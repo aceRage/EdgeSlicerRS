@@ -15,6 +15,7 @@ replaces it until output matches on the printers we care about.
 | `crates/edge-3mf` | 3MF projects: objects, parts and their roles, instances, plates, project settings |
 | `crates/edge-clip` | Polygon union, difference, intersection, offset and gap closing (wraps clipper2-rs) |
 | `crates/edge-extrusion` | Extruded line cross-section (flow) and extrusion loops |
+| `crates/edge-parity` | `edge-parity`: runs the reference slicer and this engine on one project and compares time and G-code |
 | `crates/edge-perimeter` | Walls and the infill area inside them (classic constant-width generator) |
 | `crates/edge-gcode` | Print order, travel, retraction and extrusion, written as G-code |
 | `crates/edge-infill` | Top, bottom, bridge, solid and sparse surfaces, and the lines that fill them |
@@ -87,10 +88,39 @@ the radius merge; the reference closes within one object only.
 Clipping is clipper2-rs, a port of Clipper2. The reference uses Clipper 6,
 so regions agree in shape and area but not vertex for vertex.
 
-Next: the placeholder language for machine G-code templates (what makes
-output printable), plate origins, supports, then a
+Next: close the gaps the comparison shows (elephant-foot compensation,
+joined fill lines), the placeholder language for machine G-code templates
+(what makes output printable), plate origins, supports, then a
 parity harness that slices the same project with both engines and diffs the
 result.
+
+## Comparing with the reference
+
+```bash
+cargo build --release
+target/release/edge-parity reference/EdgeSlicer/tests/data/cylinder_drawcut.3mf \
+  --reference /path/to/EdgeSlicer.app/Contents/MacOS/EdgeSlicer --svg overlay.svg
+```
+
+It slices the project with both, reads both G-code files, and reports time,
+filament, path length by feature, and how far walls and layer extents differ
+layer by layer; `--svg` draws one layer of both toolpaths over each other.
+The reference takes about two seconds to start and exit whatever it is asked
+to do, so its time is also taken from its own log.
+
+First results, 2026-11-09, Mac mini, reference build 2.4.7.6, best of 3:
+
+| Project | Reference work | This engine | Walls, per layer |
+| --- | --- | --- | --- |
+| `cylinder_drawcut.3mf` (389 layers) | 0.41 s | 0.058 s | 0.03% apart |
+| `stabilizer_v1.3mf` (499 layers) | 0.85 s | 0.063 s | 0.45% apart |
+| `twopart_groups.3mf` (60 layers) | 0.18 s | 0.007 s | not yet comparable |
+
+The reference does more in that time (supports, seams, overhangs, gap fill,
+fan and time planning), so the speed gap will narrow as stages are added.
+Differences it showed: no elephant-foot compensation on the first layer
+(0.15 mm), no supports, brim or prime tower, no multi-material regions, and
+fill lines not joined along the walls as the reference joins them.
 
 ## Licence
 

@@ -271,6 +271,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "edge-parity"
+version = "0.0.0"
+dependencies = [
+ "clap",
+]
+
+[[package]]
 name = "edge-perimeter"
 version = "0.0.0"
 dependencies = [

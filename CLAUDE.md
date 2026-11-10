@@ -21,6 +21,14 @@ submodule; a new stage should add its own and keep all of them at zero failures.
 
 On the Mac mini cargo comes from Homebrew rustup: `/opt/homebrew/opt/rustup/bin`.
 
+`edge-parity <project.3mf> --reference <EdgeSlicer executable>` compares this
+engine with the C++ slicer (or set `EDGE_REFERENCE_BIN`). On the Mac mini a
+build lives at
+`~/Dev/EdgeSlicer/build/arm64/Snapmaker_Orca/EdgeSlicer.app/Contents/MacOS/EdgeSlicer`.
+The tool gives the reference its own empty data directory and `--no-hub`, so
+it does not touch the user's settings or a running hub. Run it after a change
+to a stage and say in the PR what moved.
+
 ## Rules
 
 - `reference/EdgeSlicer` is a pinned submodule of the C++ slicer. Never edit
