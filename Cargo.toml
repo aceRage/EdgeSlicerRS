@@ -1,0 +1,26 @@
+[workspace]
+resolver = "3"
+members = ["crates/*"]
+
+[workspace.package]
+version = "0.0.0"
+edition = "2024"
+license = "AGPL-3.0-only"
+publish = false
+
+[workspace.dependencies]
+edge-geom = { path = "crates/edge-geom" }
+edge-mesh = { path = "crates/edge-mesh" }
+edge-slice = { path = "crates/edge-slice" }
+clap = { version = "4", features = ["derive"] }
+rayon = "1"
+rustc-hash = "2"
+thiserror = "2"
+
+[workspace.lints.rust]
+unsafe_code = "deny"
+
+[profile.release]
+lto = "thin"
+codegen-units = 1
+debug = "line-tables-only"

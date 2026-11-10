@@ -1,0 +1,3 @@
+[submodule "reference/EdgeSlicer"]
+	path = reference/EdgeSlicer
+	url = https://github.com/aceRage/EdgeSlicer.git

@@ -1,0 +1,15 @@
+[package]
+name = "edge-slice"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
+edge-geom.workspace = true
+edge-mesh.workspace = true
+rayon.workspace = true
+rustc-hash.workspace = true
+
+[lints]
+workspace = true
