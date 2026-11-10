@@ -490,7 +490,7 @@ fn slice(args: SliceArgs) -> Result<(), Failure> {
                 "note: no printer profile, so this G-code has a generic preamble and is not printer-ready"
             );
         }
-        for note in sliced.notes() {
+        for note in sliced.remarks.iter().chain(sliced.notes()) {
             println!("note: {note}");
         }
         // A filament with no tool of its own is written as the reference

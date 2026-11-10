@@ -150,3 +150,93 @@ fn a_vendors_presets_are_listed_by_printer() {
     assert!(chosen.process.unwrap().1.get("layer_height").is_some());
     assert!(shelf.choose(Some("no such printer"), None, None).is_err());
 }
+
+#[test]
+fn a_filament_preset_serves_every_filament_of_the_model() {
+    let library = Library::new(reference("resources/profiles"));
+    let shelf = library.shelf("Snapmaker").unwrap();
+    let machine = "Snapmaker U1 (0.4 nozzle)";
+    let filament = shelf.filaments_for(machine)[0].to_owned();
+    let two_filaments = || {
+        let opened = edge_engine::open(
+            &reference("tests/data/support_corpus/twopart_groups.3mf"),
+            None,
+        )
+        .unwrap();
+        let mut loaded = opened.place().unwrap();
+        // The project describes two filaments; print part of it in a third.
+        loaded.bodies[0].filament = 3;
+        loaded
+    };
+
+    // With the project's own settings there is nothing to say of filament 3.
+    let job = edge_engine::prepare(two_filaments(), &Chosen::default(), &Overrides::default());
+    let sliced = edge_engine::slice(job.unwrap(), &Unwatched).unwrap();
+    let refused = sliced.gcode("now").err().expect("no G-code").to_string();
+    assert!(
+        refused.contains("prints in filament 3") && refused.contains("only 2 filament"),
+        "{refused}"
+    );
+
+    // A filament preset chosen is every filament's, and that is said.
+    let chosen = shelf.choose(Some(machine), None, Some(&filament)).unwrap();
+    let job = edge_engine::prepare(two_filaments(), &chosen, &Overrides::default()).unwrap();
+    assert_eq!(job.remarks.len(), 1);
+    assert!(job.remarks[0].contains("3 filaments"), "{:?}", job.remarks);
+    assert_eq!(job.settings.texts("nozzle_temperature").unwrap().len(), 3);
+    assert_eq!(
+        job.settings.texts("filament_settings_id").unwrap(),
+        [filament.clone(), filament.clone(), filament.clone()]
+    );
+    let sliced = edge_engine::slice(job, &Unwatched).unwrap();
+    sliced.gcode("now").unwrap();
+
+    // One filament in, one filament out: nothing is repeated or remarked on.
+    let plain = edge_engine::open(
+        &reference("tests/data/support_corpus/twopart_groups.3mf"),
+        None,
+    )
+    .unwrap();
+    let job = edge_engine::prepare(plain.place().unwrap(), &chosen, &Overrides::default()).unwrap();
+    assert!(job.remarks.is_empty());
+    assert_eq!(job.settings.texts("nozzle_temperature").unwrap().len(), 1);
+}
+
+#[test]
+fn a_tool_is_changed_over_the_prime_tower() {
+    let opened = edge_engine::open(&reference("tests/mcbrim_test.3mf"), Some(2)).unwrap();
+    let job = edge_engine::prepare(
+        opened.place().unwrap(),
+        &Chosen::default(),
+        &Overrides::default(),
+    )
+    .unwrap();
+    let sliced = edge_engine::slice(job, &Unwatched).unwrap();
+    let [min_x, min_y, max_x, max_y] = sliced.tower.footprint.expect("a tower");
+    let text = String::from_utf8(sliced.gcode("now").unwrap().text).unwrap();
+    let lines: Vec<&str> = text.lines().collect();
+    let word = |line: &str, letter: char| -> Option<f64> {
+        line.split_whitespace()
+            .find_map(|word| word.strip_prefix(letter)?.parse().ok())
+    };
+    let mut changes = 0;
+    for (at, _) in lines
+        .iter()
+        .enumerate()
+        .filter(|(_, line)| line.ends_with(";cooldown"))
+    {
+        // Wherever the nozzle last went before it was put away.
+        let (x, y) = lines[..at]
+            .iter()
+            .rev()
+            .filter(|line| line.starts_with("G1 "))
+            .find_map(|line| Some((word(line, 'X')?, word(line, 'Y')?)))
+            .expect("a move before the change");
+        assert!(
+            (min_x..=max_x).contains(&x) && (min_y..=max_y).contains(&y),
+            "tool put away at {x} x {y}, off the tower"
+        );
+        changes += 1;
+    }
+    assert!(changes > 20, "{changes} changes");
+}

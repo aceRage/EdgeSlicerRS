@@ -53,6 +53,26 @@ pub struct Job {
     pub closing_radius: Sourced,
     pub wall_loops: Option<usize>,
     pub bed_type: BedType,
+    /// Things settled here that the person should know of, as sentences.
+    pub remarks: Vec<String>,
+}
+
+/// A filament preset describes one filament. For a model printed in
+/// several, every one of them is given the preset: each of its lists,
+/// which hold the one filament's value, is repeated for `count` filaments.
+fn for_every_filament(preset: &Settings, count: usize) -> Settings {
+    let mut spread = preset.clone();
+    let single: Vec<(String, String)> = preset
+        .iter()
+        .filter_map(|(key, value)| match value {
+            Value::Many(values) if values.len() == 1 => Some((key.to_owned(), values[0].clone())),
+            _ => None,
+        })
+        .collect();
+    for (key, value) in single {
+        spread.insert(&key, Value::Many(vec![value; count]));
+    }
+    spread
 }
 
 /// Layer height, first layer height and closing radius, each from the first
@@ -102,13 +122,35 @@ pub fn prepare(mut loaded: Loaded, chosen: &Chosen, overrides: &Overrides) -> Re
         chosen.process.as_ref().map(|(_, settings)| settings),
         project_settings.as_ref(),
     )?;
+    // The highest-numbered filament anything is printed in.
+    let filaments = loaded
+        .bodies
+        .iter()
+        .map(|body| body.filament)
+        .max()
+        .unwrap_or(1);
+    let mut remarks = Vec::new();
+    let filament = chosen.filament.as_ref().map(|(name, preset)| {
+        if filaments > 1 {
+            remarks.push(format!(
+                "the model prints in {filaments} filaments; the filament preset \"{name}\" is used for all of them"
+            ));
+            (name, for_every_filament(preset, filaments))
+        } else {
+            (name, preset.clone())
+        }
+    });
     // Later sources replace earlier ones: project, then the presets named.
     let mut settings = project_settings.unwrap_or_default();
-    for preset in [&chosen.machine, &chosen.filament, &chosen.process]
-        .into_iter()
-        .flatten()
+    for preset in [
+        chosen.machine.as_ref().map(|(_, preset)| preset),
+        filament.as_ref().map(|(_, preset)| preset),
+        chosen.process.as_ref().map(|(_, preset)| preset),
+    ]
+    .into_iter()
+    .flatten()
     {
-        settings.overlay(&preset.1);
+        settings.overlay(preset);
     }
     // The presets are named in the file, as the reference names them, for
     // whoever reads it back.
@@ -119,7 +161,10 @@ pub fn prepare(mut loaded: Loaded, chosen: &Chosen, overrides: &Overrides) -> Re
         settings.insert("printer_settings_id", Value::One(name.clone()));
     }
     if let Some((name, _)) = &chosen.filament {
-        settings.insert("filament_settings_id", Value::Many(vec![name.clone()]));
+        settings.insert(
+            "filament_settings_id",
+            Value::Many(vec![name.clone(); filaments]),
+        );
     }
     let mut bed_type = BedType::Settled;
     if let Some(bed) = &overrides.bed_type {
@@ -170,5 +215,6 @@ pub fn prepare(mut loaded: Loaded, chosen: &Chosen, overrides: &Overrides) -> Re
         closing_radius,
         wall_loops: overrides.wall_loops,
         bed_type,
+        remarks,
     })
 }

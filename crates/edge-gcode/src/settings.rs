@@ -325,7 +325,7 @@ impl Default for PrintSettings {
             tool_change_temperature_wait: true,
             tools: 1,
             filaments: 1,
-            variables: variables(&Settings::default(), None, None, None),
+            variables: variables(&Settings::default(), None, None, None, None),
             config: Vec::new(),
             produced_at: None,
             unsupported: Vec::new(),
@@ -788,6 +788,7 @@ impl PrintSettings {
                 settings,
                 bed_temperature,
                 bed_temperature_initial_layer,
+                bed_key,
                 bed,
             ),
             config: {
@@ -837,6 +838,7 @@ fn variables(
     settings: &Settings,
     bed: Option<f64>,
     bed_initial: Option<f64>,
+    bed_key: Option<&str>,
     area: Option<[f64; 4]>,
 ) -> Variables {
     let mut variables = Variables::default();
@@ -880,13 +882,29 @@ fn variables(
         variables.set_list("print_bed_size", pair(max_x - min_x, max_y - min_y));
     }
     let whole = |temperature: f64| Value::Int(temperature.round() as i64);
+    // The lists have an entry for each filament, as the plate's own
+    // setting has, so a template can ask for any tool's; a filament with
+    // none of its own takes this one's.
+    let for_each = |suffix: &str, own: f64| -> Vec<Value> {
+        let listed = bed_key.and_then(|key| settings.floats(&format!("{key}{suffix}")).ok()?);
+        match listed {
+            Some(all) if !all.is_empty() => all
+                .iter()
+                .map(|temperature| whole(temperature.unwrap_or(own)))
+                .collect(),
+            _ => vec![whole(own)],
+        }
+    };
     if let Some(bed) = bed_initial.or(bed) {
         variables.set("bed_temperature_initial_layer_single", whole(bed));
-        variables.set_list("bed_temperature_initial_layer", vec![whole(bed)]);
+        variables.set_list(
+            "bed_temperature_initial_layer",
+            for_each("_initial_layer", bed),
+        );
         variables.set("first_layer_bed_temperature", whole(bed));
     }
     if let Some(bed) = bed.or(bed_initial) {
-        variables.set_list("bed_temperature", vec![whole(bed)]);
+        variables.set_list("bed_temperature", for_each("", bed));
     }
     // One filament and no tool changes, for now.
     variables.set("has_wipe_tower", Value::Bool(false));
