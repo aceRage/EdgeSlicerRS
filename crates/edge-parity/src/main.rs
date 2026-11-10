@@ -93,10 +93,16 @@ fn run(cli: Cli) -> Result<(), Failure> {
 }
 
 fn compare(cli: &Cli, engine: &Path, work: &Path, runs: usize) -> Result<(), Failure> {
+    // The reference is run from the work directory, so every path it is
+    // given has to hold from there.
+    let project = std::path::absolute(&cli.project)?;
+    let work = &std::path::absolute(work)?;
     // The reference gets its own empty data directory so it neither reads
     // nor disturbs the user's, and is told to leave the hub alone.
     let reference_out = work.join("reference");
     let mut reference = Command::new(&cli.reference);
+    // It drops a result.json wherever it is run from.
+    reference.current_dir(work);
     reference
         .arg("--datadir")
         .arg(work.join("reference-data"))
@@ -110,7 +116,7 @@ fn compare(cli: &Cli, engine: &Path, work: &Path, runs: usize) -> Result<(), Fai
         ])
         .arg("--outputdir")
         .arg(&reference_out)
-        .arg(&cli.project);
+        .arg(&project);
     let reference_gcode = reference_out.join(format!("plate_{}.gcode", cli.plate));
     let reference_time = fastest(
         &mut reference,
@@ -122,7 +128,7 @@ fn compare(cli: &Cli, engine: &Path, work: &Path, runs: usize) -> Result<(), Fai
     let engine_gcode = work.join("edge.gcode");
     let mut ours = Command::new(engine);
     ours.arg("slice")
-        .arg(&cli.project)
+        .arg(&project)
         .arg("--gcode")
         .arg(&engine_gcode);
     if cli.plate != 1 {
