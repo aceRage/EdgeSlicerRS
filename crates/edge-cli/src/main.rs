@@ -376,7 +376,39 @@ fn slice(args: SliceArgs) -> Result<(), Failure> {
             negative: body.negative.as_ref(),
         })
         .collect();
-    let layers = edge_slice::slice_regions(&borrowed, &planes, scaled(closing_radius))?;
+    let mut layers = edge_slice::slice_regions(&borrowed, &planes, scaled(closing_radius))?;
+
+    // The first layers are printed slightly smaller than modelled, tapering
+    // to nothing over `elefant_foot_compensation_layers`. The modelled
+    // outlines are kept: neighbouring layers are still compared with them.
+    let elephant_foot = settings.float("elefant_foot_compensation")?.unwrap_or(0.0);
+    let elephant_layers = if elephant_foot > 0.0 {
+        usize::try_from(
+            settings
+                .integer("elefant_foot_compensation_layers")?
+                .unwrap_or(1),
+        )
+        .unwrap_or(0)
+    } else {
+        0
+    }
+    .min(layers.len());
+    let mut modelled: Vec<Vec<ExPolygon>> = Vec::with_capacity(elephant_layers);
+    for (index, layer) in layers.iter_mut().take(elephant_layers).enumerate() {
+        let height = if index == 0 {
+            first_layer_height
+        } else {
+            layer_height
+        };
+        let outer = walls.params(height, index == 0)?.outer;
+        let amount = elephant_foot * (1.0 - index as f64 / elephant_layers as f64);
+        let shrunk = edge_slice::compensate_elephant_foot(
+            &layer.regions,
+            scaled(outer.width + outer.spacing),
+            scaled(amount),
+        )?;
+        modelled.push(std::mem::replace(&mut layer.regions, shrunk));
+    }
     let slice_time = started.elapsed();
 
     let started = Instant::now();
@@ -390,7 +422,7 @@ fn slice(args: SliceArgs) -> Result<(), Failure> {
                 layer_height
             };
             let params = walls
-                .params(height, index == 0)
+                .params_at(height, index, layers.len())
                 .map_err(|e| e.to_string())?;
             edge_perimeter::classic(&layer.regions, &params).map_err(|e| e.to_string())
         })
@@ -407,7 +439,19 @@ fn slice(args: SliceArgs) -> Result<(), Failure> {
         .iter()
         .map(|layer| layer.infill.as_slice())
         .collect();
-    let surfaces = edge_infill::classify(&slices, &inside_walls, &infill.shells(layer_height)?)?;
+    let outlines: Vec<&[ExPolygon]> = (0..layers.len())
+        .map(|index| {
+            modelled
+                .get(index)
+                .map_or(layers[index].regions.as_slice(), Vec::as_slice)
+        })
+        .collect();
+    let surfaces = edge_infill::classify(
+        &slices,
+        &outlines,
+        &inside_walls,
+        &infill.shells(layer_height)?,
+    )?;
     let classify_time = started.elapsed();
     let fills = surfaces
         .par_iter()
@@ -447,6 +491,11 @@ fn slice(args: SliceArgs) -> Result<(), Failure> {
         "layer height {layer_height} mm ({layer_source}), first layer {first_layer_height} mm ({first_source}), \
          closing radius {closing_radius} mm ({closing_source})"
     );
+    if elephant_layers > 0 {
+        println!(
+            "elephant foot compensation {elephant_foot} mm over the first {elephant_layers} layer(s)"
+        );
+    }
 
     let regions = || layers.iter().flat_map(|layer| &layer.regions);
     println!(

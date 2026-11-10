@@ -92,8 +92,11 @@ fn every_reference_project_exports_well_formed_gcode_that_adds_up() {
             .iter()
             .enumerate()
             .map(|(index, layer)| {
-                edge_perimeter::classic(&layer.regions, &walls.params(0.2, index == 0).unwrap())
-                    .unwrap()
+                edge_perimeter::classic(
+                    &layer.regions,
+                    &walls.params_at(0.2, index, layers.len()).unwrap(),
+                )
+                .unwrap()
             })
             .collect();
         let slices: Vec<&[ExPolygon]> = layers
@@ -105,7 +108,7 @@ fn every_reference_project_exports_well_formed_gcode_that_adds_up() {
             .map(|layer| layer.infill.as_slice())
             .collect();
         let surfaces =
-            edge_infill::classify(&slices, &inside, &infill.shells(0.2).unwrap()).unwrap();
+            edge_infill::classify(&slices, &slices, &inside, &infill.shells(0.2).unwrap()).unwrap();
         let fills: Vec<_> = surfaces
             .iter()
             .enumerate()

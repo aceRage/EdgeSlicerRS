@@ -68,7 +68,7 @@ fn walls_are_well_formed_and_infill_stays_inside_on_every_reference_project() {
 
         let mut problems = Vec::new();
         for (index, layer) in layers.iter().enumerate() {
-            let params = walls.params(0.2, index == 0).unwrap();
+            let params = walls.params_at(0.2, index, layers.len()).unwrap();
             let perimeters = match edge_perimeter::classic(&layer.regions, &params) {
                 Ok(perimeters) => perimeters,
                 Err(error) => {

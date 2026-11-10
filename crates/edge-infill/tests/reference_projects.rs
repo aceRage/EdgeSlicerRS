@@ -68,8 +68,11 @@ fn surfaces_partition_the_infill_area_and_every_one_is_filled() {
             .iter()
             .enumerate()
             .map(|(index, layer)| {
-                edge_perimeter::classic(&layer.regions, &walls.params(0.2, index == 0).unwrap())
-                    .unwrap()
+                edge_perimeter::classic(
+                    &layer.regions,
+                    &walls.params_at(0.2, index, layers.len()).unwrap(),
+                )
+                .unwrap()
             })
             .collect();
         let slices: Vec<&[ExPolygon]> = layers
@@ -81,7 +84,7 @@ fn surfaces_partition_the_infill_area_and_every_one_is_filled() {
             .map(|layer| layer.infill.as_slice())
             .collect();
         let surfaces =
-            edge_infill::classify(&slices, &inside, &infill.shells(0.2).unwrap()).unwrap();
+            edge_infill::classify(&slices, &slices, &inside, &infill.shells(0.2).unwrap()).unwrap();
         filled += 1;
 
         let mut problems = Vec::new();
