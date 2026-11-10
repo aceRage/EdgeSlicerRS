@@ -1605,3 +1605,94 @@ fn progress_is_said_at_the_start_and_as_layers_go_by() {
         "; EXECUTABLE_BLOCK_END"
     );
 }
+
+#[test]
+fn a_wall_with_nothing_under_it_follows_the_curled_edge_setting() {
+    // As the profile has it, a wall over air goes at the bridge's speed.
+    let at_bridge_speed = wall_over_a_smaller_plate(&overhanging(), true);
+    let over_air = |text: &str| -> Vec<f64> {
+        let mut speeds = Vec::new();
+        let (mut kind, mut speed) = ("", 0.0);
+        for line in text.lines() {
+            if let Some(name) = line.strip_prefix(";TYPE:") {
+                kind = name;
+            }
+            if line.starts_with("G1 ") {
+                speed = word(line, 'F').unwrap_or(speed);
+                if kind == "Overhang wall" && word(line, 'E').is_some_and(|feed| feed > 0.0) {
+                    speeds.push(speed / 60.0);
+                }
+            }
+        }
+        speeds
+    };
+    let speeds = over_air(&at_bridge_speed);
+    assert!(speeds.contains(&25.0), "{speeds:?}");
+    // With the setting on, at the last of the overhang speeds.
+    let careful = PrintSettings {
+        slowdown_for_curled_perimeters: true,
+        ..overhanging()
+    };
+    let speeds = over_air(&wall_over_a_smaller_plate(&careful, true));
+    assert!(
+        !speeds.is_empty() && speeds.iter().all(|speed| *speed <= 10.0),
+        "{speeds:?}"
+    );
+}
+
+#[test]
+fn a_wall_over_air_is_as_wide_as_an_inner_wall() {
+    // An outer wall 0.42 mm wide with an inner wall of 0.45 mm behind
+    // it, over a plate half their size.
+    let narrow = Flow::new(0.42, 0.2, 0.4).unwrap();
+    let plate = [wall(0.0, 0.0, 10.0, 0)];
+    let above = [
+        ExtrusionLoop {
+            flow: narrow,
+            ..wall(0.21, 0.21, 19.58, 0)
+        },
+        wall(0.64, 0.64, 18.72, 1),
+    ];
+    let beneath = [ExPolygon {
+        contour: wall(0.0, 0.0, 10.0, 0).polygon,
+        holes: Vec::new(),
+    }];
+    let layers = [
+        Layer {
+            z: 0.2,
+            ..one_layer(&plate, &[0..1], &[])[0]
+        },
+        Layer {
+            z: 0.4,
+            below: &beneath,
+            ..one_layer(&above, &[0..2], &[])[0]
+        },
+    ];
+    let (text, _) = print(&layers, &overhanging());
+    let second = text.split(";Z:0.400").nth(1).unwrap();
+    // Every stretch over air is written at the inner wall's width less
+    // what the bridge's flow takes off, whichever wall it belongs to.
+    let wide = flow().bridging(0.8, false).width;
+    let mut kind = "";
+    let mut widths = Vec::new();
+    for line in second.lines() {
+        if let Some(name) = line.strip_prefix(";TYPE:") {
+            kind = name;
+        }
+        if let Some(width) = line.strip_prefix(";WIDTH:")
+            && kind == "Overhang wall"
+        {
+            widths.push(width.parse::<f64>().unwrap());
+        }
+    }
+    assert!(
+        widths.iter().any(|width| (width - wide).abs() < 1e-3),
+        "{widths:?} against {wide}"
+    );
+    assert!(
+        !widths
+            .iter()
+            .any(|width| (width - narrow.bridging(0.8, false).width).abs() < 1e-3),
+        "{widths:?}"
+    );
+}

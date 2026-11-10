@@ -57,6 +57,11 @@ pub struct PrintSettings {
     /// the line hangs over; zero for the wall's own speed.
     pub enable_overhang_speed: bool,
     pub overhang_speeds: [FloatOrPercent; 4],
+    /// With this on, the reference prints a wall with nothing under it
+    /// at the last of the overhang speeds, not at the bridge's
+    /// (`slowdown_for_curled_perimeters`). Slowing over edges that have
+    /// curled up, which the setting is named for, is not done.
+    pub slowdown_for_curled_perimeters: bool,
     /// The fan for bridges and overhangs; none when they get the layer's.
     pub overhang_fan: Option<OverhangFan>,
     /// A bridge's plastic as a share of a normal line's, and whether it
@@ -225,6 +230,7 @@ impl Default for PrintSettings {
             detect_overhang_wall: true,
             enable_overhang_speed: true,
             overhang_speeds: [FloatOrPercent::Value(0.0); 4],
+            slowdown_for_curled_perimeters: false,
             overhang_fan: Some(OverhangFan {
                 speed: 100.0,
                 at: Some(0.05),
@@ -426,7 +432,7 @@ impl PrintSettings {
             (
                 "slowdown_for_curled_perimeters",
                 "0",
-                "walls over curled edges are not slowed",
+                "walls are not slowed over edges that have curled up",
             ),
             (
                 "overhang_reverse",
@@ -554,6 +560,7 @@ impl PrintSettings {
                 listed_share("overhang_3_4_speed", defaults.overhang_speeds[2])?,
                 listed_share("overhang_4_4_speed", defaults.overhang_speeds[3])?,
             ],
+            slowdown_for_curled_perimeters: flag("slowdown_for_curled_perimeters", false)?,
             overhang_fan: if flag("enable_overhang_bridge_fan", true)? {
                 Some(OverhangFan {
                     speed: number("overhang_fan_speed", 100.0)?,
