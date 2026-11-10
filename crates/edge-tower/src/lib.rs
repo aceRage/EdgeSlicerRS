@@ -7,11 +7,11 @@
 //! between colours and every tool change primes the same `prime_volume`.
 //! Kept from the reference: the line width, how deep a block a tool change
 //! takes, that the tower stands on every layer up to the last tool change
-//! and is never deeper above than below, a solid first layer, and a brim.
+//! and is never deeper above than below, a solid first layer, a brim, and
+//! that a tower set to have a ribbed wall is made as wide as it is deep.
 //!
-//! Not done: the ribbed, filleted and cone walls (the wall is a plain
-//! box, so the tower is as wide as `prime_tower_width` and not squared
-//! off), the gap in the wall where a nozzle comes in, the slow ironing
+//! Not done: the ribbed, filleted and cone walls themselves (the wall is
+//! a plain box), the gap in the wall where a nozzle comes in, the slow ironing
 //! pass that starts a block, turning the tower end for end on alternate
 //! layers, ramming, and leaving out or thinning the layers no tool change
 //! uses.
@@ -49,6 +49,9 @@ pub struct TowerSettings {
     /// The furthest apart the lines across unused depth may be, since the
     /// layer above is laid over them.
     pub bridging: f64,
+    /// Whether the tower is made as wide as it is deep, whatever width is
+    /// set: the reference does so for its ribbed wall.
+    pub squared: bool,
     /// Settings present in the input that are not honoured, each with what
     /// is done instead.
     pub unsupported: Vec<String>,
@@ -67,6 +70,7 @@ impl Default for TowerSettings {
             extra_spacing: 1.0,
             extra_flow: 1.0,
             bridging: 10.0,
+            squared: false,
             unsupported: Vec::new(),
         }
     }
@@ -103,7 +107,7 @@ impl TowerSettings {
                 (
                     "wipe_tower_wall_type",
                     "rectangle",
-                    "the tower has a plain box for a wall, and is not squared off",
+                    "the tower has a plain box for a wall",
                 ),
                 (
                     "wipe_tower_rotation_angle",
@@ -146,6 +150,7 @@ impl TowerSettings {
             extra_spacing: share("wipe_tower_extra_spacing", defaults.extra_spacing)?.max(0.5),
             extra_flow: share("wipe_tower_extra_flow", defaults.extra_flow)?.max(0.1),
             bridging: number("wipe_tower_bridging", defaults.bridging)?.max(1.0),
+            squared: settings.text("wipe_tower_wall_type") == Some("rib"),
             unsupported,
         })
     }
@@ -163,11 +168,11 @@ impl TowerSettings {
     /// `height` mm thick (WipeTower2.cpp `get_wipe_depth`): enough rows,
     /// across a width a little less than the tower's, to lay down
     /// `prime_volume`.
-    fn block_depth(&self, height: f64, first_layer: bool) -> f64 {
+    fn block_depth(&self, width: f64, height: f64, first_layer: bool) -> f64 {
         let line = WIDTH_TO_NOZZLE * self.nozzle_diameter;
         let per_mm = height * (line - height * (1.0 - PI / 4.0));
         let length = self.prime_volume / per_mm / self.extra_flow;
-        let across = (self.width - line - 2.0 * line * RAMMING_WIDTH).max(line);
+        let across = (width - line - 2.0 * line * RAMMING_WIDTH).max(line);
         let rows = (length / across).floor() + 1.0;
         rows * line * self.row_step(first_layer)
     }
@@ -224,10 +229,21 @@ pub fn plan(
     let line = WIDTH_TO_NOZZLE * settings.nozzle_diameter;
     // A layer is as deep as its tool changes need, and no shallower than
     // any layer above it, so nothing is laid over air.
-    let own =
-        |layer: usize| changes[layer] as f64 * settings.block_depth(heights[layer], layer == 0);
-    let depth = (0..=last).map(own).fold(0.0, f64::max) + line;
-    let width = settings.width.max(6.0 * line);
+    let depth_at = |width: f64| {
+        (0..=last)
+            .map(|layer| {
+                changes[layer] as f64 * settings.block_depth(width, heights[layer], layer == 0)
+            })
+            .fold(0.0, f64::max)
+            + line
+    };
+    let mut width = settings.width.max(6.0 * line);
+    // A tower with a ribbed wall takes the ground of the one set but as
+    // a square, to the next whole line (WipeTower2.cpp `generate`).
+    if settings.squared {
+        width = ((depth_at(width) * width).sqrt() / line).ceil() * line;
+    }
+    let depth = depth_at(width);
 
     let at = |x: f64, y: f64| Point2::from_mm(settings.x + x, settings.y + y);
     for layer in 0..=last {
@@ -252,7 +268,7 @@ pub fn plan(
         // from side to side, the first of them laid slowly.
         let (left, right) = (1.5 * line, width - 1.5 * line);
         let step = line * settings.row_step(first);
-        let block = settings.block_depth(heights[layer], first);
+        let block = settings.block_depth(width, heights[layer], first);
         let rows = (block / step).round().max(1.0) as usize;
         let mut front = line;
         for _ in 0..changes[layer] {
@@ -421,7 +437,7 @@ mod tests {
         assert!((min_x - 100.25).abs() < 1e-6 && (min_y - 50.25).abs() < 1e-6);
         assert!((max_x - 129.75).abs() < 1e-6);
         let depth = max_y - min_y + 0.5;
-        let two_blocks = 2.0 * settings.block_depth(0.2, false) + 0.5;
+        let two_blocks = 2.0 * settings.block_depth(settings.width, 0.2, false) + 0.5;
         assert!(
             (depth - two_blocks).abs() < 1e-6,
             "{depth} for {two_blocks}"
@@ -500,7 +516,7 @@ mod tests {
             "wipe_tower_extra_flow": "100%", "wipe_tower_wall_type": "rib",
             "nozzle_diameter": ["0.4", "0.4"], "filament_multitool_ramming": ["0", "1"]}"#;
         let second = read(json, 1);
-        assert!(second.enabled);
+        assert!(second.enabled && second.squared);
         assert_eq!((second.x, second.y, second.width), (40.0, 200.0, 30.0));
         assert_eq!((second.extra_spacing, second.extra_flow), (1.2, 1.0));
         // A plate past the end of the list takes the last place given.
@@ -512,5 +528,38 @@ mod tests {
                 .unsupported
                 .is_empty()
         );
+    }
+
+    #[test]
+    fn a_tower_with_a_ribbed_wall_is_made_square() {
+        // Five changes on a layer make a 30 mm tower 54.5 mm deep; as a
+        // square of the same ground it is about 40 mm each way.
+        let plain = on();
+        let squared = TowerSettings {
+            squared: true,
+            ..on()
+        };
+        let size = |settings: &TowerSettings| {
+            let [min_x, min_y, max_x, max_y] = plan(&[1, 5, 5], &[0.2; 3], settings)
+                .unwrap()
+                .footprint
+                .unwrap();
+            let brim = 2.0 * settings.brim_width;
+            (max_x - min_x - brim, max_y - min_y - brim)
+        };
+        let (width, depth) = size(&plain);
+        assert!(
+            (width - 30.0).abs() < 0.6 && (depth - 54.5).abs() < 0.6,
+            "{width} x {depth}"
+        );
+        let (width, depth) = size(&squared);
+        assert!((width - depth).abs() < 2.5, "{width} x {depth}");
+        assert!((width - 40.5).abs() < 1.0, "{width} x {depth}");
+        // Every block still carries the plastic asked for.
+        let tower = plan(&[1, 5, 5], &[0.2; 3], &squared).unwrap();
+        for block in &tower.layers[1].changes {
+            let volume: f64 = block.iter().map(ExtrusionPath::volume_mm3).sum();
+            assert!((45.0..45.0 * 1.2).contains(&volume), "{volume} mm³");
+        }
     }
 }
