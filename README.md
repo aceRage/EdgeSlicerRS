@@ -129,7 +129,18 @@ Known gaps: painted triangles, per-object setting overrides, typed settings
   note. Top and bottom surfaces are fitted to their area: the lines are
   spread, by up to a fifth, so that a whole number of them fills the
   width, and each is made as wide as its share. They overlap their walls
-  by `top_bottom_infill_wall_overlap` on the first layer and the last. The first solid layer over sparse
+  by `top_bottom_infill_wall_overlap` on the first layer and the last.
+  Sparse fill is laid as the reference lays it. Its pattern passes
+  through the middle of what is printed, so it sits the same way in a
+  part wherever the part is on the bed. A grid's lines are cut half a
+  spacing inside the area, none within a spacing of the area's own edge,
+  joined along the wall where two ends are closer than
+  `infill_anchor_max`, and an end joined to nothing runs `infill_anchor`
+  along the wall to hold on to it, stopping half a line short of the
+  next end; nothing is joined or anchored along a wall a line already
+  runs beside (FillBase.cpp `connect_infill`). Lines in one direction
+  (`rectilinear`, `zig-zag`, `line`) are one zigzag that turns half a
+  spacing inside the wall. The first solid layer over sparse
   fill is laid as an internal bridge: round threads across the lines
   beneath, at `internal_bridge_speed`. Fill over air takes `bridge_flow`
   and `bridge_density`, and runs along the edges it has nothing beside,
@@ -283,9 +294,8 @@ each top surface and fills the room with top fill: the largest difference
 left on flat parts with lettering). Arachne (variable width) is not
 started. Overhangs are measured as the reference measures them but probed
 at fixed steps, so a wall's speed changes at slightly different places.
-Infill is a first working version, not a port: fill lines are joined along
-the walls nearest-first but not ordered (no monotonic) and get no anchors
-where they stay unjoined, a bridge reaches 0.4 mm onto each support where the reference's
+Infill is not all a port yet: solid lines are joined along
+the walls nearest-first but not ordered (no monotonic), a bridge reaches 0.4 mm onto each support where the reference's
 reaches 0.8 mm, internal bridges are not run out to the
 sparse lines that carry them (they come 5 to 9% short of the
 reference's), narrow parts of top and bottom surfaces get no gap fill
@@ -307,7 +317,7 @@ could be and picks afterwards; a leaning branch is a circle on each layer,
 not an oval; and branches are not smoothed.
 
 Next: thumbnails, one wall under top
-surfaces, sparse fill joined along the walls, and painted colours.
+surfaces, and painted colours.
 
 ## Comparing with the reference
 
@@ -415,6 +425,21 @@ top shell (a band round the sparse fill beneath the first bridged layer)
 and fills small gaps left inside solid fill; neither is done here. Solid
 lines here are laid as one zigzag where the reference orders `monotonic`
 lines so that each is laid beside the last.
+
+Sparse fill comes to the reference's length within 1.5% on the cube, the
+deck, the tower and the two-colour test with both printers' presets
+(the U1's grid and the Centauri Carbon's rectilinear), on
+`cylinder_drawcut.3mf` (663.1 m against 663.4 m) and on
+`twopart_groups.3mf`; it was 8 to 60% under on small parts with the
+grid, and up to 25% out either way with rectilinear. On the tower and
+the deck the paths are the reference's, line for line. On the cube two
+joins of equal length are taken in another order, which leaves one path
+as two. Filament over the whole part is now within 0.6% on the cube,
+the deck and the tower for both printers (the tower with the U1's
+presets was 18% under). Where objects share a plate the pattern passes
+through the middle of all of them, not of each as in the reference; and
+on the lettered plate sparse fill is 6 to 8% over, where this engine
+makes more of the inside sparse than the reference does.
 
 Tree supports with the Centauri Carbon's presets (`tree(auto)`, arcs on)
 come to about half the reference's length on the `shelf` fixture (2.26 m

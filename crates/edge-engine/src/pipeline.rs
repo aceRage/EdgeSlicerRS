@@ -324,9 +324,13 @@ pub fn slice(job: Job, watch: &dyn Watcher) -> Result<Sliced, Failure> {
                 } else {
                     layer_height
                 };
-                let params = infill
+                let mut params = infill
                     .params(height, index == 0)
                     .map_err(|e| e.to_string())?;
+                // The sparse pattern is laid through the middle of what
+                // is printed. (The reference lays each object's through
+                // its own middle; here objects are not kept apart.)
+                params.origin = middle;
                 edge_infill::fill(surfaces, index, &params).map_err(|e| e.to_string())
             })
             .collect::<Result<Vec<Vec<ExtrusionPath>>, String>>()?;
