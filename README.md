@@ -255,8 +255,17 @@ than the profile asks, which is since put right. A 20 mm cube
 printed on a Snapmaker U1 the same day. One was started on the Centauri
 Carbon too; how it came out is not recorded here. A two-colour
 test (two blocks side by side, 20 tool changes, a prime tower) printed on
-the U1 that day too: the first print in more than one filament. Supports
-have not been on hardware at all. Without a printer
+the U1 that day too: the first print in more than one filament. The
+`mushroom` fixture with tree supports printed on the U1 as well, beside
+the C++ slicer's file for the same project: both caps were carried and
+both sets of supports came away. This engine's stood on separate feet
+where the reference's first layer is one sheet, with more and thinner
+trunks, and kept further from the stem (2.8 mm against 1.6 mm, taking
+the middle layer's least distance). Its bridge under the cap runs across
+the lines of the support's roof where the reference's runs along them,
+and came out flatter with a few blobs; the two were printed in different
+filaments, so the look of the surfaces is not a fair comparison. Normal
+(grid) supports have not been on hardware. Without a printer
 profile a generic preamble is written and the file is only good for viewing.
 
 Multi-filament printing is a first working version. Where parts of
