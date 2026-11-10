@@ -30,6 +30,11 @@ pub struct WallSettings {
     /// the wall, as in the reference.
     pub top_shell_layers: usize,
     pub bottom_shell_layers: usize,
+    /// Gaps between walls are filled when this speed, in mm/s, is above
+    /// zero; the reference has no other switch for it.
+    pub gap_infill_speed: f64,
+    /// Gap lines shorter than this many mm are left out.
+    pub filter_out_gap_fill: f64,
 }
 
 impl Default for WallSettings {
@@ -50,6 +55,8 @@ impl Default for WallSettings {
             only_one_wall_first_layer: false,
             top_shell_layers: 4,
             bottom_shell_layers: 3,
+            gap_infill_speed: 30.0,
+            filter_out_gap_fill: 0.0,
         }
     }
 }
@@ -108,6 +115,13 @@ impl WallSettings {
                 .unwrap_or(defaults.only_one_wall_first_layer),
             top_shell_layers: count("top_shell_layers", defaults.top_shell_layers)?,
             bottom_shell_layers: count("bottom_shell_layers", defaults.bottom_shell_layers)?,
+            gap_infill_speed: settings
+                .floats("gap_infill_speed")?
+                .and_then(|speeds| speeds.first().copied().flatten())
+                .unwrap_or(defaults.gap_infill_speed),
+            filter_out_gap_fill: settings
+                .float("filter_out_gap_fill")?
+                .unwrap_or(defaults.filter_out_gap_fill),
         })
     }
 
@@ -152,6 +166,10 @@ impl WallSettings {
             solid_infill_spacing: solid_infill.scaled_spacing(),
             infill_overlap_percent: self.infill_wall_overlap_percent,
             resolution: scaled(resolution),
+            gap_fill: (self.gap_infill_speed > 0.0).then_some(crate::GapFill {
+                flow: solid_infill,
+                shortest: scaled(self.filter_out_gap_fill),
+            }),
         })
     }
 

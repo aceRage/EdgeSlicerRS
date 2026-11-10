@@ -37,6 +37,8 @@ pub struct PrintSettings {
     pub internal_solid_infill_speed: f64,
     pub top_surface_speed: f64,
     pub bridge_speed: f64,
+    /// Lines that fill the gaps between walls.
+    pub gap_infill_speed: f64,
     /// Walls on the first layer.
     pub initial_layer_speed: f64,
     /// All fill on the first layer.
@@ -182,6 +184,7 @@ impl Default for PrintSettings {
             internal_solid_infill_speed: 100.0,
             top_surface_speed: 100.0,
             bridge_speed: 25.0,
+            gap_infill_speed: 30.0,
             initial_layer_speed: 30.0,
             initial_layer_infill_speed: 60.0,
             travel_speed: 120.0,
@@ -462,6 +465,7 @@ impl PrintSettings {
             )?,
             top_surface_speed: number("top_surface_speed", defaults.top_surface_speed)?,
             bridge_speed: number("bridge_speed", defaults.bridge_speed)?,
+            gap_infill_speed: number("gap_infill_speed", defaults.gap_infill_speed)?,
             initial_layer_speed: number("initial_layer_speed", defaults.initial_layer_speed)?,
             initial_layer_infill_speed: number(
                 "initial_layer_infill_speed",

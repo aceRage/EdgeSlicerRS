@@ -995,6 +995,7 @@ impl Writer<'_> {
             Role::SolidInfill | Role::BottomSurface => s.internal_solid_infill_speed,
             Role::TopSolidInfill => s.top_surface_speed,
             Role::BridgeInfill => s.bridge_speed,
+            Role::GapFill => s.gap_infill_speed,
             Role::Skirt | Role::Brim => s.outer_wall_speed,
             Role::Support => s.support_speed,
             Role::SupportInterface => s.support_interface_speed,
@@ -1015,6 +1016,7 @@ impl Writer<'_> {
                 .resolve(s.default_acceleration),
             Role::Skirt
             | Role::Brim
+            | Role::GapFill
             | Role::Support
             | Role::SupportInterface
             | Role::PrimeTower
@@ -1550,6 +1552,7 @@ fn role_name(role: Role) -> &'static str {
         Role::TopSolidInfill => "Top surface",
         Role::BottomSurface => "Bottom surface",
         Role::BridgeInfill => "Bridge",
+        Role::GapFill => "Gap infill",
         Role::Skirt => "Skirt",
         Role::Brim => "Brim",
         Role::Support => "Support",

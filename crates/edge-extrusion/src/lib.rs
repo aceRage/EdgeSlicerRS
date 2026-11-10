@@ -131,6 +131,8 @@ pub enum Role {
     BottomSurface,
     /// Fill laid over air.
     BridgeInfill,
+    /// A line of whatever width fills a gap too narrow for a wall.
+    GapFill,
     /// Loops around the print that prime the nozzle and show the bed is level.
     Skirt,
     /// Loops against the first layer's outline that hold the part down.

@@ -668,6 +668,11 @@ fn slice(args: SliceArgs) -> Result<(), Failure> {
                 edge_infill::fill(surfaces, index, &params).map_err(|e| e.to_string())
             })
             .collect::<Result<Vec<Vec<ExtrusionPath>>, String>>()?;
+        // The lines that fill gaps between walls go with the fill.
+        let mut fills = fills;
+        for (layer, walls) in fills.iter_mut().zip(perimeters) {
+            layer.extend(walls.gap_fill.iter().cloned());
+        }
         surfaces_by.push(surfaces);
         fills_by.push(fills);
     }
@@ -823,11 +828,7 @@ fn slice(args: SliceArgs) -> Result<(), Failure> {
     let merged: Option<(Vec<Perimeters>, Vec<Vec<ExtrusionPath>>)> = (used.len() > 1).then(|| {
         (0..layers.len())
             .map(|index| {
-                let mut all = Perimeters {
-                    loops: Vec::new(),
-                    islands: Vec::new(),
-                    infill: Vec::new(),
-                };
+                let mut all = Perimeters::default();
                 let mut fill = Vec::new();
                 for filament in 0..used.len() {
                     let own = &walls_by[filament][index];
@@ -959,6 +960,30 @@ fn slice(args: SliceArgs) -> Result<(), Failure> {
     }
     if let Some((x, y)) = centred {
         println!("placed in the middle of the bed, at {x} x {y} mm");
+    }
+    let gap_lines = || {
+        fills
+            .iter()
+            .flatten()
+            .filter(|line| line.role == Role::GapFill)
+    };
+    if gap_lines().next().is_some() {
+        println!(
+            "gaps between walls filled with {} line(s), {:.2} m",
+            gap_lines().count(),
+            gap_lines().map(ExtrusionPath::length_mm).sum::<f64>() / 1e3,
+        );
+    }
+    let gaps_skipped: usize = walls_by
+        .iter()
+        .flatten()
+        .map(|layer| layer.gaps_skipped)
+        .sum();
+    if gaps_skipped > 0 {
+        println!(
+            "note: {gaps_skipped} gap(s) between walls were left empty; their centre line could \
+             not be worked out"
+        );
     }
     if let Some(pattern) = &infill.unsupported_pattern {
         println!(
@@ -1201,6 +1226,7 @@ fn svg(layer: &LayerRegions, perimeters: &Perimeters, fills: &[ExtrusionPath]) -
             Role::BottomSurface => "#8d6e63",
             Role::BridgeInfill => "#d62828",
             Role::SolidInfill => "#b5651d",
+            Role::GapFill => "#f4f1de",
             _ => "#e09f3e",
         };
         write!(
