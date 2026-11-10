@@ -223,9 +223,10 @@ Centauri Carbon on 2026-11-10 and the bridge held; the wall across the
 gap came out a little pulled in, having been printed five times faster
 than the profile asks, which is since put right. A 20 mm cube
 printed on a Snapmaker U1 the same day. One was started on the Centauri
-Carbon too; how it came out is not recorded here. Supports and printing in more than one
-filament have not been on hardware at all; a two-colour test for the U1
-(two blocks side by side, 20 tool changes) was made on 2026-11-10. Without a printer
+Carbon too; how it came out is not recorded here. A two-colour
+test (two blocks side by side, 20 tool changes, a prime tower) printed on
+the U1 that day too: the first print in more than one filament. Supports
+have not been on hardware at all. Without a printer
 profile a generic preamble is written and the file is only good for viewing.
 
 Multi-filament printing is a first working version. Where parts of
@@ -279,9 +280,8 @@ moved layer by layer, where the reference follows every place a branch
 could be and picks afterwards; a leaning branch is a circle on each layer,
 not an oval; and branches are not smoothed.
 
-Next: a two-colour print on the U1, which tool changes and the prime
-tower have not yet had; then print time with acceleration, thumbnails,
-one wall under top surfaces, and painted colours.
+Next: print time with acceleration, thumbnails, one wall under top
+surfaces, sparse fill joined along the walls, and painted colours.
 
 ## Comparing with the reference
 
