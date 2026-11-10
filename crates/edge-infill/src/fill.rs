@@ -2,7 +2,7 @@ use std::f64::consts::FRAC_PI_2;
 
 use edge_clip::{ClipError, Join};
 use edge_extrusion::{ExtrusionPath, Flow, Role};
-use edge_geom::scaled;
+use edge_geom::{Point2, scaled};
 
 use crate::{Pattern, Surface, SurfaceKind, lines};
 
@@ -30,6 +30,13 @@ pub struct FillParams {
     /// Longest stretch of outline, in mm, that two sparse lines may be
     /// joined along; zero leaves sparse lines separate.
     pub sparse_link_max: f64,
+    /// How far along the outline, in mm, a sparse line's end runs when it
+    /// is joined to no other; zero leaves it bare.
+    pub sparse_anchor: f64,
+    /// A point the sparse pattern is laid through, in each of its
+    /// directions: the middle of what is printed, as in the reference,
+    /// so the pattern sits the same way in a part wherever the part is.
+    pub origin: Point2,
     /// Whether the lines of a top surface, of a bottom surface and of
     /// solid fill inside the part are joined end to end. The reference's
     /// `monotonicline` pattern leaves them separate.
@@ -44,6 +51,16 @@ enum Lay {
     /// Cut to the area drawn in by this share of the line spacing, and
     /// joined along that outline.
     Cut(f64),
+    /// Sparse lines in one direction, as FillRectilinear.cpp
+    /// `fill_surface_by_lines` lays them when they are not solid: through
+    /// [`FillParams::origin`], every line joined to the next however far
+    /// along the wall that is, turning half a spacing inside the area.
+    Zigzag,
+    /// Sparse lines as FillRectilinear.cpp `fill_surface_by_multilines`
+    /// lays them: cut half a spacing inside the area, laid through
+    /// [`FillParams::origin`], joined along that outline, and anchored
+    /// where they are not.
+    Anchored,
     /// Solid lines as `FillRectilinear.cpp` lays them: run to within
     /// `LINES_INSET` of the edge, and turned half a spacing inside it
     /// where they are joined. `fitted` spreads them to fill the width.
@@ -57,7 +74,6 @@ const LINES_INSET: f64 = 0.05;
 /// How much further in joined solid lines turn: to half a spacing from the
 /// area's edge, so the turn itself lies inside the area and not on it.
 const TURN_INSET: f64 = 0.45;
-const GRID_INSET: f64 = 0.5;
 /// Solid lines are joined along the outline when it runs no further than
 /// this many line spacings between them (Fill.cpp, `link_max_length`).
 const SOLID_LINK_SPACINGS: f64 = 3.0;
@@ -80,7 +96,7 @@ pub fn fill(
                     params.sparse,
                     Role::SparseInfill,
                     params.sparse.spacing / params.density,
-                    Lay::Cut(LINES_INSET),
+                    Lay::Zigzag,
                     &[params.sparse_angle + turned],
                 ),
                 // Two sets of lines share the density between them.
@@ -88,7 +104,7 @@ pub fn fill(
                     params.sparse,
                     Role::SparseInfill,
                     2.0 * params.sparse.spacing / params.density,
-                    Lay::Cut(GRID_INSET),
+                    Lay::Anchored,
                     &[params.sparse_angle, params.sparse_angle + FRAC_PI_2],
                 ),
             },
@@ -167,6 +183,74 @@ pub fn fill(
                 for area in &inside {
                     let spacing = scaled(spacing);
                     for points in lines::paths(area, spacing, angles, min_length, scaled(max_link))
+                    {
+                        paths.push(ExtrusionPath { points, role, flow });
+                    }
+                }
+            }
+            Lay::Zigzag => {
+                let outer = edge_clip::offset(
+                    std::slice::from_ref(&surface.area),
+                    -scaled(LINES_INSET * flow.spacing),
+                    Join::MITER,
+                )?;
+                let inner =
+                    edge_clip::offset(&outer, -scaled(TURN_INSET * flow.spacing), Join::MITER)?;
+                let (sin, cos) = angles[0].sin_cos();
+                let first = params.origin.y as f64 * cos - params.origin.x as f64 * sin;
+                // No join is too long: sparse lines have no limit there
+                // (Fill.cpp sets `link_max_length` only above 80% density).
+                let unlimited = edge_geom::Coord::MAX / 4;
+                for points in lines::paths_turned(
+                    &outer,
+                    &inner,
+                    scaled(spacing) as f64,
+                    first,
+                    angles[0],
+                    unlimited,
+                ) {
+                    paths.push(ExtrusionPath { points, role, flow });
+                }
+            }
+            Lay::Anchored => {
+                let line = flow.scaled_spacing();
+                let inside =
+                    edge_clip::offset(std::slice::from_ref(&surface.area), -line / 2, Join::MITER)?;
+                // Nothing is joined when the profile allows no join at
+                // all (`infill_anchor_max` of zero), nor anchored.
+                let max_link = scaled(params.sparse_link_max);
+                let joining = lines::Joining {
+                    max_link,
+                    anchor: if max_link > 0 {
+                        scaled(params.sparse_anchor)
+                    } else {
+                        0
+                    },
+                    half_width: line / 2,
+                    // FillBase.cpp `create_boundary_infill_graph`.
+                    beside: (0.8 * line as f64) as i64,
+                    beside_clip: (1.7 * line as f64) as i64,
+                };
+                // Each direction's lines pass through the origin. None
+                // lies within a line's spacing of the area's own edge,
+                // where it would only retrace the wall (`make_fill_lines`).
+                let rows: Vec<lines::Rows> = angles
+                    .iter()
+                    .map(|angle| {
+                        let (sin, cos) = angle.sin_cos();
+                        let first = params.origin.y as f64 * cos - params.origin.x as f64 * sin;
+                        let within = match lines::extent_across(&surface.area, *angle) {
+                            Some((low, high)) => {
+                                (low + line as f64 + 1.0, high - line as f64 - 1.0)
+                            }
+                            None => (f64::NEG_INFINITY, f64::INFINITY),
+                        };
+                        lines::Rows { first, within }
+                    })
+                    .collect();
+                for area in &inside {
+                    for points in
+                        lines::paths_anchored(area, scaled(spacing) as f64, &rows, angles, joining)
                     {
                         paths.push(ExtrusionPath { points, role, flow });
                     }
@@ -251,6 +335,8 @@ mod tests {
             sparse_angle: 45f64.to_radians(),
             solid_angle: 45f64.to_radians(),
             sparse_link_max: 0.0,
+            sparse_anchor: 0.0,
+            origin: Point2::from_mm(0.0, 0.0),
             top_joined: false,
             bottom_joined: true,
             solid_joined: true,
@@ -314,32 +400,60 @@ mod tests {
 
     #[test]
     fn sparse_patterns_lay_the_density_share_of_plastic() {
+        // The lines themselves, leaving out the runs along the walls
+        // that join or anchor them.
+        let slanted = |paths: &[ExtrusionPath]| -> f64 {
+            paths
+                .iter()
+                .flat_map(|path| path.points.windows(2))
+                .filter(|pair| pair[0].x != pair[1].x && pair[0].y != pair[1].y)
+                .map(|pair| ((pair[1].x - pair[0].x) as f64).hypot((pair[1].y - pair[0].y) as f64))
+                .sum::<f64>()
+                / 1e6
+        };
         for pattern in [Pattern::Grid, Pattern::Lines] {
             let params = params(pattern, 0.25);
             let paths = fill(&[surface(SurfaceKind::Sparse, 60.0)], 0, &params).unwrap();
-            let covered = length(&paths) * params.sparse.spacing;
+            let covered = slanted(&paths) * params.sparse.spacing;
             assert!(
                 (covered / (0.25 * 3600.0) - 1.0).abs() < 0.03,
                 "{pattern:?} covered {covered}"
             );
             // A grid has both directions on one layer; lines have one.
+            let crossing = paths
+                .iter()
+                .flat_map(|path| path.points.windows(2))
+                .filter(|pair| pair[0].x != pair[1].x && pair[0].y != pair[1].y)
+                .map(|pair| ((pair[1].x - pair[0].x) > 0) == ((pair[1].y - pair[0].y) > 0))
+                .collect::<Vec<bool>>();
             assert_eq!(
-                paths.iter().any(rises) && !paths.iter().all(rises),
+                crossing.iter().any(|up| *up) && !crossing.iter().all(|up| *up),
                 pattern == Pattern::Grid
             );
         }
-        // Joining sparse lines along the walls makes fewer, longer paths.
-        let separate = fill(
+        // Lines in one direction are one zigzag, however far apart they are.
+        let zigzag = fill(
             &[surface(SurfaceKind::Sparse, 60.0)],
             0,
             &params(Pattern::Lines, 0.25),
         )
         .unwrap();
-        let linked = FillParams {
-            sparse_link_max: 20.0,
-            ..params(Pattern::Lines, 0.25)
+        assert_eq!(zigzag.len(), 1);
+
+        // A grid's lines are joined along the walls where that is allowed,
+        // which makes fewer, longer paths; and an end left over is anchored.
+        let grid = |sparse_link_max: f64, sparse_anchor: f64| {
+            let params = FillParams {
+                sparse_link_max,
+                sparse_anchor,
+                // Off the square's own lines of symmetry, so that the two
+                // directions do not meet the walls at the same points.
+                origin: Point2::from_mm(1.15, 0.0),
+                ..params(Pattern::Grid, 0.25)
+            };
+            fill(&[surface(SurfaceKind::Sparse, 60.0)], 0, &params).unwrap()
         };
-        let joined = fill(&[surface(SurfaceKind::Sparse, 60.0)], 0, &linked).unwrap();
+        let (separate, joined, anchored) = (grid(0.0, 0.0), grid(20.0, 0.0), grid(0.01, 1.5));
         assert!(
             joined.len() < separate.len() / 4,
             "{} paths joined from {}",
@@ -347,6 +461,24 @@ mod tests {
             separate.len()
         );
         assert!(length(&joined) > length(&separate));
+        // Too far apart to join, each end runs a little way along the wall.
+        assert!(anchored.len() > joined.len());
+        assert!(length(&anchored) > length(&separate) + 0.5 * separate.len() as f64);
+
+        // The pattern is laid through the origin: moved with the part, it
+        // sits in the part as it did.
+        let moved = |by: f64| {
+            let params = FillParams {
+                origin: Point2::from_mm(30.0 + by, 30.0 + by),
+                ..params(Pattern::Grid, 0.25)
+            };
+            let mut surface = surface(SurfaceKind::Sparse, 60.0);
+            for point in &mut surface.area.contour.points {
+                *point = Point2::from_mm(point.x as f64 / 1e6 + by, point.y as f64 / 1e6 + by);
+            }
+            length(&fill(&[surface], 0, &params).unwrap())
+        };
+        assert!((moved(0.0) - moved(7.3)).abs() < 1e-3);
 
         let empty = params(Pattern::Grid, 0.0);
         assert!(

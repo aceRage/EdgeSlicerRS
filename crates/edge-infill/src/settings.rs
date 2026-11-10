@@ -32,6 +32,9 @@ pub struct InfillSettings {
     /// Longest stretch of wall two sparse lines are joined along; a
     /// percentage is of the sparse line width, and zero joins nothing.
     pub infill_anchor_max: FloatOrPercent,
+    /// How far a sparse line's end runs along the wall when it is joined
+    /// to no other, in mm or as a share of the line spacing.
+    pub infill_anchor: FloatOrPercent,
     pub sparse_infill_line_width: FloatOrPercent,
     pub internal_solid_infill_line_width: FloatOrPercent,
     pub top_surface_line_width: FloatOrPercent,
@@ -78,6 +81,7 @@ impl Default for InfillSettings {
             solid_infill_direction: 45.0,
             minimum_sparse_infill_area: 15.0,
             infill_anchor_max: FloatOrPercent::Value(20.0),
+            infill_anchor: FloatOrPercent::Percent(400.0),
             sparse_infill_line_width: unset,
             internal_solid_infill_line_width: unset,
             top_surface_line_width: unset,
@@ -211,6 +215,9 @@ impl InfillSettings {
             infill_anchor_max: settings
                 .float_or_percent("infill_anchor_max")?
                 .unwrap_or(defaults.infill_anchor_max),
+            infill_anchor: settings
+                .float_or_percent("infill_anchor")?
+                .unwrap_or(defaults.infill_anchor),
             sparse_infill_line_width: width("sparse_infill_line_width")?,
             internal_solid_infill_line_width: width("internal_solid_infill_line_width")?,
             top_surface_line_width: width("top_surface_line_width")?,
@@ -322,7 +329,15 @@ impl InfillSettings {
             pattern: self.pattern,
             sparse_angle: self.infill_direction.to_radians(),
             solid_angle: self.solid_infill_direction.to_radians(),
-            sparse_link_max: self.infill_anchor_max.resolve(sparse.width).max(0.0),
+            // Both are shares of the line spacing when given as percentages
+            // (Fill.cpp), and an anchor is never longer than a join may be.
+            sparse_link_max: self.infill_anchor_max.resolve(sparse.spacing).max(0.0),
+            sparse_anchor: self
+                .infill_anchor
+                .resolve(sparse.spacing)
+                .min(self.infill_anchor_max.resolve(sparse.spacing))
+                .max(0.0),
+            origin: edge_geom::Point2::from_mm(0.0, 0.0),
             top_joined: self.top_joined,
             bottom_joined: self.bottom_joined,
             solid_joined: self.solid_joined,
