@@ -90,13 +90,26 @@ pub struct Summary {
     /// Distance moved without extruding, in mm.
     pub travel_mm: f64,
     pub retractions: usize,
-    /// Time for every move at its commanded speed, in seconds. Real prints
-    /// take longer: acceleration and heating are not counted.
+    /// How long the print takes, in seconds. With a printer profile this
+    /// is every move planned as the printer's firmware plans it
+    /// (`edge-time`), and `timed` says which way; without one it is
+    /// `seconds_at_speeds`. Heating and whatever the printer's own
+    /// macros do are not counted.
     pub seconds: f64,
+    /// Time for every move at its commanded speed, with no acceleration.
+    pub seconds_at_speeds: f64,
+    /// The planner `seconds` comes from, when there is a printer profile.
+    pub timed: Option<TimeModel>,
     /// Layers slowed down to give them time to cool.
     pub slowed_layers: usize,
     pub tool_changes: usize,
 }
+
+pub use edge_time::Model as TimeModel;
+
+/// Starts a line the writer leaves for itself where a tool is changed:
+/// the tool taken up and the temperature it prints at.
+const CHANGE_MARK: &[u8] = b";_TOOL_CHANGE ";
 
 /// Writes the whole print in one filament and reports what it used.
 pub fn write(
@@ -177,7 +190,6 @@ pub fn write_tools(
         extruding: false,
         slowdown: Slowdown::None,
         last_use,
-        marks: Vec::new(),
         file: FileInfo {
             layers: groups.len(),
             top: layers.last().map_or(0.0, |layer| layer.z),
@@ -239,48 +251,176 @@ pub fn write_tools(
     if let Some(start) = find(&whole, EXECUTABLE_START) {
         reached.push((start + EXECUTABLE_START.len(), 0.0));
     }
+    // Tool changes: where in the file, the tool taken up, its temperature.
+    let mut changes: Vec<(usize, usize, f64)> = Vec::new();
+    let mut second_layer = None;
     for (index, group) in groups.iter().enumerate() {
         writer.out.clear();
         reached.push((whole.len(), writer.state.summary.seconds));
-        // The tool the next layer starts with, to be warmed up in time.
-        let after = groups
-            .get(index + 1)
-            .map(|next| layers[next.start].filament);
-        writer.layer(index, &layers[group.clone()], group.start, after)?;
+        if index == 1 {
+            second_layer = Some(whole.len());
+        }
+        writer.layer(index, &layers[group.clone()], group.start)?;
         if index == 0 {
             writer.file.first_layer_seconds = writer.state.summary.seconds;
         }
-        whole.extend_from_slice(&writer.out);
+        // The layer's text, less the notes of where a tool was changed.
+        for line in writer.out.split_inclusive(|byte| *byte == b'\n') {
+            match line.strip_prefix(CHANGE_MARK) {
+                Some(noted) => {
+                    let noted = String::from_utf8_lossy(noted);
+                    let mut words = noted.split_whitespace();
+                    let number = |word: Option<&str>| word.and_then(|word| word[1..].parse().ok());
+                    let tool: Option<f64> = number(words.next());
+                    let temperature: Option<f64> = number(words.next());
+                    if let (Some(tool), Some(temperature)) = (tool, temperature) {
+                        changes.push((whole.len(), tool as usize, temperature));
+                    }
+                }
+                None => whole.extend_from_slice(line),
+            }
+        }
     }
+    let printed = whole.len();
     writer.out.clear();
-    let summary = writer.finish()?;
+    let mut summary = writer.finish()?;
     whole.extend_from_slice(&writer.out);
+    summary.seconds_at_speeds = summary.seconds;
 
+    // With a printer profile the file is timed as its firmware will run
+    // it. `ends` is where each line ends and `elapsed` the seconds gone
+    // by then.
+    let limits = settings[first].limits;
+    let text = std::str::from_utf8(&whole).ok();
+    let timed = limits.zip(text).map(|(limits, text)| {
+        let model = limits.own_model();
+        let estimate = edge_time::estimate(text, &limits, model);
+        let mut at = 0;
+        let ends: Vec<usize> = text
+            .split_inclusive('\n')
+            .map(|line| {
+                at += line.len();
+                at
+            })
+            .collect();
+        (model, estimate.elapsed(), ends)
+    });
+    // Seconds gone when the file has been run up to `at`.
+    let gone = |at: usize| -> Option<f64> {
+        let (_, elapsed, ends) = timed.as_ref()?;
+        let lines = ends.partition_point(|end| *end <= at);
+        Some(if lines == 0 { 0.0 } else { elapsed[lines - 1] })
+    };
+    if let Some((model, elapsed, _)) = &timed {
+        summary.seconds = elapsed.last().copied().unwrap_or(0.0);
+        summary.timed = Some(*model);
+        // The first layer, from its start to the start of the next.
+        if let (Some(start), Some(end)) = (
+            reached.get(1).and_then(|(at, _)| gone(*at)),
+            gone(second_layer.unwrap_or(printed)),
+        ) {
+            writer.file.first_layer_seconds = end - start;
+        }
+    }
+
+    // What is slipped into the file now that its time is known: (where, text).
+    let mut slipped: Vec<(usize, String)> = Vec::new();
     // Progress for the printer's screen: how far through, in percent,
     // and the minutes left, said at the start and at each layer where
-    // either has changed (the reference's `M73`, which it places by its
-    // own, finer estimate of the time). Printers given no profile are
-    // not assumed to know the command.
-    if settings[first].machine_start_gcode.is_none() || summary.seconds <= 0.0 {
-        out.write_all(&whole)?;
-        return Ok(summary);
-    }
-    let mut said = None;
-    let mut from = 0;
-    for (at, seconds) in reached {
-        let progress = (
-            (100.0 * seconds / summary.seconds).floor() as u32,
-            ((summary.seconds - seconds) / 60.0).floor() as u32,
-        );
-        if said == Some(progress) {
-            continue;
+    // either has changed (the reference's `M73`). Printers given no
+    // profile are not assumed to know the command.
+    if settings[first].machine_start_gcode.is_some() && summary.seconds > 0.0 {
+        let mut said = None;
+        for (at, at_speeds) in &reached {
+            let seconds = gone(*at).unwrap_or(*at_speeds);
+            let progress = (
+                (100.0 * seconds / summary.seconds).floor() as u32,
+                ((summary.seconds - seconds) / 60.0).floor() as u32,
+            );
+            if said != Some(progress) {
+                said = Some(progress);
+                slipped.push((*at, format!("M73 P{} R{}\n", progress.0, progress.1)));
+            }
         }
-        said = Some(progress);
+    }
+    // A tool waiting its turn is kept cooler; it is told to warm up
+    // `preheat_time` before it is wanted, but never before the last
+    // thing said of its temperature, which would undo it.
+    if let (Some((_, elapsed, ends)), Some(text)) = (&timed, text) {
+        for (change, tool, temperature) in &changes {
+            let wanted = &settings[*tool];
+            if wanted.standby_temperature_delta.is_none() || wanted.preheat_time <= 0.0 {
+                continue;
+            }
+            let last = ends.partition_point(|end| *end <= *change);
+            let mentions = |line: &str| {
+                let code = line.split(';').next().unwrap_or_default();
+                let mut words = code.split_whitespace();
+                matches!(words.next(), Some("M104" | "M109"))
+                    && words.any(|word| {
+                        word.strip_prefix('T').and_then(|t| t.parse().ok()) == Some(*tool)
+                    })
+            };
+            let line_at = |index: usize| {
+                let from = if index == 0 { 0 } else { ends[index - 1] };
+                &text[from..ends[index]]
+            };
+            let earliest = (0..last)
+                .rev()
+                .find(|index| mentions(line_at(*index)))
+                .map_or(0, |index| index + 1);
+            let at_change = if last == 0 { 0.0 } else { elapsed[last - 1] };
+            let target = at_change - wanted.preheat_time;
+            // After the last line that ends before the moment wanted.
+            let line = elapsed[..last]
+                .partition_point(|seconds| *seconds < target)
+                .max(earliest)
+                .min(last);
+            // Nothing is put before the file's own first lines.
+            let executable = reached.first().map_or(0, |(at, _)| *at);
+            let at = (if line == 0 { 0 } else { ends[line - 1] }).max(executable);
+            let lead = at_change - gone(at).unwrap_or(at_change);
+            slipped.push((
+                at,
+                format!("M104 S{temperature:.0} T{tool} ; preheat T{tool} time: {lead:.0}s\n"),
+            ));
+        }
+    }
+    slipped.sort_by_key(|(at, _)| *at);
+    let mut from = 0;
+    for (at, line) in slipped {
         out.write_all(&whole[from..at])?;
-        writeln!(out, "M73 P{} R{}", progress.0, progress.1)?;
+        out.write_all(line.as_bytes())?;
         from = at;
     }
     out.write_all(&whole[from..])?;
+    writeln!(
+        out,
+        "; estimated printing time (normal mode) = {}",
+        days_hours_minutes_seconds(summary.seconds)
+    )?;
+    writeln!(
+        out,
+        "; estimated first layer printing time (normal mode) = {}",
+        days_hours_minutes_seconds(writer.file.first_layer_seconds)
+    )?;
+    // How the time above was come by, and the plain figure beside it.
+    match summary.timed {
+        Some(TimeModel::Klipper) => writeln!(
+            out,
+            "; time planned as Klipper plans, with its minimum cruise ratio; heating is not counted"
+        )?,
+        Some(TimeModel::Reference) => writeln!(
+            out,
+            "; time planned with acceleration, as the reference slicer estimates; heating is not counted"
+        )?,
+        None => {}
+    }
+    writeln!(
+        out,
+        "; time at commanded speeds, without acceleration [s] = {:.0}",
+        summary.seconds_at_speeds
+    )?;
     Ok(summary)
 }
 
@@ -334,10 +474,6 @@ struct Writer<'a> {
     slowdown: Slowdown,
     /// For each filament, the last entry of the print that uses it.
     last_use: Vec<usize>,
-    /// Places in the text of the stretch one tool is printing, with the
-    /// time each is reached, where a line can be slipped in to warm the
-    /// next tool.
-    marks: Vec<(usize, f64)>,
     /// What the file's first and last lines say about the print.
     file: FileInfo,
     /// The outline of the layer beneath the one being written.
@@ -786,6 +922,10 @@ impl Writer<'_> {
                 "M104 S{standby:.0} T{from} ; set nozzle temperature ;cooldown"
             )?;
         }
+        // A note of the change, taken out again once the file is whole
+        // and timed, when the tool is told to warm up ahead of it.
+        self.out.extend_from_slice(CHANGE_MARK);
+        writeln!(self.out, "T{to} S{:.0}", self.temperature(to, layer == 0))?;
         self.swap(Some(from as i64), to, Some(layer), z)?;
         self.state.parked[from] = (self.state.retracted, self.state.retracted_length);
         (self.state.retracted, self.state.retracted_length) = self.state.parked[to];
@@ -802,40 +942,13 @@ impl Writer<'_> {
         self.announce(to, layer == 0)
     }
 
-    /// Slips in a line that starts heating the tool that is up next, far
-    /// enough before the end of the stretch just written for it to be
-    /// warm in time: at the last mark that leaves `preheat_time`, or at
-    /// the start of the stretch if it is shorter than that.
-    fn preheat(&mut self, next: usize, layer: usize, start: (usize, f64)) {
-        let s = &self.all[next];
-        if s.standby_temperature_delta.is_none() || s.preheat_time <= 0.0 {
-            return;
-        }
-        let end = self.state.summary.seconds;
-        let (at, when) = self
-            .marks
-            .iter()
-            .rev()
-            .find(|(_, when)| *when <= end - s.preheat_time)
-            .copied()
-            .unwrap_or(start);
-        let temperature = self.temperature(next, layer == 0);
-        let line = format!(
-            "M104 S{temperature:.0} T{next} ; preheat T{next} time: {:.0}s\n",
-            end - when
-        );
-        self.out.splice(at..at, line.into_bytes());
-    }
-
     /// One physical layer: `parts` is what each filament prints on it, in
-    /// order, `cursor` where the first of them comes in the whole print,
-    /// and `after` the filament the next layer starts with.
+    /// order, and `cursor` where the first of them comes in the whole print.
     fn layer(
         &mut self,
         index: usize,
         parts: &[Layer<'_>],
         cursor: usize,
-        after: Option<usize>,
     ) -> Result<(), GcodeError> {
         let s = self.settings;
         let layer = &parts[0];
@@ -898,7 +1011,7 @@ impl Writer<'_> {
         self.slowdown = Slowdown::None;
         self.measured.clear();
         self.measured_used = 0;
-        self.body(index, parts, cursor, after)?;
+        self.body(index, parts, cursor)?;
         if s.slow_down_for_layer_cooling {
             let slowdown = self
                 .timing
@@ -910,7 +1023,7 @@ impl Writer<'_> {
                 self.filament_area = PI * (self.settings.filament_diameter / 2.0).powi(2);
                 self.slowdown = slowdown;
                 self.measured_used = 0;
-                self.body(index, parts, cursor, after)?;
+                self.body(index, parts, cursor)?;
                 self.state.summary.slowed_layers += 1;
             }
         }
@@ -956,13 +1069,7 @@ impl Writer<'_> {
     }
 
     /// Everything the layer prints, each filament's part in turn.
-    fn body(
-        &mut self,
-        index: usize,
-        parts: &[Layer<'_>],
-        cursor: usize,
-        after: Option<usize>,
-    ) -> Result<(), GcodeError> {
+    fn body(&mut self, index: usize, parts: &[Layer<'_>], cursor: usize) -> Result<(), GcodeError> {
         self.timing = Timing::default();
         self.extruding = false;
         for (offset, layer) in parts.iter().enumerate() {
@@ -976,8 +1083,6 @@ impl Writer<'_> {
                     over.copied(),
                 )?;
             }
-            let start = (self.out.len(), self.state.summary.seconds);
-            self.marks.clear();
             self.inner_wall = layer
                 .loops
                 .iter()
@@ -1005,11 +1110,6 @@ impl Writer<'_> {
             } else {
                 self.walls(layer)?;
                 self.lines(layer.paths, layer.infill_area)?;
-            }
-            // Whichever tool is up next starts warming before this one is done.
-            let next = parts.get(offset + 1).map(|next| next.filament).or(after);
-            if let Some(next) = next.filter(|next| *next != layer.filament) {
-                self.preheat(next, index, start);
             }
         }
         self.fan_over_air(false)?;
@@ -1417,12 +1517,21 @@ impl Writer<'_> {
         }
         self.state.acceleration = acceleration;
         match (self.settings.klipper, self.settings.accel_to_decel_factor) {
-            (true, Some(factor)) => writeln!(
-                self.out,
-                "SET_VELOCITY_LIMIT ACCEL={acceleration:.0} ACCEL_TO_DECEL={:.0}",
-                acceleration * factor
-            ),
-            (true, None) => writeln!(self.out, "SET_VELOCITY_LIMIT ACCEL={acceleration:.0}"),
+            // The limit is said both ways (GCodeWriter.cpp
+            // `append_klipper_accel_to_decel`): Klipper before 0.13 and
+            // vendor forks read ACCEL_TO_DECEL, current Klipper only
+            // MINIMUM_CRUISE_RATIO, which is one less the same share.
+            (true, Some(factor)) if factor > 0.0 => {
+                let factor = factor.min(1.0);
+                let ratio = format!("{:.6}", 1.0 - factor);
+                let ratio = ratio.trim_end_matches('0').trim_end_matches('.');
+                writeln!(
+                    self.out,
+                    "SET_VELOCITY_LIMIT ACCEL={acceleration:.0} ACCEL_TO_DECEL={:.0} MINIMUM_CRUISE_RATIO={ratio}",
+                    acceleration * factor
+                )
+            }
+            (true, _) => writeln!(self.out, "SET_VELOCITY_LIMIT ACCEL={acceleration:.0}"),
             (false, _) => writeln!(self.out, "M204 S{acceleration:.0}"),
         }
     }
@@ -1670,10 +1779,6 @@ impl Writer<'_> {
         let volume =
             length * flow.mm3_per_mm() * s.filament_flow_ratio * s.print_flow_ratio * share;
         let feed = volume / self.filament_area;
-        if self.all.len() > 1 {
-            self.marks
-                .push((self.out.len(), self.state.summary.seconds));
-        }
         self.feed(speed);
         let feed_word = self.feed_word();
         writeln!(
@@ -1934,23 +2039,7 @@ impl Writer<'_> {
             )?;
         }
         writeln!(self.out, "; total layers count = {}", self.file.layers)?;
-        // Both times are at commanded speeds with no acceleration, so the
-        // print takes longer than they say.
-        writeln!(
-            self.out,
-            "; estimated printing time (normal mode) = {}",
-            days_hours_minutes_seconds(summary.seconds)
-        )?;
-        writeln!(
-            self.out,
-            "; estimated first layer printing time (normal mode) = {}",
-            days_hours_minutes_seconds(self.file.first_layer_seconds)
-        )?;
-        writeln!(
-            self.out,
-            "; time at commanded speeds, without acceleration [s] = {:.0}",
-            summary.seconds
-        )?;
+        // The times follow, once the file has been timed.
         Ok(summary)
     }
 }

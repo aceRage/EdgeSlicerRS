@@ -881,6 +881,7 @@ dependencies = [
  "edge-extrusion",
  "edge-geom",
  "edge-template",
+ "edge-time",
  "thiserror 2.0.21",
 ]
 
@@ -959,6 +960,14 @@ name = "edge-template"
 version = "0.0.0"
 dependencies = [
  "thiserror 2.0.21",
+]
+
+[[package]]
+name = "edge-time"
+version = "0.0.0"
+dependencies = [
+ "edge-config",
+ "serde_json",
 ]
 
 [[package]]

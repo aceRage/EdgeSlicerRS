@@ -628,11 +628,11 @@ fn acceleration_follows_the_feature_and_the_first_layer() {
         limits(&klipper),
         [
             // The whole first layer, travel included, is gentle.
-            "SET_VELOCITY_LIMIT ACCEL=500 ACCEL_TO_DECEL=250",
+            "SET_VELOCITY_LIMIT ACCEL=500 ACCEL_TO_DECEL=250 MINIMUM_CRUISE_RATIO=0.5",
             // Second layer: travel, the outer wall, then fill at the default.
-            "SET_VELOCITY_LIMIT ACCEL=10000 ACCEL_TO_DECEL=5000",
-            "SET_VELOCITY_LIMIT ACCEL=5000 ACCEL_TO_DECEL=2500",
-            "SET_VELOCITY_LIMIT ACCEL=10000 ACCEL_TO_DECEL=5000",
+            "SET_VELOCITY_LIMIT ACCEL=10000 ACCEL_TO_DECEL=5000 MINIMUM_CRUISE_RATIO=0.5",
+            "SET_VELOCITY_LIMIT ACCEL=5000 ACCEL_TO_DECEL=2500 MINIMUM_CRUISE_RATIO=0.5",
+            "SET_VELOCITY_LIMIT ACCEL=10000 ACCEL_TO_DECEL=5000 MINIMUM_CRUISE_RATIO=0.5",
         ]
     );
     let marlin = PrintSettings {
@@ -1171,9 +1171,15 @@ fn the_tool_is_named_when_the_profile_does_not() {
 fn the_next_tool_is_warmed_ahead_of_its_turn() {
     // One tool prints for a long time before the other is wanted: a slow
     // wall, 160 mm at 2 mm/s.
+    // The file is timed as a printer runs it, which takes knowing the printer.
     let slow = |settings: PrintSettings| PrintSettings {
         outer_wall_speed: 2.0,
         initial_layer_speed: 2.0,
+        limits: Some(edge_time::Limits {
+            flavor: edge_time::Flavor::Klipper,
+            max_extruding: 5000.0,
+            ..edge_time::Limits::default()
+        }),
         ..settings
     };
     let [a, b] = two_tools(Some(CHANGE));
@@ -1741,4 +1747,45 @@ fn some_kinds_of_line_have_a_share_of_their_own() {
             fed(kind)
         );
     }
+}
+
+#[test]
+fn a_print_with_a_printer_profile_is_timed_as_the_printer_runs_it() {
+    // A 120 mm square loop, timed first at its speed alone.
+    let loops = [wall(0.0, 0.0, 30.0, 0)];
+    let plain = PrintSettings {
+        slow_down_for_layer_cooling: false,
+        ..basic()
+    };
+    let (text, summary) = print(&one_layer(&loops, &[0..1], &[]), &plain);
+    assert_eq!(summary.timed, None);
+    assert_eq!(summary.seconds, summary.seconds_at_speeds);
+    assert!(!text.contains("time planned"));
+
+    // On a Klipper printer at 1000 mm/s² every corner costs time: the
+    // nozzle slows to the square corner velocity and speeds up again.
+    let limits = edge_time::Limits {
+        flavor: edge_time::Flavor::Klipper,
+        max_extruding: 1000.0,
+        jerk: [5.0, 5.0, 0.0, 0.0],
+        ..edge_time::Limits::default()
+    };
+    let known = PrintSettings {
+        limits: Some(limits),
+        ..plain.clone()
+    };
+    let (text, timed) = print(&one_layer(&loops, &[0..1], &[]), &known);
+    assert_eq!(timed.timed, Some(TimeModel::Klipper));
+    assert_eq!(timed.seconds_at_speeds, summary.seconds_at_speeds);
+    assert!(
+        timed.seconds > timed.seconds_at_speeds + 0.1,
+        "{} against {}",
+        timed.seconds,
+        timed.seconds_at_speeds
+    );
+    // The file says the same, and how it was come by.
+    let stated = edge_time::estimate(&text, &limits, TimeModel::Klipper).seconds;
+    assert!((stated - timed.seconds).abs() < 1e-9);
+    assert!(text.contains("; time planned as Klipper plans"));
+    assert!(text.contains("; time at commanded speeds, without acceleration [s] = "));
 }
