@@ -185,11 +185,23 @@ dependencies = [
 ]
 
 [[package]]
+name = "edge-adhesion"
+version = "0.0.0"
+dependencies = [
+ "edge-clip",
+ "edge-config",
+ "edge-extrusion",
+ "edge-geom",
+ "thiserror",
+]
+
+[[package]]
 name = "edge-cli"
 version = "0.0.0"
 dependencies = [
  "clap",
  "edge-3mf",
+ "edge-adhesion",
  "edge-clip",
  "edge-config",
  "edge-extrusion",

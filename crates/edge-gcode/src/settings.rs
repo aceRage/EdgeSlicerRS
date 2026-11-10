@@ -262,7 +262,7 @@ impl PrintSettings {
                 .texts(key)
                 .and_then(|texts| texts.first())
                 .filter(|text| !text.trim().is_empty())
-                .cloned()
+                .map(|text| unescaped(text))
         };
         let mut unsupported = Vec::new();
 
@@ -575,6 +575,27 @@ impl PrintSettings {
     }
 }
 
+/// A template as the reference reads it from a preset: a backslash makes
+/// `\n` a line break and `\r` a carriage return, and stands any other
+/// character after it for itself (Config.cpp `unescape_string_cstyle`).
+/// Vendor presets write their G-code that way; a project's is already plain.
+fn unescaped(text: &str) -> String {
+    let mut out = String::with_capacity(text.len());
+    let mut chars = text.chars();
+    while let Some(c) = chars.next() {
+        match c {
+            '\\' => match chars.next() {
+                Some('n') => out.push('\n'),
+                Some('r') => out.push('\r'),
+                Some(other) => out.push(other),
+                None => out.push('\\'),
+            },
+            _ => out.push(c),
+        }
+    }
+    out
+}
+
 /// Every setting under its own name, plus the names templates use that are
 /// not settings: the tool in use (always the first, for now) and the bed
 /// temperature of the plate in use.
@@ -639,6 +660,33 @@ fn variables(
     if let Some(lengths) = settings.texts("retraction_length") {
         variables.set_list("retract_length", lengths.iter().map(Value::text).collect());
     }
+    // The flow each filament slot was sliced for, which the U1's firmware
+    // reads from the end G-code: standard unless the slot says high flow.
+    if let Some(filaments) = settings.texts("filament_type") {
+        let kinds = settings.texts("filament_volume_type").unwrap_or(&[]);
+        let list: Vec<&str> = (0..filaments.len())
+            .map(|slot| match kinds.get(slot).map(String::as_str) {
+                Some("high_flow") => "high_flow",
+                _ => "standard",
+            })
+            .collect();
+        variables.set("filament_volume_type_list", Value::text(list.join(",")));
+    }
+    // How hard the chamber is cooled, from how easily the filament in use
+    // softens: 2 at a glass transition of 50 °C or under, 1 up to 70, else
+    // 0 (GCode.cpp, where the start G-code's variables are set).
+    let softens = first("temperature_vitrification").unwrap_or(100.0);
+    let high_temperature = settings
+        .texts("filament_is_high_temperature")
+        .and_then(|values| values.first())
+        .is_some_and(|value| value == "1");
+    let cooling = match softens {
+        _ if high_temperature => 0,
+        at if at <= 50.0 => 2,
+        at if at <= 70.0 => 1,
+        _ => 0,
+    };
+    variables.set("chamber_cooling_mode", Value::Int(cooling));
     // The hottest chamber any filament asks for; none by default.
     let chamber = settings
         .floats("chamber_temperature")
@@ -752,6 +800,13 @@ mod tests {
         assert_eq!(
             settings.machine_start_gcode.as_deref(),
             Some("G28\nM140 S{bed_temperature_initial_layer_single}")
+        );
+        // Vendor presets escape their line breaks and quotes.
+        assert_eq!(
+            read(r#"{"machine_start_gcode": "G28\\n{if curr_bed_type==\\\"Cool Plate\\\"}G29\\n{endif}"}"#)
+                .machine_start_gcode
+                .as_deref(),
+            Some("G28\n{if curr_bed_type==\"Cool Plate\"}G29\n{endif}")
         );
         // Blank templates count as absent; per-filament ones take the first filament's.
         assert_eq!(
@@ -890,6 +945,19 @@ mod tests {
         // 200 mm/s of a 0.42 x 0.2 line is more than the filament melts.
         assert_eq!(expand("{outer_wall_volumetric_speed}"), "12");
         assert_eq!(expand("{overall_chamber_temperature}"), "45");
+        assert_eq!(expand("{chamber_cooling_mode}"), "0");
+        let slots = read(
+            r#"{"filament_type": ["PLA", "PLA", "PETG"], "filament_volume_type": ["standard", "high_flow"]}"#,
+        );
+        assert_eq!(
+            edge_template::expand("{filament_volume_type_list}", &slots.variables).unwrap(),
+            "standard,high_flow,standard"
+        );
+        let pla = read(r#"{"temperature_vitrification": ["45", "100"]}"#);
+        assert_eq!(
+            edge_template::expand("{chamber_cooling_mode}", &pla.variables).unwrap(),
+            "2"
+        );
     }
 
     #[test]
