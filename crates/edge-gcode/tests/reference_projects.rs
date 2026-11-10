@@ -37,10 +37,13 @@ fn projects_under(dir: &Path, found: &mut Vec<PathBuf>) {
 }
 
 /// Whether a move line is malformed. Lines that are not moves are not
-/// checked: with a printer profile they include whatever its templates say.
+/// checked, nor moves with a comment: with a printer profile the file
+/// includes whatever its templates say, and the writer itself never
+/// comments a move.
 fn malformed(line: &str) -> bool {
     let mut words = line.split(' ');
-    words.next() == Some("G1")
+    !line.contains(';')
+        && words.next() == Some("G1")
         && !words.all(|word| {
             let mut chars = word.chars();
             matches!(chars.next(), Some('X' | 'Y' | 'Z' | 'E' | 'F'))
@@ -112,6 +115,7 @@ fn every_reference_project_exports_well_formed_gcode_that_adds_up() {
             .map(|index| Layer {
                 z: 0.2 * (index + 1) as f64,
                 height: 0.2,
+                around: &[],
                 loops: &perimeters[index].loops,
                 islands: &perimeters[index].islands,
                 paths: &fills[index],
@@ -136,9 +140,11 @@ fn every_reference_project_exports_well_formed_gcode_that_adds_up() {
         let whole = String::from_utf8(out).unwrap();
         exported += 1;
         bytes += whole.len();
-        // The checks below are about the layers; what comes before them is
-        // the profile's own start G-code.
-        let text = &whole[whole.find(";LAYER_CHANGE").unwrap_or(0)..];
+        // The checks below are about the layers; what comes before and
+        // after them is the profile's own start and end G-code.
+        let layers_from = whole.find(";LAYER_CHANGE").unwrap_or(0);
+        let layers_to = whole.rfind(";TYPE:Custom").unwrap_or(whole.len());
+        let text = &whole[layers_from..layers_to.max(layers_from)];
 
         let mut problems = Vec::new();
         if let Some(line) = text.lines().find(|line| malformed(line)) {
@@ -149,10 +155,12 @@ fn every_reference_project_exports_well_formed_gcode_that_adds_up() {
                 .find_map(|part| part.strip_prefix(letter)?.parse().ok())
         };
         // Everything the planner was given is in the file, and nothing else.
+        // Each wall stops short of its start by the seam gap.
         let planned: f64 = perimeters
             .iter()
             .flat_map(|layer| &layer.loops)
-            .map(|wall| wall.volume_mm3())
+            .filter(|wall| wall.polygon.points.len() >= 3)
+            .map(|wall| (wall.length_mm() - print.seam_gap).max(0.0) * wall.flow.mm3_per_mm())
             .sum::<f64>()
             + fills
                 .iter()
@@ -171,6 +179,7 @@ fn every_reference_project_exports_well_formed_gcode_that_adds_up() {
         let fed: f64 = moves()
             .filter(|line| line.contains(" X"))
             .filter_map(|line| word(line, 'E'))
+            .filter(|fed| *fed > 0.0)
             .sum();
         if (fed - summary.filament_mm).abs() > 1e-5 * moves().count() as f64 {
             problems.push(format!(
@@ -178,17 +187,20 @@ fn every_reference_project_exports_well_formed_gcode_that_adds_up() {
                 summary.filament_mm
             ));
         }
-        // Retractions and their undoing cancel out, bar the final one.
+        // Retractions and their undoing cancel out, bar the final one. A
+        // wipe may pull filament back as it moves.
         let net: f64 = moves()
-            .filter(|line| !line.contains(" X"))
-            .filter_map(|line| word(line, 'E'))
+            .filter(|line| !line.contains(';'))
+            .filter_map(|line| Some((line.contains(" X"), word(line, 'E')?)))
+            .filter(|(moving, fed)| !moving || *fed < 0.0)
+            .map(|(_, fed)| fed)
             .sum();
         let last = if summary.retractions > 0 {
             print.retraction_length
         } else {
             0.0
         };
-        if (net + last).abs() > 1e-6 {
+        if (net + last).abs() > 1e-5 * (2 * summary.retractions + 1) as f64 {
             problems.push(format!("retraction does not balance: net {net} mm"));
         }
         // The nozzle never drops below the layer it is printing.

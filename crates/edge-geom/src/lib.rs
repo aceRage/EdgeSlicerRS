@@ -67,6 +67,46 @@ impl Polygon {
     }
 }
 
+/// The smallest convex contour around a set of points, counter-clockwise,
+/// with no three corners in a line. Fewer than three distinct points, or
+/// points all in one line, give back what there is.
+pub fn convex_hull(points: impl IntoIterator<Item = Point2>) -> Polygon {
+    let mut points: Vec<Point2> = points.into_iter().collect();
+    points.sort_unstable_by_key(|point| (point.x, point.y));
+    points.dedup();
+    if points.len() < 3 {
+        return Polygon { points };
+    }
+    // Which way the turn a -> b -> c goes; products of two coordinates
+    // overflow i64.
+    let turn = |a: Point2, b: Point2, c: Point2| {
+        i128::from(b.x - a.x) * i128::from(c.y - a.y)
+            - i128::from(b.y - a.y) * i128::from(c.x - a.x)
+    };
+    // Andrew's monotone chain: the lower side left to right, then the
+    // upper side back again.
+    let mut hull: Vec<Point2> = Vec::with_capacity(points.len() + 1);
+    for pass in 0..2 {
+        // Points of this side that a new one may still push off the hull.
+        let floor = if pass == 0 { 2 } else { hull.len() + 1 };
+        let side: Box<dyn Iterator<Item = &Point2>> = if pass == 0 {
+            Box::new(points.iter())
+        } else {
+            Box::new(points.iter().rev().skip(1))
+        };
+        for &point in side {
+            while hull.len() >= floor
+                && turn(hull[hull.len() - 2], hull[hull.len() - 1], point) <= 0
+            {
+                hull.pop();
+            }
+            hull.push(point);
+        }
+    }
+    hull.pop();
+    Polygon { points: hull }
+}
+
 /// A region of the plane: one outer boundary and the holes cut out of it.
 /// The contour runs counter-clockwise and the holes clockwise. Named as in
 /// libslic3r, where the same shape is the unit every later stage works on.
@@ -138,5 +178,40 @@ mod tests {
     fn scaling_round_trips() {
         assert_eq!(scaled(0.2), 200_000);
         assert_eq!(unscaled(scaled(123.456789)), 123.456789);
+    }
+
+    #[test]
+    fn convex_hull_wraps_the_outermost_points() {
+        let mm = |points: &[(f64, f64)]| -> Vec<Point2> {
+            points.iter().map(|&(x, y)| Point2::from_mm(x, y)).collect()
+        };
+        // An L with a point inside and one on an edge: neither is a corner.
+        let hull = convex_hull(mm(&[
+            (0.0, 0.0),
+            (10.0, 0.0),
+            (10.0, 5.0),
+            (5.0, 5.0),
+            (5.0, 10.0),
+            (0.0, 10.0),
+            (2.0, 2.0),
+            (5.0, 0.0),
+        ]));
+        assert_eq!(
+            hull.points,
+            mm(&[
+                (0.0, 0.0),
+                (10.0, 0.0),
+                (10.0, 5.0),
+                (5.0, 10.0),
+                (0.0, 10.0)
+            ])
+        );
+        assert!(hull.is_ccw());
+        // Too few points to enclose anything come back as they are.
+        assert_eq!(convex_hull(mm(&[(1.0, 1.0), (1.0, 1.0)])).points.len(), 1);
+        assert_eq!(
+            convex_hull(mm(&[(0.0, 0.0), (1.0, 1.0), (2.0, 2.0)])).points,
+            mm(&[(0.0, 0.0), (2.0, 2.0)])
+        );
     }
 }

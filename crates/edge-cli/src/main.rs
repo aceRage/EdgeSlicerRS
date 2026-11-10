@@ -2,6 +2,7 @@ use std::{error::Error, fmt::Write as _, fs, path::PathBuf, process::ExitCode, t
 
 use clap::{Args, Parser, Subcommand};
 use edge_3mf::{Body, PartKind, Project};
+use edge_adhesion::AdhesionSettings;
 use edge_config::{Kind, Settings, Vendor};
 use edge_extrusion::{ExtrusionLoop, ExtrusionPath, Role};
 use edge_gcode::PrintSettings;
@@ -23,7 +24,7 @@ struct Cli {
 #[derive(Subcommand)]
 enum Command {
     /// Cut a model into layer contours and report what was found and how long it took.
-    Slice(SliceArgs),
+    Slice(Box<SliceArgs>),
     /// Show what a 3MF project contains.
     Inspect {
         /// 3MF file.
@@ -63,9 +64,19 @@ struct SliceArgs {
     /// Process preset name within --vendor.
     #[arg(long, requires = "vendor")]
     process: Option<String>,
-    /// Machine preset name within --vendor; supplies the nozzle diameter.
+    /// Machine preset name within --vendor; supplies the nozzle, the bed and
+    /// the printer's own start and end G-code.
     #[arg(long, requires = "vendor")]
     machine: Option<String>,
+    /// Filament preset name within --vendor; supplies temperatures, cooling
+    /// and retraction.
+    #[arg(long, requires = "vendor")]
+    filament: Option<String>,
+    /// Which build plate is on the printer, e.g. "Textured PEI Plate"; it
+    /// picks the bed temperature. Defaults to the 3MF's, or else to the
+    /// reference's default, "Cool Plate".
+    #[arg(long)]
+    bed_type: Option<String>,
     #[command(flatten)]
     profiles: ProfilesArgs,
     /// Number of walls; overrides the presets and the 3MF's own settings.
@@ -104,7 +115,7 @@ struct PresetArgs {
 
 fn main() -> ExitCode {
     let result = match Cli::parse().command {
-        Command::Slice(args) => slice(args),
+        Command::Slice(args) => slice(*args),
         Command::Inspect { project } => inspect(project),
         Command::Preset(args) => preset(args),
     };
@@ -206,6 +217,36 @@ fn inspect(path: PathBuf) -> Result<(), Failure> {
     Ok(())
 }
 
+/// Moves bodies across the bed by `(x, y)` mm.
+fn shift(bodies: &mut [Body], x: f64, y: f64) {
+    let meshes = bodies
+        .iter_mut()
+        .flat_map(|body| std::iter::once(&mut body.solid).chain(body.negative.as_mut()));
+    for mesh in meshes {
+        for vertex in &mut mesh.vertices {
+            vertex[0] = (f64::from(vertex[0]) + x) as f32;
+            vertex[1] = (f64::from(vertex[1]) + y) as f32;
+        }
+    }
+}
+
+/// Where plate `index` of `count` sits in a project's own coordinates. The
+/// plates are laid out in a grid a fifth of a bed apart, rows running
+/// towards -Y (PartPlate.cpp `compute_origin`); a part's position on its
+/// plate, which is what the printer needs, is measured from here. The bed
+/// size is the project's own `printable_area`, whole millimetres as the
+/// reference takes it.
+fn plate_origin(index: usize, count: usize, settings: Option<&Settings>) -> Option<(f64, f64)> {
+    if index == 0 {
+        return Some((0.0, 0.0));
+    }
+    let [min_x, min_y, max_x, max_y] = PrintSettings::from_settings(settings?).ok()?.bed?;
+    let (width, depth) = ((max_x - min_x).trunc(), (max_y - min_y).trunc());
+    let columns = (count as f64).sqrt().ceil() as usize;
+    let (row, column) = (index / columns, index % columns);
+    Some((column as f64 * width * 1.2, -(row as f64) * depth * 1.2))
+}
+
 /// The bodies to slice and, for a project, the settings it was saved with.
 fn load(args: &SliceArgs) -> Result<(Vec<Body>, Option<Settings>), Failure> {
     let path = &args.model;
@@ -256,13 +297,26 @@ fn load(args: &SliceArgs) -> Result<(Vec<Body>, Option<Settings>), Failure> {
             project.plates.len()
         );
     }
-    Ok((project.bodies(plate), project.settings))
+    let mut bodies = project.bodies(plate);
+    if let Some(index) = plate {
+        let (x, y) = plate_origin(index, project.plates.len(), project.settings.as_ref())
+            .ok_or_else(|| {
+                format!(
+                    "{}: plate {} cannot be placed: the project does not give the bed's size",
+                    path.display(),
+                    project.plates[index].id
+                )
+            })?;
+        shift(&mut bodies, -x, -y);
+    }
+    Ok((bodies, project.settings))
 }
 
 /// The presets named on the command line, resolved.
 struct Presets {
     machine: Option<Settings>,
     process: Option<Settings>,
+    filament: Option<Settings>,
 }
 
 fn presets(args: &SliceArgs) -> Result<Presets, Failure> {
@@ -270,6 +324,7 @@ fn presets(args: &SliceArgs) -> Result<Presets, Failure> {
         return Ok(Presets {
             machine: None,
             process: None,
+            filament: None,
         });
     };
     let vendor = args.profiles.vendor(vendor)?;
@@ -281,6 +336,7 @@ fn presets(args: &SliceArgs) -> Result<Presets, Failure> {
     Ok(Presets {
         machine: resolve(Kind::Machine, &args.machine)?,
         process: resolve(Kind::Process, &args.process)?,
+        filament: resolve(Kind::Filament, &args.filament)?,
     })
 }
 
@@ -331,8 +387,9 @@ fn slice(args: SliceArgs) -> Result<(), Failure> {
     }
 
     let started = Instant::now();
-    let (bodies, project_settings) = load(&args)?;
+    let (mut bodies, project_settings) = load(&args)?;
     let load_time = started.elapsed();
+    let is_project = project_settings.is_some();
     let bounds =
         bodies
             .iter()
@@ -353,10 +410,34 @@ fn slice(args: SliceArgs) -> Result<(), Failure> {
         (first_layer_height, first_source),
         (closing_radius, closing_source),
     ] = slice_settings(&args, presets.process.as_ref(), project_settings.as_ref())?;
-    // Later sources replace earlier ones: project, machine preset, process preset.
+    // Later sources replace earlier ones: project, then the presets named.
     let mut settings = project_settings.unwrap_or_default();
-    for preset in [&presets.machine, &presets.process].into_iter().flatten() {
+    for preset in [&presets.machine, &presets.filament, &presets.process]
+        .into_iter()
+        .flatten()
+    {
         settings.overlay(preset);
+    }
+    if let Some(bed_type) = &args.bed_type {
+        settings.insert("curr_bed_type", edge_config::Value::One(bed_type.clone()));
+    } else if settings.get("curr_bed_type").is_none()
+        && settings.get("machine_start_gcode").is_some()
+    {
+        println!("bed type not given; the default, Cool Plate, is assumed (--bed-type changes it)");
+        settings.insert(
+            "curr_bed_type",
+            edge_config::Value::One("Cool Plate".into()),
+        );
+    }
+    let print = PrintSettings::from_settings(&settings)?;
+    // A bare model has no place on the bed of its own: it goes in the
+    // middle, as the reference's arranger leaves a single part.
+    let mut centred = None;
+    if let (false, Some([min_x, min_y, max_x, max_y])) = (is_project, print.bed) {
+        let x = (min_x + max_x) / 2.0 - f64::from(min[0] + max[0]) / 2.0;
+        let y = (min_y + max_y) / 2.0 - f64::from(min[1] + max[1]) / 2.0;
+        shift(&mut bodies, x, y);
+        centred = Some(((min_x + max_x) / 2.0, (min_y + max_y) / 2.0));
     }
     let mut walls = WallSettings::from_settings(&settings)?;
     if let Some(count) = args.wall_loops {
@@ -429,6 +510,37 @@ fn slice(args: SliceArgs) -> Result<(), Failure> {
         })
         .collect::<Result<Vec<Perimeters>, String>>()?;
     let perimeter_time = started.elapsed();
+
+    // Skirt and brim, per layer, in the order they are printed.
+    let adhesion = AdhesionSettings::from_settings(&settings)?;
+    // Both stand off the outlines as modelled, as in the reference, so a
+    // first layer shrunk against elephant foot leaves that much more gap.
+    let beside: Vec<&[ExPolygon]> = (0..layers.len().min(adhesion.skirt_height.max(1)))
+        .map(|index| {
+            modelled
+                .get(index)
+                .map_or(layers[index].regions.as_slice(), Vec::as_slice)
+        })
+        .collect();
+    let brim = match beside.first() {
+        Some(first) => edge_adhesion::brim(first, &adhesion, first_layer_height)?,
+        None => Vec::new(),
+    };
+    let mut around: Vec<Vec<ExtrusionLoop>> = vec![Vec::new(); layers.len()];
+    for (index, lines) in around.iter_mut().enumerate() {
+        if adhesion.has_skirt(index) {
+            let height = if index == 0 {
+                first_layer_height
+            } else {
+                layer_height
+            };
+            *lines = edge_adhesion::skirt(&beside, &brim, &adhesion, height)?;
+        }
+    }
+    let skirt_loops = around.first().map_or(0, Vec::len);
+    if let Some(first) = around.first_mut() {
+        first.extend(brim);
+    }
 
     let started = Instant::now();
     let infill = InfillSettings::from_settings(&settings)?;
@@ -558,6 +670,17 @@ fn slice(args: SliceArgs) -> Result<(), Failure> {
         paths().map(ExtrusionPath::length_mm).sum::<f64>() / 1e3,
         paths().map(ExtrusionPath::volume_mm3).sum::<f64>() / 1e3,
     );
+    if let Some(first) = around.first().filter(|first| !first.is_empty()) {
+        println!(
+            "{skirt_loops} skirt loop(s) on {} layer(s), {} brim loop(s): {:.2} m on the first layer",
+            adhesion.skirt_height.min(layers.len()),
+            first.len() - skirt_loops,
+            first.iter().map(ExtrusionLoop::length_mm).sum::<f64>() / 1e3,
+        );
+    }
+    if let Some((x, y)) = centred {
+        println!("placed in the middle of the bed, at {x} x {y} mm");
+    }
     if let Some(pattern) = &infill.unsupported_pattern {
         println!(
             "note: sparse pattern \"{pattern}\" is not implemented; grid was used in its place"
@@ -575,7 +698,6 @@ fn slice(args: SliceArgs) -> Result<(), Failure> {
 
     if let Some(path) = &args.gcode {
         let started = Instant::now();
-        let print = PrintSettings::from_settings(&settings)?;
         // Layer tops, measured from the bottom of the model as the bed.
         let plan: Vec<edge_gcode::Layer<'_>> = (0..layers.len())
             .map(|index| edge_gcode::Layer {
@@ -585,15 +707,42 @@ fn slice(args: SliceArgs) -> Result<(), Failure> {
                 } else {
                     layer_height
                 },
+                around: &around[index],
                 loops: &perimeters[index].loops,
                 islands: &perimeters[index].islands,
                 paths: &fills[index],
                 infill_area: &perimeters[index].infill,
             })
             .collect();
-        let mut file = std::io::BufWriter::new(fs::File::create(path)?);
-        let summary = edge_gcode::write(&mut file, &plan, &print)?;
-        std::io::Write::flush(&mut file)?;
+        // Nothing may be sent to a printer that would run it off its bed.
+        if let Some([min_x, min_y, max_x, max_y]) = print.bed {
+            let points = plan.iter().flat_map(|layer| {
+                let loops = layer.around.iter().chain(layer.loops);
+                loops
+                    .flat_map(|line| &line.polygon.points)
+                    .chain(layer.paths.iter().flat_map(|line| &line.points))
+            });
+            let mut reach: Option<[f64; 4]> = None;
+            for point in points {
+                let (x, y) = (unscaled(point.x), unscaled(point.y));
+                let [a, b, c, d] = reach.unwrap_or([x, y, x, y]);
+                reach = Some([a.min(x), b.min(y), c.max(x), d.max(y)]);
+            }
+            if let Some([a, b, c, d]) = reach
+                && (a < min_x || b < min_y || c > max_x || d > max_y)
+            {
+                return Err(format!(
+                    "the print reaches from {a:.1} x {b:.1} to {c:.1} x {d:.1} mm, off the bed, which runs \
+                     from {min_x} x {min_y} to {max_x} x {max_y} mm; no G-code was written"
+                )
+                .into());
+            }
+        }
+        // Written whole or not at all: a file cut short by an error must
+        // never be left where it could be sent to a printer.
+        let mut text = Vec::new();
+        let summary = edge_gcode::write(&mut text, &plan, &print)?;
+        fs::write(path, &text)?;
         let weight = match print.filament_density {
             Some(density) => format!(", {:.1} g", summary.filament_mm3 / 1000.0 * density),
             None => String::new(),
@@ -617,8 +766,14 @@ fn slice(args: SliceArgs) -> Result<(), Failure> {
                 "note: no printer profile, so this G-code has a generic preamble and is not printer-ready"
             );
         }
-        for note in &print.unsupported {
+        for note in print.unsupported.iter().chain(&adhesion.unsupported) {
             println!("note: {note}");
+        }
+        if summary.slowed_layers > 0 {
+            println!(
+                "{} layer(s) were slowed down to give them time to cool",
+                summary.slowed_layers
+            );
         }
     }
 
@@ -736,4 +891,45 @@ fn svg(layer: &LayerRegions, perimeters: &Perimeters, fills: &[ExtrusionPath]) -
         width + 2.0 * margin,
         height + 2.0 * margin,
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn plates_are_laid_out_in_a_grid_running_back_along_y() {
+        let settings = Settings::from_json(
+            r#"{"printable_area": ["0.5x1", "270.5x1", "270.5x271", "0.5x271"]}"#,
+        )
+        .unwrap();
+        let origin = |index, count| plate_origin(index, count, Some(&settings));
+        // A 270 x 270 mm bed, plates a fifth of a bed apart.
+        assert_eq!(origin(0, 3), Some((0.0, 0.0)));
+        assert_eq!(origin(1, 3), Some((324.0, 0.0)));
+        // Three plates make two columns, so the third starts a new row.
+        assert_eq!(origin(2, 3), Some((0.0, -324.0)));
+        assert_eq!(origin(4, 9), Some((324.0, -324.0)));
+        // The first plate needs no bed size; any other does.
+        assert_eq!(plate_origin(0, 2, None), Some((0.0, 0.0)));
+        assert_eq!(plate_origin(1, 2, None), None);
+        assert_eq!(plate_origin(1, 2, Some(&Settings::default())), None);
+    }
+
+    #[test]
+    fn shifting_moves_solid_and_negative_parts_together() {
+        let cube = edge_mesh::Mesh::from_triangle_soup(edge_mesh::primitives::cuboid(
+            [0.0, 0.0, 0.0],
+            [1.0, 1.0, 1.0],
+        ));
+        let mut bodies = [Body {
+            solid: cube.clone(),
+            negative: Some(cube),
+        }];
+        shift(&mut bodies, 10.0, -5.0);
+        for mesh in [&bodies[0].solid, bodies[0].negative.as_ref().unwrap()] {
+            let (min, max) = mesh.bounds().unwrap();
+            assert_eq!((min, max), ([10.0, -5.0, 0.0], [11.0, -4.0, 1.0]));
+        }
+    }
 }

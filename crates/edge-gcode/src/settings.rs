@@ -1,5 +1,23 @@
 use edge_config::{ConfigError, FloatOrPercent, Settings, Value as Setting};
+use edge_extrusion::Flow;
 use edge_template::{Value, Variables};
+
+use crate::seam::Seam;
+
+/// How the nozzle rises before a travel (`z_hop_types`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Lift {
+    /// Straight up, then across.
+    Normal,
+    /// Up a ramp along the start of the travel.
+    Slope,
+    /// Up a turn of a spiral, then across.
+    Spiral,
+    /// A ramp, or a spiral where the travel starts a new layer. The
+    /// reference also spirals when the ramp would cross an overhang; that
+    /// is not looked at here.
+    Auto,
+}
 
 /// Which wall of an island is printed first.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -37,6 +55,31 @@ pub struct PrintSettings {
     /// Travels shorter than this are made without retracting.
     pub retraction_minimum_travel: f64,
     pub z_hop: f64,
+    pub lift: Lift,
+    /// Steepness of a ramped lift, in degrees.
+    pub travel_slope: f64,
+    /// The nozzle is only lifted between these heights; zero for no limit.
+    pub retract_lift_above: f64,
+    pub retract_lift_below: f64,
+    pub retract_when_changing_layer: bool,
+    /// After retracting, drag the nozzle back over what it just printed.
+    pub wipe: bool,
+    pub wipe_distance: f64,
+    /// Shares of the retraction made before and after the wipe; the rest
+    /// happens during it.
+    pub retract_before_wipe: f64,
+    pub retract_after_wipe: f64,
+    /// Absent to wipe at the speed of the line just printed.
+    pub wipe_speed: Option<f64>,
+
+    pub nozzle_diameter: f64,
+    pub seam: Seam,
+    /// How far short of its start a wall loop stops, in mm.
+    pub seam_gap: f64,
+    /// Curves are cut into segments that stray no further than this, in mm.
+    pub resolution: f64,
+    /// The bed's extent in mm: min x, min y, max x, max y.
+    pub bed: Option<[f64; 4]>,
 
     pub filament_diameter: f64,
     pub filament_flow_ratio: f64,
@@ -63,6 +106,22 @@ pub struct PrintSettings {
     pub slow_down_layer_time: f64,
     /// The fan stays off for this many layers at the start.
     pub close_fan_the_first_x_layers: usize,
+    /// The layer the fan reaches full speed on, ramping up; zero for no ramp.
+    pub full_fan_speed_layer: usize,
+    /// On layers long enough to need no cooling, keep the fan at its
+    /// minimum instead of stopping it.
+    pub reduce_fan_stop_start_freq: bool,
+    /// Slow layers shorter than `slow_down_layer_time` down to that long,
+    /// though no line goes below `slow_down_min_speed`.
+    pub slow_down_for_layer_cooling: bool,
+    pub slow_down_min_speed: f64,
+    pub dont_slow_down_outer_wall: bool,
+    /// Whether the printer has a second, auxiliary fan, and its speed in
+    /// percent once the first layers are down.
+    pub auxiliary_fan: bool,
+    pub additional_cooling_fan_speed: f64,
+    /// Speed of the skirt; zero for the usual speeds.
+    pub skirt_speed: f64,
 
     /// Accelerations in mm/s²; zero means "leave it as it is".
     pub default_acceleration: f64,
@@ -115,6 +174,21 @@ impl Default for PrintSettings {
             deretraction_speed: 0.0,
             retraction_minimum_travel: 2.0,
             z_hop: 0.4,
+            lift: Lift::Slope,
+            travel_slope: 3.0,
+            retract_lift_above: 0.0,
+            retract_lift_below: 0.0,
+            retract_when_changing_layer: false,
+            wipe: false,
+            wipe_distance: 1.0,
+            retract_before_wipe: 1.0,
+            retract_after_wipe: 0.0,
+            wipe_speed: None,
+            nozzle_diameter: 0.4,
+            seam: Seam::Aligned,
+            seam_gap: 0.04,
+            resolution: 0.01,
+            bed: None,
             filament_diameter: 1.75,
             filament_flow_ratio: 1.0,
             print_flow_ratio: 1.0,
@@ -131,6 +205,14 @@ impl Default for PrintSettings {
             fan_cooling_layer_time: 60.0,
             slow_down_layer_time: 5.0,
             close_fan_the_first_x_layers: 1,
+            full_fan_speed_layer: 0,
+            reduce_fan_stop_start_freq: false,
+            slow_down_for_layer_cooling: true,
+            slow_down_min_speed: 10.0,
+            dont_slow_down_outer_wall: false,
+            auxiliary_fan: false,
+            additional_cooling_fan_speed: 0.0,
+            skirt_speed: 50.0,
             default_acceleration: 0.0,
             outer_wall_acceleration: 0.0,
             inner_wall_acceleration: 0.0,
@@ -148,7 +230,7 @@ impl Default for PrintSettings {
             layer_change_gcode: None,
             filament_start_gcode: None,
             filament_end_gcode: None,
-            variables: variables(&Settings::default(), None, None),
+            variables: variables(&Settings::default(), None, None, None),
             unsupported: Vec::new(),
         }
     }
@@ -180,7 +262,7 @@ impl PrintSettings {
                 .texts(key)
                 .and_then(|texts| texts.first())
                 .filter(|text| !text.trim().is_empty())
-                .cloned()
+                .map(|text| unescaped(text))
         };
         let mut unsupported = Vec::new();
 
@@ -198,13 +280,115 @@ impl PrintSettings {
                 WallOrder::InnerOuter
             }
         };
-        if let Some(kind) = settings.texts("z_hop_types").and_then(|v| v.first())
-            && kind != "Normal Lift"
-        {
-            unsupported.push(format!(
-                "z_hop_types \"{kind}\": a straight vertical lift is used"
-            ));
+        let first_text = |key: &str| settings.texts(key).and_then(|v| v.first());
+        let lift = match first_text("z_hop_types").map(String::as_str) {
+            None | Some("Slope Lift") => Lift::Slope,
+            Some("Normal Lift") => Lift::Normal,
+            Some("Spiral Lift") => Lift::Spiral,
+            Some("Auto Lift") => Lift::Auto,
+            Some(other) => {
+                unsupported.push(format!("z_hop_types \"{other}\": a ramped lift is used"));
+                Lift::Slope
+            }
+        };
+        let seam = match settings.text("seam_position") {
+            None | Some("aligned") => Seam::Aligned,
+            Some("nearest") => Seam::Nearest,
+            Some("aligned_back") => Seam::AlignedBack,
+            Some("aligned_front") => Seam::AlignedFront,
+            Some("back") => Seam::Back,
+            Some("left") => Seam::Left,
+            Some("right") => Seam::Right,
+            Some(other) => {
+                unsupported.push(format!("seam_position \"{other}\": aligned seams are used"));
+                Seam::Aligned
+            }
+        };
+        // Present and not the value that turns the feature off.
+        for (key, off, instead) in [
+            (
+                "retract_lift_enforce",
+                "All Surfaces",
+                "the nozzle lifts over every surface",
+            ),
+            ("seam_slope_type", "none", "seams are plain butt joints"),
+            ("wipe_on_loops", "0", "walls end without the inward move"),
+            (
+                "wipe_before_external_loop",
+                "0",
+                "outer walls start without the inward move",
+            ),
+            (
+                "exclude_object",
+                "0",
+                "objects are not labelled for cancelling",
+            ),
+            (
+                "enable_arc_fitting",
+                "0",
+                "curves are written as straight moves",
+            ),
+            (
+                "enable_overhang_bridge_fan",
+                "0",
+                "overhangs get the layer's fan speed",
+            ),
+        ] {
+            if let Some(value) = first_text(key)
+                && value != off
+            {
+                unsupported.push(format!("{key} \"{value}\": {instead}"));
+            }
         }
+        if first("initial_layer_fan_speed")?.is_some_and(|speed| speed >= 0.0) {
+            unsupported.push(
+                "initial_layer_fan_speed: the first layers follow close_fan_the_first_x_layers"
+                    .into(),
+            );
+        }
+        // A share written as a percentage, such as "100%".
+        let share = |key: &str, default: f64| -> Result<f64, ConfigError> {
+            match first_text(key) {
+                None => Ok(default),
+                Some(text) => text
+                    .trim()
+                    .trim_end_matches('%')
+                    .parse::<f64>()
+                    .map(|percent| percent / 100.0)
+                    .map_err(|_| ConfigError::BadValue {
+                        key: key.into(),
+                        found: text.clone(),
+                        expected: "a percentage",
+                    }),
+            }
+        };
+        let flag = |key: &str, default: bool| -> Result<bool, ConfigError> {
+            Ok(match first_text(key).map(String::as_str) {
+                None => default,
+                Some("1" | "true") => true,
+                Some("0" | "false") => false,
+                Some(other) => {
+                    return Err(ConfigError::BadValue {
+                        key: key.into(),
+                        found: other.into(),
+                        expected: "0 or 1",
+                    });
+                }
+            })
+        };
+        let nozzle_diameter = number("nozzle_diameter", defaults.nozzle_diameter)?;
+        let travel_speed = number("travel_speed", defaults.travel_speed)?;
+        // The bed is the box around the corners of `printable_area`, each "XxY".
+        let bed = settings.texts("printable_area").and_then(|corners| {
+            let mut extent: Option<[f64; 4]> = None;
+            for corner in corners {
+                let (x, y) = corner.split_once('x')?;
+                let (x, y): (f64, f64) = (x.trim().parse().ok()?, y.trim().parse().ok()?);
+                let [min_x, min_y, max_x, max_y] = extent.unwrap_or([x, y, x, y]);
+                extent = Some([min_x.min(x), min_y.min(y), max_x.max(x), max_y.max(y)]);
+            }
+            extent
+        });
 
         // The bed temperature lives under a key named after the plate in use.
         let bed_key = match settings.text("curr_bed_type") {
@@ -242,9 +426,9 @@ impl PrintSettings {
                 "initial_layer_infill_speed",
                 defaults.initial_layer_infill_speed,
             )?,
-            travel_speed: number("travel_speed", defaults.travel_speed)?,
+            travel_speed,
             z_speed: {
-                let travel = number("travel_speed", defaults.travel_speed)?;
+                let travel = travel_speed;
                 let wanted = first("travel_speed_z")?
                     .filter(|speed| *speed > 0.0)
                     .unwrap_or(travel);
@@ -265,6 +449,41 @@ impl PrintSettings {
                 defaults.retraction_minimum_travel,
             )?,
             z_hop: overridable("z_hop", defaults.z_hop)?,
+            lift,
+            travel_slope: number("travel_slope", defaults.travel_slope)?,
+            retract_lift_above: number("retract_lift_above", 0.0)?,
+            retract_lift_below: number("retract_lift_below", 0.0)?,
+            retract_when_changing_layer: flag(
+                "retract_when_changing_layer",
+                defaults.retract_when_changing_layer,
+            )?,
+            wipe: flag("wipe", defaults.wipe)?,
+            wipe_distance: number("wipe_distance", defaults.wipe_distance)?,
+            retract_before_wipe: share("retract_before_wipe", defaults.retract_before_wipe)?
+                .clamp(0.0, 1.0),
+            retract_after_wipe: share("retract_after_wipe", defaults.retract_after_wipe)?
+                .clamp(0.0, 1.0),
+            wipe_speed: if flag("role_based_wipe_speed", true)? {
+                None
+            } else {
+                // The reference never wipes slower than 10 mm/s.
+                Some(
+                    settings
+                        .float_or_percent("wipe_speed")?
+                        .unwrap_or(FloatOrPercent::Percent(80.0))
+                        .resolve(travel_speed)
+                        .max(10.0),
+                )
+            },
+            nozzle_diameter,
+            seam,
+            seam_gap: settings
+                .float_or_percent("seam_gap")?
+                .unwrap_or(FloatOrPercent::Percent(10.0))
+                .resolve(nozzle_diameter)
+                .max(0.0),
+            resolution: number("resolution", defaults.resolution)?,
+            bed,
             filament_diameter: number("filament_diameter", defaults.filament_diameter)?,
             filament_flow_ratio: number("filament_flow_ratio", defaults.filament_flow_ratio)?,
             print_flow_ratio: number("print_flow_ratio", defaults.print_flow_ratio)?,
@@ -280,9 +499,13 @@ impl PrintSettings {
             infill_first: settings
                 .flag("is_infill_first")?
                 .unwrap_or(defaults.infill_first),
+            // Only with sparse fill to shelter in, as in the reference.
             reduce_infill_retraction: settings
                 .flag("reduce_infill_retraction")?
-                .unwrap_or(defaults.reduce_infill_retraction),
+                .unwrap_or(defaults.reduce_infill_retraction)
+                && settings
+                    .float_or_percent("sparse_infill_density")?
+                    .is_none_or(|density| density.resolve(100.0) > 0.0),
             fan_min_speed: number("fan_min_speed", defaults.fan_min_speed)?,
             fan_max_speed: number("fan_max_speed", defaults.fan_max_speed)?,
             fan_cooling_layer_time: number(
@@ -295,6 +518,20 @@ impl PrintSettings {
                 defaults.close_fan_the_first_x_layers as f64,
             )?
             .max(0.0) as usize,
+            full_fan_speed_layer: number("full_fan_speed_layer", 0.0)?.max(0.0) as usize,
+            reduce_fan_stop_start_freq: flag(
+                "reduce_fan_stop_start_freq",
+                defaults.reduce_fan_stop_start_freq,
+            )?,
+            slow_down_for_layer_cooling: flag(
+                "slow_down_for_layer_cooling",
+                defaults.slow_down_for_layer_cooling,
+            )?,
+            slow_down_min_speed: number("slow_down_min_speed", defaults.slow_down_min_speed)?,
+            dont_slow_down_outer_wall: flag("dont_slow_down_outer_wall", false)?,
+            auxiliary_fan: flag("auxiliary_fan", false)?,
+            additional_cooling_fan_speed: number("additional_cooling_fan_speed", 0.0)?,
+            skirt_speed: number("skirt_speed", defaults.skirt_speed)?,
             default_acceleration: number("default_acceleration", 0.0)?,
             outer_wall_acceleration: number("outer_wall_acceleration", 0.0)?,
             inner_wall_acceleration: number("inner_wall_acceleration", 0.0)?,
@@ -327,16 +564,47 @@ impl PrintSettings {
             layer_change_gcode: template("layer_change_gcode"),
             filament_start_gcode: template("filament_start_gcode"),
             filament_end_gcode: template("filament_end_gcode"),
-            variables: variables(settings, bed_temperature, bed_temperature_initial_layer),
+            variables: variables(
+                settings,
+                bed_temperature,
+                bed_temperature_initial_layer,
+                bed,
+            ),
             unsupported,
         })
     }
 }
 
+/// A template as the reference reads it from a preset: a backslash makes
+/// `\n` a line break and `\r` a carriage return, and stands any other
+/// character after it for itself (Config.cpp `unescape_string_cstyle`).
+/// Vendor presets write their G-code that way; a project's is already plain.
+fn unescaped(text: &str) -> String {
+    let mut out = String::with_capacity(text.len());
+    let mut chars = text.chars();
+    while let Some(c) = chars.next() {
+        match c {
+            '\\' => match chars.next() {
+                Some('n') => out.push('\n'),
+                Some('r') => out.push('\r'),
+                Some(other) => out.push(other),
+                None => out.push('\\'),
+            },
+            _ => out.push(c),
+        }
+    }
+    out
+}
+
 /// Every setting under its own name, plus the names templates use that are
 /// not settings: the tool in use (always the first, for now) and the bed
 /// temperature of the plate in use.
-fn variables(settings: &Settings, bed: Option<f64>, bed_initial: Option<f64>) -> Variables {
+fn variables(
+    settings: &Settings,
+    bed: Option<f64>,
+    bed_initial: Option<f64>,
+    area: Option<[f64; 4]>,
+) -> Variables {
     let mut variables = Variables::default();
     for (key, value) in settings.iter() {
         match value {
@@ -354,6 +622,12 @@ fn variables(settings: &Settings, bed: Option<f64>, bed_initial: Option<f64>) ->
     ] {
         variables.set(name, Value::Int(0));
     }
+    if let Some([min_x, min_y, max_x, max_y]) = area {
+        let pair = |x: f64, y: f64| vec![Value::Float(x), Value::Float(y)];
+        variables.set_list("print_bed_min", pair(min_x, min_y));
+        variables.set_list("print_bed_max", pair(max_x, max_y));
+        variables.set_list("print_bed_size", pair(max_x - min_x, max_y - min_y));
+    }
     let whole = |temperature: f64| Value::Int(temperature.round() as i64);
     if let Some(bed) = bed_initial.or(bed) {
         variables.set("bed_temperature_initial_layer_single", whole(bed));
@@ -362,6 +636,89 @@ fn variables(settings: &Settings, bed: Option<f64>, bed_initial: Option<f64>) ->
     }
     if let Some(bed) = bed.or(bed_initial) {
         variables.set_list("bed_temperature", vec![whole(bed)]);
+    }
+    // One filament and no tool changes, for now.
+    variables.set("has_wipe_tower", Value::Bool(false));
+    variables.set("total_toolchanges", Value::Int(0));
+    let number = |key: &str| settings.float(key).ok().flatten();
+    let first = |key: &str| {
+        settings
+            .floats(key)
+            .ok()
+            .flatten()
+            .and_then(|values| values.first().copied().flatten())
+    };
+    if let Some(height) = number("initial_layer_print_height") {
+        variables.set("first_layer_height", Value::Float(height));
+    }
+    if let Some(height) = number("printable_height") {
+        variables.set("max_print_height", Value::Int(height as i64));
+    }
+    if let Some(nozzles) = settings.texts("nozzle_diameter") {
+        variables.set("num_extruders", Value::Int(nozzles.len() as i64));
+    }
+    if let Some(lengths) = settings.texts("retraction_length") {
+        variables.set_list("retract_length", lengths.iter().map(Value::text).collect());
+    }
+    // The flow each filament slot was sliced for, which the U1's firmware
+    // reads from the end G-code: standard unless the slot says high flow.
+    if let Some(filaments) = settings.texts("filament_type") {
+        let kinds = settings.texts("filament_volume_type").unwrap_or(&[]);
+        let list: Vec<&str> = (0..filaments.len())
+            .map(|slot| match kinds.get(slot).map(String::as_str) {
+                Some("high_flow") => "high_flow",
+                _ => "standard",
+            })
+            .collect();
+        variables.set("filament_volume_type_list", Value::text(list.join(",")));
+    }
+    // How hard the chamber is cooled, from how easily the filament in use
+    // softens: 2 at a glass transition of 50 °C or under, 1 up to 70, else
+    // 0 (GCode.cpp, where the start G-code's variables are set).
+    let softens = first("temperature_vitrification").unwrap_or(100.0);
+    let high_temperature = settings
+        .texts("filament_is_high_temperature")
+        .and_then(|values| values.first())
+        .is_some_and(|value| value == "1");
+    let cooling = match softens {
+        _ if high_temperature => 0,
+        at if at <= 50.0 => 2,
+        at if at <= 70.0 => 1,
+        _ => 0,
+    };
+    variables.set("chamber_cooling_mode", Value::Int(cooling));
+    // The hottest chamber any filament asks for; none by default.
+    let chamber = settings
+        .floats("chamber_temperature")
+        .ok()
+        .flatten()
+        .and_then(|values| values.into_iter().flatten().reduce(f64::max))
+        .unwrap_or(0.0);
+    variables.set(
+        "overall_chamber_temperature",
+        Value::Int(chamber.round() as i64),
+    );
+    // How much plastic the outer wall takes per second, held to what the
+    // filament can melt (GCode.cpp, where the start G-code's variables are set).
+    if let (Some(speed), Some(height), Some(nozzle)) = (
+        number("outer_wall_speed").or(first("outer_wall_speed")),
+        number("layer_height"),
+        first("nozzle_diameter"),
+    ) {
+        let width = ["outer_wall_line_width", "line_width"]
+            .into_iter()
+            .filter_map(|key| settings.float_or_percent(key).ok().flatten())
+            .map(|width| width.resolve(nozzle))
+            .find(|width| *width > 0.0)
+            .unwrap_or(nozzle);
+        if let Ok(flow) = Flow::new(width, height, nozzle) {
+            let wanted = speed * flow.mm3_per_mm();
+            let volumetric = match first("filament_max_volumetric_speed") {
+                Some(limit) if limit > 0.0 => wanted.min(limit),
+                _ => wanted,
+            };
+            variables.set("outer_wall_volumetric_speed", Value::Float(volumetric));
+        }
     }
     // Names older profiles still use for the nozzle temperatures.
     for (old, new) in [
@@ -444,6 +801,13 @@ mod tests {
             settings.machine_start_gcode.as_deref(),
             Some("G28\nM140 S{bed_temperature_initial_layer_single}")
         );
+        // Vendor presets escape their line breaks and quotes.
+        assert_eq!(
+            read(r#"{"machine_start_gcode": "G28\\n{if curr_bed_type==\\\"Cool Plate\\\"}G29\\n{endif}"}"#)
+                .machine_start_gcode
+                .as_deref(),
+            Some("G28\n{if curr_bed_type==\"Cool Plate\"}G29\n{endif}")
+        );
         // Blank templates count as absent; per-filament ones take the first filament's.
         assert_eq!(
             (
@@ -516,11 +880,92 @@ mod tests {
     }
 
     #[test]
+    fn reads_seams_wipe_lift_and_cooling() {
+        let read =
+            |json: &str| PrintSettings::from_settings(&Settings::from_json(json).unwrap()).unwrap();
+        let settings = read(
+            r#"{"seam_position": "aligned_back", "seam_gap": "15%", "nozzle_diameter": ["0.4", "0.4"],
+                "wipe": ["1"], "wipe_distance": ["2"], "retract_before_wipe": ["70%"], "wipe_speed": "80%",
+                "travel_speed": "500", "z_hop_types": ["Auto Lift"], "travel_slope": ["3"],
+                "retract_lift_below": ["269"], "retract_when_changing_layer": ["1"],
+                "printable_area": ["0.5x1", "270.5x1", "270.5x271", "0.5x271"],
+                "slow_down_for_layer_cooling": ["0", "1"], "slow_down_min_speed": ["40"],
+                "reduce_fan_stop_start_freq": ["1"], "auxiliary_fan": "1",
+                "additional_cooling_fan_speed": ["50", "25"], "resolution": "0.012"}"#,
+        );
+        assert_eq!(settings.seam, Seam::AlignedBack);
+        assert!((settings.seam_gap - 0.06).abs() < 1e-12);
+        assert_eq!(
+            (
+                settings.wipe,
+                settings.wipe_distance,
+                settings.retract_before_wipe
+            ),
+            (true, 2.0, 0.7)
+        );
+        // Wiping at the speed of the line just printed, unless told otherwise.
+        assert_eq!(settings.wipe_speed, None);
+        assert_eq!(
+            read(r#"{"role_based_wipe_speed": "0", "wipe_speed": "80%", "travel_speed": "500"}"#)
+                .wipe_speed,
+            Some(400.0)
+        );
+        assert_eq!(
+            (settings.lift, settings.retract_lift_below),
+            (Lift::Auto, 269.0)
+        );
+        assert!(settings.retract_when_changing_layer);
+        assert_eq!(settings.bed, Some([0.5, 1.0, 270.5, 271.0]));
+        assert_eq!(
+            (
+                settings.slow_down_for_layer_cooling,
+                settings.slow_down_min_speed
+            ),
+            (false, 40.0)
+        );
+        assert!(settings.reduce_fan_stop_start_freq && settings.auxiliary_fan);
+        assert_eq!(settings.additional_cooling_fan_speed, 50.0);
+        assert!(
+            settings.unsupported.is_empty(),
+            "{:?}",
+            settings.unsupported
+        );
+
+        let expand = |template: &str| edge_template::expand(template, &settings.variables).unwrap();
+        assert_eq!(
+            expand("{print_bed_max[0]} {print_bed_size[1]}"),
+            "270.5 270"
+        );
+        let bambu = read(
+            r#"{"outer_wall_speed": "200", "layer_height": "0.2", "nozzle_diameter": ["0.4"],
+                "outer_wall_line_width": "0.42", "filament_max_volumetric_speed": ["12"],
+                "chamber_temperature": ["0", "45"]}"#,
+        );
+        let expand = |template: &str| edge_template::expand(template, &bambu.variables).unwrap();
+        // 200 mm/s of a 0.42 x 0.2 line is more than the filament melts.
+        assert_eq!(expand("{outer_wall_volumetric_speed}"), "12");
+        assert_eq!(expand("{overall_chamber_temperature}"), "45");
+        assert_eq!(expand("{chamber_cooling_mode}"), "0");
+        let slots = read(
+            r#"{"filament_type": ["PLA", "PLA", "PETG"], "filament_volume_type": ["standard", "high_flow"]}"#,
+        );
+        assert_eq!(
+            edge_template::expand("{filament_volume_type_list}", &slots.variables).unwrap(),
+            "standard,high_flow,standard"
+        );
+        let pla = read(r#"{"temperature_vitrification": ["45", "100"]}"#);
+        assert_eq!(
+            edge_template::expand("{chamber_cooling_mode}", &pla.variables).unwrap(),
+            "2"
+        );
+    }
+
+    #[test]
     fn settings_not_honoured_are_listed_not_hidden() {
         let read =
             |json: &str| PrintSettings::from_settings(&Settings::from_json(json).unwrap()).unwrap();
         let settings = read(
-            r#"{"wall_sequence": "inner-outer-inner wall", "z_hop_types": ["Auto Lift"], "curr_bed_type": "Glass"}"#,
+            r#"{"wall_sequence": "inner-outer-inner wall", "seam_position": "random", "curr_bed_type": "Glass"}"#,
         );
         assert_eq!(settings.wall_order, WallOrder::InnerOuter);
         assert_eq!(settings.bed_temperature, None);
