@@ -2,7 +2,7 @@ use edge_config::{ConfigError, FloatOrPercent, Settings};
 use edge_extrusion::{Flow, FlowError, LineWidths};
 use edge_geom::scaled;
 
-use crate::{FillParams, Shells};
+use crate::{Anchoring, FillParams, Shells};
 
 /// Sparse fill patterns this engine can lay.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -36,6 +36,10 @@ pub struct InfillSettings {
     pub internal_solid_infill_line_width: FloatOrPercent,
     pub top_surface_line_width: FloatOrPercent,
     pub outer_wall_line_width: FloatOrPercent,
+    pub inner_wall_line_width: FloatOrPercent,
+    /// How many walls there are, which sets how far a surface reaches
+    /// into solid fill to anchor.
+    pub wall_loops: usize,
     pub widths: LineWidths,
     /// Fill over air: its plastic as a share of a normal line's, whether
     /// it is a round thread instead of a flattened line, and how closely
@@ -66,6 +70,8 @@ impl Default for InfillSettings {
             internal_solid_infill_line_width: unset,
             top_surface_line_width: unset,
             outer_wall_line_width: unset,
+            inner_wall_line_width: unset,
+            wall_loops: 2,
             widths: LineWidths {
                 line_width: unset,
                 initial_layer_line_width: unset,
@@ -153,6 +159,8 @@ impl InfillSettings {
             internal_solid_infill_line_width: width("internal_solid_infill_line_width")?,
             top_surface_line_width: width("top_surface_line_width")?,
             outer_wall_line_width: width("outer_wall_line_width")?,
+            inner_wall_line_width: width("inner_wall_line_width")?,
+            wall_loops: count("wall_loops", defaults.wall_loops)?,
             widths: LineWidths {
                 line_width: width("line_width")?,
                 initial_layer_line_width: width("initial_layer_line_width")?,
@@ -192,6 +200,41 @@ impl InfillSettings {
             sparse_density: self.sparse_infill_density_percent / 100.0,
             minimum_sparse_area: self.minimum_sparse_infill_area,
             opening: scaled(outer.width / 10.0),
+        })
+    }
+
+    /// How far outward-facing surfaces reach into the fill beside them
+    /// on layers of this height (`LayerRegion::process_external_surfaces`).
+    pub fn anchoring(&self, layer_height: f64) -> Result<Anchoring, FlowError> {
+        let nozzle = self.widths.nozzle_diameter;
+        let flow = |width| {
+            Flow::from_widths(
+                &self.widths,
+                width,
+                Flow::auto_width(nozzle),
+                layer_height,
+                false,
+            )
+        };
+        let (outer, inner) = (
+            flow(self.outer_wall_line_width)?,
+            flow(self.inner_wall_line_width)?,
+        );
+        let solid = flow(self.internal_solid_infill_line_width)?;
+        // With no walls there is nothing to reach past.
+        let (shell, least) = if self.wall_loops > 0 {
+            (
+                0.5 * outer.width + outer.spacing + inner.spacing * (self.wall_loops - 1) as f64,
+                inner.spacing,
+            )
+        } else {
+            (1e-4, 1e-4)
+        };
+        Ok(Anchoring {
+            into_sparse: scaled(least),
+            into_solid: scaled(shell * std::f64::consts::SQRT_2),
+            closing: scaled(0.55 * 0.65 * 1.05 * solid.spacing),
+            minimum_sparse_area: self.minimum_sparse_infill_area,
         })
     }
 

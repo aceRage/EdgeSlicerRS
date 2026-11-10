@@ -698,6 +698,9 @@ fn slice(args: SliceArgs) -> Result<(), Failure> {
             &inside_walls,
             &infill.shells(layer_height)?,
         )?;
+        // Bridges, bottoms and tops reach into the fill beside them, and
+        // each bridge is turned to run from support to support.
+        let surfaces = edge_infill::anchor(&surfaces, &infill.anchoring(layer_height)?)?;
         // Solid over sparse fill is laid as a bridge across it.
         let surfaces = edge_infill::bridge_over_infill(
             &surfaces,

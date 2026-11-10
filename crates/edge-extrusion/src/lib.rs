@@ -96,9 +96,11 @@ impl Flow {
 
     /// This line as it is laid over air (`LayerRegion::bridging_flow`).
     /// `thick` is the round thread of the nozzle's own bore, `ratio` times
-    /// its section; otherwise the line keeps its height and spacing and is
-    /// given `ratio` times its plastic by changing its width
-    /// (`Flow::with_cross_section`).
+    /// its section. Otherwise the line is given `ratio` times its plastic
+    /// (`Flow::with_cross_section`): less by narrowing it, its spacing
+    /// following its width, or by making it a round thread once it would
+    /// be narrower than it is tall; more by letting it stand taller once
+    /// it fills its spacing.
     pub fn bridging(&self, ratio: f64, thick: bool) -> Self {
         if thick {
             let diameter = ratio.max(0.0).sqrt() * self.nozzle_diameter;
@@ -111,19 +113,36 @@ impl Flow {
         }
         let area = self.mm3_per_mm();
         let wanted = area * ratio;
-        if wanted > area && wanted / self.spacing > self.height {
-            // More than fills the spacing: the line stands taller.
-            let height = wanted / self.spacing;
+        if wanted > area + 1e-9 {
+            if wanted / self.height > self.spacing {
+                let height = wanted / self.spacing;
+                return Self {
+                    width: self.spacing + height * (1.0 - 0.25 * PI),
+                    height,
+                    ..*self
+                };
+            }
+            return *self;
+        }
+        if wanted < area - 1e-9 {
+            let width = self.width - (area - wanted) / self.height;
+            if width > self.height {
+                return Self {
+                    width,
+                    spacing: width - self.height * (1.0 - 0.25 * PI),
+                    ..*self
+                };
+            }
+            // As the reference has it, which takes the thread's radius
+            // for its width.
+            let thread = (wanted / PI).sqrt();
             return Self {
-                width: self.spacing + height * (1.0 - 0.25 * PI),
-                height,
+                width: thread,
+                height: thread,
                 ..*self
             };
         }
-        Self {
-            width: (self.width - (area - wanted) / self.height).max(self.height),
-            ..*self
-        }
+        *self
     }
 
     /// Plastic laid down per mm of travel, in mm³.

@@ -78,12 +78,13 @@ pub fn fill(
                     LINES_INSET,
                     &[params.solid_angle + turned],
                 ),
+                // From support to support where that is known.
                 SurfaceKind::Bridge => (
                     params.bridge,
                     Role::BridgeInfill,
                     params.bridge_spacing,
                     LINES_INSET,
-                    &[params.solid_angle + turned],
+                    &[surface.angle.unwrap_or(params.solid_angle + turned)],
                 ),
                 // Across the sparse lines beneath: for a grid, along its
                 // other set; for plain lines, square to the layer below's.
@@ -152,6 +153,7 @@ mod tests {
                 contour: Polygon { points },
                 holes: Vec::new(),
             },
+            angle: None,
         }
     }
 
@@ -272,8 +274,12 @@ mod tests {
     #[test]
     fn bridges_are_laid_in_their_own_flow() {
         let base = params(Pattern::Grid, 0.2);
-        // Over air: four fifths of the plastic in lines a quarter further apart.
+        // Over air: four fifths of the plastic, by a narrower line whose
+        // spacing follows its width; at four fifths the density, that
+        // comes to the same number of lines as the solid fill has.
         let thin = base.solid.bridging(0.8, false);
+        assert!(thin.width < base.solid.width && thin.spacing < base.solid.spacing);
+        assert!((thin.mm3_per_mm() / base.solid.mm3_per_mm() - 0.8).abs() < 1e-9);
         let over_air = FillParams {
             bridge: thin,
             bridge_spacing: thin.spacing / 0.8,
@@ -285,10 +291,21 @@ mod tests {
                 .iter()
                 .all(|line| line.role == Role::BridgeInfill && line.flow == thin)
         );
-        assert!((thin.mm3_per_mm() / base.solid.mm3_per_mm() - 0.8).abs() < 1e-9);
         let plain = fill(&[surface(SurfaceKind::InternalSolid, 20.0)], 0, &base).unwrap();
         let ratio = length(&lines) / length(&plain);
-        assert!((ratio - 0.8).abs() < 0.03, "{ratio}");
+        assert!((ratio - 1.0).abs() < 0.03, "{ratio}");
+        // A bridge with a direction of its own is laid along it.
+        let turned = Surface {
+            angle: Some(0.0),
+            ..surface(SurfaceKind::Bridge, 20.0)
+        };
+        let lines = fill(&[turned], 0, &over_air).unwrap();
+        let longest = lines
+            .iter()
+            .flat_map(|line| line.points.windows(2))
+            .max_by_key(|pair| (pair[1].x - pair[0].x).abs() + (pair[1].y - pair[0].y).abs())
+            .unwrap();
+        assert_eq!(longest[0].y, longest[1].y, "along x");
 
         // Over sparse fill: round threads of the nozzle's bore, along the
         // grid's own direction so they cross its other lines.
