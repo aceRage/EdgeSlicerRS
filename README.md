@@ -288,10 +288,11 @@ provided stops the export with the variable's name.
   Klipper reads only the second.
 
 Walls do not yet have thin-wall detection (the U1 profiles leave it off),
-extra perimeters over overhangs, or a single wall under every top surface
-(only the last layer gets one, where the reference thins the walls under
-each top surface and fills the room with top fill: the largest difference
-left on flat parts with lettering). Arachne (variable width) is not
+or extra perimeters over overhangs. A top surface below the last layer
+keeps only its outer wall, as the reference's `only_one_wall_top` does with
+`top_surface_expansion` at zero (PerimeterGenerator.cpp
+`split_top_surfaces`); the other way of doing it, with an expansion set, is
+not ported. Arachne (variable width) is not
 started. Overhangs are measured as the reference measures them but probed
 at fixed steps, so a wall's speed changes at slightly different places.
 Infill is not all a port yet: solid lines are joined along
@@ -316,8 +317,7 @@ moved layer by layer, where the reference follows every place a branch
 could be and picks afterwards; a leaning branch is a circle on each layer,
 not an oval; and branches are not smoothed.
 
-Next: thumbnails, one wall under top
-surfaces, and painted colours.
+Next: thumbnails and painted colours.
 
 ## Comparing with the reference
 
@@ -412,8 +412,9 @@ to 30% less plastic, having no ribs. Plates 2 and 3 set the order of
 filaments on the first layer (`first_layer_print_sequence`), which this
 engine does not follow, so it starts with a different tool there. All three of its plates slice. It is a flat part
 3 mm thick covered in lettering, and it is where this engine is furthest
-from the reference: 7 to 10% less filament, most of it top surface the
-reference lays where it thins the walls (23% less top surface).
+from the reference: 6 to 10% less filament on plates 1 and 2. Top surface
+is within 1.3% now that walls are thinned under it; what is left is the
+prime tower (no ribs) and internal bridges.
 
 Top and bottom surfaces now come to the reference's length within 0.1%,
 at the same pitch and width, on the cube, the deck, the tower and the
@@ -455,8 +456,7 @@ last layer, fill lines joined along the walls, seam gaps, wipe, ramped and
 spiral lifts, and plate placement (outer walls land where the reference
 puts them on all three plates of `mcbrim_test.3mf`), the prime tower, gap
 fill between walls, overhang walls with their speeds and fan, and
-internal bridges. Still different: top surfaces below the last layer keep
-all their walls.
+internal bridges, and one wall under top surfaces below the last layer.
 
 ## Licence
 

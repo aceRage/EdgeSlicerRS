@@ -29,6 +29,11 @@ pub struct WallSettings {
     pub only_one_wall_top: bool,
     /// Print the first layer with a single wall.
     pub only_one_wall_first_layer: bool,
+    /// A top surface narrower than this keeps all its walls, in mm or as
+    /// a share of the inner wall's width.
+    pub min_width_top_surface: FloatOrPercent,
+    /// The sparse infill's line width; zero is the nozzle's own.
+    pub sparse_infill_line_width: FloatOrPercent,
     /// The one-wall options only apply where there is a solid shell behind
     /// the wall, as in the reference.
     pub top_shell_layers: usize,
@@ -57,6 +62,8 @@ impl Default for WallSettings {
             enable_arc_fitting: false,
             only_one_wall_top: false,
             only_one_wall_first_layer: false,
+            min_width_top_surface: FloatOrPercent::Percent(300.0),
+            sparse_infill_line_width: FloatOrPercent::Value(0.0),
             top_shell_layers: 4,
             bottom_shell_layers: 3,
             gap_infill_speed: 30.0,
@@ -122,6 +129,12 @@ impl WallSettings {
             only_one_wall_first_layer: settings
                 .flag("only_one_wall_first_layer")?
                 .unwrap_or(defaults.only_one_wall_first_layer),
+            min_width_top_surface: settings
+                .float_or_percent("min_width_top_surface")?
+                .unwrap_or(defaults.min_width_top_surface),
+            sparse_infill_line_width: settings
+                .float_or_percent("sparse_infill_line_width")?
+                .unwrap_or(defaults.sparse_infill_line_width),
             top_shell_layers: count("top_shell_layers", defaults.top_shell_layers)?,
             bottom_shell_layers: count("bottom_shell_layers", defaults.bottom_shell_layers)?,
             gap_infill_speed: settings
@@ -136,9 +149,9 @@ impl WallSettings {
 
     /// What the generator needs for layer `index` of `layer_count`, which
     /// adds to [`Self::params`] the rules that depend on where a layer is.
-    /// Only the object's very last layer gets the single top wall; top
-    /// surfaces lower down keep all their walls, where the reference thins
-    /// the walls over each of them (`split_top_surfaces`).
+    /// The object's very last layer gets the single top wall all over; a
+    /// layer below it is told how to thin the walls over whatever top
+    /// surface it has ([`crate::OneWallTop`]).
     pub fn params_at(
         &self,
         layer_height: f64,
@@ -158,6 +171,24 @@ impl WallSettings {
         // `layer_id == 0` or there are no slices above).
         if index == 0 || index + 1 == layer_count {
             params.infill_overlap_percent = self.top_bottom_infill_wall_overlap_percent;
+        }
+        // Below the last layer a top surface keeps only its outer wall,
+        // where there is a top shell to make one of it.
+        if self.only_one_wall_top && self.top_shell_layers > 0 && index + 1 < layer_count {
+            let infill = self.sparse_infill_line_width.resolve(self.nozzle_diameter);
+            let infill = if infill > 0.0 {
+                infill
+            } else {
+                Flow::auto_width(self.nozzle_diameter)
+            };
+            params.one_wall_top = Some(crate::OneWallTop {
+                min_width: scaled(self.min_width_top_surface.resolve(params.inner.width)),
+                infill_width: scaled(infill),
+                // libslic3r.h `BRIDGE_INFILL_MARGIN`, 1 mm on a 0.4 mm nozzle.
+                bridge_margin: scaled(1f64.min(self.nozzle_diameter / 0.4)),
+                wall_loops: self.wall_loops,
+                overlap_percent: self.top_bottom_infill_wall_overlap_percent,
+            });
         }
         Ok(params)
     }
@@ -185,6 +216,7 @@ impl WallSettings {
                 flow: solid_infill,
                 shortest: scaled(self.filter_out_gap_fill),
             }),
+            one_wall_top: None,
         })
     }
 
@@ -279,6 +311,42 @@ mod tests {
             unset.params_at(0.2, 0, 10).unwrap().infill_overlap_percent,
             25.0
         );
+    }
+
+    #[test]
+    fn layers_below_the_last_are_told_how_to_thin_walls_under_a_top() {
+        let settings = WallSettings::from_settings(
+            &Settings::from_json(
+                r#"{"only_one_wall_top": "1", "top_shell_layers": "4", "wall_loops": "3",
+                    "min_width_top_surface": "200%", "inner_wall_line_width": "0.45",
+                    "sparse_infill_line_width": "0.5", "nozzle_diameter": ["0.4"],
+                    "top_bottom_infill_wall_overlap": "25%"}"#,
+            )
+            .unwrap(),
+        )
+        .unwrap();
+        let top = settings
+            .params_at(0.2, 3, 10)
+            .unwrap()
+            .one_wall_top
+            .unwrap();
+        assert_eq!(top.min_width, scaled(0.9));
+        assert_eq!(top.infill_width, scaled(0.5));
+        assert_eq!((top.wall_loops, top.overlap_percent), (3, 25.0));
+        // The last layer is one wall all over, with nothing to split.
+        let last = settings.params_at(0.2, 9, 10).unwrap();
+        assert_eq!((last.wall_loops, last.one_wall_top), (1, None));
+        // Off, or with no top shell to make of it, nothing is thinned.
+        let off = WallSettings {
+            only_one_wall_top: false,
+            ..settings
+        };
+        assert_eq!(off.params_at(0.2, 3, 10).unwrap().one_wall_top, None);
+        let no_shell = WallSettings {
+            top_shell_layers: 0,
+            ..settings
+        };
+        assert_eq!(no_shell.params_at(0.2, 3, 10).unwrap().one_wall_top, None);
     }
 
     #[test]

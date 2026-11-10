@@ -220,6 +220,17 @@ pub fn slice(job: Job, watch: &dyn Watcher) -> Result<Sliced, Failure> {
         }
     };
 
+    // The part's outlines as modelled: what supports, brim and skirt stand
+    // off, and what neighbouring layers are compared by, so a first layer
+    // shrunk against elephant foot does not count as an overhang above it.
+    let outlines: Vec<&[ExPolygon]> = (0..layers.len())
+        .map(|index| {
+            modelled
+                .get(index)
+                .map_or(layers[index].regions.as_slice(), Vec::as_slice)
+        })
+        .collect();
+
     step(watch, Stage::Walls)?;
     let started = Instant::now();
     let walls_by: Vec<Vec<Perimeters>> = (0..used.len())
@@ -235,24 +246,19 @@ pub fn slice(job: Job, watch: &dyn Watcher) -> Result<Sliced, Failure> {
                     let params = walls
                         .params_at(height, index, layers.len())
                         .map_err(|e| e.to_string())?;
-                    edge_perimeter::classic(share(filament, index), &params)
+                    // A top surface is told from the part as a whole, on
+                    // the layer above and the one below.
+                    let around = outlines.get(index + 1).map(|upper| edge_perimeter::Around {
+                        upper,
+                        lower: index.checked_sub(1).map(|below| outlines[below]),
+                    });
+                    edge_perimeter::classic_between(share(filament, index), &params, around)
                         .map_err(|e| e.to_string())
                 })
                 .collect::<Result<Vec<Perimeters>, String>>()
         })
         .collect::<Result<_, String>>()?;
     let perimeter_time = started.elapsed();
-
-    // The part's outlines as modelled: what supports, brim and skirt stand
-    // off, and what neighbouring layers are compared by, so a first layer
-    // shrunk against elephant foot does not count as an overhang above it.
-    let outlines: Vec<&[ExPolygon]> = (0..layers.len())
-        .map(|index| {
-            modelled
-                .get(index)
-                .map_or(layers[index].regions.as_slice(), Vec::as_slice)
-        })
-        .collect();
 
     step(watch, Stage::Supports)?;
     let started = Instant::now();
