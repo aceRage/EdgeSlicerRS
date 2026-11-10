@@ -53,6 +53,13 @@ pub struct InfillSettings {
     /// applied to the plastic when the G-code is written.
     pub thick_internal_bridges: bool,
     pub internal_bridge_density: f64,
+    /// Whether top surface, bottom surface and internal solid lines are
+    /// joined end to end (`top_surface_pattern`, `bottom_surface_pattern`,
+    /// `internal_solid_infill_pattern`): `monotonicline` leaves them
+    /// separate, `monotonic` and `rectilinear` join them.
+    pub top_joined: bool,
+    pub bottom_joined: bool,
+    pub solid_joined: bool,
     /// Settings present in the input that are not honoured, each with
     /// what is done instead.
     pub unsupported: Vec<String>,
@@ -87,6 +94,9 @@ impl Default for InfillSettings {
             bridge_density: 1.0,
             thick_internal_bridges: true,
             internal_bridge_density: 1.0,
+            top_joined: false,
+            bottom_joined: true,
+            solid_joined: true,
             unsupported: Vec::new(),
         }
     }
@@ -158,6 +168,26 @@ impl InfillSettings {
                 unsupported.push(format!("{key} \"{value}\": {instead}"));
             }
         }
+        // Straight lines are all this engine lays on a surface; any other
+        // pattern is laid as joined lines and said so.
+        let mut joined = |key: &str, default: bool| match settings
+            .texts(key)
+            .and_then(|pattern| pattern.first())
+            .map(String::as_str)
+        {
+            None => default,
+            Some("monotonicline") => false,
+            Some("monotonic" | "rectilinear") => true,
+            Some(other) => {
+                unsupported.push(format!(
+                    "{key} \"{other}\": laid as straight lines joined at their ends"
+                ));
+                true
+            }
+        };
+        let top_joined = joined("top_surface_pattern", defaults.top_joined);
+        let bottom_joined = joined("bottom_surface_pattern", defaults.bottom_joined);
+        let solid_joined = joined("internal_solid_infill_pattern", defaults.solid_joined);
         let density = match settings.float_or_percent("sparse_infill_density")? {
             // A percentage whether or not the sign is written.
             Some(FloatOrPercent::Percent(percent) | FloatOrPercent::Value(percent)) => percent,
@@ -206,6 +236,9 @@ impl InfillSettings {
                 "internal_bridge_density",
                 defaults.internal_bridge_density,
             )?,
+            top_joined,
+            bottom_joined,
+            solid_joined,
             unsupported,
         })
     }
@@ -290,6 +323,9 @@ impl InfillSettings {
             sparse_angle: self.infill_direction.to_radians(),
             solid_angle: self.solid_infill_direction.to_radians(),
             sparse_link_max: self.infill_anchor_max.resolve(sparse.width).max(0.0),
+            top_joined: self.top_joined,
+            bottom_joined: self.bottom_joined,
+            solid_joined: self.solid_joined,
         })
     }
 }
@@ -312,6 +348,31 @@ mod tests {
             (shells.top_layers, shells.bottom_layers, shells.opening),
             (4, 3, 45_000)
         );
+    }
+
+    #[test]
+    fn surface_patterns_say_whether_lines_are_joined() {
+        let read = |json: &str| InfillSettings::from_settings(&Settings::from_json(json).unwrap());
+        // Absent, the reference's defaults: separate on top, joined below.
+        let unset = read("{}").unwrap();
+        assert_eq!(
+            (unset.top_joined, unset.bottom_joined, unset.solid_joined),
+            (false, true, true)
+        );
+        let set = read(
+            r#"{"top_surface_pattern": "monotonic", "bottom_surface_pattern": "monotonicline",
+                "internal_solid_infill_pattern": "rectilinear"}"#,
+        )
+        .unwrap();
+        assert_eq!(
+            (set.top_joined, set.bottom_joined, set.solid_joined),
+            (true, false, true)
+        );
+        assert!(set.unsupported.is_empty());
+        // A pattern not laid here is said, and laid as joined lines.
+        let other = read(r#"{"top_surface_pattern": "concentric"}"#).unwrap();
+        assert!(other.top_joined);
+        assert!(other.unsupported[0].starts_with("top_surface_pattern \"concentric\""));
     }
 
     #[test]

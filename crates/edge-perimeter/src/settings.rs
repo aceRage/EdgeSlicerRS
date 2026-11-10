@@ -19,6 +19,9 @@ pub struct WallSettings {
     pub initial_layer_line_width: FloatOrPercent,
     pub nozzle_diameter: f64,
     pub infill_wall_overlap_percent: f64,
+    /// The same on the first layer and the last, where the fill is a
+    /// bottom or a top surface (`top_bottom_infill_wall_overlap`).
+    pub top_bottom_infill_wall_overlap_percent: f64,
     /// Outline detail in mm below which vertices are dropped.
     pub resolution: f64,
     pub enable_arc_fitting: bool,
@@ -49,6 +52,7 @@ impl Default for WallSettings {
             initial_layer_line_width: unset,
             nozzle_diameter: 0.4,
             infill_wall_overlap_percent: 15.0,
+            top_bottom_infill_wall_overlap_percent: 25.0,
             resolution: 0.01,
             enable_arc_fitting: false,
             only_one_wall_top: false,
@@ -75,6 +79,10 @@ impl WallSettings {
             // The setting is a percentage whether or not the sign is written.
             Some(FloatOrPercent::Percent(percent) | FloatOrPercent::Value(percent)) => percent,
             None => defaults.infill_wall_overlap_percent,
+        };
+        let outside_overlap = match settings.float_or_percent("top_bottom_infill_wall_overlap")? {
+            Some(FloatOrPercent::Percent(percent) | FloatOrPercent::Value(percent)) => percent,
+            None => defaults.top_bottom_infill_wall_overlap_percent,
         };
         let count = |key: &str, default: usize| -> Result<usize, ConfigError> {
             settings.integer(key)?.map_or(Ok(default), |found| {
@@ -103,6 +111,7 @@ impl WallSettings {
                 .and_then(|nozzles| nozzles.first().copied().flatten())
                 .unwrap_or(defaults.nozzle_diameter),
             infill_wall_overlap_percent: overlap,
+            top_bottom_infill_wall_overlap_percent: outside_overlap,
             resolution: settings.float("resolution")?.unwrap_or(defaults.resolution),
             enable_arc_fitting: settings
                 .flag("enable_arc_fitting")?
@@ -143,6 +152,12 @@ impl WallSettings {
             || (index + 1 == layer_count && self.only_one_wall_top && self.top_shell_layers > 0);
         if one_wall {
             params.wall_loops = params.wall_loops.min(1);
+        }
+        // The first layer and the last overlap their walls by the amount
+        // set for top and bottom surfaces (PerimeterGenerator.cpp, where
+        // `layer_id == 0` or there are no slices above).
+        if index == 0 || index + 1 == layer_count {
+            params.infill_overlap_percent = self.top_bottom_infill_wall_overlap_percent;
         }
         Ok(params)
     }
@@ -237,6 +252,33 @@ mod tests {
             ..WallSettings::default()
         };
         assert!((auto.params(0.3, false).unwrap().outer.width - 0.9).abs() < 1e-12);
+    }
+
+    #[test]
+    fn end_layers_overlap_their_walls_by_the_surface_amount() {
+        let settings = WallSettings::from_settings(
+            &Settings::from_json(
+                r#"{"infill_wall_overlap": "15%", "top_bottom_infill_wall_overlap": "30%"}"#,
+            )
+            .unwrap(),
+        )
+        .unwrap();
+        let overlap = |index| {
+            settings
+                .params_at(0.2, index, 10)
+                .unwrap()
+                .infill_overlap_percent
+        };
+        assert_eq!(
+            [overlap(0), overlap(1), overlap(8), overlap(9)],
+            [30.0, 15.0, 15.0, 30.0]
+        );
+        // Left unset it is the reference's quarter.
+        let unset = WallSettings::default();
+        assert_eq!(
+            unset.params_at(0.2, 0, 10).unwrap().infill_overlap_percent,
+            25.0
+        );
     }
 
     #[test]
