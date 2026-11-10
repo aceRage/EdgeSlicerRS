@@ -358,6 +358,33 @@ fn report(project: &Path, times: &Times, reference: &Print, ours: &Print) -> Str
         .unwrap();
     }
 
+    // The machine's start G-code should come out the same from both: it is
+    // the profile's template, and only the filling-in is ours.
+    if !reference.start_block.is_empty() || !ours.start_block.is_empty() {
+        let (r, o) = (&reference.start_block, &ours.start_block);
+        let same = r.iter().zip(o).take_while(|(a, b)| a == b).count();
+        if same == r.len() && same == o.len() {
+            writeln!(out, "\nstart G-code: all {same} lines identical").unwrap();
+        } else {
+            writeln!(
+                out,
+                "\nstart G-code: first {same} lines identical, then (of {} and {} lines)",
+                r.len(),
+                o.len()
+            )
+            .unwrap();
+            for index in same..(same + 6).min(r.len().max(o.len())) {
+                let line = |block: &[String]| {
+                    block
+                        .get(index)
+                        .map_or("(nothing)", String::as_str)
+                        .to_owned()
+                };
+                writeln!(out, "  reference: {}\n  here:      {}", line(r), line(o)).unwrap();
+            }
+        }
+    }
+
     // Layer by layer, where the two prints have the same layers.
     let pairs: Vec<(usize, &Layer, &Layer)> = reference
         .layers

@@ -80,8 +80,9 @@ struct SliceArgs {
     /// Layer index for --svg; defaults to the middle layer.
     #[arg(long, requires = "svg")]
     svg_layer: Option<usize>,
-    /// Write the print as G-code to this file. Not printer-ready yet: the
-    /// machine's start and end G-code is replaced by a generic preamble.
+    /// Write the print as G-code to this file. With a printer profile (from
+    /// the 3MF or --machine) its start and end G-code is used; without one a
+    /// generic preamble is written and the file is only good for viewing.
     #[arg(long)]
     gcode: Option<PathBuf>,
 }
@@ -607,9 +608,15 @@ fn slice(args: SliceArgs) -> Result<(), Failure> {
             summary.retractions,
             summary.seconds / 60.0,
         );
-        println!(
-            "note: this G-code is not printer-ready; machine start and end G-code is not expanded yet"
-        );
+        if print.machine_start_gcode.is_some() {
+            println!(
+                "note: start, end and layer-change G-code come from the printer profile; not yet run on a printer"
+            );
+        } else {
+            println!(
+                "note: no printer profile, so this G-code has a generic preamble and is not printer-ready"
+            );
+        }
         for note in &print.unsupported {
             println!("note: {note}");
         }

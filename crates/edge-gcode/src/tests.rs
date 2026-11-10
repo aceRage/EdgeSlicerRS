@@ -146,7 +146,8 @@ fn long_travels_retract_and_lift_and_short_ones_do_not() {
     let near = [wall(0.0, 0.0, 10.0, 0), wall(-11.5, 0.0, 10.0, 0)];
     let (text, summary) = print(&one_layer(&near, &[0..1, 1..2], &[]), &settings);
     assert_eq!(summary.retractions, 1);
-    assert!(!text.contains("Z0.600"));
+    // The nozzle rises once, at the start of the layer, and not again.
+    assert_eq!(text.matches("Z0.600").count(), 1);
 
     let none = PrintSettings {
         retraction_length: 0.0,
@@ -279,12 +280,15 @@ fn temperatures_change_after_the_first_layer() {
             "M104 S220",
             "M190 S60",
             "M109 S220",
-            "M83",
+            "M83 ; use relative distances for extrusion",
+            "M106 S0",
             "M104 S210",
             "M140 S55",
+            "M106 S255",
+            "M106 S0",
             "M104 S0",
             "M140 S0",
-            "M84"
+            "M84",
         ]
     );
     let grams = summary.filament_mm3 / 1000.0 * 1.24;
@@ -351,7 +355,8 @@ fn moves_inside_the_infill_area_can_skip_retraction() {
     };
     let (text, summary) = print(&layer, &reduced);
     assert_eq!(summary.retractions, 1);
-    assert!(!text.contains("Z0.600"));
+    // The nozzle rises once, at the start of the layer, and not again.
+    assert_eq!(text.matches("Z0.600").count(), 1);
 
     // The same move with a hole in the way retracts as usual.
     let mut gap = Polygon {
@@ -369,4 +374,229 @@ fn moves_inside_the_infill_area_can_skip_retraction() {
         ..layer[0]
     }];
     assert_eq!(print(&layer, &reduced).1.retractions, 2);
+}
+
+/// A wall and one fill line on each of `count` layers, 0.2 mm apart.
+fn printed(count: usize, settings: &PrintSettings) -> String {
+    let loops = [wall(0.0, 0.0, 10.0, 0)];
+    let fill = [line((2.0, 2.0), (8.0, 2.0), Role::SparseInfill)];
+    let layers: Vec<Layer<'_>> = (0..count)
+        .map(|index| Layer {
+            z: 0.2 * (index + 1) as f64,
+            height: 0.2,
+            loops: &loops,
+            islands: &[0..1],
+            paths: &fill,
+            infill_area: &[],
+        })
+        .collect();
+    print(&layers, settings).0
+}
+
+fn profile(templates: &[(&str, &str)]) -> PrintSettings {
+    let mut settings = PrintSettings::default();
+    for (name, text) in templates {
+        let slot = match *name {
+            "start" => &mut settings.machine_start_gcode,
+            "end" => &mut settings.machine_end_gcode,
+            "before" => &mut settings.before_layer_change_gcode,
+            "after" => &mut settings.layer_change_gcode,
+            "filament_start" => &mut settings.filament_start_gcode,
+            _ => &mut settings.filament_end_gcode,
+        };
+        *slot = Some((*text).to_owned());
+    }
+    settings
+}
+
+#[test]
+fn the_profiles_templates_replace_the_generic_preamble() {
+    let settings = profile(&[
+        (
+            "start",
+            "PRINT_START TOTAL={total_layer_count}\nG1 X185 E15 F360",
+        ),
+        ("filament_start", "; filament start"),
+        ("before", ";BEFORE [layer_z]\nG92 E0"),
+        ("after", ";AFTER {layer_num+1} of {total_layer_count}"),
+        ("filament_end", "; filament end\n"),
+        (
+            "end",
+            "{if max_layer_z > 0.5}G1 Z{max_layer_z+2}{endif}\nPRINT_END",
+        ),
+    ]);
+    let text = printed(3, &settings);
+    let start: Vec<&str> = text
+        .lines()
+        .take_while(|line| *line != ";LAYER_CHANGE")
+        .collect();
+    assert_eq!(
+        start[1..],
+        [
+            ";TYPE:Custom",
+            "PRINT_START TOTAL=3",
+            "G1 X185 E15 F360",
+            "G90",
+            "G21",
+            "M83 ; use relative distances for extrusion",
+            "; filament start",
+            "T0",
+        ]
+    );
+    assert!(!text.contains("NOT PRINTER-READY") && !text.contains("G28"));
+
+    // Each layer: the profile's own lines, a retraction between them, then the rise.
+    let second: Vec<&str> = text
+        .split(";LAYER_CHANGE\n")
+        .nth(2)
+        .unwrap()
+        .lines()
+        .take(7)
+        .collect();
+    assert_eq!(
+        second[..4],
+        [";Z:0.400", ";HEIGHT:0.200", ";BEFORE 0.4", "G92 E0"]
+    );
+    assert_eq!(second[4], "G1 E-0.80000 F1800");
+    assert_eq!(second[5], ";AFTER 2 of 3");
+    let end: Vec<&str> = text
+        .lines()
+        .rev()
+        .skip_while(|line| line.starts_with("; "))
+        .take(3)
+        .collect();
+    // The top layer is at 0.6 mm, so the end G-code lifts to 2.6.
+    assert_eq!((end[0], end[2]), ("PRINT_END", "; filament end"));
+    let lift: f64 = end[1].strip_prefix("G1 Z").unwrap().parse().unwrap();
+    assert!((lift - 2.6).abs() < 1e-9, "{}", end[1]);
+}
+
+#[test]
+fn start_gcode_leaves_the_nozzle_primed_so_the_first_move_retracts() {
+    let with = printed(1, &profile(&[("start", "PRINT_START")]));
+    let after_change: Vec<&str> = with
+        .split(";HEIGHT:0.200\n")
+        .nth(1)
+        .unwrap()
+        .lines()
+        .take(4)
+        .collect();
+    // Retract, rise clear of the bed, travel, and only then come down.
+    assert_eq!(after_change[0], "G1 E-0.80000 F1800");
+    assert_eq!(after_change[2], "G1 Z0.600 F7200");
+    assert!(after_change[3].starts_with("G1 X"));
+    // With no start G-code nothing has been extruded yet, so nothing is retracted.
+    let without = printed(1, &PrintSettings::default());
+    assert!(!without.split(";TYPE:").next().unwrap().contains("E-"));
+}
+
+#[test]
+fn a_bad_template_names_the_setting_and_line() {
+    let settings = profile(&[("start", "G28\nM140 S{bed_temp}")]);
+    let error = write(&mut Vec::new(), &[], &settings).unwrap_err();
+    assert_eq!(
+        error.to_string(),
+        "machine_start_gcode, line 2: unknown variable \"bed_temp\""
+    );
+}
+
+#[test]
+fn fan_runs_faster_on_layers_that_take_less_time() {
+    let fan = |settings: &PrintSettings| -> Vec<String> {
+        printed(3, settings)
+            .lines()
+            .filter(|line| line.starts_with("M106"))
+            .map(str::to_owned)
+            .collect()
+    };
+    // The layer takes under a second, far below the 5 s that calls for full speed.
+    assert_eq!(
+        fan(&PrintSettings::default()),
+        ["M106 S0", "M106 S255", "M106 S0"]
+    );
+    // Made to count as a long layer, it gets the minimum.
+    let patient = PrintSettings {
+        fan_cooling_layer_time: 0.1,
+        slow_down_layer_time: 0.05,
+        fan_min_speed: 40.0,
+        ..PrintSettings::default()
+    };
+    assert_eq!(fan(&patient), ["M106 S0", "M106 S102", "M106 S0"]);
+    // In between, the speed is scaled: 46 mm at 60 and 100 mm/s is 0.727 s.
+    let scaled = PrintSettings {
+        fan_cooling_layer_time: 1.0,
+        slow_down_layer_time: 0.5,
+        fan_min_speed: 0.0,
+        ..PrintSettings::default()
+    };
+    let share: f64 = 1.0 - (40.0 / 60.0 + 6.0 / 100.0 - 0.5) / 0.5;
+    assert_eq!(
+        fan(&scaled)[1],
+        format!("M106 S{}", (share * 255.0).round())
+    );
+    let never = PrintSettings {
+        close_fan_the_first_x_layers: 9,
+        ..PrintSettings::default()
+    };
+    assert_eq!(fan(&never), ["M106 S0"]);
+}
+
+#[test]
+fn acceleration_follows_the_feature_and_the_first_layer() {
+    let limits = |settings: &PrintSettings| -> Vec<String> {
+        let text = printed(2, settings);
+        text.lines()
+            .filter(|line| line.starts_with("SET_VELOCITY") || line.starts_with("M204"))
+            .map(str::to_owned)
+            .collect()
+    };
+    let klipper = PrintSettings {
+        klipper: true,
+        accel_to_decel_factor: Some(0.5),
+        default_acceleration: 10000.0,
+        outer_wall_acceleration: 5000.0,
+        initial_layer_acceleration: 500.0,
+        ..PrintSettings::default()
+    };
+    assert_eq!(
+        limits(&klipper),
+        [
+            // The whole first layer, travel included, is gentle.
+            "SET_VELOCITY_LIMIT ACCEL=500 ACCEL_TO_DECEL=250",
+            // Second layer: travel, the outer wall, then fill at the default.
+            "SET_VELOCITY_LIMIT ACCEL=10000 ACCEL_TO_DECEL=5000",
+            "SET_VELOCITY_LIMIT ACCEL=5000 ACCEL_TO_DECEL=2500",
+            "SET_VELOCITY_LIMIT ACCEL=10000 ACCEL_TO_DECEL=5000",
+        ]
+    );
+    let marlin = PrintSettings {
+        klipper: false,
+        accel_to_decel_factor: None,
+        ..klipper.clone()
+    };
+    assert_eq!(limits(&marlin)[..2], ["M204 S500", "M204 S10000"]);
+    // With no accelerations set, the printer's own are left alone.
+    assert!(limits(&PrintSettings::default()).is_empty());
+}
+
+#[test]
+fn pressure_advance_is_set_once_before_the_first_layer() {
+    let klipper = PrintSettings {
+        klipper: true,
+        pressure_advance: Some(0.02),
+        ..PrintSettings::default()
+    };
+    let text = printed(1, &klipper);
+    assert_eq!(
+        text.matches("SET_PRESSURE_ADVANCE ADVANCE=0.02; Override pressure advance value")
+            .count(),
+        1
+    );
+    assert!(text.find("SET_PRESSURE_ADVANCE").unwrap() < text.find(";LAYER_CHANGE").unwrap());
+    let marlin = PrintSettings {
+        pressure_advance: Some(0.05),
+        ..PrintSettings::default()
+    };
+    assert!(printed(1, &marlin).contains("M900 K0.05"));
+    assert!(!printed(1, &PrintSettings::default()).contains("M900"));
 }

@@ -9,6 +9,8 @@ publish.workspace = true
 edge-config.workspace = true
 edge-extrusion.workspace = true
 edge-geom.workspace = true
+edge-template.workspace = true
+thiserror.workspace = true
 
 [dev-dependencies]
 edge-3mf.workspace = true

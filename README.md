@@ -19,6 +19,7 @@ replaces it until output matches on the printers we care about.
 | `crates/edge-perimeter` | Walls and the infill area inside them (classic constant-width generator) |
 | `crates/edge-gcode` | Print order, travel, retraction and extrusion, written as G-code |
 | `crates/edge-infill` | Top, bottom, bridge, solid and sparse surfaces, and the lines that fill them |
+| `crates/edge-template` | The placeholder language of custom G-code: `{expression}`, `{if}`, `[variable]` |
 | `crates/edge-slice` | Mesh to per-layer contours, then to regions with holes; parallel across layers |
 | `crates/edge-cli` | The `edge` command line |
 | `reference/EdgeSlicer` | Pinned submodule of the C++ slicer: profiles, test models, behaviour to match. Read-only here |
@@ -65,15 +66,30 @@ settings (values are text until a stage needs them), and modifier parts.
 
 - G-code: `slice --gcode out.gcode` orders each layer (walls island by
   island, then fill nearest-end-first), travels with retraction and lift,
-  holds speeds to the hot end's melt rate, and reports filament, weight and
-  time. The file loads in G-code viewers.
+  holds speeds to the hot end's melt rate, sets fan speed by layer time and
+  acceleration by feature, and reports filament, weight and time.
+- Printer profiles: the machine's start, end and layer-change G-code and the
+  filament's start and end G-code are expanded from their templates, with
+  filament-level retraction overrides applied. For the Snapmaker U1 projects
+  in the reference, the expanded start G-code is identical to the
+  reference's, line for line.
 
-**The G-code is not printer-ready.** The machine's start, end and
-layer-change templates are not expanded (a generic preamble stands in), and
-there is no fan control, acceleration, pressure advance, seam placement,
-wipe, arc fitting, skirt or brim, or multi-extruder support. Coordinates are
-the project's own, not shifted onto a bed; the time is at commanded speeds
-with no acceleration.
+**The G-code has not been run on a printer.** It is written to print on the
+U1 from a 3MF's first plate with one filament, and it matches the reference
+where the two have been compared, but nothing here has been tested on
+hardware. Without a printer profile (a bare STL) a generic preamble is
+written and the file is only good for viewing.
+
+Not done in G-code: tool changes and multiple extruders (the U1's
+tool-change template uses the statement form of the placeholder language,
+which is refused, not skipped), slowing down short layers, the auxiliary
+fan, overhang and bridge fan speeds, seam placement, wipe, arc fitting,
+skirt and brim, progress reports and object labels. Templates of some
+other printers need variables not provided yet (Bambu start G-code asks
+for `outer_wall_volumetric_speed`, for one); export stops with the
+variable's name. Coordinates are the project's own, which for a first plate
+are the bed's; other plates and bare STLs are not moved onto the bed. The
+time is at commanded speeds with no acceleration.
 
 Walls do not yet have thin-wall detection, gap fill, overhang handling,
 extra or one-wall-on-top perimeters, print ordering or seams, and Arachne
@@ -89,10 +105,8 @@ the radius merge; the reference closes within one object only.
 Clipping is clipper2-rs, a port of Clipper2. The reference uses Clipper 6,
 so regions agree in shape and area but not vertex for vertex.
 
-Next: the placeholder language for machine G-code templates
-(what makes output printable), plate origins, supports, then a
-parity harness that slices the same project with both engines and diffs the
-result.
+Next: a first print on the U1 to check the output on hardware, then plate
+origins, seams and wipe, and supports.
 
 ## Comparing with the reference
 

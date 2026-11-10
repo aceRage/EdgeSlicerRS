@@ -48,6 +48,10 @@ pub struct Print {
     pub retractions: usize,
     /// Distance moved without extruding, in mm, once layers have begun.
     pub travel_mm: f64,
+    /// The machine's start G-code as written: every line from the first
+    /// `;TYPE:Custom` to the first layer, without trailing spaces, blank
+    /// lines or progress reports.
+    pub start_block: Vec<String>,
 }
 
 impl Print {
@@ -78,8 +82,20 @@ pub fn parse(text: &str, keep_segments: Option<usize>) -> Print {
     let (mut relative_e, mut last_e) = (false, 0.0f64);
     let mut feature = String::from("Unknown");
 
+    let mut in_start_block = false;
     for line in text.lines() {
         let line = line.trim();
+        if print.layers.is_empty() {
+            if line == ";TYPE:Custom" {
+                in_start_block = true;
+            } else if in_start_block
+                && !line.is_empty()
+                && !line.starts_with("M73")
+                && !line.starts_with(";LAYER_CHANGE")
+            {
+                print.start_block.push(line.to_owned());
+            }
+        }
         if let Some(comment) = line.strip_prefix(';') {
             if comment.starts_with("LAYER_CHANGE") {
                 print.layers.push(Layer::default());
@@ -272,6 +288,12 @@ G1 X10 Y0 E0.5
             (3, 0)
         );
         assert_eq!(print.layers[0].segments[2].feature, "Sparse infill");
+    }
+
+    #[test]
+    fn start_block_is_the_custom_lines_before_the_first_layer() {
+        let text = "; header\nM106 S0\n;TYPE:Custom\nPRINT_START  \n\nM73 P0 R9\nG28 Z\n;LAYER_CHANGE\n;TYPE:Custom\nLATER\n";
+        assert_eq!(parse(text, None).start_block, ["PRINT_START", "G28 Z"]);
     }
 
     #[test]

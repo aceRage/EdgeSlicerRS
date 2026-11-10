@@ -19,6 +19,7 @@ edge-mesh = { path = "crates/edge-mesh" }
 edge-infill = { path = "crates/edge-infill" }
 edge-perimeter = { path = "crates/edge-perimeter" }
 edge-slice = { path = "crates/edge-slice" }
+edge-template = { path = "crates/edge-template" }
 clap = { version = "4", features = ["derive", "env"] }
 clipper2-rs = "0.3"
 quick-xml = "0.42"

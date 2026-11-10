@@ -36,26 +36,16 @@ fn projects_under(dir: &Path, found: &mut Vec<PathBuf>) {
     }
 }
 
-/// Checks one line against the small set of forms the writer may produce.
+/// Whether a move line is malformed. Lines that are not moves are not
+/// checked: with a printer profile they include whatever its templates say.
 fn malformed(line: &str) -> bool {
-    if line.starts_with(';') {
-        return false;
-    }
     let mut words = line.split(' ');
-    match words.next() {
-        Some("G1") => !words.all(|word| {
+    words.next() == Some("G1")
+        && !words.all(|word| {
             let mut chars = word.chars();
             matches!(chars.next(), Some('X' | 'Y' | 'Z' | 'E' | 'F'))
                 && chars.as_str().parse::<f64>().is_ok_and(f64::is_finite)
-        }),
-        Some("G28" | "G21" | "G90" | "M83" | "M84") => words.next().is_some(),
-        Some("G92") => line != "G92 E0",
-        Some("M104" | "M109" | "M140" | "M190") => !words
-            .next()
-            .and_then(|word| word.strip_prefix('S'))
-            .is_some_and(|value| value.parse::<u32>().is_ok()),
-        _ => true,
-    }
+        })
 }
 
 #[test]
@@ -68,6 +58,7 @@ fn every_reference_project_exports_well_formed_gcode_that_adds_up() {
 
     let mut failures = Vec::new();
     let (mut exported, mut bytes) = (0, 0);
+    let mut refused = Vec::new();
     for path in &paths {
         let project = Project::open(path).unwrap();
         let bodies = project.bodies(None);
@@ -129,10 +120,25 @@ fn every_reference_project_exports_well_formed_gcode_that_adds_up() {
             .collect();
 
         let mut out = Vec::new();
-        let summary = edge_gcode::write(&mut out, &plan, &print).unwrap();
-        let text = String::from_utf8(out).unwrap();
+        let summary = match edge_gcode::write(&mut out, &plan, &print) {
+            Ok(summary) => summary,
+            // A profile whose templates need something not provided yet must
+            // say so and stop, never write a file with holes in it.
+            Err(edge_gcode::GcodeError::Template { name, source }) => {
+                refused.push(format!(
+                    "{}: {name}, {source}",
+                    path.file_name().unwrap().to_string_lossy()
+                ));
+                continue;
+            }
+            Err(error) => panic!("{}: {error}", path.display()),
+        };
+        let whole = String::from_utf8(out).unwrap();
         exported += 1;
-        bytes += text.len();
+        bytes += whole.len();
+        // The checks below are about the layers; what comes before them is
+        // the profile's own start G-code.
+        let text = &whole[whole.find(";LAYER_CHANGE").unwrap_or(0)..];
 
         let mut problems = Vec::new();
         if let Some(line) = text.lines().find(|line| malformed(line)) {
@@ -201,6 +207,11 @@ fn every_reference_project_exports_well_formed_gcode_that_adds_up() {
         }
     }
     assert!(failures.is_empty(), "{}", failures.join("\n"));
+    eprintln!(
+        "{} projects refused for their templates:\n  {}",
+        refused.len(),
+        refused.join("\n  ")
+    );
     assert!(
         exported >= 25 && bytes > 1_000_000,
         "{exported} projects exported, {bytes} bytes"
