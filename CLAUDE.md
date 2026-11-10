@@ -9,7 +9,7 @@ is the goal; a Tauri + web UI comes second. See README.md for layout and status.
 cargo test --workspace
 cargo clippy --workspace --all-targets -- -D warnings
 cargo fmt --all
-cargo run --release -p edge-cli -- slice <model.stl|project.3mf> [--plate N] [--svg out.svg]
+cargo run --release -p edge-cli -- slice <model.stl|project.3mf> [--plate N] [--svg out.svg] [--gcode out.gcode]
 cargo run --release -p edge-cli -- inspect <project.3mf>
 cargo run --release -p edge-cli -- preset <vendor> <kind> <name> --profiles reference/EdgeSlicer/resources/profiles
 ```
@@ -43,6 +43,8 @@ to a stage and say in the PR what moved.
 - G-code is headed for a real printer. Anything a profile asks for that the
   engine cannot do yet (an unknown template variable, an unsupported
   setting) is an error or a listed note, never a silent default.
+  A G-code file is written whole or not at all, and never with toolpaths
+  off the bed.
 - Engine crates stay UI-free and take no dependency on Tauri; the desktop
   app calls into them.
 - `unsafe` is denied workspace-wide. A crate that needs it opts in locally

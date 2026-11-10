@@ -892,3 +892,44 @@ fn svg(layer: &LayerRegions, perimeters: &Perimeters, fills: &[ExtrusionPath]) -
         height + 2.0 * margin,
     )
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn plates_are_laid_out_in_a_grid_running_back_along_y() {
+        let settings = Settings::from_json(
+            r#"{"printable_area": ["0.5x1", "270.5x1", "270.5x271", "0.5x271"]}"#,
+        )
+        .unwrap();
+        let origin = |index, count| plate_origin(index, count, Some(&settings));
+        // A 270 x 270 mm bed, plates a fifth of a bed apart.
+        assert_eq!(origin(0, 3), Some((0.0, 0.0)));
+        assert_eq!(origin(1, 3), Some((324.0, 0.0)));
+        // Three plates make two columns, so the third starts a new row.
+        assert_eq!(origin(2, 3), Some((0.0, -324.0)));
+        assert_eq!(origin(4, 9), Some((324.0, -324.0)));
+        // The first plate needs no bed size; any other does.
+        assert_eq!(plate_origin(0, 2, None), Some((0.0, 0.0)));
+        assert_eq!(plate_origin(1, 2, None), None);
+        assert_eq!(plate_origin(1, 2, Some(&Settings::default())), None);
+    }
+
+    #[test]
+    fn shifting_moves_solid_and_negative_parts_together() {
+        let cube = edge_mesh::Mesh::from_triangle_soup(edge_mesh::primitives::cuboid(
+            [0.0, 0.0, 0.0],
+            [1.0, 1.0, 1.0],
+        ));
+        let mut bodies = [Body {
+            solid: cube.clone(),
+            negative: Some(cube),
+        }];
+        shift(&mut bodies, 10.0, -5.0);
+        for mesh in [&bodies[0].solid, bodies[0].negative.as_ref().unwrap()] {
+            let (min, max) = mesh.bounds().unwrap();
+            assert_eq!((min, max), ([10.0, -5.0, 0.0], [11.0, -4.0, 1.0]));
+        }
+    }
+}
