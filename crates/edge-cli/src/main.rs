@@ -1190,6 +1190,7 @@ fn slice(args: SliceArgs) -> Result<(), Failure> {
             .iter()
             .chain(&adhesion.unsupported)
             .chain(&support.unsupported)
+            .chain(&infill.unsupported)
             .chain(&tower_settings.unsupported)
         {
             println!("note: {note}");

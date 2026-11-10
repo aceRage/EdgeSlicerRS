@@ -51,6 +51,9 @@ pub struct InfillSettings {
     pub internal_bridge_flow: f64,
     pub thick_internal_bridges: bool,
     pub internal_bridge_density: f64,
+    /// Settings present in the input that are not honoured, each with
+    /// what is done instead.
+    pub unsupported: Vec<String>,
 }
 
 impl Default for InfillSettings {
@@ -83,6 +86,7 @@ impl Default for InfillSettings {
             internal_bridge_flow: 1.0,
             thick_internal_bridges: true,
             internal_bridge_density: 1.0,
+            unsupported: Vec::new(),
         }
     }
 }
@@ -132,6 +136,27 @@ impl InfillSettings {
         let flag = |key: &str, default: bool| -> Result<bool, ConfigError> {
             Ok(settings.flag(key)?.unwrap_or(default))
         };
+        // Asked for and not done: said, never passed over.
+        let mut unsupported = Vec::new();
+        for (key, instead) in [
+            ("bridge_angle", "each bridge is turned to span its own gap"),
+            (
+                "internal_bridge_angle",
+                "bridges over infill run across the lines beneath them",
+            ),
+            (
+                "bridge_expansion_extra",
+                "bridges reach the usual distance onto what is beside them",
+            ),
+            ("bridge_line_width", "bridges are as wide as the solid fill"),
+        ] {
+            if let Some(FloatOrPercent::Value(value) | FloatOrPercent::Percent(value)) =
+                settings.float_or_percent(key)?
+                && value != 0.0
+            {
+                unsupported.push(format!("{key} \"{value}\": {instead}"));
+            }
+        }
         let density = match settings.float_or_percent("sparse_infill_density")? {
             // A percentage whether or not the sign is written.
             Some(FloatOrPercent::Percent(percent) | FloatOrPercent::Value(percent)) => percent,
@@ -181,6 +206,7 @@ impl InfillSettings {
                 "internal_bridge_density",
                 defaults.internal_bridge_density,
             )?,
+            unsupported,
         })
     }
 
@@ -321,5 +347,21 @@ mod tests {
         );
         assert!(read(r#"{"top_shell_layers": "-2"}"#).is_err());
         assert!(read(r#"{"sparse_infill_density": "lots"}"#).is_err());
+    }
+
+    #[test]
+    fn bridge_settings_not_honoured_are_said() {
+        let read = |json: &str| InfillSettings::from_settings(&Settings::from_json(json).unwrap());
+        assert!(
+            read(
+                r#"{"bridge_angle": "0", "bridge_line_width": "0", "bridge_expansion_extra": "0"}"#
+            )
+            .unwrap()
+            .unsupported
+            .is_empty()
+        );
+        let set = read(r#"{"bridge_angle": "30", "bridge_line_width": "0.5"}"#).unwrap();
+        assert_eq!(set.unsupported.len(), 2);
+        assert!(set.unsupported[0].starts_with("bridge_angle \"30\""));
     }
 }
