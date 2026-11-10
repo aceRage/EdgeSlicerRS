@@ -11,7 +11,7 @@ replaces it until output matches on the printers we care about.
 | --- | --- |
 | `crates/edge-geom` | Fixed-point 2D geometry (nanometre `i64`, same scale as libslic3r): points, polygons, regions, convex hull |
 | `crates/edge-mesh` | Indexed triangle mesh, transforms, STL read/write |
-| `crates/edge-config` | Vendor presets resolved through `inherits`, `include` and `renamed_from` |
+| `crates/edge-config` | Vendor presets resolved through `inherits`, `include` and `renamed_from`; the reference's defaults for every setting, and the text form it writes settings in |
 | `crates/edge-3mf` | 3MF projects: objects, parts and their roles, instances, plates, project settings |
 | `crates/edge-clip` | Polygon union, difference, intersection, offset and gap closing (wraps clipper2-rs) |
 | `crates/edge-extrusion` | Extruded line cross-section (flow) and extrusion loops |
@@ -26,6 +26,7 @@ replaces it until output matches on the printers we care about.
 | `crates/edge-tower` | The prime tower a nozzle is primed on after a tool change |
 | `crates/edge-slice` | Mesh to per-layer contours, then to regions with holes; parallel across layers |
 | `crates/edge-cli` | The `edge` command line |
+| `tools/make_defaults.py` | Asks the reference for its default of every setting and writes the table `edge-config` carries; run again when the pin moves |
 | `tools/make_fixture.py` | Writes small test 3MFs (parts that need supports or a brim, and a plain cube) to compare with the reference on |
 | `reference/EdgeSlicer` | Pinned submodule of the C++ slicer: profiles, test models, behaviour to match. Read-only here |
 | `apps/desktop` | Tauri app (not started) |
@@ -141,11 +142,14 @@ Known gaps: painted triangles, per-object setting overrides, typed settings
   G-code when `--machine`, `--process` and `--filament` name its presets.
 - File layout: the G-code file is laid out as the reference lays its own
   out, because printers and their hosts read it by that layout: a header
-  block, the G-code between `EXECUTABLE_BLOCK` markers, what each filament
-  used, every setting in a `CONFIG_BLOCK`, and totals with the time. The
-  first line names OrcaSlicer, as the reference's does: the U1's host
-  accepts files only from slicers on a fixed list, and refused this
-  engine's under its own name. A print host's address and keys are left
+  block, the line widths, the G-code between `EXECUTABLE_BLOCK` markers
+  with progress (`M73`) at each layer, what each filament used, every
+  setting in a `CONFIG_BLOCK`, and totals with the time. The first line
+  names OrcaSlicer and the reference's version, as the reference's does:
+  the U1's host accepts files only from slicers on a fixed list. A setting
+  the presets leave out takes the reference's default, both in what is
+  printed and in the settings block, so a model sliced with named presets
+  comes out as the same model in a project would. A print host's address and keys are left
   out of the settings. The time in the file is at commanded speeds with no
   acceleration, so a print takes longer than it says. `SOURCE_DATE_EPOCH`
   fixes the date in the first line, for comparing two runs byte for byte.
@@ -168,8 +172,8 @@ generated, and a note says so), the older tree styles (`tree_slim`,
 `tree_strong`, `tree_hybrid`: organic-style trees are built, with a note),
 rafts, brims inside holes, draft shields, seams placed by visibility or kept
 off overhangs, a fan speed of its own for bridges over infill, walls
-slowed over curled edges, arc fitting, progress reports (`M73`), preview
-pictures in the file (thumbnails), and object labels for cancelling. Bridge fill keeps its own speed along its whole
+slowed over curled edges, arc fitting, preview pictures in the file
+(thumbnails), and object labels for cancelling (`EXCLUDE_OBJECT`). Bridge fill keeps its own speed along its whole
 length, where the reference also slows it near its anchors. A setting that asks for one of these is listed as a
 note when the file is written. A template that needs a variable not
 provided stops the export with the variable's name. The time is at

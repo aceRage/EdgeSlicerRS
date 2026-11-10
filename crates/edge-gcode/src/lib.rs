@@ -189,6 +189,40 @@ pub fn write_tools(
                 used
             },
             first_layer_seconds: 0.0,
+            widths: {
+                // Above the first layer, the first line of each kind;
+                // and whatever the first layer starts with.
+                let above = layers.iter().filter(|layer| layer.z > layers[0].z);
+                let wall = |role: Role| {
+                    above
+                        .clone()
+                        .flat_map(|layer| layer.loops)
+                        .find(|wall| wall.role == role)
+                        .map(|wall| wall.flow.width)
+                };
+                let fill = |role: Role| {
+                    above
+                        .clone()
+                        .flat_map(|layer| layer.paths)
+                        .find(|path| path.role == role)
+                        .map(|path| path.flow.width)
+                };
+                let first = layers.first().and_then(|layer| {
+                    (layer.loops.first().map(|wall| wall.flow.width))
+                        .or(layer.paths.first().map(|path| path.flow.width))
+                });
+                [
+                    ("external perimeters", wall(Role::ExternalPerimeter)),
+                    ("perimeters", wall(Role::Perimeter)),
+                    ("infill", fill(Role::SparseInfill)),
+                    ("solid infill", fill(Role::SolidInfill)),
+                    ("top infill", fill(Role::TopSolidInfill)),
+                    ("first layer", first),
+                ]
+                .into_iter()
+                .filter_map(|(name, width)| Some((name, width?)))
+                .collect()
+            },
         },
         below: None,
         measured: Vec::new(),
@@ -196,9 +230,17 @@ pub fn write_tools(
     };
     let several = layers.iter().any(|layer| layer.filament > 0);
     writer.preamble(several)?;
-    out.write_all(&writer.out)?;
+    // The whole file is put together before any of it is handed on, so
+    // that progress can be written into it once the time is known. Each
+    // entry is a place in the file and the seconds printed by then.
+    let mut whole = std::mem::take(&mut writer.out);
+    let mut reached: Vec<(usize, f64)> = Vec::with_capacity(groups.len() + 1);
+    if let Some(start) = find(&whole, EXECUTABLE_START) {
+        reached.push((start + EXECUTABLE_START.len(), 0.0));
+    }
     for (index, group) in groups.iter().enumerate() {
         writer.out.clear();
+        reached.push((whole.len(), writer.state.summary.seconds));
         // The tool the next layer starts with, to be warmed up in time.
         let after = groups
             .get(index + 1)
@@ -207,11 +249,37 @@ pub fn write_tools(
         if index == 0 {
             writer.file.first_layer_seconds = writer.state.summary.seconds;
         }
-        out.write_all(&writer.out)?;
+        whole.extend_from_slice(&writer.out);
     }
     writer.out.clear();
     let summary = writer.finish()?;
-    out.write_all(&writer.out)?;
+    whole.extend_from_slice(&writer.out);
+
+    // Progress for the printer's screen: how far through, in percent,
+    // and the minutes left, said at the start and at each layer where
+    // either has changed (the reference's `M73`, which it places by its
+    // own, finer estimate of the time). Printers given no profile are
+    // not assumed to know the command.
+    if settings[first].machine_start_gcode.is_none() || summary.seconds <= 0.0 {
+        out.write_all(&whole)?;
+        return Ok(summary);
+    }
+    let mut said = None;
+    let mut from = 0;
+    for (at, seconds) in reached {
+        let progress = (
+            (100.0 * seconds / summary.seconds).floor() as u32,
+            ((summary.seconds - seconds) / 60.0).floor() as u32,
+        );
+        if said == Some(progress) {
+            continue;
+        }
+        said = Some(progress);
+        out.write_all(&whole[from..at])?;
+        writeln!(out, "M73 P{} R{}", progress.0, progress.1)?;
+        from = at;
+    }
+    out.write_all(&whole[from..])?;
     Ok(summary)
 }
 
@@ -291,6 +359,9 @@ struct FileInfo {
     filaments: Vec<usize>,
     /// How long the first layer takes, in seconds.
     first_layer_seconds: f64,
+    /// Line widths in mm as the file's opening lines give them, each
+    /// with the name the reference gives it; only those the print has.
+    widths: Vec<(&'static str, f64)>,
 }
 
 /// What tells one measured wall from another: where it starts and ends,
@@ -353,11 +424,13 @@ impl Writer<'_> {
         // it by that layout. The first line names OrcaSlicer because the
         // U1's host accepts files only from a fixed list of slicers, and
         // the reference names itself the same way for the same reason
-        // (utils.cpp `header_gcode_producer`).
+        // (utils.cpp `header_gcode_producer`). The version is that of
+        // the reference whose settings and file layout these are.
         writeln!(self.out, "; HEADER_BLOCK_START")?;
         write!(
             self.out,
-            "; generated by OrcaSlicer {} (EdgeSlicerRS)",
+            "; generated by {} (EdgeSlicerRS {})",
+            edge_config::reference_producer(),
             env!("CARGO_PKG_VERSION")
         )?;
         match &s.produced_at {
@@ -375,7 +448,13 @@ impl Writer<'_> {
         writeln!(self.out, "; filament: {}", filaments.join(","))?;
         writeln!(self.out, "; support_material_on_wipe_tower: 0")?;
         writeln!(self.out, "; HEADER_BLOCK_END\n")?;
-        writeln!(self.out, "; EXECUTABLE_BLOCK_START")?;
+        for (name, width) in &self.file.widths {
+            writeln!(self.out, "; {name} extrusion width = {width:.2}mm")?;
+        }
+        if !self.file.widths.is_empty() {
+            writeln!(self.out)?;
+        }
+        self.out.extend_from_slice(EXECUTABLE_START);
         // Both fans off before anything heats, as the reference does when
         // the printer has an auxiliary fan.
         if s.auxiliary_fan && s.close_fan_the_first_x_layers > 0 {
@@ -431,8 +510,10 @@ impl Writer<'_> {
             self.custom("filament_start_gcode", template)?;
         }
         self.advance()?;
-        // Select the tool the print starts with, as the reference does.
-        if s.machine_start_gcode.is_some() {
+        // Select the tool the print starts with, as the reference does
+        // when the project has more than one filament to choose from
+        // (GCodeWriter.cpp `toolchange`).
+        if s.machine_start_gcode.is_some() && s.filaments > 1 {
             writeln!(self.out, "T0")?;
         }
         Ok(())
@@ -1735,6 +1816,9 @@ impl Writer<'_> {
             None => writeln!(self.out, "M104 S0\nM140 S0\nM84")?,
         }
         let summary = self.state.summary;
+        if s.machine_start_gcode.is_some() {
+            writeln!(self.out, "M73 P100 R0")?;
+        }
         writeln!(self.out, "; EXECUTABLE_BLOCK_END\n")?;
         // One figure for each filament, as the reference lists them.
         let listed = |figure: &dyn Fn(usize) -> f64| {
@@ -1881,6 +1965,15 @@ fn days_hours_minutes_seconds(seconds: f64) -> String {
     } else {
         format!("{seconds}s")
     }
+}
+
+/// The line everything the printer runs comes after.
+const EXECUTABLE_START: &[u8] = b"; EXECUTABLE_BLOCK_START\n";
+
+/// Where `needle` first is in `text`.
+fn find(text: &[u8], needle: &[u8]) -> Option<usize> {
+    text.windows(needle.len())
+        .position(|window| window == needle)
 }
 
 /// Markers a layer is written with where the fan is to change for an

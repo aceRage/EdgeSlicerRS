@@ -501,6 +501,14 @@ fn slice(args: SliceArgs) -> Result<(), Failure> {
         };
         settings.insert("curr_bed_type", edge_config::Value::One(plate));
     }
+    // What a printer's profile leaves unsaid is as the reference has it
+    // by default, so a model sliced with named presets comes out as the
+    // same model in a project would.
+    if settings.get("machine_start_gcode").is_some() {
+        let mut complete = edge_config::reference_defaults().clone();
+        complete.overlay(&settings);
+        settings = complete;
+    }
     let print = PrintSettings::from_settings(&settings)?;
     // A bare model has no place on the bed of its own: it goes in the
     // middle, as the reference's arranger leaves a single part.

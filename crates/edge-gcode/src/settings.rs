@@ -195,6 +195,8 @@ pub struct PrintSettings {
     pub tool_change_temperature_wait: bool,
     /// How many tools the printer has.
     pub tools: usize,
+    /// How many filaments the project is set up with, used or not.
+    pub filaments: usize,
     /// Every setting, by name, for the templates to refer to.
     pub variables: Variables,
     /// Every setting as the file's settings block lists it, in order.
@@ -306,6 +308,7 @@ impl Default for PrintSettings {
             preheat_time: 30.0,
             tool_change_temperature_wait: true,
             tools: 1,
+            filaments: 1,
             variables: variables(&Settings::default(), None, None, None),
             config: Vec::new(),
             produced_at: None,
@@ -757,6 +760,9 @@ impl PrintSettings {
             tools: settings
                 .texts("nozzle_diameter")
                 .map_or(defaults.tools, |nozzles| nozzles.len().max(1)),
+            filaments: settings
+                .texts("filament_diameter")
+                .map_or(defaults.filaments, |filaments| filaments.len().max(1)),
             variables: variables(
                 settings,
                 bed_temperature,
@@ -764,18 +770,14 @@ impl PrintSettings {
                 bed,
             ),
             config: {
-                // Not the print host's address and keys, which a project
-                // carries but a file sent to a printer must not, nor what
-                // only names the preset the settings came from.
-                let private = |key: &str| {
-                    key.starts_with("printhost_")
-                        || key.starts_with("print_host")
-                        || matches!(key, "name" | "from" | "version")
-                };
+                // The settings the reference knows and would list. That
+                // leaves out the print host's address and keys, which a
+                // project carries but a file sent to a printer must not,
+                // and what only names the preset a setting came from.
                 let mut config: Vec<(String, String)> = settings
                     .iter()
-                    .filter(|(key, _)| !private(key))
-                    .map(|(key, value)| (key.to_owned(), serialized(key, value)))
+                    .filter(|(key, _)| edge_config::reference_knows(key))
+                    .map(|(key, value)| (key.to_owned(), edge_config::serialized(key, value)))
                     .collect();
                 config.sort();
                 config
@@ -783,66 +785,6 @@ impl PrintSettings {
             produced_at: None,
             unsupported,
         })
-    }
-}
-
-/// A setting as the reference writes it in a G-code file's settings
-/// block (Config.cpp `serialize`): a list of numbers joined by commas, a
-/// list of texts by semicolons with any that hold spaces or escapes in
-/// quotes (`escape_strings_cstyle`). Lists of names from a fixed set are
-/// joined by commas like numbers; which settings those are is not told by
-/// their text, so they are named here.
-fn serialized(key: &str, value: &Setting) -> String {
-    const CHOICES: [&str; 6] = [
-        "extruder_type",
-        "retract_lift_enforce",
-        "z_hop_types",
-        "nozzle_type",
-        "nozzle_volume_type",
-        "filament_volume_type",
-    ];
-    let escaped = |text: &str| {
-        let mut out = String::with_capacity(text.len());
-        for c in text.chars() {
-            match c {
-                '\r' => out.push_str("\\r"),
-                '\n' => out.push_str("\\n"),
-                '"' => out.push_str("\\\""),
-                c => out.push(c),
-            }
-        }
-        out
-    };
-    match value {
-        Setting::One(text) => escaped(text),
-        Setting::Many(items) => {
-            let plain = |item: &String| {
-                let item = item.trim();
-                item == "nil"
-                    || item.trim_end_matches('%').parse::<f64>().is_ok()
-                    || item
-                        .split_once('x')
-                        .is_some_and(|(x, y)| x.parse::<f64>().is_ok() && y.parse::<f64>().is_ok())
-            };
-            if CHOICES.contains(&key) || items.iter().all(plain) {
-                return items.join(",");
-            }
-            items
-                .iter()
-                .map(|item| {
-                    let quoted = (items.len() == 1 && item.is_empty())
-                        || item
-                            .chars()
-                            .any(|c| matches!(c, ' ' | '\t' | '\\' | '"' | '\r' | '\n'));
-                    if quoted {
-                        format!("\"{}\"", escaped(item))
-                    } else {
-                        item.clone()
-                    }
-                })
-                .collect::<Vec<_>>()
-                .join(";")
-        }
     }
 }
 
