@@ -49,6 +49,17 @@ pub enum GcodeError {
     },
 }
 
+/// A filament rammed on the prime tower before its tool is put away
+/// (WipeTower2.cpp `toolchange_Unload`).
+#[derive(Clone, Copy, Debug)]
+pub struct Ram<'a> {
+    pub lines: &'a [ExtrusionPath],
+    /// How fast they are laid, in mm a second.
+    pub speed: f64,
+    /// Where the tool is taken once it has laid them.
+    pub park: Point2,
+}
+
 /// One layer's toolpaths.
 #[derive(Clone, Copy, Debug)]
 pub struct Layer<'a> {
@@ -60,6 +71,13 @@ pub struct Layer<'a> {
     /// several is given once for each, one after another at the same
     /// height, in the order they are to be printed.
     pub filament: usize,
+    /// What the tool in use before this one lays on the prime tower
+    /// before it is put away, when this part starts with a tool change
+    /// and that tool's filament is rammed.
+    pub ram: Option<Ram<'a>>,
+    /// Where the nozzle goes on its way to the prime tower's lines: in
+    /// through the gap left in the tower's wall.
+    pub enter: &'a [Point2],
     /// Prime tower lines, printed before anything else.
     pub tower: &'a [ExtrusionPath],
     /// Loops laid before the part on this layer, in order: skirt and brim.
@@ -110,6 +128,10 @@ pub use edge_time::Model as TimeModel;
 /// Starts a line the writer leaves for itself where a tool is changed:
 /// the tool taken up and the temperature it prints at.
 const CHANGE_MARK: &[u8] = b";_TOOL_CHANGE ";
+
+/// How fast a tool that has rammed its filament is taken clear of it, in
+/// mm a second (WipeTower2.cpp `toolchange_Unload`).
+const RAM_PARK_SPEED: f64 = 40.0;
 
 /// Writes the whole print in one filament and reports what it used.
 pub fn write(
@@ -887,11 +909,32 @@ impl Writer<'_> {
         z: f64,
         cursor: usize,
         over: Option<Point2>,
+        ram: Option<Ram<'_>>,
     ) -> Result<(), GcodeError> {
         let from = self.state.tool;
         let s = self.settings;
-        if let Some(over) = over.filter(|_| self.state.primed) {
-            self.travel(over, false)?;
+        match ram.filter(|_| self.state.primed) {
+            // A rammed filament is pushed out fast on the tower, and its
+            // tool then waits just clear of what it laid.
+            Some(ram) => {
+                let motion = Motion {
+                    speed: ram.speed,
+                    acceleration: s.default_acceleration,
+                };
+                for line in ram.lines.iter().filter(|line| line.points.len() >= 2) {
+                    self.travel(line.points[0], false)?;
+                    for point in &line.points[1..] {
+                        self.extrude(*point, line.role, &line.flow, motion)?;
+                    }
+                }
+                let length = self.state.position.map_or(0.0, |at| distance(at, ram.park));
+                self.go(ram.park, None, RAM_PARK_SPEED, length)?;
+            }
+            None => {
+                if let Some(over) = over.filter(|_| self.state.primed) {
+                    self.travel(over, false)?;
+                }
+            }
         }
         // Pull the filament well back, wiping first as for any retraction.
         if self.state.primed && s.retract_length_toolchange > 0.0 {
@@ -1081,7 +1124,12 @@ impl Writer<'_> {
                     layer.z,
                     cursor + offset,
                     over.copied(),
+                    layer.ram,
                 )?;
+                // The new tool comes in through the gap in the tower's wall.
+                for point in layer.enter {
+                    self.travel(*point, false)?;
+                }
             }
             self.inner_wall = layer
                 .loops

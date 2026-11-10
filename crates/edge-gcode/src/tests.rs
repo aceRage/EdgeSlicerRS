@@ -66,6 +66,8 @@ fn one_layer<'a>(
         z: 0.2,
         height: 0.2,
         filament: 0,
+        ram: None,
+        enter: &[],
         tower: &[],
         around: &[],
         support: &[],
@@ -222,6 +224,8 @@ fn speeds_follow_role_layer_and_the_melt_limit() {
             z: 0.2,
             height: 0.2,
             filament: 0,
+            ram: None,
+            enter: &[],
             tower: &[],
             around: &[],
             support: &[],
@@ -235,6 +239,8 @@ fn speeds_follow_role_layer_and_the_melt_limit() {
             z: 0.4,
             height: 0.2,
             filament: 0,
+            ram: None,
+            enter: &[],
             tower: &[],
             around: &[],
             support: &[],
@@ -287,6 +293,8 @@ fn temperatures_change_after_the_first_layer() {
         z,
         height: 0.2,
         filament: 0,
+        ram: None,
+        enter: &[],
         tower: &[],
         around: &[],
         support: &[],
@@ -373,6 +381,8 @@ fn moves_inside_the_infill_area_can_skip_retraction() {
         z: 0.2,
         height: 0.2,
         filament: 0,
+        ram: None,
+        enter: &[],
         tower: &[],
         around: &[],
         support: &[],
@@ -421,6 +431,8 @@ fn printed(count: usize, settings: &PrintSettings) -> String {
             z: 0.2 * (index + 1) as f64,
             height: 0.2,
             filament: 0,
+            ram: None,
+            enter: &[],
             tower: &[],
             around: &[],
             support: &[],
@@ -1231,6 +1243,8 @@ fn the_prime_tower_is_printed_first_and_its_first_line_slowly() {
         .into_iter()
         .map(|z| Layer {
             z,
+            ram: None,
+            enter: &[],
             tower: &tower,
             ..one_layer(&part, &[0..1], &[])[0]
         })
@@ -1256,6 +1270,83 @@ fn the_prime_tower_is_printed_first_and_its_first_line_slowly() {
     );
 }
 
+#[test]
+fn a_rammed_filament_is_laid_by_the_tool_being_put_away() {
+    let [a, b] = two_tools(Some(CHANGE));
+    let settings = [a, b];
+    let loops = [wall(0.0, 0.0, 10.0, 0)];
+    // A ramming line 1 mm wide and 2.6 mm long on the tower, at 104 mm/s.
+    let mut rammed = line((40.75, 40.85), (43.35, 40.85), Role::PrimeTower);
+    rammed.flow = Flow::new(1.0, 0.2, 0.4).unwrap();
+    let ram = [rammed];
+    let mut slow = line((43.35, 41.1), (60.0, 41.1), Role::PrimeLine);
+    slow.flow = Flow::new(0.5, 0.2, 0.4).unwrap();
+    let tower = [slow];
+    let enter = [Point2::from_mm(38.5, 41.45), Point2::from_mm(40.25, 41.45)];
+    let plan = [
+        one_layer(&loops, &[0..1], &[])[0],
+        Layer {
+            filament: 1,
+            ram: Some(Ram {
+                lines: &ram,
+                speed: 104.0,
+                park: Point2::from_mm(43.35, 41.85),
+            }),
+            enter: &enter,
+            tower: &tower,
+            ..one_layer(&loops, &[0..1], &[])[0]
+        },
+    ];
+    let mut out = Vec::new();
+    write_tools(&mut out, &plan, &settings).unwrap();
+    let text = String::from_utf8(out).unwrap();
+    let at = |wanted: &str| {
+        text.lines()
+            .position(|line| line.starts_with(wanted))
+            .unwrap_or_else(|| panic!("no line starting {wanted}"))
+    };
+    let change = at("; Change Tool0 -> Tool1");
+    // The ram comes before the change, so the old tool lays it: at its
+    // own width and speed, and with as much plastic as the line holds.
+    let laid = at("G1 X43.350 Y40.850 E");
+    assert!(laid < change);
+    let rammed = text.lines().nth(laid).unwrap();
+    assert_eq!(word(rammed, 'F'), Some(104.0 * 60.0));
+    let volume = 2.6 * 0.2 * (1.0 - 0.2 * (1.0 - std::f64::consts::FRAC_PI_4));
+    let area = std::f64::consts::PI * 1.75 * 1.75 / 4.0;
+    assert!(
+        (word(rammed, 'E').unwrap() - volume / area).abs() < 1e-4,
+        "{rammed}"
+    );
+    assert!(text.lines().take(laid).any(|line| line == ";WIDTH:1.000"));
+    // The tool then moves clear of it, slowly, and is put away there.
+    let parked = at("G1 X43.350 Y41.850");
+    assert!(laid < parked && parked < change);
+    assert_eq!(word(text.lines().nth(parked).unwrap(), 'F'), Some(2400.0));
+    // The new tool comes in from outside the tower's wall, through the
+    // gap, and starts where the ram stopped.
+    let outside = at("G1 X38.500 Y41.450");
+    let inside = at("G1 X40.250 Y41.450");
+    let first = at("G1 X60.000 Y41.100 E");
+    assert!(change < outside && outside < inside && inside < first);
+    // The old tool's count has the ram in it.
+    let (_, summary) = (0, write_tools(&mut Vec::new(), &plan, &settings).unwrap());
+    assert!(summary.filament_mm3 > volume);
+
+    // With nothing rammed the old tool goes to where the new one starts.
+    let plain = [
+        plan[0],
+        Layer {
+            ram: None,
+            ..plan[1]
+        },
+    ];
+    let mut out = Vec::new();
+    write_tools(&mut out, &plain, &settings).unwrap();
+    let text = String::from_utf8(out).unwrap();
+    assert!(!text.contains("G1 X43.350 Y40.850 E") && !text.contains(";WIDTH:1.000"));
+}
+
 /// A 10 mm plate with a 20 mm wall on the layer above it: the wall is over
 /// the plate along two sides near the corner at the origin and over air
 /// along the rest.
@@ -1271,6 +1362,8 @@ fn wall_over_a_smaller_plate(settings: &PrintSettings, measured: bool) -> String
         z,
         height: 0.2,
         filament: 0,
+        ram: None,
+        enter: &[],
         tower: &[],
         around: &[],
         support: &[],
