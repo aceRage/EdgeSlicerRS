@@ -13,6 +13,7 @@ edge-3mf = { path = "crates/edge-3mf" }
 edge-clip = { path = "crates/edge-clip" }
 edge-config = { path = "crates/edge-config" }
 edge-extrusion = { path = "crates/edge-extrusion" }
+edge-gcode = { path = "crates/edge-gcode" }
 edge-geom = { path = "crates/edge-geom" }
 edge-mesh = { path = "crates/edge-mesh" }
 edge-infill = { path = "crates/edge-infill" }
@@ -36,6 +37,11 @@ unsafe_code = "deny"
 # this workspace's own code harder to debug.
 [profile.dev.package."*"]
 opt-level = 2
+
+# Light optimisation for this workspace's own code as well: the tests that
+# run whole projects spend their time in it.
+[profile.dev]
+opt-level = 1
 
 [profile.release]
 lto = "thin"

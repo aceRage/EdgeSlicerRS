@@ -14,9 +14,9 @@ cargo run --release -p edge-cli -- inspect <project.3mf>
 cargo run --release -p edge-cli -- preset <vendor> <kind> <name> --profiles reference/EdgeSlicer/resources/profiles
 ```
 
-Four test files (`edge-config/tests/reference_profiles.rs` and a
-`tests/reference_projects.rs` in each of `edge-3mf`, `edge-perimeter` and
-`edge-infill`) run against everything in the
+Five test files (`edge-config/tests/reference_profiles.rs` and a
+`tests/reference_projects.rs` in each of `edge-3mf`, `edge-perimeter`,
+`edge-infill` and `edge-gcode`) run against everything in the
 submodule; a new stage should add its own and keep all of them at zero failures.
 
 On the Mac mini cargo comes from Homebrew rustup: `/opt/homebrew/opt/rustup/bin`.

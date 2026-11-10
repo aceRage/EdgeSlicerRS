@@ -9,6 +9,8 @@
 
 mod settings;
 
+use std::ops::Range;
+
 use edge_clip::{ClipError, Join};
 use edge_extrusion::{ExtrusionLoop, Flow, FlowError, INSET_OVERLAP_TOLERANCE, Role};
 use edge_geom::{Coord, ExPolygon, scaled, unscaled};
@@ -51,6 +53,9 @@ pub struct Perimeters {
     /// Island by island; within an island outermost first, each depth's
     /// outer boundaries before its holes.
     pub loops: Vec<ExtrusionLoop>,
+    /// Which of `loops` belong to each island, in order. Islands that got
+    /// no walls are not listed.
+    pub islands: Vec<Range<usize>>,
     /// Where infill goes, already overlapping the innermost wall.
     pub infill: Vec<ExPolygon>,
 }
@@ -74,6 +79,7 @@ pub fn classic(regions: &[ExPolygon], params: &Params) -> Result<Perimeters, Err
 
     let mut result = Perimeters::default();
     for island in regions {
+        let first_loop = result.loops.len();
         // Index of the innermost wall, or -1 for none.
         let mut loop_number = params.wall_loops as isize - 1;
         let mut last = edge_clip::simplify(std::slice::from_ref(island), params.resolution)?;
@@ -134,6 +140,10 @@ pub fn classic(regions: &[ExPolygon], params: &Params) -> Result<Perimeters, Err
             push_loops(&mut result.loops, &narrow, depth as usize, narrow_flow);
             last = offsets;
             depth += 1;
+        }
+
+        if result.loops.len() > first_loop {
+            result.islands.push(first_loop..result.loops.len());
         }
 
         // Infill starts half a line inside the innermost wall's centre
@@ -374,5 +384,6 @@ mod tests {
             .collect();
         assert_eq!(min_x, [false, false, true, true]);
         assert_eq!(walls.infill.len(), 2);
+        assert_eq!(walls.islands, [0..2, 2..4]);
     }
 }

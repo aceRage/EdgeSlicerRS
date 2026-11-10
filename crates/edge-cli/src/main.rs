@@ -4,6 +4,7 @@ use clap::{Args, Parser, Subcommand};
 use edge_3mf::{Body, PartKind, Project};
 use edge_config::{Kind, Settings, Vendor};
 use edge_extrusion::{ExtrusionLoop, ExtrusionPath, Role};
+use edge_gcode::PrintSettings;
 use edge_geom::{ExPolygon, scaled, unscaled};
 use edge_infill::{InfillSettings, SurfaceKind};
 use edge_perimeter::{Perimeters, WallSettings};
@@ -79,6 +80,10 @@ struct SliceArgs {
     /// Layer index for --svg; defaults to the middle layer.
     #[arg(long, requires = "svg")]
     svg_layer: Option<usize>,
+    /// Write the print as G-code to this file. Not printer-ready yet: the
+    /// machine's start and end G-code is replaced by a generic preamble.
+    #[arg(long)]
+    gcode: Option<PathBuf>,
 }
 
 #[derive(Args)]
@@ -517,6 +522,49 @@ fn slice(args: SliceArgs) -> Result<(), Failure> {
         (infill_time - classify_time).as_secs_f64() * 1e3,
         rayon::current_num_threads(),
     );
+
+    if let Some(path) = &args.gcode {
+        let started = Instant::now();
+        let print = PrintSettings::from_settings(&settings)?;
+        // Layer tops, measured from the bottom of the model as the bed.
+        let plan: Vec<edge_gcode::Layer<'_>> = (0..layers.len())
+            .map(|index| edge_gcode::Layer {
+                z: first_layer_height + index as f64 * layer_height,
+                height: if index == 0 {
+                    first_layer_height
+                } else {
+                    layer_height
+                },
+                loops: &perimeters[index].loops,
+                islands: &perimeters[index].islands,
+                paths: &fills[index],
+                infill_area: &perimeters[index].infill,
+            })
+            .collect();
+        let mut file = std::io::BufWriter::new(fs::File::create(path)?);
+        let summary = edge_gcode::write(&mut file, &plan, &print)?;
+        std::io::Write::flush(&mut file)?;
+        let weight = match print.filament_density {
+            Some(density) => format!(", {:.1} g", summary.filament_mm3 / 1000.0 * density),
+            None => String::new(),
+        };
+        println!(
+            "G-code written to {} in {:.1} ms: {:.2} m of filament{weight}, {:.1} m of travel, {} retractions, \
+             {:.0} min at commanded speeds (no acceleration)",
+            path.display(),
+            started.elapsed().as_secs_f64() * 1e3,
+            summary.filament_mm / 1e3,
+            summary.travel_mm / 1e3,
+            summary.retractions,
+            summary.seconds / 60.0,
+        );
+        println!(
+            "note: this G-code is not printer-ready; machine start and end G-code is not expanded yet"
+        );
+        for note in &print.unsupported {
+            println!("note: {note}");
+        }
+    }
 
     if let Some(path) = args.svg {
         let index = args.svg_layer.unwrap_or(layers.len() / 2);

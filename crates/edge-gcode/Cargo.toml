@@ -1,0 +1,20 @@
+[package]
+name = "edge-gcode"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
+edge-config.workspace = true
+edge-extrusion.workspace = true
+edge-geom.workspace = true
+
+[dev-dependencies]
+edge-3mf.workspace = true
+edge-infill.workspace = true
+edge-perimeter.workspace = true
+edge-slice.workspace = true
+
+[lints]
+workspace = true

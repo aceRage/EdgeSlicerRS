@@ -16,6 +16,7 @@ replaces it until output matches on the printers we care about.
 | `crates/edge-clip` | Polygon union, difference, intersection, offset and gap closing (wraps clipper2-rs) |
 | `crates/edge-extrusion` | Extruded line cross-section (flow) and extrusion loops |
 | `crates/edge-perimeter` | Walls and the infill area inside them (classic constant-width generator) |
+| `crates/edge-gcode` | Print order, travel, retraction and extrusion, written as G-code |
 | `crates/edge-infill` | Top, bottom, bridge, solid and sparse surfaces, and the lines that fill them |
 | `crates/edge-slice` | Mesh to per-layer contours, then to regions with holes; parallel across layers |
 | `crates/edge-cli` | The `edge` command line |
@@ -30,6 +31,7 @@ cargo test --workspace
 export EDGE_PROFILES=reference/EdgeSlicer/resources/profiles
 cargo run --release -p edge-cli -- inspect reference/EdgeSlicer/tests/mcbrim_test.3mf
 cargo run --release -p edge-cli -- slice reference/EdgeSlicer/tests/mcbrim_test.3mf --plate 2 --svg layer.svg
+cargo run --release -p edge-cli -- slice reference/EdgeSlicer/resources/handy_models/3DBenchy.3mf --gcode benchy.gcode
 cargo run --release -p edge-cli -- slice model.stl --vendor Snapmaker --machine "Snapmaker U1 (0.4 nozzle)" --process "0.20mm Standard @Snapmaker U1 (0.4 nozzle)"
 cargo run --release -p edge-cli -- preset Snapmaker process "0.20mm Standard @Snapmaker U1 (0.4 nozzle)"
 ```
@@ -60,6 +62,18 @@ settings (values are text until a stage needs them), and modifier parts.
   `sparse_infill_density`, `minimum_sparse_infill_area`) and filled with
   lines, or a grid for sparse areas.
 
+- G-code: `slice --gcode out.gcode` orders each layer (walls island by
+  island, then fill nearest-end-first), travels with retraction and lift,
+  holds speeds to the hot end's melt rate, and reports filament, weight and
+  time. The file loads in G-code viewers.
+
+**The G-code is not printer-ready.** The machine's start, end and
+layer-change templates are not expanded (a generic preamble stands in), and
+there is no fan control, acceleration, pressure advance, seam placement,
+wipe, arc fitting, skirt or brim, or multi-extruder support. Coordinates are
+the project's own, not shifted onto a bed; the time is at commanded speeds
+with no acceleration.
+
 Walls do not yet have thin-wall detection, gap fill, overhang handling,
 extra or one-wall-on-top perimeters, print ordering or seams, and Arachne
 (variable width) is not started. Infill is a first working version, not a
@@ -73,8 +87,8 @@ the radius merge; the reference closes within one object only.
 Clipping is clipper2-rs, a port of Clipper2. The reference uses Clipper 6,
 so regions agree in shape and area but not vertex for vertex.
 
-Next, in pipeline order: G-code export (with print order and travel moves),
-supports, then a
+Next: the placeholder language for machine G-code templates (what makes
+output printable), plate origins, supports, then a
 parity harness that slices the same project with both engines and diffs the
 result.
 
