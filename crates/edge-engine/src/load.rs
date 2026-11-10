@@ -1,0 +1,246 @@
+use std::path::{Path, PathBuf};
+
+use edge_3mf::{Body, Project};
+use edge_config::Settings;
+use edge_gcode::PrintSettings;
+use edge_mesh::Mesh;
+
+use crate::Failure;
+
+/// A model file read, before anything is placed on a bed.
+pub struct Opened {
+    path: PathBuf,
+    held: Held,
+}
+
+enum Held {
+    Model(Mesh),
+    Project {
+        project: Box<Project>,
+        plate: Option<usize>,
+    },
+}
+
+/// What a model file holds, placed where it prints.
+pub struct Loaded {
+    /// What to slice.
+    pub bodies: Vec<Body>,
+    /// For a project, the settings it was saved with.
+    pub settings: Option<Settings>,
+    /// For a project, each object on the plate by itself, for what depends
+    /// on which object is which. Empty for a bare model, which is one object.
+    pub objects: Vec<Mesh>,
+    /// Which of the project's plates this is, counting from 0.
+    pub plate: usize,
+    /// The least and greatest corners of everything to slice, in mm.
+    pub bounds: ([f32; 3], [f32; 3]),
+}
+
+/// Reads an STL (binary or ASCII) or a 3MF project. `plate` is the number
+/// of the plate to take from a project; left out, it is plate 1 when the
+/// project has plates.
+pub fn open(path: &Path, plate: Option<u32>) -> Result<Opened, Failure> {
+    let named = |e: &dyn std::error::Error| format!("{}: {e}", path.display());
+    let is_3mf = path
+        .extension()
+        .is_some_and(|ext| ext.eq_ignore_ascii_case("3mf"));
+    if !is_3mf {
+        if plate.is_some() {
+            return Err("--plate only applies to 3MF files".into());
+        }
+        let solid = edge_mesh::stl::load(path).map_err(|e| named(&e))?;
+        return Ok(Opened {
+            path: path.to_owned(),
+            held: Held::Model(solid),
+        });
+    }
+
+    let project = Project::open(path).map_err(|e| named(&e))?;
+    let plate = match plate {
+        Some(id) => Some(project.plate_index(id).ok_or_else(|| {
+            let ids: Vec<String> = project
+                .plates
+                .iter()
+                .map(|plate| plate.id.to_string())
+                .collect();
+            match ids.as_slice() {
+                [] => format!(
+                    "{}: no plate {id}; the file defines no plates",
+                    path.display()
+                ),
+                _ => format!(
+                    "{}: no plate {id}; it has plates {}",
+                    path.display(),
+                    ids.join(", ")
+                ),
+            }
+        })?),
+        None => project.plate_index(1),
+    };
+    Ok(Opened {
+        path: path.to_owned(),
+        held: Held::Project {
+            project: Box::new(project),
+            plate,
+        },
+    })
+}
+
+impl Opened {
+    /// The number of the plate taken and how many the project has; none
+    /// for a bare model or a project without plates.
+    pub fn plate(&self) -> Option<(u32, usize)> {
+        match &self.held {
+            Held::Project {
+                project,
+                plate: Some(index),
+            } => Some((project.plates[*index].id, project.plates.len())),
+            _ => None,
+        }
+    }
+
+    /// The numbers of the project's plates, in order; empty for a bare model.
+    pub fn plates(&self) -> Vec<u32> {
+        match &self.held {
+            Held::Project { project, .. } => project.plates.iter().map(|plate| plate.id).collect(),
+            Held::Model(_) => Vec::new(),
+        }
+    }
+
+    /// The settings a project was saved with.
+    pub fn settings(&self) -> Option<&Settings> {
+        match &self.held {
+            Held::Project { project, .. } => project.settings.as_ref(),
+            Held::Model(_) => None,
+        }
+    }
+
+    /// Everything on the plate, moved to where it sits on the bed.
+    pub fn place(self) -> Result<Loaded, Failure> {
+        let path = self.path;
+        let (mut bodies, settings, mut objects, plate) = match self.held {
+            Held::Model(solid) => (
+                vec![Body {
+                    solid,
+                    negative: None,
+                    filament: 1,
+                }],
+                None,
+                Vec::new(),
+                None,
+            ),
+            Held::Project { project, plate } => (
+                project.bodies(plate),
+                project.settings.clone(),
+                project.instance_meshes(plate),
+                plate.map(|index| (index, project.plates[index].id, project.plates.len())),
+            ),
+        };
+        if let Some((index, id, count)) = plate {
+            let (x, y) = plate_origin(index, count, settings.as_ref()).ok_or_else(|| {
+                format!(
+                    "{}: plate {id} cannot be placed: the project does not give the bed's size",
+                    path.display(),
+                )
+            })?;
+            shift(&mut bodies, -x, -y);
+            shift_meshes(objects.iter_mut(), -x, -y);
+        }
+        let bounds =
+            bodies
+                .iter()
+                .filter_map(|body| body.solid.bounds())
+                .reduce(|(lo, hi), (min, max)| {
+                    (
+                        std::array::from_fn(|i| lo[i].min(min[i])),
+                        std::array::from_fn(|i| hi[i].max(max[i])),
+                    )
+                });
+        let Some(bounds) = bounds else {
+            return Err(format!("{}: nothing printable to slice", path.display()).into());
+        };
+        Ok(Loaded {
+            bodies,
+            settings,
+            objects,
+            plate: plate.map_or(0, |(index, ..)| index),
+            bounds,
+        })
+    }
+}
+
+/// Moves bodies across the bed by `(x, y)` mm.
+pub(crate) fn shift(bodies: &mut [Body], x: f64, y: f64) {
+    let meshes = bodies
+        .iter_mut()
+        .flat_map(|body| std::iter::once(&mut body.solid).chain(body.negative.as_mut()));
+    shift_meshes(meshes, x, y);
+}
+
+fn shift_meshes<'a>(meshes: impl Iterator<Item = &'a mut Mesh>, x: f64, y: f64) {
+    for mesh in meshes {
+        for vertex in &mut mesh.vertices {
+            vertex[0] = (f64::from(vertex[0]) + x) as f32;
+            vertex[1] = (f64::from(vertex[1]) + y) as f32;
+        }
+    }
+}
+
+/// Where plate `index` of `count` sits in a project's own coordinates. The
+/// plates are laid out in a grid a fifth of a bed apart, rows running
+/// towards -Y (PartPlate.cpp `compute_origin`); a part's position on its
+/// plate, which is what the printer needs, is measured from here. The bed
+/// size is the project's own `printable_area`, whole millimetres as the
+/// reference takes it.
+fn plate_origin(index: usize, count: usize, settings: Option<&Settings>) -> Option<(f64, f64)> {
+    if index == 0 {
+        return Some((0.0, 0.0));
+    }
+    let [min_x, min_y, max_x, max_y] = PrintSettings::from_settings(settings?).ok()?.bed?;
+    let (width, depth) = ((max_x - min_x).trunc(), (max_y - min_y).trunc());
+    let columns = (count as f64).sqrt().ceil() as usize;
+    let (row, column) = (index / columns, index % columns);
+    Some((column as f64 * width * 1.2, -(row as f64) * depth * 1.2))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn plates_are_laid_out_in_a_grid_running_back_along_y() {
+        let settings = Settings::from_json(
+            r#"{"printable_area": ["0.5x1", "270.5x1", "270.5x271", "0.5x271"]}"#,
+        )
+        .unwrap();
+        let origin = |index, count| plate_origin(index, count, Some(&settings));
+        // A 270 x 270 mm bed, plates a fifth of a bed apart.
+        assert_eq!(origin(0, 3), Some((0.0, 0.0)));
+        assert_eq!(origin(1, 3), Some((324.0, 0.0)));
+        // Three plates make two columns, so the third starts a new row.
+        assert_eq!(origin(2, 3), Some((0.0, -324.0)));
+        assert_eq!(origin(4, 9), Some((324.0, -324.0)));
+        // The first plate needs no bed size; any other does.
+        assert_eq!(plate_origin(0, 2, None), Some((0.0, 0.0)));
+        assert_eq!(plate_origin(1, 2, None), None);
+        assert_eq!(plate_origin(1, 2, Some(&Settings::default())), None);
+    }
+
+    #[test]
+    fn shifting_moves_solid_and_negative_parts_together() {
+        let cube = edge_mesh::Mesh::from_triangle_soup(edge_mesh::primitives::cuboid(
+            [0.0, 0.0, 0.0],
+            [1.0, 1.0, 1.0],
+        ));
+        let mut bodies = [Body {
+            solid: cube.clone(),
+            negative: Some(cube),
+            filament: 1,
+        }];
+        shift(&mut bodies, 10.0, -5.0);
+        for mesh in [&bodies[0].solid, bodies[0].negative.as_ref().unwrap()] {
+            let (min, max) = mesh.bounds().unwrap();
+            assert_eq!((min, max), ([10.0, -5.0, 0.0], [11.0, -4.0, 1.0]));
+        }
+    }
+}

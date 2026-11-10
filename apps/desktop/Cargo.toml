@@ -1,0 +1,38 @@
+[package]
+name = "edge-desktop"
+version = "0.0.0"
+edition = "2024"
+license = "AGPL-3.0-only"
+publish = false
+description = "EdgeSlicerRS desktop app: open a model, slice it, look through its layers, export G-code"
+
+# A workspace of its own: the engine's workspace builds and tests without
+# Tauri or a web view.
+[workspace]
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+edge-engine = { path = "../../crates/edge-engine" }
+edge-extrusion = { path = "../../crates/edge-extrusion" }
+edge-gcode = { path = "../../crates/edge-gcode" }
+edge-geom = { path = "../../crates/edge-geom" }
+serde_json = "1"
+tauri = { version = "2", features = [] }
+tauri-plugin-dialog = "2"
+# Serves the same page to a browser (`--serve`), for working on the page
+# and for checking it where no window can be opened.
+tiny_http = "0.12"
+
+[lints.rust]
+unsafe_code = "deny"
+
+# The engine is a dependency here, so this is what makes slicing quick in
+# a debug build of the app.
+[profile.dev.package."*"]
+opt-level = 2
+
+[profile.release]
+lto = "thin"
+codegen-units = 1

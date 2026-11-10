@@ -2020,7 +2020,7 @@ fn distance(a: Point2, b: Point2) -> f64 {
 
 /// Feature names as the reference writes them (`ExtrusionEntity::role_to_string`),
 /// which is what G-code viewers colour by.
-fn role_name(role: Role) -> &'static str {
+pub fn role_name(role: Role) -> &'static str {
     match role {
         Role::ExternalPerimeter => "Outer wall",
         Role::Perimeter => "Inner wall",
