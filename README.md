@@ -157,11 +157,13 @@ Known gaps: painted triangles, per-object setting overrides, typed settings
   acceleration, so a print takes longer than it says. `SOURCE_DATE_EPOCH`
   fixes the date in the first line, for comparing two runs byte for byte.
 
-**The G-code has not been checked on a printer.** Prints of a 20 mm cube
-were started on a Snapmaker U1 and an Elegoo Centauri Carbon on
-2026-11-10; how they came out is not recorded here yet. Supports,
-bridges, overhangs and printing in more than one filament have not been
-on hardware at all. Without a printer
+**On hardware so far:** a deck across a 30 mm gap printed on an Elegoo
+Centauri Carbon on 2026-11-10 and the bridge held; the wall across the
+gap came out a little pulled in, having been printed five times faster
+than the profile asks, which is since put right. Prints of a 20 mm cube
+were started on that printer and on a Snapmaker U1 the same day; how they
+came out is not recorded here. Supports and printing in more than one
+filament have not been on hardware at all. Without a printer
 profile a generic preamble is written and the file is only good for viewing.
 
 Multi-filament printing is a first working version. Where parts of
