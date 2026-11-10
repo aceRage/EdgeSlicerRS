@@ -2,12 +2,13 @@ use std::{error::Error, fmt::Write as _, fs, path::PathBuf, process::ExitCode, t
 
 use clap::{Args, Parser, Subcommand};
 use edge_3mf::{Body, PartKind, Project};
-use edge_adhesion::AdhesionSettings;
+use edge_adhesion::{AdhesionSettings, BrimKind, Footing};
 use edge_config::{Kind, Settings, Vendor};
 use edge_extrusion::{ExtrusionLoop, ExtrusionPath, Role};
 use edge_gcode::PrintSettings;
 use edge_geom::{ExPolygon, scaled, unscaled};
 use edge_infill::{InfillSettings, SurfaceKind};
+use edge_mesh::Mesh;
 use edge_perimeter::{Perimeters, WallSettings};
 use edge_slice::LayerRegions;
 use rayon::prelude::*;
@@ -222,6 +223,10 @@ fn shift(bodies: &mut [Body], x: f64, y: f64) {
     let meshes = bodies
         .iter_mut()
         .flat_map(|body| std::iter::once(&mut body.solid).chain(body.negative.as_mut()));
+    shift_meshes(meshes, x, y);
+}
+
+fn shift_meshes<'a>(meshes: impl Iterator<Item = &'a mut Mesh>, x: f64, y: f64) {
     for mesh in meshes {
         for vertex in &mut mesh.vertices {
             vertex[0] = (f64::from(vertex[0]) + x) as f32;
@@ -247,8 +252,18 @@ fn plate_origin(index: usize, count: usize, settings: Option<&Settings>) -> Opti
     Some((column as f64 * width * 1.2, -(row as f64) * depth * 1.2))
 }
 
-/// The bodies to slice and, for a project, the settings it was saved with.
-fn load(args: &SliceArgs) -> Result<(Vec<Body>, Option<Settings>), Failure> {
+/// What a model file holds.
+struct Loaded {
+    /// What to slice.
+    bodies: Vec<Body>,
+    /// For a project, the settings it was saved with.
+    settings: Option<Settings>,
+    /// For a project, each object on the plate by itself, for what depends
+    /// on which object is which. Empty for a bare model, which is one object.
+    objects: Vec<Mesh>,
+}
+
+fn load(args: &SliceArgs) -> Result<Loaded, Failure> {
     let path = &args.model;
     let named = |e: &dyn Error| format!("{}: {e}", path.display());
     let is_3mf = path
@@ -259,13 +274,14 @@ fn load(args: &SliceArgs) -> Result<(Vec<Body>, Option<Settings>), Failure> {
             return Err("--plate only applies to 3MF files".into());
         }
         let solid = edge_mesh::stl::load(path).map_err(|e| named(&e))?;
-        return Ok((
-            vec![Body {
+        return Ok(Loaded {
+            bodies: vec![Body {
                 solid,
                 negative: None,
             }],
-            None,
-        ));
+            settings: None,
+            objects: Vec::new(),
+        });
     }
 
     let project = Project::open(path).map_err(|e| named(&e))?;
@@ -298,6 +314,7 @@ fn load(args: &SliceArgs) -> Result<(Vec<Body>, Option<Settings>), Failure> {
         );
     }
     let mut bodies = project.bodies(plate);
+    let mut objects = project.instance_meshes(plate);
     if let Some(index) = plate {
         let (x, y) = plate_origin(index, project.plates.len(), project.settings.as_ref())
             .ok_or_else(|| {
@@ -308,8 +325,13 @@ fn load(args: &SliceArgs) -> Result<(Vec<Body>, Option<Settings>), Failure> {
                 )
             })?;
         shift(&mut bodies, -x, -y);
+        shift_meshes(objects.iter_mut(), -x, -y);
     }
-    Ok((bodies, project.settings))
+    Ok(Loaded {
+        bodies,
+        settings: project.settings,
+        objects,
+    })
 }
 
 /// The presets named on the command line, resolved.
@@ -387,7 +409,11 @@ fn slice(args: SliceArgs) -> Result<(), Failure> {
     }
 
     let started = Instant::now();
-    let (mut bodies, project_settings) = load(&args)?;
+    let Loaded {
+        mut bodies,
+        settings: project_settings,
+        objects,
+    } = load(&args)?;
     let load_time = started.elapsed();
     let is_project = project_settings.is_some();
     let bounds =
@@ -522,10 +548,37 @@ fn slice(args: SliceArgs) -> Result<(), Failure> {
                 .map_or(layers[index].regions.as_slice(), Vec::as_slice)
         })
         .collect();
-    let brim = match beside.first() {
-        Some(first) => edge_adhesion::brim(first, &adhesion, first_layer_height)?,
-        None => Vec::new(),
+    // The brim is worked out object by object: each one's first layer and
+    // how tall it stands. A bare model is the one object.
+    let own: Vec<&Mesh> = if objects.is_empty() {
+        bodies.iter().map(|body| &body.solid).collect()
+    } else {
+        objects.iter().collect()
     };
+    let mut footprints: Vec<(Vec<ExPolygon>, f64)> = Vec::new();
+    if adhesion.brim != BrimKind::None {
+        for mesh in own {
+            let Some((low, high)) = mesh.bounds() else {
+                continue;
+            };
+            let body = [edge_slice::Body {
+                solid: mesh,
+                negative: None,
+            }];
+            let first = edge_slice::slice_regions(&body, &planes[..1], scaled(closing_radius))?;
+            if let Some(layer) = first.into_iter().next() {
+                footprints.push((layer.regions, f64::from(high[2] - low[2])));
+            }
+        }
+    }
+    let footings: Vec<Footing<'_>> = footprints
+        .iter()
+        .map(|(footprint, height)| Footing {
+            footprint,
+            height: *height,
+        })
+        .collect();
+    let brim = edge_adhesion::brim(&footings, &adhesion, first_layer_height)?;
     let mut around: Vec<Vec<ExtrusionLoop>> = vec![Vec::new(); layers.len()];
     for (index, lines) in around.iter_mut().enumerate() {
         if adhesion.has_skirt(index) {
