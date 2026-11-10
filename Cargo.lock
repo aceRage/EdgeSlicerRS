@@ -192,8 +192,10 @@ dependencies = [
  "edge-3mf",
  "edge-clip",
  "edge-config",
+ "edge-extrusion",
  "edge-geom",
  "edge-mesh",
+ "edge-perimeter",
  "edge-slice",
  "rayon",
 ]
@@ -218,6 +220,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "edge-extrusion"
+version = "0.0.0"
+dependencies = [
+ "edge-geom",
+ "thiserror",
+]
+
+[[package]]
 name = "edge-geom"
 version = "0.0.0"
 
@@ -226,6 +236,19 @@ name = "edge-mesh"
 version = "0.0.0"
 dependencies = [
  "rustc-hash",
+ "thiserror",
+]
+
+[[package]]
+name = "edge-perimeter"
+version = "0.0.0"
+dependencies = [
+ "edge-3mf",
+ "edge-clip",
+ "edge-config",
+ "edge-extrusion",
+ "edge-geom",
+ "edge-slice",
  "thiserror",
 ]
 

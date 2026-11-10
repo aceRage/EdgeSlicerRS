@@ -88,6 +88,18 @@ pub fn offset(
         .map_err(ClipError::from)
 }
 
+/// Two offsets in a row. Shrinking then growing by less removes whatever
+/// is too narrow to survive the first step; growing then shrinking fills
+/// what is too narrow to stay open.
+pub fn offset2(
+    regions: &[ExPolygon],
+    first: Coord,
+    second: Coord,
+    join: Join,
+) -> Result<Vec<ExPolygon>, ClipError> {
+    offset(&offset(regions, first, join)?, second, join)
+}
+
 /// Fills cracks and notches narrower than twice `radius` by growing the
 /// regions and shrinking them back. This is how the reference merges parts
 /// modelled to sit flush whose surfaces miss each other by a hair
@@ -100,7 +112,73 @@ pub fn closing(
     if radius <= 0 {
         return union_ex(regions);
     }
-    offset(&offset(regions, radius, join)?, -radius, join)
+    offset2(regions, radius, -radius, join)
+}
+
+/// Drops vertices that deviate from the outline by no more than `tolerance`
+/// (Douglas-Peucker on each ring, anchored at its first point), then
+/// re-unites the rings in case simplifying made them cross. Matches the
+/// reference's `ExPolygon::simplify_p` followed by `union_ex`.
+pub fn simplify(regions: &[ExPolygon], tolerance: Coord) -> Result<Vec<ExPolygon>, ClipError> {
+    let simplified: Vec<Polygon> = rings(regions)
+        .map(|ring| {
+            // Closing the ring makes its first point both ends of the path.
+            let mut closed = ring.points.clone();
+            closed.extend(ring.points.first().copied());
+            let mut points = douglas_peucker(&closed, tolerance as f64);
+            points.pop();
+            Polygon { points }
+        })
+        .collect();
+    union(&simplified)
+}
+
+/// Simplifies an open path, keeping both ends. A port of the reference's
+/// `MultiPoint::_douglas_peucker`, including measuring to the segment rather
+/// than to the infinite line through it.
+fn douglas_peucker(points: &[Point2], tolerance: f64) -> Vec<Point2> {
+    let Some(&first) = points.first() else {
+        return Vec::new();
+    };
+    let mut kept = vec![first];
+    if points.len() == 1 {
+        return kept;
+    }
+    let tolerance_sq = tolerance * tolerance;
+    let mut anchor = 0;
+    // Ends of the stretches still to be examined, nearest last.
+    let mut floaters = vec![points.len() - 1];
+    while let Some(&floater) = floaters.last() {
+        let (mut furthest, mut furthest_sq) = (anchor, 0.0);
+        for index in anchor + 1..floater {
+            let distance_sq =
+                distance_to_segment_sq(points[index], points[anchor], points[floater]);
+            if distance_sq > furthest_sq {
+                (furthest, furthest_sq) = (index, distance_sq);
+            }
+        }
+        if furthest_sq <= tolerance_sq {
+            kept.push(points[floater]);
+            anchor = floater;
+            floaters.pop();
+        } else {
+            floaters.push(furthest);
+        }
+    }
+    kept
+}
+
+fn distance_to_segment_sq(p: Point2, a: Point2, b: Point2) -> f64 {
+    let (px, py) = ((p.x - a.x) as f64, (p.y - a.y) as f64);
+    let (dx, dy) = ((b.x - a.x) as f64, (b.y - a.y) as f64);
+    let length_sq = dx * dx + dy * dy;
+    let along = if length_sq > 0.0 {
+        ((px * dx + py * dy) / length_sq).clamp(0.0, 1.0)
+    } else {
+        0.0
+    };
+    let (ox, oy) = (px - along * dx, py - along * dy);
+    ox * ox + oy * oy
 }
 
 fn rings(regions: &[ExPolygon]) -> impl Iterator<Item = &Polygon> {
@@ -379,6 +457,60 @@ mod tests {
         shapes.sort_by(|a, b| a.0.total_cmp(&b.0));
         assert_eq!(shapes, [(90.0, 4), (200.0, 4)]);
         assert_eq!(area(&closing(&blocks, 0, Join::MITER).unwrap()), 289.5);
+    }
+
+    #[test]
+    fn simplify_drops_small_deviations_only() {
+        // A square with a 0.005 mm bump on one side and a 1 mm notch on another.
+        let points = [
+            (0.0, 0.0),
+            (5.0, -0.005),
+            (10.0, 0.0),
+            (10.0, 4.0),
+            (9.0, 5.0),
+            (10.0, 6.0),
+            (10.0, 10.0),
+            (0.0, 10.0),
+        ];
+        let bumpy = vec![ExPolygon {
+            contour: Polygon {
+                points: points.map(|(x, y)| Point2::from_mm(x, y)).to_vec(),
+            },
+            holes: vec![hole(4.0, 4.0, 6.0, 6.0)],
+        }];
+        let simple = simplify(&bumpy, scaled(0.01)).unwrap();
+        assert_eq!(simple.len(), 1);
+        assert_eq!(simple[0].contour.points.len(), 7);
+        assert_eq!(simple[0].holes.len(), 1);
+        assert_eq!(area(&simple), 100.0 - 1.0 - 4.0);
+        assert_eq!(
+            area(&simplify(&bumpy, 0).unwrap()),
+            100.0 + 0.025 - 1.0 - 4.0
+        );
+    }
+
+    #[test]
+    fn douglas_peucker_keeps_ends_and_real_corners() {
+        let path: Vec<Point2> = [(0.0, 0.0), (1.0, 0.004), (2.0, 0.0), (3.0, 1.0), (4.0, 0.0)]
+            .map(|(x, y)| Point2::from_mm(x, y))
+            .to_vec();
+        let kept = douglas_peucker(&path, scaled(0.01) as f64);
+        assert_eq!(kept, [path[0], path[2], path[3], path[4]]);
+        assert_eq!(
+            douglas_peucker(&path, scaled(5.0) as f64),
+            [path[0], path[4]]
+        );
+        assert_eq!(douglas_peucker(&path[..1], 1.0), [path[0]]);
+        assert!(douglas_peucker(&[], 1.0).is_empty());
+    }
+
+    #[test]
+    fn offset2_removes_what_is_too_narrow() {
+        // A 10 mm block with a 0.3 mm wide fin sticking out of it.
+        let mut shape = solid(0.0, 0.0, 10.0, 10.0);
+        shape.extend(solid(10.0, 4.0, 15.0, 4.3));
+        let opened = offset2(&shape, scaled(-0.2), scaled(0.2), Join::MITER).unwrap();
+        assert_eq!((opened.len(), area(&opened)), (1, 100.0));
     }
 
     #[test]

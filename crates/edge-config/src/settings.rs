@@ -10,6 +10,24 @@ pub enum Value {
     Many(Vec<String>),
 }
 
+/// A length given outright in mm or as a percentage of some other length,
+/// which the setting's meaning decides (a line width is a percentage of the
+/// nozzle diameter, for instance).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum FloatOrPercent {
+    Value(f64),
+    Percent(f64),
+}
+
+impl FloatOrPercent {
+    pub fn resolve(self, whole: f64) -> f64 {
+        match self {
+            Self::Value(value) => value,
+            Self::Percent(percent) => whole * percent / 100.0,
+        }
+    }
+}
+
 /// Flat key to value settings, ordered by key so output is deterministic.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Settings(BTreeMap<String, Value>);
@@ -90,6 +108,13 @@ impl Settings {
         }
     }
 
+    /// Takes every setting from `other`, replacing those already present.
+    pub fn overlay(&mut self, other: &Settings) {
+        for (key, value) in &other.0 {
+            self.0.insert(key.clone(), value.clone());
+        }
+    }
+
     /// A single-valued setting; `None` when absent or stored as a list.
     pub fn text(&self, key: &str) -> Option<&str> {
         match self.0.get(key)? {
@@ -114,6 +139,44 @@ impl Settings {
             return Err(bad(key, "a list", "a single number"));
         };
         parse_float(key, text).map(Some)
+    }
+
+    /// A whole number, such as a count of walls.
+    pub fn integer(&self, key: &str) -> Result<Option<i64>, ConfigError> {
+        let Some(text) = self.first(key) else {
+            return Ok(None);
+        };
+        text.trim()
+            .parse()
+            .map(Some)
+            .map_err(|_| bad(key, text, "a whole number"))
+    }
+
+    /// An on/off setting, stored as `1` or `0`.
+    pub fn flag(&self, key: &str) -> Result<Option<bool>, ConfigError> {
+        match self.first(key).map(str::trim) {
+            None => Ok(None),
+            Some("1" | "true") => Ok(Some(true)),
+            Some("0" | "false") => Ok(Some(false)),
+            Some(other) => Err(bad(key, other, "1 or 0")),
+        }
+    }
+
+    /// A number with an optional trailing `%`.
+    pub fn float_or_percent(&self, key: &str) -> Result<Option<FloatOrPercent>, ConfigError> {
+        let Some(text) = self.first(key) else {
+            return Ok(None);
+        };
+        let text = text.trim();
+        Ok(Some(match text.strip_suffix('%') {
+            Some(percent) => FloatOrPercent::Percent(parse_float(key, percent)?),
+            None => FloatOrPercent::Value(parse_float(key, text)?),
+        }))
+    }
+
+    /// The value itself, or the first entry of a per-extruder list.
+    fn first(&self, key: &str) -> Option<&str> {
+        self.texts(key)?.first().map(String::as_str)
     }
 
     /// Per-extruder or per-filament numbers. An entry of `nil` means "not
@@ -198,6 +261,40 @@ mod tests {
             Some(vec![Some(210.0), None])
         );
         assert_eq!(settings.floats("one").unwrap(), Some(vec![Some(7.0)]));
+    }
+
+    #[test]
+    fn typed_values_read_scalars_and_first_list_entries() {
+        let settings = Settings::from_json(
+            r#"{"wall_loops": "3", "overlap": "15%", "width": ["0.42", "0.6"], "arc": "1", "bad": "x"}"#,
+        )
+        .unwrap();
+        assert_eq!(settings.integer("wall_loops").unwrap(), Some(3));
+        assert_eq!(
+            settings.float_or_percent("overlap").unwrap(),
+            Some(FloatOrPercent::Percent(15.0))
+        );
+        assert_eq!(
+            settings.float_or_percent("width").unwrap(),
+            Some(FloatOrPercent::Value(0.42))
+        );
+        assert_eq!(settings.flag("arc").unwrap(), Some(true));
+        assert_eq!(settings.flag("missing").unwrap(), None);
+        assert!(settings.integer("overlap").is_err() && settings.flag("bad").is_err());
+        assert_eq!(FloatOrPercent::Percent(150.0).resolve(0.4), 0.6);
+        assert_eq!(FloatOrPercent::Value(0.5).resolve(0.4), 0.5);
+    }
+
+    #[test]
+    fn overlay_replaces_and_adds() {
+        let mut base = Settings::from_json(r#"{"a": "1", "b": "1"}"#).unwrap();
+        base.overlay(&Settings::from_json(r#"{"b": "2", "c": "2"}"#).unwrap());
+        assert_eq!(
+            base.to_json(),
+            Settings::from_json(r#"{"a": "1", "b": "2", "c": "2"}"#)
+                .unwrap()
+                .to_json()
+        );
     }
 
     #[test]

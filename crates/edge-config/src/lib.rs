@@ -6,7 +6,7 @@ mod vendor;
 
 use std::{io, path::PathBuf};
 
-pub use settings::{Settings, Value};
+pub use settings::{FloatOrPercent, Settings, Value};
 pub use vendor::{Kind, Vendor};
 
 #[derive(Debug, thiserror::Error)]

@@ -53,6 +53,18 @@ impl Polygon {
     pub fn is_ccw(&self) -> bool {
         self.signed_area_mm2() > 0.0
     }
+
+    /// Length in mm of the closed outline.
+    pub fn perimeter_mm(&self) -> f64 {
+        let pts = &self.points;
+        (0..pts.len())
+            .map(|i| {
+                let (a, b) = (pts[i], pts[(i + 1) % pts.len()]);
+                ((b.x - a.x) as f64).hypot((b.y - a.y) as f64)
+            })
+            .sum::<f64>()
+            / UNITS_PER_MM
+    }
 }
 
 /// A region of the plane: one outer boundary and the holes cut out of it.
@@ -97,6 +109,12 @@ mod tests {
         assert!(sq.is_ccw());
         sq.points.reverse();
         assert_eq!(sq.signed_area_mm2(), -100.0);
+    }
+
+    #[test]
+    fn perimeter_closes_the_outline() {
+        assert_eq!(square(10.0).perimeter_mm(), 40.0);
+        assert_eq!(Polygon::default().perimeter_mm(), 0.0);
     }
 
     #[test]

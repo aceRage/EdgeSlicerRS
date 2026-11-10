@@ -2,10 +2,12 @@ use std::{error::Error, fmt::Write as _, fs, path::PathBuf, process::ExitCode, t
 
 use clap::{Args, Parser, Subcommand};
 use edge_3mf::{Body, PartKind, Project};
-use edge_clip::Join;
 use edge_config::{Kind, Settings, Vendor};
+use edge_extrusion::{ExtrusionLoop, Role};
 use edge_geom::{ExPolygon, scaled, unscaled};
+use edge_perimeter::{Perimeters, WallSettings};
 use edge_slice::LayerRegions;
+use rayon::prelude::*;
 
 type Failure = Box<dyn Error>;
 
@@ -54,17 +56,19 @@ struct SliceArgs {
     #[arg(long)]
     closing_radius: Option<f64>,
     /// Vendor whose process preset supplies the slicing settings; needs --process.
-    #[arg(long, requires = "process")]
+    #[arg(long)]
     vendor: Option<String>,
     /// Process preset name within --vendor.
     #[arg(long, requires = "vendor")]
     process: Option<String>,
+    /// Machine preset name within --vendor; supplies the nozzle diameter.
+    #[arg(long, requires = "vendor")]
+    machine: Option<String>,
     #[command(flatten)]
     profiles: ProfilesArgs,
-    /// Grow each layer's regions by this many mm before reporting, or shrink
-    /// them when negative. For checking and timing offsets.
-    #[arg(long, allow_hyphen_values = true)]
-    offset: Option<f64>,
+    /// Number of walls; overrides the presets and the 3MF's own settings.
+    #[arg(long)]
+    wall_loops: Option<usize>,
     /// Worker threads; defaults to all cores.
     #[arg(long)]
     threads: Option<usize>,
@@ -248,28 +252,46 @@ fn load(args: &SliceArgs) -> Result<(Vec<Body>, Option<Settings>), Failure> {
     Ok((project.bodies(plate), project.settings))
 }
 
+/// The presets named on the command line, resolved.
+struct Presets {
+    machine: Option<Settings>,
+    process: Option<Settings>,
+}
+
+fn presets(args: &SliceArgs) -> Result<Presets, Failure> {
+    let Some(vendor) = &args.vendor else {
+        return Ok(Presets {
+            machine: None,
+            process: None,
+        });
+    };
+    let vendor = args.profiles.vendor(vendor)?;
+    let resolve = |kind, name: &Option<String>| {
+        name.as_ref()
+            .map(|name| vendor.resolve(kind, name))
+            .transpose()
+    };
+    Ok(Presets {
+        machine: resolve(Kind::Machine, &args.machine)?,
+        process: resolve(Kind::Process, &args.process)?,
+    })
+}
+
 /// A slicing setting's value and where it came from.
 type Sourced = (f64, &'static str);
 
 /// Layer height, first layer height and closing radius, each from the first
 /// of: command line, process preset, the project's settings, default.
-fn slice_settings(args: &SliceArgs, project: Option<&Settings>) -> Result<[Sourced; 3], Failure> {
-    let preset = match (&args.vendor, &args.process) {
-        (Some(vendor), Some(process)) => Some(
-            args.profiles
-                .vendor(vendor)?
-                .resolve(Kind::Process, process)?,
-        ),
-        _ => None,
-    };
+fn slice_settings(
+    args: &SliceArgs,
+    preset: Option<&Settings>,
+    project: Option<&Settings>,
+) -> Result<[Sourced; 3], Failure> {
     let pick = |flag: Option<f64>, key: &str| -> Result<Option<Sourced>, Failure> {
         if let Some(value) = flag {
             return Ok(Some((value, "command line")));
         }
-        for (settings, source) in [
-            (preset.as_ref(), "process preset"),
-            (project, "project settings"),
-        ] {
+        for (settings, source) in [(preset, "process preset"), (project, "project settings")] {
             if let Some(value) = settings
                 .map(|settings| settings.float(key))
                 .transpose()?
@@ -317,11 +339,22 @@ fn slice(args: SliceArgs) -> Result<(), Failure> {
     let Some((min, max)) = bounds else {
         return Err(format!("{}: nothing printable to slice", args.model.display()).into());
     };
+
+    let presets = presets(&args)?;
     let [
         (layer_height, layer_source),
         (first_layer_height, first_source),
         (closing_radius, closing_source),
-    ] = slice_settings(&args, project_settings.as_ref())?;
+    ] = slice_settings(&args, presets.process.as_ref(), project_settings.as_ref())?;
+    // Later sources replace earlier ones: project, machine preset, process preset.
+    let mut settings = project_settings.unwrap_or_default();
+    for preset in [&presets.machine, &presets.process].into_iter().flatten() {
+        settings.overlay(preset);
+    }
+    let mut walls = WallSettings::from_settings(&settings)?;
+    if let Some(count) = args.wall_loops {
+        walls.wall_loops = count;
+    }
 
     let started = Instant::now();
     let planes = edge_slice::layer_planes(
@@ -337,8 +370,26 @@ fn slice(args: SliceArgs) -> Result<(), Failure> {
             negative: body.negative.as_ref(),
         })
         .collect();
-    let mut layers = edge_slice::slice_regions(&borrowed, &planes, scaled(closing_radius))?;
+    let layers = edge_slice::slice_regions(&borrowed, &planes, scaled(closing_radius))?;
     let slice_time = started.elapsed();
+
+    let started = Instant::now();
+    let perimeters = layers
+        .par_iter()
+        .enumerate()
+        .map(|(index, layer)| {
+            let height = if index == 0 {
+                first_layer_height
+            } else {
+                layer_height
+            };
+            let params = walls
+                .params(height, index == 0)
+                .map_err(|e| e.to_string())?;
+            edge_perimeter::classic(&layer.regions, &params).map_err(|e| e.to_string())
+        })
+        .collect::<Result<Vec<Perimeters>, String>>()?;
+    let perimeter_time = started.elapsed();
 
     let carved = bodies.iter().filter(|body| body.negative.is_some()).count();
     println!(
@@ -361,51 +412,7 @@ fn slice(args: SliceArgs) -> Result<(), Failure> {
         "layer height {layer_height} mm ({layer_source}), first layer {first_layer_height} mm ({first_source}), \
          closing radius {closing_radius} mm ({closing_source})"
     );
-    report(&layers);
-    let leaky = layers.iter().filter(|l| l.open_chains > 0).count();
-    if leaky > 0 {
-        println!("warning: {leaky} layers have open contours; the mesh is not watertight there");
-    }
-    println!(
-        "load {:.1} ms, slice {:.1} ms on {} threads",
-        load_time.as_secs_f64() * 1e3,
-        slice_time.as_secs_f64() * 1e3,
-        rayon::current_num_threads(),
-    );
 
-    if let Some(distance) = args.offset {
-        use rayon::prelude::*;
-        let started = Instant::now();
-        layers.par_iter_mut().try_for_each(|layer| {
-            layer.regions = edge_clip::offset(&layer.regions, scaled(distance), Join::MITER)?;
-            Ok::<_, edge_clip::ClipError>(())
-        })?;
-        println!(
-            "offset by {distance} mm in {:.1} ms:",
-            started.elapsed().as_secs_f64() * 1e3
-        );
-        report(&layers);
-    }
-
-    if let Some(path) = args.svg {
-        let index = args.svg_layer.unwrap_or(layers.len() / 2);
-        let layer = layers.get(index).ok_or_else(|| {
-            format!(
-                "--svg-layer {index} is out of range; there are {} layers",
-                layers.len()
-            )
-        })?;
-        fs::write(&path, svg(layer))?;
-        println!(
-            "layer {index} (z {:.3} mm) written to {}",
-            layer.z,
-            path.display()
-        );
-    }
-    Ok(())
-}
-
-fn report(layers: &[LayerRegions]) {
     let regions = || layers.iter().flat_map(|layer| &layer.regions);
     println!(
         "{} layers, {} regions, {} holes, {} points, {:.1} mm² in all",
@@ -418,11 +425,73 @@ fn report(layers: &[LayerRegions]) {
             .sum::<usize>(),
         regions().map(ExPolygon::area_mm2).sum::<f64>(),
     );
+    let leaky = layers.iter().filter(|l| l.open_chains > 0).count();
+    if leaky > 0 {
+        println!("warning: {leaky} layers have open contours; the mesh is not watertight there");
+    }
+
+    let sample = walls.params(layer_height, false)?;
+    let loops = || perimeters.iter().flat_map(|layer| &layer.loops);
+    let external = loops().filter(|wall| wall.role == Role::ExternalPerimeter);
+    println!(
+        "{} walls of {:.3} mm outside and {:.3} mm inside on a {} mm nozzle: {} loops ({} external), \
+         {:.2} m, {:.2} cm³; {} infill areas",
+        walls.wall_loops,
+        sample.outer.width,
+        sample.inner.width,
+        walls.nozzle_diameter,
+        loops().count(),
+        external.count(),
+        loops().map(ExtrusionLoop::length_mm).sum::<f64>() / 1e3,
+        loops().map(ExtrusionLoop::volume_mm3).sum::<f64>() / 1e3,
+        perimeters
+            .iter()
+            .map(|layer| layer.infill.len())
+            .sum::<usize>(),
+    );
+    println!(
+        "load {:.1} ms, slice {:.1} ms, perimeters {:.1} ms on {} threads",
+        load_time.as_secs_f64() * 1e3,
+        slice_time.as_secs_f64() * 1e3,
+        perimeter_time.as_secs_f64() * 1e3,
+        rayon::current_num_threads(),
+    );
+
+    if let Some(path) = args.svg {
+        let index = args.svg_layer.unwrap_or(layers.len() / 2);
+        let layer = layers.get(index).ok_or_else(|| {
+            format!(
+                "--svg-layer {index} is out of range; there are {} layers",
+                layers.len()
+            )
+        })?;
+        fs::write(&path, svg(layer, &perimeters[index]))?;
+        println!(
+            "layer {index} (z {:.3} mm) written to {}",
+            layer.z,
+            path.display()
+        );
+    }
+    Ok(())
 }
 
-/// Renders a layer in millimetres with +y up. Each region is one path, so
-/// its holes show through and regions that should have merged would not.
-fn svg(layer: &LayerRegions) -> String {
+/// Renders a layer in millimetres with +y up: the sliced outline as a thin
+/// line, the infill area filled, and each wall stroked at its real width so
+/// gaps and overlaps between walls show as they would print.
+fn svg(layer: &LayerRegions, perimeters: &Perimeters) -> String {
+    fn path(
+        out: &mut String,
+        rings: impl Iterator<Item = impl std::borrow::Borrow<edge_geom::Polygon>>,
+    ) {
+        for ring in rings {
+            for (i, p) in ring.borrow().points.iter().enumerate() {
+                let command = if i == 0 { 'M' } else { 'L' };
+                write!(out, "{command}{:.4} {:.4}", unscaled(p.x), -unscaled(p.y)).unwrap();
+            }
+            out.push('Z');
+        }
+    }
+
     let points = || {
         layer
             .regions
@@ -442,25 +511,43 @@ fn svg(layer: &LayerRegions) -> String {
     let (width, height) = (max_x - min_x, max_y - min_y);
     let margin = width.max(height) * 0.05;
 
-    let mut paths = String::new();
-    for region in &layer.regions {
-        paths.push_str("<path d=\"");
-        for ring in region.rings() {
-            for (i, p) in ring.points.iter().enumerate() {
-                let command = if i == 0 { 'M' } else { 'L' };
-                write!(paths, "{command}{:.4} {:.4}", unscaled(p.x), -unscaled(p.y)).unwrap();
-            }
-            paths.push('Z');
-        }
-        paths.push_str("\"/>");
+    let mut body = String::new();
+    body.push_str("<g fill=\"#f2d9a0\" fill-rule=\"evenodd\">");
+    for area in &perimeters.infill {
+        body.push_str("<path d=\"");
+        path(&mut body, area.rings());
+        body.push_str("\"/>");
     }
+    body.push_str("</g><g fill=\"none\" stroke-linejoin=\"round\" stroke-opacity=\"0.75\">");
+    for wall in &perimeters.loops {
+        let colour = if wall.role == Role::ExternalPerimeter {
+            "#1d3557"
+        } else {
+            "#5b8cc0"
+        };
+        write!(
+            body,
+            "<path stroke=\"{colour}\" stroke-width=\"{:.4}\" d=\"",
+            wall.flow.width
+        )
+        .unwrap();
+        path(&mut body, std::iter::once(&wall.polygon));
+        body.push_str("\"/>");
+    }
+    write!(
+        body,
+        "</g><g fill=\"none\" stroke=\"#c1121f\" stroke-width=\"{:.4}\"><path d=\"",
+        width.max(height) / 2000.0
+    )
+    .unwrap();
+    path(&mut body, layer.regions.iter().flat_map(ExPolygon::rings));
+    body.push_str("\"/></g>");
+
     format!(
-        "<svg xmlns=\"http://www.w3.org/2000/svg\" viewBox=\"{:.4} {:.4} {:.4} {:.4}\">\
-         <g fill=\"#9db7d5\" fill-rule=\"evenodd\" stroke=\"#1d3557\" stroke-width=\"{:.4}\">{paths}</g></svg>\n",
+        "<svg xmlns=\"http://www.w3.org/2000/svg\" viewBox=\"{:.4} {:.4} {:.4} {:.4}\">{body}</svg>\n",
         min_x - margin,
         -max_y - margin,
         width + 2.0 * margin,
         height + 2.0 * margin,
-        width.max(height) / 500.0,
     )
 }

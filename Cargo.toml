@@ -12,8 +12,10 @@ publish = false
 edge-3mf = { path = "crates/edge-3mf" }
 edge-clip = { path = "crates/edge-clip" }
 edge-config = { path = "crates/edge-config" }
+edge-extrusion = { path = "crates/edge-extrusion" }
 edge-geom = { path = "crates/edge-geom" }
 edge-mesh = { path = "crates/edge-mesh" }
+edge-perimeter = { path = "crates/edge-perimeter" }
 edge-slice = { path = "crates/edge-slice" }
 clap = { version = "4", features = ["derive", "env"] }
 clipper2-rs = "0.3"
@@ -27,6 +29,12 @@ zip = { version = "9", default-features = false, features = ["deflate-flate2-zli
 
 [workspace.lints.rust]
 unsafe_code = "deny"
+
+# Tests run every preset and project in the reference; optimising the
+# dependencies (clipping, XML, zip) keeps that to seconds without making
+# this workspace's own code harder to debug.
+[profile.dev.package."*"]
+opt-level = 2
 
 [profile.release]
 lto = "thin"
