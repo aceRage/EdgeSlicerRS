@@ -28,7 +28,8 @@ replaces it until output matches on the printers we care about.
 | `crates/edge-engine` | The whole pipeline behind one call, for whatever drives it: open a model, settle its settings, slice with progress and cancel, G-code, a layer's lines for drawing, and a vendor's presets by printer |
 | `crates/edge-cli` | The `edge` command line |
 | `tools/make_defaults.py` | Asks the reference for its default of every setting and writes the table `edge-config` carries; run again when the pin moves |
-| `tools/make_fixture.py` | Writes small test 3MFs (parts that need supports or a brim, and a plain cube) to compare with the reference on |
+| `tools/make_fixture.py` | Writes small test 3MFs (parts that need supports or a brim, a plain cube, two blocks in two filaments) to compare with the reference on |
+| `tools/make_project.py` | Writes one of those parts as a project whose settings are named presets, with as many filaments as are named: how the test prints for a printer are made |
 | `reference/EdgeSlicer` | Pinned submodule of the C++ slicer: profiles, test models, behaviour to match. Read-only here |
 | `apps/desktop` | The desktop app (Tauri): open a model, slice it, look through its layers, export G-code. A workspace of its own |
 
@@ -80,10 +81,11 @@ page makes on standard error.
 Checked so far, on the Mac mini: in a browser through `--serve`, a
 four-colour plate and a bare STL with presets were sliced, looked through
 and exported, and the exported file is byte for byte the command line's
-but for the time in its first line. The window itself opens, loads the
-page and answers its calls (seen in the trace); slicing from the window
-and its file dialogs have not been tried by hand yet. Not built on
-Windows or Linux.
+but for the time in its first line. The owner then ran the window by hand on the same day: its file dialogs,
+slicing and the layer view worked. A model printed in two filaments
+and sliced there with one filament preset had no G-code, which is since
+put right (the preset is used for every filament). Not built on Windows
+or Linux.
 
 ## Status
 
@@ -178,8 +180,18 @@ Known gaps: painted triangles, per-object setting overrides, typed settings
   - A tool change follows the reference: pull the filament well back, cool
     the tool being put away, run the printer's own tool-change G-code,
     heat and select the new tool, and push its filament back as far as it
-    was pulled when last put away. The next tool starts warming half a
-    minute ahead, and a tool not needed again is switched off.
+    was pulled when last put away. The tool being put away goes to the
+    prime tower first, so it is over the tower and not over the part that
+    it waits while the next comes up to temperature. The next tool starts
+    warming half a minute ahead, as far as this engine's time for the
+    layer allows (it has no acceleration, so it is short: the reference
+    starts the first one during the start G-code), and a tool not needed
+    again is switched off.
+  - A filament preset named for a model printed in several filaments is
+    used for all of them, and a note says so. A model printed in a
+    filament its settings say nothing of gets no G-code and a sentence
+    saying which. Printer scripts are given a bed temperature for every
+    filament.
   - A prime tower, on every layer up to the last tool change: a wall, a
     block for each change where the new nozzle lays down `prime_volume`,
     lines across the depth no change uses, a solid first layer and a brim.
@@ -212,7 +224,8 @@ gap came out a little pulled in, having been printed five times faster
 than the profile asks, which is since put right. A 20 mm cube
 printed on a Snapmaker U1 the same day. One was started on the Centauri
 Carbon too; how it came out is not recorded here. Supports and printing in more than one
-filament have not been on hardware at all. Without a printer
+filament have not been on hardware at all; a two-colour test for the U1
+(two blocks side by side, 20 tool changes) was made on 2026-11-10. Without a printer
 profile a generic preamble is written and the file is only good for viewing.
 
 Multi-filament printing is a first working version. Where parts of

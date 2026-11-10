@@ -426,6 +426,13 @@ fn summary(done: &Done) -> Value {
             "{gaps} gap(s) between walls were left empty; their centre line could not be worked out."
         ));
     }
+    // These came from the engine as phrases; here they are sentences.
+    notes.extend(sliced.remarks.iter().map(|remark| {
+        let mut first = remark.chars();
+        first.next().map_or(String::new(), |letter| {
+            format!("{}{}.", letter.to_uppercase(), first.as_str())
+        })
+    }));
     notes.extend(sliced.notes().cloned());
     let warnings: Vec<String> = sliced
         .without_a_tool()

@@ -739,16 +739,24 @@ impl Writer<'_> {
         Ok(())
     }
 
-    /// Puts the tool in use away and takes up another, mid-print.
+    /// Puts the tool in use away and takes up another, mid-print. `over`
+    /// is where on the prime tower the new tool starts: the old one goes
+    /// there first, so that it waits over the tower, not over the part,
+    /// while the new one comes up to temperature (WipeTower2.cpp
+    /// `tool_change`, which unloads on the tower).
     fn change_tool(
         &mut self,
         to: usize,
         layer: usize,
         z: f64,
         cursor: usize,
+        over: Option<Point2>,
     ) -> Result<(), GcodeError> {
         let from = self.state.tool;
         let s = self.settings;
+        if let Some(over) = over.filter(|_| self.state.primed) {
+            self.travel(over, false)?;
+        }
         // Pull the filament well back, wiping first as for any retraction.
         if self.state.primed && s.retract_length_toolchange > 0.0 {
             self.retract(false)?;
@@ -959,7 +967,14 @@ impl Writer<'_> {
         self.extruding = false;
         for (offset, layer) in parts.iter().enumerate() {
             if layer.filament != self.state.tool {
-                self.change_tool(layer.filament, index, layer.z, cursor + offset)?;
+                let over = layer.tower.first().and_then(|line| line.points.first());
+                self.change_tool(
+                    layer.filament,
+                    index,
+                    layer.z,
+                    cursor + offset,
+                    over.copied(),
+                )?;
             }
             let start = (self.out.len(), self.state.summary.seconds);
             self.marks.clear();

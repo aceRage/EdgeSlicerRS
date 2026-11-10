@@ -14,7 +14,10 @@ any changes given on the command line.
     target/release/edge-parity /tmp/mushroom.3mf
 
 Shapes: mushroom and shelf need supports; tower and bar get an automatic
-brim; bridge is a deck across two posts; cube is a plain 20 mm cube. The reference loads the filament preset named in the settings again,
+brim; bridge is a deck across two posts; cube is a plain 20 mm cube;
+twotone is two blocks side by side, the first in filament 1 and 6 mm tall,
+the second in filament 2 and 4 mm tall, so there is a tool change on every
+layer up to 4 mm and none above. The reference loads the filament preset named in the settings again,
 so a change to a filament's own settings, such as filament_type, is undone.
 """
 import json, sys, zipfile
@@ -40,7 +43,11 @@ SHAPES = {
     "cube": [(125.5, 126, 0, 20, 20, 20)],
     # a long low bar
     "bar": [(35.5, 131, 0, 200, 10, 30)],
+    # two blocks that touch, one in each of two filaments
+    "twotone": [(115.5, 126, 0, 20, 20, 6), (135.5, 126, 0, 20, 20, 4)],
 }
+# The filament each box of a shape is printed in, where it is not all the first.
+FILAMENTS = {"twotone": [1, 2]}
 
 out, source, shape = sys.argv[1:4]
 changes = dict(arg.split("=", 1) for arg in sys.argv[4:])
@@ -71,4 +78,14 @@ with zipfile.ZipFile(out, "w", zipfile.ZIP_DEFLATED) as z:
     z.writestr("[Content_Types].xml", '<?xml version="1.0" encoding="UTF-8"?>\n<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">\n <Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/>\n <Default Extension="model" ContentType="application/vnd.ms-package.3dmanufacturing-3dmodel+xml"/>\n</Types>\n')
     z.writestr("_rels/.rels", '<?xml version="1.0" encoding="UTF-8"?>\n<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">\n <Relationship Target="/3D/3dmodel.model" Id="rel-1" Type="http://schemas.microsoft.com/3dmanufacturing/2013/01/3dmodel"/>\n</Relationships>\n')
     z.writestr("3D/3dmodel.model", model)
+    if shape in FILAMENTS:
+        # As the reference saves it: the object's filament, then each part's own.
+        parts = "".join(
+            f'\n    <part id="{i + 1}" subtype="normal_part">\n      <metadata key="name" value="{shape} {i + 1}"/>\n'
+            f'      <metadata key="extruder" value="{filament}"/>\n    </part>'
+            for i, filament in enumerate(FILAMENTS[shape]))
+        z.writestr("Metadata/model_settings.config",
+                   f'<?xml version="1.0" encoding="UTF-8"?>\n<config>\n  <object id="{parent}">\n'
+                   f'    <metadata key="name" value="{shape}"/>\n    <metadata key="extruder" value="1"/>{parts}\n'
+                   f'  </object>\n</config>\n')
     z.writestr("Metadata/project_settings.config", json.dumps(settings, indent=4))

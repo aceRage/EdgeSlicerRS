@@ -75,6 +75,8 @@ pub struct Sliced {
     /// (layer, index into `used`, what that tool prints on the tower when
     /// its turn comes), in the order printed.
     pub(crate) entries: Vec<(usize, usize, Vec<ExtrusionPath>)>,
+    /// Things settled before slicing that the person should know of.
+    pub remarks: Vec<String>,
     pub timings: Timings,
 }
 
@@ -105,6 +107,7 @@ pub fn slice(job: Job, watch: &dyn Watcher) -> Result<Sliced, Failure> {
         closing_radius: (closing_radius, _),
         wall_loops,
         bed_type: _,
+        remarks,
     } = job;
     let (mut bodies, objects, plate) = (loaded.bodies, loaded.objects, loaded.plate);
     let (min, max) = loaded.bounds;
@@ -537,6 +540,7 @@ pub fn slice(job: Job, watch: &dyn Watcher) -> Result<Sliced, Failure> {
         changes,
         tower,
         entries,
+        remarks,
         timings: Timings {
             slice: slice_time,
             perimeters: perimeter_time,
@@ -639,6 +643,21 @@ impl Sliced {
     pub fn gcode(&self, produced_at: &str) -> Result<Gcode, Failure> {
         // One set of settings for each filament up to the highest in use.
         let highest = self.used.iter().copied().max().unwrap_or(1);
+        // A filament the settings say nothing about cannot be printed:
+        // there is no temperature to bring its nozzle to.
+        if let Some(described) = self
+            .settings
+            .texts("nozzle_temperature")
+            .map(<[String]>::len)
+            && described < highest
+        {
+            return Err(format!(
+                "the model prints in filament {highest}, but the settings describe only {described} \
+                 filament(s); no G-code was written. Slice with a filament preset, which is then used \
+                 for every filament, or give the project the filaments it is missing"
+            )
+            .into());
+        }
         let mut prints: Vec<PrintSettings> = (0..highest)
             .map(|filament| PrintSettings::for_filament(&self.settings, filament))
             .collect::<Result<_, _>>()?;
