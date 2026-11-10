@@ -119,6 +119,10 @@ pub struct LayerRegions {
     /// filament has the overlap. (The reference gives it to whichever part
     /// comes later in its object.)
     pub by_filament: Vec<(usize, Vec<ExPolygon>)>,
+    /// Each filament's own material as cut, before any of it is shared
+    /// out or closed up, in ascending order of filament; empty when there
+    /// is only one.
+    pub cut_by_filament: Vec<(usize, Vec<ExPolygon>)>,
     /// See [`Layer::open_chains`]; summed over every mesh cut at this height.
     pub open_chains: usize,
 }
@@ -204,8 +208,10 @@ pub fn slice_regions(
             own.sort_by_key(|(filament, _)| *filament);
             let mut by_filament: Vec<(usize, Vec<ExPolygon>)> = Vec::with_capacity(own.len());
             let mut taken: Vec<ExPolygon> = Vec::new();
+            let mut cut_by_filament = Vec::with_capacity(own.len());
             for (filament, material) in own.into_iter().rev() {
                 let mut mine = edge_clip::union_ex(&material)?;
+                cut_by_filament.push((filament, mine.clone()));
                 if closing_radius > 0 {
                     mine = edge_clip::offset(&mine, closing_radius, Join::MITER)?;
                 }
@@ -216,10 +222,12 @@ pub fn slice_regions(
                 by_filament.push((filament, mine));
             }
             by_filament.reverse();
+            cut_by_filament.reverse();
             Ok(LayerRegions {
                 z,
                 regions,
                 by_filament,
+                cut_by_filament,
                 open_chains,
             })
         })

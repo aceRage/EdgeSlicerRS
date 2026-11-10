@@ -37,6 +37,8 @@ pub(crate) struct PartSettings {
 pub(crate) struct RawPlate {
     pub id: u32,
     pub name: String,
+    /// The plate's own order of filaments on the first layer.
+    pub first_layer_sequence: Vec<u32>,
     /// `(object id, index among that object's instances)`.
     pub instances: Vec<(u32, usize)>,
 }
@@ -146,6 +148,14 @@ pub(crate) fn parse(text: &str, part: &str) -> Result<ModelSettings, Error> {
                             match key.as_str() {
                                 "plater_id" => plate.id = number(part, "plater_id", &value)?,
                                 "plater_name" => plate.name = value,
+                                // Filament numbers with spaces between;
+                                // anything else among them is passed over.
+                                "first_layer_print_sequence" => {
+                                    plate.first_layer_sequence = value
+                                        .split_whitespace()
+                                        .filter_map(|number| number.parse().ok())
+                                        .collect();
+                                }
                                 _ => {}
                             }
                         }

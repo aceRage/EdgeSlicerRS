@@ -5,7 +5,7 @@ use std::{
 
 use edge_3mf::Body;
 use edge_adhesion::{AdhesionSettings, BrimKind, Footing};
-use edge_config::Settings;
+use edge_config::{FloatOrPercent, Settings};
 use edge_extrusion::{ExtrusionLoop, ExtrusionPath};
 use edge_gcode::{PrintSettings, Summary};
 use edge_geom::{ExPolygon, Point2, Polygon, scaled, unscaled};
@@ -86,6 +86,8 @@ pub struct Sliced {
     /// Tool changes on each layer.
     pub changes: Vec<usize>,
     pub tower: Tower,
+    /// What the profile asks of the order of tools that is not followed.
+    pub(crate) order_notes: Vec<String>,
     /// (layer, index into `used`, what that tool prints on the tower when
     /// its turn comes), in the order printed.
     pub(crate) entries: Vec<Entry>,
@@ -124,6 +126,7 @@ pub fn slice(job: Job, watch: &dyn Watcher) -> Result<Sliced, Failure> {
         remarks,
     } = job;
     let (mut bodies, objects, plate) = (loaded.bodies, loaded.objects, loaded.plate);
+    let first_layer_sequence = loaded.first_layer_sequence;
     let (min, max) = loaded.bounds;
 
     let print = PrintSettings::from_settings(&settings)?;
@@ -428,37 +431,87 @@ pub fn slice(job: Job, watch: &dyn Watcher) -> Result<Sliced, Failure> {
     let on_layer = |filament: usize, index: usize| {
         !walls_by[filament][index].loops.is_empty() || !fills_by[filament][index].is_empty()
     };
-    let mut orders: Vec<Vec<usize>> = Vec::with_capacity(layers.len());
-    let mut in_hand: Option<usize> = None;
-    for index in 0..layers.len() {
-        let mut order: Vec<usize> = (0..used.len())
+    let tools_on = |index: usize| -> Vec<usize> {
+        (0..used.len())
             .filter(|filament| on_layer(*filament, index))
-            .collect();
-        match in_hand {
-            None => {
-                let smallest = |filament: usize| {
-                    share(filament, index)
-                        .iter()
-                        .map(|region| region.contour.signed_area_mm2().abs())
-                        .fold(f64::INFINITY, f64::min)
-                };
-                order.sort_by(|a, b| smallest(*a).total_cmp(&smallest(*b)).then(a.cmp(b)));
+            .collect()
+    };
+    let tower_settings = TowerSettings::from_settings(&settings, plate)?;
+    // On the bed, each tool is judged by its smallest piece as cut,
+    // pieces too slight to print a line of not counted.
+    let mut on_bed = if layers.is_empty() {
+        Vec::new()
+    } else {
+        tools_on(0)
+    };
+    if on_bed.len() > 1 {
+        let nozzle = settings
+            .floats("nozzle_diameter")?
+            .and_then(|nozzles| nozzles.first().copied().flatten())
+            .unwrap_or(0.4);
+        let line = match settings.float_or_percent("initial_layer_line_width")? {
+            Some(FloatOrPercent::Value(width)) => width,
+            Some(FloatOrPercent::Percent(percent)) => percent / 100.0 * nozzle,
+            None => 0.0,
+        };
+        let mut pieces = Vec::with_capacity(on_bed.len());
+        for tool in &on_bed {
+            let cut = layers[0]
+                .cut_by_filament
+                .iter()
+                .find(|(filament, _)| *filament == used[*tool])
+                .map_or(&[][..], |(_, regions)| regions.as_slice());
+            let mut smallest = f64::INFINITY;
+            for region in cut {
+                let shrunk = edge_clip::offset(
+                    std::slice::from_ref(region),
+                    -scaled(0.2 * line),
+                    edge_clip::Join::MITER,
+                )?;
+                if !shrunk.is_empty() {
+                    smallest = smallest.min(region.contour.signed_area_mm2().abs());
+                }
             }
-            Some(held) => {
-                order.sort_by_key(|filament| (*filament != held, std::cmp::Reverse(*filament)));
-            }
+            pieces.push((*tool, smallest));
         }
-        // A layer with nothing of the part on it still has its place,
-        // for the tool in hand.
+        on_bed =
+            crate::order::first_layer(&pieces, &first_layer_sequence, |tool| used[tool] as u32);
+    }
+    let later: Vec<Vec<usize>> = (1..layers.len()).map(tools_on).collect();
+    // A nozzle for each filament: every change costs the tower the same.
+    let price = tower_settings.prime_volume as f32;
+    let mut orders = crate::order::layers(on_bed, &later, |_, _| price);
+    // A layer with nothing of the part on it still has its place, for
+    // the tool in hand.
+    let mut in_hand: Option<usize> = None;
+    for order in &mut orders {
         if order.is_empty() {
             order.push(in_hand.unwrap_or(0));
         }
-        in_hand = order.last().copied().or(in_hand);
-        orders.push(order);
+        in_hand = order.last().copied();
+    }
+    // What the profile asks of the order and is not followed.
+    let mut order_notes = Vec::new();
+    if used.len() > 1 {
+        if let Some(kind) = settings.text("toolchange_ordering")
+            && kind != "default"
+        {
+            order_notes.push(format!(
+                "toolchange_ordering \"{kind}\": tools are taken in the order that wastes least"
+            ));
+        }
+        if settings
+            .floats("other_layers_print_sequence")?
+            .is_some_and(|sequence| sequence.iter().flatten().any(|number| *number != 0.0))
+        {
+            order_notes.push(
+                "other_layers_print_sequence: above the first layer tools are taken in the order that wastes least"
+                    .to_owned(),
+            );
+        }
     }
     // Tool changes on each layer: every switch, counting one at the
     // start of a layer that begins with a tool not in hand.
-    let tower_settings = TowerSettings::from_settings(&settings, plate)?;
     let mut changes = vec![0usize; layers.len()];
     // And for each, how the filament put away is rammed on the tower.
     let mut rams: Vec<Vec<Option<edge_tower::Ramming>>> = vec![Vec::new(); layers.len()];
@@ -629,6 +682,7 @@ pub fn slice(job: Job, watch: &dyn Watcher) -> Result<Sliced, Failure> {
         orders,
         changes,
         tower,
+        order_notes,
         entries,
         remarks,
         timings: Timings {
@@ -717,6 +771,7 @@ impl Sliced {
             .chain(&self.adhesion.unsupported)
             .chain(&self.support.unsupported)
             .chain(&self.infill.unsupported)
+            .chain(&self.order_notes)
             // What the tower does not do matters only where there is one.
             .chain(
                 self.tower_settings

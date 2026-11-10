@@ -114,6 +114,7 @@ fn bambu_layout_reads_parts_roles_plates_and_settings() {
   </plate>
   <plate>
     <metadata key="plater_id" value="2"/>
+    <metadata key="first_layer_print_sequence" value="1 2 6 4 5 3 7"/>
     <model_instance><metadata key="object_id" value="4"/><metadata key="instance_id" value="1"/></model_instance>
     <model_instance><metadata key="object_id" value="4"/><metadata key="instance_id" value="9"/></model_instance>
     <model_instance><metadata key="object_id" value="99"/><metadata key="instance_id" value="0"/></model_instance>
@@ -144,6 +145,14 @@ fn bambu_layout_reads_parts_roles_plates_and_settings() {
             (Some("Body"), PartKind::Normal),
             (Some("Dense zone"), PartKind::Modifier)
         ]
+    );
+
+    // The second plate sets its own order of filaments on the first
+    // layer; the first sets none.
+    assert!(project.plates[0].first_layer_sequence.is_empty());
+    assert_eq!(
+        project.plates[1].first_layer_sequence,
+        [1, 2, 6, 4, 5, 3, 7]
     );
 
     let plates: Vec<_> = project

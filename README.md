@@ -210,8 +210,15 @@ Known gaps: painted triangles, per-object setting overrides, typed settings
     out among the filaments it is printed in. Each share gets its own
     walls and fill, so parts of different filaments that touch each have
     a wall along the join.
-  - Tools are taken in the reference's order on the first layer, and after
-    that each layer starts with the tool already in hand.
+  - Tools are taken in the reference's order (ToolOrdering.cpp). On the
+    first layer the tool whose smallest piece is largest goes first, or
+    the plate's own order where it sets one
+    (`first_layer_print_sequence`). After that each layer starts with
+    the tool in hand and takes the rest as the reference's solver does.
+    With a nozzle for each filament every order costs the tower the
+    same, so which one comes out is a matter of how that solver breaks
+    ties and of the order it is handed the tools in; both are ported as
+    they stand, because the tower is a layer taller or shorter by it.
   - A tool change follows the reference: pull the filament well back, cool
     the tool being put away, run the printer's own tool-change G-code,
     heat and select the new tool, and push its filament back as far as it
@@ -301,8 +308,13 @@ profile a generic preamble is written and the file is only good for viewing.
 
 Multi-filament printing is a first working version. Where parts of
 different filaments overlap, the higher-numbered filament has the overlap
-(the reference gives it to the later part). The order of tools within a
-layer after the first is simpler than the reference's. The tower has no
+(the reference gives it to the later part). `toolchange_ordering` other
+than the default and `other_layers_print_sequence` are noted and not
+followed. On the first layer two tools whose smallest pieces are the
+same to a millionth count as the same, and the lower number goes first;
+the reference compares exactly, so where it has identical parts in
+several filaments its order among them can differ (plate 3 of
+`mcbrim_test.3mf` starts 1, 5, 4, 3, 2 there and 1, 3, 4, 5, 2 here). The tower has no
 cone wall; a nozzle coming in is not wiped flat on it first, tool changes
 all start at the same place in their blocks
 (`wipe_tower_stagger_toolchange_start`), and pressure advance is not
@@ -466,19 +478,19 @@ with the same layers of air above and below. Trees start from about as
 many tips (96 against 101 under the mushroom's cap) and join up a little
 more slowly on the way down.
 
-On `mcbrim_test.3mf`, printed in four filaments, both make tool changes on
-the same layers (27 here, 28 in the reference), and on plate 1 the start
-of the file is identical for 96 of its 99 lines. Plates 2 and 3 set the order of
-filaments on the first layer (`first_layer_print_sequence`), which this
-engine does not follow, so it starts with a different tool there. All three of its plates slice. It is a flat part
-3 mm thick covered in lettering, and it is where this engine is furthest
-from the reference. Plates 2 and 3 carry 0.6% less filament (7.9% less
-before the tower had its ribs and stepped brim). The tower is within
-0.2% of the reference's on each of the eleven layers both print it on
-(5943.1 mm against 5946.0 mm on the first), with the same rows, frame
-and gaps in its wall, and 2.1% under in all because the reference has a
-twelfth layer of it, for a tool change this engine's simpler order of
-tools does not make. On the two-colour test, whose filament is rammed,
+On `mcbrim_test.3mf`, printed in up to six filaments, tools are taken in
+the reference's order on every layer of plates 1 and 2 (plate 2 sets its
+own order on the first layer), and on every layer but the first of
+plate 3, with the same number of tool changes (28 on plate 1, 50 on
+plates 2 and 3). All three of its plates slice. It is a flat part
+3 mm thick covered in lettering. The prime tower is the reference's
+length on every one of its twelve layers on all three plates, to within
+half a millimetre a layer (39.87 m against 39.87 m on plate 2), with the
+same rows, frame and gaps in its wall; its top layer, which has one
+change where those below have five, is as shallow as that needs and sits
+in the middle, as the reference's does. Plates 2 and 3 carry 0.3% more
+filament than the reference (they carried 7.9% less before the tower had
+its ribs and stepped brim). On the two-colour test, whose filament is rammed,
 the first layer of the tower is the reference's length to a tenth of a
 millimetre (2251.4 mm) and stands on the same ground; the tower is 1.4%
 under in all, the reference filling out each block where it starts
@@ -538,7 +550,8 @@ puts them on all three plates of `mcbrim_test.3mf`), the prime tower, gap
 fill between walls, overhang walls with their speeds and fan, and
 internal bridges, one wall under top surfaces below the last layer,
 vertical shells, the solid band under a bridge's edge, and the prime
-tower's ribs, stepped brim, ramming and the gap in its wall.
+tower's ribs, stepped brim, ramming and the gap in its wall, and the
+order tools are taken in.
 
 ## Licence
 

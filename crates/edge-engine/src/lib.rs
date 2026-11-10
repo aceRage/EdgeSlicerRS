@@ -9,6 +9,7 @@
 mod clock;
 mod job;
 mod load;
+mod order;
 mod pipeline;
 mod presets;
 mod preview;
