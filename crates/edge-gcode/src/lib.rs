@@ -917,11 +917,13 @@ impl Writer<'_> {
             // A rammed filament is pushed out fast on the tower, and its
             // tool then waits just clear of what it laid.
             Some(ram) => {
-                let motion = Motion {
-                    speed: ram.speed,
-                    acceleration: s.default_acceleration,
-                };
                 for line in ram.lines.iter().filter(|line| line.points.len() >= 2) {
+                    // As fast as the filament is to be pushed out, with
+                    // the acceleration any line of the tower has here.
+                    let motion = Motion {
+                        speed: ram.speed,
+                        ..self.motion(line.role, &line.flow, self.state.first_layer)
+                    };
                     self.travel(line.points[0], false)?;
                     for point in &line.points[1..] {
                         self.extrude(*point, line.role, &line.flow, motion)?;
