@@ -100,7 +100,11 @@ button.link { padding: 0; border: 0; background: none; color: var(--accent); tex
 ul.error { padding-left: 18px; }
 ul.error:empty { display: none; }
 
-#presets { display: flex; flex-direction: column; gap: 8px; }
+#presets, #filaments { display: flex; flex-direction: column; gap: 8px; }
+ul.plain { margin: 0; padding-left: 18px; color: var(--quiet); }
+ul.plain:empty { display: none; }
+ul.plain li + li { margin-top: 4px; }
+details p { margin: 6px 0 0; }
 #ask { display: flex; flex-direction: column; gap: 6px; }
 
 #progress { height: 4px; border-radius: 2px; background: var(--line); overflow: hidden; }

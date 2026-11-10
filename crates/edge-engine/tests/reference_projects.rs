@@ -140,15 +140,24 @@ fn a_vendors_presets_are_listed_by_printer() {
     assert!(processes.contains(&process), "{processes:?}");
     let filaments = shelf.filaments_for(machine);
     assert!(!filaments.is_empty());
+    // The printer's profile says which it usually prints with.
+    let (usual_process, usual_filament) = shelf.usual_for(machine);
+    assert_eq!(usual_process.as_deref(), Some(process));
+    assert_eq!(
+        usual_filament.as_deref(),
+        Some("Generic PLA @U1 0.4 nozzle")
+    );
+    assert_eq!(shelf.usual_for("no such printer"), (None, None));
     // None of them is for another printer.
     assert!(shelf.processes_for("no such printer").is_empty());
 
     let chosen = shelf
-        .choose(Some(machine), Some(process), Some(filaments[0]))
+        .choose(Some(machine), Some(process), &filaments[..1])
         .unwrap();
     assert_eq!(chosen.machine.unwrap().0, machine);
     assert!(chosen.process.unwrap().1.get("layer_height").is_some());
-    assert!(shelf.choose(Some("no such printer"), None, None).is_err());
+    assert!(shelf.choose(Some("no such printer"), None, &[]).is_err());
+    assert!(shelf.choose(None, None, &["no such filament"]).is_err());
 }
 
 #[test]
@@ -179,7 +188,7 @@ fn a_filament_preset_serves_every_filament_of_the_model() {
     );
 
     // A filament preset chosen is every filament's, and that is said.
-    let chosen = shelf.choose(Some(machine), None, Some(&filament)).unwrap();
+    let chosen = shelf.choose(Some(machine), None, &[&filament]).unwrap();
     let job = edge_engine::prepare(two_filaments(), &chosen, &Overrides::default()).unwrap();
     assert_eq!(job.remarks.len(), 1);
     assert!(job.remarks[0].contains("3 filaments"), "{:?}", job.remarks);
@@ -239,4 +248,61 @@ fn a_tool_is_changed_over_the_prime_tower() {
         changes += 1;
     }
     assert!(changes > 20, "{changes} changes");
+}
+
+#[test]
+fn each_filament_can_have_a_preset_of_its_own() {
+    let library = Library::new(reference("resources/profiles"));
+    let shelf = library.shelf("Snapmaker").unwrap();
+    let machine = "Snapmaker U1 (0.4 nozzle)";
+    // Two filament presets that print at different temperatures.
+    let temperature = |name: &str| {
+        let chosen = shelf.choose(None, None, &[name]).unwrap();
+        chosen.filaments[0].1.texts("nozzle_temperature").unwrap()[0].clone()
+    };
+    let names = shelf.filaments_for(machine);
+    let first = names[0];
+    let other = names
+        .iter()
+        .copied()
+        .find(|name| temperature(name) != temperature(first))
+        .expect("a filament that prints at another temperature");
+    let model = |filament: usize| {
+        let opened = edge_engine::open(
+            &reference("tests/data/support_corpus/twopart_groups.3mf"),
+            None,
+        )
+        .unwrap();
+        assert_eq!(opened.filaments(), [1]);
+        let mut loaded = opened.place().unwrap();
+        loaded.bodies[0].filament = filament;
+        loaded
+    };
+
+    // Filament 2 prints with the second preset.
+    let chosen = shelf.choose(Some(machine), None, &[first, other]).unwrap();
+    let job = edge_engine::prepare(model(2), &chosen, &Overrides::default()).unwrap();
+    assert!(job.remarks.is_empty(), "{:?}", job.remarks);
+    assert_eq!(
+        job.settings.texts("nozzle_temperature").unwrap(),
+        [temperature(first), temperature(other)]
+    );
+    assert_eq!(
+        job.settings.texts("filament_settings_id").unwrap(),
+        [first.to_owned(), other.to_owned()]
+    );
+    let sliced = edge_engine::slice(job, &Unwatched).unwrap();
+    sliced.gcode("now").unwrap();
+
+    // A third filament with two presets named takes the second, and that is said.
+    let job = edge_engine::prepare(model(3), &chosen, &Overrides::default()).unwrap();
+    assert_eq!(
+        job.settings.texts("nozzle_temperature").unwrap(),
+        [temperature(first), temperature(other), temperature(other)]
+    );
+    assert!(
+        job.remarks[0].contains("is used for the rest"),
+        "{:?}",
+        job.remarks
+    );
 }

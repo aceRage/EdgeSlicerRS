@@ -43,8 +43,19 @@
       <label>Vendor <select id="vendor"></select></label>
       <label>Printer <select id="machine"></select></label>
       <label>Process <select id="process"></select></label>
-      <label>Filament <select id="filament"></select></label>
+      <div id="filaments"></div>
     </div>
+    <label>Bed surface
+      <select id="bed">
+        <option value="">as the project or the printer has it</option>
+        <option>Cool Plate</option>
+        <option>Engineering Plate</option>
+        <option>High Temp Plate</option>
+        <option>Textured PEI Plate</option>
+        <option>Textured Cool Plate</option>
+        <option>Supertack Plate</option>
+      </select>
+    </label>
   </section>
 
   <section>
@@ -60,11 +71,13 @@
     <h2 id="h-print">Print</h2>
     <dl id="figures"></dl>
     <p id="gcode-error" class="error" hidden></p>
+    <ul id="problems" class="error"></ul>
     <button id="export" type="button">Export G-code…</button>
     <p id="exported" class="quiet"></p>
-    <ul id="warnings" class="error"></ul>
-    <details id="notes">
+    <ul id="remarks" class="plain"></ul>
+    <details id="gaps">
       <summary></summary>
+      <p class="quiet">The profile turns these on. The print goes ahead without them.</p>
       <ul></ul>
     </details>
   </section>
