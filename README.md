@@ -142,7 +142,19 @@ Known gaps: painted triangles, per-object setting overrides, typed settings
   (`rectilinear`, `zig-zag`, `line`) are one zigzag that turns half a
   spacing inside the wall. The first solid layer over sparse
   fill is laid as an internal bridge: round threads across the lines
-  beneath, at `internal_bridge_speed`. Fill over air takes `bridge_flow`
+  beneath, at `internal_bridge_speed`. What it lies over is taken from
+  the whole layer beneath, whatever the filament, so a colour that
+  starts part of the way up a part is bridged over the fill of the
+  colour under it. Under the edge of such a bridge, where the edge runs
+  along the walls of the layer below, a band of that layer's sparse fill
+  is made solid to carry the ends of its lines
+  (PrintObject.cpp `bridge_over_infill`).
+  With `ensure_vertical_shell_thickness` at `ensure_all`, whatever of a
+  layer's fill is not over and under the fill of the layers within a
+  shell of it is made solid too, so a leaning wall stays as thick
+  measured straight up as it is sideways; walls between two filaments
+  inside a part do not count (`discover_vertical_shells`). Any other
+  value of that setting is noted and not followed. Fill over air takes `bridge_flow`
   and `bridge_density`, and runs along the edges it has nothing beside,
   so its lines go from one support to the other. Bridges, bottoms and
   tops reach a wall's spacing into the fill beside them, to have
@@ -298,9 +310,13 @@ at fixed steps, so a wall's speed changes at slightly different places.
 Infill is not all a port yet: solid lines are joined along
 the walls nearest-first but not ordered (no monotonic), a bridge reaches 0.4 mm onto each support where the reference's
 reaches 0.8 mm, internal bridges are not run out to the
-sparse lines that carry them (they come 5 to 9% short of the
-reference's), narrow parts of top and bottom surfaces get no gap fill
-(`gap_fill_target`), shell thickness in mm and vertical shells are ignored, and sparse patterns other than line and
+sparse lines that carry them nor turned as the reference turns them
+(they come within 6% of the reference's on plain parts and 9% over on
+the lettered plate), narrow solid areas are filled with the same lines
+as wide ones where the reference lays loops along them
+(`detect_narrow_internal_solid_infill`, noted), narrow parts of top and
+bottom surfaces get no gap fill
+(`gap_fill_target`), shell thickness in mm is ignored, and sparse patterns other than line and
 grid fall back to grid with a note. Gap closing runs across objects, so two separate objects closer than twice
 the radius merge; the reference closes within one object only.
 
@@ -381,9 +397,10 @@ By feature, in metres of extruded path, reference against this engine:
 
 | Project | Overhang wall | Internal bridge | Internal solid fill | Gap fill |
 | --- | --- | --- | --- | --- |
-| `cylinder_drawcut.3mf` | none | 11.22 / 11.30 | 61.04 / 60.62 | 0.02 / 0.00 |
-| `twopart_groups.3mf` | 0.16 / 0.16 | 1.16 / 1.20 | 6.38 / 6.13 | none |
-| `mushroom` fixture | 0.23 / 0.23 | 1.99 / 2.04 | | none |
+| `cylinder_drawcut.3mf` | none | 11.22 / 11.30 | 61.04 / 61.08 | 0.02 / 0.00 |
+| `twopart_groups.3mf` | 0.16 / 0.16 | 1.16 / 1.20 | 6.38 / 6.38 | none |
+| `mushroom` fixture | 0.23 / 0.23 | 1.99 / 2.04 | 10.93 / 10.93 | none |
+| `mcbrim_test.3mf` plate 2 | | 2.60 / 2.83 | 24.29 / 25.05 | |
 | `mcbrim_test.3mf` plate 1 | 0.10 / 0.06 | | | 8.28 / 9.98 |
 | `mcbrim_test.3mf` plate 2 | 0.03 / 0.03 | | | 4.95 / 5.03 |
 
@@ -412,18 +429,23 @@ to 30% less plastic, having no ribs. Plates 2 and 3 set the order of
 filaments on the first layer (`first_layer_print_sequence`), which this
 engine does not follow, so it starts with a different tool there. All three of its plates slice. It is a flat part
 3 mm thick covered in lettering, and it is where this engine is furthest
-from the reference: 6 to 10% less filament on plates 1 and 2. Top surface
-is within 1.3% now that walls are thinned under it; what is left is the
-prime tower (no ribs) and internal bridges.
+from the reference. Plates 2 and 3 carry 7.9% less filament, nearly all
+of it the prime tower (no ribs): top surface is within 1.3%, bridges
+over infill 9% over (they were 78% under, when a colour that starts
+part of the way up was not bridged over the colour beneath), solid fill
+3% over and sparse fill 4% under. The parts on plate 1 are painted in
+their colours, which this engine does not read yet, so its regions
+there are not the reference's and the plate is no measure of either.
 
 Top and bottom surfaces now come to the reference's length within 0.1%,
 at the same pitch and width, on the cube, the deck, the tower and the
 mushroom with both printers' presets and on the cylinder (they were 2 to
 26% over). A full layer of solid fill inside the part does too: 907.9 mm
-against 907.0 mm on the cube. Over a whole part solid fill is 1 to 8%
-under, because the reference lays one more, partly solid, layer under a
-top shell (a band round the sparse fill beneath the first bridged layer)
-and fills small gaps left inside solid fill; neither is done here. Solid
+against 907.0 mm on the cube. Over a whole part solid fill is within
+0.2% on the cube, the deck, the shelf, the mushroom, the two-part
+project and the cylinder (it was 1 to 5% under, for want of the band
+under the first bridged layer) and 2% over on the tower. Small gaps
+left inside solid fill are not filled. Solid
 lines here are laid as one zigzag where the reference orders `monotonic`
 lines so that each is laid beside the last.
 
@@ -438,9 +460,7 @@ joins of equal length are taken in another order, which leaves one path
 as two. Filament over the whole part is now within 0.6% on the cube,
 the deck and the tower for both printers (the tower with the U1's
 presets was 18% under). Where objects share a plate the pattern passes
-through the middle of all of them, not of each as in the reference; and
-on the lettered plate sparse fill is 6 to 8% over, where this engine
-makes more of the inside sparse than the reference does.
+through the middle of all of them, not of each as in the reference.
 
 Tree supports with the Centauri Carbon's presets (`tree(auto)`, arcs on)
 come to about half the reference's length on the `shelf` fixture (2.26 m
@@ -456,7 +476,8 @@ last layer, fill lines joined along the walls, seam gaps, wipe, ramped and
 spiral lifts, and plate placement (outer walls land where the reference
 puts them on all three plates of `mcbrim_test.3mf`), the prime tower, gap
 fill between walls, overhang walls with their speeds and fan, and
-internal bridges, and one wall under top surfaces below the last layer.
+internal bridges, one wall under top surfaces below the last layer,
+vertical shells, and the solid band under a bridge's edge.
 
 ## Licence
 

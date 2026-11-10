@@ -18,4 +18,7 @@ mod surfaces;
 
 pub use fill::{FillParams, fill};
 pub use settings::{InfillSettings, Pattern};
-pub use surfaces::{Anchoring, Shells, Surface, SurfaceKind, anchor, bridge_over_infill, classify};
+pub use surfaces::{
+    Anchoring, Beneath, Shells, Surface, SurfaceKind, WallsAround, anchor, bridge_edges,
+    bridge_over_infill, carry_bridge_edges, classify, inside_walls,
+};

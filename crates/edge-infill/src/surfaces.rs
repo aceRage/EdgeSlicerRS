@@ -54,11 +54,66 @@ pub struct Shells {
     /// Exposed strips narrower than twice this are ignored; the reference
     /// uses a tenth of the external wall width.
     pub opening: Coord,
+    /// The spacing of solid lines when the walls are to be kept as thick
+    /// measured straight up as they are sideways
+    /// (`ensure_vertical_shell_thickness` at `ensure_all`): whatever of a
+    /// layer's fill is not over and under the fill of the layers within
+    /// a shell of it is then made solid.
+    pub ensure: Option<Coord>,
+}
+
+/// The one set of walls a layer would have were it all in one filament.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct WallsAround {
+    /// From the outline to where the fill would start.
+    pub depth: Coord,
+    /// The least distance between two of its walls.
+    pub spacing: Coord,
+}
+
+/// Each layer's area inside the walls taken over every filament:
+/// `by_filament[f][i]` is filament `f`'s on layer `i` and `slices[i]` the
+/// layer's whole cross-section as printed. Where filaments meet inside a
+/// part each has walls of its own; with `walls` given, the area inside
+/// one set of walls around the whole layer counts as well, so that those
+/// inner walls are not taken for the part's shell. This is the `holes` of
+/// the reference's `PrintObject::discover_vertical_shells`.
+pub fn inside_walls(
+    by_filament: &[Vec<&[ExPolygon]>],
+    slices: &[&[ExPolygon]],
+    walls: Option<WallsAround>,
+) -> Result<Vec<Vec<ExPolygon>>, ClipError> {
+    (0..slices.len())
+        .into_par_iter()
+        .map(|layer| {
+            let mut all: Vec<ExPolygon> = by_filament
+                .iter()
+                .flat_map(|own| own[layer].iter().cloned())
+                .collect();
+            if let Some(walls) = walls {
+                // The layer's pieces are made to merge by growing them first.
+                let merge = (0.3 * walls.spacing as f64) as Coord;
+                all.extend(edge_clip::offset2(
+                    slices[layer],
+                    merge,
+                    -walls.depth - merge,
+                    Join::MITER,
+                )?);
+            }
+            if by_filament.len() > 1 || walls.is_some() {
+                edge_clip::union_ex(&all)
+            } else {
+                Ok(all)
+            }
+        })
+        .collect()
 }
 
 /// Splits each layer's infill area by what it is. `slices[i]` is layer
 /// `i`'s cross-section as printed, `outlines[i]` its cross-section as
-/// modelled, and `infill[i]` the part of the slice left inside the walls.
+/// modelled, `infill[i]` the part of the slice left inside the walls, and
+/// `inside[i]` the layer's area inside the walls over every filament
+/// (`inside_walls`), which is read only when `shells.ensure` is set.
 /// The two cross-sections differ only where a layer was shrunk for the
 /// elephant's foot: a layer is compared with its neighbours as modelled, so
 /// the shrinking does not make the layer above look like an overhang. A layer's surfaces do not overlap and together cover its
@@ -67,9 +122,13 @@ pub fn classify(
     slices: &[&[ExPolygon]],
     outlines: &[&[ExPolygon]],
     infill: &[&[ExPolygon]],
+    inside: &[Vec<ExPolygon>],
     shells: &Shells,
 ) -> Result<Vec<Vec<Surface>>, ClipError> {
     assert_eq!(slices.len(), infill.len(), "one infill area per layer");
+    if shells.ensure.is_some() {
+        assert_eq!(slices.len(), inside.len(), "one area inside per layer");
+    }
     assert_eq!(slices.len(), outlines.len(), "one outline per layer");
     let count = slices.len();
 
@@ -146,13 +205,46 @@ pub fn classify(
             let above = layer + 1..count.min(layer + shells.top_layers);
             let below = layer.saturating_sub(shells.bottom_layers.saturating_sub(1))..layer;
             let shell: Vec<ExPolygon> = above
+                .clone()
                 .flat_map(|other| &faces[other].0)
-                .chain(below.flat_map(|other| &faces[other].1))
+                .chain(below.clone().flat_map(|other| &faces[other].1))
                 .cloned()
                 .collect();
 
             let (mut solid, mut sparse) = if shells.sparse_density >= 1.0 {
                 (internal, Vec::new())
+            } else if let Some(spacing) = shells.ensure {
+                // What the fill of every layer within a shell of this
+                // one covers; the rest of this layer's fill lies under or
+                // over their walls and is part of the shell.
+                let mut covered = inside[layer].clone();
+                for other in above.chain(below) {
+                    if covered.is_empty() {
+                        break;
+                    }
+                    covered = edge_clip::intersection(&covered, &inside[other])?;
+                }
+                let mut kept = if shell.is_empty() {
+                    Vec::new()
+                } else {
+                    edge_clip::intersection(&internal, &shell)?
+                };
+                kept.extend(edge_clip::difference(&internal, &covered)?);
+                if kept.is_empty() {
+                    (Vec::new(), internal)
+                } else {
+                    let object = match (layer.checked_sub(1), outlines.get(layer + 1)) {
+                        (Some(lower), Some(upper)) => {
+                            edge_clip::intersection(outlines[lower], upper)?
+                        }
+                        _ => Vec::new(),
+                    };
+                    let regular = regularized(&kept, &internal, &object, spacing)?;
+                    (
+                        edge_clip::intersection(&internal, &regular)?,
+                        edge_clip::difference(&internal, &regular)?,
+                    )
+                }
             } else if shell.is_empty() {
                 (Vec::new(), internal)
             } else {
@@ -176,6 +268,49 @@ pub fn classify(
             Ok(surfaces)
         })
         .collect()
+}
+
+/// A shell made fit to fill with lines `spacing` apart, as the reference
+/// does in `discover_vertical_shells`: strips too narrow for a line are
+/// dropped, gaps too narrow for sparse fill are closed, and scattered
+/// drops that stand for nothing are removed. `internal` is the fill the
+/// shell is part of and `object` what the part has both above and below.
+fn regularized(
+    shell: &[ExPolygon],
+    internal: &[ExPolygon],
+    object: &[ExPolygon],
+    spacing: Coord,
+) -> Result<Vec<ExPolygon>, ClipError> {
+    // A little more than a line, as the reference takes it.
+    let line = 1.05 * spacing as f64;
+    let narrow = (0.5 * 0.65 * line) as Coord;
+    let gap = (0.5 * 1.2 * line) as Coord;
+    let overlap = (0.2 * line) as Coord;
+    let join = Join::Square;
+    let grown = edge_clip::offset2(&edge_clip::union_ex(shell)?, -narrow, narrow + gap, join)?;
+    let regular = edge_clip::offset(&grown, overlap - gap, join)?;
+    let line_mm = edge_geom::unscaled(line as Coord);
+    if regular.iter().all(|drop| drop.area_mm2() >= line_mm * 8.0) {
+        return Ok(regular);
+    }
+    let volume = edge_clip::closing(internal, 100, Join::MITER)?;
+    let pieces = |regions: &[ExPolygon]| regions.iter().map(|r| 1 + r.holes.len()).sum::<usize>();
+    let mut kept = Vec::with_capacity(regular.len());
+    for drop in regular {
+        let area = drop.area_mm2();
+        let own = std::slice::from_ref(&drop);
+        let slight = area < line_mm * 1.5
+            || (area < line_mm * 8.0 && edge_clip::difference(own, object)?.is_empty());
+        // A drop that takes a whole piece of the fill with it stays.
+        let scattered = slight && {
+            let around = edge_clip::offset(own, line as Coord, Join::MITER)?;
+            pieces(&edge_clip::difference(&volume, &around)?) >= pieces(&volume)
+        };
+        if !scattered {
+            kept.push(drop);
+        }
+    }
+    Ok(kept)
 }
 
 /// How far the surfaces that face outward reach into the fill beside
@@ -476,19 +611,49 @@ fn short_way(region: &ExPolygon) -> (f64, f64) {
     (x / length, y / length)
 }
 
+/// What a layer gives the one above it to rest on, taken over every
+/// filament printed in it: a filament that starts part of the way up
+/// rests on whatever is beneath it, not on its own layer below.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct Beneath {
+    /// The layer's whole area inside the walls.
+    pub infill: Vec<ExPolygon>,
+    /// The part of it filled solid: everything but sparse fill.
+    pub solid: Vec<ExPolygon>,
+}
+
+impl Beneath {
+    /// Gathers a layer from each filament's surfaces on it and each
+    /// filament's area inside the walls.
+    pub fn gather<'a>(parts: impl IntoIterator<Item = (&'a [Surface], &'a [ExPolygon])>) -> Self {
+        let mut all = Self::default();
+        for (surfaces, infill) in parts {
+            all.infill.extend(infill.iter().cloned());
+            all.solid.extend(
+                surfaces
+                    .iter()
+                    .filter(|s| s.kind != SurfaceKind::Sparse)
+                    .map(|s| s.area.clone()),
+            );
+        }
+        all
+    }
+}
+
 /// Turns the parts of each layer's internal solid that lie over sparse
 /// fill into internal bridges: the first phase of the reference's
 /// `PrintObject::bridge_over_infill`, which picks out what is worth
-/// bridging. `infill[i]` is layer `i`'s whole area inside the walls and
+/// bridging. `beneath[i]` is what layer `i` gives the next to rest on,
+/// over all filaments as the reference takes it over all regions, and
 /// `spacing` the distance between solid lines. The reference goes on to
 /// run each bridge out to the sparse lines that carry it; here a bridge
 /// is the area picked out and no more.
 pub fn bridge_over_infill(
     surfaces: &[Vec<Surface>],
-    infill: &[&[ExPolygon]],
+    beneath: &[Beneath],
     spacing: Coord,
 ) -> Result<Vec<Vec<Surface>>, ClipError> {
-    assert_eq!(surfaces.len(), infill.len(), "one infill area per layer");
+    assert_eq!(surfaces.len(), beneath.len(), "one layer beneath per layer");
     // Edges meant to coincide are made to (the reference's `SCALED_EPSILON`).
     const SNAP: Coord = 100;
     let join = Join::MITER;
@@ -505,18 +670,14 @@ pub fn bridge_over_infill(
             // inside the walls, less what is solid there, both first
             // shrunk so that slivers neither count as footing nor are
             // bridged for their own sake.
-            let solids: Vec<ExPolygon> = surfaces[layer - 1]
-                .iter()
-                .filter(|s| s.kind != SurfaceKind::Sparse)
-                .map(|s| s.area.clone())
-                .collect();
+            let below = &beneath[layer - 1];
             let footing = edge_clip::offset(
-                &edge_clip::offset(&solids, -spacing, join)?,
+                &edge_clip::offset(&below.solid, -spacing, join)?,
                 4 * spacing,
                 join,
             )?;
             let open = edge_clip::offset(
-                &edge_clip::closing(infill[layer - 1], SNAP, join)?,
+                &edge_clip::closing(&below.infill, SNAP, join)?,
                 -3 * spacing,
                 join,
             )?;
@@ -560,6 +721,106 @@ pub fn bridge_over_infill(
         .collect()
 }
 
+/// The band, one line's `spacing` wide, round the inside of every bridge
+/// over infill on each layer, taken over all filaments
+/// (`surfaces[f][i]` is filament `f`'s layer `i`).
+pub fn bridge_edges(
+    surfaces: &[Vec<Vec<Surface>>],
+    spacing: Coord,
+) -> Result<Vec<Vec<ExPolygon>>, ClipError> {
+    let count = surfaces.iter().map(Vec::len).max().unwrap_or(0);
+    (0..count)
+        .into_par_iter()
+        .map(|layer| {
+            let mut edges = Vec::new();
+            for own in surfaces {
+                for bridge in own
+                    .get(layer)
+                    .into_iter()
+                    .flatten()
+                    .filter(|s| s.kind == SurfaceKind::InternalBridge)
+                {
+                    let whole = std::slice::from_ref(&bridge.area);
+                    edges.extend(edge_clip::difference(
+                        whole,
+                        &edge_clip::offset(whole, -spacing, Join::MITER)?,
+                    )?);
+                }
+            }
+            Ok(edges)
+        })
+        .collect()
+}
+
+/// Makes solid the sparse fill that lies under the edge of a bridge on
+/// the layer above, where that edge runs along this layer's walls, so the
+/// ends of the bridge's lines have something under them: the last step
+/// of the reference's `PrintObject::bridge_over_infill`. `edges[i]` is
+/// what `bridge_edges` found on layer `i`.
+pub fn carry_bridge_edges(
+    surfaces: &[Vec<Surface>],
+    edges: &[Vec<ExPolygon>],
+    spacing: Coord,
+) -> Result<Vec<Vec<Surface>>, ClipError> {
+    let join = Join::MITER;
+    surfaces
+        .par_iter()
+        .enumerate()
+        .map(|(layer, own)| {
+            let above = match edges.get(layer + 1) {
+                Some(above) if !above.is_empty() => above,
+                _ => return Ok(own.clone()),
+            };
+            let sparse: Vec<ExPolygon> = own
+                .iter()
+                .filter(|s| s.kind == SurfaceKind::Sparse)
+                .map(|s| s.area.clone())
+                .collect();
+            if sparse.is_empty() {
+                return Ok(own.clone());
+            }
+            // The band of this layer's fill that lies along its walls.
+            let all: Vec<ExPolygon> = own.iter().map(|s| s.area.clone()).collect();
+            let all = edge_clip::union_ex(&all)?;
+            let beside_walls =
+                edge_clip::difference(&all, &edge_clip::offset(&all, -spacing, join)?)?;
+            // Widened by a line, so that where walls lean and the two
+            // bands only just meet there is still room to print.
+            let carrying = edge_clip::intersection(
+                &sparse,
+                &edge_clip::offset(
+                    &edge_clip::intersection(above, &beside_walls)?,
+                    spacing,
+                    join,
+                )?,
+            )?;
+            if carrying.is_empty() {
+                return Ok(own.clone());
+            }
+            let mut solid: Vec<ExPolygon> = own
+                .iter()
+                .filter(|s| s.kind == SurfaceKind::InternalSolid)
+                .map(|s| s.area.clone())
+                .collect();
+            solid.extend(carrying.iter().cloned());
+            let mut changed: Vec<Surface> = own
+                .iter()
+                .filter(|s| !matches!(s.kind, SurfaceKind::Sparse | SurfaceKind::InternalSolid))
+                .cloned()
+                .collect();
+            let mut push = |kind, areas: Vec<ExPolygon>| {
+                changed.extend(areas.into_iter().map(|area| Surface::new(kind, area)));
+            };
+            push(SurfaceKind::InternalSolid, edge_clip::union_ex(&solid)?);
+            push(
+                SurfaceKind::Sparse,
+                edge_clip::difference(&sparse, &carrying)?,
+            );
+            Ok(changed)
+        })
+        .collect()
+}
+
 #[cfg(test)]
 mod tests {
     use edge_geom::{Point2, Polygon, scaled};
@@ -583,6 +844,7 @@ mod tests {
             sparse_density: 0.2,
             minimum_sparse_area: 15.0,
             opening: scaled(0.045),
+            ensure: None,
         }
     }
 
@@ -590,7 +852,7 @@ mod tests {
     /// reports each layer as `(kind, area in mm²)` sorted by kind order.
     fn kinds(layers: &[Vec<ExPolygon>], shells: &Shells) -> Vec<Vec<(SurfaceKind, f64)>> {
         let slices: Vec<&[ExPolygon]> = layers.iter().map(Vec::as_slice).collect();
-        classify(&slices, &slices, &slices, shells)
+        classify(&slices, &slices, &slices, &[], shells)
             .unwrap()
             .into_iter()
             .map(|surfaces| {
@@ -686,6 +948,7 @@ mod tests {
                 &refs(&printed),
                 &refs(outlines),
                 &refs(&printed),
+                &[],
                 &shells(1, 1),
             )
             .unwrap();
@@ -696,18 +959,190 @@ mod tests {
         assert_eq!(kinds(&printed), [Bridge, Sparse]);
     }
 
+    /// A stack whose one side leans in by 0.08 mm a layer: too little for
+    /// any layer to show a top face, enough that four layers up the fill
+    /// starts a third of a millimetre further in.
+    fn leaning(count: usize) -> (Vec<Vec<ExPolygon>>, Vec<Vec<ExPolygon>>) {
+        (0..count)
+            .map(|layer| {
+                let side = 20.0 - 0.08 * layer as f64;
+                (
+                    block(0.0, 0.0, side, 20.0),
+                    block(1.0, 1.0, side - 1.0, 19.0),
+                )
+            })
+            .unzip()
+    }
+
+    #[test]
+    fn fill_under_the_walls_of_the_layers_above_is_made_solid() {
+        let (slices, fills) = leaning(14);
+        let slices: Vec<&[ExPolygon]> = slices.iter().map(Vec::as_slice).collect();
+        let fills: Vec<&[ExPolygon]> = fills.iter().map(Vec::as_slice).collect();
+        let inside = inside_walls(std::slice::from_ref(&fills), &slices, None).unwrap();
+        let solid_on = |shells: &Shells, layer: usize| {
+            classify(&slices, &slices, &fills, &inside, shells).unwrap()[layer]
+                .iter()
+                .filter(|s| s.kind == SurfaceKind::InternalSolid)
+                .map(|s| s.area.area_mm2())
+                .sum::<f64>()
+        };
+        // Layer 4 is clear of the bottom's three layers and the top's five.
+        let plain = shells(5, 3);
+        assert_eq!(solid_on(&plain, 4), 0.0);
+        let ensuring = Shells {
+            ensure: Some(scaled(0.4)),
+            ..plain
+        };
+        // The strip the fill four layers up does not cover, 0.32 mm by
+        // 18 mm, and the little it is grown by to meet the fill beside it.
+        let strip = solid_on(&ensuring, 4);
+        assert!((5.76..8.0).contains(&strip), "{strip}");
+        // A layer under the top's shell is solid all over either way.
+        assert_eq!(
+            solid_on(&ensuring, 10).round(),
+            solid_on(&plain, 10).round()
+        );
+    }
+
+    #[test]
+    fn a_strip_too_narrow_for_a_line_is_not_made_solid() {
+        // Leaning by a quarter as much, the strip is 0.08 mm wide.
+        let layers: Vec<(Vec<ExPolygon>, Vec<ExPolygon>)> = (0..14)
+            .map(|layer| {
+                let side = 20.0 - 0.02 * layer as f64;
+                (
+                    block(0.0, 0.0, side, 20.0),
+                    block(1.0, 1.0, side - 1.0, 19.0),
+                )
+            })
+            .collect();
+        let slices: Vec<&[ExPolygon]> = layers.iter().map(|l| l.0.as_slice()).collect();
+        let fills: Vec<&[ExPolygon]> = layers.iter().map(|l| l.1.as_slice()).collect();
+        let inside = inside_walls(std::slice::from_ref(&fills), &slices, None).unwrap();
+        let ensuring = Shells {
+            ensure: Some(scaled(0.4)),
+            ..shells(5, 3)
+        };
+        let found = classify(&slices, &slices, &fills, &inside, &ensuring).unwrap();
+        assert!(found[4].iter().all(|s| s.kind == SurfaceKind::Sparse));
+    }
+
+    #[test]
+    fn walls_between_filaments_are_not_taken_for_the_shell() {
+        // Two filaments side by side, each with fill a millimetre inside
+        // its own half, so a two millimetre band between them has none.
+        let whole = block(0.0, 0.0, 20.0, 20.0);
+        let (left, right) = (block(1.0, 1.0, 9.0, 19.0), block(11.0, 1.0, 19.0, 19.0));
+        let by_filament = [vec![left.as_slice()], vec![right.as_slice()]];
+        let area = |regions: &[ExPolygon]| regions.iter().map(ExPolygon::area_mm2).sum::<f64>();
+        let apart = inside_walls(&by_filament, &[whole.as_slice()], None).unwrap();
+        assert_eq!(area(&apart[0]).round(), 288.0);
+        // One set of walls a millimetre deep around the whole layer has
+        // the band inside it.
+        let walls = WallsAround {
+            depth: scaled(1.0),
+            spacing: scaled(0.4),
+        };
+        let together = inside_walls(&by_filament, &[whole.as_slice()], Some(walls)).unwrap();
+        assert_eq!(area(&together[0]).round(), 324.0);
+    }
+
+    #[test]
+    fn sparse_fill_under_a_bridge_s_edge_along_the_walls_is_made_solid() {
+        let whole = block(0.0, 0.0, 20.0, 20.0);
+        let of = |kind| vec![Surface::new(kind, whole[0].clone())];
+        // Sparse fill with a bridge over all of it on the next layer.
+        let stack = vec![of(SurfaceKind::Sparse), of(SurfaceKind::InternalBridge)];
+        let spacing = scaled(0.4);
+        let edges = bridge_edges(std::slice::from_ref(&stack), spacing).unwrap();
+        assert!(edges[0].is_empty());
+        // A band 0.4 mm wide round a 20 mm square.
+        let band: f64 = edges[1].iter().map(ExPolygon::area_mm2).sum();
+        assert!((band - (400.0 - 19.2 * 19.2)).abs() < 1e-3, "{band}");
+        let carried = carry_bridge_edges(&stack, &edges, spacing).unwrap();
+        let area = |layer: &[Surface], kind| {
+            layer
+                .iter()
+                .filter(|s| s.kind == kind)
+                .map(|s| s.area.area_mm2())
+                .sum::<f64>()
+        };
+        // Under it the band is solid, a line wider than the bridge's own.
+        let solid = area(&carried[0], SurfaceKind::InternalSolid);
+        assert!((solid - (400.0 - 18.4 * 18.4)).abs() < 1e-3, "{solid}");
+        assert!((area(&carried[0], SurfaceKind::Sparse) - 18.4 * 18.4).abs() < 1e-3);
+        // The bridge's own layer is left as it was.
+        assert_eq!(carried[1], stack[1]);
+
+        // A bridge whose edge is nowhere near the walls below carries
+        // on the sparse lines alone.
+        let small = block(5.0, 5.0, 15.0, 15.0);
+        let stack = vec![
+            of(SurfaceKind::Sparse),
+            vec![Surface::new(SurfaceKind::InternalBridge, small[0].clone())],
+        ];
+        let edges = bridge_edges(std::slice::from_ref(&stack), spacing).unwrap();
+        assert_eq!(
+            carry_bridge_edges(&stack, &edges, spacing).unwrap()[0],
+            stack[0]
+        );
+    }
+
+    #[test]
+    fn a_filament_that_starts_on_another_s_sparse_fill_is_bridged_over_it() {
+        let whole = block(0.0, 0.0, 20.0, 20.0);
+        let solid = |kind| vec![Surface::new(kind, whole[0].clone())];
+        // The second filament prints nothing on the first layer.
+        let own = [Vec::new(), solid(SurfaceKind::InternalSolid)];
+        let kinds = |beneath: &[Beneath]| -> Vec<SurfaceKind> {
+            bridge_over_infill(&own, beneath, scaled(0.4)).unwrap()[1]
+                .iter()
+                .map(|s| s.kind)
+                .collect()
+        };
+        // Going by its own layer below, there is nothing to bridge.
+        let alone = [Beneath::default(), Beneath::default()];
+        assert_eq!(kinds(&alone), [SurfaceKind::InternalSolid]);
+        // Going by the whole layer, it lies on the first filament's
+        // sparse fill.
+        let first = solid(SurfaceKind::Sparse);
+        let under = Beneath::gather([(first.as_slice(), whole.as_slice())]);
+        assert!(under.solid.is_empty());
+        assert_eq!(
+            kinds(&[under, Beneath::default()]),
+            [SurfaceKind::InternalBridge]
+        );
+        // On the first filament's solid fill it is left as it was.
+        let first = solid(SurfaceKind::InternalSolid);
+        let under = Beneath::gather([(first.as_slice(), whole.as_slice())]);
+        assert_eq!(
+            kinds(&[under, Beneath::default()]),
+            [SurfaceKind::InternalSolid]
+        );
+    }
+
     #[test]
     fn a_one_layer_sheet_is_a_bottom() {
         let found = kinds(&[block(0.0, 0.0, 10.0, 10.0)], &shells(4, 3));
         assert_eq!(found, [vec![(Bottom, 100.0)]]);
     }
 
+    /// What each layer gives the next when one filament prints them all.
+    fn beneath(surfaces: &[Vec<Surface>], infill: &[&[ExPolygon]]) -> Vec<Beneath> {
+        surfaces
+            .iter()
+            .zip(infill)
+            .map(|(surfaces, infill)| Beneath::gather([(surfaces.as_slice(), *infill)]))
+            .collect()
+    }
+
     /// Classifies a stack of layers and picks out the bridges over infill,
     /// with solid lines 0.4 mm apart.
     fn bridged(layers: &[Vec<ExPolygon>], shells: &Shells) -> Vec<Vec<(SurfaceKind, f64)>> {
         let slices: Vec<&[ExPolygon]> = layers.iter().map(Vec::as_slice).collect();
-        let surfaces = classify(&slices, &slices, &slices, shells).unwrap();
-        bridge_over_infill(&surfaces, &slices, scaled(0.4))
+        let surfaces = classify(&slices, &slices, &slices, &[], shells).unwrap();
+        bridge_over_infill(&surfaces, &beneath(&surfaces, &slices), scaled(0.4))
             .unwrap()
             .into_iter()
             .map(|surfaces| {
@@ -757,7 +1192,14 @@ mod tests {
         assert!(has(4, InternalSolid) && !has(4, InternalBridge));
         // Bridge and what is left of the solid cover what the solid did.
         let layers_alone: Vec<&[ExPolygon]> = layers.iter().map(Vec::as_slice).collect();
-        let before = classify(&layers_alone, &layers_alone, &layers_alone, &shells(3, 1)).unwrap();
+        let before = classify(
+            &layers_alone,
+            &layers_alone,
+            &layers_alone,
+            &[],
+            &shells(3, 1),
+        )
+        .unwrap();
         let area = |surfaces: &[Surface], kinds: &[SurfaceKind]| {
             surfaces
                 .iter()
@@ -765,7 +1207,8 @@ mod tests {
                 .map(|s| s.area.area_mm2())
                 .sum::<f64>()
         };
-        let after = bridge_over_infill(&before, &layers_alone, scaled(0.4)).unwrap();
+        let after =
+            bridge_over_infill(&before, &beneath(&before, &layers_alone), scaled(0.4)).unwrap();
         for (was, is) in before.iter().zip(&after) {
             let solid = area(was, &[InternalSolid]);
             assert!((area(is, &[InternalSolid, InternalBridge]) - solid).abs() < 1e-6);
@@ -805,7 +1248,7 @@ mod tests {
     /// Classifies a stack of layers and anchors what faces outward.
     fn anchored(layers: &[Vec<ExPolygon>], shells: &Shells) -> Vec<Vec<Surface>> {
         let slices: Vec<&[ExPolygon]> = layers.iter().map(Vec::as_slice).collect();
-        let surfaces = classify(&slices, &slices, &slices, shells).unwrap();
+        let surfaces = classify(&slices, &slices, &slices, &[], shells).unwrap();
         anchor(&surfaces, &anchoring()).unwrap()
     }
 
@@ -895,7 +1338,7 @@ mod tests {
         assert!((area_of(&found[3], Sparse) - (100.0 - 4.0 * 10.0 * 0.4 + 4.0 * 0.16)).abs() < 0.5);
         // A layer with nothing facing outward is left as it was.
         let slices: Vec<&[ExPolygon]> = layers.iter().map(Vec::as_slice).collect();
-        let before = classify(&slices, &slices, &slices, &shells(2, 1)).unwrap();
+        let before = classify(&slices, &slices, &slices, &[], &shells(2, 1)).unwrap();
         assert_eq!(found[1], before[1]);
         // A sparse area left too small to be worth a pattern goes solid.
         let mut layers = vec![block(0.0, 0.0, 20.0, 20.0); 4];
