@@ -1,34 +1,34 @@
 //! Supports: scaffolding under whatever would otherwise be printed over air.
 //!
-//! This is a first working version of the reference's normal (grid)
-//! supports, not a port of SupportMaterial.cpp. It keeps the rules that
-//! decide whether a support works and comes off again:
+//! Two styles, both first working versions of the reference's rather than
+//! ports of it: normal supports, here, and tree supports, in `tree.rs`.
+//! They share what decides whether a support works and comes off again:
 //!
 //! - what counts as an overhang (`support_threshold_angle`, or by overlap);
 //! - the gap above a support, a whole number of layers, and the dense
 //!   interface layers under it;
-//! - the gaps beside and below a support wherever it passes the part;
-//! - a column, once it meets the part on its way down, stops there.
+//! - the gaps beside and below a support wherever it passes the part.
 //!
-//! Support areas are squared off to a grid one line spacing wide, as the
-//! reference's default "grid" style does, which makes them a little larger
-//! than what they hold up and gives every column whole lines to stand on.
-//! The grid here is always square to the bed, whatever `support_angle`.
+//! Normal supports are columns that stop where they meet the part on the
+//! way down. Their areas are squared off to a grid one line spacing wide,
+//! as the reference's default "grid" style does, which makes them a little
+//! larger than what they hold up and gives every column whole lines to
+//! stand on. The grid here is always square to the bed, whatever
+//! `support_angle`.
 //!
-//! Not done: tree supports of any style (a profile that asks for them gets
-//! these instead, with a note), supports only where painted, the "snug"
-//! style,
-//! bridges left unsupported, rafts, an outline round each support, and
-//! support in a filament of its own.
+//! Not done: supports only where painted, the "snug" and the older tree
+//! styles, bridges left unsupported, rafts, an outline round each normal
+//! support, and support in a filament of its own.
 
 mod settings;
+mod tree;
 
 use edge_clip::{ClipError, Join};
 use edge_extrusion::{ExtrusionPath, Flow, FlowError, Role};
 use edge_geom::{ExPolygon, Point2, Polygon, scaled, unscaled};
 use rayon::prelude::*;
 
-pub use settings::SupportSettings;
+pub use settings::{Style, SupportSettings};
 
 #[derive(Debug, thiserror::Error)]
 pub enum SupportError {
@@ -148,11 +148,11 @@ fn touching(regions: Vec<ExPolygon>, kept: &[ExPolygon]) -> Result<Vec<ExPolygon
 
 /// What one layer of the part needs holding up.
 #[derive(Clone, Debug, Default)]
-struct Overhang {
+pub(crate) struct Overhang {
     /// Everything over air; a support column stands under all of it.
-    whole: Vec<ExPolygon>,
+    pub whole: Vec<ExPolygon>,
     /// The part of it far enough out to need the dense interface.
-    dense: Vec<ExPolygon>,
+    pub dense: Vec<ExPolygon>,
 }
 
 /// The overhang of a layer over the one below, after
@@ -362,6 +362,49 @@ pub fn generate(
     Ok(supports)
 }
 
+/// A part to be supported, its middle at the origin, and how.
+pub(crate) struct Job<'a> {
+    pub slices: &'a [&'a [ExPolygon]],
+    pub first_layer_height: f64,
+    pub layer_height: f64,
+    pub settings: &'a SupportSettings,
+    /// Layers of air left above a support and below one that stands on
+    /// the part: `top_z_distance` and `bottom_z_distance` in whole layers.
+    pub gap_above: usize,
+    pub gap_below: usize,
+}
+
+impl Job<'_> {
+    pub fn height_of(&self, index: usize) -> f64 {
+        if index == 0 {
+            self.first_layer_height
+        } else {
+            self.layer_height
+        }
+    }
+
+    /// Where no support may be on a layer: within the set distance of the
+    /// part on that layer, and within a little of the part on the layers
+    /// inside the gaps above and below. The second is also what leaves the
+    /// gap under a support that rests on the part.
+    pub fn keep_off(&self, index: usize) -> Result<Vec<ExPolygon>, SupportError> {
+        let mut near_part = edge_clip::offset(
+            self.slices[index],
+            scaled(self.settings.xy_distance),
+            Join::MITER,
+        )?;
+        let last = (index + self.gap_above).min(self.slices.len() - 1);
+        for near in (index.saturating_sub(self.gap_below)..=last).filter(|near| *near != index) {
+            near_part.extend(edge_clip::offset(
+                self.slices[near],
+                scaled(NEIGHBOUR_GAP),
+                Join::MITER,
+            )?);
+        }
+        Ok(edge_clip::union_ex(&near_part)?)
+    }
+}
+
 /// [`generate`] for a part whose middle is at the origin.
 fn about_origin(
     slices: &[&[ExPolygon]],
@@ -369,15 +412,30 @@ fn about_origin(
     layer_height: f64,
     settings: &SupportSettings,
 ) -> Result<Vec<Vec<ExtrusionPath>>, SupportError> {
-    let count = slices.len();
-    let height_of = |index: usize| {
-        if index == 0 {
-            first_layer_height
-        } else {
-            layer_height
-        }
+    // A support's top sits a whole number of layers under what it holds
+    // up, leaving `top_z_distance` of air: an overhang on layer L is met by
+    // a contact on layer L - 1 - gap.
+    let layers_in = |distance: f64| (distance / layer_height + 1e-4).round().max(0.0) as usize;
+    let job = Job {
+        slices,
+        first_layer_height,
+        layer_height,
+        settings,
+        gap_above: layers_in(settings.top_z_distance),
+        gap_below: layers_in(settings.bottom_z_distance),
     };
-    let wall_width = settings.wall_width(layer_height)?;
+    let overhangs = overhangs(&job)?;
+    match settings.style {
+        Style::Normal => normal(&job, overhangs),
+        Style::Tree => tree::build(&job, overhangs),
+    }
+}
+
+/// What every layer of the part needs holding up.
+fn overhangs(job: &Job<'_>) -> Result<Vec<Overhang>, SupportError> {
+    let (slices, settings) = (job.slices, job.settings);
+    let count = slices.len();
+    let wall_width = settings.wall_width(job.layer_height)?;
 
     let detect = |index: usize, covered: Option<&[ExPolygon]>| {
         if index == 0 {
@@ -386,7 +444,7 @@ fn about_origin(
         overhang(
             slices[index],
             slices[index - 1],
-            height_of(index - 1),
+            job.height_of(index - 1),
             covered,
             settings,
             wall_width,
@@ -420,15 +478,18 @@ fn about_origin(
     if settings.remove_small_overhang {
         drop_small(&mut overhangs, wall_width)?;
     }
+    Ok(overhangs)
+}
 
-    // A support's top sits a whole number of layers under what it holds
-    // up, leaving `top_z_distance` of air: an overhang on layer L is met by
-    // a contact on layer L - 1 - gap.
-    let layers_in = |distance: f64| (distance / layer_height + 1e-4).round().max(0.0) as usize;
-    let (gap_above, gap_below) = (
-        layers_in(settings.top_z_distance),
-        layers_in(settings.bottom_z_distance),
-    );
+/// Normal supports: columns squared off to a grid and filled with lines.
+fn normal(
+    job: &Job<'_>,
+    overhangs: Vec<Overhang>,
+) -> Result<Vec<Vec<ExtrusionPath>>, SupportError> {
+    let (slices, settings, layer_height) = (job.slices, job.settings, job.layer_height);
+    let (gap_above, gap_below) = (job.gap_above, job.gap_below);
+    let count = slices.len();
+    let height_of = |index: usize| job.height_of(index);
     let flow = settings.flow(layer_height, false)?;
     // The grid supports are squared off to: one sparse line spacing wide.
     let cell = scaled(flow.spacing + settings.base_spacing);
@@ -484,27 +545,14 @@ fn about_origin(
             if columns[index].is_empty() {
                 return Ok(Vec::new());
             }
-            // Kept clear of the part: by the full distance on its own
-            // layer, and by a little from the layers within the gaps above
-            // and below, which is also what leaves the gap under a support
-            // that rests on the part.
-            let mut keep_off =
-                edge_clip::offset(slices[index], scaled(settings.xy_distance), Join::MITER)?;
-            let window = index.saturating_sub(gap_below)..=(index + gap_above).min(count - 1);
-            for near in window.filter(|near| *near != index) {
-                keep_off.extend(edge_clip::offset(
-                    slices[near],
-                    scaled(NEIGHBOUR_GAP),
-                    Join::MITER,
-                )?);
-            }
+            let keep_off = job.keep_off(index)?;
             let first = index == 0;
             let flow = settings.flow(height_of(index), first)?;
             // Half a line beyond the grid, so the outermost lines lie on it.
             let reach = flow.scaled_spacing() / 2 + GRID_MARGIN;
             let mut area = edge_clip::difference(
                 &edge_clip::offset(&columns[index], reach, Join::MITER)?,
-                &edge_clip::union_ex(&keep_off)?,
+                &keep_off,
             )?;
             let mut paths = Vec::new();
             if first {
@@ -528,6 +576,7 @@ fn about_origin(
                     settings.angle + 90.0,
                     Role::Support,
                     &flow,
+                    false,
                     &mut paths,
                 )?;
                 return Ok(paths);
@@ -564,6 +613,7 @@ fn about_origin(
                 settings.angle + 90.0,
                 Role::SupportInterface,
                 &flow,
+                true,
                 &mut paths,
             )?;
             fill(
@@ -572,6 +622,7 @@ fn about_origin(
                 settings.angle,
                 Role::Support,
                 &flow,
+                false,
                 &mut paths,
             )?;
             fill(
@@ -580,6 +631,7 @@ fn about_origin(
                 settings.angle + 90.0,
                 Role::SupportInterface,
                 &flow,
+                true,
                 &mut paths,
             )?;
             Ok(paths)
@@ -590,26 +642,68 @@ fn about_origin(
 /// Lines `spacing` mm apart at `angle` degrees across each region, joined
 /// into zigzags. A region too narrow for a line to cross still gets its
 /// outline, so nothing above it is left standing on air.
-fn fill(
+///
+/// Lines lie on one grid for the whole plane unless `anchored`, when each
+/// region's lines start at its own edge, so the edge of a dense layer is
+/// held up wherever it happens to fall.
+pub(crate) fn fill(
     regions: &[ExPolygon],
     spacing: f64,
     angle: f64,
     role: Role,
     flow: &Flow,
+    anchored: bool,
     paths: &mut Vec<ExtrusionPath>,
 ) -> Result<(), SupportError> {
     // Lines stop half a line spacing short of the edge, as the reference's
     // do; areas reach that much past the grid, plus a hair, so a line on
     // the grid's own edge is kept.
     let half = flow.scaled_spacing() / 2;
-    for region in edge_clip::offset(regions, -half, Join::MITER)? {
-        let lines = edge_infill::lines::paths(
+    let (sin, cos) = angle.to_radians().sin_cos();
+    for mut region in edge_clip::offset(regions, -half, Join::MITER)? {
+        // Rows lie where this is a whole number of spacings; the region is
+        // moved so that its edge is just short of one, and the lines are
+        // moved back.
+        let across = |p: &Point2| -unscaled(p.x) * sin + unscaled(p.y) * cos;
+        let (dx, dy) = if anchored {
+            let low = region
+                .contour
+                .points
+                .iter()
+                .map(across)
+                .fold(f64::INFINITY, f64::min);
+            let slide = (low / spacing).ceil() * spacing - low - 0.002;
+            (scaled(-sin * slide), scaled(cos * slide))
+        } else {
+            (0, 0)
+        };
+        if (dx, dy) != (0, 0) {
+            for ring in std::iter::once(&mut region.contour).chain(&mut region.holes) {
+                for point in &mut ring.points {
+                    *point = Point2 {
+                        x: point.x + dx,
+                        y: point.y + dy,
+                    };
+                }
+            }
+        }
+        let mut lines = edge_infill::lines::paths(
             &region,
             scaled(spacing),
             &[angle.to_radians()],
             half,
             scaled(3.0 * spacing),
         );
+        for point in lines.iter_mut().flatten().chain(
+            std::iter::once(&mut region.contour)
+                .chain(&mut region.holes)
+                .flat_map(|ring| &mut ring.points),
+        ) {
+            *point = Point2 {
+                x: point.x - dx,
+                y: point.y - dy,
+            };
+        }
         if lines.is_empty() {
             let mut points = region.contour.points;
             if points.len() >= 3 {
