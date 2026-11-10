@@ -99,12 +99,39 @@ impl Shelf {
         for_machine(&self.filaments, machine)
     }
 
-    /// The presets named, each with everything it inherits.
+    /// The process and the filament preset a printer's own profile names
+    /// as its usual ones, where they are among those made for it.
+    pub fn usual_for(&self, machine: &str) -> (Option<String>, Option<String>) {
+        let Ok(profile) = self.vendor.resolve(Kind::Machine, machine) else {
+            return (None, None);
+        };
+        let among = |named: Option<&str>, offered: Vec<&str>| {
+            named
+                .filter(|name| offered.contains(name))
+                .map(str::to_owned)
+        };
+        (
+            among(
+                profile.text("default_print_profile"),
+                self.processes_for(machine),
+            ),
+            among(
+                profile
+                    .texts("default_filament_profile")
+                    .and_then(|names| names.first())
+                    .map(String::as_str),
+                self.filaments_for(machine),
+            ),
+        )
+    }
+
+    /// The presets named, each with everything it inherits. `filaments`
+    /// are for filament 1, filament 2 and so on.
     pub fn choose(
         &self,
         machine: Option<&str>,
         process: Option<&str>,
-        filament: Option<&str>,
+        filaments: &[&str],
     ) -> Result<Chosen, Failure> {
         let resolve = |kind, name: Option<&str>| -> Result<Option<(String, Settings)>, Failure> {
             match name {
@@ -115,7 +142,15 @@ impl Shelf {
         Ok(Chosen {
             machine: resolve(Kind::Machine, machine)?,
             process: resolve(Kind::Process, process)?,
-            filament: resolve(Kind::Filament, filament)?,
+            filaments: filaments
+                .iter()
+                .map(|name| {
+                    Ok((
+                        (*name).to_owned(),
+                        self.vendor.resolve(Kind::Filament, name)?,
+                    ))
+                })
+                .collect::<Result<_, Failure>>()?,
         })
     }
 }

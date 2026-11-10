@@ -107,6 +107,22 @@ impl Opened {
         }
     }
 
+    /// The filaments what is to be sliced prints in, by number from 1, in
+    /// order.
+    pub fn filaments(&self) -> Vec<usize> {
+        let mut used: Vec<usize> = match &self.held {
+            Held::Model(_) => vec![1],
+            Held::Project { project, plate } => project
+                .bodies(*plate)
+                .iter()
+                .map(|body| body.filament)
+                .collect(),
+        };
+        used.sort_unstable();
+        used.dedup();
+        used
+    }
+
     /// The settings a project was saved with.
     pub fn settings(&self) -> Option<&Settings> {
         match &self.held {

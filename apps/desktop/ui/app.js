@@ -64,6 +64,10 @@ const remembered = {
 
 const state = {
   model: null,
+  // The filament presets made for the printer chosen.
+  filamentNames: [],
+  // The one the printer's own profile usually prints with.
+  usualFilament: null,
   summary: null,
   layer: 0,
   shown: null,
@@ -97,7 +101,9 @@ async function loadLibrary(library) {
 async function vendorChanged() {
   const vendor = $('vendor').value;
   if (!vendor) {
-    for (const id of ['machine', 'process', 'filament']) fill($(id), []);
+    for (const id of ['machine', 'process']) fill($(id), []);
+    state.filamentNames = [];
+    buildFilaments();
     return;
   }
   remembered.set('vendor', vendor);
@@ -114,17 +120,47 @@ async function machineChanged() {
   const [vendor, machine] = [$('vendor').value, $('machine').value];
   if (!machine) {
     fill($('process'), []);
-    fill($('filament'), []);
+    state.filamentNames = [];
+    buildFilaments();
     return;
   }
   remembered.set(`machine.${vendor}`, machine);
   try {
-    const { processes, filaments } = await call('presets', { vendor, machine });
-    fill($('process'), processes, remembered.get(`process.${machine}`));
-    fill($('filament'), filaments, remembered.get(`filament.${machine}`));
+    const usual = await call('presets', { vendor, machine });
+    fill($('process'), usual.processes, remembered.get(`process.${machine}`) || usual.usual_process);
+    state.filamentNames = usual.filaments;
+    state.usualFilament = usual.usual_filament;
+    buildFilaments();
   } catch (error) {
     say(error.message, true);
   }
+}
+
+// The filaments the model prints in, by number; one for a bare model.
+const filamentsUsed = () => (state.model && state.model.used.length ? state.model.used : [1]);
+
+// One choice of filament preset for each filament the model prints in.
+function buildFilaments() {
+  const machine = $('machine').value;
+  const used = filamentsUsed();
+  $('filaments').replaceChildren(...used.map((number) => {
+    const label = document.createElement('label');
+    const select = document.createElement('select');
+    select.dataset.filament = number;
+    fill(select, state.filamentNames, remembered.get(`filament.${machine}.${number}`) || remembered.get(`filament.${machine}`) || state.usualFilament);
+    label.append(used.length === 1 && number === 1 ? 'Filament ' : `Filament ${number} `, select);
+    return label;
+  }));
+}
+
+// A preset for filament 1, 2 and so on up to the highest in use; one the
+// model does not print in takes the first chosen.
+function filamentsChosen() {
+  const selects = [...$('filaments').querySelectorAll('select')];
+  if (!selects.length || !selects[0].value) return [];
+  const byNumber = new Map(selects.map((select) => [Number(select.dataset.filament), select.value]));
+  const highest = Math.max(...byNumber.keys());
+  return Array.from({ length: highest }, (_, index) => byNumber.get(index + 1) || selects[0].value);
 }
 
 function sourceChanged() {
@@ -142,6 +178,7 @@ async function openModel(path) {
     plates.replaceChildren(...model.plates.map((id) => new Option(`Plate ${id}`, id)));
     if (model.plate !== null) plates.value = model.plate;
     $('plate-row').hidden = model.plates.length < 2;
+    buildFilaments();
     // A project brings its settings; a bare model needs presets.
     const source = $('source');
     source.options[0].disabled = !model.has_settings;
@@ -166,10 +203,15 @@ async function slice() {
   const args = { path: state.model.path };
   if (!$('plate-row').hidden) args.plate = Number($('plate').value);
   if ($('source').value === 'presets') {
-    for (const id of ['vendor', 'machine', 'process', 'filament']) args[id] = $(id).value;
+    for (const id of ['vendor', 'machine', 'process']) args[id] = $(id).value;
+    args.filaments = filamentsChosen();
     remembered.set(`process.${args.machine}`, args.process);
-    remembered.set(`filament.${args.machine}`, args.filament);
+    for (const select of $('filaments').querySelectorAll('select')) {
+      remembered.set(`filament.${args.machine}.${select.dataset.filament}`, select.value);
+    }
+    if (args.filaments.length) remembered.set(`filament.${args.machine}`, args.filaments[0]);
   }
+  if ($('bed').value) args.bed_type = $('bed').value;
   try {
     await call('slice', args);
   } catch (error) {
@@ -255,9 +297,15 @@ async function showResult() {
   $('gcode-error').textContent = failed ? gcode.error : '';
   $('export').disabled = failed;
   const items = (texts) => texts.map((text) => Object.assign(document.createElement('li'), { textContent: text }));
-  $('warnings').replaceChildren(...items(summary.warnings));
-  $('notes').querySelector('summary').textContent = `${summary.notes.length} note${summary.notes.length === 1 ? '' : 's'} on what was not done as asked`;
-  $('notes').querySelector('ul').replaceChildren(...items(summary.notes));
+  // What is wrong with this print, what was settled for the person, and
+  // what the profile asks for that the engine does not do yet: three
+  // different things, kept apart.
+  $('problems').replaceChildren(...items(summary.problems));
+  $('remarks').replaceChildren(...items(summary.remarks));
+  const gaps = summary.gaps.length;
+  $('gaps').hidden = gaps === 0;
+  $('gaps').querySelector('summary').textContent = `${gaps} setting${gaps === 1 ? '' : 's'} this engine does not follow yet`;
+  $('gaps').querySelector('ul').replaceChildren(...items(summary.gaps));
   $('result').hidden = false;
 
   const slider = $('layer');
@@ -294,9 +342,26 @@ const featureColours = {
 };
 const spareColours = ['#ff7d38', '#4da3ff', '#3ddc5a', '#ffe64d', '#e06fd0', '#8fc4e8', '#f04a4a', '#b9e3a8'];
 
+// The colour each filament is set to, where the filaments in use are
+// set to colours that can be told apart; else one from a fixed list.
 function filamentColour(filament) {
-  const given = (state.summary.colours || [])[filament - 1];
-  return /^#[0-9a-f]{6}/i.test(given || '') ? given.slice(0, 7) : spareColours[(filament - 1) % spareColours.length];
+  const given = (number) => {
+    const colour = (state.summary.colours || [])[number - 1] || '';
+    return /^#[0-9a-f]{6}/i.test(colour) ? colour.slice(0, 7).toLowerCase() : null;
+  };
+  const used = state.summary.filaments.map(given);
+  const distinct = used.every(Boolean) && new Set(used).size === used.length;
+  return distinct ? onDark(given(filament)) : spareColours[(filament - 1) % spareColours.length];
+}
+
+// A colour as drawn on the dark stage: one too dark to see there is
+// lifted towards grey, enough to show and still read as dark.
+function onDark(colour) {
+  const parts = [1, 3, 5].map((at) => parseInt(colour.slice(at, at + 2), 16));
+  const brightness = (0.299 * parts[0] + 0.587 * parts[1] + 0.114 * parts[2]) / 255;
+  if (brightness >= 0.3) return colour;
+  const lifted = parts.map((part) => Math.round(part + (150 - part) * 0.6));
+  return `#${lifted.map((part) => part.toString(16).padStart(2, '0')).join('')}`;
 }
 
 const byFilament = () => $('colour').value === 'filament';
@@ -474,6 +539,16 @@ new ResizeObserver(draw).observe(canvas);
 $('open').addEventListener('click', async () => {
   const path = await pick('model', remembered.get('model') || '');
   if (path) await openModel(path);
+});
+$('plate').addEventListener('change', async () => {
+  // Another plate may print in other filaments.
+  try {
+    const model = await call('open', { path: state.model.path, plate: Number($('plate').value) });
+    state.model.used = model.used;
+    buildFilaments();
+  } catch (error) {
+    say(error.message, true);
+  }
 });
 $('vendor').addEventListener('change', vendorChanged);
 $('machine').addEventListener('change', machineChanged);

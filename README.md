@@ -59,11 +59,16 @@ cargo test
 ```
 
 A first slice of the app, not the app: it opens an STL or a 3MF project,
-slices it with the project's own settings or with a printer, process and
-filament preset picked from the vendor profiles, shows each layer coloured
-by feature or by filament (wheel to zoom, drag to move, arrow keys or the
-slider for layers), lists what the settings asked for that is not done,
-and saves the G-code, which is the file the command line writes. It has
+slices it with the project's own settings or with presets picked from the
+vendor profiles (a printer, a process, a filament for each filament the
+model prints in, starting from the ones the printer's own profile
+names), and optionally a bed surface. It shows each layer coloured by
+feature or by filament (wheel to zoom, drag to move, arrow keys or the
+slider for layers) and saves the G-code, which is the file the command
+line writes. What it has to say about a print is kept in three places:
+what is wrong with this print, in red; what was settled without being
+asked, such as the bed surface; and, folded away, the settings the
+profile turns on that this engine does not follow yet. It has
 no 3D view, no arranging or editing of the model, no settings editor and
 no installer. The vendor profiles are found in `reference/EdgeSlicer`
 beside the source, or wherever `EDGE_PROFILES` points; the folder can be
@@ -188,8 +193,10 @@ Known gaps: painted triangles, per-object setting overrides, typed settings
     first change is during the start G-code as in the reference, but
     never before the last thing said of its temperature; and a tool not
     needed again is switched off.
-  - A filament preset named for a model printed in several filaments is
-    used for all of them, and a note says so. A model printed in a
+  - Filament presets are named one for each filament (`--filament`
+    given again for filament 2, and so on). One alone is used for every
+    filament, and a filament past the last named takes the last; a note
+    says so either way. A model printed in a
     filament its settings say nothing of gets no G-code and a sentence
     saying which. Printer scripts are given a bed temperature for every
     filament.

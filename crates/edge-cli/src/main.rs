@@ -67,9 +67,10 @@ struct SliceArgs {
     #[arg(long, requires = "vendor")]
     machine: Option<String>,
     /// Filament preset name within --vendor; supplies temperatures, cooling
-    /// and retraction.
+    /// and retraction. Given once it serves every filament the model
+    /// prints in; given again, the second is for filament 2, and so on.
     #[arg(long, requires = "vendor")]
-    filament: Option<String>,
+    filament: Vec<String>,
     /// Which build plate is on the printer, e.g. "Textured PEI Plate"; it
     /// picks the bed temperature. Defaults to the 3MF's, or else to the
     /// reference's default, "Cool Plate".
@@ -233,7 +234,11 @@ fn presets(args: &SliceArgs) -> Result<Chosen, Failure> {
     Ok(Chosen {
         machine: resolve(Kind::Machine, &args.machine)?,
         process: resolve(Kind::Process, &args.process)?,
-        filament: resolve(Kind::Filament, &args.filament)?,
+        filaments: args
+            .filament
+            .iter()
+            .map(|name| Ok((name.clone(), vendor.resolve(Kind::Filament, name)?)))
+            .collect::<Result<_, Failure>>()?,
     })
 }
 

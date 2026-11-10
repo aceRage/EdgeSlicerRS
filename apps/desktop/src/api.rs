@@ -11,7 +11,7 @@ use std::{
     },
 };
 
-use edge_engine::{Chosen, Gcode, Library, Overrides, Shelf, Sliced, Stage, Watcher};
+use edge_engine::{BedType, Chosen, Gcode, Library, Overrides, Shelf, Sliced, Stage, Watcher};
 use edge_extrusion::Role;
 use edge_gcode::role_name;
 use edge_geom::unscaled;
@@ -40,6 +40,8 @@ struct Done {
     sliced: Sliced,
     gcode: Result<Gcode, String>,
     model: PathBuf,
+    /// How the bed surface was settled when none was chosen.
+    bed_type: BedType,
 }
 
 #[derive(Clone, Default)]
@@ -87,6 +89,13 @@ fn text<'a>(args: &'a Value, key: &str) -> Option<&'a str> {
     args.get(key)
         .and_then(Value::as_str)
         .filter(|value| !value.is_empty())
+}
+
+/// The plate asked for, by its number.
+fn plate(args: &Value) -> Option<u32> {
+    args.get("plate")
+        .and_then(Value::as_u64)
+        .map(|plate| plate as u32)
 }
 
 fn needed<'a>(args: &'a Value, key: &str) -> Result<&'a str, String> {
@@ -155,12 +164,16 @@ impl Session {
             "presets" => {
                 let shelf = self.shelf(needed(args, "vendor")?)?;
                 let machine = needed(args, "machine")?;
+                let (process, filament) = shelf.usual_for(machine);
                 Ok(json!({
                     "processes": shelf.processes_for(machine),
                     "filaments": shelf.filaments_for(machine),
+                    // What the printer's own profile usually prints with.
+                    "usual_process": process,
+                    "usual_filament": filament,
                 }))
             }
-            "open" => open(Path::new(needed(args, "path")?)),
+            "open" => open(Path::new(needed(args, "path")?), plate(args)),
             "slice" => self.slice(args),
             "cancel" => {
                 self.cancel.store(true, Ordering::Relaxed);
@@ -236,21 +249,23 @@ impl Session {
     /// `status` says how it is going.
     fn slice(self: &Arc<Self>, args: &Value) -> Result<Value, String> {
         let path = PathBuf::from(needed(args, "path")?);
-        let plate = args
-            .get("plate")
-            .and_then(Value::as_u64)
-            .map(|plate| plate as u32);
+        let plate = plate(args);
+        // A preset for filament 1, filament 2 and so on.
+        let filaments: Vec<&str> = match args.get("filaments").and_then(Value::as_array) {
+            Some(names) => names.iter().filter_map(Value::as_str).collect(),
+            None => text(args, "filament").into_iter().collect(),
+        };
+        let overrides = Overrides {
+            bed_type: text(args, "bed_type").map(str::to_owned),
+            ..Overrides::default()
+        };
         // The presets are found before anything starts, so a name that
         // is not there is said at once.
         let chosen = match text(args, "vendor") {
             None => Chosen::default(),
             Some(vendor) => self
                 .shelf(vendor)?
-                .choose(
-                    text(args, "machine"),
-                    text(args, "process"),
-                    text(args, "filament"),
-                )
+                .choose(text(args, "machine"), text(args, "process"), &filaments)
                 .map_err(|e| e.to_string())?,
         };
         let run = {
@@ -278,7 +293,8 @@ impl Session {
             };
             let work = || -> Result<Done, edge_engine::Failure> {
                 let loaded = edge_engine::open(&path, plate)?.place()?;
-                let job = edge_engine::prepare(loaded, &chosen, &Overrides::default())?;
+                let job = edge_engine::prepare(loaded, &chosen, &overrides)?;
+                let bed_type = job.bed_type.clone();
                 let sliced = edge_engine::slice(job, &watch)?;
                 {
                     let mut progress = lock(&session.progress);
@@ -292,6 +308,7 @@ impl Session {
                     sliced,
                     gcode,
                     model: path.clone(),
+                    bed_type,
                 })
             };
             let outcome = work();
@@ -316,8 +333,8 @@ impl Session {
 
 /// What a model file is, before slicing it: its plates and the presets
 /// it names.
-fn open(path: &Path) -> Result<Value, String> {
-    let opened = edge_engine::open(path, None).map_err(|e| e.to_string())?;
+fn open(path: &Path, plate: Option<u32>) -> Result<Value, String> {
+    let opened = edge_engine::open(path, plate).map_err(|e| e.to_string())?;
     let settings = opened.settings();
     let named = |key: &str| settings.and_then(|settings| settings.text(key));
     Ok(json!({
@@ -326,6 +343,8 @@ fn open(path: &Path) -> Result<Value, String> {
         "plates": opened.plates(),
         "plate": opened.plate().map(|(id, _)| id),
         "has_settings": settings.is_some(),
+        // The filaments what is on the plate prints in, by number from 1.
+        "used": opened.filaments(),
         "printer": named("printer_settings_id"),
         "process": named("print_settings_id"),
         "filaments": settings.and_then(|settings| settings.texts("filament_settings_id")),
@@ -391,60 +410,72 @@ fn summary(done: &Done) -> Value {
         }
     }
 
-    let mut notes: Vec<String> = Vec::new();
-    if print.machine_start_gcode.is_some() {
-        notes.push("Start, end and layer-change G-code come from the printer profile.".to_owned());
-    } else {
-        notes.push(
-            "No printer profile: the G-code has a generic preamble and is only good for viewing."
+    // Three kinds of thing to say, kept apart: what is wrong with this
+    // print, what was settled for the person, and what the settings ask
+    // for that this engine does not do yet.
+    let sentence = |phrase: &str| {
+        let mut letters = phrase.chars();
+        letters.next().map_or(String::new(), |first| {
+            format!("{}{}.", first.to_uppercase(), letters.as_str())
+        })
+    };
+    let mut problems: Vec<String> = Vec::new();
+    if print.machine_start_gcode.is_none() {
+        problems.push(
+            "No printer was chosen: the G-code has a generic start and end, and is only good for looking at."
                 .to_owned(),
         );
     }
+    problems.extend(sliced.without_a_tool().map(|filament| {
+        format!(
+            "Filament {filament} is used, but the printer has {} tools; T{} is written, as the C++ \
+             slicer writes it, and the printer may not accept it.",
+            print.tools,
+            filament - 1
+        )
+    }));
     let leaky = sliced
         .layers
         .iter()
         .filter(|layer| layer.open_chains > 0)
         .count();
     if leaky > 0 {
-        notes.push(format!(
+        problems.push(format!(
             "{leaky} layers have open contours; the mesh is not watertight there."
         ));
     }
-    if let Some(pattern) = &sliced.infill.unsupported_pattern {
-        notes.push(format!(
-            "Sparse pattern \"{pattern}\" is not implemented; grid was used in its place."
-        ));
-    }
-    let gaps: usize = sliced
+    let skipped: usize = sliced
         .walls_by
         .iter()
         .flatten()
         .map(|layer| layer.gaps_skipped)
         .sum();
-    if gaps > 0 {
-        notes.push(format!(
-            "{gaps} gap(s) between walls were left empty; their centre line could not be worked out."
+    if skipped > 0 {
+        problems.push(format!(
+            "{skipped} gap(s) between walls were left empty; their centre line could not be worked out."
         ));
     }
-    // These came from the engine as phrases; here they are sentences.
-    notes.extend(sliced.remarks.iter().map(|remark| {
-        let mut first = remark.chars();
-        first.next().map_or(String::new(), |letter| {
-            format!("{}{}.", letter.to_uppercase(), first.as_str())
-        })
-    }));
-    notes.extend(sliced.notes().cloned());
-    let warnings: Vec<String> = sliced
-        .without_a_tool()
-        .map(|filament| {
-            format!(
-                "Filament {filament} is used, but the printer has {} tools; T{} is written, as the C++ \
-                 slicer writes it, and the printer may not accept it.",
-                print.tools,
-                filament - 1
-            )
-        })
+    let mut remarks: Vec<String> = sliced
+        .remarks
+        .iter()
+        .map(|remark| sentence(remark))
         .collect();
+    match &done.bed_type {
+        BedType::Settled => {}
+        BedType::PrinterDefault(plate) => remarks.push(format!(
+            "No bed surface was chosen; the printer's own default, {plate}, sets the bed temperature."
+        )),
+        BedType::Assumed => remarks.push(
+            "No bed surface was chosen; Cool Plate is assumed for the bed temperature.".to_owned(),
+        ),
+    }
+    let mut gaps: Vec<String> = Vec::new();
+    if let Some(pattern) = &sliced.infill.unsupported_pattern {
+        gaps.push(format!(
+            "sparse_infill_pattern \"{pattern}\": grid is used in its place"
+        ));
+    }
+    gaps.extend(sliced.notes().cloned());
 
     let gcode = match &done.gcode {
         Err(error) => json!({ "error": error }),
@@ -479,8 +510,9 @@ fn summary(done: &Done) -> Value {
         "filaments": sliced.used,
         "colours": sliced.settings.texts("filament_colour"),
         "roles": present,
-        "notes": notes,
-        "warnings": warnings,
+        "problems": problems,
+        "remarks": remarks,
+        "gaps": gaps,
         "gcode": gcode,
         "ms": {
             "layers": ms(timings.slice),
@@ -558,6 +590,7 @@ mod tests {
         let path = reference("tests/data/support_corpus/twopart_groups.3mf");
         let opened = session.call("open", &json!({ "path": path })).unwrap();
         assert_eq!(opened["has_settings"], true);
+        assert_eq!(opened["used"], json!([1]));
         assert_eq!(opened["name"], "twopart_groups.3mf");
 
         session.call("slice", &json!({ "path": path })).unwrap();
@@ -568,6 +601,14 @@ mod tests {
         let summary = session.call("summary", &Value::Null).unwrap();
         assert_eq!(summary["layers"], 60);
         assert!(summary["gcode"]["filament_m"].as_f64().unwrap() > 0.5);
+        // Nothing is wrong with it; what the profile asks for and is not
+        // done is listed apart.
+        assert_eq!(summary["problems"], json!([]));
+        assert!(
+            summary["gaps"]
+                .as_array()
+                .is_some_and(|gaps| !gaps.is_empty())
+        );
         let roles = summary["roles"].as_array().unwrap();
         assert!(roles.contains(&json!("Outer wall")) && roles.contains(&json!("Bridge")));
 
@@ -640,5 +681,42 @@ mod tests {
         let summary = session.call("summary", &Value::Null).unwrap();
         assert_eq!(summary["printer_ready"], true);
         assert!(summary["bed"].is_array());
+        // No bed surface was chosen, which is said; one chosen is not.
+        let said = |summary: &Value| {
+            summary["remarks"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|remark| remark.as_str().unwrap().contains("bed surface"))
+        };
+        assert!(said(&summary), "{}", summary["remarks"]);
+
+        // A plate of several filaments, with a preset for each and a bed chosen.
+        let project = reference("tests/mcbrim_test.3mf");
+        let opened = session
+            .call("open", &json!({ "path": project, "plate": 2 }))
+            .unwrap();
+        let used = opened["used"].as_array().unwrap();
+        assert!(used.len() > 1, "{used:?}");
+        let highest = used.iter().filter_map(Value::as_u64).max().unwrap() as usize;
+        let args = json!({
+            "path": project, "plate": 2, "vendor": "Snapmaker", "machine": machine,
+            "process": process, "filaments": vec![filament; highest],
+            "bed_type": "Textured PEI Plate",
+        });
+        session.call("slice", &args).unwrap();
+        let status = wait(&session);
+        assert_eq!(status["state"], "done", "{status}");
+        let summary = session.call("summary", &Value::Null).unwrap();
+        assert!(!said(&summary), "{}", summary["remarks"]);
+        assert!(summary["gcode"]["tool_changes"].as_u64().unwrap() > 0);
+        // More filaments than the printer has tools is a problem with this print.
+        assert!(
+            summary["problems"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|problem| problem.as_str().unwrap().contains("tools"))
+        );
     }
 }

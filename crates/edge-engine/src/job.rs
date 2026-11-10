@@ -8,7 +8,9 @@ use crate::{Failure, Loaded};
 pub struct Chosen {
     pub machine: Option<(String, Settings)>,
     pub process: Option<(String, Settings)>,
-    pub filament: Option<(String, Settings)>,
+    /// A preset for filament 1, filament 2 and so on. One alone serves
+    /// every filament; a filament past the last named takes the last.
+    pub filaments: Vec<(String, Settings)>,
 }
 
 /// What the person slicing sets over the presets and the project.
@@ -57,22 +59,34 @@ pub struct Job {
     pub remarks: Vec<String>,
 }
 
-/// A filament preset describes one filament. For a model printed in
-/// several, every one of them is given the preset: each of its lists,
-/// which hold the one filament's value, is repeated for `count` filaments.
-fn for_every_filament(preset: &Settings, count: usize) -> Settings {
-    let mut spread = preset.clone();
-    let single: Vec<(String, String)> = preset
+/// A filament preset describes one filament: each of its lists holds
+/// that filament's one value. A project's lists hold a value for every
+/// filament in turn. This makes the second of the first: filament `n` of
+/// `count` takes the `n`th preset, or the last when there are fewer, and
+/// what is not a list comes from the first.
+fn for_filaments(presets: &[&Settings], count: usize) -> Settings {
+    let first = presets[0];
+    let mut merged = first.clone();
+    let single: Vec<(String, String)> = first
         .iter()
         .filter_map(|(key, value)| match value {
             Value::Many(values) if values.len() == 1 => Some((key.to_owned(), values[0].clone())),
             _ => None,
         })
         .collect();
-    for (key, value) in single {
-        spread.insert(&key, Value::Many(vec![value; count]));
+    for (key, own) in single {
+        let values = (0..count)
+            .map(|filament| {
+                let preset = presets[filament.min(presets.len() - 1)];
+                match preset.get(&key) {
+                    Some(Value::Many(values)) if values.len() == 1 => values[0].clone(),
+                    _ => own.clone(),
+                }
+            })
+            .collect();
+        merged.insert(&key, Value::Many(values));
     }
-    spread
+    merged
 }
 
 /// Layer height, first layer height and closing radius, each from the first
@@ -130,21 +144,27 @@ pub fn prepare(mut loaded: Loaded, chosen: &Chosen, overrides: &Overrides) -> Re
         .max()
         .unwrap_or(1);
     let mut remarks = Vec::new();
-    let filament = chosen.filament.as_ref().map(|(name, preset)| {
-        if filaments > 1 {
+    let named = chosen.filaments.len();
+    // As many filaments as the model prints in or presets were named for.
+    let described = filaments.max(named);
+    let filament = chosen.filaments.last().map(|(last, _)| {
+        if named == 1 && filaments > 1 {
             remarks.push(format!(
-                "the model prints in {filaments} filaments; the filament preset \"{name}\" is used for all of them"
+                "the model prints in {filaments} filaments; the filament preset \"{last}\" is used for all of them"
             ));
-            (name, for_every_filament(preset, filaments))
-        } else {
-            (name, preset.clone())
+        } else if named < filaments {
+            remarks.push(format!(
+                "the model prints in {filaments} filaments and {named} filament presets were chosen; \"{last}\" is used for the rest"
+            ));
         }
+        let presets: Vec<&Settings> = chosen.filaments.iter().map(|(_, preset)| preset).collect();
+        for_filaments(&presets, described)
     });
     // Later sources replace earlier ones: project, then the presets named.
     let mut settings = project_settings.unwrap_or_default();
     for preset in [
         chosen.machine.as_ref().map(|(_, preset)| preset),
-        filament.as_ref().map(|(_, preset)| preset),
+        filament.as_ref(),
         chosen.process.as_ref().map(|(_, preset)| preset),
     ]
     .into_iter()
@@ -160,11 +180,17 @@ pub fn prepare(mut loaded: Loaded, chosen: &Chosen, overrides: &Overrides) -> Re
     if let Some((name, _)) = &chosen.machine {
         settings.insert("printer_settings_id", Value::One(name.clone()));
     }
-    if let Some((name, _)) = &chosen.filament {
-        settings.insert(
-            "filament_settings_id",
-            Value::Many(vec![name.clone(); filaments]),
-        );
+    if let Some((last, _)) = chosen.filaments.last() {
+        let names = (0..described)
+            .map(|filament| {
+                chosen
+                    .filaments
+                    .get(filament)
+                    .map_or(last, |(name, _)| name)
+            })
+            .cloned()
+            .collect();
+        settings.insert("filament_settings_id", Value::Many(names));
     }
     let mut bed_type = BedType::Settled;
     if let Some(bed) = &overrides.bed_type {
