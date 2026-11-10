@@ -78,7 +78,8 @@ with no acceleration.
 Walls do not yet have thin-wall detection, gap fill, overhang handling,
 extra or one-wall-on-top perimeters, print ordering or seams, and Arachne
 (variable width) is not started. Infill is a first working version, not a
-port: fill lines are separate segments (not joined or ordered), solid lines
+port: fill lines are joined along the walls nearest-first but not ordered
+(no monotonic) and get no anchors where they stay unjoined, solid lines
 are not fitted to the region's width, bridges use the ordinary flow and
 direction, external surfaces are not grown to anchor, shell thickness in mm
 and vertical shells are ignored, and sparse patterns other than line and
@@ -88,8 +89,7 @@ the radius merge; the reference closes within one object only.
 Clipping is clipper2-rs, a port of Clipper2. The reference uses Clipper 6,
 so regions agree in shape and area but not vertex for vertex.
 
-Next: close the gaps the comparison shows (elephant-foot compensation,
-joined fill lines), the placeholder language for machine G-code templates
+Next: the placeholder language for machine G-code templates
 (what makes output printable), plate origins, supports, then a
 parity harness that slices the same project with both engines and diffs the
 result.
@@ -108,20 +108,21 @@ layer by layer; `--svg` draws one layer of both toolpaths over each other.
 The reference takes about two seconds to start and exit whatever it is asked
 to do, so its time is also taken from its own log.
 
-First results, 2026-11-09, Mac mini, reference build 2.4.7.6, best of 5:
+Results, 2026-11-09, Mac mini, reference build 2.4.7.6, best of 3:
 
-| Project | Reference work | This engine | Walls, per layer |
-| --- | --- | --- | --- |
-| `cylinder_drawcut.3mf` (389 layers) | 0.41 s | 0.058 s | 0.28% apart |
-| `stabilizer_v1.3mf` (499 layers) | 0.84 s | 0.063 s | 0.53% apart |
-| `twopart_groups.3mf` (60 layers) | 0.18 s | 0.006 s | 1.78% apart |
+| Project | Reference work | This engine | Walls, per layer | Filament |
+| --- | --- | --- | --- | --- |
+| `cylinder_drawcut.3mf` (389 layers) | 0.41 s | 0.055 s | 0.02% apart | -0.5% |
+| `stabilizer_v1.3mf` (499 layers) | 0.84 s | 0.064 s | 0.53% apart | -43% (no supports) |
+| `twopart_groups.3mf` (60 layers) | 0.18 s | 0.007 s | 0.12% apart | -1.4% |
 
 The reference does more in that time (supports, seams, overhangs, gap fill,
 fan and time planning), so the speed gap will narrow as stages are added.
-Differences it showed: no elephant-foot compensation on the first layer
-(0.15 mm), two walls on the topmost layer where the reference prints one,
-no supports, brim or prime tower, no multi-material regions, and
-fill lines not joined along the walls as the reference joins them.
+Closed since the first run: elephant-foot compensation, one wall on the
+last layer, and fill lines joined along the walls. Still different: no
+supports, brim, prime tower, gap fill or multi-material regions; solid fill
+over sparse is not marked as an internal bridge; top surfaces below the last
+layer keep all their walls.
 
 ## Licence
 

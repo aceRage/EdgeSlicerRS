@@ -22,6 +22,14 @@ pub struct WallSettings {
     /// Outline detail in mm below which vertices are dropped.
     pub resolution: f64,
     pub enable_arc_fitting: bool,
+    /// Print the object's last layer with a single wall.
+    pub only_one_wall_top: bool,
+    /// Print the first layer with a single wall.
+    pub only_one_wall_first_layer: bool,
+    /// The one-wall options only apply where there is a solid shell behind
+    /// the wall, as in the reference.
+    pub top_shell_layers: usize,
+    pub bottom_shell_layers: usize,
 }
 
 impl Default for WallSettings {
@@ -38,6 +46,10 @@ impl Default for WallSettings {
             infill_wall_overlap_percent: 15.0,
             resolution: 0.01,
             enable_arc_fitting: false,
+            only_one_wall_top: false,
+            only_one_wall_first_layer: false,
+            top_shell_layers: 4,
+            bottom_shell_layers: 3,
         }
     }
 }
@@ -57,18 +69,17 @@ impl WallSettings {
             Some(FloatOrPercent::Percent(percent) | FloatOrPercent::Value(percent)) => percent,
             None => defaults.infill_wall_overlap_percent,
         };
-        let wall_loops =
-            settings
-                .integer("wall_loops")?
-                .map_or(Ok(defaults.wall_loops), |count| {
-                    usize::try_from(count).map_err(|_| ConfigError::BadValue {
-                        key: "wall_loops".into(),
-                        found: count.to_string(),
-                        expected: "zero or more",
-                    })
-                })?;
+        let count = |key: &str, default: usize| -> Result<usize, ConfigError> {
+            settings.integer(key)?.map_or(Ok(default), |found| {
+                usize::try_from(found).map_err(|_| ConfigError::BadValue {
+                    key: key.into(),
+                    found: found.to_string(),
+                    expected: "zero or more",
+                })
+            })
+        };
         Ok(Self {
-            wall_loops,
+            wall_loops: count("wall_loops", defaults.wall_loops)?,
             outer_wall_line_width: width("outer_wall_line_width", defaults.outer_wall_line_width)?,
             inner_wall_line_width: width("inner_wall_line_width", defaults.inner_wall_line_width)?,
             internal_solid_infill_line_width: width(
@@ -89,7 +100,37 @@ impl WallSettings {
             enable_arc_fitting: settings
                 .flag("enable_arc_fitting")?
                 .unwrap_or(defaults.enable_arc_fitting),
+            only_one_wall_top: settings
+                .flag("only_one_wall_top")?
+                .unwrap_or(defaults.only_one_wall_top),
+            only_one_wall_first_layer: settings
+                .flag("only_one_wall_first_layer")?
+                .unwrap_or(defaults.only_one_wall_first_layer),
+            top_shell_layers: count("top_shell_layers", defaults.top_shell_layers)?,
+            bottom_shell_layers: count("bottom_shell_layers", defaults.bottom_shell_layers)?,
         })
+    }
+
+    /// What the generator needs for layer `index` of `layer_count`, which
+    /// adds to [`Self::params`] the rules that depend on where a layer is.
+    /// Only the object's very last layer gets the single top wall; top
+    /// surfaces lower down keep all their walls, where the reference thins
+    /// the walls over each of them (`split_top_surfaces`).
+    pub fn params_at(
+        &self,
+        layer_height: f64,
+        index: usize,
+        layer_count: usize,
+    ) -> Result<Params, FlowError> {
+        let mut params = self.params(layer_height, index == 0)?;
+        let one_wall = (index == 0
+            && self.only_one_wall_first_layer
+            && self.bottom_shell_layers > 0)
+            || (index + 1 == layer_count && self.only_one_wall_top && self.top_shell_layers > 0);
+        if one_wall {
+            params.wall_loops = params.wall_loops.min(1);
+        }
+        Ok(params)
     }
 
     /// What the generator needs for a layer of this height.
@@ -178,6 +219,32 @@ mod tests {
             ..WallSettings::default()
         };
         assert!((auto.params(0.3, false).unwrap().outer.width - 0.9).abs() < 1e-12);
+    }
+
+    #[test]
+    fn end_layers_can_be_held_to_one_wall() {
+        let settings = WallSettings::from_settings(
+            &Settings::from_json(
+                r#"{"wall_loops": "3", "only_one_wall_top": "1", "only_one_wall_first_layer": "1",
+                    "top_shell_layers": "4", "bottom_shell_layers": "0"}"#,
+            )
+            .unwrap(),
+        )
+        .unwrap();
+        let walls = |index| settings.params_at(0.2, index, 10).unwrap().wall_loops;
+        // No bottom shell, so the first layer keeps its walls; the last has a top shell.
+        assert_eq!((walls(0), walls(5), walls(9)), (3, 3, 1));
+        let off = WallSettings {
+            wall_loops: 3,
+            ..WallSettings::default()
+        };
+        assert_eq!(off.params_at(0.2, 9, 10).unwrap().wall_loops, 3);
+        let none = WallSettings {
+            wall_loops: 0,
+            only_one_wall_top: true,
+            ..WallSettings::default()
+        };
+        assert_eq!(none.params_at(0.2, 9, 10).unwrap().wall_loops, 0);
     }
 
     #[test]

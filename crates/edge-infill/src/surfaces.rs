@@ -40,15 +40,20 @@ pub struct Shells {
 }
 
 /// Splits each layer's infill area by what it is. `slices[i]` is layer
-/// `i`'s whole cross-section and `infill[i]` the part of it left inside
-/// the walls. A layer's surfaces do not overlap and together cover its
+/// `i`'s cross-section as printed, `outlines[i]` its cross-section as
+/// modelled, and `infill[i]` the part of the slice left inside the walls.
+/// The two cross-sections differ only where a layer was shrunk for the
+/// elephant's foot: a layer is compared with its neighbours as modelled, so
+/// the shrinking does not make the layer above look like an overhang. A layer's surfaces do not overlap and together cover its
 /// infill area, except that sparse areas are left out at zero density.
 pub fn classify(
     slices: &[&[ExPolygon]],
+    outlines: &[&[ExPolygon]],
     infill: &[&[ExPolygon]],
     shells: &Shells,
 ) -> Result<Vec<Vec<Surface>>, ClipError> {
     assert_eq!(slices.len(), infill.len(), "one infill area per layer");
+    assert_eq!(slices.len(), outlines.len(), "one outline per layer");
     let count = slices.len();
 
     // Where each layer's cross-section has nothing above it, and nothing
@@ -56,7 +61,7 @@ pub fn classify(
     // a kind, that kind of face gets no special treatment at all.
     let exposed = |layer: usize, neighbour: Option<usize>| match neighbour {
         Some(neighbour) => edge_clip::opening(
-            &edge_clip::difference(slices[layer], slices[neighbour])?,
+            &edge_clip::difference(slices[layer], outlines[neighbour])?,
             shells.opening,
             Join::MITER,
         ),
@@ -186,7 +191,7 @@ mod tests {
     /// reports each layer as `(kind, area in mm²)` sorted by kind order.
     fn kinds(layers: &[Vec<ExPolygon>], shells: &Shells) -> Vec<Vec<(SurfaceKind, f64)>> {
         let slices: Vec<&[ExPolygon]> = layers.iter().map(Vec::as_slice).collect();
-        classify(&slices, &slices, shells)
+        classify(&slices, &slices, &slices, shells)
             .unwrap()
             .into_iter()
             .map(|surfaces| {
@@ -266,6 +271,30 @@ mod tests {
         // A sparse pocket under 15 mm² is filled solid.
         let small = vec![block(0.0, 0.0, 3.0, 3.0); 5];
         assert_eq!(kinds(&small, &shells(1, 1))[2], [(InternalSolid, 9.0)]);
+    }
+
+    #[test]
+    fn neighbours_are_compared_as_modelled_not_as_printed() {
+        // The first layer is printed 0.15 mm smaller all round than modelled.
+        let modelled = vec![block(0.0, 0.0, 10.0, 10.0); 4];
+        let mut printed = modelled.clone();
+        printed[0] = block(0.15, 0.15, 9.85, 9.85);
+        fn refs(layers: &[Vec<ExPolygon>]) -> Vec<&[ExPolygon]> {
+            layers.iter().map(Vec::as_slice).collect()
+        }
+        let kinds = |outlines: &[Vec<ExPolygon>]| {
+            let found = classify(
+                &refs(&printed),
+                &refs(outlines),
+                &refs(&printed),
+                &shells(1, 1),
+            )
+            .unwrap();
+            found[1].iter().map(|s| s.kind).collect::<Vec<_>>()
+        };
+        assert_eq!(kinds(&modelled), [Sparse]);
+        // Compared with the shrunken layer, the second would get a bridge ring.
+        assert_eq!(kinds(&printed), [Bridge, Sparse]);
     }
 
     #[test]

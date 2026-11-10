@@ -179,6 +179,72 @@ pub fn slice_regions(
         .collect()
 }
 
+/// Shrinks a first layer's regions by `compensation` to offset the way the
+/// first layer squashes outward on the bed. Parts too narrow to give up
+/// that much are left at their full width, so thin features survive.
+///
+/// The thresholds are the reference's (ElephantFootCompensation.cpp), with
+/// `min_contour_width` being the external wall's width plus its spacing: a
+/// region smaller than about five times that across is left alone, and a
+/// part narrower than it plus twice the compensation is not shrunk. Where
+/// the reference then varies the offset smoothly along the outline, this
+/// shrinks the wide parts fully and the narrow parts not at all.
+pub fn compensate_elephant_foot(
+    regions: &[ExPolygon],
+    min_contour_width: Coord,
+    compensation: Coord,
+) -> Result<Vec<ExPolygon>, ClipError> {
+    if compensation <= 0 {
+        return Ok(regions.to_vec());
+    }
+    // Inner corners are mitred no further than twice the offset, as there.
+    const JOIN: Join = Join::Miter { limit: 2.0 };
+    let wide_enough = min_contour_width + 2 * compensation;
+    let mut compensated = Vec::with_capacity(regions.len());
+    for region in regions {
+        let one = std::slice::from_ref(region);
+        let (width, height) = extent(region);
+        let side = edge_geom::unscaled(wide_enough);
+        if width < wide_enough || height < wide_enough || region.area_mm2() < 5.0 * side * side {
+            compensated.push(region.clone());
+            continue;
+        }
+        let shrunk = edge_clip::offset(one, -compensation, JOIN)?;
+        // What an opening removes is what is too narrow to shrink.
+        let narrow = edge_clip::difference(one, &edge_clip::opening(one, wide_enough / 2, JOIN)?)?;
+        let result = if narrow.is_empty() {
+            shrunk
+        } else {
+            // Keep the narrow parts whole, along with the margin of the
+            // body they meet, so they stay attached.
+            let kept =
+                edge_clip::intersection(one, &edge_clip::offset(&narrow, compensation, JOIN)?)?;
+            edge_clip::union_ex(&[shrunk, kept].concat())?
+        };
+        // Anything but one region means the shape came apart; leave it be.
+        match result.len() {
+            1 => compensated.extend(result),
+            _ => compensated.push(region.clone()),
+        }
+    }
+    Ok(compensated)
+}
+
+/// Width and height of a region's bounding box.
+fn extent(region: &ExPolygon) -> (Coord, Coord) {
+    let points = &region.contour.points;
+    let span = |axis: fn(&Point2) -> Coord| {
+        let (min, max) = points
+            .iter()
+            .map(axis)
+            .fold((Coord::MAX, Coord::MIN), |(lo, hi), v| {
+                (lo.min(v), hi.max(v))
+            });
+        if min > max { 0 } else { max - min }
+    };
+    (span(|p| p.x), span(|p| p.y))
+}
+
 /// One triangle's cut: a directed step from one mesh edge to another.
 struct Segment {
     from: u64,
@@ -437,6 +503,82 @@ mod tests {
         assert_eq!(open[0].regions.len(), 2);
         let closed = slice_regions(&[body], &[5.0], edge_geom::scaled(0.049)).unwrap();
         assert_eq!(shapes(&closed[0]), [(200.0, 0)]);
+    }
+
+    fn block(x0: f64, y0: f64, x1: f64, y1: f64) -> ExPolygon {
+        let points = [(x0, y0), (x1, y0), (x1, y1), (x0, y1)]
+            .map(|(x, y)| Point2::from_mm(x, y))
+            .to_vec();
+        ExPolygon {
+            contour: Polygon { points },
+            holes: Vec::new(),
+        }
+    }
+
+    /// Min and max of a region's contour on one axis, in mm.
+    fn reach(region: &ExPolygon, axis: fn(&Point2) -> Coord) -> (f64, f64) {
+        let values = || {
+            region
+                .contour
+                .points
+                .iter()
+                .map(axis)
+                .map(edge_geom::unscaled)
+        };
+        (
+            values().fold(f64::MAX, f64::min),
+            values().fold(f64::MIN, f64::max),
+        )
+    }
+
+    #[test]
+    fn elephant_foot_shrinks_wide_regions_evenly() {
+        let (min_width, compensation) = (edge_geom::scaled(0.857), edge_geom::scaled(0.15));
+        let shrunk =
+            compensate_elephant_foot(&[block(0.0, 0.0, 20.0, 10.0)], min_width, compensation)
+                .unwrap();
+        assert_eq!(shrunk.len(), 1);
+        assert_eq!(reach(&shrunk[0], |p| p.x), (0.15, 19.85));
+        assert_eq!(reach(&shrunk[0], |p| p.y), (0.15, 9.85));
+        // Nothing to do, and regions too small to spare any are left alone.
+        let same = [block(0.0, 0.0, 20.0, 10.0)];
+        assert_eq!(compensate_elephant_foot(&same, min_width, 0).unwrap(), same);
+        let small = [block(0.0, 0.0, 2.0, 2.0)];
+        assert_eq!(
+            compensate_elephant_foot(&small, min_width, compensation).unwrap(),
+            small
+        );
+    }
+
+    #[test]
+    fn elephant_foot_leaves_thin_features_at_full_width() {
+        // A 20 x 10 body with a fin 0.6 mm wide and 8 mm long on its right side.
+        let body = edge_clip::union_ex(&[block(0.0, 0.0, 20.0, 10.0), block(20.0, 4.7, 28.0, 5.3)])
+            .unwrap();
+        let shaped =
+            compensate_elephant_foot(&body, edge_geom::scaled(0.857), edge_geom::scaled(0.15))
+                .unwrap();
+        assert_eq!(shaped.len(), 1, "the fin stays attached");
+        // The body gives up 0.15 mm; the fin keeps its full length and width.
+        assert_eq!(reach(&shaped[0], |p| p.x), (0.15, 28.0));
+        assert_eq!(reach(&shaped[0], |p| p.y), (0.15, 9.85));
+        let fin: Vec<_> = shaped[0]
+            .contour
+            .points
+            .iter()
+            .filter(|p| p.x == edge_geom::scaled(28.0))
+            .collect();
+        assert_eq!(
+            fin.iter()
+                .map(|p| p.y)
+                .collect::<std::collections::BTreeSet<_>>()
+                .len(),
+            2
+        );
+        assert!(
+            fin.iter()
+                .all(|p| p.y == edge_geom::scaled(4.7) || p.y == edge_geom::scaled(5.3))
+        );
     }
 
     #[test]

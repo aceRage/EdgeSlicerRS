@@ -29,6 +29,9 @@ pub struct InfillSettings {
     pub solid_infill_direction: f64,
     /// In mm².
     pub minimum_sparse_infill_area: f64,
+    /// Longest stretch of wall two sparse lines are joined along; a
+    /// percentage is of the sparse line width, and zero joins nothing.
+    pub infill_anchor_max: FloatOrPercent,
     pub sparse_infill_line_width: FloatOrPercent,
     pub internal_solid_infill_line_width: FloatOrPercent,
     pub top_surface_line_width: FloatOrPercent,
@@ -48,6 +51,7 @@ impl Default for InfillSettings {
             infill_direction: 45.0,
             solid_infill_direction: 45.0,
             minimum_sparse_infill_area: 15.0,
+            infill_anchor_max: FloatOrPercent::Value(20.0),
             sparse_infill_line_width: unset,
             internal_solid_infill_line_width: unset,
             top_surface_line_width: unset,
@@ -111,6 +115,9 @@ impl InfillSettings {
             minimum_sparse_infill_area: settings
                 .float("minimum_sparse_infill_area")?
                 .unwrap_or(defaults.minimum_sparse_infill_area),
+            infill_anchor_max: settings
+                .float_or_percent("infill_anchor_max")?
+                .unwrap_or(defaults.infill_anchor_max),
             sparse_infill_line_width: width("sparse_infill_line_width")?,
             internal_solid_infill_line_width: width("internal_solid_infill_line_width")?,
             top_surface_line_width: width("top_surface_line_width")?,
@@ -150,6 +157,7 @@ impl InfillSettings {
         let nozzle = self.widths.nozzle_diameter;
         let flow =
             |width, auto| Flow::from_widths(&self.widths, width, auto, layer_height, first_layer);
+        let sparse = flow(self.sparse_infill_line_width, Flow::auto_width(nozzle))?;
         Ok(FillParams {
             solid: flow(
                 self.internal_solid_infill_line_width,
@@ -157,11 +165,12 @@ impl InfillSettings {
             )?,
             // A top surface left unset is drawn at the nozzle's own width.
             top: flow(self.top_surface_line_width, nozzle)?,
-            sparse: flow(self.sparse_infill_line_width, Flow::auto_width(nozzle))?,
+            sparse,
             density: self.sparse_infill_density_percent / 100.0,
             pattern: self.pattern,
             sparse_angle: self.infill_direction.to_radians(),
             solid_angle: self.solid_infill_direction.to_radians(),
+            sparse_link_max: self.infill_anchor_max.resolve(sparse.width).max(0.0),
         })
     }
 }

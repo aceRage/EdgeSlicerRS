@@ -68,8 +68,11 @@ fn surfaces_partition_the_infill_area_and_every_one_is_filled() {
             .iter()
             .enumerate()
             .map(|(index, layer)| {
-                edge_perimeter::classic(&layer.regions, &walls.params(0.2, index == 0).unwrap())
-                    .unwrap()
+                edge_perimeter::classic(
+                    &layer.regions,
+                    &walls.params_at(0.2, index, layers.len()).unwrap(),
+                )
+                .unwrap()
             })
             .collect();
         let slices: Vec<&[ExPolygon]> = layers
@@ -81,7 +84,7 @@ fn surfaces_partition_the_infill_area_and_every_one_is_filled() {
             .map(|layer| layer.infill.as_slice())
             .collect();
         let surfaces =
-            edge_infill::classify(&slices, &inside, &infill.shells(0.2).unwrap()).unwrap();
+            edge_infill::classify(&slices, &slices, &inside, &infill.shells(0.2).unwrap()).unwrap();
         filled += 1;
 
         let mut problems = Vec::new();
@@ -113,7 +116,7 @@ fn surfaces_partition_the_infill_area_and_every_one_is_filled() {
             let fill = edge_infill::fill(surfaces, index, &params).unwrap();
             lines += fill.len();
             if fill.iter().any(|line| {
-                line.points.len() != 2 || line.length_mm() < line.flow.width / 2.0 - 1e-6
+                line.points.len() < 2 || line.length_mm() < line.flow.width / 2.0 - 1e-6
             }) {
                 problems.push(format!("layer {index}: a fill line is degenerate"));
             }
@@ -148,7 +151,7 @@ fn surfaces_partition_the_infill_area_and_every_one_is_filled() {
     }
     assert!(failures.is_empty(), "{}", failures.join("\n"));
     assert!(
-        filled >= 25 && lines > 100_000,
-        "{filled} projects filled, {lines} lines"
+        filled >= 25 && lines > 10_000,
+        "{filled} projects filled, {lines} fill paths"
     );
 }
