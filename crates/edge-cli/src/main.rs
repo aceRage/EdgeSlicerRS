@@ -1064,6 +1064,7 @@ fn slice(args: SliceArgs) -> Result<(), Failure> {
                     islands: &own.islands,
                     paths: &fills_by[*filament][index],
                     infill_area: &own.infill,
+                    below: if index > 0 { outlines[index - 1] } else { &[] },
                 }
             })
             .collect();

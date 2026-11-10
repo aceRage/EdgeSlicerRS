@@ -8,12 +8,12 @@
 //! It has not been run on a printer. Without a profile a generic preamble
 //! stands in and the output is only good for viewing.
 //!
-//! Not done: tool changes and multiple extruders, overhang and bridge fan
-//! speeds, seams placed by visibility, arc fitting, progress (`M73`) and
-//! object labels.
+//! Not done: seams placed by visibility, arc fitting, progress (`M73`)
+//! and object labels.
 
 mod cooling;
 mod inside;
+mod overhang;
 mod seam;
 mod settings;
 
@@ -24,12 +24,13 @@ use std::{
 };
 
 use cooling::{Slowdown, Timing};
+use edge_config::FloatOrPercent;
 use edge_extrusion::{ExtrusionLoop, ExtrusionPath, Flow, Role};
 use edge_geom::{ExPolygon, Point2, scaled, unscaled};
 use edge_template::{TemplateError, Value, Variables};
 
 pub use seam::Seam;
-pub use settings::{Lift, PrintSettings, WallOrder};
+pub use settings::{Lift, OverhangFan, PrintSettings, WallOrder};
 
 #[derive(Debug, thiserror::Error)]
 pub enum GcodeError {
@@ -72,6 +73,10 @@ pub struct Layer<'a> {
     /// The area inside the walls. Moves between fill lines that stay
     /// within it can skip retraction, since any ooze lands where fill goes.
     pub infill_area: &'a [ExPolygon],
+    /// The outline of everything printed on the layer beneath, which
+    /// walls are measured against to find where they overhang. Empty on
+    /// the first layer, or to leave overhangs alone.
+    pub below: &'a [ExPolygon],
 }
 
 /// What a print comes to.
@@ -172,6 +177,7 @@ pub fn write_tools(
         slowdown: Slowdown::None,
         last_use,
         marks: Vec::new(),
+        below: None,
     };
     let several = layers.iter().any(|layer| layer.filament > 0);
     writer.preamble(several)?;
@@ -245,6 +251,8 @@ struct Writer<'a> {
     /// time each is reached, where a line can be slipped in to warm the
     /// next tool.
     marks: Vec<(usize, f64)>,
+    /// The outline of the layer beneath the one being written.
+    below: Option<overhang::Below>,
 }
 
 /// Where the machine stands as the text is written. Kept apart so a layer
@@ -281,6 +289,8 @@ struct State {
     acceleration: f64,
     /// The last fan speeds written, 0 to 255.
     fan: Option<u8>,
+    /// Whether the fan has been asked to run for an overhang or a bridge.
+    over_air: bool,
     auxiliary_fan: Option<u8>,
     role: Option<Role>,
     width: f64,
@@ -714,6 +724,11 @@ impl Writer<'_> {
         self.state.first_layer = index == 0;
         // The nozzle itself moves up with the layer's first travel.
         self.state.z = layer.z;
+        self.below = if index == 0 {
+            None
+        } else {
+            overhang::Below::new(layer.below)
+        };
 
         // Lay the layer out to see how long it takes; if that is too short
         // for it to cool, lay it out again, slower.
@@ -749,6 +764,14 @@ impl Writer<'_> {
         };
         let mut fans = String::new();
         let speed = cooling::pwm(fan.percent(index, seconds));
+        // Bridges and overhangs get their own fan speed where that is
+        // more than the layer's (CoolingBuffer.cpp `overhang_fan_control`).
+        let over_air = s
+            .overhang_fan
+            .and_then(|wanted| fan.overhang_percent(index, wanted.speed))
+            .map(cooling::pwm)
+            .filter(|over_air| *over_air > speed);
+        self.settle_fan(speed, over_air);
         if self.state.fan != Some(speed) {
             fans.push_str(&format!("M106 S{speed}\n"));
             self.state.fan = Some(speed);
@@ -813,8 +836,55 @@ impl Writer<'_> {
                 self.preheat(next, index, start);
             }
         }
+        self.fan_over_air(false)?;
         self.state.seams = std::mem::take(&mut self.state.next_seams);
         Ok(())
+    }
+
+    /// Asks for the overhang fan, or for the layer's own again. What
+    /// speeds those are is only known once the layer has been timed, so
+    /// a marker is written for [`Self::settle_fan`] to fill in.
+    fn fan_over_air(&mut self, wanted: bool) -> io::Result<()> {
+        if wanted != self.state.over_air {
+            self.state.over_air = wanted;
+            self.out
+                .extend_from_slice(if wanted { FAN_OVER_AIR } else { FAN_AS_LAYER });
+        }
+        Ok(())
+    }
+
+    /// Turns the layer's fan markers into fan commands: `over_air` where
+    /// an overhang starts and `layer` where it ends, or nothing when
+    /// overhangs get no fan of their own on this layer.
+    fn settle_fan(&mut self, layer: u8, over_air: Option<u8>) {
+        let marked = |text: &[u8]| {
+            text.windows(FAN_MARK.len())
+                .position(|window| window == FAN_MARK)
+        };
+        if marked(&self.out).is_none() {
+            return;
+        }
+        let mut settled = Vec::with_capacity(self.out.len());
+        let mut rest = self.out.as_slice();
+        while let Some(at) = marked(rest) {
+            settled.extend_from_slice(&rest[..at]);
+            let tail = &rest[at..];
+            let (length, speed) = if tail.starts_with(FAN_OVER_AIR) {
+                (FAN_OVER_AIR.len(), over_air)
+            } else if tail.starts_with(FAN_AS_LAYER) {
+                (FAN_AS_LAYER.len(), over_air.map(|_| layer))
+            } else {
+                settled.extend_from_slice(&tail[..FAN_MARK.len()]);
+                rest = &tail[FAN_MARK.len()..];
+                continue;
+            };
+            if let Some(speed) = speed {
+                settled.extend_from_slice(format!("M106 S{speed}\n").as_bytes());
+            }
+            rest = &tail[length..];
+        }
+        settled.extend_from_slice(rest);
+        self.out = settled;
     }
 
     /// Islands nearest first; within an island, walls in the configured order.
@@ -930,9 +1000,87 @@ impl Writer<'_> {
         closed: bool,
     ) -> io::Result<()> {
         self.travel(points[0], sheltered)?;
+        let s = self.settings;
         let motion = self.motion(role, flow, self.state.first_layer);
-        for &point in &points[1..] {
-            self.extrude(point, role, flow, motion)?;
+        // Bridges always get the overhang fan, and with no threshold set
+        // so does every outer wall (GCode.cpp `overhang_fan_on_for_role`).
+        let fan = s.overhang_fan.filter(|_| !self.state.first_layer);
+        let cooled = fan.is_some_and(|fan| {
+            role == Role::BridgeInfill || (fan.at.is_none() && role == Role::ExternalPerimeter)
+        });
+        let is_wall = matches!(role, Role::ExternalPerimeter | Role::Perimeter);
+        let measured = (is_wall
+            && (s.enable_overhang_speed || s.detect_overhang_wall || fan.is_some()))
+        .then_some(self.below.as_ref())
+        .flatten()
+        .map(|below| {
+            // The wall's speed where it is fully supported, and where a
+            // quarter, a half, three quarters and nearly all of it hangs
+            // over; a bridge's where nothing is under it (GCode.cpp `_extrude`).
+            let mut usual = if role == Role::ExternalPerimeter {
+                s.outer_wall_speed
+            } else {
+                s.inner_wall_speed
+            };
+            if s.filament_max_volumetric_speed > 0.0 {
+                usual = usual.min(s.filament_max_volumetric_speed / flow.mm3_per_mm());
+            }
+            let step = |speed: FloatOrPercent| {
+                let speed = speed.resolve(usual);
+                if speed < 0.5 { usual } else { speed }
+            };
+            let sections = [
+                (0.1, usual),
+                (0.25, step(s.overhang_speeds[0])),
+                (0.5, step(s.overhang_speeds[1])),
+                (0.75, step(s.overhang_speeds[2])),
+                (0.87, step(s.overhang_speeds[3])),
+                (1.0, s.bridge_speed),
+            ];
+            let speed = |short: f64| {
+                if s.enable_overhang_speed {
+                    overhang::speed_for(&sections, flow.width, motion.speed, short)
+                } else {
+                    motion.speed
+                }
+            };
+            overhang::Judge {
+                below,
+                width: flow.width,
+                clear_beyond: s.detect_overhang_wall.then_some(0.5 * s.nozzle_diameter),
+                speed: &speed,
+                fan_at: fan.and_then(|fan| fan.at),
+            }
+            .pieces(points)
+        });
+        match measured {
+            Some(pieces) => {
+                let bridge = flow.bridging(s.bridge_flow, s.thick_bridges);
+                let over_air = self.motion(Role::OverhangPerimeter, &bridge, false);
+                for piece in pieces {
+                    if piece.clear {
+                        self.fan_over_air(fan.is_some())?;
+                        let motion = Motion {
+                            speed: piece.speed.min(over_air.speed),
+                            ..over_air
+                        };
+                        self.extrude(piece.to, Role::OverhangPerimeter, &bridge, motion)?;
+                    } else {
+                        self.fan_over_air(cooled || piece.cooled)?;
+                        let motion = Motion {
+                            speed: piece.speed,
+                            ..motion
+                        };
+                        self.extrude(piece.to, role, flow, motion)?;
+                    }
+                }
+            }
+            None => {
+                self.fan_over_air(cooled)?;
+                for &point in &points[1..] {
+                    self.extrude(point, role, flow, motion)?;
+                }
+            }
         }
         self.state.wipe_path = points.to_vec();
         if !closed {
@@ -994,7 +1142,7 @@ impl Writer<'_> {
             Role::SparseInfill => s.sparse_infill_speed,
             Role::SolidInfill | Role::BottomSurface => s.internal_solid_infill_speed,
             Role::TopSolidInfill => s.top_surface_speed,
-            Role::BridgeInfill => s.bridge_speed,
+            Role::BridgeInfill | Role::OverhangPerimeter => s.bridge_speed,
             Role::GapFill => s.gap_infill_speed,
             Role::Skirt | Role::Brim => s.outer_wall_speed,
             Role::Support => s.support_speed,
@@ -1007,6 +1155,13 @@ impl Writer<'_> {
         };
         let own = match role {
             _ if first_layer && s.initial_layer_acceleration > 0.0 => s.initial_layer_acceleration,
+            // Anything laid over air, before its kind is looked at.
+            Role::BridgeInfill | Role::OverhangPerimeter
+                if s.bridge_acceleration.resolve(s.outer_wall_acceleration) > 0.0 =>
+            {
+                s.bridge_acceleration.resolve(s.outer_wall_acceleration)
+            }
+            Role::OverhangPerimeter => s.default_acceleration,
             Role::ExternalPerimeter => s.outer_wall_acceleration,
             Role::Perimeter => s.inner_wall_acceleration,
             Role::TopSolidInfill => s.top_surface_acceleration,
@@ -1537,6 +1692,12 @@ fn alongside(points: &[Point2], is_hole: bool, planned: &[(bool, Point2)]) -> Op
         .map(|(_, seam)| seam)
 }
 
+/// Markers a layer is written with where the fan is to change for an
+/// overhang and back, until the layer's own fan speed is known.
+const FAN_MARK: &[u8] = b";_FAN_OVER_AIR_";
+const FAN_OVER_AIR: &[u8] = b";_FAN_OVER_AIR_ON\n";
+const FAN_AS_LAYER: &[u8] = b";_FAN_OVER_AIR_OFF\n";
+
 fn distance(a: Point2, b: Point2) -> f64 {
     unscaled(b.x - a.x).hypot(unscaled(b.y - a.y))
 }
@@ -1547,6 +1708,7 @@ fn role_name(role: Role) -> &'static str {
     match role {
         Role::ExternalPerimeter => "Outer wall",
         Role::Perimeter => "Inner wall",
+        Role::OverhangPerimeter => "Overhang wall",
         Role::SparseInfill => "Sparse infill",
         Role::SolidInfill => "Internal solid infill",
         Role::TopSolidInfill => "Top surface",

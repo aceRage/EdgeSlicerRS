@@ -15,6 +15,9 @@ pub enum FlowError {
     TooNarrow { width: f64, height: f64 },
 }
 
+/// Air left between neighbouring bridge threads, in mm (Flow.hpp).
+pub const BRIDGE_EXTRA_SPACING: f64 = 0.05;
+
 /// Share of the nominal spacing two neighbouring lines may give up before
 /// there is no room for both (libslic3r.h, `INSET_OVERLAP_TOLERANCE`).
 pub const INSET_OVERLAP_TOLERANCE: f64 = 0.4;
@@ -91,6 +94,38 @@ impl Flow {
         Self::new(width, self.height, self.nozzle_diameter)
     }
 
+    /// This line as it is laid over air (`LayerRegion::bridging_flow`).
+    /// `thick` is the round thread of the nozzle's own bore, `ratio` times
+    /// its section; otherwise the line keeps its height and spacing and is
+    /// given `ratio` times its plastic by changing its width
+    /// (`Flow::with_cross_section`).
+    pub fn bridging(&self, ratio: f64, thick: bool) -> Self {
+        if thick {
+            let diameter = ratio.max(0.0).sqrt() * self.nozzle_diameter;
+            return Self {
+                width: diameter,
+                height: diameter,
+                spacing: diameter + BRIDGE_EXTRA_SPACING,
+                nozzle_diameter: self.nozzle_diameter,
+            };
+        }
+        let area = self.mm3_per_mm();
+        let wanted = area * ratio;
+        if wanted > area && wanted / self.spacing > self.height {
+            // More than fills the spacing: the line stands taller.
+            let height = wanted / self.spacing;
+            return Self {
+                width: self.spacing + height * (1.0 - 0.25 * PI),
+                height,
+                ..*self
+            };
+        }
+        Self {
+            width: (self.width - (area - wanted) / self.height).max(self.height),
+            ..*self
+        }
+    }
+
     /// Plastic laid down per mm of travel, in mm³.
     pub fn mm3_per_mm(&self) -> f64 {
         self.height * (self.width - self.height * (1.0 - 0.25 * PI))
@@ -121,6 +156,8 @@ pub enum Role {
     ExternalPerimeter,
     /// Walls behind the external one.
     Perimeter,
+    /// A stretch of wall with nothing under it, printed as a bridge.
+    OverhangPerimeter,
     /// Partial fill inside the part.
     SparseInfill,
     /// Full fill inside the part, backing up a top or bottom surface.
