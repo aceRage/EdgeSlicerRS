@@ -54,6 +54,110 @@ pub struct Params {
     pub resolution: Coord,
     /// How gaps between walls are filled; none leaves them empty.
     pub gap_fill: Option<GapFill>,
+    /// Set where a top surface with more of the part above it elsewhere
+    /// keeps only its outer wall (`only_one_wall_top`).
+    pub one_wall_top: Option<OneWallTop>,
+}
+
+/// What `only_one_wall_top` needs on a layer that is not the last.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct OneWallTop {
+    /// A top surface narrower than this keeps all its walls
+    /// (`min_width_top_surface`).
+    pub min_width: Coord,
+    /// The sparse infill's line width, which sets how near the outer wall
+    /// the top fill may come.
+    pub infill_width: Coord,
+    /// How far from an overhang a surface is left alone, so that walls
+    /// over air are not traded for fill over air.
+    pub bridge_margin: Coord,
+    /// The number of walls asked for, whatever this layer gets.
+    pub wall_loops: usize,
+    /// How far the top fill reaches into the outer wall, as a percentage
+    /// of the distance between their centre lines.
+    pub overlap_percent: f64,
+}
+
+/// The part's outlines on the layers next to the one being walled.
+#[derive(Clone, Copy, Debug)]
+pub struct Around<'a> {
+    pub upper: &'a [ExPolygon],
+    pub lower: Option<&'a [ExPolygon]>,
+}
+
+/// What `split_top_surfaces` makes of the area inside the outer wall.
+struct Split {
+    /// Where top fill goes in place of inner walls.
+    top: Vec<ExPolygon>,
+    /// Where the inner walls still go.
+    rest: Vec<ExPolygon>,
+    /// How near the outer wall the top fill may come.
+    clip: Vec<ExPolygon>,
+}
+
+/// Divides the area inside the outer wall into what has nothing above it
+/// and the rest (PerimeterGenerator.cpp `split_top_surfaces`). None when
+/// nothing of it is exposed, which leaves the layer as it was.
+fn split_top_surfaces(
+    inside: &[ExPolygon],
+    around: &Around<'_>,
+    params: &Params,
+    top: &OneWallTop,
+) -> Result<Option<Split>, Error> {
+    let ext_width = params.outer.scaled_width();
+    let ext_spacing = params.outer.scaled_spacing();
+    let (width, spacing) = (params.inner.scaled_width(), params.inner.scaled_spacing());
+    // How far the top surface is taken under the walls that stay: as far
+    // as the outer wall is wide, where there are inner walls to give up.
+    let behind = top.wall_loops.saturating_sub(1) as f64 * spacing as f64;
+    let all = if top.wall_loops == 0 {
+        0.0
+    } else {
+        0.9 * (ext_width as f64 + behind)
+    };
+    let anchor = if all > 0.9 * behind {
+        (all - 0.9 * behind) as Coord
+    } else {
+        0
+    };
+    // Too thin an exposed strip is not worth a top surface.
+    let min_width = top.min_width.max(ext_spacing / 2 + 10);
+    let covered = edge_clip::offset(around.upper, min_width, Join::MITER)?;
+    // No nearer the outline than a second wall would be.
+    let second_wall = edge_clip::offset(inside, -ext_spacing, Join::MITER)?;
+    // What hangs over air, and a margin round it, keeps its walls.
+    let supported = match around.lower {
+        Some(lower) => {
+            let over_air = edge_clip::difference(inside, lower)?;
+            let reach = ext_spacing.max(width) * 3 / 2 + top.bridge_margin + spacing / 2;
+            edge_clip::difference(inside, &edge_clip::offset(&over_air, reach, Join::MITER)?)?
+        }
+        None => inside.to_vec(),
+    };
+    let exposed = edge_clip::difference(&supported, &covered)?;
+    if exposed.is_empty() {
+        return Ok(None);
+    }
+    let slivers = edge_clip::difference(&exposed, &second_wall)?;
+    let rest = edge_clip::difference(
+        inside,
+        &edge_clip::offset(&exposed, anchor + min_width - ext_spacing / 2, Join::MITER)?,
+    )?;
+    let top_fill = edge_clip::difference(&second_wall, &rest)?;
+    if top_fill.is_empty() {
+        return Ok(None);
+    }
+    let clip = edge_clip::offset(inside, ext_spacing / 2 - top.infill_width / 2, Join::MITER)?;
+    let mut rest = edge_clip::intersection(&rest, inside)?;
+    if params.gap_fill.is_some() && !slivers.is_empty() {
+        rest.extend(slivers);
+        rest = edge_clip::union_ex(&rest)?;
+    }
+    Ok(Some(Split {
+        top: top_fill,
+        rest,
+        clip,
+    }))
 }
 
 /// What gaps too narrow for a wall are filled with.
@@ -85,6 +189,17 @@ pub struct Perimeters {
 
 /// Concentric constant-width walls for one layer's regions.
 pub fn classic(regions: &[ExPolygon], params: &Params) -> Result<Perimeters, Error> {
+    classic_between(regions, params, None)
+}
+
+/// As [`classic`], knowing the part's outlines on the layers next to this
+/// one: where [`Params::one_wall_top`] is set, a top surface among them
+/// keeps only its outer wall.
+pub fn classic_between(
+    regions: &[ExPolygon],
+    params: &Params,
+    around: Option<Around<'_>>,
+) -> Result<Perimeters, Error> {
     let ext_width = params.outer.scaled_width();
     let ext_spacing = params.outer.scaled_spacing();
     let spacing = params.inner.scaled_spacing();
@@ -110,6 +225,9 @@ pub fn classic(regions: &[ExPolygon], params: &Params) -> Result<Perimeters, Err
         // One pass more than there are walls: an area with no room for a
         // further loop is left to gap fill rather than handed to infill.
         let mut gaps: Vec<ExPolygon> = Vec::new();
+        // Top fill laid in place of inner walls, and how near the outer
+        // wall it may come.
+        let (mut top_fills, mut fill_clip): (Vec<ExPolygon>, Vec<ExPolygon>) = Default::default();
         let mut depth: isize = 0;
         while loop_number >= 0 {
             let mut offsets = Vec::new();
@@ -171,6 +289,15 @@ pub fn classic(regions: &[ExPolygon], params: &Params) -> Result<Perimeters, Err
             push_loops(&mut result.loops, &offsets, depth as usize, flow);
             push_loops(&mut result.loops, &narrow, depth as usize, narrow_flow);
             last = offsets;
+            // With the outer wall down, a top surface inside it gives its
+            // inner walls up to top fill: they go round what is left.
+            if depth == 0
+                && loop_number != 0
+                && let (Some(top), Some(around)) = (&params.one_wall_top, &around)
+                && let Some(split) = split_top_surfaces(&last, around, params, top)?
+            {
+                (top_fills, fill_clip, last) = (split.top, split.clip, split.rest);
+            }
             depth += 1;
         }
 
@@ -203,18 +330,33 @@ pub fn classic(regions: &[ExPolygon], params: &Params) -> Result<Perimeters, Err
             0 => ext_spacing / 2,
             _ => spacing / 2,
         };
+        let mut top_overlap = 0;
         if inset > 0 {
             let reach = unscaled(inset + params.solid_infill_spacing / 2);
+            if let Some(top) = &params.one_wall_top {
+                top_overlap = scaled(reach * top.overlap_percent / 100.0);
+            }
             inset -= scaled(reach * params.infill_overlap_percent / 100.0);
         }
         let min_infill_spacing =
             (params.solid_infill_spacing as f64 * (1.0 - INSET_OVERLAP_TOLERANCE)) as Coord;
-        result.infill.extend(edge_clip::offset2(
+        let mut infill = edge_clip::offset2(
             &edge_clip::simplify(&last, params.resolution)?,
             -inset - min_infill_spacing / 2,
             min_infill_spacing / 2,
             Join::MITER,
-        )?);
+        )?;
+        // The top fill reaches from its side to the outer wall, half a
+        // line nearer than where the inner walls would have started.
+        if !top_fills.is_empty() {
+            let reached = edge_clip::intersection(
+                &fill_clip,
+                &edge_clip::offset(&top_fills, ext_spacing / 2, Join::MITER)?,
+            )?;
+            infill.extend(edge_clip::offset(&reached, top_overlap, Join::MITER)?);
+            infill = edge_clip::union_ex(&infill)?;
+        }
+        result.infill.extend(infill);
     }
     Ok(result)
 }
@@ -313,6 +455,7 @@ mod tests {
             inner: flow,
             solid_infill_spacing: flow.scaled_spacing(),
             infill_overlap_percent: 15.0,
+            one_wall_top: None,
             resolution: scaled(0.01),
             gap_fill: None,
         }
@@ -322,6 +465,104 @@ mod tests {
     fn side(wall: &ExtrusionLoop) -> f64 {
         assert_eq!(wall.polygon.points.len(), 4);
         wall.length_mm() / 4.0
+    }
+
+    #[test]
+    fn a_top_surface_below_the_last_layer_keeps_only_its_outer_wall() {
+        // A 40 x 20 mm layer whose left half has more of the part on it
+        // and whose right half is the part's top there.
+        let layer = [block(0.0, 0.0, 40.0, 20.0)];
+        let (upper, lower) = ([block(0.0, 0.0, 20.0, 20.0)], [block(0.0, 0.0, 40.0, 20.0)]);
+        let top = OneWallTop {
+            min_width: scaled(0.9),
+            infill_width: scaled(0.45),
+            bridge_margin: scaled(1.0),
+            wall_loops: 3,
+            overlap_percent: 25.0,
+        };
+        let with = Params {
+            one_wall_top: Some(top),
+            ..params(3)
+        };
+        let between = Around {
+            upper: &upper,
+            lower: Some(&lower),
+        };
+        let thinned = classic_between(&layer, &with, Some(between)).unwrap();
+        let plain = classic(&layer, &params(3)).unwrap();
+        // One outer wall round the whole layer, as before.
+        let outer = |walls: &Perimeters| -> Vec<f64> {
+            walls
+                .loops
+                .iter()
+                .filter(|wall| wall.depth == 0)
+                .map(ExtrusionLoop::length_mm)
+                .collect()
+        };
+        assert_eq!(outer(&thinned), outer(&plain));
+        // The inner walls go round the covered half only.
+        fn inner(walls: &Perimeters) -> Vec<&ExtrusionLoop> {
+            walls.loops.iter().filter(|wall| wall.depth > 0).collect()
+        }
+        assert_eq!(inner(&thinned).len(), 2);
+        let furthest = inner(&thinned)
+            .iter()
+            .flat_map(|wall| &wall.polygon.points)
+            .map(|point| point.x)
+            .max()
+            .unwrap();
+        // They stop a little short of where the part above ends: the top
+        // fill runs that far under it, to have something to hold on to.
+        assert!(
+            furthest > scaled(19.0) && furthest < scaled(20.0),
+            "{}",
+            unscaled(furthest)
+        );
+        // Fill takes their place: it reaches to within a wall or so of
+        // the outline on the exposed side, where it stopped three walls in.
+        let reach = |walls: &Perimeters| {
+            walls
+                .infill
+                .iter()
+                .flat_map(|area| &area.contour.points)
+                .map(|point| point.x)
+                .max()
+                .unwrap()
+        };
+        assert!(
+            reach(&thinned) > scaled(39.4),
+            "{}",
+            unscaled(reach(&thinned))
+        );
+        assert!(reach(&plain) < scaled(39.0), "{}", unscaled(reach(&plain)));
+        let area = |walls: &Perimeters| walls.infill.iter().map(ExPolygon::area_mm2).sum::<f64>();
+        assert!(area(&thinned) > area(&plain) + 10.0);
+
+        // With the whole layer covered, or no neighbours known, nothing changes.
+        let covered = [block(0.0, 0.0, 40.0, 20.0)];
+        let all = Around {
+            upper: &covered,
+            lower: Some(&lower),
+        };
+        assert_eq!(classic_between(&layer, &with, Some(all)).unwrap(), plain);
+        assert_eq!(classic_between(&layer, &with, None).unwrap(), plain);
+        // A strip of top narrower than the least width keeps its walls.
+        let nearly = [block(0.0, 0.0, 39.5, 20.0)];
+        let sliver = Around {
+            upper: &nearly,
+            lower: Some(&lower),
+        };
+        assert_eq!(classic_between(&layer, &with, Some(sliver)).unwrap(), plain);
+        // What hangs over air keeps its walls too.
+        let short = [block(0.0, 0.0, 20.0, 20.0)];
+        let over_air = Around {
+            upper: &upper,
+            lower: Some(&short),
+        };
+        assert_eq!(
+            inner(&classic_between(&layer, &with, Some(over_air)).unwrap()).len(),
+            inner(&plain).len()
+        );
     }
 
     #[test]
