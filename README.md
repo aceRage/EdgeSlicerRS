@@ -16,6 +16,7 @@ replaces it until output matches on the printers we care about.
 | `crates/edge-clip` | Polygon union, difference, intersection, offset and gap closing (wraps clipper2-rs) |
 | `crates/edge-extrusion` | Extruded line cross-section (flow) and extrusion loops |
 | `crates/edge-perimeter` | Walls and the infill area inside them (classic constant-width generator) |
+| `crates/edge-infill` | Top, bottom, bridge, solid and sparse surfaces, and the lines that fill them |
 | `crates/edge-slice` | Mesh to per-layer contours, then to regions with holes; parallel across layers |
 | `crates/edge-cli` | The `edge` command line |
 | `reference/EdgeSlicer` | Pinned submodule of the C++ slicer: profiles, test models, behaviour to match. Read-only here |
@@ -54,16 +55,26 @@ Working:
 Known gaps: painted triangles, per-object setting overrides, plate origins (a
 plate's regions are in project coordinates, not relative to its bed), typed
 settings (values are text until a stage needs them), and modifier parts.
+- Infill: each layer's inside is split into top, bottom, bridge, solid
+  shell and sparse areas (`top_shell_layers`, `bottom_shell_layers`,
+  `sparse_infill_density`, `minimum_sparse_infill_area`) and filled with
+  lines, or a grid for sparse areas.
+
 Walls do not yet have thin-wall detection, gap fill, overhang handling,
 extra or one-wall-on-top perimeters, print ordering or seams, and Arachne
-(variable width) is not started. Gap closing runs across objects, so two separate objects closer than twice
+(variable width) is not started. Infill is a first working version, not a
+port: fill lines are separate segments (not joined or ordered), solid lines
+are not fitted to the region's width, bridges use the ordinary flow and
+direction, external surfaces are not grown to anchor, shell thickness in mm
+and vertical shells are ignored, and sparse patterns other than line and
+grid fall back to grid with a note. Gap closing runs across objects, so two separate objects closer than twice
 the radius merge; the reference closes within one object only.
 
 Clipping is clipper2-rs, a port of Clipper2. The reference uses Clipper 6,
 so regions agree in shape and area but not vertex for vertex.
 
-Next, in pipeline order: top/bottom surface detection and infill, supports,
-G-code export, then a
+Next, in pipeline order: G-code export (with print order and travel moves),
+supports, then a
 parity harness that slices the same project with both engines and diffs the
 result.
 

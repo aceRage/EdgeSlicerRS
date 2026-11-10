@@ -4,7 +4,8 @@
 
 use std::f64::consts::PI;
 
-use edge_geom::{Coord, Polygon, scaled};
+use edge_config::FloatOrPercent;
+use edge_geom::{Coord, Point2, Polygon, UNITS_PER_MM, scaled};
 
 #[derive(Debug, PartialEq, thiserror::Error)]
 pub enum FlowError {
@@ -55,6 +56,36 @@ impl Flow {
         1.125 * nozzle_diameter
     }
 
+    /// Builds a flow from line width settings, in the reference's order of
+    /// precedence (`PrintRegion::flow`, then `Flow::new_from_config_width`):
+    /// the first layer's own width, the role's width, the general line
+    /// width, and last `auto_width`. A width of zero means "not set"; a
+    /// percentage is of the nozzle diameter.
+    pub fn from_widths(
+        widths: &LineWidths,
+        role_width: FloatOrPercent,
+        auto_width: f64,
+        height: f64,
+        first_layer: bool,
+    ) -> Result<Self, FlowError> {
+        let is_set = |width: FloatOrPercent| match width {
+            FloatOrPercent::Value(value) | FloatOrPercent::Percent(value) => value > 0.0,
+        };
+        let chosen = if first_layer && is_set(widths.initial_layer_line_width) {
+            widths.initial_layer_line_width
+        } else if is_set(role_width) {
+            role_width
+        } else {
+            widths.line_width
+        };
+        let width = if is_set(chosen) {
+            chosen.resolve(widths.nozzle_diameter)
+        } else {
+            auto_width
+        };
+        Self::new(width, height, widths.nozzle_diameter)
+    }
+
     /// The same layer and nozzle with a different line width.
     pub fn with_width(&self, width: f64) -> Result<Self, FlowError> {
         Self::new(width, self.height, self.nozzle_diameter)
@@ -74,12 +105,55 @@ impl Flow {
     }
 }
 
+/// The width settings every role falls back on.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct LineWidths {
+    /// Used wherever a role's own width is not set.
+    pub line_width: FloatOrPercent,
+    /// Replaces every width on the first layer when set.
+    pub initial_layer_line_width: FloatOrPercent,
+    pub nozzle_diameter: f64,
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum Role {
     /// The wall that forms the visible surface.
     ExternalPerimeter,
     /// Walls behind the external one.
     Perimeter,
+    /// Partial fill inside the part.
+    SparseInfill,
+    /// Full fill inside the part, backing up a top or bottom surface.
+    SolidInfill,
+    /// The topmost, visible fill.
+    TopSolidInfill,
+    /// Fill resting on the bed.
+    BottomSurface,
+    /// Fill laid over air.
+    BridgeInfill,
+}
+
+/// An open line: the centre line the nozzle follows and what it extrudes.
+#[derive(Clone, Debug, PartialEq)]
+pub struct ExtrusionPath {
+    pub points: Vec<Point2>,
+    pub role: Role,
+    pub flow: Flow,
+}
+
+impl ExtrusionPath {
+    pub fn length_mm(&self) -> f64 {
+        self.points
+            .windows(2)
+            .map(|pair| ((pair[1].x - pair[0].x) as f64).hypot((pair[1].y - pair[0].y) as f64))
+            .sum::<f64>()
+            / UNITS_PER_MM
+    }
+
+    /// Plastic in the path, in mm³.
+    pub fn volume_mm3(&self) -> f64 {
+        self.length_mm() * self.flow.mm3_per_mm()
+    }
 }
 
 /// A closed line: the centre line the nozzle follows and what it extrudes.
@@ -143,11 +217,48 @@ mod tests {
     }
 
     #[test]
+    fn widths_fall_back_from_first_layer_to_role_to_general_to_auto() {
+        let unset = FloatOrPercent::Value(0.0);
+        let mut widths = LineWidths {
+            line_width: unset,
+            initial_layer_line_width: unset,
+            nozzle_diameter: 0.4,
+        };
+        let width = |widths: &LineWidths, role, first| {
+            Flow::from_widths(widths, role, 0.4, 0.2, first)
+                .unwrap()
+                .width
+        };
+        assert_eq!(width(&widths, unset, false), 0.4);
+        widths.line_width = FloatOrPercent::Percent(150.0);
+        assert!((width(&widths, unset, false) - 0.6).abs() < 1e-12);
+        assert_eq!(width(&widths, FloatOrPercent::Value(0.42), false), 0.42);
+        widths.initial_layer_line_width = FloatOrPercent::Value(0.5);
+        assert_eq!(width(&widths, FloatOrPercent::Value(0.42), true), 0.5);
+        assert_eq!(width(&widths, FloatOrPercent::Value(0.42), false), 0.42);
+    }
+
+    #[test]
+    fn path_length_follows_every_segment() {
+        let flow = Flow::new(0.45, 0.2, 0.4).unwrap();
+        let points = [(0.0, 0.0), (3.0, 4.0), (3.0, 10.0)]
+            .map(|(x, y)| Point2::from_mm(x, y))
+            .to_vec();
+        let path = ExtrusionPath {
+            points,
+            role: Role::SolidInfill,
+            flow,
+        };
+        assert_eq!(path.length_mm(), 11.0);
+        assert!((path.volume_mm3() - 11.0 * flow.mm3_per_mm()).abs() < 1e-12);
+    }
+
+    #[test]
     fn loop_volume_is_length_times_cross_section() {
         let flow = Flow::new(0.5, 0.2, 0.4).unwrap();
         let square = Polygon {
             points: [(0.0, 0.0), (10.0, 0.0), (10.0, 10.0), (0.0, 10.0)]
-                .map(|(x, y)| edge_geom::Point2::from_mm(x, y))
+                .map(|(x, y)| Point2::from_mm(x, y))
                 .to_vec(),
         };
         let wall = ExtrusionLoop {

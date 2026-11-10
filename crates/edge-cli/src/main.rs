@@ -3,8 +3,9 @@ use std::{error::Error, fmt::Write as _, fs, path::PathBuf, process::ExitCode, t
 use clap::{Args, Parser, Subcommand};
 use edge_3mf::{Body, PartKind, Project};
 use edge_config::{Kind, Settings, Vendor};
-use edge_extrusion::{ExtrusionLoop, Role};
+use edge_extrusion::{ExtrusionLoop, ExtrusionPath, Role};
 use edge_geom::{ExPolygon, scaled, unscaled};
+use edge_infill::{InfillSettings, SurfaceKind};
 use edge_perimeter::{Perimeters, WallSettings};
 use edge_slice::LayerRegions;
 use rayon::prelude::*;
@@ -391,6 +392,35 @@ fn slice(args: SliceArgs) -> Result<(), Failure> {
         .collect::<Result<Vec<Perimeters>, String>>()?;
     let perimeter_time = started.elapsed();
 
+    let started = Instant::now();
+    let infill = InfillSettings::from_settings(&settings)?;
+    let slices: Vec<&[ExPolygon]> = layers
+        .iter()
+        .map(|layer| layer.regions.as_slice())
+        .collect();
+    let inside_walls: Vec<&[ExPolygon]> = perimeters
+        .iter()
+        .map(|layer| layer.infill.as_slice())
+        .collect();
+    let surfaces = edge_infill::classify(&slices, &inside_walls, &infill.shells(layer_height)?)?;
+    let classify_time = started.elapsed();
+    let fills = surfaces
+        .par_iter()
+        .enumerate()
+        .map(|(index, surfaces)| {
+            let height = if index == 0 {
+                first_layer_height
+            } else {
+                layer_height
+            };
+            let params = infill
+                .params(height, index == 0)
+                .map_err(|e| e.to_string())?;
+            edge_infill::fill(surfaces, index, &params).map_err(|e| e.to_string())
+        })
+        .collect::<Result<Vec<Vec<ExtrusionPath>>, String>>()?;
+    let infill_time = started.elapsed();
+
     let carved = bodies.iter().filter(|body| body.negative.is_some()).count();
     println!(
         "{}: {} triangles, {:.3} x {:.3} x {:.3} mm{}",
@@ -449,11 +479,42 @@ fn slice(args: SliceArgs) -> Result<(), Failure> {
             .map(|layer| layer.infill.len())
             .sum::<usize>(),
     );
+    let area_of = |kind: SurfaceKind| {
+        surfaces
+            .iter()
+            .flatten()
+            .filter(|s| s.kind == kind)
+            .map(|s| s.area.area_mm2())
+            .sum::<f64>()
+            / 100.0
+    };
+    let paths = || fills.iter().flatten();
     println!(
-        "load {:.1} ms, slice {:.1} ms, perimeters {:.1} ms on {} threads",
+        "infill at {}% {:?}: {:.1} cm² top, {:.1} bottom, {:.1} bridge, {:.1} solid, {:.1} sparse; \
+         {} lines, {:.2} m, {:.2} cm³",
+        infill.sparse_infill_density_percent,
+        infill.pattern,
+        area_of(SurfaceKind::Top),
+        area_of(SurfaceKind::Bottom),
+        area_of(SurfaceKind::Bridge),
+        area_of(SurfaceKind::InternalSolid),
+        area_of(SurfaceKind::Sparse),
+        paths().count(),
+        paths().map(ExtrusionPath::length_mm).sum::<f64>() / 1e3,
+        paths().map(ExtrusionPath::volume_mm3).sum::<f64>() / 1e3,
+    );
+    if let Some(pattern) = &infill.unsupported_pattern {
+        println!(
+            "note: sparse pattern \"{pattern}\" is not implemented; grid was used in its place"
+        );
+    }
+    println!(
+        "load {:.1} ms, slice {:.1} ms, perimeters {:.1} ms, surfaces {:.1} ms, fill {:.1} ms on {} threads",
         load_time.as_secs_f64() * 1e3,
         slice_time.as_secs_f64() * 1e3,
         perimeter_time.as_secs_f64() * 1e3,
+        classify_time.as_secs_f64() * 1e3,
+        (infill_time - classify_time).as_secs_f64() * 1e3,
         rayon::current_num_threads(),
     );
 
@@ -465,7 +526,7 @@ fn slice(args: SliceArgs) -> Result<(), Failure> {
                 layers.len()
             )
         })?;
-        fs::write(&path, svg(layer, &perimeters[index]))?;
+        fs::write(&path, svg(layer, &perimeters[index], &fills[index]))?;
         println!(
             "layer {index} (z {:.3} mm) written to {}",
             layer.z,
@@ -476,9 +537,9 @@ fn slice(args: SliceArgs) -> Result<(), Failure> {
 }
 
 /// Renders a layer in millimetres with +y up: the sliced outline as a thin
-/// line, the infill area filled, and each wall stroked at its real width so
-/// gaps and overlaps between walls show as they would print.
-fn svg(layer: &LayerRegions, perimeters: &Perimeters) -> String {
+/// line, the infill area tinted, and every fill line and wall stroked at
+/// its real width so gaps and overlaps show as they would print.
+fn svg(layer: &LayerRegions, perimeters: &Perimeters, fills: &[ExtrusionPath]) -> String {
     fn path(
         out: &mut String,
         rings: impl Iterator<Item = impl std::borrow::Borrow<edge_geom::Polygon>>,
@@ -512,10 +573,31 @@ fn svg(layer: &LayerRegions, perimeters: &Perimeters) -> String {
     let margin = width.max(height) * 0.05;
 
     let mut body = String::new();
-    body.push_str("<g fill=\"#f2d9a0\" fill-rule=\"evenodd\">");
+    body.push_str("<g fill=\"#faf3e0\" fill-rule=\"evenodd\">");
     for area in &perimeters.infill {
         body.push_str("<path d=\"");
         path(&mut body, area.rings());
+        body.push_str("\"/>");
+    }
+    body.push_str("</g><g fill=\"none\" stroke-linecap=\"round\" stroke-opacity=\"0.8\">");
+    for line in fills {
+        let colour = match line.role {
+            Role::TopSolidInfill => "#2a9d8f",
+            Role::BottomSurface => "#8d6e63",
+            Role::BridgeInfill => "#d62828",
+            Role::SolidInfill => "#b5651d",
+            _ => "#e09f3e",
+        };
+        write!(
+            body,
+            "<path stroke=\"{colour}\" stroke-width=\"{:.4}\" d=\"",
+            line.flow.width
+        )
+        .unwrap();
+        for (i, p) in line.points.iter().enumerate() {
+            let command = if i == 0 { 'M' } else { 'L' };
+            write!(body, "{command}{:.4} {:.4}", unscaled(p.x), -unscaled(p.y)).unwrap();
+        }
         body.push_str("\"/>");
     }
     body.push_str("</g><g fill=\"none\" stroke-linejoin=\"round\" stroke-opacity=\"0.75\">");

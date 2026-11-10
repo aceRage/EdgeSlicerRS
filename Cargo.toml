@@ -15,6 +15,7 @@ edge-config = { path = "crates/edge-config" }
 edge-extrusion = { path = "crates/edge-extrusion" }
 edge-geom = { path = "crates/edge-geom" }
 edge-mesh = { path = "crates/edge-mesh" }
+edge-infill = { path = "crates/edge-infill" }
 edge-perimeter = { path = "crates/edge-perimeter" }
 edge-slice = { path = "crates/edge-slice" }
 clap = { version = "4", features = ["derive", "env"] }

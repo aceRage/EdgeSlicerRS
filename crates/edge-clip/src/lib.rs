@@ -100,6 +100,19 @@ pub fn offset2(
     offset(&offset(regions, first, join)?, second, join)
 }
 
+/// Removes slivers and spurs narrower than twice `radius` by shrinking the
+/// regions and growing them back.
+pub fn opening(
+    regions: &[ExPolygon],
+    radius: Coord,
+    join: Join,
+) -> Result<Vec<ExPolygon>, ClipError> {
+    if radius <= 0 {
+        return union_ex(regions);
+    }
+    offset2(regions, -radius, radius, join)
+}
+
 /// Fills cracks and notches narrower than twice `radius` by growing the
 /// regions and shrinking them back. This is how the reference merges parts
 /// modelled to sit flush whose surfaces miss each other by a hair
@@ -502,6 +515,15 @@ mod tests {
         );
         assert_eq!(douglas_peucker(&path[..1], 1.0), [path[0]]);
         assert!(douglas_peucker(&[], 1.0).is_empty());
+    }
+
+    #[test]
+    fn opening_drops_slivers_and_keeps_the_rest() {
+        let mut shape = solid(0.0, 0.0, 10.0, 10.0);
+        shape.extend(solid(20.0, 0.0, 20.05, 10.0));
+        let opened = opening(&shape, scaled(0.045), Join::MITER).unwrap();
+        assert_eq!((opened.len(), area(&opened)), (1, 100.0));
+        assert_eq!(area(&opening(&shape, 0, Join::MITER).unwrap()), 100.5);
     }
 
     #[test]

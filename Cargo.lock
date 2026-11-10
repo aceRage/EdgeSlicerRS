@@ -194,6 +194,7 @@ dependencies = [
  "edge-config",
  "edge-extrusion",
  "edge-geom",
+ "edge-infill",
  "edge-mesh",
  "edge-perimeter",
  "edge-slice",
@@ -223,6 +224,7 @@ dependencies = [
 name = "edge-extrusion"
 version = "0.0.0"
 dependencies = [
+ "edge-config",
  "edge-geom",
  "thiserror",
 ]
@@ -230,6 +232,21 @@ dependencies = [
 [[package]]
 name = "edge-geom"
 version = "0.0.0"
+
+[[package]]
+name = "edge-infill"
+version = "0.0.0"
+dependencies = [
+ "edge-3mf",
+ "edge-clip",
+ "edge-config",
+ "edge-extrusion",
+ "edge-geom",
+ "edge-perimeter",
+ "edge-slice",
+ "rayon",
+ "thiserror",
+]
 
 [[package]]
 name = "edge-mesh"

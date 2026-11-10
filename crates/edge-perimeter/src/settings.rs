@@ -1,5 +1,5 @@
 use edge_config::{ConfigError, FloatOrPercent, Settings};
-use edge_extrusion::{Flow, FlowError};
+use edge_extrusion::{Flow, FlowError, LineWidths};
 use edge_geom::scaled;
 
 use crate::Params;
@@ -114,32 +114,24 @@ impl WallSettings {
         })
     }
 
-    /// Width precedence as in the reference (`PrintRegion::flow`, then
-    /// `Flow::new_from_config_width`): the first layer's own width, the
-    /// role's width, the general line width, and last a width derived from
-    /// the nozzle.
     fn flow(
         &self,
         role_width: FloatOrPercent,
         layer_height: f64,
         first_layer: bool,
     ) -> Result<Flow, FlowError> {
-        let is_set = |width: FloatOrPercent| match width {
-            FloatOrPercent::Value(value) | FloatOrPercent::Percent(value) => value > 0.0,
+        let widths = LineWidths {
+            line_width: self.line_width,
+            initial_layer_line_width: self.initial_layer_line_width,
+            nozzle_diameter: self.nozzle_diameter,
         };
-        let chosen = if first_layer && is_set(self.initial_layer_line_width) {
-            self.initial_layer_line_width
-        } else if is_set(role_width) {
-            role_width
-        } else {
-            self.line_width
-        };
-        let width = if is_set(chosen) {
-            chosen.resolve(self.nozzle_diameter)
-        } else {
-            Flow::auto_width(self.nozzle_diameter)
-        };
-        Flow::new(width, layer_height, self.nozzle_diameter)
+        Flow::from_widths(
+            &widths,
+            role_width,
+            Flow::auto_width(self.nozzle_diameter),
+            layer_height,
+            first_layer,
+        )
     }
 }
 
