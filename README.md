@@ -225,10 +225,18 @@ Known gaps: painted triangles, per-object setting overrides, typed settings
     filament.
   - A prime tower, on every layer up to the last tool change: a wall, a
     block for each change where the new nozzle lays down `prime_volume`,
-    lines across the depth no change uses, a solid first layer and a brim.
-    The skirt goes round it and no part's brim is laid on its ground. A
-    tower set to a ribbed wall is made as wide as it is deep, as the
-    reference makes it.
+    a frame and lines across the depth no change uses, a solid first
+    layer and a brim. The skirt goes round it and no part's brim is laid
+    on its ground. With `wipe_tower_wall_type` at `rib`, as the U1's
+    profiles have it, the tower is made as wide as it is deep and has a
+    rib along each diagonal that runs out past the corners, longest on
+    the bed and gone at the top, with rounded corners
+    (`wipe_tower_rib_width`, `wipe_tower_extra_rib_length`,
+    `wipe_tower_fillet_wall`); a tower slight for its height gets longer
+    ribs. It stands where the ends of its ribs put it, as the reference's
+    does. The brim follows the wall, and above the first layer steps in
+    a loop a layer from at most `prime_tower_brim_chamfer_max_width`
+    (WipeTower2.cpp `finish_layer`, `generate_rib_polygon`).
 - Printer profiles: the machine's start, end and layer-change G-code and the
   filament's start and end G-code are expanded from their templates, with
   filament-level retraction overrides applied. For the Snapmaker U1 projects
@@ -271,9 +279,10 @@ profile a generic preamble is written and the file is only good for viewing.
 Multi-filament printing is a first working version. Where parts of
 different filaments overlap, the higher-numbered filament has the overlap
 (the reference gives it to the later part). The order of tools within a
-layer after the first is simpler than the reference's. The tower's wall
-is a plain box: no ribs or cone, no gap where the nozzle comes in, and no
-ramming. A filament with no tool of its own (the fifth on a
+layer after the first is simpler than the reference's. The tower has no
+cone wall, no gap in its wall where the nozzle comes in (noted), and no
+ramming, for want of which it is narrower than the reference's where a
+filament is rammed (40.5 mm against 43 mm on `mcbrim_test.3mf`). A filament with no tool of its own (the fifth on a
 four-tool printer) is written as the reference writes it, with a warning.
 Painted colours and filaments mixed from others are not read.
 
@@ -433,13 +442,16 @@ more slowly on the way down.
 
 On `mcbrim_test.3mf`, printed in four filaments, both make tool changes on
 the same layers (27 here, 28 in the reference), and on plate 1 the start
-of the file is identical for 96 of its 99 lines; the tower here carries 24
-to 30% less plastic, having no ribs. Plates 2 and 3 set the order of
+of the file is identical for 96 of its 99 lines. Plates 2 and 3 set the order of
 filaments on the first layer (`first_layer_print_sequence`), which this
 engine does not follow, so it starts with a different tool there. All three of its plates slice. It is a flat part
 3 mm thick covered in lettering, and it is where this engine is furthest
-from the reference. Plates 2 and 3 carry 7.9% less filament, nearly all
-of it the prime tower (no ribs): top surface is within 1.3%, bridges
+from the reference. Plates 2 and 3 carry 2.2% less filament (7.9% less
+before the tower had its ribs and stepped brim); the tower itself is 7%
+under, where the reference rams. Its first layer stands on the same
+ground to the hundredth of a millimetre at the corner it is placed by.
+On the two-colour test the tower is 3.5% over and the whole part 0.7%
+over. Top surface is within 1.3%, bridges
 over infill 9% over (they were 78% under, when a colour that starts
 part of the way up was not bridged over the colour beneath), solid fill
 3% over and sparse fill 4% under. The parts on plate 1 are painted in
@@ -486,7 +498,8 @@ spiral lifts, and plate placement (outer walls land where the reference
 puts them on all three plates of `mcbrim_test.3mf`), the prime tower, gap
 fill between walls, overhang walls with their speeds and fan, and
 internal bridges, one wall under top surfaces below the last layer,
-vertical shells, and the solid band under a bridge's edge.
+vertical shells, the solid band under a bridge's edge, and the prime
+tower's ribs and stepped brim.
 
 ## Licence
 
