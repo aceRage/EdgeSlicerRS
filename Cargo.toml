@@ -18,11 +18,15 @@ edge-gcode = { path = "crates/edge-gcode" }
 edge-geom = { path = "crates/edge-geom" }
 edge-mesh = { path = "crates/edge-mesh" }
 edge-infill = { path = "crates/edge-infill" }
+edge-medial = { path = "crates/edge-medial" }
 edge-perimeter = { path = "crates/edge-perimeter" }
 edge-slice = { path = "crates/edge-slice" }
 edge-support = { path = "crates/edge-support" }
 edge-template = { path = "crates/edge-template" }
 edge-tower = { path = "crates/edge-tower" }
+# Voronoi diagrams of line segments, a port of Boost.Polygon's. Only
+# edge-medial may depend on it.
+boostvoronoi = "0.12"
 clap = { version = "4", features = ["derive", "env"] }
 clipper2-rs = "0.3"
 quick-xml = "0.42"

@@ -128,6 +128,30 @@ pub fn closing(
     offset2(regions, radius, -radius, join)
 }
 
+/// The ground open lines cover when each is drawn `half_width` to either
+/// side, with corners squared and ends cut off flush: the reference's
+/// `offset` of a polyline, which is how it measures what an extrusion
+/// covers.
+pub fn thicken<'a>(
+    lines: impl IntoIterator<Item = &'a [Point2]>,
+    half_width: Coord,
+) -> Result<Vec<ExPolygon>, ClipError> {
+    let lines: Paths64 = lines
+        .into_iter()
+        .filter(|line| line.len() >= 2)
+        .map(|line| line.iter().map(|p| Point64::new(p.x, p.y)).collect())
+        .collect();
+    if lines.is_empty() || half_width <= 0 {
+        return Ok(Vec::new());
+    }
+    let mut offsetter = ClipperOffset::new(2.0, 0.0, false, false);
+    offsetter.add_paths(&lines, JoinType::Square, EndType::Butt);
+    offsetter
+        .execute_tree(half_width as f64)
+        .map(|tree| regions_of(&tree))
+        .map_err(ClipError::from)
+}
+
 /// Drops vertices that deviate from the outline by no more than `tolerance`
 /// (Douglas-Peucker on each ring, anchored at its first point), then
 /// re-unites the rings in case simplifying made them cross. Matches the

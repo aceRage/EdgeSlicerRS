@@ -2,9 +2,10 @@
 //! inside them for infill.
 //!
 //! `classic` is a port of the constant-width generator in the reference
-//! (`PerimeterGenerator::process_classic`, PerimeterGenerator.cpp). Not
-//! ported yet: thin-wall detection, gap fill, overhang and bridge handling,
-//! extra and one-wall-on-top perimeters, fuzzy skin, spiral vase, and the
+//! (`PerimeterGenerator::process_classic`, PerimeterGenerator.cpp), with
+//! the gaps between walls filled by lines of whatever width fits. Not
+//! ported yet: thin-wall detection, overhang and bridge handling, extra
+//! and one-wall-on-top perimeters, fuzzy skin, spiral vase, and the
 //! nesting order loops are printed in.
 
 mod settings;
@@ -12,7 +13,9 @@ mod settings;
 use std::ops::Range;
 
 use edge_clip::{ClipError, Join};
-use edge_extrusion::{ExtrusionLoop, Flow, FlowError, INSET_OVERLAP_TOLERANCE, Role};
+use edge_extrusion::{
+    ExtrusionLoop, ExtrusionPath, Flow, FlowError, INSET_OVERLAP_TOLERANCE, Role,
+};
 use edge_geom::{Coord, ExPolygon, scaled, unscaled};
 
 pub use settings::WallSettings;
@@ -22,6 +25,9 @@ pub use settings::WallSettings;
 const SMALLER_EXT_INSET_OVERLAP_TOLERANCE: f64 = 0.22;
 /// Islands shorter than this many mm qualify for the thinner wall.
 const NARROW_LOOP_LENGTH_THRESHOLD: f64 = 10.0;
+/// Added to an offset so that edges meant to coincide overlap instead
+/// (ClipperUtils.hpp `ClipperSafetyOffset`).
+const SAFETY_OFFSET: Coord = 10;
 
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
@@ -46,6 +52,18 @@ pub struct Params {
     pub infill_overlap_percent: f64,
     /// Outline detail finer than this is dropped before walls are placed.
     pub resolution: Coord,
+    /// How gaps between walls are filled; none leaves them empty.
+    pub gap_fill: Option<GapFill>,
+}
+
+/// What gaps too narrow for a wall are filled with.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct GapFill {
+    /// Supplies the layer height and nozzle; every line takes its width
+    /// from the gap it fills. The reference passes the solid infill's flow.
+    pub flow: Flow,
+    /// Lines shorter than this are not worth printing (`filter_out_gap_fill`).
+    pub shortest: Coord,
 }
 
 #[derive(Clone, Debug, Default, PartialEq)]
@@ -58,6 +76,11 @@ pub struct Perimeters {
     pub islands: Vec<Range<usize>>,
     /// Where infill goes, already overlapping the innermost wall.
     pub infill: Vec<ExPolygon>,
+    /// Lines down the middle of the gaps between walls, each as wide as
+    /// its gap.
+    pub gap_fill: Vec<ExtrusionPath>,
+    /// Gaps left empty because their centre line could not be worked out.
+    pub gaps_skipped: usize,
 }
 
 /// Concentric constant-width walls for one layer's regions.
@@ -86,6 +109,7 @@ pub fn classic(regions: &[ExPolygon], params: &Params) -> Result<Perimeters, Err
 
         // One pass more than there are walls: an area with no room for a
         // further loop is left to gap fill rather than handed to infill.
+        let mut gaps: Vec<ExPolygon> = Vec::new();
         let mut depth: isize = 0;
         while loop_number >= 0 {
             let mut offsets = Vec::new();
@@ -121,6 +145,14 @@ pub fn classic(regions: &[ExPolygon], params: &Params) -> Result<Perimeters, Err
                     min_spacing / 2 - 1,
                     Join::MITER,
                 )?;
+                // What lies between the last loop and this one and is
+                // covered by neither is a gap.
+                if params.gap_fill.is_some() {
+                    gaps.extend(edge_clip::difference(
+                        &edge_clip::offset(&last, -distance / 2, Join::MITER)?,
+                        &edge_clip::offset(&offsets, distance / 2 + SAFETY_OFFSET, Join::MITER)?,
+                    )?);
+                }
             }
 
             if offsets.is_empty() && narrow.is_empty() {
@@ -146,6 +178,24 @@ pub fn classic(regions: &[ExPolygon], params: &Params) -> Result<Perimeters, Err
             result.islands.push(first_loop..result.loops.len());
         }
 
+        if let Some(fill) = &params.gap_fill
+            && !gaps.is_empty()
+        {
+            let filled = fill_gaps(&gaps, fill, params, &mut result.gaps_skipped)?;
+            // What a gap line covers is not infilled as well.
+            let mut covered = Vec::new();
+            for path in &filled {
+                covered.extend(edge_clip::thicken(
+                    [path.points.as_slice()],
+                    path.flow.scaled_width() / 2 + SAFETY_OFFSET,
+                )?);
+            }
+            if !covered.is_empty() {
+                last = edge_clip::difference(&last, &edge_clip::union_ex(&covered)?)?;
+            }
+            result.gap_fill.extend(filled);
+        }
+
         // Infill starts half a line inside the innermost wall's centre
         // line, then reaches back toward it by the configured overlap.
         let mut inset = match loop_number {
@@ -167,6 +217,46 @@ pub fn classic(regions: &[ExPolygon], params: &Params) -> Result<Perimeters, Err
         )?);
     }
     Ok(result)
+}
+
+/// Lines down the middle of whatever part of `gaps` is too narrow for a
+/// wall and wide enough to print (PerimeterGenerator.cpp, "fill gaps").
+fn fill_gaps(
+    gaps: &[ExPolygon],
+    fill: &GapFill,
+    params: &Params,
+    skipped: &mut usize,
+) -> Result<Vec<ExtrusionPath>, Error> {
+    let thinnest = 0.2
+        * params.inner.scaled_width().min(params.outer.scaled_width()) as f64
+        * (1.0 - INSET_OVERLAP_TOLERANCE);
+    let widest = 2.0 * params.inner.scaled_spacing() as f64;
+    // Without the slivers too thin to print and the parts a wall could
+    // have had.
+    let narrow = edge_clip::difference(
+        &edge_clip::opening(gaps, (thinnest / 2.0) as Coord, Join::MITER)?,
+        &edge_clip::offset2(
+            gaps,
+            -(widest / 2.0) as Coord,
+            (widest / 2.0) as Coord + SAFETY_OFFSET,
+            Join::MITER,
+        )?,
+    )?;
+    let mut lines = Vec::new();
+    for gap in &narrow {
+        for gap in edge_clip::simplify(std::slice::from_ref(gap), params.resolution)? {
+            match edge_medial::medial_axis(&gap, thinnest, widest) {
+                Ok(found) => lines.extend(found),
+                Err(_) => *skipped += 1,
+            }
+        }
+    }
+    lines.retain(|line| line.length() >= fill.shortest as f64);
+    Ok(edge_medial::variable_width(
+        &lines,
+        Role::GapFill,
+        &fill.flow,
+    ))
 }
 
 /// One depth's loops: every outer boundary, then every hole.
@@ -224,6 +314,7 @@ mod tests {
             solid_infill_spacing: flow.scaled_spacing(),
             infill_overlap_percent: 15.0,
             resolution: scaled(0.01),
+            gap_fill: None,
         }
     }
 
@@ -385,5 +476,71 @@ mod tests {
         assert_eq!(min_x, [false, false, true, true]);
         assert_eq!(walls.infill.len(), 2);
         assert_eq!(walls.islands, [0..2, 2..4]);
+    }
+
+    fn filling(wall_loops: usize) -> Params {
+        let base = params(wall_loops);
+        Params {
+            gap_fill: Some(GapFill {
+                flow: base.inner,
+                shortest: 0,
+            }),
+            ..base
+        }
+    }
+
+    #[test]
+    fn the_gap_between_walls_gets_a_line_as_wide_as_it_is() {
+        // 1 mm across: a wall each side, 0.45 mm wide with its middle
+        // 0.225 mm in, leaves 0.55 mm between the centre lines. The gap
+        // is what is further than half the wall spacing from both.
+        let strip = classic(&[block(0.0, 0.0, 30.0, 1.0)], &filling(3)).unwrap();
+        assert_eq!(strip.loops.len(), 1);
+        assert_eq!(strip.gaps_skipped, 0);
+        let length: f64 = strip.gap_fill.iter().map(ExtrusionPath::length_mm).sum();
+        assert!(length > 28.5 && length < 29.5, "{length} mm of gap fill");
+        let expected = 0.55 - 0.407_08;
+        for line in &strip.gap_fill {
+            assert_eq!(line.role, Role::GapFill);
+            assert!(
+                line.points
+                    .iter()
+                    .all(|point| (unscaled(point.y) - 0.5).abs() < 1e-3),
+                "the line runs down the middle"
+            );
+        }
+        // Between its ends the line is as wide as the gap.
+        let longest = strip
+            .gap_fill
+            .iter()
+            .max_by(|a, b| a.length_mm().total_cmp(&b.length_mm()))
+            .unwrap();
+        assert!(
+            (longest.flow.spacing - expected).abs() < 0.01,
+            "{} against {expected}",
+            longest.flow.spacing
+        );
+        assert!(strip.infill.is_empty());
+    }
+
+    #[test]
+    fn a_part_with_room_for_its_walls_has_no_gap_fill() {
+        let walls = classic(&[block(0.0, 0.0, 20.0, 20.0)], &filling(3)).unwrap();
+        assert!(walls.gap_fill.is_empty());
+        // And the infill is what it is without gap fill.
+        let plain = classic(&[block(0.0, 0.0, 20.0, 20.0)], &params(3)).unwrap();
+        assert_eq!(walls.infill, plain.infill);
+    }
+
+    #[test]
+    fn what_a_gap_line_covers_is_not_infilled_too() {
+        // 2.2 mm across holds two walls a side and leaves a strip too
+        // narrow for a third: a gap line, and no infill under it.
+        let strip = classic(&[block(0.0, 0.0, 30.0, 2.2)], &filling(2)).unwrap();
+        assert!(!strip.gap_fill.is_empty());
+        let infill: f64 = strip.infill.iter().map(ExPolygon::area_mm2).sum();
+        assert!(infill < 0.5, "{infill} mm² of infill left");
+        let without = classic(&[block(0.0, 0.0, 30.0, 2.2)], &params(2)).unwrap();
+        assert!(without.gap_fill.is_empty());
     }
 }

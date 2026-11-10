@@ -16,16 +16,17 @@ replaces it until output matches on the printers we care about.
 | `crates/edge-clip` | Polygon union, difference, intersection, offset and gap closing (wraps clipper2-rs) |
 | `crates/edge-extrusion` | Extruded line cross-section (flow) and extrusion loops |
 | `crates/edge-parity` | `edge-parity`: runs the reference slicer and this engine on one project and compares time and G-code |
-| `crates/edge-perimeter` | Walls and the infill area inside them (classic constant-width generator) |
+| `crates/edge-perimeter` | Walls, the lines that fill the gaps between them, and the infill area inside (classic constant-width generator) |
+| `crates/edge-medial` | The centre line of a narrow region and how wide it is along it (wraps boostvoronoi), and lines of changing width as extrusions |
 | `crates/edge-adhesion` | Skirt and brim, with the automatic brim width |
 | `crates/edge-support` | Supports under overhangs, normal (grid) and tree, with dense tops and feet |
-| `crates/edge-gcode` | Print order, seams, travel, retraction, wipe and lift, cooling, and extrusion, written as G-code |
-| `crates/edge-infill` | Top, bottom, bridge, solid and sparse surfaces, and the lines that fill them |
+| `crates/edge-gcode` | Print order, seams, travel, retraction, wipe and lift, cooling, overhangs, and extrusion, written as G-code |
+| `crates/edge-infill` | Top, bottom, bridge, solid, bridged-over-infill and sparse surfaces, and the lines that fill them |
 | `crates/edge-template` | The placeholder language of custom G-code: `{expression}`, `{if}`, `[variable]`, and scripts |
 | `crates/edge-tower` | The prime tower a nozzle is primed on after a tool change |
 | `crates/edge-slice` | Mesh to per-layer contours, then to regions with holes; parallel across layers |
 | `crates/edge-cli` | The `edge` command line |
-| `tools/make_fixture.py` | Writes small test 3MFs (parts that need supports or a brim) to compare with the reference on |
+| `tools/make_fixture.py` | Writes small test 3MFs (parts that need supports or a brim, and a plain cube) to compare with the reference on |
 | `reference/EdgeSlicer` | Pinned submodule of the C++ slicer: profiles, test models, behaviour to match. Read-only here |
 | `apps/desktop` | Tauri app (not started) |
 
@@ -60,13 +61,20 @@ Working:
   `outer_wall_line_width`, `inner_wall_line_width`, `line_width`,
   `initial_layer_line_width`, `infill_wall_overlap`, `resolution`), and the
   infill area left inside them. `slice --svg` draws each wall at its real width.
+- Gap fill: a gap between walls too narrow for another wall gets a line
+  down its middle, as wide as the gap is at each point, found as the
+  reference finds it (the medial axis of the gap). On whenever
+  `gap_infill_speed` is above zero.
 
 Known gaps: painted triangles, per-object setting overrides, typed settings
 (values are text until a stage needs them), and modifier parts.
 - Infill: each layer's inside is split into top, bottom, bridge, solid
   shell and sparse areas (`top_shell_layers`, `bottom_shell_layers`,
   `sparse_infill_density`, `minimum_sparse_infill_area`) and filled with
-  lines, or a grid for sparse areas.
+  lines, or a grid for sparse areas. The first solid layer over sparse
+  fill is laid as an internal bridge: round threads across the lines
+  beneath, at `internal_bridge_speed`. Fill over air takes `bridge_flow`
+  and `bridge_density`.
 
 - G-code: `slice --gcode out.gcode` orders each layer (skirt and brim,
   walls island by island, then fill nearest-end-first), holds speeds to the
@@ -80,6 +88,13 @@ Known gaps: painted triangles, per-object setting overrides, typed settings
   - Cooling: a layer shorter than `slow_down_layer_time` is laid out again
     with its fastest lines slowed, down to `slow_down_min_speed`; the part
     fan follows layer time and the auxiliary fan is driven.
+  - Overhangs: every wall is measured against the outline of the layer
+    beneath. A stretch that hangs clear of it is an overhang wall, printed
+    as a bridge (`detect_overhang_wall`); one partly supported slows
+    between the four overhang speeds by how much of its width has
+    something under it (`enable_overhang_speed`); and bridges, overhang
+    walls and stretches past `overhang_fan_threshold` get
+    `overhang_fan_speed` where that is more than the layer's fan.
 - Skirt and brim: skirt loops around everything, and a brim round the
   outside of each part, either of the width asked for or, with
   `brim_type` `auto_brim` (the default), as wide as the reference's rule of
@@ -115,6 +130,9 @@ Known gaps: painted triangles, per-object setting overrides, typed settings
   - A prime tower, on every layer up to the last tool change: a wall, a
     block for each change where the new nozzle lays down `prime_volume`,
     lines across the depth no change uses, a solid first layer and a brim.
+    The skirt goes round it and no part's brim is laid on its ground. A
+    tower set to a ribbed wall is made as wide as it is deep, as the
+    reference makes it.
 - Printer profiles: the machine's start, end and layer-change G-code and the
   filament's start and end G-code are expanded from their templates, with
   filament-level retraction overrides applied. For the Snapmaker U1 projects
@@ -129,31 +147,40 @@ profile a generic preamble is written and the file is only good for viewing.
 Multi-filament printing is a first working version. Where parts of
 different filaments overlap, the higher-numbered filament has the overlap
 (the reference gives it to the later part). The order of tools within a
-layer after the first is simpler than the reference's. The tower is a
-plain box as wide as `prime_tower_width`: no ribbed or cone wall, no gap
-where the nozzle comes in, no ramming, and it is not kept out of the way
-of the skirt and brim. A filament with no tool of its own (the fifth on a
+layer after the first is simpler than the reference's. The tower's wall
+is a plain box: no ribs or cone, no gap where the nozzle comes in, and no
+ramming. A filament with no tool of its own (the fifth on a
 four-tool printer) is written as the reference writes it, with a warning.
 Painted colours and filaments mixed from others are not read.
 
 Not done in G-code: supports only where painted (none are
 generated, and a note says so), the older tree styles (`tree_slim`,
 `tree_strong`, `tree_hybrid`: organic-style trees are built, with a note),
-rafts, brims inside holes, draft shields, seams placed by visibility or kept off overhangs, overhang
-and bridge fan speeds, arc fitting, progress reports (`M73`) and object
-labels for cancelling. A setting that asks for one of these is listed as a
+rafts, brims inside holes, draft shields, seams placed by visibility or kept
+off overhangs, a fan speed of its own for bridges over infill, walls
+slowed over curled edges, arc fitting, progress reports (`M73`) and object
+labels for cancelling. Bridge fill keeps its own speed along its whole
+length, where the reference also slows it near its anchors. A setting that asks for one of these is listed as a
 note when the file is written. A template that needs a variable not
 provided stops the export with the variable's name. The time is at
 commanded speeds with no acceleration.
 
-Walls do not yet have thin-wall detection, gap fill, overhang handling,
-extra or one-wall-on-top perimeters, print ordering or seams, and Arachne
-(variable width) is not started. Infill is a first working version, not a
-port: fill lines are joined along the walls nearest-first but not ordered
-(no monotonic) and get no anchors where they stay unjoined, solid lines
-are not fitted to the region's width, bridges use the ordinary flow and
-direction, external surfaces are not grown to anchor, shell thickness in mm
-and vertical shells are ignored, and sparse patterns other than line and
+Walls do not yet have thin-wall detection (the U1 profiles leave it off),
+extra perimeters over overhangs, or a single wall under every top surface
+(only the last layer gets one, where the reference thins the walls under
+each top surface and fills the room with top fill: the largest difference
+left on flat parts with lettering). Arachne (variable width) is not
+started. Overhangs are measured as the reference measures them but probed
+at fixed steps, so a wall's speed changes at slightly different places.
+Infill is a first working version, not a port: fill lines are joined along
+the walls nearest-first but not ordered (no monotonic) and get no anchors
+where they stay unjoined, solid lines are not fitted to the region's
+width, bridges run in the solid fill's direction and are not turned to
+span their gap, bridges and other external surfaces are not grown to
+anchor on what is beside them, internal bridges are not run out to the
+sparse lines that carry them (they come 5 to 9% short of the
+reference's), narrow parts of top and bottom surfaces get no gap fill
+(`gap_fill_target`), shell thickness in mm and vertical shells are ignored, and sparse patterns other than line and
 grid fall back to grid with a note. Gap closing runs across objects, so two separate objects closer than twice
 the radius merge; the reference closes within one object only.
 
@@ -170,8 +197,9 @@ moved layer by layer, where the reference follows every place a branch
 could be and picks afterwards; a leaning branch is a circle on each layer,
 not an oval; and branches are not smoothed.
 
-Next: a first print on the U1 to check the output on hardware, then wall
-quality (thin walls, gap fill, overhangs).
+Next: a first print on the U1 to check the output on hardware; then
+bridges turned to span their gap and anchored, one wall under top
+surfaces, and painted colours.
 
 ## Comparing with the reference
 
@@ -187,13 +215,23 @@ layer by layer; `--svg` draws one layer of both toolpaths over each other.
 The reference takes about two seconds to start and exit whatever it is asked
 to do, so its time is also taken from its own log.
 
-Results, 2026-11-09, Mac mini, reference build 2.4.7.6, best of 3:
+Results, 2026-11-10, Mac mini, reference build 2.4.7.6, best of 3:
 
 | Project | Reference work | This engine | Walls, per layer | Filament |
 | --- | --- | --- | --- | --- |
-| `cylinder_drawcut.3mf` (389 layers) | 0.41 s | 0.060 s | under 0.01% apart | -0.5% |
-| `stabilizer_v1.3mf` (499 layers) | 0.85 s | 0.109 s | 0.85% apart | -43% (no supports) |
-| `twopart_groups.3mf` (60 layers) | 0.18 s | 0.008 s | under 0.01% apart | -1.4% |
+| `cylinder_drawcut.3mf` (389 layers) | 0.40 s | 0.084 s | under 0.01% apart | -0.1% |
+| `stabilizer_v1.3mf` (499 layers) | 0.83 s | 0.158 s | 0.85% apart | -43% (no supports) |
+| `twopart_groups.3mf` (60 layers) | 0.18 s | 0.009 s | under 0.01% apart | -0.7% |
+
+By feature, in metres of extruded path, reference against this engine:
+
+| Project | Overhang wall | Internal bridge | Internal solid fill | Gap fill |
+| --- | --- | --- | --- | --- |
+| `cylinder_drawcut.3mf` | none | 11.22 / 10.24 | 61.04 / 61.06 | 0.02 / 0.00 |
+| `twopart_groups.3mf` | 0.16 / 0.16 | 1.16 / 1.09 | 6.38 / 6.39 | none |
+| `mushroom` fixture | 0.23 / 0.23 | 1.99 / 1.86 | | none |
+| `mcbrim_test.3mf` plate 1 | 0.06 / 0.06 | | | 12.22 / 9.98 |
+| `mcbrim_test.3mf` plate 2 | 0.03 / 0.03 | | | 4.95 / 5.03 |
 
 Supports and the automatic brim are compared on parts written by
 `tools/make_fixture.py`, with normal supports turned on:
@@ -215,18 +253,23 @@ more slowly on the way down.
 
 On `mcbrim_test.3mf`, printed in four filaments, both make tool changes on
 the same layers (27 here, 28 in the reference), and the start of the file
-is identical for 96 of its 99 lines; the tower here carries 30% less
-plastic, having no ribs.
+is identical for 96 of its 99 lines; the tower here carries 24 to 30% less
+plastic, having no ribs. All three of its plates slice. It is a flat part
+3 mm thick covered in lettering, and it is where this engine is furthest
+from the reference: 8 to 11% less filament, most of it top surface the
+reference lays where it thins the walls.
 
-The reference does more in that time (overhangs, gap fill,
-fan and time planning), so the speed gap will narrow as stages are added.
+The reference still does more in that time (arc fitting, time planning,
+ironing out its fill order), so the speed gap will narrow as stages are
+added; measuring overhangs took this engine from seven times faster to
+five on the cylinder.
 Closed since the first run: elephant-foot compensation, one wall on the
 last layer, fill lines joined along the walls, seam gaps, wipe, ramped and
 spiral lifts, and plate placement (outer walls land where the reference
-puts them on all three plates of `mcbrim_test.3mf`). Still different: no
-prime tower, gap fill or multi-material regions; solid fill
-over sparse is not marked as an internal bridge; top surfaces below the last
-layer keep all their walls.
+puts them on all three plates of `mcbrim_test.3mf`), the prime tower, gap
+fill between walls, overhang walls with their speeds and fan, and
+internal bridges. Still different: top surfaces below the last layer keep
+all their walls, and bridges are neither turned nor anchored.
 
 ## Licence
 

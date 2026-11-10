@@ -375,9 +375,13 @@ fn island_width(
 /// Each island's outline, holes filled in, is given a band of its width
 /// beyond the gap; the bands are united, kept off every island, and filled
 /// with loops a line apart working in from both edges (Brim.cpp
-/// `tryExPolygonOffset`).
+/// `tryExPolygonOffset`). No brim is laid on `taken`, ground something
+/// else stands on, such as the prime tower. The reference keeps the brim
+/// off the tower's wall only and lets it cross the tower's own brim; here
+/// `taken` is given with that brim, so the two never overlap.
 pub fn brim(
     objects: &[Footing<'_>],
+    taken: &[ExPolygon],
     settings: &AdhesionSettings,
     height: f64,
 ) -> Result<Vec<ExtrusionLoop>, AdhesionError> {
@@ -420,7 +424,8 @@ pub fn brim(
         .flat_map(|object| object.footprint)
         .map(filled)
         .collect();
-    let keep_off = edge_clip::offset(&islands, gap, join)?;
+    let mut keep_off = edge_clip::offset(&islands, gap, join)?;
+    keep_off.extend(taken.iter().cloned());
     let area = edge_clip::difference(&edge_clip::union_ex(&bands)?, &keep_off)?;
 
     let detail = scaled(0.0125);
@@ -465,11 +470,13 @@ pub fn brim(
 
 /// The skirt for one layer, outermost loop first: loops around the convex
 /// hull of everything in `outlines` and `supports` (the layers the skirt
-/// stands beside) and `brim`.
+/// stands beside), `brim`, and `also`: the corners of anything else on the
+/// bed, such as the prime tower (Print.cpp `_make_skirt`).
 pub fn skirt(
     outlines: &[&[ExPolygon]],
     brim: &[ExtrusionLoop],
     supports: &[&[ExtrusionPath]],
+    also: &[Point2],
     settings: &AdhesionSettings,
     height: f64,
 ) -> Result<Vec<ExtrusionLoop>, AdhesionError> {
@@ -485,6 +492,7 @@ pub fn skirt(
                 .flat_map(|layer| layer.iter())
                 .flat_map(|line| &line.points),
         )
+        .chain(also)
         .copied();
     let hull = convex_hull(points);
     if settings.skirt_loops == 0 || hull.points.len() < 3 {
@@ -589,7 +597,7 @@ mod tests {
             skirt_loops: 2,
             ..settings()
         };
-        let loops = skirt(&[&parts], &[], &[], &two, 0.2).unwrap();
+        let loops = skirt(&[&parts], &[], &[], &[], &two, 0.2).unwrap();
         assert_eq!(loops.len(), 2);
         let flow = two.skirt_flow(0.2).unwrap();
         assert_eq!((flow.width, loops[0].role), (0.5, Role::Skirt));
@@ -619,8 +627,12 @@ mod tests {
             skirt_loops: 0,
             ..settings()
         };
-        assert!(skirt(&[&parts], &[], &[], &none, 0.2).unwrap().is_empty());
-        assert!(skirt(&[&[]], &[], &[], &two, 0.2).unwrap().is_empty());
+        assert!(
+            skirt(&[&parts], &[], &[], &[], &none, 0.2)
+                .unwrap()
+                .is_empty()
+        );
+        assert!(skirt(&[&[]], &[], &[], &[], &two, 0.2).unwrap().is_empty());
         assert!(two.has_skirt(0) && !two.has_skirt(1) && !none.has_skirt(0));
     }
 
@@ -660,7 +672,7 @@ mod tests {
             ..outer(3.0)
         };
         let flow = wide.brim_flow(0.2).unwrap();
-        let loops = brim(&on_bed, &wide, 0.2).unwrap();
+        let loops = brim(&on_bed, &[], &wide, 0.2).unwrap();
         let count = 2 * (3.0 / flow.spacing / 2.0).floor() as usize;
         assert_eq!(loops.len(), count);
         assert!(loops.iter().all(|line| line.role == Role::Brim));
@@ -684,15 +696,15 @@ mod tests {
         );
 
         // Too narrow for a pair of lines, or no brim asked for: nothing.
-        assert!(brim(&on_bed, &outer(0.6), 0.2).unwrap().is_empty());
+        assert!(brim(&on_bed, &[], &outer(0.6), 0.2).unwrap().is_empty());
         let none = AdhesionSettings {
             brim: BrimKind::None,
             ..outer(3.0)
         };
-        assert!(brim(&on_bed, &none, 0.2).unwrap().is_empty());
+        assert!(brim(&on_bed, &[], &none, 0.2).unwrap().is_empty());
 
         // The skirt goes round the brim, not just the part.
-        let around = skirt(&[&part], &loops, &[], &wide, 0.2).unwrap();
+        let around = skirt(&[&part], &loops, &[], &[], &wide, 0.2).unwrap();
         assert!(reach(&around[0]) > furthest + 2.0);
     }
 
@@ -703,7 +715,7 @@ mod tests {
             footprint: &parts,
             height: 5.0,
         }];
-        let loops = brim(&on_bed, &outer(3.0), 0.2).unwrap();
+        let loops = brim(&on_bed, &[], &outer(3.0), 0.2).unwrap();
         // The outermost loop goes round both.
         let [min_x, _, max_x, _] = extent(&loops[0].polygon);
         assert!(min_x < -2.0 && max_x > 23.0, "{min_x} to {max_x}");
@@ -792,7 +804,7 @@ mod tests {
                 height: 2.0,
             },
         ];
-        let loops = brim(&on_bed, &pla, 0.2).unwrap();
+        let loops = brim(&on_bed, &[], &pla, 0.2).unwrap();
         assert!(!loops.is_empty());
         // Held to the tower's own 5 mm, in whole pairs of lines.
         let reach = loops
@@ -847,5 +859,64 @@ mod tests {
         assert_eq!(read(r#"{"brim_type": "no_brim"}"#).brim, BrimKind::None);
         let ears = read(r#"{"brim_type": "brim_ears", "brim_width": "5"}"#);
         assert_eq!((ears.brim, ears.unsupported.len()), (BrimKind::None, 1));
+    }
+
+    #[test]
+    fn brim_and_skirt_give_way_to_what_else_is_on_the_bed() {
+        let part = [square(0.0, 0.0, 20.0)];
+        let on_bed = [Footing {
+            footprint: &part,
+            height: 10.0,
+        }];
+        let settings = AdhesionSettings {
+            brim: BrimKind::Outer,
+            brim_width: 5.0,
+            skirt_loops: 1,
+            skirt_distance: 2.0,
+            ..AdhesionSettings::default()
+        };
+        // A tower whose ground reaches into where the brim would be.
+        let tower = [square(22.0, 5.0, 10.0)];
+        let free = brim(&on_bed, &[], &settings, 0.2).unwrap();
+        let clear = brim(&on_bed, &tower, &settings, 0.2).unwrap();
+        // How many points along the lines, a quarter of a millimetre
+        // apart, lie on the tower's ground.
+        let reach = |loops: &[ExtrusionLoop]| {
+            let mut inside = 0;
+            for line in loops {
+                let points = &line.polygon.points;
+                for (index, from) in points.iter().enumerate() {
+                    let to = points[(index + 1) % points.len()];
+                    let (ax, ay) = (unscaled(from.x), unscaled(from.y));
+                    let (bx, by) = (unscaled(to.x), unscaled(to.y));
+                    let steps = ((bx - ax).hypot(by - ay) / 0.25).ceil().max(1.0) as usize;
+                    for step in 0..steps {
+                        let along = step as f64 / steps as f64;
+                        let (x, y) = (ax + (bx - ax) * along, ay + (by - ay) * along);
+                        if x > 22.01 && x < 31.99 && y > 5.01 && y < 14.99 {
+                            inside += 1;
+                        }
+                    }
+                }
+            }
+            inside
+        };
+        assert!(reach(&free) > 0, "the brim would cross the tower's ground");
+        assert_eq!(reach(&clear), 0, "no brim point lies on the tower's ground");
+        assert!(!clear.is_empty());
+
+        // The skirt goes round the tower as well as the part.
+        let corners: Vec<Point2> = tower[0].contour.points.clone();
+        let around = skirt(&[&part], &clear, &[], &corners, &settings, 0.2).unwrap();
+        let furthest = around[0]
+            .polygon
+            .points
+            .iter()
+            .map(|point| unscaled(point.x))
+            .fold(f64::MIN, f64::max);
+        assert!(
+            furthest > 32.0 + 2.0,
+            "skirt reaches {furthest}, beyond the tower"
+        );
     }
 }

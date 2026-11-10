@@ -6,7 +6,7 @@ use edge_adhesion::{AdhesionSettings, BrimKind, Footing};
 use edge_config::{Kind, Settings, Vendor};
 use edge_extrusion::{ExtrusionLoop, ExtrusionPath, Role};
 use edge_gcode::PrintSettings;
-use edge_geom::{ExPolygon, Point2, scaled, unscaled};
+use edge_geom::{ExPolygon, Point2, Polygon, scaled, unscaled};
 use edge_infill::{InfillSettings, SurfaceKind};
 use edge_mesh::Mesh;
 use edge_perimeter::{Perimeters, WallSettings};
@@ -630,6 +630,119 @@ fn slice(args: SliceArgs) -> Result<(), Failure> {
     )?;
     let support_time = started.elapsed();
 
+    let started = Instant::now();
+    let infill = InfillSettings::from_settings(&settings)?;
+    let mut classify_time = std::time::Duration::ZERO;
+    let mut surfaces_by = Vec::with_capacity(used.len());
+    let mut fills_by: Vec<Vec<Vec<ExtrusionPath>>> = Vec::with_capacity(used.len());
+    for (filament, perimeters) in walls_by.iter().enumerate() {
+        let classifying = Instant::now();
+        let slices: Vec<&[ExPolygon]> = (0..layers.len())
+            .map(|index| share(filament, index))
+            .collect();
+        let inside_walls: Vec<&[ExPolygon]> = perimeters
+            .iter()
+            .map(|layer| layer.infill.as_slice())
+            .collect();
+        // Whatever the filament, a surface is a top or a bottom by what
+        // the whole part has above and below it.
+        let surfaces = edge_infill::classify(
+            &slices,
+            &outlines,
+            &inside_walls,
+            &infill.shells(layer_height)?,
+        )?;
+        // Solid over sparse fill is laid as a bridge across it.
+        let surfaces = edge_infill::bridge_over_infill(
+            &surfaces,
+            &inside_walls,
+            infill.params(layer_height, false)?.solid.scaled_spacing(),
+        )?;
+        classify_time += classifying.elapsed();
+        let fills = surfaces
+            .par_iter()
+            .enumerate()
+            .map(|(index, surfaces)| {
+                let height = if index == 0 {
+                    first_layer_height
+                } else {
+                    layer_height
+                };
+                let params = infill
+                    .params(height, index == 0)
+                    .map_err(|e| e.to_string())?;
+                edge_infill::fill(surfaces, index, &params).map_err(|e| e.to_string())
+            })
+            .collect::<Result<Vec<Vec<ExtrusionPath>>, String>>()?;
+        // The lines that fill gaps between walls go with the fill.
+        let mut fills = fills;
+        for (layer, walls) in fills.iter_mut().zip(perimeters) {
+            layer.extend(walls.gap_fill.iter().cloned());
+        }
+        surfaces_by.push(surfaces);
+        fills_by.push(fills);
+    }
+    let infill_time = started.elapsed();
+
+    let height_of = |index: usize| {
+        if index == 0 {
+            first_layer_height
+        } else {
+            layer_height
+        }
+    };
+    // Which filaments print on each layer, and in what order
+    // (ToolOrdering.cpp). The first layer takes them by the size of
+    // the smallest piece each prints, smaller first; every later layer
+    // starts with the tool already in hand and takes the rest from the
+    // highest down.
+    let on_layer = |filament: usize, index: usize| {
+        !walls_by[filament][index].loops.is_empty() || !fills_by[filament][index].is_empty()
+    };
+    let mut orders: Vec<Vec<usize>> = Vec::with_capacity(layers.len());
+    let mut in_hand: Option<usize> = None;
+    for index in 0..layers.len() {
+        let mut order: Vec<usize> = (0..used.len())
+            .filter(|filament| on_layer(*filament, index))
+            .collect();
+        match in_hand {
+            None => {
+                let smallest = |filament: usize| {
+                    share(filament, index)
+                        .iter()
+                        .map(|region| region.contour.signed_area_mm2().abs())
+                        .fold(f64::INFINITY, f64::min)
+                };
+                order.sort_by(|a, b| smallest(*a).total_cmp(&smallest(*b)).then(a.cmp(b)));
+            }
+            Some(held) => {
+                order.sort_by_key(|filament| (*filament != held, std::cmp::Reverse(*filament)));
+            }
+        }
+        // A layer with nothing of the part on it still has its place,
+        // for the tool in hand.
+        if order.is_empty() {
+            order.push(in_hand.unwrap_or(0));
+        }
+        in_hand = order.last().copied().or(in_hand);
+        orders.push(order);
+    }
+    // Tool changes on each layer: every switch, counting one at the
+    // start of a layer that begins with a tool not in hand.
+    let mut changes = vec![0usize; layers.len()];
+    let mut held = orders.first().and_then(|order| order.first().copied());
+    for (index, order) in orders.iter().enumerate() {
+        for filament in order {
+            if Some(*filament) != held {
+                changes[index] += 1;
+                held = Some(*filament);
+            }
+        }
+    }
+    let tower_settings = TowerSettings::from_settings(&settings, plate)?;
+    let heights: Vec<f64> = (0..layers.len()).map(height_of).collect();
+    let tower = edge_tower::plan(&changes, &heights, &tower_settings)?;
+
     // Skirt and brim, per layer, in the order they are printed.
     let adhesion = AdhesionSettings::from_settings(&settings)?;
     let beside = &outlines[..layers.len().min(adhesion.skirt_height.max(1))];
@@ -669,7 +782,30 @@ fn slice(args: SliceArgs) -> Result<(), Failure> {
             height: *height,
         })
         .collect();
-    let brim = edge_adhesion::brim(&footings, &adhesion, first_layer_height)?;
+    // The prime tower's ground, brim included: no brim is laid on it,
+    // and the skirt goes round it.
+    let tower_ground: Vec<ExPolygon> = tower
+        .footprint
+        .map(|[min_x, min_y, max_x, max_y]| ExPolygon {
+            contour: Polygon {
+                points: [
+                    (min_x, min_y),
+                    (max_x, min_y),
+                    (max_x, max_y),
+                    (min_x, max_y),
+                ]
+                .map(|(x, y)| Point2::from_mm(x, y))
+                .to_vec(),
+            },
+            holes: Vec::new(),
+        })
+        .into_iter()
+        .collect();
+    let tower_corners: Vec<Point2> = tower_ground
+        .iter()
+        .flat_map(|ground| ground.contour.points.iter().copied())
+        .collect();
+    let brim = edge_adhesion::brim(&footings, &tower_ground, &adhesion, first_layer_height)?;
     let mut around: Vec<Vec<ExtrusionLoop>> = vec![Vec::new(); layers.len()];
     for (index, lines) in around.iter_mut().enumerate() {
         if adhesion.has_skirt(index) {
@@ -678,7 +814,14 @@ fn slice(args: SliceArgs) -> Result<(), Failure> {
             } else {
                 layer_height
             };
-            *lines = edge_adhesion::skirt(beside, &brim, &supports_beside, &adhesion, height)?;
+            *lines = edge_adhesion::skirt(
+                beside,
+                &brim,
+                &supports_beside,
+                &tower_corners,
+                &adhesion,
+                height,
+            )?;
         }
     }
     let skirt_loops = around.first().map_or(0, Vec::len);
@@ -686,59 +829,12 @@ fn slice(args: SliceArgs) -> Result<(), Failure> {
         first.extend(brim);
     }
 
-    let started = Instant::now();
-    let infill = InfillSettings::from_settings(&settings)?;
-    let mut classify_time = std::time::Duration::ZERO;
-    let mut surfaces_by = Vec::with_capacity(used.len());
-    let mut fills_by: Vec<Vec<Vec<ExtrusionPath>>> = Vec::with_capacity(used.len());
-    for (filament, perimeters) in walls_by.iter().enumerate() {
-        let classifying = Instant::now();
-        let slices: Vec<&[ExPolygon]> = (0..layers.len())
-            .map(|index| share(filament, index))
-            .collect();
-        let inside_walls: Vec<&[ExPolygon]> = perimeters
-            .iter()
-            .map(|layer| layer.infill.as_slice())
-            .collect();
-        // Whatever the filament, a surface is a top or a bottom by what
-        // the whole part has above and below it.
-        let surfaces = edge_infill::classify(
-            &slices,
-            &outlines,
-            &inside_walls,
-            &infill.shells(layer_height)?,
-        )?;
-        classify_time += classifying.elapsed();
-        let fills = surfaces
-            .par_iter()
-            .enumerate()
-            .map(|(index, surfaces)| {
-                let height = if index == 0 {
-                    first_layer_height
-                } else {
-                    layer_height
-                };
-                let params = infill
-                    .params(height, index == 0)
-                    .map_err(|e| e.to_string())?;
-                edge_infill::fill(surfaces, index, &params).map_err(|e| e.to_string())
-            })
-            .collect::<Result<Vec<Vec<ExtrusionPath>>, String>>()?;
-        surfaces_by.push(surfaces);
-        fills_by.push(fills);
-    }
-    let infill_time = started.elapsed();
-
     // Every filament's work on a layer taken together, for the figures
     // below and for drawing. One filament's is used as it is.
     let merged: Option<(Vec<Perimeters>, Vec<Vec<ExtrusionPath>>)> = (used.len() > 1).then(|| {
         (0..layers.len())
             .map(|index| {
-                let mut all = Perimeters {
-                    loops: Vec::new(),
-                    islands: Vec::new(),
-                    infill: Vec::new(),
-                };
+                let mut all = Perimeters::default();
                 let mut fill = Vec::new();
                 for filament in 0..used.len() {
                     let own = &walls_by[filament][index];
@@ -835,14 +931,15 @@ fn slice(args: SliceArgs) -> Result<(), Failure> {
     };
     let paths = || fills.iter().flatten();
     println!(
-        "infill at {}% {:?}: {:.1} cm² top, {:.1} bottom, {:.1} bridge, {:.1} solid, {:.1} sparse; \
-         {} lines, {:.2} m, {:.2} cm³",
+        "infill at {}% {:?}: {:.1} cm² top, {:.1} bottom, {:.1} bridge, {:.1} solid, {:.1} bridged \
+         over infill, {:.1} sparse; {} lines, {:.2} m, {:.2} cm³",
         infill.sparse_infill_density_percent,
         infill.pattern,
         area_of(SurfaceKind::Top),
         area_of(SurfaceKind::Bottom),
         area_of(SurfaceKind::Bridge),
         area_of(SurfaceKind::InternalSolid),
+        area_of(SurfaceKind::InternalBridge),
         area_of(SurfaceKind::Sparse),
         paths().count(),
         paths().map(ExtrusionPath::length_mm).sum::<f64>() / 1e3,
@@ -871,6 +968,30 @@ fn slice(args: SliceArgs) -> Result<(), Failure> {
     if let Some((x, y)) = centred {
         println!("placed in the middle of the bed, at {x} x {y} mm");
     }
+    let gap_lines = || {
+        fills
+            .iter()
+            .flatten()
+            .filter(|line| line.role == Role::GapFill)
+    };
+    if gap_lines().next().is_some() {
+        println!(
+            "gaps between walls filled with {} line(s), {:.2} m",
+            gap_lines().count(),
+            gap_lines().map(ExtrusionPath::length_mm).sum::<f64>() / 1e3,
+        );
+    }
+    let gaps_skipped: usize = walls_by
+        .iter()
+        .flatten()
+        .map(|layer| layer.gaps_skipped)
+        .sum();
+    if gaps_skipped > 0 {
+        println!(
+            "note: {gaps_skipped} gap(s) between walls were left empty; their centre line could \
+             not be worked out"
+        );
+    }
     if let Some(pattern) = &infill.unsupported_pattern {
         println!(
             "note: sparse pattern \"{pattern}\" is not implemented; grid was used in its place"
@@ -890,64 +1011,6 @@ fn slice(args: SliceArgs) -> Result<(), Failure> {
 
     if let Some(path) = &args.gcode {
         let started = Instant::now();
-        let height_of = |index: usize| {
-            if index == 0 {
-                first_layer_height
-            } else {
-                layer_height
-            }
-        };
-        // Which filaments print on each layer, and in what order
-        // (ToolOrdering.cpp). The first layer takes them by the size of
-        // the smallest piece each prints, smaller first; every later layer
-        // starts with the tool already in hand and takes the rest from the
-        // highest down.
-        let on_layer = |filament: usize, index: usize| {
-            !walls_by[filament][index].loops.is_empty() || !fills_by[filament][index].is_empty()
-        };
-        let mut orders: Vec<Vec<usize>> = Vec::with_capacity(layers.len());
-        let mut in_hand: Option<usize> = None;
-        for index in 0..layers.len() {
-            let mut order: Vec<usize> = (0..used.len())
-                .filter(|filament| on_layer(*filament, index))
-                .collect();
-            match in_hand {
-                None => {
-                    let smallest = |filament: usize| {
-                        share(filament, index)
-                            .iter()
-                            .map(|region| region.contour.signed_area_mm2().abs())
-                            .fold(f64::INFINITY, f64::min)
-                    };
-                    order.sort_by(|a, b| smallest(*a).total_cmp(&smallest(*b)).then(a.cmp(b)));
-                }
-                Some(held) => {
-                    order.sort_by_key(|filament| (*filament != held, std::cmp::Reverse(*filament)));
-                }
-            }
-            // A layer with nothing of the part on it still has its place,
-            // for the tool in hand.
-            if order.is_empty() {
-                order.push(in_hand.unwrap_or(0));
-            }
-            in_hand = order.last().copied().or(in_hand);
-            orders.push(order);
-        }
-        // Tool changes on each layer: every switch, counting one at the
-        // start of a layer that begins with a tool not in hand.
-        let mut changes = vec![0usize; layers.len()];
-        let mut held = orders.first().and_then(|order| order.first().copied());
-        for (index, order) in orders.iter().enumerate() {
-            for filament in order {
-                if Some(*filament) != held {
-                    changes[index] += 1;
-                    held = Some(*filament);
-                }
-            }
-        }
-        let tower_settings = TowerSettings::from_settings(&settings, plate)?;
-        let heights: Vec<f64> = (0..layers.len()).map(height_of).collect();
-        let tower = edge_tower::plan(&changes, &heights, &tower_settings)?;
         if let Some([a, b, c, d]) = tower.footprint {
             println!(
                 "prime tower from {a:.1} x {b:.1} to {c:.1} x {d:.1} mm, on {} layer(s), for {} tool change(s)",
@@ -1008,6 +1071,7 @@ fn slice(args: SliceArgs) -> Result<(), Failure> {
                     islands: &own.islands,
                     paths: &fills_by[*filament][index],
                     infill_area: &own.infill,
+                    below: if index > 0 { outlines[index - 1] } else { &[] },
                 }
             })
             .collect();
@@ -1169,7 +1233,9 @@ fn svg(layer: &LayerRegions, perimeters: &Perimeters, fills: &[ExtrusionPath]) -
             Role::TopSolidInfill => "#2a9d8f",
             Role::BottomSurface => "#8d6e63",
             Role::BridgeInfill => "#d62828",
+            Role::InternalBridge => "#e76f51",
             Role::SolidInfill => "#b5651d",
+            Role::GapFill => "#f4f1de",
             _ => "#e09f3e",
         };
         write!(

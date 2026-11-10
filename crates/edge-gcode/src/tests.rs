@@ -73,6 +73,7 @@ fn one_layer<'a>(
         islands,
         paths,
         infill_area: &[],
+        below: &[],
     }]
 }
 
@@ -228,6 +229,7 @@ fn speeds_follow_role_layer_and_the_melt_limit() {
             islands: &[0..1],
             paths: &fill,
             infill_area: &[],
+            below: &[],
         },
         Layer {
             z: 0.4,
@@ -240,6 +242,7 @@ fn speeds_follow_role_layer_and_the_melt_limit() {
             islands: &[0..1],
             paths: &fill,
             infill_area: &[],
+            below: &[],
         },
     ];
     let feed_of = |text: &str, layer: usize, feature: &str| -> f64 {
@@ -291,6 +294,7 @@ fn temperatures_change_after_the_first_layer() {
         islands: &[0..1],
         paths: &[],
         infill_area: &[],
+        below: &[],
     };
     let settings = PrintSettings {
         nozzle_temperature: 210.0,
@@ -376,6 +380,7 @@ fn moves_inside_the_infill_area_can_skip_retraction() {
         islands: &[],
         paths: &fill,
         infill_area: &area,
+        below: &[],
     }];
 
     let plain = basic();
@@ -401,6 +406,7 @@ fn moves_inside_the_infill_area_can_skip_retraction() {
     }];
     let layer = [Layer {
         infill_area: &holed,
+        below: &[],
         ..layer[0]
     }];
     assert_eq!(print(&layer, &reduced).1.retractions, 2);
@@ -422,6 +428,7 @@ fn printed(count: usize, settings: &PrintSettings) -> String {
             islands: &[0..1],
             paths: &fill,
             infill_area: &[],
+            below: &[],
         })
         .collect();
     print(&layers, settings).0
@@ -1226,5 +1233,205 @@ fn the_prime_tower_is_printed_first_and_its_first_line_slowly() {
     assert_eq!(
         feed_of(&text, "Prime tower"),
         Some((0.33 * 30.0 * 60.0_f64).round())
+    );
+}
+
+/// A 10 mm plate with a 20 mm wall on the layer above it: the wall is over
+/// the plate along two sides near the corner at the origin and over air
+/// along the rest.
+fn wall_over_a_smaller_plate(settings: &PrintSettings, measured: bool) -> String {
+    let plate = [wall(0.0, 0.0, 10.0, 0)];
+    // The wall's middle is 0.225 mm inside the part's edge.
+    let above = [wall(0.225, 0.225, 19.55, 0)];
+    let beneath = [ExPolygon {
+        contour: wall(0.0, 0.0, 10.0, 0).polygon,
+        holes: Vec::new(),
+    }];
+    let layer = |z: f64, loops, below| Layer {
+        z,
+        height: 0.2,
+        filament: 0,
+        tower: &[],
+        around: &[],
+        support: &[],
+        loops,
+        islands: &[0..1],
+        paths: &[],
+        infill_area: &[],
+        below,
+    };
+    let layers = [
+        layer(0.2, &plate[..], &[][..]),
+        layer(
+            0.4,
+            &above[..],
+            if measured { &beneath[..] } else { &[][..] },
+        ),
+    ];
+    let (text, _) = print(&layers, settings);
+    // The second layer, without the end of the print, which stops the fan.
+    let layer = text.split(";Z:0.400").nth(1).unwrap();
+    layer.split("M106 S0").next().unwrap().to_string()
+}
+
+fn overhanging() -> PrintSettings {
+    PrintSettings {
+        outer_wall_speed: 200.0,
+        bridge_speed: 25.0,
+        bridge_flow: 0.8,
+        overhang_speeds: [
+            FloatOrPercent::Value(0.0),
+            FloatOrPercent::Value(50.0),
+            FloatOrPercent::Value(30.0),
+            FloatOrPercent::Value(10.0),
+        ],
+        overhang_fan: Some(OverhangFan {
+            speed: 100.0,
+            at: Some(0.5),
+        }),
+        // A layer fan that is the same however long the layer takes.
+        fan_min_speed: 20.0,
+        fan_max_speed: 20.0,
+        reduce_fan_stop_start_freq: true,
+        close_fan_the_first_x_layers: 0,
+        full_fan_speed_layer: 0,
+        ..basic()
+    }
+}
+
+#[test]
+fn a_wall_over_air_is_bridged_and_cooled() {
+    let text = wall_over_a_smaller_plate(&overhanging(), true);
+    // It starts over the plate as the outer wall the layer below ended
+    // with, so that kind is not named again until it comes back to it.
+    assert_eq!(features(&text), ["Overhang wall", "Outer wall"]);
+    assert!(!text.contains(";_FAN"), "no marker is left in the output");
+
+    // The fan goes to full for the stretch over air and back to the
+    // layer's 20% after it.
+    let fans: Vec<&str> = text
+        .lines()
+        .filter(|line| line.starts_with("M106"))
+        .collect();
+    assert_eq!(fans, ["M106 S255", "M106 S51"]);
+    let at = |needle: &str| text.find(needle).unwrap();
+    assert!(at("M106 S255") < at(";TYPE:Overhang wall"));
+    assert!(at(";TYPE:Overhang wall") < at("M106 S51"));
+
+    // Over the plate the wall goes at its own speed, over air at the
+    // bridge's, with four fifths of the plastic.
+    let mut kind = "";
+    let (mut over_plate, mut over_air) = (Vec::new(), Vec::new());
+    let (mut speed, mut at_point) = (0.0, None::<(f64, f64)>);
+    for line in text.lines() {
+        if let Some(name) = line.strip_prefix(";TYPE:") {
+            kind = name;
+        }
+        if !line.starts_with("G1 ") {
+            continue;
+        }
+        speed = word(line, 'F').unwrap_or(speed);
+        let to = word(line, 'X').zip(word(line, 'Y'));
+        if let (Some(feed), Some(from), Some(to)) = (word(line, 'E'), at_point, to)
+            && feed > 0.0
+        {
+            let length = (to.0 - from.0).hypot(to.1 - from.1);
+            let entry = (speed / 60.0, feed / length);
+            if kind == "Overhang wall" {
+                over_air.push(entry);
+            } else {
+                over_plate.push(entry);
+            }
+        }
+        at_point = to.or(at_point);
+    }
+    assert!(over_air.iter().all(|(speed, _)| *speed <= 25.0));
+    assert!(over_plate.iter().any(|(speed, _)| *speed == 200.0));
+    let (plain, bridged) = (over_plate[0].1, over_air[0].1);
+    assert!(
+        (bridged / plain - 0.8).abs() < 1e-3,
+        "{bridged} against {plain}"
+    );
+    // Between the two, where the wall is only part supported, it slows.
+    assert!(
+        over_plate
+            .iter()
+            .any(|(speed, _)| *speed < 200.0 && *speed >= 10.0),
+        "{over_plate:?}"
+    );
+}
+
+#[test]
+fn overhangs_are_left_alone_when_asked_or_when_nothing_is_known() {
+    // With nothing known of the layer beneath, the wall is as it was.
+    let unmeasured = wall_over_a_smaller_plate(&overhanging(), false);
+    assert!(features(&unmeasured).is_empty());
+    assert!(!unmeasured.contains("M106"));
+
+    // Every part of it switched off.
+    let off = PrintSettings {
+        detect_overhang_wall: false,
+        enable_overhang_speed: false,
+        overhang_fan: None,
+        ..overhanging()
+    };
+    assert_eq!(wall_over_a_smaller_plate(&off, true), unmeasured);
+
+    // Slowed but not bridged: one kind of line, more than one speed.
+    let slowed = PrintSettings {
+        detect_overhang_wall: false,
+        overhang_fan: None,
+        ..overhanging()
+    };
+    let text = wall_over_a_smaller_plate(&slowed, true);
+    assert!(features(&text).is_empty());
+    assert!(
+        text.contains("F1500"),
+        "over air it goes at the bridge's speed"
+    );
+
+    // A layer fan already at the overhang's speed is not touched.
+    let windy = PrintSettings {
+        fan_min_speed: 100.0,
+        fan_max_speed: 100.0,
+        ..overhanging()
+    };
+    let text = wall_over_a_smaller_plate(&windy, true);
+    assert!(!text.contains("M106") && !text.contains(";_FAN"));
+    assert!(text.contains(";TYPE:Overhang wall"));
+}
+
+#[test]
+fn solid_over_infill_goes_at_its_own_bridge_speed() {
+    let loops = [wall(0.0, 0.0, 10.0, 0)];
+    let fill = [line((2.0, 2.0), (8.0, 2.0), Role::InternalBridge)];
+    let settings = PrintSettings {
+        bridge_speed: 40.0,
+        internal_bridge_speed: FloatOrPercent::Percent(150.0),
+        ..basic()
+    };
+    let second = |settings: &PrintSettings| {
+        let layer = |z: f64| Layer {
+            z,
+            ..one_layer(&loops, &[0..1], &fill)[0]
+        };
+        let (text, _) = print(&[layer(0.2), layer(0.4)], settings);
+        text.split(";Z:0.400").nth(1).unwrap().to_string()
+    };
+    let text = second(&settings);
+    assert_eq!(features(&text), ["Outer wall", "Internal Bridge"]);
+    let bridge = text.split(";TYPE:Internal Bridge").nth(1).unwrap();
+    let speed = moves(bridge).find_map(|line| word(line, 'F')).unwrap();
+    assert_eq!(speed, 60.0 * 60.0);
+    // A speed given outright is used as it is.
+    let fixed = PrintSettings {
+        internal_bridge_speed: FloatOrPercent::Value(70.0),
+        ..settings
+    };
+    let text = second(&fixed);
+    let bridge = text.split(";TYPE:Internal Bridge").nth(1).unwrap();
+    assert_eq!(
+        moves(bridge).find_map(|line| word(line, 'F')),
+        Some(70.0 * 60.0)
     );
 }

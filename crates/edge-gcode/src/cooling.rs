@@ -145,12 +145,27 @@ impl Fan {
         } else {
             0.0
         };
+        speed = self.ramped(layer, speed);
+        speed.clamp(0.0, 100.0)
+    }
+
+    /// A speed in percent as the ramp up to the full-speed layer leaves
+    /// it on this layer; the layer must not be one the fan is off for.
+    fn ramped(&self, layer: usize, speed: f64) -> f64 {
         if layer + 1 < self.full_speed_layer {
             let factor = (layer + 1 - self.off_layers) as f64
                 / (self.full_speed_layer - self.off_layers) as f64;
-            speed = (speed * factor + 0.5).floor();
+            (speed * factor + 0.5).floor()
+        } else {
+            speed
         }
-        speed.clamp(0.0, 100.0)
+    }
+
+    /// The speed in percent that bridges and overhangs get on this layer
+    /// when the profile asks `wanted` for them; none while the fan is
+    /// kept off.
+    pub fn overhang_percent(&self, layer: usize, wanted: f64) -> Option<f64> {
+        (layer >= self.off_layers).then(|| self.ramped(layer, wanted).clamp(0.0, 100.0))
     }
 }
 

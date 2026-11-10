@@ -26,6 +26,16 @@ pub enum WallOrder {
     OuterInner,
 }
 
+/// The fan for whatever is laid over air.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct OverhangFan {
+    /// In percent.
+    pub speed: f64,
+    /// A wall gets it where no more than this share of its width is
+    /// supported; none gives it to every outer wall. Bridges always get it.
+    pub at: Option<f64>,
+}
+
 /// The settings G-code export depends on, read once per print. Defaults
 /// are the reference's (PrintConfig.cpp). Speeds are in mm/s, lengths in mm,
 /// temperatures in °C.
@@ -37,6 +47,26 @@ pub struct PrintSettings {
     pub internal_solid_infill_speed: f64,
     pub top_surface_speed: f64,
     pub bridge_speed: f64,
+    /// Lines that fill the gaps between walls.
+    pub gap_infill_speed: f64,
+    /// Whether a stretch of wall with nothing under it is printed as a
+    /// bridge, in its own kind of line.
+    pub detect_overhang_wall: bool,
+    /// Whether walls slow down as less of them is supported, and the
+    /// speeds where a quarter, a half, three quarters and nearly all of
+    /// the line hangs over; zero for the wall's own speed.
+    pub enable_overhang_speed: bool,
+    pub overhang_speeds: [FloatOrPercent; 4],
+    /// The fan for bridges and overhangs; none when they get the layer's.
+    pub overhang_fan: Option<OverhangFan>,
+    /// A bridge's plastic as a share of a normal line's, and whether it
+    /// is a round thread instead of a flattened line.
+    pub bridge_flow: f64,
+    pub thick_bridges: bool,
+    /// May be a percentage of the outer wall's acceleration.
+    pub bridge_acceleration: FloatOrPercent,
+    /// Solid fill laid over sparse fill; a percentage is of the bridge's speed.
+    pub internal_bridge_speed: FloatOrPercent,
     /// Walls on the first layer.
     pub initial_layer_speed: f64,
     /// All fill on the first layer.
@@ -182,6 +212,18 @@ impl Default for PrintSettings {
             internal_solid_infill_speed: 100.0,
             top_surface_speed: 100.0,
             bridge_speed: 25.0,
+            gap_infill_speed: 30.0,
+            detect_overhang_wall: true,
+            enable_overhang_speed: true,
+            overhang_speeds: [FloatOrPercent::Value(0.0); 4],
+            overhang_fan: Some(OverhangFan {
+                speed: 100.0,
+                at: Some(0.05),
+            }),
+            bridge_flow: 1.0,
+            thick_bridges: false,
+            bridge_acceleration: FloatOrPercent::Percent(50.0),
+            internal_bridge_speed: FloatOrPercent::Percent(150.0),
             initial_layer_speed: 30.0,
             initial_layer_infill_speed: 60.0,
             travel_speed: 120.0,
@@ -370,9 +412,14 @@ impl PrintSettings {
                 "curves are written as straight moves",
             ),
             (
-                "enable_overhang_bridge_fan",
+                "slowdown_for_curled_perimeters",
                 "0",
-                "overhangs get the layer's fan speed",
+                "walls over curled edges are not slowed",
+            ),
+            (
+                "overhang_reverse",
+                "0",
+                "walls over overhangs keep their direction",
             ),
         ] {
             if let Some(value) = first_text(key)
@@ -380,6 +427,11 @@ impl PrintSettings {
             {
                 unsupported.push(format!("{key} \"{value}\": {instead}"));
             }
+        }
+        if first("internal_bridge_fan_speed")?.is_some_and(|speed| speed >= 0.0) {
+            unsupported.push(
+                "internal_bridge_fan_speed: bridges over infill get the overhang fan speed".into(),
+            );
         }
         if first("initial_layer_fan_speed")?.is_some_and(|speed| speed >= 0.0) {
             unsupported.push(
@@ -417,6 +469,25 @@ impl PrintSettings {
                 }
             })
         };
+        // This filament's entry of a list of numbers that may each be a
+        // percentage.
+        let listed_share =
+            |key: &str, default: FloatOrPercent| -> Result<FloatOrPercent, ConfigError> {
+                let Some(text) = first_text(key) else {
+                    return Ok(default);
+                };
+                let bad = || ConfigError::BadValue {
+                    key: key.into(),
+                    found: text.clone(),
+                    expected: "a number or a percentage",
+                };
+                let text = text.trim();
+                match text.strip_suffix('%') {
+                    Some(percent) => percent.trim().parse().map(FloatOrPercent::Percent),
+                    None => text.parse().map(FloatOrPercent::Value),
+                }
+                .map_err(|_| bad())
+            };
         let nozzle_diameter = number("nozzle_diameter", defaults.nozzle_diameter)?;
         let travel_speed = number("travel_speed", defaults.travel_speed)?;
         // The bed is the box around the corners of `printable_area`, each "XxY".
@@ -462,6 +533,47 @@ impl PrintSettings {
             )?,
             top_surface_speed: number("top_surface_speed", defaults.top_surface_speed)?,
             bridge_speed: number("bridge_speed", defaults.bridge_speed)?,
+            gap_infill_speed: number("gap_infill_speed", defaults.gap_infill_speed)?,
+            detect_overhang_wall: flag("detect_overhang_wall", defaults.detect_overhang_wall)?,
+            enable_overhang_speed: flag("enable_overhang_speed", defaults.enable_overhang_speed)?,
+            overhang_speeds: [
+                listed_share("overhang_1_4_speed", defaults.overhang_speeds[0])?,
+                listed_share("overhang_2_4_speed", defaults.overhang_speeds[1])?,
+                listed_share("overhang_3_4_speed", defaults.overhang_speeds[2])?,
+                listed_share("overhang_4_4_speed", defaults.overhang_speeds[3])?,
+            ],
+            overhang_fan: if flag("enable_overhang_bridge_fan", true)? {
+                Some(OverhangFan {
+                    speed: number("overhang_fan_speed", 100.0)?,
+                    // How much of a line may hang over before the fan
+                    // comes on, written as that share (GCode.cpp
+                    // `overhang_fan_overlap_threshold`).
+                    at: match first_text("overhang_fan_threshold").map(String::as_str) {
+                        Some("0%") => None,
+                        Some("10%") => Some(0.9),
+                        Some("25%") => Some(0.75),
+                        Some("50%") => Some(0.5),
+                        Some("75%") => Some(0.25),
+                        None | Some("95%") => Some(0.05),
+                        Some(other) => {
+                            return Err(ConfigError::BadValue {
+                                key: "overhang_fan_threshold".into(),
+                                found: other.into(),
+                                expected: "0%, 10%, 25%, 50%, 75% or 95%",
+                            });
+                        }
+                    },
+                })
+            } else {
+                None
+            },
+            bridge_flow: number("bridge_flow", defaults.bridge_flow)?,
+            thick_bridges: flag("thick_bridges", defaults.thick_bridges)?,
+            bridge_acceleration: listed_share("bridge_acceleration", defaults.bridge_acceleration)?,
+            internal_bridge_speed: listed_share(
+                "internal_bridge_speed",
+                defaults.internal_bridge_speed,
+            )?,
             initial_layer_speed: number("initial_layer_speed", defaults.initial_layer_speed)?,
             initial_layer_infill_speed: number(
                 "initial_layer_infill_speed",
