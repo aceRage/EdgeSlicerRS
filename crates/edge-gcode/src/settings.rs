@@ -245,8 +245,22 @@ impl PrintSettings {
     /// Reads what is present; anything absent keeps its default. Lists are
     /// per extruder or filament and the first entry is used.
     pub fn from_settings(settings: &Settings) -> Result<Self, ConfigError> {
+        Self::for_filament(settings, 0)
+    }
+
+    /// The settings for printing with one filament, counting from 0.
+    /// Lists are per filament or per tool, and that filament's entry is
+    /// used, or the last entry of a list too short to have one.
+    pub fn for_filament(settings: &Settings, index: usize) -> Result<Self, ConfigError> {
         let defaults = Self::default();
         let first = |key: &str| -> Result<Option<f64>, ConfigError> {
+            Ok(settings
+                .floats(key)?
+                .and_then(|values| values.get(index).or(values.last()).copied().flatten()))
+        };
+        // The machine's limits are listed for its normal and quiet modes,
+        // not per filament.
+        let limit = |key: &str| -> Result<Option<f64>, ConfigError> {
             Ok(settings
                 .floats(key)?
                 .and_then(|values| values.first().copied().flatten()))
@@ -265,7 +279,7 @@ impl PrintSettings {
         let template = |key: &str| -> Option<String> {
             settings
                 .texts(key)
-                .and_then(|texts| texts.first())
+                .and_then(|texts| texts.get(index).or(texts.last()))
                 .filter(|text| !text.trim().is_empty())
                 .map(|text| unescaped(text))
         };
@@ -285,7 +299,7 @@ impl PrintSettings {
                 WallOrder::InnerOuter
             }
         };
-        let first_text = |key: &str| settings.texts(key).and_then(|v| v.first());
+        let first_text = |key: &str| settings.texts(key).and_then(|v| v.get(index).or(v.last()));
         let lift = match first_text("z_hop_types").map(String::as_str) {
             None | Some("Slope Lift") => Lift::Slope,
             Some("Normal Lift") => Lift::Normal,
@@ -437,7 +451,7 @@ impl PrintSettings {
                 let wanted = first("travel_speed_z")?
                     .filter(|speed| *speed > 0.0)
                     .unwrap_or(travel);
-                match first("machine_max_speed_z")?.filter(|limit| *limit > 0.0) {
+                match limit("machine_max_speed_z")?.filter(|limit| *limit > 0.0) {
                     Some(limit) => wanted.min(limit),
                     None => wanted,
                 }

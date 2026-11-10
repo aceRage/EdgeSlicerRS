@@ -1,6 +1,6 @@
-use std::fmt;
+use std::{collections::HashMap, fmt};
 
-use crate::Variables;
+use crate::{Variable, Variables};
 
 /// A value in an expression.
 #[derive(Clone, Debug, PartialEq)]
@@ -41,6 +41,19 @@ impl Value {
         }
     }
 
+    /// The value as a script writes it out or joins it to text: numbers
+    /// that are not whole to six significant digits, as the reference's
+    /// stream output gives them.
+    pub(crate) fn brief(&self) -> String {
+        match self {
+            Value::Float(value) => match format!("{value:.5e}").parse::<f64>() {
+                Ok(rounded) => rounded.to_string(),
+                Err(_) => value.to_string(),
+            },
+            other => other.to_string(),
+        }
+    }
+
     /// Whether the value counts as true in a condition.
     pub(crate) fn truthy(&self) -> Result<bool, String> {
         match self {
@@ -74,17 +87,64 @@ impl fmt::Display for Value {
     }
 }
 
-pub(crate) fn evaluate(source: &str, variables: &Variables) -> Result<Value, String> {
+/// What a template has set as it ran, over the variables it was given.
+#[derive(Debug, Default)]
+pub(crate) struct Overlay {
+    pub values: HashMap<String, Variable>,
+    /// Names declared `local`, which end with the template.
+    pub locals: Vec<String>,
+}
+
+/// The value of one expression.
+pub(crate) fn evaluate(
+    source: &str,
+    variables: &Variables,
+    overlay: &mut Overlay,
+) -> Result<Value, String> {
     let tokens = tokenize(source)?;
     let mut parser = Parser {
         tokens: &tokens,
         position: 0,
         variables,
+        overlay,
     };
     let value = parser.ternary()?;
     match parser.peek() {
         None => Ok(value),
         Some(token) => Err(format!("unexpected {token} in \"{}\"", source.trim())),
+    }
+}
+
+/// Whether what is between a pair of braces is a script (statements, which
+/// may set variables and branch) and not one expression.
+pub(crate) fn is_script(source: &str) -> bool {
+    tokenize(source).is_ok_and(|tokens| {
+        tokens.iter().any(|token| {
+            matches!(token, Token::Symbol(";" | "="))
+                || matches!(token, Token::Name(name) if matches!(name.as_str(), "then" | "local" | "global"))
+        })
+    })
+}
+
+/// Runs a script and gives what it writes out: the value of every
+/// statement that is an expression, one after another.
+pub(crate) fn run(
+    source: &str,
+    variables: &Variables,
+    overlay: &mut Overlay,
+) -> Result<String, String> {
+    let tokens = tokenize(source)?;
+    let mut parser = Parser {
+        tokens: &tokens,
+        position: 0,
+        variables,
+        overlay,
+    };
+    let mut out = String::new();
+    parser.statements(&mut out)?;
+    match parser.peek() {
+        None => Ok(out),
+        Some(token) => Err(format!("unexpected {token}")),
     }
 }
 
@@ -109,9 +169,9 @@ impl fmt::Display for Token {
 }
 
 /// Longest first, so `<=` is not read as `<` then `=`.
-const SYMBOLS: [&str; 22] = [
+const SYMBOLS: [&str; 24] = [
     "==", "!=", "<>", "<=", ">=", "&&", "||", "=~", "!~", "<", ">", "+", "-", "*", "/", "%", "(",
-    ")", "[", "]", "!", ",",
+    ")", "[", "]", "!", ",", ";", "=",
 ];
 
 fn tokenize(source: &str) -> Result<Vec<Token>, String> {
@@ -149,10 +209,7 @@ fn tokenize(source: &str) -> Result<Vec<Token>, String> {
             tokens.push(Token::Symbol(if first == '?' { "?" } else { ":" }));
             1
         } else {
-            // This is where the statement form (`;`, `=`) ends up.
-            return Err(format!(
-                "\"{first}\" is not part of an expression; statement blocks are not supported"
-            ));
+            return Err(format!("\"{first}\" is not part of an expression"));
         };
         rest = rest[length..].trim_start();
     }
@@ -163,9 +220,203 @@ struct Parser<'a> {
     tokens: &'a [Token],
     position: usize,
     variables: &'a Variables,
+    overlay: &'a mut Overlay,
 }
 
+/// Words that end a run of statements.
+const CLOSERS: [&str; 3] = ["elsif", "else", "endif"];
+
 impl Parser<'_> {
+    /// A variable's value, as the template last set it or as it was given.
+    fn lookup(&self, name: &str, index: Option<i64>) -> Result<Value, String> {
+        match self.overlay.values.get(name) {
+            Some(variable) => variable.read(name, index),
+            None => self.variables.get(name, index),
+        }
+    }
+
+    fn at_name(&self, wanted: &[&str]) -> bool {
+        matches!(self.peek(), Some(Token::Name(name)) if wanted.contains(&name.as_str()))
+    }
+
+    fn name(&mut self) -> Result<String, String> {
+        match self.peek().cloned() {
+            Some(Token::Name(name)) => {
+                self.position += 1;
+                Ok(name)
+            }
+            Some(token) => Err(format!("expected a name but found {token}")),
+            None => Err("expected a name at the end".into()),
+        }
+    }
+
+    /// Statements up to the end, or to a word that closes a branch.
+    fn statements(&mut self, out: &mut String) -> Result<(), String> {
+        while self.peek().is_some() && !self.at_name(&CLOSERS) {
+            if self.take(&[";"]).is_some() {
+                continue;
+            }
+            self.statement(out)?;
+            // A statement ends at a `;`, or where its branch or the script does.
+            if self.peek().is_some() && !self.at_name(&CLOSERS) && !self.ended_block() {
+                self.expect(";")?;
+            }
+        }
+        Ok(())
+    }
+
+    /// Whether the statement just read was an `if` block, which needs no `;`.
+    fn ended_block(&self) -> bool {
+        matches!(self.tokens.get(self.position.wrapping_sub(1)), Some(Token::Name(name)) if name == "endif")
+    }
+
+    fn statement(&mut self, out: &mut String) -> Result<(), String> {
+        if self.at_name(&["if"]) {
+            return self.branch(out);
+        }
+        if self.at_name(&["local", "global"]) {
+            let local = self.name()? == "local";
+            let name = self.name()?;
+            self.expect("=")?;
+            let value = self.ternary()?;
+            self.overlay
+                .values
+                .insert(name.clone(), Variable::One(value));
+            if local {
+                self.overlay.locals.push(name);
+            }
+            return Ok(());
+        }
+        // `name = value` or `name[index] = value`; anything else is an
+        // expression, whose value the script writes out.
+        let start = self.position;
+        if let Some(Token::Name(name)) = self.peek().cloned() {
+            self.position += 1;
+            let index = if self.take(&["["]).is_some() {
+                let index = self.ternary()?;
+                self.expect("]")?;
+                Some(index)
+            } else {
+                None
+            };
+            if self.take(&["="]).is_some() {
+                let value = self.ternary()?;
+                return self.assign(&name, index, value);
+            }
+            self.position = start;
+        }
+        let value = self.ternary()?;
+        out.push_str(&value.brief());
+        Ok(())
+    }
+
+    fn assign(&mut self, name: &str, index: Option<Value>, value: Value) -> Result<(), String> {
+        let current = match self.overlay.values.get(name) {
+            Some(variable) => variable.clone(),
+            None => self
+                .variables
+                .variable(name)
+                .cloned()
+                .ok_or_else(|| format!("\"{name}\" is set but was never declared"))?,
+        };
+        let updated = match (current, index) {
+            (Variable::One(_), None) => Variable::One(value),
+            (Variable::Many(mut values), Some(index)) => {
+                let slot = match index.number() {
+                    Some(Value::Int(at)) => usize::try_from(at).ok(),
+                    _ => None,
+                }
+                .filter(|at| *at < values.len())
+                .ok_or_else(|| {
+                    format!(
+                        "\"{name}\" has {} entries; there is no entry {index}",
+                        values.len()
+                    )
+                })?;
+                values[slot] = value;
+                Variable::Many(values)
+            }
+            (Variable::One(_), Some(_)) => {
+                return Err(format!(
+                    "\"{name}\" is a single value and cannot be indexed"
+                ));
+            }
+            (Variable::Many(_), None) => {
+                return Err(format!("\"{name}\" is a list; set one entry of it"));
+            }
+        };
+        self.overlay.values.insert(name.to_owned(), updated);
+        Ok(())
+    }
+
+    /// `if … then … elsif … then … else … endif`. Branches not taken are
+    /// passed over unread, so what they mention need not exist.
+    fn branch(&mut self, out: &mut String) -> Result<(), String> {
+        self.position += 1;
+        let mut taken = false;
+        loop {
+            let condition = self.ternary()?.truthy()?;
+            self.expect("then")?;
+            if condition && !taken {
+                taken = true;
+                self.statements(out)?;
+            } else {
+                self.skip_branch()?;
+            }
+            if self.take(&["elsif"]).is_some() {
+                // Once a branch is taken the rest are passed over, their
+                // conditions included.
+                if taken {
+                    self.skip_to_then()?;
+                    self.skip_branch()?;
+                    while self.take(&["elsif"]).is_some() {
+                        self.skip_to_then()?;
+                        self.skip_branch()?;
+                    }
+                } else {
+                    continue;
+                }
+            }
+            if self.take(&["else"]).is_some() {
+                if taken {
+                    self.skip_branch()?;
+                } else {
+                    self.statements(out)?;
+                }
+            }
+            return self.expect("endif");
+        }
+    }
+
+    fn skip_to_then(&mut self) -> Result<(), String> {
+        while let Some(token) = self.peek() {
+            let found = matches!(token, Token::Name(name) if name == "then");
+            self.position += 1;
+            if found {
+                return Ok(());
+            }
+        }
+        Err("an elsif has no then".into())
+    }
+
+    /// Passes over statements to the word that closes this branch, minding
+    /// any `if … endif` inside it.
+    fn skip_branch(&mut self) -> Result<(), String> {
+        let mut depth = 0usize;
+        while let Some(token) = self.peek() {
+            if let Token::Name(name) = token {
+                match name.as_str() {
+                    "if" => depth += 1,
+                    "endif" if depth > 0 => depth -= 1,
+                    "elsif" | "else" | "endif" if depth == 0 => return Ok(()),
+                    _ => {}
+                }
+            }
+            self.position += 1;
+        }
+        Err("an if is never closed with endif".into())
+    }
+
     fn peek(&self) -> Option<&Token> {
         self.tokens.get(self.position)
     }
@@ -255,7 +506,7 @@ impl Parser<'_> {
             left = match (left.number(), right.number()) {
                 (Some(a), Some(b)) => arithmetic(operator, &a, &b)?,
                 // Adding text to anything joins them.
-                _ if operator == "+" => Value::Text(format!("{left}{right}")),
+                _ if operator == "+" => Value::Text(format!("{}{}", left.brief(), right.brief())),
                 _ => return Err(format!("cannot subtract \"{right}\" from \"{left}\"")),
             };
         }
@@ -313,9 +564,9 @@ impl Parser<'_> {
                             "the index of \"{name}\" is \"{index}\", not a whole number"
                         ));
                     };
-                    self.variables.get(&name, Some(index))
+                    self.lookup(&name, Some(index))
                 }
-                _ => self.variables.get(&name, None),
+                _ => self.lookup(&name, None),
             },
             other => Err(format!("unexpected {other}")),
         }
@@ -406,7 +657,7 @@ mod tests {
             "temperature",
             vec![Value::text("220"), Value::text("240.5")],
         );
-        evaluate(source, &variables)
+        evaluate(source, &variables, &mut Overlay::default())
     }
 
     fn shown(source: &str) -> String {
@@ -477,6 +728,7 @@ mod tests {
             "\"open",
             "x = 1",
             "local a; b",
+            "layer_num; 2",
             "temperature[1.5]",
         ] {
             assert!(value(source).is_err(), "{source:?} was accepted");

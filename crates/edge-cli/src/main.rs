@@ -279,6 +279,7 @@ fn load(args: &SliceArgs) -> Result<Loaded, Failure> {
             bodies: vec![Body {
                 solid,
                 negative: None,
+                filament: 1,
             }],
             settings: None,
             objects: Vec::new(),
@@ -1031,6 +1032,7 @@ mod tests {
         let mut bodies = [Body {
             solid: cube.clone(),
             negative: Some(cube),
+            filament: 1,
         }];
         shift(&mut bodies, 10.0, -5.0);
         for mesh in [&bodies[0].solid, bodies[0].negative.as_ref().unwrap()] {

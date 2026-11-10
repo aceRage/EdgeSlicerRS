@@ -67,6 +67,9 @@ pub struct Object {
 pub struct Part {
     pub name: Option<String>,
     pub kind: PartKind,
+    /// Which filament the part is printed in, counting from 1: its own
+    /// choice, or else its object's, or else the first.
+    pub filament: usize,
     /// Shared between parts and objects that reuse the same geometry.
     pub mesh: Arc<Mesh>,
     /// Places the mesh in its object's coordinates.
@@ -208,49 +211,68 @@ impl Project {
     pub fn mesh(&self, plate: Option<usize>) -> Mesh {
         let mut mesh = Mesh::default();
         for (object, instance) in self.printable(plate) {
-            append_parts(&mut mesh, object, instance, PartKind::Normal);
+            append_parts(&mut mesh, object, instance, PartKind::Normal, None);
         }
         mesh
     }
 
     /// What to slice for one plate (or the whole project for `None`), in
-    /// world coordinates. Objects without negative parts share one body;
-    /// each instance of an object that has them is a body of its own, so its
-    /// negative parts carve it and nothing else.
+    /// world coordinates: one body for each filament. Objects without
+    /// negative parts share a filament's body; each instance of an object
+    /// that has them gets bodies of its own, so its negative parts carve it
+    /// and nothing else. Bodies come in ascending order of filament.
     pub fn bodies(&self, plate: Option<usize>) -> Vec<Body> {
-        let mut shared = Mesh::default();
-        let mut bodies = Vec::new();
+        let mut shared: std::collections::BTreeMap<usize, Mesh> = Default::default();
+        let mut carved = Vec::new();
         for (object, instance) in self.printable(plate) {
-            if object
+            let has_negative = object
                 .parts
                 .iter()
-                .any(|part| part.kind == PartKind::Negative)
-            {
-                let mut body = Body {
-                    solid: Mesh::default(),
-                    negative: Some(Mesh::default()),
-                };
-                append_parts(&mut body.solid, object, instance, PartKind::Normal);
-                append_parts(
-                    body.negative.as_mut().expect("set above"),
-                    object,
-                    instance,
-                    PartKind::Negative,
-                );
-                bodies.push(body);
-            } else {
-                append_parts(&mut shared, object, instance, PartKind::Normal);
+                .any(|part| part.kind == PartKind::Negative);
+            for filament in filaments(object) {
+                if has_negative {
+                    let mut body = Body {
+                        solid: Mesh::default(),
+                        negative: Some(Mesh::default()),
+                        filament,
+                    };
+                    append_parts(
+                        &mut body.solid,
+                        object,
+                        instance,
+                        PartKind::Normal,
+                        Some(filament),
+                    );
+                    append_parts(
+                        body.negative.as_mut().expect("set above"),
+                        object,
+                        instance,
+                        PartKind::Negative,
+                        None,
+                    );
+                    carved.push(body);
+                } else {
+                    append_parts(
+                        shared.entry(filament).or_default(),
+                        object,
+                        instance,
+                        PartKind::Normal,
+                        Some(filament),
+                    );
+                }
             }
         }
-        if !shared.triangles.is_empty() {
-            bodies.insert(
-                0,
-                Body {
-                    solid: shared,
-                    negative: None,
-                },
-            );
-        }
+        let mut bodies: Vec<Body> = shared
+            .into_iter()
+            .filter(|(_, solid)| !solid.triangles.is_empty())
+            .map(|(filament, solid)| Body {
+                solid,
+                negative: None,
+                filament,
+            })
+            .collect();
+        bodies.extend(carved);
+        bodies.sort_by_key(|body| body.filament);
         bodies
     }
 
@@ -262,7 +284,7 @@ impl Project {
         self.printable(plate)
             .map(|(object, instance)| {
                 let mut mesh = Mesh::default();
-                append_parts(&mut mesh, object, instance, PartKind::Normal);
+                append_parts(&mut mesh, object, instance, PartKind::Normal, None);
                 mesh
             })
             .filter(|mesh| !mesh.triangles.is_empty())
@@ -296,16 +318,43 @@ impl Project {
 
 /// Printed material and, for objects that have negative parts, the volume
 /// to remove from it.
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Debug)]
 pub struct Body {
     pub solid: Mesh,
     pub negative: Option<Mesh>,
+    /// Which filament the solid is printed in, counting from 1.
+    pub filament: usize,
 }
 
-fn append_parts(mesh: &mut Mesh, object: &Object, instance: &Instance, kind: PartKind) {
-    for part in object.parts.iter().filter(|part| part.kind == kind) {
+/// Adds an object's parts of one kind to a mesh; with `filament`, only
+/// those printed in it.
+fn append_parts(
+    mesh: &mut Mesh,
+    object: &Object,
+    instance: &Instance,
+    kind: PartKind,
+    filament: Option<usize>,
+) {
+    let wanted = object
+        .parts
+        .iter()
+        .filter(|part| part.kind == kind && filament.is_none_or(|wanted| part.filament == wanted));
+    for part in wanted {
         mesh.append(&part.mesh, &part.transform.then(&instance.transform));
     }
+}
+
+/// The filaments an object's printed parts use, in ascending order.
+fn filaments(object: &Object) -> Vec<usize> {
+    let mut used: Vec<usize> = object
+        .parts
+        .iter()
+        .filter(|part| part.kind == PartKind::Normal)
+        .map(|part| part.filament)
+        .collect();
+    used.sort_unstable();
+    used.dedup();
+    used
 }
 
 /// Part names are stored without the leading slash references carry.
@@ -404,11 +453,16 @@ fn parts(
     object: &RawObject,
     settings: Option<&ObjectSettings>,
 ) -> Result<Vec<Part>, Error> {
+    // Zero stands for "not chosen" at either level.
+    let chosen = |extruder: Option<u32>| extruder.filter(|extruder| *extruder > 0);
+    let object_filament =
+        chosen(settings.and_then(|settings| settings.extruder)).unwrap_or(1) as usize;
     let components = match &object.body {
         Shape::Mesh(mesh) => {
             return Ok(vec![Part {
                 name: object.name.clone(),
                 kind: PartKind::Normal,
+                filament: object_filament,
                 mesh: mesh.clone(),
                 transform: Transform::IDENTITY,
             }]);
@@ -433,6 +487,8 @@ fn parts(
             parts.push(Part {
                 name: part_settings.and_then(|s| s.name.clone()).or(name),
                 kind: part_settings.map_or(PartKind::Normal, |s| s.kind),
+                filament: chosen(part_settings.and_then(|s| s.extruder))
+                    .map_or(object_filament, |extruder| extruder as usize),
                 mesh,
                 transform,
             });
