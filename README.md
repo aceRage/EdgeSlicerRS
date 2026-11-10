@@ -108,18 +108,19 @@ layer by layer; `--svg` draws one layer of both toolpaths over each other.
 The reference takes about two seconds to start and exit whatever it is asked
 to do, so its time is also taken from its own log.
 
-First results, 2026-11-09, Mac mini, reference build 2.4.7.6, best of 3:
+First results, 2026-11-09, Mac mini, reference build 2.4.7.6, best of 5:
 
 | Project | Reference work | This engine | Walls, per layer |
 | --- | --- | --- | --- |
-| `cylinder_drawcut.3mf` (389 layers) | 0.41 s | 0.058 s | 0.03% apart |
-| `stabilizer_v1.3mf` (499 layers) | 0.85 s | 0.063 s | 0.45% apart |
-| `twopart_groups.3mf` (60 layers) | 0.18 s | 0.007 s | not yet comparable |
+| `cylinder_drawcut.3mf` (389 layers) | 0.41 s | 0.058 s | 0.28% apart |
+| `stabilizer_v1.3mf` (499 layers) | 0.84 s | 0.063 s | 0.53% apart |
+| `twopart_groups.3mf` (60 layers) | 0.18 s | 0.006 s | 1.78% apart |
 
 The reference does more in that time (supports, seams, overhangs, gap fill,
 fan and time planning), so the speed gap will narrow as stages are added.
 Differences it showed: no elephant-foot compensation on the first layer
-(0.15 mm), no supports, brim or prime tower, no multi-material regions, and
+(0.15 mm), two walls on the topmost layer where the reference prints one,
+no supports, brim or prime tower, no multi-material regions, and
 fill lines not joined along the walls as the reference joins them.
 
 ## Licence

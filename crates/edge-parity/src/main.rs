@@ -118,7 +118,7 @@ fn compare(cli: &Cli, engine: &Path, work: &Path, runs: usize) -> Result<(), Fai
         .arg(&reference_out)
         .arg(&project);
     let reference_gcode = reference_out.join(format!("plate_{}.gcode", cli.plate));
-    let reference_time = fastest(
+    let (reference_time, reference_work) = fastest(
         &mut reference,
         runs,
         &work.join("reference.log"),
@@ -134,16 +134,14 @@ fn compare(cli: &Cli, engine: &Path, work: &Path, runs: usize) -> Result<(), Fai
     if cli.plate != 1 {
         ours.args(["--plate", &cli.plate.to_string()]);
     }
-    let engine_time = fastest(&mut ours, runs, &work.join("edge.log"), &engine_gcode)?;
+    let (engine_time, _) = fastest(&mut ours, runs, &work.join("edge.log"), &engine_gcode)?;
 
     let reference = gcode::parse(&fs::read_to_string(&reference_gcode)?, None);
     let ours = gcode::parse(&fs::read_to_string(&engine_gcode)?, None);
     let times = Times {
         runs,
         reference: reference_time,
-        reference_work: logged_span(
-            &fs::read_to_string(work.join("reference.log")).unwrap_or_default(),
-        ),
+        reference_work,
         engine: engine_time,
     };
     print!("{}", report(&cli.project, &times, &reference, &ours));
@@ -170,15 +168,17 @@ fn compare(cli: &Cli, engine: &Path, work: &Path, runs: usize) -> Result<(), Fai
     Ok(())
 }
 
-/// Runs a slicer `runs` times and returns its fastest wall time. Its output
+/// Runs a slicer `runs` times and returns its fastest wall time and, when
+/// its log is timestamped, the shortest span the log covers. Its output
 /// goes to `log`; `produces` must exist afterwards.
 fn fastest(
     command: &mut Command,
     runs: usize,
     log: &Path,
     produces: &Path,
-) -> Result<Duration, Failure> {
+) -> Result<(Duration, Option<Duration>), Failure> {
     let mut best = Duration::MAX;
+    let mut best_logged: Option<Duration> = None;
     for _ in 0..runs {
         let _ = fs::remove_file(produces);
         let output = fs::File::create(log)?;
@@ -206,8 +206,11 @@ fn fastest(
             )
             .into());
         }
+        if let Some(logged) = logged_span(&fs::read_to_string(log).unwrap_or_default()) {
+            best_logged = Some(best_logged.map_or(logged, |best| best.min(logged)));
+        }
     }
-    Ok(best)
+    Ok((best, best_logged))
 }
 
 /// Fastest wall times over `runs` runs of each program.
@@ -218,7 +221,7 @@ struct Times {
     /// From the first line of the reference's log to its last. The program
     /// spends about two seconds starting and exiting whatever it is asked
     /// to do, even to print its help, so this is the fairer figure for the
-    /// work of loading, slicing and exporting. Taken from the last run.
+    /// work of loading, slicing and exporting.
     reference_work: Option<Duration>,
     /// This engine from start to exit.
     engine: Duration,
