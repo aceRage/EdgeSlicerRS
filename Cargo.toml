@@ -13,6 +13,7 @@ edge-adhesion = { path = "crates/edge-adhesion" }
 edge-3mf = { path = "crates/edge-3mf" }
 edge-clip = { path = "crates/edge-clip" }
 edge-config = { path = "crates/edge-config" }
+edge-engine = { path = "crates/edge-engine" }
 edge-extrusion = { path = "crates/edge-extrusion" }
 edge-gcode = { path = "crates/edge-gcode" }
 edge-geom = { path = "crates/edge-geom" }
