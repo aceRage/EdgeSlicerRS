@@ -6,7 +6,7 @@ use edge_adhesion::{AdhesionSettings, BrimKind, Footing};
 use edge_config::{Kind, Settings, Vendor};
 use edge_extrusion::{ExtrusionLoop, ExtrusionPath, Role};
 use edge_gcode::PrintSettings;
-use edge_geom::{ExPolygon, Point2, scaled, unscaled};
+use edge_geom::{ExPolygon, Point2, Polygon, scaled, unscaled};
 use edge_infill::{InfillSettings, SurfaceKind};
 use edge_mesh::Mesh;
 use edge_perimeter::{Perimeters, WallSettings};
@@ -630,62 +630,6 @@ fn slice(args: SliceArgs) -> Result<(), Failure> {
     )?;
     let support_time = started.elapsed();
 
-    // Skirt and brim, per layer, in the order they are printed.
-    let adhesion = AdhesionSettings::from_settings(&settings)?;
-    let beside = &outlines[..layers.len().min(adhesion.skirt_height.max(1))];
-    let supports_beside: Vec<&[ExtrusionPath]> = supports
-        .iter()
-        .take(beside.len())
-        .map(Vec::as_slice)
-        .collect();
-    // The brim is worked out object by object: each one's first layer and
-    // how tall it stands. A bare model is the one object.
-    let own: Vec<&Mesh> = if objects.is_empty() {
-        bodies.iter().map(|body| &body.solid).collect()
-    } else {
-        objects.iter().collect()
-    };
-    let mut footprints: Vec<(Vec<ExPolygon>, f64)> = Vec::new();
-    if adhesion.brim != BrimKind::None {
-        for mesh in own {
-            let Some((low, high)) = mesh.bounds() else {
-                continue;
-            };
-            let body = [edge_slice::Body {
-                solid: mesh,
-                negative: None,
-                filament: 1,
-            }];
-            let first = edge_slice::slice_regions(&body, &planes[..1], scaled(closing_radius))?;
-            if let Some(layer) = first.into_iter().next() {
-                footprints.push((layer.regions, f64::from(high[2] - low[2])));
-            }
-        }
-    }
-    let footings: Vec<Footing<'_>> = footprints
-        .iter()
-        .map(|(footprint, height)| Footing {
-            footprint,
-            height: *height,
-        })
-        .collect();
-    let brim = edge_adhesion::brim(&footings, &adhesion, first_layer_height)?;
-    let mut around: Vec<Vec<ExtrusionLoop>> = vec![Vec::new(); layers.len()];
-    for (index, lines) in around.iter_mut().enumerate() {
-        if adhesion.has_skirt(index) {
-            let height = if index == 0 {
-                first_layer_height
-            } else {
-                layer_height
-            };
-            *lines = edge_adhesion::skirt(beside, &brim, &supports_beside, &adhesion, height)?;
-        }
-    }
-    let skirt_loops = around.first().map_or(0, Vec::len);
-    if let Some(first) = around.first_mut() {
-        first.extend(brim);
-    }
-
     let started = Instant::now();
     let infill = InfillSettings::from_settings(&settings)?;
     let mut classify_time = std::time::Duration::ZERO;
@@ -728,6 +672,151 @@ fn slice(args: SliceArgs) -> Result<(), Failure> {
         fills_by.push(fills);
     }
     let infill_time = started.elapsed();
+
+    let height_of = |index: usize| {
+        if index == 0 {
+            first_layer_height
+        } else {
+            layer_height
+        }
+    };
+    // Which filaments print on each layer, and in what order
+    // (ToolOrdering.cpp). The first layer takes them by the size of
+    // the smallest piece each prints, smaller first; every later layer
+    // starts with the tool already in hand and takes the rest from the
+    // highest down.
+    let on_layer = |filament: usize, index: usize| {
+        !walls_by[filament][index].loops.is_empty() || !fills_by[filament][index].is_empty()
+    };
+    let mut orders: Vec<Vec<usize>> = Vec::with_capacity(layers.len());
+    let mut in_hand: Option<usize> = None;
+    for index in 0..layers.len() {
+        let mut order: Vec<usize> = (0..used.len())
+            .filter(|filament| on_layer(*filament, index))
+            .collect();
+        match in_hand {
+            None => {
+                let smallest = |filament: usize| {
+                    share(filament, index)
+                        .iter()
+                        .map(|region| region.contour.signed_area_mm2().abs())
+                        .fold(f64::INFINITY, f64::min)
+                };
+                order.sort_by(|a, b| smallest(*a).total_cmp(&smallest(*b)).then(a.cmp(b)));
+            }
+            Some(held) => {
+                order.sort_by_key(|filament| (*filament != held, std::cmp::Reverse(*filament)));
+            }
+        }
+        // A layer with nothing of the part on it still has its place,
+        // for the tool in hand.
+        if order.is_empty() {
+            order.push(in_hand.unwrap_or(0));
+        }
+        in_hand = order.last().copied().or(in_hand);
+        orders.push(order);
+    }
+    // Tool changes on each layer: every switch, counting one at the
+    // start of a layer that begins with a tool not in hand.
+    let mut changes = vec![0usize; layers.len()];
+    let mut held = orders.first().and_then(|order| order.first().copied());
+    for (index, order) in orders.iter().enumerate() {
+        for filament in order {
+            if Some(*filament) != held {
+                changes[index] += 1;
+                held = Some(*filament);
+            }
+        }
+    }
+    let tower_settings = TowerSettings::from_settings(&settings, plate)?;
+    let heights: Vec<f64> = (0..layers.len()).map(height_of).collect();
+    let tower = edge_tower::plan(&changes, &heights, &tower_settings)?;
+
+    // Skirt and brim, per layer, in the order they are printed.
+    let adhesion = AdhesionSettings::from_settings(&settings)?;
+    let beside = &outlines[..layers.len().min(adhesion.skirt_height.max(1))];
+    let supports_beside: Vec<&[ExtrusionPath]> = supports
+        .iter()
+        .take(beside.len())
+        .map(Vec::as_slice)
+        .collect();
+    // The brim is worked out object by object: each one's first layer and
+    // how tall it stands. A bare model is the one object.
+    let own: Vec<&Mesh> = if objects.is_empty() {
+        bodies.iter().map(|body| &body.solid).collect()
+    } else {
+        objects.iter().collect()
+    };
+    let mut footprints: Vec<(Vec<ExPolygon>, f64)> = Vec::new();
+    if adhesion.brim != BrimKind::None {
+        for mesh in own {
+            let Some((low, high)) = mesh.bounds() else {
+                continue;
+            };
+            let body = [edge_slice::Body {
+                solid: mesh,
+                negative: None,
+                filament: 1,
+            }];
+            let first = edge_slice::slice_regions(&body, &planes[..1], scaled(closing_radius))?;
+            if let Some(layer) = first.into_iter().next() {
+                footprints.push((layer.regions, f64::from(high[2] - low[2])));
+            }
+        }
+    }
+    let footings: Vec<Footing<'_>> = footprints
+        .iter()
+        .map(|(footprint, height)| Footing {
+            footprint,
+            height: *height,
+        })
+        .collect();
+    // The prime tower's ground, brim included: no brim is laid on it,
+    // and the skirt goes round it.
+    let tower_ground: Vec<ExPolygon> = tower
+        .footprint
+        .map(|[min_x, min_y, max_x, max_y]| ExPolygon {
+            contour: Polygon {
+                points: [
+                    (min_x, min_y),
+                    (max_x, min_y),
+                    (max_x, max_y),
+                    (min_x, max_y),
+                ]
+                .map(|(x, y)| Point2::from_mm(x, y))
+                .to_vec(),
+            },
+            holes: Vec::new(),
+        })
+        .into_iter()
+        .collect();
+    let tower_corners: Vec<Point2> = tower_ground
+        .iter()
+        .flat_map(|ground| ground.contour.points.iter().copied())
+        .collect();
+    let brim = edge_adhesion::brim(&footings, &tower_ground, &adhesion, first_layer_height)?;
+    let mut around: Vec<Vec<ExtrusionLoop>> = vec![Vec::new(); layers.len()];
+    for (index, lines) in around.iter_mut().enumerate() {
+        if adhesion.has_skirt(index) {
+            let height = if index == 0 {
+                first_layer_height
+            } else {
+                layer_height
+            };
+            *lines = edge_adhesion::skirt(
+                beside,
+                &brim,
+                &supports_beside,
+                &tower_corners,
+                &adhesion,
+                height,
+            )?;
+        }
+    }
+    let skirt_loops = around.first().map_or(0, Vec::len);
+    if let Some(first) = around.first_mut() {
+        first.extend(brim);
+    }
 
     // Every filament's work on a layer taken together, for the figures
     // below and for drawing. One filament's is used as it is.
@@ -890,64 +979,6 @@ fn slice(args: SliceArgs) -> Result<(), Failure> {
 
     if let Some(path) = &args.gcode {
         let started = Instant::now();
-        let height_of = |index: usize| {
-            if index == 0 {
-                first_layer_height
-            } else {
-                layer_height
-            }
-        };
-        // Which filaments print on each layer, and in what order
-        // (ToolOrdering.cpp). The first layer takes them by the size of
-        // the smallest piece each prints, smaller first; every later layer
-        // starts with the tool already in hand and takes the rest from the
-        // highest down.
-        let on_layer = |filament: usize, index: usize| {
-            !walls_by[filament][index].loops.is_empty() || !fills_by[filament][index].is_empty()
-        };
-        let mut orders: Vec<Vec<usize>> = Vec::with_capacity(layers.len());
-        let mut in_hand: Option<usize> = None;
-        for index in 0..layers.len() {
-            let mut order: Vec<usize> = (0..used.len())
-                .filter(|filament| on_layer(*filament, index))
-                .collect();
-            match in_hand {
-                None => {
-                    let smallest = |filament: usize| {
-                        share(filament, index)
-                            .iter()
-                            .map(|region| region.contour.signed_area_mm2().abs())
-                            .fold(f64::INFINITY, f64::min)
-                    };
-                    order.sort_by(|a, b| smallest(*a).total_cmp(&smallest(*b)).then(a.cmp(b)));
-                }
-                Some(held) => {
-                    order.sort_by_key(|filament| (*filament != held, std::cmp::Reverse(*filament)));
-                }
-            }
-            // A layer with nothing of the part on it still has its place,
-            // for the tool in hand.
-            if order.is_empty() {
-                order.push(in_hand.unwrap_or(0));
-            }
-            in_hand = order.last().copied().or(in_hand);
-            orders.push(order);
-        }
-        // Tool changes on each layer: every switch, counting one at the
-        // start of a layer that begins with a tool not in hand.
-        let mut changes = vec![0usize; layers.len()];
-        let mut held = orders.first().and_then(|order| order.first().copied());
-        for (index, order) in orders.iter().enumerate() {
-            for filament in order {
-                if Some(*filament) != held {
-                    changes[index] += 1;
-                    held = Some(*filament);
-                }
-            }
-        }
-        let tower_settings = TowerSettings::from_settings(&settings, plate)?;
-        let heights: Vec<f64> = (0..layers.len()).map(height_of).collect();
-        let tower = edge_tower::plan(&changes, &heights, &tower_settings)?;
         if let Some([a, b, c, d]) = tower.footprint {
             println!(
                 "prime tower from {a:.1} x {b:.1} to {c:.1} x {d:.1} mm, on {} layer(s), for {} tool change(s)",

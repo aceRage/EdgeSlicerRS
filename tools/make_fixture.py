@@ -14,7 +14,7 @@ any changes given on the command line.
     target/release/edge-parity /tmp/mushroom.3mf
 
 Shapes: mushroom and shelf need supports; tower and bar get an automatic
-brim. The reference loads the filament preset named in the settings again,
+brim; cube is a plain 20 mm cube. The reference loads the filament preset named in the settings again,
 so a change to a filament's own settings, such as filament_type, is undone.
 """
 import json, sys, zipfile
@@ -34,6 +34,8 @@ SHAPES = {
     "shelf": [(115.5, 126, 0, 40, 20, 2), (120.5, 131, 2, 10, 10, 10), (120.5, 131, 12, 30, 10, 3)],
     # a tall thin tower
     "tower": [(132.5, 133, 0, 6, 6, 80)],
+    # a 20 mm cube, for a first print
+    "cube": [(125.5, 126, 0, 20, 20, 20)],
     # a long low bar
     "bar": [(35.5, 131, 0, 200, 10, 30)],
 }
