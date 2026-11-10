@@ -72,9 +72,16 @@ Known gaps: painted triangles, per-object setting overrides, typed settings
 - Infill: each layer's inside is split into top, bottom, bridge, solid
   shell and sparse areas (`top_shell_layers`, `bottom_shell_layers`,
   `sparse_infill_density`, `minimum_sparse_infill_area`) and filled with
-  lines, or a grid for sparse areas. Solid fill is fitted to the area it
-  fills: its lines are spread, by up to a fifth, so that a whole number of
-  them fills the width, and each is made as wide as its share. The first solid layer over sparse
+  lines, or a grid for sparse areas. Solid lines run to the edge of their
+  area and, where one is joined to the next, turn half a line spacing
+  inside it, as the reference's do. `top_surface_pattern`,
+  `bottom_surface_pattern` and `internal_solid_infill_pattern` say whether
+  lines are joined (`monotonic`, `rectilinear`) or left separate
+  (`monotonicline`); any other pattern is laid as joined lines, with a
+  note. Top and bottom surfaces are fitted to their area: the lines are
+  spread, by up to a fifth, so that a whole number of them fills the
+  width, and each is made as wide as its share. They overlap their walls
+  by `top_bottom_infill_wall_overlap` on the first layer and the last. The first solid layer over sparse
   fill is laid as an internal bridge: round threads across the lines
   beneath, at `internal_bridge_speed`. Fill over air takes `bridge_flow`
   and `bridge_density`, and runs along the edges it has nothing beside,
@@ -262,16 +269,16 @@ Results, 2026-11-10, Mac mini, reference build 2.4.9.0, best of 3:
 
 | Project | Reference work | This engine | Walls, per layer | Filament |
 | --- | --- | --- | --- | --- |
-| `cylinder_drawcut.3mf` (389 layers) | 0.42 s | 0.088 s | under 0.01% apart | -0.3% |
-| `stabilizer_v1.3mf` (499 layers) | 0.89 s | 0.167 s | 0.85% apart | -43% (no supports) |
-| `twopart_groups.3mf` (60 layers) | 0.18 s | 0.011 s | under 0.01% apart | -1.0% |
+| `cylinder_drawcut.3mf` (389 layers) | 0.41 s | 0.086 s | under 0.01% apart | -0.3% |
+| `stabilizer_v1.3mf` (499 layers) | 0.87 s | 0.163 s | 0.85% apart | -43% (no supports) |
+| `twopart_groups.3mf` (60 layers) | 0.18 s | 0.010 s | under 0.01% apart | -2.7% |
 
 By feature, in metres of extruded path, reference against this engine:
 
 | Project | Overhang wall | Internal bridge | Internal solid fill | Gap fill |
 | --- | --- | --- | --- | --- |
-| `cylinder_drawcut.3mf` | none | 11.22 / 11.30 | 61.04 / 60.97 | 0.02 / 0.00 |
-| `twopart_groups.3mf` | 0.16 / 0.16 | 1.16 / 1.20 | 6.38 / 6.37 | none |
+| `cylinder_drawcut.3mf` | none | 11.22 / 11.30 | 61.04 / 60.62 | 0.02 / 0.00 |
+| `twopart_groups.3mf` | 0.16 / 0.16 | 1.16 / 1.20 | 6.38 / 6.13 | none |
 | `mushroom` fixture | 0.23 / 0.23 | 1.99 / 2.04 | | none |
 | `mcbrim_test.3mf` plate 1 | 0.10 / 0.06 | | | 8.28 / 9.98 |
 | `mcbrim_test.3mf` plate 2 | 0.03 / 0.03 | | | 4.95 / 5.03 |
@@ -301,20 +308,19 @@ to 30% less plastic, having no ribs. Plates 2 and 3 set the order of
 filaments on the first layer (`first_layer_print_sequence`), which this
 engine does not follow, so it starts with a different tool there. All three of its plates slice. It is a flat part
 3 mm thick covered in lettering, and it is where this engine is furthest
-from the reference: 4 to 8% less filament, most of it top surface the
-reference lays where it thins the walls.
+from the reference: 7 to 10% less filament, most of it top surface the
+reference lays where it thins the walls (23% less top surface).
 
-Solid fill is laid more heavily here than in the reference, by 3 to 4% a
-layer on a 20 mm cube. Top surfaces in the `monotonicline` pattern are
-separate lines in the reference and joined end to end here (39 mm of
-joins on the cube's top). Where the reference does join solid lines
-(`monotonic`, `rectilinear`) it turns them half a line spacing inside the
-area, and this engine turns them at the area's edge, 0.17 mm nearer the
-walls. The reference also leaves solid fill inside the part at its own
-pitch on these parts, where this engine spreads it to fit; on a 6 mm
-tower that makes the lines 0.44 mm wide against 0.42 mm. The surface
-patterns (`top_surface_pattern`, `bottom_surface_pattern`,
-`internal_solid_infill_pattern`) are not read.
+Top and bottom surfaces now come to the reference's length within 0.1%,
+at the same pitch and width, on the cube, the deck, the tower and the
+mushroom with both printers' presets and on the cylinder (they were 2 to
+26% over). A full layer of solid fill inside the part does too: 907.9 mm
+against 907.0 mm on the cube. Over a whole part solid fill is 1 to 8%
+under, because the reference lays one more, partly solid, layer under a
+top shell (a band round the sparse fill beneath the first bridged layer)
+and fills small gaps left inside solid fill; neither is done here. Solid
+lines here are laid as one zigzag where the reference orders `monotonic`
+lines so that each is laid beside the last.
 
 Tree supports with the Centauri Carbon's presets (`tree(auto)`, arcs on)
 come to about half the reference's length on the `shelf` fixture (2.26 m

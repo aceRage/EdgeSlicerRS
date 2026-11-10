@@ -30,12 +30,33 @@ pub struct FillParams {
     /// Longest stretch of outline, in mm, that two sparse lines may be
     /// joined along; zero leaves sparse lines separate.
     pub sparse_link_max: f64,
+    /// Whether the lines of a top surface, of a bottom surface and of
+    /// solid fill inside the part are joined end to end. The reference's
+    /// `monotonicline` pattern leaves them separate.
+    pub top_joined: bool,
+    pub bottom_joined: bool,
+    pub solid_joined: bool,
+}
+
+/// How a surface's lines meet the edge of its area.
+#[derive(Clone, Copy)]
+enum Lay {
+    /// Cut to the area drawn in by this share of the line spacing, and
+    /// joined along that outline.
+    Cut(f64),
+    /// Solid lines as `FillRectilinear.cpp` lays them: run to within
+    /// `LINES_INSET` of the edge, and turned half a spacing inside it
+    /// where they are joined. `fitted` spreads them to fill the width.
+    Turned { joined: bool, fitted: bool },
 }
 
 /// How far a line's centre stops short of the area's edge, as a share of
 /// the line spacing (FillRectilinear.cpp: 0.5 less `INFILL_OVERLAP_OVER_SPACING`
 /// for single-direction fill, a full half spacing for crossing lines).
 const LINES_INSET: f64 = 0.05;
+/// How much further in joined solid lines turn: to half a spacing from the
+/// area's edge, so the turn itself lies inside the area and not on it.
+const TURN_INSET: f64 = 0.45;
 const GRID_INSET: f64 = 0.5;
 /// Solid lines are joined along the outline when it runs no further than
 /// this many line spacings between them (Fill.cpp, `link_max_length`).
@@ -50,109 +71,144 @@ pub fn fill(
     let turned = if layer_index % 2 == 1 { FRAC_PI_2 } else { 0.0 };
     let mut paths = Vec::new();
     for surface in surfaces {
-        // (flow, role, line spacing in mm, inset share, directions)
-        let (flow, role, spacing, inset, angles): (Flow, Role, f64, f64, &[f64]) =
-            match surface.kind {
-                SurfaceKind::Sparse if params.density <= 0.0 => continue,
-                SurfaceKind::Sparse => match params.pattern {
-                    Pattern::Lines => (
-                        params.sparse,
-                        Role::SparseInfill,
-                        params.sparse.spacing / params.density,
-                        LINES_INSET,
-                        &[params.sparse_angle + turned],
-                    ),
-                    // Two sets of lines share the density between them.
-                    Pattern::Grid => (
-                        params.sparse,
-                        Role::SparseInfill,
-                        2.0 * params.sparse.spacing / params.density,
-                        GRID_INSET,
-                        &[params.sparse_angle, params.sparse_angle + FRAC_PI_2],
-                    ),
+        // (flow, role, line spacing in mm, how the lines end, directions)
+        let (flow, role, spacing, lay, angles): (Flow, Role, f64, Lay, &[f64]) = match surface.kind
+        {
+            SurfaceKind::Sparse if params.density <= 0.0 => continue,
+            SurfaceKind::Sparse => match params.pattern {
+                Pattern::Lines => (
+                    params.sparse,
+                    Role::SparseInfill,
+                    params.sparse.spacing / params.density,
+                    Lay::Cut(LINES_INSET),
+                    &[params.sparse_angle + turned],
+                ),
+                // Two sets of lines share the density between them.
+                Pattern::Grid => (
+                    params.sparse,
+                    Role::SparseInfill,
+                    2.0 * params.sparse.spacing / params.density,
+                    Lay::Cut(GRID_INSET),
+                    &[params.sparse_angle, params.sparse_angle + FRAC_PI_2],
+                ),
+            },
+            SurfaceKind::Top => (
+                params.top,
+                Role::TopSolidInfill,
+                params.top.spacing,
+                Lay::Turned {
+                    joined: params.top_joined,
+                    fitted: true,
                 },
-                SurfaceKind::Top => (
-                    params.top,
-                    Role::TopSolidInfill,
-                    params.top.spacing,
-                    LINES_INSET,
-                    &[params.solid_angle + turned],
-                ),
-                // From support to support where that is known.
-                SurfaceKind::Bridge => (
-                    params.bridge,
-                    Role::BridgeInfill,
-                    params.bridge_spacing,
-                    LINES_INSET,
-                    &[surface.angle.unwrap_or(params.solid_angle + turned)],
-                ),
-                // Across the sparse lines beneath: for a grid, along its
-                // other set; for plain lines, square to the layer below's.
-                SurfaceKind::InternalBridge => (
-                    params.internal_bridge,
-                    Role::InternalBridge,
-                    params.internal_bridge_spacing,
-                    LINES_INSET,
-                    &[params.sparse_angle
-                        + match params.pattern {
-                            Pattern::Grid => 0.0,
-                            Pattern::Lines => turned,
-                        }],
-                ),
-                kind => {
-                    let role = match kind {
-                        SurfaceKind::Bottom => Role::BottomSurface,
-                        _ => Role::SolidInfill,
-                    };
-                    (
-                        params.solid,
-                        role,
-                        params.solid.spacing,
-                        LINES_INSET,
-                        &[params.solid_angle + turned],
-                    )
-                }
-            };
-
-        let inside = edge_clip::offset(
-            std::slice::from_ref(&surface.area),
-            -scaled(inset * flow.spacing),
-            Join::MITER,
-        )?;
-        let max_link = match role {
-            Role::SparseInfill => params.sparse_link_max,
-            _ => SOLID_LINK_SPACINGS * flow.spacing,
+                &[params.solid_angle + turned],
+            ),
+            // From support to support where that is known.
+            SurfaceKind::Bridge => (
+                params.bridge,
+                Role::BridgeInfill,
+                params.bridge_spacing,
+                Lay::Cut(LINES_INSET),
+                &[surface.angle.unwrap_or(params.solid_angle + turned)],
+            ),
+            // Across the sparse lines beneath: for a grid, along its
+            // other set; for plain lines, square to the layer below's.
+            SurfaceKind::InternalBridge => (
+                params.internal_bridge,
+                Role::InternalBridge,
+                params.internal_bridge_spacing,
+                Lay::Cut(LINES_INSET),
+                &[params.sparse_angle
+                    + match params.pattern {
+                        Pattern::Grid => 0.0,
+                        Pattern::Lines => turned,
+                    }],
+            ),
+            // The reference's output has top and bottom lines spread to
+            // fit and solid lines inside the part at their own pitch,
+            // on every part compared; the source gives no reason seen.
+            SurfaceKind::Bottom => (
+                params.solid,
+                Role::BottomSurface,
+                params.solid.spacing,
+                Lay::Turned {
+                    joined: params.bottom_joined,
+                    fitted: true,
+                },
+                &[params.solid_angle + turned],
+            ),
+            SurfaceKind::InternalSolid => (
+                params.solid,
+                Role::SolidInfill,
+                params.solid.spacing,
+                Lay::Turned {
+                    joined: params.solid_joined,
+                    fitted: false,
+                },
+                &[params.solid_angle + turned],
+            ),
         };
-        // Solid fill that is not a bridge is fitted to the area: its
-        // lines are spread, by up to a fifth, so that a whole number of
-        // them fills the width with none left over, and each is made as
-        // wide as its share (FillBase.cpp `_adjust_solid_spacing`).
-        let fitted = matches!(
-            surface.kind,
-            SurfaceKind::Top | SurfaceKind::Bottom | SurfaceKind::InternalSolid
-        );
-        // All of a surface's directions are joined together, so a line can
-        // link to a crossing one as readily as to its own neighbour.
-        for area in &inside {
-            let (mut pitch, mut first, mut flow) = (scaled(spacing) as f64, 0.0, flow);
-            if fitted && let Some((low, high)) = lines::extent_across(area, angles[0]) {
-                let intervals = ((high - low) / pitch).floor();
-                if intervals >= 1.0 {
-                    pitch = ((high - low) / intervals).min((1.2 * pitch + 0.5).floor());
-                }
-                first = low + pitch / 2.0;
-                // A pitch no line can be made for leaves the fill as it was.
-                match flow.with_spacing(pitch / edge_geom::UNITS_PER_MM) {
-                    Ok(wider) => flow = wider,
-                    Err(_) => (pitch, first) = (scaled(spacing) as f64, 0.0),
+
+        match lay {
+            Lay::Cut(inset) => {
+                let inside = edge_clip::offset(
+                    std::slice::from_ref(&surface.area),
+                    -scaled(inset * flow.spacing),
+                    Join::MITER,
+                )?;
+                let max_link = match role {
+                    Role::SparseInfill => params.sparse_link_max,
+                    _ => SOLID_LINK_SPACINGS * flow.spacing,
+                };
+                // A stub shorter than half its own width is a blob, not a line.
+                let min_length = flow.scaled_width() / 2;
+                // All of a surface's directions are joined together, so a
+                // line can link to a crossing one as readily as to its
+                // own neighbour.
+                for area in &inside {
+                    let spacing = scaled(spacing);
+                    for points in lines::paths(area, spacing, angles, min_length, scaled(max_link))
+                    {
+                        paths.push(ExtrusionPath { points, role, flow });
+                    }
                 }
             }
-            // A stub shorter than half its own width is a blob, not a line.
-            let min_length = flow.scaled_width() / 2;
-            for points in
-                lines::paths_from(area, pitch, first, angles, min_length, scaled(max_link))
-            {
-                paths.push(ExtrusionPath { points, role, flow });
+            Lay::Turned { joined, fitted } => {
+                let Some((low, high)) = lines::extent_across(&surface.area, angles[0]) else {
+                    continue;
+                };
+                let outer = edge_clip::offset(
+                    std::slice::from_ref(&surface.area),
+                    -scaled(LINES_INSET * flow.spacing),
+                    Join::MITER,
+                )?;
+                let inner =
+                    edge_clip::offset(&outer, -scaled(TURN_INSET * flow.spacing), Join::MITER)?;
+                let max_link = if joined {
+                    SOLID_LINK_SPACINGS * flow.spacing
+                } else {
+                    0.0
+                };
+                // Fitted lines are spread, by up to a fifth, so that a
+                // whole number of them fills the area's width with none
+                // left over, and each is made as wide as its share
+                // (FillBase.cpp `_adjust_solid_spacing`).
+                let (mut pitch, mut flow) = (scaled(spacing) as f64, flow);
+                let intervals = ((high - low - 1.0) / pitch).floor();
+                if fitted && intervals >= 1.0 {
+                    let spread = ((high - low) / intervals).min((1.2 * pitch + 0.5).floor());
+                    // A pitch no line can be made for leaves the fill as it was.
+                    if let Ok(wider) = flow.with_spacing(spread / edge_geom::UNITS_PER_MM) {
+                        (pitch, flow) = (spread, wider);
+                    }
+                }
+                // The first line lies half a pitch in from the area's own
+                // edge, not on a grid shared with other areas.
+                let first = low + pitch / 2.0;
+                for points in
+                    lines::paths_turned(&outer, &inner, pitch, first, angles[0], scaled(max_link))
+                {
+                    paths.push(ExtrusionPath { points, role, flow });
+                }
             }
         }
     }
@@ -195,6 +251,9 @@ mod tests {
             sparse_angle: 45f64.to_radians(),
             solid_angle: 45f64.to_radians(),
             sparse_link_max: 0.0,
+            top_joined: false,
+            bottom_joined: true,
+            solid_joined: true,
         }
     }
 
@@ -318,8 +377,9 @@ mod tests {
                 .all(|line| line.role == Role::BridgeInfill && line.flow == thin)
         );
         let plain = fill(&[surface(SurfaceKind::InternalSolid, 20.0)], 0, &base).unwrap();
+        // The solid lines turn inside their area, so they come a little shorter.
         let ratio = length(&lines) / length(&plain);
-        assert!((ratio - 1.0).abs() < 0.03, "{ratio}");
+        assert!((ratio - 1.03).abs() < 0.04, "{ratio}");
         // A bridge with a direction of its own is laid along it.
         let turned = Surface {
             angle: Some(0.0),
@@ -352,19 +412,23 @@ mod tests {
             solid_angle: 0.0,
             ..params(Pattern::Grid, 0.2)
         };
-        let lines = fill(&[surface(SurfaceKind::InternalSolid, 10.0)], 0, &base).unwrap();
+        let rows_of = |lines: &[ExtrusionPath]| {
+            let mut rows: Vec<f64> = lines
+                .iter()
+                .flat_map(|line| line.points.windows(2))
+                .filter(|pair| pair[0].y == pair[1].y && pair[0].x != pair[1].x)
+                .map(|pair| pair[0].y as f64 / 1e6)
+                .collect();
+            rows.sort_by(f64::total_cmp);
+            rows.dedup();
+            rows
+        };
+        let lines = fill(&[surface(SurfaceKind::Bottom, 10.0)], 0, &base).unwrap();
         let flow = lines[0].flow;
-        let mut rows: Vec<f64> = lines
-            .iter()
-            .flat_map(|line| line.points.windows(2))
-            .filter(|pair| pair[0].y == pair[1].y && pair[0].x != pair[1].x)
-            .map(|pair| pair[0].y as f64 / 1e6)
-            .collect();
-        rows.sort_by(f64::total_cmp);
-        rows.dedup();
-        // The area is filled from 0.02 mm inside each edge: 24 lines fit
-        // where 24.5 of the width set would, each a little wider for it.
-        let (low, high) = (0.05 * base.solid.spacing, 10.0 - 0.05 * base.solid.spacing);
+        let rows = rows_of(&lines);
+        // The fit is to the area's own width: 24 lines go where 24.6 of
+        // the width set would, each a little wider for it.
+        let (low, high) = (0.0, 10.0);
         assert_eq!(
             rows.len(),
             ((high - low) / base.solid.spacing).floor() as usize
@@ -396,9 +460,67 @@ mod tests {
                 },
                 holes: Vec::new(),
             },
-            ..surface(SurfaceKind::InternalSolid, 1.0)
+            ..surface(SurfaceKind::Bottom, 1.0)
         };
         let lines = fill(&[sliver], 0, &base).unwrap();
         assert!((lines[0].flow.spacing / base.solid.spacing - 1.2).abs() < 1e-3);
+
+        // Solid fill inside the part keeps the pitch set, starting half
+        // of it in from the area's edge.
+        let lines = fill(&[surface(SurfaceKind::InternalSolid, 10.0)], 0, &base).unwrap();
+        assert!(lines.iter().all(|line| line.flow == base.solid));
+        let rows = rows_of(&lines);
+        assert!((rows[0] - base.solid.spacing / 2.0).abs() < 1e-5);
+        assert!(
+            rows.windows(2)
+                .all(|pair| (pair[1] - pair[0] - base.solid.spacing).abs() < 1e-5)
+        );
+    }
+
+    #[test]
+    fn joined_lines_turn_inside_and_separate_ones_run_edge_to_edge() {
+        let base = FillParams {
+            solid_angle: 0.0,
+            ..params(Pattern::Grid, 0.2)
+        };
+        let xs = |lines: &[ExtrusionPath]| -> Vec<f64> {
+            let mut xs: Vec<f64> = lines
+                .iter()
+                .flat_map(|line| &line.points)
+                .map(|p| p.x as f64 / 1e6)
+                .collect();
+            xs.sort_by(f64::total_cmp);
+            xs.dedup_by(|a, b| (*a - *b).abs() < 1e-6);
+            xs
+        };
+        // A top surface in separate lines: each runs to within a twentieth
+        // of a spacing of both edges, and none is joined to the next.
+        let top = fill(&[surface(SurfaceKind::Top, 10.0)], 0, &base).unwrap();
+        assert!(top.len() > 20 && top.iter().all(|line| line.points.len() == 2));
+        let reach = 0.05 * base.top.spacing;
+        let ends = xs(&top);
+        assert_eq!(ends.len(), 2);
+        assert!((ends[0] - reach).abs() < 1e-5 && (ends[1] - (10.0 - reach)).abs() < 1e-5);
+
+        // Joined, the lines are one path that turns half a spacing inside
+        // the edge; only its two loose ends reach as far as separate lines.
+        let joined = FillParams {
+            top_joined: true,
+            ..base
+        };
+        let top = fill(&[surface(SurfaceKind::Top, 10.0)], 0, &joined).unwrap();
+        assert_eq!(top.len(), 1);
+        let turn = 0.5 * base.top.spacing;
+        let points = &top[0].points;
+        assert!(points[1..points.len() - 1].iter().all(|p| {
+            let x = p.x as f64 / 1e6;
+            (x - turn).abs() < 1e-5 || (x - (10.0 - turn)).abs() < 1e-5
+        }));
+        let loose = [points[0].x, points[points.len() - 1].x].map(|x| x as f64 / 1e6);
+        assert!(
+            loose
+                .iter()
+                .all(|x| (x - reach).abs() < 1e-5 || (x - (10.0 - reach)).abs() < 1e-5)
+        );
     }
 }

@@ -5,9 +5,9 @@
 //! follows the reference's `PrintObject::detect_surfaces_type` and the core
 //! of `discover_horizontal_shells`; fill lines are plain parallel lines.
 //! Not done: the lengths the reference goes to in running internal bridges out to
-//! the lines that carry them, vertical shell thickness, shell thickness in mm, joining
-//! lines into continuous paths, monotonic ordering, fitting solid lines to
-//! the region's width, and every sparse pattern but lines and grid.
+//! the lines that carry them, vertical shell thickness, shell thickness in mm,
+//! monotonic ordering, gap fill inside solid fill, and every sparse
+//! pattern but lines and grid.
 
 mod fill;
 pub mod lines;
