@@ -12,6 +12,9 @@ pub enum SurfaceKind {
     Bridge,
     /// Inside the part but within the shell under a top or over a bottom.
     InternalSolid,
+    /// Solid that has only sparse fill beneath it, and is laid as a bridge
+    /// from one of that fill's lines to the next.
+    InternalBridge,
     /// Inside the part, filled at the sparse density.
     Sparse,
 }
@@ -161,6 +164,90 @@ pub fn classify(
         .collect()
 }
 
+/// Turns the parts of each layer's internal solid that lie over sparse
+/// fill into internal bridges: the first phase of the reference's
+/// `PrintObject::bridge_over_infill`, which picks out what is worth
+/// bridging. `infill[i]` is layer `i`'s whole area inside the walls and
+/// `spacing` the distance between solid lines. The reference goes on to
+/// run each bridge out to the sparse lines that carry it; here a bridge
+/// is the area picked out and no more.
+pub fn bridge_over_infill(
+    surfaces: &[Vec<Surface>],
+    infill: &[&[ExPolygon]],
+    spacing: Coord,
+) -> Result<Vec<Vec<Surface>>, ClipError> {
+    assert_eq!(surfaces.len(), infill.len(), "one infill area per layer");
+    // Edges meant to coincide are made to (the reference's `SCALED_EPSILON`).
+    const SNAP: Coord = 100;
+    let join = Join::MITER;
+    let area_of = |regions: &[ExPolygon]| regions.iter().map(ExPolygon::area_mm2).sum::<f64>();
+    let unit = edge_geom::unscaled(spacing);
+    (0..surfaces.len())
+        .into_par_iter()
+        .map(|layer| {
+            let own = &surfaces[layer];
+            if layer == 0 || !own.iter().any(|s| s.kind == SurfaceKind::InternalSolid) {
+                return Ok(own.clone());
+            }
+            // What the layer beneath gives no solid footing: its area
+            // inside the walls, less what is solid there, both first
+            // shrunk so that slivers neither count as footing nor are
+            // bridged for their own sake.
+            let solids: Vec<ExPolygon> = surfaces[layer - 1]
+                .iter()
+                .filter(|s| s.kind != SurfaceKind::Sparse)
+                .map(|s| s.area.clone())
+                .collect();
+            let footing = edge_clip::offset(
+                &edge_clip::offset(&solids, -spacing, join)?,
+                4 * spacing,
+                join,
+            )?;
+            let open = edge_clip::offset(
+                &edge_clip::closing(infill[layer - 1], SNAP, join)?,
+                -3 * spacing,
+                join,
+            )?;
+            let unsupported = edge_clip::difference(&open, &footing)?;
+            if unsupported.is_empty() {
+                return Ok(own.clone());
+            }
+            let mut changed = Vec::with_capacity(own.len());
+            for surface in own {
+                if surface.kind != SurfaceKind::InternalSolid {
+                    changed.push(surface.clone());
+                    continue;
+                }
+                let whole = std::slice::from_ref(&surface.area);
+                let over = edge_clip::intersection(whole, &unsupported)?;
+                let partly = area_of(&over) < surface.area.area_mm2() - 1e-4;
+                if over.is_empty() || (partly && area_of(&over) <= 9.0 * unit * unit) {
+                    changed.push(surface.clone());
+                    continue;
+                }
+                let mut bridged =
+                    edge_clip::intersection(whole, &edge_clip::offset(&over, 4 * spacing, join)?)?;
+                // Scraps of solid the bridge would leave beside it join it.
+                let beside =
+                    edge_clip::difference(whole, &edge_clip::offset(&bridged, spacing, join)?)?;
+                bridged.extend(beside.into_iter().filter(|scrap| {
+                    let area = scrap.area_mm2();
+                    area > unit * unit && area < unit * 12.0
+                }));
+                let bridged =
+                    edge_clip::intersection(&edge_clip::closing(&bridged, SNAP, join)?, whole)?;
+                let rest = edge_clip::difference(whole, &bridged)?;
+                let mut push = |kind, areas: Vec<ExPolygon>| {
+                    changed.extend(areas.into_iter().map(|area| Surface { kind, area }));
+                };
+                push(SurfaceKind::InternalBridge, bridged);
+                push(SurfaceKind::InternalSolid, rest);
+            }
+            Ok(changed)
+        })
+        .collect()
+}
+
 #[cfg(test)]
 mod tests {
     use edge_geom::{Point2, Polygon, scaled};
@@ -301,5 +388,96 @@ mod tests {
     fn a_one_layer_sheet_is_a_bottom() {
         let found = kinds(&[block(0.0, 0.0, 10.0, 10.0)], &shells(4, 3));
         assert_eq!(found, [vec![(Bottom, 100.0)]]);
+    }
+
+    /// Classifies a stack of layers and picks out the bridges over infill,
+    /// with solid lines 0.4 mm apart.
+    fn bridged(layers: &[Vec<ExPolygon>], shells: &Shells) -> Vec<Vec<(SurfaceKind, f64)>> {
+        let slices: Vec<&[ExPolygon]> = layers.iter().map(Vec::as_slice).collect();
+        let surfaces = classify(&slices, &slices, &slices, shells).unwrap();
+        bridge_over_infill(&surfaces, &slices, scaled(0.4))
+            .unwrap()
+            .into_iter()
+            .map(|surfaces| {
+                surfaces
+                    .into_iter()
+                    .map(|s| (s.kind, s.area.area_mm2().round()))
+                    .collect()
+            })
+            .collect()
+    }
+
+    #[test]
+    fn the_first_solid_layer_over_sparse_fill_is_a_bridge() {
+        // 20 mm square, eight layers: bottom, solid, three sparse, two
+        // solid under the top, top.
+        let layers = vec![block(0.0, 0.0, 20.0, 20.0); 8];
+        let found = bridged(&layers, &shells(3, 2));
+        let kinds: Vec<SurfaceKind> = found.iter().map(|layer| layer[0].0).collect();
+        assert_eq!(
+            kinds,
+            [
+                Bottom,
+                InternalSolid,
+                Sparse,
+                Sparse,
+                Sparse,
+                InternalBridge,
+                InternalSolid,
+                Top
+            ]
+        );
+        // The whole of that layer: nothing beneath it is solid.
+        assert_eq!(found[5], [(InternalBridge, 400.0)]);
+    }
+
+    #[test]
+    fn solid_with_solid_beneath_it_is_not_bridged() {
+        // A 20 mm base carrying a 10 mm tower: the base's top shell is a
+        // ring of solid round sparse fill under the tower. The ring's
+        // first layer bridges; the one above it rests on that.
+        let mut layers = vec![block(0.0, 0.0, 20.0, 20.0); 6];
+        layers.extend(vec![block(5.0, 5.0, 15.0, 15.0); 6]);
+        let found = bridged(&layers, &shells(3, 1));
+        let has = |layer: usize, kind| found[layer].iter().any(|(found, _)| *found == kind);
+        assert!(has(2, Sparse) && !has(2, InternalBridge));
+        assert!(has(3, InternalBridge) && !has(3, InternalSolid));
+        assert!(has(4, InternalSolid) && !has(4, InternalBridge));
+        // Bridge and what is left of the solid cover what the solid did.
+        let layers_alone: Vec<&[ExPolygon]> = layers.iter().map(Vec::as_slice).collect();
+        let before = classify(&layers_alone, &layers_alone, &layers_alone, &shells(3, 1)).unwrap();
+        let area = |surfaces: &[Surface], kinds: &[SurfaceKind]| {
+            surfaces
+                .iter()
+                .filter(|s| kinds.contains(&s.kind))
+                .map(|s| s.area.area_mm2())
+                .sum::<f64>()
+        };
+        let after = bridge_over_infill(&before, &layers_alone, scaled(0.4)).unwrap();
+        for (was, is) in before.iter().zip(&after) {
+            let solid = area(was, &[InternalSolid]);
+            assert!((area(is, &[InternalSolid, InternalBridge]) - solid).abs() < 1e-6);
+            assert_eq!(
+                area(was, &[Sparse, Top, Bottom]),
+                area(is, &[Sparse, Top, Bottom])
+            );
+        }
+    }
+
+    #[test]
+    fn with_everything_solid_nothing_is_bridged() {
+        // At full density there is no sparse fill to bridge over.
+        let layers = vec![block(0.0, 0.0, 20.0, 20.0); 8];
+        let solid = Shells {
+            sparse_density: 1.0,
+            ..shells(3, 2)
+        };
+        let found = bridged(&layers, &solid);
+        assert!(
+            found
+                .iter()
+                .flatten()
+                .all(|(kind, _)| *kind != InternalBridge)
+        );
     }
 }

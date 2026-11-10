@@ -1400,3 +1400,38 @@ fn overhangs_are_left_alone_when_asked_or_when_nothing_is_known() {
     assert!(!text.contains("M106") && !text.contains(";_FAN"));
     assert!(text.contains(";TYPE:Overhang wall"));
 }
+
+#[test]
+fn solid_over_infill_goes_at_its_own_bridge_speed() {
+    let loops = [wall(0.0, 0.0, 10.0, 0)];
+    let fill = [line((2.0, 2.0), (8.0, 2.0), Role::InternalBridge)];
+    let settings = PrintSettings {
+        bridge_speed: 40.0,
+        internal_bridge_speed: FloatOrPercent::Percent(150.0),
+        ..basic()
+    };
+    let second = |settings: &PrintSettings| {
+        let layer = |z: f64| Layer {
+            z,
+            ..one_layer(&loops, &[0..1], &fill)[0]
+        };
+        let (text, _) = print(&[layer(0.2), layer(0.4)], settings);
+        text.split(";Z:0.400").nth(1).unwrap().to_string()
+    };
+    let text = second(&settings);
+    assert_eq!(features(&text), ["Outer wall", "Internal Bridge"]);
+    let bridge = text.split(";TYPE:Internal Bridge").nth(1).unwrap();
+    let speed = moves(bridge).find_map(|line| word(line, 'F')).unwrap();
+    assert_eq!(speed, 60.0 * 60.0);
+    // A speed given outright is used as it is.
+    let fixed = PrintSettings {
+        internal_bridge_speed: FloatOrPercent::Value(70.0),
+        ..settings
+    };
+    let text = second(&fixed);
+    let bridge = text.split(";TYPE:Internal Bridge").nth(1).unwrap();
+    assert_eq!(
+        moves(bridge).find_map(|line| word(line, 'F')),
+        Some(70.0 * 60.0)
+    );
+}

@@ -65,6 +65,8 @@ pub struct PrintSettings {
     pub thick_bridges: bool,
     /// May be a percentage of the outer wall's acceleration.
     pub bridge_acceleration: FloatOrPercent,
+    /// Solid fill laid over sparse fill; a percentage is of the bridge's speed.
+    pub internal_bridge_speed: FloatOrPercent,
     /// Walls on the first layer.
     pub initial_layer_speed: f64,
     /// All fill on the first layer.
@@ -221,6 +223,7 @@ impl Default for PrintSettings {
             bridge_flow: 1.0,
             thick_bridges: false,
             bridge_acceleration: FloatOrPercent::Percent(50.0),
+            internal_bridge_speed: FloatOrPercent::Percent(150.0),
             initial_layer_speed: 30.0,
             initial_layer_infill_speed: 60.0,
             travel_speed: 120.0,
@@ -425,6 +428,11 @@ impl PrintSettings {
                 unsupported.push(format!("{key} \"{value}\": {instead}"));
             }
         }
+        if first("internal_bridge_fan_speed")?.is_some_and(|speed| speed >= 0.0) {
+            unsupported.push(
+                "internal_bridge_fan_speed: bridges over infill get the overhang fan speed".into(),
+            );
+        }
         if first("initial_layer_fan_speed")?.is_some_and(|speed| speed >= 0.0) {
             unsupported.push(
                 "initial_layer_fan_speed: the first layers follow close_fan_the_first_x_layers"
@@ -562,6 +570,10 @@ impl PrintSettings {
             bridge_flow: number("bridge_flow", defaults.bridge_flow)?,
             thick_bridges: flag("thick_bridges", defaults.thick_bridges)?,
             bridge_acceleration: listed_share("bridge_acceleration", defaults.bridge_acceleration)?,
+            internal_bridge_speed: listed_share(
+                "internal_bridge_speed",
+                defaults.internal_bridge_speed,
+            )?,
             initial_layer_speed: number("initial_layer_speed", defaults.initial_layer_speed)?,
             initial_layer_infill_speed: number(
                 "initial_layer_infill_speed",

@@ -9,8 +9,14 @@ use crate::{Pattern, Surface, SurfaceKind, lines};
 /// What filling one layer needs.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct FillParams {
-    /// Internal solid, bottom and bridge fill.
+    /// Internal solid and bottom fill.
     pub solid: Flow,
+    /// Fill laid over air, and the distance between its lines in mm.
+    pub bridge: Flow,
+    pub bridge_spacing: f64,
+    /// Fill laid over sparse fill, and the distance between its lines.
+    pub internal_bridge: Flow,
+    pub internal_bridge_spacing: f64,
     /// The visible top fill.
     pub top: Flow,
     pub sparse: Flow,
@@ -72,10 +78,29 @@ pub fn fill(
                     LINES_INSET,
                     &[params.solid_angle + turned],
                 ),
+                SurfaceKind::Bridge => (
+                    params.bridge,
+                    Role::BridgeInfill,
+                    params.bridge_spacing,
+                    LINES_INSET,
+                    &[params.solid_angle + turned],
+                ),
+                // Across the sparse lines beneath: for a grid, along its
+                // other set; for plain lines, square to the layer below's.
+                SurfaceKind::InternalBridge => (
+                    params.internal_bridge,
+                    Role::InternalBridge,
+                    params.internal_bridge_spacing,
+                    LINES_INSET,
+                    &[params.sparse_angle
+                        + match params.pattern {
+                            Pattern::Grid => 0.0,
+                            Pattern::Lines => turned,
+                        }],
+                ),
                 kind => {
                     let role = match kind {
                         SurfaceKind::Bottom => Role::BottomSurface,
-                        SurfaceKind::Bridge => Role::BridgeInfill,
                         _ => Role::SolidInfill,
                     };
                     (
@@ -135,6 +160,10 @@ mod tests {
         let top = Flow::new(0.4, 0.2, 0.4).unwrap();
         FillParams {
             solid: flow,
+            bridge: flow,
+            bridge_spacing: flow.spacing,
+            internal_bridge: flow.bridging(1.0, true),
+            internal_bridge_spacing: 0.45,
             top,
             sparse: flow,
             density,
@@ -238,5 +267,38 @@ mod tests {
                 .unwrap()
                 .is_empty()
         );
+    }
+
+    #[test]
+    fn bridges_are_laid_in_their_own_flow() {
+        let base = params(Pattern::Grid, 0.2);
+        // Over air: four fifths of the plastic in lines a quarter further apart.
+        let thin = base.solid.bridging(0.8, false);
+        let over_air = FillParams {
+            bridge: thin,
+            bridge_spacing: thin.spacing / 0.8,
+            ..base
+        };
+        let lines = fill(&[surface(SurfaceKind::Bridge, 20.0)], 0, &over_air).unwrap();
+        assert!(
+            lines
+                .iter()
+                .all(|line| line.role == Role::BridgeInfill && line.flow == thin)
+        );
+        assert!((thin.mm3_per_mm() / base.solid.mm3_per_mm() - 0.8).abs() < 1e-9);
+        let plain = fill(&[surface(SurfaceKind::InternalSolid, 20.0)], 0, &base).unwrap();
+        let ratio = length(&lines) / length(&plain);
+        assert!((ratio - 0.8).abs() < 0.03, "{ratio}");
+
+        // Over sparse fill: round threads of the nozzle's bore, along the
+        // grid's own direction so they cross its other lines.
+        let lines = fill(&[surface(SurfaceKind::InternalBridge, 20.0)], 3, &base).unwrap();
+        assert!(lines.iter().all(|line| line.role == Role::InternalBridge));
+        let thread = lines[0].flow;
+        assert_eq!((thread.width, thread.height), (0.4, 0.4));
+        assert!((thread.mm3_per_mm() - std::f64::consts::PI * 0.04).abs() < 1e-9);
+        let first = &lines[0].points;
+        let (dx, dy) = (first[1].x - first[0].x, first[1].y - first[0].y);
+        assert_eq!(dx.abs(), dy.abs(), "at 45 degrees");
     }
 }

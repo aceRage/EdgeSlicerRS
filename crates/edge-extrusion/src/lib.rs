@@ -168,6 +168,9 @@ pub enum Role {
     BottomSurface,
     /// Fill laid over air.
     BridgeInfill,
+    /// Solid fill laid across the sparse fill beneath it, the first layer
+    /// of a shell that closes over it.
+    InternalBridge,
     /// A line of whatever width fills a gap too narrow for a wall.
     GapFill,
     /// Loops around the print that prime the nozzle and show the bed is level.

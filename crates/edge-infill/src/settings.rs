@@ -37,6 +37,16 @@ pub struct InfillSettings {
     pub top_surface_line_width: FloatOrPercent,
     pub outer_wall_line_width: FloatOrPercent,
     pub widths: LineWidths,
+    /// Fill over air: its plastic as a share of a normal line's, whether
+    /// it is a round thread instead of a flattened line, and how closely
+    /// its lines are laid, from 0 to 1.
+    pub bridge_flow: f64,
+    pub thick_bridges: bool,
+    pub bridge_density: f64,
+    /// The same for solid fill laid over sparse fill.
+    pub internal_bridge_flow: f64,
+    pub thick_internal_bridges: bool,
+    pub internal_bridge_density: f64,
 }
 
 impl Default for InfillSettings {
@@ -61,6 +71,12 @@ impl Default for InfillSettings {
                 initial_layer_line_width: unset,
                 nozzle_diameter: 0.4,
             },
+            bridge_flow: 1.0,
+            thick_bridges: false,
+            bridge_density: 1.0,
+            internal_bridge_flow: 1.0,
+            thick_internal_bridges: true,
+            internal_bridge_density: 1.0,
         }
     }
 }
@@ -94,6 +110,21 @@ impl InfillSettings {
                 "line" | "rectilinear" | "zig-zag" => (Pattern::Lines, None),
                 other => (Pattern::Grid, Some(other.to_owned())),
             },
+        };
+        // A share of full density, written as a percentage.
+        let share = |key: &str, default: f64| -> Result<f64, ConfigError> {
+            Ok(match settings.float_or_percent(key)? {
+                Some(FloatOrPercent::Percent(percent) | FloatOrPercent::Value(percent)) => {
+                    (percent / 100.0).clamp(0.1, 1.0)
+                }
+                None => default,
+            })
+        };
+        let number = |key: &str, default: f64| -> Result<f64, ConfigError> {
+            Ok(settings.float(key)?.unwrap_or(default))
+        };
+        let flag = |key: &str, default: bool| -> Result<bool, ConfigError> {
+            Ok(settings.flag(key)?.unwrap_or(default))
         };
         let density = match settings.float_or_percent("sparse_infill_density")? {
             // A percentage whether or not the sign is written.
@@ -130,6 +161,18 @@ impl InfillSettings {
                     .and_then(|nozzles| nozzles.first().copied().flatten())
                     .unwrap_or(defaults.widths.nozzle_diameter),
             },
+            bridge_flow: number("bridge_flow", defaults.bridge_flow)?,
+            thick_bridges: flag("thick_bridges", defaults.thick_bridges)?,
+            bridge_density: share("bridge_density", defaults.bridge_density)?,
+            internal_bridge_flow: number("internal_bridge_flow", defaults.internal_bridge_flow)?,
+            thick_internal_bridges: flag(
+                "thick_internal_bridges",
+                defaults.thick_internal_bridges,
+            )?,
+            internal_bridge_density: share(
+                "internal_bridge_density",
+                defaults.internal_bridge_density,
+            )?,
         })
     }
 
@@ -158,11 +201,19 @@ impl InfillSettings {
         let flow =
             |width, auto| Flow::from_widths(&self.widths, width, auto, layer_height, first_layer);
         let sparse = flow(self.sparse_infill_line_width, Flow::auto_width(nozzle))?;
+        let solid = flow(
+            self.internal_solid_infill_line_width,
+            Flow::auto_width(nozzle),
+        )?;
+        let bridge = solid.bridging(self.bridge_flow, self.thick_bridges);
+        let internal_bridge =
+            solid.bridging(self.internal_bridge_flow, self.thick_internal_bridges);
         Ok(FillParams {
-            solid: flow(
-                self.internal_solid_infill_line_width,
-                Flow::auto_width(nozzle),
-            )?,
+            solid,
+            bridge,
+            bridge_spacing: bridge.spacing / self.bridge_density,
+            internal_bridge,
+            internal_bridge_spacing: internal_bridge.spacing / self.internal_bridge_density,
             // A top surface left unset is drawn at the nozzle's own width.
             top: flow(self.top_surface_line_width, nozzle)?,
             sparse,

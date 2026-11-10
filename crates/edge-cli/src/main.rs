@@ -652,6 +652,12 @@ fn slice(args: SliceArgs) -> Result<(), Failure> {
             &inside_walls,
             &infill.shells(layer_height)?,
         )?;
+        // Solid over sparse fill is laid as a bridge across it.
+        let surfaces = edge_infill::bridge_over_infill(
+            &surfaces,
+            &inside_walls,
+            infill.params(layer_height, false)?.solid.scaled_spacing(),
+        )?;
         classify_time += classifying.elapsed();
         let fills = surfaces
             .par_iter()
@@ -925,14 +931,15 @@ fn slice(args: SliceArgs) -> Result<(), Failure> {
     };
     let paths = || fills.iter().flatten();
     println!(
-        "infill at {}% {:?}: {:.1} cm² top, {:.1} bottom, {:.1} bridge, {:.1} solid, {:.1} sparse; \
-         {} lines, {:.2} m, {:.2} cm³",
+        "infill at {}% {:?}: {:.1} cm² top, {:.1} bottom, {:.1} bridge, {:.1} solid, {:.1} bridged \
+         over infill, {:.1} sparse; {} lines, {:.2} m, {:.2} cm³",
         infill.sparse_infill_density_percent,
         infill.pattern,
         area_of(SurfaceKind::Top),
         area_of(SurfaceKind::Bottom),
         area_of(SurfaceKind::Bridge),
         area_of(SurfaceKind::InternalSolid),
+        area_of(SurfaceKind::InternalBridge),
         area_of(SurfaceKind::Sparse),
         paths().count(),
         paths().map(ExtrusionPath::length_mm).sum::<f64>() / 1e3,
@@ -1226,6 +1233,7 @@ fn svg(layer: &LayerRegions, perimeters: &Perimeters, fills: &[ExtrusionPath]) -
             Role::TopSolidInfill => "#2a9d8f",
             Role::BottomSurface => "#8d6e63",
             Role::BridgeInfill => "#d62828",
+            Role::InternalBridge => "#e76f51",
             Role::SolidInfill => "#b5651d",
             Role::GapFill => "#f4f1de",
             _ => "#e09f3e",

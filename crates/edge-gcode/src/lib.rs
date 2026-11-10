@@ -1006,7 +1006,8 @@ impl Writer<'_> {
         // so does every outer wall (GCode.cpp `overhang_fan_on_for_role`).
         let fan = s.overhang_fan.filter(|_| !self.state.first_layer);
         let cooled = fan.is_some_and(|fan| {
-            role == Role::BridgeInfill || (fan.at.is_none() && role == Role::ExternalPerimeter)
+            matches!(role, Role::BridgeInfill | Role::InternalBridge)
+                || (fan.at.is_none() && role == Role::ExternalPerimeter)
         });
         let is_wall = matches!(role, Role::ExternalPerimeter | Role::Perimeter);
         let measured = (is_wall
@@ -1143,6 +1144,7 @@ impl Writer<'_> {
             Role::SolidInfill | Role::BottomSurface => s.internal_solid_infill_speed,
             Role::TopSolidInfill => s.top_surface_speed,
             Role::BridgeInfill | Role::OverhangPerimeter => s.bridge_speed,
+            Role::InternalBridge => s.internal_bridge_speed.resolve(s.bridge_speed),
             Role::GapFill => s.gap_infill_speed,
             Role::Skirt | Role::Brim => s.outer_wall_speed,
             Role::Support => s.support_speed,
@@ -1156,12 +1158,12 @@ impl Writer<'_> {
         let own = match role {
             _ if first_layer && s.initial_layer_acceleration > 0.0 => s.initial_layer_acceleration,
             // Anything laid over air, before its kind is looked at.
-            Role::BridgeInfill | Role::OverhangPerimeter
+            Role::BridgeInfill | Role::InternalBridge | Role::OverhangPerimeter
                 if s.bridge_acceleration.resolve(s.outer_wall_acceleration) > 0.0 =>
             {
                 s.bridge_acceleration.resolve(s.outer_wall_acceleration)
             }
-            Role::OverhangPerimeter => s.default_acceleration,
+            Role::OverhangPerimeter | Role::InternalBridge => s.default_acceleration,
             Role::ExternalPerimeter => s.outer_wall_acceleration,
             Role::Perimeter => s.inner_wall_acceleration,
             Role::TopSolidInfill => s.top_surface_acceleration,
@@ -1714,6 +1716,7 @@ fn role_name(role: Role) -> &'static str {
         Role::TopSolidInfill => "Top surface",
         Role::BottomSurface => "Bottom surface",
         Role::BridgeInfill => "Bridge",
+        Role::InternalBridge => "Internal Bridge",
         Role::GapFill => "Gap infill",
         Role::Skirt => "Skirt",
         Role::Brim => "Brim",
