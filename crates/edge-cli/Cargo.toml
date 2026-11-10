@@ -18,6 +18,7 @@ edge-mesh.workspace = true
 edge-perimeter.workspace = true
 edge-slice.workspace = true
 edge-support.workspace = true
+edge-tower.workspace = true
 clap.workspace = true
 rayon.workspace = true
 

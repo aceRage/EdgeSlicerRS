@@ -12,6 +12,7 @@ use edge_mesh::Mesh;
 use edge_perimeter::{Perimeters, WallSettings};
 use edge_slice::LayerRegions;
 use edge_support::SupportSettings;
+use edge_tower::TowerSettings;
 use rayon::prelude::*;
 
 type Failure = Box<dyn Error>;
@@ -262,6 +263,8 @@ struct Loaded {
     /// For a project, each object on the plate by itself, for what depends
     /// on which object is which. Empty for a bare model, which is one object.
     objects: Vec<Mesh>,
+    /// Which of the project's plates this is, counting from 0.
+    plate: usize,
 }
 
 fn load(args: &SliceArgs) -> Result<Loaded, Failure> {
@@ -283,6 +286,7 @@ fn load(args: &SliceArgs) -> Result<Loaded, Failure> {
             }],
             settings: None,
             objects: Vec::new(),
+            plate: 0,
         });
     }
 
@@ -333,6 +337,7 @@ fn load(args: &SliceArgs) -> Result<Loaded, Failure> {
         bodies,
         settings: project.settings,
         objects,
+        plate: plate.unwrap_or(0),
     })
 }
 
@@ -415,6 +420,7 @@ fn slice(args: SliceArgs) -> Result<(), Failure> {
         mut bodies,
         settings: project_settings,
         objects,
+        plate,
     } = load(&args)?;
     let load_time = started.elapsed();
     let is_project = project_settings.is_some();
@@ -484,6 +490,7 @@ fn slice(args: SliceArgs) -> Result<(), Failure> {
         .map(|body| edge_slice::Body {
             solid: &body.solid,
             negative: body.negative.as_ref(),
+            filament: body.filament,
         })
         .collect();
     let mut layers = edge_slice::slice_regions(&borrowed, &planes, scaled(closing_radius))?;
@@ -521,22 +528,68 @@ fn slice(args: SliceArgs) -> Result<(), Failure> {
     }
     let slice_time = started.elapsed();
 
+    // The filaments in use, and each one's share of every layer. With one
+    // filament its share is the layer itself.
+    let mut used: Vec<usize> = layers
+        .iter()
+        .flat_map(|layer| layer.by_filament.iter().map(|(filament, _)| *filament))
+        .collect();
+    used.sort_unstable();
+    used.dedup();
+    let shares: Vec<Vec<Vec<ExPolygon>>> = if used.is_empty() {
+        used = vec![bodies.first().map_or(1, |body| body.filament)];
+        Vec::new()
+    } else {
+        used.iter()
+            .map(|filament| {
+                layers
+                    .par_iter()
+                    .enumerate()
+                    .map(|(index, layer)| {
+                        let own = layer
+                            .by_filament
+                            .iter()
+                            .find(|(of, _)| of == filament)
+                            .map_or(&[][..], |(_, regions)| regions.as_slice());
+                        // The first layers are shrunk as a whole; each
+                        // share keeps what is left of it.
+                        if index < elephant_layers {
+                            edge_clip::intersection(own, &layer.regions).map_err(|e| e.to_string())
+                        } else {
+                            Ok(own.to_vec())
+                        }
+                    })
+                    .collect::<Result<Vec<_>, String>>()
+            })
+            .collect::<Result<_, String>>()?
+    };
+    let share = |filament: usize, layer: usize| -> &[ExPolygon] {
+        match shares.get(filament) {
+            Some(own) => &own[layer],
+            None => &layers[layer].regions,
+        }
+    };
+
     let started = Instant::now();
-    let perimeters = layers
-        .par_iter()
-        .enumerate()
-        .map(|(index, layer)| {
-            let height = if index == 0 {
-                first_layer_height
-            } else {
-                layer_height
-            };
-            let params = walls
-                .params_at(height, index, layers.len())
-                .map_err(|e| e.to_string())?;
-            edge_perimeter::classic(&layer.regions, &params).map_err(|e| e.to_string())
+    let walls_by: Vec<Vec<Perimeters>> = (0..used.len())
+        .map(|filament| {
+            (0..layers.len())
+                .into_par_iter()
+                .map(|index| {
+                    let height = if index == 0 {
+                        first_layer_height
+                    } else {
+                        layer_height
+                    };
+                    let params = walls
+                        .params_at(height, index, layers.len())
+                        .map_err(|e| e.to_string())?;
+                    edge_perimeter::classic(share(filament, index), &params)
+                        .map_err(|e| e.to_string())
+                })
+                .collect::<Result<Vec<Perimeters>, String>>()
         })
-        .collect::<Result<Vec<Perimeters>, String>>()?;
+        .collect::<Result<_, String>>()?;
     let perimeter_time = started.elapsed();
 
     // The part's outlines as modelled: what supports, brim and skirt stand
@@ -601,6 +654,7 @@ fn slice(args: SliceArgs) -> Result<(), Failure> {
             let body = [edge_slice::Body {
                 solid: mesh,
                 negative: None,
+                filament: 1,
             }];
             let first = edge_slice::slice_regions(&body, &planes[..1], scaled(closing_radius))?;
             if let Some(layer) = first.into_iter().next() {
@@ -634,37 +688,79 @@ fn slice(args: SliceArgs) -> Result<(), Failure> {
 
     let started = Instant::now();
     let infill = InfillSettings::from_settings(&settings)?;
-    let slices: Vec<&[ExPolygon]> = layers
-        .iter()
-        .map(|layer| layer.regions.as_slice())
-        .collect();
-    let inside_walls: Vec<&[ExPolygon]> = perimeters
-        .iter()
-        .map(|layer| layer.infill.as_slice())
-        .collect();
-    let surfaces = edge_infill::classify(
-        &slices,
-        &outlines,
-        &inside_walls,
-        &infill.shells(layer_height)?,
-    )?;
-    let classify_time = started.elapsed();
-    let fills = surfaces
-        .par_iter()
-        .enumerate()
-        .map(|(index, surfaces)| {
-            let height = if index == 0 {
-                first_layer_height
-            } else {
-                layer_height
-            };
-            let params = infill
-                .params(height, index == 0)
-                .map_err(|e| e.to_string())?;
-            edge_infill::fill(surfaces, index, &params).map_err(|e| e.to_string())
-        })
-        .collect::<Result<Vec<Vec<ExtrusionPath>>, String>>()?;
+    let mut classify_time = std::time::Duration::ZERO;
+    let mut surfaces_by = Vec::with_capacity(used.len());
+    let mut fills_by: Vec<Vec<Vec<ExtrusionPath>>> = Vec::with_capacity(used.len());
+    for (filament, perimeters) in walls_by.iter().enumerate() {
+        let classifying = Instant::now();
+        let slices: Vec<&[ExPolygon]> = (0..layers.len())
+            .map(|index| share(filament, index))
+            .collect();
+        let inside_walls: Vec<&[ExPolygon]> = perimeters
+            .iter()
+            .map(|layer| layer.infill.as_slice())
+            .collect();
+        // Whatever the filament, a surface is a top or a bottom by what
+        // the whole part has above and below it.
+        let surfaces = edge_infill::classify(
+            &slices,
+            &outlines,
+            &inside_walls,
+            &infill.shells(layer_height)?,
+        )?;
+        classify_time += classifying.elapsed();
+        let fills = surfaces
+            .par_iter()
+            .enumerate()
+            .map(|(index, surfaces)| {
+                let height = if index == 0 {
+                    first_layer_height
+                } else {
+                    layer_height
+                };
+                let params = infill
+                    .params(height, index == 0)
+                    .map_err(|e| e.to_string())?;
+                edge_infill::fill(surfaces, index, &params).map_err(|e| e.to_string())
+            })
+            .collect::<Result<Vec<Vec<ExtrusionPath>>, String>>()?;
+        surfaces_by.push(surfaces);
+        fills_by.push(fills);
+    }
     let infill_time = started.elapsed();
+
+    // Every filament's work on a layer taken together, for the figures
+    // below and for drawing. One filament's is used as it is.
+    let merged: Option<(Vec<Perimeters>, Vec<Vec<ExtrusionPath>>)> = (used.len() > 1).then(|| {
+        (0..layers.len())
+            .map(|index| {
+                let mut all = Perimeters {
+                    loops: Vec::new(),
+                    islands: Vec::new(),
+                    infill: Vec::new(),
+                };
+                let mut fill = Vec::new();
+                for filament in 0..used.len() {
+                    let own = &walls_by[filament][index];
+                    let from = all.loops.len();
+                    all.islands.extend(
+                        own.islands
+                            .iter()
+                            .map(|island| island.start + from..island.end + from),
+                    );
+                    all.loops.extend(own.loops.iter().cloned());
+                    all.infill.extend(own.infill.iter().cloned());
+                    fill.extend(fills_by[filament][index].iter().cloned());
+                }
+                (all, fill)
+            })
+            .unzip()
+    });
+    let (perimeters, fills): (&[Perimeters], &[Vec<ExtrusionPath>]) = match &merged {
+        Some((perimeters, fills)) => (perimeters, fills),
+        None => (&walls_by[0], &fills_by[0]),
+    };
+    let surfaces: Vec<&edge_infill::Surface> = surfaces_by.iter().flatten().flatten().collect();
 
     let carved = bodies.iter().filter(|body| body.negative.is_some()).count();
     println!(
@@ -732,7 +828,6 @@ fn slice(args: SliceArgs) -> Result<(), Failure> {
     let area_of = |kind: SurfaceKind| {
         surfaces
             .iter()
-            .flatten()
             .filter(|s| s.kind == kind)
             .map(|s| s.area.area_mm2())
             .sum::<f64>()
@@ -795,21 +890,125 @@ fn slice(args: SliceArgs) -> Result<(), Failure> {
 
     if let Some(path) = &args.gcode {
         let started = Instant::now();
+        let height_of = |index: usize| {
+            if index == 0 {
+                first_layer_height
+            } else {
+                layer_height
+            }
+        };
+        // Which filaments print on each layer, and in what order
+        // (ToolOrdering.cpp). The first layer takes them by the size of
+        // the smallest piece each prints, smaller first; every later layer
+        // starts with the tool already in hand and takes the rest from the
+        // highest down.
+        let on_layer = |filament: usize, index: usize| {
+            !walls_by[filament][index].loops.is_empty() || !fills_by[filament][index].is_empty()
+        };
+        let mut orders: Vec<Vec<usize>> = Vec::with_capacity(layers.len());
+        let mut in_hand: Option<usize> = None;
+        for index in 0..layers.len() {
+            let mut order: Vec<usize> = (0..used.len())
+                .filter(|filament| on_layer(*filament, index))
+                .collect();
+            match in_hand {
+                None => {
+                    let smallest = |filament: usize| {
+                        share(filament, index)
+                            .iter()
+                            .map(|region| region.contour.signed_area_mm2().abs())
+                            .fold(f64::INFINITY, f64::min)
+                    };
+                    order.sort_by(|a, b| smallest(*a).total_cmp(&smallest(*b)).then(a.cmp(b)));
+                }
+                Some(held) => {
+                    order.sort_by_key(|filament| (*filament != held, std::cmp::Reverse(*filament)));
+                }
+            }
+            // A layer with nothing of the part on it still has its place,
+            // for the tool in hand.
+            if order.is_empty() {
+                order.push(in_hand.unwrap_or(0));
+            }
+            in_hand = order.last().copied().or(in_hand);
+            orders.push(order);
+        }
+        // Tool changes on each layer: every switch, counting one at the
+        // start of a layer that begins with a tool not in hand.
+        let mut changes = vec![0usize; layers.len()];
+        let mut held = orders.first().and_then(|order| order.first().copied());
+        for (index, order) in orders.iter().enumerate() {
+            for filament in order {
+                if Some(*filament) != held {
+                    changes[index] += 1;
+                    held = Some(*filament);
+                }
+            }
+        }
+        let tower_settings = TowerSettings::from_settings(&settings, plate)?;
+        let heights: Vec<f64> = (0..layers.len()).map(height_of).collect();
+        let tower = edge_tower::plan(&changes, &heights, &tower_settings)?;
+        if let Some([a, b, c, d]) = tower.footprint {
+            println!(
+                "prime tower from {a:.1} x {b:.1} to {c:.1} x {d:.1} mm, on {} layer(s), for {} tool change(s)",
+                tower
+                    .layers
+                    .iter()
+                    .filter(|layer| !layer.finish.is_empty())
+                    .count(),
+                changes.iter().sum::<usize>(),
+            );
+        }
+        // What each tool prints on the tower when its turn comes: its own
+        // block after a change, and once a layer the tower's wall and fill,
+        // by the first tool to arrive, or by the tool in hand when none does.
+        let mut entries: Vec<(usize, usize, Vec<ExtrusionPath>)> = Vec::new();
+        let mut held = orders.first().and_then(|order| order.first().copied());
+        for (index, order) in orders.iter().enumerate() {
+            let mut blocks = tower.layers[index].changes.iter();
+            let mut finish = Some(&tower.layers[index].finish);
+            let any_change = changes[index] > 0;
+            for filament in order {
+                let mut lines = Vec::new();
+                let switched = Some(*filament) != held;
+                if switched {
+                    lines.extend(blocks.next().into_iter().flatten().cloned());
+                    held = Some(*filament);
+                }
+                if (switched || !any_change)
+                    && let Some(finish) = finish.take()
+                {
+                    lines.extend(finish.iter().cloned());
+                }
+                entries.push((index, *filament, lines));
+            }
+        }
+        // One set of settings for each filament up to the highest in use.
+        let highest = used.iter().copied().max().unwrap_or(1);
+        let prints: Vec<PrintSettings> = (0..highest)
+            .map(|filament| PrintSettings::for_filament(&settings, filament))
+            .collect::<Result<_, _>>()?;
         // Layer tops, measured from the bottom of the model as the bed.
-        let plan: Vec<edge_gcode::Layer<'_>> = (0..layers.len())
-            .map(|index| edge_gcode::Layer {
-                z: first_layer_height + index as f64 * layer_height,
-                height: if index == 0 {
-                    first_layer_height
-                } else {
-                    layer_height
-                },
-                around: &around[index],
-                support: &supports[index],
-                loops: &perimeters[index].loops,
-                islands: &perimeters[index].islands,
-                paths: &fills[index],
-                infill_area: &perimeters[index].infill,
+        // Skirt, brim and supports go to whichever tool starts the layer.
+        let plan: Vec<edge_gcode::Layer<'_>> = entries
+            .iter()
+            .enumerate()
+            .map(|(entry, (index, filament, lines))| {
+                let index = *index;
+                let starts = entry == 0 || entries[entry - 1].0 != index;
+                let own = &walls_by[*filament][index];
+                edge_gcode::Layer {
+                    z: first_layer_height + index as f64 * layer_height,
+                    height: height_of(index),
+                    filament: used[*filament] - 1,
+                    tower: lines,
+                    around: if starts { &around[index] } else { &[] },
+                    support: if starts { &supports[index] } else { &[] },
+                    loops: &own.loops,
+                    islands: &own.islands,
+                    paths: &fills_by[*filament][index],
+                    infill_area: &own.infill,
+                }
             })
             .collect();
         // Nothing may be sent to a printer that would run it off its bed.
@@ -818,8 +1017,9 @@ fn slice(args: SliceArgs) -> Result<(), Failure> {
                 let loops = layer.around.iter().chain(layer.loops);
                 loops.flat_map(|line| &line.polygon.points).chain(
                     layer
-                        .support
+                        .tower
                         .iter()
+                        .chain(layer.support)
                         .chain(layer.paths)
                         .flat_map(|line| &line.points),
                 )
@@ -843,7 +1043,7 @@ fn slice(args: SliceArgs) -> Result<(), Failure> {
         // Written whole or not at all: a file cut short by an error must
         // never be left where it could be sent to a printer.
         let mut text = Vec::new();
-        let summary = edge_gcode::write(&mut text, &plan, &print)?;
+        let summary = edge_gcode::write_tools(&mut text, &plan, &prints)?;
         fs::write(path, &text)?;
         let weight = match print.filament_density {
             Some(density) => format!(", {:.1} g", summary.filament_mm3 / 1000.0 * density),
@@ -873,8 +1073,26 @@ fn slice(args: SliceArgs) -> Result<(), Failure> {
             .iter()
             .chain(&adhesion.unsupported)
             .chain(&support.unsupported)
+            .chain(&tower_settings.unsupported)
         {
             println!("note: {note}");
+        }
+        // A filament with no tool of its own is written as the reference
+        // writes it, and said out loud: the printer may well refuse it.
+        for filament in used.iter().filter(|filament| **filament > print.tools) {
+            println!(
+                "warning: filament {filament} is used, but the printer has {} tools; T{} is written, as the \
+                 C++ slicer writes it, and the printer may not accept it",
+                print.tools,
+                filament - 1
+            );
+        }
+        if summary.tool_changes > 0 {
+            println!(
+                "{} tool change(s) between {} filaments",
+                summary.tool_changes,
+                used.len()
+            );
         }
         if summary.slowed_layers > 0 {
             println!(

@@ -139,6 +139,10 @@ pub enum Role {
     Support,
     /// The dense top of a support, which the part rests on.
     SupportInterface,
+    /// The prime tower: where a nozzle just brought into use is primed.
+    PrimeTower,
+    /// The first line a fresh nozzle lays on the tower, put down slowly.
+    PrimeLine,
 }
 
 /// An open line: the centre line the nozzle follows and what it extrudes.

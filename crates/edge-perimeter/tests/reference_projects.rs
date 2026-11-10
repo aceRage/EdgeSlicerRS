@@ -58,6 +58,7 @@ fn walls_are_well_formed_and_infill_stays_inside_on_every_reference_project() {
             .map(|body| Body {
                 solid: &body.solid,
                 negative: body.negative.as_ref(),
+                filament: body.filament,
             })
             .collect();
         // The project's own wall settings where it carries them.

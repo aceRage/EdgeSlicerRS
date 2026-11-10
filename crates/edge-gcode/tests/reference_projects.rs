@@ -73,6 +73,7 @@ fn every_reference_project_exports_well_formed_gcode_that_adds_up() {
             .map(|body| Body {
                 solid: &body.solid,
                 negative: body.negative.as_ref(),
+                filament: body.filament,
             })
             .collect();
         let settings = project.settings.unwrap_or_default();
@@ -115,6 +116,8 @@ fn every_reference_project_exports_well_formed_gcode_that_adds_up() {
             .map(|index| Layer {
                 z: 0.2 * (index + 1) as f64,
                 height: 0.2,
+                filament: 0,
+                tower: &[],
                 around: &[],
                 support: &[],
                 loops: &perimeters[index].loops,
@@ -229,4 +232,96 @@ fn every_reference_project_exports_well_formed_gcode_that_adds_up() {
         exported >= 25 && bytes > 1_000_000,
         "{exported} projects exported, {bytes} bytes"
     );
+}
+
+/// The Snapmaker U1's tool-change G-code is a script; it has to run as the
+/// reference runs it, from the profile as shipped.
+#[test]
+fn the_u1s_own_tool_change_gcode_runs() {
+    let profiles = reference().join("resources").join("profiles");
+    let machine = edge_config::Vendor::open(&profiles, "Snapmaker")
+        .unwrap()
+        .resolve(edge_config::Kind::Machine, "Snapmaker U1 (0.4 nozzle)")
+        .unwrap();
+    let mut settings = machine;
+    settings.insert(
+        "curr_bed_type",
+        edge_config::Value::One("Cool Plate".into()),
+    );
+    // What a process preset would bring.
+    for (key, value) in [("travel_speed", "500"), ("print_sequence", "by layer")] {
+        settings.insert(key, edge_config::Value::One(value.into()));
+    }
+    // What a filament preset would bring, for two filaments.
+    for (key, value) in [
+        ("filament_type", "PLA"),
+        ("nozzle_temperature", "220"),
+        ("nozzle_temperature_initial_layer", "225"),
+        ("cool_plate_temp_initial_layer", "35"),
+    ] {
+        settings.insert(key, edge_config::Value::Many(vec![value.into(); 2]));
+    }
+    let tools: Vec<PrintSettings> = (0..2)
+        .map(|filament| PrintSettings::for_filament(&settings, filament).unwrap())
+        .collect();
+    assert_eq!(tools[0].tools, 4);
+    assert!(tools[0].change_filament_gcode.is_some());
+
+    let layer = |z: f64, filament: usize| Layer {
+        z,
+        height: 0.2,
+        filament,
+        tower: &[],
+        around: &[],
+        support: &[],
+        loops: &[],
+        islands: &[],
+        paths: &[],
+        infill_area: &[],
+    };
+    let plan = [layer(0.2, 0), layer(0.2, 1), layer(0.4, 1), layer(0.4, 0)];
+    let mut out = Vec::new();
+    let summary = edge_gcode::write_tools(&mut out, &plan, &tools).unwrap();
+    let text = String::from_utf8(out).unwrap();
+    assert_eq!(summary.tool_changes, 2);
+    let lines: Vec<&str> = text.lines().collect();
+    let after = |marker: &str| -> Vec<&str> {
+        let at = lines.iter().position(|line| *line == marker).unwrap();
+        lines[at..].iter().copied().take(16).collect()
+    };
+    // Before the first layer: no waiting for a tool the start G-code has
+    // already brought up to temperature.
+    let opening = after("; Change Tool0 -> Tool0 (layer -1)");
+    assert!(opening.contains(&"T0") && opening.contains(&"G1 F21000"));
+    assert!(
+        !opening.iter().any(|line| line.starts_with("M109")),
+        "{opening:?}"
+    );
+    // On the first layer the new tool is heated to its first-layer
+    // temperature, waited for, selected and primed by the firmware.
+    let first = after("; Change Tool0 -> Tool1 (layer 0)");
+    for expected in [
+        "G91",
+        "G1 Z1.5 F1800",
+        "G90",
+        "G1 F21000",
+        "; 0",
+        "M109 S225 T1",
+        "M400",
+        "T1",
+        "SM_PRINT_PREEXTRUDE_FILAMENT INDEX=1",
+    ] {
+        assert!(first.contains(&expected), "missing {expected} in {first:?}");
+    }
+    // Above the first layer, the printing temperature; and no firmware
+    // priming on the way back to the tool the print started with.
+    let back = after("; Change Tool1 -> Tool0 (layer 1)");
+    assert!(back.contains(&"M109 S220 T0") && back.contains(&"T0"));
+    assert!(
+        !back
+            .iter()
+            .any(|line| line.starts_with("SM_PRINT_PREEXTRUDE"))
+    );
+    // The template selects the tool, so the tool is selected once a change.
+    assert_eq!(lines.iter().filter(|line| **line == "T1").count(), 1);
 }

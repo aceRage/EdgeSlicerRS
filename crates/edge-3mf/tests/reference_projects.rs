@@ -73,6 +73,7 @@ fn every_reference_project_opens_and_slices_into_closed_contours() {
             .map(|body| Body {
                 solid: &body.solid,
                 negative: body.negative.as_ref(),
+                filament: body.filament,
             })
             .collect();
         let planes = edge_slice::layer_planes(min[2].into(), max[2].into(), 0.2, 0.2);
@@ -170,4 +171,27 @@ fn plain_3mf_takes_names_from_model_settings() {
         .collect();
     assert_eq!(names, [Some("OrcaCube"), Some("OrcaPlug")]);
     assert!(project.plates.is_empty() && project.settings.is_none());
+}
+
+/// A project printed in several filaments says which part is printed in
+/// which, and its bodies come one to a filament.
+#[test]
+fn parts_keep_their_filaments() {
+    let project = Project::open(reference().join("tests").join("mcbrim_test.3mf")).unwrap();
+    let object = &project.objects[0];
+    let filaments: Vec<usize> = object.parts.iter().map(|part| part.filament).collect();
+    assert_eq!(filaments.len(), 3);
+    // Every part names a filament of its own, none the object's.
+    assert!(
+        filaments.iter().all(|filament| *filament > 1),
+        "{filaments:?}"
+    );
+    let plate = project.plate_index(1);
+    let bodies = project.bodies(plate);
+    let used: Vec<usize> = bodies.iter().map(|body| body.filament).collect();
+    assert_eq!(used, [2, 3, 4, 7]);
+    assert!(bodies.iter().all(|body| !body.solid.triangles.is_empty()));
+    // Together they are the same material as the plate's one mesh.
+    let all: usize = bodies.iter().map(|body| body.solid.triangles.len()).sum();
+    assert_eq!(all, project.mesh(plate).triangles.len());
 }

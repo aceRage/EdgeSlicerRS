@@ -125,6 +125,8 @@ pub struct PrintSettings {
     /// Speeds of a support's sparse body and of its dense top.
     pub support_speed: f64,
     pub support_interface_speed: f64,
+    /// The fastest a nozzle lays plastic on the prime tower.
+    pub wipe_tower_max_purge_speed: f64,
 
     /// Accelerations in mm/s²; zero means "leave it as it is".
     pub default_acceleration: f64,
@@ -150,6 +152,19 @@ pub struct PrintSettings {
     pub layer_change_gcode: Option<String>,
     pub filament_start_gcode: Option<String>,
     pub filament_end_gcode: Option<String>,
+    /// The printer's own G-code for swapping tools.
+    pub change_filament_gcode: Option<String>,
+    /// How far a filament is pulled back when its tool is put away.
+    pub retract_length_toolchange: f64,
+    /// What a tool waiting its turn is cooled by, when the profile keeps
+    /// idle nozzles from oozing; and how long before its turn it is heated
+    /// again, in seconds.
+    pub standby_temperature_delta: Option<f64>,
+    pub preheat_time: f64,
+    /// Whether the tool's temperature is waited for after a change.
+    pub tool_change_temperature_wait: bool,
+    /// How many tools the printer has.
+    pub tools: usize,
     /// Every setting, by name, for the templates to refer to.
     pub variables: Variables,
 
@@ -218,6 +233,7 @@ impl Default for PrintSettings {
             skirt_speed: 50.0,
             support_speed: 80.0,
             support_interface_speed: 80.0,
+            wipe_tower_max_purge_speed: 90.0,
             default_acceleration: 0.0,
             outer_wall_acceleration: 0.0,
             inner_wall_acceleration: 0.0,
@@ -235,6 +251,12 @@ impl Default for PrintSettings {
             layer_change_gcode: None,
             filament_start_gcode: None,
             filament_end_gcode: None,
+            change_filament_gcode: None,
+            retract_length_toolchange: 10.0,
+            standby_temperature_delta: None,
+            preheat_time: 30.0,
+            tool_change_temperature_wait: true,
+            tools: 1,
             variables: variables(&Settings::default(), None, None, None),
             unsupported: Vec::new(),
         }
@@ -556,6 +578,10 @@ impl PrintSettings {
                 "support_interface_speed",
                 defaults.support_interface_speed,
             )?,
+            wipe_tower_max_purge_speed: number(
+                "wipe_tower_max_purge_speed",
+                defaults.wipe_tower_max_purge_speed,
+            )?,
             default_acceleration: number("default_acceleration", 0.0)?,
             outer_wall_acceleration: number("outer_wall_acceleration", 0.0)?,
             inner_wall_acceleration: number("inner_wall_acceleration", 0.0)?,
@@ -588,6 +614,28 @@ impl PrintSettings {
             layer_change_gcode: template("layer_change_gcode"),
             filament_start_gcode: template("filament_start_gcode"),
             filament_end_gcode: template("filament_end_gcode"),
+            change_filament_gcode: settings
+                .text("change_filament_gcode")
+                .filter(|text| !text.trim().is_empty())
+                .map(unescaped),
+            retract_length_toolchange: number(
+                "retract_length_toolchange",
+                defaults.retract_length_toolchange,
+            )?,
+            standby_temperature_delta: match settings.flag("ooze_prevention")? {
+                Some(true) => Some(settings.float("standby_temperature_delta")?.unwrap_or(-5.0))
+                    .filter(|delta| *delta != 0.0),
+                _ => None,
+            },
+            preheat_time: settings
+                .float("preheat_time")?
+                .unwrap_or(defaults.preheat_time),
+            tool_change_temperature_wait: settings
+                .flag("tool_change_temprature_wait")?
+                .unwrap_or(defaults.tool_change_temperature_wait),
+            tools: settings
+                .texts("nozzle_diameter")
+                .map_or(defaults.tools, |nozzles| nozzles.len().max(1)),
             variables: variables(
                 settings,
                 bed_temperature,

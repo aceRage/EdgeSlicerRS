@@ -22,6 +22,7 @@ edge-perimeter = { path = "crates/edge-perimeter" }
 edge-slice = { path = "crates/edge-slice" }
 edge-support = { path = "crates/edge-support" }
 edge-template = { path = "crates/edge-template" }
+edge-tower = { path = "crates/edge-tower" }
 clap = { version = "4", features = ["derive", "env"] }
 clipper2-rs = "0.3"
 quick-xml = "0.42"

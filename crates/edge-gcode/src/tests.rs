@@ -65,6 +65,8 @@ fn one_layer<'a>(
     [Layer {
         z: 0.2,
         height: 0.2,
+        filament: 0,
+        tower: &[],
         around: &[],
         support: &[],
         loops,
@@ -218,6 +220,8 @@ fn speeds_follow_role_layer_and_the_melt_limit() {
         Layer {
             z: 0.2,
             height: 0.2,
+            filament: 0,
+            tower: &[],
             around: &[],
             support: &[],
             loops: &loops,
@@ -228,6 +232,8 @@ fn speeds_follow_role_layer_and_the_melt_limit() {
         Layer {
             z: 0.4,
             height: 0.2,
+            filament: 0,
+            tower: &[],
             around: &[],
             support: &[],
             loops: &loops,
@@ -277,6 +283,8 @@ fn temperatures_change_after_the_first_layer() {
     let layer = |z| Layer {
         z,
         height: 0.2,
+        filament: 0,
+        tower: &[],
         around: &[],
         support: &[],
         loops: &loops,
@@ -360,6 +368,8 @@ fn moves_inside_the_infill_area_can_skip_retraction() {
     let layer = [Layer {
         z: 0.2,
         height: 0.2,
+        filament: 0,
+        tower: &[],
         around: &[],
         support: &[],
         loops: &[],
@@ -404,6 +414,8 @@ fn printed(count: usize, settings: &PrintSettings) -> String {
         .map(|index| Layer {
             z: 0.2 * (index + 1) as f64,
             height: 0.2,
+            filament: 0,
+            tower: &[],
             around: &[],
             support: &[],
             loops: &loops,
@@ -974,4 +986,245 @@ fn supports_go_down_before_the_part_at_their_own_speeds() {
     // Their plastic is counted with the rest.
     let volume = 2.0 * (40.0 + 30.0) * flow().mm3_per_mm();
     assert!((summary.filament_mm3 - volume).abs() < 1e-9);
+}
+
+/// Two filaments' settings for a printer whose profile has a tool-change
+/// template, and keeps an idle tool 150 °C cooler.
+fn two_tools(change: Option<&str>) -> [PrintSettings; 2] {
+    let tool = |temperature: f64, flow_ratio: f64| PrintSettings {
+        machine_start_gcode: Some("PRINT_START\nT0".into()),
+        change_filament_gcode: change.map(str::to_owned),
+        filament_start_gcode: Some("; filament start".into()),
+        filament_end_gcode: Some("; filament end".into()),
+        nozzle_temperature: temperature,
+        nozzle_temperature_initial_layer: temperature + 10.0,
+        filament_flow_ratio: flow_ratio,
+        retract_length_toolchange: 10.0,
+        standby_temperature_delta: Some(-150.0),
+        tool_change_temperature_wait: false,
+        preheat_time: 30.0,
+        tools: 2,
+        ..basic()
+    };
+    [tool(210.0, 1.0), tool(240.0, 0.9)]
+}
+
+/// Layers 0.2 mm apart, each printed by the filaments named, in order: a
+/// wall for the first of them and one fill line for each of the others.
+fn in_filaments(layers: &[&[usize]], settings: &[PrintSettings]) -> (String, Summary) {
+    let loops = [wall(0.0, 0.0, 10.0, 0)];
+    let fill = [line((20.0, 0.0), (30.0, 0.0), Role::SolidInfill)];
+    let plan: Vec<Layer<'_>> = layers
+        .iter()
+        .enumerate()
+        .flat_map(|(index, filaments)| {
+            let (loops, fill) = (&loops, &fill);
+            filaments
+                .iter()
+                .enumerate()
+                .map(move |(turn, filament)| Layer {
+                    z: 0.2 * (index + 1) as f64,
+                    filament: *filament,
+                    loops: if turn == 0 { loops } else { &[] },
+                    islands: if turn == 0 { &[0..1] } else { &[] },
+                    paths: if turn == 0 { &[] } else { fill },
+                    ..one_layer(&[], &[], &[])[0]
+                })
+        })
+        .collect();
+    let mut out = Vec::new();
+    let summary = write_tools(&mut out, &plan, settings).unwrap();
+    (String::from_utf8(out).unwrap(), summary)
+}
+
+const CHANGE: &str = "; Change Tool[previous_extruder] -> Tool[next_extruder] (layer [layer_num])\n{\n\"M109 S\" + new_filament_temp + \" T\" + next_extruder + \"\n\";\n\"T\" + next_extruder + \"\n\";\n}";
+
+#[test]
+fn a_tool_change_goes_through_the_printers_own_gcode() {
+    let (text, summary) = in_filaments(&[&[0, 1], &[1, 0]], &two_tools(Some(CHANGE)));
+    assert_eq!(summary.tool_changes, 2);
+    // The print opens with the template for its first tool, from the tool
+    // the start G-code chose, before the first layer.
+    let opening = from(&text, "; custom gcode start", 8);
+    assert_eq!(
+        opening[..7],
+        [
+            "; custom gcode start",
+            "; Change Tool0 -> Tool0 (layer -1)",
+            "M109 S220 T0",
+            "T0",
+            "; custom gcode end",
+            ";_FORCE_RESUME_FAN_SPEED",
+            "; filament start",
+        ]
+    );
+    assert_eq!(opening[7], "M104 S220 T0 ; set nozzle temperature");
+
+    // The change on the first layer: pull the filament right back, end the
+    // old filament, cool its tool, run the template, start the new one.
+    let first = text.split(";LAYER_CHANGE").nth(1).unwrap();
+    let change: Vec<&str> = first
+        .lines()
+        .skip_while(|line| *line != "; filament end")
+        .take(9)
+        .collect();
+    assert_eq!(
+        change,
+        [
+            "; filament end",
+            "M104 S70 T0 ; set nozzle temperature ;cooldown",
+            "; custom gcode start",
+            "; Change Tool0 -> Tool1 (layer 0)",
+            "M109 S250 T1",
+            "T1",
+            "; custom gcode end",
+            "; filament start",
+            "M104 S250 T1 ; set nozzle temperature",
+        ]
+    );
+    let pulled: f64 = first
+        .lines()
+        .skip_while(|line| *line != ";TYPE:Outer wall")
+        .take_while(|line| *line != "; filament end")
+        .filter(|line| line.starts_with("G1 E-"))
+        .filter_map(|line| word(line, 'E'))
+        .sum();
+    assert!((pulled + 10.0).abs() < 1e-9, "pulled back {pulled}");
+    // The template names the tool, so it is not named again.
+    assert_eq!(text.lines().filter(|line| *line == "T1").count(), 1);
+
+    // On the second layer tool 0 comes back: what was pulled out of it is
+    // pushed back in, and it prints at its own temperature and flow.
+    let second = text.split(";LAYER_CHANGE").nth(2).unwrap();
+    assert!(second.contains("; Change Tool1 -> Tool0 (layer 1)"));
+    assert!(second.contains("M104 S210 T0 ; set nozzle temperature"));
+    let back = second
+        .lines()
+        .skip_while(|line| *line != "M104 S210 T0 ; set nozzle temperature")
+        .find(|line| line.starts_with("G1 E") && !line.starts_with("G1 E-"));
+    assert_eq!(word(back.unwrap(), 'E'), Some(10.0), "{back:?}");
+    // Tool 1 lays 10% less plastic for the same line.
+    let fed = |part: &str, y: f64| -> f64 {
+        part.lines()
+            .filter(|line| line.starts_with("G1 X30.000") && word(line, 'Y') == Some(y))
+            .filter_map(|line| word(line, 'E'))
+            .sum()
+    };
+    let (thin, full) = (fed(first, 0.0), fed(second, 0.0));
+    assert!((thin / full - 0.9).abs() < 1e-3, "{thin} against {full}");
+    // Tool 1 is not needed again after the second layer, so it is switched off.
+    assert!(second.contains("M104 S0 T1 ; set nozzle temperature ;cooldown"));
+}
+
+#[test]
+fn the_tool_is_named_when_the_profile_does_not() {
+    let silent = "; swapping\n";
+    let (text, _) = in_filaments(&[&[0, 1]], &two_tools(Some(silent)));
+    let layer = text.split(";LAYER_CHANGE").nth(1).unwrap();
+    let after: Vec<&str> = from(layer, "; swapping", 3);
+    assert_eq!(after[..3], ["; swapping", "; custom gcode end", "T1"]);
+    // With no template at all, the tool is simply selected.
+    let (text, summary) = in_filaments(&[&[0, 1]], &two_tools(None));
+    assert_eq!(summary.tool_changes, 1);
+    assert!(text.lines().any(|line| line == "T1") && !text.contains("custom gcode"));
+    // A template that needs something unknown stops the export.
+    let broken = two_tools(Some("{no_such_thing}"));
+    let error = write_tools(&mut Vec::new(), &[], &broken);
+    assert!(error.is_ok(), "nothing to print, nothing to expand");
+    let loops = [wall(0.0, 0.0, 10.0, 0)];
+    let plan = [
+        one_layer(&loops, &[0..1], &[])[0],
+        Layer {
+            filament: 1,
+            ..one_layer(&loops, &[0..1], &[])[0]
+        },
+    ];
+    let error = write_tools(&mut Vec::new(), &plan, &broken).unwrap_err();
+    assert!(
+        error.to_string().contains("change_filament_gcode"),
+        "{error}"
+    );
+}
+
+#[test]
+fn the_next_tool_is_warmed_ahead_of_its_turn() {
+    // One tool prints for a long time before the other is wanted: a slow
+    // wall, 160 mm at 2 mm/s.
+    let slow = |settings: PrintSettings| PrintSettings {
+        outer_wall_speed: 2.0,
+        initial_layer_speed: 2.0,
+        ..settings
+    };
+    let [a, b] = two_tools(Some(CHANGE));
+    let settings = [slow(a), slow(b)];
+    let loops = [wall(0.0, 0.0, 40.0, 0), wall(50.0, 0.0, 10.0, 0)];
+    let fill = [line((20.0, 0.0), (30.0, 0.0), Role::SolidInfill)];
+    let plan = [
+        one_layer(&loops, &[0..1, 1..2], &[])[0],
+        Layer {
+            filament: 1,
+            ..one_layer(&[], &[], &fill)[0]
+        },
+    ];
+    let mut out = Vec::new();
+    write_tools(&mut out, &plan, &settings).unwrap();
+    let text = String::from_utf8(out).unwrap();
+    let preheat = text
+        .lines()
+        .position(|line| line.starts_with("M104 S250 T1 ; preheat T1 time:"))
+        .expect("no preheat line");
+    let change = text
+        .lines()
+        .position(|line| line.starts_with("; Change Tool0 -> Tool1"))
+        .unwrap();
+    // Before the change, and after the long wall has started.
+    let wall_start = text
+        .lines()
+        .position(|line| line == ";TYPE:Outer wall")
+        .unwrap();
+    assert!(wall_start < preheat && preheat < change);
+    // No preheating when idle tools are not cooled in the first place.
+    let warm = settings.map(|settings| PrintSettings {
+        standby_temperature_delta: None,
+        ..settings
+    });
+    let mut out = Vec::new();
+    write_tools(&mut out, &plan, &warm).unwrap();
+    let text = String::from_utf8(out).unwrap();
+    assert!(!text.contains("preheat") && !text.contains("cooldown"));
+}
+
+#[test]
+fn the_prime_tower_is_printed_first_and_its_first_line_slowly() {
+    let part = [wall(0.0, 0.0, 10.0, 0)];
+    let mut slow = line((40.0, 40.0), (60.0, 40.0), Role::PrimeLine);
+    slow.flow = Flow::new(0.5, 0.2, 0.4).unwrap();
+    let tower = [slow, line((60.0, 40.6), (40.0, 40.6), Role::PrimeTower)];
+    let layers: Vec<Layer<'_>> = [0.2, 0.4]
+        .into_iter()
+        .map(|z| Layer {
+            z,
+            tower: &tower,
+            ..one_layer(&part, &[0..1], &[])[0]
+        })
+        .collect();
+    let (text, _) = print(&layers, &basic());
+    // Named once though it has two roles, and ahead of the part.
+    assert_eq!(
+        features(&text),
+        ["Prime tower", "Outer wall", "Prime tower", "Outer wall"]
+    );
+    // A third of the speed for the first line: of the first layer's 30 mm/s,
+    // then of the 90 mm/s the tower is held to.
+    let second = text.split(";LAYER_CHANGE").nth(2).unwrap();
+    let feeds: Vec<f64> = second
+        .lines()
+        .filter(|line| line.contains(" Y40.") && line.contains(" E"))
+        .filter_map(|line| word(line, 'F'))
+        .collect();
+    assert_eq!(feeds, [(0.33 * 90.0 * 60.0_f64).round(), 5400.0]);
+    assert_eq!(
+        feed_of(&text, "Prime tower"),
+        Some((0.33 * 30.0 * 60.0_f64).round())
+    );
 }

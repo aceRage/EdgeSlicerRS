@@ -21,7 +21,8 @@ replaces it until output matches on the printers we care about.
 | `crates/edge-support` | Supports under overhangs, normal (grid) and tree, with dense tops and feet |
 | `crates/edge-gcode` | Print order, seams, travel, retraction, wipe and lift, cooling, and extrusion, written as G-code |
 | `crates/edge-infill` | Top, bottom, bridge, solid and sparse surfaces, and the lines that fill them |
-| `crates/edge-template` | The placeholder language of custom G-code: `{expression}`, `{if}`, `[variable]` |
+| `crates/edge-template` | The placeholder language of custom G-code: `{expression}`, `{if}`, `[variable]`, and scripts |
+| `crates/edge-tower` | The prime tower a nozzle is primed on after a tool change |
 | `crates/edge-slice` | Mesh to per-layer contours, then to regions with holes; parallel across layers |
 | `crates/edge-cli` | The `edge` command line |
 | `tools/make_fixture.py` | Writes small test 3MFs (parts that need supports or a brim) to compare with the reference on |
@@ -99,6 +100,21 @@ Known gaps: painted triangles, per-object setting overrides, typed settings
 - Placement: each plate of a 3MF is moved to bed coordinates, and a bare
   model is centred on the bed of the machine preset. Export refuses
   toolpaths that leave the bed, and writes the file whole or not at all.
+- More than one filament, for a printer with a nozzle for each:
+  - Each part's filament is read from the 3MF, and every layer is shared
+    out among the filaments it is printed in. Each share gets its own
+    walls and fill, so parts of different filaments that touch each have
+    a wall along the join.
+  - Tools are taken in the reference's order on the first layer, and after
+    that each layer starts with the tool already in hand.
+  - A tool change follows the reference: pull the filament well back, cool
+    the tool being put away, run the printer's own tool-change G-code,
+    heat and select the new tool, and push its filament back as far as it
+    was pulled when last put away. The next tool starts warming half a
+    minute ahead, and a tool not needed again is switched off.
+  - A prime tower, on every layer up to the last tool change: a wall, a
+    block for each change where the new nozzle lays down `prime_volume`,
+    lines across the depth no change uses, a solid first layer and a brim.
 - Printer profiles: the machine's start, end and layer-change G-code and the
   filament's start and end G-code are expanded from their templates, with
   filament-level retraction overrides applied. For the Snapmaker U1 projects
@@ -107,13 +123,20 @@ Known gaps: painted triangles, per-object setting overrides, typed settings
   G-code when `--machine`, `--process` and `--filament` name its presets.
 
 **The G-code has not been run on a printer.** It is written to print on the
-U1 with one filament, and it matches the reference where the two have been
-compared, but nothing here has been tested on hardware. Without a printer
+U1, and it matches the reference where the two have been compared, but nothing here has been tested on hardware. Without a printer
 profile a generic preamble is written and the file is only good for viewing.
 
-Not done in G-code: tool changes and multiple extruders (the U1's
-tool-change template uses the statement form of the placeholder language,
-which is refused, not skipped), supports only where painted (none are
+Multi-filament printing is a first working version. Where parts of
+different filaments overlap, the higher-numbered filament has the overlap
+(the reference gives it to the later part). The order of tools within a
+layer after the first is simpler than the reference's. The tower is a
+plain box as wide as `prime_tower_width`: no ribbed or cone wall, no gap
+where the nozzle comes in, no ramming, and it is not kept out of the way
+of the skirt and brim. A filament with no tool of its own (the fifth on a
+four-tool printer) is written as the reference writes it, with a warning.
+Painted colours and filaments mixed from others are not read.
+
+Not done in G-code: supports only where painted (none are
 generated, and a note says so), the older tree styles (`tree_slim`,
 `tree_strong`, `tree_hybrid`: organic-style trees are built, with a note),
 rafts, brims inside holes, draft shields, seams placed by visibility or kept off overhangs, overhang
@@ -147,8 +170,8 @@ moved layer by layer, where the reference follows every place a branch
 could be and picks afterwards; a leaning branch is a circle on each layer,
 not an oval; and branches are not smoothed.
 
-Next: a first print on the U1 to check the output on hardware, then tool
-changes.
+Next: a first print on the U1 to check the output on hardware, then wall
+quality (thin walls, gap fill, overhangs).
 
 ## Comparing with the reference
 
@@ -189,6 +212,11 @@ Normal support lines come as close to the part as the reference's
 with the same layers of air above and below. Trees start from about as
 many tips (96 against 101 under the mushroom's cap) and join up a little
 more slowly on the way down.
+
+On `mcbrim_test.3mf`, printed in four filaments, both make tool changes on
+the same layers (27 here, 28 in the reference), and the start of the file
+is identical for 96 of its 99 lines; the tower here carries 30% less
+plastic, having no ribs.
 
 The reference does more in that time (overhangs, gap fill,
 fan and time planning), so the speed gap will narrow as stages are added.
