@@ -8,11 +8,10 @@
 //! not that code: a wall is probed every 2 mm and again wherever its
 //! speed, fan or kind changes, where the reference bisects and prunes.
 
+use std::cell::Cell;
+
 use edge_geom::{ExPolygon, Point2, scaled, unscaled};
 
-/// Further than this many mm from the outline a point is simply inside
-/// or outside; nothing that depends on the distance reaches so far.
-const REACH: f64 = 2.0;
 /// A wall is probed at least this often along its length, in mm.
 const PROBE: f64 = 2.0;
 /// A stretch whose two ends differ is halved until it is this short, in mm.
@@ -25,6 +24,10 @@ pub(crate) struct Below {
     /// the left of every edge: contours run counter-clockwise and holes
     /// clockwise.
     edges: Vec<[f64; 4]>,
+    /// Further than this many mm from the outline a point is simply
+    /// inside or outside. Cells are this size, so the edges within reach
+    /// of a point are all in its cell or the eight round it.
+    reach: f64,
     min: (f64, f64),
     columns: usize,
     rows: usize,
@@ -32,11 +35,15 @@ pub(crate) struct Below {
     cells: Vec<Vec<u32>>,
     /// The edges that cross each row of cells, for counting crossings.
     bands: Vec<Vec<u32>>,
+    /// For a cell with no edge in it or round it, whether it is over the
+    /// layer beneath, once that has been asked: 0 not yet, 1 over it, 2 not.
+    far: Vec<Cell<u8>>,
 }
 
 impl Below {
-    /// None when there is nothing beneath.
-    pub(crate) fn new(regions: &[ExPolygon]) -> Option<Self> {
+    /// None when there is nothing beneath. `reach` is as far, in mm, as
+    /// any distance asked for needs to be told apart.
+    pub(crate) fn new(regions: &[ExPolygon], reach: f64) -> Option<Self> {
         let mut edges = Vec::new();
         for ring in regions.iter().flat_map(ExPolygon::rings) {
             let points = &ring.points;
@@ -60,15 +67,17 @@ impl Below {
             min = (min.0.min(ax.min(*bx)), min.1.min(ay.min(*by)));
             max = (max.0.max(ax.max(*bx)), max.1.max(ay.max(*by)));
         }
-        let columns = ((max.0 - min.0) / REACH) as usize + 1;
-        let rows = ((max.1 - min.1) / REACH) as usize + 1;
+        let columns = ((max.0 - min.0) / reach) as usize + 1;
+        let rows = ((max.1 - min.1) / reach) as usize + 1;
         let mut below = Self {
             edges,
+            reach,
             min,
             columns,
             rows,
             cells: vec![Vec::new(); columns * rows],
             bands: vec![Vec::new(); rows],
+            far: vec![Cell::new(0); columns * rows],
         };
         for index in 0..below.edges.len() {
             let [ax, ay, bx, by] = below.edges[index];
@@ -85,17 +94,31 @@ impl Below {
     }
 
     fn column(&self, x: f64) -> usize {
-        (((x - self.min.0) / REACH).max(0.0) as usize).min(self.columns - 1)
+        (((x - self.min.0) / self.reach).max(0.0) as usize).min(self.columns - 1)
     }
 
     fn row(&self, y: f64) -> usize {
-        (((y - self.min.1) / REACH).max(0.0) as usize).min(self.rows - 1)
+        (((y - self.min.1) / self.reach).max(0.0) as usize).min(self.rows - 1)
     }
 
     /// Distance in mm from a point to the outline: negative over the layer
-    /// beneath, positive over air, and no further than [`REACH`] either way.
+    /// beneath, positive over air, and no further than the reach either way.
     pub(crate) fn signed_distance(&self, x: f64, y: f64) -> f64 {
+        let reach = self.reach;
+        let outside_grid = x < self.min.0 - reach
+            || y < self.min.1 - reach
+            || x > self.min.0 + (self.columns as f64 + 1.0) * reach
+            || y > self.min.1 + (self.rows as f64 + 1.0) * reach;
+        if outside_grid {
+            return reach;
+        }
         let (column, row) = (self.column(x), self.row(y));
+        let cell = row * self.columns + column;
+        match self.far[cell].get() {
+            1 => return -reach,
+            2 => return reach,
+            _ => {}
+        }
         // Nearest edge, and how far the point is from the line through it:
         // of two edges meeting at the nearest corner, the one the point
         // stands further off says which side the point is on.
@@ -116,26 +139,25 @@ impl Below {
                 }
             }
         }
-        if nearest <= REACH {
+        if nearest <= reach {
             return if inside { -nearest } else { nearest };
         }
         // Too far from any edge to say by the nearest: count the edges a
         // ray from the point crosses.
-        let outside_grid = x < self.min.0
-            || y < self.min.1
-            || x > self.min.0 + self.columns as f64 * REACH
-            || y > self.min.1 + self.rows as f64 * REACH;
-        if outside_grid {
-            return REACH;
-        }
         let mut inside = false;
-        for &index in &self.bands[row] {
-            let [ax, ay, bx, by] = self.edges[index as usize];
-            if (ay > y) != (by > y) && x < ax + (y - ay) / (by - ay) * (bx - ax) {
-                inside = !inside;
+        if y >= self.min.1 && y <= self.min.1 + self.rows as f64 * reach {
+            for &index in &self.bands[row] {
+                let [ax, ay, bx, by] = self.edges[index as usize];
+                if (ay > y) != (by > y) && x < ax + (y - ay) / (by - ay) * (bx - ax) {
+                    inside = !inside;
+                }
             }
         }
-        if inside { -REACH } else { REACH }
+        // With no edge in the cell or round it, the whole cell is alike.
+        if nearest == f64::MAX {
+            self.far[cell].set(if inside { 1 } else { 2 });
+        }
+        if inside { -reach } else { reach }
     }
 }
 
@@ -324,7 +346,7 @@ mod tests {
         let mut hole = square(8.0, 8.0, 4.0).contour;
         hole.points.reverse();
         plate.holes.push(hole);
-        let below = Below::new(&[plate]).unwrap();
+        let below = Below::new(&[plate], 2.0).unwrap();
         let near = |found: f64, wanted: f64| (found - wanted).abs() < 1e-9;
         assert!(near(below.signed_distance(1.0, 10.0), -1.0));
         assert!(near(below.signed_distance(-0.5, 10.0), 0.5));
@@ -336,9 +358,12 @@ mod tests {
         assert!(near(below.signed_distance(-0.3, -0.4), 0.5));
         assert!(below.signed_distance(0.3, 0.4) < 0.0);
         // Far away either side.
-        assert_eq!(below.signed_distance(4.0, 4.0), -REACH);
-        assert_eq!(below.signed_distance(40.0, 4.0), REACH);
-        assert!(Below::new(&[]).is_none());
+        assert_eq!(below.signed_distance(4.0, 4.0), -2.0);
+        // Asked again, the cell remembers.
+        assert_eq!(below.signed_distance(4.1, 4.2), -2.0);
+        assert_eq!(below.signed_distance(40.0, 4.0), 2.0);
+        assert_eq!(below.signed_distance(23.5, 4.0), 2.0);
+        assert!(Below::new(&[], 2.0).is_none());
     }
 
     #[test]
@@ -366,7 +391,7 @@ mod tests {
 
     #[test]
     fn a_wall_is_cut_where_it_leaves_the_layer_beneath() {
-        let below = Below::new(&[square(0.0, 0.0, 10.0)]).unwrap();
+        let below = Below::new(&[square(0.0, 0.0, 10.0)], 0.6).unwrap();
         let sections = [(0.1, 100.0), (0.5, 50.0), (1.0, 20.0)];
         let speed = |short: f64| speed_for(&sections, 0.4, 100.0, short);
         let judge = Judge {

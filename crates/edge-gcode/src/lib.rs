@@ -178,6 +178,8 @@ pub fn write_tools(
         last_use,
         marks: Vec::new(),
         below: None,
+        measured: Vec::new(),
+        measured_used: 0,
     };
     let several = layers.iter().any(|layer| layer.filament > 0);
     writer.preamble(several)?;
@@ -253,7 +255,16 @@ struct Writer<'a> {
     marks: Vec<(usize, f64)>,
     /// The outline of the layer beneath the one being written.
     below: Option<overhang::Below>,
+    /// Walls measured against it so far this layer, each with what tells
+    /// it apart, and how many of them the pass being written has used: a
+    /// layer laid out a second time, slower, measures nothing again.
+    measured: Vec<(Measured, Vec<overhang::Piece>)>,
+    measured_used: usize,
 }
+
+/// What tells one measured wall from another: where it starts and ends,
+/// how many points it has, its kind and its width.
+type Measured = (Point2, Point2, usize, Role, u64);
 
 /// Where the machine stands as the text is written. Kept apart so a layer
 /// can be laid out once to see how long it takes and then again, slower.
@@ -727,7 +738,9 @@ impl Writer<'_> {
         self.below = if index == 0 {
             None
         } else {
-            overhang::Below::new(layer.below)
+            // Nothing a wall is judged by reaches further than its own
+            // width from the outline beneath.
+            overhang::Below::new(layer.below, (1.5 * s.nozzle_diameter).max(0.6))
         };
 
         // Lay the layer out to see how long it takes; if that is too short
@@ -735,6 +748,8 @@ impl Writer<'_> {
         let head = self.out.len();
         let before = self.state.clone();
         self.slowdown = Slowdown::None;
+        self.measured.clear();
+        self.measured_used = 0;
         self.body(index, parts, cursor, after)?;
         if s.slow_down_for_layer_cooling {
             let slowdown = self
@@ -746,6 +761,7 @@ impl Writer<'_> {
                 self.settings = &self.all[self.state.tool];
                 self.filament_area = PI * (self.settings.filament_diameter / 2.0).powi(2);
                 self.slowdown = slowdown;
+                self.measured_used = 0;
                 self.body(index, parts, cursor, after)?;
                 self.state.summary.slowed_layers += 1;
             }
@@ -1010,50 +1026,79 @@ impl Writer<'_> {
                 || (fan.at.is_none() && role == Role::ExternalPerimeter)
         });
         let is_wall = matches!(role, Role::ExternalPerimeter | Role::Perimeter);
-        let measured = (is_wall
-            && (s.enable_overhang_speed || s.detect_overhang_wall || fan.is_some()))
-        .then_some(self.below.as_ref())
-        .flatten()
-        .map(|below| {
-            // The wall's speed where it is fully supported, and where a
-            // quarter, a half, three quarters and nearly all of it hangs
-            // over; a bridge's where nothing is under it (GCode.cpp `_extrude`).
-            let mut usual = if role == Role::ExternalPerimeter {
-                s.outer_wall_speed
-            } else {
-                s.inner_wall_speed
-            };
-            if s.filament_max_volumetric_speed > 0.0 {
-                usual = usual.min(s.filament_max_volumetric_speed / flow.mm3_per_mm());
-            }
-            let step = |speed: FloatOrPercent| {
-                let speed = speed.resolve(usual);
-                if speed < 0.5 { usual } else { speed }
-            };
-            let sections = [
-                (0.1, usual),
-                (0.25, step(s.overhang_speeds[0])),
-                (0.5, step(s.overhang_speeds[1])),
-                (0.75, step(s.overhang_speeds[2])),
-                (0.87, step(s.overhang_speeds[3])),
-                (1.0, s.bridge_speed),
-            ];
-            let speed = |short: f64| {
-                if s.enable_overhang_speed {
-                    overhang::speed_for(&sections, flow.width, motion.speed, short)
+        let key: Measured = (
+            points[0],
+            points[points.len() - 1],
+            points.len(),
+            role,
+            flow.width.to_bits(),
+        );
+        // The same wall, met in the same order, on the layer's second pass.
+        let known = self
+            .measured
+            .get(self.measured_used)
+            .filter(|(known, _)| *known == key)
+            .map(|(_, pieces)| pieces.clone());
+        let measure = is_wall
+            && known.is_none()
+            && (s.enable_overhang_speed || s.detect_overhang_wall || fan.is_some());
+        let measured = measure
+            .then_some(self.below.as_ref())
+            .flatten()
+            .map(|below| {
+                // The wall's speed where it is fully supported, and where a
+                // quarter, a half, three quarters and nearly all of it hangs
+                // over; a bridge's where nothing is under it (GCode.cpp `_extrude`).
+                let mut usual = if role == Role::ExternalPerimeter {
+                    s.outer_wall_speed
                 } else {
-                    motion.speed
+                    s.inner_wall_speed
+                };
+                if s.filament_max_volumetric_speed > 0.0 {
+                    usual = usual.min(s.filament_max_volumetric_speed / flow.mm3_per_mm());
                 }
-            };
-            overhang::Judge {
-                below,
-                width: flow.width,
-                clear_beyond: s.detect_overhang_wall.then_some(0.5 * s.nozzle_diameter),
-                speed: &speed,
-                fan_at: fan.and_then(|fan| fan.at),
+                let step = |speed: FloatOrPercent| {
+                    let speed = speed.resolve(usual);
+                    if speed < 0.5 { usual } else { speed }
+                };
+                let sections = [
+                    (0.1, usual),
+                    (0.25, step(s.overhang_speeds[0])),
+                    (0.5, step(s.overhang_speeds[1])),
+                    (0.75, step(s.overhang_speeds[2])),
+                    (0.87, step(s.overhang_speeds[3])),
+                    (1.0, s.bridge_speed),
+                ];
+                let speed = |short: f64| {
+                    if s.enable_overhang_speed {
+                        overhang::speed_for(&sections, flow.width, motion.speed, short)
+                    } else {
+                        motion.speed
+                    }
+                };
+                overhang::Judge {
+                    below,
+                    width: flow.width,
+                    clear_beyond: s.detect_overhang_wall.then_some(0.5 * s.nozzle_diameter),
+                    speed: &speed,
+                    fan_at: fan.and_then(|fan| fan.at),
+                }
+                .pieces(points)
+            });
+        let measured = match (known, measured) {
+            (Some(pieces), _) => {
+                self.measured_used += 1;
+                Some(pieces)
             }
-            .pieces(points)
-        });
+            (None, Some(pieces)) => {
+                // Anything kept from a pass that went another way is dropped.
+                self.measured.truncate(self.measured_used);
+                self.measured.push((key, pieces.clone()));
+                self.measured_used += 1;
+                Some(pieces)
+            }
+            (None, None) => None,
+        };
         match measured {
             Some(pieces) => {
                 let bridge = flow.bridging(s.bridge_flow, s.thick_bridges);

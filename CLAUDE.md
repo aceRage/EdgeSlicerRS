@@ -41,6 +41,7 @@ to a stage and say in the PR what moved.
   any thread count. Parity testing depends on it.
 - Only `edge-clip` may depend on the clipping library; every other crate
   goes through its API, so the library can be replaced in one place.
+  The same holds for `edge-medial` and the Voronoi library.
 - G-code is headed for a real printer. Anything a profile asks for that the
   engine cannot do yet (an unknown template variable, an unsupported
   setting) is an error or a listed note, never a silent default.
