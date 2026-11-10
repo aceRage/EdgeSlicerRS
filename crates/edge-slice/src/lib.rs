@@ -95,14 +95,28 @@ pub fn slice(mesh: &Mesh, planes: &[f64]) -> Vec<Layer> {
         .collect()
 }
 
+/// One triangle's cut: a directed step from one mesh edge to another.
+struct Segment {
+    from: u64,
+    to: u64,
+    /// Where the segment starts, on the `from` edge.
+    point: Point2,
+    /// Another unused segment leaving the same edge, or `NONE`.
+    sibling: u32,
+}
+
+const NONE: u32 = u32::MAX;
+
 /// Every triangle in `triangles` must cross the plane at `z`.
 fn slice_layer(mesh: &Mesh, z: f64, triangles: &[u32]) -> Layer {
-    // Each triangle contributes one directed segment between two mesh edges.
-    // Keyed by the edge a segment starts on, a watertight mesh gives every
-    // edge exactly one successor, so contours chain exactly with no tolerance.
-    let mut next: FxHashMap<u64, (u64, Point2)> =
+    // Each triangle contributes one segment between two mesh edges, and
+    // segments chain by edge identity, so contours close exactly with no
+    // distance tolerance. A watertight mesh has one segment leaving each edge.
+    // Where shells touch along an edge several leave it and as many arrive,
+    // so taking any unused one still closes every contour.
+    let mut segments: Vec<Segment> = Vec::with_capacity(triangles.len());
+    let mut unused: FxHashMap<u64, u32> =
         FxHashMap::with_capacity_and_hasher(triangles.len(), Default::default());
-    let mut starts = Vec::with_capacity(triangles.len());
 
     for &triangle in triangles {
         let ids = mesh.triangles[triangle as usize];
@@ -130,45 +144,54 @@ fn slice_layer(mesh: &Mesh, z: f64, triangles: &[u32]) -> Layer {
         } else {
             (entering, leaving)
         };
-        if next
-            .insert(from, (to, Point2::from_mm(point[0], point[1])))
-            .is_none()
-        {
-            starts.push(from);
-        }
+        let sibling = unused.insert(from, segments.len() as u32).unwrap_or(NONE);
+        segments.push(Segment {
+            from,
+            to,
+            point: Point2::from_mm(point[0], point[1]),
+            sibling,
+        });
     }
 
-    // Trace in insertion order so output is identical run to run and across
-    // thread counts; parity checks against the reference depend on that.
+    // Removes and returns an unused segment leaving `edge`.
+    let take = |unused: &mut FxHashMap<u64, u32>, edge: u64| -> Option<&Segment> {
+        let head = unused.get_mut(&edge)?;
+        let segment = segments.get(*head as usize)?;
+        *head = segment.sibling;
+        Some(segment)
+    };
+
+    // Start contours in triangle order so output is identical run to run and
+    // across thread counts; parity checks against the reference depend on that.
     let mut polygons = Vec::new();
     let mut open_chains = 0;
-    for start in starts {
-        let Some((mut to, first)) = next.remove(&start) else {
-            continue;
-        };
-        let mut points = vec![first];
-        let closed = loop {
-            if to == start {
-                break true;
-            }
-            match next.remove(&to) {
-                Some((after, point)) => {
-                    // Planes through a vertex yield zero-length segments.
-                    if points.last() != Some(&point) {
-                        points.push(point);
-                    }
-                    to = after;
+    for start in segments.iter().map(|segment| segment.from) {
+        while let Some(first) = take(&mut unused, start) {
+            let mut points = vec![first.point];
+            let mut to = first.to;
+            let closed = loop {
+                if to == start {
+                    break true;
                 }
-                None => break false,
+                match take(&mut unused, to) {
+                    Some(segment) => {
+                        // Planes through a vertex yield zero-length segments.
+                        if points.last() != Some(&segment.point) {
+                            points.push(segment.point);
+                        }
+                        to = segment.to;
+                    }
+                    None => break false,
+                }
+            };
+            if points.len() > 1 && points.last() == points.first() {
+                points.pop();
             }
-        };
-        if points.len() > 1 && points.last() == points.first() {
-            points.pop();
-        }
-        if !closed {
-            open_chains += 1;
-        } else if points.len() >= 3 {
-            polygons.push(Polygon { points });
+            if !closed {
+                open_chains += 1;
+            } else if points.len() >= 3 {
+                polygons.push(Polygon { points });
+            }
         }
     }
 
@@ -256,6 +279,17 @@ mod tests {
         assert_eq!(areas(&layers[1]), vec![100.0]);
         assert_eq!(layers[1].polygons[0].points.len(), 4);
         assert!(layers[2].polygons.is_empty());
+    }
+
+    #[test]
+    fn shells_touching_along_an_edge_both_close() {
+        // The vertical edge at x = y = 1 belongs to four triangles.
+        let mut soup = cuboid([0.0; 3], [1.0; 3]);
+        soup.extend(cuboid([1.0, 1.0, 0.0], [2.0, 2.0, 1.0]));
+        let layers = slice(&Mesh::from_triangle_soup(soup), &[0.5]);
+        assert_eq!(layers[0].open_chains, 0);
+        assert_eq!(areas(&layers[0]).iter().sum::<f64>(), 2.0);
+        assert!(areas(&layers[0]).iter().all(|&area| area > 0.0));
     }
 
     #[test]

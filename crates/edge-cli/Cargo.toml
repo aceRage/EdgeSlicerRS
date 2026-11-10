@@ -6,6 +6,8 @@ license.workspace = true
 publish.workspace = true
 
 [dependencies]
+edge-3mf.workspace = true
+edge-config.workspace = true
 edge-geom.workspace = true
 edge-mesh.workspace = true
 edge-slice.workspace = true

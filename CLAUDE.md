@@ -9,8 +9,14 @@ is the goal; a Tauri + web UI comes second. See README.md for layout and status.
 cargo test --workspace
 cargo clippy --workspace --all-targets -- -D warnings
 cargo fmt --all
-cargo run --release -p edge-cli -- slice <model.stl> [--svg out.svg]
+cargo run --release -p edge-cli -- slice <model.stl|project.3mf> [--plate N] [--svg out.svg]
+cargo run --release -p edge-cli -- inspect <project.3mf>
+cargo run --release -p edge-cli -- preset <vendor> <kind> <name> --profiles reference/EdgeSlicer/resources/profiles
 ```
+
+Two test files (`edge-config/tests/reference_profiles.rs`,
+`edge-3mf/tests/reference_projects.rs`) run against everything in the
+submodule; a new reader or loader feature should keep them at zero failures.
 
 On the Mac mini cargo comes from Homebrew rustup: `/opt/homebrew/opt/rustup/bin`.
 

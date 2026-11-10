@@ -9,13 +9,19 @@ license = "AGPL-3.0-only"
 publish = false
 
 [workspace.dependencies]
+edge-3mf = { path = "crates/edge-3mf" }
+edge-config = { path = "crates/edge-config" }
 edge-geom = { path = "crates/edge-geom" }
 edge-mesh = { path = "crates/edge-mesh" }
 edge-slice = { path = "crates/edge-slice" }
-clap = { version = "4", features = ["derive"] }
+clap = { version = "4", features = ["derive", "env"] }
+quick-xml = "0.42"
 rayon = "1"
 rustc-hash = "2"
+serde_json = "1"
+tempfile = "3"
 thiserror = "2"
+zip = { version = "9", default-features = false, features = ["deflate-flate2-zlib-rs"] }
 
 [workspace.lints.rust]
 unsafe_code = "deny"

@@ -1,8 +1,13 @@
-use std::{error::Error, fmt::Write as _, fs, path::PathBuf, time::Instant};
+use std::{error::Error, fmt::Write as _, fs, path::PathBuf, process::ExitCode, time::Instant};
 
 use clap::{Args, Parser, Subcommand};
+use edge_3mf::{PartKind, Project};
+use edge_config::{Kind, Settings, Vendor};
 use edge_geom::unscaled;
+use edge_mesh::Mesh;
 use edge_slice::Layer;
+
+type Failure = Box<dyn Error>;
 
 #[derive(Parser)]
 #[command(name = "edge", version, about = "EdgeSlicer engine command line")]
@@ -15,18 +20,43 @@ struct Cli {
 enum Command {
     /// Cut a model into layer contours and report what was found and how long it took.
     Slice(SliceArgs),
+    /// Show what a 3MF project contains.
+    Inspect {
+        /// 3MF file.
+        project: PathBuf,
+    },
+    /// Print a preset with everything it inherits, as JSON.
+    Preset(PresetArgs),
+}
+
+#[derive(Args)]
+struct ProfilesArgs {
+    /// Directory holding the vendor profiles, e.g. EdgeSlicer's resources/profiles.
+    #[arg(long, env = "EDGE_PROFILES")]
+    profiles: Option<PathBuf>,
 }
 
 #[derive(Args)]
 struct SliceArgs {
-    /// STL file, binary or ASCII.
+    /// STL (binary or ASCII) or 3MF file.
     model: PathBuf,
-    /// Layer height in mm.
-    #[arg(long, default_value_t = 0.2)]
-    layer_height: f64,
-    /// First layer height in mm; defaults to the layer height.
+    /// Plate number to slice from a 3MF; defaults to plate 1 when the file has plates.
+    #[arg(long)]
+    plate: Option<u32>,
+    /// Layer height in mm. Overrides the process preset and the 3MF's own settings.
+    #[arg(long)]
+    layer_height: Option<f64>,
+    /// First layer height in mm.
     #[arg(long)]
     first_layer_height: Option<f64>,
+    /// Vendor whose process preset supplies the layer heights; needs --process.
+    #[arg(long, requires = "process")]
+    vendor: Option<String>,
+    /// Process preset name within --vendor.
+    #[arg(long, requires = "vendor")]
+    process: Option<String>,
+    #[command(flatten)]
+    profiles: ProfilesArgs,
     /// Worker threads; defaults to all cores.
     #[arg(long)]
     threads: Option<usize>,
@@ -38,17 +68,213 @@ struct SliceArgs {
     svg_layer: Option<usize>,
 }
 
-fn main() -> Result<(), Box<dyn Error>> {
-    match Cli::parse().command {
+#[derive(Args)]
+struct PresetArgs {
+    /// Vendor name, e.g. Snapmaker.
+    vendor: String,
+    /// machine-model, machine, process or filament.
+    kind: Kind,
+    /// Preset name; a name the preset used to have also works.
+    name: String,
+    /// Print only this setting instead of the whole preset.
+    #[arg(long)]
+    key: Option<String>,
+    #[command(flatten)]
+    profiles: ProfilesArgs,
+}
+
+fn main() -> ExitCode {
+    let result = match Cli::parse().command {
         Command::Slice(args) => slice(args),
+        Command::Inspect { project } => inspect(project),
+        Command::Preset(args) => preset(args),
+    };
+    match result {
+        Ok(()) => ExitCode::SUCCESS,
+        Err(error) => {
+            eprintln!("error: {error}");
+            ExitCode::FAILURE
+        }
     }
 }
 
-fn slice(args: SliceArgs) -> Result<(), Box<dyn Error>> {
-    let first_layer_height = args.first_layer_height.unwrap_or(args.layer_height);
-    if !(args.layer_height > 0.0 && first_layer_height > 0.0) {
+impl ProfilesArgs {
+    fn vendor(&self, name: &str) -> Result<Vendor, Failure> {
+        let dir = self
+            .profiles
+            .as_ref()
+            .ok_or("no profiles directory; pass --profiles or set EDGE_PROFILES")?;
+        Ok(Vendor::open(dir, name)?)
+    }
+}
+
+fn preset(args: PresetArgs) -> Result<(), Failure> {
+    let settings = args
+        .profiles
+        .vendor(&args.vendor)?
+        .resolve(args.kind, &args.name)?;
+    match args.key {
+        None => println!("{}", settings.to_json()),
+        Some(key) => match settings.texts(&key) {
+            Some(values) => println!("{}", values.join("\n")),
+            None => return Err(format!("{} has no setting {key}", args.name).into()),
+        },
+    }
+    Ok(())
+}
+
+fn inspect(path: PathBuf) -> Result<(), Failure> {
+    let project = Project::open(&path).map_err(|e| format!("{}: {e}", path.display()))?;
+    println!(
+        "{}: {} objects, {} plates",
+        path.display(),
+        project.objects.len(),
+        project.plates.len()
+    );
+    for object in &project.objects {
+        let name = object.name.as_deref().unwrap_or("(unnamed)");
+        let triangles: usize = object
+            .parts
+            .iter()
+            .map(|part| part.mesh.triangles.len())
+            .sum();
+        println!(
+            "  object {} {name}: {} instances, {} parts, {triangles} triangles",
+            object.id,
+            object.instances.len(),
+            object.parts.len(),
+        );
+        for part in object
+            .parts
+            .iter()
+            .filter(|part| part.kind != PartKind::Normal || object.parts.len() > 1)
+        {
+            println!(
+                "    {:?} {}",
+                part.kind,
+                part.name.as_deref().unwrap_or("(unnamed)")
+            );
+        }
+    }
+    for plate in &project.plates {
+        let name = if plate.name.is_empty() {
+            String::new()
+        } else {
+            format!(" \"{}\"", plate.name)
+        };
+        println!(
+            "  plate {}{name}: {} instances",
+            plate.id,
+            plate.instances.len()
+        );
+    }
+    match &project.settings {
+        None => println!("  no project settings"),
+        Some(settings) => {
+            println!("  {} project settings", settings.len());
+            for key in [
+                "printer_settings_id",
+                "print_settings_id",
+                "filament_settings_id",
+                "layer_height",
+            ] {
+                if let Some(values) = settings.texts(key) {
+                    println!("    {key}: {}", values.join(", "));
+                }
+            }
+        }
+    }
+    Ok(())
+}
+
+/// A model ready to slice and, for a project, the settings it was saved with.
+fn load(args: &SliceArgs) -> Result<(Mesh, Option<Settings>), Failure> {
+    let path = &args.model;
+    let named = |e: &dyn Error| format!("{}: {e}", path.display());
+    let is_3mf = path
+        .extension()
+        .is_some_and(|ext| ext.eq_ignore_ascii_case("3mf"));
+    if !is_3mf {
+        if args.plate.is_some() {
+            return Err("--plate only applies to 3MF files".into());
+        }
+        return Ok((edge_mesh::stl::load(path).map_err(|e| named(&e))?, None));
+    }
+
+    let project = Project::open(path).map_err(|e| named(&e))?;
+    let plate = match args.plate {
+        Some(id) => Some(project.plate_index(id).ok_or_else(|| {
+            let ids: Vec<String> = project
+                .plates
+                .iter()
+                .map(|plate| plate.id.to_string())
+                .collect();
+            match ids.as_slice() {
+                [] => format!(
+                    "{}: no plate {id}; the file defines no plates",
+                    path.display()
+                ),
+                _ => format!(
+                    "{}: no plate {id}; it has plates {}",
+                    path.display(),
+                    ids.join(", ")
+                ),
+            }
+        })?),
+        None => project.plate_index(1),
+    };
+    if let Some(index) = plate {
+        println!(
+            "plate {} of {}",
+            project.plates[index].id,
+            project.plates.len()
+        );
+    }
+    Ok((project.mesh(plate), project.settings))
+}
+
+/// Layer and first-layer height with where each came from, in order of
+/// precedence: command line, process preset, the project's settings, default.
+fn layer_heights(
+    args: &SliceArgs,
+    project: Option<&Settings>,
+) -> Result<[(f64, &'static str); 2], Failure> {
+    let preset = match (&args.vendor, &args.process) {
+        (Some(vendor), Some(process)) => Some(
+            args.profiles
+                .vendor(vendor)?
+                .resolve(Kind::Process, process)?,
+        ),
+        _ => None,
+    };
+    let pick = |flag: Option<f64>, key: &str| -> Result<Option<(f64, &'static str)>, Failure> {
+        if let Some(value) = flag {
+            return Ok(Some((value, "command line")));
+        }
+        for (settings, source) in [
+            (preset.as_ref(), "process preset"),
+            (project, "project settings"),
+        ] {
+            if let Some(value) = settings
+                .map(|settings| settings.float(key))
+                .transpose()?
+                .flatten()
+            {
+                return Ok(Some((value, source)));
+            }
+        }
+        Ok(None)
+    };
+    let layer = pick(args.layer_height, "layer_height")?.unwrap_or((0.2, "default"));
+    let first = pick(args.first_layer_height, "initial_layer_print_height")?
+        .unwrap_or((layer.0, "layer height"));
+    if !(layer.0 > 0.0 && first.0 > 0.0) {
         return Err("layer heights must be positive".into());
     }
+    Ok([layer, first])
+}
+
+fn slice(args: SliceArgs) -> Result<(), Failure> {
     if let Some(threads) = args.threads {
         rayon::ThreadPoolBuilder::new()
             .num_threads(threads)
@@ -56,19 +282,22 @@ fn slice(args: SliceArgs) -> Result<(), Box<dyn Error>> {
     }
 
     let started = Instant::now();
-    let mesh =
-        edge_mesh::stl::load(&args.model).map_err(|e| format!("{}: {e}", args.model.display()))?;
+    let (mesh, project_settings) = load(&args)?;
     let load_time = started.elapsed();
     let Some((min, max)) = mesh.bounds() else {
-        return Err(format!("{}: no triangles", args.model.display()).into());
+        return Err(format!("{}: nothing printable to slice", args.model.display()).into());
     };
+    let [
+        (layer_height, layer_source),
+        (first_layer_height, first_source),
+    ] = layer_heights(&args, project_settings.as_ref())?;
 
     let started = Instant::now();
     let planes = edge_slice::layer_planes(
         min[2].into(),
         max[2].into(),
         first_layer_height,
-        args.layer_height,
+        layer_height,
     );
     let layers = edge_slice::slice(&mesh, &planes);
     let slice_time = started.elapsed();
@@ -88,6 +317,9 @@ fn slice(args: SliceArgs) -> Result<(), Box<dyn Error>> {
         max[0] - min[0],
         max[1] - min[1],
         max[2] - min[2],
+    );
+    println!(
+        "layer height {layer_height} mm ({layer_source}), first layer {first_layer_height} mm ({first_source})"
     );
     println!(
         "{} layers, {contours} contours, {points} points",
