@@ -29,6 +29,20 @@ pub struct Timings {
     pub fill: Duration,
 }
 
+/// One tool's turn on a layer.
+pub(crate) struct Entry {
+    pub(crate) layer: usize,
+    /// Which of the filaments in use, counting from 0.
+    pub(crate) filament: usize,
+    /// What it lays on the prime tower.
+    pub(crate) lines: Vec<ExtrusionPath>,
+    /// What the tool before it lays there first, when its filament is
+    /// rammed before it is put away.
+    pub(crate) ram: Option<edge_tower::Rammed>,
+    /// Its way in through the tower's wall.
+    pub(crate) enter: Vec<Point2>,
+}
+
 /// A model sliced: every layer's walls, fill, supports and what goes
 /// round them, ready to be written as G-code or drawn.
 pub struct Sliced {
@@ -74,7 +88,7 @@ pub struct Sliced {
     pub tower: Tower,
     /// (layer, index into `used`, what that tool prints on the tower when
     /// its turn comes), in the order printed.
-    pub(crate) entries: Vec<(usize, usize, Vec<ExtrusionPath>)>,
+    pub(crate) entries: Vec<Entry>,
     /// Things settled before slicing that the person should know of.
     pub remarks: Vec<String>,
     pub timings: Timings,
@@ -444,19 +458,26 @@ pub fn slice(job: Job, watch: &dyn Watcher) -> Result<Sliced, Failure> {
     }
     // Tool changes on each layer: every switch, counting one at the
     // start of a layer that begins with a tool not in hand.
+    let tower_settings = TowerSettings::from_settings(&settings, plate)?;
     let mut changes = vec![0usize; layers.len()];
+    // And for each, how the filament put away is rammed on the tower.
+    let mut rams: Vec<Vec<Option<edge_tower::Ramming>>> = vec![Vec::new(); layers.len()];
     let mut held = orders.first().and_then(|order| order.first().copied());
     for (index, order) in orders.iter().enumerate() {
         for filament in order {
             if Some(*filament) != held {
                 changes[index] += 1;
+                rams[index].push(
+                    held.and_then(|old| {
+                        tower_settings.ramming.get(used[old] - 1).copied().flatten()
+                    }),
+                );
                 held = Some(*filament);
             }
         }
     }
-    let tower_settings = TowerSettings::from_settings(&settings, plate)?;
     let heights: Vec<f64> = (0..layers.len()).map(height_of).collect();
-    let tower = edge_tower::plan(&changes, &heights, &tower_settings)?;
+    let tower = edge_tower::plan(&rams, &heights, &tower_settings)?;
 
     // Skirt and brim, per layer, in the order they are printed.
     let adhesion = AdhesionSettings::from_settings(&settings)?;
@@ -547,7 +568,7 @@ pub fn slice(job: Job, watch: &dyn Watcher) -> Result<Sliced, Failure> {
     // What each tool prints on the tower when its turn comes: its own
     // block after a change, and once a layer the tower's wall and fill,
     // by the first tool to arrive, or by the tool in hand when none does.
-    let mut entries: Vec<(usize, usize, Vec<ExtrusionPath>)> = Vec::new();
+    let mut entries: Vec<Entry> = Vec::new();
     let mut held = orders.first().and_then(|order| order.first().copied());
     for (index, order) in orders.iter().enumerate() {
         let mut blocks = tower.layers[index].changes.iter();
@@ -555,9 +576,14 @@ pub fn slice(job: Job, watch: &dyn Watcher) -> Result<Sliced, Failure> {
         let any_change = changes[index] > 0;
         for filament in order {
             let mut lines = Vec::new();
+            let (mut ram, mut enter) = (None, Vec::new());
             let switched = Some(*filament) != held;
             if switched {
-                lines.extend(blocks.next().into_iter().flatten().cloned());
+                if let Some(block) = blocks.next() {
+                    lines.extend(block.lines.iter().cloned());
+                    ram = block.ram.clone();
+                    enter = block.enter.clone();
+                }
                 held = Some(*filament);
             }
             if (switched || !any_change)
@@ -565,7 +591,13 @@ pub fn slice(job: Job, watch: &dyn Watcher) -> Result<Sliced, Failure> {
             {
                 lines.extend(finish.iter().cloned());
             }
-            entries.push((index, *filament, lines));
+            entries.push(Entry {
+                layer: index,
+                filament: *filament,
+                lines,
+                ram,
+                enter,
+            });
         }
     }
 
@@ -729,15 +761,21 @@ impl Sliced {
             .entries
             .iter()
             .enumerate()
-            .map(|(entry, (index, filament, lines))| {
-                let index = *index;
-                let starts = entry == 0 || self.entries[entry - 1].0 != index;
+            .map(|(entry, turn)| {
+                let (index, filament) = (turn.layer, &turn.filament);
+                let starts = entry == 0 || self.entries[entry - 1].layer != index;
                 let own = &self.walls_by[*filament][index];
                 edge_gcode::Layer {
                     z: self.top_of(index),
                     height: self.height_of(index),
                     filament: self.used[*filament] - 1,
-                    tower: lines,
+                    ram: turn.ram.as_ref().map(|ram| edge_gcode::Ram {
+                        lines: &ram.lines,
+                        speed: ram.speed,
+                        park: ram.park,
+                    }),
+                    enter: &turn.enter,
+                    tower: &turn.lines,
                     around: if starts { &self.around[index] } else { &[] },
                     support: if starts { &self.supports[index] } else { &[] },
                     loops: &own.loops,
@@ -752,14 +790,24 @@ impl Sliced {
         if let Some([min_x, min_y, max_x, max_y]) = self.print.bed {
             let points = plan.iter().flat_map(|layer| {
                 let loops = layer.around.iter().chain(layer.loops);
-                loops.flat_map(|line| &line.polygon.points).chain(
-                    layer
-                        .tower
+                let ram = layer.ram.iter().flat_map(|ram| {
+                    ram.lines
                         .iter()
-                        .chain(layer.support)
-                        .chain(layer.paths)
-                        .flat_map(|line| &line.points),
-                )
+                        .flat_map(|line| &line.points)
+                        .chain([&ram.park])
+                });
+                loops
+                    .flat_map(|line| &line.polygon.points)
+                    .chain(
+                        layer
+                            .tower
+                            .iter()
+                            .chain(layer.support)
+                            .chain(layer.paths)
+                            .flat_map(|line| &line.points),
+                    )
+                    .chain(ram)
+                    .chain(layer.enter)
             });
             let mut reach: Option<[f64; 4]> = None;
             for point in points {

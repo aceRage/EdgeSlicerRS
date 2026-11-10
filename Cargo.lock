@@ -426,6 +426,7 @@ dependencies = [
 name = "edge-tower"
 version = "0.0.0"
 dependencies = [
+ "edge-clip",
  "edge-config",
  "edge-extrusion",
  "edge-geom",

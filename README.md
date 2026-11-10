@@ -225,10 +225,27 @@ Known gaps: painted triangles, per-object setting overrides, typed settings
     filament.
   - A prime tower, on every layer up to the last tool change: a wall, a
     block for each change where the new nozzle lays down `prime_volume`,
-    lines across the depth no change uses, a solid first layer and a brim.
-    The skirt goes round it and no part's brim is laid on its ground. A
-    tower set to a ribbed wall is made as wide as it is deep, as the
-    reference makes it.
+    a frame and lines across the depth no change uses, a solid first
+    layer and a brim. The skirt goes round it and no part's brim is laid
+    on its ground. With `wipe_tower_wall_type` at `rib`, as the U1's
+    profiles have it, the tower is made as wide as it is deep and has a
+    rib along each diagonal that runs out past the corners, longest on
+    the bed and gone at the top, with rounded corners
+    (`wipe_tower_rib_width`, `wipe_tower_extra_rib_length`,
+    `wipe_tower_fillet_wall`); a tower slight for its height gets longer
+    ribs. It stands where the ends of its ribs put it, as the reference's
+    does. The brim follows the wall, and above the first layer steps in
+    a loop a layer from at most `prime_tower_brim_chamfer_max_width`
+    (WipeTower2.cpp `finish_layer`, `generate_rib_polygon`).
+    A filament set to be rammed (`filament_multitool_ramming`, as most
+    of the U1's are) is, by the tool being put away and before the
+    change: a line `ramming_line_width_ratio` tower lines wide holding
+    `filament_multitool_ramming_volume`, laid at
+    `filament_multitool_ramming_flow`, after which that tool waits just
+    clear of it and the new tool's first line carries on from where it
+    stopped (`toolchange_Unload`, `set_toolchange`). The wall is left
+    open for 2.5 mm where each new tool comes in, and the tool comes in
+    that way (`wipe_tower_wall_gap`).
 - Printer profiles: the machine's start, end and layer-change G-code and the
   filament's start and end G-code are expanded from their templates, with
   filament-level retraction overrides applied. For the Snapmaker U1 projects
@@ -255,7 +272,14 @@ than the profile asks, which is since put right. A 20 mm cube
 printed on a Snapmaker U1 the same day. One was started on the Centauri
 Carbon too; how it came out is not recorded here. A two-colour
 test (two blocks side by side, 20 tool changes, a prime tower) printed on
-the U1 that day too: the first print in more than one filament. The
+the U1 that day too: the first print in more than one filament. It was
+printed again with the tower as it now is (ribs, the brim stepping in,
+each filament rammed before its tool is put away, the wall open where
+the new tool comes in): the tower stood, its ribs and stepped brim came
+out as drawn, and the owner saw no blobs to speak of. A photograph of
+the tower shows a dark smear where the rams are laid and a wall end
+by the gap a little out of line; the part itself was not looked at
+against the first print. The
 `mushroom` fixture with tree supports printed on the U1 as well, beside
 the C++ slicer's file for the same project: both caps were carried and
 both sets of supports came away. This engine's stood on separate feet
@@ -271,9 +295,13 @@ profile a generic preamble is written and the file is only good for viewing.
 Multi-filament printing is a first working version. Where parts of
 different filaments overlap, the higher-numbered filament has the overlap
 (the reference gives it to the later part). The order of tools within a
-layer after the first is simpler than the reference's. The tower's wall
-is a plain box: no ribs or cone, no gap where the nozzle comes in, and no
-ramming. A filament with no tool of its own (the fifth on a
+layer after the first is simpler than the reference's. The tower has no
+cone wall; a nozzle coming in is not wiped flat on it first, tool changes
+all start at the same place in their blocks
+(`wipe_tower_stagger_toolchange_start`), and pressure advance is not
+changed for a ram (`enable_change_pressure_when_wiping`); each is noted
+when the profile asks for it. The tower is not turned end for end on
+alternate layers. A filament with no tool of its own (the fifth on a
 four-tool printer) is written as the reference writes it, with a warning.
 Painted colours and filaments mixed from others are not read.
 
@@ -433,13 +461,21 @@ more slowly on the way down.
 
 On `mcbrim_test.3mf`, printed in four filaments, both make tool changes on
 the same layers (27 here, 28 in the reference), and on plate 1 the start
-of the file is identical for 96 of its 99 lines; the tower here carries 24
-to 30% less plastic, having no ribs. Plates 2 and 3 set the order of
+of the file is identical for 96 of its 99 lines. Plates 2 and 3 set the order of
 filaments on the first layer (`first_layer_print_sequence`), which this
 engine does not follow, so it starts with a different tool there. All three of its plates slice. It is a flat part
 3 mm thick covered in lettering, and it is where this engine is furthest
-from the reference. Plates 2 and 3 carry 7.9% less filament, nearly all
-of it the prime tower (no ribs): top surface is within 1.3%, bridges
+from the reference. Plates 2 and 3 carry 0.6% less filament (7.9% less
+before the tower had its ribs and stepped brim). The tower is within
+0.2% of the reference's on each of the eleven layers both print it on
+(5943.1 mm against 5946.0 mm on the first), with the same rows, frame
+and gaps in its wall, and 2.1% under in all because the reference has a
+twelfth layer of it, for a tool change this engine's simpler order of
+tools does not make. On the two-colour test, whose filament is rammed,
+the first layer of the tower is the reference's length to a tenth of a
+millimetre (2251.4 mm) and stands on the same ground; the tower is 1.4%
+under in all, the reference filling out each block where it starts
+tool changes at different places. Top surface is within 1.3%, bridges
 over infill 9% over (they were 78% under, when a colour that starts
 part of the way up was not bridged over the colour beneath), solid fill
 3% over and sparse fill 4% under. The parts on plate 1 are painted in
@@ -486,7 +522,8 @@ spiral lifts, and plate placement (outer walls land where the reference
 puts them on all three plates of `mcbrim_test.3mf`), the prime tower, gap
 fill between walls, overhang walls with their speeds and fan, and
 internal bridges, one wall under top surfaces below the last layer,
-vertical shells, and the solid band under a bridge's edge.
+vertical shells, the solid band under a bridge's edge, and the prime
+tower's ribs, stepped brim, ramming and the gap in its wall.
 
 ## Licence
 
