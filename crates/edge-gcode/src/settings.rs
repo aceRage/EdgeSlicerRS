@@ -122,6 +122,9 @@ pub struct PrintSettings {
     pub additional_cooling_fan_speed: f64,
     /// Speed of the skirt; zero for the usual speeds.
     pub skirt_speed: f64,
+    /// Speeds of a support's sparse body and of its dense top.
+    pub support_speed: f64,
+    pub support_interface_speed: f64,
 
     /// Accelerations in mm/s²; zero means "leave it as it is".
     pub default_acceleration: f64,
@@ -213,6 +216,8 @@ impl Default for PrintSettings {
             auxiliary_fan: false,
             additional_cooling_fan_speed: 0.0,
             skirt_speed: 50.0,
+            support_speed: 80.0,
+            support_interface_speed: 80.0,
             default_acceleration: 0.0,
             outer_wall_acceleration: 0.0,
             inner_wall_acceleration: 0.0,
@@ -532,6 +537,11 @@ impl PrintSettings {
             auxiliary_fan: flag("auxiliary_fan", false)?,
             additional_cooling_fan_speed: number("additional_cooling_fan_speed", 0.0)?,
             skirt_speed: number("skirt_speed", defaults.skirt_speed)?,
+            support_speed: number("support_speed", defaults.support_speed)?,
+            support_interface_speed: number(
+                "support_interface_speed",
+                defaults.support_interface_speed,
+            )?,
             default_acceleration: number("default_acceleration", 0.0)?,
             outer_wall_acceleration: number("outer_wall_acceleration", 0.0)?,
             inner_wall_acceleration: number("inner_wall_acceleration", 0.0)?,

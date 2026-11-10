@@ -9,7 +9,7 @@
 
 use edge_clip::{ClipError, Join};
 use edge_config::{ConfigError, FloatOrPercent, Settings};
-use edge_extrusion::{ExtrusionLoop, Flow, FlowError, LineWidths, Role};
+use edge_extrusion::{ExtrusionLoop, ExtrusionPath, Flow, FlowError, LineWidths, Role};
 use edge_geom::{ExPolygon, Point2, Polygon, convex_hull, scaled, unscaled};
 
 #[derive(Debug, thiserror::Error)]
@@ -464,11 +464,12 @@ pub fn brim(
 }
 
 /// The skirt for one layer, outermost loop first: loops around the convex
-/// hull of everything in `outlines` (the layers the skirt stands beside)
-/// and `brim`.
+/// hull of everything in `outlines` and `supports` (the layers the skirt
+/// stands beside) and `brim`.
 pub fn skirt(
     outlines: &[&[ExPolygon]],
     brim: &[ExtrusionLoop],
+    supports: &[&[ExtrusionPath]],
     settings: &AdhesionSettings,
     height: f64,
 ) -> Result<Vec<ExtrusionLoop>, AdhesionError> {
@@ -478,6 +479,12 @@ pub fn skirt(
         .flat_map(|layer| layer.iter())
         .flat_map(|island| &island.contour.points)
         .chain(brim.iter().flat_map(|line| &line.polygon.points))
+        .chain(
+            supports
+                .iter()
+                .flat_map(|layer| layer.iter())
+                .flat_map(|line| &line.points),
+        )
         .copied();
     let hull = convex_hull(points);
     if settings.skirt_loops == 0 || hull.points.len() < 3 {
@@ -582,7 +589,7 @@ mod tests {
             skirt_loops: 2,
             ..settings()
         };
-        let loops = skirt(&[&parts], &[], &two, 0.2).unwrap();
+        let loops = skirt(&[&parts], &[], &[], &two, 0.2).unwrap();
         assert_eq!(loops.len(), 2);
         let flow = two.skirt_flow(0.2).unwrap();
         assert_eq!((flow.width, loops[0].role), (0.5, Role::Skirt));
@@ -612,8 +619,8 @@ mod tests {
             skirt_loops: 0,
             ..settings()
         };
-        assert!(skirt(&[&parts], &[], &none, 0.2).unwrap().is_empty());
-        assert!(skirt(&[&[]], &[], &two, 0.2).unwrap().is_empty());
+        assert!(skirt(&[&parts], &[], &[], &none, 0.2).unwrap().is_empty());
+        assert!(skirt(&[&[]], &[], &[], &two, 0.2).unwrap().is_empty());
         assert!(two.has_skirt(0) && !two.has_skirt(1) && !none.has_skirt(0));
     }
 
@@ -685,7 +692,7 @@ mod tests {
         assert!(brim(&on_bed, &none, 0.2).unwrap().is_empty());
 
         // The skirt goes round the brim, not just the part.
-        let around = skirt(&[&part], &loops, &wide, 0.2).unwrap();
+        let around = skirt(&[&part], &loops, &[], &wide, 0.2).unwrap();
         assert!(reach(&around[0]) > furthest + 2.0);
     }
 

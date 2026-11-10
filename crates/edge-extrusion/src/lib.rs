@@ -135,6 +135,10 @@ pub enum Role {
     Skirt,
     /// Loops against the first layer's outline that hold the part down.
     Brim,
+    /// Scaffolding under an overhang, made to break away.
+    Support,
+    /// The dense top of a support, which the part rests on.
+    SupportInterface,
 }
 
 /// An open line: the centre line the nozzle follows and what it extrudes.

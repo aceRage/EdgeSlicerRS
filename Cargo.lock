@@ -211,6 +211,7 @@ dependencies = [
  "edge-mesh",
  "edge-perimeter",
  "edge-slice",
+ "edge-support",
  "rayon",
 ]
 
@@ -313,6 +314,19 @@ dependencies = [
  "edge-mesh",
  "rayon",
  "rustc-hash",
+]
+
+[[package]]
+name = "edge-support"
+version = "0.0.0"
+dependencies = [
+ "edge-clip",
+ "edge-config",
+ "edge-extrusion",
+ "edge-geom",
+ "edge-infill",
+ "rayon",
+ "thiserror",
 ]
 
 [[package]]

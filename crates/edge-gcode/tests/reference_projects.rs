@@ -116,6 +116,7 @@ fn every_reference_project_exports_well_formed_gcode_that_adds_up() {
                 z: 0.2 * (index + 1) as f64,
                 height: 0.2,
                 around: &[],
+                support: &[],
                 loops: &perimeters[index].loops,
                 islands: &perimeters[index].islands,
                 paths: &fills[index],

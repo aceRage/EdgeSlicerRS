@@ -10,7 +10,7 @@
 //! the region's width, and every sparse pattern but lines and grid.
 
 mod fill;
-mod lines;
+pub mod lines;
 mod settings;
 mod surfaces;
 

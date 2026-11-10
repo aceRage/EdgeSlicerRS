@@ -54,6 +54,8 @@ pub struct Layer<'a> {
     pub height: f64,
     /// Loops laid before the part on this layer, in order: skirt and brim.
     pub around: &'a [ExtrusionLoop],
+    /// Support lines, printed before the part so it has them to rest on.
+    pub support: &'a [ExtrusionPath],
     pub loops: &'a [ExtrusionLoop],
     /// Which of `loops` make up each island.
     pub islands: &'a [Range<usize>],
@@ -134,7 +136,11 @@ fn extent(layer: &Layer<'_>) -> Option<[f64; 4]> {
         .iter()
         .chain(layer.loops)
         .flat_map(|wall| &wall.polygon.points);
-    let fills = layer.paths.iter().flat_map(|path| &path.points);
+    let fills = layer
+        .support
+        .iter()
+        .chain(layer.paths)
+        .flat_map(|path| &path.points);
     walls
         .chain(fills)
         .map(|p| (unscaled(p.x), unscaled(p.y)))
@@ -388,12 +394,13 @@ impl Writer<'_> {
             seam::clip_end(&mut path, self.settings.seam_gap);
             self.path(&path, around.role, &around.flow, false, true)?;
         }
+        self.lines(layer.support, &[])?;
         if self.settings.infill_first {
-            self.fills(layer)?;
+            self.lines(layer.paths, layer.infill_area)?;
             self.walls(layer)?;
         } else {
             self.walls(layer)?;
-            self.fills(layer)?;
+            self.lines(layer.paths, layer.infill_area)?;
         }
         self.state.seams = std::mem::take(&mut self.state.next_seams);
         Ok(())
@@ -468,10 +475,11 @@ impl Writer<'_> {
         Ok(())
     }
 
-    /// Fill lines kind by kind as they come, each kind in nearest-end-first
+    /// Open lines kind by kind as they come, each kind in nearest-end-first
     /// order so the nozzle works across an area instead of jumping about.
-    fn fills(&mut self, layer: &Layer<'_>) -> io::Result<()> {
-        for group in layer.paths.chunk_by(|a, b| a.role == b.role) {
+    /// Moves that stay inside `shelter` may skip retraction.
+    fn lines(&mut self, paths: &[ExtrusionPath], shelter: &[ExPolygon]) -> io::Result<()> {
+        for group in paths.chunk_by(|a, b| a.role == b.role) {
             let mut remaining: Vec<&ExtrusionPath> =
                 group.iter().filter(|path| path.points.len() >= 2).collect();
             while !remaining.is_empty() {
@@ -492,7 +500,7 @@ impl Writer<'_> {
                     && self
                         .state
                         .position
-                        .is_some_and(|at| inside::stays_inside(layer.infill_area, at, points[0]));
+                        .is_some_and(|at| inside::stays_inside(shelter, at, points[0]));
                 self.path(&points, path.role, &path.flow, sheltered, false)?;
             }
         }
@@ -547,7 +555,14 @@ impl Writer<'_> {
         let wanted = match role {
             // As GCode.cpp `_extrude`: the skirt's own speed wins when set.
             Role::Skirt if s.skirt_speed > 0.0 => s.skirt_speed,
-            _ if first_layer && (is_wall || role == Role::Brim) => s.initial_layer_speed,
+            // On the first layer supports go down as carefully as walls
+            // (GCode.cpp `_extrude`, where EdgeSlicer departs from Orca).
+            _ if first_layer
+                && (is_wall
+                    || matches!(role, Role::Brim | Role::Support | Role::SupportInterface)) =>
+            {
+                s.initial_layer_speed
+            }
             _ if first_layer => s.initial_layer_infill_speed,
             Role::ExternalPerimeter => s.outer_wall_speed,
             Role::Perimeter => s.inner_wall_speed,
@@ -556,6 +571,8 @@ impl Writer<'_> {
             Role::TopSolidInfill => s.top_surface_speed,
             Role::BridgeInfill => s.bridge_speed,
             Role::Skirt | Role::Brim => s.outer_wall_speed,
+            Role::Support => s.support_speed,
+            Role::SupportInterface => s.support_interface_speed,
         };
         let speed = if s.filament_max_volumetric_speed > 0.0 {
             wanted.min(s.filament_max_volumetric_speed / flow.mm3_per_mm())
@@ -571,7 +588,9 @@ impl Writer<'_> {
             Role::SolidInfill | Role::BottomSurface | Role::BridgeInfill => s
                 .internal_solid_infill_acceleration
                 .resolve(s.default_acceleration),
-            Role::Skirt | Role::Brim => s.default_acceleration,
+            Role::Skirt | Role::Brim | Role::Support | Role::SupportInterface => {
+                s.default_acceleration
+            }
         };
         Motion {
             speed,
@@ -1092,6 +1111,8 @@ fn role_name(role: Role) -> &'static str {
         Role::BridgeInfill => "Bridge",
         Role::Skirt => "Skirt",
         Role::Brim => "Brim",
+        Role::Support => "Support",
+        Role::SupportInterface => "Support interface",
     }
 }
 
