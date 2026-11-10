@@ -23,6 +23,7 @@ replaces it until output matches on the printers we care about.
 | `crates/edge-gcode` | Print order, seams, travel, retraction, wipe and lift, cooling, overhangs, and extrusion, written as G-code |
 | `crates/edge-infill` | Top, bottom, bridge, solid, bridged-over-infill and sparse surfaces, and the lines that fill them |
 | `crates/edge-template` | The placeholder language of custom G-code: `{expression}`, `{if}`, `[variable]`, and scripts |
+| `crates/edge-time` | How long a G-code file takes, with acceleration: the file is read as a printer reads it and planned as the reference's estimator plans, or as Klipper does |
 | `crates/edge-tower` | The prime tower a nozzle is primed on after a tool change |
 | `crates/edge-slice` | Mesh to per-layer contours, then to regions with holes; parallel across layers |
 | `crates/edge-engine` | The whole pipeline behind one call, for whatever drives it: open a model, settle its settings, slice with progress and cancel, G-code, a layer's lines for drawing, and a vendor's presets by printer |
@@ -183,10 +184,10 @@ Known gaps: painted triangles, per-object setting overrides, typed settings
     was pulled when last put away. The tool being put away goes to the
     prime tower first, so it is over the tower and not over the part that
     it waits while the next comes up to temperature. The next tool starts
-    warming half a minute ahead, as far as this engine's time for the
-    layer allows (it has no acceleration, so it is short: the reference
-    starts the first one during the start G-code), and a tool not needed
-    again is switched off.
+    warming `preheat_time` ahead by the file's own timing, which for the
+    first change is during the start G-code as in the reference, but
+    never before the last thing said of its temperature; and a tool not
+    needed again is switched off.
   - A filament preset named for a model printed in several filaments is
     used for all of them, and a note says so. A model printed in a
     filament its settings say nothing of gets no G-code and a sentence
@@ -214,8 +215,7 @@ Known gaps: painted triangles, per-object setting overrides, typed settings
   the presets leave out takes the reference's default, both in what is
   printed and in the settings block, so a model sliced with named presets
   comes out as the same model in a project would. A print host's address and keys are left
-  out of the settings. The time in the file is at commanded speeds with no
-  acceleration, so a print takes longer than it says. `SOURCE_DATE_EPOCH`
+  out of the settings. `SOURCE_DATE_EPOCH`
   fixes the date in the first line, for comparing two runs byte for byte.
 
 **On hardware so far:** a deck across a 30 mm gap printed on an Elegoo
@@ -247,8 +247,27 @@ slowed over curled edges, arc fitting, preview pictures in the file
 (thumbnails), and object labels for cancelling (`EXCLUDE_OBJECT`). Bridge fill keeps its own speed along its whole
 length, where the reference also slows it near its anchors. A setting that asks for one of these is listed as a
 note when the file is written. A template that needs a variable not
-provided stops the export with the variable's name. The time is at
-commanded speeds with no acceleration.
+provided stops the export with the variable's name.
+
+- Print time: with a printer profile the finished file is read back as a
+  printer reads it and every move is planned with acceleration
+  (`edge-time`). That time is the one in the file, the one progress
+  (`M73`) is worked out from, and the one a waiting tool is warmed by.
+  For a Klipper printer the moves are planned as Klipper plans them
+  (klippy/toolhead.py): corners by the square corner velocity, and a look-ahead
+  that holds the peak of a short move to what `minimum_cruise_ratio`
+  allows, read from the file's own `SET_VELOCITY_LIMIT`. The reference's
+  estimator has the first and not the second, so this engine's figure
+  for a Klipper printer is longer than the reference would give the
+  same file, by 1 to 5% on the parts compared; a line at the end of the
+  file says which way it was timed. For any other firmware the reference's own
+  estimator is used, ported from GCodeProcessor.cpp. Heating, homing,
+  bed levelling and whatever a printer's macros do are in neither. The
+  time at commanded speeds is kept on a line of its own. Cooling still
+  slows a layer by its time at commanded speeds, as the reference's does.
+- Acceleration limits for Klipper are written with both `ACCEL_TO_DECEL`
+  and `MINIMUM_CRUISE_RATIO`, as the reference writes them: current
+  Klipper reads only the second.
 
 Walls do not yet have thin-wall detection (the U1 profiles leave it off),
 extra perimeters over overhangs, or a single wall under every top surface
@@ -280,7 +299,7 @@ moved layer by layer, where the reference follows every place a branch
 could be and picks afterwards; a leaning branch is a circle on each layer,
 not an oval; and branches are not smoothed.
 
-Next: print time with acceleration, thumbnails, one wall under top
+Next: thumbnails, one wall under top
 surfaces, sparse fill joined along the walls, and painted colours.
 
 ## Comparing with the reference
@@ -299,6 +318,21 @@ plastic per millimetre, acceleration and fan, on the first layer and on
 the rest, with a mark where the two differ; and the print time at the
 speeds written, and the temperatures set along the way. A wall printed
 five times too fast shows there and nowhere in the lengths.
+
+Last it gives the print time each file states, and times both files with
+this engine's estimator, each planned both ways. The reference's own
+file planned the reference's way should come to the reference's own
+figure: that is the standing check on the port. On 2026-11-10 it did, to
+the second, on every file sliced with the U1's presets (13m 17s, 14m 59s
+against 15m 00s, 19m 42s, 24m 38s, 42m 32s), and within 1% on the
+Centauri Carbon's, whose files have arcs that are cut up a little
+differently here. This engine's own files, planned the same way, came to
+15m 02s against 15m 00s on the cube with the U1's presets, 7m 15s
+against 7m 15s on the bridge with the Centauri Carbon's and 93m 51s
+against 94m 14s on `cylinder_drawcut.3mf`. Planned as Klipper plans,
+with the cruise ratio of a half that both printers' profiles set, the
+same files take 0.4 to 2% longer; at a ratio of three quarters, 2 to 8%.
+No figure has been checked against a clock on a printer yet.
 
 The reference binary has to be built from the commit `reference/EdgeSlicer`
 is pinned to, or the comparison is with something older than the source

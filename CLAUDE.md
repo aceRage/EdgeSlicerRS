@@ -64,6 +64,11 @@ to a stage and say in the PR what moved.
   `Session::call` in `src/api.rs`, which stays free of Tauri so the window
   and `--serve` share it and it can be tested without either. The page has
   no build step and loads nothing from the network.
+- The time in a file comes from `edge-time`, which reads the finished
+  G-code back. Anything new the writer emits that takes time or changes
+  how moves are planned (a wait, a limit, a macro) has to be read there
+  too. `edge-parity` ends with the check on it: the reference's file,
+  planned the reference's way, should come to the reference's own time.
 - `unsafe` is denied workspace-wide. A crate that needs it opts in locally
   with the reason and a benchmark showing the gain.
 - Tests also run on Windows: no hard-coded path separators or Unix-only APIs.

@@ -471,9 +471,14 @@ fn slice(args: SliceArgs) -> Result<(), Failure> {
             Some(density) => format!(", {:.1} g", summary.filament_mm3 / 1000.0 * density),
             None => String::new(),
         };
+        let timed = match summary.timed {
+            Some(edge_gcode::TimeModel::Klipper) => "as Klipper plans it (heating not counted)",
+            Some(edge_gcode::TimeModel::Reference) => "with acceleration (heating not counted)",
+            None => "at commanded speeds (no acceleration)",
+        };
         println!(
             "G-code written to {} in {:.1} ms: {:.2} m of filament{weight}, {:.1} m of travel, {} retractions, \
-             {:.0} min at commanded speeds (no acceleration)",
+             {:.0} min {timed}",
             path.display(),
             started.elapsed().as_secs_f64() * 1e3,
             summary.filament_mm / 1e3,

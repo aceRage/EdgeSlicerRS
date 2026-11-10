@@ -240,7 +240,8 @@ async function showResult() {
   if (!failed) {
     const weight = gcode.grams === null ? '' : `, ${number(gcode.grams)} g`;
     figures.push(['Filament', `${number(gcode.filament_m, 2)} m${weight}`]);
-    figures.push(['Time', `${duration(gcode.minutes)} at the speeds set, before acceleration`]);
+    const how = { klipper: 'planned as Klipper plans it; heating not counted', acceleration: 'with acceleration; heating not counted' };
+    figures.push(['Time', `${duration(gcode.minutes)}, ${how[gcode.timed] || 'at the speeds set, before acceleration'}`]);
     figures.push(['Travel', `${number(gcode.travel_m)} m, ${gcode.retractions} retractions`]);
     if (gcode.tool_changes > 0) figures.push(['Tool changes', String(gcode.tool_changes)]);
   }

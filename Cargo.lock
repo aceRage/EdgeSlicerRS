@@ -320,6 +320,7 @@ dependencies = [
  "edge-perimeter",
  "edge-slice",
  "edge-template",
+ "edge-time",
  "thiserror",
 ]
 
@@ -365,6 +366,7 @@ name = "edge-parity"
 version = "0.0.0"
 dependencies = [
  "clap",
+ "edge-time",
 ]
 
 [[package]]
@@ -410,6 +412,14 @@ name = "edge-template"
 version = "0.0.0"
 dependencies = [
  "thiserror",
+]
+
+[[package]]
+name = "edge-time"
+version = "0.0.0"
+dependencies = [
+ "edge-config",
+ "serde_json",
 ]
 
 [[package]]

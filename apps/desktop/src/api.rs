@@ -456,6 +456,10 @@ fn summary(done: &Done) -> Value {
                 "grams": print.filament_density.map(|density| summary.filament_mm3 / 1e3 * density),
                 "travel_m": summary.travel_mm / 1e3,
                 "minutes": summary.seconds / 60.0,
+                "timed": summary.timed.map(|model| match model {
+                    edge_gcode::TimeModel::Klipper => "klipper",
+                    edge_gcode::TimeModel::Reference => "acceleration",
+                }),
                 "retractions": summary.retractions,
                 "tool_changes": summary.tool_changes,
                 "slowed_layers": summary.slowed_layers,

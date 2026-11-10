@@ -182,6 +182,9 @@ pub struct PrintSettings {
     /// Klipper also takes a deceleration limit, as a share of the acceleration.
     pub accel_to_decel_factor: Option<f64>,
     pub klipper: bool,
+    /// What the machine can do, for timing the print; none without a
+    /// printer profile.
+    pub limits: Option<edge_time::Limits>,
 
     pub pressure_advance: Option<f64>,
 
@@ -311,6 +314,7 @@ impl Default for PrintSettings {
             travel_acceleration: 0.0,
             accel_to_decel_factor: None,
             klipper: false,
+            limits: None,
             pressure_advance: None,
             machine_start_gcode: None,
             machine_end_gcode: None,
@@ -749,6 +753,10 @@ impl PrintSettings {
                 _ => None,
             },
             klipper: settings.text("gcode_flavor") == Some("klipper"),
+            limits: match settings.get("gcode_flavor") {
+                Some(_) => Some(edge_time::Limits::from_settings(settings)?),
+                None => None,
+            },
             pressure_advance: match settings.flag("enable_pressure_advance")? {
                 Some(true) => Some(number("pressure_advance", 0.02)?),
                 _ => None,

@@ -136,8 +136,12 @@ fn compare(cli: &Cli, engine: &Path, work: &Path, runs: usize) -> Result<(), Fai
     }
     let (engine_time, _) = fastest(&mut ours, runs, &work.join("edge.log"), &engine_gcode)?;
 
-    let reference = gcode::parse(&fs::read_to_string(&reference_gcode)?, None);
-    let ours = gcode::parse(&fs::read_to_string(&engine_gcode)?, None);
+    let (reference_text, engine_text) = (
+        fs::read_to_string(&reference_gcode)?,
+        fs::read_to_string(&engine_gcode)?,
+    );
+    let reference = gcode::parse(&reference_text, None);
+    let ours = gcode::parse(&engine_text, None);
     let times = Times {
         runs,
         reference: reference_time,
@@ -145,6 +149,7 @@ fn compare(cli: &Cli, engine: &Path, work: &Path, runs: usize) -> Result<(), Fai
         engine: engine_time,
     };
     print!("{}", report(&cli.project, &times, &reference, &ours));
+    print!("{}", estimates(&reference_text, &engine_text));
 
     if let Some(path) = &cli.svg {
         let layer = cli
@@ -254,6 +259,48 @@ fn logged_span(log: &str) -> Option<Duration> {
 
 /// Filament cross-section for the usual 1.75 mm filament, in mm².
 const FILAMENT_AREA: f64 = std::f64::consts::PI * 0.875 * 0.875;
+
+/// The print time each file gives, and what this engine's estimator makes
+/// of both files. On the reference's own file, planned its way, it should
+/// come to the reference's own figure: that is the check on the port. The
+/// same file planned as Klipper plans shows what the reference's
+/// estimator leaves out.
+fn estimates(reference: &str, ours: &str) -> String {
+    let written = |text: &str| {
+        text.lines()
+            .find_map(|line| line.strip_prefix("; estimated printing time (normal mode) = "))
+            .unwrap_or("none")
+            .to_owned()
+    };
+    let clock = |seconds: f64| {
+        let whole = seconds.round() as u64;
+        format!("{}m {:02}s", whole / 60, whole % 60)
+    };
+    let mut out = format!(
+        "\nprint time as each file gives it: {} / {}\n",
+        written(reference),
+        written(ours)
+    );
+    for (name, text) in [
+        ("the reference's file", reference),
+        ("this engine's file", ours),
+    ] {
+        match edge_time::Limits::from_gcode(text) {
+            None => writeln!(out, "  {name} lists no machine limits to time it by").unwrap(),
+            Some(limits) => {
+                let by = |model| clock(edge_time::estimate(text, &limits, model).seconds);
+                writeln!(
+                    out,
+                    "  {name}, timed here: {} as the reference plans, {} as Klipper plans",
+                    by(edge_time::Model::Reference),
+                    by(edge_time::Model::Klipper)
+                )
+                .unwrap();
+            }
+        }
+    }
+    out
+}
 
 fn report(project: &Path, times: &Times, reference: &Print, ours: &Print) -> String {
     let mut out = String::new();
