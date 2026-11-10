@@ -294,33 +294,81 @@ pub fn slice(job: Job, watch: &dyn Watcher) -> Result<Sliced, Failure> {
     let mut classify_time = Duration::ZERO;
     let mut surfaces_by = Vec::with_capacity(used.len());
     let mut fills_by: Vec<Vec<Vec<ExtrusionPath>>> = Vec::with_capacity(used.len());
-    for (filament, perimeters) in walls_by.iter().enumerate() {
-        let classifying = Instant::now();
+    let classifying = Instant::now();
+    // Each layer's area inside the walls, over every filament. Where
+    // filaments meet inside a part, the walls between them are not the
+    // part's shell.
+    let inside_by: Vec<Vec<&[ExPolygon]>> = walls_by
+        .iter()
+        .map(|perimeters| {
+            perimeters
+                .iter()
+                .map(|layer| layer.infill.as_slice())
+                .collect()
+        })
+        .collect();
+    let printed: Vec<&[ExPolygon]> = layers
+        .iter()
+        .map(|layer| layer.regions.as_slice())
+        .collect();
+    let around = if used.len() > 1 {
+        infill.walls_around(layer_height)?
+    } else {
+        None
+    };
+    let inside_all = edge_infill::inside_walls(&inside_by, &printed, around)?;
+    let mut anchored_by = Vec::with_capacity(used.len());
+    for (filament, inside_walls) in inside_by.iter().enumerate() {
         let slices: Vec<&[ExPolygon]> = (0..layers.len())
             .map(|index| share(filament, index))
-            .collect();
-        let inside_walls: Vec<&[ExPolygon]> = perimeters
-            .iter()
-            .map(|layer| layer.infill.as_slice())
             .collect();
         // Whatever the filament, a surface is a top or a bottom by what
         // the whole part has above and below it.
         let surfaces = edge_infill::classify(
             &slices,
             &outlines,
-            &inside_walls,
+            inside_walls,
+            &inside_all,
             &infill.shells(layer_height)?,
         )?;
         // Bridges, bottoms and tops reach into the fill beside them, and
         // each bridge is turned to run from support to support.
-        let surfaces = edge_infill::anchor(&surfaces, &infill.anchoring(layer_height)?)?;
-        // Solid over sparse fill is laid as a bridge across it.
-        let surfaces = edge_infill::bridge_over_infill(
+        anchored_by.push(edge_infill::anchor(
             &surfaces,
-            &inside_walls,
-            infill.params(layer_height, false)?.solid.scaled_spacing(),
-        )?;
-        classify_time += classifying.elapsed();
+            &infill.anchoring(layer_height)?,
+        )?);
+    }
+    // What each layer gives the next to rest on, whatever the filament.
+    let beneath: Vec<edge_infill::Beneath> = (0..layers.len())
+        .into_par_iter()
+        .map(|index| {
+            edge_infill::Beneath::gather(anchored_by.iter().zip(&walls_by).map(
+                |(surfaces, perimeters)| {
+                    (
+                        surfaces[index].as_slice(),
+                        perimeters[index].infill.as_slice(),
+                    )
+                },
+            ))
+        })
+        .collect();
+    classify_time += classifying.elapsed();
+    let classifying = Instant::now();
+    let solid_spacing = infill.params(layer_height, false)?.solid.scaled_spacing();
+    // Solid over sparse fill is laid as a bridge across it.
+    let bridged_by = anchored_by
+        .iter()
+        .map(|surfaces| edge_infill::bridge_over_infill(surfaces, &beneath, solid_spacing))
+        .collect::<Result<Vec<_>, _>>()?;
+    // And the sparse fill under a bridge's edge, where that edge runs
+    // along the walls, is made solid to carry it.
+    let edges = edge_infill::bridge_edges(&bridged_by, solid_spacing)?;
+    let bridged_by = bridged_by
+        .iter()
+        .map(|surfaces| edge_infill::carry_bridge_edges(surfaces, &edges, solid_spacing))
+        .collect::<Result<Vec<_>, _>>()?;
+    classify_time += classifying.elapsed();
+    for (surfaces, perimeters) in bridged_by.into_iter().zip(&walls_by) {
         let fills = surfaces
             .par_iter()
             .enumerate()

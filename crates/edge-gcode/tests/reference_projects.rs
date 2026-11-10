@@ -103,8 +103,16 @@ fn every_reference_project_exports_well_formed_gcode_that_adds_up() {
             .iter()
             .map(|layer| layer.infill.as_slice())
             .collect();
-        let surfaces =
-            edge_infill::classify(&slices, &slices, &inside, &infill.shells(0.2).unwrap()).unwrap();
+        let inside_all =
+            edge_infill::inside_walls(std::slice::from_ref(&inside), &slices, None).unwrap();
+        let surfaces = edge_infill::classify(
+            &slices,
+            &slices,
+            &inside,
+            &inside_all,
+            &infill.shells(0.2).unwrap(),
+        )
+        .unwrap();
         let fills: Vec<_> = surfaces
             .iter()
             .enumerate()

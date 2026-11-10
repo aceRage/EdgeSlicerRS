@@ -2,7 +2,7 @@ use edge_config::{ConfigError, FloatOrPercent, Settings};
 use edge_extrusion::{Flow, FlowError, LineWidths};
 use edge_geom::scaled;
 
-use crate::{Anchoring, FillParams, Shells};
+use crate::{Anchoring, FillParams, Shells, WallsAround};
 
 /// Sparse fill patterns this engine can lay.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -63,6 +63,9 @@ pub struct InfillSettings {
     pub top_joined: bool,
     pub bottom_joined: bool,
     pub solid_joined: bool,
+    /// Whether fill under and over the walls of nearby layers is made
+    /// solid (`ensure_vertical_shell_thickness` at `ensure_all`).
+    pub ensure_vertical_shells: bool,
     /// Settings present in the input that are not honoured, each with
     /// what is done instead.
     pub unsupported: Vec<String>,
@@ -101,6 +104,7 @@ impl Default for InfillSettings {
             top_joined: false,
             bottom_joined: true,
             solid_joined: true,
+            ensure_vertical_shells: true,
             unsupported: Vec::new(),
         }
     }
@@ -192,6 +196,29 @@ impl InfillSettings {
         let top_joined = joined("top_surface_pattern", defaults.top_joined);
         let bottom_joined = joined("bottom_surface_pattern", defaults.bottom_joined);
         let solid_joined = joined("internal_solid_infill_pattern", defaults.solid_joined);
+        // The reference has a different way of laying shells for each
+        // other value; only this one is ported.
+        let ensure_vertical_shells = match settings
+            .texts("ensure_vertical_shell_thickness")
+            .and_then(|found| found.first())
+            .map(String::as_str)
+        {
+            None | Some("ensure_all") => true,
+            Some(other) => {
+                unsupported.push(format!(
+                    "ensure_vertical_shell_thickness \"{other}\": shells are the layers under a top and over a bottom, and no more"
+                ));
+                false
+            }
+        };
+        // Solid areas too narrow for lines across them: the reference
+        // lays loops along those, of whatever width fits.
+        if flag("detect_narrow_internal_solid_infill", false)? {
+            unsupported.push(
+                "detect_narrow_internal_solid_infill \"1\": narrow solid areas are filled with the same lines as wide ones"
+                    .to_owned(),
+            );
+        }
         let density = match settings.float_or_percent("sparse_infill_density")? {
             // A percentage whether or not the sign is written.
             Some(FloatOrPercent::Percent(percent) | FloatOrPercent::Value(percent)) => percent,
@@ -246,6 +273,7 @@ impl InfillSettings {
             top_joined,
             bottom_joined,
             solid_joined,
+            ensure_vertical_shells,
             unsupported,
         })
     }
@@ -260,13 +288,50 @@ impl InfillSettings {
             layer_height,
             false,
         )?;
+        let solid = Flow::from_widths(
+            &self.widths,
+            self.internal_solid_infill_line_width,
+            Flow::auto_width(nozzle),
+            layer_height,
+            false,
+        )?;
         Ok(Shells {
             top_layers: self.top_shell_layers,
             bottom_layers: self.bottom_shell_layers,
             sparse_density: self.sparse_infill_density_percent / 100.0,
             minimum_sparse_area: self.minimum_sparse_infill_area,
             opening: scaled(outer.width / 10.0),
+            ensure: self.ensure_vertical_shells.then(|| scaled(solid.spacing)),
         })
+    }
+
+    /// The one set of walls a layer of this height would have were it
+    /// all in one filament, or none with no walls
+    /// (`PrintObject::discover_vertical_shells`).
+    pub fn walls_around(&self, layer_height: f64) -> Result<Option<WallsAround>, FlowError> {
+        if self.wall_loops == 0 {
+            return Ok(None);
+        }
+        let nozzle = self.widths.nozzle_diameter;
+        let flow = |width| {
+            Flow::from_widths(
+                &self.widths,
+                width,
+                Flow::auto_width(nozzle),
+                layer_height,
+                false,
+            )
+        };
+        let (outer, inner) = (
+            flow(self.outer_wall_line_width)?,
+            flow(self.inner_wall_line_width)?,
+        );
+        Ok(Some(WallsAround {
+            depth: scaled(
+                0.5 * (outer.width + outer.spacing) + inner.spacing * (self.wall_loops - 1) as f64,
+            ),
+            spacing: scaled(outer.spacing.min(inner.spacing)),
+        }))
     }
 
     /// How far outward-facing surfaces reach into the fill beside them
@@ -348,6 +413,29 @@ impl InfillSettings {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn only_ensuring_all_of_the_vertical_shell_is_followed() {
+        let read = |json: &str| InfillSettings::from_settings(&Settings::from_json(json).unwrap());
+        let all = read(r#"{"ensure_vertical_shell_thickness": "ensure_all"}"#).unwrap();
+        assert!(all.shells(0.2).unwrap().ensure.is_some());
+        assert!(all.unsupported.is_empty());
+        let moderate = read(r#"{"ensure_vertical_shell_thickness": "ensure_moderate"}"#).unwrap();
+        assert_eq!(moderate.shells(0.2).unwrap().ensure, None);
+        assert!(moderate.unsupported[0].starts_with("ensure_vertical_shell_thickness"));
+        // Absent, it is the reference's default.
+        let absent = InfillSettings::from_settings(&Settings::default()).unwrap();
+        assert!(absent.shells(0.2).unwrap().ensure.is_some());
+    }
+
+    #[test]
+    fn narrow_solid_areas_laid_as_loops_are_said_not_to_be() {
+        let read = |json: &str| InfillSettings::from_settings(&Settings::from_json(json).unwrap());
+        let on = read(r#"{"detect_narrow_internal_solid_infill": "1"}"#).unwrap();
+        assert!(on.unsupported[0].starts_with("detect_narrow_internal_solid_infill"));
+        let off = read(r#"{"detect_narrow_internal_solid_infill": "0"}"#).unwrap();
+        assert!(off.unsupported.is_empty());
+    }
 
     #[test]
     fn absent_settings_keep_reference_defaults() {

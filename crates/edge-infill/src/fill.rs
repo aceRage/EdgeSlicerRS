@@ -248,11 +248,17 @@ pub fn fill(
                         lines::Rows { first, within }
                     })
                     .collect();
+                // A path shorter than half its own width is a blob, not a
+                // line, and is left out; the reference keeps them.
+                let least = flow.width / 2.0;
                 for area in &inside {
                     for points in
                         lines::paths_anchored(area, scaled(spacing) as f64, &rows, angles, joining)
                     {
-                        paths.push(ExtrusionPath { points, role, flow });
+                        let path = ExtrusionPath { points, role, flow };
+                        if path.length_mm() >= least {
+                            paths.push(path);
+                        }
                     }
                 }
             }
