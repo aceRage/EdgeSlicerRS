@@ -272,7 +272,14 @@ than the profile asks, which is since put right. A 20 mm cube
 printed on a Snapmaker U1 the same day. One was started on the Centauri
 Carbon too; how it came out is not recorded here. A two-colour
 test (two blocks side by side, 20 tool changes, a prime tower) printed on
-the U1 that day too: the first print in more than one filament. The
+the U1 that day too: the first print in more than one filament. It was
+printed again with the tower as it now is (ribs, the brim stepping in,
+each filament rammed before its tool is put away, the wall open where
+the new tool comes in): the tower stood, its ribs and stepped brim came
+out as drawn, and the owner saw no blobs to speak of. A photograph of
+the tower shows a dark smear where the rams are laid and a wall end
+by the gap a little out of line; the part itself was not looked at
+against the first print. The
 `mushroom` fixture with tree supports printed on the U1 as well, beside
 the C++ slicer's file for the same project: both caps were carried and
 both sets of supports came away. This engine's stood on separate feet
