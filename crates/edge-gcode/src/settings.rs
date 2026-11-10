@@ -197,6 +197,13 @@ pub struct PrintSettings {
     pub tools: usize,
     /// Every setting, by name, for the templates to refer to.
     pub variables: Variables,
+    /// Every setting as the file's settings block lists it, in order.
+    /// Printers and their hosts read the material, nozzle and
+    /// temperatures from there.
+    pub config: Vec<(String, String)>,
+    /// When the file is made, as `2026-11-10 at 07:21:37`, for its first
+    /// lines; none leaves the time out.
+    pub produced_at: Option<String>,
 
     /// Settings present in the input that export does not honour yet, each
     /// with what is done instead.
@@ -300,6 +307,8 @@ impl Default for PrintSettings {
             tool_change_temperature_wait: true,
             tools: 1,
             variables: variables(&Settings::default(), None, None, None),
+            config: Vec::new(),
+            produced_at: None,
             unsupported: Vec::new(),
         }
     }
@@ -754,8 +763,86 @@ impl PrintSettings {
                 bed_temperature_initial_layer,
                 bed,
             ),
+            config: {
+                // Not the print host's address and keys, which a project
+                // carries but a file sent to a printer must not, nor what
+                // only names the preset the settings came from.
+                let private = |key: &str| {
+                    key.starts_with("printhost_")
+                        || key.starts_with("print_host")
+                        || matches!(key, "name" | "from" | "version")
+                };
+                let mut config: Vec<(String, String)> = settings
+                    .iter()
+                    .filter(|(key, _)| !private(key))
+                    .map(|(key, value)| (key.to_owned(), serialized(key, value)))
+                    .collect();
+                config.sort();
+                config
+            },
+            produced_at: None,
             unsupported,
         })
+    }
+}
+
+/// A setting as the reference writes it in a G-code file's settings
+/// block (Config.cpp `serialize`): a list of numbers joined by commas, a
+/// list of texts by semicolons with any that hold spaces or escapes in
+/// quotes (`escape_strings_cstyle`). Lists of names from a fixed set are
+/// joined by commas like numbers; which settings those are is not told by
+/// their text, so they are named here.
+fn serialized(key: &str, value: &Setting) -> String {
+    const CHOICES: [&str; 6] = [
+        "extruder_type",
+        "retract_lift_enforce",
+        "z_hop_types",
+        "nozzle_type",
+        "nozzle_volume_type",
+        "filament_volume_type",
+    ];
+    let escaped = |text: &str| {
+        let mut out = String::with_capacity(text.len());
+        for c in text.chars() {
+            match c {
+                '\r' => out.push_str("\\r"),
+                '\n' => out.push_str("\\n"),
+                '"' => out.push_str("\\\""),
+                c => out.push(c),
+            }
+        }
+        out
+    };
+    match value {
+        Setting::One(text) => escaped(text),
+        Setting::Many(items) => {
+            let plain = |item: &String| {
+                let item = item.trim();
+                item == "nil"
+                    || item.trim_end_matches('%').parse::<f64>().is_ok()
+                    || item
+                        .split_once('x')
+                        .is_some_and(|(x, y)| x.parse::<f64>().is_ok() && y.parse::<f64>().is_ok())
+            };
+            if CHOICES.contains(&key) || items.iter().all(plain) {
+                return items.join(",");
+            }
+            items
+                .iter()
+                .map(|item| {
+                    let quoted = (items.len() == 1 && item.is_empty())
+                        || item
+                            .chars()
+                            .any(|c| matches!(c, ' ' | '\t' | '\\' | '"' | '\r' | '\n'));
+                    if quoted {
+                        format!("\"{}\"", escaped(item))
+                    } else {
+                        item.clone()
+                    }
+                })
+                .collect::<Vec<_>>()
+                .join(";")
+        }
     }
 }
 
@@ -797,6 +884,23 @@ fn variables(
                 variables.set_list(key, texts.iter().map(Value::text).collect())
             }
         }
+    }
+    // Pressure advance is an on/off setting per filament that templates
+    // compare with the text "true", and one a profile may leave out: it
+    // is given as the reference gives it, with the reference's defaults
+    // (PrintConfig.cpp) when absent.
+    let enabled: Vec<Value> =
+        settings
+            .texts("enable_pressure_advance")
+            .map_or(vec![Value::Bool(false)], |flags| {
+                flags
+                    .iter()
+                    .map(|flag| Value::Bool(matches!(flag.trim(), "1" | "true")))
+                    .collect()
+            });
+    variables.set_list("enable_pressure_advance", enabled);
+    if !variables.contains("pressure_advance") {
+        variables.set_list("pressure_advance", vec![Value::Float(0.02)]);
     }
     for name in [
         "initial_extruder",
@@ -1159,6 +1263,48 @@ mod tests {
                 &Settings::from_json(r#"{"travel_speed": "fast"}"#).unwrap()
             )
             .is_err()
+        );
+    }
+
+    #[test]
+    fn settings_are_listed_for_the_file_without_what_is_private() {
+        let settings = PrintSettings::from_settings(
+            &Settings::from_json(
+                r#"{"filament_type": ["PLA", "PETG"], "nozzle_diameter": ["0.4", "0.4"],
+                    "filament_settings_id": ["Generic PLA", "Generic PETG"],
+                    "filament_notes": ["", ""], "z_hop_types": ["Auto Lift", "Auto Lift"],
+                    "printable_area": ["0x0", "270x0", "270x270", "0x270"],
+                    "print_settings_id": "0.20 Standard @Snapmaker U1 (0.4 nozzle)",
+                    "accel_to_decel_factor": "50%", "retraction_length": ["0.8", "nil"],
+                    "machine_end_gcode": "PRINT_END\nTIMELAPSE_STOP",
+                    "printhost_apikey": "secret", "print_host": "192.168.1.20",
+                    "printhost_password": "secret", "name": "project_settings", "from": "project"}"#,
+            )
+            .unwrap(),
+        )
+        .unwrap();
+        let listed: Vec<(&str, &str)> = settings
+            .config
+            .iter()
+            .map(|(key, value)| (key.as_str(), value.as_str()))
+            .collect();
+        assert_eq!(
+            listed,
+            [
+                ("accel_to_decel_factor", "50%"),
+                ("filament_notes", ";"),
+                ("filament_settings_id", "\"Generic PLA\";\"Generic PETG\""),
+                ("filament_type", "PLA;PETG"),
+                ("machine_end_gcode", "PRINT_END\\nTIMELAPSE_STOP"),
+                ("nozzle_diameter", "0.4,0.4"),
+                (
+                    "print_settings_id",
+                    "0.20 Standard @Snapmaker U1 (0.4 nozzle)"
+                ),
+                ("printable_area", "0x0,270x0,270x270,0x270"),
+                ("retraction_length", "0.8,nil"),
+                ("z_hop_types", "Auto Lift,Auto Lift"),
+            ]
         );
     }
 }

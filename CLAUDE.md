@@ -39,6 +39,8 @@ to a stage and say in the PR what moved.
   purpose, say so in the code and in the PR.
 - Output must be deterministic: same input gives byte-identical results at
   any thread count. Parity testing depends on it.
+  The G-code's first line carries the time it was made; set
+  `SOURCE_DATE_EPOCH` when comparing two runs.
 - Only `edge-clip` may depend on the clipping library; every other crate
   goes through its API, so the library can be replaced in one place.
   The same holds for `edge-medial` and the Voronoi library.

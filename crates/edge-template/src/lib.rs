@@ -179,9 +179,19 @@ fn expand_over(
             }
         } else {
             let trimmed = body.trim();
-            let (keyword, argument) = trimmed
-                .split_once(char::is_whitespace)
-                .unwrap_or((trimmed, ""));
+            // The word a tag opens with, which need not be followed by a
+            // space: profiles write `{elsif(a > b)}`.
+            let word = trimmed
+                .find(|c: char| !(c.is_ascii_alphanumeric() || c == '_'))
+                .unwrap_or(trimmed.len());
+            let (keyword, argument) = match &trimmed[..word] {
+                keyword @ ("if" | "elsif" | "elseif" | "else" | "endif") => {
+                    (keyword, trimmed[word..].trim_start())
+                }
+                _ => trimmed
+                    .split_once(char::is_whitespace)
+                    .unwrap_or((trimmed, "")),
+            };
             let script = expression::is_script(trimmed);
             match keyword {
                 _ if script => {
@@ -402,5 +412,17 @@ mod tests {
         assert!(error("{if true then 1;}").contains("endif"));
         assert!(error("{local a = 1 local b = 2;}").contains("expected \";\""));
         assert!(error("{local a = (1, 2);}").contains("expected"));
+    }
+
+    #[test]
+    fn a_condition_may_follow_its_keyword_without_a_space() {
+        let mut variables = Variables::default();
+        variables.set("bed", Value::Int(52));
+        let template = "{if(bed > 55)}hot{elsif(bed > 50)||(bed < 0)}warm{elsif(bed > 45)}mild{else}cold{endif}";
+        assert_eq!(expand(template, &variables).unwrap(), "warm");
+        variables.set("bed", Value::Int(60));
+        assert_eq!(expand(template, &variables).unwrap(), "hot");
+        variables.set("bed", Value::Int(20));
+        assert_eq!(expand(template, &variables).unwrap(), "cold");
     }
 }

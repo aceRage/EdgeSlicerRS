@@ -139,6 +139,16 @@ Known gaps: painted triangles, per-object setting overrides, typed settings
   in the reference, the expanded start G-code is identical to the
   reference's on every line. A bare model exports with a printer's own
   G-code when `--machine`, `--process` and `--filament` name its presets.
+- File layout: the G-code file is laid out as the reference lays its own
+  out, because printers and their hosts read it by that layout: a header
+  block, the G-code between `EXECUTABLE_BLOCK` markers, what each filament
+  used, every setting in a `CONFIG_BLOCK`, and totals with the time. The
+  first line names OrcaSlicer, as the reference's does: the U1's host
+  accepts files only from slicers on a fixed list, and refused this
+  engine's under its own name. A print host's address and keys are left
+  out of the settings. The time in the file is at commanded speeds with no
+  acceleration, so a print takes longer than it says. `SOURCE_DATE_EPOCH`
+  fixes the date in the first line, for comparing two runs byte for byte.
 
 **The G-code has not been run on a printer.** It is written to print on the
 U1, and it matches the reference where the two have been compared, but nothing here has been tested on hardware. Without a printer
@@ -158,8 +168,8 @@ generated, and a note says so), the older tree styles (`tree_slim`,
 `tree_strong`, `tree_hybrid`: organic-style trees are built, with a note),
 rafts, brims inside holes, draft shields, seams placed by visibility or kept
 off overhangs, a fan speed of its own for bridges over infill, walls
-slowed over curled edges, arc fitting, progress reports (`M73`) and object
-labels for cancelling. Bridge fill keeps its own speed along its whole
+slowed over curled edges, arc fitting, progress reports (`M73`), preview
+pictures in the file (thumbnails), and object labels for cancelling. Bridge fill keeps its own speed along its whole
 length, where the reference also slows it near its anchors. A setting that asks for one of these is listed as a
 note when the file is written. A template that needs a variable not
 provided stops the export with the variable's name. The time is at

@@ -452,16 +452,54 @@ fn slice(args: SliceArgs) -> Result<(), Failure> {
     {
         settings.overlay(preset);
     }
+    // The presets are named in the file, as the reference names them, for
+    // whoever reads it back.
+    if let Some(name) = &args.process {
+        settings.insert("print_settings_id", edge_config::Value::One(name.clone()));
+    }
+    if let Some(name) = &args.machine {
+        settings.insert("printer_settings_id", edge_config::Value::One(name.clone()));
+    }
+    if let Some(name) = &args.filament {
+        settings.insert(
+            "filament_settings_id",
+            edge_config::Value::Many(vec![name.clone()]),
+        );
+    }
     if let Some(bed_type) = &args.bed_type {
         settings.insert("curr_bed_type", edge_config::Value::One(bed_type.clone()));
     } else if settings.get("curr_bed_type").is_none()
         && settings.get("machine_start_gcode").is_some()
     {
-        println!("bed type not given; the default, Cool Plate, is assumed (--bed-type changes it)");
-        settings.insert(
-            "curr_bed_type",
-            edge_config::Value::One("Cool Plate".into()),
-        );
+        // The printer's own default plate, which a profile gives by name
+        // or by its number in the reference's list (PrintConfig.hpp
+        // `BedType`); failing that, the reference's default.
+        let plate = match settings.text("default_bed_type").map(str::trim) {
+            Some("1") => Some("Cool Plate"),
+            Some("2") => Some("Engineering Plate"),
+            Some("3") => Some("High Temp Plate"),
+            Some("4") => Some("Textured PEI Plate"),
+            Some("5") => Some("Textured Cool Plate"),
+            Some("7") => Some("Supertack Plate"),
+            Some(name) if name.ends_with("Plate") => Some(name),
+            _ => None,
+        }
+        .map(str::to_owned);
+        let plate = match plate {
+            Some(plate) => {
+                println!(
+                    "bed type not given; the printer's default, {plate}, is used (--bed-type changes it)"
+                );
+                plate
+            }
+            None => {
+                println!(
+                    "bed type not given; the default, Cool Plate, is assumed (--bed-type changes it)"
+                );
+                "Cool Plate".into()
+            }
+        };
+        settings.insert("curr_bed_type", edge_config::Value::One(plate));
     }
     let print = PrintSettings::from_settings(&settings)?;
     // A bare model has no place on the bed of its own: it goes in the
@@ -1048,9 +1086,13 @@ fn slice(args: SliceArgs) -> Result<(), Failure> {
         }
         // One set of settings for each filament up to the highest in use.
         let highest = used.iter().copied().max().unwrap_or(1);
-        let prints: Vec<PrintSettings> = (0..highest)
+        let mut prints: Vec<PrintSettings> = (0..highest)
             .map(|filament| PrintSettings::for_filament(&settings, filament))
             .collect::<Result<_, _>>()?;
+        let produced_at = timestamp();
+        for print in &mut prints {
+            print.produced_at = Some(produced_at.clone());
+        }
         // Layer tops, measured from the bottom of the model as the bed.
         // Skirt, brim and supports go to whichever tool starts the layer.
         let plan: Vec<edge_gcode::Layer<'_>> = entries
@@ -1284,9 +1326,57 @@ fn svg(layer: &LayerRegions, perimeters: &Perimeters, fills: &[ExtrusionPath]) -
     )
 }
 
+/// Now, as the first line of a G-code file gives it: `2026-11-10 at
+/// 07:21:37`, in UTC. `SOURCE_DATE_EPOCH`, in seconds, stands in for the
+/// clock when set, so the same input can be made to give the same file.
+fn timestamp() -> String {
+    let seconds = std::env::var("SOURCE_DATE_EPOCH")
+        .ok()
+        .and_then(|epoch| epoch.trim().parse::<u64>().ok())
+        .unwrap_or_else(|| {
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map_or(0, |since| since.as_secs())
+        });
+    stamp(seconds)
+}
+
+/// A count of seconds since 1970 as a date and time of day.
+fn stamp(seconds: u64) -> String {
+    let (days, of_day) = (seconds / 86_400, seconds % 86_400);
+    // Days since 1970 to a calendar date (Howard Hinnant's `civil_from_days`).
+    let shifted = days as i64 + 719_468;
+    let era = shifted.div_euclid(146_097);
+    let day_of_era = shifted.rem_euclid(146_097);
+    let year_of_era =
+        (day_of_era - day_of_era / 1_460 + day_of_era / 36_524 - day_of_era / 146_096) / 365;
+    let day_of_year = day_of_era - (365 * year_of_era + year_of_era / 4 - year_of_era / 100);
+    let shifted_month = (5 * day_of_year + 2) / 153;
+    let day = day_of_year - (153 * shifted_month + 2) / 5 + 1;
+    let month = if shifted_month < 10 {
+        shifted_month + 3
+    } else {
+        shifted_month - 9
+    };
+    let year = year_of_era + era * 400 + i64::from(month <= 2);
+    format!(
+        "{year:04}-{month:02}-{day:02} at {:02}:{:02}:{:02}",
+        of_day / 3_600,
+        of_day / 60 % 60,
+        of_day % 60
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn seconds_since_1970_are_written_as_a_date_and_time() {
+        assert_eq!(stamp(0), "1970-01-01 at 00:00:00");
+        assert_eq!(stamp(1_709_164_800), "2024-02-29 at 00:00:00");
+        assert_eq!(stamp(1_794_295_297), "2026-11-10 at 07:21:37");
+    }
 
     #[test]
     fn plates_are_laid_out_in_a_grid_running_back_along_y() {
