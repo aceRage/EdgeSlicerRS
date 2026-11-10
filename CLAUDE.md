@@ -12,6 +12,8 @@ cargo fmt --all
 cargo run --release -p edge-cli -- slice <model.stl|project.3mf> [--plate N] [--svg out.svg] [--gcode out.gcode]
 cargo run --release -p edge-cli -- inspect <project.3mf>
 cargo run --release -p edge-cli -- preset <vendor> <kind> <name> --profiles reference/EdgeSlicer/resources/profiles
+(cd apps/desktop && cargo test && cargo clippy --all-targets -- -D warnings)   # the desktop app, a workspace of its own
+(cd apps/desktop && cargo run -- --serve 4710)                                 # its page in a browser, no window
 ```
 
 Five test files (`edge-config/tests/reference_profiles.rs` and a
@@ -55,7 +57,13 @@ to a stage and say in the PR what moved.
   A G-code file is written whole or not at all, and never with toolpaths
   off the bed.
 - Engine crates stay UI-free and take no dependency on Tauri; the desktop
-  app calls into them.
+  app calls into them, through `edge-engine`. The pipeline lives there, not
+  in the CLI: after changing it, check the CLI's output is still what it
+  was.
+- In `apps/desktop`, everything the page can ask for goes through
+  `Session::call` in `src/api.rs`, which stays free of Tauri so the window
+  and `--serve` share it and it can be tested without either. The page has
+  no build step and loads nothing from the network.
 - `unsafe` is denied workspace-wide. A crate that needs it opts in locally
   with the reason and a benchmark showing the gain.
 - Tests also run on Windows: no hard-coded path separators or Unix-only APIs.

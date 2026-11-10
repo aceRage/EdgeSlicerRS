@@ -1,7 +1,7 @@
 # EdgeSlicerRS
 
-A from-scratch Rust slicing engine for EdgeSlicer, built for speed, with a
-Tauri + web desktop UI to follow. The C++ EdgeSlicer stays the shipping
+A from-scratch Rust slicing engine for EdgeSlicer, built for speed, with the
+start of a Tauri desktop app. The C++ EdgeSlicer stays the shipping
 product and the reference this engine is checked against; nothing here
 replaces it until output matches on the printers we care about.
 
@@ -25,11 +25,12 @@ replaces it until output matches on the printers we care about.
 | `crates/edge-template` | The placeholder language of custom G-code: `{expression}`, `{if}`, `[variable]`, and scripts |
 | `crates/edge-tower` | The prime tower a nozzle is primed on after a tool change |
 | `crates/edge-slice` | Mesh to per-layer contours, then to regions with holes; parallel across layers |
+| `crates/edge-engine` | The whole pipeline behind one call, for whatever drives it: open a model, settle its settings, slice with progress and cancel, G-code, a layer's lines for drawing, and a vendor's presets by printer |
 | `crates/edge-cli` | The `edge` command line |
 | `tools/make_defaults.py` | Asks the reference for its default of every setting and writes the table `edge-config` carries; run again when the pin moves |
 | `tools/make_fixture.py` | Writes small test 3MFs (parts that need supports or a brim, and a plain cube) to compare with the reference on |
 | `reference/EdgeSlicer` | Pinned submodule of the C++ slicer: profiles, test models, behaviour to match. Read-only here |
-| `apps/desktop` | Tauri app (not started) |
+| `apps/desktop` | The desktop app (Tauri): open a model, slice it, look through its layers, export G-code. A workspace of its own |
 
 ## Build and run
 
@@ -44,6 +45,45 @@ cargo run --release -p edge-cli -- slice model.stl --vendor Snapmaker --machine 
   --process "0.20mm Standard @Snapmaker U1 (0.4 nozzle)" --filament "Snapmaker PLA @U1" --bed-type "Textured PEI Plate" --gcode model.gcode
 cargo run --release -p edge-cli -- preset Snapmaker process "0.20mm Standard @Snapmaker U1 (0.4 nozzle)"
 ```
+
+## The desktop app
+
+```bash
+cd apps/desktop
+cargo run                      # the window
+cargo run -- model.3mf         # the window, with a model open
+cargo run -- --serve 4710      # no window: the same page at http://127.0.0.1:4710/
+cargo test
+```
+
+A first slice of the app, not the app: it opens an STL or a 3MF project,
+slices it with the project's own settings or with a printer, process and
+filament preset picked from the vendor profiles, shows each layer coloured
+by feature or by filament (wheel to zoom, drag to move, arrow keys or the
+slider for layers), lists what the settings asked for that is not done,
+and saves the G-code, which is the file the command line writes. It has
+no 3D view, no arranging or editing of the model, no settings editor and
+no installer. The vendor profiles are found in `reference/EdgeSlicer`
+beside the source, or wherever `EDGE_PROFILES` points; the folder can be
+changed in the window.
+
+`apps/desktop` is a Cargo workspace of its own, so `cargo test --workspace`
+at the top builds no web view. The page (`ui/`) is plain HTML, CSS and
+JavaScript with no build step, and asks the engine for everything through
+one function (`src/api.rs`), which does not know about Tauri. `--serve`
+puts the same page and the same function behind a local web server, for
+working on the page in a browser and for checking it where a window
+cannot be seen; it listens on the loopback address only and takes calls
+only from the page it served. `EDGE_DESKTOP_TRACE=1` notes each call the
+page makes on standard error.
+
+Checked so far, on the Mac mini: in a browser through `--serve`, a
+four-colour plate and a bare STL with presets were sliced, looked through
+and exported, and the exported file is byte for byte the command line's
+but for the time in its first line. The window itself opens, loads the
+page and answers its calls (seen in the trace); slicing from the window
+and its file dialogs have not been tried by hand yet. Not built on
+Windows or Linux.
 
 ## Status
 
