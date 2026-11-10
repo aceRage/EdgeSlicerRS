@@ -116,7 +116,7 @@ fn surfaces_partition_the_infill_area_and_every_one_is_filled() {
             let fill = edge_infill::fill(surfaces, index, &params).unwrap();
             lines += fill.len();
             if fill.iter().any(|line| {
-                line.points.len() != 2 || line.length_mm() < line.flow.width / 2.0 - 1e-6
+                line.points.len() < 2 || line.length_mm() < line.flow.width / 2.0 - 1e-6
             }) {
                 problems.push(format!("layer {index}: a fill line is degenerate"));
             }
@@ -151,7 +151,7 @@ fn surfaces_partition_the_infill_area_and_every_one_is_filled() {
     }
     assert!(failures.is_empty(), "{}", failures.join("\n"));
     assert!(
-        filled >= 25 && lines > 100_000,
-        "{filled} projects filled, {lines} lines"
+        filled >= 25 && lines > 10_000,
+        "{filled} projects filled, {lines} fill paths"
     );
 }

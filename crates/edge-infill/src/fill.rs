@@ -21,6 +21,9 @@ pub struct FillParams {
     pub sparse_angle: f64,
     /// Direction of solid lines on even layers; odd layers are turned 90°.
     pub solid_angle: f64,
+    /// Longest stretch of outline, in mm, that two sparse lines may be
+    /// joined along; zero leaves sparse lines separate.
+    pub sparse_link_max: f64,
 }
 
 /// How far a line's centre stops short of the area's edge, as a share of
@@ -28,6 +31,9 @@ pub struct FillParams {
 /// for single-direction fill, a full half spacing for crossing lines).
 const LINES_INSET: f64 = 0.05;
 const GRID_INSET: f64 = 0.5;
+/// Solid lines are joined along the outline when it runs no further than
+/// this many line spacings between them (Fill.cpp, `link_max_length`).
+const SOLID_LINK_SPACINGS: f64 = 3.0;
 
 /// Fill lines for one layer's surfaces, surface by surface.
 pub fn fill(
@@ -87,18 +93,18 @@ pub fn fill(
             -scaled(inset * flow.spacing),
             Join::MITER,
         )?;
-        for &angle in angles {
-            for area in &inside {
-                // A stub shorter than half its own width is a blob, not a line.
-                for segment in
-                    lines::segments(area, scaled(spacing), angle, flow.scaled_width() / 2)
-                {
-                    paths.push(ExtrusionPath {
-                        points: segment.to_vec(),
-                        role,
-                        flow,
-                    });
-                }
+        let max_link = match role {
+            Role::SparseInfill => params.sparse_link_max,
+            _ => SOLID_LINK_SPACINGS * flow.spacing,
+        };
+        // All of a surface's directions are joined together, so a line can
+        // link to a crossing one as readily as to its own neighbour.
+        for area in &inside {
+            // A stub shorter than half its own width is a blob, not a line.
+            let min_length = flow.scaled_width() / 2;
+            for points in lines::paths(area, scaled(spacing), angles, min_length, scaled(max_link))
+            {
+                paths.push(ExtrusionPath { points, role, flow });
             }
         }
     }
@@ -135,6 +141,7 @@ mod tests {
             pattern,
             sparse_angle: 45f64.to_radians(),
             solid_angle: 45f64.to_radians(),
+            sparse_link_max: 0.0,
         }
     }
 
@@ -157,12 +164,15 @@ mod tests {
                 .iter()
                 .all(|path| path.role == Role::SolidInfill && path.flow == params.solid)
         );
-        // Lines one spacing apart cover the area once.
+        // Lines one spacing apart cover the area once; the short links
+        // joining them along the edges add a little.
         let covered = length(&paths) * params.solid.spacing;
         assert!(
-            (covered / 1600.0 - 1.0).abs() < 0.01,
+            (covered / 1600.0 - 1.0).abs() < 0.03,
             "covered {covered} of 1600 mm²"
         );
+        // Joined, the whole square is a handful of zigzags, not a hundred lines.
+        assert!(paths.len() <= 4, "{} separate paths", paths.len());
     }
 
     #[test]
@@ -202,6 +212,26 @@ mod tests {
                 pattern == Pattern::Grid
             );
         }
+        // Joining sparse lines along the walls makes fewer, longer paths.
+        let separate = fill(
+            &[surface(SurfaceKind::Sparse, 60.0)],
+            0,
+            &params(Pattern::Lines, 0.25),
+        )
+        .unwrap();
+        let linked = FillParams {
+            sparse_link_max: 20.0,
+            ..params(Pattern::Lines, 0.25)
+        };
+        let joined = fill(&[surface(SurfaceKind::Sparse, 60.0)], 0, &linked).unwrap();
+        assert!(
+            joined.len() < separate.len() / 4,
+            "{} paths joined from {}",
+            joined.len(),
+            separate.len()
+        );
+        assert!(length(&joined) > length(&separate));
+
         let empty = params(Pattern::Grid, 0.0);
         assert!(
             fill(&[surface(SurfaceKind::Sparse, 60.0)], 0, &empty)
