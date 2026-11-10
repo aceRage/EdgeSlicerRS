@@ -2,7 +2,7 @@ use edge_config::{ConfigError, FloatOrPercent, Settings};
 use edge_extrusion::{Flow, FlowError, LineWidths};
 use edge_geom::scaled;
 
-use crate::{FillParams, Shells};
+use crate::{Anchoring, FillParams, Shells};
 
 /// Sparse fill patterns this engine can lay.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -36,6 +36,10 @@ pub struct InfillSettings {
     pub internal_solid_infill_line_width: FloatOrPercent,
     pub top_surface_line_width: FloatOrPercent,
     pub outer_wall_line_width: FloatOrPercent,
+    pub inner_wall_line_width: FloatOrPercent,
+    /// How many walls there are, which sets how far a surface reaches
+    /// into solid fill to anchor.
+    pub wall_loops: usize,
     pub widths: LineWidths,
     /// Fill over air: its plastic as a share of a normal line's, whether
     /// it is a round thread instead of a flattened line, and how closely
@@ -47,6 +51,9 @@ pub struct InfillSettings {
     pub internal_bridge_flow: f64,
     pub thick_internal_bridges: bool,
     pub internal_bridge_density: f64,
+    /// Settings present in the input that are not honoured, each with
+    /// what is done instead.
+    pub unsupported: Vec<String>,
 }
 
 impl Default for InfillSettings {
@@ -66,6 +73,8 @@ impl Default for InfillSettings {
             internal_solid_infill_line_width: unset,
             top_surface_line_width: unset,
             outer_wall_line_width: unset,
+            inner_wall_line_width: unset,
+            wall_loops: 2,
             widths: LineWidths {
                 line_width: unset,
                 initial_layer_line_width: unset,
@@ -77,6 +86,7 @@ impl Default for InfillSettings {
             internal_bridge_flow: 1.0,
             thick_internal_bridges: true,
             internal_bridge_density: 1.0,
+            unsupported: Vec::new(),
         }
     }
 }
@@ -126,6 +136,27 @@ impl InfillSettings {
         let flag = |key: &str, default: bool| -> Result<bool, ConfigError> {
             Ok(settings.flag(key)?.unwrap_or(default))
         };
+        // Asked for and not done: said, never passed over.
+        let mut unsupported = Vec::new();
+        for (key, instead) in [
+            ("bridge_angle", "each bridge is turned to span its own gap"),
+            (
+                "internal_bridge_angle",
+                "bridges over infill run across the lines beneath them",
+            ),
+            (
+                "bridge_expansion_extra",
+                "bridges reach the usual distance onto what is beside them",
+            ),
+            ("bridge_line_width", "bridges are as wide as the solid fill"),
+        ] {
+            if let Some(FloatOrPercent::Value(value) | FloatOrPercent::Percent(value)) =
+                settings.float_or_percent(key)?
+                && value != 0.0
+            {
+                unsupported.push(format!("{key} \"{value}\": {instead}"));
+            }
+        }
         let density = match settings.float_or_percent("sparse_infill_density")? {
             // A percentage whether or not the sign is written.
             Some(FloatOrPercent::Percent(percent) | FloatOrPercent::Value(percent)) => percent,
@@ -153,6 +184,8 @@ impl InfillSettings {
             internal_solid_infill_line_width: width("internal_solid_infill_line_width")?,
             top_surface_line_width: width("top_surface_line_width")?,
             outer_wall_line_width: width("outer_wall_line_width")?,
+            inner_wall_line_width: width("inner_wall_line_width")?,
+            wall_loops: count("wall_loops", defaults.wall_loops)?,
             widths: LineWidths {
                 line_width: width("line_width")?,
                 initial_layer_line_width: width("initial_layer_line_width")?,
@@ -173,6 +206,7 @@ impl InfillSettings {
                 "internal_bridge_density",
                 defaults.internal_bridge_density,
             )?,
+            unsupported,
         })
     }
 
@@ -192,6 +226,41 @@ impl InfillSettings {
             sparse_density: self.sparse_infill_density_percent / 100.0,
             minimum_sparse_area: self.minimum_sparse_infill_area,
             opening: scaled(outer.width / 10.0),
+        })
+    }
+
+    /// How far outward-facing surfaces reach into the fill beside them
+    /// on layers of this height (`LayerRegion::process_external_surfaces`).
+    pub fn anchoring(&self, layer_height: f64) -> Result<Anchoring, FlowError> {
+        let nozzle = self.widths.nozzle_diameter;
+        let flow = |width| {
+            Flow::from_widths(
+                &self.widths,
+                width,
+                Flow::auto_width(nozzle),
+                layer_height,
+                false,
+            )
+        };
+        let (outer, inner) = (
+            flow(self.outer_wall_line_width)?,
+            flow(self.inner_wall_line_width)?,
+        );
+        let solid = flow(self.internal_solid_infill_line_width)?;
+        // With no walls there is nothing to reach past.
+        let (shell, least) = if self.wall_loops > 0 {
+            (
+                0.5 * outer.width + outer.spacing + inner.spacing * (self.wall_loops - 1) as f64,
+                inner.spacing,
+            )
+        } else {
+            (1e-4, 1e-4)
+        };
+        Ok(Anchoring {
+            into_sparse: scaled(least),
+            into_solid: scaled(shell * std::f64::consts::SQRT_2),
+            closing: scaled(0.55 * 0.65 * 1.05 * solid.spacing),
+            minimum_sparse_area: self.minimum_sparse_infill_area,
         })
     }
 
@@ -278,5 +347,21 @@ mod tests {
         );
         assert!(read(r#"{"top_shell_layers": "-2"}"#).is_err());
         assert!(read(r#"{"sparse_infill_density": "lots"}"#).is_err());
+    }
+
+    #[test]
+    fn bridge_settings_not_honoured_are_said() {
+        let read = |json: &str| InfillSettings::from_settings(&Settings::from_json(json).unwrap());
+        assert!(
+            read(
+                r#"{"bridge_angle": "0", "bridge_line_width": "0", "bridge_expansion_extra": "0"}"#
+            )
+            .unwrap()
+            .unsupported
+            .is_empty()
+        );
+        let set = read(r#"{"bridge_angle": "30", "bridge_line_width": "0.5"}"#).unwrap();
+        assert_eq!(set.unsupported.len(), 2);
+        assert!(set.unsupported[0].starts_with("bridge_angle \"30\""));
     }
 }

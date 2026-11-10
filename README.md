@@ -75,7 +75,10 @@ Known gaps: painted triangles, per-object setting overrides, typed settings
   lines, or a grid for sparse areas. The first solid layer over sparse
   fill is laid as an internal bridge: round threads across the lines
   beneath, at `internal_bridge_speed`. Fill over air takes `bridge_flow`
-  and `bridge_density`.
+  and `bridge_density`, and runs along the edges it has nothing beside,
+  so its lines go from one support to the other. Bridges, bottoms and
+  tops reach a wall's spacing into the fill beside them, to have
+  something to hold on to.
 
 - G-code: `slice --gcode out.gcode` orders each layer (skirt and brim,
   walls island by island, then fill nearest-end-first), holds speeds to the
@@ -154,8 +157,11 @@ Known gaps: painted triangles, per-object setting overrides, typed settings
   acceleration, so a print takes longer than it says. `SOURCE_DATE_EPOCH`
   fixes the date in the first line, for comparing two runs byte for byte.
 
-**The G-code has not been run on a printer.** It is written to print on the
-U1, and it matches the reference where the two have been compared, but nothing here has been tested on hardware. Without a printer
+**The G-code has not been checked on a printer.** Prints of a 20 mm cube
+were started on a Snapmaker U1 and an Elegoo Centauri Carbon on
+2026-11-10; how they came out is not recorded here yet. Supports,
+bridges, overhangs and printing in more than one filament have not been
+on hardware at all. Without a printer
 profile a generic preamble is written and the file is only good for viewing.
 
 Multi-filament printing is a first working version. Where parts of
@@ -189,9 +195,8 @@ at fixed steps, so a wall's speed changes at slightly different places.
 Infill is a first working version, not a port: fill lines are joined along
 the walls nearest-first but not ordered (no monotonic) and get no anchors
 where they stay unjoined, solid lines are not fitted to the region's
-width, bridges run in the solid fill's direction and are not turned to
-span their gap, bridges and other external surfaces are not grown to
-anchor on what is beside them, internal bridges are not run out to the
+width, a bridge reaches 0.4 mm onto each support where the reference's
+reaches 0.8 mm, internal bridges are not run out to the
 sparse lines that carry them (they come 5 to 9% short of the
 reference's), narrow parts of top and bottom surfaces get no gap fill
 (`gap_fill_target`), shell thickness in mm and vertical shells are ignored, and sparse patterns other than line and
@@ -211,9 +216,9 @@ moved layer by layer, where the reference follows every place a branch
 could be and picks afterwards; a leaning branch is a circle on each layer,
 not an oval; and branches are not smoothed.
 
-Next: a first print on the U1 to check the output on hardware; then
-bridges turned to span their gap and anchored, one wall under top
-surfaces, and painted colours.
+Next: a two-colour print on the U1, which tool changes and the prime
+tower have not yet had; then print time with acceleration, thumbnails,
+one wall under top surfaces, and painted colours.
 
 ## Comparing with the reference
 
@@ -283,7 +288,7 @@ spiral lifts, and plate placement (outer walls land where the reference
 puts them on all three plates of `mcbrim_test.3mf`), the prime tower, gap
 fill between walls, overhang walls with their speeds and fan, and
 internal bridges. Still different: top surfaces below the last layer keep
-all their walls, and bridges are neither turned nor anchored.
+all their walls.
 
 ## Licence
 

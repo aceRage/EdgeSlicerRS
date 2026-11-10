@@ -24,6 +24,20 @@ pub enum SurfaceKind {
 pub struct Surface {
     pub kind: SurfaceKind,
     pub area: ExPolygon,
+    /// The direction its lines are to run, in radians counter-clockwise
+    /// from +x, where the surface has one of its own: a bridge runs from
+    /// one support to the other. None leaves it to the fill.
+    pub angle: Option<f64>,
+}
+
+impl Surface {
+    fn new(kind: SurfaceKind, area: ExPolygon) -> Self {
+        Self {
+            kind,
+            area,
+            angle: None,
+        }
+    }
 }
 
 /// What classification needs to know.
@@ -101,7 +115,7 @@ pub fn classify(
             }
             let (top, bottom) = &faces[layer];
             let mut push = |kind, areas: Vec<ExPolygon>| {
-                surfaces.extend(areas.into_iter().map(|area| Surface { kind, area }));
+                surfaces.extend(areas.into_iter().map(|area| Surface::new(kind, area)));
             };
             // Most layers have nothing exposed; those skip clipping entirely.
             let within = |faces: &[ExPolygon]| {
@@ -162,6 +176,304 @@ pub fn classify(
             Ok(surfaces)
         })
         .collect()
+}
+
+/// How far the surfaces that face outward reach into the fill beside
+/// them, so that they have something to hold on to.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Anchoring {
+    /// How far into sparse fill: the reference's one wall spacing.
+    pub into_sparse: Coord,
+    /// How far into solid fill, and for a bridge into a top surface: the
+    /// reference's width of the walls times the square root of two.
+    pub into_solid: Coord,
+    /// Gaps narrower than twice this left in a grown surface are closed.
+    pub closing: Coord,
+    /// What is left of a sparse area is made solid when smaller than
+    /// this many mm².
+    pub minimum_sparse_area: f64,
+}
+
+/// Grows each layer's bridges, bottoms and tops into the fill beside
+/// them, and gives every bridge the direction that carries it from
+/// support to support (`LayerRegion::process_external_surfaces`). The
+/// reference grows in waves that cannot leave the area they start in;
+/// here a surface is grown by the same distance and cut to the fill it
+/// may grow into.
+pub fn anchor(
+    surfaces: &[Vec<Surface>],
+    anchoring: &Anchoring,
+) -> Result<Vec<Vec<Surface>>, ClipError> {
+    let join = Join::MITER;
+    surfaces
+        .par_iter()
+        .map(|layer| {
+            let of = |kind: SurfaceKind| -> Vec<ExPolygon> {
+                layer
+                    .iter()
+                    .filter(|s| s.kind == kind)
+                    .map(|s| s.area.clone())
+                    .collect()
+            };
+            let (bridges, bottoms) = (of(SurfaceKind::Bridge), of(SurfaceKind::Bottom));
+            let mut top = of(SurfaceKind::Top);
+            if bridges.is_empty() && bottoms.is_empty() && top.is_empty() {
+                return Ok(layer.clone());
+            }
+            let mut solid = of(SurfaceKind::InternalSolid);
+            let mut sparse = of(SurfaceKind::Sparse);
+            let mut out = Vec::with_capacity(layer.len());
+
+            // A surface with what it gains from each kind of fill beside
+            // it, closed up and kept to what it started from and gained.
+            let grown = |surface: &[ExPolygon],
+                         into: &[(&[ExPolygon], Coord)]|
+             -> Result<Vec<ExPolygon>, ClipError> {
+                let mut all = surface.to_vec();
+                let mut allowed = surface.to_vec();
+                for (zone, reach) in into {
+                    if zone.is_empty() || *reach <= 0 {
+                        continue;
+                    }
+                    all.extend(edge_clip::intersection(
+                        &edge_clip::offset(surface, *reach, join)?,
+                        zone,
+                    )?);
+                    allowed.extend(zone.iter().cloned());
+                }
+                if all.len() == surface.len() {
+                    return edge_clip::union_ex(surface);
+                }
+                edge_clip::intersection(
+                    &edge_clip::closing(&all, anchoring.closing, join)?,
+                    &edge_clip::union_ex(&allowed)?,
+                )
+            };
+
+            // Bridges first, each with its own direction, judged by the
+            // edges it has no fill beside.
+            if !bridges.is_empty() {
+                let beside: Vec<ExPolygon> =
+                    solid.iter().chain(&sparse).chain(&top).cloned().collect();
+                let beside = edge_clip::offset(&beside, BESIDE, join)?;
+                let mut taken: Vec<ExPolygon> = Vec::new();
+                for bridge in &bridges {
+                    let angle = bridge_direction(bridge, &beside);
+                    let own = std::slice::from_ref(bridge);
+                    let mut area = grown(
+                        own,
+                        &[
+                            (&solid, anchoring.into_solid),
+                            (&sparse, anchoring.into_sparse),
+                            (&top, anchoring.into_solid),
+                        ],
+                    )?;
+                    if !taken.is_empty() {
+                        area = edge_clip::difference(&area, &taken)?;
+                    }
+                    solid = edge_clip::difference(&solid, &area)?;
+                    sparse = edge_clip::difference(&sparse, &area)?;
+                    top = edge_clip::difference(&top, &area)?;
+                    taken.extend(area.iter().cloned());
+                    out.extend(area.into_iter().map(|area| Surface {
+                        kind: SurfaceKind::Bridge,
+                        area,
+                        angle: Some(angle),
+                    }));
+                }
+            }
+            // Then what rests on the bed, and last the tops.
+            let mut spread = |kind: SurfaceKind,
+                              surface: &[ExPolygon],
+                              solid: &mut Vec<ExPolygon>,
+                              sparse: &mut Vec<ExPolygon>|
+             -> Result<(), ClipError> {
+                if surface.is_empty() {
+                    return Ok(());
+                }
+                let area = grown(
+                    surface,
+                    &[
+                        (solid, anchoring.into_solid),
+                        (sparse, anchoring.into_sparse),
+                    ],
+                )?;
+                *solid = edge_clip::difference(solid, &area)?;
+                *sparse = edge_clip::difference(sparse, &area)?;
+                out.extend(area.into_iter().map(|area| Surface::new(kind, area)));
+                Ok(())
+            };
+            spread(SurfaceKind::Bottom, &bottoms, &mut solid, &mut sparse)?;
+            spread(SurfaceKind::Top, &top, &mut solid, &mut sparse)?;
+
+            // What is left of the sparse fill may be too small to be
+            // worth a pattern.
+            let (small, large): (Vec<ExPolygon>, Vec<ExPolygon>) = sparse
+                .into_iter()
+                .partition(|area| area.area_mm2() < anchoring.minimum_sparse_area);
+            if !small.is_empty() && !of(SurfaceKind::Sparse).is_empty() {
+                solid.extend(small);
+                solid = edge_clip::union_ex(&solid)?;
+            }
+            out.extend(
+                solid
+                    .into_iter()
+                    .map(|area| Surface::new(SurfaceKind::InternalSolid, area)),
+            );
+            out.extend(
+                layer
+                    .iter()
+                    .filter(|s| s.kind == SurfaceKind::InternalBridge)
+                    .cloned(),
+            );
+            out.extend(
+                large
+                    .into_iter()
+                    .map(|area| Surface::new(SurfaceKind::Sparse, area)),
+            );
+            Ok(out)
+        })
+        .collect()
+}
+
+/// How far fill is grown before a bridge's edges are tested against it,
+/// so that an edge along it counts as beside it.
+const BESIDE: Coord = 2_000;
+
+/// Whether a point, in mm, lies in any of the regions.
+fn contains(regions: &[ExPolygon], x: f64, y: f64) -> bool {
+    regions.iter().any(|region| {
+        let mut inside = false;
+        for ring in region.rings() {
+            let points = &ring.points;
+            for (index, a) in points.iter().enumerate() {
+                let b = points[(index + 1) % points.len()];
+                let (ax, ay) = (edge_geom::unscaled(a.x), edge_geom::unscaled(a.y));
+                let (bx, by) = (edge_geom::unscaled(b.x), edge_geom::unscaled(b.y));
+                if (ay > y) != (by > y) && x < ax + (y - ay) / (by - ay) * (bx - ax) {
+                    inside = !inside;
+                }
+            }
+        }
+        inside
+    })
+}
+
+/// The direction a bridge's lines should run, in radians from 0 up to π
+/// (BridgeDetector.hpp `detect_bridging_direction`). `beside` is the
+/// fill around it, which holds a line's end up. Lines run along the
+/// edges that have no fill beside them, so that as little line as can be
+/// ends in the air; a bridge with fill all round it is crossed the short
+/// way.
+fn bridge_direction(bridge: &ExPolygon, beside: &[ExPolygon]) -> f64 {
+    // The edges with nothing beside them, in pieces of a millimetre or
+    // less so that an edge partly held is partly counted.
+    let mut floating: Vec<(f64, f64)> = Vec::new();
+    for ring in bridge.rings() {
+        let points = &ring.points;
+        for (index, a) in points.iter().enumerate() {
+            let b = points[(index + 1) % points.len()];
+            let (ax, ay) = (edge_geom::unscaled(a.x), edge_geom::unscaled(a.y));
+            let (dx, dy) = (edge_geom::unscaled(b.x) - ax, edge_geom::unscaled(b.y) - ay);
+            let pieces = dx.hypot(dy).ceil().max(1.0) as usize;
+            for piece in 0..pieces {
+                let middle = (piece as f64 + 0.5) / pieces as f64;
+                if !contains(beside, ax + dx * middle, ay + dy * middle) {
+                    floating.push((dx / pieces as f64, dy / pieces as f64));
+                }
+            }
+        }
+    }
+    let direction = if floating.is_empty() {
+        short_way(bridge)
+    } else {
+        // Each edge's own direction is tried; the one the edges together
+        // run along most wins. Tried in a fixed order, so the choice
+        // between equals is always the same.
+        let mut tried: std::collections::BTreeMap<i64, (f64, f64)> =
+            std::collections::BTreeMap::new();
+        for (dx, dy) in &floating {
+            let length = dx.hypot(*dy);
+            if length > 0.0 {
+                let normal = (-dy / length, dx / length);
+                let key = (normal.1.atan2(normal.0) * 1000.0).ceil() as i64;
+                tried.entry(key).or_insert(normal);
+            }
+        }
+        let mut best = ((1.0, 0.0), f64::MAX);
+        for normal in tried.values() {
+            let across: f64 = floating
+                .iter()
+                .map(|(dx, dy)| (dx * normal.0 + dy * normal.1).abs())
+                .sum();
+            if across < best.1 {
+                best = ((normal.1, -normal.0), across);
+            }
+        }
+        best.0
+    };
+    direction
+        .1
+        .atan2(direction.0)
+        .rem_euclid(std::f64::consts::PI)
+}
+
+/// The direction across the narrower way of a region: the lesser of the
+/// two axes its area is spread along (PrincipalComponents2D.cpp).
+fn short_way(region: &ExPolygon) -> (f64, f64) {
+    let Some(origin) = region.contour.points.first().copied() else {
+        return (1.0, 0.0);
+    };
+    let at = |point: &edge_geom::Point2| {
+        (
+            edge_geom::unscaled(point.x - origin.x),
+            edge_geom::unscaled(point.y - origin.y),
+        )
+    };
+    // Area and its first and second moments, ring by ring as fans of
+    // triangles; a hole's triangles count against the contour's.
+    let (mut area, mut mx, mut my, mut mxx, mut myy, mut mxy) = (0.0, 0.0, 0.0, 0.0, 0.0, 0.0);
+    for ring in region.rings() {
+        let points = &ring.points;
+        if points.len() < 3 {
+            continue;
+        }
+        let (x0, y0) = at(&points[0]);
+        for pair in points[1..].windows(2) {
+            let ((x1, y1), (x2, y2)) = (at(&pair[0]), at(&pair[1]));
+            let a = ((x1 - x0) * (y2 - y0) - (x2 - x0) * (y1 - y0)) / 2.0;
+            area += a;
+            mx += a * (x0 + x1 + x2) / 3.0;
+            my += a * (y0 + y1 + y2) / 3.0;
+            mxx += a / 6.0 * (x0 * x0 + x1 * x1 + x2 * x2 + x0 * x1 + x1 * x2 + x0 * x2);
+            myy += a / 6.0 * (y0 * y0 + y1 * y1 + y2 * y2 + y0 * y1 + y1 * y2 + y0 * y2);
+            mxy += a / 12.0
+                * (x0 * (2.0 * y0 + y1 + y2)
+                    + x1 * (y0 + 2.0 * y1 + y2)
+                    + x2 * (y0 + y1 + 2.0 * y2));
+        }
+    }
+    if area <= 0.0 {
+        return (1.0, 0.0);
+    }
+    let (cx, cy) = (mx / area, my / area);
+    let (var_x, var_y, cov) = (
+        mxx / area - cx * cx,
+        myy / area - cy * cy,
+        mxy / area - cx * cy,
+    );
+    if cov.abs() < 1e-9 {
+        return if var_y > var_x {
+            (1.0, 0.0)
+        } else {
+            (0.0, 1.0)
+        };
+    }
+    // The lesser eigenvalue of the spread, and its direction.
+    let lesser = 0.5 * (var_x + var_y - ((var_x - var_y).powi(2) + 4.0 * cov * cov).sqrt());
+    let (x, y) = ((lesser - var_y) / cov, 1.0);
+    let length = x.hypot(y);
+    (x / length, y / length)
 }
 
 /// Turns the parts of each layer's internal solid that lie over sparse
@@ -238,7 +550,7 @@ pub fn bridge_over_infill(
                     edge_clip::intersection(&edge_clip::closing(&bridged, SNAP, join)?, whole)?;
                 let rest = edge_clip::difference(whole, &bridged)?;
                 let mut push = |kind, areas: Vec<ExPolygon>| {
-                    changed.extend(areas.into_iter().map(|area| Surface { kind, area }));
+                    changed.extend(areas.into_iter().map(|area| Surface::new(kind, area)));
                 };
                 push(SurfaceKind::InternalBridge, bridged);
                 push(SurfaceKind::InternalSolid, rest);
@@ -479,5 +791,116 @@ mod tests {
                 .flatten()
                 .all(|(kind, _)| *kind != InternalBridge)
         );
+    }
+
+    fn anchoring() -> Anchoring {
+        Anchoring {
+            into_sparse: scaled(0.4),
+            into_solid: scaled(1.4),
+            closing: scaled(0.15),
+            minimum_sparse_area: 15.0,
+        }
+    }
+
+    /// Classifies a stack of layers and anchors what faces outward.
+    fn anchored(layers: &[Vec<ExPolygon>], shells: &Shells) -> Vec<Vec<Surface>> {
+        let slices: Vec<&[ExPolygon]> = layers.iter().map(Vec::as_slice).collect();
+        let surfaces = classify(&slices, &slices, &slices, shells).unwrap();
+        anchor(&surfaces, &anchoring()).unwrap()
+    }
+
+    fn area_of(surfaces: &[Surface], kind: SurfaceKind) -> f64 {
+        surfaces
+            .iter()
+            .filter(|s| s.kind == kind)
+            .map(|s| s.area.area_mm2())
+            .sum()
+    }
+
+    #[test]
+    fn a_bridge_runs_from_one_support_to_the_other_and_onto_both() {
+        // Two posts 20 mm apart along x, and a deck across them.
+        let posts: Vec<ExPolygon> =
+            [block(0.0, 0.0, 10.0, 10.0), block(30.0, 0.0, 40.0, 10.0)].concat();
+        let mut layers = vec![posts; 3];
+        layers.extend(vec![block(0.0, 0.0, 40.0, 10.0); 5]);
+        let found = anchored(&layers, &shells(1, 1));
+        let deck = &found[3];
+        let bridges: Vec<&Surface> = deck.iter().filter(|s| s.kind == Bridge).collect();
+        let [bridge] = bridges.as_slice() else {
+            panic!("expected one bridge, got {}", bridges.len())
+        };
+        // Along x: its free edges are the deck's two long sides.
+        let angle = bridge.angle.unwrap();
+        assert!(
+            angle.abs() < 1e-6 || (angle - std::f64::consts::PI).abs() < 1e-6,
+            "{angle}"
+        );
+        // The 20 x 10 mm gap, and 0.4 mm onto the fill over each post.
+        let area = bridge.area.area_mm2();
+        assert!(
+            (area - (200.0 + 2.0 * 0.4 * 10.0)).abs() < 0.5,
+            "{area} mm²"
+        );
+        // What it gained, the fill beside it lost: the layer is still covered once.
+        let total: f64 = deck.iter().map(|s| s.area.area_mm2()).sum();
+        assert!((total - 400.0).abs() < 1e-3, "{total}");
+
+        // Turned a quarter, the same deck is bridged along y.
+        let posts: Vec<ExPolygon> =
+            [block(0.0, 0.0, 10.0, 10.0), block(0.0, 30.0, 10.0, 40.0)].concat();
+        let mut layers = vec![posts; 3];
+        layers.extend(vec![block(0.0, 0.0, 10.0, 40.0); 5]);
+        let found = anchored(&layers, &shells(1, 1));
+        let bridge = found[3].iter().find(|s| s.kind == Bridge).unwrap();
+        assert!((bridge.angle.unwrap() - std::f64::consts::FRAC_PI_2).abs() < 1e-6);
+    }
+
+    #[test]
+    fn a_bridge_with_support_all_round_goes_the_short_way() {
+        // A plate over a pocket 8 mm wide in x and 14 mm long in y.
+        let mut pocket = block(6.0, 3.0, 14.0, 17.0).remove(0).contour;
+        pocket.points.reverse();
+        let mut ring = block(0.0, 0.0, 20.0, 20.0);
+        ring[0].holes.push(pocket);
+        let mut layers = vec![ring; 3];
+        layers.extend(vec![block(0.0, 0.0, 20.0, 20.0); 5]);
+        let found = anchored(&layers, &shells(1, 1));
+        let bridge = found[3].iter().find(|s| s.kind == Bridge).unwrap();
+        let angle = bridge.angle.unwrap();
+        assert!(
+            angle.abs() < 1e-6 || (angle - std::f64::consts::PI).abs() < 1e-6,
+            "{angle}"
+        );
+        // It reaches onto the fill round the pocket on every side.
+        let area = bridge.area.area_mm2();
+        assert!(
+            area > 8.0 * 14.0 + 15.0 && area < 8.0 * 14.0 + 20.0,
+            "{area} mm²"
+        );
+    }
+
+    #[test]
+    fn tops_and_bottoms_reach_into_the_fill_beside_them() {
+        // A 20 mm base carrying a 10 mm tower: the base's top is a ring
+        // round the sparse fill under the tower, and gains from it.
+        let mut layers = vec![block(0.0, 0.0, 20.0, 20.0); 4];
+        layers.extend(vec![block(5.0, 5.0, 15.0, 15.0); 4]);
+        let found = anchored(&layers, &shells(2, 1));
+        let top = area_of(&found[3], Top);
+        assert!(
+            (top - (300.0 + 4.0 * 10.0 * 0.4 - 4.0 * 0.16)).abs() < 0.5,
+            "{top} mm²"
+        );
+        assert!((area_of(&found[3], Sparse) - (100.0 - 4.0 * 10.0 * 0.4 + 4.0 * 0.16)).abs() < 0.5);
+        // A layer with nothing facing outward is left as it was.
+        let slices: Vec<&[ExPolygon]> = layers.iter().map(Vec::as_slice).collect();
+        let before = classify(&slices, &slices, &slices, &shells(2, 1)).unwrap();
+        assert_eq!(found[1], before[1]);
+        // A sparse area left too small to be worth a pattern goes solid.
+        let mut layers = vec![block(0.0, 0.0, 20.0, 20.0); 4];
+        layers.extend(vec![block(8.0, 8.0, 12.0, 12.2); 4]);
+        let found = anchored(&layers, &shells(2, 1));
+        assert_eq!(area_of(&found[3], Sparse), 0.0);
     }
 }
