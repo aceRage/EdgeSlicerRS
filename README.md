@@ -17,12 +17,14 @@ replaces it until output matches on the printers we care about.
 | `crates/edge-extrusion` | Extruded line cross-section (flow) and extrusion loops |
 | `crates/edge-parity` | `edge-parity`: runs the reference slicer and this engine on one project and compares time and G-code |
 | `crates/edge-perimeter` | Walls and the infill area inside them (classic constant-width generator) |
-| `crates/edge-adhesion` | Skirt and brim |
+| `crates/edge-adhesion` | Skirt and brim, with the automatic brim width |
+| `crates/edge-support` | Supports under overhangs: normal (grid) style, with dense tops and feet |
 | `crates/edge-gcode` | Print order, seams, travel, retraction, wipe and lift, cooling, and extrusion, written as G-code |
 | `crates/edge-infill` | Top, bottom, bridge, solid and sparse surfaces, and the lines that fill them |
 | `crates/edge-template` | The placeholder language of custom G-code: `{expression}`, `{if}`, `[variable]` |
 | `crates/edge-slice` | Mesh to per-layer contours, then to regions with holes; parallel across layers |
 | `crates/edge-cli` | The `edge` command line |
+| `tools/make_fixture.py` | Writes small test 3MFs (parts that need supports or a brim) to compare with the reference on |
 | `reference/EdgeSlicer` | Pinned submodule of the C++ slicer: profiles, test models, behaviour to match. Read-only here |
 | `apps/desktop` | Tauri app (not started) |
 
@@ -77,8 +79,16 @@ Known gaps: painted triangles, per-object setting overrides, typed settings
   - Cooling: a layer shorter than `slow_down_layer_time` is laid out again
     with its fastest lines slowed, down to `slow_down_min_speed`; the part
     fan follows layer time and the auxiliary fan is driven.
-- Skirt and brim: skirt loops around everything, and an outer brim of the
-  width asked for.
+- Skirt and brim: skirt loops around everything, and a brim round the
+  outside of each part, either of the width asked for or, with
+  `brim_type` `auto_brim` (the default), as wide as the reference's rule of
+  thumb says each object needs from its height, footprint, material and
+  print speed.
+- Supports (`enable_support`): the reference's normal style. Overhangs
+  past `support_threshold_angle` get a column down to the bed or to the
+  part, squared off to the reference's grid, with its air gap above, its
+  gaps beside and below the part, dense layers at the top and at a foot
+  that stands on the part, and a wider, denser first layer.
 - Placement: each plate of a 3MF is moved to bed coordinates, and a bare
   model is centred on the bed of the machine preset. Export refuses
   toolpaths that leave the bed, and writes the file whole or not at all.
@@ -96,9 +106,10 @@ profile a generic preamble is written and the file is only good for viewing.
 
 Not done in G-code: tool changes and multiple extruders (the U1's
 tool-change template uses the statement form of the placeholder language,
-which is refused, not skipped), the automatic brim (`brim_type` `auto_brim`,
-the default: no brim is added, and a note says so), brims inside holes,
-draft shields, seams placed by visibility or kept off overhangs, overhang
+which is refused, not skipped), tree supports of any style (a profile
+that asks for them gets normal supports and a note; `tree(auto)` is what
+the U1 profiles use), supports only where painted (none are generated,
+and a note says so), rafts, brims inside holes, draft shields, seams placed by visibility or kept off overhangs, overhang
 and bridge fan speeds, arc fitting, progress reports (`M73`) and object
 labels for cancelling. A setting that asks for one of these is listed as a
 note when the file is written. A template that needs a variable not
@@ -119,8 +130,13 @@ the radius merge; the reference closes within one object only.
 Clipping is clipper2-rs, a port of Clipper2. The reference uses Clipper 6,
 so regions agree in shape and area but not vertex for vertex.
 
+Supports are a first working version, not a port: the grid is always
+square to the bed, a support's lines are not sheltered from retraction,
+bridges are supported like any overhang, and where a brim and a support
+meet on the first layer neither gives way.
+
 Next: a first print on the U1 to check the output on hardware, then tool
-changes, the automatic brim, and supports.
+changes and tree supports.
 
 ## Comparing with the reference
 
@@ -144,13 +160,26 @@ Results, 2026-11-09, Mac mini, reference build 2.4.7.6, best of 3:
 | `stabilizer_v1.3mf` (499 layers) | 0.85 s | 0.109 s | 0.85% apart | -43% (no supports) |
 | `twopart_groups.3mf` (60 layers) | 0.18 s | 0.008 s | under 0.01% apart | -1.4% |
 
-The reference does more in that time (supports, seams, overhangs, gap fill,
+Supports and the automatic brim are compared on parts written by
+`tools/make_fixture.py`, with normal supports turned on:
+
+| Part | Support body | Dense layers | Brim |
+| --- | --- | --- | --- |
+| `mushroom` (a cap on a stem) | -1.6%, same extents | -7.0% | none in either |
+| `shelf` (a shelf over a plate) | -1.5%, same extents | -5.7% | none in either |
+| `tower` (6 x 6 x 80 mm) | | | same length, same reach (5.63 mm) |
+| `bar` (200 x 10 x 30 mm, PLA) | | | same length, same reach (7.42 mm) |
+
+Support lines come as close to the part as the reference's (0.54 mm), on
+the same layers, with the same layers of air above and below.
+
+The reference does more in that time (tree supports, overhangs, gap fill,
 fan and time planning), so the speed gap will narrow as stages are added.
 Closed since the first run: elephant-foot compensation, one wall on the
 last layer, fill lines joined along the walls, seam gaps, wipe, ramped and
 spiral lifts, and plate placement (outer walls land where the reference
 puts them on all three plates of `mcbrim_test.3mf`). Still different: no
-supports, automatic brim, prime tower, gap fill or multi-material regions; solid fill
+tree supports, prime tower, gap fill or multi-material regions; solid fill
 over sparse is not marked as an internal bridge; top surfaces below the last
 layer keep all their walls.
 

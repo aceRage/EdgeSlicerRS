@@ -25,6 +25,7 @@ On the Mac mini cargo comes from Homebrew rustup: `/opt/homebrew/opt/rustup/bin`
 engine with the C++ slicer (or set `EDGE_REFERENCE_BIN`). On the Mac mini a
 build lives at
 `~/Dev/EdgeSlicer/build/arm64/Snapmaker_Orca/EdgeSlicer.app/Contents/MacOS/EdgeSlicer`.
+`tools/make_fixture.py` writes small parts to compare on (supports, brim).
 The tool gives the reference its own empty data directory and `--no-hub`, so
 it does not touch the user's settings or a running hub. Run it after a change
 to a stage and say in the PR what moved.

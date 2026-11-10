@@ -32,7 +32,7 @@ struct Crossing {
 /// extruding instead of hopping. This is the scheme of the reference's
 /// `connect_infill`, without the short anchors it adds to ends left
 /// unjoined. A `max_link` of zero joins nothing.
-pub(crate) fn paths(
+pub fn paths(
     area: &ExPolygon,
     spacing: Coord,
     angles: &[f64],

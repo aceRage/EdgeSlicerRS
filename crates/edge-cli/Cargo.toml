@@ -17,6 +17,7 @@ edge-infill.workspace = true
 edge-mesh.workspace = true
 edge-perimeter.workspace = true
 edge-slice.workspace = true
+edge-support.workspace = true
 clap.workspace = true
 rayon.workspace = true
 

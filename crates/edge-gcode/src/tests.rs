@@ -66,6 +66,7 @@ fn one_layer<'a>(
         z: 0.2,
         height: 0.2,
         around: &[],
+        support: &[],
         loops,
         islands,
         paths,
@@ -218,6 +219,7 @@ fn speeds_follow_role_layer_and_the_melt_limit() {
             z: 0.2,
             height: 0.2,
             around: &[],
+            support: &[],
             loops: &loops,
             islands: &[0..1],
             paths: &fill,
@@ -227,6 +229,7 @@ fn speeds_follow_role_layer_and_the_melt_limit() {
             z: 0.4,
             height: 0.2,
             around: &[],
+            support: &[],
             loops: &loops,
             islands: &[0..1],
             paths: &fill,
@@ -275,6 +278,7 @@ fn temperatures_change_after_the_first_layer() {
         z,
         height: 0.2,
         around: &[],
+        support: &[],
         loops: &loops,
         islands: &[0..1],
         paths: &[],
@@ -357,6 +361,7 @@ fn moves_inside_the_infill_area_can_skip_retraction() {
         z: 0.2,
         height: 0.2,
         around: &[],
+        support: &[],
         loops: &[],
         islands: &[],
         paths: &fill,
@@ -400,6 +405,7 @@ fn printed(count: usize, settings: &PrintSettings) -> String {
             z: 0.2 * (index + 1) as f64,
             height: 0.2,
             around: &[],
+            support: &[],
             loops: &loops,
             islands: &[0..1],
             paths: &fill,
@@ -912,6 +918,7 @@ fn skirt_and_brim_go_down_before_the_part() {
     around[1].role = Role::Brim;
     let layer = [Layer {
         around: &around,
+        support: &[],
         ..one_layer(&part, &[0..1], &[])[0]
     }];
     let settings = PrintSettings {
@@ -923,4 +930,48 @@ fn skirt_and_brim_go_down_before_the_part() {
     let feed = |feature: &str| feed_of(&text, feature);
     // The skirt has its own speed; the brim goes at the first layer's.
     assert_eq!((feed("Skirt"), feed("Brim")), (Some(3000.0), Some(1500.0)));
+}
+
+#[test]
+fn supports_go_down_before_the_part_at_their_own_speeds() {
+    let part = [wall(0.0, 0.0, 10.0, 0)];
+    let support = [
+        line((20.0, 0.0), (30.0, 0.0), Role::Support),
+        line((20.0, 3.0), (30.0, 3.0), Role::Support),
+        line((20.0, 6.0), (30.0, 6.0), Role::SupportInterface),
+    ];
+    let layers: Vec<Layer<'_>> = [0.2, 0.4]
+        .into_iter()
+        .map(|z| Layer {
+            z,
+            support: &support,
+            ..one_layer(&part, &[0..1], &[])[0]
+        })
+        .collect();
+    let settings = PrintSettings {
+        support_speed: 150.0,
+        support_interface_speed: 40.0,
+        ..basic()
+    };
+    let (text, summary) = print(&layers, &settings);
+    assert_eq!(
+        features(&text),
+        [
+            "Support",
+            "Support interface",
+            "Outer wall",
+            "Support",
+            "Support interface",
+            "Outer wall"
+        ]
+    );
+    // On the first layer supports go at the walls' careful speed; above it
+    // at their own.
+    let second = text.split(";LAYER_CHANGE").nth(2).unwrap();
+    assert_eq!(feed_of(&text, "Support"), Some(1800.0));
+    assert_eq!(feed_of(second, "Support"), Some(9000.0));
+    assert_eq!(feed_of(second, "Support interface"), Some(2400.0));
+    // Their plastic is counted with the rest.
+    let volume = 2.0 * (40.0 + 30.0) * flow().mm3_per_mm();
+    assert!((summary.filament_mm3 - volume).abs() < 1e-9);
 }

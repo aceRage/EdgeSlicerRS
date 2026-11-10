@@ -254,6 +254,21 @@ impl Project {
         bodies
     }
 
+    /// Each printable instance on a plate (or in the whole project for
+    /// `None`) as a mesh of its own, in world coordinates and in the order
+    /// the plate lists them. Negative parts are left out. For what depends
+    /// on which object is which, such as how wide a brim each one needs.
+    pub fn instance_meshes(&self, plate: Option<usize>) -> Vec<Mesh> {
+        self.printable(plate)
+            .map(|(object, instance)| {
+                let mut mesh = Mesh::default();
+                append_parts(&mut mesh, object, instance, PartKind::Normal);
+                mesh
+            })
+            .filter(|mesh| !mesh.triangles.is_empty())
+            .collect()
+    }
+
     /// The printable instances on a plate, each with its object.
     fn printable(&self, plate: Option<usize>) -> impl Iterator<Item = (&Object, &Instance)> {
         let selected: Vec<InstanceRef> = match plate {

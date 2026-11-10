@@ -2,14 +2,16 @@ use std::{error::Error, fmt::Write as _, fs, path::PathBuf, process::ExitCode, t
 
 use clap::{Args, Parser, Subcommand};
 use edge_3mf::{Body, PartKind, Project};
-use edge_adhesion::AdhesionSettings;
+use edge_adhesion::{AdhesionSettings, BrimKind, Footing};
 use edge_config::{Kind, Settings, Vendor};
 use edge_extrusion::{ExtrusionLoop, ExtrusionPath, Role};
 use edge_gcode::PrintSettings;
-use edge_geom::{ExPolygon, scaled, unscaled};
+use edge_geom::{ExPolygon, Point2, scaled, unscaled};
 use edge_infill::{InfillSettings, SurfaceKind};
+use edge_mesh::Mesh;
 use edge_perimeter::{Perimeters, WallSettings};
 use edge_slice::LayerRegions;
+use edge_support::SupportSettings;
 use rayon::prelude::*;
 
 type Failure = Box<dyn Error>;
@@ -222,6 +224,10 @@ fn shift(bodies: &mut [Body], x: f64, y: f64) {
     let meshes = bodies
         .iter_mut()
         .flat_map(|body| std::iter::once(&mut body.solid).chain(body.negative.as_mut()));
+    shift_meshes(meshes, x, y);
+}
+
+fn shift_meshes<'a>(meshes: impl Iterator<Item = &'a mut Mesh>, x: f64, y: f64) {
     for mesh in meshes {
         for vertex in &mut mesh.vertices {
             vertex[0] = (f64::from(vertex[0]) + x) as f32;
@@ -247,8 +253,18 @@ fn plate_origin(index: usize, count: usize, settings: Option<&Settings>) -> Opti
     Some((column as f64 * width * 1.2, -(row as f64) * depth * 1.2))
 }
 
-/// The bodies to slice and, for a project, the settings it was saved with.
-fn load(args: &SliceArgs) -> Result<(Vec<Body>, Option<Settings>), Failure> {
+/// What a model file holds.
+struct Loaded {
+    /// What to slice.
+    bodies: Vec<Body>,
+    /// For a project, the settings it was saved with.
+    settings: Option<Settings>,
+    /// For a project, each object on the plate by itself, for what depends
+    /// on which object is which. Empty for a bare model, which is one object.
+    objects: Vec<Mesh>,
+}
+
+fn load(args: &SliceArgs) -> Result<Loaded, Failure> {
     let path = &args.model;
     let named = |e: &dyn Error| format!("{}: {e}", path.display());
     let is_3mf = path
@@ -259,13 +275,14 @@ fn load(args: &SliceArgs) -> Result<(Vec<Body>, Option<Settings>), Failure> {
             return Err("--plate only applies to 3MF files".into());
         }
         let solid = edge_mesh::stl::load(path).map_err(|e| named(&e))?;
-        return Ok((
-            vec![Body {
+        return Ok(Loaded {
+            bodies: vec![Body {
                 solid,
                 negative: None,
             }],
-            None,
-        ));
+            settings: None,
+            objects: Vec::new(),
+        });
     }
 
     let project = Project::open(path).map_err(|e| named(&e))?;
@@ -298,6 +315,7 @@ fn load(args: &SliceArgs) -> Result<(Vec<Body>, Option<Settings>), Failure> {
         );
     }
     let mut bodies = project.bodies(plate);
+    let mut objects = project.instance_meshes(plate);
     if let Some(index) = plate {
         let (x, y) = plate_origin(index, project.plates.len(), project.settings.as_ref())
             .ok_or_else(|| {
@@ -308,8 +326,13 @@ fn load(args: &SliceArgs) -> Result<(Vec<Body>, Option<Settings>), Failure> {
                 )
             })?;
         shift(&mut bodies, -x, -y);
+        shift_meshes(objects.iter_mut(), -x, -y);
     }
-    Ok((bodies, project.settings))
+    Ok(Loaded {
+        bodies,
+        settings: project.settings,
+        objects,
+    })
 }
 
 /// The presets named on the command line, resolved.
@@ -387,7 +410,11 @@ fn slice(args: SliceArgs) -> Result<(), Failure> {
     }
 
     let started = Instant::now();
-    let (mut bodies, project_settings) = load(&args)?;
+    let Loaded {
+        mut bodies,
+        settings: project_settings,
+        objects,
+    } = load(&args)?;
     let load_time = started.elapsed();
     let is_project = project_settings.is_some();
     let bounds =
@@ -511,21 +538,83 @@ fn slice(args: SliceArgs) -> Result<(), Failure> {
         .collect::<Result<Vec<Perimeters>, String>>()?;
     let perimeter_time = started.elapsed();
 
-    // Skirt and brim, per layer, in the order they are printed.
-    let adhesion = AdhesionSettings::from_settings(&settings)?;
-    // Both stand off the outlines as modelled, as in the reference, so a
-    // first layer shrunk against elephant foot leaves that much more gap.
-    let beside: Vec<&[ExPolygon]> = (0..layers.len().min(adhesion.skirt_height.max(1)))
+    // The part's outlines as modelled: what supports, brim and skirt stand
+    // off, and what neighbouring layers are compared by, so a first layer
+    // shrunk against elephant foot does not count as an overhang above it.
+    let outlines: Vec<&[ExPolygon]> = (0..layers.len())
         .map(|index| {
             modelled
                 .get(index)
                 .map_or(layers[index].regions.as_slice(), Vec::as_slice)
         })
         .collect();
-    let brim = match beside.first() {
-        Some(first) => edge_adhesion::brim(first, &adhesion, first_layer_height)?,
-        None => Vec::new(),
+
+    let started = Instant::now();
+    let support = SupportSettings::from_settings(&settings)?;
+    // Laid out from the middle of what is being printed.
+    let middle = bodies
+        .iter()
+        .filter_map(|body| body.solid.bounds())
+        .reduce(|(lo, hi), (min, max)| {
+            (
+                std::array::from_fn(|i| lo[i].min(min[i])),
+                std::array::from_fn(|i| hi[i].max(max[i])),
+            )
+        })
+        .map_or(Point2::from_mm(0.0, 0.0), |(lo, hi)| {
+            Point2::from_mm(
+                f64::from(lo[0] + hi[0]) / 2.0,
+                f64::from(lo[1] + hi[1]) / 2.0,
+            )
+        });
+    let supports = edge_support::generate(
+        &outlines,
+        middle,
+        first_layer_height,
+        layer_height,
+        &support,
+    )?;
+    let support_time = started.elapsed();
+
+    // Skirt and brim, per layer, in the order they are printed.
+    let adhesion = AdhesionSettings::from_settings(&settings)?;
+    let beside = &outlines[..layers.len().min(adhesion.skirt_height.max(1))];
+    let supports_beside: Vec<&[ExtrusionPath]> = supports
+        .iter()
+        .take(beside.len())
+        .map(Vec::as_slice)
+        .collect();
+    // The brim is worked out object by object: each one's first layer and
+    // how tall it stands. A bare model is the one object.
+    let own: Vec<&Mesh> = if objects.is_empty() {
+        bodies.iter().map(|body| &body.solid).collect()
+    } else {
+        objects.iter().collect()
     };
+    let mut footprints: Vec<(Vec<ExPolygon>, f64)> = Vec::new();
+    if adhesion.brim != BrimKind::None {
+        for mesh in own {
+            let Some((low, high)) = mesh.bounds() else {
+                continue;
+            };
+            let body = [edge_slice::Body {
+                solid: mesh,
+                negative: None,
+            }];
+            let first = edge_slice::slice_regions(&body, &planes[..1], scaled(closing_radius))?;
+            if let Some(layer) = first.into_iter().next() {
+                footprints.push((layer.regions, f64::from(high[2] - low[2])));
+            }
+        }
+    }
+    let footings: Vec<Footing<'_>> = footprints
+        .iter()
+        .map(|(footprint, height)| Footing {
+            footprint,
+            height: *height,
+        })
+        .collect();
+    let brim = edge_adhesion::brim(&footings, &adhesion, first_layer_height)?;
     let mut around: Vec<Vec<ExtrusionLoop>> = vec![Vec::new(); layers.len()];
     for (index, lines) in around.iter_mut().enumerate() {
         if adhesion.has_skirt(index) {
@@ -534,7 +623,7 @@ fn slice(args: SliceArgs) -> Result<(), Failure> {
             } else {
                 layer_height
             };
-            *lines = edge_adhesion::skirt(&beside, &brim, &adhesion, height)?;
+            *lines = edge_adhesion::skirt(beside, &brim, &supports_beside, &adhesion, height)?;
         }
     }
     let skirt_loops = around.first().map_or(0, Vec::len);
@@ -551,13 +640,6 @@ fn slice(args: SliceArgs) -> Result<(), Failure> {
     let inside_walls: Vec<&[ExPolygon]> = perimeters
         .iter()
         .map(|layer| layer.infill.as_slice())
-        .collect();
-    let outlines: Vec<&[ExPolygon]> = (0..layers.len())
-        .map(|index| {
-            modelled
-                .get(index)
-                .map_or(layers[index].regions.as_slice(), Vec::as_slice)
-        })
         .collect();
     let surfaces = edge_infill::classify(
         &slices,
@@ -670,6 +752,18 @@ fn slice(args: SliceArgs) -> Result<(), Failure> {
         paths().map(ExtrusionPath::length_mm).sum::<f64>() / 1e3,
         paths().map(ExtrusionPath::volume_mm3).sum::<f64>() / 1e3,
     );
+    if support.enabled {
+        let lines = || supports.iter().flatten();
+        let dense = lines().filter(|line| line.role == Role::SupportInterface);
+        println!(
+            "supports on {} layer(s): {} lines, {:.2} m, of which {:.2} m in the dense tops; {:.2} cm³",
+            supports.iter().filter(|layer| !layer.is_empty()).count(),
+            lines().count(),
+            lines().map(ExtrusionPath::length_mm).sum::<f64>() / 1e3,
+            dense.map(ExtrusionPath::length_mm).sum::<f64>() / 1e3,
+            lines().map(ExtrusionPath::volume_mm3).sum::<f64>() / 1e3,
+        );
+    }
     if let Some(first) = around.first().filter(|first| !first.is_empty()) {
         println!(
             "{skirt_loops} skirt loop(s) on {} layer(s), {} brim loop(s): {:.2} m on the first layer",
@@ -687,10 +781,12 @@ fn slice(args: SliceArgs) -> Result<(), Failure> {
         );
     }
     println!(
-        "load {:.1} ms, slice {:.1} ms, perimeters {:.1} ms, surfaces {:.1} ms, fill {:.1} ms on {} threads",
+        "load {:.1} ms, slice {:.1} ms, perimeters {:.1} ms, supports {:.1} ms, surfaces {:.1} ms, \
+         fill {:.1} ms on {} threads",
         load_time.as_secs_f64() * 1e3,
         slice_time.as_secs_f64() * 1e3,
         perimeter_time.as_secs_f64() * 1e3,
+        support_time.as_secs_f64() * 1e3,
         classify_time.as_secs_f64() * 1e3,
         (infill_time - classify_time).as_secs_f64() * 1e3,
         rayon::current_num_threads(),
@@ -708,6 +804,7 @@ fn slice(args: SliceArgs) -> Result<(), Failure> {
                     layer_height
                 },
                 around: &around[index],
+                support: &supports[index],
                 loops: &perimeters[index].loops,
                 islands: &perimeters[index].islands,
                 paths: &fills[index],
@@ -718,9 +815,13 @@ fn slice(args: SliceArgs) -> Result<(), Failure> {
         if let Some([min_x, min_y, max_x, max_y]) = print.bed {
             let points = plan.iter().flat_map(|layer| {
                 let loops = layer.around.iter().chain(layer.loops);
-                loops
-                    .flat_map(|line| &line.polygon.points)
-                    .chain(layer.paths.iter().flat_map(|line| &line.points))
+                loops.flat_map(|line| &line.polygon.points).chain(
+                    layer
+                        .support
+                        .iter()
+                        .chain(layer.paths)
+                        .flat_map(|line| &line.points),
+                )
             });
             let mut reach: Option<[f64; 4]> = None;
             for point in points {
@@ -766,7 +867,12 @@ fn slice(args: SliceArgs) -> Result<(), Failure> {
                 "note: no printer profile, so this G-code has a generic preamble and is not printer-ready"
             );
         }
-        for note in print.unsupported.iter().chain(&adhesion.unsupported) {
+        for note in print
+            .unsupported
+            .iter()
+            .chain(&adhesion.unsupported)
+            .chain(&support.unsupported)
+        {
             println!("note: {note}");
         }
         if summary.slowed_layers > 0 {
