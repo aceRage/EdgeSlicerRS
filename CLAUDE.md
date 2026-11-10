@@ -34,7 +34,9 @@ to a stage and say in the PR what moved.
 
 - `reference/EdgeSlicer` is a pinned submodule of the C++ slicer. Never edit
   it from here; C++ changes go through the EdgeSlicer repo. Bump the pin
-  deliberately, in its own commit.
+  deliberately, in its own commit. After a bump run
+  `tools/make_defaults.py <EdgeSlicer executable>`, which rewrites the
+  table of the reference's defaults in `edge-config`.
 - The reference slicer defines correct output. Where this engine differs on
   purpose, say so in the code and in the PR.
 - Output must be deterministic: same input gives byte-identical results at

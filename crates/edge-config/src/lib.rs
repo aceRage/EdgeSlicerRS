@@ -1,11 +1,13 @@
 //! Printer, process and filament presets in the reference slicer's on-disk
 //! format, resolved through inheritance into flat settings.
 
+mod defaults;
 mod settings;
 mod vendor;
 
 use std::{io, path::PathBuf};
 
+pub use defaults::{reference_defaults, reference_knows, reference_producer, serialized};
 pub use settings::{FloatOrPercent, Settings, Value};
 pub use vendor::{Kind, Vendor};
 
