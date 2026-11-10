@@ -18,7 +18,7 @@ replaces it until output matches on the printers we care about.
 | `crates/edge-parity` | `edge-parity`: runs the reference slicer and this engine on one project and compares time and G-code |
 | `crates/edge-perimeter` | Walls and the infill area inside them (classic constant-width generator) |
 | `crates/edge-adhesion` | Skirt and brim, with the automatic brim width |
-| `crates/edge-support` | Supports under overhangs: normal (grid) style, with dense tops and feet |
+| `crates/edge-support` | Supports under overhangs, normal (grid) and tree, with dense tops and feet |
 | `crates/edge-gcode` | Print order, seams, travel, retraction, wipe and lift, cooling, and extrusion, written as G-code |
 | `crates/edge-infill` | Top, bottom, bridge, solid and sparse surfaces, and the lines that fill them |
 | `crates/edge-template` | The placeholder language of custom G-code: `{expression}`, `{if}`, `[variable]` |
@@ -84,11 +84,18 @@ Known gaps: painted triangles, per-object setting overrides, typed settings
   `brim_type` `auto_brim` (the default), as wide as the reference's rule of
   thumb says each object needs from its height, footprint, material and
   print speed.
-- Supports (`enable_support`): the reference's normal style. Overhangs
-  past `support_threshold_angle` get a column down to the bed or to the
-  part, squared off to the reference's grid, with its air gap above, its
-  gaps beside and below the part, dense layers at the top and at a foot
-  that stands on the part, and a wider, denser first layer.
+- Supports (`enable_support`), in the reference's two styles. Both hold
+  up what overhangs past `support_threshold_angle`, with the reference's
+  air gap above, its gaps beside and below the part, and dense layers at
+  the top and at a foot that stands on the part.
+  - Normal (`normal(auto)`): a column down to the bed or to the part,
+    squared off to the reference's grid, with a wider, denser first layer.
+  - Tree (`tree(auto)`, which the U1 profiles use): under a dense roof,
+    thin tips that thicken into branches, lean together into trunks and
+    flare out at the bed, or stand on the part where the bed is out of
+    reach. Branches are hollow loops, as in the reference's default
+    "organic" style, and keep clear of anywhere they could not get down
+    from.
 - Placement: each plate of a 3MF is moved to bed coordinates, and a bare
   model is centred on the bed of the machine preset. Export refuses
   toolpaths that leave the bed, and writes the file whole or not at all.
@@ -106,10 +113,10 @@ profile a generic preamble is written and the file is only good for viewing.
 
 Not done in G-code: tool changes and multiple extruders (the U1's
 tool-change template uses the statement form of the placeholder language,
-which is refused, not skipped), tree supports of any style (a profile
-that asks for them gets normal supports and a note; `tree(auto)` is what
-the U1 profiles use), supports only where painted (none are generated,
-and a note says so), rafts, brims inside holes, draft shields, seams placed by visibility or kept off overhangs, overhang
+which is refused, not skipped), supports only where painted (none are
+generated, and a note says so), the older tree styles (`tree_slim`,
+`tree_strong`, `tree_hybrid`: organic-style trees are built, with a note),
+rafts, brims inside holes, draft shields, seams placed by visibility or kept off overhangs, overhang
 and bridge fan speeds, arc fitting, progress reports (`M73`) and object
 labels for cancelling. A setting that asks for one of these is listed as a
 note when the file is written. A template that needs a variable not
@@ -130,13 +137,18 @@ the radius merge; the reference closes within one object only.
 Clipping is clipper2-rs, a port of Clipper2. The reference uses Clipper 6,
 so regions agree in shape and area but not vertex for vertex.
 
-Supports are a first working version, not a port: the grid is always
-square to the bed, a support's lines are not sheltered from retraction,
-bridges are supported like any overhang, and where a brim and a support
-meet on the first layer neither gives way.
+Supports are a first working version, not a port: the grid of normal
+supports is always square to the bed, a support's lines are not sheltered
+from retraction, bridges are supported like any overhang, and where a brim
+and a support meet on the first layer neither gives way. Tree supports use
+the reference's numbers (how a branch thickens, leans and flares, how far
+apart tips stand) but a much simpler method: each branch is one point
+moved layer by layer, where the reference follows every place a branch
+could be and picks afterwards; a leaning branch is a circle on each layer,
+not an oval; and branches are not smoothed.
 
 Next: a first print on the U1 to check the output on hardware, then tool
-changes and tree supports.
+changes.
 
 ## Comparing with the reference
 
@@ -165,21 +177,26 @@ Supports and the automatic brim are compared on parts written by
 
 | Part | Support body | Dense layers | Brim |
 | --- | --- | --- | --- |
-| `mushroom` (a cap on a stem) | -1.6%, same extents | -7.0% | none in either |
-| `shelf` (a shelf over a plate) | -1.5%, same extents | -5.7% | none in either |
+| `mushroom` (a cap on a stem), normal | -1.6%, same extents | -3.6% | none in either |
+| `shelf` (a shelf over a plate), normal | -1.5%, same extents | -5.0% | none in either |
+| `mushroom`, tree | -3.5% | -5.3% | none in either |
+| `shelf`, tree | -6.3%, five trunks on the plate in both | -6.3% | none in either |
 | `tower` (6 x 6 x 80 mm) | | | same length, same reach (5.63 mm) |
 | `bar` (200 x 10 x 30 mm, PLA) | | | same length, same reach (7.42 mm) |
 
-Support lines come as close to the part as the reference's (0.54 mm), on
-the same layers, with the same layers of air above and below.
+Normal support lines come as close to the part as the reference's
+(0.54 mm). Both styles put support on the same layers as the reference,
+with the same layers of air above and below. Trees start from about as
+many tips (96 against 101 under the mushroom's cap) and join up a little
+more slowly on the way down.
 
-The reference does more in that time (tree supports, overhangs, gap fill,
+The reference does more in that time (overhangs, gap fill,
 fan and time planning), so the speed gap will narrow as stages are added.
 Closed since the first run: elephant-foot compensation, one wall on the
 last layer, fill lines joined along the walls, seam gaps, wipe, ramped and
 spiral lifts, and plate placement (outer walls land where the reference
 puts them on all three plates of `mcbrim_test.3mf`). Still different: no
-tree supports, prime tower, gap fill or multi-material regions; solid fill
+prime tower, gap fill or multi-material regions; solid fill
 over sparse is not marked as an internal bridge; top surfaces below the last
 layer keep all their walls.
 

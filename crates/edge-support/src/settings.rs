@@ -1,11 +1,22 @@
 use edge_config::{ConfigError, FloatOrPercent, Settings};
 use edge_extrusion::{Flow, FlowError, LineWidths};
 
+/// How supports are built (`support_type`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Style {
+    /// Columns straight down, squared off to a grid and filled with lines.
+    Normal,
+    /// Thin branches from many points under the overhang that lean
+    /// together into trunks on their way down.
+    Tree,
+}
+
 /// The settings supports depend on. Defaults are the reference's
 /// (PrintConfig.cpp). Lengths are in mm, angles in degrees.
 #[derive(Clone, Debug, PartialEq)]
 pub struct SupportSettings {
     pub enabled: bool,
+    pub style: Style,
     /// A surface rising at less than this angle from level is held up;
     /// zero to go by `threshold_overlap` instead.
     pub threshold_angle: f64,
@@ -40,6 +51,18 @@ pub struct SupportSettings {
     /// On the first layer a support is this dense and this much wider.
     pub first_layer_density: f64,
     pub first_layer_expansion: f64,
+    /// Tree supports: how thick a branch is at its tip and once grown, how
+    /// much thicker it gets on the way down (an angle), how far it may
+    /// lean from upright (usually, and at most), how thickly tips are set
+    /// under an overhang, and how many walls a branch has (0 for one, two
+    /// where it is thick).
+    pub tree_tip_diameter: f64,
+    pub tree_branch_diameter: f64,
+    pub tree_branch_diameter_angle: f64,
+    pub tree_angle_slow: f64,
+    pub tree_branch_angle: f64,
+    pub tree_top_rate: f64,
+    pub tree_wall_count: usize,
     pub support_line_width: FloatOrPercent,
     pub line_width: FloatOrPercent,
     pub initial_layer_line_width: FloatOrPercent,
@@ -54,6 +77,7 @@ impl Default for SupportSettings {
     fn default() -> Self {
         Self {
             enabled: false,
+            style: Style::Normal,
             threshold_angle: 30.0,
             threshold_overlap: FloatOrPercent::Percent(50.0),
             on_build_plate_only: false,
@@ -71,6 +95,13 @@ impl Default for SupportSettings {
             expansion: 0.0,
             first_layer_density: 0.9,
             first_layer_expansion: 2.0,
+            tree_tip_diameter: 0.8,
+            tree_branch_diameter: 2.0,
+            tree_branch_diameter_angle: 5.0,
+            tree_angle_slow: 25.0,
+            tree_branch_angle: 40.0,
+            tree_top_rate: 0.3,
+            tree_wall_count: 0,
             support_line_width: FloatOrPercent::Value(0.0),
             line_width: FloatOrPercent::Value(0.4),
             initial_layer_line_width: FloatOrPercent::Value(0.4),
@@ -105,14 +136,11 @@ impl SupportSettings {
 
         let wanted = flag("enable_support", defaults.enabled)?;
         let mut enabled = wanted;
+        let mut style = defaults.style;
         if wanted {
             match settings.text("support_type") {
                 None | Some("normal(auto)") => {}
-                Some("tree(auto)") => unsupported.push(
-                    "support_type \"tree(auto)\": tree supports are not implemented; normal \
-                     supports are generated in their place"
-                        .into(),
-                ),
+                Some("tree(auto)") => style = Style::Tree,
                 Some(other) => {
                     unsupported.push(format!(
                         "support_type \"{other}\": supports only where painted are not \
@@ -120,6 +148,21 @@ impl SupportSettings {
                     ));
                     enabled = false;
                 }
+            }
+        }
+        if enabled {
+            // A style this engine has one answer for is noted when the
+            // profile names another.
+            match (style, settings.text("support_style")) {
+                (_, None | Some("default")) | (Style::Normal, Some("grid")) => {}
+                (Style::Tree, Some("organic")) => {}
+                (Style::Normal, Some(other)) => unsupported.push(format!(
+                    "support_style \"{other}\": normal supports are squared off to a grid"
+                )),
+                (Style::Tree, Some(other)) => unsupported.push(format!(
+                    "support_style \"{other}\": tree supports are built one way, as round \
+                     branches"
+                )),
             }
         }
         if enabled {
@@ -146,11 +189,6 @@ impl SupportSettings {
                     "bridge_no_support",
                     &["0"][..],
                     "bridges are supported like any overhang",
-                ),
-                (
-                    "tree_support_wall_count",
-                    &["0"][..],
-                    "supports have no outline round them",
                 ),
                 (
                     "independent_support_layer_height",
@@ -184,6 +222,7 @@ impl SupportSettings {
         };
         Ok(Self {
             enabled,
+            style,
             threshold_angle: number("support_threshold_angle", defaults.threshold_angle)?,
             threshold_overlap: width("support_threshold_overlap", defaults.threshold_overlap)?,
             on_build_plate_only: flag("support_on_build_plate_only", false)?,
@@ -221,6 +260,27 @@ impl SupportSettings {
                 "raft_first_layer_expansion",
                 defaults.first_layer_expansion,
             )?,
+            tree_tip_diameter: number("tree_support_tip_diameter", defaults.tree_tip_diameter)?,
+            tree_branch_diameter: number(
+                "tree_support_branch_diameter_organic",
+                defaults.tree_branch_diameter,
+            )?,
+            tree_branch_diameter_angle: number(
+                "tree_support_branch_diameter_angle",
+                defaults.tree_branch_diameter_angle,
+            )?,
+            tree_angle_slow: number("tree_support_angle_slow", defaults.tree_angle_slow)?,
+            tree_branch_angle: number(
+                "tree_support_branch_angle_organic",
+                defaults.tree_branch_angle,
+            )?,
+            tree_top_rate: match settings.float_or_percent("tree_support_top_rate")? {
+                Some(FloatOrPercent::Percent(percent) | FloatOrPercent::Value(percent)) => {
+                    percent / 100.0
+                }
+                None => defaults.tree_top_rate,
+            },
+            tree_wall_count: count("tree_support_wall_count", defaults.tree_wall_count)?,
             support_line_width: width("support_line_width", defaults.support_line_width)?,
             line_width: width("line_width", defaults.line_width)?,
             initial_layer_line_width: width(

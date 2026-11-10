@@ -384,11 +384,10 @@ fn settings_are_read_and_what_is_not_done_is_said() {
     assert_eq!(normal.flow(0.2, false).unwrap().width, 0.42);
     assert!(normal.unsupported.is_empty(), "{:?}", normal.unsupported);
 
-    // Tree supports are swapped for these, and that is said.
+    assert_eq!(normal.style, Style::Normal);
     let tree = read(r#"{"enable_support": "1", "support_type": "tree(auto)", "raft_layers": "2"}"#);
     assert!(tree.enabled);
-    assert_eq!(tree.unsupported.len(), 2);
-    assert!(tree.unsupported[0].contains("tree"));
+    assert_eq!((tree.style, tree.unsupported.len()), (Style::Tree, 1));
     // Painted-only supports cannot be honoured at all, and that is said louder.
     let manual = read(r#"{"enable_support": "1", "support_type": "normal(manual)"}"#);
     assert!(!manual.enabled && manual.unsupported[0].contains("NO supports"));
@@ -430,4 +429,187 @@ fn areas_are_squared_off_to_a_grid_once_and_for_all() {
         .map(ExPolygon::area_mm2)
         .sum();
     assert!((area - 20.0).abs() < 1e-9, "{area}");
+}
+
+fn tree() -> SupportSettings {
+    SupportSettings {
+        style: Style::Tree,
+        ..on()
+    }
+}
+
+/// A 10 mm stem sixty layers tall under a 30 mm cap.
+fn tall_mushroom() -> Vec<Vec<ExPolygon>> {
+    let mut layers = vec![vec![rect(0.0, 0.0, 10.0, 10.0)]; 60];
+    layers.extend(vec![vec![rect(-10.0, -10.0, 20.0, 20.0)]; 5]);
+    layers
+}
+
+fn is_loop(path: &ExtrusionPath) -> bool {
+    path.points.len() > 3 && path.points[0] == path.points[path.points.len() - 1]
+}
+
+#[test]
+fn a_tree_holds_up_a_cap_on_branches_that_join_into_trunks() {
+    let found = supports(&tall_mushroom(), &tree());
+    // The cap starts on layer 60: air on 59, then three layers of roof.
+    assert!(found[59..].iter().all(Vec::is_empty));
+    for layer in [58, 57, 56] {
+        assert!(!found[layer].is_empty(), "no roof on layer {layer}");
+        assert!(
+            found[layer]
+                .iter()
+                .all(|path| path.role == Role::SupportInterface && !is_loop(path)),
+            "layer {layer} is not all roof"
+        );
+    }
+    // Under the roof, hollow branches all the way to the bed.
+    for (layer, paths) in found.iter().enumerate().take(56).skip(1) {
+        assert!(!paths.is_empty(), "nothing on layer {layer}");
+        assert!(
+            paths
+                .iter()
+                .all(|path| path.role == Role::Support && is_loop(path)),
+            "layer {layer} is not all branches"
+        );
+    }
+    // Many tips under the roof; fewer, thicker trunks further down.
+    let (tips, middle, low) = (found[55].len(), found[30].len(), found[5].len());
+    assert!(tips > 40, "{tips} tips");
+    assert!(
+        middle < tips && low <= middle,
+        "{tips} tips, {middle}, then {low}"
+    );
+    let girth = |layer: usize| {
+        found[layer]
+            .iter()
+            .map(ExtrusionPath::length_mm)
+            .fold(0.0, f64::max)
+    };
+    assert!(
+        girth(5) > 2.0 * girth(55),
+        "{} then {}",
+        girth(55),
+        girth(5)
+    );
+
+    // Nothing comes nearer the stem than the distance set.
+    for layer in &found[..56] {
+        for (x, y) in points(layer) {
+            let clear = !(-0.34..10.34).contains(&x) || !(-0.34..10.34).contains(&y);
+            assert!(clear, "support at {x} x {y} is against the stem");
+        }
+    }
+    // On the bed the trunks are outlined and filled in.
+    assert!(found[0].iter().any(is_loop) && found[0].iter().any(|path| !is_loop(path)));
+    assert!(found[0].iter().all(|path| path.role == Role::Support));
+}
+
+#[test]
+fn a_tree_stands_on_the_part_where_it_cannot_reach_the_bed() {
+    // A wide plate, a post on it and a shelf from the post, far from the
+    // plate's edge.
+    let mut layers = vec![vec![rect(-30.0, -30.0, 60.0, 40.0)]; 5];
+    layers.extend(vec![vec![rect(0.0, 0.0, 10.0, 10.0)]; 40]);
+    layers.extend(vec![vec![rect(0.0, 0.0, 30.0, 10.0)]; 5]);
+    let found = supports(&layers, &tree());
+    // Roof on 43 to 41 under the shelf, branches below it.
+    assert!(found[44].is_empty() && !found[43].is_empty());
+    assert!(found[30].iter().all(is_loop) && !found[30].is_empty());
+    // The plate's top is layer 4: a layer of air, then the branches' feet.
+    assert!(!found[6].is_empty(), "no branch stands on the plate");
+    assert!(
+        found[..6].iter().all(Vec::is_empty),
+        "support in or on the plate"
+    );
+    // The branches stay under the shelf instead of making for the bed.
+    for (x, y) in points(&found[10]) {
+        assert!(
+            (5.0..35.0).contains(&x) && (-5.0..15.0).contains(&y),
+            "{x} x {y}"
+        );
+    }
+
+    // Asked for, a branch's foot on the part is dense for its first layers.
+    let footed = SupportSettings {
+        interface_bottom_layers: 2,
+        ..tree()
+    };
+    let found = supports(&layers, &footed);
+    for layer in [6, 7] {
+        assert!(
+            found[layer]
+                .iter()
+                .all(|path| path.role == Role::SupportInterface),
+            "layer {layer} is not a dense foot"
+        );
+    }
+    assert!(found[8].iter().all(|path| path.role == Role::Support));
+
+    // Held to the build plate, a tree has nowhere to stand here.
+    let plate_only = SupportSettings {
+        on_build_plate_only: true,
+        ..tree()
+    };
+    assert!(supports(&layers, &plate_only).iter().all(Vec::is_empty));
+    // The mushroom's cap is over the bed and still gets its tree.
+    assert!(!supports(&tall_mushroom(), &plate_only)[20].is_empty());
+}
+
+#[test]
+fn trees_are_the_same_every_time_and_move_with_the_part() {
+    let once = supports(&tall_mushroom(), &tree());
+    let again = supports(&tall_mushroom(), &tree());
+    for (a, b) in once.iter().zip(&again) {
+        assert_eq!(a.len(), b.len());
+        assert!(a.iter().zip(b).all(|(a, b)| a.points == b.points));
+    }
+}
+
+/// A wide plate, a post on it `post` layers tall and a shelf from the post.
+fn low_shelf(post: usize) -> Vec<Vec<ExPolygon>> {
+    let mut layers = vec![vec![rect(-30.0, -30.0, 60.0, 40.0)]; 5];
+    layers.extend(vec![vec![rect(0.0, 0.0, 10.0, 10.0)]; post]);
+    layers.extend(vec![vec![rect(0.0, 0.0, 30.0, 10.0)]; 5]);
+    layers
+}
+
+#[test]
+fn a_roof_is_never_left_on_nothing() {
+    let roofed = |layer: &[ExtrusionPath]| layer.iter().any(|path| !is_loop(path));
+    // Seven layers of post: roof on 10 to 8 under the shelf on 12, and room
+    // for two layers of branch between it and the air over the plate.
+    // Short as they are, the branches stay, because the roof stands on them.
+    let found = supports(&low_shelf(7), &tree());
+    assert!(roofed(&found[10]) && roofed(&found[8]));
+    for layer in [7, 6] {
+        assert!(
+            found[layer].iter().any(is_loop),
+            "no branch on layer {layer}"
+        );
+    }
+    assert!(found[..6].iter().all(Vec::is_empty));
+
+    // Four layers of post: the roof, on 7 and 6, lies on the plate with
+    // its layer of air, and there is no room or need for branches.
+    let found = supports(&low_shelf(4), &tree());
+    assert!(roofed(&found[7]) && roofed(&found[6]));
+    assert!(found[..6].iter().all(Vec::is_empty));
+    assert!(found.iter().flatten().all(|path| !is_loop(path)));
+
+    // Whatever the height, every roof has a roof, a branch or the part's
+    // own surface, a layer of air away, beneath it.
+    for post in 2..12 {
+        let layers = low_shelf(post);
+        let found = supports(&layers, &tree());
+        for layer in 6..found.len() {
+            if found[layer].is_empty() {
+                continue;
+            }
+            assert!(
+                layer == 6 || !found[layer - 1].is_empty(),
+                "with a post of {post} layers, layer {layer} stands on nothing"
+            );
+        }
+    }
 }
