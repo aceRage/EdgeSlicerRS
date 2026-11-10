@@ -7,7 +7,8 @@
 //! between colours and every tool change primes the same `prime_volume`.
 //! Kept from the reference: the line width, how deep a block a tool change
 //! takes, that the tower stands on every layer up to the last tool change
-//! and is never deeper above than below, a solid first layer, the lines
+//! and is never deeper above than below (a layer is as deep as it and
+//! those above it need, and sits in the middle of the tower), a solid first layer, the lines
 //! that carry the next layer over depth no tool change uses, the ribbed
 //! wall (a tower with one is made as wide as it is deep, has a rib along
 //! each diagonal that runs out past the corners, longest on the bed and
@@ -612,12 +613,27 @@ struct Shape {
 }
 
 impl Shape {
+    /// How far back a layer `deep` mm deep starts, so that it sits in
+    /// the middle of the tower (`m_y_shift`).
+    fn lift(&self, deep: f64) -> f64 {
+        if deep < self.blocks - 1e-9 {
+            (self.blocks - deep) / 2.0
+        } else {
+            0.0
+        }
+    }
+
     /// The middle of the wall's line on the layer whose top is `z` mm
     /// up (WipeTower2.cpp `support_rib_wall_polygon`).
-    fn wall(&self, z: f64) -> Result<Vec<(f64, f64)>, ClipError> {
+    /// `deep` is what that layer's blocks and those above it take, which
+    /// may be less than the tower's: its box is then that much shallower
+    /// and sits in the middle, while the ribs stay where they are.
+    fn wall(&self, z: f64, deep: f64) -> Result<Vec<(f64, f64)>, ClipError> {
         // The tower's depth is what its blocks take and the wall's line.
         let (span, depth) = (self.span, self.blocks + self.line);
-        let plain = [(0.0, 0.0), (span, 0.0), (span, depth), (0.0, depth)];
+        let front = self.lift(deep);
+        let back = front + deep + self.line;
+        let plain = [(0.0, front), (span, front), (span, back), (0.0, back)];
         let Wall::Ribs {
             width,
             extra,
@@ -715,14 +731,22 @@ pub fn plan(
         line,
         wall: settings.wall,
     };
-    let blocks = shape.blocks;
+    // A layer is as deep as its own tool changes and those of the layers
+    // above it need, and no deeper (`plan_tower`).
+    let mut deep = vec![0.0; last + 1];
+    let mut most: f64 = 0.0;
+    for layer in (0..=last).rev() {
+        most = most.max(used_at(span, layer));
+        deep[layer] = most;
+    }
     // The tower stands where the wall of its first layer, ribs and all,
     // has its corner on the place set (`set_rib_offset`).
-    let first_wall = shape.wall(heights[0])?;
+    let first_wall = shape.wall(heights[0], deep[0])?;
     let corner = first_wall
         .iter()
         .fold((f64::MAX, f64::MAX), |(x, y), p| (x.min(p.0), y.min(p.1)));
-    let at = |x: f64, y: f64| Point2::from_mm(settings.x - corner.0 + x, settings.y - corner.1 + y);
+    let place =
+        |x: f64, y: f64| Point2::from_mm(settings.x - corner.0 + x, settings.y - corner.1 + y);
 
     let mut top = 0.0;
     for layer in 0..=last {
@@ -736,6 +760,10 @@ pub fn plan(
             flow,
         };
         let per_mm = |width: f64| height * (width - height * (1.0 - PI / 4.0));
+        // What the layer lays is measured from its own front.
+        let blocks = deep[layer];
+        let lift = shape.lift(blocks);
+        let at = |x: f64, y: f64| place(x, y + lift);
 
         // Tool changes take their blocks from the front
         // (`toolchange_Unload`, `toolchange_Wipe`).
@@ -931,31 +959,34 @@ pub fn plan(
 
         // The wall, its line's middle on the outline, left open where a
         // nozzle comes in.
-        let wall = shape.wall(top)?;
+        let wall = shape.wall(top, blocks)?;
         let closed = |outline: &[(f64, f64)]| -> Vec<Point2> {
             outline
                 .iter()
                 .chain(outline.first())
-                .map(|(x, y)| at(*x, *y))
+                .map(|(x, y)| place(*x, *y))
                 .collect()
         };
         let mut gaps = Vec::new();
         if settings.wall_gap {
             for (block, (from_left, y)) in tower.layers[layer].changes.iter_mut().zip(&ways_in) {
                 let side = if *from_left { 0.0 } else { span };
-                let Some((along, (x, y))) = crossing(&wall, *from_left, side, *y) else {
+                let Some((along, (x, y))) = crossing(&wall, *from_left, side, *y + lift) else {
                     continue;
                 };
                 gaps.push(along);
                 let out = if *from_left { -1.0 } else { 1.0 };
-                block.enter = vec![at(x + out * 3.0 * line, y), at(x - out * line / 2.0, y)];
+                block.enter = vec![
+                    place(x + out * 3.0 * line, y),
+                    place(x - out * line / 2.0, y),
+                ];
             }
         }
         if gaps.is_empty() {
             finish.push(path(closed(&wall)));
         } else {
             for piece in opened(&wall, &gaps, GAP_HALF * line) {
-                finish.push(path(piece.iter().map(|(x, y)| at(*x, *y)).collect()));
+                finish.push(path(piece.iter().map(|(x, y)| place(*x, *y)).collect()));
             }
         }
 
@@ -965,7 +996,9 @@ pub fn plan(
         let spacing = flow.spacing;
         let mut loops = ((settings.brim_width + spacing / 2.0) / spacing) as usize;
         if !first {
-            loops = if settings.brim_chamfer {
+            // The brim does not go on up a tower that has got shallower.
+            let as_deep = (blocks - deep[0]).abs() < 1e-9;
+            loops = if settings.brim_chamfer && as_deep {
                 loops
                     .min((settings.brim_chamfer_max / spacing) as usize)
                     .saturating_sub(layer)
@@ -1469,6 +1502,61 @@ mod tests {
         let planned = settings.planned(30.0, 0.2, false, Some(ram));
         assert!((planned.ramming - 3.0 * 1.2).abs() < 1e-9);
         assert!(unscaled(block.lines[0].points[0].y) > rows[2]);
+    }
+
+    #[test]
+    fn a_layer_is_no_deeper_than_it_and_those_above_need() {
+        // Two changes a layer, then one, then one more layer of one.
+        let settings = TowerSettings {
+            wall_gap: false,
+            ..on()
+        };
+        let tower = plan(&counts(&[2, 2, 1, 1]), &[0.2; 4], &settings).unwrap();
+        let one = settings.block_depth(settings.width, 0.2, false);
+        let wall = |layer: usize| {
+            // The wall is the one closed line that is not a brim loop:
+            // the innermost.
+            let closed: Vec<&ExtrusionPath> = tower.layers[layer]
+                .finish
+                .iter()
+                .filter(|path| path.points.first() == path.points.last())
+                .collect();
+            closed
+                .iter()
+                .map(|path| extent([*path]))
+                .min_by(|a, b| (a[3] - a[1]).total_cmp(&(b[3] - b[1])))
+                .unwrap()
+        };
+        // Below, the box is two blocks deep and starts at the place set.
+        let [_, front, _, back] = wall(1);
+        assert!((front - 50.0).abs() < 1e-6 && (back - front - 2.0 * one - 0.5).abs() < 1e-6);
+        // Above, it is one block deep and sits in the middle of that.
+        let [left, front, right, back] = wall(2);
+        assert!((back - front - one - 0.5).abs() < 1e-6, "{}", back - front);
+        assert!((front - 50.0 - one / 2.0).abs() < 1e-6, "{front}");
+        assert!((left - 100.0).abs() < 1e-6 && (right - 130.0).abs() < 1e-6);
+        assert_eq!(wall(2), wall(3));
+        // Its one block is inside it, and nothing is laid across depth
+        // the layer does not have.
+        let [_, low, _, high] = extent(&tower.layers[2].changes[0].lines);
+        assert!(low > front && high < back);
+        assert_eq!(tower.layers[2].finish.len(), 1);
+        // A layer below that has a change to spare gets its frame and
+        // lines across, as before.
+        let spare = plan(&counts(&[1, 2]), &[0.2; 2], &settings).unwrap();
+        assert!(spare.layers[0].finish.len() > 3);
+        // The brim steps in up the tower only while the tower is as deep
+        // as it was on the bed.
+        let brimmed = |layer: usize| {
+            tower.layers[layer]
+                .finish
+                .iter()
+                .filter(|path| path.points.first() == path.points.last())
+                .count()
+                - 1
+        };
+        assert!(brimmed(1) > 0);
+        assert_eq!(brimmed(2), 0);
     }
 
     #[test]

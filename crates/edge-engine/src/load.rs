@@ -32,6 +32,9 @@ pub struct Loaded {
     pub objects: Vec<Mesh>,
     /// Which of the project's plates this is, counting from 0.
     pub plate: usize,
+    /// The order the plate sets for filaments on the first layer, as
+    /// filament numbers from 1; empty when it sets none.
+    pub first_layer_sequence: Vec<u32>,
     /// The least and greatest corners of everything to slice, in mm.
     pub bounds: ([f32; 3], [f32; 3]),
 }
@@ -134,6 +137,13 @@ impl Opened {
     /// Everything on the plate, moved to where it sits on the bed.
     pub fn place(self) -> Result<Loaded, Failure> {
         let path = self.path;
+        let first_layer_sequence = match &self.held {
+            Held::Project {
+                project,
+                plate: Some(index),
+            } => project.plates[*index].first_layer_sequence.clone(),
+            _ => Vec::new(),
+        };
         let (mut bodies, settings, mut objects, plate) = match self.held {
             Held::Model(solid) => (
                 vec![Body {
@@ -180,6 +190,7 @@ impl Opened {
             settings,
             objects,
             plate: plate.map_or(0, |(index, ..)| index),
+            first_layer_sequence,
             bounds,
         })
     }

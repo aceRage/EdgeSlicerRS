@@ -114,6 +114,10 @@ pub struct Plate {
     /// The plate's number as the reference shows it, starting at 1.
     pub id: u32,
     pub name: String,
+    /// The order the plate sets for filaments on the first layer, as
+    /// filament numbers from 1 (`first_layer_print_sequence`); empty when
+    /// it sets none.
+    pub first_layer_sequence: Vec<u32>,
     pub instances: Vec<InstanceRef>,
 }
 
@@ -179,6 +183,7 @@ impl Project {
             .map(|plate| Plate {
                 id: plate.id,
                 name: plate.name,
+                first_layer_sequence: plate.first_layer_sequence,
                 // Entries naming objects or instances the file does not
                 // contain are dropped, as the reference drops them.
                 instances: plate
