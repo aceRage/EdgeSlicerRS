@@ -1,32 +1,35 @@
 //! Turns each layer's walls and fill into G-code: the order things are
-//! printed in, the travel between them, retraction, fan and acceleration,
-//! and how much filament every move pushes.
+//! printed in, where each wall starts, the travel between them, retraction,
+//! wipe and lift, fan and acceleration, how much filament every move
+//! pushes, and how much a short layer is slowed so it can cool.
 //!
 //! With a printer profile, the machine's own start, end and layer-change
 //! G-code is expanded from its templates and the output is meant to print.
 //! It has not been run on a printer. Without a profile a generic preamble
 //! stands in and the output is only good for viewing.
 //!
-//! Not done: tool changes and multiple extruders, slowing down short
-//! layers, the auxiliary fan, overhang and bridge fan speeds, seam
-//! placement, wipe, arc fitting, skirt and brim, progress (`M73`) and
-//! object labels. Coordinates are the project's own, which for a 3MF's
-//! first plate are the bed's.
+//! Not done: tool changes and multiple extruders, overhang and bridge fan
+//! speeds, seams placed by visibility, arc fitting, progress (`M73`) and
+//! object labels.
 
+mod cooling;
 mod inside;
+mod seam;
 mod settings;
 
 use std::{
-    f64::consts::PI,
+    f64::consts::{PI, TAU},
     io::{self, Write},
     ops::Range,
 };
 
+use cooling::{Slowdown, Timing};
 use edge_extrusion::{ExtrusionLoop, ExtrusionPath, Flow, Role};
-use edge_geom::{ExPolygon, Point2, unscaled};
+use edge_geom::{ExPolygon, Point2, scaled, unscaled};
 use edge_template::{TemplateError, Value, Variables};
 
-pub use settings::{PrintSettings, WallOrder};
+pub use seam::Seam;
+pub use settings::{Lift, PrintSettings, WallOrder};
 
 #[derive(Debug, thiserror::Error)]
 pub enum GcodeError {
@@ -49,6 +52,8 @@ pub struct Layer<'a> {
     pub z: f64,
     /// Thickness of the layer in mm.
     pub height: f64,
+    /// Loops laid before the part on this layer, in order: skirt and brim.
+    pub around: &'a [ExtrusionLoop],
     pub loops: &'a [ExtrusionLoop],
     /// Which of `loops` make up each island.
     pub islands: &'a [Range<usize>],
@@ -72,6 +77,8 @@ pub struct Summary {
     /// Time for every move at its commanded speed, in seconds. Real prints
     /// take longer: acceleration and heating are not counted.
     pub seconds: f64,
+    /// Layers slowed down to give them time to cool.
+    pub slowed_layers: usize,
 }
 
 /// Writes the whole print and reports what it used.
@@ -89,7 +96,8 @@ pub fn write(
     variables.set("layer_num", Value::Int(0));
     variables.set("layer_z", Value::Float(0.0));
     // Where the first layer is, for start G-code that probes or purges near it.
-    if let Some([min_x, min_y, max_x, max_y]) = layers.first().and_then(extent) {
+    // "First" being the first layer with anything on it.
+    if let Some([min_x, min_y, max_x, max_y]) = layers.iter().find_map(extent) {
         let pair = |x: f64, y: f64| vec![Value::Float(x), Value::Float(y)];
         variables.set_list("first_layer_print_min", pair(min_x, min_y));
         variables.set_list("first_layer_print_max", pair(max_x, max_y));
@@ -97,33 +105,35 @@ pub fn write(
     }
 
     let mut writer = Writer {
-        out,
+        out: Vec::new(),
         settings,
         variables,
         filament_area: PI * (settings.filament_diameter / 2.0).powi(2),
-        position: None,
-        z: 0.0,
-        first_layer: true,
-        lifted: false,
-        retracted: false,
-        primed: false,
-        feedrate: 0.0,
-        acceleration: 0.0,
-        fan: None,
-        role: None,
-        width: 0.0,
-        summary: Summary::default(),
+        state: State::default(),
+        timing: Timing::default(),
+        extruding: false,
+        slowdown: Slowdown::None,
     };
     writer.preamble()?;
+    out.write_all(&writer.out)?;
     for (index, layer) in layers.iter().enumerate() {
+        writer.out.clear();
         writer.layer(index, layer)?;
+        out.write_all(&writer.out)?;
     }
-    writer.finish()
+    writer.out.clear();
+    let summary = writer.finish()?;
+    out.write_all(&writer.out)?;
+    Ok(summary)
 }
 
 /// The box around everything a layer extrudes, in mm: min x, min y, max x, max y.
 fn extent(layer: &Layer<'_>) -> Option<[f64; 4]> {
-    let walls = layer.loops.iter().flat_map(|wall| &wall.polygon.points);
+    let walls = layer
+        .around
+        .iter()
+        .chain(layer.loops)
+        .flat_map(|wall| &wall.polygon.points);
     let fills = layer.paths.iter().flat_map(|path| &path.points);
     walls
         .chain(fills)
@@ -143,37 +153,61 @@ struct Motion {
     acceleration: f64,
 }
 
-struct Writer<'a, W> {
-    out: &'a mut W,
+struct Writer<'a> {
+    /// The text of the part being written; handed on a layer at a time.
+    out: Vec<u8>,
     settings: &'a PrintSettings,
     /// What templates can refer to; the layer's number and height change as it goes.
     variables: Variables,
     /// Cross-section of the filament in mm².
     filament_area: f64,
+    state: State,
+    /// How the layer being written spends its time.
+    timing: Timing,
+    /// Whether the layer has started extruding; time before that is not the layer's.
+    extruding: bool,
+    /// What the layer's extrusion speeds are held to.
+    slowdown: Slowdown,
+}
+
+/// Where the machine stands as the text is written. Kept apart so a layer
+/// can be laid out once to see how long it takes and then again, slower.
+#[derive(Clone, Debug, Default)]
+struct State {
     /// Where the nozzle is, once it has been anywhere.
     position: Option<Point2>,
     /// The current layer's height above the bed.
     z: f64,
+    /// How high the nozzle actually is, once a move has said.
+    height: Option<f64>,
     first_layer: bool,
-    /// Whether the nozzle is raised above the layer for a travel.
-    lifted: bool,
     retracted: bool,
     /// Whether the nozzle holds molten plastic that would ooze on a travel:
     /// true once anything is extruded, or once the machine's start G-code
     /// has run, since that purges.
     primed: bool,
+    /// A lift decided on at retraction, to be made by the travel that follows.
+    pending_lift: Option<Lift>,
+    /// What was just printed, in the order the wipe retraces it.
+    wipe_path: Vec<Point2>,
+    /// Speed of the line just printed, before any slowdown, in mm/s.
+    line_speed: f64,
     /// The last feedrate written, in mm/min.
     feedrate: f64,
     /// The last acceleration written, in mm/s².
     acceleration: f64,
-    /// The last fan speed written, 0 to 255.
+    /// The last fan speeds written, 0 to 255.
     fan: Option<u8>,
+    auxiliary_fan: Option<u8>,
     role: Option<Role>,
     width: f64,
+    /// Seams of the layer below, and of this one so far.
+    seams: Vec<Point2>,
+    next_seams: Vec<Point2>,
     summary: Summary,
 }
 
-impl<W: Write> Writer<'_, W> {
+impl Writer<'_> {
     fn preamble(&mut self) -> Result<(), GcodeError> {
         let s = self.settings;
         writeln!(
@@ -181,11 +215,16 @@ impl<W: Write> Writer<'_, W> {
             "; generated by EdgeSlicerRS {}",
             env!("CARGO_PKG_VERSION")
         )?;
+        // Both fans off before anything heats, as the reference does when
+        // the printer has an auxiliary fan.
+        if s.auxiliary_fan && s.close_fan_the_first_x_layers > 0 {
+            writeln!(self.out, "M106 S0\nM106 P2 S0")?;
+        }
         match &s.machine_start_gcode {
             Some(template) => {
                 writeln!(self.out, ";TYPE:Custom")?;
                 self.custom("machine_start_gcode", template)?;
-                self.primed = true;
+                self.state.primed = true;
             }
             None => {
                 writeln!(
@@ -250,10 +289,20 @@ impl<W: Write> Writer<'_, W> {
             ";LAYER_CHANGE\n;Z:{:.3}\n;HEIGHT:{:.3}",
             layer.z, layer.height
         )?;
-        self.variables.set("layer_num", Value::Int(index as i64));
+        // The reference counts layers from 1 before the change and from 0 after it.
+        self.variables
+            .set("layer_num", Value::Int(index as i64 + 1));
         self.variables.set("layer_z", Value::Float(layer.z));
         if let Some(template) = &s.before_layer_change_gcode {
             self.custom("before_layer_change_gcode", template)?;
+        }
+        // Stop oozing onto the finished layer while the nozzle moves on.
+        if s.retract_when_changing_layer {
+            self.retract(true)?;
+        }
+        self.variables.set("layer_num", Value::Int(index as i64));
+        if let Some(template) = &s.layer_change_gcode {
+            self.custom("layer_change_gcode", template)?;
         }
         if index == 1 {
             if s.nozzle_temperature != s.nozzle_temperature_initial_layer {
@@ -266,69 +315,93 @@ impl<W: Write> Writer<'_, W> {
                 writeln!(self.out, "M140 S{bed:.0}")?;
             }
         }
-        // Stop oozing onto the finished layer while the nozzle rises.
-        self.retract()?;
-        if let Some(template) = &s.layer_change_gcode {
-            self.custom("layer_change_gcode", template)?;
-        }
+        self.state.first_layer = index == 0;
+        // The nozzle itself moves up with the layer's first travel.
+        self.state.z = layer.z;
 
-        self.first_layer = index == 0;
-        let fan = (self.fan_percent(index, layer).clamp(0.0, 100.0) * 2.55).round() as u8;
-        if self.fan != Some(fan) {
-            writeln!(self.out, "M106 S{fan}")?;
-            self.fan = Some(fan);
+        // Lay the layer out to see how long it takes; if that is too short
+        // for it to cool, lay it out again, slower.
+        let head = self.out.len();
+        let before = self.state.clone();
+        self.slowdown = Slowdown::None;
+        self.body(layer)?;
+        if s.slow_down_for_layer_cooling {
+            let slowdown = self
+                .timing
+                .slowdown(s.slow_down_layer_time, s.slow_down_min_speed);
+            if slowdown != Slowdown::None {
+                self.out.truncate(head);
+                self.state = before;
+                self.slowdown = slowdown;
+                self.body(layer)?;
+                self.state.summary.slowed_layers += 1;
+            }
         }
+        let seconds = self.timing.seconds_after(self.slowdown);
 
-        // Rise above the new layer before moving to its first point, so the
-        // nozzle clears what is printed and, on the first layer, whatever
-        // the start G-code laid down. It comes down when extrusion starts.
-        self.z = layer.z;
-        self.lifted = s.z_hop > 0.0;
-        self.feed(s.z_speed);
-        let feed_word = self.feed_word();
-        writeln!(self.out, "G1 Z{:.3}{feed_word}", layer.z + s.z_hop.max(0.0))?;
-
-        if s.infill_first {
-            self.fills(layer)?;
-            self.walls(layer)?;
-        } else {
-            self.walls(layer)?;
-            self.fills(layer)?;
+        // The fans are set ahead of the layer, where the reference sets them.
+        let fan = cooling::Fan {
+            min_speed: s.fan_min_speed,
+            max_speed: s.fan_max_speed,
+            cooling_layer_time: s.fan_cooling_layer_time,
+            slow_down_layer_time: s.slow_down_layer_time,
+            off_layers: s.close_fan_the_first_x_layers,
+            full_speed_layer: s.full_fan_speed_layer,
+            keep_running: s.reduce_fan_stop_start_freq,
+        };
+        let mut fans = String::new();
+        let speed = cooling::pwm(fan.percent(index, seconds));
+        if self.state.fan != Some(speed) {
+            fans.push_str(&format!("M106 S{speed}\n"));
+            self.state.fan = Some(speed);
         }
+        if s.auxiliary_fan {
+            let speed = if index >= s.close_fan_the_first_x_layers {
+                cooling::auxiliary_pwm(s.additional_cooling_fan_speed)
+            } else {
+                0
+            };
+            if self.state.auxiliary_fan != Some(speed) {
+                fans.push_str(&format!("M106 P2 S{speed}\n"));
+                self.state.auxiliary_fan = Some(speed);
+            }
+        }
+        self.out.splice(0..0, fans.into_bytes());
         Ok(())
     }
 
-    /// Fan speed for a layer, as a percentage: off at the start, then
-    /// faster the less time the layer takes and so the less it cools by
-    /// itself. The reference also slows short layers down; this does not.
-    fn fan_percent(&self, index: usize, layer: &Layer<'_>) -> f64 {
-        let s = self.settings;
-        if index < s.close_fan_the_first_x_layers {
-            return 0.0;
+    /// Everything the layer prints.
+    fn body(&mut self, layer: &Layer<'_>) -> io::Result<()> {
+        self.timing = Timing::default();
+        self.extruding = false;
+        for around in layer.around {
+            let points = &around.polygon.points;
+            if points.len() < 3 {
+                continue;
+            }
+            // Skirt and brim start wherever is nearest.
+            let (edge, start) = match self.state.position {
+                Some(at) => seam::project(points, at),
+                None => (0, points[0]),
+            };
+            let mut path = seam::open_at(points, edge, start);
+            seam::clip_end(&mut path, self.settings.seam_gap);
+            self.path(&path, around.role, &around.flow, false, true)?;
         }
-        let first_layer = index == 0;
-        let walls = layer
-            .loops
-            .iter()
-            .map(|wall| wall.length_mm() / self.motion(wall.role, &wall.flow, first_layer).speed);
-        let fills = layer
-            .paths
-            .iter()
-            .map(|path| path.length_mm() / self.motion(path.role, &path.flow, first_layer).speed);
-        let seconds: f64 = walls.chain(fills).sum();
-        if seconds >= s.fan_cooling_layer_time {
-            s.fan_min_speed
-        } else if seconds > s.slow_down_layer_time {
-            let share = (seconds - s.slow_down_layer_time)
-                / (s.fan_cooling_layer_time - s.slow_down_layer_time);
-            s.fan_max_speed - (s.fan_max_speed - s.fan_min_speed) * share
+        if self.settings.infill_first {
+            self.fills(layer)?;
+            self.walls(layer)?;
         } else {
-            s.fan_max_speed
+            self.walls(layer)?;
+            self.fills(layer)?;
         }
+        self.state.seams = std::mem::take(&mut self.state.next_seams);
+        Ok(())
     }
 
     /// Islands nearest first; within an island, walls in the configured order.
-    fn walls(&mut self, layer: &Layer<'_>) -> Result<(), GcodeError> {
+    fn walls(&mut self, layer: &Layer<'_>) -> io::Result<()> {
+        let s = self.settings;
         let mut remaining: Vec<&Range<usize>> = layer.islands.iter().collect();
         while !remaining.is_empty() {
             let nearest = self.nearest(remaining.iter().map(|island| {
@@ -340,27 +413,56 @@ impl<W: Write> Writer<'_, W> {
             let island = remaining.remove(nearest);
             let mut walls: Vec<&ExtrusionLoop> = layer.loops[island.clone()].iter().collect();
             // Stable, so each depth keeps its outer boundaries before its holes.
-            match self.settings.wall_order {
+            match s.wall_order {
                 WallOrder::InnerOuter => walls.sort_by_key(|wall| std::cmp::Reverse(wall.depth)),
                 WallOrder::OuterInner => walls.sort_by_key(|wall| wall.depth),
             }
+            // The seams of the island's outermost walls are settled first,
+            // so the walls behind them can start alongside.
+            let planned: Vec<(bool, Point2)> = if s.seam == Seam::Nearest {
+                Vec::new()
+            } else {
+                walls
+                    .iter()
+                    .filter(|wall| wall.depth == 0 && wall.polygon.points.len() >= 3)
+                    .map(|wall| {
+                        let points = &wall.polygon.points;
+                        let corner = seam::choose(
+                            points,
+                            s.seam,
+                            s.nozzle_diameter,
+                            None,
+                            &self.state.seams,
+                        );
+                        (wall.is_hole, points[corner])
+                    })
+                    .collect()
+            };
+            self.state
+                .next_seams
+                .extend(planned.iter().map(|(_, seam)| *seam));
+
             for wall in walls {
                 let points = &wall.polygon.points;
                 if points.len() < 3 {
                     continue;
                 }
-                // Start at the corner nearest the nozzle and go once round.
-                let start = self.nearest(points.iter().map(|point| std::iter::once(*point)));
-                self.travel(points[start], false)?;
-                let motion = self.motion(wall.role, &wall.flow, self.first_layer);
-                for step in 1..=points.len() {
-                    self.extrude(
-                        points[(start + step) % points.len()],
-                        wall.role,
-                        &wall.flow,
-                        motion,
-                    )?;
-                }
+                let (edge, start) = match alongside(points, wall.is_hole, &planned) {
+                    Some(target) => seam::project(points, target),
+                    None => {
+                        let corner = seam::choose(
+                            points,
+                            Seam::Nearest,
+                            s.nozzle_diameter,
+                            self.state.position,
+                            &[],
+                        );
+                        (corner, points[corner])
+                    }
+                };
+                let mut path = seam::open_at(points, edge, start);
+                seam::clip_end(&mut path, s.seam_gap);
+                self.path(&path, wall.role, &wall.flow, false, true)?;
             }
         }
         Ok(())
@@ -368,7 +470,7 @@ impl<W: Write> Writer<'_, W> {
 
     /// Fill lines kind by kind as they come, each kind in nearest-end-first
     /// order so the nozzle works across an area instead of jumping about.
-    fn fills(&mut self, layer: &Layer<'_>) -> Result<(), GcodeError> {
+    fn fills(&mut self, layer: &Layer<'_>) -> io::Result<()> {
         for group in layer.paths.chunk_by(|a, b| a.role == b.role) {
             let mut remaining: Vec<&ExtrusionPath> =
                 group.iter().filter(|path| path.points.len() >= 2).collect();
@@ -379,6 +481,7 @@ impl<W: Write> Writer<'_, W> {
                 let path = remaining.remove(nearest);
                 let [head, tail] = ends(path);
                 let reversed = self
+                    .state
                     .position
                     .is_some_and(|at| distance(at, tail) < distance(at, head));
                 let mut points: Vec<Point2> = path.points.clone();
@@ -387,14 +490,34 @@ impl<W: Write> Writer<'_, W> {
                 }
                 let sheltered = self.settings.reduce_infill_retraction
                     && self
+                        .state
                         .position
                         .is_some_and(|at| inside::stays_inside(layer.infill_area, at, points[0]));
-                self.travel(points[0], sheltered)?;
-                let motion = self.motion(path.role, &path.flow, self.first_layer);
-                for &point in &points[1..] {
-                    self.extrude(point, path.role, &path.flow, motion)?;
-                }
+                self.path(&points, path.role, &path.flow, sheltered, false)?;
             }
+        }
+        Ok(())
+    }
+
+    /// Travels to the start of a path and extrudes along it. `closed` says
+    /// it is a loop, which a wipe carries on around; an open line is wiped
+    /// back the way it came.
+    fn path(
+        &mut self,
+        points: &[Point2],
+        role: Role,
+        flow: &Flow,
+        sheltered: bool,
+        closed: bool,
+    ) -> io::Result<()> {
+        self.travel(points[0], sheltered)?;
+        let motion = self.motion(role, flow, self.state.first_layer);
+        for &point in &points[1..] {
+            self.extrude(point, role, flow, motion)?;
+        }
+        self.state.wipe_path = points.to_vec();
+        if !closed {
+            self.state.wipe_path.reverse();
         }
         Ok(())
     }
@@ -402,7 +525,9 @@ impl<W: Write> Writer<'_, W> {
     /// Index of the candidate with a point closest to the nozzle; the first
     /// when the nozzle has not been anywhere yet.
     fn nearest<P: Iterator<Item = Point2>>(&self, candidates: impl Iterator<Item = P>) -> usize {
-        let Some(at) = self.position else { return 0 };
+        let Some(at) = self.state.position else {
+            return 0;
+        };
         candidates
             .map(|points| {
                 points
@@ -420,7 +545,9 @@ impl<W: Write> Writer<'_, W> {
         let s = self.settings;
         let is_wall = matches!(role, Role::ExternalPerimeter | Role::Perimeter);
         let wanted = match role {
-            _ if first_layer && is_wall => s.initial_layer_speed,
+            // As GCode.cpp `_extrude`: the skirt's own speed wins when set.
+            Role::Skirt if s.skirt_speed > 0.0 => s.skirt_speed,
+            _ if first_layer && (is_wall || role == Role::Brim) => s.initial_layer_speed,
             _ if first_layer => s.initial_layer_infill_speed,
             Role::ExternalPerimeter => s.outer_wall_speed,
             Role::Perimeter => s.inner_wall_speed,
@@ -428,6 +555,7 @@ impl<W: Write> Writer<'_, W> {
             Role::SolidInfill | Role::BottomSurface => s.internal_solid_infill_speed,
             Role::TopSolidInfill => s.top_surface_speed,
             Role::BridgeInfill => s.bridge_speed,
+            Role::Skirt | Role::Brim => s.outer_wall_speed,
         };
         let speed = if s.filament_max_volumetric_speed > 0.0 {
             wanted.min(s.filament_max_volumetric_speed / flow.mm3_per_mm())
@@ -443,6 +571,7 @@ impl<W: Write> Writer<'_, W> {
             Role::SolidInfill | Role::BottomSurface | Role::BridgeInfill => s
                 .internal_solid_infill_acceleration
                 .resolve(s.default_acceleration),
+            Role::Skirt | Role::Brim => s.default_acceleration,
         };
         Motion {
             speed,
@@ -456,10 +585,10 @@ impl<W: Write> Writer<'_, W> {
 
     /// Tells the printer a new acceleration limit, if it is a change.
     fn accelerate(&mut self, acceleration: f64) -> io::Result<()> {
-        if acceleration <= 0.0 || acceleration == self.acceleration {
+        if acceleration <= 0.0 || acceleration == self.state.acceleration {
             return Ok(());
         }
-        self.acceleration = acceleration;
+        self.state.acceleration = acceleration;
         match (self.settings.klipper, self.settings.accel_to_decel_factor) {
             (true, Some(factor)) => writeln!(
                 self.out,
@@ -471,30 +600,32 @@ impl<W: Write> Writer<'_, W> {
         }
     }
 
-    /// `sheltered` says the move may go unretracted however long it is.
+    /// `sheltered` says the move may go unretracted however long it is,
+    /// unless it leaves an outer wall, which always retracts.
     fn travel(&mut self, to: Point2, sheltered: bool) -> io::Result<()> {
         let s = self.settings;
-        let length = self
-            .position
-            .map_or(f64::INFINITY, |from| distance(from, to));
-        if length == 0.0 {
+        let from = self.state.position;
+        let length = from.map_or(f64::INFINITY, |from| distance(from, to));
+        if length == 0.0 && self.state.height == Some(self.state.z) {
             return Ok(());
         }
-        if length > s.retraction_minimum_travel && !sheltered {
-            self.retract()?;
-            if s.z_hop > 0.0 && !self.lifted {
-                self.feed(s.z_speed);
-                let feed_word = self.feed_word();
-                writeln!(self.out, "G1 Z{:.3}{feed_word}", self.z + s.z_hop)?;
-                self.lifted = true;
-            }
+        let exposed = !sheltered || self.state.role == Some(Role::ExternalPerimeter);
+        let long = length > s.retraction_minimum_travel && exposed;
+        if long {
+            self.retract(false)?;
+        } else {
+            // Nothing to wipe once the nozzle has moved off the line.
+            self.state.wipe_path.clear();
         }
+        // A wipe moves the nozzle, so the travel is measured from where it ends.
+        let from = self.state.position;
+        let length = from.map_or(f64::INFINITY, |from| distance(from, to));
         // The first layer is gentle throughout. Above it, long moves get the
         // travel acceleration; short hops between neighbouring lines keep
         // whatever is set, rather than switching twice for a millimetre.
-        if self.first_layer && s.initial_layer_acceleration > 0.0 {
+        if self.state.first_layer && s.initial_layer_acceleration > 0.0 {
             self.accelerate(s.initial_layer_acceleration)?;
-        } else if length > s.retraction_minimum_travel && !sheltered {
+        } else if long {
             let travel = if s.travel_acceleration > 0.0 {
                 s.travel_acceleration
             } else {
@@ -502,26 +633,171 @@ impl<W: Write> Writer<'_, W> {
             };
             self.accelerate(travel)?;
         }
-        self.feed(s.travel_speed);
+
+        let lift = self.state.pending_lift.take();
+        let z = self.state.z;
+        let top = match (lift, self.state.height) {
+            (Some(_), _) => z + s.z_hop,
+            // Already up from an earlier lift: stay there.
+            (None, Some(height)) => height.max(z),
+            (None, None) => z,
+        };
+        let (Some(from), Some(height)) = (from, self.state.height) else {
+            // The first move starts wherever the start G-code left the
+            // nozzle, which is not known: across at that height, then to
+            // this layer's, as the reference does.
+            self.go(to, None, s.travel_speed, 0.0)?;
+            self.feed(s.z_speed);
+            let feed_word = self.feed_word();
+            writeln!(self.out, "G1 Z{top:.3}{feed_word}")?;
+            self.state.height = Some(top);
+            return Ok(());
+        };
+        let rise = top - height;
+        // A ramp or spiral climbs no faster than the Z axis can.
+        let climbing = |run: f64, rise: f64| s.travel_speed.min(s.z_speed * run.hypot(rise) / rise);
+        if rise.abs() < 1e-9 {
+            self.go(to, None, s.travel_speed, length)?;
+        } else if rise < 0.0 {
+            self.go(to, Some(top), s.travel_speed, length)?;
+        } else {
+            match lift {
+                Some(Lift::Spiral) if self.spiral_fits(from, to, top - z) => {
+                    self.spiral(from, to, top, height)?;
+                    self.go(to, Some(top), s.travel_speed, length)?;
+                }
+                Some(Lift::Normal | Lift::Spiral) => {
+                    self.feed(s.z_speed);
+                    let feed_word = self.feed_word();
+                    writeln!(self.out, "G1 Z{top:.3}{feed_word}")?;
+                    self.spend(rise / s.z_speed);
+                    self.go(to, None, s.travel_speed, length)?;
+                }
+                // A ramp along the start of the travel, as steep as
+                // `travel_slope`; a travel too short for it climbs all the way.
+                _ => {
+                    let run = rise / s.travel_slope.to_radians().tan();
+                    if run > 0.0 && run < length {
+                        let share = run / length;
+                        let ramp = Point2 {
+                            x: from.x + ((to.x - from.x) as f64 * share).round() as i64,
+                            y: from.y + ((to.y - from.y) as f64 * share).round() as i64,
+                        };
+                        self.go(ramp, Some(top), climbing(run, rise), run)?;
+                        self.go(to, Some(top), s.travel_speed, length - run)?;
+                    } else {
+                        self.go(to, Some(top), climbing(length, rise), length)?;
+                    }
+                }
+            }
+        }
+        self.state.height = Some(top);
+        Ok(())
+    }
+
+    /// One move without extruding, to `to` and, if given, height `z`.
+    /// `length` is how far that is across the bed, in mm.
+    fn go(&mut self, to: Point2, z: Option<f64>, speed: f64, length: f64) -> io::Result<()> {
+        self.feed(speed);
         let feed_word = self.feed_word();
+        let height = z.map_or(String::new(), |z| format!(" Z{z:.3}"));
         writeln!(
             self.out,
-            "G1 X{:.3} Y{:.3}{feed_word}",
+            "G1 X{:.3} Y{:.3}{height}{feed_word}",
             unscaled(to.x),
             unscaled(to.y)
         )?;
-        // The very first move starts from wherever the start G-code left
-        // the nozzle, which is not known, so it is not counted.
+        // The very first move has no known start, so it is not counted.
         if length.is_finite() {
-            self.summary.travel_mm += length;
-            self.summary.seconds += length / s.travel_speed;
+            self.state.summary.travel_mm += length;
+            self.spend(length / speed);
         }
-        self.position = Some(to);
+        self.state.position = Some(to);
+        Ok(())
+    }
+
+    /// Counts time that passes without extruding.
+    fn spend(&mut self, seconds: f64) {
+        self.state.summary.seconds += seconds;
+        if self.extruding {
+            self.timing.fixed += seconds;
+        }
+    }
+
+    /// Radius of a spiral lift of `hop` mm, as GCodeWriter::travel_to_xyz has it.
+    fn spiral_radius(&self, hop: f64) -> f64 {
+        hop / (TAU * self.settings.travel_slope.to_radians().atan())
+    }
+
+    /// Whether a spiral lift from `from` towards `to` stays over the bed.
+    /// Without a known bed it is not risked.
+    fn spiral_fits(&self, from: Point2, to: Point2, hop: f64) -> bool {
+        let Some([min_x, min_y, max_x, max_y]) = self.settings.bed else {
+            return false;
+        };
+        let length = distance(from, to);
+        let radius = self.spiral_radius(hop);
+        if length == 0.0 || !(radius.is_finite() && radius > 0.0) {
+            return false;
+        }
+        // The circle's centre lies to the left of the way the travel heads.
+        let x = unscaled(from.x) - unscaled(to.y - from.y) / length * radius;
+        let y = unscaled(from.y) + unscaled(to.x - from.x) / length * radius;
+        x - radius >= min_x && x + radius <= max_x && y - radius >= min_y && y + radius <= max_y
+    }
+
+    /// One turn of a rising circle, ending above where it started.
+    fn spiral(&mut self, from: Point2, to: Point2, top: f64, height: f64) -> io::Result<()> {
+        let s = self.settings;
+        let base = self.state.z;
+        let hop = top - base;
+        let radius = self.spiral_radius(hop);
+        let length = distance(from, to);
+        let (dx, dy) = (
+            unscaled(to.x - from.x) / length,
+            unscaled(to.y - from.y) / length,
+        );
+        let (centre_x, centre_y) = (
+            unscaled(from.x) - dy * radius,
+            unscaled(from.y) + dx * radius,
+        );
+        // Enough segments to stay within `resolution` of the circle
+        // (ArcWelder.hpp `arc_discretization_steps`), between 8 and 128.
+        let steps = if s.resolution <= 0.0 {
+            128
+        } else if s.resolution >= radius {
+            8
+        } else {
+            ((TAU / (2.0 * (1.0 - s.resolution / radius).acos())).ceil() as usize).clamp(8, 128)
+        };
+        let chord = 2.0 * radius * (PI / steps as f64).sin();
+        let mut below = height;
+        for step in 1..=steps {
+            let turn = TAU * step as f64 / steps as f64;
+            // Start from the centre towards the nozzle, turning to the left.
+            let (arm_x, arm_y) = (dy * radius, -dx * radius);
+            let point = if step == steps {
+                from
+            } else {
+                Point2 {
+                    x: scaled(centre_x + arm_x * turn.cos() - arm_y * turn.sin()),
+                    y: scaled(centre_y + arm_x * turn.sin() + arm_y * turn.cos()),
+                }
+            };
+            let z = base + hop * step as f64 / steps as f64;
+            let speed = s
+                .travel_speed
+                .min(s.z_speed * chord.hypot(z - below) / (z - below));
+            self.go(point, Some(z), speed, chord)?;
+            below = z;
+        }
         Ok(())
     }
 
     fn extrude(&mut self, to: Point2, role: Role, flow: &Flow, motion: Motion) -> io::Result<()> {
+        let s = self.settings;
         let from = self
+            .state
             .position
             .expect("a travel always comes before extruding");
         let length = distance(from, to);
@@ -529,21 +805,34 @@ impl<W: Write> Writer<'_, W> {
             return Ok(());
         }
         self.prime()?;
-        if self.role != Some(role) {
+        if self.state.role != Some(role) {
             writeln!(self.out, ";TYPE:{}", role_name(role))?;
-            self.role = Some(role);
+            self.state.role = Some(role);
         }
-        if self.width != flow.width {
+        if self.state.width != flow.width {
             writeln!(self.out, ";WIDTH:{:.3}", flow.width)?;
-            self.width = flow.width;
+            self.state.width = flow.width;
         }
         self.accelerate(motion.acceleration)?;
-        let volume = length
-            * flow.mm3_per_mm()
-            * self.settings.filament_flow_ratio
-            * self.settings.print_flow_ratio;
+        // A layer's time is counted from its first line, as in the reference.
+        if !self.extruding {
+            self.extruding = true;
+            self.timing.fixed = 0.0;
+        }
+        let held = role == Role::ExternalPerimeter && s.dont_slow_down_outer_wall;
+        let speed = if held {
+            self.timing.fixed += length / motion.speed;
+            motion.speed
+        } else {
+            match self.timing.lines.last_mut() {
+                Some(line) if line.1 == motion.speed => line.0 += length,
+                _ => self.timing.lines.push((length, motion.speed)),
+            }
+            self.slowdown.apply(motion.speed)
+        };
+        let volume = length * flow.mm3_per_mm() * s.filament_flow_ratio * s.print_flow_ratio;
         let feed = volume / self.filament_area;
-        self.feed(motion.speed);
+        self.feed(speed);
         let feed_word = self.feed_word();
         writeln!(
             self.out,
@@ -551,38 +840,126 @@ impl<W: Write> Writer<'_, W> {
             unscaled(to.x),
             unscaled(to.y)
         )?;
-        self.primed = true;
-        self.summary.filament_mm += feed;
-        self.summary.filament_mm3 += volume;
-        self.summary.seconds += length / motion.speed;
-        self.position = Some(to);
+        self.state.primed = true;
+        self.state.line_speed = motion.speed;
+        self.state.summary.filament_mm += feed;
+        self.state.summary.filament_mm3 += volume;
+        self.state.summary.seconds += length / speed;
+        self.state.position = Some(to);
         Ok(())
     }
 
-    fn retract(&mut self) -> io::Result<()> {
+    /// Pulls the filament back, wiping the nozzle over what it just printed
+    /// if the profile asks, and decides whether the next travel lifts.
+    /// `layer_change` says the retraction is the one between layers.
+    fn retract(&mut self, layer_change: bool) -> io::Result<()> {
         let s = self.settings;
-        if self.retracted || !self.primed || s.retraction_length <= 0.0 {
+        let path = std::mem::take(&mut self.state.wipe_path);
+        if self.state.retracted || !self.state.primed || s.retraction_length <= 0.0 {
             return Ok(());
         }
-        self.feed(s.retraction_speed);
-        let feed_word = self.feed_word();
-        writeln!(self.out, "G1 E-{:.5}{feed_word}", s.retraction_length)?;
-        self.retracted = true;
-        self.summary.retractions += 1;
-        self.summary.seconds += s.retraction_length / s.retraction_speed;
+        let total = s.retraction_length;
+        // The wipe sets off from where the nozzle is and follows the path
+        // for `wipe_distance` (GCode.cpp `Wipe::wipe`).
+        let wipe = match self.state.position {
+            Some(at) if s.wipe && s.wipe_distance > 0.0 && path.len() >= 2 => {
+                let mut path = path;
+                path[0] = at;
+                Some(seam::head(&path, s.wipe_distance)).filter(|path| path.len() >= 2)
+            }
+            _ => None,
+        };
+        let wipe_speed = s.wipe_speed.unwrap_or(self.state.line_speed).max(10.0);
+        let reach: f64 = wipe
+            .iter()
+            .flat_map(|path| path.windows(2))
+            .map(|pair| distance(pair[0], pair[1]))
+            .sum();
+        // How much is pulled back before, during and after the wipe
+        // (`calculateWipeRetractionLengths`).
+        let (before, during, after) = if reach > 0.0 {
+            let before = total * s.retract_before_wipe;
+            let after = (total * s.retract_after_wipe).min(total - before);
+            let rest = total - before - after;
+            let most = s.retraction_speed * reach / wipe_speed;
+            if rest <= 1e-9 {
+                (before, 0.0, after)
+            } else if most > rest {
+                (before, rest, after)
+            } else {
+                (before + rest - most, most, after)
+            }
+        } else {
+            (total, 0.0, 0.0)
+        };
+        if before > 0.0 {
+            self.feed(s.retraction_speed);
+            let feed_word = self.feed_word();
+            writeln!(self.out, "G1 E-{before:.5}{feed_word}")?;
+        }
+        if let Some(path) = wipe.filter(|_| reach > 0.0) {
+            self.state.feedrate = (wipe_speed * 60.0).round();
+            writeln!(self.out, ";WIPE_START\nG1 F{:.0}", self.state.feedrate)?;
+            for pair in path.windows(2) {
+                let length = distance(pair[0], pair[1]);
+                if length == 0.0 {
+                    continue;
+                }
+                let pulled = if during > 0.0 {
+                    format!(" E-{:.5}", during * length / reach)
+                } else {
+                    String::new()
+                };
+                writeln!(
+                    self.out,
+                    "G1 X{:.3} Y{:.3}{pulled}",
+                    unscaled(pair[1].x),
+                    unscaled(pair[1].y)
+                )?;
+                self.state.summary.travel_mm += length;
+                self.spend(length / wipe_speed);
+                self.state.position = Some(pair[1]);
+            }
+            writeln!(self.out, ";WIPE_END")?;
+        }
+        if after > 0.0 {
+            self.feed(s.retraction_speed);
+            let feed_word = self.feed_word();
+            writeln!(self.out, "G1 E-{after:.5}{feed_word}")?;
+        }
+        self.state.retracted = true;
+        self.state.summary.retractions += 1;
+        self.spend((before + after) / s.retraction_speed);
+
+        let z = self.state.z;
+        let in_range =
+            z >= s.retract_lift_above && (s.retract_lift_below <= 0.0 || z <= s.retract_lift_below);
+        if s.z_hop > 0.0 && in_range {
+            self.state.pending_lift = Some(match s.lift {
+                Lift::Auto if layer_change => Lift::Spiral,
+                Lift::Auto => Lift::Slope,
+                chosen => chosen,
+            });
+        }
         Ok(())
     }
 
-    /// Undoes a lift and a retraction, ready to extrude.
+    /// Brings the nozzle down to the layer and undoes a retraction, ready
+    /// to extrude.
     fn prime(&mut self) -> io::Result<()> {
         let s = self.settings;
-        if self.lifted {
+        let z = self.state.z;
+        if self.state.height != Some(z) {
             self.feed(s.z_speed);
             let feed_word = self.feed_word();
-            writeln!(self.out, "G1 Z{:.3}{feed_word}", self.z)?;
-            self.lifted = false;
+            writeln!(self.out, "G1 Z{z:.3}{feed_word}")?;
+            if let Some(height) = self.state.height {
+                self.spend((height - z).abs() / s.z_speed);
+            }
+            self.state.height = Some(z);
         }
-        if self.retracted {
+        self.state.pending_lift = None;
+        if self.state.retracted {
             let speed = if s.deretraction_speed > 0.0 {
                 s.deretraction_speed
             } else {
@@ -591,8 +968,8 @@ impl<W: Write> Writer<'_, W> {
             self.feed(speed);
             let feed_word = self.feed_word();
             writeln!(self.out, "G1 E{:.5}{feed_word}", s.retraction_length)?;
-            self.retracted = false;
-            self.summary.seconds += s.retraction_length / speed;
+            self.state.retracted = false;
+            self.spend(s.retraction_length / speed);
         }
         Ok(())
     }
@@ -601,26 +978,27 @@ impl<W: Write> Writer<'_, W> {
     /// `feed_word` then yields the `F` word once, the first time it changes.
     fn feed(&mut self, speed: f64) {
         let feedrate = (speed * 60.0).round();
-        if feedrate != self.feedrate.abs() {
+        if feedrate != self.state.feedrate.abs() {
             // Negative marks a feedrate not yet written.
-            self.feedrate = -feedrate;
+            self.state.feedrate = -feedrate;
         }
     }
 
     fn feed_word(&mut self) -> String {
-        if self.feedrate < 0.0 {
-            self.feedrate = -self.feedrate;
-            format!(" F{:.0}", self.feedrate)
+        if self.state.feedrate < 0.0 {
+            self.state.feedrate = -self.state.feedrate;
+            format!(" F{:.0}", self.state.feedrate)
         } else {
             String::new()
         }
     }
 
-    fn finish(mut self) -> Result<Summary, GcodeError> {
+    fn finish(&mut self) -> Result<Summary, GcodeError> {
         let s = self.settings;
-        self.retract()?;
-        if self.fan.is_some_and(|fan| fan > 0) {
-            writeln!(self.out, "M106 S0")?;
+        self.retract(false)?;
+        writeln!(self.out, "M106 S0")?;
+        if s.auxiliary_fan {
+            writeln!(self.out, "M106 P2 S0")?;
         }
         if s.filament_end_gcode.is_some() || s.machine_end_gcode.is_some() {
             writeln!(self.out, ";TYPE:Custom")?;
@@ -632,7 +1010,7 @@ impl<W: Write> Writer<'_, W> {
             Some(template) => self.custom("machine_end_gcode", template)?,
             None => writeln!(self.out, "M104 S0\nM140 S0\nM84")?,
         }
-        let summary = self.summary;
+        let summary = self.state.summary;
         writeln!(
             self.out,
             "; filament used [mm] = {:.2}",
@@ -659,6 +1037,44 @@ impl<W: Write> Writer<'_, W> {
     }
 }
 
+/// The planned seam a wall should start next to: the nearest one, taking
+/// those of its own kind (around the part, or around a hole) first. None
+/// when no seams were planned.
+fn alongside(points: &[Point2], is_hole: bool, planned: &[(bool, Point2)]) -> Option<Point2> {
+    let (mut min_x, mut min_y, mut max_x, mut max_y) = (i64::MAX, i64::MAX, i64::MIN, i64::MIN);
+    for point in points {
+        (min_x, max_x) = (min_x.min(point.x), max_x.max(point.x));
+        (min_y, max_y) = (min_y.min(point.y), max_y.max(point.y));
+    }
+    // How far a seam is from the box around the wall: a cheap lower bound
+    // that rules most seams out before the wall itself is measured.
+    let outside = |seam: Point2| {
+        let dx = (min_x - seam.x).max(seam.x - max_x).max(0);
+        let dy = (min_y - seam.y).max(seam.y - max_y).max(0);
+        unscaled(dx).hypot(unscaled(dy))
+    };
+    let same: Vec<Point2> = planned
+        .iter()
+        .filter(|(hole, _)| *hole == is_hole)
+        .map(|(_, seam)| *seam)
+        .collect();
+    let candidates = if same.is_empty() {
+        planned.iter().map(|(_, seam)| *seam).collect()
+    } else {
+        same
+    };
+    let nearest_box = candidates
+        .iter()
+        .map(|seam| outside(*seam))
+        .fold(f64::INFINITY, f64::min);
+    candidates
+        .into_iter()
+        .filter(|seam| outside(*seam) <= nearest_box + 2.0)
+        .map(|seam| (distance(seam::project(points, seam).1, seam), seam))
+        .min_by(|a, b| a.0.total_cmp(&b.0))
+        .map(|(_, seam)| seam)
+}
+
 fn distance(a: Point2, b: Point2) -> f64 {
     unscaled(b.x - a.x).hypot(unscaled(b.y - a.y))
 }
@@ -674,6 +1090,8 @@ fn role_name(role: Role) -> &'static str {
         Role::TopSolidInfill => "Top surface",
         Role::BottomSurface => "Bottom surface",
         Role::BridgeInfill => "Bridge",
+        Role::Skirt => "Skirt",
+        Role::Brim => "Brim",
     }
 }
 

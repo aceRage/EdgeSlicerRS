@@ -585,6 +585,7 @@ fn slice(args: SliceArgs) -> Result<(), Failure> {
                 } else {
                     layer_height
                 },
+                around: &[],
                 loops: &perimeters[index].loops,
                 islands: &perimeters[index].islands,
                 paths: &fills[index],

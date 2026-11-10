@@ -131,6 +131,10 @@ pub enum Role {
     BottomSurface,
     /// Fill laid over air.
     BridgeInfill,
+    /// Loops around the print that prime the nozzle and show the bed is level.
+    Skirt,
+    /// Loops against the first layer's outline that hold the part down.
+    Brim,
 }
 
 /// An open line: the centre line the nozzle follows and what it extrudes.
