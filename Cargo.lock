@@ -241,6 +241,8 @@ dependencies = [
  "edge-infill",
  "edge-perimeter",
  "edge-slice",
+ "edge-template",
+ "thiserror",
 ]
 
 [[package]]
@@ -299,6 +301,13 @@ dependencies = [
  "edge-mesh",
  "rayon",
  "rustc-hash",
+]
+
+[[package]]
+name = "edge-template"
+version = "0.0.0"
+dependencies = [
+ "thiserror",
 ]
 
 [[package]]
