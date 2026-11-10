@@ -55,6 +55,27 @@ impl Polygon {
     }
 }
 
+/// A region of the plane: one outer boundary and the holes cut out of it.
+/// The contour runs counter-clockwise and the holes clockwise. Named as in
+/// libslic3r, where the same shape is the unit every later stage works on.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct ExPolygon {
+    pub contour: Polygon,
+    pub holes: Vec<Polygon>,
+}
+
+impl ExPolygon {
+    /// Area in mm² of the material: the contour less its holes.
+    pub fn area_mm2(&self) -> f64 {
+        self.rings().map(Polygon::signed_area_mm2).sum()
+    }
+
+    /// The contour, then each hole.
+    pub fn rings(&self) -> impl Iterator<Item = &Polygon> {
+        std::iter::once(&self.contour).chain(&self.holes)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -81,6 +102,18 @@ mod tests {
     #[test]
     fn area_survives_metre_scale_parts() {
         assert_eq!(square(2000.0).signed_area_mm2(), 4_000_000.0);
+    }
+
+    #[test]
+    fn expolygon_area_subtracts_holes() {
+        let mut hole = square(4.0);
+        hole.points.reverse();
+        let region = ExPolygon {
+            contour: square(10.0),
+            holes: vec![hole],
+        };
+        assert_eq!(region.area_mm2(), 84.0);
+        assert_eq!(region.rings().count(), 2);
     }
 
     #[test]

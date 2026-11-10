@@ -22,10 +22,10 @@ pub(crate) struct ModelFile {
 pub(crate) struct RawObject {
     pub id: u32,
     pub name: Option<String>,
-    pub body: Body,
+    pub body: Shape,
 }
 
-pub(crate) enum Body {
+pub(crate) enum Shape {
     Mesh(Arc<Mesh>),
     Components(Vec<Reference>),
 }
@@ -43,8 +43,8 @@ impl ModelFile {
     /// Other parts this one's components and build items point into.
     pub fn referenced_parts(&self) -> impl Iterator<Item = &str> {
         let components = self.objects.iter().flat_map(|object| match &object.body {
-            Body::Components(components) => components.as_slice(),
-            Body::Mesh(_) => &[],
+            Shape::Components(components) => components.as_slice(),
+            Shape::Mesh(_) => &[],
         });
         components
             .chain(&self.items)
@@ -198,12 +198,12 @@ fn close(object: OpenObject, part: &str) -> Result<RawObject, Error> {
         }
         let mut triangles = object.triangles;
         triangles.retain(|[a, b, c]| a != b && b != c && c != a);
-        Body::Mesh(Arc::new(Mesh {
+        Shape::Mesh(Arc::new(Mesh {
             vertices: object.vertices,
             triangles,
         }))
     } else {
-        Body::Components(object.components)
+        Shape::Components(object.components)
     };
     Ok(RawObject {
         id: object.id,

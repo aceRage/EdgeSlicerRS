@@ -22,7 +22,7 @@ use edge_config::Settings;
 use edge_mesh::{Mesh, Transform};
 use rayon::prelude::*;
 
-use model::{Body, ModelFile, RawObject};
+use model::{ModelFile, RawObject, Shape};
 use model_settings::{ModelSettings, ObjectSettings};
 use package::Package;
 use xml::malformed;
@@ -206,32 +206,90 @@ impl Project {
     /// `None`, merged into one mesh in world coordinates. Parts stay separate
     /// shells; overlapping ones are not united.
     pub fn mesh(&self, plate: Option<usize>) -> Mesh {
-        let everything = || {
-            self.objects.iter().enumerate().flat_map(|(object, o)| {
-                (0..o.instances.len()).map(move |instance| InstanceRef { object, instance })
-            })
-        };
-        let selected: Vec<InstanceRef> = match plate {
-            Some(index) => self.plates[index].instances.clone(),
-            None => everything().collect(),
-        };
-
         let mut mesh = Mesh::default();
-        for InstanceRef { object, instance } in selected {
-            let object = &self.objects[object];
-            let instance = &object.instances[instance];
-            if !instance.printable {
-                continue;
-            }
-            for part in object
-                .parts
-                .iter()
-                .filter(|part| part.kind == PartKind::Normal)
-            {
-                mesh.append(&part.mesh, &part.transform.then(&instance.transform));
-            }
+        for (object, instance) in self.printable(plate) {
+            append_parts(&mut mesh, object, instance, PartKind::Normal);
         }
         mesh
+    }
+
+    /// What to slice for one plate (or the whole project for `None`), in
+    /// world coordinates. Objects without negative parts share one body;
+    /// each instance of an object that has them is a body of its own, so its
+    /// negative parts carve it and nothing else.
+    pub fn bodies(&self, plate: Option<usize>) -> Vec<Body> {
+        let mut shared = Mesh::default();
+        let mut bodies = Vec::new();
+        for (object, instance) in self.printable(plate) {
+            if object
+                .parts
+                .iter()
+                .any(|part| part.kind == PartKind::Negative)
+            {
+                let mut body = Body {
+                    solid: Mesh::default(),
+                    negative: Some(Mesh::default()),
+                };
+                append_parts(&mut body.solid, object, instance, PartKind::Normal);
+                append_parts(
+                    body.negative.as_mut().expect("set above"),
+                    object,
+                    instance,
+                    PartKind::Negative,
+                );
+                bodies.push(body);
+            } else {
+                append_parts(&mut shared, object, instance, PartKind::Normal);
+            }
+        }
+        if !shared.triangles.is_empty() {
+            bodies.insert(
+                0,
+                Body {
+                    solid: shared,
+                    negative: None,
+                },
+            );
+        }
+        bodies
+    }
+
+    /// The printable instances on a plate, each with its object.
+    fn printable(&self, plate: Option<usize>) -> impl Iterator<Item = (&Object, &Instance)> {
+        let selected: Vec<InstanceRef> = match plate {
+            Some(index) => self.plates[index].instances.clone(),
+            None => self
+                .objects
+                .iter()
+                .enumerate()
+                .flat_map(|(object, o)| {
+                    (0..o.instances.len()).map(move |instance| InstanceRef { object, instance })
+                })
+                .collect(),
+        };
+        selected
+            .into_iter()
+            .map(|InstanceRef { object, instance }| {
+                (
+                    &self.objects[object],
+                    &self.objects[object].instances[instance],
+                )
+            })
+            .filter(|(_, instance)| instance.printable)
+    }
+}
+
+/// Printed material and, for objects that have negative parts, the volume
+/// to remove from it.
+#[derive(Clone, Debug, Default)]
+pub struct Body {
+    pub solid: Mesh,
+    pub negative: Option<Mesh>,
+}
+
+fn append_parts(mesh: &mut Mesh, object: &Object, instance: &Instance, kind: PartKind) {
+    for part in object.parts.iter().filter(|part| part.kind == kind) {
+        mesh.append(&part.mesh, &part.transform.then(&instance.transform));
     }
 }
 
@@ -332,7 +390,7 @@ fn parts(
     settings: Option<&ObjectSettings>,
 ) -> Result<Vec<Part>, Error> {
     let components = match &object.body {
-        Body::Mesh(mesh) => {
+        Shape::Mesh(mesh) => {
             return Ok(vec![Part {
                 name: object.name.clone(),
                 kind: PartKind::Normal,
@@ -340,7 +398,7 @@ fn parts(
                 transform: Transform::IDENTITY,
             }]);
         }
-        Body::Components(components) => components,
+        Shape::Components(components) => components,
     };
 
     let mut parts = Vec::new();
@@ -384,8 +442,8 @@ fn flatten(
     }
     let object = find(files, file, id)?;
     match &object.body {
-        Body::Mesh(mesh) => leaves.push((object.name.clone(), mesh.clone(), transform)),
-        Body::Components(components) => {
+        Shape::Mesh(mesh) => leaves.push((object.name.clone(), mesh.clone(), transform)),
+        Shape::Components(components) => {
             for component in components {
                 let child_file = component.path.as_deref().map_or(file, part_key);
                 // The component is placed inside its parent, then the parent is placed.

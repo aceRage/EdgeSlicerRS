@@ -7,6 +7,7 @@ publish.workspace = true
 
 [dependencies]
 edge-3mf.workspace = true
+edge-clip.workspace = true
 edge-config.workspace = true
 edge-geom.workspace = true
 edge-mesh.workspace = true

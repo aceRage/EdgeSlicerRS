@@ -29,6 +29,8 @@ On the Mac mini cargo comes from Homebrew rustup: `/opt/homebrew/opt/rustup/bin`
   purpose, say so in the code and in the PR.
 - Output must be deterministic: same input gives byte-identical results at
   any thread count. Parity testing depends on it.
+- Only `edge-clip` may depend on the clipping library; every other crate
+  goes through its API, so the library can be replaced in one place.
 - Engine crates stay UI-free and take no dependency on Tauri; the desktop
   app calls into them.
 - `unsafe` is denied workspace-wide. A crate that needs it opts in locally

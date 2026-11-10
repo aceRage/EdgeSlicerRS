@@ -7,6 +7,10 @@ use std::{
 
 use edge_3mf::Project;
 use edge_mesh::Mesh;
+use edge_slice::Body;
+
+/// The reference's default `slice_closing_radius`, 0.049 mm, in nanometres.
+const CLOSING_RADIUS: i64 = 49_000;
 
 fn reference() -> PathBuf {
     let dir = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../reference/EdgeSlicer");
@@ -62,13 +66,40 @@ fn every_reference_project_opens_and_slices_into_closed_contours() {
                 mesh.signed_volume()
             ));
         }
-        let planes = edge_slice::layer_planes(min[2].into(), max[2].into(), 0.2, 0.2);
-        let open: usize = edge_slice::slice(&mesh, &planes)
+
+        let bodies = project.bodies(None);
+        let bodies: Vec<Body<'_>> = bodies
             .iter()
-            .map(|layer| layer.open_chains)
-            .sum();
+            .map(|body| Body {
+                solid: &body.solid,
+                negative: body.negative.as_ref(),
+            })
+            .collect();
+        let planes = edge_slice::layer_planes(min[2].into(), max[2].into(), 0.2, 0.2);
+        let layers = match edge_slice::slice_regions(&bodies, &planes, CLOSING_RADIUS) {
+            Ok(layers) => layers,
+            Err(error) => {
+                failures.push(format!("{}: {error}", path.display()));
+                continue;
+            }
+        };
+        let open: usize = layers.iter().map(|layer| layer.open_chains).sum();
         if open > 0 {
             failures.push(format!("{}: {open} open contours", path.display()));
+        }
+        // Regions are material: counter-clockwise outside, clockwise holes.
+        let inverted = layers
+            .iter()
+            .flat_map(|layer| &layer.regions)
+            .filter(|region| {
+                !region.contour.is_ccw() || region.holes.iter().any(|hole| hole.is_ccw())
+            })
+            .count();
+        if inverted > 0 || layers.iter().all(|layer| layer.regions.is_empty()) {
+            failures.push(format!(
+                "{}: {inverted} misoriented regions, or no regions at all",
+                path.display()
+            ));
         }
     }
     assert!(failures.is_empty(), "{}", failures.join("\n"));

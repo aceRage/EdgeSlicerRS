@@ -10,11 +10,13 @@ publish = false
 
 [workspace.dependencies]
 edge-3mf = { path = "crates/edge-3mf" }
+edge-clip = { path = "crates/edge-clip" }
 edge-config = { path = "crates/edge-config" }
 edge-geom = { path = "crates/edge-geom" }
 edge-mesh = { path = "crates/edge-mesh" }
 edge-slice = { path = "crates/edge-slice" }
 clap = { version = "4", features = ["derive", "env"] }
+clipper2-rs = "0.3"
 quick-xml = "0.42"
 rayon = "1"
 rustc-hash = "2"

@@ -1,11 +1,11 @@
 use std::{error::Error, fmt::Write as _, fs, path::PathBuf, process::ExitCode, time::Instant};
 
 use clap::{Args, Parser, Subcommand};
-use edge_3mf::{PartKind, Project};
+use edge_3mf::{Body, PartKind, Project};
+use edge_clip::Join;
 use edge_config::{Kind, Settings, Vendor};
-use edge_geom::unscaled;
-use edge_mesh::Mesh;
-use edge_slice::Layer;
+use edge_geom::{ExPolygon, scaled, unscaled};
+use edge_slice::LayerRegions;
 
 type Failure = Box<dyn Error>;
 
@@ -49,7 +49,11 @@ struct SliceArgs {
     /// First layer height in mm.
     #[arg(long)]
     first_layer_height: Option<f64>,
-    /// Vendor whose process preset supplies the layer heights; needs --process.
+    /// Fill cracks narrower than twice this many mm when resolving a layer's
+    /// regions (the slice_closing_radius setting); 0 turns it off.
+    #[arg(long)]
+    closing_radius: Option<f64>,
+    /// Vendor whose process preset supplies the slicing settings; needs --process.
     #[arg(long, requires = "process")]
     vendor: Option<String>,
     /// Process preset name within --vendor.
@@ -57,6 +61,10 @@ struct SliceArgs {
     process: Option<String>,
     #[command(flatten)]
     profiles: ProfilesArgs,
+    /// Grow each layer's regions by this many mm before reporting, or shrink
+    /// them when negative. For checking and timing offsets.
+    #[arg(long, allow_hyphen_values = true)]
+    offset: Option<f64>,
     /// Worker threads; defaults to all cores.
     #[arg(long)]
     threads: Option<usize>,
@@ -187,8 +195,8 @@ fn inspect(path: PathBuf) -> Result<(), Failure> {
     Ok(())
 }
 
-/// A model ready to slice and, for a project, the settings it was saved with.
-fn load(args: &SliceArgs) -> Result<(Mesh, Option<Settings>), Failure> {
+/// The bodies to slice and, for a project, the settings it was saved with.
+fn load(args: &SliceArgs) -> Result<(Vec<Body>, Option<Settings>), Failure> {
     let path = &args.model;
     let named = |e: &dyn Error| format!("{}: {e}", path.display());
     let is_3mf = path
@@ -198,7 +206,14 @@ fn load(args: &SliceArgs) -> Result<(Mesh, Option<Settings>), Failure> {
         if args.plate.is_some() {
             return Err("--plate only applies to 3MF files".into());
         }
-        return Ok((edge_mesh::stl::load(path).map_err(|e| named(&e))?, None));
+        let solid = edge_mesh::stl::load(path).map_err(|e| named(&e))?;
+        return Ok((
+            vec![Body {
+                solid,
+                negative: None,
+            }],
+            None,
+        ));
     }
 
     let project = Project::open(path).map_err(|e| named(&e))?;
@@ -230,15 +245,15 @@ fn load(args: &SliceArgs) -> Result<(Mesh, Option<Settings>), Failure> {
             project.plates.len()
         );
     }
-    Ok((project.mesh(plate), project.settings))
+    Ok((project.bodies(plate), project.settings))
 }
 
-/// Layer and first-layer height with where each came from, in order of
-/// precedence: command line, process preset, the project's settings, default.
-fn layer_heights(
-    args: &SliceArgs,
-    project: Option<&Settings>,
-) -> Result<[(f64, &'static str); 2], Failure> {
+/// A slicing setting's value and where it came from.
+type Sourced = (f64, &'static str);
+
+/// Layer height, first layer height and closing radius, each from the first
+/// of: command line, process preset, the project's settings, default.
+fn slice_settings(args: &SliceArgs, project: Option<&Settings>) -> Result<[Sourced; 3], Failure> {
     let preset = match (&args.vendor, &args.process) {
         (Some(vendor), Some(process)) => Some(
             args.profiles
@@ -247,7 +262,7 @@ fn layer_heights(
         ),
         _ => None,
     };
-    let pick = |flag: Option<f64>, key: &str| -> Result<Option<(f64, &'static str)>, Failure> {
+    let pick = |flag: Option<f64>, key: &str| -> Result<Option<Sourced>, Failure> {
         if let Some(value) = flag {
             return Ok(Some((value, "command line")));
         }
@@ -268,10 +283,15 @@ fn layer_heights(
     let layer = pick(args.layer_height, "layer_height")?.unwrap_or((0.2, "default"));
     let first = pick(args.first_layer_height, "initial_layer_print_height")?
         .unwrap_or((layer.0, "layer height"));
+    // 0.049 is the reference's default for slice_closing_radius.
+    let closing = pick(args.closing_radius, "slice_closing_radius")?.unwrap_or((0.049, "default"));
     if !(layer.0 > 0.0 && first.0 > 0.0) {
         return Err("layer heights must be positive".into());
     }
-    Ok([layer, first])
+    if closing.0.is_nan() || closing.0 < 0.0 {
+        return Err("closing radius cannot be negative".into());
+    }
+    Ok([layer, first, closing])
 }
 
 fn slice(args: SliceArgs) -> Result<(), Failure> {
@@ -282,15 +302,26 @@ fn slice(args: SliceArgs) -> Result<(), Failure> {
     }
 
     let started = Instant::now();
-    let (mesh, project_settings) = load(&args)?;
+    let (bodies, project_settings) = load(&args)?;
     let load_time = started.elapsed();
-    let Some((min, max)) = mesh.bounds() else {
+    let bounds =
+        bodies
+            .iter()
+            .filter_map(|body| body.solid.bounds())
+            .reduce(|(lo, hi), (min, max)| {
+                (
+                    std::array::from_fn(|i| lo[i].min(min[i])),
+                    std::array::from_fn(|i| hi[i].max(max[i])),
+                )
+            });
+    let Some((min, max)) = bounds else {
         return Err(format!("{}: nothing printable to slice", args.model.display()).into());
     };
     let [
         (layer_height, layer_source),
         (first_layer_height, first_source),
-    ] = layer_heights(&args, project_settings.as_ref())?;
+        (closing_radius, closing_source),
+    ] = slice_settings(&args, project_settings.as_ref())?;
 
     let started = Instant::now();
     let planes = edge_slice::layer_planes(
@@ -299,32 +330,39 @@ fn slice(args: SliceArgs) -> Result<(), Failure> {
         first_layer_height,
         layer_height,
     );
-    let layers = edge_slice::slice(&mesh, &planes);
+    let borrowed: Vec<edge_slice::Body<'_>> = bodies
+        .iter()
+        .map(|body| edge_slice::Body {
+            solid: &body.solid,
+            negative: body.negative.as_ref(),
+        })
+        .collect();
+    let mut layers = edge_slice::slice_regions(&borrowed, &planes, scaled(closing_radius))?;
     let slice_time = started.elapsed();
 
-    let contours: usize = layers.iter().map(|l| l.polygons.len()).sum();
-    let points: usize = layers
-        .iter()
-        .flat_map(|l| &l.polygons)
-        .map(|p| p.points.len())
-        .sum();
-    let leaky = layers.iter().filter(|l| l.open_chains > 0).count();
+    let carved = bodies.iter().filter(|body| body.negative.is_some()).count();
     println!(
-        "{}: {} triangles, {} vertices, {:.3} x {:.3} x {:.3} mm",
+        "{}: {} triangles, {:.3} x {:.3} x {:.3} mm{}",
         args.model.display(),
-        mesh.triangles.len(),
-        mesh.vertices.len(),
+        bodies
+            .iter()
+            .map(|body| body.solid.triangles.len())
+            .sum::<usize>(),
         max[0] - min[0],
         max[1] - min[1],
         max[2] - min[2],
+        if carved > 0 {
+            format!(", {carved} bodies with negative parts")
+        } else {
+            String::new()
+        },
     );
     println!(
-        "layer height {layer_height} mm ({layer_source}), first layer {first_layer_height} mm ({first_source})"
+        "layer height {layer_height} mm ({layer_source}), first layer {first_layer_height} mm ({first_source}), \
+         closing radius {closing_radius} mm ({closing_source})"
     );
-    println!(
-        "{} layers, {contours} contours, {points} points",
-        layers.len()
-    );
+    report(&layers);
+    let leaky = layers.iter().filter(|l| l.open_chains > 0).count();
     if leaky > 0 {
         println!("warning: {leaky} layers have open contours; the mesh is not watertight there");
     }
@@ -334,6 +372,20 @@ fn slice(args: SliceArgs) -> Result<(), Failure> {
         slice_time.as_secs_f64() * 1e3,
         rayon::current_num_threads(),
     );
+
+    if let Some(distance) = args.offset {
+        use rayon::prelude::*;
+        let started = Instant::now();
+        layers.par_iter_mut().try_for_each(|layer| {
+            layer.regions = edge_clip::offset(&layer.regions, scaled(distance), Join::MITER)?;
+            Ok::<_, edge_clip::ClipError>(())
+        })?;
+        println!(
+            "offset by {distance} mm in {:.1} ms:",
+            started.elapsed().as_secs_f64() * 1e3
+        );
+        report(&layers);
+    }
 
     if let Some(path) = args.svg {
         let index = args.svg_layer.unwrap_or(layers.len() / 2);
@@ -353,12 +405,29 @@ fn slice(args: SliceArgs) -> Result<(), Failure> {
     Ok(())
 }
 
-/// Renders a layer in millimetres with +y up; holes show through via even-odd fill.
-fn svg(layer: &Layer) -> String {
+fn report(layers: &[LayerRegions]) {
+    let regions = || layers.iter().flat_map(|layer| &layer.regions);
+    println!(
+        "{} layers, {} regions, {} holes, {} points, {:.1} mm² in all",
+        layers.len(),
+        regions().count(),
+        regions().map(|region| region.holes.len()).sum::<usize>(),
+        regions()
+            .flat_map(ExPolygon::rings)
+            .map(|ring| ring.points.len())
+            .sum::<usize>(),
+        regions().map(ExPolygon::area_mm2).sum::<f64>(),
+    );
+}
+
+/// Renders a layer in millimetres with +y up. Each region is one path, so
+/// its holes show through and regions that should have merged would not.
+fn svg(layer: &LayerRegions) -> String {
     let points = || {
         layer
-            .polygons
+            .regions
             .iter()
+            .flat_map(ExPolygon::rings)
             .flat_map(|p| &p.points)
             .map(|p| (unscaled(p.x), unscaled(p.y)))
     };
@@ -373,17 +442,21 @@ fn svg(layer: &Layer) -> String {
     let (width, height) = (max_x - min_x, max_y - min_y);
     let margin = width.max(height) * 0.05;
 
-    let mut path = String::new();
-    for polygon in &layer.polygons {
-        for (i, p) in polygon.points.iter().enumerate() {
-            let command = if i == 0 { 'M' } else { 'L' };
-            write!(path, "{command}{:.4} {:.4}", unscaled(p.x), -unscaled(p.y)).unwrap();
+    let mut paths = String::new();
+    for region in &layer.regions {
+        paths.push_str("<path d=\"");
+        for ring in region.rings() {
+            for (i, p) in ring.points.iter().enumerate() {
+                let command = if i == 0 { 'M' } else { 'L' };
+                write!(paths, "{command}{:.4} {:.4}", unscaled(p.x), -unscaled(p.y)).unwrap();
+            }
+            paths.push('Z');
         }
-        path.push('Z');
+        paths.push_str("\"/>");
     }
     format!(
         "<svg xmlns=\"http://www.w3.org/2000/svg\" viewBox=\"{:.4} {:.4} {:.4} {:.4}\">\
-         <path d=\"{path}\" fill=\"#9db7d5\" fill-rule=\"evenodd\" stroke=\"#1d3557\" stroke-width=\"{:.4}\"/></svg>\n",
+         <g fill=\"#9db7d5\" fill-rule=\"evenodd\" stroke=\"#1d3557\" stroke-width=\"{:.4}\">{paths}</g></svg>\n",
         min_x - margin,
         -max_y - margin,
         width + 2.0 * margin,

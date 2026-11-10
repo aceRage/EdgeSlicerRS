@@ -1,6 +1,7 @@
 //! Mesh to layer contours: the first stage of the slicing pipeline.
 
-use edge_geom::{Point2, Polygon};
+use edge_clip::{ClipError, Join};
+use edge_geom::{Coord, ExPolygon, Point2, Polygon};
 use edge_mesh::Mesh;
 use rayon::prelude::*;
 use rustc_hash::FxHashMap;
@@ -92,6 +93,89 @@ pub fn slice(mesh: &Mesh, planes: &[f64]) -> Vec<Layer> {
         .par_iter()
         .enumerate()
         .map(|(plane, &z)| slice_layer(mesh, z, &buckets[offsets[plane]..offsets[plane + 1]]))
+        .collect()
+}
+
+/// A solid and, optionally, the volume carved out of it. The carving
+/// applies to this body alone, as a negative part applies only to its object.
+#[derive(Clone, Copy)]
+pub struct Body<'a> {
+    pub solid: &'a Mesh,
+    pub negative: Option<&'a Mesh>,
+}
+
+/// One layer's material as regions with holes, ready for perimeters.
+#[derive(Clone, Debug)]
+pub struct LayerRegions {
+    /// Height of the cutting plane in millimetres.
+    pub z: f64,
+    /// Disjoint regions; overlapping and touching shells are merged.
+    pub regions: Vec<ExPolygon>,
+    /// See [`Layer::open_chains`]; summed over every mesh cut at this height.
+    pub open_chains: usize,
+}
+
+/// Cuts every body at each plane and resolves the contours into regions:
+/// each body's negative volume is removed from that body, everything that
+/// overlaps is united, and cracks narrower than twice `closing_radius` are
+/// filled (the reference's `slice_closing_radius`; zero leaves them open).
+/// `planes` must be sorted ascending.
+///
+/// The reference closes cracks within one object only. Here closing runs
+/// after bodies are united, so two separate objects standing closer than
+/// twice the radius are joined as well.
+pub fn slice_regions(
+    bodies: &[Body<'_>],
+    planes: &[f64],
+    closing_radius: Coord,
+) -> Result<Vec<LayerRegions>, ClipError> {
+    let sliced: Vec<(Vec<Layer>, Option<Vec<Layer>>)> = bodies
+        .iter()
+        .map(|body| {
+            (
+                slice(body.solid, planes),
+                body.negative.map(|mesh| slice(mesh, planes)),
+            )
+        })
+        .collect();
+
+    planes
+        .par_iter()
+        .enumerate()
+        .map(|(index, &z)| {
+            // Contours that need no carving go straight into the final union.
+            let mut plain: Vec<&Polygon> = Vec::new();
+            let mut carved: Vec<ExPolygon> = Vec::new();
+            let mut open_chains = 0;
+            for (solid, negative) in &sliced {
+                let solid = &solid[index];
+                open_chains += solid.open_chains;
+                let negative = negative.as_ref().map(|layers| &layers[index]);
+                open_chains += negative.map_or(0, |layer| layer.open_chains);
+                match negative.filter(|layer| !layer.polygons.is_empty()) {
+                    None => plain.extend(&solid.polygons),
+                    Some(negative) => carved.extend(edge_clip::difference(
+                        &edge_clip::union(&solid.polygons)?,
+                        &edge_clip::union(&negative.polygons)?,
+                    )?),
+                }
+            }
+            let united = edge_clip::union(
+                plain
+                    .into_iter()
+                    .chain(carved.iter().flat_map(ExPolygon::rings)),
+            )?;
+            let regions = if closing_radius > 0 {
+                edge_clip::closing(&united, closing_radius, Join::MITER)?
+            } else {
+                united
+            };
+            Ok(LayerRegions {
+                z,
+                regions,
+                open_chains,
+            })
+        })
         .collect()
 }
 
@@ -290,6 +374,69 @@ mod tests {
         assert_eq!(layers[0].open_chains, 0);
         assert_eq!(areas(&layers[0]).iter().sum::<f64>(), 2.0);
         assert!(areas(&layers[0]).iter().all(|&area| area > 0.0));
+    }
+
+    fn shapes(layer: &LayerRegions) -> Vec<(f64, usize)> {
+        layer
+            .regions
+            .iter()
+            .map(|region| (region.area_mm2(), region.holes.len()))
+            .collect()
+    }
+
+    #[test]
+    fn regions_pair_holes_with_contours_and_merge_overlaps() {
+        let mut hollow = cube(0.0, 10.0);
+        hollow.extend(inverted(cube(2.0, 8.0)));
+        hollow.extend(cuboid([8.0, 8.0, 0.0], [14.0, 14.0, 10.0]));
+        let mesh = Mesh::from_triangle_soup(hollow);
+        let body = Body {
+            solid: &mesh,
+            negative: None,
+        };
+        let layers = slice_regions(&[body], &[1.0, 5.0], 0).unwrap();
+        // Two overlapping boxes: 100 + 36 - 4 shared.
+        assert_eq!(shapes(&layers[0]), [(132.0, 0)]);
+        assert_eq!(shapes(&layers[1]), [(96.0, 1)]);
+        assert_eq!(layers[1].z, 5.0);
+    }
+
+    #[test]
+    fn negative_volume_carves_only_its_own_body() {
+        let block = Mesh::from_triangle_soup(cube(0.0, 10.0));
+        // Reaches past the block into where the neighbour stands.
+        let drill = Mesh::from_triangle_soup(cuboid([4.0, 4.0, 2.0], [16.0, 6.0, 20.0]));
+        let neighbour = Mesh::from_triangle_soup(cuboid([12.0, 0.0, 0.0], [20.0, 10.0, 10.0]));
+        let bodies = [
+            Body {
+                solid: &block,
+                negative: Some(&drill),
+            },
+            Body {
+                solid: &neighbour,
+                negative: None,
+            },
+        ];
+        let layers = slice_regions(&bodies, &[1.0, 5.0], 0).unwrap();
+        // Below the drill both are whole; at z = 5 the block loses a 6 x 2 slot.
+        assert_eq!(shapes(&layers[0]), [(100.0, 0), (80.0, 0)]);
+        assert_eq!(shapes(&layers[1]), [(88.0, 0), (80.0, 0)]);
+        assert!(layers.iter().all(|layer| layer.open_chains == 0));
+    }
+
+    #[test]
+    fn closing_radius_joins_parts_that_almost_touch() {
+        let mut soup = cube(0.0, 10.0);
+        soup.extend(cuboid([10.05, 0.0, 0.0], [20.0, 10.0, 10.0]));
+        let mesh = Mesh::from_triangle_soup(soup);
+        let body = Body {
+            solid: &mesh,
+            negative: None,
+        };
+        let open = slice_regions(&[body], &[5.0], 0).unwrap();
+        assert_eq!(open[0].regions.len(), 2);
+        let closed = slice_regions(&[body], &[5.0], edge_geom::scaled(0.049)).unwrap();
+        assert_eq!(shapes(&closed[0]), [(200.0, 0)]);
     }
 
     #[test]

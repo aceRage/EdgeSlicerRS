@@ -277,3 +277,49 @@ fn broken_files_say_what_is_wrong() {
     )]);
     assert!(message.contains("fewer than 12 numbers"), "{message}");
 }
+
+#[test]
+fn negative_parts_make_their_instances_separate_bodies() {
+    let root = model(
+        "millimeter",
+        &format!(
+            r#"<object id="1">{}</object><object id="2">{}</object><object id="3">{}</object>
+               <object id="4"><components><component objectid="1"/><component objectid="2"/></components></object>"#,
+            box_mesh([10.0; 3]),
+            box_mesh([2.0, 2.0, 20.0]),
+            box_mesh([5.0; 3])
+        ),
+        r#"<item objectid="4"/><item objectid="4" transform="1 0 0 0 1 0 0 0 1 50 0 0"/>
+           <item objectid="3" transform="1 0 0 0 1 0 0 0 1 0 50 0"/>
+           <item objectid="3" transform="1 0 0 0 1 0 0 0 1 20 50 0"/>"#,
+    );
+    let model_settings = r#"<config><object id="4">
+        <part id="1" subtype="normal_part"/><part id="2" subtype="negative_part"/></object></config>"#;
+    let project = Project::read(package(&[
+        ("3D/3dmodel.model", &root),
+        (MODEL_SETTINGS_PART, model_settings),
+    ]))
+    .unwrap();
+
+    let bodies = project.bodies(None);
+    // The two plain cubes share the first body; each drilled block has its own.
+    let volumes: Vec<_> = bodies
+        .iter()
+        .map(|b| {
+            (
+                b.solid.signed_volume(),
+                b.negative.as_ref().map(Mesh::signed_volume),
+            )
+        })
+        .collect();
+    assert_eq!(
+        volumes,
+        [(250.0, None), (1000.0, Some(80.0)), (1000.0, Some(80.0))]
+    );
+    assert_eq!(
+        bodies[2].negative.as_ref().unwrap().bounds().unwrap().0,
+        [50.0, 0.0, 0.0]
+    );
+    // The merged mesh is the printed material only.
+    assert_eq!(project.mesh(None).signed_volume(), 2250.0);
+}
