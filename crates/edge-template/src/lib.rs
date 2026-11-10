@@ -7,9 +7,14 @@
 //! optional `[index]`, arithmetic, comparison, `and` / `or` / `not`, a
 //! ternary, and a few functions.
 //!
-//! Not covered: the statement form (`{ local x = 1; if x then ... endif }`)
-//! that newer tool-change templates use, regular-expression matching, and
-//! assignment. A template using them is an error, never a silent skip.
+//! Between braces there may also be a script, as newer tool-change
+//! templates have: statements separated by `;` that declare variables
+//! (`local`, `global`), set them, branch (`if … then … elsif … else …
+//! endif`) and write out the value of every statement that is just an
+//! expression.
+//!
+//! Not covered: regular-expression matching, list literals and `repeat`.
+//! A template using them is an error, never a silent skip.
 
 mod expression;
 
@@ -32,34 +37,18 @@ pub struct Variables {
 }
 
 #[derive(Clone, Debug, PartialEq)]
-enum Variable {
+pub(crate) enum Variable {
     One(Value),
     /// One entry per extruder or filament.
     Many(Vec<Value>),
 }
 
-impl Variables {
-    pub fn set(&mut self, name: impl Into<String>, value: Value) {
-        self.values.insert(name.into(), Variable::One(value));
-    }
-
-    pub fn set_list(&mut self, name: impl Into<String>, values: Vec<Value>) {
-        self.values.insert(name.into(), Variable::Many(values));
-    }
-
-    pub fn contains(&self, name: &str) -> bool {
-        self.values.contains_key(name)
-    }
-
-    /// A variable's value; `index` picks an entry of a list. A list read
-    /// without an index gives its first entry, as the reference does for
-    /// the older `[variable]` form.
-    fn get(&self, name: &str, index: Option<i64>) -> Result<Value, String> {
-        let variable = self
-            .values
-            .get(name)
-            .ok_or_else(|| format!("unknown variable \"{name}\""))?;
-        match (variable, index) {
+impl Variable {
+    /// The value; `index` picks an entry of a list. A list read without an
+    /// index gives its first entry, as the reference does for the older
+    /// `[variable]` form.
+    pub(crate) fn read(&self, name: &str, index: Option<i64>) -> Result<Value, String> {
+        match (self, index) {
             (Variable::One(value), None) => Ok(value.clone()),
             (Variable::One(_), Some(_)) => Err(format!(
                 "\"{name}\" is a single value and cannot be indexed"
@@ -81,11 +70,76 @@ impl Variables {
     }
 }
 
+impl Variables {
+    pub fn set(&mut self, name: impl Into<String>, value: Value) {
+        self.values.insert(name.into(), Variable::One(value));
+    }
+
+    pub fn set_list(&mut self, name: impl Into<String>, values: Vec<Value>) {
+        self.values.insert(name.into(), Variable::Many(values));
+    }
+
+    pub fn contains(&self, name: &str) -> bool {
+        self.values.contains_key(name)
+    }
+
+    pub(crate) fn variable(&self, name: &str) -> Option<&Variable> {
+        self.values.get(name)
+    }
+
+    /// The value of a single variable, or of a list's first entry.
+    pub fn value(&self, name: &str) -> Option<Value> {
+        self.get(name, None).ok()
+    }
+
+    /// The entries of a list.
+    pub fn list(&self, name: &str) -> Option<&[Value]> {
+        match self.values.get(name)? {
+            Variable::Many(values) => Some(values),
+            Variable::One(_) => None,
+        }
+    }
+
+    fn get(&self, name: &str, index: Option<i64>) -> Result<Value, String> {
+        self.values
+            .get(name)
+            .ok_or_else(|| format!("unknown variable \"{name}\""))?
+            .read(name, index)
+    }
+}
+
+/// Fills in a template, discarding whatever it sets.
+pub fn expand(template: &str, variables: &Variables) -> Result<String, TemplateError> {
+    expand_over(template, variables, &mut expression::Overlay::default())
+}
+
+/// Fills in a template and keeps what it sets: new values of variables
+/// that were given, and variables it declares `global`. What it declares
+/// `local` ends with it.
+pub fn expand_mut(template: &str, variables: &mut Variables) -> Result<String, TemplateError> {
+    let mut overlay = expression::Overlay::default();
+    let text = expand_over(template, variables, &mut overlay)?;
+    for (name, variable) in overlay.values {
+        if !overlay.locals.contains(&name) {
+            variables.values.insert(name, variable);
+        }
+    }
+    Ok(text)
+}
+
 /// Fills in a template. Text outside braces and brackets is copied as it
 /// is, including the rest of a line that held only a directive, which is
 /// what the reference does too.
-pub fn expand(template: &str, variables: &Variables) -> Result<String, TemplateError> {
+fn expand_over(
+    template: &str,
+    variables: &Variables,
+    overlay: &mut expression::Overlay,
+) -> Result<String, TemplateError> {
     let mut out = String::with_capacity(template.len());
+    let read = |overlay: &expression::Overlay, name: &str| match overlay.values.get(name) {
+        Some(variable) => variable.read(name, None),
+        None => variables.get(name, None),
+    };
     // One entry per open `{if}`: whether its text is being emitted, whether
     // any branch has been taken yet, and whether the enclosing text is live.
     struct Branch {
@@ -121,17 +175,23 @@ pub fn expand(template: &str, variables: &Variables) -> Result<String, TemplateE
                 if name.is_empty() || !name.chars().all(|c| c.is_ascii_alphanumeric() || c == '_') {
                     return Err(fail(format!("\"[{body}]\" is not a variable name")));
                 }
-                out.push_str(&variables.get(name, None).map_err(fail)?.to_string());
+                out.push_str(&read(overlay, name).map_err(fail)?.to_string());
             }
         } else {
             let trimmed = body.trim();
             let (keyword, argument) = trimmed
                 .split_once(char::is_whitespace)
                 .unwrap_or((trimmed, ""));
+            let script = expression::is_script(trimmed);
             match keyword {
+                _ if script => {
+                    if live {
+                        out.push_str(&expression::run(trimmed, variables, overlay).map_err(fail)?);
+                    }
+                }
                 "if" => {
                     let truth = live
-                        && expression::evaluate(argument, variables)
+                        && expression::evaluate(argument, variables, overlay)
                             .map_err(fail)?
                             .truthy()
                             .map_err(fail)?;
@@ -149,7 +209,7 @@ pub fn expand(template: &str, variables: &Variables) -> Result<String, TemplateE
                     let wanted = branch.outer && !branch.taken;
                     let truth = wanted
                         && (keyword == "else"
-                            || expression::evaluate(argument, variables)
+                            || expression::evaluate(argument, variables, overlay)
                                 .map_err(fail)?
                                 .truthy()
                                 .map_err(fail)?);
@@ -163,7 +223,7 @@ pub fn expand(template: &str, variables: &Variables) -> Result<String, TemplateE
                 }
                 _ if live => {
                     out.push_str(
-                        &expression::evaluate(trimmed, variables)
+                        &expression::evaluate(trimmed, variables, overlay)
                             .map_err(fail)?
                             .to_string(),
                     );
@@ -294,8 +354,53 @@ mod tests {
     }
 
     #[test]
-    fn statement_blocks_are_refused_not_mangled() {
-        let script = "{\nlocal max_speed = 350.0;\nif travel_speed < max_speed then\n\"G1 F\" + travel_speed;\nendif\n}";
-        assert!(expand(script, &variables()).is_err());
+    fn scripts_declare_set_branch_and_write() {
+        let script = "{\nlocal max_speed = 350.0;\nlocal speed = max_speed;\nif travel_speed < max_speed then\n  speed = travel_speed;\nendif\n\"G1 F\" + (speed * 60) + \"\n\";\n}";
+        assert_eq!(expanded(script), "G1 F21000\n");
+        // Branches not taken are passed over unread, nested ones included.
+        let branches = "{if layer_num < 0 then no_such_thing; if a then b endif elsif layer_num == 4 then \"four\"; else nor_this; endif \"!\"}";
+        assert_eq!(expanded(branches), "four!");
+        let fallen = "{if false then 1 elsif false then 2 else \"last\" endif}";
+        assert_eq!(expanded(fallen), "last");
+        let empty = "{if true then \"a\"; else endif; if false then else \"b\" endif}";
+        assert_eq!(expanded(empty), "ab");
+        // Numbers are written as the reference's stream output writes them.
+        assert_eq!(
+            expanded("{local third = 1.0 / 3; third; \" \" + 2.50}"),
+            "0.333333 2.5"
+        );
+        // A local lasts to the end of the template, across blocks.
+        assert_eq!(expanded("{local n = 2;}{n * layer_num}[layer_num]"), "84");
+    }
+
+    #[test]
+    fn what_a_script_sets_can_be_kept() {
+        let mut variables = variables();
+        variables.set_list(
+            "position",
+            vec![Value::Float(10.0), Value::Float(20.0), Value::Float(0.4)],
+        );
+        let script = "{position[2] = position[2] + 2.0; global seen = layer_num + 1; local gone = 9; layer_num = 7;}";
+        // Discarded by default.
+        assert_eq!(expand(script, &variables).unwrap(), "");
+        assert_eq!(variables.value("layer_num"), Some(Value::Int(4)));
+        // Kept on request: values of what was given, and globals, not locals.
+        assert_eq!(expand_mut(script, &mut variables).unwrap(), "");
+        assert_eq!(variables.list("position").unwrap()[2], Value::Float(2.4));
+        assert_eq!(variables.value("seen"), Some(Value::Int(5)));
+        assert_eq!(variables.value("layer_num"), Some(Value::Int(7)));
+        assert!(!variables.contains("gone"));
+    }
+
+    #[test]
+    fn script_mistakes_are_errors() {
+        let error = |template: &str| expand(template, &variables()).unwrap_err().message;
+        assert!(error("{undeclared = 1;}").contains("never declared"));
+        assert!(error("{nozzle_temperature = 1;}").contains("is a list"));
+        assert!(error("{nozzle_temperature[7] = 1;}").contains("no entry 7"));
+        assert!(error("{layer_num[0] = 1;}").contains("cannot be indexed"));
+        assert!(error("{if true then 1;}").contains("endif"));
+        assert!(error("{local a = 1 local b = 2;}").contains("expected \";\""));
+        assert!(error("{local a = (1, 2);}").contains("expected"));
     }
 }

@@ -102,6 +102,8 @@ pub fn slice(mesh: &Mesh, planes: &[f64]) -> Vec<Layer> {
 pub struct Body<'a> {
     pub solid: &'a Mesh,
     pub negative: Option<&'a Mesh>,
+    /// Which filament the solid is printed in, counting from 1.
+    pub filament: usize,
 }
 
 /// One layer's material as regions with holes, ready for perimeters.
@@ -111,6 +113,12 @@ pub struct LayerRegions {
     pub z: f64,
     /// Disjoint regions; overlapping and touching shells are merged.
     pub regions: Vec<ExPolygon>,
+    /// The same material shared out among the filaments it is printed in,
+    /// in ascending order of filament; empty when there is only one.
+    /// Where bodies of different filaments overlap, the higher-numbered
+    /// filament has the overlap. (The reference gives it to whichever part
+    /// comes later in its object.)
+    pub by_filament: Vec<(usize, Vec<ExPolygon>)>,
     /// See [`Layer::open_chains`]; summed over every mesh cut at this height.
     pub open_chains: usize,
 }
@@ -139,6 +147,9 @@ pub fn slice_regions(
         })
         .collect();
 
+    let several = bodies
+        .iter()
+        .any(|body| body.filament != bodies[0].filament);
     planes
         .par_iter()
         .enumerate()
@@ -147,17 +158,34 @@ pub fn slice_regions(
             let mut plain: Vec<&Polygon> = Vec::new();
             let mut carved: Vec<ExPolygon> = Vec::new();
             let mut open_chains = 0;
-            for (solid, negative) in &sliced {
+            // Each filament's own material, kept apart when there are several.
+            let mut own: Vec<(usize, Vec<ExPolygon>)> = Vec::new();
+            for (body, (solid, negative)) in bodies.iter().zip(&sliced) {
                 let solid = &solid[index];
                 open_chains += solid.open_chains;
                 let negative = negative.as_ref().map(|layers| &layers[index]);
                 open_chains += negative.map_or(0, |layer| layer.open_chains);
+                let before = carved.len();
                 match negative.filter(|layer| !layer.polygons.is_empty()) {
                     None => plain.extend(&solid.polygons),
                     Some(negative) => carved.extend(edge_clip::difference(
                         &edge_clip::union(&solid.polygons)?,
                         &edge_clip::union(&negative.polygons)?,
                     )?),
+                }
+                if several {
+                    let mut material = if carved.len() > before {
+                        carved[before..].to_vec()
+                    } else {
+                        edge_clip::union(&solid.polygons)?
+                    };
+                    match own
+                        .iter_mut()
+                        .find(|(filament, _)| *filament == body.filament)
+                    {
+                        Some((_, regions)) => regions.append(&mut material),
+                        None => own.push((body.filament, material)),
+                    }
                 }
             }
             let united = edge_clip::union(
@@ -170,9 +198,28 @@ pub fn slice_regions(
             } else {
                 united
             };
+            // Shared out from the highest filament down, each taking what
+            // no higher one has; then each is let into the cracks that
+            // closing filled, so neighbours meet as the whole does.
+            own.sort_by_key(|(filament, _)| *filament);
+            let mut by_filament: Vec<(usize, Vec<ExPolygon>)> = Vec::with_capacity(own.len());
+            let mut taken: Vec<ExPolygon> = Vec::new();
+            for (filament, material) in own.into_iter().rev() {
+                let mut mine = edge_clip::union_ex(&material)?;
+                if closing_radius > 0 {
+                    mine = edge_clip::offset(&mine, closing_radius, Join::MITER)?;
+                }
+                let mine =
+                    edge_clip::difference(&edge_clip::intersection(&mine, &regions)?, &taken)?;
+                taken.extend(mine.iter().cloned());
+                taken = edge_clip::union_ex(&taken)?;
+                by_filament.push((filament, mine));
+            }
+            by_filament.reverse();
             Ok(LayerRegions {
                 z,
                 regions,
+                by_filament,
                 open_chains,
             })
         })
@@ -459,6 +506,7 @@ mod tests {
         let body = Body {
             solid: &mesh,
             negative: None,
+            filament: 1,
         };
         let layers = slice_regions(&[body], &[1.0, 5.0], 0).unwrap();
         // Two overlapping boxes: 100 + 36 - 4 shared.
@@ -477,10 +525,12 @@ mod tests {
             Body {
                 solid: &block,
                 negative: Some(&drill),
+                filament: 1,
             },
             Body {
                 solid: &neighbour,
                 negative: None,
+                filament: 1,
             },
         ];
         let layers = slice_regions(&bodies, &[1.0, 5.0], 0).unwrap();
@@ -498,6 +548,7 @@ mod tests {
         let body = Body {
             solid: &mesh,
             negative: None,
+            filament: 1,
         };
         let open = slice_regions(&[body], &[5.0], 0).unwrap();
         assert_eq!(open[0].regions.len(), 2);
@@ -610,5 +661,92 @@ mod tests {
                 .collect::<Vec<_>>()
         };
         assert_eq!(run(1), run(8));
+    }
+}
+
+#[cfg(test)]
+mod filament_tests {
+    use edge_geom::unscaled;
+    use edge_mesh::primitives::cuboid;
+
+    use super::*;
+
+    fn block(min: [f32; 3], max: [f32; 3]) -> Mesh {
+        Mesh::from_triangle_soup(cuboid(min, max))
+    }
+
+    fn area(regions: &[ExPolygon]) -> f64 {
+        regions.iter().map(ExPolygon::area_mm2).sum()
+    }
+
+    #[test]
+    fn one_filament_needs_no_sharing_out() {
+        let (a, b) = (
+            block([0.0; 3], [10.0; 3]),
+            block([20.0, 0.0, 0.0], [30.0, 10.0, 10.0]),
+        );
+        let bodies = [&a, &b].map(|solid| Body {
+            solid,
+            negative: None,
+            filament: 3,
+        });
+        let layers = slice_regions(&bodies, &[5.0], 0).unwrap();
+        assert_eq!(layers[0].regions.len(), 2);
+        assert!(layers[0].by_filament.is_empty());
+    }
+
+    #[test]
+    fn material_is_shared_out_among_its_filaments() {
+        // Two blocks side by side that overlap by 2 mm, and a third apart.
+        let left = block([0.0; 3], [10.0; 3]);
+        let right = block([8.0, 0.0, 0.0], [20.0, 10.0, 10.0]);
+        let apart = block([40.0, 0.0, 0.0], [50.0, 10.0, 10.0]);
+        let bodies = [(&left, 1), (&right, 2), (&apart, 1)].map(|(solid, filament)| Body {
+            solid,
+            negative: None,
+            filament,
+        });
+        let layers = slice_regions(&bodies, &[5.0], 0).unwrap();
+        let layer = &layers[0];
+        assert!((area(&layer.regions) - 300.0).abs() < 1e-6);
+        // In ascending order of filament, and adding up to the whole.
+        assert_eq!(
+            layer
+                .by_filament
+                .iter()
+                .map(|(f, _)| *f)
+                .collect::<Vec<_>>(),
+            [1, 2]
+        );
+        let (first, second) = (&layer.by_filament[0].1, &layer.by_filament[1].1);
+        // The overlap goes to the higher filament.
+        assert!((area(second) - 120.0).abs() < 1e-6, "{}", area(second));
+        assert!((area(first) - 180.0).abs() < 1e-6, "{}", area(first));
+        let reach = first
+            .iter()
+            .flat_map(|region| &region.contour.points)
+            .map(|p| unscaled(p.x))
+            .filter(|x| *x < 30.0)
+            .fold(f64::MIN, f64::max);
+        assert!((reach - 8.0).abs() < 1e-6, "filament 1 reaches {reach}");
+        assert!(edge_clip::intersection(first, second).unwrap().is_empty());
+    }
+
+    #[test]
+    fn a_crack_between_filaments_is_closed_for_both() {
+        // Blocks 0.05 mm apart: closing fills the crack, and it must not
+        // be left belonging to neither.
+        let left = block([0.0; 3], [10.0; 3]);
+        let right = block([10.05, 0.0, 0.0], [20.0, 10.0, 10.0]);
+        let bodies = [(&left, 1), (&right, 2)].map(|(solid, filament)| Body {
+            solid,
+            negative: None,
+            filament,
+        });
+        let layers = slice_regions(&bodies, &[5.0], edge_geom::scaled(0.049)).unwrap();
+        let layer = &layers[0];
+        assert_eq!(layer.regions.len(), 1);
+        let shared: f64 = layer.by_filament.iter().map(|(_, r)| area(r)).sum();
+        assert!((shared - area(&layer.regions)).abs() < 0.02, "{shared}");
     }
 }

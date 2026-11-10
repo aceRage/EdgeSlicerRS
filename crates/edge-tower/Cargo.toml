@@ -1,0 +1,15 @@
+[package]
+name = "edge-tower"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
+edge-config.workspace = true
+edge-extrusion.workspace = true
+edge-geom.workspace = true
+thiserror.workspace = true
+
+[lints]
+workspace = true

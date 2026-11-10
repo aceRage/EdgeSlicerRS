@@ -19,6 +19,8 @@ pub(crate) struct ModelSettings {
 #[derive(Default)]
 pub(crate) struct ObjectSettings {
     pub name: Option<String>,
+    /// The filament the object is printed in, counting from 1.
+    pub extruder: Option<u32>,
     /// Keyed by the id of the component the part comes from.
     pub parts: HashMap<u32, PartSettings>,
 }
@@ -27,6 +29,8 @@ pub(crate) struct ObjectSettings {
 pub(crate) struct PartSettings {
     pub name: Option<String>,
     pub kind: PartKind,
+    /// The filament this part is printed in, if not the object's.
+    pub extruder: Option<u32>,
 }
 
 #[derive(Default)]
@@ -127,6 +131,15 @@ pub(crate) fn parse(text: &str, part: &str) -> Result<ModelSettings, Error> {
                     Scope::Part(object, id) if key == "name" => {
                         let object = settings.objects.entry(*object).or_default();
                         object.parts.entry(*id).or_default().name = Some(value);
+                    }
+                    Scope::Object(object) if key == "extruder" => {
+                        settings.objects.entry(*object).or_default().extruder =
+                            Some(number(part, "extruder", &value)?);
+                    }
+                    Scope::Part(object, id) if key == "extruder" => {
+                        let object = settings.objects.entry(*object).or_default();
+                        object.parts.entry(*id).or_default().extruder =
+                            Some(number(part, "extruder", &value)?);
                     }
                     Scope::Plate => {
                         if let Some(plate) = settings.plates.last_mut() {

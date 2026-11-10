@@ -56,6 +56,7 @@ fn surfaces_partition_the_infill_area_and_every_one_is_filled() {
             .map(|body| Body {
                 solid: &body.solid,
                 negative: body.negative.as_ref(),
+                filament: body.filament,
             })
             .collect();
         let settings = project.settings.unwrap_or_default();
