@@ -162,9 +162,9 @@ Known gaps: painted triangles, per-object setting overrides, typed settings
 **On hardware so far:** a deck across a 30 mm gap printed on an Elegoo
 Centauri Carbon on 2026-11-10 and the bridge held; the wall across the
 gap came out a little pulled in, having been printed five times faster
-than the profile asks, which is since put right. Prints of a 20 mm cube
-were started on that printer and on a Snapmaker U1 the same day; how they
-came out is not recorded here. Supports and printing in more than one
+than the profile asks, which is since put right. A 20 mm cube
+printed on a Snapmaker U1 the same day. One was started on the Centauri
+Carbon too; how it came out is not recorded here. Supports and printing in more than one
 filament have not been on hardware at all. Without a printer
 profile a generic preamble is written and the file is only good for viewing.
 
@@ -242,32 +242,38 @@ five times too fast shows there and nowhere in the lengths.
 
 The reference binary has to be built from the commit `reference/EdgeSlicer`
 is pinned to, or the comparison is with something older than the source
-this engine is written against. On the Mac mini on 2026-11-10 it was not:
-the build dated from 28 October (`cb41c97a2e`), 948 commits behind the
-pin, and every figure below is against that build. One difference it
-shows is its own: it prints bridges at the last overhang speed when
-`slowdown_for_curled_perimeters` is on, which the pinned source has since
-changed to the bridge speed, as this engine has it. The table of defaults
-in `edge-config` was made with the same build.
+this engine is written against. Until 2026-11-10 the Mac mini's build
+was from 28 October (`cb41c97a2e`), 948 commits behind the pin. It has
+been rebuilt at the pin (`156e9591fe`, which calls itself 2.4.9.0) and
+every figure below is against that build, as is the table of defaults in
+`edge-config`. Three things changed with it. The reference lists 33 more
+settings. It prints bridges at the bridge speed when
+`slowdown_for_curled_perimeters` is on, as this engine does, where the old
+build used the last overhang speed. And plate 1 of `mcbrim_test.3mf` came
+out differently (8.8 m of bottom surface where the old build laid 22.9 m,
+and sparse fill where it had none). Nothing else moved: a cube, a deck
+across two posts, a 6 mm tower and two supported parts, each with the U1's
+and the Centauri Carbon's presets, gave the same lengths of every feature
+from both builds.
 The reference takes about two seconds to start and exit whatever it is asked
 to do, so its time is also taken from its own log.
 
-Results, 2026-11-10, Mac mini, reference build 2.4.7.6, best of 3:
+Results, 2026-11-10, Mac mini, reference build 2.4.9.0, best of 3:
 
 | Project | Reference work | This engine | Walls, per layer | Filament |
 | --- | --- | --- | --- | --- |
-| `cylinder_drawcut.3mf` (389 layers) | 0.40 s | 0.084 s | under 0.01% apart | -0.1% |
-| `stabilizer_v1.3mf` (499 layers) | 0.83 s | 0.158 s | 0.85% apart | -43% (no supports) |
-| `twopart_groups.3mf` (60 layers) | 0.18 s | 0.009 s | under 0.01% apart | -0.7% |
+| `cylinder_drawcut.3mf` (389 layers) | 0.42 s | 0.088 s | under 0.01% apart | -0.3% |
+| `stabilizer_v1.3mf` (499 layers) | 0.89 s | 0.167 s | 0.85% apart | -43% (no supports) |
+| `twopart_groups.3mf` (60 layers) | 0.18 s | 0.011 s | under 0.01% apart | -1.0% |
 
 By feature, in metres of extruded path, reference against this engine:
 
 | Project | Overhang wall | Internal bridge | Internal solid fill | Gap fill |
 | --- | --- | --- | --- | --- |
-| `cylinder_drawcut.3mf` | none | 11.22 / 10.24 | 61.04 / 61.06 | 0.02 / 0.00 |
-| `twopart_groups.3mf` | 0.16 / 0.16 | 1.16 / 1.09 | 6.38 / 6.39 | none |
-| `mushroom` fixture | 0.23 / 0.23 | 1.99 / 1.86 | | none |
-| `mcbrim_test.3mf` plate 1 | 0.06 / 0.06 | | | 12.22 / 9.98 |
+| `cylinder_drawcut.3mf` | none | 11.22 / 11.30 | 61.04 / 60.97 | 0.02 / 0.00 |
+| `twopart_groups.3mf` | 0.16 / 0.16 | 1.16 / 1.20 | 6.38 / 6.37 | none |
+| `mushroom` fixture | 0.23 / 0.23 | 1.99 / 2.04 | | none |
+| `mcbrim_test.3mf` plate 1 | 0.10 / 0.06 | | | 8.28 / 9.98 |
 | `mcbrim_test.3mf` plate 2 | 0.03 / 0.03 | | | 4.95 / 5.03 |
 
 Supports and the automatic brim are compared on parts written by
@@ -289,12 +295,31 @@ many tips (96 against 101 under the mushroom's cap) and join up a little
 more slowly on the way down.
 
 On `mcbrim_test.3mf`, printed in four filaments, both make tool changes on
-the same layers (27 here, 28 in the reference), and the start of the file
-is identical for 96 of its 99 lines; the tower here carries 24 to 30% less
-plastic, having no ribs. All three of its plates slice. It is a flat part
+the same layers (27 here, 28 in the reference), and on plate 1 the start
+of the file is identical for 96 of its 99 lines; the tower here carries 24
+to 30% less plastic, having no ribs. Plates 2 and 3 set the order of
+filaments on the first layer (`first_layer_print_sequence`), which this
+engine does not follow, so it starts with a different tool there. All three of its plates slice. It is a flat part
 3 mm thick covered in lettering, and it is where this engine is furthest
-from the reference: 8 to 11% less filament, most of it top surface the
+from the reference: 4 to 8% less filament, most of it top surface the
 reference lays where it thins the walls.
+
+Solid fill is laid more heavily here than in the reference, by 3 to 4% a
+layer on a 20 mm cube. Top surfaces in the `monotonicline` pattern are
+separate lines in the reference and joined end to end here (39 mm of
+joins on the cube's top). Where the reference does join solid lines
+(`monotonic`, `rectilinear`) it turns them half a line spacing inside the
+area, and this engine turns them at the area's edge, 0.17 mm nearer the
+walls. The reference also leaves solid fill inside the part at its own
+pitch on these parts, where this engine spreads it to fit; on a 6 mm
+tower that makes the lines 0.44 mm wide against 0.42 mm. The surface
+patterns (`top_surface_pattern`, `bottom_surface_pattern`,
+`internal_solid_infill_pattern`) are not read.
+
+Tree supports with the Centauri Carbon's presets (`tree(auto)`, arcs on)
+come to about half the reference's length on the `shelf` fixture (2.26 m
+against 4.37 m); with the settings of `twopart_groups.3mf` the same part
+is within 7%.
 
 The reference still does more in that time (arc fitting, time planning,
 ironing out its fill order), so the speed gap will narrow as stages are

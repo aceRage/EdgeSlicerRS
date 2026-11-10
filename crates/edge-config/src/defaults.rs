@@ -26,7 +26,7 @@ pub fn reference_defaults() -> &'static Settings {
 }
 
 /// The slicer and version the defaults were taken from, as a G-code
-/// file's first line names it: `OrcaSlicer 2.4.7.6`.
+/// file's first line names it, such as `OrcaSlicer 2.4.9.0`.
 pub fn reference_producer() -> &'static str {
     include_str!("reference_defaults.txt")
         .lines()
