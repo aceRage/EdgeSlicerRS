@@ -225,6 +225,7 @@ pub fn write_tools(
             },
         },
         below: None,
+        inner_wall: None,
         measured: Vec::new(),
         measured_used: 0,
     };
@@ -341,6 +342,8 @@ struct Writer<'a> {
     file: FileInfo,
     /// The outline of the layer beneath the one being written.
     below: Option<overhang::Below>,
+    /// The line the layer's inner walls are printed with, when it has any.
+    inner_wall: Option<Flow>,
     /// Walls measured against it so far this layer, each with what tells
     /// it apart, and how many of them the pass being written has used: a
     /// layer laid out a second time, slower, measures nothing again.
@@ -960,6 +963,11 @@ impl Writer<'_> {
             }
             let start = (self.out.len(), self.state.summary.seconds);
             self.marks.clear();
+            self.inner_wall = layer
+                .loops
+                .iter()
+                .find(|wall| wall.role == Role::Perimeter)
+                .map(|wall| wall.flow);
             self.lines(layer.tower, &[])?;
             for around in layer.around {
                 let points = &around.polygon.points;
@@ -1204,7 +1212,18 @@ impl Writer<'_> {
                     (0.5, step(s.overhang_speeds[1])),
                     (0.75, step(s.overhang_speeds[2])),
                     (0.87, step(s.overhang_speeds[3])),
-                    (1.0, s.bridge_speed),
+                    // With nothing under it at all a wall goes at the
+                    // bridge's speed, or with
+                    // `slowdown_for_curled_perimeters` at the last of
+                    // the overhang speeds.
+                    (
+                        1.0,
+                        if s.slowdown_for_curled_perimeters {
+                            step(s.overhang_speeds[3])
+                        } else {
+                            s.bridge_speed
+                        },
+                    ),
                 ];
                 let speed = |short: f64| {
                     if s.enable_overhang_speed {
@@ -1238,7 +1257,12 @@ impl Writer<'_> {
         };
         match measured {
             Some(pieces) => {
-                let bridge = flow.bridging(s.bridge_flow, s.thick_bridges);
+                // A wall over air is a bridge of the inner walls' width,
+                // whichever wall it is (`PerimeterGenerator` `overhang_flow`).
+                let bridge = self
+                    .inner_wall
+                    .unwrap_or(*flow)
+                    .bridging(s.bridge_flow, s.thick_bridges);
                 let over_air = self.motion(Role::OverhangPerimeter, &bridge, false);
                 for piece in pieces {
                     if piece.clear {
