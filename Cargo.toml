@@ -9,16 +9,39 @@ license = "AGPL-3.0-only"
 publish = false
 
 [workspace.dependencies]
+edge-3mf = { path = "crates/edge-3mf" }
+edge-clip = { path = "crates/edge-clip" }
+edge-config = { path = "crates/edge-config" }
+edge-extrusion = { path = "crates/edge-extrusion" }
+edge-gcode = { path = "crates/edge-gcode" }
 edge-geom = { path = "crates/edge-geom" }
 edge-mesh = { path = "crates/edge-mesh" }
+edge-infill = { path = "crates/edge-infill" }
+edge-perimeter = { path = "crates/edge-perimeter" }
 edge-slice = { path = "crates/edge-slice" }
-clap = { version = "4", features = ["derive"] }
+clap = { version = "4", features = ["derive", "env"] }
+clipper2-rs = "0.3"
+quick-xml = "0.42"
 rayon = "1"
 rustc-hash = "2"
+serde_json = "1"
+tempfile = "3"
 thiserror = "2"
+zip = { version = "9", default-features = false, features = ["deflate-flate2-zlib-rs"] }
 
 [workspace.lints.rust]
 unsafe_code = "deny"
+
+# Tests run every preset and project in the reference; optimising the
+# dependencies (clipping, XML, zip) keeps that to seconds without making
+# this workspace's own code harder to debug.
+[profile.dev.package."*"]
+opt-level = 2
+
+# Light optimisation for this workspace's own code as well: the tests that
+# run whole projects spend their time in it.
+[profile.dev]
+opt-level = 1
 
 [profile.release]
 lto = "thin"

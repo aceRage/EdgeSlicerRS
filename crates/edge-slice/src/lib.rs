@@ -1,6 +1,7 @@
 //! Mesh to layer contours: the first stage of the slicing pipeline.
 
-use edge_geom::{Point2, Polygon};
+use edge_clip::{ClipError, Join};
+use edge_geom::{Coord, ExPolygon, Point2, Polygon};
 use edge_mesh::Mesh;
 use rayon::prelude::*;
 use rustc_hash::FxHashMap;
@@ -95,14 +96,111 @@ pub fn slice(mesh: &Mesh, planes: &[f64]) -> Vec<Layer> {
         .collect()
 }
 
+/// A solid and, optionally, the volume carved out of it. The carving
+/// applies to this body alone, as a negative part applies only to its object.
+#[derive(Clone, Copy)]
+pub struct Body<'a> {
+    pub solid: &'a Mesh,
+    pub negative: Option<&'a Mesh>,
+}
+
+/// One layer's material as regions with holes, ready for perimeters.
+#[derive(Clone, Debug)]
+pub struct LayerRegions {
+    /// Height of the cutting plane in millimetres.
+    pub z: f64,
+    /// Disjoint regions; overlapping and touching shells are merged.
+    pub regions: Vec<ExPolygon>,
+    /// See [`Layer::open_chains`]; summed over every mesh cut at this height.
+    pub open_chains: usize,
+}
+
+/// Cuts every body at each plane and resolves the contours into regions:
+/// each body's negative volume is removed from that body, everything that
+/// overlaps is united, and cracks narrower than twice `closing_radius` are
+/// filled (the reference's `slice_closing_radius`; zero leaves them open).
+/// `planes` must be sorted ascending.
+///
+/// The reference closes cracks within one object only. Here closing runs
+/// after bodies are united, so two separate objects standing closer than
+/// twice the radius are joined as well.
+pub fn slice_regions(
+    bodies: &[Body<'_>],
+    planes: &[f64],
+    closing_radius: Coord,
+) -> Result<Vec<LayerRegions>, ClipError> {
+    let sliced: Vec<(Vec<Layer>, Option<Vec<Layer>>)> = bodies
+        .iter()
+        .map(|body| {
+            (
+                slice(body.solid, planes),
+                body.negative.map(|mesh| slice(mesh, planes)),
+            )
+        })
+        .collect();
+
+    planes
+        .par_iter()
+        .enumerate()
+        .map(|(index, &z)| {
+            // Contours that need no carving go straight into the final union.
+            let mut plain: Vec<&Polygon> = Vec::new();
+            let mut carved: Vec<ExPolygon> = Vec::new();
+            let mut open_chains = 0;
+            for (solid, negative) in &sliced {
+                let solid = &solid[index];
+                open_chains += solid.open_chains;
+                let negative = negative.as_ref().map(|layers| &layers[index]);
+                open_chains += negative.map_or(0, |layer| layer.open_chains);
+                match negative.filter(|layer| !layer.polygons.is_empty()) {
+                    None => plain.extend(&solid.polygons),
+                    Some(negative) => carved.extend(edge_clip::difference(
+                        &edge_clip::union(&solid.polygons)?,
+                        &edge_clip::union(&negative.polygons)?,
+                    )?),
+                }
+            }
+            let united = edge_clip::union(
+                plain
+                    .into_iter()
+                    .chain(carved.iter().flat_map(ExPolygon::rings)),
+            )?;
+            let regions = if closing_radius > 0 {
+                edge_clip::closing(&united, closing_radius, Join::MITER)?
+            } else {
+                united
+            };
+            Ok(LayerRegions {
+                z,
+                regions,
+                open_chains,
+            })
+        })
+        .collect()
+}
+
+/// One triangle's cut: a directed step from one mesh edge to another.
+struct Segment {
+    from: u64,
+    to: u64,
+    /// Where the segment starts, on the `from` edge.
+    point: Point2,
+    /// Another unused segment leaving the same edge, or `NONE`.
+    sibling: u32,
+}
+
+const NONE: u32 = u32::MAX;
+
 /// Every triangle in `triangles` must cross the plane at `z`.
 fn slice_layer(mesh: &Mesh, z: f64, triangles: &[u32]) -> Layer {
-    // Each triangle contributes one directed segment between two mesh edges.
-    // Keyed by the edge a segment starts on, a watertight mesh gives every
-    // edge exactly one successor, so contours chain exactly with no tolerance.
-    let mut next: FxHashMap<u64, (u64, Point2)> =
+    // Each triangle contributes one segment between two mesh edges, and
+    // segments chain by edge identity, so contours close exactly with no
+    // distance tolerance. A watertight mesh has one segment leaving each edge.
+    // Where shells touch along an edge several leave it and as many arrive,
+    // so taking any unused one still closes every contour.
+    let mut segments: Vec<Segment> = Vec::with_capacity(triangles.len());
+    let mut unused: FxHashMap<u64, u32> =
         FxHashMap::with_capacity_and_hasher(triangles.len(), Default::default());
-    let mut starts = Vec::with_capacity(triangles.len());
 
     for &triangle in triangles {
         let ids = mesh.triangles[triangle as usize];
@@ -130,45 +228,54 @@ fn slice_layer(mesh: &Mesh, z: f64, triangles: &[u32]) -> Layer {
         } else {
             (entering, leaving)
         };
-        if next
-            .insert(from, (to, Point2::from_mm(point[0], point[1])))
-            .is_none()
-        {
-            starts.push(from);
-        }
+        let sibling = unused.insert(from, segments.len() as u32).unwrap_or(NONE);
+        segments.push(Segment {
+            from,
+            to,
+            point: Point2::from_mm(point[0], point[1]),
+            sibling,
+        });
     }
 
-    // Trace in insertion order so output is identical run to run and across
-    // thread counts; parity checks against the reference depend on that.
+    // Removes and returns an unused segment leaving `edge`.
+    let take = |unused: &mut FxHashMap<u64, u32>, edge: u64| -> Option<&Segment> {
+        let head = unused.get_mut(&edge)?;
+        let segment = segments.get(*head as usize)?;
+        *head = segment.sibling;
+        Some(segment)
+    };
+
+    // Start contours in triangle order so output is identical run to run and
+    // across thread counts; parity checks against the reference depend on that.
     let mut polygons = Vec::new();
     let mut open_chains = 0;
-    for start in starts {
-        let Some((mut to, first)) = next.remove(&start) else {
-            continue;
-        };
-        let mut points = vec![first];
-        let closed = loop {
-            if to == start {
-                break true;
-            }
-            match next.remove(&to) {
-                Some((after, point)) => {
-                    // Planes through a vertex yield zero-length segments.
-                    if points.last() != Some(&point) {
-                        points.push(point);
-                    }
-                    to = after;
+    for start in segments.iter().map(|segment| segment.from) {
+        while let Some(first) = take(&mut unused, start) {
+            let mut points = vec![first.point];
+            let mut to = first.to;
+            let closed = loop {
+                if to == start {
+                    break true;
                 }
-                None => break false,
+                match take(&mut unused, to) {
+                    Some(segment) => {
+                        // Planes through a vertex yield zero-length segments.
+                        if points.last() != Some(&segment.point) {
+                            points.push(segment.point);
+                        }
+                        to = segment.to;
+                    }
+                    None => break false,
+                }
+            };
+            if points.len() > 1 && points.last() == points.first() {
+                points.pop();
             }
-        };
-        if points.len() > 1 && points.last() == points.first() {
-            points.pop();
-        }
-        if !closed {
-            open_chains += 1;
-        } else if points.len() >= 3 {
-            polygons.push(Polygon { points });
+            if !closed {
+                open_chains += 1;
+            } else if points.len() >= 3 {
+                polygons.push(Polygon { points });
+            }
         }
     }
 
@@ -256,6 +363,80 @@ mod tests {
         assert_eq!(areas(&layers[1]), vec![100.0]);
         assert_eq!(layers[1].polygons[0].points.len(), 4);
         assert!(layers[2].polygons.is_empty());
+    }
+
+    #[test]
+    fn shells_touching_along_an_edge_both_close() {
+        // The vertical edge at x = y = 1 belongs to four triangles.
+        let mut soup = cuboid([0.0; 3], [1.0; 3]);
+        soup.extend(cuboid([1.0, 1.0, 0.0], [2.0, 2.0, 1.0]));
+        let layers = slice(&Mesh::from_triangle_soup(soup), &[0.5]);
+        assert_eq!(layers[0].open_chains, 0);
+        assert_eq!(areas(&layers[0]).iter().sum::<f64>(), 2.0);
+        assert!(areas(&layers[0]).iter().all(|&area| area > 0.0));
+    }
+
+    fn shapes(layer: &LayerRegions) -> Vec<(f64, usize)> {
+        layer
+            .regions
+            .iter()
+            .map(|region| (region.area_mm2(), region.holes.len()))
+            .collect()
+    }
+
+    #[test]
+    fn regions_pair_holes_with_contours_and_merge_overlaps() {
+        let mut hollow = cube(0.0, 10.0);
+        hollow.extend(inverted(cube(2.0, 8.0)));
+        hollow.extend(cuboid([8.0, 8.0, 0.0], [14.0, 14.0, 10.0]));
+        let mesh = Mesh::from_triangle_soup(hollow);
+        let body = Body {
+            solid: &mesh,
+            negative: None,
+        };
+        let layers = slice_regions(&[body], &[1.0, 5.0], 0).unwrap();
+        // Two overlapping boxes: 100 + 36 - 4 shared.
+        assert_eq!(shapes(&layers[0]), [(132.0, 0)]);
+        assert_eq!(shapes(&layers[1]), [(96.0, 1)]);
+        assert_eq!(layers[1].z, 5.0);
+    }
+
+    #[test]
+    fn negative_volume_carves_only_its_own_body() {
+        let block = Mesh::from_triangle_soup(cube(0.0, 10.0));
+        // Reaches past the block into where the neighbour stands.
+        let drill = Mesh::from_triangle_soup(cuboid([4.0, 4.0, 2.0], [16.0, 6.0, 20.0]));
+        let neighbour = Mesh::from_triangle_soup(cuboid([12.0, 0.0, 0.0], [20.0, 10.0, 10.0]));
+        let bodies = [
+            Body {
+                solid: &block,
+                negative: Some(&drill),
+            },
+            Body {
+                solid: &neighbour,
+                negative: None,
+            },
+        ];
+        let layers = slice_regions(&bodies, &[1.0, 5.0], 0).unwrap();
+        // Below the drill both are whole; at z = 5 the block loses a 6 x 2 slot.
+        assert_eq!(shapes(&layers[0]), [(100.0, 0), (80.0, 0)]);
+        assert_eq!(shapes(&layers[1]), [(88.0, 0), (80.0, 0)]);
+        assert!(layers.iter().all(|layer| layer.open_chains == 0));
+    }
+
+    #[test]
+    fn closing_radius_joins_parts_that_almost_touch() {
+        let mut soup = cube(0.0, 10.0);
+        soup.extend(cuboid([10.05, 0.0, 0.0], [20.0, 10.0, 10.0]));
+        let mesh = Mesh::from_triangle_soup(soup);
+        let body = Body {
+            solid: &mesh,
+            negative: None,
+        };
+        let open = slice_regions(&[body], &[5.0], 0).unwrap();
+        assert_eq!(open[0].regions.len(), 2);
+        let closed = slice_regions(&[body], &[5.0], edge_geom::scaled(0.049)).unwrap();
+        assert_eq!(shapes(&closed[0]), [(200.0, 0)]);
     }
 
     #[test]

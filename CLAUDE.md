@@ -9,10 +9,25 @@ is the goal; a Tauri + web UI comes second. See README.md for layout and status.
 cargo test --workspace
 cargo clippy --workspace --all-targets -- -D warnings
 cargo fmt --all
-cargo run --release -p edge-cli -- slice <model.stl> [--svg out.svg]
+cargo run --release -p edge-cli -- slice <model.stl|project.3mf> [--plate N] [--svg out.svg]
+cargo run --release -p edge-cli -- inspect <project.3mf>
+cargo run --release -p edge-cli -- preset <vendor> <kind> <name> --profiles reference/EdgeSlicer/resources/profiles
 ```
 
+Five test files (`edge-config/tests/reference_profiles.rs` and a
+`tests/reference_projects.rs` in each of `edge-3mf`, `edge-perimeter`,
+`edge-infill` and `edge-gcode`) run against everything in the
+submodule; a new stage should add its own and keep all of them at zero failures.
+
 On the Mac mini cargo comes from Homebrew rustup: `/opt/homebrew/opt/rustup/bin`.
+
+`edge-parity <project.3mf> --reference <EdgeSlicer executable>` compares this
+engine with the C++ slicer (or set `EDGE_REFERENCE_BIN`). On the Mac mini a
+build lives at
+`~/Dev/EdgeSlicer/build/arm64/Snapmaker_Orca/EdgeSlicer.app/Contents/MacOS/EdgeSlicer`.
+The tool gives the reference its own empty data directory and `--no-hub`, so
+it does not touch the user's settings or a running hub. Run it after a change
+to a stage and say in the PR what moved.
 
 ## Rules
 
@@ -23,6 +38,8 @@ On the Mac mini cargo comes from Homebrew rustup: `/opt/homebrew/opt/rustup/bin`
   purpose, say so in the code and in the PR.
 - Output must be deterministic: same input gives byte-identical results at
   any thread count. Parity testing depends on it.
+- Only `edge-clip` may depend on the clipping library; every other crate
+  goes through its API, so the library can be replaced in one place.
 - Engine crates stay UI-free and take no dependency on Tauri; the desktop
   app calls into them.
 - `unsafe` is denied workspace-wide. A crate that needs it opts in locally
