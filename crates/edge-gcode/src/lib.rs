@@ -1645,7 +1645,15 @@ impl Writer<'_> {
             }
             self.slowdown.apply(motion.speed)
         };
-        let volume = length * flow.mm3_per_mm() * s.filament_flow_ratio * s.print_flow_ratio;
+        let share = match role {
+            Role::TopSolidInfill => s.top_solid_infill_flow_ratio,
+            Role::BottomSurface => s.bottom_solid_infill_flow_ratio,
+            Role::InternalBridge => s.internal_bridge_flow,
+            Role::Brim => s.brim_flow_ratio,
+            _ => 1.0,
+        };
+        let volume =
+            length * flow.mm3_per_mm() * s.filament_flow_ratio * s.print_flow_ratio * share;
         let feed = volume / self.filament_area;
         if self.all.len() > 1 {
             self.marks

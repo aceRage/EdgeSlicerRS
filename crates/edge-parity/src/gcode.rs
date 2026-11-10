@@ -1,6 +1,8 @@
 //! Reads G-code back into what was printed: per layer and per feature, how
-//! far the nozzle moved while extruding and how much filament it fed. It
-//! understands what both this engine and the reference slicer write.
+//! far the nozzle moved while extruding and how much filament it fed, and
+//! per feature how it was printed: how fast, how wide, at what
+//! acceleration and with how much fan. It understands what both this
+//! engine and the reference slicer write.
 
 use std::collections::BTreeMap;
 
@@ -17,6 +19,50 @@ impl Stat {
     fn add(&mut self, other: Stat) {
         self.length_mm += other.length_mm;
         self.filament_mm += other.filament_mm;
+    }
+}
+
+/// How one feature is printed, over all the layers it is on.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct How {
+    pub length_mm: f64,
+    pub filament_mm: f64,
+    /// Time its moves take at the feedrates written, in seconds.
+    pub seconds: f64,
+    /// The slowest and fastest of those feedrates, in mm/s.
+    pub slowest: f64,
+    pub fastest: f64,
+    /// Width, acceleration and fan in force along it, each multiplied by
+    /// the length it was in force for.
+    width_by_length: f64,
+    acceleration_by_length: f64,
+    fan_by_length: f64,
+}
+
+impl How {
+    /// Mean speed in mm/s: the length over the time it takes.
+    pub fn speed(&self) -> f64 {
+        self.length_mm / self.seconds.max(1e-12)
+    }
+
+    /// Mean line width in mm, as the file's `;WIDTH:` comments give it.
+    pub fn width(&self) -> f64 {
+        self.width_by_length / self.length_mm.max(1e-12)
+    }
+
+    /// Mean acceleration in mm/s².
+    pub fn acceleration(&self) -> f64 {
+        self.acceleration_by_length / self.length_mm.max(1e-12)
+    }
+
+    /// Mean part fan speed, in percent.
+    pub fn fan(&self) -> f64 {
+        self.fan_by_length / self.length_mm.max(1e-12) / 255.0 * 100.0
+    }
+
+    /// Plastic laid per mm of line, in mm³, for 1.75 mm filament.
+    pub fn mm3_per_mm(&self) -> f64 {
+        self.filament_mm * std::f64::consts::PI * 0.875 * 0.875 / self.length_mm.max(1e-12)
     }
 }
 
@@ -52,6 +98,15 @@ pub struct Print {
     /// `;TYPE:Custom` to the first layer, without trailing spaces, blank
     /// lines or progress reports.
     pub start_block: Vec<String>,
+    /// How each feature is printed on the first layer, and on the rest.
+    pub how_first: BTreeMap<String, How>,
+    pub how: BTreeMap<String, How>,
+    /// Time spent moving without extruding once layers have begun, at
+    /// the feedrates written, in seconds.
+    pub travel_seconds: f64,
+    /// Every nozzle and bed temperature set once layers have begun, with
+    /// the layer it is set on, counting from 0.
+    pub temperatures: Vec<(usize, String)>,
 }
 
 impl Print {
@@ -81,6 +136,9 @@ pub fn parse(text: &str, keep_segments: Option<usize>) -> Print {
     // Extrusion is absolute until M83 says otherwise.
     let (mut relative_e, mut last_e) = (false, 0.0f64);
     let mut feature = String::from("Unknown");
+    // What is in force as the file is read: feedrate in mm/min, line
+    // width in mm, acceleration in mm/s² and the part fan from 0 to 255.
+    let (mut feedrate, mut width, mut acceleration, mut fan) = (0.0f64, 0.0f64, 0.0f64, 0.0f64);
 
     let mut in_start_block = false;
     for line in text.lines() {
@@ -101,6 +159,8 @@ pub fn parse(text: &str, keep_segments: Option<usize>) -> Print {
                 print.layers.push(Layer::default());
             } else if let Some(name) = comment.strip_prefix("TYPE:") {
                 feature = name.trim().to_owned();
+            } else if let Some(value) = comment.strip_prefix("WIDTH:") {
+                width = value.trim().parse().unwrap_or(width);
             } else if let (Some(z), Some(layer)) =
                 (comment.strip_prefix("Z:"), print.layers.last_mut())
             {
@@ -119,7 +179,29 @@ pub fn parse(text: &str, keep_segments: Option<usize>) -> Print {
                 .skip(1)
                 .find_map(|w| w.strip_prefix(letter)?.parse().ok())
         };
+        // A value written as `NAME=12`, as Klipper's own commands take them.
+        let named = |name: &str| -> Option<f64> {
+            code.split_ascii_whitespace()
+                .skip(1)
+                .find_map(|w| w.strip_prefix(name)?.strip_prefix('=')?.parse().ok())
+        };
         match command {
+            "SET_VELOCITY_LIMIT" => acceleration = named("ACCEL").unwrap_or(acceleration),
+            "M204" => acceleration = word('S').or(word('P')).unwrap_or(acceleration),
+            // The part fan is the one with no number, or number 1.
+            "M106" if word('P').is_none_or(|fan| fan == 1.0) => {
+                fan = word('S').unwrap_or(255.0);
+            }
+            "M107" if word('P').is_none_or(|fan| fan == 1.0) => fan = 0.0,
+            "M104" | "M109" | "M140" | "M190" if !print.layers.is_empty() => {
+                if let Some(target) = word('S') {
+                    let tool = word('T').map_or(String::new(), |tool| format!(" T{tool:.0}"));
+                    print.temperatures.push((
+                        print.layers.len() - 1,
+                        format!("{command} S{target:.0}{tool}"),
+                    ));
+                }
+            }
             "M82" => relative_e = false,
             "M83" => relative_e = true,
             "G92" => {
@@ -132,6 +214,7 @@ pub fn parse(text: &str, keep_segments: Option<usize>) -> Print {
                     word('X').unwrap_or(position[0]),
                     word('Y').unwrap_or(position[1]),
                 ];
+                feedrate = word('F').unwrap_or(feedrate);
                 let fed = match word('E') {
                     Some(e) if relative_e => e,
                     Some(e) => {
@@ -156,6 +239,27 @@ pub fn parse(text: &str, keep_segments: Option<usize>) -> Print {
                         filament_mm: fed,
                     };
                     let index = print.layers.len();
+                    if index > 0 && feedrate > 0.0 {
+                        let how = if index == 1 {
+                            &mut print.how_first
+                        } else {
+                            &mut print.how
+                        };
+                        let how = how.entry(feature.clone()).or_default();
+                        let speed = feedrate / 60.0;
+                        how.slowest = if how.length_mm == 0.0 {
+                            speed
+                        } else {
+                            how.slowest.min(speed)
+                        };
+                        how.fastest = how.fastest.max(speed);
+                        how.length_mm += length;
+                        how.filament_mm += fed;
+                        how.seconds += length / speed;
+                        how.width_by_length += width * length;
+                        how.acceleration_by_length += acceleration * length;
+                        how.fan_by_length += fan * length;
+                    }
                     match print.layers.last_mut() {
                         None => print.before_layers.add(stat),
                         Some(layer) => {
@@ -185,6 +289,9 @@ pub fn parse(text: &str, keep_segments: Option<usize>) -> Print {
                     }
                 } else if length > 0.0 && !print.layers.is_empty() {
                     print.travel_mm += length;
+                    if feedrate > 0.0 {
+                        print.travel_seconds += length / (feedrate / 60.0);
+                    }
                 } else if length == 0.0 && fed < 0.0 {
                     print.retractions += 1;
                 }
@@ -318,5 +425,59 @@ G1 X10 Y0 E0.5
         let print = parse(text, None);
         let expected = std::f64::consts::PI * 5.0 + std::f64::consts::TAU * 10.0;
         assert!((print.layers[0].features["Unknown"].length_mm - expected).abs() < 1e-9);
+    }
+
+    #[test]
+    fn how_each_feature_is_printed_is_tallied() {
+        let text = "\
+M83
+;LAYER_CHANGE
+;Z:0.2
+M106 S0
+M204 S500
+;TYPE:Outer wall
+;WIDTH:0.5
+G1 X10 Y0 E0.5 F1800
+;LAYER_CHANGE
+;Z:0.4
+M104 S210
+SET_VELOCITY_LIMIT ACCEL=5000 ACCEL_TO_DECEL=2500
+M106 S127.5
+;TYPE:Outer wall
+;WIDTH:0.42
+G1 X20 Y0 E0.4 F6000
+M106 S255
+M106 P2 S90
+G1 X50 Y0 E1.2 F3000
+G1 X50 Y30 F12000
+M104 S0 T1
+";
+        let print = parse(text, None);
+        let first = print.how_first["Outer wall"];
+        assert_eq!(
+            (
+                first.speed(),
+                first.width(),
+                first.acceleration(),
+                first.fan()
+            ),
+            (30.0, 0.5, 500.0, 0.0)
+        );
+        let rest = print.how["Outer wall"];
+        // 10 mm at 100 mm/s and 30 mm at 50 mm/s: 40 mm in 0.7 s.
+        assert!((rest.speed() - 40.0 / 0.7).abs() < 1e-9);
+        assert_eq!((rest.slowest, rest.fastest), (50.0, 100.0));
+        assert!((rest.width() - 0.42).abs() < 1e-12 && rest.acceleration() == 5000.0);
+        // Half fan for a quarter of the way, full for the rest; the
+        // second fan is another fan.
+        assert!((rest.fan() - 87.5).abs() < 1e-9);
+        assert!(
+            (rest.mm3_per_mm() - 1.6 * std::f64::consts::PI * 0.875 * 0.875 / 40.0).abs() < 1e-12
+        );
+        assert!((print.travel_seconds - 30.0 / 200.0).abs() < 1e-12);
+        assert_eq!(
+            print.temperatures,
+            [(1, "M104 S210".to_owned()), (1, "M104 S0 T1".to_owned())]
+        );
     }
 }

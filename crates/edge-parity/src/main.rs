@@ -14,7 +14,7 @@ use std::{
 };
 
 use clap::Parser;
-use gcode::{Layer, Print, Stat};
+use gcode::{How, Layer, Print, Stat};
 
 type Failure = Box<dyn Error>;
 
@@ -356,6 +356,119 @@ fn report(project: &Path, times: &Times, reference: &Print, ours: &Print) -> Str
             o / 1e3
         )
         .unwrap();
+    }
+
+    // How each feature is printed, where both print it: a difference
+    // here is one a printer would show and the lengths above would not.
+    for (title, reference, ours) in [
+        ("first layer", &reference.how_first, &ours.how_first),
+        ("other layers", &reference.how, &ours.how),
+    ] {
+        let shared: Vec<(&String, &How, &How)> = reference
+            .iter()
+            .filter_map(|(name, how)| Some((name, how, ours.get(name)?)))
+            .filter(|(name, ..)| name.as_str() != "Custom")
+            .collect();
+        if shared.is_empty() {
+            continue;
+        }
+        writeln!(
+            out,
+            "\nhow each feature is printed, {title}: reference / this engine (* marks a difference)\n  \
+             {:<22}{:>17}{:>17}{:>19}{:>17}{:>13}",
+            "", "speed mm/s", "width mm", "mm3 per mm", "accel mm/s2", "fan %"
+        )
+        .unwrap();
+        for (name, r, o) in shared {
+            // Apart by more than a share of the reference's, and by more
+            // than a floor that rounding alone would not cross.
+            let apart = |r: f64, o: f64, share: f64, floor: f64| {
+                let gap = (r - o).abs();
+                if gap > floor && gap > share * r.abs() {
+                    "*"
+                } else {
+                    " "
+                }
+            };
+            let cell = |text: String, mark: &str, width: usize| {
+                format!("{:>width$}", format!("{text}{mark}"))
+            };
+            writeln!(
+                out,
+                "  {name:<22}{}{}{}{}{}",
+                cell(
+                    format!("{:.0} / {:.0}", r.speed(), o.speed()),
+                    apart(r.speed(), o.speed(), 0.05, 2.0),
+                    17
+                ),
+                cell(
+                    format!("{:.2} / {:.2}", r.width(), o.width()),
+                    apart(r.width(), o.width(), 0.0, 0.006),
+                    17
+                ),
+                cell(
+                    format!("{:.3} / {:.3}", r.mm3_per_mm(), o.mm3_per_mm()),
+                    apart(r.mm3_per_mm(), o.mm3_per_mm(), 0.02, 0.0005),
+                    19
+                ),
+                cell(
+                    format!("{:.0} / {:.0}", r.acceleration(), o.acceleration()),
+                    apart(r.acceleration(), o.acceleration(), 0.02, 1.0),
+                    17
+                ),
+                cell(
+                    format!("{:.0} / {:.0}", r.fan(), o.fan()),
+                    apart(r.fan(), o.fan(), 0.0, 5.0),
+                    13
+                ),
+            )
+            .unwrap();
+        }
+    }
+    let seconds = |print: &Print| {
+        print
+            .how_first
+            .values()
+            .chain(print.how.values())
+            .map(|how| how.seconds)
+            .sum::<f64>()
+            + print.travel_seconds
+    };
+    let minutes = |seconds: f64| format!("{}m {:02}s", seconds as u64 / 60, seconds as u64 % 60);
+    writeln!(
+        out,
+        "\ntime at the speeds written, with no acceleration: {} / {}",
+        minutes(seconds(reference)),
+        minutes(seconds(ours))
+    )
+    .unwrap();
+    // Nozzle and bed temperatures set once printing has begun.
+    if reference.temperatures == ours.temperatures {
+        writeln!(
+            out,
+            "temperatures set while printing: all {} the same",
+            reference.temperatures.len()
+        )
+        .unwrap();
+    } else {
+        let (r, o) = (&reference.temperatures, &ours.temperatures);
+        let same = r.iter().zip(o).take_while(|(a, b)| a == b).count();
+        writeln!(
+            out,
+            "temperatures set while printing: first {same} the same, then (of {} and {})",
+            r.len(),
+            o.len()
+        )
+        .unwrap();
+        for index in same..(same + 4).min(r.len().max(o.len())) {
+            let line = |set: &[(usize, String)]| {
+                set.get(index)
+                    .map_or("(nothing)".to_owned(), |(layer, command)| {
+                        format!("layer {layer}: {command}")
+                    })
+            };
+            writeln!(out, "  reference: {}\n  here:      {}", line(r), line(o)).unwrap();
+        }
     }
 
     // The machine's start G-code should come out the same from both: it is

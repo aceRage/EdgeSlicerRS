@@ -47,8 +47,10 @@ pub struct InfillSettings {
     pub bridge_flow: f64,
     pub thick_bridges: bool,
     pub bridge_density: f64,
-    /// The same for solid fill laid over sparse fill.
-    pub internal_bridge_flow: f64,
+    /// Solid fill laid over sparse fill: whether it is a round thread,
+    /// and how closely its lines are laid. Its thread is sized by
+    /// `bridge_flow`, as the reference sizes it; `internal_bridge_flow` is
+    /// applied to the plastic when the G-code is written.
     pub thick_internal_bridges: bool,
     pub internal_bridge_density: f64,
     /// Settings present in the input that are not honoured, each with
@@ -83,7 +85,6 @@ impl Default for InfillSettings {
             bridge_flow: 1.0,
             thick_bridges: false,
             bridge_density: 1.0,
-            internal_bridge_flow: 1.0,
             thick_internal_bridges: true,
             internal_bridge_density: 1.0,
             unsupported: Vec::new(),
@@ -197,7 +198,6 @@ impl InfillSettings {
             bridge_flow: number("bridge_flow", defaults.bridge_flow)?,
             thick_bridges: flag("thick_bridges", defaults.thick_bridges)?,
             bridge_density: share("bridge_density", defaults.bridge_density)?,
-            internal_bridge_flow: number("internal_bridge_flow", defaults.internal_bridge_flow)?,
             thick_internal_bridges: flag(
                 "thick_internal_bridges",
                 defaults.thick_internal_bridges,
@@ -275,8 +275,7 @@ impl InfillSettings {
             Flow::auto_width(nozzle),
         )?;
         let bridge = solid.bridging(self.bridge_flow, self.thick_bridges);
-        let internal_bridge =
-            solid.bridging(self.internal_bridge_flow, self.thick_internal_bridges);
+        let internal_bridge = solid.bridging(self.bridge_flow, self.thick_internal_bridges);
         Ok(FillParams {
             solid,
             bridge,
