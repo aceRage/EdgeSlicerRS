@@ -717,7 +717,13 @@ impl Sliced {
             .chain(&self.adhesion.unsupported)
             .chain(&self.support.unsupported)
             .chain(&self.infill.unsupported)
-            .chain(&self.tower_settings.unsupported)
+            // What the tower does not do matters only where there is one.
+            .chain(
+                self.tower_settings
+                    .unsupported
+                    .iter()
+                    .filter(|_| self.tower.footprint.is_some()),
+            )
     }
 
     /// The filaments in use that the printer has no tool for.

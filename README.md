@@ -195,7 +195,13 @@ Known gaps: painted triangles, per-object setting overrides, typed settings
     flare out at the bed, or stand on the part where the bed is out of
     reach. Branches are hollow loops, as in the reference's default
     "organic" style, and keep clear of anywhere they could not get down
-    from.
+    from. They pair off, nearest first, and each pair leans together
+    until it is one. A leaning branch is drawn as the oval a level cut
+    through its tube makes. Each loop starts from a hook laid inside it
+    (SupportCommon.cpp `tree_supports_generate_paths`), and is always
+    laid hook first. On the bed the trunks spread out by
+    `raft_first_layer_expansion`, as other supports do, which joins
+    their feet into a sheet.
 - Placement: each plate of a 3MF is moved to bed coordinates, and a bare
   model is centred on the bed of the machine preset. Export refuses
   toolpaths that leave the bed, and writes the file whole or not at all.
@@ -282,14 +288,15 @@ by the gap a little out of line; the part itself was not looked at
 against the first print. The
 `mushroom` fixture with tree supports printed on the U1 as well, beside
 the C++ slicer's file for the same project: both caps were carried and
-both sets of supports came away. This engine's stood on separate feet
-where the reference's first layer is one sheet, with more and thinner
-trunks, and kept further from the stem (2.8 mm against 1.6 mm, taking
+both sets of supports came away. This engine's, as it was then, stood
+on separate feet where the reference's first layer is one sheet, with
+more and thinner trunks, and kept further from the stem (2.8 mm against 1.6 mm, taking
 the middle layer's least distance). Its bridge under the cap runs across
 the lines of the support's roof where the reference's runs along them,
 and came out flatter with a few blobs; the two were printed in different
-filaments, so the look of the surfaces is not a fair comparison. Normal
-(grid) supports have not been on hardware. Without a printer
+filaments, so the look of the surfaces is not a fair comparison. Trees
+as they are now (paired branches, hooked loops, a sheet on the bed)
+have not been printed. Normal (grid) supports have not been on hardware. Without a printer
 profile a generic preamble is written and the file is only good for viewing.
 
 Multi-filament printing is a first working version. Where parts of
@@ -367,8 +374,8 @@ and a support meet on the first layer neither gives way. Tree supports use
 the reference's numbers (how a branch thickens, leans and flares, how far
 apart tips stand) but a much simpler method: each branch is one point
 moved layer by layer, where the reference follows every place a branch
-could be and picks afterwards; a leaning branch is a circle on each layer,
-not an oval; and branches are not smoothed.
+could be and picks afterwards; and branches are not smoothed, so they
+stand in more regular rows than the reference's.
 
 Next: thumbnails and painted colours.
 
@@ -448,8 +455,8 @@ Supports and the automatic brim are compared on parts written by
 | --- | --- | --- | --- |
 | `mushroom` (a cap on a stem), normal | -1.6%, same extents | -3.6% | none in either |
 | `shelf` (a shelf over a plate), normal | -1.5%, same extents | -5.0% | none in either |
-| `mushroom`, tree | -3.5% | -5.3% | none in either |
-| `shelf`, tree | -6.3%, five trunks on the plate in both | -6.3% | none in either |
+| `mushroom`, tree | -5.2% | -5.3% | none in either |
+| `shelf`, tree | +4.0% | -8.9% | none in either |
 | `tower` (6 x 6 x 80 mm) | | | same length, same reach (5.63 mm) |
 | `bar` (200 x 10 x 30 mm, PLA) | | | same length, same reach (7.42 mm) |
 
@@ -507,10 +514,18 @@ the deck and the tower for both printers (the tower with the U1's
 presets was 18% under). Where objects share a plate the pattern passes
 through the middle of all of them, not of each as in the reference.
 
-Tree supports with the Centauri Carbon's presets (`tree(auto)`, arcs on)
-come to about half the reference's length on the `shelf` fixture (2.26 m
-against 4.37 m); with the settings of `twopart_groups.3mf` the same part
-is within 7%.
+Tree supports now join into trunks as soon as the reference's do. On
+the `mushroom` with the U1's presets there are as many separate outlines
+as in the reference all the way down (38 against 37 thirty layers up,
+23 against 24 at twenty), where there were a third more; the file has
+1687 retractions against the reference's 1739 (it had 2228) and is
+timed at 19m 26s against 19m 42s (it was 21m 15s). Layer by layer its
+support is within 10% of the reference's from the bed to two thirds of
+the way up, and 15 to 35% under in the last ten layers below the roof,
+where the reference's tips are drawn fatter and lean more than a branch
+may here. With the Centauri Carbon's presets (`tree(auto)`, arcs on)
+the `shelf` fixture is still 30% under (3.08 m against 4.37 m; it was
+2.26 m).
 
 The reference still does more in that time (arc fitting, time planning,
 ironing out its fill order), so the speed gap will narrow as stages are

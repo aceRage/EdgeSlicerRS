@@ -1271,6 +1271,47 @@ fn the_prime_tower_is_printed_first_and_its_first_line_slowly() {
 }
 
 #[test]
+fn a_tree_branch_s_wall_is_laid_hook_first() {
+    // A support line that ends at (10, 0), then a branch's wall whose
+    // hook starts at (14, 0) and whose far end, at (12, 0), is the nearer.
+    let before = line((0.0, 0.0), (10.0, 0.0), Role::Support);
+    let mut hooked = line((14.0, 0.0), (14.0, 1.0), Role::Support);
+    hooked.points.extend(
+        [(20.0, 1.0), (20.0, -1.0), (12.0, -1.0), (12.0, 0.0)].map(|(x, y)| Point2::from_mm(x, y)),
+    );
+    let supports = [before, hooked];
+    let part = [wall(50.0, 50.0, 10.0, 0)];
+    let layer = Layer {
+        support: &supports,
+        ..one_layer(&part, &[0..1], &[])[0]
+    };
+    let (text, _) = print(&[layer], &basic());
+    let at = |wanted: &str| {
+        text.lines()
+            .position(|line| line.starts_with(wanted))
+            .unwrap_or_else(|| panic!("no line starting {wanted}"))
+    };
+    // It is gone to at its hook and ends at its far end.
+    let hook = at("G1 X14.000 Y0.000");
+    let end = at("G1 X12.000 Y0.000 E");
+    assert!(hook < end);
+    assert!(!text.lines().nth(hook).unwrap().contains(" E"));
+
+    // A plain support line with its ends far apart is still taken from
+    // whichever end is nearer.
+    let supports = [
+        line((0.0, 0.0), (10.0, 0.0), Role::Support),
+        line((40.0, 0.0), (12.0, 0.0), Role::Support),
+    ];
+    let layer = Layer {
+        support: &supports,
+        ..one_layer(&part, &[0..1], &[])[0]
+    };
+    let (text, _) = print(&[layer], &basic());
+    assert!(text.contains("G1 X40.000 Y0.000 E"));
+}
+
+#[test]
 fn a_rammed_filament_is_laid_by_the_tool_being_put_away() {
     let [a, b] = two_tools(Some(CHANGE));
     let settings = [a, b];

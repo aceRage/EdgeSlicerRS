@@ -8,13 +8,19 @@
 //! foot. The method is much simpler:
 //!
 //! - the reference follows, for every branch, the whole area it could be
-//!   in on each layer, and picks positions afterwards from the bed up;
-//!   here each branch is one point that is moved layer by layer on the way
-//!   down, towards its nearest neighbour if the two can meet before the
-//!   bed, and out of the way of the part;
-//! - the reference builds each branch as a tube and slices it, so a
-//!   leaning branch is an oval on a layer; here it is a circle;
-//! - the reference smooths branches afterwards; here they are left as moved.
+//!   in on each layer, joins two branches once those areas overlap, and
+//!   picks positions afterwards from the bed up; here each branch is one
+//!   point that is moved layer by layer on the way down, towards the
+//!   branch it is paired with, and out of the way of the part. Branches
+//!   pair off nearest first, which joins them about as soon;
+//! - the reference builds each branch as a tube and slices it; here each
+//!   is drawn as the oval a level cut through such a tube makes, from how
+//!   far it steps on that layer alone;
+//! - the reference smooths branches afterwards; here they are left as
+//!   moved, so they are a little more regular than the reference's.
+//!
+//! As in the reference, a branch's wall starts from a hook laid inside
+//! it, and on the bed a trunk spreads out by `raft_first_layer_expansion`.
 //!
 //! What keeps a branch from being trapped is the same: a branch's centre
 //! stays out of every place from which it could not get down to the bed.
@@ -273,21 +279,41 @@ fn toward(from: Point2, to: Point2, share: f64) -> Point2 {
     }
 }
 
-/// A circle as a polygon, with enough corners to stay within 0.015 mm of
-/// round (TreeSupport3D.cpp `extrude_branch`).
-fn circle(centre: Point2, radius: f64) -> ExPolygon {
+/// A branch is never drawn longer than this many times its width, however
+/// far it steps on one layer to join another.
+const MOST_OVAL: f64 = 2.0;
+
+/// A branch's outline on a layer: the cut a level plane makes through a
+/// round tube of `radius` that goes `lean` mm sideways for every `height`
+/// mm down, which is an oval lying along the lean and a circle where the
+/// branch stands straight (TreeSupport3D.cpp `extrude_branch` builds the
+/// tube and slices it). Corners enough to stay within 0.015 mm of round.
+fn outline(centre: Point2, radius: f64, lean: (f64, f64), height: f64) -> ExPolygon {
     let corners = if radius <= 0.015 {
         8
     } else {
         ((TAU / (2.0 * (1.0 - 0.015 / radius).acos())).ceil() as usize).clamp(8, 96)
     };
     let (cx, cy) = (unscaled(centre.x), unscaled(centre.y));
+    let sideways = lean.0.hypot(lean.1);
+    let (along, long) = if sideways > 1e-6 && height > 0.0 {
+        (
+            (lean.0 / sideways, lean.1 / sideways),
+            radius * (1.0 + (sideways / height).powi(2)).sqrt().min(MOST_OVAL),
+        )
+    } else {
+        ((1.0, 0.0), radius)
+    };
     ExPolygon {
         contour: Polygon {
             points: (0..corners)
                 .map(|corner| {
                     let turn = TAU * corner as f64 / corners as f64;
-                    Point2::from_mm(cx + radius * turn.cos(), cy + radius * turn.sin())
+                    let (a, b) = (long * turn.cos(), radius * turn.sin());
+                    Point2::from_mm(
+                        cx + along.0 * a - along.1 * b,
+                        cy + along.1 * a + along.0 * b,
+                    )
                 })
                 .collect(),
         },
@@ -453,6 +479,48 @@ fn grow(
             .iter()
             .map(|node| (node.at, node.to_bed))
             .collect();
+        // Which branch each leans towards: branches pair off, nearest
+        // first, so that two lean into each other and meet. (The
+        // reference joins two branches once the places each could be in
+        // overlap, which comes to the same; a branch that only followed
+        // its nearest neighbour would, in a row of them, follow one that
+        // was itself moving away.)
+        let reach = 2.0 * shape.slow * layer as f64;
+        let mut mates: Vec<Option<usize>> = vec![None; here.len()];
+        for _ in 0..4 {
+            let nearest: Vec<Option<usize>> = (0..here.len())
+                .map(|index| {
+                    if mates[index].is_some() {
+                        return None;
+                    }
+                    let (at, to_bed) = here[index];
+                    here.iter()
+                        .enumerate()
+                        .filter(|(other, (_, kind))| {
+                            *other != index && mates[*other].is_none() && *kind == to_bed
+                        })
+                        .map(|(other, (place, _))| (mm(at, *place), other))
+                        .filter(|(distance, _)| *distance <= reach)
+                        .min_by(|a, b| a.0.total_cmp(&b.0).then(a.1.cmp(&b.1)))
+                        .map(|(_, other)| other)
+                })
+                .collect();
+            let mut paired = false;
+            for index in 0..here.len() {
+                if let Some(other) = nearest[index]
+                    && nearest[other] == Some(index)
+                    && mates[index].is_none()
+                    && mates[other].is_none()
+                {
+                    mates[index] = Some(other);
+                    mates[other] = Some(index);
+                    paired = true;
+                }
+            }
+            if !paired {
+                break;
+            }
+        }
         let mut next: Vec<Node> = Vec::new();
         for index in 0..here.len() {
             let (at, to_bed) = here[index];
@@ -464,15 +532,19 @@ fn grow(
             // as much again as the branch thickens by, which takes its far
             // side no further out (TreeSupport3D.cpp `increase_areas_one_layer`).
             let step = shape.slow + (shape.radius(below_top) - shape.radius(above)).max(0.0);
-            // Towards the nearest branch of its kind, if the two can meet
-            // before they run out of layers to lean over.
-            let mate = here
-                .iter()
-                .enumerate()
-                .filter(|(other, (_, kind))| *other != index && *kind == to_bed)
-                .map(|(_, (other, _))| (mm(at, *other), *other))
-                .filter(|(distance, _)| *distance <= 2.0 * shape.slow * layer as f64)
-                .min_by(|a, b| a.0.total_cmp(&b.0));
+            // Towards the branch it is paired with; one left over leans
+            // towards the nearest of its kind, if the two can meet before
+            // they run out of layers to lean over.
+            let mate = match mates[index] {
+                Some(other) => Some((mm(at, here[other].0), here[other].0)),
+                None => here
+                    .iter()
+                    .enumerate()
+                    .filter(|(other, (_, kind))| *other != index && *kind == to_bed)
+                    .map(|(_, (other, _))| (mm(at, *other), *other))
+                    .filter(|(distance, _)| *distance <= reach)
+                    .min_by(|a, b| a.0.total_cmp(&b.0)),
+            };
             let drawn = mate.map_or(at, |(distance, other)| {
                 let share = if distance <= 2.0 * step {
                     0.5
@@ -747,8 +819,9 @@ pub(crate) fn build(
             let first = layer == 0;
             let flow = settings.flow(job.height_of(layer), first)?;
             let mut paths = Vec::new();
-            // Branches as circles; those in the first layers above where
-            // they rest on the part are dense instead of hollow.
+            // Each branch as the cut through its tube, which leans the
+            // way the branch goes on down; those in the first layers
+            // above where they rest on the part are dense, not hollow.
             let (mut hollow, mut feet) = (Vec::new(), Vec::new());
             for (node, fate) in layers[layer].iter().zip(&fates[layer]) {
                 if !fate.stands {
@@ -763,7 +836,22 @@ pub(crate) fn build(
                 let dense = fate
                     .above_rest
                     .is_some_and(|layers| layers < settings.interface_bottom_layers);
-                if dense { &mut feet } else { &mut hollow }.push(circle(node.at, radius));
+                let lean = match (layer.checked_sub(1), node.below) {
+                    (Some(lower), Some(next)) => {
+                        let to = layers[lower][next].at;
+                        (
+                            unscaled(to.x) - unscaled(node.at.x),
+                            unscaled(to.y) - unscaled(node.at.y),
+                        )
+                    }
+                    _ => (0.0, 0.0),
+                };
+                if dense { &mut feet } else { &mut hollow }.push(outline(
+                    node.at,
+                    radius,
+                    lean,
+                    job.height_of(layer),
+                ));
             }
             let mut blocked = keep_off[layer].clone();
             blocked.extend(roofs[layer].iter().cloned());
@@ -788,8 +876,26 @@ pub(crate) fn build(
             }
 
             if first {
-                // On the bed a trunk is filled in and outlined.
-                walls(&hollow, &flow, false, &mut paths)?;
+                // On the bed a trunk spreads out for a firmer footing,
+                // keeping its own small distance from the part
+                // (`raft_first_layer_expansion`, as for any support:
+                // SupportCommon.cpp `generate_raft_base`), and is filled
+                // in and outlined.
+                if settings.first_layer_expansion > 0.0 {
+                    let grown = edge_clip::offset(
+                        &hollow,
+                        scaled(settings.first_layer_expansion),
+                        Join::Round {
+                            tolerance: scaled(0.05),
+                        },
+                    )?;
+                    let part = job.slices.first().copied().unwrap_or(&[]);
+                    hollow = edge_clip::difference(
+                        &grown,
+                        &edge_clip::offset(part, scaled(settings.first_layer_gap), Join::MITER)?,
+                    )?;
+                }
+                walls(&hollow, &flow, false, false, &mut paths)?;
                 let inner = edge_clip::offset(&hollow, -flow.scaled_width(), Join::MITER)?;
                 fill(
                     &inner,
@@ -801,14 +907,17 @@ pub(crate) fn build(
                     &mut paths,
                 )?;
             } else {
-                walls(&hollow, &flow, settings.tree_wall_count >= 2, &mut paths)?;
-                if settings.tree_wall_count == 0 {
-                    let wide: Vec<ExPolygon> = hollow
-                        .iter()
-                        .filter(|island| island.area_mm2() > DOUBLE_WALL_AREA)
-                        .cloned()
-                        .collect();
-                    second_wall(&wide, &flow, &mut paths)?;
+                // Each island's innermost wall starts from a hook laid
+                // inside it, so the wall has something to start on.
+                if settings.tree_wall_count >= 2 {
+                    walls(&hollow, &flow, true, true, &mut paths)?;
+                } else {
+                    let (wide, slight): (Vec<ExPolygon>, Vec<ExPolygon>) =
+                        hollow.iter().cloned().partition(|island| {
+                            settings.tree_wall_count == 0 && island.area_mm2() > DOUBLE_WALL_AREA
+                        });
+                    walls(&wide, &flow, true, true, &mut paths)?;
+                    walls(&slight, &flow, false, true, &mut paths)?;
                 }
             }
             fill(
@@ -836,41 +945,162 @@ pub(crate) fn build(
     Ok(supports)
 }
 
-/// One wall round each island, and a second inside it when `double`.
+/// A wall's start is kept this much of a line's spacing short of its
+/// end, and its hook is this many spacings long
+/// (SupportCommon.cpp `tree_supports_generate_paths`).
+const SEAM_CLIP: f64 = 0.15;
+const HOOK_SPACINGS: f64 = 6.0;
+
+/// One wall round each island, and a second inside it when `double`. With
+/// `hooked`, the innermost starts from a hook laid inside it.
 fn walls(
     islands: &[ExPolygon],
     flow: &Flow,
     double: bool,
+    hooked: bool,
     paths: &mut Vec<ExtrusionPath>,
 ) -> Result<(), SupportError> {
+    let innermost = if hooked { Start::Hooked } else { Start::Whole };
     if double {
-        second_wall(islands, flow, paths)?;
+        // The outer of two is cut short of its start all the same.
+        let outer = if hooked { Start::Short } else { Start::Whole };
+        loops(islands, flow.scaled_width() * 3 / 2, flow, innermost, paths)?;
+        return loops(islands, flow.scaled_width() / 2, flow, outer, paths);
     }
-    loops(islands, flow.scaled_width() / 2, flow, paths)
+    loops(islands, flow.scaled_width() / 2, flow, innermost, paths)
 }
 
-fn second_wall(
-    islands: &[ExPolygon],
-    flow: &Flow,
-    paths: &mut Vec<ExtrusionPath>,
-) -> Result<(), SupportError> {
-    loops(islands, flow.scaled_width() * 3 / 2, flow, paths)
+/// How a wall begins.
+#[derive(Clone, Copy, PartialEq)]
+enum Start {
+    /// A closed loop.
+    Whole,
+    /// Cut a little short of where it began.
+    Short,
+    /// Cut short, and begun from a hook laid inside it.
+    Hooked,
 }
 
-/// The outlines of some islands, `inset` in from their edges, as closed paths.
+fn clockwise(points: &mut [Point2]) {
+    let doubled: i128 = points
+        .iter()
+        .zip(points.iter().cycle().skip(1))
+        .map(|(a, b)| a.x as i128 * b.y as i128 - b.x as i128 * a.y as i128)
+        .sum();
+    if doubled > 0 {
+        points.reverse();
+    }
+}
+
+/// The outlines of some islands, `inset` in from their edges. Whole, each
+/// is a closed path. Hooked, each is cut short of its start and begins
+/// with a hook: from a little way round the next outline in, across to
+/// the wall, so the wall does not start on nothing.
 fn loops(
     islands: &[ExPolygon],
     inset: i64,
     flow: &Flow,
+    start: Start,
     paths: &mut Vec<ExtrusionPath>,
 ) -> Result<(), SupportError> {
+    let hooked = start == Start::Hooked;
     for island in edge_clip::offset(islands, -inset, Join::MITER)? {
+        // Where a hook may lie: one line's width further in.
+        let mut within: Vec<Vec<Point2>> = Vec::new();
+        if hooked {
+            for inner in edge_clip::offset(
+                std::slice::from_ref(&island),
+                -flow.scaled_width(),
+                Join::MITER,
+            )? {
+                for ring in inner.rings() {
+                    if ring.points.len() >= 3 {
+                        let mut points = ring.points.clone();
+                        clockwise(&mut points);
+                        within.push(points);
+                    }
+                }
+            }
+        }
         for ring in island.rings() {
             if ring.points.len() < 3 {
                 continue;
             }
             let mut points = ring.points.clone();
+            if start == Start::Whole {
+                points.push(points[0]);
+                paths.push(ExtrusionPath {
+                    points,
+                    role: Role::Support,
+                    flow: *flow,
+                });
+                continue;
+            }
+            // Clockwise, and short of its own start.
+            clockwise(&mut points);
             points.push(points[0]);
+            let mut spare = SEAM_CLIP * flow.spacing;
+            while points.len() >= 2 {
+                let (end, before) = (points[points.len() - 1], points[points.len() - 2]);
+                let length = mm(end, before);
+                if length > spare {
+                    let last = points.len() - 1;
+                    points[last] = toward(end, before, spare / length);
+                    break;
+                }
+                spare -= length;
+                points.pop();
+            }
+            if points.len() < 2 {
+                continue;
+            }
+            // The hook starts at the nearest place on the next outline
+            // in, if that is within three lines' width, and runs on
+            // round it.
+            let seam = points[points.len() - 1];
+            let mut nearest: Option<(f64, usize, usize, Point2)> = None;
+            for (which, inner) in within.iter().enumerate() {
+                for index in 0..inner.len() {
+                    let (a, b) = (inner[index], inner[(index + 1) % inner.len()]);
+                    let (vx, vy) = ((b.x - a.x) as f64, (b.y - a.y) as f64);
+                    let squared = vx * vx + vy * vy;
+                    let share = if squared == 0.0 {
+                        0.0
+                    } else {
+                        (((seam.x - a.x) as f64 * vx + (seam.y - a.y) as f64 * vy) / squared)
+                            .clamp(0.0, 1.0)
+                    };
+                    let foot = toward(a, b, share);
+                    let distance = mm(seam, foot);
+                    if nearest.is_none_or(|(least, ..)| distance < least) {
+                        nearest = Some((distance, which, index, foot));
+                    }
+                }
+            }
+            if let Some((distance, which, index, foot)) = nearest
+                && distance < 3.0 * flow.width
+            {
+                let inner = &within[which];
+                points.push(foot);
+                let mut left = HOOK_SPACINGS * flow.spacing - distance;
+                let mut from = foot;
+                for step in 1..=inner.len() {
+                    if left <= 0.0 {
+                        break;
+                    }
+                    let to = inner[(index + step) % inner.len()];
+                    let length = mm(from, to);
+                    if length >= left {
+                        points.push(toward(from, to, left / length));
+                        break;
+                    }
+                    points.push(to);
+                    left -= length;
+                    from = to;
+                }
+            }
+            // The hook first, then the wall.
+            points.reverse();
             paths.push(ExtrusionPath {
                 points,
                 role: Role::Support,
@@ -1038,5 +1268,157 @@ mod tests {
             let (x, y) = (unscaled(node.at.x), unscaled(node.at.y));
             assert!(!(-0.3..10.3).contains(&x) || !(-0.3..10.3).contains(&y));
         }
+    }
+
+    #[test]
+    fn a_row_of_branches_pairs_off_and_halves() {
+        // Six tips in a row, the usual 2.85 mm apart, with nothing in
+        // their way. Each leaning towards its nearest neighbour, the row
+        // would shuffle along and never close up.
+        let part = vec![Vec::<ExPolygon>::new(); 60];
+        let slices: Vec<&[ExPolygon]> = part.iter().map(Vec::as_slice).collect();
+        let settings = SupportSettings {
+            enabled: true,
+            ..SupportSettings::default()
+        };
+        let job = Job {
+            slices: &slices,
+            first_layer_height: 0.2,
+            layer_height: 0.2,
+            settings: &settings,
+            gap_above: 1,
+            gap_below: 1,
+        };
+        let shape = Shape::new(&job, &settings.flow(0.2, false).unwrap());
+        let keep_off: Vec<Vec<ExPolygon>> =
+            (0..50).map(|layer| job.keep_off(layer).unwrap()).collect();
+        let mut volumes = Volumes {
+            keep_off: &keep_off,
+            radii: &shape.classes,
+            lean: shape.slow,
+            classes: shape.classes.iter().map(|_| None).collect(),
+        };
+        let mut tips = vec![Vec::new(); 50];
+        for step in 0..6 {
+            tips[49].push(Tip {
+                at: Point2::from_mm(f64::from(step) * 2.85, 0.0),
+                below_top: 0,
+                source: 0,
+            });
+        }
+        let Grown { layers, .. } = grow(&tips, &shape, &mut volumes, true).unwrap();
+        assert_eq!(layers[49].len(), 6);
+        // Each pair closes 2.85 mm at a fifth of a millimetre a layer
+        // from each side while the tips thicken, and less after.
+        assert_eq!(layers[49 - 12].len(), 3);
+        let pairs: Vec<f64> = layers[49 - 12]
+            .iter()
+            .map(|node| unscaled(node.at.x))
+            .collect();
+        for (pair, x) in pairs.iter().enumerate() {
+            // Each between the two tips it came from.
+            let left = pair as f64 * 5.7;
+            assert!((left..left + 2.85).contains(x), "{pairs:?}");
+        }
+        // And the three go on to become fewer still.
+        assert!(layers[0].len() < 3, "{} trunks", layers[0].len());
+    }
+
+    #[test]
+    fn a_leaning_branch_is_cut_as_an_oval() {
+        let at = Point2::from_mm(10.0, 5.0);
+        let extent = |shape: &ExPolygon| {
+            let points = &shape.contour.points;
+            let (xs, ys): (Vec<f64>, Vec<f64>) = points
+                .iter()
+                .map(|p| (unscaled(p.x) - 10.0, unscaled(p.y) - 5.0))
+                .unzip();
+            (
+                xs.iter().fold(0.0_f64, |most, x| most.max(x.abs())),
+                ys.iter().fold(0.0_f64, |most, y| most.max(y.abs())),
+            )
+        };
+        // Standing straight, a circle.
+        let (across, along) = extent(&outline(at, 1.0, (0.0, 0.0), 0.2));
+        assert!((across - 1.0).abs() < 1e-6 && (along - 1.0).abs() < 0.02);
+        // Going 0.2 mm sideways in a 0.2 mm layer it leans at 45 degrees,
+        // and a level cut through it is longer by the square root of two
+        // the way it leans, and no wider.
+        let (across, along) = extent(&outline(at, 1.0, (0.0, 0.2), 0.2));
+        assert!((across - 1.0).abs() < 0.02, "{across}");
+        assert!((along - std::f64::consts::SQRT_2).abs() < 1e-6, "{along}");
+        // The same the other way about.
+        let (along, across) = extent(&outline(at, 1.0, (-0.2, 0.0), 0.2));
+        assert!((across - 1.0).abs() < 0.02 && (along - std::f64::consts::SQRT_2).abs() < 1e-6);
+        // However far it steps to join another, never more than twice as long.
+        let (_, along) = extent(&outline(at, 1.0, (0.0, 5.0), 0.2));
+        assert!((along - 2.0).abs() < 1e-6);
+    }
+
+    #[test]
+    fn a_branch_wall_starts_from_a_hook_inside_it() {
+        let flow = Flow::new(0.42, 0.2, 0.4).unwrap();
+        let island = [square(0.0, 0.0, 6.0, 6.0)];
+        let length = |path: &ExtrusionPath| path.length_mm();
+        // Plain, a closed loop half a line in from the edge.
+        let mut plain = Vec::new();
+        walls(&island, &flow, false, false, &mut plain).unwrap();
+        assert_eq!(plain.len(), 1);
+        assert_eq!(plain[0].points.first(), plain[0].points.last());
+        assert!((length(&plain[0]) - 4.0 * 5.58).abs() < 1e-6);
+        // Hooked, it stops 0.15 of a spacing short of its start, and
+        // before it comes six spacings of hook, the first of them the
+        // step across from the next outline in.
+        let mut hooked = Vec::new();
+        walls(&island, &flow, false, true, &mut hooked).unwrap();
+        assert_eq!(hooked.len(), 1);
+        let path = &hooked[0];
+        let wanted = 4.0 * 5.58 - 0.15 * flow.spacing + 6.0 * flow.spacing;
+        assert!(
+            (length(path) - wanted).abs() < 1e-3,
+            "{} for {wanted}",
+            length(path)
+        );
+        // It starts inside the loop, a line's width in or more.
+        let start = path.points[0];
+        let (x, y) = (unscaled(start.x), unscaled(start.y));
+        assert!(
+            (0.62..=5.38).contains(&x) && (0.62..=5.38).contains(&y),
+            "{x} x {y}"
+        );
+        // And ends on the loop, beside where the loop began.
+        let end = path.points[path.points.len() - 1];
+        let on_loop = |p: Point2| {
+            let (x, y) = (unscaled(p.x), unscaled(p.y));
+            [x - 0.21, 5.79 - x, y - 0.21, 5.79 - y]
+                .iter()
+                .any(|gap| gap.abs() < 1e-6)
+        };
+        assert!(on_loop(end));
+        let hook = path
+            .points
+            .iter()
+            .position(|p| on_loop(*p))
+            .expect("the wall follows the hook");
+        assert!(mm(path.points[hook], end) < 0.15 * flow.spacing + 1e-6);
+        // With two walls the hook goes with the inner one, and the
+        // outer is cut short of its start all the same.
+        let mut two = Vec::new();
+        walls(&island, &flow, true, true, &mut two).unwrap();
+        assert_eq!(two.len(), 2);
+        assert!(length(&two[0]) < length(&two[1]));
+        assert!((length(&two[1]) - (4.0 * 5.58 - 0.15 * flow.spacing)).abs() < 1e-3);
+        // An island too small for anything inside it gets its wall and no hook.
+        let mut small = Vec::new();
+        walls(
+            &[square(0.0, 0.0, 1.0, 1.0)],
+            &flow,
+            false,
+            true,
+            &mut small,
+        )
+        .unwrap();
+        assert_eq!(small.len(), 1);
+        assert!((length(&small[0]) - (4.0 * 0.58 - 0.15 * flow.spacing)).abs() < 1e-3);
     }
 }

@@ -129,6 +129,10 @@ pub use edge_time::Model as TimeModel;
 /// the tool taken up and the temperature it prints at.
 const CHANGE_MARK: &[u8] = b";_TOOL_CHANGE ";
 
+/// A support wall's hook is six line spacings long, so its two ends are
+/// never further apart than a little more than that.
+const HOOK_REACH: f64 = 6.5;
+
 /// How fast a tool that has rammed its filament is taken clear of it, in
 /// mm a second (WipeTower2.cpp `toolchange_Unload`).
 const RAM_PARK_SPEED: f64 = 40.0;
@@ -1295,10 +1299,18 @@ impl Writer<'_> {
                 let nearest = self.nearest(remaining.iter().map(|path| ends(path).into_iter()));
                 let path = remaining.remove(nearest);
                 let [head, tail] = ends(path);
-                let reversed = self
-                    .state
-                    .position
-                    .is_some_and(|at| distance(at, tail) < distance(at, head));
+                // A tree branch's wall is laid hook first, never from its
+                // far end (SupportCommon.cpp `tree_supports_generate_paths`).
+                // It is known by its ends: an open support line that comes
+                // back to within its hook's length of where it began.
+                let hooked = path.role == Role::Support
+                    && head != tail
+                    && distance(head, tail) <= HOOK_REACH * path.flow.spacing;
+                let reversed = !hooked
+                    && self
+                        .state
+                        .position
+                        .is_some_and(|at| distance(at, tail) < distance(at, head));
                 let mut points: Vec<Point2> = path.points.clone();
                 if reversed {
                     points.reverse();

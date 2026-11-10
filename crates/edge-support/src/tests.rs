@@ -446,7 +446,12 @@ fn tall_mushroom() -> Vec<Vec<ExPolygon>> {
 }
 
 fn is_loop(path: &ExtrusionPath) -> bool {
-    path.points.len() > 3 && path.points[0] == path.points[path.points.len() - 1]
+    // A branch's wall: closed on the bed, and above it a loop that
+    // starts from a hook inside itself, so that its two ends are no
+    // further apart than the hook is long.
+    let (first, last) = (path.points[0], path.points[path.points.len() - 1]);
+    let apart = ((first.x - last.x) as f64).hypot((first.y - last.y) as f64) / 1e6;
+    path.points.len() > 4 && apart <= 6.5 * path.flow.spacing
 }
 
 #[test]
@@ -503,6 +508,37 @@ fn a_tree_holds_up_a_cap_on_branches_that_join_into_trunks() {
     // On the bed the trunks are outlined and filled in.
     assert!(found[0].iter().any(is_loop) && found[0].iter().any(|path| !is_loop(path)));
     assert!(found[0].iter().all(|path| path.role == Role::Support));
+}
+
+#[test]
+fn a_tree_spreads_out_on_the_bed() {
+    let extent = |layer: &[ExtrusionPath]| {
+        points(layer).fold(
+            [f64::MAX, f64::MAX, f64::MIN, f64::MIN],
+            |[a, b, c, d], (x, y)| [a.min(x), b.min(y), c.max(x), d.max(y)],
+        )
+    };
+    let found = supports(&tall_mushroom(), &tree());
+    let (bed, above) = (extent(&found[0]), extent(&found[1]));
+    // The first layer reaches about the 2 mm of `raft_first_layer_expansion`
+    // further out all round than the one above it.
+    for (on_bed, over, outward) in [
+        (bed[0], above[0], -1.0),
+        (bed[1], above[1], -1.0),
+        (bed[2], above[2], 1.0),
+        (bed[3], above[3], 1.0),
+    ] {
+        let further = (on_bed - over) * outward;
+        assert!((1.7..2.4).contains(&further), "{further}");
+    }
+    // With none asked for it reaches no further than the flare of the feet.
+    let plain = SupportSettings {
+        first_layer_expansion: 0.0,
+        ..tree()
+    };
+    let found = supports(&tall_mushroom(), &plain);
+    let (bed, above) = (extent(&found[0]), extent(&found[1]));
+    assert!((above[0] - bed[0]).abs() < 0.5);
 }
 
 #[test]
