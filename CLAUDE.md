@@ -27,7 +27,10 @@ build lives at
 `~/Dev/EdgeSlicer/build/arm64/Snapmaker_Orca/EdgeSlicer.app/Contents/MacOS/EdgeSlicer`.
 `tools/make_fixture.py` writes small parts to compare on (supports, brim).
 The tool gives the reference its own empty data directory and `--no-hub`, so
-it does not touch the user's settings or a running hub. Run it after a change
+it does not touch the user's settings or a running hub. The build it runs
+must be of the commit `reference/EdgeSlicer` is pinned to: check with
+`git -C ~/Dev/EdgeSlicer log -1` against `git -C reference/EdgeSlicer log -1`
+before trusting a difference, and read the pinned source when they disagree. Run it after a change
 to a stage and say in the PR what moved.
 
 ## Rules

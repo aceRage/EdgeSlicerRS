@@ -39,10 +39,38 @@ pub fn paths(
     min_length: Coord,
     max_link: Coord,
 ) -> Vec<Vec<Point2>> {
-    if spacing <= 0 {
+    paths_from(area, spacing as f64, 0.0, angles, min_length, max_link)
+}
+
+/// How far across its lines an area reaches, in the frame turned to
+/// `angle`: the least and the greatest of its points' distances across.
+pub fn extent_across(area: &ExPolygon, angle: f64) -> Option<(f64, f64)> {
+    let (sin, cos) = angle.sin_cos();
+    area.contour
+        .points
+        .iter()
+        .map(|p| p.y as f64 * cos - p.x as f64 * sin)
+        .fold(None, |extent, v| match extent {
+            None => Some((v, v)),
+            Some((low, high)) => Some((f64::min(low, v), f64::max(high, v))),
+        })
+}
+
+/// As [`paths`], with the lines on a grid of the caller's choosing: a
+/// line lies `first` across from the origin, in the frame turned to each
+/// angle, and the rest every `spacing` from it. Solid fill is laid this
+/// way, fitted to the area it fills.
+pub fn paths_from(
+    area: &ExPolygon,
+    spacing: f64,
+    first: f64,
+    angles: &[f64],
+    min_length: Coord,
+    max_link: Coord,
+) -> Vec<Vec<Point2>> {
+    if spacing <= 0.0 {
         return Vec::new();
     }
-    let spacing = spacing as f64;
     let rings: Vec<&Polygon> = area.rings().collect();
     let mut ring_lengths = vec![0.0f64; rings.len()];
     let mut crossings: Vec<Crossing> = Vec::new();
@@ -64,10 +92,10 @@ pub fn paths(
                 // A row crosses this edge when exactly one end is at or
                 // below it, so a row through a vertex counts the two edges
                 // meeting there once between them, not twice or never.
-                let first = (va.min(vb) / spacing).ceil() as i64;
-                let end = (va.max(vb) / spacing).ceil() as i64;
-                for row in first..end {
-                    let v = row as f64 * spacing;
+                let from = ((va.min(vb) - first) / spacing).ceil() as i64;
+                let end = ((va.max(vb) - first) / spacing).ceil() as i64;
+                for row in from..end {
+                    let v = first + row as f64 * spacing;
                     let t = (v - va) / (vb - va);
                     let u = ua + t * (ub - ua);
                     crossings.push(Crossing {

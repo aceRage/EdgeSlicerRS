@@ -72,7 +72,9 @@ Known gaps: painted triangles, per-object setting overrides, typed settings
 - Infill: each layer's inside is split into top, bottom, bridge, solid
   shell and sparse areas (`top_shell_layers`, `bottom_shell_layers`,
   `sparse_infill_density`, `minimum_sparse_infill_area`) and filled with
-  lines, or a grid for sparse areas. The first solid layer over sparse
+  lines, or a grid for sparse areas. Solid fill is fitted to the area it
+  fills: its lines are spread, by up to a fifth, so that a whole number of
+  them fills the width, and each is made as wide as its share. The first solid layer over sparse
   fill is laid as an internal bridge: round threads across the lines
   beneath, at `internal_bridge_speed`. Fill over air takes `bridge_flow`
   and `bridge_density`, and runs along the edges it has nothing beside,
@@ -196,8 +198,7 @@ started. Overhangs are measured as the reference measures them but probed
 at fixed steps, so a wall's speed changes at slightly different places.
 Infill is a first working version, not a port: fill lines are joined along
 the walls nearest-first but not ordered (no monotonic) and get no anchors
-where they stay unjoined, solid lines are not fitted to the region's
-width, a bridge reaches 0.4 mm onto each support where the reference's
+where they stay unjoined, a bridge reaches 0.4 mm onto each support where the reference's
 reaches 0.8 mm, internal bridges are not run out to the
 sparse lines that carry them (they come 5 to 9% short of the
 reference's), narrow parts of top and bottom surfaces get no gap fill
@@ -233,6 +234,21 @@ target/release/edge-parity reference/EdgeSlicer/tests/data/cylinder_drawcut.3mf 
 It slices the project with both, reads both G-code files, and reports time,
 filament, path length by feature, and how far walls and layer extents differ
 layer by layer; `--svg` draws one layer of both toolpaths over each other.
+It also sets side by side how each feature is printed: speed, line width,
+plastic per millimetre, acceleration and fan, on the first layer and on
+the rest, with a mark where the two differ; and the print time at the
+speeds written, and the temperatures set along the way. A wall printed
+five times too fast shows there and nowhere in the lengths.
+
+The reference binary has to be built from the commit `reference/EdgeSlicer`
+is pinned to, or the comparison is with something older than the source
+this engine is written against. On the Mac mini on 2026-11-10 it was not:
+the build dated from 28 October (`cb41c97a2e`), 948 commits behind the
+pin, and every figure below is against that build. One difference it
+shows is its own: it prints bridges at the last overhang speed when
+`slowdown_for_curled_perimeters` is on, which the pinned source has since
+changed to the bridge speed, as this engine has it. The table of defaults
+in `edge-config` was made with the same build.
 The reference takes about two seconds to start and exit whatever it is asked
 to do, so its time is also taken from its own log.
 

@@ -119,6 +119,12 @@ pub struct PrintSettings {
     pub filament_diameter: f64,
     pub filament_flow_ratio: f64,
     pub print_flow_ratio: f64,
+    /// Further shares of the plastic for particular kinds of line
+    /// (GCode.cpp `_extrude`).
+    pub top_solid_infill_flow_ratio: f64,
+    pub bottom_solid_infill_flow_ratio: f64,
+    pub internal_bridge_flow: f64,
+    pub brim_flow_ratio: f64,
     /// In g/cm³, when the filament profile gives one.
     pub filament_density: Option<f64>,
 
@@ -267,6 +273,10 @@ impl Default for PrintSettings {
             filament_diameter: 1.75,
             filament_flow_ratio: 1.0,
             print_flow_ratio: 1.0,
+            top_solid_infill_flow_ratio: 1.0,
+            bottom_solid_infill_flow_ratio: 1.0,
+            internal_bridge_flow: 1.0,
+            brim_flow_ratio: 1.0,
             filament_density: None,
             nozzle_temperature: 200.0,
             nozzle_temperature_initial_layer: 200.0,
@@ -659,6 +669,10 @@ impl PrintSettings {
             filament_diameter: number("filament_diameter", defaults.filament_diameter)?,
             filament_flow_ratio: number("filament_flow_ratio", defaults.filament_flow_ratio)?,
             print_flow_ratio: number("print_flow_ratio", defaults.print_flow_ratio)?,
+            top_solid_infill_flow_ratio: number("top_solid_infill_flow_ratio", 1.0)?,
+            bottom_solid_infill_flow_ratio: number("bottom_solid_infill_flow_ratio", 1.0)?,
+            internal_bridge_flow: number("internal_bridge_flow", 1.0)?,
+            brim_flow_ratio: number("brim_flow_ratio", 1.0)?,
             filament_density: first("filament_density")?.filter(|density| *density > 0.0),
             nozzle_temperature: number("nozzle_temperature", defaults.nozzle_temperature)?,
             nozzle_temperature_initial_layer: number(

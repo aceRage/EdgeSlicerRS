@@ -89,6 +89,12 @@ impl Flow {
         Self::new(width, height, widths.nozzle_diameter)
     }
 
+    /// The same layer and nozzle with lines this far apart, each as wide
+    /// as fills that spacing (`Flow::with_spacing`).
+    pub fn with_spacing(&self, spacing: f64) -> Result<Self, FlowError> {
+        self.with_width(spacing + self.height * (1.0 - 0.25 * PI))
+    }
+
     /// The same layer and nozzle with a different line width.
     pub fn with_width(&self, width: f64) -> Result<Self, FlowError> {
         Self::new(width, self.height, self.nozzle_diameter)

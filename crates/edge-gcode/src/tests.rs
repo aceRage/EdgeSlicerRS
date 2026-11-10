@@ -1696,3 +1696,49 @@ fn a_wall_over_air_is_as_wide_as_an_inner_wall() {
         "{widths:?}"
     );
 }
+
+#[test]
+fn some_kinds_of_line_have_a_share_of_their_own() {
+    let fill = [
+        line((0.0, 0.0), (10.0, 0.0), Role::SolidInfill),
+        line((0.0, 1.0), (10.0, 1.0), Role::InternalBridge),
+        line((0.0, 2.0), (10.0, 2.0), Role::TopSolidInfill),
+        line((0.0, 3.0), (10.0, 3.0), Role::BottomSurface),
+    ];
+    let loops = [ExtrusionLoop {
+        role: Role::Brim,
+        ..wall(20.0, 0.0, 10.0, 0)
+    }];
+    let settings = PrintSettings {
+        internal_bridge_flow: 0.95,
+        top_solid_infill_flow_ratio: 0.9,
+        bottom_solid_infill_flow_ratio: 1.1,
+        brim_flow_ratio: 0.5,
+        ..basic()
+    };
+    let layer = Layer {
+        around: &loops,
+        ..one_layer(&[], &[], &fill)[0]
+    };
+    let (text, _) = print(&[layer], &settings);
+    // Filament fed over each kind's first 10 mm move.
+    let fed = |kind: &str| -> f64 {
+        let after = text.split(&format!(";TYPE:{kind}\n")).nth(1).unwrap();
+        moves(after)
+            .find_map(|line| word(line, 'E').filter(|feed| *feed > 0.0))
+            .unwrap()
+    };
+    let plain = fed("Internal solid infill");
+    for (kind, share) in [
+        ("Internal Bridge", 0.95),
+        ("Top surface", 0.9),
+        ("Bottom surface", 1.1),
+        ("Brim", 0.5),
+    ] {
+        assert!(
+            (fed(kind) / plain - share).abs() < 1e-3,
+            "{kind}: {} against {plain}",
+            fed(kind)
+        );
+    }
+}

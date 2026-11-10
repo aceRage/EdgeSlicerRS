@@ -7,6 +7,7 @@ use std::{
 };
 
 use edge_3mf::Project;
+use edge_extrusion::Role;
 use edge_gcode::{Layer, PrintSettings};
 use edge_geom::ExPolygon;
 use edge_infill::InfillSettings;
@@ -170,7 +171,16 @@ fn every_reference_project_exports_well_formed_gcode_that_adds_up() {
             + fills
                 .iter()
                 .flatten()
-                .map(|line| line.volume_mm3())
+                .map(|line| {
+                    // Some kinds of line carry a share of their own.
+                    line.volume_mm3()
+                        * match line.role {
+                            Role::TopSolidInfill => print.top_solid_infill_flow_ratio,
+                            Role::BottomSurface => print.bottom_solid_infill_flow_ratio,
+                            Role::InternalBridge => print.internal_bridge_flow,
+                            _ => 1.0,
+                        }
+                })
                 .sum::<f64>();
         let expected = planned * print.filament_flow_ratio * print.print_flow_ratio;
         if (summary.filament_mm3 - expected).abs() > 1e-6 * expected.max(1.0) {

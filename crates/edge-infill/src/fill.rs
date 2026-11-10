@@ -123,12 +123,34 @@ pub fn fill(
             Role::SparseInfill => params.sparse_link_max,
             _ => SOLID_LINK_SPACINGS * flow.spacing,
         };
+        // Solid fill that is not a bridge is fitted to the area: its
+        // lines are spread, by up to a fifth, so that a whole number of
+        // them fills the width with none left over, and each is made as
+        // wide as its share (FillBase.cpp `_adjust_solid_spacing`).
+        let fitted = matches!(
+            surface.kind,
+            SurfaceKind::Top | SurfaceKind::Bottom | SurfaceKind::InternalSolid
+        );
         // All of a surface's directions are joined together, so a line can
         // link to a crossing one as readily as to its own neighbour.
         for area in &inside {
+            let (mut pitch, mut first, mut flow) = (scaled(spacing) as f64, 0.0, flow);
+            if fitted && let Some((low, high)) = lines::extent_across(area, angles[0]) {
+                let intervals = ((high - low) / pitch).floor();
+                if intervals >= 1.0 {
+                    pitch = ((high - low) / intervals).min((1.2 * pitch + 0.5).floor());
+                }
+                first = low + pitch / 2.0;
+                // A pitch no line can be made for leaves the fill as it was.
+                match flow.with_spacing(pitch / edge_geom::UNITS_PER_MM) {
+                    Ok(wider) => flow = wider,
+                    Err(_) => (pitch, first) = (scaled(spacing) as f64, 0.0),
+                }
+            }
             // A stub shorter than half its own width is a blob, not a line.
             let min_length = flow.scaled_width() / 2;
-            for points in lines::paths(area, scaled(spacing), angles, min_length, scaled(max_link))
+            for points in
+                lines::paths_from(area, pitch, first, angles, min_length, scaled(max_link))
             {
                 paths.push(ExtrusionPath { points, role, flow });
             }
@@ -190,14 +212,17 @@ mod tests {
     fn solid_fill_lays_about_the_area_in_plastic() {
         let params = params(Pattern::Grid, 0.2);
         let paths = fill(&[surface(SurfaceKind::InternalSolid, 40.0)], 0, &params).unwrap();
+        // Every line is as wide as the others, and no narrower than set.
+        let flow = paths[0].flow;
         assert!(
             paths
                 .iter()
-                .all(|path| path.role == Role::SolidInfill && path.flow == params.solid)
+                .all(|path| path.role == Role::SolidInfill && path.flow == flow)
         );
+        assert!(flow.width >= params.solid.width && flow.width < 1.2 * params.solid.width);
         // Lines one spacing apart cover the area once; the short links
         // joining them along the edges add a little.
-        let covered = length(&paths) * params.solid.spacing;
+        let covered = length(&paths) * flow.spacing;
         assert!(
             (covered / 1600.0 - 1.0).abs() < 0.03,
             "covered {covered} of 1600 mm²"
@@ -218,10 +243,11 @@ mod tests {
     fn roles_and_flows_follow_the_surface() {
         let params = params(Pattern::Grid, 0.2);
         let role = |kind| fill(&[surface(kind, 10.0)], 0, &params).unwrap()[0].clone();
-        assert_eq!(
-            (role(SurfaceKind::Top).role, role(SurfaceKind::Top).flow),
-            (Role::TopSolidInfill, params.top)
-        );
+        let top = role(SurfaceKind::Top);
+        assert_eq!(top.role, Role::TopSolidInfill);
+        // The top's own width, spread a little to fit the area.
+        assert!(top.flow.width >= params.top.width && top.flow.width < params.top.width * 1.05);
+        assert_eq!(role(SurfaceKind::Sparse).flow, params.sparse);
         assert_eq!(role(SurfaceKind::Bottom).role, Role::BottomSurface);
         assert_eq!(role(SurfaceKind::Bridge).role, Role::BridgeInfill);
         assert_eq!(role(SurfaceKind::Sparse).role, Role::SparseInfill);
@@ -317,5 +343,62 @@ mod tests {
         let first = &lines[0].points;
         let (dx, dy) = (first[1].x - first[0].x, first[1].y - first[0].y);
         assert_eq!(dx.abs(), dy.abs(), "at 45 degrees");
+    }
+
+    #[test]
+    fn solid_lines_are_spread_to_fill_the_width_exactly() {
+        // Lines along x across a 10 mm square, 0.407 mm apart as set.
+        let base = FillParams {
+            solid_angle: 0.0,
+            ..params(Pattern::Grid, 0.2)
+        };
+        let lines = fill(&[surface(SurfaceKind::InternalSolid, 10.0)], 0, &base).unwrap();
+        let flow = lines[0].flow;
+        let mut rows: Vec<f64> = lines
+            .iter()
+            .flat_map(|line| line.points.windows(2))
+            .filter(|pair| pair[0].y == pair[1].y && pair[0].x != pair[1].x)
+            .map(|pair| pair[0].y as f64 / 1e6)
+            .collect();
+        rows.sort_by(f64::total_cmp);
+        rows.dedup();
+        // The area is filled from 0.02 mm inside each edge: 24 lines fit
+        // where 24.5 of the width set would, each a little wider for it.
+        let (low, high) = (0.05 * base.solid.spacing, 10.0 - 0.05 * base.solid.spacing);
+        assert_eq!(
+            rows.len(),
+            ((high - low) / base.solid.spacing).floor() as usize
+        );
+        let pitch = (high - low) / rows.len() as f64;
+        assert!(
+            (flow.spacing - pitch).abs() < 1e-6,
+            "{} against {pitch}",
+            flow.spacing
+        );
+        assert!(pitch > base.solid.spacing && pitch < 1.2 * base.solid.spacing);
+        // The first and last lines lie half a pitch inside the area, so
+        // nothing is left unfilled along either edge.
+        assert!((rows[0] - (low + pitch / 2.0)).abs() < 1e-5);
+        assert!((rows[rows.len() - 1] - (high - pitch / 2.0)).abs() < 1e-5);
+        assert!(
+            rows.windows(2)
+                .all(|pair| (pair[1] - pair[0] - pitch).abs() < 1e-5)
+        );
+
+        // An area too narrow for the fit to hold is spread by a fifth and
+        // no more.
+        let sliver = Surface {
+            area: ExPolygon {
+                contour: Polygon {
+                    points: [(0.0, 0.0), (10.0, 0.0), (10.0, 0.55), (0.0, 0.55)]
+                        .map(|(x, y)| Point2::from_mm(x, y))
+                        .to_vec(),
+                },
+                holes: Vec::new(),
+            },
+            ..surface(SurfaceKind::InternalSolid, 1.0)
+        };
+        let lines = fill(&[sliver], 0, &base).unwrap();
+        assert!((lines[0].flow.spacing / base.solid.spacing - 1.2).abs() < 1e-3);
     }
 }
