@@ -55,6 +55,7 @@ fn block(project: Option<&Settings>) -> Loaded {
         painted: Vec::new(),
         settings: project.cloned(),
         unread_paint: Vec::new(),
+        precise_seams: false,
         objects: Vec::new(),
         negatives: Vec::new(),
         plate: 0,

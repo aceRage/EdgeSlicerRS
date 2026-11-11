@@ -31,6 +31,9 @@ pub struct Loaded {
     pub settings: Option<Settings>,
     /// For a project, what is painted on its models that is not read.
     pub unread_paint: Vec<&'static str>,
+    /// Whether anything to slice has a Precise Seam part, which is not
+    /// followed.
+    pub precise_seams: bool,
     /// For a project, each object on the plate by itself, for what depends
     /// on which object is which. Empty for a bare model, which is one object.
     pub objects: Vec<Mesh>,
@@ -247,6 +250,7 @@ pub(crate) fn lone(path: &Path, solid: Mesh) -> Result<Loaded, Failure> {
         painted: Vec::new(),
         settings: None,
         unread_paint: Vec::new(),
+        precise_seams: false,
         objects: Vec::new(),
         negatives: Vec::new(),
         plate: 0,
@@ -299,6 +303,7 @@ pub(crate) fn placed(
         painted,
         settings,
         unread_paint: project.unread_paint.clone(),
+        precise_seams: project.has_precise_seams(plate),
         objects,
         negatives,
         plate: plate.unwrap_or(0),

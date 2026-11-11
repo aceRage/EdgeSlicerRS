@@ -97,6 +97,12 @@ pub enum PartKind {
     Modifier,
     SupportBlocker,
     SupportEnforcer,
+    /// Where the reference's Precise Seam puts a seam, or keeps one in or
+    /// out (GCode/PreciseSeam.cpp; Model.cpp `type_from_string`,
+    /// `precise_seam_center` to `precise_seam_neutral`): helper geometry,
+    /// not printed. Not followed here: the seams near it are placed as
+    /// any other, and a project with one says so.
+    PreciseSeam,
 }
 
 impl PartKind {
@@ -107,9 +113,24 @@ impl PartKind {
             "modifier_part" => Self::Modifier,
             "support_blocker" => Self::SupportBlocker,
             "support_enforcer" => Self::SupportEnforcer,
+            _ if is_precise_seam(subtype) => Self::PreciseSeam,
             _ => Self::Normal,
         }
     }
+}
+
+/// Whether a part type, as the reference writes it, is one of Precise
+/// Seam's.
+pub(crate) fn is_precise_seam(kind: &str) -> bool {
+    matches!(
+        kind,
+        "precise_seam_center"
+            | "precise_seam_left"
+            | "precise_seam_right"
+            | "precise_seam_enforced"
+            | "precise_seam_blocked"
+            | "precise_seam_neutral"
+    )
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -381,6 +402,13 @@ impl Project {
             .collect()
     }
 
+    /// Whether anything on a plate (or in the whole project for `None`)
+    /// has a Precise Seam part, which is not followed.
+    pub fn has_precise_seams(&self, plate: Option<usize>) -> bool {
+        self.printable(plate)
+            .any(|(object, _)| (object.parts.iter()).any(|part| part.kind == PartKind::PreciseSeam))
+    }
+
     /// The printable instances on a plate, each with its object.
     fn printable(&self, plate: Option<usize>) -> impl Iterator<Item = (&Object, &Instance)> {
         let selected: Vec<InstanceRef> = match plate {
@@ -589,7 +617,7 @@ fn parts(
         for (name, mesh, paint, transform) in leaves {
             parts.push(Part {
                 name: part_settings.and_then(|s| s.name.clone()).or(name),
-                kind: part_settings.map_or(PartKind::Normal, |s| s.kind),
+                kind: part_settings.map_or(PartKind::Normal, |s| s.kind()),
                 filament: chosen(part_settings.and_then(|s| s.extruder))
                     .map_or(object_filament, |extruder| extruder as usize),
                 mesh,
