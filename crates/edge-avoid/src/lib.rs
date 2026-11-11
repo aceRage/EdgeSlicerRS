@@ -179,6 +179,9 @@ impl Layer {
                 return straight;
             }
         }
+        // A point come to twice running is one point: no move of no
+        // length is asked for.
+        way.dedup();
         way.remove(0);
         way
     }

@@ -1612,9 +1612,9 @@ option off the file is byte for byte what it was, and with it on it is
 the same at any number of threads. What it costs: making the layers
 ready is most of it and is done in parallel, the routing itself is in
 the writer. Plate 1 of `mcbrim_test.3mf`, the largest of these, slices
-in 2.39 s with it on against 2.01 s off on 18 threads (4.21 against
-3.79 on four), and the Benchy in 0.69 s against 0.45 s (2.82 against
-2.05 on one thread), best of three.
+in 2.44 s with it on against 2.13 s off on 18 threads (4.04 against
+3.65 on four), and the Benchy in 0.67 s against 0.43 s (2.80 against
+2.04 on one thread), each the best of five taken turn about.
 
 ## Licence
 
