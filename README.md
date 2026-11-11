@@ -735,7 +735,9 @@ Known gaps: painted supports and seams, per-object setting overrides, typed sett
   gap fill and the fill that lie in it), holds speeds to the
   hot end's melt rate, sets acceleration by feature, and reports filament,
   weight and time. Following the reference:
-  - Seams: every point of every outermost wall is weighed as a place
+  - Seams: every point of every outermost wall, as it is written
+    (without arcs thinned to `resolution`, which is done to the walls
+    of the whole print first), is weighed as a place
     for its seam before the file is written, as the reference's
     SeamPlacer weighs it, object by object and in each object's own
     coordinates. First, how far the wall's line hangs out over the
@@ -1164,7 +1166,8 @@ Not done in G-code: supports only where painted (none are
 generated, and a note says so), the older tree styles (`tree_slim`,
 `tree_strong`, `tree_hybrid`: organic-style trees are built, with a note),
 rafts, brims inside holes, draft shields, seams moved to where parts meet
-(`seam_prefer_part_joints`) or painted on or off, a fan speed of its own for bridges over infill, walls
+(`seam_prefer_part_joints`), painted on or off, or put by Precise Seam
+parts (read as helpers, not printed, with a note), a fan speed of its own for bridges over infill, walls
 slowed over curled edges, preview pictures in the file
 (thumbnails), and object labels for cancelling (`EXCLUDE_OBJECT`). Bridge fill keeps its own speed along its whole
 length, where the reference also slows it near its anchors. A setting that asks for one of these is listed as a
@@ -1778,11 +1781,12 @@ the comb at `back` from 1 seam of 15 to all; the round parts come
 within 1 mm where they were up to 10 mm off (tube at `aligned` and
 `aligned_back`, cylinder at `aligned_back`, 100% each from none; the
 funnel at `back` and `aligned_back` 70% and 74% from none), and within
-0.05 mm on about half the tube's loops. They cannot do better yet:
-this engine's round walls have twice the reference's corners, so the
-points a seam may sit on are not the same points, and the cylinder at
-`aligned`, whose every point is as good as another, has its seam 10 mm
-round from the reference's. The same holds for the frame, the steps
+0.05 mm on about half the tube's loops. They could not do better
+then: this engine's round walls had twice the reference's corners, so
+the points a seam may sit on were not the same points, and the
+cylinder at `aligned`, whose every point is as good as another, had its
+seam 10 mm round from the reference's (with main merged in they do;
+see below). The same holds for the frame, the steps
 and the `holes` slab, where the reference's seam is on a straight side
 at a point of its outline that this engine's outline does not have
 (where two of the boxes the part is built of meet; a seam can only
@@ -1823,6 +1827,55 @@ is off by 0.03% on average, the most 0.6% on the first layer, and both
 loops of the layer at 10.45 mm still start where the reference's do.
 Lining seams up costs no time that shows: the Benchy's run is 0.65 s
 before it and after.
+
+With main merged in (layers cut without flat crossings, so a ring is
+its mesh's corners; walls thinned to `resolution` before they are
+written, and the seams now planned on the thinned loops, so a seam's
+candidates are the points that are written), 2026-11-11, on the same
+parts and the bent `curve`, which the script now pairs (the reference
+stands it 0.73 mm further back than the file has it, being centred by
+its bounds; the script moves this engine's walls onto the reference's
+where the two have the same size). Main as it was, against main with
+the seams:
+
+| | loops | main | with the seams |
+| --- | --- | --- | --- |
+| `aligned` | 1051 | 6.3%, 9.2% | 42.9%, 58.3% |
+| `aligned_back` | 1051 | 12.3%, 28.9% | 52.7%, 69.9% |
+| `back` | 1051 | 76.6%, 92.2% | 88.2%, 94.3% |
+| `nearest` | 1051 | 22.7%, 30.0% | 42.8%, 46.7% |
+| `random` | 1051 | 0.1%, 7.1% | 25.7%, 31.3% |
+| `aligned_front`, `left`, `right` | 1953 | 25.0%, 27.1% | 46.1%, 64.3% |
+| Benchy | 744 | 33.9%, 40.7% | 49.5%, 62.2% |
+| the three plates | 412 | 1.9%, 1.9% | 2.4%, 5.1% |
+| every loop | 8364 | 23.8%, 31.1% | 47.0%, 58.6% |
+
+(On the old base with the same script the seams came to 39.4% and
+54.9% of every loop.) The round parts gain most: the tube is within
+0.05 mm on all 80 loops at every position but `nearest` and `random`,
+where it was within 1 mm and on about half; the cylinder at `back` and
+`aligned_back` on all 50, where it was within 0.5 mm. The cylinder at
+`aligned` is 4.8 mm off on every layer, and that is the mirror image
+of the reference's seam across the part's middle (10 mm off before):
+every point of a round wall scores about the same, and which of the two
+mirrored places wins is settled by the scatter of what can be seen.
+The funnel is where it was, 76% and 72% within 1 mm at `aligned_back`
+and `back`: both slicers line its seams up the back, but the
+reference's line leans 2 mm across the part's 50 layers and this
+engine's stands upright, the two crossing at about the 43rd layer
+(within 0.05 mm there); at `aligned` its seams are elsewhere
+altogether, 10 mm off on average. The `curve` is within 1 mm on every
+loop at `aligned`, `aligned_back` and `back` (0.5 mm, 0.16 mm and
+none), as on main. Travel and retractions on the Benchy: 26.96 m and
+1520 in the reference's file, 29.00 m and 1708 on main, 27.39 m and
+1727 with the seams; on the `holes` part at `aligned` 17.35 m and 747,
+17.08 m and 752, 17.41 m and 754. With scarf seams on the `holes` part
+(`seam_slope_type=all`, `seam_slope_inner_walls=1`) wall length per
+layer is off by less than 0.005% on average and by less than 0.05% on
+any layer, where main is off by 0.21% on average and 16.8% on the layer at
+10.45 mm. Time, best of 5: the Benchy 0.49 s on main and 0.67 s with
+the seams, plate 1 of `mcbrim_test.3mf` 2.54 s and 3.05 s, nearly all
+of it the visibility measure.
 
 Moves at the seam (`wipe_on_loops`, `wipe_before_external_loop`,
 `wipe_inward`), 2026-11-11, on parts from `tools/make_fixture.py` with
