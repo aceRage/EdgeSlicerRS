@@ -10,15 +10,15 @@ use edge_slice::{Body, LayerRegions};
 use crate::layer_heights::LayerHeights;
 
 /// What the profile says of making overhangs printable.
-#[derive(Clone, Copy, Debug, Default, PartialEq)]
+#[derive(Clone, Debug, Default, PartialEq)]
 pub(crate) struct Printable {
     /// The steepest overhang left, in degrees from upright, and the area
     /// in mm² under which a hole in the underside is kept; `None` with
     /// the option off.
     asked: Option<(f64, f64)>,
-    /// Whether the first layer was added to: what stands on the bed is
-    /// then no longer what the model has there.
-    reached_bed: bool,
+    /// The plate's first layer as grown, where it was added to: what
+    /// stands on the bed is then no longer what the model has there.
+    on_bed: Option<Vec<ExPolygon>>,
 }
 
 impl Printable {
@@ -37,7 +37,7 @@ impl Printable {
                     ))
                 })
                 .transpose()?,
-            reached_bed: false,
+            on_bed: None,
         })
     }
 
@@ -60,7 +60,10 @@ impl Printable {
         };
         let first = layers.first().map(|layer| layer.regions.clone());
         edge_slice::make_overhangs_printable(layers, &heights.all(), angle, hole)?;
-        self.reached_bed = first != layers.first().map(|layer| layer.regions.clone());
+        self.on_bed = layers
+            .first()
+            .map(|layer| layer.regions.clone())
+            .filter(|grown| Some(grown) != first.as_ref());
         // Paint is shared out from each painted object's outline as
         // modelled; the reference shares out the layers as grown.
         Ok(if painted {
@@ -75,16 +78,22 @@ impl Printable {
     }
 
     /// What one object by itself has on the bed, for its brim: its first
-    /// layer as cut, unless the first layer was added to, when the whole
+    /// layer as cut, unless the first layer was added to. Then it is the
+    /// plate's first layer as grown where the object is `alone` on the
+    /// plate with nothing carved out of it, and otherwise the whole
     /// object is cut and grown as the plate was.
     pub(crate) fn first_layer(
         &self,
         body: &[Body<'_>],
+        alone: bool,
         planes: &[f64],
         closing_radius: Coord,
         heights: &LayerHeights,
     ) -> Result<Vec<ExPolygon>, ClipError> {
-        let grown = self.asked.filter(|_| self.reached_bed);
+        if let (true, Some(grown)) = (alone, &self.on_bed) {
+            return Ok(grown.clone());
+        }
+        let grown = self.asked.filter(|_| self.on_bed.is_some());
         let cut = if grown.is_some() {
             planes
         } else {
@@ -175,13 +184,13 @@ mod tests {
         assert!(notes.is_empty());
         assert!(area(&layers[49].regions) > 800.0);
         assert!((area(&layers[0].regions) - 100.0).abs() < 1e-6);
-        assert!(!on.reached_bed);
+        assert!(on.on_bed.is_none());
         let body = [Body {
             solid: &mesh,
             negative: None,
             filament: 1,
         }];
-        let first = on.first_layer(&body, &planes, 0, &heights).unwrap();
+        let first = on.first_layer(&body, true, &planes, 0, &heights).unwrap();
         assert_eq!(first, layers[0].regions);
     }
 
@@ -192,7 +201,7 @@ mod tests {
         let (mut layers, planes, heights) = cut(&mesh, 20);
         let mut on = read(r#"{"make_overhang_printable": "1"}"#);
         on.apply(&mut layers, &heights, false).unwrap();
-        assert!(on.reached_bed);
+        assert_eq!(on.on_bed.as_ref(), Some(&layers[0].regions));
         let side = 30.0 - 2.0 * 10.0 * 55f64.to_radians().tan() * 0.2;
         assert!((area(&layers[0].regions) - side * side).abs() < 1e-3);
         let body = [Body {
@@ -200,10 +209,16 @@ mod tests {
             negative: None,
             filament: 1,
         }];
-        let first = on.first_layer(&body, &planes, 0, &heights).unwrap();
-        assert_eq!(first, layers[0].regions);
+        // One object of several is cut and grown by itself, and comes
+        // to the same; alone on the plate, the plate's layer is its own.
+        for alone in [false, true] {
+            let first = on.first_layer(&body, alone, &planes, 0, &heights).unwrap();
+            assert_eq!(first, layers[0].regions);
+        }
         // Off, the object's own first layer is all that is cut.
-        let first = read("{}").first_layer(&body, &planes, 0, &heights).unwrap();
+        let first = read("{}")
+            .first_layer(&body, true, &planes, 0, &heights)
+            .unwrap();
         assert!((area(&first) - 100.0).abs() < 1e-6);
     }
 

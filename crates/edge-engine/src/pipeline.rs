@@ -973,6 +973,7 @@ pub fn slice(job: Job, watch: &dyn Watcher) -> Result<Sliced, Failure> {
     };
     let mut footprints: Vec<(Vec<ExPolygon>, f64)> = Vec::new();
     if adhesion.brim != BrimKind::None {
+        let alone = own.len() == 1 && bodies.iter().all(|body| body.negative.is_none());
         for mesh in own {
             let Some((low, high)) = mesh.bounds() else {
                 continue;
@@ -984,7 +985,8 @@ pub fn slice(job: Job, watch: &dyn Watcher) -> Result<Sliced, Failure> {
             }];
             // The object's own first layer, grown as the plate's was
             // where overhangs were made printable down to the bed.
-            let first = printable.first_layer(&body, &planes, scaled(closing_radius), &heights)?;
+            let first =
+                printable.first_layer(&body, alone, &planes, scaled(closing_radius), &heights)?;
             footprints.push((first, f64::from(high[2] - low[2])));
         }
     }
