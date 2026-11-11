@@ -630,6 +630,17 @@ fn speeds_follow_role_layer_and_the_melt_limit() {
     let expected = (4.0 / flow().mm3_per_mm() * 60.0).round();
     assert_eq!(feed_of(&text, 1, "Sparse infill"), expected);
     assert_eq!(feed_of(&text, 0, "Outer wall"), 1800.0);
+
+    // The limit goes by what the line lays with its flow ratios, as the
+    // reference holds it (GCode.cpp `_extrude`, `_mm3_per_mm`).
+    let ratioed = PrintSettings {
+        filament_flow_ratio: 0.98,
+        print_flow_ratio: 0.9,
+        ..limited
+    };
+    let (text, _) = print(&layers, &ratioed);
+    let expected = (4.0 / (flow().mm3_per_mm() * 0.98 * 0.9) * 60.0).round();
+    assert_eq!(feed_of(&text, 1, "Sparse infill"), expected);
 }
 
 #[test]

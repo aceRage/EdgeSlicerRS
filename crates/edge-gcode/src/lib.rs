@@ -2167,8 +2167,7 @@ impl Writer<'_> {
                 } else {
                     s.inner_wall_speed
                 };
-                let melts =
-                    s.filament_max_volumetric_speed / (flow.mm3_per_mm() * self.scarf_flow());
+                let melts = s.filament_max_volumetric_speed / self.melted(role, flow);
                 let reference = if s.filament_max_volumetric_speed <= 0.0 {
                     own
                 } else if own == 0.0 {
@@ -2463,7 +2462,7 @@ impl Writer<'_> {
             Role::SupportInterface => s.support_interface_speed,
         };
         let speed = if s.filament_max_volumetric_speed > 0.0 {
-            wanted.min(s.filament_max_volumetric_speed / (flow.mm3_per_mm() * self.scarf_flow()))
+            wanted.min(s.filament_max_volumetric_speed / self.melted(role, flow))
         } else {
             wanted
         };
@@ -2500,6 +2499,25 @@ impl Writer<'_> {
                 s.default_acceleration
             },
         }
+    }
+
+    /// What a line lays per mm where the hot end's limit is worked out,
+    /// in mm³: its own cross-section with the flow ratios it is laid
+    /// with, the filament's, the print's and its kind's (GCode.cpp
+    /// `_extrude`, `_mm3_per_mm`, which the speed is capped by), or on a
+    /// scarf the scarf's. The prime tower's lines are not laid by
+    /// `_extrude` in the reference, and keep their cross-section alone.
+    fn melted(&self, role: Role, flow: &Flow) -> f64 {
+        let s = self.settings;
+        let share = match role {
+            Role::PrimeTower | Role::PrimeLine => return flow.mm3_per_mm() * self.scarf_flow(),
+            Role::TopSolidInfill => s.top_solid_infill_flow_ratio,
+            Role::BottomSurface => s.bottom_solid_infill_flow_ratio,
+            Role::InternalBridge => s.internal_bridge_flow,
+            Role::Brim => s.brim_flow_ratio,
+            _ => self.scarf_flow(),
+        };
+        flow.mm3_per_mm() * s.filament_flow_ratio * s.print_flow_ratio * share
     }
 
     /// Tells the printer a new acceleration limit, if it is a change.
