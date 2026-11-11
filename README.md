@@ -29,7 +29,7 @@ replaces it until output matches on the printers we care about.
 | `crates/edge-time` | How long a G-code file takes, with acceleration: the file is read as a printer reads it and planned as the reference's estimator plans, or as Klipper does |
 | `crates/edge-tower` | The prime tower a nozzle is primed on after a tool change |
 | `crates/edge-slice` | Mesh to per-layer contours, then to regions with holes; parallel across layers. Elephant foot compensation of the first layers |
-| `crates/edge-engine` | The whole pipeline behind one call, for whatever drives it: open a model and list its plates, settle its settings, slice with progress and cancel, G-code, a layer's lines for drawing, and a vendor's presets by printer |
+| `crates/edge-engine` | The whole pipeline behind one call, for whatever drives it: open a model and list its plates, settle its settings, slice with progress and cancel, G-code, a layer's lines for drawing, a vendor's presets by printer, and its printer models with the presets, picture and sizes of each |
 | `crates/edge-cli` | The `edge` command line |
 | `tools/make_defaults.py` | Asks the reference for its default of every setting and writes the table `edge-config` carries; run again when the pin moves |
 | `tools/make_fixture.py` | Writes small test 3MFs (parts that need supports or a brim, a plain cube, two blocks in two filaments, a comb with thin teeth on the bed) to compare with the reference on |
@@ -72,9 +72,12 @@ not yet.
   reorder, close; a dot on a project whose choices would be lost, a tick
   on one that is sliced. A slice goes on while another project is looked
   at or sliced.
-- **Prepare**: the printer, a filament preset for each filament the file
-  prints in and the process, picked from the vendor profiles, or the
-  project's own settings; the bed type the printer takes; layer height,
+- **Prepare**: the printer, picked as in the C++ application from the
+  printers added (one row for each model, its nozzles under "Diameter"),
+  or the project's own; a filament preset for each filament the file
+  prints in and the process, which follow a change of printer as the
+  C++ application's do; the bed type the printer takes, remembered for
+  each printer; layer height,
   initial layer height, wall loops and the gap closing radius set over
   the preset; the plate from above, with the outline of each object; the
   project's plates to pick from. An STL or a 3MF opens as a project.
@@ -90,10 +93,27 @@ not yet.
   it, with its address when the preset has one. Nothing is sent to a
   printer or read from one yet; the inventory says what that takes.
 
+- **Printer Selection** ("Select/Remove printers (system presets)" in
+  the printer list, or the gear beside "Printer"): every printer model
+  of every vendor in one table, with its picture, bed and toolheads, to
+  search, filter, sort and tick. It opens by itself while no printer is
+  added. Removing a printer moves the open projects that were on it to
+  one that is still added, and says so.
+
 It has no 3D view, no arranging or editing of the model, no settings
 editor beyond those four, no saving of projects and no installer. The
 vendor profiles are found in `reference/EdgeSlicer` beside the source, or
-wherever `EDGE_PROFILES` points; the folder can be changed in the window.
+wherever `EDGE_PROFILES` points; the folder can be changed in the window,
+and is then kept.
+
+What the app keeps between runs is in a file of its own, `settings.json`:
+the profiles folder, the printers added, the printer last selected, and
+the process, filaments and bed type last used with each printer. It is
+in `~/Library/Application Support/EdgeSlicerRS` on macOS,
+`%APPDATA%\EdgeSlicerRS` on Windows and `$XDG_CONFIG_HOME/EdgeSlicerRS`
+(or `~/.config/EdgeSlicerRS`) elsewhere; `EDGE_DESKTOP_DATA` names another
+folder for it. The C++ application's own settings are never read or
+written.
 
 `apps/desktop` is a Cargo workspace of its own, so `cargo test --workspace`
 at the top builds no web view. The page (`ui/`) is plain HTML, CSS and
@@ -111,8 +131,14 @@ and dark, three projects were open at once (a three-plate project of
 seven filaments, a bare STL with presets, a small project): opened,
 switched, reordered, closed and refused past the eighth; plates sliced
 one at a time and all at once, cancelled, looked through in each view
-and exported. The tabbed window itself (Tauri) has not been run since it
-got its tabs and strip; before that the owner ran it by hand, and its
+and exported. With an empty settings folder (`EDGE_DESKTOP_DATA`), again
+in a browser, light and dark: Printer Selection opening by itself,
+searched, filtered and sorted; printers of three vendors added and one
+removed while a project was on it; a three-plate project and a bare STL
+moved between printers and nozzles, and sliced on one; the bed type and
+the last printer found again after the page was loaded anew and after
+the server was started again. The tabbed window itself (Tauri) has not
+been run since it got its tabs and strip; before that the owner ran it by hand, and its
 file dialogs, slicing and layer view worked, with G-code byte for byte
 the command line's but for the time in its first line. Not built on
 Windows or Linux.
