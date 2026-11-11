@@ -743,7 +743,32 @@ fn the_joint_has_its_own_speed_and_flow() {
         s.small_perimeter_speed = FloatOrPercent::Value(40.0);
     };
     assert_eq!(speeds(&with(slow, &small)), (vec![20.0], vec![40.0]));
-    assert_eq!(speeds(&with(half, &small)), (vec![20.0], vec![40.0]));
+    // On a small loop too a percentage is of the wall's own speed, not
+    // of the small loop's: half of 60, not half of 40.
+    assert_eq!(speeds(&with(half, &small)), (vec![30.0], vec![40.0]));
+    // Half of a 100 mm/s wall that is a small loop at 60 is 50.
+    let fast_wall = |s: &mut PrintSettings| {
+        s.outer_wall_speed = 100.0;
+        s.small_perimeter_threshold = 15.0;
+        s.small_perimeter_speed = FloatOrPercent::Value(60.0);
+    };
+    assert_eq!(speeds(&with(half, &fast_wall)), (vec![50.0], vec![60.0]));
+    // And never faster than the small loop goes: nine tenths of 100 is
+    // more than 60, and the joint stays at 60.
+    let most = Scarf {
+        joint_speed: FloatOrPercent::Percent(90.0),
+        ..usual
+    };
+    assert_eq!(speeds(&with(most, &fast_wall)), (vec![60.0], vec![60.0]));
+    // A speed in mm/s is what it was.
+    assert_eq!(speeds(&with(slow, &fast_wall)), (vec![20.0], vec![60.0]));
+    // Nothing, or less, is no speed of its own (the settings turn a 0
+    // into the wall's speed and say so; this is for what gets by).
+    let none = Scarf {
+        joint_speed: FloatOrPercent::Value(0.0),
+        ..usual
+    };
+    assert_eq!(speeds(&with(none, &fast_wall)), (vec![60.0], vec![60.0]));
 
     // More or less plastic along the joint, and none more elsewhere.
     let rich = Scarf {

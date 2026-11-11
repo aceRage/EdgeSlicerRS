@@ -557,7 +557,9 @@ Known gaps: painted supports and seams, per-object setting overrides, typed sett
     it ends at; and when the loop comes round to its start it goes on
     over that stretch, level, laying what is left of the line, to two
     seam gaps short of where the slope ends. The joint is laid at
-    `scarf_joint_speed` where that is slower than the wall, with
+    `scarf_joint_speed` where that is slower than the wall (a
+    percentage is of the wall's own speed, or of the compensation
+    speed on a compensated circle, on a small loop as on any), with
     `scarf_joint_flow_ratio` of the plastic. `external` joins the loops
     round the part so and `all` those round holes too: outer walls,
     and with `seam_slope_inner_walls` inner ones, whose way up starts
@@ -581,7 +583,9 @@ Known gaps: painted supports and seams, per-object setting overrides, typed sett
     inner wall's way up starts two fifths on whatever the seam gap,
     where the reference clips nothing with the gap at 0;
     `scarf_joint_speed` holds the joint on a small loop too, where the
-    reference lets it go at `small_perimeter_speed`; a joint speed of 0
+    reference lets it go at `small_perimeter_speed` (half of a
+    100 mm/s wall is 50 mm/s on a loop small enough to go at 60, as
+    the fix to the reference has it, aceRage/EdgeSlicer#958); a joint speed of 0
     is the wall's own speed, and said, where the reference then goes
     as fast as the hot end melts; and how far a seam may hang out is a
     share of the wall's own width, where the reference takes the width

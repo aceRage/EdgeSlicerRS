@@ -74,13 +74,21 @@ impl Writer<'_> {
     }
 
     /// A wall's speed: the compensated circle's, the small loop's, or
-    /// `usual`; on a scarf, no more than the scarf's.
+    /// `usual`; on a scarf, no more than the scarf's, which as a
+    /// percentage is of the wall's own speed: `usual`, or for a
+    /// compensated circle's wall the compensation speed.
     pub(crate) fn wall_speed(&self, usual: f64) -> f64 {
+        let own = if self.state.circle_wall.is_some() {
+            self.settings.circle_compensation_speed
+        } else {
+            usual
+        };
         self.scarf_speed(
             self.state
                 .circle_wall
                 .or(self.state.small_wall)
                 .unwrap_or(usual),
+            own,
         )
     }
 

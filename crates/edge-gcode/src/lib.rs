@@ -1877,20 +1877,24 @@ impl Writer<'_> {
                 // The wall's speed where it is fully supported, and where a
                 // quarter, a half, three quarters and nearly all of it hangs
                 // over; a bridge's where nothing is under it (GCode.cpp `_extrude`).
-                let mut usual =
-                    self.state
-                        .small_wall
-                        .unwrap_or(if role == Role::ExternalPerimeter {
-                            s.outer_wall_speed
-                        } else {
-                            s.inner_wall_speed
-                        });
-                if s.filament_max_volumetric_speed > 0.0 {
-                    usual = usual.min(
-                        s.filament_max_volumetric_speed / (flow.mm3_per_mm() * self.scarf_flow()),
-                    );
-                }
-                let usual = self.scarf_speed(usual);
+                // A scarf's speed as a percentage is of the wall's own.
+                let own = if role == Role::ExternalPerimeter {
+                    s.outer_wall_speed
+                } else {
+                    s.inner_wall_speed
+                };
+                let melted = |speed: f64| {
+                    if s.filament_max_volumetric_speed > 0.0 {
+                        speed.min(
+                            s.filament_max_volumetric_speed
+                                / (flow.mm3_per_mm() * self.scarf_flow()),
+                        )
+                    } else {
+                        speed
+                    }
+                };
+                let usual = melted(self.state.small_wall.unwrap_or(own));
+                let usual = self.scarf_speed(usual, melted(own));
                 let step = |speed: FloatOrPercent| {
                     let speed = speed.resolve(usual);
                     if speed < 0.5 { usual } else { speed }
