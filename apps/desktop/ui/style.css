@@ -960,7 +960,7 @@ dialog .row button { min-width: 84px; }
   border-right: 1px solid var(--line-1);
 }
 #side-scroll { flex: 1; min-height: 0; overflow-y: auto; scrollbar-gutter: stable; }
-#side-scroll .fold > h2, #side-scroll .fold-pin {
+#side-scroll .fold > h2, #side-scroll .fold-pin, #preset-scroll > .fold-pin {
   position: sticky;
   top: 0;
   z-index: var(--z-raised);
@@ -969,9 +969,13 @@ dialog .row button { min-width: 84px; }
 #side-scroll .fold-pin > h2 { position: static; }
 .fold-pin > .fold-body { padding-bottom: 0; }
 .fold-pin + .fold-body { padding-top: var(--space-2); }
-/* What is gone to, or given the keys, under the pinned head is not left
-   behind it (app.js keeps --pinned at the head's height). */
-#s-process .fold-pin ~ .fold-body * { scroll-margin-top: calc(var(--pinned, 0px) + var(--space-2)); }
+/* What is gone to, or given the keys, under a pinned head (the Process
+   section's, the panel's in settings.css) is not left behind it (app.js
+   keeps --pinned at the head's height on what holds it). */
+.fold-pin ~ .fold-body * { scroll-margin-top: calc(var(--pinned, 0px) + var(--space-2)); }
+/* While something is searched for, the list under the head has the room
+   for the head to come to the top of the scroll above it (app.js). */
+.fold-pin + .fold-body:has(> [role="listbox"]:not([hidden])) { min-height: calc(var(--room, 0px) - var(--pinned, 0px)); }
 
 /* Filaments: a numbered swatch, the preset, and room after it for what a
    filament will be able to do. */

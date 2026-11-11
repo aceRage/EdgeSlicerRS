@@ -147,29 +147,34 @@
       <!-- A filament's or the printer's pages of settings (settings.js): they take the place of the
            sections above while they are open, the plate staying in sight. -->
       <section id="preset-panel" aria-labelledby="preset-title" hidden>
-        <header id="preset-head">
-          <button type="button" id="preset-back" class="icon tool" title="Back to the sidebar [Esc]" aria-label="Back to the sidebar">
-            <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M10,3L5,8l5,5"/></svg>
-          </button>
-          <div id="preset-heading">
-            <h2 id="preset-title" tabindex="-1"></h2>
-            <p id="preset-name"></p>
-          </div>
-          <button type="button" id="preset-reset" class="icon tool" title="Click to reset all settings to the last saved preset." aria-label="Reset all of these settings to the preset" hidden>
-            <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M3.5,8a4.5,4.5 0 1 0 1.4,-3.3M3.2,2.6v2.5h2.5"/></svg>
-          </button>
-          <label class="switch" title="Shows the advanced settings with the simple ones">Advance <input type="checkbox" id="preset-advanced" role="switch"></label>
-        </header>
-        <div id="preset-filaments" role="group" aria-label="Filaments" hidden></div>
-        <div id="preset-tools">
-          <input type="search" id="preset-search" placeholder="Search in preset…" aria-label="Search in preset" role="combobox" aria-controls="preset-found" aria-expanded="false" aria-autocomplete="list" autocomplete="off" spellcheck="false">
-          <div id="preset-found" role="listbox" aria-label="Settings found" hidden></div>
-          <div id="preset-tabs" class="tabs scrolls" role="tablist" aria-label="Preset settings"></div>
-          <p id="preset-refused" class="error" hidden></p>
-        </div>
         <div id="preset-scroll">
-          <p id="preset-none" class="quiet" hidden>Nothing on this page with the settings as they are.</p>
-          <div id="preset-page" role="tabpanel"></div>
+          <!-- The head of the panel stays in sight while the options scroll under it, as the Process section's does. -->
+          <div class="fold-pin">
+            <header id="preset-head">
+              <button type="button" id="preset-back" class="icon tool" title="Back to the sidebar [Esc]" aria-label="Back to the sidebar">
+                <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M10,3L5,8l5,5"/></svg>
+              </button>
+              <div id="preset-heading">
+                <h2 id="preset-title" tabindex="-1"></h2>
+                <p id="preset-name"></p>
+              </div>
+              <button type="button" id="preset-reset" class="icon tool" title="Click to reset all settings to the last saved preset." aria-label="Reset all of these settings to the preset" hidden>
+                <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M3.5,8a4.5,4.5 0 1 0 1.4,-3.3M3.2,2.6v2.5h2.5"/></svg>
+              </button>
+              <label class="switch" title="Shows the advanced settings with the simple ones">Advance <input type="checkbox" id="preset-advanced" role="switch"></label>
+            </header>
+            <div id="preset-filaments" role="group" aria-label="Filaments" hidden></div>
+            <div id="preset-tools" class="fold-body">
+              <input type="search" id="preset-search" placeholder="Search in preset…" aria-label="Search in preset" role="combobox" aria-controls="preset-found" aria-expanded="false" aria-autocomplete="list" autocomplete="off" spellcheck="false">
+              <div id="preset-tabs" class="tabs scrolls" role="tablist" aria-label="Preset settings"></div>
+            </div>
+          </div>
+          <div class="fold-body">
+            <div id="preset-found" role="listbox" aria-label="Settings found" hidden></div>
+            <p id="preset-refused" class="error" hidden></p>
+            <p id="preset-none" class="quiet" hidden>Nothing on this page with the settings as they are.</p>
+            <div id="preset-page" role="tabpanel"></div>
+          </div>
         </div>
       </section>
 

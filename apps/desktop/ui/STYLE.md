@@ -259,9 +259,13 @@ the status line and the profiles folder stay under them. Its head
 sidebar [Esc]"), the title in `--size-title` with the preset's name under
 it cut with an ellipsis, the reset-all arrow and "Advance". For a filament,
 `#preset-filaments` holds a numbered swatch for each filament
-(`aria-pressed` on the one shown, ringed in the accent). Then the search,
-the tabs, and the page, which scrolls alone. Escape anywhere in it but in a
-list or a box of text goes back, and the keys go back to what opened it.
+(`aria-pressed` on the one shown, ringed in the accent). Then the search
+and the tabs (`.tabs.scrolls`, as the Process section's). All of that is
+the panel's `.fold-pin`, pinned at the top of its scroll (`#preset-scroll`)
+as the Process head is in the sidebar's (see "Sections that fold"); the
+page, or the search's list in its place, scrolls under it. Escape anywhere
+in it but in a list or a box of text goes back, and the keys go back to
+what opened it (not to a swatch moved by).
 
 Opened by an edit icon (`button.icon.tool`, a pencil, "Click to edit
 preset"): in the last column of a filament's row, and at the right of the
@@ -344,9 +348,14 @@ section's body scrolls under it:
 `app.js` keeps the head's height as `--pinned` on the section, and
 whatever is gone to or given the keys in the body has a `scroll-margin` of
 it, so it is never left under the head; a page opened from the head's tabs
-starts under it. Folding hides both bodies. The sidebar's order is
-Printer, Filament Management, Objects, Process: the long one last, where
-it can have the whole height when scrolled to.
+starts under it. The search's list (`role="listbox"`, `.found-row`s) stands
+in the body in place of the page and has no scroll of its own; while it is
+shown the body is at least the scroll's height (`--room`), and typing in
+the search brings the head to the top, so the list is read under it.
+Folding hides both bodies. The panel of a filament's or the printer's
+pages has its head pinned the same way, with the same list. The
+sidebar's order is Printer, Filament Management, Objects, Process: the
+long one last, where it can have the whole height when scrolled to.
 
 ### What opens in place
 

@@ -502,16 +502,32 @@ function scrollingTabs(row) {
 for (const row of document.querySelectorAll('.tabs.scrolls')) scrollingTabs(row);
 
 // A section's head that stays in sight while its body scrolls under it
-// (`.fold-pin`): its height is kept as --pinned on the section, so that
-// what is gone to in the body is not left under it (style.css), and a
-// page opened from its tabs starts under it rather than where the last
-// one was scrolled to.
+// (`.fold-pin`): the Process section's head in the sidebar's scroll, and
+// the panel's (a filament's or the printer's pages, settings.js) in the
+// panel's. Its height is kept as --pinned on what holds it, so that what
+// is gone to in the body is not left under it (style.css), and a page
+// opened from its tabs starts under it rather than where the last one was
+// scrolled to. What is searched for is listed under it: the head is
+// brought to the top of the scroll to stand over the list, which is given
+// the room to let it (--room, the scroll's height).
 for (const pin of document.querySelectorAll('.fold-pin')) {
-  const section = pin.closest('.fold');
-  const scroller = pin.closest('#side-scroll');
-  new ResizeObserver(() => section.style.setProperty('--pinned', `${pin.offsetHeight}px`)).observe(pin);
+  const holder = pin.parentElement;
+  const scroller = pin.closest('#side-scroll, #preset-scroll');
+  new ResizeObserver(() => holder.style.setProperty('--pinned', `${pin.offsetHeight}px`)).observe(pin);
+  if (!scroller) continue;
+  new ResizeObserver(() => holder.style.setProperty('--room', `${scroller.clientHeight}px`)).observe(scroller);
+  const search = pin.querySelector('input[type="search"]');
+  if (search) {
+    search.addEventListener('input', () => requestAnimationFrame(() => {
+      // The head is lower by the tabs the list hides: the room under it is
+      // taken now, not when the resize is next seen.
+      holder.style.setProperty('--pinned', `${pin.offsetHeight}px`);
+      const below = pin.getBoundingClientRect().top - scroller.getBoundingClientRect().top;
+      if (search.value.trim() && below > 1) scroller.scrollTop += below;
+    }));
+  }
   const tabs = pin.querySelector('[role="tablist"]');
-  if (!tabs || !scroller) continue;
+  if (!tabs) continue;
   const toPageTop = () => requestAnimationFrame(() => {
     const body = pin.nextElementSibling;
     if (!body || scroller.scrollHeight <= scroller.clientHeight) return;
