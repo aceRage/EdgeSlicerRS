@@ -405,6 +405,51 @@ fn report(project: &Path, times: &Times, reference: &Print, ours: &Print) -> Str
         .unwrap();
     }
 
+    // Arc moves, where either file has any: how many, and how much of
+    // each feature's path they lay.
+    let any_arcs = |features: &std::collections::BTreeMap<String, Stat>| {
+        features.values().any(|stat| stat.arcs > 0)
+    };
+    if any_arcs(&reference_features) || any_arcs(&our_features) {
+        writeln!(
+            out,
+            "\narc moves (G2, G3) by feature, and the share of its path they lay"
+        )
+        .unwrap();
+        let names: BTreeSet<&String> = reference_features
+            .iter()
+            .chain(&our_features)
+            .filter(|(_, stat)| stat.arcs > 0)
+            .map(|(name, _)| name)
+            .collect();
+        let cell = |features: &std::collections::BTreeMap<String, Stat>, name: &String| {
+            let stat = features.get(name).copied().unwrap_or_default();
+            let share = 100.0 * stat.arc_mm / stat.length_mm.max(1e-12);
+            (stat.arcs, format!("{} ({share:.0}%)", stat.arcs))
+        };
+        let (mut all_r, mut all_o) = (0, 0);
+        for name in names {
+            let ((r, reference), (o, here)) =
+                (cell(&reference_features, name), cell(&our_features, name));
+            all_r += r;
+            all_o += o;
+            let change = if r == 0 {
+                "only here".to_owned()
+            } else if o == 0 {
+                "missing".to_owned()
+            } else {
+                percent(o as f64, r as f64)
+            };
+            writeln!(out, "  {name:<22}{reference:>14}{here:>14}{change:>16}").unwrap();
+        }
+        let change = if all_r == 0 || all_o == 0 {
+            String::new()
+        } else {
+            percent(all_o as f64, all_r as f64)
+        };
+        writeln!(out, "  {:<22}{all_r:>14}{all_o:>14}{change:>16}", "all").unwrap();
+    }
+
     // How each feature is printed, where both print it: a difference
     // here is one a printer would show and the lengths above would not.
     for (title, reference, ours) in [
