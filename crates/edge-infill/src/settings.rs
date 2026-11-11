@@ -7,10 +7,29 @@ use crate::{Anchoring, FillParams, Shells, WallsAround};
 /// Sparse fill patterns this engine can lay.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Pattern {
-    /// One set of parallel lines, turned 90° each layer.
+    /// One set of parallel lines, turned 90° each layer (`rectilinear`).
     Lines,
+    /// One set of parallel lines, the same way on every layer
+    /// (`alignedrectilinear`).
+    AlignedLines,
     /// Two crossing sets of lines on every layer.
     Grid,
+    /// Three sets of lines 60° apart, all through the same points.
+    Triangles,
+    /// Three sets of lines 60° apart, the third moved half its pitch,
+    /// leaving hexagons between triangles (`tri-hexagon`).
+    Stars,
+    /// Three sets of lines 60° apart that move sideways as the layers go
+    /// up, making cubes stood on a corner.
+    Cubic,
+    /// Two sets of lines square to each other, each doubled and moving
+    /// apart and together as the layers go up (`quartercubic`).
+    QuarterCubic,
+    /// Straight lines one way for some layers, then the other, turning
+    /// from one to the other through zigzags (`crosshatch`).
+    CrossHatch,
+    /// Waves that swing between two directions as the layers go up.
+    Gyroid,
 }
 
 /// The settings infill depends on, read once per print. Defaults are the
@@ -84,8 +103,8 @@ impl Default for InfillSettings {
             top_shell_layers: 4,
             bottom_shell_layers: 3,
             sparse_infill_density_percent: 20.0,
-            pattern: Pattern::Grid,
-            unsupported_pattern: Some("crosshatch".into()),
+            pattern: Pattern::CrossHatch,
+            unsupported_pattern: None,
             infill_direction: 45.0,
             solid_infill_direction: 45.0,
             minimum_sparse_infill_area: 15.0,
@@ -146,6 +165,13 @@ impl InfillSettings {
             Some(name) => match name.as_str() {
                 "grid" => (Pattern::Grid, None),
                 "line" | "rectilinear" | "zig-zag" => (Pattern::Lines, None),
+                "alignedrectilinear" => (Pattern::AlignedLines, None),
+                "triangles" => (Pattern::Triangles, None),
+                "tri-hexagon" => (Pattern::Stars, None),
+                "cubic" => (Pattern::Cubic, None),
+                "quartercubic" => (Pattern::QuarterCubic, None),
+                "crosshatch" => (Pattern::CrossHatch, None),
+                "gyroid" => (Pattern::Gyroid, None),
                 other => (Pattern::Grid, Some(other.to_owned())),
             },
         };
@@ -184,6 +210,32 @@ impl InfillSettings {
             {
                 unsupported.push(format!("{key} \"{value}\": {instead}"));
             }
+        }
+        // What the profile asks of a sparse pattern that is not done.
+        if settings
+            .integer("fill_multiline")?
+            .is_some_and(|lines| lines > 1)
+        {
+            unsupported
+                .push("fill_multiline: each line of a sparse pattern is laid once".to_owned());
+        }
+        if pattern == Pattern::Gyroid && settings.flag("gyroid_optimized")? == Some(true) {
+            unsupported
+                .push("gyroid_optimized \"1\": the gyroid is laid as plain waves".to_owned());
+        }
+        if settings
+            .text("sparse_infill_rotate_template")
+            .is_some_and(|template| !template.trim().is_empty())
+        {
+            unsupported.push(
+                "sparse_infill_rotate_template: sparse fill keeps to infill_direction".to_owned(),
+            );
+        }
+        if settings.text("sparse_infill_pattern") == Some("line") {
+            unsupported.push(
+                "sparse_infill_pattern \"line\": laid as rectilinear, joined along the walls"
+                    .to_owned(),
+            );
         }
         // Straight lines are all this engine lays on a surface; any other
         // pattern is laid as joined lines and said so.
@@ -426,6 +478,7 @@ impl InfillSettings {
                 .min(self.infill_anchor_max.resolve(sparse.spacing))
                 .max(0.0),
             origin: edge_geom::Point2::from_mm(0.0, 0.0),
+            z: 0.0,
             top_joined: self.top_joined,
             bottom_joined: self.bottom_joined,
             solid_joined: self.solid_joined,
@@ -538,10 +591,57 @@ mod tests {
         assert!((params.solid.width - 0.675).abs() < 1e-12);
         assert!((params.sparse_angle - 30f64.to_radians()).abs() < 1e-12);
 
-        let gyroid = read(r#"{"sparse_infill_pattern": "gyroid"}"#).unwrap();
+        // Every pattern laid here is known by the reference's name for it.
+        for (name, pattern) in [
+            ("grid", Pattern::Grid),
+            ("rectilinear", Pattern::Lines),
+            ("alignedrectilinear", Pattern::AlignedLines),
+            ("triangles", Pattern::Triangles),
+            ("tri-hexagon", Pattern::Stars),
+            ("cubic", Pattern::Cubic),
+            ("quartercubic", Pattern::QuarterCubic),
+            ("crosshatch", Pattern::CrossHatch),
+            ("gyroid", Pattern::Gyroid),
+        ] {
+            let found = read(&format!(r#"{{"sparse_infill_pattern": "{name}"}}"#)).unwrap();
+            assert_eq!((found.pattern, found.unsupported_pattern), (pattern, None));
+        }
+        // One that is not is laid as a grid, and said.
+        let other = read(r#"{"sparse_infill_pattern": "honeycomb"}"#).unwrap();
         assert_eq!(
-            (gyroid.pattern, gyroid.unsupported_pattern.as_deref()),
-            (Pattern::Grid, Some("gyroid"))
+            (other.pattern, other.unsupported_pattern.as_deref()),
+            (Pattern::Grid, Some("honeycomb"))
+        );
+        // With none set it is the reference's default.
+        assert_eq!(read("{}").unwrap().pattern, Pattern::CrossHatch);
+        // What is asked of a pattern and not done is said.
+        let asked = read(
+            r#"{"sparse_infill_pattern": "gyroid", "gyroid_optimized": "1", "fill_multiline": "2",
+                "sparse_infill_rotate_template": "0,90"}"#,
+        )
+        .unwrap();
+        for key in [
+            "fill_multiline",
+            "gyroid_optimized",
+            "sparse_infill_rotate_template",
+        ] {
+            assert!(
+                asked.unsupported.iter().any(|note| note.starts_with(key)),
+                "{key} is not noted"
+            );
+        }
+        let line = read(r#"{"sparse_infill_pattern": "line"}"#).unwrap();
+        assert_eq!(line.pattern, Pattern::Lines);
+        assert!(
+            line.unsupported
+                .iter()
+                .any(|note| note.contains("\"line\""))
+        );
+        assert!(
+            read(r#"{"sparse_infill_pattern": "crosshatch"}"#)
+                .unwrap()
+                .unsupported
+                .is_empty()
         );
         assert!(read(r#"{"top_shell_layers": "-2"}"#).is_err());
         assert!(read(r#"{"sparse_infill_density": "lots"}"#).is_err());

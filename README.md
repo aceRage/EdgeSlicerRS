@@ -121,7 +121,7 @@ Known gaps: painted supports and seams, per-object setting overrides, typed sett
 - Infill: each layer's inside is split into top, bottom, bridge, solid
   shell and sparse areas (`top_shell_layers`, `bottom_shell_layers`,
   `sparse_infill_density`, `minimum_sparse_infill_area`) and filled with
-  lines, or a grid for sparse areas. Solid lines run to the edge of their
+  lines, or for sparse areas one of nine patterns (below). Solid lines run to the edge of their
   area and, where one is joined to the next, turn half a line spacing
   inside it, as the reference's do. `top_surface_pattern`,
   `bottom_surface_pattern` and `internal_solid_infill_pattern` say whether
@@ -438,8 +438,8 @@ the lettered plate), narrow solid areas are filled with the same lines
 as wide ones where the reference lays loops along them
 (`detect_narrow_internal_solid_infill`, noted), narrow parts of top and
 bottom surfaces get no gap fill
-(`gap_fill_target`), shell thickness in mm is ignored, and sparse patterns other than line and
-grid fall back to grid with a note. Gap closing runs across objects, so two separate objects closer than twice
+(`gap_fill_target`), shell thickness in mm is ignored, and eighteen of the
+reference's sparse patterns are not laid (below). Gap closing runs across objects, so two separate objects closer than twice
 the radius merge; the reference closes within one object only.
 
 Clipping is clipper2-rs, a port of Clipper2. The reference uses Clipper 6,
@@ -616,8 +616,54 @@ the deck the paths are the reference's, line for line. On the cube two
 joins of equal length are taken in another order, which leaves one path
 as two. Filament over the whole part is now within 0.6% on the cube,
 the deck and the tower for both printers (the tower with the U1's
-presets was 18% under). Where objects share a plate the pattern passes
-through the middle of all of them, not of each as in the reference.
+presets was 18% under). Each object's pattern is laid through that
+object's own middle, as in the reference; it used to be through the
+middle of everything on the plate, which put the lines of every object
+but a lone one somewhere else than the reference's.
+
+Sparse patterns. Nine of the reference's twenty-seven are laid:
+`grid`, `rectilinear`, `alignedrectilinear`,
+`triangles`, `tri-hexagon`, `cubic`, `quartercubic`, `crosshatch` (the
+reference's default, and what 130 of the 184 Elegoo process profiles
+set) and `gyroid`. Between them they are every pattern the Snapmaker
+and Elegoo profiles in the reference ask for. The six made of straight
+lines are the sets of lines FillRectilinear.cpp hands to
+`fill_surface_by_multilines`, each set's direction and sideways move
+taken from there (cubic and quarter cubic move with the layer's
+height). Cross hatch and gyroid are ports of FillCrossHatch.cpp and of
+`make_gyroid_waves` in FillGyroid.cpp: the pattern is laid over the
+area, cut to it, and its ends joined and anchored along the outline as
+the crossing lines' are. On a 20 mm cube with the U1's presets, C++
+slicer against this engine, sparse fill in metres and how much of each
+file's sparse plastic lies within 0.3 mm of the other's:
+
+| Pattern | At 15% | Lies together | Also at |
+|---|---|---|---|
+| `grid` | 14.51 / 14.36 | 95% | |
+| `rectilinear` | 14.06 / 14.06 | | |
+| `alignedrectilinear` | 14.06 / 14.06 | | |
+| `triangles` | 12.97 / 12.97 | 97% | |
+| `tri-hexagon` | 12.97 / 12.97 | | 30%: 24.49 / 24.49, 100% |
+| `cubic` | 13.10 / 13.10 | 99.8% | 35%: 28.30 / 28.29, 99.4% |
+| `quartercubic` | 13.79 / 13.81 | | 10%: 9.76 / 9.73, 93% |
+| `crosshatch` | 14.18 / 14.20 | 98.6% | 40%: 31.90 / 31.72, 99.4% |
+| `gyroid` | 13.29 / 13.29 | 99.9% | 5%: 5.37 / 5.37, 99.6% |
+
+Where less than everything lies together the pattern's own lines are
+in the same places, checked line by line; what differs is which wall a
+join or an anchor runs along. On plate 2 of `mcbrim_test.3mf`, four
+objects of several parts each, cross hatch, gyroid, cubic and grid lie
+98% together and come to within 1% of the reference's length (they lay
+45 to 50% together before each object had its own middle).
+
+Not laid, and printed as a grid with a note: `zigzag`, `crosszag`,
+`lockedzag`, `honeycomb`, `3dhoneycomb`, `lateral-honeycomb`,
+`lateral-lattice`, `tpmsd`, `tpmsfk`, `concentric`, `spiralinset`,
+`hilbertcurve`, `archimedeanchords`, `octagramspiral`, `adaptivecubic`,
+`supportcubic` and `lightning`. `fill_multiline` above one,
+`gyroid_optimized` and `sparse_infill_rotate_template` are noted and
+not followed, and `line` is noted as laid like `rectilinear`; the
+adaptive forms of the gyroid and corner smoothing are not looked at.
 
 Tree supports now join into trunks as soon as the reference's do. On
 the `mushroom` with the U1's presets there are as many separate outlines
@@ -648,8 +694,8 @@ order tools are taken in, the order within a layer with where a
 move may go unretracted, and the monotonic order of surface lines.
 
 Retractions on the lettered plates were 41% over the reference's and
-are now within 3% (plate 2: 869 against 848, from 1199; plate 3: 871
-against 846), with 14% and 11% less travel than the reference. Four
+are now within 2% (plate 2: 854 against 848, from 1199; plate 3: 856
+against 846), with 15% and 12% less travel than the reference. Four
 things did it: an island is finished, walls and fill, before the next
 is begun, where every island's walls used to be laid first and each
 kind of fill then took another trip round the layer; moves between

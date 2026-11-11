@@ -4,7 +4,7 @@ use edge_clip::{ClipError, Join};
 use edge_extrusion::{ExtrusionPath, Flow, Role};
 use edge_geom::{Point2, scaled};
 
-use crate::{Pattern, Surface, SurfaceKind, lines};
+use crate::{Pattern, Surface, SurfaceKind, curves, lines};
 
 /// What filling one layer needs.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -37,6 +37,9 @@ pub struct FillParams {
     /// directions: the middle of what is printed, as in the reference,
     /// so the pattern sits the same way in a part wherever the part is.
     pub origin: Point2,
+    /// The height of the top of the layer above the bed, in mm: patterns
+    /// that change from layer to layer are laid by it.
+    pub z: f64,
     /// Whether the lines of a top surface, of a bottom surface and of
     /// solid fill inside the part are joined end to end. The reference's
     /// `monotonicline` pattern leaves them separate.
@@ -49,6 +52,70 @@ pub struct FillParams {
     pub top_ordered: bool,
     pub bottom_ordered: bool,
     pub solid_ordered: bool,
+}
+
+impl FillParams {
+    /// The sets of lines a sparse pattern of crossing lines is made of:
+    /// each set's direction and how far it is moved sideways, in mm
+    /// (FillRectilinear.cpp, the `SweepParams` each pattern hands to
+    /// `fill_surface_by_multilines`). Empty for the patterns that are
+    /// one set of lines.
+    fn sweeps(&self) -> Vec<(f64, f64)> {
+        let along = self.sparse_angle;
+        let third = std::f64::consts::FRAC_PI_3;
+        match self.pattern {
+            Pattern::Lines | Pattern::AlignedLines | Pattern::CrossHatch | Pattern::Gyroid => {
+                Vec::new()
+            }
+            Pattern::Grid => vec![(along, 0.0), (along + FRAC_PI_2, 0.0)],
+            Pattern::Triangles => {
+                vec![
+                    (along, 0.0),
+                    (along + third, 0.0),
+                    (along + 2.0 * third, 0.0),
+                ]
+            }
+            Pattern::Stars => vec![
+                (along, 0.0),
+                (along + third, 0.0),
+                (
+                    along + 2.0 * third,
+                    1.5 * self.sparse.spacing / self.density,
+                ),
+            ],
+            Pattern::Cubic => {
+                let shift = std::f64::consts::FRAC_1_SQRT_2 * self.z;
+                vec![
+                    (along, shift),
+                    (along + third, -shift),
+                    (along + 2.0 * third, shift),
+                ]
+            }
+            Pattern::QuarterCubic => {
+                // In scaled whole units, as the reference works it out.
+                let line = scaled(self.sparse.spacing);
+                let period = (scaled(self.sparse.spacing) as f64 / self.density) as i64 * 4;
+                let shift = |part: f64| {
+                    let raw = (std::f64::consts::FRAC_1_SQRT_2
+                        * (scaled(self.z) as f64 + part * period as f64 * 2.0))
+                        as i64
+                        % period.max(1);
+                    let shift = raw
+                        .min(period - raw)
+                        .min(period / 2 - line / 2)
+                        .max(line / 2);
+                    shift as f64 / edge_geom::UNITS_PER_MM
+                };
+                let (first, second) = (shift(0.0), shift(0.5));
+                vec![
+                    (along, first),
+                    (along, -first),
+                    (along + FRAC_PI_2, second),
+                    (along + FRAC_PI_2, -second),
+                ]
+            }
+        }
+    }
 }
 
 /// How a surface's lines meet the edge of its area.
@@ -67,6 +134,10 @@ enum Lay {
     /// [`FillParams::origin`], joined along that outline, and anchored
     /// where they are not.
     Anchored,
+    /// A sparse pattern that is not straight rows: laid over the area,
+    /// cut to it half a spacing in, and joined and anchored along that
+    /// outline like the crossing lines.
+    Curved,
     /// Solid lines as `FillRectilinear.cpp` lays them: run to within
     /// `LINES_INSET` of the edge, and turned half a spacing inside it
     /// where they are joined. `fitted` spreads them to fill the width.
@@ -96,11 +167,46 @@ pub fn fill(
     layer_index: usize,
     params: &FillParams,
 ) -> Result<Vec<ExtrusionPath>, ClipError> {
+    fill_from(surfaces, layer_index, params, &|_| params.origin)
+}
+
+/// As [`fill`], with the point each surface's sparse pattern is laid
+/// through given by `origin_of`: the reference lays every object's
+/// pattern through that object's own middle, so the pattern sits the same
+/// way in a part wherever the part is and whatever stands beside it.
+pub fn fill_from(
+    surfaces: &[Surface],
+    layer_index: usize,
+    params: &FillParams,
+    origin_of: &dyn Fn(&Surface) -> Point2,
+) -> Result<Vec<ExtrusionPath>, ClipError> {
     let turned = if layer_index % 2 == 1 { FRAC_PI_2 } else { 0.0 };
     let mut paths = Vec::new();
+    // How sparse lines' ends are joined along the outline they are cut
+    // to. Nothing is joined when the profile allows no join at all
+    // (`infill_anchor_max` of zero), nor anchored.
+    let sparse_joining = |line: edge_geom::Coord| {
+        let max_link = scaled(params.sparse_link_max);
+        lines::Joining {
+            max_link,
+            anchor: if max_link > 0 {
+                scaled(params.sparse_anchor)
+            } else {
+                0
+            },
+            half_width: line / 2,
+            // FillBase.cpp `create_boundary_infill_graph`.
+            beside: (0.8 * line as f64) as i64,
+            beside_clip: (1.7 * line as f64) as i64,
+            order: lines::Order::Nearest,
+        }
+    };
+    let sweeps = params.sweeps();
+    let sweep_angles: Vec<f64> = sweeps.iter().map(|sweep| sweep.0).collect();
     for (number, surface) in surfaces.iter().enumerate() {
         // Each surface's lines are one part, laid together.
         let part = number as u32 + 1;
+        let origin = origin_of(surface);
         // (flow, role, line spacing in mm, how the lines end, directions)
         let (flow, role, spacing, lay, angles): (Flow, Role, f64, Lay, &[f64]) = match surface.kind
         {
@@ -113,13 +219,27 @@ pub fn fill(
                     Lay::Zigzag,
                     &[params.sparse_angle + turned],
                 ),
-                // Two sets of lines share the density between them.
-                Pattern::Grid => (
+                Pattern::AlignedLines => (
                     params.sparse,
                     Role::SparseInfill,
-                    2.0 * params.sparse.spacing / params.density,
+                    params.sparse.spacing / params.density,
+                    Lay::Zigzag,
+                    &[params.sparse_angle],
+                ),
+                Pattern::CrossHatch | Pattern::Gyroid => (
+                    params.sparse,
+                    Role::SparseInfill,
+                    params.sparse.spacing / params.density,
+                    Lay::Curved,
+                    &[params.sparse_angle],
+                ),
+                // The sets of lines share the density between them.
+                _ => (
+                    params.sparse,
+                    Role::SparseInfill,
+                    sweeps.len() as f64 * params.sparse.spacing / params.density,
                     Lay::Anchored,
-                    &[params.sparse_angle, params.sparse_angle + FRAC_PI_2],
+                    &sweep_angles,
                 ),
             },
             SurfaceKind::Top => (
@@ -150,8 +270,9 @@ pub fn fill(
                 Lay::Cut(LINES_INSET),
                 &[params.sparse_angle
                     + match params.pattern {
-                        Pattern::Grid => 0.0,
                         Pattern::Lines => turned,
+                        Pattern::AlignedLines => FRAC_PI_2,
+                        _ => 0.0,
                     }],
             ),
             // The reference's output has top and bottom lines spread to
@@ -220,7 +341,7 @@ pub fn fill(
                 let inner =
                     edge_clip::offset(&outer, -scaled(TURN_INSET * flow.spacing), Join::MITER)?;
                 let (sin, cos) = angles[0].sin_cos();
-                let first = params.origin.y as f64 * cos - params.origin.x as f64 * sin;
+                let first = origin.y as f64 * cos - origin.x as f64 * sin;
                 // No join is too long: sparse lines have no limit there
                 // (Fill.cpp sets `link_max_length` only above 80% density).
                 let unlimited = edge_geom::Coord::MAX / 4;
@@ -242,34 +363,108 @@ pub fn fill(
                     });
                 }
             }
+            Lay::Curved => {
+                let line = flow.scaled_spacing();
+                let inside =
+                    edge_clip::offset(std::slice::from_ref(&surface.area), -line / 2, Join::MITER)?;
+                // The reference turns the area so the pattern lies square
+                // to the axes, about the middle of what is printed; the
+                // gyroid a further 45° back (`CorrectionAngle`).
+                let angle = match params.pattern {
+                    Pattern::Gyroid => angles[0] - std::f64::consts::FRAC_PI_4,
+                    _ => angles[0],
+                };
+                let (sin, cos) = angle.sin_cos();
+                let turned = |p: Point2| {
+                    let (x, y) = ((p.x - origin.x) as f64, (p.y - origin.y) as f64);
+                    Point2 {
+                        x: (x * cos + y * sin).round() as i64,
+                        y: (y * cos - x * sin).round() as i64,
+                    }
+                };
+                let back = |p: Point2| {
+                    let (x, y) = (p.x as f64, p.y as f64);
+                    Point2 {
+                        x: (x * cos - y * sin).round() as i64 + origin.x,
+                        y: (x * sin + y * cos).round() as i64 + origin.y,
+                    }
+                };
+                // A piece shorter than this is not worth laying.
+                let least = 0.8 * flow.spacing;
+                for area in &inside {
+                    let area = edge_geom::ExPolygon {
+                        contour: edge_geom::Polygon {
+                            points: area.contour.points.iter().copied().map(turned).collect(),
+                        },
+                        holes: area
+                            .holes
+                            .iter()
+                            .map(|hole| edge_geom::Polygon {
+                                points: hole.points.iter().copied().map(turned).collect(),
+                            })
+                            .collect(),
+                    };
+                    let points = &area.contour.points;
+                    let Some(&first) = points.first() else {
+                        continue;
+                    };
+                    let bounds = points.iter().fold((first, first), |(low, high), p| {
+                        (
+                            Point2 {
+                                x: low.x.min(p.x),
+                                y: low.y.min(p.y),
+                            },
+                            Point2 {
+                                x: high.x.max(p.x),
+                                y: high.y.max(p.y),
+                            },
+                        )
+                    });
+                    let pattern = match params.pattern {
+                        Pattern::Gyroid => {
+                            curves::gyroid(bounds, flow.spacing, params.density, params.z)
+                        }
+                        _ => curves::crosshatch(bounds, flow.spacing, params.density, params.z),
+                    };
+                    let mut pieces = edge_clip::clip_lines(&pattern, std::slice::from_ref(&area))?;
+                    pieces.retain(|piece| {
+                        let length: f64 = piece
+                            .windows(2)
+                            .map(|pair| {
+                                ((pair[1].x - pair[0].x) as f64)
+                                    .hypot((pair[1].y - pair[0].y) as f64)
+                            })
+                            .sum();
+                        length >= scaled(least) as f64
+                    });
+                    for points in lines::paths_joined(&area, pieces, sparse_joining(line)) {
+                        paths.push(ExtrusionPath {
+                            points: points.into_iter().map(back).collect(),
+                            role,
+                            flow,
+                            in_turn: false,
+                            part,
+                        });
+                    }
+                }
+            }
             Lay::Anchored => {
                 let line = flow.scaled_spacing();
                 let inside =
                     edge_clip::offset(std::slice::from_ref(&surface.area), -line / 2, Join::MITER)?;
-                // Nothing is joined when the profile allows no join at
-                // all (`infill_anchor_max` of zero), nor anchored.
-                let max_link = scaled(params.sparse_link_max);
-                let joining = lines::Joining {
-                    max_link,
-                    anchor: if max_link > 0 {
-                        scaled(params.sparse_anchor)
-                    } else {
-                        0
-                    },
-                    half_width: line / 2,
-                    // FillBase.cpp `create_boundary_infill_graph`.
-                    beside: (0.8 * line as f64) as i64,
-                    beside_clip: (1.7 * line as f64) as i64,
-                    order: lines::Order::Nearest,
-                };
+                let joining = sparse_joining(line);
                 // Each direction's lines pass through the origin. None
                 // lies within a line's spacing of the area's own edge,
                 // where it would only retrace the wall (`make_fill_lines`).
-                let rows: Vec<lines::Rows> = angles
+                let rows: Vec<lines::Rows> = sweeps
                     .iter()
-                    .map(|angle| {
+                    .map(|(angle, shift)| {
                         let (sin, cos) = angle.sin_cos();
-                        let first = params.origin.y as f64 * cos - params.origin.x as f64 * sin;
+                        // A set moved sideways is moved to the right of
+                        // the way its lines run (`make_fill_lines`).
+                        let first = origin.y as f64 * cos
+                            - origin.x as f64 * sin
+                            - shift * edge_geom::UNITS_PER_MM;
                         let within = match lines::extent_across(&surface.area, *angle) {
                             Some((low, high)) => {
                                 (low + line as f64 + 1.0, high - line as f64 - 1.0)
@@ -391,6 +586,7 @@ mod tests {
             sparse_link_max: 0.0,
             sparse_anchor: 0.0,
             origin: Point2::from_mm(0.0, 0.0),
+            z: 0.2,
             top_joined: false,
             bottom_joined: true,
             solid_joined: true,
@@ -488,6 +684,73 @@ mod tests {
                 pattern == Pattern::Grid
             );
         }
+        // Every pattern lays the share of plastic the density asks for,
+        // on whatever layer: counted whole here, joins and all, which a
+        // large area keeps small beside the lines.
+        for pattern in [
+            Pattern::AlignedLines,
+            Pattern::Triangles,
+            Pattern::Stars,
+            Pattern::Cubic,
+            Pattern::QuarterCubic,
+            Pattern::CrossHatch,
+            Pattern::Gyroid,
+        ] {
+            for layer in [0, 1, 7, 12] {
+                let params = FillParams {
+                    z: 0.2 * (layer + 1) as f64,
+                    ..params(pattern, 0.2)
+                };
+                let paths = fill(&[surface(SurfaceKind::Sparse, 100.0)], layer, &params).unwrap();
+                let covered = length(&paths) * params.sparse.spacing;
+                // Cross hatch is laid 8% further apart than its density
+                // says, and on the layers where it turns its zigzags
+                // are longer than straight lines, as in the reference.
+                let (least, most) = match pattern {
+                    Pattern::CrossHatch => (0.9 / 1.08, 1.45 / 1.08),
+                    _ => (0.88, 1.12),
+                };
+                let share = covered / (0.2 * 10_000.0);
+                assert!(
+                    (least..=most).contains(&share),
+                    "{pattern:?} on layer {layer} covered {share} of what its density asks"
+                );
+                assert!(paths.iter().all(|path| path.role == Role::SparseInfill));
+            }
+        }
+        // Lines that keep their direction lie the same way on every
+        // layer; plain lines turn.
+        let ways = |pattern: Pattern, layer: usize| -> Vec<bool> {
+            let paths = fill(
+                &[surface(SurfaceKind::Sparse, 60.0)],
+                layer,
+                &params(pattern, 0.25),
+            )
+            .unwrap();
+            paths
+                .iter()
+                .flat_map(|path| path.points.windows(2))
+                .filter(|pair| pair[0].x != pair[1].x && pair[0].y != pair[1].y)
+                .map(|pair| ((pair[1].x - pair[0].x) > 0) == ((pair[1].y - pair[0].y) > 0))
+                .collect()
+        };
+        assert_eq!(
+            ways(Pattern::AlignedLines, 0),
+            ways(Pattern::AlignedLines, 1)
+        );
+        assert_ne!(ways(Pattern::Lines, 0)[0], ways(Pattern::Lines, 1)[0]);
+        // Cubic lines move sideways from layer to layer; triangles stay.
+        let at = |pattern: Pattern, z: f64| {
+            let params = FillParams {
+                z,
+                ..params(pattern, 0.2)
+            };
+            fill(&[surface(SurfaceKind::Sparse, 60.0)], 0, &params).unwrap()
+        };
+        assert_eq!(at(Pattern::Triangles, 0.2), at(Pattern::Triangles, 3.0));
+        assert_ne!(at(Pattern::Cubic, 0.2), at(Pattern::Cubic, 3.0));
+        assert_ne!(at(Pattern::Gyroid, 0.2), at(Pattern::Gyroid, 3.0));
+
         // Lines in one direction are one zigzag, however far apart they are.
         let zigzag = fill(
             &[surface(SurfaceKind::Sparse, 60.0)],

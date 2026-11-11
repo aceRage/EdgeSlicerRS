@@ -378,6 +378,97 @@ pub fn paths_turned(
     )
 }
 
+/// How near the outline an end of a line must lie to be joined along it,
+/// in scaled units. Lines cut to an area end on its outline to within the
+/// rounding of the cut.
+const ON_OUTLINE: f64 = 2_000.0;
+
+/// Lines of any shape that have been cut to `area`, joined end to end
+/// along its outline and anchored where they are not, as the reference's
+/// `connect_infill` does for the patterns that are not straight rows.
+/// An end that does not lie on the outline is left as it is.
+pub fn paths_joined(
+    area: &ExPolygon,
+    lines: Vec<Vec<Point2>>,
+    joining: Joining,
+) -> Vec<Vec<Point2>> {
+    let rings: Vec<&Polygon> = area.rings().collect();
+    let ring_lengths: Vec<f64> = rings
+        .iter()
+        .map(|ring| {
+            let points = &ring.points;
+            (0..points.len())
+                .map(|at| {
+                    let (a, b) = (points[at], points[(at + 1) % points.len()]);
+                    ((b.x - a.x) as f64).hypot((b.y - a.y) as f64)
+                })
+                .sum()
+        })
+        .collect();
+    // Where on the outline a point lies: (ring, edge, distance round the
+    // ring), when it is near enough to be on it at all.
+    let place = |point: Point2| -> Option<(usize, usize, f64)> {
+        let (px, py) = (point.x as f64, point.y as f64);
+        let mut best: Option<(f64, usize, usize, f64)> = None;
+        for (ring, polygon) in rings.iter().enumerate() {
+            let points = &polygon.points;
+            let mut travelled = 0.0;
+            for (edge, &a) in points.iter().enumerate() {
+                let b = points[(edge + 1) % points.len()];
+                let (ax, ay) = (a.x as f64, a.y as f64);
+                let (dx, dy) = (b.x as f64 - ax, b.y as f64 - ay);
+                let length = dx.hypot(dy);
+                if length > 0.0 {
+                    let along = (((px - ax) * dx + (py - ay) * dy) / length).clamp(0.0, length);
+                    let off = (px - ax - dx * along / length).hypot(py - ay - dy * along / length);
+                    if off <= ON_OUTLINE && best.is_none_or(|best| off < best.0) {
+                        best = Some((off, ring, edge, travelled + along));
+                    }
+                }
+                travelled += length;
+            }
+        }
+        best.map(|(_, ring, edge, at)| (ring, edge, at))
+    };
+    let mut crossings = Vec::with_capacity(2 * lines.len());
+    let mut segments = Vec::with_capacity(lines.len());
+    let mut bends = Vec::with_capacity(lines.len());
+    for (number, line) in lines.into_iter().enumerate() {
+        if line.len() < 2 {
+            continue;
+        }
+        for (end, &point) in [line[0], line[line.len() - 1]].iter().enumerate() {
+            // An end off the outline is on no ring, and so joined to nothing.
+            let (ring, edge, at) = place(point).unwrap_or((usize::MAX, 0, 0.0));
+            crossings.push(Crossing {
+                direction: 0,
+                row: number as i64,
+                u: end as f64,
+                ring,
+                edge,
+                at,
+                point,
+                segment: None,
+                link: None,
+                loose: None,
+                hook: None,
+            });
+        }
+        segments.push([crossings.len() - 2, crossings.len() - 1]);
+        bends.push(line[1..line.len() - 1].to_vec());
+    }
+    let by_row: Vec<usize> = (0..crossings.len()).collect();
+    join(
+        &rings,
+        &ring_lengths,
+        crossings,
+        &segments,
+        &bends,
+        &by_row,
+        joining,
+    )
+}
+
 /// Rows across `rings`, joined along them. With `edge` given, a row is a
 /// stretch across `edge` instead, joined where it crosses `rings`.
 fn lay(
@@ -437,6 +528,32 @@ fn lay(
             segments
         }
     };
+    join(
+        rings,
+        &ring_lengths,
+        crossings,
+        &segments,
+        &[],
+        &by_row,
+        joining,
+    )
+}
+
+/// Joins stretches end to end along the rings their ends lie on, and
+/// gives the paths that makes. `crossings` are the ends, `segments` the
+/// two ends of each stretch, and `bends` the points a stretch passes
+/// between them, from its first end to its second: none for a straight
+/// one, and none at all (an empty list) when every stretch is straight.
+/// `by_row` is the order paths are begun in.
+fn join(
+    rings: &[&Polygon],
+    ring_lengths: &[f64],
+    mut crossings: Vec<Crossing>,
+    segments: &[[usize; 2]],
+    bends: &[Vec<Point2>],
+    by_row: &[usize],
+    joining: Joining,
+) -> Vec<Vec<Point2>> {
     for (segment, ends) in segments.iter().enumerate() {
         for &end in ends {
             crossings[end].segment = Some(segment);
@@ -464,6 +581,30 @@ fn lay(
     }
     let mut free: Vec<Option<Free>> = vec![None; crossings.len()];
     let mut candidates: Vec<(f64, usize, usize)> = Vec::new();
+    // Each stretch less `beside_clip` at either end, for telling where it
+    // runs beside the outline without ending there.
+    let shortened: Vec<Vec<(f64, f64)>> = if joining.beside > 0 {
+        let as_pair = |p: Point2| (p.x as f64, p.y as f64);
+        segments
+            .iter()
+            .enumerate()
+            .filter_map(|(segment, ends)| {
+                let mut line = vec![as_pair(crossings[ends[0]].point)];
+                line.extend(
+                    bends
+                        .get(segment)
+                        .into_iter()
+                        .flatten()
+                        .copied()
+                        .map(as_pair),
+                );
+                line.push(as_pair(crossings[ends[1]].point));
+                shorten(&line, joining.beside_clip as f64)
+            })
+            .collect()
+    } else {
+        Vec::new()
+    };
     for (ring, &ring_length) in ring_lengths.iter().enumerate() {
         let mut ends: Vec<usize> = (0..crossings.len())
             .filter(|&c| crossings[c].ring == ring && crossings[c].segment.is_some())
@@ -500,7 +641,7 @@ fn lay(
         // ring is left alone (FillBase.cpp
         // `mark_boundary_segments_touching_infill`).
         if joining.beside > 0 && !ends.is_empty() {
-            let (radius, clip) = (joining.beside as f64, joining.beside_clip as f64);
+            let radius = joining.beside as f64;
             let as_pair = |p: Point2| (p.x as f64, p.y as f64);
             let corners = &rings[ring].points;
             let mut travelled = 0.0;
@@ -512,21 +653,11 @@ fn lay(
                 if length <= 0.0 {
                     continue;
                 }
-                for stretch in &segments {
-                    let (c, d) = (
-                        as_pair(crossings[stretch[0]].point),
-                        as_pair(crossings[stretch[1]].point),
-                    );
-                    let run = (d.0 - c.0).hypot(d.1 - c.1);
-                    if run <= 2.0 * clip {
-                        continue;
-                    }
-                    // The line less its two ends.
-                    let (ux, uy) = ((d.0 - c.0) / run, (d.1 - c.1) / run);
-                    let (c, d) = (
-                        (c.0 + ux * clip, c.1 + uy * clip),
-                        (d.0 - ux * clip, d.1 - uy * clip),
-                    );
+                for (c, d) in shortened
+                    .iter()
+                    .flat_map(|line| line.windows(2))
+                    .map(|pair| (pair[0], pair[1]))
+                {
                     let clear = |low: f64, high: f64, one: f64, two: f64| {
                         low.min(high) > one.max(two) + radius
                             || low.max(high) < one.min(two) - radius
@@ -635,7 +766,7 @@ fn lay(
     let mut starts: Option<Vec<usize>> = None;
     if joining.order == Order::Monotonic {
         candidates.clear();
-        let turns = monotonic(&crossings, &segments);
+        let turns = monotonic(&crossings, segments);
         // A line is joined to the one laid next when that is on the next
         // row and its end is the next along the outline.
         for pair in turns.windows(2) {
@@ -668,7 +799,7 @@ fn lay(
         // of the two where both sides offer one. A path ends where
         // neither does.
         let mut passed = vec![false; segments.len()];
-        for &start in &by_row {
+        for &start in by_row {
             let mut at = start;
             while let Some(segment) = crossings[at].segment.filter(|&segment| !passed[segment]) {
                 passed[segment] = true;
@@ -734,7 +865,7 @@ fn lay(
     // Whatever end is still bare takes an anchor towards whichever side
     // has more of the outline free.
     if joining.anchor > 0 {
-        for ends in &segments {
+        for ends in segments {
             for &end in ends {
                 if let Some(own) = free[end].filter(|own| !own.taken) {
                     hook(
@@ -751,7 +882,7 @@ fn lay(
     // Walk each chain of stretches and links from one loose end to the other.
     let mut walked = vec![false; segments.len()];
     let mut paths = Vec::new();
-    for &start in starts.as_ref().unwrap_or(&by_row) {
+    for &start in starts.as_deref().unwrap_or(by_row) {
         let Some(first) = crossings[start].segment else {
             continue;
         };
@@ -777,6 +908,14 @@ fn lay(
             walked[segment] = true;
             let [a, b] = segments[segment];
             let far = if a == at { b } else { a };
+            // Along the stretch, by whatever it passes on the way.
+            if let Some(bends) = bends.get(segment) {
+                if a == at {
+                    points.extend(bends.iter().copied());
+                } else {
+                    points.extend(bends.iter().rev().copied());
+                }
+            }
             let Some((next, is_forward)) = crossings[far].link else {
                 points.push(end(&crossings[far]));
                 points.extend(anchor(&crossings[far]));
@@ -822,6 +961,41 @@ fn lay(
         }
     }
     paths
+}
+
+/// A line with `clip` cut off each end; `None` when nothing is left.
+fn shorten(line: &[(f64, f64)], clip: f64) -> Option<Vec<(f64, f64)>> {
+    let length = |a: (f64, f64), b: (f64, f64)| (b.0 - a.0).hypot(b.1 - a.1);
+    let total: f64 = line.windows(2).map(|pair| length(pair[0], pair[1])).sum();
+    if total <= 2.0 * clip {
+        return None;
+    }
+    // The point `along` the line from its start.
+    let at = |along: f64| {
+        let mut left = along;
+        for pair in line.windows(2) {
+            let step = length(pair[0], pair[1]);
+            if left <= step && step > 0.0 {
+                let t = left / step;
+                return (
+                    pair[0].0 + t * (pair[1].0 - pair[0].0),
+                    pair[0].1 + t * (pair[1].1 - pair[0].1),
+                );
+            }
+            left -= step;
+        }
+        line[line.len() - 1]
+    };
+    let mut out = vec![at(clip)];
+    let mut travelled = 0.0;
+    for pair in line.windows(2) {
+        travelled += length(pair[0], pair[1]);
+        if travelled > clip && travelled < total - clip {
+            out.push(pair[1]);
+        }
+    }
+    out.push(at(total - clip));
+    Some(out)
 }
 
 /// The order to lay solid lines in so that the area is swept from its
@@ -1278,6 +1452,43 @@ mod tests {
         // One tooth is finished before the next is begun.
         let teeth: Vec<Coord> = rows[4..].iter().map(|row| row[0].x / scaled(4.0)).collect();
         assert_eq!(teeth.chunk_by(|a, b| a == b).count(), 16);
+    }
+
+    #[test]
+    fn lines_of_any_shape_are_joined_where_their_ends_meet_the_outline() {
+        let square = ExPolygon {
+            contour: rect(0.0, 0.0, 10.0, 10.0),
+            holes: Vec::new(),
+        };
+        let bent = |y: f64| {
+            vec![
+                Point2::from_mm(0.0, y),
+                Point2::from_mm(5.0, y + 0.5),
+                Point2::from_mm(10.0, y),
+            ]
+        };
+        let joining = Joining {
+            max_link: scaled(3.0),
+            ..Joining::default()
+        };
+        // Three bent lines right across: one path, bends and all, with
+        // the two joins running up the sides.
+        let joined = paths_joined(&square, vec![bent(2.0), bent(4.0), bent(6.0)], joining);
+        assert_eq!(joined.len(), 1);
+        assert_eq!(joined[0].len(), 9);
+        assert!((length(&joined) - (3.0 * 2.0 * 5.0249378 + 4.0)).abs() < 1e-3);
+        // Too far apart to join, they stay three.
+        let apart = paths_joined(&square, vec![bent(1.0), bent(5.0), bent(9.0)], joining);
+        assert_eq!(apart.len(), 3);
+        // A line that stops short of the outline keeps that end to itself.
+        let short = vec![Point2::from_mm(0.0, 3.0), Point2::from_mm(5.0, 3.0)];
+        let mixed = paths_joined(&square, vec![bent(2.0), short.clone()], joining);
+        assert_eq!(mixed.len(), 1);
+        let ends = [mixed[0][0], mixed[0][mixed[0].len() - 1]];
+        assert!(ends.contains(&Point2::from_mm(5.0, 3.0)));
+        // With no joining allowed every line comes back as it went in.
+        let alone = paths_joined(&square, vec![bent(2.0), short], Joining::default());
+        assert_eq!(alone.len(), 2);
     }
 
     #[test]
