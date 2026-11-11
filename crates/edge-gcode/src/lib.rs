@@ -88,9 +88,12 @@ pub struct Layer<'a> {
     /// Which of `loops` make up each island.
     pub islands: &'a [Range<usize>],
     pub paths: &'a [ExtrusionPath],
-    /// The area inside the walls. Moves between fill lines that stay
-    /// within it can skip retraction, since any ooze lands where fill goes.
-    pub infill_area: &'a [ExPolygon],
+    /// Where a move to a fill line may skip retraction if it stays
+    /// within one piece: the part of the layer that is neither a top
+    /// face nor a bottom one, walls and all, since ooze there is covered
+    /// over (RetractWhenCrossingPerimeters.cpp). Pieces of different
+    /// filaments are given apart, and a move from one to another retracts.
+    pub shelter: &'a [ExPolygon],
     /// The outline of everything printed on the layer beneath, which
     /// walls are measured against to find where they overhang. Empty on
     /// the first layer, or to leave overhangs alone.
@@ -1142,7 +1145,7 @@ impl Writer<'_> {
                 .iter()
                 .find(|wall| wall.role == Role::Perimeter)
                 .map(|wall| wall.flow);
-            self.lines(layer.tower, &[])?;
+            self.lines(&layer.tower.iter().collect::<Vec<_>>(), &[])?;
             for around in layer.around {
                 let points = &around.polygon.points;
                 if points.len() < 3 {
@@ -1157,14 +1160,8 @@ impl Writer<'_> {
                 seam::clip_end(&mut path, self.settings.seam_gap);
                 self.path(&path, around.role, &around.flow, false, true)?;
             }
-            self.lines(layer.support, &[])?;
-            if self.settings.infill_first {
-                self.lines(layer.paths, layer.infill_area)?;
-                self.walls(layer)?;
-            } else {
-                self.walls(layer)?;
-                self.lines(layer.paths, layer.infill_area)?;
-            }
+            self.lines(&layer.support.iter().collect::<Vec<_>>(), &[])?;
+            self.islands(layer)?;
         }
         self.fan_over_air(false)?;
         self.state.seams = std::mem::take(&mut self.state.next_seams);
@@ -1217,71 +1214,89 @@ impl Writer<'_> {
         self.out = settled;
     }
 
-    /// Islands nearest first; within an island, walls in the configured order.
-    fn walls(&mut self, layer: &Layer<'_>) -> io::Result<()> {
-        let s = self.settings;
-        let mut remaining: Vec<&Range<usize>> = layer.islands.iter().collect();
+    /// Islands nearest first, each finished before the next is begun: its
+    /// walls and the fill that lies in it, in the configured order
+    /// (GCode.cpp `process_layer`). Fill in no island comes last.
+    fn islands(&mut self, layer: &Layer<'_>) -> io::Result<()> {
+        let homes = homes(layer);
+        let fill = |island: usize| -> Vec<&ExtrusionPath> {
+            layer
+                .paths
+                .iter()
+                .zip(&homes)
+                .filter(|(_, home)| **home == island)
+                .map(|(path, _)| path)
+                .collect()
+        };
+        let mut remaining: Vec<usize> = (0..layer.islands.len()).collect();
         while !remaining.is_empty() {
-            let nearest = self.nearest(remaining.iter().map(|island| {
-                layer.loops[(*island).clone()]
+            let nearest = self.nearest(remaining.iter().map(|&island| {
+                layer.loops[layer.islands[island].clone()]
                     .iter()
                     .flat_map(|wall| &wall.polygon.points)
                     .copied()
             }));
             let island = remaining.remove(nearest);
-            let mut walls: Vec<&ExtrusionLoop> = layer.loops[island.clone()].iter().collect();
-            // Stable, so each depth keeps its outer boundaries before its holes.
-            match s.wall_order {
-                WallOrder::InnerOuter => walls.sort_by_key(|wall| std::cmp::Reverse(wall.depth)),
-                WallOrder::OuterInner => walls.sort_by_key(|wall| wall.depth),
-            }
-            // The seams of the island's outermost walls are settled first,
-            // so the walls behind them can start alongside.
-            let planned: Vec<(bool, Point2)> = if s.seam == Seam::Nearest {
-                Vec::new()
+            if self.settings.infill_first {
+                self.lines(&fill(island), layer.shelter)?;
+                self.walls(layer, &layer.islands[island])?;
             } else {
-                walls
-                    .iter()
-                    .filter(|wall| wall.depth == 0 && wall.polygon.points.len() >= 3)
-                    .map(|wall| {
-                        let points = &wall.polygon.points;
-                        let corner = seam::choose(
-                            points,
-                            s.seam,
-                            s.nozzle_diameter,
-                            None,
-                            &self.state.seams,
-                        );
-                        (wall.is_hole, points[corner])
-                    })
-                    .collect()
-            };
-            self.state
-                .next_seams
-                .extend(planned.iter().map(|(_, seam)| *seam));
-
-            for wall in walls {
-                let points = &wall.polygon.points;
-                if points.len() < 3 {
-                    continue;
-                }
-                let (edge, start) = match alongside(points, wall.is_hole, &planned) {
-                    Some(target) => seam::project(points, target),
-                    None => {
-                        let corner = seam::choose(
-                            points,
-                            Seam::Nearest,
-                            s.nozzle_diameter,
-                            self.state.position,
-                            &[],
-                        );
-                        (corner, points[corner])
-                    }
-                };
-                let mut path = seam::open_at(points, edge, start);
-                seam::clip_end(&mut path, s.seam_gap);
-                self.path(&path, wall.role, &wall.flow, false, true)?;
+                self.walls(layer, &layer.islands[island])?;
+                self.lines(&fill(island), layer.shelter)?;
             }
+        }
+        self.lines(&fill(layer.islands.len()), layer.shelter)
+    }
+
+    /// One island's walls in the configured order.
+    fn walls(&mut self, layer: &Layer<'_>, island: &Range<usize>) -> io::Result<()> {
+        let s = self.settings;
+        let own = &layer.loops[island.clone()];
+        let mut walls: Vec<&ExtrusionLoop> = nested(own).into_iter().map(|at| &own[at]).collect();
+        if s.wall_order == WallOrder::OuterInner {
+            walls.reverse();
+        }
+        // The seams of the island's outermost walls are settled first,
+        // so the walls behind them can start alongside.
+        let planned: Vec<(bool, Point2)> = if s.seam == Seam::Nearest {
+            Vec::new()
+        } else {
+            walls
+                .iter()
+                .filter(|wall| wall.depth == 0 && wall.polygon.points.len() >= 3)
+                .map(|wall| {
+                    let points = &wall.polygon.points;
+                    let corner =
+                        seam::choose(points, s.seam, s.nozzle_diameter, None, &self.state.seams);
+                    (wall.is_hole, points[corner])
+                })
+                .collect()
+        };
+        self.state
+            .next_seams
+            .extend(planned.iter().map(|(_, seam)| *seam));
+
+        for wall in walls {
+            let points = &wall.polygon.points;
+            if points.len() < 3 {
+                continue;
+            }
+            let (edge, start) = match alongside(points, wall.is_hole, &planned) {
+                Some(target) => seam::project(points, target),
+                None => {
+                    let corner = seam::choose(
+                        points,
+                        Seam::Nearest,
+                        s.nozzle_diameter,
+                        self.state.position,
+                        &[],
+                    );
+                    (corner, points[corner])
+                }
+            };
+            let mut path = seam::open_at(points, edge, start);
+            seam::clip_end(&mut path, s.seam_gap);
+            self.path(&path, wall.role, &wall.flow, false, true)?;
         }
         Ok(())
     }
@@ -1289,10 +1304,13 @@ impl Writer<'_> {
     /// Open lines kind by kind as they come, each kind in nearest-end-first
     /// order so the nozzle works across an area instead of jumping about.
     /// Moves that stay inside `shelter` may skip retraction.
-    fn lines(&mut self, paths: &[ExtrusionPath], shelter: &[ExPolygon]) -> io::Result<()> {
+    fn lines(&mut self, paths: &[&ExtrusionPath], shelter: &[ExPolygon]) -> io::Result<()> {
         for group in paths.chunk_by(|a, b| a.role == b.role) {
-            let mut remaining: Vec<&ExtrusionPath> =
-                group.iter().filter(|path| path.points.len() >= 2).collect();
+            let mut remaining: Vec<&ExtrusionPath> = group
+                .iter()
+                .copied()
+                .filter(|path| path.points.len() >= 2)
+                .collect();
             while !remaining.is_empty() {
                 let ends =
                     |path: &ExtrusionPath| [path.points[0], path.points[path.points.len() - 1]];
@@ -1607,7 +1625,11 @@ impl Writer<'_> {
         if length == 0.0 && self.state.height == Some(self.state.z) {
             return Ok(());
         }
-        let exposed = !sheltered || self.state.role == Some(Role::ExternalPerimeter);
+        let exposed = !sheltered
+            || matches!(
+                self.state.role,
+                Some(Role::ExternalPerimeter | Role::OverhangPerimeter)
+            );
         let long = length > s.retraction_minimum_travel && exposed;
         if long {
             self.retract(false)?;
@@ -2104,6 +2126,161 @@ impl Writer<'_> {
         // The times follow, once the file has been timed.
         Ok(summary)
     }
+}
+
+/// An island's walls from the inside out, each wall next to the one it
+/// lies against: every hole's walls from the one deepest in the part to
+/// the one on the hole, then the outline's from the innermost out
+/// (PerimeterGenerator.cpp `process_classic` and `traverse_loops`, which
+/// nest a hole's wall in the next wall round the same hole, or failing
+/// that in the innermost wall of the outline that holds it, and each of
+/// the outline's walls in the one outside it). The nozzle then moves a
+/// line's width from a wall to the next, where taking all the inner walls
+/// before any outer one sends it across the island between them.
+fn nested(walls: &[ExtrusionLoop]) -> Vec<usize> {
+    let deepest = walls.iter().map(|wall| wall.depth).max().unwrap_or(0);
+    let holds = |outer: usize, inner: usize| {
+        walls[inner]
+            .polygon
+            .points
+            .first()
+            .is_some_and(|&point| inside::within(&walls[outer].polygon, point))
+    };
+    let around = |inner: usize, is_hole: bool, depth: usize| {
+        (0..walls.len()).find(|&outer| {
+            outer != inner
+                && walls[outer].is_hole == is_hole
+                && walls[outer].depth == depth
+                && holds(outer, inner)
+        })
+    };
+    let mut children: Vec<Vec<usize>> = vec![Vec::new(); walls.len()];
+    let mut roots = Vec::new();
+    let mut place = |wall: usize, parent: Option<usize>| match parent {
+        Some(parent) => children[parent].push(wall),
+        None => roots.push(wall),
+    };
+    for depth in 0..=deepest {
+        for (wall, _) in walls
+            .iter()
+            .enumerate()
+            .filter(|(_, wall)| wall.is_hole && wall.depth == depth)
+        {
+            let parent = (depth + 1..=deepest)
+                .find_map(|further| around(wall, true, further))
+                .or_else(|| (0..=deepest).rev().find_map(|at| around(wall, false, at)));
+            place(wall, parent);
+        }
+    }
+    for depth in (0..=deepest).rev() {
+        for (wall, _) in walls
+            .iter()
+            .enumerate()
+            .filter(|(_, wall)| !wall.is_hole && wall.depth == depth)
+        {
+            let parent = (0..depth).rev().find_map(|at| around(wall, false, at));
+            place(wall, parent);
+        }
+    }
+    // An outline's walls come after what lies inside them; a hole's
+    // before the walls nearer the hole.
+    fn visit(walls: &[ExtrusionLoop], children: &[Vec<usize>], wall: usize, out: &mut Vec<usize>) {
+        if walls[wall].is_hole {
+            out.push(wall);
+        }
+        for &child in &children[wall] {
+            visit(walls, children, child, out);
+        }
+        if !walls[wall].is_hole {
+            out.push(wall);
+        }
+    }
+    // Outlines last among those with nothing round them, so a hole's
+    // wall that was matched to none still goes down before the outside.
+    roots.sort_by_key(|&wall| (!walls[wall].is_hole, std::cmp::Reverse(walls[wall].depth)));
+    let mut order = Vec::with_capacity(walls.len());
+    for root in roots {
+        visit(walls, &children, root, &mut order);
+    }
+    order
+}
+
+/// Which island each of the layer's fill lines lies in, as an index into
+/// its islands, or their count for a line in none. An island is known by
+/// its outermost walls around material; a line is in it when its first
+/// point is, or the middle of its first segment, or the centre of its
+/// bounds, and the smallest island that has it wins, so one standing in
+/// another's hole is found before the one around it (GCode.cpp
+/// `process_layer`).
+fn homes(layer: &Layer<'_>) -> Vec<usize> {
+    let outlines = |island: &Range<usize>| {
+        layer.loops[island.clone()]
+            .iter()
+            .filter(|wall| wall.depth == 0 && !wall.is_hole)
+            .map(|wall| &wall.polygon)
+    };
+    let bounds = |points: &mut dyn Iterator<Item = Point2>| {
+        points.fold(None, |bounds: Option<(Point2, Point2)>, point| {
+            Some(match bounds {
+                None => (point, point),
+                Some((low, high)) => (
+                    Point2 {
+                        x: low.x.min(point.x),
+                        y: low.y.min(point.y),
+                    },
+                    Point2 {
+                        x: high.x.max(point.x),
+                        y: high.y.max(point.y),
+                    },
+                ),
+            })
+        })
+    };
+    let mut order: Vec<(i128, usize)> = layer
+        .islands
+        .iter()
+        .enumerate()
+        .map(|(index, island)| {
+            let size =
+                bounds(&mut outlines(island).flat_map(|outline| outline.points.iter().copied()))
+                    .map_or(0, |(low, high)| {
+                        i128::from(high.x - low.x) * i128::from(high.y - low.y)
+                    });
+            (size, index)
+        })
+        .collect();
+    order.sort();
+    layer
+        .paths
+        .iter()
+        .map(|path| {
+            let Some(&first) = path.points.first() else {
+                return layer.islands.len();
+            };
+            let mut probes = vec![first];
+            if let Some(&second) = path.points.get(1) {
+                probes.push(Point2 {
+                    x: (first.x + second.x) / 2,
+                    y: (first.y + second.y) / 2,
+                });
+            }
+            if let Some((low, high)) = bounds(&mut path.points.iter().copied()) {
+                probes.push(Point2 {
+                    x: (low.x + high.x) / 2,
+                    y: (low.y + high.y) / 2,
+                });
+            }
+            probes
+                .iter()
+                .find_map(|&probe| {
+                    order.iter().map(|&(_, index)| index).find(|&index| {
+                        outlines(&layer.islands[index])
+                            .any(|outline| inside::within(outline, probe))
+                    })
+                })
+                .unwrap_or(layer.islands.len())
+        })
+        .collect()
 }
 
 /// The planned seam a wall should start next to: the nearest one, taking

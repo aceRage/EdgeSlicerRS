@@ -20,5 +20,5 @@ pub use fill::{FillParams, fill};
 pub use settings::{InfillSettings, Pattern};
 pub use surfaces::{
     Anchoring, Beneath, Shells, Surface, SurfaceKind, WallsAround, anchor, bridge_edges,
-    bridge_over_infill, carry_bridge_edges, classify, inside_walls,
+    bridge_over_infill, carry_bridge_edges, classify, inside_walls, internal,
 };

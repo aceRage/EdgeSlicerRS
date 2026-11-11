@@ -161,14 +161,21 @@ Known gaps: painted triangles, per-object setting overrides, typed settings
   something to hold on to.
 
 - G-code: `slice --gcode out.gcode` orders each layer (skirt and brim,
-  walls island by island, then fill nearest-end-first), holds speeds to the
+  each part's brim whole before the next, then island by island: an
+  island's walls from the inside out, each beside the last, then the
+  gap fill and the fill that lie in it, nearest end first), holds speeds to the
   hot end's melt rate, sets acceleration by feature, and reports filament,
   weight and time. Following the reference:
   - Seams: each outer wall starts at its best corner by the reference's
     angle score and stays in line with the layer below; inner walls start
     alongside. Walls stop `seam_gap` short of their start.
   - Travel: retraction with wipe, and straight, ramped or spiral lifts
-    (`z_hop_types`), at feedrates the Z axis can follow.
+    (`z_hop_types`), at feedrates the Z axis can follow. With
+    `reduce_infill_retraction` a move to a fill line goes unretracted
+    when it stays inside one piece of the layer that is neither a top
+    face nor a bottom one, walls included
+    (RetractWhenCrossingPerimeters.cpp), unless it leaves an outer or
+    an overhanging wall.
   - Cooling: a layer shorter than `slow_down_layer_time` is laid out again
     with its fastest lines slowed, down to `slow_down_min_speed`; the part
     fan follows layer time and the auxiliary fan is driven.
@@ -370,7 +377,14 @@ not ported. Arachne (variable width) is not
 started. Overhangs are measured as the reference measures them but probed
 at fixed steps, so a wall's speed changes at slightly different places.
 Infill is not all a port yet: solid lines are joined along
-the walls nearest-first but not ordered (no monotonic), a bridge reaches 0.4 mm onto each support where the reference's
+the walls in sweep order, each to its neighbour on the next row
+whatever the distance, as the reference's rectilinear fill joins them
+(it means to stop at three spacings, but works the limit out from a
+spacing that is still zero), but pieces and unjoined lines are then
+taken nearest end first, not in monotonic order: on a top surface laid
+in separate lines (`monotonicline`) the nozzle doubles back where the
+reference sweeps across once (76 retracted moves against 20 on plate 2
+of `mcbrim_test.3mf`). A bridge reaches 0.4 mm onto each support where the reference's
 reaches 0.8 mm, internal bridges are not run out to the
 sparse lines that carry them nor turned as the reference turns them
 (they come within 6% of the reference's on plain parts and 9% over on
@@ -556,8 +570,27 @@ puts them on all three plates of `mcbrim_test.3mf`), the prime tower, gap
 fill between walls, overhang walls with their speeds and fan, and
 internal bridges, one wall under top surfaces below the last layer,
 vertical shells, the solid band under a bridge's edge, and the prime
-tower's ribs, stepped brim, ramming and the gap in its wall, and the
-order tools are taken in.
+tower's ribs, stepped brim, ramming and the gap in its wall, the
+order tools are taken in, and the order within a layer with where a
+move may go unretracted.
+
+Retractions on the lettered plates were 41% over the reference's and
+are now within 3% (plate 2: 870 against 848, from 1199; plate 3: 872
+against 846), with 14% and 11% less travel than the reference. Four
+things did it: an island is finished, walls and fill, before the next
+is begun, where every island's walls used to be laid first and each
+kind of fill then took another trip round the layer; moves between
+fill lines are sheltered over the whole inside of the part, not just
+inside its walls; solid lines round a curved outline stay one zigzag
+(the body of a blade's first layer was in ten pieces and is in one, as
+in the reference); and each part's brim is laid whole. On the plain
+parts the count moved by four at most and is within 1% of the
+reference's on the cube, the tower and the bridge with either
+printer's presets and on the shelf with the U1's. What is left on plate 2 is the top surface's order, above,
+supports (a support's lines are not sheltered, and there is twice the
+support the reference lays under these parts), and seams: where an
+outer wall's seam sits on a sharp tip the inner wall ends 1.7 mm from
+it and the move retracts, and the reference puts those seams elsewhere.
 
 ## Licence
 

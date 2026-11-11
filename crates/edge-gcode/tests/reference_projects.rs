@@ -134,7 +134,7 @@ fn every_reference_project_exports_well_formed_gcode_that_adds_up() {
                 loops: &perimeters[index].loops,
                 islands: &perimeters[index].islands,
                 paths: &fills[index],
-                infill_area: &perimeters[index].infill,
+                shelter: &perimeters[index].infill,
                 below: &[],
             })
             .collect();
@@ -300,7 +300,7 @@ fn the_u1s_own_tool_change_gcode_runs() {
         loops: &[],
         islands: &[],
         paths: &[],
-        infill_area: &[],
+        shelter: &[],
         below: &[],
     };
     let plan = [layer(0.2, 0), layer(0.2, 1), layer(0.4, 1), layer(0.4, 0)];

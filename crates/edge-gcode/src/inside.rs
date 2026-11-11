@@ -1,4 +1,4 @@
-use edge_geom::{ExPolygon, Point2};
+use edge_geom::{ExPolygon, Point2, Polygon};
 
 /// Whether the straight move from `a` to `b` stays within `areas`: it
 /// crosses none of their outlines and its midpoint is inside one of them.
@@ -31,6 +31,23 @@ pub(crate) fn stays_inside(areas: &[ExPolygon], a: Point2, b: Point2) -> bool {
             // Which side of the edge the midpoint is on, without dividing.
             let side = (dx - cx) * (my - cy) - (mx - cx) * (dy - cy);
             if (side > 0) == (dy > cy) {
+                inside = !inside;
+            }
+        }
+    }
+    inside
+}
+
+/// Whether `point` is inside `outline`, by counting the edges to its right.
+pub(crate) fn within(outline: &Polygon, point: Point2) -> bool {
+    let points = &outline.points;
+    let mut inside = false;
+    for i in 0..points.len() {
+        let (c, d) = (points[i], points[(i + 1) % points.len()]);
+        if (c.y > point.y) != (d.y > point.y) {
+            let side = i128::from(d.x - c.x) * i128::from(point.y - c.y)
+                - i128::from(point.x - c.x) * i128::from(d.y - c.y);
+            if (side > 0) == (d.y > c.y) {
                 inside = !inside;
             }
         }
