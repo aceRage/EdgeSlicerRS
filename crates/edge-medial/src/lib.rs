@@ -8,12 +8,14 @@
 //! crate that knows which.
 
 mod cells;
+mod diagram;
 mod thick;
 
 use boostvoronoi::prelude::{Builder, BvError, Diagram, EdgeIndex, SourceCategory};
 use edge_geom::{ExPolygon, Point2};
 
 pub use cells::cells;
+pub use diagram::{Source, VoronoiCell, VoronoiDiagram, VoronoiEdge, diagram};
 pub use thick::variable_width;
 
 /// The reference's `SCALED_EPSILON`: lengths below it count as nothing.
