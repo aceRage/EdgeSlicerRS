@@ -53,6 +53,9 @@ pub struct Sliced {
     pub settings: Settings,
     pub layer_height: f64,
     pub first_layer_height: f64,
+    /// Each layer's own height and top: the two above, but for the last
+    /// layers where `precise_z_height` tuned them.
+    heights: crate::layer_heights::LayerHeights,
     pub print: PrintSettings,
     pub walls: WallSettings,
     pub infill: InfillSettings,
@@ -297,12 +300,32 @@ pub fn slice(job: Job, watch: &dyn Watcher) -> Result<Sliced, Failure> {
 
     step(watch, Stage::Layers)?;
     let started = Instant::now();
-    let planes = edge_slice::layer_planes(
+    let mut planes = edge_slice::layer_planes(
         min[2].into(),
         max[2].into(),
         first_layer_height,
         layer_height,
     );
+    // How thick each layer is. With `precise_z_height` the last five are
+    // tuned, and cut where they then lie, so that the print ends at the
+    // top of the part; `crate::layer_heights` has the rest.
+    let filaments: Vec<usize> = bodies.iter().map(|body| body.filament).collect();
+    let tops: Vec<f64> = objects
+        .iter()
+        .filter_map(Mesh::bounds)
+        .map(|(_, high)| high[2].into())
+        .collect();
+    let (heights, mut quality_notes) = crate::layer_heights::settle(
+        &settings,
+        &mut planes,
+        &crate::layer_heights::Stack {
+            span: (min[2].into(), max[2].into()),
+            first_layer_height,
+            layer_height,
+            filaments: &filaments,
+            tops: &tops,
+        },
+    )?;
     let borrowed: Vec<edge_slice::Body<'_>> = bodies
         .iter()
         .map(|body| edge_slice::Body {
@@ -324,6 +347,12 @@ pub fn slice(job: Job, watch: &dyn Watcher) -> Result<Sliced, Failure> {
     } else {
         edge_slice::slice_regions(&borrowed, &planes, scaled(closing_radius))?
     };
+
+    // Overhangs are made printable by growing the layers under them
+    // (`make_overhang_printable`), before anything else is done to the
+    // layers as cut; `crate::printable` has the rest.
+    let mut printable = crate::printable::Printable::from_settings(&settings)?;
+    quality_notes.extend(printable.apply(&mut layers, &heights, !painted.is_empty())?);
 
     // Colours painted onto a part move what they cover from the filament
     // the part is made of to the one painted. Each painted object is
@@ -438,11 +467,7 @@ pub fn slice(job: Job, watch: &dyn Watcher) -> Result<Sliced, Failure> {
     .min(layers.len());
     let mut modelled: Vec<Vec<ExPolygon>> = Vec::with_capacity(elephant_layers);
     for (index, layer) in layers.iter_mut().take(elephant_layers).enumerate() {
-        let height = if index == 0 {
-            first_layer_height
-        } else {
-            layer_height
-        };
+        let height = heights.height_of(index);
         let outer = walls.params(height, index == 0)?.outer;
         let amount = elephant_foot * (1.0 - index as f64 / elephant_layers as f64);
         let compensate = |regions: &[ExPolygon]| {
@@ -539,18 +564,13 @@ pub fn slice(job: Job, watch: &dyn Watcher) -> Result<Sliced, Failure> {
             (0..layers.len())
                 .into_par_iter()
                 .map(|index| {
-                    let height = if index == 0 {
-                        first_layer_height
-                    } else {
-                        layer_height
-                    };
+                    let height = heights.height_of(index);
                     let mut params = walls
                         .params_at(height, index, layers.len())
                         .map_err(|e| e.to_string())?;
                     if let Some(fuzzy) = &mut params.fuzzy {
                         // The middle of the layer, where it was sliced.
-                        fuzzy.slice_z =
-                            first_layer_height + index as f64 * layer_height - height / 2.0;
+                        fuzzy.slice_z = heights.top_of(index) - height / 2.0;
                     }
                     // A top surface is told from the part as a whole, on
                     // the layer above and the one below.
@@ -607,13 +627,14 @@ pub fn slice(job: Job, watch: &dyn Watcher) -> Result<Sliced, Failure> {
             )
         })
         .collect();
-    let supports = edge_support::generate(
+    let mut supports = edge_support::generate(
         &outlines,
         middle,
         first_layer_height,
         layer_height,
         &support,
     )?;
+    heights.fit(&mut supports)?;
     let support_time = started.elapsed();
 
     step(watch, Stage::Fill)?;
@@ -721,18 +742,14 @@ pub fn slice(job: Job, watch: &dyn Watcher) -> Result<Sliced, Failure> {
             .par_iter()
             .enumerate()
             .map(|(index, surfaces)| {
-                let height = if index == 0 {
-                    first_layer_height
-                } else {
-                    layer_height
-                };
+                let height = heights.height_of(index);
                 let mut params = infill
                     .params(height, index == 0)
                     .map_err(|e| e.to_string())?;
                 // A sparse pattern is laid through the middle of the
                 // object it fills, as in the reference.
                 params.origin = middle;
-                params.z = first_layer_height + index as f64 * layer_height;
+                params.z = heights.top_of(index);
                 edge_infill::fill_within(
                     surfaces,
                     index,
@@ -860,13 +877,6 @@ pub fn slice(job: Job, watch: &dyn Watcher) -> Result<Sliced, Failure> {
     let infill_time = started.elapsed();
 
     step(watch, Stage::Around)?;
-    let height_of = |index: usize| {
-        if index == 0 {
-            first_layer_height
-        } else {
-            layer_height
-        }
-    };
     // Which filaments print on each layer, and in what order
     // (ToolOrdering.cpp). The first layer takes them by the size of
     // the smallest piece each prints, smaller first; every later layer
@@ -938,6 +948,7 @@ pub fn slice(job: Job, watch: &dyn Watcher) -> Result<Sliced, Failure> {
     // What the walls were asked for and do not do goes with these.
     let mut order_notes = walls.notes(&settings);
     order_notes.extend(size_notes);
+    order_notes.extend(quality_notes);
     order_notes.extend(ironing_notes);
     order_notes.extend(crate::unfollowed::notes(&settings, bodies.len()));
     if used.len() > 1 {
@@ -977,8 +988,7 @@ pub fn slice(job: Job, watch: &dyn Watcher) -> Result<Sliced, Failure> {
             }
         }
     }
-    let heights: Vec<f64> = (0..layers.len()).map(height_of).collect();
-    let tower = edge_tower::plan(&rams, &heights, &tower_settings)?;
+    let tower = edge_tower::plan(&rams, &heights.all(), &tower_settings)?;
 
     // Skirt and brim, per layer, in the order they are printed.
     let adhesion = AdhesionSettings::from_settings(&settings)?;
@@ -997,6 +1007,7 @@ pub fn slice(job: Job, watch: &dyn Watcher) -> Result<Sliced, Failure> {
     };
     let mut footprints: Vec<(Vec<ExPolygon>, f64)> = Vec::new();
     if adhesion.brim != BrimKind::None {
+        let alone = own.len() == 1 && bodies.iter().all(|body| body.negative.is_none());
         for mesh in own {
             let Some((low, high)) = mesh.bounds() else {
                 continue;
@@ -1006,10 +1017,11 @@ pub fn slice(job: Job, watch: &dyn Watcher) -> Result<Sliced, Failure> {
                 negative: None,
                 filament: 1,
             }];
-            let first = edge_slice::slice_regions(&body, &planes[..1], scaled(closing_radius))?;
-            if let Some(layer) = first.into_iter().next() {
-                footprints.push((layer.regions, f64::from(high[2] - low[2])));
-            }
+            // The object's own first layer, grown as the plate's was
+            // where overhangs were made printable down to the bed.
+            let first =
+                printable.first_layer(&body, alone, &planes, scaled(closing_radius), &heights)?;
+            footprints.push((first, f64::from(high[2] - low[2])));
         }
     }
     let footings: Vec<Footing<'_>> = footprints
@@ -1046,11 +1058,7 @@ pub fn slice(job: Job, watch: &dyn Watcher) -> Result<Sliced, Failure> {
     let mut around: Vec<Vec<ExtrusionLoop>> = vec![Vec::new(); layers.len()];
     for (index, lines) in around.iter_mut().enumerate() {
         if adhesion.has_skirt(index) {
-            let height = if index == 0 {
-                first_layer_height
-            } else {
-                layer_height
-            };
+            let height = heights.height_of(index);
             *lines = edge_adhesion::skirt(
                 beside,
                 &brim,
@@ -1108,6 +1116,7 @@ pub fn slice(job: Job, watch: &dyn Watcher) -> Result<Sliced, Failure> {
         settings,
         layer_height,
         first_layer_height,
+        heights,
         print,
         walls,
         infill,
@@ -1148,16 +1157,12 @@ pub fn slice(job: Job, watch: &dyn Watcher) -> Result<Sliced, Failure> {
 impl Sliced {
     /// How thick layer `index` is, in mm.
     pub fn height_of(&self, index: usize) -> f64 {
-        if index == 0 {
-            self.first_layer_height
-        } else {
-            self.layer_height
-        }
+        self.heights.height_of(index)
     }
 
     /// The top of layer `index` above the bed, in mm.
     pub fn top_of(&self, index: usize) -> f64 {
-        self.first_layer_height + index as f64 * self.layer_height
+        self.heights.top_of(index)
     }
 
     /// The part's outline on each layer as modelled.
