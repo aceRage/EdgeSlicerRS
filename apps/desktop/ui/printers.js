@@ -50,13 +50,19 @@ function showPrinterBlock() {
   };
   const groups = [];
   let value = '';
+  // What a row's picture is of, for the list (listbox) to show.
+  const pictured = (option, model) => {
+    if (model && model.vendor && model.model) Object.assign(option.dataset, { vendor: model.vendor, model: model.model });
+    return option;
+  };
   if (project.has_settings) {
-    groups.push(group('Project-inside presets', [new Option(listing.project_printer || 'The project names no printer', 'project')]));
-    if (selected && selected.source === 'project') value = 'project';
+    const own = selected && selected.source === 'project';
+    groups.push(group('Project-inside presets', [pictured(new Option(listing.project_printer || 'The project names no printer', 'project'), own ? selected : null)]));
+    if (own) value = 'project';
   }
   const onPreset = selected && selected.source === 'preset';
   const rows = listing.installed.map((model, index) => {
-    const option = new Option(model.model, `m${index}`);
+    const option = pictured(new Option(model.model, `m${index}`), model);
     if (model.brand !== model.vendor || !model.model.startsWith(model.brand)) option.title = model.brand;
     if (onPreset && selected.vendor === model.vendor && selected.model === model.model) value = option.value;
     return option;
@@ -64,7 +70,7 @@ function showPrinterBlock() {
   // A printer the project is on that is not among those added is still
   // the one in force: it is listed while it is.
   if (onPreset && !selected.added) {
-    rows.push(new Option(selected.model || selected.machine, 'current'));
+    rows.push(pictured(new Option(selected.model || selected.machine, 'current'), selected));
     value = 'current';
   }
   if (rows.length) groups.push(group('System presets', rows));
@@ -229,15 +235,15 @@ function ptRender() {
     if (!column.label) return cell;
     const sorting = pt.sort.key === column.key ? pt.sort.way : 0;
     cell.setAttribute('aria-sort', sorting > 0 ? 'ascending' : sorting < 0 ? 'descending' : 'none');
-    const title = el('button', { type: 'button', className: 'pt-sort', title: column.tip ? `${column.tip}\nClick to sort` : 'Click to sort' },
-      column.label, el('span', { className: 'pt-way', textContent: sorting > 0 ? ' ▲' : sorting < 0 ? ' ▼' : '' }));
+    const title = el('button', { type: 'button', className: 'th-sort', title: column.tip ? `${column.tip}\nClick to sort` : 'Click to sort' },
+      column.label, el('span', { className: 'th-way', textContent: sorting > 0 ? ' ▲' : sorting < 0 ? ' ▼' : '' }));
     title.addEventListener('click', () => {
       // Up, down, then back to the order given.
       const next = pt.sort.key !== column.key ? 1 : pt.sort.way === 1 ? -1 : pt.sort.way === -1 ? 0 : 1;
       pt.sort = { key: next ? column.key : null, way: next };
       ptRender();
     });
-    const funnel = el('button', { type: 'button', className: `pt-funnel${pt.filters.has(column.key) ? ' on' : ''}`, title: `Filter ${column.label}` });
+    const funnel = el('button', { type: 'button', className: `th-filter${pt.filters.has(column.key) ? ' on' : ''}`, title: `Filter ${column.label}` });
     funnel.setAttribute('aria-label', `Filter ${column.label}`);
     funnel.setAttribute('aria-haspopup', 'dialog');
     funnel.innerHTML = '<svg viewBox="0 0 12 12" aria-hidden="true"><path d="M1,1.5h10L7.2,6.2v4.3L4.8,9.3V6.2Z"/></svg>';
@@ -258,7 +264,7 @@ function ptRender() {
   $('pt-body').replaceChildren(...pt.view.map((row) => {
     const box = el('input', { type: 'checkbox', checked: row.enabled });
     box.setAttribute('aria-label', `Enable ${row.name}`);
-    const picture = el('span', { className: 'pt-cover' });
+    const picture = el('span', { className: 'cover' });
     if (row.cover) {
       picture.dataset.vendor = row.vendor;
       picture.dataset.model = row.model;
@@ -293,7 +299,7 @@ function ptRender() {
     const remove = el('button', { type: 'button', className: 'icon', title: 'Remove this filter', textContent: '✕' });
     remove.setAttribute('aria-label', `Remove the filter on ${column.label}`);
     remove.addEventListener('click', () => { pt.filters.delete(key); ptRender(); });
-    return el('span', { className: 'pt-chip' }, `${column.label}: ${said} `, remove);
+    return el('span', { className: 'chip' }, el('span', { className: 'chip-key', textContent: `${column.label}:` }), ` ${said} `, remove);
   });
   if (filtered) {
     const clear = el('button', { type: 'button', className: 'link', textContent: 'Clear search and filters' });
@@ -353,7 +359,7 @@ function ptOpenPop(column, anchor) {
       box.dataset.value = value;
       return el('label', {}, box, value);
     });
-    const list = el('div', { className: 'pt-values' }, ...boxes);
+    const list = el('div', { className: 'check-list' }, ...boxes);
     const take = () => {
       const ticked = [...list.querySelectorAll('input')].filter((box) => box.checked).map((box) => box.dataset.value);
       apply(ticked.length === values.length ? null : new Set(ticked));
@@ -486,6 +492,22 @@ async function firstRun() {
 }
 
 function initPrinters() {
+  // The printer's list: the whole head of its card opens it; each printer has its picture, and the entry
+  // that opens the printer selection its gear.
+  listbox($('printer'), {
+    trigger: $('printer-row'),
+    decorate(row, option) {
+      if (option.value === 'wizard') {
+        row.classList.add('lb-action');
+        row.insertAdjacentHTML('afterbegin', '<svg viewBox="0 0 16 16" aria-hidden="true"><circle cx="8" cy="8" r="2.2"/><path d="M8,1.5v2M8,12.5v2M1.5,8h2M12.5,8h2M3.4,3.4l1.4,1.4M11.2,11.2l1.4,1.4M3.4,12.6l1.4-1.4M11.2,4.8l1.4-1.4"/></svg>');
+        return;
+      }
+      const picture = el('span', { className: 'cover' });
+      showCover(picture, option.dataset.vendor || '', option.dataset.model || '');
+      row.prepend(picture);
+    },
+  });
+  listbox($('nozzle-diameter'), { bare: true });
   $('printer').addEventListener('change', () => attempt(printerPicked));
   $('nozzle-diameter').addEventListener('change', () => attempt(() => selectPrinter({ variant: $('nozzle-diameter').value })));
   $('printer-settings').addEventListener('click', () => attempt(openPrinterSelection));
@@ -501,6 +523,6 @@ function initPrinters() {
     if (pt.pop) ptClosePop(); else attempt(ptCancel);
   });
   dialog.addEventListener('pointerdown', (event) => {
-    if (pt.pop && !$('pt-pop').contains(event.target) && !event.target.closest('.pt-funnel')) ptClosePop();
+    if (pt.pop && !$('pt-pop').contains(event.target) && !event.target.closest('.th-filter')) ptClosePop();
   });
 }

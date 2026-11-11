@@ -12,6 +12,7 @@ edge-geom.workspace = true
 edge-medial.workspace = true
 edge-template.workspace = true
 edge-time.workspace = true
+rayon.workspace = true
 thiserror.workspace = true
 
 [dev-dependencies]

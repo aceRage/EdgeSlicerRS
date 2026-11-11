@@ -13,11 +13,6 @@ const UNREAD: [(&str, &str, &str); 8] = [
         "the nozzle is wiped along the wall, not in toward the inner walls",
     ),
     (
-        "enable_circle_compensation",
-        "0",
-        "round holes and bosses are printed at the size they are drawn",
-    ),
-    (
         "elefant_foot_layers_density",
         "100%",
         "solid fill on the first layers is laid at its full density",
@@ -38,11 +33,6 @@ const UNREAD: [(&str, &str, &str); 8] = [
         "small solid areas are laid at the usual flow",
     ),
     (
-        "enable_extra_bridge_layer",
-        "disabled",
-        "a bridge is one layer of bridge lines",
-    ),
-    (
         "unsupported_wall_last",
         "0",
         "a wall loop with nothing under it keeps its place among the walls",
@@ -61,14 +51,6 @@ pub(crate) fn notes(settings: &Settings, parts: usize) -> Vec<String> {
                 .then(|| format!("{key} \"{value}\": {instead}"))
         })
         .collect();
-    // How small internal bridges are filtered is not a choice here.
-    if let Some(value) = settings.text("dont_filter_internal_bridges")
-        && value != "disabled"
-    {
-        notes.push(format!(
-            "dont_filter_internal_bridges \"{value}\": internal bridges are kept or dropped as they are with \"disabled\""
-        ));
-    }
     if parts > 1
         && !matches!(
             settings.text("seam_prefer_part_joints"),
@@ -105,14 +87,20 @@ mod tests {
                 "dont_filter_internal_bridges": "nofilter"}"#,
         )
         .unwrap();
+        // How small bridges over infill are sorted out is followed, and
+        // nothing is said of it here.
         let said = notes(&on, 1);
-        assert_eq!(said.len(), 6, "{said:?}");
+        assert_eq!(said.len(), 5, "{said:?}");
         assert!(said.contains(
             &"wipe_inward \"1\": the nozzle is wiped along the wall, not in toward the inner walls"
                 .to_owned()
         ));
-        // Ironing is followed, and nothing is said of it here.
-        let ironed = Settings::from_json(r#"{"ironing_type": "top"}"#).unwrap();
+        // Ironing is followed, and nothing is said of it here; nor of a
+        // second layer of bridge.
+        let ironed = Settings::from_json(
+            r#"{"ironing_type": "top", "enable_extra_bridge_layer": "apply_to_all"}"#,
+        )
+        .unwrap();
         assert!(notes(&ironed, 1).is_empty());
         // Nor of a precise height or printable overhangs, which have
         // their own notes for what they leave undone.

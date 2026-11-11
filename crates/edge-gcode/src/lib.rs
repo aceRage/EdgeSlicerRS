@@ -8,10 +8,12 @@
 //! It has not been run on a printer. Without a profile a generic preamble
 //! stands in and the output is only good for viewing.
 //!
-//! Not done: seams placed by visibility, arc fitting, progress (`M73`)
-//! and object labels.
+//! Not done: seams placed by visibility, progress (`M73`) and object
+//! labels.
 
+mod arc;
 mod chain;
+mod circle;
 mod cooling;
 mod inside;
 mod overhang;
@@ -19,6 +21,7 @@ mod seam;
 mod settings;
 
 use std::{
+    collections::HashMap,
     f64::consts::{PI, TAU},
     io::{self, Write},
     ops::Range,
@@ -29,6 +32,7 @@ use edge_config::FloatOrPercent;
 use edge_extrusion::{ExtrusionLoop, ExtrusionPath, Flow, Role};
 use edge_geom::{ExPolygon, Point2, scaled, unscaled};
 use edge_template::{TemplateError, Value, Variables};
+use rayon::prelude::*;
 
 pub use seam::Seam;
 pub use settings::{Lift, OverhangFan, PrintSettings, WallDirection, WallOrder};
@@ -47,6 +51,18 @@ pub enum GcodeError {
         name: &'static str,
         #[source]
         source: TemplateError,
+    },
+    /// An arc fitted to a path bulges past the edge of the bed, though
+    /// the path's own points are on it.
+    #[error(
+        "an arc reaches from {:.3} x {:.3} to {:.3} x {:.3} mm, off the bed, which runs from \
+         {} x {} to {} x {} mm; no G-code was written",
+        reach[0], reach[1], reach[2], reach[3], bed[0], bed[1], bed[2], bed[3]
+    )]
+    OffBed {
+        /// The box round the arc in mm: min x, min y, max x, max y.
+        reach: [f64; 4],
+        bed: [f64; 4],
     },
 }
 
@@ -144,6 +160,11 @@ const HOOK_REACH: f64 = 6.5;
 /// How fast a tool that has rammed its filament is taken clear of it, in
 /// mm a second (WipeTower2.cpp `toolchange_Unload`).
 const RAM_PARK_SPEED: f64 = 40.0;
+
+/// How many layers have their arcs fitted at once: enough to keep every
+/// thread busy, few enough that what is fitted is not held for the whole
+/// print.
+const FITTED_AHEAD: usize = 64;
 
 /// Writes the whole print in one filament and reports what it used.
 pub fn write(
@@ -274,6 +295,8 @@ pub fn write_tools(
         inner_wall: None,
         measured: Vec::new(),
         measured_used: 0,
+        fits: HashMap::new(),
+        off_bed: None,
     };
     let several = layers.iter().any(|layer| layer.filament > 0);
     writer.preamble(several)?;
@@ -294,7 +317,18 @@ pub fn write_tools(
         if index == 1 {
             second_layer = Some(whole.len());
         }
+        // Arcs are fitted a stretch of layers at a time, ahead of
+        // laying them.
+        if index % FITTED_AHEAD == 0 {
+            let until = groups[(index + FITTED_AHEAD).min(groups.len()) - 1].end;
+            writer.prefit(&layers[group.start..until]);
+        }
         writer.layer(index, &layers[group.clone()], group.start)?;
+        // Whole or not at all, and never off the bed: an arc counts by
+        // its bulge, which the points it was fitted to do not show.
+        if let (Some(reach), Some(bed)) = (writer.off_bed, writer.settings.bed) {
+            return Err(GcodeError::OffBed { reach, bed });
+        }
         if index == 0 {
             writer.file.first_layer_seconds = writer.state.summary.seconds;
         }
@@ -519,6 +553,14 @@ struct Writer<'a> {
     /// layer laid out a second time, slower, measures nothing again.
     measured: Vec<(Measured, Vec<overhang::Piece>)>,
     measured_used: usize,
+    /// The arcs of the layers being written, fitted ahead of laying
+    /// them: for each wall loop and line, by where it is kept and, for a
+    /// loop, whether it is laid the other way round from how its points
+    /// run. A layer laid out a second time, slower, fits nothing again.
+    fits: HashMap<(usize, bool), arc::Fitted>,
+    /// The box round an arc that was found to leave the bed, in mm; the
+    /// file is then not written.
+    off_bed: Option<[f64; 4]>,
 }
 
 /// What the file says about the print outside its G-code.
@@ -541,6 +583,22 @@ struct FileInfo {
 /// how many points it has, its kind and its width.
 type Measured = (Point2, Point2, usize, Role, u64);
 
+/// How a wall measured against the layer beneath is laid: as itself
+/// where it is supported, and as a bridge where it hangs clear.
+#[derive(Clone, Copy)]
+struct Laid<'a> {
+    role: Role,
+    flow: &'a Flow,
+    motion: Motion,
+    /// The line and motion of a stretch that hangs clear.
+    bridge: &'a Flow,
+    over_air: Motion,
+    /// Whether the wall gets the overhang fan wherever it goes, and
+    /// whether there is an overhang fan at all.
+    cooled: bool,
+    fan: bool,
+}
+
 /// Where the machine stands as the text is written. Kept apart so a layer
 /// can be laid out once to see how long it takes and then again, slower.
 #[derive(Clone, Debug, Default)]
@@ -555,6 +613,9 @@ struct State {
     /// The speed of the wall loop being laid, where it is small enough
     /// to have one of its own (`small_perimeter_speed`).
     small_wall: Option<f64>,
+    /// The speed of the wall loop being laid, where it goes round a
+    /// circle the auto circle compensation resized (`circle.rs`).
+    circle_wall: Option<f64>,
     /// The tool in use, and what was left retracted in each tool put away.
     tool: usize,
     parked: Vec<(bool, f64)>,
@@ -1479,6 +1540,7 @@ impl Writer<'_> {
                     s.small_perimeter_speed.resolve(s.outer_wall_speed)
                 }
             });
+            self.state.circle_wall = self.circle_wall_speed(wall);
             let mut path = seam::open_at(points, edge, start);
             if turned {
                 path.reverse();
@@ -1486,7 +1548,17 @@ impl Writer<'_> {
             let whole = (!wall.widths.is_empty()).then(|| path.clone());
             seam::clip_end(&mut path, s.seam_gap);
             let Some(whole) = whole else {
-                self.path(&path, wall.role, &wall.flow, false, true)?;
+                match self.fit_loop(wall, turned, path[0]) {
+                    Some(fitted) => self.path_parts(
+                        &fitted.points,
+                        Some(&fitted.parts),
+                        wall.role,
+                        &wall.flow,
+                        false,
+                        true,
+                    )?,
+                    None => self.path(&path, wall.role, &wall.flow, false, true)?,
+                }
                 continue;
             };
             // A wall whose width changes is laid from its seam as pieces
@@ -1510,12 +1582,13 @@ impl Writer<'_> {
                 open_ends: (true, true),
             };
             for piece in edge_medial::varying_width(&line, wall.role, &wall.flow) {
-                self.path(&piece.points, wall.role, &piece.flow, false, true)?;
+                self.curved(&piece.points, wall.role, &piece.flow, false, true)?;
             }
             // The nozzle is wiped along the whole wall, not its last piece.
             self.state.wipe_path = line.points;
         }
         self.state.small_wall = None;
+        self.state.circle_wall = None;
         Ok(())
     }
 
@@ -1569,7 +1642,25 @@ impl Writer<'_> {
                             .state
                             .position
                             .is_some_and(|at| inside::stays_inside(shelter, at, points[0]));
-                    self.path(&points, path.role, &path.flow, sheltered, false)?;
+                    // Arcs are fitted to the line as it was made and turned
+                    // about with it, as in the reference, where fitting
+                    // comes before the order lines are laid in is chosen.
+                    match self.fit_line(path) {
+                        Some(mut fitted) => {
+                            if reversed {
+                                fitted.reverse();
+                            }
+                            self.path_parts(
+                                &fitted.points,
+                                Some(&fitted.parts),
+                                path.role,
+                                &path.flow,
+                                sheltered,
+                                false,
+                            )?;
+                        }
+                        None => self.path(&points, path.role, &path.flow, sheltered, false)?,
+                    }
                 }
             }
         }
@@ -1605,6 +1696,109 @@ impl Writer<'_> {
     fn path(
         &mut self,
         points: &[Point2],
+        role: Role,
+        flow: &Flow,
+        sheltered: bool,
+        closed: bool,
+    ) -> io::Result<()> {
+        self.path_parts(points, None, role, flow, sheltered, closed)
+    }
+
+    /// Fits the arcs of some layers ahead of laying them, every loop and
+    /// line at once on as many threads as there are: fitting is most of
+    /// the work of writing a curved part, and what is fitted to a path
+    /// does not depend on when its turn comes. Whatever is not found
+    /// here when it is wanted is fitted then.
+    fn prefit(&mut self, parts: &[Layer<'_>]) {
+        self.fits.clear();
+        let mut loops: Vec<(&PrintSettings, &ExtrusionLoop)> = Vec::new();
+        let mut lines: Vec<(&PrintSettings, &ExtrusionPath)> = Vec::new();
+        for part in parts {
+            let s = &self.all[part.filament];
+            if !s.arc_fitting {
+                continue;
+            }
+            // A loop whose width changes is fitted piece by piece as it
+            // is laid.
+            loops.extend(
+                (part.loops.iter())
+                    .filter(|wall| wall.widths.is_empty() && wall.polygon.points.len() >= 3)
+                    .map(|wall| (s, wall)),
+            );
+            lines.extend(
+                (part.support.iter().chain(part.paths))
+                    .filter(|path| path.points.len() >= 3)
+                    .map(|path| (s, path)),
+            );
+        }
+        let loops = loops.par_iter().filter_map(|(s, wall)| {
+            let turned = wall_turned(s, wall);
+            let fitted = fit_closed(s, &wall.polygon.points, turned, wall.role)?;
+            Some(((address(*wall), turned), fitted))
+        });
+        let lines = lines.par_iter().filter_map(|(s, path)| {
+            Some(((address(*path), false), fit(s, &path.points, path.role)?))
+        });
+        self.fits = loops.chain(lines).collect();
+    }
+
+    /// The arcs in a line as it was made: fitted ahead with its layer,
+    /// or now. None when arcs are not asked for, or it is too short for
+    /// one.
+    fn fit_line(&self, path: &ExtrusionPath) -> Option<arc::Fitted> {
+        match self.fits.get(&(address(path), false)) {
+            Some(fitted) => Some(fitted.clone()),
+            None => fit(self.settings, &path.points, path.role),
+        }
+    }
+
+    /// A wall loop with its arcs, once round from `seam` and stopped
+    /// short of it by the seam gap; `turned` lays it the other way round
+    /// from how its points run. As in the reference, the arcs are fitted
+    /// to the whole loop from its own first point (PrintObject.cpp
+    /// `simplify_extrusion_path`) before it is opened at the seam
+    /// (GCode.cpp `extrude_loop`), which cuts the arc the seam is on in
+    /// two. None when arcs are not asked for or the gap leaves nothing.
+    fn fit_loop(&self, wall: &ExtrusionLoop, turned: bool, seam: Point2) -> Option<arc::Fitted> {
+        let mut fitted = match self.fits.get(&(address(wall), turned)) {
+            Some(fitted) => fitted.clone(),
+            None => fit_closed(self.settings, &wall.polygon.points, turned, wall.role)?,
+        };
+        fitted.start_at(seam);
+        fitted.clip_end(arc::tolerance(self.settings.seam_gap));
+        (fitted.points.len() >= 2).then_some(fitted)
+    }
+
+    /// [`Self::path`], with whatever arcs fit the points when arcs are
+    /// asked for.
+    fn curved(
+        &mut self,
+        points: &[Point2],
+        role: Role,
+        flow: &Flow,
+        sheltered: bool,
+        closed: bool,
+    ) -> io::Result<()> {
+        match fit(self.settings, points, role) {
+            Some(fitted) => self.path_parts(
+                &fitted.points,
+                Some(&fitted.parts),
+                role,
+                flow,
+                sheltered,
+                closed,
+            ),
+            None => self.path(points, role, flow, sheltered, closed),
+        }
+    }
+
+    /// [`Self::path`] for a path that may have arcs in it: `parts` says
+    /// how each stretch of `points` is laid, or is none for a path that
+    /// is straight from point to point and was never asked about.
+    fn path_parts(
+        &mut self,
+        points: &[Point2],
+        parts: Option<&[arc::Part]>,
         role: Role,
         flow: &Flow,
         sheltered: bool,
@@ -1714,39 +1908,164 @@ impl Writer<'_> {
             Some(pieces) => {
                 // A wall over air is a bridge of the inner walls' width,
                 // whichever wall it is (`PerimeterGenerator` `overhang_flow`).
+                // At `bridge_line_width` where that is set.
                 let bridge = self
                     .inner_wall
                     .unwrap_or(*flow)
-                    .bridging(s.bridge_flow, s.thick_bridges);
+                    .bridging_sized(s.bridge_flow, s.thick_bridges, s.bridge_line_width)
+                    .map_err(|e| io::Error::other(e.to_string()))?;
                 let over_air = self.motion(Role::OverhangPerimeter, &bridge, false);
-                for piece in pieces {
-                    if piece.clear {
-                        self.fan_over_air(fan.is_some())?;
-                        let motion = Motion {
-                            speed: piece.speed.min(over_air.speed),
-                            ..over_air
-                        };
-                        self.extrude(piece.to, Role::OverhangPerimeter, &bridge, motion)?;
-                    } else {
-                        self.fan_over_air(cooled || piece.cooled)?;
-                        let motion = Motion {
-                            speed: piece.speed,
-                            ..motion
-                        };
-                        self.extrude(piece.to, role, flow, motion)?;
+                let laid = Laid {
+                    role,
+                    flow,
+                    motion,
+                    bridge: &bridge,
+                    over_air,
+                    cooled,
+                    fan: fan.is_some(),
+                };
+                match parts {
+                    Some(parts) => self.pieces_with_arcs(points, parts, &pieces, &laid)?,
+                    None => {
+                        for piece in &pieces {
+                            self.piece(piece, &laid)?;
+                        }
                     }
                 }
             }
             None => {
                 self.fan_over_air(cooled)?;
-                for &point in &points[1..] {
-                    self.extrude(point, role, flow, motion)?;
+                match parts {
+                    Some(parts) => self.lay_parts(points, parts, role, flow, motion)?,
+                    None => {
+                        for &point in &points[1..] {
+                            self.extrude(point, role, flow, motion)?;
+                        }
+                    }
                 }
             }
         }
         self.state.wipe_path = points.to_vec();
         if !closed {
             self.state.wipe_path.reverse();
+        }
+        Ok(())
+    }
+
+    /// One straight move of a wall measured against the layer beneath.
+    fn piece(&mut self, piece: &overhang::Piece, laid: &Laid<'_>) -> io::Result<()> {
+        if piece.clear {
+            self.fan_over_air(laid.fan)?;
+            let motion = Motion {
+                speed: piece.speed.min(laid.over_air.speed),
+                ..laid.over_air
+            };
+            self.extrude(piece.to, Role::OverhangPerimeter, laid.bridge, motion)
+        } else {
+            self.fan_over_air(laid.cooled || piece.cooled)?;
+            let motion = Motion {
+                speed: piece.speed,
+                ..laid.motion
+            };
+            self.extrude(piece.to, laid.role, laid.flow, motion)
+        }
+    }
+
+    /// A measured wall whose path has arcs in it. As in the reference
+    /// (GCode.cpp `_extrude`), a stretch keeps its arcs only where it is
+    /// laid one way throughout: at one speed, to within 1 mm/s of its
+    /// own, and with the overhang fan either on all along or off. A
+    /// stretch whose speed or fan changes on the way is laid as the
+    /// straight moves it was measured in. A stretch is the wall between
+    /// the places where it starts and stops hanging clear, which the
+    /// reference makes separate paths of before it fits arcs to any.
+    fn pieces_with_arcs(
+        &mut self,
+        points: &[Point2],
+        parts: &[arc::Part],
+        pieces: &[overhang::Piece],
+        laid: &Laid<'_>,
+    ) -> io::Result<()> {
+        let mut done = 0;
+        let mut from = points[0];
+        while done < pieces.len() {
+            let first = pieces[done];
+            let length = pieces[done..]
+                .iter()
+                .take_while(|piece| piece.clear == first.clear)
+                .count();
+            let run = &pieces[done..done + length];
+            let whole = length == pieces.len();
+            done += length;
+            let (role, flow, motion) = if first.clear {
+                (Role::OverhangPerimeter, laid.bridge, laid.over_air)
+            } else {
+                (laid.role, laid.flow, laid.motion)
+            };
+            let alike = run.iter().all(|piece| {
+                (piece.speed.min(motion.speed) - motion.speed).abs() <= 1.0
+                    && (first.clear || piece.cooled == first.cooled)
+            });
+            if !alike {
+                for piece in run {
+                    self.piece(piece, laid)?;
+                }
+            } else {
+                self.fan_over_air(if first.clear {
+                    laid.fan
+                } else {
+                    laid.cooled || first.cooled
+                })?;
+                if whole {
+                    self.lay_parts(points, parts, role, flow, motion)?;
+                } else {
+                    // Part of the wall: the arcs are those of this
+                    // stretch by itself.
+                    let stretch: Vec<Point2> = std::iter::once(from)
+                        .chain(run.iter().map(|piece| piece.to))
+                        .collect();
+                    match fit(self.settings, &stretch, laid.role) {
+                        Some(fitted) => {
+                            self.lay_parts(&fitted.points, &fitted.parts, role, flow, motion)?;
+                        }
+                        None => {
+                            for &point in &stretch[1..] {
+                                self.extrude(point, role, flow, motion)?;
+                            }
+                        }
+                    }
+                }
+            }
+            from = run[length - 1].to;
+        }
+        Ok(())
+    }
+
+    /// Extrudes along a path stretch by stretch: straight from point to
+    /// point, or round an arc (GCode.cpp `_extrude`, "generate gcode from
+    /// arc fitting data").
+    fn lay_parts(
+        &mut self,
+        points: &[Point2],
+        parts: &[arc::Part],
+        role: Role,
+        flow: &Flow,
+        motion: Motion,
+    ) -> io::Result<()> {
+        for part in parts {
+            match &part.kind {
+                arc::Kind::Line => {
+                    for pair in points[part.start..=part.end].windows(2) {
+                        // A move of next to no length is left out, as
+                        // the reference leaves it out; cutting a loop at
+                        // its seam can leave one.
+                        if distance(pair[0], pair[1]) >= 1e-4 {
+                            self.extrude(pair[1], role, flow, motion)?;
+                        }
+                    }
+                }
+                arc::Kind::Arc(arc) => self.lay(arc.end, Some(arc), role, flow, motion)?,
+            }
         }
         Ok(())
     }
@@ -1812,8 +2131,8 @@ impl Writer<'_> {
             }
             Role::Ironing => s.ironing_speed,
             _ if first_layer => s.initial_layer_infill_speed,
-            Role::ExternalPerimeter => self.state.small_wall.unwrap_or(s.outer_wall_speed),
-            Role::Perimeter => self.state.small_wall.unwrap_or(s.inner_wall_speed),
+            Role::ExternalPerimeter => self.wall_speed(s.outer_wall_speed),
+            Role::Perimeter => self.wall_speed(s.inner_wall_speed),
             Role::SparseInfill => s.sparse_infill_speed,
             Role::SolidInfill | Role::BottomSurface => s.internal_solid_infill_speed,
             Role::TopSolidInfill => s.top_surface_speed,
@@ -2055,6 +2374,24 @@ impl Writer<'_> {
             unscaled(from.x) - dy * radius,
             unscaled(from.y) + dx * radius,
         );
+        // With arc fitting the turn is one counter-clockwise arc
+        // (GCodeWriter.cpp `_spiral_travel_to_z`): it ends where it
+        // starts, so it has no X or Y, and `P1` says it is a whole turn
+        // to firmware that would otherwise take it for none. Its speed
+        // is held to what the Z axis can climb at over the turn, the
+        // radius being the one the three places of I and J give.
+        if s.arc_fitting {
+            let (i, j) = (thousandths(-dy * radius), thousandths(dx * radius));
+            let around = TAU * i.hypot(j);
+            let rise = top - height;
+            let speed = s.travel_speed.min(s.z_speed * around.hypot(rise) / rise);
+            self.feed(speed);
+            let feed_word = self.feed_word();
+            writeln!(self.out, "G17\nG3 Z{top:.3} I{i:.3} J{j:.3} P1{feed_word}")?;
+            self.state.summary.travel_mm += around;
+            self.spend(around / speed);
+            return Ok(());
+        }
         // Enough segments to stay within `resolution` of the circle
         // (ArcWelder.hpp `arc_discretization_steps`), between 8 and 128.
         let steps = if s.resolution <= 0.0 {
@@ -2089,12 +2426,42 @@ impl Writer<'_> {
     }
 
     fn extrude(&mut self, to: Point2, role: Role, flow: &Flow, motion: Motion) -> io::Result<()> {
+        self.lay(to, None, role, flow, motion)
+    }
+
+    /// One extruding move to `to`: straight, or round `turn`, an arc
+    /// that starts where the nozzle is and ends there.
+    fn lay(
+        &mut self,
+        to: Point2,
+        turn: Option<&arc::Arc>,
+        role: Role,
+        flow: &Flow,
+        motion: Motion,
+    ) -> io::Result<()> {
         let s = self.settings;
         let from = self
             .state
             .position
             .expect("a travel always comes before extruding");
-        let length = distance(from, to);
+        let length = match turn {
+            Some(arc) => {
+                // An arc of next to no length is left out, as in the
+                // reference (GCode.cpp `_extrude`, `arc_length < EPSILON`).
+                if arc.length_mm() < 1e-4 {
+                    return Ok(());
+                }
+                // Its bulge has to be over the bed as well as its ends.
+                if let Some([min_x, min_y, max_x, max_y]) = s.bed {
+                    let [a, b, c, d] = arc.bounds().map(|units| units / edge_geom::UNITS_PER_MM);
+                    if a < min_x || b < min_y || c > max_x || d > max_y {
+                        self.off_bed.get_or_insert([a, b, c, d]);
+                    }
+                }
+                arc.length_mm()
+            }
+            None => distance(from, to),
+        };
         if length == 0.0 {
             return Ok(());
         }
@@ -2116,7 +2483,8 @@ impl Writer<'_> {
             self.extruding = true;
             self.timing.fixed = 0.0;
         }
-        let held = role == Role::ExternalPerimeter && s.dont_slow_down_outer_wall;
+        let held = role == Role::ExternalPerimeter && s.dont_slow_down_outer_wall
+            || self.circle_wall_held(role);
         let speed = if held {
             self.timing.fixed += length / motion.speed;
             motion.speed
@@ -2139,12 +2507,27 @@ impl Writer<'_> {
         let feed = volume / self.filament_area;
         self.feed(speed);
         let feed_word = self.feed_word();
-        writeln!(
-            self.out,
-            "G1 X{:.3} Y{:.3} E{feed:.5}{feed_word}",
-            unscaled(to.x),
-            unscaled(to.y)
-        )?;
+        match turn {
+            None => writeln!(
+                self.out,
+                "G1 X{:.3} Y{:.3} E{feed:.5}{feed_word}",
+                unscaled(to.x),
+                unscaled(to.y)
+            )?,
+            // GCodeWriter.cpp `extrude_arc_to_xy`: G3 goes round
+            // counter-clockwise and G2 clockwise, and I and J say where
+            // the centre is from where the move starts, to the same
+            // three places as X and Y.
+            Some(arc) => writeln!(
+                self.out,
+                "G{} X{:.3} Y{:.3} I{:.3} J{:.3} E{feed:.5}{feed_word}",
+                if arc.ccw { 3 } else { 2 },
+                unscaled(to.x),
+                unscaled(to.y),
+                thousandths(unscaled(arc.center.x) - unscaled(arc.start.x)),
+                thousandths(unscaled(arc.center.y) - unscaled(arc.start.y)),
+            )?,
+        }
         self.state.primed = true;
         self.state.line_speed = motion.speed;
         self.state.summary.filament_mm += feed;
@@ -2782,6 +3165,71 @@ const FAN_AS_LAYER: &[u8] = b";_FAN_OVER_AIR_OFF\n";
 /// `OFF`, and that speed.
 const FAN_IRONING: &[u8] = b";_FAN_IRONING_";
 
+/// The arcs in a path, when arcs are asked for and it has the three
+/// points one takes: the path within the tolerance of its kind, and how
+/// each stretch of it is laid. Sparse infill and supports are held less
+/// closely than the rest (LayerRegion.cpp `simplify_path`, Layer.cpp
+/// `simplify_support_path`). Skirt, brim and prime tower are never asked
+/// about: the reference fits nothing to the first two, and the tower's
+/// rounded ribs, which it does fit, are not done here.
+fn fit(s: &PrintSettings, points: &[Point2], role: Role) -> Option<arc::Fitted> {
+    if !s.arc_fitting || points.len() < 3 {
+        return None;
+    }
+    let within = match role {
+        Role::SparseInfill => arc::SPARSE_INFILL_RESOLUTION,
+        Role::Support | Role::SupportInterface => arc::SUPPORT_RESOLUTION,
+        _ => s.resolution,
+    };
+    Some(arc::Fitted::new(points, arc::tolerance(within)))
+}
+
+/// The arcs in a loop taken once round from its first point, the other
+/// way round from how `points` run if `turned`.
+fn fit_closed(
+    s: &PrintSettings,
+    points: &[Point2],
+    turned: bool,
+    role: Role,
+) -> Option<arc::Fitted> {
+    if !s.arc_fitting {
+        return None;
+    }
+    let mut closed = Vec::with_capacity(points.len() + 1);
+    closed.extend_from_slice(points);
+    closed.push(points[0]);
+    if turned {
+        closed.reverse();
+    }
+    fit(s, &closed, role)
+}
+
+/// Whether a wall is laid the other way round from how its points run,
+/// as [`Writer::walls`] has it. Only what is fitted ahead of a layer
+/// goes by this: a wall laid another way after all is fitted when it is
+/// laid.
+fn wall_turned(s: &PrintSettings, wall: &ExtrusionLoop) -> bool {
+    let clockwise = match s.wall_direction {
+        WallDirection::Auto => wall.clockwise,
+        WallDirection::CounterClockwise => false,
+        WallDirection::Clockwise => true,
+    };
+    wall.is_hole != clockwise
+}
+
+/// Where something is kept, to know it by while its layer is written.
+fn address<T>(kept: &T) -> usize {
+    std::ptr::from_ref(kept) as usize
+}
+
+/// A length in mm to the three places a coordinate is written with,
+/// rounded as the reference rounds what it writes (GCodeWriter.cpp
+/// `emit_axis`), and never a zero with a minus sign.
+fn thousandths(mm: f64) -> f64 {
+    let rounded = (mm * 1000.0).round() / 1000.0;
+    if rounded == 0.0 { 0.0 } else { rounded }
+}
+
 fn distance(a: Point2, b: Point2) -> f64 {
     unscaled(b.x - a.x).hypot(unscaled(b.y - a.y))
 }
@@ -2809,6 +3257,8 @@ pub fn role_name(role: Role) -> &'static str {
     }
 }
 
+#[cfg(test)]
+mod arc_tests;
 #[cfg(test)]
 mod ironing_tests;
 #[cfg(test)]

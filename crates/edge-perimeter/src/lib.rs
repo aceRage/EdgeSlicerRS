@@ -59,6 +59,11 @@ pub struct Params {
     pub infill_overlap_percent: f64,
     /// Outline detail finer than this is dropped before walls are placed.
     pub resolution: Coord,
+    /// Detail finer than this is dropped from the outline of what is
+    /// left for infill. The `resolution` setting itself, where the
+    /// walls' own may be finer for arc fitting (PerimeterGenerator.cpp,
+    /// "simplify infill contours according to resolution").
+    pub infill_resolution: Coord,
     /// How gaps between walls are filled; none leaves them empty.
     pub gap_fill: Option<GapFill>,
     /// Set where a top surface with more of the part above it elsewhere
@@ -614,7 +619,7 @@ pub fn classic_between(
         }
         let min_infill_spacing =
             (params.solid_infill_spacing as f64 * (1.0 - INSET_OVERLAP_TOLERANCE)) as Coord;
-        let not_filled = edge_clip::simplify(&last, params.resolution)?;
+        let not_filled = edge_clip::simplify(&last, params.infill_resolution)?;
         let mut infill = edge_clip::offset2(
             &not_filled,
             -inset - min_infill_spacing / 2,
@@ -935,6 +940,7 @@ pub fn arachne(
                         flow: flow_of(flow, average)?,
                         widths,
                         clockwise: false,
+                        circle_compensation: false,
                     };
                     if is_hole {
                         holes.push(made);
@@ -987,7 +993,7 @@ pub fn arachne(
         let inset = scaled(unscaled(reach) * params.infill_overlap_percent / 100.0);
         let min_infill_spacing =
             (params.solid_infill_spacing as f64 * (1.0 - INSET_OVERLAP_TOLERANCE)) as Coord;
-        let not_filled = edge_clip::simplify(&infill_contour, params.resolution)?;
+        let not_filled = edge_clip::simplify(&infill_contour, params.infill_resolution)?;
         let mut infill = edge_clip::offset2(
             &not_filled,
             -min_infill_spacing / 2,
@@ -1371,6 +1377,7 @@ fn push_loops(loops: &mut Vec<ExtrusionLoop>, shells: &[ExPolygon], depth: usize
         loops.push(ExtrusionLoop {
             widths: Vec::new(),
             clockwise: false,
+            circle_compensation: false,
             polygon: polygon.clone(),
             role,
             is_hole,
@@ -1413,6 +1420,7 @@ mod tests {
             infill_overlap_percent: 15.0,
             one_wall_top: None,
             resolution: scaled(0.01),
+            infill_resolution: scaled(0.01),
             gap_fill: None,
             arachne: None,
             precise_outer_wall: false,

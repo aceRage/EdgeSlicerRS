@@ -9,6 +9,7 @@
 //! work has got and may stop it.
 
 mod clock;
+mod holes;
 mod job;
 mod layer_heights;
 mod load;

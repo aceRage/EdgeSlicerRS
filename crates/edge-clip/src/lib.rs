@@ -419,6 +419,31 @@ pub fn thicken<'a>(
         .map_err(ClipError::from)
 }
 
+/// The ground within `radius` of open lines: each drawn `radius` to
+/// either side with corners and ends rounded, no point of an arc more
+/// than `tolerance` off a true one. A line that ends where it began is
+/// rounded there too, which covers what a closed line would.
+pub fn thicken_round<'a>(
+    lines: impl IntoIterator<Item = &'a [Point2]>,
+    radius: Coord,
+    tolerance: Coord,
+) -> Result<Vec<ExPolygon>, ClipError> {
+    let lines: Paths64 = lines
+        .into_iter()
+        .filter(|line| line.len() >= 2)
+        .map(|line| line.iter().map(|p| Point64::new(p.x, p.y)).collect())
+        .collect();
+    if lines.is_empty() || radius <= 0 {
+        return Ok(Vec::new());
+    }
+    let mut offsetter = ClipperOffset::new(2.0, tolerance as f64, false, false);
+    offsetter.add_paths(&lines, JoinType::Round, EndType::Round);
+    offsetter
+        .execute_tree(radius as f64)
+        .map(|tree| regions_of(&tree))
+        .map_err(ClipError::from)
+}
+
 /// Drops vertices that deviate from the outline by no more than `tolerance`
 /// (Douglas-Peucker on each ring, anchored at its first point), then
 /// re-unites the rings in case simplifying made them cross. Matches the
@@ -617,6 +642,30 @@ mod tests {
                 "hole is counter-clockwise"
             );
         }
+    }
+
+    #[test]
+    fn a_line_thickened_round_covers_what_is_within_reach_of_it() {
+        // A 10 mm line a millimetre to either side, with a half disc at
+        // each end: a little under 20 + pi mm², the arcs being chords.
+        let line = [Point2::from_mm(0.0, 0.0), Point2::from_mm(10.0, 0.0)];
+        let found = thicken_round([line.as_slice()], scaled(1.0), scaled(0.001)).unwrap();
+        assert_eq!(found.len(), 1);
+        assert!(
+            (area(&found) - (20.0 + PI)).abs() < 0.02,
+            "{}",
+            area(&found)
+        );
+        // It reaches past the line's ends, where `thicken` stops flush.
+        let reach = found[0].contour.points.iter().map(|p| p.x).max().unwrap();
+        assert!((reach - scaled(11.0)).abs() <= scaled(0.001), "{reach}");
+        // A line with one point, or no width, covers nothing.
+        assert!(
+            thicken_round([&line[..1]], scaled(1.0), 10)
+                .unwrap()
+                .is_empty()
+        );
+        assert!(thicken_round([line.as_slice()], 0, 10).unwrap().is_empty());
     }
 
     #[test]
