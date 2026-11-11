@@ -769,21 +769,59 @@ pub fn slice(job: Job, watch: &dyn Watcher) -> Result<Sliced, Failure> {
         .collect();
     classify_time += classifying.elapsed();
     let classifying = Instant::now();
-    let solid_spacing = infill.params(layer_height, false)?.solid.scaled_spacing();
-    // Solid over sparse fill is laid as a bridge across it.
-    // Which is worth bridging is `dont_filter_internal_bridges`' to say.
+    // What laying a layer's fill needs. A sparse pattern is laid
+    // through the middle of the object it fills, as in the reference.
+    let params_of = |index: usize| -> Result<edge_infill::FillParams, Failure> {
+        let mut params = infill.params(heights.height_of(index), index == 0)?;
+        params.origin = middle;
+        params.z = heights.top_of(index);
+        Ok(params)
+    };
+    let frame = |surface: &edge_infill::Surface| {
+        frame_of(&middles, surface.area.contour.points.first().copied()).unwrap_or(
+            edge_infill::Frame {
+                origin: middle,
+                bounds: None,
+            },
+        )
+    };
+    // Solid over sparse fill is laid as a bridge across it, run out to
+    // the sparse lines beneath that carry it: those lines are laid for
+    // this as they will be laid, from each layer's sparse surfaces as
+    // they stand. Which is worth bridging is
+    // `dont_filter_internal_bridges`' to say; and the sparse fill under
+    // a bridge's edge, where that edge runs along the walls, is made
+    // solid to carry it.
+    let tops: Vec<f64> = (0..layers.len())
+        .map(|index| heights.top_of(index))
+        .collect();
+    let sparse_lines = |index: usize| -> Result<Vec<Vec<Point2>>, Failure> {
+        let params = params_of(index)?;
+        let mut lines = Vec::new();
+        for surfaces in &anchored_by {
+            let sparse: Vec<edge_infill::Surface> = surfaces[index]
+                .iter()
+                .filter(|s| s.kind == edge_infill::SurfaceKind::Sparse)
+                .cloned()
+                .collect();
+            if sparse.is_empty() {
+                continue;
+            }
+            lines.extend(
+                edge_infill::fill_within(&sparse, index, &params, &frame, &[])?
+                    .into_iter()
+                    .map(|path| path.points),
+            );
+        }
+        Ok(lines)
+    };
     let bridged_by = edge_infill::bridge_over_infill_by(
         &anchored_by,
         &beneath,
+        &tops,
         &infill.over_infill(layer_height)?,
+        &sparse_lines,
     )?;
-    // And the sparse fill under a bridge's edge, where that edge runs
-    // along the walls, is made solid to carry it.
-    let edges = edge_infill::bridge_edges(&bridged_by, solid_spacing)?;
-    let bridged_by = bridged_by
-        .iter()
-        .map(|surfaces| edge_infill::carry_bridge_edges(surfaces, &edges, solid_spacing))
-        .collect::<Result<Vec<_>, _>>()?;
     // A second layer of bridge over those, where the profile asks
     // (`enable_extra_bridge_layer`); over a bridge over air it is made
     // when surfaces are told apart.
@@ -798,26 +836,12 @@ pub fn slice(job: Job, watch: &dyn Watcher) -> Result<Sliced, Failure> {
             .par_iter()
             .enumerate()
             .map(|(index, surfaces)| {
-                let height = heights.height_of(index);
-                let mut params = infill
-                    .params(height, index == 0)
-                    .map_err(|e| e.to_string())?;
-                // A sparse pattern is laid through the middle of the
-                // object it fills, as in the reference.
-                params.origin = middle;
-                params.z = heights.top_of(index);
+                let params = params_of(index).map_err(|e| e.to_string())?;
                 edge_infill::fill_within(
                     surfaces,
                     index,
                     &params,
-                    &|surface| {
-                        frame_of(&middles, surface.area.contour.points.first().copied()).unwrap_or(
-                            edge_infill::Frame {
-                                origin: middle,
-                                bounds: None,
-                            },
-                        )
-                    },
+                    &frame,
                     // What is inside this filament's walls on the layer,
                     // for the fill's own gap fill.
                     &perimeters[index].infill_no_overlap,
