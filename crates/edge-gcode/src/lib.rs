@@ -1296,8 +1296,37 @@ impl Writer<'_> {
                 }
             };
             let mut path = seam::open_at(points, edge, start);
+            let whole = (!wall.widths.is_empty()).then(|| path.clone());
             seam::clip_end(&mut path, s.seam_gap);
-            self.path(&path, wall.role, &wall.flow, false, true)?;
+            let Some(whole) = whole else {
+                self.path(&path, wall.role, &wall.flow, false, true)?;
+                continue;
+            };
+            // A wall whose width changes is laid from its seam as pieces
+            // end to end, each of one width (the reference's
+            // `thick_polyline_to_multi_path`).
+            let widths: Vec<f64> = wall.widths.iter().map(|&width| width as f64).collect();
+            let widths = seam::clip_widths(
+                &whole,
+                &seam::open_widths_at(points, &widths, edge, start),
+                &path,
+            );
+            if path.len() < 2 {
+                continue;
+            }
+            let line = edge_medial::ThickPolyline {
+                widths: widths
+                    .windows(2)
+                    .flat_map(|pair| [pair[0], pair[1]])
+                    .collect(),
+                points: path,
+                open_ends: (true, true),
+            };
+            for piece in edge_medial::varying_width(&line, wall.role, &wall.flow) {
+                self.path(&piece.points, wall.role, &piece.flow, false, true)?;
+            }
+            // The nozzle is wiped along the whole wall, not its last piece.
+            self.state.wipe_path = line.points;
         }
         Ok(())
     }

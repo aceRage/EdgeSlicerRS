@@ -203,9 +203,8 @@ pub struct Perimeters {
     pub infill: Vec<ExPolygon>,
     /// Lines down the middle of the gaps between walls, each as wide as
     /// its gap. With walls of changing width there are no gaps, and what
-    /// is here are the walls that are not loops of one width: lines down
-    /// the middle of thin parts, and loops whose width changes, in their
-    /// wall roles.
+    /// is here are the walls that are not loops: lines down the middle of
+    /// thin parts, in their wall roles.
     pub gap_fill: Vec<ExtrusionPath>,
     /// Gaps left empty because their centre line could not be worked out.
     pub gaps_skipped: usize,
@@ -390,19 +389,20 @@ pub fn classic_between(
 
 /// A loop's width may differ by this much along it and still be laid as
 /// one width, in scaled units: what the reference allows a path before
-/// cutting it (`variable_width`).
+/// cutting it (`thick_polyline_to_multi_path`).
 const LOOP_WIDTH_TOLERANCE: Coord = 50_000;
 
 /// Walls of changing width for one layer's regions: as many as fit
 /// wherever the region is measured, up to `wall_loops`
 /// (`PerimeterGenerator::process_arachne`, PerimeterGenerator.cpp).
 ///
-/// Not a port of the whole of it. The reference orders the walls itself
-/// and keeps a loop a loop whatever its widths; here the loops of one
-/// width go to the writer as the classic ones do, to be ordered and
-/// given their seams there, and every other wall is a line of its own
-/// laid with the fill. One wall over top surfaces, extra walls over
-/// overhangs and fuzzy skin are not here.
+/// Not a port of the whole of it. The reference orders the walls
+/// itself; here the loops go to the writer as the classic ones do, to
+/// be ordered and given their seams there, a loop whose width changes
+/// carrying its width at every point, and the walls that are not loops
+/// (lines down the middle of thin parts) are laid with the fill. One
+/// wall over top surfaces, extra walls over overhangs and fuzzy skin are
+/// not here.
 pub fn arachne(
     regions: &[ExPolygon],
     params: &Params,
@@ -465,26 +465,45 @@ pub fn arachne(
                 };
                 let widths = wall.junctions.iter().map(|junction| junction.w);
                 let (least, most) = (widths.clone().min().unwrap_or(0), widths.max().unwrap_or(0));
-                if wall.is_closed
-                    && most - least <= LOOP_WIDTH_TOLERANCE
-                    && wall.junctions.len() > 3
-                {
+                if wall.is_closed && wall.junctions.len() > 3 {
                     let is_hole = !wall.is_contour();
                     let mut polygon = wall.to_polygon();
+                    let mut widths: Vec<Coord> =
+                        wall.junctions.iter().map(|junction| junction.w).collect();
                     // A closed wall ends on the point it began at.
                     if polygon.points.len() > 1 && polygon.points.first() == polygon.points.last() {
                         polygon.points.pop();
+                        widths.pop();
                     }
                     // Counter-clockwise round material, clockwise round a hole.
                     if polygon.is_ccw() == is_hole {
                         polygon.points.reverse();
+                        widths.reverse();
+                    }
+                    // The width the loop has on average along it.
+                    let count = polygon.points.len();
+                    let (mut total, mut weighted) = (0.0, 0.0);
+                    for at in 0..count {
+                        let (a, b) = (polygon.points[at], polygon.points[(at + 1) % count]);
+                        let length = ((b.x - a.x) as f64).hypot((b.y - a.y) as f64);
+                        total += length;
+                        weighted += length * 0.5 * (widths[at] + widths[(at + 1) % count]) as f64;
+                    }
+                    let average = if total > 0.0 {
+                        (weighted / total) as Coord
+                    } else {
+                        widths[0]
+                    };
+                    if most - least <= LOOP_WIDTH_TOLERANCE {
+                        widths.clear();
                     }
                     let made = ExtrusionLoop {
                         polygon,
                         role,
                         is_hole,
                         depth: wall.inset_idx,
-                        flow: flow_of(flow, wall.junctions[0].w)?,
+                        flow: flow_of(flow, average)?,
+                        widths,
                     };
                     if is_hole {
                         holes.push(made);
@@ -503,7 +522,7 @@ pub fn arachne(
                         .collect(),
                     open_ends: (!wall.is_closed, !wall.is_closed),
                 };
-                lines.extend(edge_medial::variable_width(&[line], role, flow));
+                lines.extend(edge_medial::varying_width(&line, role, flow));
             }
             result.loops.extend(holes);
         }
@@ -596,6 +615,7 @@ fn push_loops(loops: &mut Vec<ExtrusionLoop>, shells: &[ExPolygon], depth: usize
         .map(|hole| (hole, true));
     for (polygon, is_hole) in contours.chain(holes) {
         loops.push(ExtrusionLoop {
+            widths: Vec::new(),
             polygon: polygon.clone(),
             role,
             is_hole,
@@ -1042,6 +1062,45 @@ mod tests {
             );
             assert!(line.points.iter().all(|p| (p.y - 300_000).abs() < 2_000));
         }
+    }
+
+    #[test]
+    fn a_loop_whose_width_changes_stays_a_loop_and_carries_its_widths() {
+        // A frame 1.4 mm thick on one side and 2 mm on the other three:
+        // too thin there for four full lines.
+        let mut frame = block(0.0, 0.0, 20.0, 20.0);
+        frame.holes.push(Polygon {
+            points: [(1.4, 2.0), (1.4, 18.0), (18.0, 18.0), (18.0, 2.0)]
+                .map(|(x, y)| Point2::from_mm(x, y))
+                .to_vec(),
+        });
+        let walls = classic(&[frame], &varying(2)).unwrap();
+        let changing: Vec<&ExtrusionLoop> = walls
+            .loops
+            .iter()
+            .filter(|wall| !wall.widths.is_empty())
+            .collect();
+        assert!(!changing.is_empty());
+        for wall in &changing {
+            assert_eq!(wall.widths.len(), wall.polygon.points.len());
+            assert_eq!(wall.polygon.is_ccw(), !wall.is_hole);
+            let (least, most) = (
+                *wall.widths.iter().min().unwrap(),
+                *wall.widths.iter().max().unwrap(),
+            );
+            assert!(most - least > LOOP_WIDTH_TOLERANCE);
+            // Laid at a width between its narrowest and its widest.
+            let own = scaled(wall.flow.width - 0.2 * (1.0 - std::f64::consts::FRAC_PI_4));
+            assert!((least..=most).contains(&own), "{least} {own} {most}");
+        }
+        // The outer walls are one width all round, inside and out.
+        assert!(
+            walls
+                .loops
+                .iter()
+                .filter(|wall| wall.depth == 0)
+                .all(|wall| wall.widths.is_empty())
+        );
     }
 
     #[test]

@@ -177,6 +177,51 @@ pub fn open_at(points: &[Point2], edge: usize, start: Point2) -> Vec<Point2> {
     path
 }
 
+/// A loop's width at each point of the path [`open_at`] makes of it:
+/// `widths` holds the width at each of `points`, and the width at
+/// `start` is that of its place along its edge.
+pub fn open_widths_at(points: &[Point2], widths: &[f64], edge: usize, start: Point2) -> Vec<f64> {
+    let count = points.len();
+    let near = |corner: Point2| mm(corner, start) < 0.0015;
+    let first = if near(points[edge]) {
+        edge
+    } else {
+        (edge + 1) % count
+    };
+    let mut found = Vec::with_capacity(count + 2);
+    if !near(points[first]) {
+        let (a, b) = (points[edge], points[(edge + 1) % count]);
+        let whole = mm(a, b);
+        let along = if whole > 0.0 {
+            mm(a, start) / whole
+        } else {
+            0.0
+        };
+        found.push(widths[edge] + along * (widths[(edge + 1) % count] - widths[edge]));
+    }
+    found.extend((0..count).map(|step| widths[(first + step) % count]));
+    found.push(found[0]);
+    found
+}
+
+/// The widths of a path that [`clip_end`] has shortened to `clipped`
+/// from `whole`, whose widths were `widths`.
+pub fn clip_widths(whole: &[Point2], widths: &[f64], clipped: &[Point2]) -> Vec<f64> {
+    let kept = clipped.len();
+    let mut found = widths[..kept.min(widths.len())].to_vec();
+    if kept >= 2 && kept <= whole.len() && clipped[kept - 1] != whole[kept - 1] {
+        let (a, b) = (whole[kept - 2], whole[kept - 1]);
+        let full = mm(a, b);
+        let along = if full > 0.0 {
+            mm(a, clipped[kept - 1]) / full
+        } else {
+            0.0
+        };
+        found[kept - 1] = widths[kept - 2] + along * (widths[kept - 1] - widths[kept - 2]);
+    }
+    found
+}
+
 /// Shortens a path by `length` mm from its end. A path no longer than that
 /// is left as its first point.
 pub fn clip_end(path: &mut Vec<Point2>, length: f64) {

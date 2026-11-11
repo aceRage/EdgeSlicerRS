@@ -19,6 +19,7 @@ fn wall(x: f64, y: f64, side: f64, depth: usize) -> ExtrusionLoop {
         Role::Perimeter
     };
     ExtrusionLoop {
+        widths: Vec::new(),
         polygon: Polygon {
             points: points.to_vec(),
         },
@@ -2162,4 +2163,113 @@ fn a_print_with_a_printer_profile_is_timed_as_the_printer_runs_it() {
     assert!((stated - timed.seconds).abs() < 1e-9);
     assert!(text.contains("; time planned as Klipper plans"));
     assert!(text.contains("; time at commanded speeds, without acceleration [s] = "));
+}
+
+#[test]
+fn a_wall_whose_width_changes_is_laid_from_its_seam_in_pieces_end_to_end() {
+    // A 10 mm square, 0.40 mm wide along the bottom and 0.60 along the top.
+    let mut varying = wall(0.0, 0.0, 10.0, 0);
+    varying.widths = vec![400_000, 400_000, 600_000, 600_000];
+    let plain = [wall(0.0, 0.0, 10.0, 0)];
+    let loops = [varying];
+    let (text, _) = print(&one_layer(&loops, &[0..1], &[]), &basic());
+    let (even, _) = print(&one_layer(&plain, &[0..1], &[]), &basic());
+
+    // Once round, with no move between the pieces that lays nothing.
+    let laid: Vec<&str> = moves(&text)
+        .filter(|line| word(line, 'X').is_some() || word(line, 'Y').is_some())
+        .collect();
+    let first = laid
+        .iter()
+        .position(|line| word(line, 'E').is_some())
+        .unwrap();
+    assert!(laid[first..].iter().all(|line| word(line, 'E').is_some()));
+    // The widths are told as they change.
+    let widths: Vec<f64> = text
+        .lines()
+        .filter_map(|line| line.strip_prefix(";WIDTH:")?.parse().ok())
+        .collect();
+    assert!(widths.len() >= 4, "{widths:?}");
+    let (least, most) = (
+        widths.iter().copied().fold(f64::INFINITY, f64::min),
+        widths.iter().copied().fold(0.0, f64::max),
+    );
+    // A width is what the generator gave plus what a line's rounded
+    // edges leave empty: 0.2 mm * (1 - pi/4).
+    assert!(
+        (least - 0.443).abs() < 0.01 && (most - 0.643).abs() < 0.01,
+        "{least}..{most}"
+    );
+
+    // Plastic per mm follows the width: along the bottom less than along the top.
+    let per_mm = |y: f64| -> f64 {
+        let mut at = (0.0, 0.0);
+        let mut found = 0.0;
+        for line in moves(&text) {
+            let to = (
+                word(line, 'X').unwrap_or(at.0),
+                word(line, 'Y').unwrap_or(at.1),
+            );
+            if let Some(e) = word(line, 'E')
+                && at.1 == y
+                && to.1 == y
+                && to.0 != at.0
+            {
+                found = e / (to.0 - at.0).abs();
+            }
+            at = to;
+        }
+        found
+    };
+    assert!(per_mm(0.0) > 0.0 && per_mm(10.0) > 1.3 * per_mm(0.0));
+
+    // As much plastic as the same wall at the width between.
+    let fed = |text: &str| -> f64 {
+        moves(text)
+            .filter_map(|line| word(line, 'E'))
+            .filter(|e| *e > 0.0)
+            .sum()
+    };
+    let between = {
+        let mut middle = wall(0.0, 0.0, 10.0, 0);
+        middle.flow = flow()
+            .with_width(0.5 + 0.2 * (1.0 - std::f64::consts::FRAC_PI_4))
+            .unwrap();
+        print(&one_layer(&[middle], &[0..1], &[]), &basic()).0
+    };
+    assert!(
+        (fed(&text) / fed(&between) - 1.0).abs() < 0.02,
+        "{} against {}",
+        fed(&text),
+        fed(&between)
+    );
+    assert!(fed(&even) > 0.0);
+}
+
+#[test]
+fn widths_follow_a_wall_opened_at_its_seam_and_cut_short() {
+    let square =
+        [(0.0, 0.0), (10.0, 0.0), (10.0, 10.0), (0.0, 10.0)].map(|(x, y)| Point2::from_mm(x, y));
+    let widths = [400.0, 500.0, 600.0, 700.0];
+    // Opened half way along the first edge: the width there is half way too.
+    let start = Point2::from_mm(5.0, 0.0);
+    let path = seam::open_at(&square, 0, start);
+    let opened = seam::open_widths_at(&square, &widths, 0, start);
+    assert_eq!(path.len(), opened.len());
+    assert_eq!(opened, [450.0, 500.0, 600.0, 700.0, 400.0, 450.0]);
+    // Opened at a corner, the widths are only turned.
+    let at_corner = seam::open_widths_at(&square, &widths, 2, square[2]);
+    assert_eq!(at_corner, [600.0, 700.0, 400.0, 500.0, 600.0]);
+    // Cut 2.5 mm short of its end: the last width is that of where it stops.
+    let mut clipped = path.clone();
+    seam::clip_end(&mut clipped, 2.5);
+    let cut = seam::clip_widths(&path, &opened, &clipped);
+    assert_eq!(cut.len(), clipped.len());
+    assert_eq!(cut[cut.len() - 1], 425.0);
+    // Cut by more than the last piece: the points left keep their widths.
+    let mut shorter = path.clone();
+    seam::clip_end(&mut shorter, 10.0);
+    let cut = seam::clip_widths(&path, &opened, &shorter);
+    assert_eq!(cut.len(), shorter.len());
+    assert_eq!(cut[..3], opened[..3]);
 }

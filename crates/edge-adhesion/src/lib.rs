@@ -463,6 +463,7 @@ pub fn brim(
         from_parts.reverse();
         loops.extend(from_outside.into_iter().chain(from_parts).map(
             |(polygon, is_hole, depth)| ExtrusionLoop {
+                widths: Vec::new(),
                 polygon,
                 role: Role::Brim,
                 is_hole,
@@ -525,6 +526,7 @@ pub fn skirt(
             start_at_angle(&mut polygon, settings.skirt_start_angle);
         }
         loops.push(ExtrusionLoop {
+            widths: Vec::new(),
             polygon,
             role: Role::Skirt,
             is_hole: false,
