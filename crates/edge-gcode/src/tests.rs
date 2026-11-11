@@ -34,6 +34,7 @@ fn line(a: (f64, f64), b: (f64, f64), role: Role) -> ExtrusionPath {
         points: vec![Point2::from_mm(a.0, a.1), Point2::from_mm(b.0, b.1)],
         role,
         flow: flow(),
+        in_turn: false,
     }
 }
 
@@ -484,6 +485,48 @@ fn an_island_is_finished_before_the_next_is_begun() {
         .map(|(_, x, _)| x > 20.0)
         .collect();
     assert_eq!(sides, [false, false, false, true, true, true]);
+}
+
+#[test]
+fn lines_laid_in_turn_keep_their_order_and_direction() {
+    // Three rows, given bottom, top, middle, each from left to right.
+    let rows = |in_turn: bool| {
+        [1.0, 9.0, 5.0].map(|y| ExtrusionPath {
+            in_turn: in_turn && y != 1.0,
+            ..line((1.0, y), (9.0, y), Role::TopSolidInfill)
+        })
+    };
+    // (where each row starts, and its height)
+    let laid = |fill: &[ExtrusionPath]| -> Vec<(f64, f64)> {
+        let (text, _) = print(&one_layer(&[], &[], fill), &basic());
+        let mut at = (0.0, 0.0);
+        let mut found = Vec::new();
+        for line in moves(&text) {
+            let before = at;
+            at = (
+                word(line, 'X').unwrap_or(at.0),
+                word(line, 'Y').unwrap_or(at.1),
+            );
+            if word(line, 'E').is_some_and(|e| e > 0.0) && at != before {
+                found.push((before.0, before.1));
+            }
+        }
+        found
+    };
+    // Free, the nearest end is taken each time: up the rows, to and fro.
+    assert_eq!(laid(&rows(false)), [(1.0, 1.0), (9.0, 5.0), (1.0, 9.0)]);
+    // In turn, they go down as given.
+    assert_eq!(laid(&rows(true)), [(1.0, 1.0), (1.0, 9.0), (1.0, 5.0)]);
+
+    // A run goes to the island its first line lies in, all of it.
+    let loops = [wall(0.0, 0.0, 10.0, 0), wall(30.0, 0.0, 10.0, 0)];
+    let mut fill = rows(true).to_vec();
+    fill[2].points = vec![Point2::from_mm(32.0, 5.0), Point2::from_mm(38.0, 5.0)];
+    let layer = one_layer(&loops, &[0..1, 1..2], &fill);
+    assert_eq!(homes(&layer[0]), [0, 0, 0]);
+    fill[2].in_turn = false;
+    let layer = one_layer(&loops, &[0..1, 1..2], &fill);
+    assert_eq!(homes(&layer[0]), [0, 0, 1]);
 }
 
 #[test]

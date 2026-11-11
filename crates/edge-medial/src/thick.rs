@@ -43,7 +43,12 @@ fn path(points: Vec<Point2>, width: f64, role: Role, flow: &Flow) -> Option<Extr
     let flow = flow
         .with_width(width / UNITS_PER_MM + flow.height * (1.0 - 0.25 * PI))
         .ok()?;
-    (points.len() >= 2).then_some(ExtrusionPath { points, role, flow })
+    (points.len() >= 2).then_some(ExtrusionPath {
+        points,
+        role,
+        flow,
+        in_turn: false,
+    })
 }
 
 /// A closed line is one path at its average width

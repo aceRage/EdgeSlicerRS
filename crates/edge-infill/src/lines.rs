@@ -48,12 +48,28 @@ pub struct Joining {
     /// How much of each end of a line is not counted for `beside`, so
     /// that a line does not rule out the outline it ends on.
     pub beside_clip: Coord,
-    /// Ends are joined by following the lines from the first row on,
-    /// each to its neighbour on the row before or after, instead of
-    /// nearest pairs first: the reference's way with solid lines, which
-    /// keeps a zigzag whole where the outline curves (FillRectilinear.cpp
-    /// `traverse_graph_generate_polylines`). No anchors are run.
-    pub sweep: bool,
+    /// Which ends are joined, and the order the paths come out in.
+    pub order: Order,
+}
+
+/// The order line ends are joined in.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub enum Order {
+    /// Nearest pairs along the outline first (FillBase.cpp
+    /// `connect_infill`).
+    #[default]
+    Nearest,
+    /// By following the lines from the first row on, each to its
+    /// neighbour on the row before or after: the reference's way with
+    /// solid lines, which keeps a zigzag whole where the outline curves
+    /// (FillRectilinear.cpp `traverse_graph_generate_polylines`). No
+    /// anchors are run.
+    Sweep,
+    /// Swept from the first row to the last, so that no line is laid
+    /// between two already down: see [`monotonic`]. A line is joined only
+    /// to the one laid next, and the paths come out in the order they are
+    /// to be printed, each from its first point. No anchors are run.
+    Monotonic,
 }
 
 /// How far the point `t` along a→b is from the segment c→d.
@@ -328,7 +344,9 @@ pub fn paths_anchored(
 /// `outer`, and where it is joined to its neighbour it turns short of the
 /// edge, on the outline of `inner`, which lies inside `outer`. A line that
 /// does not reach into `inner` at all is left out, as there. A `max_link`
-/// of zero joins nothing, and every line then runs edge to edge.
+/// of zero joins nothing, and every line then runs edge to edge. With
+/// `monotonic` the paths come in the order they are to be laid, each from
+/// its first point ([`Order::Monotonic`]).
 pub fn paths_turned(
     outer: &[ExPolygon],
     inner: &[ExPolygon],
@@ -336,12 +354,17 @@ pub fn paths_turned(
     first: f64,
     angle: f64,
     max_link: Coord,
+    monotonic: bool,
 ) -> Vec<Vec<Point2>> {
     let rings: Vec<&Polygon> = inner.iter().flat_map(ExPolygon::rings).collect();
     let edge: Vec<&Polygon> = outer.iter().flat_map(ExPolygon::rings).collect();
     let joining = Joining {
         max_link,
-        sweep: true,
+        order: if monotonic {
+            Order::Monotonic
+        } else {
+            Order::Sweep
+        },
         ..Joining::default()
     };
     lay(
@@ -608,7 +631,37 @@ fn lay(
         }
         segment
     }
-    if joining.sweep {
+    // Where the paths start, in the order they come out.
+    let mut starts: Option<Vec<usize>> = None;
+    if joining.order == Order::Monotonic {
+        candidates.clear();
+        let turns = monotonic(&crossings, &segments);
+        // A line is joined to the one laid next when that is on the next
+        // row and its end is the next along the outline.
+        for pair in turns.windows(2) {
+            let ((segment, entry), (_, to)) = (pair[0], pair[1]);
+            let [a, b] = segments[segment];
+            let far = if a == entry { b } else { a };
+            let Some(own) = free[far] else { continue };
+            let (here, there) = (&crossings[far], &crossings[to]);
+            if there.direction != here.direction || (there.row - here.row).abs() != 1 {
+                continue;
+            }
+            let link = [
+                (own.to_next, own.next, true),
+                (own.to_prev, own.prev, false),
+            ]
+            .into_iter()
+            .filter(|&(distance, end, _)| end == to && distance <= joining.max_link as f64)
+            .min_by(|a, b| a.0.total_cmp(&b.0));
+            if let Some((_, _, forward)) = link {
+                crossings[far].link = Some((to, forward));
+                crossings[to].link = Some((far, !forward));
+            }
+        }
+        starts = Some(turns.into_iter().map(|(_, entry)| entry).collect());
+    }
+    if joining.order == Order::Sweep {
         candidates.clear();
         // From the first line not yet passed, along it, and on to the
         // line beside it whose end is next along the outline; the nearer
@@ -698,7 +751,7 @@ fn lay(
     // Walk each chain of stretches and links from one loose end to the other.
     let mut walked = vec![false; segments.len()];
     let mut paths = Vec::new();
-    for &start in &by_row {
+    for &start in starts.as_ref().unwrap_or(&by_row) {
         let Some(first) = crossings[start].segment else {
             continue;
         };
@@ -769,6 +822,225 @@ fn lay(
         }
     }
     paths
+}
+
+/// The order to lay solid lines in so that the area is swept from its
+/// first row to its last and no line goes down between two already
+/// laid, which shows on a surface: each stretch with the end it is
+/// entered at (FillRectilinear.cpp `generate_montonous_regions`,
+/// `connect_monotonic_regions` and `chain_monotonic_regions`).
+///
+/// Stretches fall into regions: a run of rows on which each stretch has
+/// just the one stretch beside it on the next row, and that one just it
+/// on the row before. A region is laid whole, zigzagging from either end
+/// of its first row, and only once every region beside its first row on
+/// the side already swept is down. Of the orders that allows, the one
+/// with the least travel between regions is taken. The reference looks
+/// for it with an ant colony run on random numbers, from a first guess
+/// that begins at the last region with nothing before it; here it is
+/// worked out exactly for up to [`EXACT_REGIONS`] regions, and for more
+/// the best of the nearest-next orders from every possible start is
+/// kept. So the order can differ from the reference's, never the rule.
+///
+/// Two stretches on neighbouring rows are beside each other when they
+/// overlap along the rows. The reference follows the outline between
+/// them, which differs only where a gap narrower than a row slants
+/// between two parts of the area.
+/// The most regions whose every order is tried: with more, the table of
+/// orders grows past a few megabytes.
+const EXACT_REGIONS: usize = 12;
+
+fn monotonic(crossings: &[Crossing], segments: &[[usize; 2]]) -> Vec<(usize, usize)> {
+    let line_of = |segment: usize| {
+        let end = &crossings[segments[segment][0]];
+        (end.direction, end.row)
+    };
+    let span = |segment: usize| {
+        let [a, b] = segments[segment];
+        (crossings[a].u, crossings[b].u)
+    };
+    let mut lines: BTreeMap<(usize, i64), Vec<usize>> = BTreeMap::new();
+    for segment in 0..segments.len() {
+        lines.entry(line_of(segment)).or_default().push(segment);
+    }
+    for members in lines.values_mut() {
+        members.sort_by(|&a, &b| span(a).0.total_cmp(&span(b).0));
+    }
+    let beside = |segment: usize, line: (usize, i64)| -> Vec<usize> {
+        let (low, high) = span(segment);
+        lines.get(&line).map_or_else(Vec::new, |members| {
+            members
+                .iter()
+                .copied()
+                .filter(|&other| {
+                    let (from, to) = span(other);
+                    from < high && to > low
+                })
+                .collect()
+        })
+    };
+
+    const NONE: usize = usize::MAX;
+    let mut region_of = vec![NONE; segments.len()];
+    let mut regions: Vec<Vec<usize>> = Vec::new();
+    for (&line, members) in &lines {
+        for &seed in members {
+            if region_of[seed] != NONE {
+                continue;
+            }
+            region_of[seed] = regions.len();
+            let (mut run, mut at, mut line) = (vec![seed], seed, line);
+            loop {
+                let next = (line.0, line.1 + 1);
+                let [only] = beside(at, next)[..] else { break };
+                if beside(only, line) != [at] || region_of[only] != NONE {
+                    break;
+                }
+                region_of[only] = regions.len();
+                run.push(only);
+                (at, line) = (only, next);
+            }
+            regions.push(run);
+        }
+    }
+
+    // What each region waits for, and what it leads into.
+    let mut before: Vec<Vec<usize>> = vec![Vec::new(); regions.len()];
+    let mut after: Vec<Vec<usize>> = vec![Vec::new(); regions.len()];
+    for (region, run) in regions.iter().enumerate() {
+        let line = line_of(run[0]);
+        for segment in beside(run[0], (line.0, line.1 - 1)) {
+            let other = region_of[segment];
+            if other != region && !before[region].contains(&other) {
+                before[region].push(other);
+                after[other].push(region);
+            }
+        }
+    }
+
+    // A region entered at the low end of its first row leaves by the
+    // high end of its last when it has an odd number of rows.
+    let entry = |region: usize, flipped: bool| segments[regions[region][0]][usize::from(flipped)];
+    let exit = |region: usize, flipped: bool| {
+        let run = &regions[region];
+        let high = (run.len() % 2 == 1) != flipped;
+        segments[run[run.len() - 1]][usize::from(high)]
+    };
+    let apart = |a: usize, b: usize| {
+        let (a, b) = (crossings[a].point, crossings[b].point);
+        ((a.x - b.x) as f64).hypot((a.y - b.y) as f64)
+    };
+    // How far the nozzle moves from the end of one region, entered at
+    // one end or the other, to the start of the next.
+    let count = regions.len();
+    let state = |region: usize, flipped: bool| 2 * region + usize::from(flipped);
+    let mut hops = vec![0.0f64; 4 * count * count];
+    for from in 0..2 * count {
+        for to in 0..2 * count {
+            hops[from * 2 * count + to] =
+                apart(exit(from / 2, from % 2 == 1), entry(to / 2, to % 2 == 1));
+        }
+    }
+    let hop = |from: usize, to: usize| hops[from * 2 * count + to];
+
+    let mut order: Vec<(usize, bool)> = Vec::with_capacity(count);
+    if count <= EXACT_REGIONS {
+        // Every order the regions may be laid in, by which are down and
+        // which was last: the least travel to have got there, and from where.
+        let needs: Vec<usize> = before
+            .iter()
+            .map(|before| before.iter().fold(0, |mask, &region| mask | 1 << region))
+            .collect();
+        let sets = 1usize << count;
+        let at = |set: usize, last: usize| set * 2 * count + last;
+        let mut least = vec![f64::INFINITY; sets * 2 * count];
+        let mut came = vec![usize::MAX; sets * 2 * count];
+        for region in (0..count).filter(|&region| needs[region] == 0) {
+            for flipped in [false, true] {
+                least[at(1 << region, state(region, flipped))] = 0.0;
+            }
+        }
+        for set in 1..sets {
+            for last in 0..2 * count {
+                let so_far = least[at(set, last)];
+                if so_far.is_infinite() {
+                    continue;
+                }
+                for (next, need) in needs.iter().enumerate() {
+                    if set & 1 << next != 0 || need & !set != 0 {
+                        continue;
+                    }
+                    for flipped in [false, true] {
+                        let to = state(next, flipped);
+                        let total = so_far + hop(last, to);
+                        let slot = at(set | 1 << next, to);
+                        if total < least[slot] {
+                            (least[slot], came[slot]) = (total, last);
+                        }
+                    }
+                }
+            }
+        }
+        let full = sets - 1;
+        let mut last =
+            (0..2 * count).min_by(|&a, &b| least[at(full, a)].total_cmp(&least[at(full, b)]));
+        let mut set = full;
+        while let Some(here) = last {
+            order.push((here / 2, here % 2 == 1));
+            let from = came[at(set, here)];
+            set &= !(1 << (here / 2));
+            last = (from != usize::MAX).then_some(from);
+        }
+        order.reverse();
+    } else {
+        // Too many to try every order: from each region that may go
+        // first, entered at either end, always on to the nearest start
+        // that is free to go, and the shortest of those is kept.
+        let mut shortest = f64::INFINITY;
+        for first in (0..2 * count).filter(|&first| before[first / 2].is_empty()) {
+            let mut waiting: Vec<usize> = before.iter().map(Vec::len).collect();
+            let mut laid = vec![false; count];
+            let (mut tried, mut total, mut last) = (vec![first], 0.0, first);
+            laid[first / 2] = true;
+            loop {
+                for &next in &after[last / 2] {
+                    waiting[next] -= 1;
+                }
+                let next = (0..2 * count)
+                    .filter(|&next| !laid[next / 2] && waiting[next / 2] == 0)
+                    .min_by(|&a, &b| hop(last, a).total_cmp(&hop(last, b)));
+                let Some(next) = next else { break };
+                total += hop(last, next);
+                laid[next / 2] = true;
+                tried.push(next);
+                last = next;
+            }
+            if total < shortest {
+                shortest = total;
+                order = tried.iter().map(|&at| (at / 2, at % 2 == 1)).collect();
+            }
+        }
+    }
+    // Nothing should be left; if anything is, it is still printed.
+    let mut laid = vec![false; count];
+    for &(region, _) in &order {
+        laid[region] = true;
+    }
+    order.extend(
+        (0..count)
+            .filter(|&region| !laid[region])
+            .map(|region| (region, false)),
+    );
+
+    let mut turns = Vec::with_capacity(segments.len());
+    for (region, flipped) in order {
+        let mut high = flipped;
+        for &segment in &regions[region] {
+            turns.push((segment, segments[segment][usize::from(high)]));
+            high = !high;
+        }
+    }
+    turns
 }
 
 #[cfg(test)]
@@ -865,6 +1137,7 @@ mod tests {
                 0.0,
                 angle,
                 Coord::MAX / 4,
+                false,
             );
             assert_eq!(paths.len(), 1, "at {angle} rad");
         }
@@ -877,8 +1150,134 @@ mod tests {
             0.0,
             0.0,
             scaled(1.0),
+            false,
         );
         assert!(limited.len() > 1);
+    }
+
+    /// An area and the same drawn in by `inset`, as `paths_turned` takes them.
+    fn drawn_in(area: &ExPolygon, inset: f64) -> (Vec<ExPolygon>, Vec<ExPolygon>) {
+        let inner = edge_clip::offset(
+            std::slice::from_ref(area),
+            -scaled(inset),
+            edge_clip::Join::MITER,
+        )
+        .unwrap();
+        (vec![area.clone()], inner)
+    }
+
+    /// Whether separate rows along x were laid so that none went down
+    /// before a row just below it that it lies over: each as (y, from, to).
+    fn swept(paths: &[Vec<Point2>]) -> bool {
+        let rows: Vec<(Coord, Coord, Coord)> = paths
+            .iter()
+            .map(|path| {
+                let (a, b) = (path[0], path[path.len() - 1]);
+                assert!(path.len() == 2 && a.y == b.y, "one straight row each");
+                (a.y, a.x.min(b.x), a.x.max(b.x))
+            })
+            .collect();
+        rows.iter().enumerate().all(|(at, &(y, from, to))| {
+            rows.iter().enumerate().all(|(other, &(below, low, high))| {
+                let under = below < y && y - below <= scaled(1.0) && low < to && high > from;
+                !under || other < at
+            })
+        })
+    }
+
+    #[test]
+    fn monotonic_rows_never_go_down_between_two_already_laid() {
+        // A square with a square hole: the rows below the hole, those to
+        // either side of it and those above are four regions.
+        let mut hole = rect(8.0, 8.0, 12.0, 12.0);
+        hole.points.reverse();
+        let holed = ExPolygon {
+            contour: rect(0.0, 0.0, 20.0, 20.0),
+            holes: vec![hole],
+        };
+        // Two prongs joined across the top, and the same upside down.
+        let arch = ExPolygon {
+            contour: Polygon {
+                points: [
+                    (0.0, 0.0),
+                    (6.0, 0.0),
+                    (6.0, 12.0),
+                    (14.0, 12.0),
+                    (14.0, 0.0),
+                    (20.0, 0.0),
+                    (20.0, 20.0),
+                    (0.0, 20.0),
+                ]
+                .map(|(x, y)| Point2::from_mm(x, y))
+                .to_vec(),
+            },
+            holes: Vec::new(),
+        };
+        let mut cup = arch.clone();
+        for point in &mut cup.contour.points {
+            point.y = scaled(20.0) - point.y;
+        }
+        cup.contour.points.reverse();
+        for area in [&holed, &arch, &cup] {
+            let (outer, inner) = drawn_in(area, 0.2);
+            let rows = paths_turned(&outer, &inner, 1e6, 0.5e6, 0.0, 0, true);
+            assert!(swept(&rows));
+            // The same rows as when they are laid in any order.
+            let any = paths_turned(&outer, &inner, 1e6, 0.5e6, 0.0, 0, false);
+            assert_eq!(rows.len(), any.len());
+            assert!((length(&rows) - length(&any)).abs() < 1e-6);
+            // Each row begins where the nozzle is nearer: a millimetre up
+            // from the last one's end, but for the hops between regions.
+            let hops = rows
+                .windows(2)
+                .filter(|pair| {
+                    let (from, to) = (pair[0][1], pair[1][0]);
+                    ((to.x - from.x) as f64).hypot((to.y - from.y) as f64) > 1.5e6
+                })
+                .count();
+            assert!(hops <= 3, "{hops} hops");
+        }
+
+        // Joined, a region is one zigzag, and a plain square one path.
+        let square = ExPolygon {
+            contour: rect(0.0, 0.0, 10.0, 10.0),
+            holes: Vec::new(),
+        };
+        let (outer, inner) = drawn_in(&square, 0.5);
+        let one = paths_turned(&outer, &inner, 1e6, 1e6, 0.0, Coord::MAX / 4, true);
+        assert_eq!(one.len(), 1);
+        let (outer, inner) = drawn_in(&holed, 0.2);
+        let joined = paths_turned(&outer, &inner, 1e6, 0.5e6, 0.0, Coord::MAX / 4, true);
+        assert!((1..=4).contains(&joined.len()), "{} paths", joined.len());
+    }
+
+    #[test]
+    fn many_regions_are_still_swept_in_order() {
+        // A comb of sixteen teeth on a spine: more regions than every
+        // order is tried for.
+        let mut points = vec![(0.0, 0.0), (64.0, 0.0), (64.0, 4.0)];
+        for tooth in (0..16).rev() {
+            let x = 4.0 * tooth as f64;
+            points.extend([(x + 2.0, 4.0), (x + 2.0, 10.0), (x, 10.0), (x, 4.0)]);
+        }
+        points.dedup();
+        let comb = ExPolygon {
+            contour: Polygon {
+                points: points
+                    .into_iter()
+                    .map(|(x, y)| Point2::from_mm(x, y))
+                    .collect(),
+            },
+            holes: Vec::new(),
+        };
+        let (outer, inner) = drawn_in(&comb, 0.2);
+        let rows = paths_turned(&outer, &inner, 1e6, 0.5e6, 0.0, 0, true);
+        // Four rows of spine and six on each tooth.
+        assert_eq!(rows.len(), 4 + 16 * 6);
+        assert!(swept(&rows));
+        // One tooth is finished before the next is begun.
+        let teeth: Vec<Coord> = rows[4..].iter().map(|row| row[0].x / scaled(4.0)).collect();
+        assert_eq!(teeth.chunk_by(|a, b| a == b).count(), 16);
     }
 
     #[test]
@@ -890,7 +1289,7 @@ mod tests {
         let outer = [whole(rect(0.0, 0.0, 10.0, 10.0))];
         let inner = [whole(rect(0.5, 0.5, 9.5, 9.5))];
         // Rows at y = 1 .. 9.
-        let joined = paths_turned(&outer, &inner, 1e6, 1e6, 0.0, scaled(3.0));
+        let joined = paths_turned(&outer, &inner, 1e6, 1e6, 0.0, scaled(3.0), false);
         assert_eq!(joined.len(), 1);
         let path = &joined[0];
         // Both loose ends reach the edge; every turn is half a millimetre in.
@@ -905,19 +1304,19 @@ mod tests {
         assert_eq!(length(&joined), 2.0 * 9.5 + 7.0 * 9.0 + 8.0);
 
         // Unjoined, each of the nine rows runs the full 10 mm.
-        let separate = paths_turned(&outer, &inner, 1e6, 1e6, 0.0, 0);
+        let separate = paths_turned(&outer, &inner, 1e6, 1e6, 0.0, 0, false);
         assert_eq!(separate.len(), 9);
         assert_eq!(length(&separate), 90.0);
 
         // A row that does not reach the inner outline is not laid.
         let low = [whole(rect(0.5, 2.0, 9.5, 8.0))];
-        let rows = paths_turned(&outer, &low, 1e6, 0.5e6, 0.0, 0);
+        let rows = paths_turned(&outer, &low, 1e6, 0.5e6, 0.0, 0, false);
         assert_eq!(rows.len(), 6);
         assert!(
             rows.iter()
                 .all(|row| row[0].y >= scaled(2.0) && row[0].y < scaled(8.0))
         );
-        assert!(paths_turned(&outer, &[], 1e6, 0.0, 0.0, 0).is_empty());
+        assert!(paths_turned(&outer, &[], 1e6, 0.0, 0.0, 0, false).is_empty());
     }
 
     #[test]

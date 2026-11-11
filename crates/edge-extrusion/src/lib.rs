@@ -218,6 +218,11 @@ pub struct ExtrusionPath {
     pub points: Vec<Point2>,
     pub role: Role,
     pub flow: Flow,
+    /// Laid straight after the path before it in its list, and from its
+    /// first point to its last: where the order lines go down in is part
+    /// of the pattern, as in a surface swept from one side to the other.
+    /// A path without this may be taken in any order and from either end.
+    pub in_turn: bool,
 }
 
 impl ExtrusionPath {
@@ -327,6 +332,7 @@ mod tests {
             points,
             role: Role::SolidInfill,
             flow,
+            in_turn: false,
         };
         assert_eq!(path.length_mm(), 11.0);
         assert!((path.volume_mm3() - 11.0 * flow.mm3_per_mm()).abs() < 1e-12);

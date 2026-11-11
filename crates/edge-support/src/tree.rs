@@ -1033,6 +1033,7 @@ fn loops(
                     points,
                     role: Role::Support,
                     flow: *flow,
+                    in_turn: false,
                 });
                 continue;
             }
@@ -1105,6 +1106,7 @@ fn loops(
                 points,
                 role: Role::Support,
                 flow: *flow,
+                in_turn: false,
             });
         }
     }

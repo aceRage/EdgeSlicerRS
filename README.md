@@ -126,7 +126,13 @@ Known gaps: painted triangles, per-object setting overrides, typed settings
   `bottom_surface_pattern` and `internal_solid_infill_pattern` say whether
   lines are joined (`monotonic`, `rectilinear`) or left separate
   (`monotonicline`); any other pattern is laid as joined lines, with a
-  note. Top and bottom surfaces are fitted to their area: the lines are
+  note. Both monotonic patterns are swept from one side of the area to
+  the other, so that no line goes down between two already laid, which
+  shows on a surface: the area falls into regions that can each be
+  zigzagged in one go, and a region waits for everything beside its
+  first row on the side already swept (FillRectilinear.cpp
+  `generate_montonous_regions`). The writer lays such lines in the
+  order given and never turns one round. Top and bottom surfaces are fitted to their area: the lines are
   spread, by up to a fifth, so that a whole number of them fills the
   width, and each is made as wide as its share. They overlap their walls
   by `top_bottom_infill_wall_overlap` on the first layer and the last.
@@ -380,11 +386,15 @@ Infill is not all a port yet: solid lines are joined along
 the walls in sweep order, each to its neighbour on the next row
 whatever the distance, as the reference's rectilinear fill joins them
 (it means to stop at three spacings, but works the limit out from a
-spacing that is still zero), but pieces and unjoined lines are then
-taken nearest end first, not in monotonic order: on a top surface laid
-in separate lines (`monotonicline`) the nozzle doubles back where the
-reference sweeps across once (76 retracted moves against 20 on plate 2
-of `mcbrim_test.3mf`). A bridge reaches 0.4 mm onto each support where the reference's
+spacing that is still zero). Monotonic lines follow the reference's
+rule but not always its order: of the orders the rule allows the
+reference looks for a short one with an ant colony run on random
+numbers, and here the shortest is worked out exactly for up to twelve
+regions and the best of the nearest-next orders is kept for more.
+Where the reference tells two rows are beside each other by following
+the outline between them, here they are when they overlap. The pieces
+of a layer's fill are then taken nearest start first, where the
+reference chains them by their closest ends. A bridge reaches 0.4 mm onto each support where the reference's
 reaches 0.8 mm, internal bridges are not run out to the
 sparse lines that carry them nor turned as the reference turns them
 (they come within 6% of the reference's on plain parts and 9% over on
@@ -529,9 +539,16 @@ against 907.0 mm on the cube. Over a whole part solid fill is within
 0.2% on the cube, the deck, the shelf, the mushroom, the two-part
 project and the cylinder (it was 1 to 5% under, for want of the band
 under the first bridged layer) and 2% over on the tower. Small gaps
-left inside solid fill are not filled. Solid
-lines here are laid as one zigzag where the reference orders `monotonic`
-lines so that each is laid beside the last.
+left inside solid fill are not filled.
+
+Monotonic surfaces are now swept in order. On the three plates of
+`mcbrim_test.3mf`, counting the lines of a surface laid between two
+already down on the layers looked at (the first, the eleventh and the
+last): 13 on plate 2 and 10 on the eleventh layer of plate 3 before,
+none now, as in the reference's files; 19 on the eleventh layer of
+plate 1 before, none now. A blade's top surface comes out in the same
+pieces as the reference's, with the same number of lines (190 against
+189) and of long moves between them (6 each).
 
 Sparse fill comes to the reference's length within 1.5% on the cube, the
 deck, the tower and the two-colour test with both printers' presets
@@ -571,12 +588,12 @@ fill between walls, overhang walls with their speeds and fan, and
 internal bridges, one wall under top surfaces below the last layer,
 vertical shells, the solid band under a bridge's edge, and the prime
 tower's ribs, stepped brim, ramming and the gap in its wall, the
-order tools are taken in, and the order within a layer with where a
-move may go unretracted.
+order tools are taken in, the order within a layer with where a
+move may go unretracted, and the monotonic order of surface lines.
 
 Retractions on the lettered plates were 41% over the reference's and
-are now within 3% (plate 2: 870 against 848, from 1199; plate 3: 872
-against 846), with 14% and 11% less travel than the reference. Four
+are now within 3% (plate 2: 868 against 848, from 1199; plate 3: 869
+against 846), with 13% and 10% less travel than the reference. Four
 things did it: an island is finished, walls and fill, before the next
 is begun, where every island's walls used to be laid first and each
 kind of fill then took another trip round the layer; moves between
@@ -586,7 +603,7 @@ inside its walls; solid lines round a curved outline stay one zigzag
 in the reference); and each part's brim is laid whole. On the plain
 parts the count moved by four at most and is within 1% of the
 reference's on the cube, the tower and the bridge with either
-printer's presets and on the shelf with the U1's. What is left on plate 2 is the top surface's order, above,
+printer's presets and on the shelf with the U1's. What is left on plate 2 is
 supports (a support's lines are not sheltered, and there is twice the
 support the reference lays under these parts), and seams: where an
 outer wall's seam sits on a sharp tip the inner wall ends 1.7 mm from

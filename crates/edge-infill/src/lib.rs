@@ -8,7 +8,7 @@
 //! `Fill::connect_infill` do it.
 //! Not done: the lengths the reference goes to in running internal bridges out to
 //! the lines that carry them, vertical shell thickness, shell thickness in mm,
-//! monotonic ordering, gap fill inside solid fill, and every sparse
+//! gap fill inside solid fill, and every sparse
 //! pattern but lines and grid.
 
 mod fill;
