@@ -605,6 +605,7 @@ impl WallSettings {
             solid_infill_spacing: solid_infill.scaled_spacing(),
             infill_overlap_percent: self.infill_wall_overlap_percent,
             resolution: scaled(resolution),
+            infill_resolution: scaled(self.resolution.max(1e-4)),
             gap_fill: (self.gap_infill_speed > 0.0).then_some(crate::GapFill {
                 flow: solid_infill,
                 shortest: scaled(self.filter_out_gap_fill),
@@ -674,6 +675,7 @@ mod tests {
         assert_eq!(params.wall_loops, 2);
         assert_eq!(params.outer.width, 0.45);
         assert_eq!(params.resolution, 10_000);
+        assert_eq!(params.infill_resolution, 10_000);
     }
 
     #[test]
@@ -692,7 +694,10 @@ mod tests {
         assert_eq!((params.wall_loops, params.outer.width), (3, 0.42));
         assert!((params.inner.width - 0.66).abs() < 1e-12);
         assert_eq!(params.infill_overlap_percent, 25.0);
+        // Arc fitting's finer outline is for the walls; what is left for
+        // infill is outlined at the resolution itself.
         assert_eq!(params.resolution, 2_400);
+        assert_eq!(params.infill_resolution, 12_000);
 
         let first = settings.params(0.25, true).unwrap();
         assert_eq!(
