@@ -224,7 +224,7 @@ pub fn classic_between(
     around: Option<Around<'_>>,
 ) -> Result<Perimeters, Error> {
     if let Some(tuning) = &params.arachne {
-        return arachne(regions, params, tuning);
+        return arachne(regions, params, tuning, around);
     }
     let ext_width = params.outer.scaled_width();
     let ext_spacing = params.outer.scaled_spacing();
@@ -400,13 +400,18 @@ const LOOP_WIDTH_TOLERANCE: Coord = 50_000;
 /// itself; here the loops go to the writer as the classic ones do, to
 /// be ordered and given their seams there, a loop whose width changes
 /// carrying its width at every point, and the walls that are not loops
-/// (lines down the middle of thin parts) are laid with the fill. One
-/// wall over top surfaces, extra walls over overhangs and fuzzy skin are
-/// not here.
+/// (lines down the middle of thin parts) are laid with the fill. Where
+/// [`Params::one_wall_top`] is set and the layers next to this one are
+/// known, a top surface keeps only its outer wall, as the reference has
+/// it with `top_surface_expansion` at zero; the inner walls are then
+/// numbered by the pass that made them, where the reference numbers
+/// them again by which wall each touches. Extra walls over overhangs
+/// and fuzzy skin are not here.
 pub fn arachne(
     regions: &[ExPolygon],
     params: &Params,
     tuning: &ArachneParams,
+    around: Option<Around<'_>>,
 ) -> Result<Perimeters, Error> {
     let ext_width = params.outer.scaled_width();
     let ext_spacing = params.outer.scaled_spacing();
@@ -418,24 +423,13 @@ pub fn arachne(
     let flow_of = |flow: &Flow, width: Coord| {
         flow.with_width(unscaled(width) + height * (1.0 - 0.25 * std::f64::consts::PI))
     };
-
-    let mut result = Perimeters::default();
-    for island in regions {
-        let first_loop = result.loops.len();
-        let simplified = edge_clip::simplify(std::slice::from_ref(island), params.resolution)?;
-        // In by what the outer wall is wider than its spacing, so that
-        // its outer edge lies on the outline.
-        let last = edge_clip::offset(
-            &simplified,
-            -((ext_width as f64 / 2.0 - ext_spacing as f64 / 2.0) as Coord),
-            Join::MITER,
-        )?;
-        let walls = edge_arachne::generate(
-            &last,
+    let walled = |outline: &[ExPolygon], bead_width_0: Coord, inset_count: usize| {
+        edge_arachne::generate(
+            outline,
             &edge_arachne::Params {
-                bead_width_0: ext_spacing,
+                bead_width_0,
                 bead_width_x: spacing,
-                inset_count: params.wall_loops,
+                inset_count,
                 wall_0_inset: 0,
                 layer_height: height,
                 min_bead_width: tuning.min_bead_width,
@@ -449,10 +443,138 @@ pub fn arachne(
                 wall_maximum_resolution: tuning.wall_maximum_resolution,
                 wall_maximum_deviation: tuning.wall_maximum_deviation,
             },
+        )
+    };
+    // One wall over top surfaces needs a wall to give up and the layers
+    // next to this one to tell a top surface by.
+    let one_wall_top = params
+        .one_wall_top
+        .as_ref()
+        .zip(around.as_ref())
+        .filter(|_| params.wall_loops > 1);
+
+    let mut result = Perimeters::default();
+    for island in regions {
+        let first_loop = result.loops.len();
+        let simplified = edge_clip::simplify(std::slice::from_ref(island), params.resolution)?;
+        // In by what the outer wall is wider than its spacing, so that
+        // its outer edge lies on the outline.
+        let last = edge_clip::offset(
+            &simplified,
+            -((ext_width as f64 / 2.0 - ext_spacing as f64 / 2.0) as Coord),
+            Join::MITER,
         )?;
+        let first_pass = walled(
+            &last,
+            ext_spacing,
+            if one_wall_top.is_some() {
+                1
+            } else {
+                params.wall_loops
+            },
+        )?;
+        let (mut perimeters, mut infill_contour) = (first_pass.toolpaths, first_pass.inner_contour);
+        let mut top_fills: Vec<ExPolygon> = Vec::new();
+
+        if let Some((top, around)) = one_wall_top {
+            let inner_walls = params.wall_loops - 1;
+            let width = params.inner.scaled_width();
+            // Too thin an exposed strip is not worth a top surface.
+            let min_width = (ext_spacing / 4 + 10).max(top.min_width / 4);
+            // What of `contour` has nothing above it and is not over
+            // air, opened up to drop what is too thin and grown to hide
+            // the wall beside it; and whether anything was uncovered at
+            // all (`get_top_expolygons`).
+            let tops_of = |contour: &[ExPolygon]| -> Result<(Vec<ExPolygon>, bool), Error> {
+                let mut exposed = edge_clip::difference(contour, around.upper)?;
+                let uncovered = !exposed.is_empty();
+                if !uncovered {
+                    return Ok((exposed, false));
+                }
+                if let Some(lower) = around.lower {
+                    let bridges = edge_clip::offset(
+                        &edge_clip::difference(&exposed, lower)?,
+                        ext_spacing.max(width),
+                        Join::MITER,
+                    )?;
+                    exposed = edge_clip::difference(&exposed, &bridges)?;
+                }
+                let exposed = edge_clip::offset2(
+                    &exposed,
+                    -min_width,
+                    min_width + (width as f64 * 0.85) as Coord,
+                    Join::MITER,
+                )?;
+                Ok((edge_clip::intersection(&exposed, contour)?, true))
+            };
+            // The walls there would be with the single wall off, made
+            // when first wanted.
+            let mut full: Option<edge_arachne::Walls> = None;
+            let mut full_pass = || -> Result<edge_arachne::Walls, Error> {
+                if full.is_none() {
+                    full = Some(walled(&last, ext_spacing, inner_walls + 1)?);
+                }
+                Ok(full.clone().unwrap_or_default())
+            };
+
+            // A single wall may be two lines across a part narrower
+            // than three, both widened to fill it. Over a top surface
+            // that is meant; elsewhere it leaves no room for the inner
+            // walls. Where the single pass's walls run away from the
+            // full pass's outside the top surface, the full pass's outer
+            // walls are taken instead.
+            let tolerance = ext_spacing / 10;
+            let widest = perimeters
+                .iter()
+                .flatten()
+                .flat_map(|line| &line.junctions)
+                .map(|junction| junction.w)
+                .max()
+                .unwrap_or(0);
+            if widest > ext_spacing + 2 * tolerance {
+                let nominal = edge_clip::offset(&last, -ext_spacing, Join::MITER)?;
+                let (zone, uncovered) = tops_of(&nominal)?;
+                if uncovered {
+                    let top_zone = edge_clip::offset(&zone, ext_spacing, Join::MITER)?;
+                    let full = full_pass()?;
+                    if let Some(outer) = full.toolpaths.first().filter(|outer| !outer.is_empty())
+                        && off_reference(&perimeters, outer, &top_zone, tolerance)? > width as f64
+                    {
+                        let footprint =
+                            edge_clip::offset(&footprint(outer)?, SAFETY_OFFSET, Join::MITER)?;
+                        infill_contour = edge_clip::difference(&nominal, &footprint)?;
+                        perimeters = vec![outer.clone()];
+                    }
+                }
+            }
+
+            let (tops, uncovered) = tops_of(&infill_contour)?;
+            if uncovered {
+                // The inner walls go round what is not a top surface.
+                let inner_region = edge_clip::difference(&infill_contour, &tops)?;
+                let inner = walled(&inner_region, spacing, inner_walls)?;
+                let mut inner_paths = inner.toolpaths;
+                if !perimeters.is_empty() {
+                    for line in inner_paths.iter_mut().flatten() {
+                        line.inset_idx += 1;
+                    }
+                }
+                perimeters.extend(inner_paths);
+                let mut both = tops.clone();
+                both.extend(inner.inner_contour);
+                infill_contour = edge_clip::union_ex(&both)?;
+                top_fills = tops;
+            } else {
+                // No top surface here: the walls as they are without
+                // the single wall.
+                let full = full_pass()?;
+                perimeters = full.toolpaths;
+                infill_contour = full.inner_contour;
+            }
+        }
 
         let mut lines = Vec::new();
-        for depth in &walls.toolpaths {
+        for depth in &perimeters {
             let mut holes = Vec::new();
             for wall in depth {
                 if wall.junctions.len() < 2 {
@@ -533,8 +655,7 @@ pub fn arachne(
 
         // Infill reaches from the inside of the innermost wall back
         // into it by the overlap set.
-        let mut infill_contour = walls.inner_contour;
-        let wall_count = walls.toolpaths.len();
+        let wall_count = perimeters.len();
         let inside_spacing = if wall_count == 1 {
             ext_spacing2
         } else {
@@ -543,22 +664,76 @@ pub fn arachne(
         if edge_clip::offset(&infill_contour, -inside_spacing / 2, Join::MITER)?.is_empty() {
             infill_contour.clear();
         }
-        let inset = match wall_count {
+        let reach = match wall_count {
             0 => 0,
             1 => ext_spacing,
             _ => spacing,
         };
-        let inset = scaled(unscaled(inset) * params.infill_overlap_percent / 100.0);
+        let inset = scaled(unscaled(reach) * params.infill_overlap_percent / 100.0);
         let min_infill_spacing =
             (params.solid_infill_spacing as f64 * (1.0 - INSET_OVERLAP_TOLERANCE)) as Coord;
-        result.infill.extend(edge_clip::offset2(
+        let mut infill = edge_clip::offset2(
             &edge_clip::simplify(&infill_contour, params.resolution)?,
             -min_infill_spacing / 2,
             inset + min_infill_spacing / 2,
             Join::MITER,
-        )?);
+        )?;
+        // The top fill overlaps the wall beside it by the amount set for
+        // top surfaces.
+        if let (Some((top, _)), false) = (one_wall_top, top_fills.is_empty()) {
+            let top_inset = scaled(unscaled(reach) * top.overlap_percent / 100.0);
+            infill.extend(edge_clip::offset(&top_fills, top_inset, Join::MITER)?);
+            infill = edge_clip::union_ex(&infill)?;
+        }
+        result.infill.extend(infill);
     }
     Ok(result)
+}
+
+/// The points of each wall with a length to it.
+fn centre_lines(walls: &[edge_arachne::ExtrusionLine]) -> Vec<Vec<edge_geom::Point2>> {
+    walls
+        .iter()
+        .filter(|line| line.junctions.len() >= 2)
+        .map(|line| line.junctions.iter().map(|junction| junction.p).collect())
+        .collect()
+}
+
+/// How much of `walls`, in scaled units of length, runs further than
+/// `tolerance` from the walls of `reference`, outside `excluded`
+/// (`length_off_reference`).
+fn off_reference(
+    walls: &[edge_arachne::VariableWidthLines],
+    reference: &[edge_arachne::ExtrusionLine],
+    excluded: &[ExPolygon],
+    tolerance: Coord,
+) -> Result<f64, Error> {
+    let own: Vec<Vec<edge_geom::Point2>> =
+        walls.iter().flat_map(|depth| centre_lines(depth)).collect();
+    let theirs = centre_lines(reference);
+    let near = edge_clip::thicken(theirs.iter().map(Vec::as_slice), tolerance)?;
+    let off = edge_clip::lines_outside(&edge_clip::lines_outside(&own, &near)?, excluded)?;
+    Ok(off
+        .iter()
+        .flat_map(|line| line.windows(2))
+        .map(|pair| ((pair[1].x - pair[0].x) as f64).hypot((pair[1].y - pair[0].y) as f64))
+        .sum())
+}
+
+/// The ground `walls` cover, each piece at the wider of its two ends
+/// (`walls_footprint`).
+fn footprint(walls: &[edge_arachne::ExtrusionLine]) -> Result<Vec<ExPolygon>, Error> {
+    let mut covered = Vec::new();
+    for pair in walls.iter().flat_map(|line| line.junctions.windows(2)) {
+        let width = pair[0].w.max(pair[1].w);
+        if width > 0 {
+            covered.extend(edge_clip::thicken(
+                [[pair[0].p, pair[1].p].as_slice()],
+                width / 2,
+            )?);
+        }
+    }
+    Ok(edge_clip::union_ex(&covered)?)
 }
 
 /// Lines down the middle of whatever part of `gaps` is too narrow for a
@@ -1045,6 +1220,7 @@ mod tests {
             &[block(0.0, 0.0, 30.0, 0.6)],
             &varying(2),
             &varying(2).arachne.unwrap(),
+            None,
         )
         .unwrap();
         assert!(strip.loops.is_empty() && strip.infill.is_empty());
@@ -1062,6 +1238,85 @@ mod tests {
             );
             assert!(line.points.iter().all(|p| (p.y - 300_000).abs() < 2_000));
         }
+    }
+
+    #[test]
+    fn walls_of_changing_width_thin_to_one_over_a_top_surface_too() {
+        // As for the classic walls: a 40 x 20 mm layer with more of the
+        // part on its left half and nothing on its right.
+        let layer = [block(0.0, 0.0, 40.0, 20.0)];
+        let (upper, lower) = ([block(0.0, 0.0, 20.0, 20.0)], [block(0.0, 0.0, 40.0, 20.0)]);
+        let with = Params {
+            one_wall_top: Some(OneWallTop {
+                min_width: scaled(0.9),
+                infill_width: scaled(0.45),
+                bridge_margin: scaled(1.0),
+                wall_loops: 3,
+                overlap_percent: 25.0,
+            }),
+            ..varying(3)
+        };
+        let between = Around {
+            upper: &upper,
+            lower: Some(&lower),
+        };
+        let thinned = classic_between(&layer, &with, Some(between)).unwrap();
+        let plain = classic(&layer, &varying(3)).unwrap();
+        let lengths = |walls: &Perimeters, outer: bool| -> f64 {
+            walls
+                .loops
+                .iter()
+                .filter(|wall| (wall.depth == 0) == outer)
+                .map(ExtrusionLoop::length_mm)
+                .sum()
+        };
+        // One outer wall round the whole layer either way.
+        assert!((lengths(&thinned, true) - lengths(&plain, true)).abs() < 1e-3);
+        // The inner walls go round the covered half only, a little way
+        // on under the top fill: well under what they were all round.
+        assert_eq!(
+            thinned.loops.iter().filter(|wall| wall.depth > 0).count(),
+            2
+        );
+        assert!(lengths(&thinned, false) < 0.75 * lengths(&plain, false));
+        let furthest = thinned
+            .loops
+            .iter()
+            .filter(|wall| wall.depth > 0)
+            .flat_map(|wall| &wall.polygon.points)
+            .map(|point| point.x)
+            .max()
+            .unwrap();
+        assert!(
+            (scaled(19.0)..scaled(23.0)).contains(&furthest),
+            "{furthest}"
+        );
+        // And what they gave up is filled.
+        let area = |walls: &Perimeters| walls.infill.iter().map(ExPolygon::area_mm2).sum::<f64>();
+        assert!(area(&thinned) > area(&plain) + 10.0);
+        // Without the layers either side it cannot be told, and the
+        // walls are all there; the same with one wall asked for.
+        assert_eq!(classic(&layer, &with).unwrap().loops, plain.loops);
+        let single = Params {
+            wall_loops: 1,
+            ..with
+        };
+        assert_eq!(
+            classic_between(&layer, &single, Some(between))
+                .unwrap()
+                .loops
+                .len(),
+            1
+        );
+        // A layer wholly covered keeps every wall.
+        let covered = Around {
+            upper: &layer,
+            lower: Some(&lower),
+        };
+        assert_eq!(
+            classic_between(&layer, &with, Some(covered)).unwrap().loops,
+            plain.loops
+        );
     }
 
     #[test]

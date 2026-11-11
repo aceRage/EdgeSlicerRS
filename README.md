@@ -648,28 +648,35 @@ this engine, walls in metres:
 | tower | 8.90 / 8.90 | 7.63 / 7.63 |
 | mushroom | 4.16 / 4.16 | 3.83 / 3.83 |
 | shelf | 4.22 / 4.22 | 3.83 / 3.91 |
-| `mcbrim_test.3mf` plate 2, lettered | 21.08 / 21.12 | 19.10 / 19.18 |
-| `mcbrim_test.3mf` plate 1, painted | 44.18 / 42.35 | 39.19 / 38.31 |
+| `mcbrim_test.3mf` plate 2, lettered | 21.08 / 21.12 | 18.13 / 18.19 |
+| `mcbrim_test.3mf` plate 1, painted | 44.18 / 42.34 | 37.18 / 36.28 |
 
-(The lettered and painted plates with `only_one_wall_top` off.) On the
-lettered plate a layer's walls are 0.25% from the reference's in length
-on average, and laid over one another the two engines' lines coincide
-through the thin strokes, where the widths change. Not a port of the
-whole of `process_arachne`, and what differs is said here:
+On the lettered plate a layer's walls are within half a percent of the
+reference's in length on average, and laid over one another the two
+engines' lines coincide through the thin strokes, where the widths
+change. A loop is a loop whatever its widths: one whose width changes
+carries its width at each point, is ordered and given its seam by the
+writer as any wall is, and is laid from the seam as pieces end to end,
+each of one width, cut where the width has drifted by 0.05 mm
+(`thick_polyline_to_multi_path`). `only_one_wall_top` is followed as
+the reference follows it with `top_surface_expansion` at zero: the
+outer wall is made alone, the top surface inside it is found from the
+layers above and below, and the inner walls go round what is left; on
+the lettered plate the top surface is then 4.47 m against 4.54 m. The
+painted plate's walls are 2 to 4% short of the reference's with classic
+walls as well (44.38 m against 42.41 m): that is the painted regions
+being split differently, not these walls. Not a port of the whole of
+`process_arachne`, and what differs is said here:
 
-- A loop of one width goes to the writer as a classic loop does, to be
-  ordered and given its seam there. Every other wall (a line down the
-  middle of a thin part, a loop whose width changes along it) is a line
-  of its own, cut where its width changes by more than 0.05 mm, laid
-  with the fill after the loops and begun where it happens to begin. The
-  reference orders all of them together (`getRegionOrder`) and seams a
-  loop whatever its widths.
-- `only_one_wall_top` is not followed with these walls below the last
-  layer: a top surface there keeps all its walls, and a note says so. On
-  the lettered plate that is 5% more inner wall and 22% less top surface
-  than the reference.
-- On the painted plate walls are 2 to 4% short of the reference's; not
-  yet looked into.
+- The walls that are not loops (lines down the middle of thin parts)
+  are laid with the fill, after the loops, and begun where they happen
+  to begin. The reference orders them with the loops (`getRegionOrder`).
+- With one wall over top surfaces the inner walls keep the numbers of
+  the pass that made them; the reference numbers them again by which
+  wall each touches (`renumber_inner_walls_by_depth`), which decides
+  their order with `inner-outer-inner`. With `top_surface_expansion`
+  set, the reference cuts the inner walls where they run over the top
+  surface instead; that is not ported, for these walls or the classic.
 - Extra walls over overhangs, fuzzy skin, `precise_outer_wall` and the
   check of a diagram that needs exact arithmetic
   (`is_voronoi_diagram_planar_angle`) are not here.

@@ -171,6 +171,39 @@ pub fn clip_lines(
         .collect())
 }
 
+/// The parts of open lines that lie outside `regions`, as open lines (the
+/// reference's `diff_pl`).
+pub fn lines_outside(
+    lines: &[Vec<Point2>],
+    regions: &[ExPolygon],
+) -> Result<Vec<Vec<Point2>>, ClipError> {
+    let kept = || {
+        lines
+            .iter()
+            .filter(|line| line.len() >= 2)
+            .cloned()
+            .collect::<Vec<_>>()
+    };
+    if regions.is_empty() {
+        return Ok(kept());
+    }
+    let open: Paths64 = kept()
+        .iter()
+        .map(|line| line.iter().map(|p| Point64::new(p.x, p.y)).collect())
+        .collect();
+    if open.is_empty() {
+        return Ok(Vec::new());
+    }
+    let mut clipper = Clipper64::new();
+    clipper.add_open_subject(&open);
+    clipper.add_clip(&paths(rings(regions)));
+    let (_closed, open) = clipper.execute_tree(ClipType::Difference, FillRule::NonZero)?;
+    Ok(open
+        .into_iter()
+        .map(|line| line.iter().map(|p| Point2 { x: p.x, y: p.y }).collect())
+        .collect())
+}
+
 /// The ground open lines cover when each is drawn `half_width` to either
 /// side, with corners squared and ends cut off flush: the reference's
 /// `offset` of a polyline, which is how it measures what an extrusion
