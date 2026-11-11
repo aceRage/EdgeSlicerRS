@@ -29,13 +29,13 @@ replaces it until output matches on the printers we care about.
 | `crates/edge-time` | How long a G-code file takes, with acceleration: the file is read as a printer reads it and planned as the reference's estimator plans, or as Klipper does |
 | `crates/edge-tower` | The prime tower a nozzle is primed on after a tool change |
 | `crates/edge-slice` | Mesh to per-layer contours, then to regions with holes; parallel across layers. Elephant foot compensation of the first layers |
-| `crates/edge-engine` | The whole pipeline behind one call, for whatever drives it: open a model, settle its settings, slice with progress and cancel, G-code, a layer's lines for drawing, and a vendor's presets by printer |
+| `crates/edge-engine` | The whole pipeline behind one call, for whatever drives it: open a model and list its plates, settle its settings, slice with progress and cancel, G-code, a layer's lines for drawing, and a vendor's presets by printer |
 | `crates/edge-cli` | The `edge` command line |
 | `tools/make_defaults.py` | Asks the reference for its default of every setting and writes the table `edge-config` carries; run again when the pin moves |
 | `tools/make_fixture.py` | Writes small test 3MFs (parts that need supports or a brim, a plain cube, two blocks in two filaments, a comb with thin teeth on the bed) to compare with the reference on |
 | `tools/make_project.py` | Writes one of those parts as a project whose settings are named presets, with as many filaments as are named: how the test prints for a printer are made |
 | `reference/EdgeSlicer` | Pinned submodule of the C++ slicer: profiles, test models, behaviour to match. Read-only here |
-| `apps/desktop` | The desktop app (Tauri): open a model, slice it, look through its layers, export G-code. A workspace of its own |
+| `apps/desktop` | The desktop app (Tauri): several projects open at once, each prepared, sliced, looked through layer by layer and exported, in the C++ application's tabs. A workspace of its own |
 
 ## Build and run
 
@@ -61,40 +61,61 @@ cargo run -- --serve 4710      # no window: the same page at http://127.0.0.1:47
 cargo test
 ```
 
-A first slice of the app, not the app: it opens an STL or a 3MF project,
-slices it with the project's own settings or with presets picked from the
-vendor profiles (a printer, a process, a filament for each filament the
-model prints in, starting from the ones the printer's own profile
-names), and optionally a bed surface. It shows each layer coloured by
-feature or by filament (wheel to zoom, drag to move, arrow keys or the
-slider for layers) and saves the G-code, which is the file the command
-line writes. What it has to say about a print is kept in three places:
-what is wrong with this print, in red; what was settled without being
-asked, such as the bed surface; and, folded away, the settings the
-profile turns on that this engine does not follow yet. It has
-no 3D view, no arranging or editing of the model, no settings editor and
-no installer. The vendor profiles are found in `reference/EdgeSlicer`
-beside the source, or wherever `EDGE_PROFILES` points; the folder can be
-changed in the window.
+A first pass at the C++ application's main window, not yet the
+application: `apps/desktop/UI_PARITY.md` lists, for each of its tabs and
+for the project strip, what the C++ offers, what is here, and what is
+not yet.
+
+- **The project strip**, at the far left: several projects open at once
+  (eight at most), each with its own file, plate, presets, slices and
+  Preview. New, open, switch (a click, Ctrl+PgDn / Ctrl+PgUp), drag to
+  reorder, close; a dot on a project whose choices would be lost, a tick
+  on one that is sliced. A slice goes on while another project is looked
+  at or sliced.
+- **Prepare**: the printer, a filament preset for each filament the file
+  prints in and the process, picked from the vendor profiles, or the
+  project's own settings; the bed type the printer takes; layer height,
+  initial layer height, wall loops and the gap closing radius set over
+  the preset; the plate from above, with the outline of each object; the
+  project's plates to pick from. An STL or a 3MF opens as a project.
+- **Preview**: going there slices the plate. One layer at a time from
+  above, by line type, filament, layer height or line width, with the
+  legend to hide and show (wheel to zoom, drag to move, the slider or
+  the arrow keys for layers); what the print comes to; and, kept apart,
+  what is wrong with this print, what was settled without being asked,
+  and the settings the profile turns on that this engine does not follow
+  yet. "Slice plate" or "Slice all", and "Export G-code file", which
+  writes the file the command line writes.
+- **Device**: the printer of the project shown, as its preset describes
+  it, with its address when the preset has one. Nothing is sent to a
+  printer or read from one yet; the inventory says what that takes.
+
+It has no 3D view, no arranging or editing of the model, no settings
+editor beyond those four, no saving of projects and no installer. The
+vendor profiles are found in `reference/EdgeSlicer` beside the source, or
+wherever `EDGE_PROFILES` points; the folder can be changed in the window.
 
 `apps/desktop` is a Cargo workspace of its own, so `cargo test --workspace`
 at the top builds no web view. The page (`ui/`) is plain HTML, CSS and
 JavaScript with no build step, and asks the engine for everything through
-one function (`src/api.rs`), which does not know about Tauri. `--serve`
+one function (`src/api.rs`), which does not know about Tauri and holds
+every open project. `--serve`
 puts the same page and the same function behind a local web server, for
 working on the page in a browser and for checking it where a window
 cannot be seen; it listens on the loopback address only and takes calls
 only from the page it served. `EDGE_DESKTOP_TRACE=1` notes each call the
 page makes on standard error.
 
-Checked so far, on the Mac mini: in a browser through `--serve`, a
-four-colour plate and a bare STL with presets were sliced, looked through
-and exported, and the exported file is byte for byte the command line's
-but for the time in its first line. The owner then ran the window by hand on the same day: its file dialogs,
-slicing and the layer view worked. A model printed in two filaments
-and sliced there with one filament preset had no G-code, which is since
-put right (the preset is used for every filament). Not built on Windows
-or Linux.
+Checked so far, on the Mac mini: in a browser through `--serve`, in light
+and dark, three projects were open at once (a three-plate project of
+seven filaments, a bare STL with presets, a small project): opened,
+switched, reordered, closed and refused past the eighth; plates sliced
+one at a time and all at once, cancelled, looked through in each view
+and exported. The tabbed window itself (Tauri) has not been run since it
+got its tabs and strip; before that the owner ran it by hand, and its
+file dialogs, slicing and layer view worked, with G-code byte for byte
+the command line's but for the time in its first line. Not built on
+Windows or Linux.
 
 ## Status
 

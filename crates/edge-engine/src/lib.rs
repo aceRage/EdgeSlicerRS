@@ -19,7 +19,7 @@ use std::{error::Error, fmt};
 
 pub use clock::timestamp;
 pub use job::{BedType, Chosen, Job, Overrides, Sourced, prepare};
-pub use load::{Loaded, Opened, open};
+pub use load::{Loaded, Opened, PlateInfo, open};
 pub use pipeline::{Gcode, Sliced, Timings, slice};
 pub use presets::{Library, Shelf};
 pub use preview::Stroke;

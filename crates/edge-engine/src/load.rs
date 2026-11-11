@@ -43,6 +43,42 @@ pub struct Loaded {
     pub bounds: ([f32; 3], [f32; 3]),
 }
 
+/// One plate of a project, as it is listed before anything is placed.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct PlateInfo {
+    /// The plate's number, from 1.
+    pub id: u32,
+    /// The name the project gives it; empty when it has none.
+    pub name: String,
+    /// The filaments what is on it prints in, by number from 1, in order;
+    /// empty when nothing printable is on it.
+    pub filaments: Vec<usize>,
+    /// The name of each printable object on it, in the plate's own order;
+    /// one for each copy, empty where the object has no name.
+    pub objects: Vec<String>,
+}
+
+/// The filaments what is on a plate (or in the whole project for `None`)
+/// prints in, by number from 1, in order.
+fn filaments_on(project: &Project, plate: Option<usize>) -> Vec<usize> {
+    let mut used: Vec<usize> = project
+        .bodies(plate)
+        .iter()
+        .map(|body| body.filament)
+        .chain(
+            project
+                .painted(plate)
+                .iter()
+                .flat_map(|object| &object.facets)
+                .map(|facet| usize::from(facet.filament))
+                .filter(|filament| *filament > 0),
+        )
+        .collect();
+    used.sort_unstable();
+    used.dedup();
+    used
+}
+
 /// Reads an STL (binary or ASCII) or a 3MF project. `plate` is the number
 /// of the plate to take from a project; left out, it is plate 1 when the
 /// project has plates.
@@ -117,25 +153,36 @@ impl Opened {
     /// The filaments what is to be sliced prints in, by number from 1, in
     /// order.
     pub fn filaments(&self) -> Vec<usize> {
-        let mut used: Vec<usize> = match &self.held {
+        match &self.held {
             Held::Model(_) => vec![1],
-            Held::Project { project, plate } => project
-                .bodies(*plate)
-                .iter()
-                .map(|body| body.filament)
-                .chain(
-                    project
-                        .painted(*plate)
-                        .iter()
-                        .flat_map(|object| &object.facets)
-                        .map(|facet| usize::from(facet.filament))
-                        .filter(|filament| *filament > 0),
-                )
-                .collect(),
+            Held::Project { project, plate } => filaments_on(project, *plate),
+        }
+    }
+
+    /// Every plate of a project, in order, with what is on it: for
+    /// listing the plates before one is taken. Empty for a bare model and
+    /// for a project that defines no plates.
+    pub fn plate_list(&self) -> Vec<PlateInfo> {
+        let Held::Project { project, .. } = &self.held else {
+            return Vec::new();
         };
-        used.sort_unstable();
-        used.dedup();
-        used
+        project
+            .plates
+            .iter()
+            .enumerate()
+            .map(|(index, plate)| PlateInfo {
+                id: plate.id,
+                name: plate.name.clone(),
+                filaments: filaments_on(project, Some(index)),
+                objects: plate
+                    .instances
+                    .iter()
+                    .map(|at| (&project.objects[at.object], at.instance))
+                    .filter(|(object, instance)| object.instances[*instance].printable)
+                    .map(|(object, _)| object.name.clone().unwrap_or_default())
+                    .collect(),
+            })
+            .collect()
     }
 
     /// The settings a project was saved with.

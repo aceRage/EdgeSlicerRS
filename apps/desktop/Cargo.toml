@@ -4,7 +4,7 @@ version = "0.0.0"
 edition = "2024"
 license = "AGPL-3.0-only"
 publish = false
-description = "EdgeSlicerRS desktop app: open a model, slice it, look through its layers, export G-code"
+description = "EdgeSlicerRS desktop app: several projects open at once, each prepared, sliced, looked through and exported"
 
 # A workspace of its own: the engine's workspace builds and tests without
 # Tauri or a web view.
@@ -14,6 +14,7 @@ description = "EdgeSlicerRS desktop app: open a model, slice it, look through it
 tauri-build = { version = "2", features = [] }
 
 [dependencies]
+edge-config = { path = "../../crates/edge-config" }
 edge-engine = { path = "../../crates/edge-engine" }
 edge-extrusion = { path = "../../crates/edge-extrusion" }
 edge-gcode = { path = "../../crates/edge-gcode" }

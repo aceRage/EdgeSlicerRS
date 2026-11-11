@@ -843,6 +843,7 @@ dependencies = [
 name = "edge-desktop"
 version = "0.0.0"
 dependencies = [
+ "edge-config",
  "edge-engine",
  "edge-extrusion",
  "edge-gcode",
