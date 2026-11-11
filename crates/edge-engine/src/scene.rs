@@ -100,7 +100,7 @@ fn widen(bounds: &mut Option<([f32; 3], [f32; 3])>, point: [f32; 3]) {
     }
 }
 
-fn object_of(object: &edge_3mf::Object) -> SceneObject {
+pub(crate) fn object_of(object: &edge_3mf::Object) -> SceneObject {
     let mut scene = SceneObject {
         name: object.name.clone().unwrap_or_default(),
         ..SceneObject::default()

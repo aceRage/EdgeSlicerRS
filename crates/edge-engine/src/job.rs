@@ -1,4 +1,4 @@
-use edge_config::{Settings, Value};
+use edge_config::{Reads, Settings, Value};
 
 use crate::{Failure, Loaded};
 
@@ -26,6 +26,10 @@ pub struct Overrides {
     pub wall_loops: Option<usize>,
     /// Which build plate is on the printer, e.g. "Textured PEI Plate".
     pub bed_type: Option<String>,
+    /// Any other setting, by its name and in the text a profile gives it
+    /// in: these replace what the presets and the project say. A height
+    /// or a radius given above comes before one given here.
+    pub settings: Settings,
 }
 
 /// A slicing setting's value and where it came from.
@@ -47,6 +51,8 @@ pub struct Job {
     pub loaded: Loaded,
     /// Whether the model came with settings of its own.
     pub is_project: bool,
+    /// Whether it stands where it was put by hand ([`Loaded::placed`]).
+    pub placed: bool,
     /// The project's settings under the presets', completed with the
     /// reference's defaults when there is a printer profile.
     pub settings: Settings,
@@ -100,7 +106,11 @@ fn slice_settings(
         if let Some(value) = flag {
             return Ok(Some((value, "command line")));
         }
-        for (settings, source) in [(preset, "process preset"), (project, "project settings")] {
+        for (settings, source) in [
+            (Some(&overrides.settings), "set by hand"),
+            (preset, "process preset"),
+            (project, "project settings"),
+        ] {
             if let Some(value) = settings
                 .map(|settings| settings.float(key))
                 .transpose()?
@@ -131,6 +141,7 @@ fn slice_settings(
 pub fn prepare(mut loaded: Loaded, chosen: &Chosen, overrides: &Overrides) -> Result<Job, Failure> {
     let project_settings = loaded.settings.take();
     let is_project = project_settings.is_some();
+    let placed = loaded.placed;
     let [layer_height, first_layer_height, closing_radius] = slice_settings(
         overrides,
         chosen.process.as_ref().map(|(_, settings)| settings),
@@ -177,6 +188,8 @@ pub fn prepare(mut loaded: Loaded, chosen: &Chosen, overrides: &Overrides) -> Re
     {
         settings.overlay(preset);
     }
+    // What was set by hand comes over all of them.
+    settings.overlay(&overrides.settings);
     // The presets are named in the file, as the reference names them, for
     // whoever reads it back.
     if let Some((name, _)) = &chosen.process {
@@ -240,6 +253,7 @@ pub fn prepare(mut loaded: Loaded, chosen: &Chosen, overrides: &Overrides) -> Re
     Ok(Job {
         loaded,
         is_project,
+        placed,
         settings,
         layer_height,
         first_layer_height,
@@ -248,4 +262,39 @@ pub fn prepare(mut loaded: Loaded, chosen: &Chosen, overrides: &Overrides) -> Re
         bed_type,
         remarks,
     })
+}
+
+/// [`prepare`], with every setting asked for by name from here to the
+/// end of the slice noted in `reads`: by `prepare` itself, which looks
+/// in the presets, the project and what is set over them for the layer
+/// heights, and by every stage that is given the job's settings after.
+/// What `reads` holds once the G-code is written is what the print
+/// depended on; a setting that is not there changed nothing in it.
+pub fn prepare_noted(
+    mut loaded: Loaded,
+    chosen: &Chosen,
+    overrides: &Overrides,
+    reads: &Reads,
+) -> Result<Job, Failure> {
+    let noted = |settings: &Settings| {
+        let mut settings = settings.clone();
+        settings.noted_by(reads);
+        settings
+    };
+    let named = |preset: &(String, Settings)| (preset.0.clone(), noted(&preset.1));
+    let chosen = Chosen {
+        machine: chosen.machine.as_ref().map(named),
+        process: chosen.process.as_ref().map(named),
+        filaments: chosen.filaments.iter().map(named).collect(),
+    };
+    let overrides = Overrides {
+        settings: noted(&overrides.settings),
+        ..overrides.clone()
+    };
+    if let Some(settings) = &mut loaded.settings {
+        settings.noted_by(reads);
+    }
+    let mut job = prepare(loaded, &chosen, &overrides)?;
+    job.settings.noted_by(reads);
+    Ok(job)
 }

@@ -569,7 +569,12 @@ fn ironing_along_a_curve_is_arcs_at_its_own_speed() {
     );
     assert_eq!(first_ironing, 4);
 
-    // Without arcs the same sweep is its 51 straight moves, as long.
+    // Without arcs the same sweep is straight moves, as long: 31 of
+    // them, where it was all 51 before paths were thinned to the
+    // resolution without arcs too (`simplify.rs`). A side of the half
+    // turn is 0.26 mm and a corner 9 µm from the line between its
+    // neighbours, so corners go, though not every other one: the path
+    // is halved from its two ends, which are not the turn's.
     let straight = PrintSettings {
         arc_fitting: false,
         ..settings
@@ -582,7 +587,7 @@ fn ironing_along_a_curve_is_arcs_at_its_own_speed() {
             .iter()
             .filter(|laid| laid.feature == "Ironing")
             .count(),
-        51
+        31
     );
     assert!((summary.filament_mm - plain.filament_mm).abs() < 1e-3 * plain.filament_mm);
 }
@@ -769,12 +774,19 @@ fn a_wall_that_slows_on_its_way_is_laid_straight_and_a_bridge_keeps_its_arc() {
     // that whole stretch is straight moves, as in the reference, which
     // gives up a path's arcs when its speed is not one throughout. Over
     // air it is a bridge at the bridge's speed all the way: an arc.
+    // (The bridge is a round thread as wide as the nozzle, which is all
+    // unsupported from where it starts. A flattened one is wider than
+    // the nozzle, so where it starts some of it still rests on the
+    // layer beneath and it goes slower: see the end of this test.)
     let under = plate(30.0, 30.0, 50.0, 70.0);
     let loops = [round_wall(50.0, 50.0, 10.0, 0)];
     let mut second = layer(0.4, &loops, &[0..1], &[]);
     second.below = &under;
     let layers = [layer(0.2, &[], &[], &[]), second];
-    let settings = measured();
+    let settings = PrintSettings {
+        thick_bridges: true,
+        ..measured()
+    };
     let (text, summary) = print(&layers, &settings);
     let moves = laid(&text);
     let wall: Vec<&Laid> = moves
@@ -823,6 +835,21 @@ fn a_wall_that_slows_on_its_way_is_laid_straight_and_a_bridge_keeps_its_arc() {
     assert!((around - plain_around).abs() < 0.05);
     assert!((summary.filament_mm - plain.filament_mm).abs() < 0.005 * plain.filament_mm);
     assert!((summary.seconds_at_speeds - plain.seconds_at_speeds).abs() < 0.05);
+
+    // A flattened bridge is as wide as the wall, wider than the nozzle,
+    // so where it leaves the layer beneath a little of it still rests
+    // there and its first and last moves are slower than the bridge's
+    // speed, as the reference has them: a stretch whose speed changes,
+    // and so straight moves all the way.
+    let (text, _) = print(&layers, &measured());
+    let moves = laid(&text);
+    let over_air: Vec<&Laid> = moves
+        .iter()
+        .filter(|laid| laid.feature == "Overhang wall")
+        .collect();
+    assert!(over_air.iter().all(|laid| laid.g == 1));
+    assert!(over_air.iter().any(|laid| laid.speed == 25.0));
+    assert!(over_air.iter().any(|laid| laid.speed < 24.0));
 }
 
 #[test]

@@ -642,6 +642,12 @@ impl Plan {
         let (object, perimeter) = match self.walls.get(&(layer, address(wall))) {
             Some(&(object, perimeter)) => (object as usize, perimeter as usize),
             None => {
+                // Every outermost wall was planned, on the loops the
+                // writer is given (thinned ahead of the plan).
+                debug_assert!(
+                    wall.depth > 0 || count < 3,
+                    "an outermost wall the seams were not planned on",
+                );
                 // The perimeter nearest the loop: the search is repeated
                 // until two points of the loop running find the same one,
                 // "because with arachne, T-Junctions may exist and

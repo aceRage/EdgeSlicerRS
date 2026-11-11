@@ -278,6 +278,7 @@ pub fn slice(job: Job, watch: &dyn Watcher) -> Result<Sliced, Failure> {
     let Job {
         loaded,
         is_project,
+        placed,
         settings,
         layer_height: (layer_height, _),
         first_layer_height: (first_layer_height, _),
@@ -294,9 +295,10 @@ pub fn slice(job: Job, watch: &dyn Watcher) -> Result<Sliced, Failure> {
 
     let print = PrintSettings::from_settings(&settings)?;
     // A bare model has no place on the bed of its own: it goes in the
-    // middle, as the reference's arranger leaves a single part.
+    // middle, as the reference's arranger leaves a single part. One that
+    // was put somewhere by hand stays there.
     let mut centred = None;
-    if let (false, Some([min_x, min_y, max_x, max_y])) = (is_project, print.bed) {
+    if let (false, Some([min_x, min_y, max_x, max_y])) = (is_project || placed, print.bed) {
         let x = (min_x + max_x) / 2.0 - f64::from(min[0] + max[0]) / 2.0;
         let y = (min_y + max_y) / 2.0 - f64::from(min[1] + max[1]) / 2.0;
         shift(&mut bodies, x, y);
@@ -343,19 +345,8 @@ pub fn slice(job: Job, watch: &dyn Watcher) -> Result<Sliced, Failure> {
             filament: body.filament,
         })
         .collect();
-    // The hole options need a round hole cut round: see
-    // `edge_slice::slice_regions_without_flat_crossings`. Without them
-    // the layers are cut as they always were.
     let holes = crate::holes::HoleSettings::from_settings(&settings)?;
-    let mut layers = if holes.any() {
-        edge_slice::slice_regions_without_flat_crossings(
-            &borrowed,
-            &planes,
-            scaled(closing_radius),
-        )?
-    } else {
-        edge_slice::slice_regions(&borrowed, &planes, scaled(closing_radius))?
-    };
+    let mut layers = edge_slice::slice_regions(&borrowed, &planes, scaled(closing_radius))?;
 
     // Overhangs are made printable by growing the layers under them
     // (`make_overhang_printable`), before anything else is done to the
@@ -569,7 +560,11 @@ pub fn slice(job: Job, watch: &dyn Watcher) -> Result<Sliced, Failure> {
 
     step(watch, Stage::Walls)?;
     let started = Instant::now();
-    let walls_by: Vec<Vec<Perimeters>> = (0..used.len())
+    // With each layer's walls, what of it is left to be bridged without
+    // any: the roof of a hole that narrows from the layer below
+    // (`counterbore_hole_bridging`), which `edge_perimeter`'s
+    // `counterbore` has the rest of.
+    let (walls_by, bored_by): (Vec<Vec<Perimeters>>, Vec<Vec<Vec<ExPolygon>>>) = (0..used.len())
         .map(|filament| {
             (0..layers.len())
                 .into_par_iter()
@@ -589,15 +584,32 @@ pub fn slice(job: Job, watch: &dyn Watcher) -> Result<Sliced, Failure> {
                         lower: index.checked_sub(1).map(|below| outlines[below]),
                     });
                     let regions = share(filament, index);
-                    let mut made = edge_perimeter::classic_between(regions, &params, around)
+                    let bores = match (&walls.counterbore, index.checked_sub(1)) {
+                        (Some(bore), Some(below)) => Some(
+                            edge_perimeter::split_counterbores(
+                                regions,
+                                outlines[below],
+                                &params,
+                                bore,
+                            )
+                            .map_err(|e| e.to_string())?,
+                        ),
+                        _ => None,
+                    };
+                    let (walled, bridged) = match bores {
+                        Some(split) => (Cow::Owned(split.walled), split.bridged),
+                        None => (Cow::Borrowed(regions), Vec::new()),
+                    };
+                    let mut made = edge_perimeter::classic_between(&walled, &params, around)
                         .map_err(|e| e.to_string())?;
-                    // The walls round a compensated circle are told apart.
+                    // The walls round a compensated circle are told apart,
+                    // by the regions as they were cut.
                     circle_marks
                         .flag(filament, index, regions, &params, &mut made)
                         .map_err(|e| e.to_string())?;
-                    Ok(made)
+                    Ok((made, bridged))
                 })
-                .collect::<Result<Vec<Perimeters>, String>>()
+                .collect::<Result<(Vec<Perimeters>, Vec<Vec<ExPolygon>>), String>>()
         })
         .collect::<Result<_, String>>()?;
     let perimeter_time = started.elapsed();
@@ -718,10 +730,25 @@ pub fn slice(job: Job, watch: &dyn Watcher) -> Result<Sliced, Failure> {
         )?;
         // Bridges, bottoms and tops reach into the fill beside them, and
         // each bridge is turned to run from support to support.
-        anchored_by.push(edge_infill::anchor(
-            &surfaces,
-            &infill.anchoring(layer_height)?,
-        )?);
+        let mut anchored = edge_infill::anchor(&surfaces, &infill.anchoring(layer_height)?)?;
+        // What the walls left to be bridged over a hole that narrows is
+        // a bridge as it stands, walls between it and the rest.
+        if let Some(bore) = &walls.counterbore {
+            let opening = infill.shells(layer_height)?.opening;
+            for (index, bridged) in bored_by[filament].iter().enumerate().skip(1) {
+                if !bridged.is_empty() {
+                    edge_infill::bridge_counterbores(
+                        &mut anchored[index],
+                        bridged,
+                        outlines[index - 1],
+                        opening,
+                        bore.fixed_angle,
+                        bore.added_angle,
+                    )?;
+                }
+            }
+        }
+        anchored_by.push(anchored);
     }
     // What each layer gives the next to rest on, whatever the filament.
     let beneath: Vec<edge_infill::Beneath> = (0..layers.len())
@@ -1290,6 +1317,16 @@ impl Sliced {
                     .iter()
                     .filter(|_| self.tower.footprint.is_some()),
             )
+    }
+
+    /// Every note of what is not done, with the fill pattern that had to
+    /// be replaced first: all there is to say of the settings this print
+    /// was sliced with that it does not follow.
+    pub fn gaps(&self) -> Vec<String> {
+        let pattern = self.infill.unsupported_pattern.as_ref().map(|pattern| {
+            format!("sparse_infill_pattern \"{pattern}\": grid is used in its place")
+        });
+        pattern.into_iter().chain(self.notes().cloned()).collect()
     }
 
     /// The filaments in use that the printer has no tool for.

@@ -700,7 +700,7 @@ pub fn anchor(
 
 /// How far fill is grown before a bridge's edges are tested against it,
 /// so that an edge along it counts as beside it.
-const BESIDE: Coord = 2_000;
+pub(crate) const BESIDE: Coord = 2_000;
 
 /// Whether a point, in mm, lies in any of the regions.
 fn contains(regions: &[ExPolygon], x: f64, y: f64) -> bool {
@@ -727,7 +727,7 @@ fn contains(regions: &[ExPolygon], x: f64, y: f64) -> bool {
 /// edges that have no fill beside them, so that as little line as can be
 /// ends in the air; a bridge with fill all round it is crossed the short
 /// way.
-fn bridge_direction(bridge: &ExPolygon, beside: &[ExPolygon]) -> f64 {
+pub(crate) fn bridge_direction(bridge: &ExPolygon, beside: &[ExPolygon]) -> f64 {
     // The edges with nothing beside them, in pieces of a millimetre or
     // less so that an edge partly held is partly counted.
     let mut floating: Vec<(f64, f64)> = Vec::new();

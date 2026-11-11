@@ -686,8 +686,9 @@ fn fit_parts(points: &[Point2], tolerance: f64) -> Vec<Part> {
 
 /// `MultiPoint::_douglas_peucker`: an open path with the points left out
 /// that are within `tolerance` of the line between those kept, measured
-/// to the segment. (edge-clip has the same for outlines.)
-fn douglas_peucker(points: &[Point2], tolerance: f64) -> Vec<Point2> {
+/// to the segment. (edge-clip has the same for outlines.) Also what a
+/// path is thinned with when no arcs are fitted to it (`simplify.rs`).
+pub(crate) fn douglas_peucker(points: &[Point2], tolerance: f64) -> Vec<Point2> {
     let Some(&first) = points.first() else {
         return Vec::new();
     };

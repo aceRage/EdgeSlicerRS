@@ -12,15 +12,18 @@
 //! pattern but lines and grid.
 
 mod bridges;
+mod counterbore;
 mod curves;
 mod fill;
 mod internal_bridges;
 mod ironing;
 pub mod lines;
+mod narrow;
 mod settings;
 mod surfaces;
 
-pub use fill::{FillParams, Frame, GapFillTarget, fill, fill_from, fill_within};
+pub use counterbore::bridge_counterbores;
+pub use fill::{FillError, FillParams, Frame, GapFillTarget, fill, fill_from, fill_within};
 pub use internal_bridges::{
     InternalBridgeFilter, OverInfill, bridge_over_infill_by, second_internal_bridges,
 };
@@ -28,6 +31,7 @@ pub use ironing::{
     IronedLayer, Ironing, IroningPattern, IroningSettings, IroningType, exposed, iron,
     ironing_areas,
 };
+pub use narrow::NarrowFill;
 pub use settings::{ExtraBridgeLayer, InfillSettings, Pattern};
 pub use surfaces::{
     Anchoring, Beneath, Shells, Surface, SurfaceKind, WallsAround, anchor, bridge_edges,
