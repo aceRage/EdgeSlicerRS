@@ -33,6 +33,7 @@ fn round_wall(cx: f64, cy: f64, r: f64, depth: usize) -> ExtrusionLoop {
     ExtrusionLoop {
         widths: Vec::new(),
         clockwise: false,
+        circle_compensation: false,
         polygon: Polygon { points },
         role: if depth == 0 {
             Role::ExternalPerimeter

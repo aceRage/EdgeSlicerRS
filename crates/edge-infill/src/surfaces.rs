@@ -31,7 +31,7 @@ pub struct Surface {
 }
 
 impl Surface {
-    fn new(kind: SurfaceKind, area: ExPolygon) -> Self {
+    pub(crate) fn new(kind: SurfaceKind, area: ExPolygon) -> Self {
         Self {
             kind,
             area,
@@ -60,6 +60,11 @@ pub struct Shells {
     /// layer's fill is not over and under the fill of the layers within
     /// a shell of it is then made solid.
     pub ensure: Option<Coord>,
+    /// Set where a bridge gets a second layer of bridge over it
+    /// (`enable_extra_bridge_layer` for bridges over air): the least
+    /// half-width of bridge worth a second layer, which the reference
+    /// takes to be the width of the walls.
+    pub second_bridge: Option<Coord>,
 }
 
 /// The one set of walls a layer would have were it all in one filament.
@@ -129,7 +134,7 @@ pub(crate) fn faces(
         ),
         None => Ok(slices[layer].to_vec()),
     };
-    (0..count)
+    let found = (0..count)
         .into_par_iter()
         .map(|layer| {
             let bottom = if shells.bottom_layers == 0 {
@@ -148,7 +153,13 @@ pub(crate) fn faces(
             }
             Ok((top, bottom))
         })
-        .collect()
+        .collect::<Result<Vec<Faces>, ClipError>>()?;
+    // With a second layer asked for over bridges, what lies on a bridge
+    // is laid as a bridge too.
+    match shells.second_bridge {
+        Some(narrow) => crate::bridges::second_bridge_layers(slices, found, narrow),
+        None => Ok(found),
+    }
 }
 
 /// The part of each layer's cross-section that is neither a top face nor
@@ -359,6 +370,10 @@ pub struct Anchoring {
     /// How far into solid fill, and for a bridge into a top surface: the
     /// reference's width of the walls times the square root of two.
     pub into_solid: Coord,
+    /// How much further than `into_solid` a bridge reaches into solid
+    /// fill and into a top or bottom surface beside it
+    /// (`bridge_expansion_extra`). Zero leaves bridges as they were.
+    pub bridge_extra: Coord,
     /// Gaps narrower than twice this left in a grown surface are closed.
     pub closing: Coord,
     /// What is left of a sparse area is made solid when smaller than
@@ -387,7 +402,7 @@ pub fn anchor(
                     .map(|s| s.area.clone())
                     .collect()
             };
-            let (bridges, bottoms) = (of(SurfaceKind::Bridge), of(SurfaceKind::Bottom));
+            let (bridges, mut bottoms) = (of(SurfaceKind::Bridge), of(SurfaceKind::Bottom));
             let mut top = of(SurfaceKind::Top);
             if bridges.is_empty() && bottoms.is_empty() && top.is_empty() {
                 return Ok(layer.clone());
@@ -424,7 +439,69 @@ pub fn anchor(
 
             // Bridges first, each with its own direction, judged by the
             // edges it has no fill beside.
-            if !bridges.is_empty() {
+            if !bridges.is_empty() && anchoring.bridge_extra > 0 {
+                // With extra reach set (`bridge_expansion_extra`) bridges
+                // are grown as the reference grows them
+                // (`expand_bridges_detect_orientations`): further by that
+                // much into solid fill and a top surface, into a bottom
+                // surface beside them as well, in waves that keep to the
+                // area they grow in, and those that grow into one another
+                // made one. Into sparse fill they reach as they did.
+                // Different from the reference: a bridge's direction is
+                // found as it is here with no extra reach, and the gaps
+                // closed in a grown bridge stay inside the fill.
+                let beside: Vec<ExPolygon> = solid
+                    .iter()
+                    .chain(&sparse)
+                    .chain(&top)
+                    .chain(&bottoms)
+                    .cloned()
+                    .collect();
+                let beside = edge_clip::offset(&beside, BESIDE, join)?;
+                let angles: Vec<f64> = bridges
+                    .iter()
+                    .map(|bridge| bridge_direction(bridge, &beside))
+                    .collect();
+                let reach = anchoring.into_solid + anchoring.bridge_extra;
+                let grown = crate::bridges::expand(
+                    &bridges,
+                    &angles,
+                    &[
+                        crate::bridges::Zone {
+                            area: &solid,
+                            reach,
+                            waves: true,
+                        },
+                        crate::bridges::Zone {
+                            area: &sparse,
+                            reach: anchoring.into_sparse,
+                            waves: false,
+                        },
+                        crate::bridges::Zone {
+                            area: &top,
+                            reach,
+                            waves: true,
+                        },
+                        crate::bridges::Zone {
+                            area: &bottoms,
+                            reach,
+                            waves: true,
+                        },
+                    ],
+                    anchoring.closing,
+                )?;
+                for (area, angle) in grown {
+                    solid = edge_clip::difference(&solid, &area)?;
+                    sparse = edge_clip::difference(&sparse, &area)?;
+                    top = edge_clip::difference(&top, &area)?;
+                    bottoms = edge_clip::difference(&bottoms, &area)?;
+                    out.extend(area.into_iter().map(|area| Surface {
+                        kind: SurfaceKind::Bridge,
+                        area,
+                        angle: Some(angle),
+                    }));
+                }
+            } else if !bridges.is_empty() {
                 let beside: Vec<ExPolygon> =
                     solid.iter().chain(&sparse).chain(&top).cloned().collect();
                 let beside = edge_clip::offset(&beside, BESIDE, join)?;
@@ -882,6 +959,7 @@ mod tests {
             minimum_sparse_area: 15.0,
             opening: scaled(0.045),
             ensure: None,
+            second_bridge: None,
         }
     }
 
@@ -970,6 +1048,38 @@ mod tests {
         assert_eq!(found[4], [(InternalSolid, 100.0), (Sparse, 100.0)]);
         assert_eq!(found[5], [(InternalSolid, 100.0), (Sparse, 100.0)]);
         assert_eq!(found[6], [(Sparse, 200.0)]);
+    }
+
+    #[test]
+    fn a_second_layer_of_bridge_moves_the_shell_over_it_up_a_layer() {
+        // A 10 mm post that widens to 20 mm at layer 3.
+        let mut layers = vec![block(0.0, 0.0, 10.0, 10.0); 3];
+        layers.extend(vec![block(0.0, 0.0, 20.0, 10.0); 6]);
+        let twice = Shells {
+            second_bridge: Some(scaled(0.87)),
+            ..shells(1, 3)
+        };
+        let found = kinds(&layers, &twice);
+        // The bridge, a bridge again over it, and the two further solid
+        // layers a bottom shell of three has, counted from the second.
+        assert_eq!(found[3], [(Bridge, 100.0), (Sparse, 100.0)]);
+        assert_eq!(found[4], [(Bridge, 100.0), (Sparse, 100.0)]);
+        assert_eq!(found[5], [(InternalSolid, 100.0), (Sparse, 100.0)]);
+        assert_eq!(found[6], [(InternalSolid, 100.0), (Sparse, 100.0)]);
+        assert_eq!(found[7], [(Sparse, 200.0)]);
+        // Without it, as it was: one layer of bridge and two of solid.
+        let once = kinds(&layers, &shells(1, 3));
+        assert_eq!(once[4], [(InternalSolid, 100.0), (Sparse, 100.0)]);
+        assert_eq!(once[6], [(Sparse, 200.0)]);
+        // What moves between fill lines without retracting sees the
+        // second layer as a face too.
+        let slices: Vec<&[ExPolygon]> = layers.iter().map(Vec::as_slice).collect();
+        let area = |layer: &[ExPolygon]| layer.iter().map(ExPolygon::area_mm2).sum::<f64>();
+        let inside = internal(&slices, &slices, &twice).unwrap();
+        assert!((area(&inside[4]) - 100.0).abs() < 1e-6);
+        assert!(
+            (area(&internal(&slices, &slices, &shells(1, 3)).unwrap()[4]) - 200.0).abs() < 1e-6
+        );
     }
 
     #[test]
@@ -1302,6 +1412,7 @@ mod tests {
         Anchoring {
             into_sparse: scaled(0.4),
             into_solid: scaled(1.4),
+            bridge_extra: 0,
             closing: scaled(0.15),
             minimum_sparse_area: 15.0,
         }
@@ -1359,6 +1470,94 @@ mod tests {
         let found = anchored(&layers, &shells(1, 1));
         let bridge = found[3].iter().find(|s| s.kind == Bridge).unwrap();
         assert!((bridge.angle.unwrap() - std::f64::consts::FRAC_PI_2).abs() < 1e-6);
+    }
+
+    #[test]
+    fn a_bridge_reaches_further_onto_solid_fill_by_the_extra_set() {
+        // Two posts 20 mm apart and a deck three layers thick across
+        // them, all of it within the top's shell: over the posts the
+        // deck's first layer is solid fill.
+        let posts: Vec<ExPolygon> =
+            [block(0.0, 0.0, 10.0, 10.0), block(30.0, 0.0, 40.0, 10.0)].concat();
+        let mut layers = vec![posts; 3];
+        layers.extend(vec![block(0.0, 0.0, 40.0, 10.0); 3]);
+        let slices: Vec<&[ExPolygon]> = layers.iter().map(Vec::as_slice).collect();
+        let surfaces = classify(&slices, &slices, &slices, &[], &shells(4, 1)).unwrap();
+        assert_eq!(area_of(&surfaces[3], InternalSolid).round(), 200.0);
+        let grown = |extra: f64| {
+            let anchoring = Anchoring {
+                bridge_extra: scaled(extra),
+                ..anchoring()
+            };
+            anchor(&surfaces, &anchoring).unwrap().swap_remove(3)
+        };
+        // With none, the gap and 1.4 mm onto the fill over each post.
+        let plain = grown(0.0);
+        assert!((area_of(&plain, Bridge) - 228.0).abs() < 0.5);
+        // With 2 mm, that much further onto each, and the solid fill
+        // gives up what the bridge gains.
+        let further = grown(2.0);
+        let bridges: Vec<&Surface> = further.iter().filter(|s| s.kind == Bridge).collect();
+        let [bridge] = bridges.as_slice() else {
+            panic!("expected one bridge, got {}", bridges.len())
+        };
+        assert!(
+            (bridge.area.area_mm2() - 268.0).abs() < 0.5,
+            "{}",
+            bridge.area.area_mm2()
+        );
+        assert!((area_of(&further, InternalSolid) - 132.0).abs() < 0.5);
+        let total: f64 = further.iter().map(|s| s.area.area_mm2()).sum();
+        assert!((total - 400.0).abs() < 1e-3, "{total}");
+        // Still laid from one post to the other.
+        let angle = bridge.angle.unwrap();
+        assert!(
+            angle.abs() < 1e-6 || (angle - std::f64::consts::PI).abs() < 1e-6,
+            "{angle}"
+        );
+        // With more than the posts are wide the whole layer is bridge.
+        let all = grown(50.0);
+        assert!((area_of(&all, Bridge) - 400.0).abs() < 1e-3);
+        assert_eq!(area_of(&all, InternalSolid), 0.0);
+        // Sparse fill beside a bridge is reached no further: the same
+        // deck with no shell over the posts.
+        let surfaces = classify(&slices, &slices, &slices, &[], &shells(1, 1)).unwrap();
+        let onto_sparse = |extra: f64| {
+            let anchoring = Anchoring {
+                bridge_extra: scaled(extra),
+                ..anchoring()
+            };
+            area_of(&anchor(&surfaces, &anchoring).unwrap()[3], Bridge)
+        };
+        assert!((onto_sparse(2.0) - onto_sparse(0.0)).abs() < 1e-3);
+    }
+
+    #[test]
+    fn with_extra_reach_a_bridge_grows_into_a_bottom_beside_it() {
+        // A bridge and a bottom surface side by side on one layer.
+        let layer = vec![
+            Surface::new(Bridge, block(0.0, 0.0, 10.0, 10.0).remove(0)),
+            Surface::new(Bottom, block(10.0, 0.0, 20.0, 10.0).remove(0)),
+        ];
+        let grown = |extra: f64| {
+            let anchoring = Anchoring {
+                bridge_extra: scaled(extra),
+                ..anchoring()
+            };
+            anchor(std::slice::from_ref(&layer), &anchoring)
+                .unwrap()
+                .remove(0)
+        };
+        // With none, each keeps its own.
+        let plain = grown(0.0);
+        assert_eq!(
+            (area_of(&plain, Bridge), area_of(&plain, Bottom)),
+            (100.0, 100.0)
+        );
+        // With 1 mm the bridge takes 1.4 + 1 mm of the bottom.
+        let further = grown(1.0);
+        assert!((area_of(&further, Bridge) - 124.0).abs() < 0.05);
+        assert!((area_of(&further, Bottom) - 76.0).abs() < 0.05);
     }
 
     #[test]

@@ -26,6 +26,15 @@ slab with one long side bowed out on a 80 mm radius, one end a half circle and
 the other end's corners rounded to 1.5 mm, for arc fitting (use a source with
 enable_arc_fitting=1, or give it as a change). The reference loads the filament preset named in the settings again,
 so a change to a filament's own settings, such as filament_type, is undone.
+
+holes is for the hole options (hole_to_polyhole, enable_circle_compensation):
+a slab 6 mm tall of ten 16 mm cells in two rows. The near row has round
+holes straight down through it, 2, 3, 5, 8 and 12 mm across, each in 64
+sides. The far row has a hole that is nearly round (an ellipse 5 by 5.4 mm),
+one of eight sides (too few to be taken for round), a round boss 10 mm
+across standing on a cell, a round tube standing on another with a 4 mm hole
+down through tube and cell, and a block 16 mm tall with a 5 mm hole through
+it from front to back, which no layer sees as a hole.
 """
 import json, math, sys, zipfile
 
@@ -111,6 +120,12 @@ SHAPES = {
     "frame": [(115.5, 116, 0, 40, 5, 6), (115.5, 151, 0, 40, 5, 6), (115.5, 116, 0, 5, 40, 6), (150.5, 116, 0, 5, 40, 6)],
     # a plate with three fins on it, 0.5, 0.8 and 1.1 mm thick, for thin walls
     "fins": [(115.5, 126, 0, 40, 20, 1), (120.5, 131, 1, 0.5, 10, 5), (130.5, 131, 1, 0.8, 10, 5), (140.5, 131, 1, 1.1, 10, 5)],
+    # a base 45 x 20 x 6 mm with five bars across it, 1, 2, 3 and 5 mm
+    # apart: the base's top shows between them in strips of those widths,
+    # so the solid layers under each strip are small bridges over infill
+    # of different sizes (dont_filter_internal_bridges, enable_extra_bridge_layer)
+    "gaps": [(113, 126, 0, 45, 20, 6)] + [
+        (113 + x, 126, 6, w, 20, 3) for x, w in ((0, 8), (9, 6), (17, 6), (26, 6), (37, 8))],
     # two blocks that touch, one in each of two filaments
     "twotone": [(115.5, 126, 0, 20, 20, 6), (135.5, 126, 0, 20, 20, 4)],
     # a spine with seven teeth standing on the bed, 0.5 to 2 mm wide, for
@@ -128,6 +143,44 @@ SHAPES = {
 SHAPES["twocomb"] = SHAPES["comb"]
 # The filament each box of a shape is printed in, where it is not all the first.
 FILAMENTS = {"twotone": [1, 2], "twocomb": [1] + [2] * 7}
+
+def around(cx, cy, half, angles):
+    """Where rays from the middle of a square at these angles leave it: the
+    square's outline, with a point for each point of a hole in its middle."""
+    return [(cx + half / max(abs(math.cos(a)), abs(math.sin(a))) * math.cos(a),
+             cy + half / max(abs(math.cos(a)), abs(math.sin(a))) * math.sin(a)) for a in angles]
+
+def cell(cx, cy, z0, dz, hole):
+    """A 16 mm square cell about (cx, cy) with a hole down through it, given
+    as (rx, ry, sides); none leaves it solid."""
+    if hole is None:
+        return box(cx - 8, cy - 8, z0, 16, 16, dz)
+    rx, ry, n = hole
+    angles = [2 * math.pi * i / n for i in range(n)]
+    return prism(around(cx, cy, 8, angles), z0, dz,
+                 [(cx + rx * math.cos(a), cy + ry * math.sin(a)) for a in angles])
+
+def lying(solid, y0):
+    """A prism drawn in x and z and pulled along y from y0: its y and z
+    change places, which turns every triangle over."""
+    v, t = solid
+    return [(x, y0 + z, y) for x, y, z in v], [(a, c, b) for a, b, c in t]
+
+def holes():
+    xs = [103.5 + 16 * i for i in range(5)]
+    near, far = 128, 144
+    solids = [cell(x, near, 0, 6, (d / 2, d / 2, 64)) for x, d in zip(xs, (2, 3, 5, 8, 12))]
+    solids.append(cell(xs[0], far, 0, 6, (2.5, 2.7, 64)))          # nearly round
+    solids.append(cell(xs[1], far, 0, 6, (3, 3, 8)))               # eight sides
+    solids.append(cell(xs[2], far, 0, 6, None))
+    solids.append(prism(circle(xs[2], far, 5, 64), 6, 4))          # a boss
+    solids.append(cell(xs[3], far, 0, 6, (2, 2, 64)))
+    solids.append(prism(circle(xs[3], far, 5, 64), 6, 4, circle(xs[3], far, 2, 64)))  # a tube
+    # the hole from front to back: drawn about (x, z) = (xs[4], 8), pulled along y
+    solids.append(lying(cell(xs[4], 8, 0, 16, (2.5, 2.5, 64)), far - 8))
+    return solids
+
+MESHES["holes"] = holes()
 
 out, source, shape = sys.argv[1:4]
 changes = dict(arg.split("=", 1) for arg in sys.argv[4:])

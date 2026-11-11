@@ -89,6 +89,10 @@ pub struct PrintSettings {
     /// is a round thread instead of a flattened line.
     pub bridge_flow: f64,
     pub thick_bridges: bool,
+    /// The width set for everything laid as a bridge, in mm
+    /// (`bridge_line_width`); none leaves a wall over air as wide as the
+    /// inner walls.
+    pub bridge_line_width: Option<f64>,
     /// May be a percentage of the outer wall's acceleration.
     pub bridge_acceleration: FloatOrPercent,
     /// Solid fill laid over sparse fill; a percentage is of the bridge's speed.
@@ -194,6 +198,11 @@ pub struct PrintSettings {
     pub slow_down_for_layer_cooling: bool,
     pub slow_down_min_speed: f64,
     pub dont_slow_down_outer_wall: bool,
+    /// The speed of the walls round a circle the auto circle
+    /// compensation resized, in mm/s: the filament's
+    /// `circle_compensation_speed`, the speed its compensation was
+    /// measured at. Zero leaves them at the walls' own speeds.
+    pub circle_compensation_speed: f64,
     /// Whether the printer has a second, auxiliary fan, and its speed in
     /// percent once the first layers are down.
     pub auxiliary_fan: bool,
@@ -285,6 +294,7 @@ impl Default for PrintSettings {
             }),
             bridge_flow: 1.0,
             thick_bridges: false,
+            bridge_line_width: None,
             bridge_acceleration: FloatOrPercent::Percent(50.0),
             internal_bridge_speed: FloatOrPercent::Percent(150.0),
             small_perimeter_threshold: 0.0,
@@ -342,6 +352,7 @@ impl Default for PrintSettings {
             slow_down_for_layer_cooling: true,
             slow_down_min_speed: 10.0,
             dont_slow_down_outer_wall: false,
+            circle_compensation_speed: 200.0,
             auxiliary_fan: false,
             additional_cooling_fan_speed: 0.0,
             skirt_speed: 50.0,
@@ -508,6 +519,20 @@ impl PrintSettings {
                 unsupported.push(format!("{key} \"{value}\": {instead}"));
             }
         }
+        // A compensated circle's walls are to be joined with a scarf seam
+        // (GCode.cpp `extrude_loop`), and there are none here.
+        if settings
+            .flag("enable_circle_compensation")?
+            .unwrap_or(false)
+            && settings
+                .flag("apply_scarf_seam_on_circles")?
+                .unwrap_or(true)
+        {
+            unsupported.push(
+                "apply_scarf_seam_on_circles \"1\": the walls of compensated circles are joined with a plain butt seam"
+                    .into(),
+            );
+        }
         if first("internal_bridge_fan_speed")?.is_some_and(|speed| speed >= 0.0) {
             unsupported.push(
                 "internal_bridge_fan_speed: bridges over infill get the overhang fan speed".into(),
@@ -663,6 +688,7 @@ impl PrintSettings {
             },
             bridge_flow: number("bridge_flow", defaults.bridge_flow)?,
             thick_bridges: flag("thick_bridges", defaults.thick_bridges)?,
+            bridge_line_width: edge_extrusion::bridge_line_width(settings)?,
             bridge_acceleration: listed_share("bridge_acceleration", defaults.bridge_acceleration)?,
             internal_bridge_speed: listed_share(
                 "internal_bridge_speed",
@@ -792,6 +818,11 @@ impl PrintSettings {
             )?,
             slow_down_min_speed: number("slow_down_min_speed", defaults.slow_down_min_speed)?,
             dont_slow_down_outer_wall: flag("dont_slow_down_outer_wall", false)?,
+            circle_compensation_speed: number(
+                "circle_compensation_speed",
+                defaults.circle_compensation_speed,
+            )?
+            .max(0.0),
             auxiliary_fan: flag("auxiliary_fan", false)?,
             additional_cooling_fan_speed: number("additional_cooling_fan_speed", 0.0)?,
             skirt_speed: number("skirt_speed", defaults.skirt_speed)?,

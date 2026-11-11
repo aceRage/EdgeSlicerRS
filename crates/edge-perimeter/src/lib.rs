@@ -940,6 +940,7 @@ pub fn arachne(
                         flow: flow_of(flow, average)?,
                         widths,
                         clockwise: false,
+                        circle_compensation: false,
                     };
                     if is_hole {
                         holes.push(made);
@@ -1376,6 +1377,7 @@ fn push_loops(loops: &mut Vec<ExtrusionLoop>, shells: &[ExPolygon], depth: usize
         loops.push(ExtrusionLoop {
             widths: Vec::new(),
             clockwise: false,
+            circle_compensation: false,
             polygon: polygon.clone(),
             role,
             is_hole,

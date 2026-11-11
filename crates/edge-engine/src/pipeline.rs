@@ -311,7 +311,19 @@ pub fn slice(job: Job, watch: &dyn Watcher) -> Result<Sliced, Failure> {
             filament: body.filament,
         })
         .collect();
-    let mut layers = edge_slice::slice_regions(&borrowed, &planes, scaled(closing_radius))?;
+    // The hole options need a round hole cut round: see
+    // `edge_slice::slice_regions_without_flat_crossings`. Without them
+    // the layers are cut as they always were.
+    let holes = crate::holes::HoleSettings::from_settings(&settings)?;
+    let mut layers = if holes.any() {
+        edge_slice::slice_regions_without_flat_crossings(
+            &borrowed,
+            &planes,
+            scaled(closing_radius),
+        )?
+    } else {
+        edge_slice::slice_regions(&borrowed, &planes, scaled(closing_radius))?
+    };
 
     // Colours painted onto a part move what they cover from the filament
     // the part is made of to the one painted. Each painted object is
@@ -469,7 +481,7 @@ pub fn slice(job: Job, watch: &dyn Watcher) -> Result<Sliced, Failure> {
         .collect();
     used.sort_unstable();
     used.dedup();
-    let shares: Vec<Vec<Vec<ExPolygon>>> = if used.is_empty() {
+    let mut shares: Vec<Vec<Vec<ExPolygon>>> = if used.is_empty() {
         used = vec![bodies.first().map_or(1, |body| body.filament)];
         Vec::new()
     } else {
@@ -496,6 +508,12 @@ pub fn slice(job: Job, watch: &dyn Watcher) -> Result<Sliced, Failure> {
             })
             .collect::<Result<_, String>>()?
     };
+    // Round outlines and holes are resized by what the filament prints
+    // them off by, and round holes that run up through the part are made
+    // polygons of few sides (`enable_circle_compensation`,
+    // `hole_to_polyhole`): after the compensations above and in that
+    // order, as in the reference. `crate::holes` has the rest.
+    let circle_marks = crate::holes::apply(&holes, &mut layers, &mut shares, &used)?;
     let share = |filament: usize, layer: usize| -> &[ExPolygon] {
         match shares.get(filament) {
             Some(own) => &own[layer],
@@ -540,8 +558,14 @@ pub fn slice(job: Job, watch: &dyn Watcher) -> Result<Sliced, Failure> {
                         upper: outlines.get(index + 1).copied().unwrap_or(&[]),
                         lower: index.checked_sub(1).map(|below| outlines[below]),
                     });
-                    edge_perimeter::classic_between(share(filament, index), &params, around)
-                        .map_err(|e| e.to_string())
+                    let regions = share(filament, index);
+                    let mut made = edge_perimeter::classic_between(regions, &params, around)
+                        .map_err(|e| e.to_string())?;
+                    // The walls round a compensated circle are told apart.
+                    circle_marks
+                        .flag(filament, index, regions, &params, &mut made)
+                        .map_err(|e| e.to_string())?;
+                    Ok(made)
                 })
                 .collect::<Result<Vec<Perimeters>, String>>()
         })
@@ -670,10 +694,12 @@ pub fn slice(job: Job, watch: &dyn Watcher) -> Result<Sliced, Failure> {
     let classifying = Instant::now();
     let solid_spacing = infill.params(layer_height, false)?.solid.scaled_spacing();
     // Solid over sparse fill is laid as a bridge across it.
-    let bridged_by = anchored_by
-        .iter()
-        .map(|surfaces| edge_infill::bridge_over_infill(surfaces, &beneath, solid_spacing))
-        .collect::<Result<Vec<_>, _>>()?;
+    // Which is worth bridging is `dont_filter_internal_bridges`' to say.
+    let bridged_by = edge_infill::bridge_over_infill_by(
+        &anchored_by,
+        &beneath,
+        &infill.over_infill(layer_height)?,
+    )?;
     // And the sparse fill under a bridge's edge, where that edge runs
     // along the walls, is made solid to carry it.
     let edges = edge_infill::bridge_edges(&bridged_by, solid_spacing)?;
@@ -681,6 +707,14 @@ pub fn slice(job: Job, watch: &dyn Watcher) -> Result<Sliced, Failure> {
         .iter()
         .map(|surfaces| edge_infill::carry_bridge_edges(surfaces, &edges, solid_spacing))
         .collect::<Result<Vec<_>, _>>()?;
+    // A second layer of bridge over those, where the profile asks
+    // (`enable_extra_bridge_layer`); over a bridge over air it is made
+    // when surfaces are told apart.
+    let bridged_by = if infill.extra_bridge_layer.internal() {
+        edge_infill::second_internal_bridges(&bridged_by, &infill.params(layer_height, false)?)?
+    } else {
+        bridged_by
+    };
     classify_time += classifying.elapsed();
     for (surfaces, perimeters) in bridged_by.into_iter().zip(&walls_by) {
         let fills = surfaces

@@ -13,6 +13,7 @@
 
 mod arc;
 mod chain;
+mod circle;
 mod cooling;
 mod inside;
 mod overhang;
@@ -612,6 +613,9 @@ struct State {
     /// The speed of the wall loop being laid, where it is small enough
     /// to have one of its own (`small_perimeter_speed`).
     small_wall: Option<f64>,
+    /// The speed of the wall loop being laid, where it goes round a
+    /// circle the auto circle compensation resized (`circle.rs`).
+    circle_wall: Option<f64>,
     /// The tool in use, and what was left retracted in each tool put away.
     tool: usize,
     parked: Vec<(bool, f64)>,
@@ -1536,6 +1540,7 @@ impl Writer<'_> {
                     s.small_perimeter_speed.resolve(s.outer_wall_speed)
                 }
             });
+            self.state.circle_wall = self.circle_wall_speed(wall);
             let mut path = seam::open_at(points, edge, start);
             if turned {
                 path.reverse();
@@ -1583,6 +1588,7 @@ impl Writer<'_> {
             self.state.wipe_path = line.points;
         }
         self.state.small_wall = None;
+        self.state.circle_wall = None;
         Ok(())
     }
 
@@ -1902,10 +1908,12 @@ impl Writer<'_> {
             Some(pieces) => {
                 // A wall over air is a bridge of the inner walls' width,
                 // whichever wall it is (`PerimeterGenerator` `overhang_flow`).
+                // At `bridge_line_width` where that is set.
                 let bridge = self
                     .inner_wall
                     .unwrap_or(*flow)
-                    .bridging(s.bridge_flow, s.thick_bridges);
+                    .bridging_sized(s.bridge_flow, s.thick_bridges, s.bridge_line_width)
+                    .map_err(|e| io::Error::other(e.to_string()))?;
                 let over_air = self.motion(Role::OverhangPerimeter, &bridge, false);
                 let laid = Laid {
                     role,
@@ -2123,8 +2131,8 @@ impl Writer<'_> {
             }
             Role::Ironing => s.ironing_speed,
             _ if first_layer => s.initial_layer_infill_speed,
-            Role::ExternalPerimeter => self.state.small_wall.unwrap_or(s.outer_wall_speed),
-            Role::Perimeter => self.state.small_wall.unwrap_or(s.inner_wall_speed),
+            Role::ExternalPerimeter => self.wall_speed(s.outer_wall_speed),
+            Role::Perimeter => self.wall_speed(s.inner_wall_speed),
             Role::SparseInfill => s.sparse_infill_speed,
             Role::SolidInfill | Role::BottomSurface => s.internal_solid_infill_speed,
             Role::TopSolidInfill => s.top_surface_speed,
@@ -2475,7 +2483,8 @@ impl Writer<'_> {
             self.extruding = true;
             self.timing.fixed = 0.0;
         }
-        let held = role == Role::ExternalPerimeter && s.dont_slow_down_outer_wall;
+        let held = role == Role::ExternalPerimeter && s.dont_slow_down_outer_wall
+            || self.circle_wall_held(role);
         let speed = if held {
             self.timing.fixed += length / motion.speed;
             motion.speed

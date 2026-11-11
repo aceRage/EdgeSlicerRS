@@ -60,6 +60,10 @@ pub struct WallSettings {
     /// thread: what the walls over overhangs are laid with.
     pub bridge_flow: f64,
     pub thick_bridges: bool,
+    /// The width set for everything laid as a bridge, in mm
+    /// (`bridge_line_width`); none leaves a wall over air as wide as the
+    /// inner walls.
+    pub bridge_line_width: Option<f64>,
     pub fuzzy: FuzzySettings,
     /// Every other layer has one wall more, which ties the sparse fill
     /// to the walls (`alternate_extra_wall`). False where there is no
@@ -202,6 +206,7 @@ impl Default for WallSettings {
             extra_perimeters_on_overhangs: false,
             bridge_flow: 1.0,
             thick_bridges: false,
+            bridge_line_width: None,
             fuzzy: FuzzySettings::default(),
             alternate_extra_wall: false,
             detect_thin_wall: false,
@@ -404,6 +409,7 @@ impl WallSettings {
             )?,
             bridge_flow: number("bridge_flow", defaults.bridge_flow)?,
             thick_bridges: flag("thick_bridges", defaults.thick_bridges)?,
+            bridge_line_width: edge_extrusion::bridge_line_width(settings)?,
             wall_loops: count("wall_loops", defaults.wall_loops)?,
             outer_wall_line_width: width("outer_wall_line_width", defaults.outer_wall_line_width)?,
             inner_wall_line_width: width("inner_wall_line_width", defaults.inner_wall_line_width)?,
@@ -456,23 +462,12 @@ impl WallSettings {
         let mut notes = Vec::new();
         let text = |key: &str| settings.text(key).map(str::to_owned);
         // Present and not the value that turns it off.
-        for (key, off, instead) in [
-            (
-                "hole_to_polyhole",
-                "0",
-                "round holes are walled as they are drawn",
-            ),
-            (
-                "counterbore_hole_bridging",
-                "none",
-                "a hole that narrows is left to bridge as it is",
-            ),
-        ] {
-            if let Some(value) = text(key)
-                && value != off
-            {
-                notes.push(format!("{key} \"{value}\": {instead}"));
-            }
+        if let Some(value) = text("counterbore_hole_bridging")
+            && value != "none"
+        {
+            notes.push(format!(
+                "counterbore_hole_bridging \"{value}\": a hole that narrows is left to bridge as it is"
+            ));
         }
         if self.only_one_wall_top
             && settings
@@ -560,7 +555,11 @@ impl WallSettings {
         {
             params.over_air = Some(crate::OverAir {
                 // `LayerRegion::bridging_flow` of the inner wall's.
-                flow: params.inner.bridging(self.bridge_flow, self.thick_bridges),
+                flow: params.inner.bridging_sized(
+                    self.bridge_flow,
+                    self.thick_bridges,
+                    self.bridge_line_width,
+                )?,
                 grow_lower: scaled(self.nozzle_diameter / 2.0),
                 wall_loops: self.wall_loops,
             });
@@ -907,6 +906,30 @@ mod tests {
         let over_air = asked.over_air.unwrap();
         assert_eq!((over_air.grow_lower, over_air.wall_loops), (200_000, 3));
         assert_eq!(over_air.flow, asked.inner.bridging(0.8, false));
+        // At the width set for bridges, where one is (`bridge_line_width`).
+        let sized = WallSettings {
+            bridge_line_width: Some(0.3),
+            ..settings
+        };
+        assert_eq!(
+            sized.params_at(0.2, 3, 10).unwrap().over_air.unwrap().flow,
+            asked.inner.with_width(0.3).unwrap().bridging(0.8, false)
+        );
+        let read = |json: &str| WallSettings::from_settings(&Settings::from_json(json).unwrap());
+        assert_eq!(
+            read(r#"{"bridge_line_width": "75%"}"#)
+                .unwrap()
+                .bridge_line_width
+                .map(|width| (width * 1e6_f64).round()),
+            Some(300_000.0)
+        );
+        assert_eq!(
+            read(r#"{"bridge_line_width": "0"}"#)
+                .unwrap()
+                .bridge_line_width,
+            None
+        );
+        assert!(read(r#"{"bridge_line_width": "0.5"}"#).is_err());
         // Not without the check against the layer below, nor with no walls.
         for off in [
             WallSettings {
@@ -1082,8 +1105,7 @@ mod tests {
         // Nothing to say of settings at what turns them off.
         assert!(
             notes(
-                r#"{"hole_to_polyhole": "0",
-                    "counterbore_hole_bridging": "none",
+                r#"{"counterbore_hole_bridging": "none",
                     "top_surface_expansion": "0", "only_one_wall_top": "1"}"#
             )
             .is_empty()
@@ -1093,8 +1115,9 @@ mod tests {
                 "counterbore_hole_bridging": "partiallybridge",
                 "top_surface_expansion": "0.5", "only_one_wall_top": "1"}"#,
         );
-        assert_eq!(said.len(), 3, "{said:?}");
-        assert!(said[0].starts_with("hole_to_polyhole \"1\": "));
+        // Polyholes are made (edge-slice), and nothing is said of them.
+        assert_eq!(said.len(), 2, "{said:?}");
+        assert!(said[0].starts_with("counterbore_hole_bridging \"partiallybridge\": "));
         // A top surface is only widened where it has one wall.
         let fewer = notes(r#"{"top_surface_expansion": "0.5"}"#);
         assert!(fewer.is_empty(), "{fewer:?}");
