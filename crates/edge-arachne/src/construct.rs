@@ -13,6 +13,20 @@
 //! `try_to_repair_degenerated_voronoi_diagram`). Of the reference's
 //! checks for a broken diagram the one that needs exact arithmetic
 //! (`is_voronoi_diagram_planar_angle`) is not made.
+//!
+//! The reference's outlines are in their object's coordinates, measured
+//! from the middle of the object's box (`PrintObject::m_center_offset`),
+//! and it makes the diagram of them as they are. Here outlines are in
+//! the plate's coordinates; the diagram is made of the outline measured
+//! from the middle of its own box (`edge_medial::diagram`), its
+//! vertices are rounded to the grid there, and the outline is turned
+//! about that middle when it has to be turned. A diagram, repaired or
+//! not, is then the same wherever the object stands. What is made of
+//! the diagram below is still worked out in the plate's coordinates,
+//! where a whole-number division of a sum is cut off downwards and the
+//! reference's, left of or below its object's middle, upwards: a
+//! skeleton's nodes can lie a nanometre or two from where they would
+//! with the object standing elsewhere.
 
 use std::collections::HashMap;
 use std::f64::consts::PI;
@@ -114,6 +128,9 @@ impl Builder<'_> {
             };
             let (from, to) = self.segment(cell.segment);
             let along = ((to.x - from.x) as f64, (to.y - from.y) as f64);
+            // The edge's start measured as the diagram's vertices are.
+            let [origin_x, origin_y] = self.diagram.origin;
+            let start = ((from.x - origin_x) as f64, (from.y - origin_y) as f64);
             let mut edge = begin;
             let mut steps = 0;
             while edge != end {
@@ -125,7 +142,7 @@ impl Builder<'_> {
                 }
                 // No edge of the cell may lie beyond the outline.
                 let [x, y] = self.diagram.vertices[v1];
-                if along.0 * (y - from.y as f64) - along.1 * (x - from.x as f64) < 0.0 {
+                if along.0 * (y - start.1) - along.1 * (x - start.0) < 0.0 {
                     return true;
                 }
                 edge = self.diagram.edges[edge].next;
@@ -150,11 +167,7 @@ impl Builder<'_> {
 
     /// A vertex of the diagram on the grid (`VoronoiUtils::to_point`).
     fn vertex(&self, vertex: usize) -> Point2 {
-        let [x, y] = self.diagram.vertices[vertex];
-        Point2 {
-            x: x.round() as Coord,
-            y: y.round() as Coord,
-        }
+        self.diagram.point(vertex)
     }
 
     /// Both ends of a diagram edge, where it has both.
@@ -509,7 +522,8 @@ fn sound_diagram(
     // first attempt to have gone wrong, and the outline is turned for it
     // as for a flaw that was found. The error comes back only when no
     // attempt gave a diagram at all.
-    let mut best = match edge_medial::diagram(&ends_of(polys)) {
+    let ends = ends_of(polys);
+    let mut best = match edge_medial::diagram(&ends) {
         Ok(diagram) => {
             let first = checker(polys, segments, diagram);
             if !first.has_known_issue() {
@@ -519,6 +533,15 @@ fn sound_diagram(
         }
         Err(error) => Err(error),
     };
+    // The outline is turned about the point its diagram is measured
+    // from, the middle of the box round it. The reference turns its
+    // outline about the origin of its coordinates, which is the middle
+    // of the object's box; about the plate's origin the turned points
+    // would be rounded to the grid elsewhere for every place the object
+    // could stand.
+    let Some([middle_x, middle_y]) = edge_medial::diagram_origin(&ends) else {
+        return best;
+    };
     for angle in FIX_ANGLES {
         let (sin, cos) = angle.sin_cos();
         let turned: Vec<Polygon> = polys
@@ -527,7 +550,7 @@ fn sound_diagram(
                 points: poly
                     .points
                     .iter()
-                    .map(|p| rotated(p.x, p.y, cos, sin))
+                    .map(|p| rotated(p.x - middle_x, p.y - middle_y, cos, sin))
                     .collect(),
             })
             .collect();
@@ -556,16 +579,21 @@ fn sound_diagram(
                 exact[vertex].get_or_insert(to);
             }
         }
+        // The turned outline's diagram is measured from the middle of
+        // the turned outline's own box; turned back, from the middle
+        // the outline was turned about.
         let mut diagram = turned_check.diagram;
+        let [turned_x, turned_y] = diagram.origin.map(|c| c as f64);
         for (vertex, exact) in diagram.vertices.iter_mut().zip(exact) {
             *vertex = match exact {
-                Some(point) => [point.x as f64, point.y as f64],
-                None => [
-                    cos * vertex[0] + sin * vertex[1],
-                    cos * vertex[1] - sin * vertex[0],
-                ],
+                Some(point) => [(point.x - middle_x) as f64, (point.y - middle_y) as f64],
+                None => {
+                    let (x, y) = (vertex[0] + turned_x, vertex[1] + turned_y);
+                    [cos * x + sin * y, cos * y - sin * x]
+                }
             };
         }
+        diagram.origin = [middle_x, middle_y];
         best = Ok(diagram);
         if !broken {
             break;
@@ -827,6 +855,183 @@ mod tests {
         [60_438_147, 76_173_145, 60_438_147, 78_978_540],
     ];
 
+    /// An outline of the Voron design cube with the notches along its
+    /// sides, as the walls are given it, in the plate's coordinates
+    /// (nanometres): the one in `edge-medial`'s `tests/deterministic.rs`.
+    /// Two of its edges are a nanometre out of line, and swept where it
+    /// lies, 49 to 79 mm from the origin, its diagram came out broken.
+    const VORON_OUTLINE: [(i64, i64); 44] = [
+        (60_186_098, 55_673_323),
+        (63_132_079, 55_673_322),
+        (63_132_079, 49_021_460),
+        (65_535_743, 49_021_460),
+        (65_535_739, 55_673_323),
+        (68_482_148, 55_673_323),
+        (68_482_148, 49_021_460),
+        (78_978_540, 49_021_460),
+        (78_978_540, 54_474_779),
+        (76_978_540, 54_474_779),
+        (76_978_540, 60_211_277),
+        (78_978_540, 60_211_277),
+        (78_978_540, 63_071_416),
+        (76_978_540, 63_071_416),
+        (76_978_540, 65_560_936),
+        (78_978_540, 65_560_935),
+        (78_978_540, 68_421_487),
+        (76_978_540, 68_421_489),
+        (76_978_540, 73_766_928),
+        (78_978_540, 73_766_928),
+        (78_978_540, 78_978_540),
+        (67_813_901, 78_978_540),
+        (67_813_901, 72_326_676),
+        (64_867_921, 72_326_678),
+        (64_867_921, 78_978_540),
+        (62_464_257, 78_978_540),
+        (62_464_258, 72_326_677),
+        (59_517_853, 72_326_677),
+        (59_517_853, 78_978_540),
+        (49_021_460, 78_978_540),
+        (49_021_460, 73_525_221),
+        (51_021_460, 73_525_221),
+        (51_021_460, 67_788_721),
+        (49_021_460, 67_788_720),
+        (49_021_460, 64_928_582),
+        (51_021_460, 64_928_585),
+        (51_021_460, 62_439_064),
+        (49_021_460, 62_439_063),
+        (49_021_460, 59_578_511),
+        (51_021_460, 59_578_511),
+        (51_021_460, 54_233_072),
+        (49_021_460, 54_233_072),
+        (49_021_460, 49_021_460),
+        (60_186_098, 49_021_460),
+    ];
+
+    /// The round hole through it.
+    const VORON_HOLE: [(i64, i64); 56] = [
+        (63_185_132, 57_428_894),
+        (62_479_353, 57_555_507),
+        (61_791_068, 57_757_827),
+        (61_128_455, 58_033_576),
+        (60_168_549, 58_599_637),
+        (59_587_813, 59_062_746),
+        (59_062_746, 59_587_813),
+        (58_599_781, 60_168_355),
+        (58_204_739, 60_797_062),
+        (57_882_558, 61_466_082),
+        (57_637_320, 62_166_923),
+        (57_472_087, 62_890_864),
+        (57_388_950, 63_628_744),
+        (57_388_950, 64_371_254),
+        (57_472_089, 65_109_156),
+        (57_637_318, 65_833_073),
+        (57_882_558, 66_533_916),
+        (58_204_739, 67_202_936),
+        (58_599_781, 67_831_643),
+        (59_062_754, 68_412_194),
+        (59_587_805, 68_937_240),
+        (60_168_352, 69_400_219),
+        (60_797_058, 69_795_257),
+        (61_466_082, 70_117_440),
+        (62_166_923, 70_362_678),
+        (62_890_866, 70_527_907),
+        (63_628_931, 70_611_064),
+        (64_250_586, 70_616_521),
+        (64_814_920, 70_571_093),
+        (65_520_658, 70_444_485),
+        (66_208_934, 70_242_166),
+        (66_871_512, 69_966_435),
+        (67_522_827, 69_606_560),
+        (68_128_432, 69_176_863),
+        (68_682_081, 68_682_081),
+        (69_176_863, 68_128_432),
+        (69_606_561, 67_522_827),
+        (69_965_734, 66_872_952),
+        (70_249_892, 66_186_930),
+        (70_455_451, 65_473_417),
+        (70_579_831, 64_741_391),
+        (70_621_465, 63_999_999),
+        (70_579_831, 63_258_609),
+        (70_455_451, 62_526_578),
+        (70_249_894, 61_813_073),
+        (69_965_734, 61_127_046),
+        (69_606_561, 60_477_171),
+        (69_176_871, 59_871_581),
+        (68_682_082, 59_317_914),
+        (68_128_424, 58_823_130),
+        (67_522_827, 58_393_437),
+        (66_872_952, 58_034_264),
+        (66_186_930, 57_750_106),
+        (65_473_400, 57_544_543),
+        (64_461_962, 57_394_906),
+        (63_810_719, 57_381_756),
+    ];
+
+    fn voron(x: i64, y: i64) -> Vec<Polygon> {
+        [&VORON_OUTLINE[..], &VORON_HOLE[..]]
+            .iter()
+            .map(|ring| Polygon {
+                points: ring
+                    .iter()
+                    .map(|&(px, py)| Point2 {
+                        x: px + x,
+                        y: py + y,
+                    })
+                    .collect(),
+            })
+            .collect()
+    }
+
+    fn segments_of(polys: &[Polygon]) -> Vec<(usize, usize)> {
+        polys
+            .iter()
+            .enumerate()
+            .flat_map(|(poly, polygon)| (0..polygon.points.len()).map(move |at| (poly, at)))
+            .collect()
+    }
+
+    #[test]
+    fn an_outline_needs_no_repair_wherever_it_stands() {
+        // Where it lay on the plate when its diagram came out broken,
+        // and elsewhere: the first diagram is sound, and is the same
+        // diagram, measured from the middle of the outline's box.
+        let home = voron(0, 0);
+        let segments = segments_of(&home);
+        let ends = |polys: &[Polygon]| -> Vec<[i64; 4]> {
+            segments
+                .iter()
+                .map(|&(poly, at)| {
+                    let points = &polys[poly].points;
+                    let (from, to) = (points[at], points[(at + 1) % points.len()]);
+                    [from.x, from.y, to.x, to.y]
+                })
+                .collect()
+        };
+        let first = checker(
+            &home,
+            &segments,
+            edge_medial::diagram(&ends(&home)).unwrap(),
+        );
+        assert!(!first.has_known_issue());
+        assert_eq!(first.diagram.origin, [64_000_000, 64_000_000]);
+        let at_home = sound_diagram(&home, &segments).unwrap();
+        assert_eq!(at_home, first.diagram);
+        for (x, y) in [
+            (-64_000_000, -64_000_000),
+            (71_500_000, 72_000_000),
+            (-250_000_000, 1),
+        ] {
+            let away = voron(x, y);
+            let mut found = sound_diagram(&away, &segments).unwrap();
+            assert_eq!(found.origin, [64_000_000 + x, 64_000_000 + y]);
+            found.origin = at_home.origin;
+            assert_eq!(found, at_home, "moved by ({x}, {y})");
+        }
+        // The skeleton is made of it without trouble.
+        let graph = from_polygons(&home, 10f64.to_radians(), 800_000).unwrap();
+        assert!(graph.edges().len() > 400);
+    }
+
     #[test]
     fn an_outline_the_library_gives_up_on_is_turned_like_a_broken_one() {
         // The two edges and the same two through the origin, so that
@@ -868,6 +1073,39 @@ mod tests {
                 .iter()
                 .any(|v| (v[0] - midway).abs() < 2.0 && v[1] > 0.0)
         );
+    }
+
+    #[test]
+    fn a_repair_is_the_same_wherever_the_outline_stands() {
+        // The edges of the test above, which are turned for want of a
+        // first diagram, and the same edges elsewhere: turned about the
+        // middle of their own box, so the same diagram comes back.
+        let lines = |x: i64, y: i64| -> Vec<Polygon> {
+            JOG.iter()
+                .flat_map(|&[x0, y0, x1, y1]| [[x0, y0, x1, y1], [-x0, -y0, -x1, -y1]])
+                .map(|[x0, y0, x1, y1]| Polygon {
+                    points: vec![
+                        Point2 {
+                            x: x0 + x,
+                            y: y0 + y,
+                        },
+                        Point2 {
+                            x: x1 + x,
+                            y: y1 + y,
+                        },
+                    ],
+                })
+                .collect()
+        };
+        let segments: Vec<(usize, usize)> = (0..4).map(|line| (line, 0)).collect();
+        let at_home = sound_diagram(&lines(0, 0), &segments).unwrap();
+        assert_eq!(at_home.origin, [0, 0]);
+        for (x, y) in [(135_500_000, 136_000_000), (-7, 3_000_000_000)] {
+            let mut found = sound_diagram(&lines(x, y), &segments).unwrap();
+            assert_eq!(found.origin, [x, y]);
+            found.origin = [0, 0];
+            assert_eq!(found, at_home, "moved by ({x}, {y})");
+        }
     }
 
     #[test]
