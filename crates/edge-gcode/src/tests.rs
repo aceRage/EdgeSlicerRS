@@ -3021,3 +3021,38 @@ fn a_measured_wall_goes_at_its_own_speed_unrounded() {
         .and_then(|line| word(line, 'F'));
     assert_eq!(feed, Some((speed * 60.0).round()));
 }
+
+#[test]
+fn a_layer_slowed_to_cool_leaves_the_prime_tower_at_its_speed() {
+    // A short layer, slowed to take 20 s: the wall gives way, the
+    // tower's line keeps its 90 mm/s, its time counted all the same
+    // (CoolingBuffer.cpp slows only lines `_extrude` marks).
+    let part = [wall(0.0, 0.0, 10.0, 0)];
+    let tower = [line((60.0, 40.6), (40.0, 40.6), Role::PrimeTower)];
+    let layers: Vec<Layer<'_>> = [0.2, 0.4]
+        .into_iter()
+        .map(|z| Layer {
+            z,
+            tower: &tower,
+            ..one_layer(&part, &[0..1], &[])[0]
+        })
+        .collect();
+    let settings = PrintSettings {
+        slow_down_for_layer_cooling: true,
+        slow_down_layer_time: 20.0,
+        slow_down_min_speed: 1.0,
+        ..basic()
+    };
+    let (text, summary) = print(&layers, &settings);
+    assert_eq!(summary.slowed_layers, 2);
+    let second = text.split(";LAYER_CHANGE").nth(2).unwrap();
+    let feed = |kind: &str| {
+        let from = second.find(&format!(";TYPE:{kind}")).unwrap();
+        moves(&second[from..])
+            .find(|line| word(line, 'E').is_some_and(|e| e > 0.0))
+            .and_then(|line| word(line, 'F'))
+            .unwrap()
+    };
+    assert_eq!(feed("Prime tower"), 5400.0);
+    assert!(feed("Outer wall") < 300.0, "{}", feed("Outer wall"));
+}

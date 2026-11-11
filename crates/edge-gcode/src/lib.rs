@@ -2836,7 +2836,15 @@ impl Writer<'_> {
         // of the line (`scarf.rs`).
         let sloping = self.slope_on(length);
         let moved = sloping.as_ref().map_or(length, |sloping| sloping.length);
+        // What a layer slowed to cool leaves at its speed, its time
+        // counted: the outer wall where asked, a compensated circle's
+        // wall, and the prime tower, whose lines the reference writes
+        // without the marks that make a line adjustable (WipeTower2.cpp
+        // writes them itself, not GCode.cpp `_extrude`, and
+        // CoolingBuffer.cpp slows only what is marked
+        // `;_EXTRUDE_SET_SPEED`).
         let held = role == Role::ExternalPerimeter && s.dont_slow_down_outer_wall
+            || matches!(role, Role::PrimeTower | Role::PrimeLine)
             || self.circle_wall_held(role);
         let speed = if held {
             self.timing.fixed += moved / motion.speed;
