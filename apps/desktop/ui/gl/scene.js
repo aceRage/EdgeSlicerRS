@@ -131,6 +131,10 @@
       this.axes = null;
       this.corners = null;
       this.cornersOf = '';
+      // Parts of one object drawn elsewhere while a tool drags them: the
+      // object's index, and for each part's index a matrix that takes the
+      // object's coordinates to where the part now is in them.
+      this.moving = null;
     }
 
     get background() { return themed(BACKGROUND); }
@@ -369,6 +373,25 @@
       gl.depthMask(true);
     }
 
+    // How to draw a copy: the whole of it with its matrix, or, while some
+    // of its object's parts are dragged, each part with its own.
+    pieces(placing) {
+      const moving = this.moving;
+      const parts = this.data.objects[placing.object].part_list || [];
+      if (!moving || moving.object !== placing.object) return [{ matrix: placing.matrix, range: null }];
+      return parts.map((part, at) => ({
+        matrix: moving.parts.has(at) ? M.multiply(placing.matrix, moving.parts.get(at)) : placing.matrix,
+        range: part.triangles,
+      }));
+    }
+
+    // Where part `at` of a copy is drawn: with the copy, unless it is
+    // being dragged.
+    partMatrix(placing, at) {
+      const moving = this.moving;
+      return moving && moving.object === placing.object && moving.parts.has(at) ? M.multiply(placing.matrix, moving.parts.get(at)) : placing.matrix;
+    }
+
     // The objects: `pass` 0 for what is opaque, 1 for what is seen through.
     drawObjects(frame, pass) {
       if (!this.data) return;
@@ -378,13 +401,16 @@
         const mesh = this.meshOf(placing.object);
         if (!mesh) return;
         const volume = placing.plate !== null || this.plates.length === 1 ? this.plateVolume(placing.plate) : null;
-        r.drawMesh(mesh, frame, placing.matrix, {
-          palette: this.palette,
-          // A copy that is not to be printed is a shadow of itself.
-          tint: placing.printable ? [0, 0, 0, -1] : UNPRINTABLE,
-          pass,
-          volume,
-        });
+        for (const piece of this.pieces(placing)) {
+          r.drawMesh(mesh, frame, piece.matrix, {
+            palette: this.palette,
+            // A copy that is not to be printed is a shadow of itself.
+            tint: placing.printable ? [0, 0, 0, -1] : UNPRINTABLE,
+            pass,
+            volume,
+            range: piece.range,
+          });
+        }
       });
       r.blend(false);
     }
@@ -406,17 +432,30 @@
 
     // What is selected (a set of copies, by their `id`): an outline, a
     // faint grey, and the corners of the box round it (Selection.cpp
-    // `render_bounding_box`: a fifth of each edge at each corner).
-    drawSelection(frame, selection) {
+    // `render_bounding_box`: a fifth of each edge at each corner). With
+    // `parts` (part ids of the one copy selected) only those parts, and
+    // `box` the box round them.
+    drawSelection(frame, selection, parts = null, partBox = null) {
       if (!this.data || !selection.size) return;
       const r = this.renderer;
       const matrix = M.multiply(frame.projection, frame.view);
       const chosen = this.data.placings.filter((placing) => selection.has(placing.id) && this.meshOf(placing.object));
       if (!chosen.length) return;
+      const byPart = Boolean(parts && parts.size);
       r.outline(() => {
-        for (const placing of chosen) r.drawFlat(this.meshOf(placing.object), M.multiply(matrix, placing.matrix), [1, 1, 1, 1]);
+        for (const placing of chosen) {
+          const mesh = this.meshOf(placing.object);
+          if (!byPart) {
+            for (const piece of this.pieces(placing)) r.drawFlat(mesh, M.multiply(matrix, piece.matrix), [1, 1, 1, 1], undefined, piece.range);
+            continue;
+          }
+          // Only the parts selected.
+          (this.data.objects[placing.object].part_list || []).forEach((part, at) => {
+            if (parts.has(part.id)) r.drawFlat(mesh, M.multiply(matrix, this.partMatrix(placing, at)), [1, 1, 1, 1], undefined, part.triangles);
+          });
+        }
       }, SELECTED);
-      const box = this.boxOf((placing) => selection.has(placing.id));
+      const box = byPart ? partBox : this.boxOf((placing) => selection.has(placing.id));
       if (!box) return;
       const key = JSON.stringify(box);
       if (key !== this.cornersOf) {
@@ -456,6 +495,22 @@
       if (!hit) return null;
       if (hit >= 0x800000) return { plate: this.plates[hit - 0x800000] };
       return { placing: hit - 1 };
+    }
+
+    // Which part of a copy is under a pixel, by its place in the object's
+    // list; null where none is (Selection.cpp, its volume mode: Alt).
+    pickPart(frame, x, y, index) {
+      const placing = this.data && this.data.placings[index];
+      const mesh = placing && this.meshOf(placing.object);
+      if (!mesh) return null;
+      const r = this.renderer;
+      const hit = r.pick(x, y, frame.projection, (projection) => {
+        const matrix = M.multiply(projection, frame.view);
+        (this.data.objects[placing.object].part_list || []).forEach((part, at) => {
+          r.drawFlat(mesh, M.multiply(matrix, this.partMatrix(placing, at)), GL.Renderer.pickColour(at + 1), undefined, part.triangles);
+        });
+      });
+      return hit ? hit - 1 : null;
     }
   }
 

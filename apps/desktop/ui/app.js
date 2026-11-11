@@ -1933,6 +1933,7 @@ window.EdgeGL.editor.init({
 window.EdgeGL.objectList.init({
   el,
   listbox,
+  say,
   project: () => state.project,
   plate: (id) => attempt(() => selectPlate(id)),
 });

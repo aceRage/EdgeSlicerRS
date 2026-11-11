@@ -204,7 +204,7 @@
     // The page's own notes on the project shown, for the 3D views.
     mine() {
       const kept = this.model.kept;
-      if (!kept.gl) kept.gl = { camera: null, fitted: '', selection: new Set(), low: {}, moveAt: {}, plateAt: null };
+      if (!kept.gl) kept.gl = { camera: null, fitted: '', selection: new Set(), parts: new Set(), low: {}, moveAt: {}, plateAt: null };
       return kept.gl;
     },
 
@@ -261,6 +261,10 @@
       // What is selected is still selected while it is still there.
       const there = new Set(data.placings.map((placing) => placing.id));
       mine.selection = new Set([...mine.selection].filter((id) => there.has(id)));
+      // Parts selected stay selected while their copy and they are there.
+      const copy = mine.selection.size === 1 ? data.placings.find((placing) => mine.selection.has(placing.id)) : null;
+      const kept = copy ? new Set((data.objects[copy.object].part_list || []).map((part) => part.id)) : new Set();
+      mine.parts = new Set([...(mine.parts || [])].filter((id) => kept.has(id)));
       if (GL.edit) GL.edit.sceneChanged();
       this.frame();
       await Promise.all([this.wantBed(data, turn), this.wantMeshes(data, turn, since, sent)]);
@@ -753,15 +757,33 @@
       const frame = this.matrices();
       const hit = this.scene.pick(this.camera, frame, press.x, press.y, { plates: true });
       if (hit && hit.placing !== undefined) {
-        const id = this.scene.data.placings[hit.placing].id;
-        if (press.button === 0 && (event.ctrlKey || event.metaKey || event.shiftKey)) {
+        const placing = this.scene.data.placings[hit.placing];
+        const id = placing.id;
+        // Alt: "Part selection" (GLCanvas3D.cpp `on_mouse`, its volume
+        // mode): the part under the pointer alone; with Shift as well,
+        // added to the parts of that copy selected, or taken away.
+        const at = event.altKey && press.button === 0 ? this.scene.pickPart(frame, press.x, press.y, hit.placing) : null;
+        const part = at !== null ? (this.scene.data.objects[placing.object].part_list || [])[at] : null;
+        const parts = mine.parts || new Set();
+        if (part && (this.scene.data.objects[placing.object].part_list || []).length > 1) {
+          if (event.shiftKey && mine.selection.has(id) && mine.selection.size === 1 && parts.size) {
+            const chosen = new Set(parts);
+            if (chosen.has(part.id)) chosen.delete(part.id); else chosen.add(part.id);
+            if (chosen.size) this.selectParts(id, chosen); else this.select([id]);
+          } else {
+            this.selectParts(id, [part.id]);
+          }
+        } else if (press.button === 0 && (event.ctrlKey || event.metaKey || event.shiftKey)) {
           // Ctrl or Shift adds an object to those selected, or takes it away.
-          const chosen = new Set(mine.selection);
+          const chosen = parts.size ? new Set() : new Set(mine.selection);
           if (chosen.has(id)) chosen.delete(id); else chosen.add(id);
           this.select(chosen);
+        } else if (press.button === 2 && parts.size && mine.selection.has(id)) {
+          // The right button on a copy whose parts are selected: their menu.
+          if (GL.edit) GL.edit.partMenu(event.clientX, event.clientY);
         } else if (press.button === 0 || press.button === 2) {
           // The right button selects too, and opens the object's menu.
-          if (press.button === 0 || !mine.selection.has(id)) this.select([id]);
+          if (press.button === 0 || !mine.selection.has(id) || parts.size) this.select([id]);
           if (press.button === 2 && GL.edit) GL.edit.menu(event.clientX, event.clientY);
         }
       } else if (hit && hit.plate && press.button === 0) {
@@ -778,8 +800,15 @@
     },
 
     // What is selected: copies of objects, by their `id` in the scene.
+    // While parts are selected it is the one copy they are picked in.
     selection() {
       return this.model && this.model.project ? this.mine().selection : new Set();
+    },
+
+    // The parts selected, by their `id` (`part_list[].id`): empty unless
+    // parts and not objects are selected.
+    parts() {
+      return this.model && this.model.project ? (this.mine().parts || new Set()) : new Set();
     },
 
     // Selects these copies and no others, and tells whoever shows the
@@ -787,6 +816,16 @@
     select(ids) {
       if (!this.model || !this.model.project) return;
       this.mine().selection = new Set(ids);
+      this.mine().parts = new Set();
+      if (GL.edit) GL.edit.selectionChanged();
+      this.frame();
+    },
+
+    // Selects parts of one object, as they are in one copy of it.
+    selectParts(copy, ids) {
+      if (!this.model || !this.model.project) return;
+      this.mine().selection = new Set([copy]);
+      this.mine().parts = new Set(ids);
       if (GL.edit) GL.edit.selectionChanged();
       this.frame();
     },
@@ -873,7 +912,7 @@
         this.scene.drawObjects(frame, 0);
         this.scene.drawBed(frame, { current: plate, all: true, below });
         this.scene.drawObjects(frame, 1);
-        this.scene.drawSelection(frame, mine.selection);
+        this.scene.drawSelection(frame, mine.selection, mine.parts, GL.edit && mine.parts && mine.parts.size ? GL.edit.partBox() : null);
         if (GL.edit) GL.edit.draw(frame);
       } else {
         this.scene.drawBed(frame, { current: plate, all: false, below });

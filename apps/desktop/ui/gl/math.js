@@ -92,6 +92,20 @@ window.EdgeGL = window.EdgeGL || {};
     ];
   };
 
+  // The matrix that undoes an affine one (its last row 0, 0, 0, 1); the
+  // identity for one that squashes space flat.
+  M.invert = (m) => {
+    const n = M.normalMatrix(m);
+    if (!n.some((value) => value !== 0)) return M.identity();
+    // `normalMatrix` is the inverse transposed: transposed back.
+    const out = [n[0], n[3], n[6], 0, n[1], n[4], n[7], 0, n[2], n[5], n[8], 0, 0, 0, 0, 1];
+    const t = M.direction(out, [m[12], m[13], m[14]]);
+    out[12] = -t[0];
+    out[13] = -t[1];
+    out[14] = -t[2];
+    return out;
+  };
+
   // The eight corners of a box [[x, y, z], [x, y, z]].
   M.corners = (box) => Array.from({ length: 8 }, (_, at) => [0, 1, 2].map((axis) => box[(at >> axis) & 1][axis]));
   M.union = (a, b) => {

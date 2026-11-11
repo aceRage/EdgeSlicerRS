@@ -9,6 +9,29 @@
 (function (GL) {
   // What a part is, in the reference's words (ModelVolumeType).
   const PART_KINDS = { part: 'Part', negative: 'Negative Part', modifier: 'Modifier', support_blocker: 'Support Blocker', support_enforcer: 'Support Enforcer', precise_seam: 'Precise Seam' };
+  // Each kind's own mark before a part's name, as the reference marks
+  // its volumes (`ADD_VOLUME_MENU_ITEMS`' icons): the page's own drawings.
+  const KIND_ICONS = {
+    part: 'M8,1.5l6,3v7l-6,3l-6-3v-7ZM2,4.5l6,3l6-3M8,7.5v7',
+    negative: 'M2.5,2.5h11v11h-11ZM5,8h6',
+    modifier: 'M2.5,2.5h11v11h-11ZM5,6h6M5,10h6M7,4.5v3M9,8.5v3',
+    support_blocker: 'M8,1.5a6.5,6.5,0,1,1,0,13a6.5,6.5,0,1,1,0-13ZM3.4,3.4l9.2,9.2',
+    support_enforcer: 'M8,1.5a6.5,6.5,0,1,1,0,13a6.5,6.5,0,1,1,0-13ZM8,4.5v7M4.5,8h7',
+    precise_seam: 'M2.5,2.5h11v11h-11ZM8,2.5v2M8,6.5v3M8,11.5v2',
+  };
+  // GUI_ObjectList.cpp `check_last_selection`: one kind of row at a time.
+  const CONFLICT_OBJECT = 'Selection conflicts\n\nIf the first selected item is an object, the second should also be an object.';
+  const CONFLICT_PART = 'Selection conflicts\n\nIf the first selected item is a part, the second should be a part in the same object.';
+  const icon = (path) => {
+    const node = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
+    node.setAttribute('viewBox', '0 0 16 16');
+    node.setAttribute('aria-hidden', 'true');
+    node.classList.add('obj-kind');
+    const line = document.createElementNS('http://www.w3.org/2000/svg', 'path');
+    line.setAttribute('d', path);
+    node.append(line);
+    return node;
+  };
   const css = (colour) => `rgb(${colour.map((part) => Math.round(part * 255)).join(',')})`;
 
   const objects = {
@@ -113,7 +136,7 @@
       name.addEventListener('click', (event) => this.pick(node, event));
       name.addEventListener('contextmenu', (event) => {
         event.preventDefault();
-        if (!ids.every((id) => GL.edit.stage.selection().has(id))) GL.edit.stage.select(ids);
+        if (!ids.every((id) => GL.edit.stage.selection().has(id)) || GL.edit.stage.parts().size) GL.edit.stage.select(ids);
         GL.edit.menu(event.clientX, event.clientY);
       });
       const node = el('div', { className: `obj-row${row.child ? ' child' : ''}${printable ? '' : ' off'}` }, name, eye);
@@ -143,24 +166,84 @@
       return node;
     },
 
-    // A part of an object, read only: its name, what it is, its
-    // filament. A click selects the object; a part of its own cannot be
-    // selected, moved or set yet.
+    // A part of an object (the reference's volume row): the mark of its
+    // kind and its name (renamed by a double click or F2), and for a part
+    // or a modifier its filament, "default" being its object's. A click
+    // selects it as it is in the copies the row is under; its menu is the
+    // part menu.
     partRow(row, ids, swatch) {
-      const { el } = this.host;
+      const { el, listbox } = this.host;
       const { part } = row;
       const kind = PART_KINDS[part.kind] || 'Part';
       const label = part.name || `${kind} ${row.number}`;
-      const name = el('button', { type: 'button', className: 'obj-name', textContent: label, title: `${label}\n${kind}` });
+      const name = el('button', { type: 'button', className: 'obj-name', title: `${label}\n${kind}` }, icon(KIND_ICONS[part.kind] || KIND_ICONS.part), el('span', { className: 'obj-label', textContent: label }));
       const node = el('div', { className: `obj-row child part${part.kind === 'part' ? '' : ' helper'}` }, name, el('span'));
       name.addEventListener('click', (event) => this.pick(node, event));
+      name.addEventListener('dblclick', () => this.renamePart(row.object.id, part.id));
+      name.addEventListener('keydown', (event) => { if (event.key === 'F2') { event.preventDefault(); this.renamePart(row.object.id, part.id); } });
+      name.addEventListener('contextmenu', (event) => {
+        event.preventDefault();
+        const stage = GL.edit.stage;
+        if (!stage.parts().has(part.id)) stage.selectParts(ids[0], [part.id]);
+        GL.edit.partMenu(event.clientX, event.clientY);
+      });
       node.setAttribute('role', 'treeitem');
       node.dataset.copies = ids.join(',');
       node.dataset.object = String(row.object.id);
+      node.dataset.part = String(part.id);
       const cell = el('span', { className: 'obj-fila' });
-      if (part.kind === 'part') cell.append(swatch(part.filament), el('span', { className: 'obj-fila-number', textContent: String(part.filament) }));
+      if (part.kind === 'part' || part.kind === 'modifier') {
+        // GUI_ObjectList.cpp: "default" and each filament
+        // (ExtraRenderers.cpp `BitmapChoiceRenderer::CreateEditorCtrl`).
+        const filaments = GL.edit.filamentCount();
+        const follows = row.object.own_filament || 1;
+        const select = el('select');
+        select.setAttribute('aria-label', `Filament of ${label}`);
+        // "default" reads in the list; closed, the cell shows the number
+        // it then prints in, as the reference's cell shows the object's.
+        const fallback = new Option('default', '');
+        fallback.label = String(follows);
+        select.append(fallback);
+        for (let filament = 1; filament <= Math.max(filaments, part.own || 0); filament += 1) select.append(new Option(String(filament), String(filament)));
+        select.value = part.own ? String(part.own) : '';
+        select.title = part.own ? `Filament ${part.own}` : `default: the object's, filament ${follows}`;
+        select.addEventListener('change', () => {
+          GL.edit.commit({ op: 'part_filament', object: row.object.id, parts: [part.id], filament: Number(select.value) || 0 });
+        });
+        const list = listbox(select, { bare: true, decorate: (item, option) => {
+          if (!option.value) item.querySelector('.lb-text').textContent = 'default';
+          item.prepend(swatch(option.value ? Number(option.value) : follows));
+        } });
+        cell.append(swatch(part.own || (part.kind === 'part' ? part.filament : follows)), list);
+      }
       node.append(cell);
       return node;
+    },
+
+    // The name of a part becomes a field to type another into.
+    renamePart(object, part) {
+      const row = this.rows().find((held) => held.dataset.part === String(part));
+      const name = row && row.querySelector('.obj-name');
+      if (!name) return;
+      const { el } = this.host;
+      const text = name.querySelector('.obj-label').textContent;
+      const input = el('input', { type: 'text', className: 'obj-rename', value: text, spellcheck: false });
+      input.setAttribute('aria-label', 'Name');
+      let done = false;
+      const end = (take) => {
+        if (done) return;
+        done = true;
+        const next = input.value.trim();
+        if (take && next && next !== text) GL.edit.commit({ op: 'part_rename', object, part, name: next }).then((made) => { if (!made) this.render(); });
+        else input.replaceWith(name);
+      };
+      input.addEventListener('keydown', (event) => {
+        if (event.key === 'Enter') { event.preventDefault(); end(true); }
+        if (event.key === 'Escape') { event.preventDefault(); event.stopPropagation(); end(false); }
+      });
+      input.addEventListener('blur', () => end(true));
+      name.replaceWith(input);
+      input.select();
     },
 
     rows() {
@@ -172,9 +255,30 @@
     pick(node, event) {
       const stage = GL.edit.stage;
       const ids = node.dataset.copies.split(',').map(Number);
+      const adding = event.ctrlKey || event.metaKey || event.shiftKey;
+      const parts = stage.parts();
+      if (node.dataset.part) {
+        // A part: alone, or with Ctrl or Shift added to the parts of the
+        // same object selected, or taken away.
+        const part = Number(node.dataset.part);
+        const object = node.dataset.object;
+        const sameObject = parts.size && this.rows().some((row) => row.dataset.object === object && row.dataset.part && parts.has(Number(row.dataset.part)));
+        if (adding && parts.size && !sameObject) { this.host.say(CONFLICT_PART, false); return; }
+        if (adding && !parts.size && stage.selection().size) { this.host.say(CONFLICT_OBJECT, false); return; }
+        this.anchor = node.dataset.copies;
+        if (adding && parts.size) {
+          const chosen = new Set(parts);
+          if (chosen.has(part)) chosen.delete(part); else chosen.add(part);
+          if (chosen.size) stage.selectParts([...stage.selection()][0], chosen); else stage.select([]);
+          return;
+        }
+        stage.selectParts(ids[0], [part]);
+        return;
+      }
+      if (adding && parts.size) { this.host.say(CONFLICT_PART, false); return; }
       let chosen;
       if (event.shiftKey && this.anchor) {
-        const rows = this.rows();
+        const rows = this.rows().filter((row) => !row.dataset.part);
         const [from, to] = [rows.findIndex((row) => row.dataset.copies === this.anchor), rows.indexOf(node)];
         const [low, high] = from < 0 ? [to, to] : [Math.min(from, to), Math.max(from, to)];
         chosen = new Set(rows.slice(low, high + 1).flatMap((row) => row.dataset.copies.split(',').map(Number)));
@@ -194,9 +298,12 @@
     mark() {
       if (!this.node || !GL.edit) return;
       const selection = GL.edit.stage.selection();
+      const parts = GL.edit.stage.parts();
       for (const row of this.rows()) {
         const ids = row.dataset.copies.split(',').map(Number);
-        row.setAttribute('aria-selected', String(ids.every((id) => selection.has(id))));
+        // While parts are selected, their rows and no others.
+        const on = parts.size ? Boolean(row.dataset.part) && parts.has(Number(row.dataset.part)) && ids.some((id) => selection.has(id)) : !row.dataset.part && ids.every((id) => selection.has(id));
+        row.setAttribute('aria-selected', String(on));
       }
     },
 

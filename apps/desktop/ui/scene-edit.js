@@ -190,12 +190,55 @@
       return this.host.tab() === 'prepare' && Boolean(this.host.project());
     },
 
-    // The copies selected, with the box round them.
+    // Whether parts, not objects, are selected.
+    partMode() {
+      return this.stage.parts().size > 0;
+    },
+
+    // The parts selected, each as the tools take a copy: its `matrix` from
+    // its own coordinates to the scene's (the copy's times the part's own,
+    // `C` and `P`), its own box (`local`) and the box round it in the scene.
+    partItems() {
+      const data = this.data();
+      const parts = this.stage.parts();
+      if (!data || !parts.size) return [];
+      const copy = data.placings.find((placing) => this.stage.selection().has(placing.id));
+      if (!copy) return [];
+      const object = data.objects[copy.object];
+      const items = [];
+      (object.part_list || []).forEach((part, at) => {
+        if (!parts.has(part.id) || !part.box) return;
+        const matrix = M.multiply(copy.matrix, part.matrix);
+        items.push({
+          id: part.id, part, at, copy, object: copy.object, objectId: object.id,
+          C: copy.matrix, P: part.matrix, matrix, local: part.box, box: boxUnder(matrix, part.box), printable: copy.printable,
+        });
+      });
+      return items;
+    },
+
+    // The box round the parts selected, for the scene to mark.
+    partBox() {
+      const chosen = this.partMode() ? this.chosen() : null;
+      return chosen ? chosen.box : null;
+    },
+
+    // The copies selected, with the box round them; or the parts selected,
+    // as copies of their own (`partItems`).
     chosen() {
       const data = this.data();
       if (!data) return null;
       const selection = this.stage.selection();
-      const copies = data.placings.filter((placing) => selection.has(placing.id));
+      if (this.partMode()) {
+        const held = this.held && this.held.starts && this.held.starts[0] && this.held.starts[0].copy.at !== undefined ? this.held.starts.map((start) => start.copy) : null;
+        return this.gather(held || this.partItems());
+      }
+      return this.gather(data.placings.filter((placing) => selection.has(placing.id)));
+    },
+
+    // What the tools need of some copies (or parts): the box round them,
+    // its middle, what a turn goes about, how far out the handles are.
+    gather(copies) {
       let box = null;
       for (const copy of copies) box = M.union(box, copy.box);
       if (!copies.length || !box) return null;
@@ -209,8 +252,10 @@
       return { copies, box, centre, pivot, radius: M.length(M.sub(box[1], box[0])) / 2 };
     },
 
-    // An object's own box, from its mesh; null until the mesh is here.
+    // An object's own box, from its mesh; null until the mesh is here. A
+    // part's own box, for a part.
     localBox(placing) {
+      if (placing.local) return placing.local;
       const mesh = this.stage.scene.meshOf(placing.object);
       return mesh && mesh.box ? mesh.box : null;
     },
@@ -218,10 +263,12 @@
     // ---- the session ----
 
     // Shows what the session answered an edit with.
-    take(answer, { select = false } = {}) {
+    take(answer, { select = false, part = false } = {}) {
       const project = answer.project;
+      const copy = [...this.stage.selection()][0];
       this.stage.adopt(project, answer.scene);
       if (select && answer.made && answer.made.length) this.stage.select(answer.made);
+      if (part && answer.part && copy !== undefined) this.stage.selectParts(copy, [answer.part]);
       this.host.applied(project);
       this.host.say(answer.note || '', false);
       this.refresh();
@@ -259,8 +306,21 @@
     },
 
     // Sets where the copies selected stand: each by its matrix in the scene.
+    // Parts are set within their object: the copy's matrix taken back off.
     place(name, copies) {
+      if (copies.length && copies[0].local) {
+        const back = M.invert(copies[0].C);
+        return this.commit({ op: 'part_transform', object: copies[0].objectId, name, parts: copies.map((item) => ({ id: item.id, matrix: M.multiply(back, item.matrix) })) });
+      }
       return this.commit({ op: 'transform', name, copies: copies.map((copy) => ({ id: copy.id, matrix: copy.matrix })) });
+    },
+
+    // While parts are dragged the scene draws them where they are taken.
+    showMoving(items) {
+      const scene = this.stage.scene;
+      if (!items || !items.length || !items[0].local) { scene.moving = null; return; }
+      const back = M.invert(items[0].C);
+      scene.moving = { object: items[0].object, parts: new Map(items.map((item) => [item.at, M.chain(back, item.matrix, M.invert(item.P))])) };
     },
 
     // ---- the toolbar's own ----
@@ -273,8 +333,11 @@
     },
 
     // The one object what is selected is of, or null (Plater.cpp
-    // `get_selected_object_idx`: splitting is for one object).
+    // `get_selected_object_idx`: splitting is for one object). Null while
+    // parts are selected: "Split to objects" is not for a part
+    // (GUI_ObjectList.cpp `is_splittable`).
     splitTarget() {
+      if (this.partMode()) return null;
       const chosen = this.chosen();
       const data = this.data();
       if (!chosen || !data) return null;
@@ -285,9 +348,18 @@
     // "Split to objects" or "Split to parts" (Plater.cpp `split_object`,
     // `split_volume`); what is split to objects is selected after.
     split(toObjects) {
+      const part = this.splitPart();
+      if (!toObjects && part) { this.commit({ op: 'part_split', object: part.objectId, part: part.id }); return; }
       const target = this.splitTarget();
       if (!target || !(toObjects ? target.split.objects : target.split.parts)) return;
       this.commit({ op: toObjects ? 'split_objects' : 'split_parts', object: target.id }, { select: toObjects });
+    },
+
+    // The one part selected, when it can be split ("Split" of a part:
+    // `ModelVolume::is_splittable`), else null.
+    splitPart() {
+      const items = this.partItems();
+      return items.length === 1 && items[0].part.split ? items[0] : null;
     },
 
     arrange(all) {
@@ -296,6 +368,11 @@
     },
 
     remove() {
+      if (this.partMode()) {
+        const items = this.partItems();
+        if (items.length) this.commit({ op: 'part_delete', object: items[0].objectId, parts: items.map((item) => item.id) });
+        return;
+      }
       const ids = [...this.stage.selection()];
       if (ids.length) this.commit({ op: 'delete', copies: ids });
     },
@@ -312,9 +389,10 @@
       this.commit({ op: 'clone', copies, ...args }, { select: true });
     },
 
-    // Whether a tool can be opened for what is selected.
+    // Whether a tool can be opened for what is selected. "Lay on face" is
+    // for a whole object (GLGizmoFlatten.cpp `is_selection_supported`).
     usable(tool, chosen = this.chosen()) {
-      return Boolean(chosen) && (!TOOLS[tool].one || chosen.copies.length === 1);
+      return Boolean(chosen) && (!TOOLS[tool].one || (chosen.copies.length === 1 && !this.partMode()));
     },
 
     setTool(tool) {
@@ -353,6 +431,20 @@
       const one = copies.length === 1 ? copies[0] : null;
       const mirror = (axis) => () => this.commit({ op: 'mirror', copies: [one.id], axis });
       const target = this.splitTarget();
+      // "Add part", "Add negative part" and the rest (GUI_Factories.cpp
+      // `append_menu_items_add_volume`), for one object: from a file
+      // ("Load...") or a cube. The other shapes wait for the engine to
+      // make them.
+      const object = one ? data.objects[one.object] : null;
+      const adding = [['Add part', 'part'], ['Add negative part', 'negative'], ['Add modifier', 'modifier'], ['Add support blocker', 'support_blocker'], ['Add support enforcer', 'support_enforcer']]
+        .map(([label, kind]) => [label, null, {
+          disabled: !object,
+          items: [
+            ['Load...', () => this.addPart(object, one, kind)],
+            null,
+            ['Cube', () => this.commit({ op: 'part_add', object: object.id, copy: one.id, kind, shape: 'Cube' }, { part: true }), { disabled: !this.host.settled() || !this.host.settled().printer }],
+          ],
+        }]);
       const items = [
         ['Split', null, {
           disabled: !target || !target.split.objects,
@@ -372,11 +464,97 @@
           ],
         }],
         ['Delete Del', () => this.remove()],
+        null,
+        ...adding,
+        null,
         ['Clone Ctrl+K', () => this.clone([...selection])],
         ['Printable', () => this.commit({ op: 'printable', copies: [...selection], value: !printable }), { checked: printable }],
       ];
       if (copies.length === 1 && GL.objects) items.push(['Rename', () => GL.objects.rename(data.objects[copies[0].object].id)]);
       this.host.menu(x, y, items);
+    },
+
+    // "Load..." under "Add part" and the rest: a file's geometry as a part
+    // of the object (GUI_ObjectList.cpp `load_subobject`).
+    async addPart(object, copy, kind) {
+      const path = await this.host.pick('model', this.host.remembered.get('model') || '');
+      if (!path) return;
+      if (await this.commit({ op: 'part_add', object: object.id, copy: copy.id, kind, path }, { part: true })) this.host.remembered.set('model', path);
+    },
+
+    // The menu of the parts selected (GUI_Factories.cpp
+    // `create_bbl_part_menu`, the one the object list shows, and
+    // `part_menu`). What the model cannot do yet is left out: "Edit
+    // text", "Repair", "Simplify", "Separate", "Reload from disk" and the
+    // rest (UI_PARITY.md, section 13).
+    partMenu(x, y) {
+      const items = this.partItems();
+      const data = this.data();
+      if (!items.length || !data) return;
+      const object = items[0].objectId;
+      const ids = items.map((item) => item.id);
+      const box = this.partBox();
+      const kinds = new Set(items.map((item) => item.part.kind));
+      const project = this.host.project();
+      const shift = (by) => () => this.place('Move Object', items.map((item) => ({ ...item, matrix: M.multiply(M.translation(...by), item.matrix) })));
+      // The middle of the plate shown (`PartPlate::get_center_origin`).
+      const plate = this.stage.scene.plate(project.plate);
+      const middle = plate && plate.box ? [(plate.box[0] + plate.box[2]) / 2, (plate.box[1] + plate.box[3]) / 2] : null;
+      const centre = box ? M.centre(box) : null;
+      const centred = !middle || !centre || (Math.abs(centre[0] - middle[0]) < 1e-6 && Math.abs(centre[1] - middle[1]) < 1e-6);
+      const mirror = (axis) => () => this.commit({ op: 'part_mirror', copy: items[0].copy.id, parts: ids, axis });
+      const part = this.splitPart();
+      // "Change type": the reference asks in a dialog ("Choose part type");
+      // here the same choices are a sub-menu.
+      const types = [['Part', 'part'], ['Negative Part', 'negative'], ['Modifier', 'modifier'], ['Support Blocker', 'support_blocker'], ['Support Enforcer', 'support_enforcer'], ['Precise Seam', 'precise_seam']];
+      const filaments = this.filamentCount();
+      const own = items.length === 1 ? items[0].part.own : undefined;
+      const menu = [
+        ['Delete Del', () => this.remove(), { title: 'Delete the selected object' }],
+        ['Center', shift(centre && middle ? [middle[0] - centre[0], middle[1] - centre[1], 0] : [0, 0, 0]), { disabled: centred }],
+        ['Drop', shift([0, 0, box ? -box[0][2] : 0]), { disabled: !box || Math.abs(box[0][2]) <= 0.001 }],
+        ['Mirror', null, {
+          title: 'Mirror object',
+          items: [
+            ['Along X axis', mirror('x'), { title: 'Mirror along the X axis' }],
+            ['Along Y axis', mirror('y'), { title: 'Mirror along the Y axis' }],
+            ['Along Z axis', mirror('z'), { title: 'Mirror along the Z axis' }],
+          ],
+        }],
+        ['Split', null, {
+          disabled: !part,
+          title: 'Split the selected object',
+          items: [
+            ['To objects', null, { disabled: true, title: 'Split the selected object into multiple objects' }],
+            ['To parts', () => this.split(false), { disabled: !part, title: 'Split the selected object into multiple parts' }],
+          ],
+        }],
+        null,
+        ['Change type', null, {
+          disabled: items.length !== 1,
+          items: types.map(([label, kind]) => [label, () => this.commit({ op: 'part_type', object, parts: ids, kind }), { checked: kinds.size === 1 && kinds.has(kind) }]),
+        }],
+      ];
+      // "Change Filament", for parts and modifiers, when there is more
+      // than one filament (`append_menu_item_change_filament`).
+      if (filaments > 1 && [...kinds].every((kind) => kind === 'part' || kind === 'modifier')) {
+        const names = (project.choices && project.choices.filaments) || [];
+        const set = (filament) => () => this.commit({ op: 'part_filament', object, parts: ids, filament });
+        menu.push([items.length === 1 ? 'Change Filament' : 'Set Filament for selected items', null, {
+          title: 'Change Filament',
+          items: [
+            ['Default', set(0), { checked: own === null }],
+            ...Array.from({ length: filaments }, (_, at) => [names[at] || `Filament ${at + 1}`, set(at + 1), { checked: own === at + 1 }]),
+          ],
+        }]);
+      }
+      this.host.menu(x, y, menu);
+    },
+
+    // How many filaments the project has to choose from.
+    filamentCount() {
+      const project = this.host.project();
+      return Math.max(project.filament_count || 1, (project.colours || []).length, ((project.choices || {}).filaments || []).length, 1);
     },
 
     // The menu of a plate (GUI_Factories.cpp `create_plate_menu`).
@@ -404,6 +582,9 @@
         else if (key === 'y' || (key === 'z' && event.shiftKey)) take(() => this.step('redo'));
         else if (event.shiftKey) return;
         else if (key === 'i') take(() => this.add());
+        // Copying, pasting and cloning are of objects; a part's own wait
+        // for the model to copy parts.
+        else if (this.partMode()) return;
         else if (key === 'c' && this.stage.selection().size) take(() => { this.copied = [...this.stage.selection()]; });
         else if (key === 'v' && this.copied.length) take(() => this.clone(this.copied, true));
         else if (key === 'k' && this.stage.selection().size) take(() => this.clone([...this.stage.selection()]));
@@ -433,7 +614,7 @@
         const shift = M.translation(this.owed[0], this.owed[1], 0);
         this.owed = null;
         if (!chosen) return;
-        await this.place('Tool Move', chosen.copies.map((copy) => ({ id: copy.id, matrix: M.multiply(shift, copy.matrix) })));
+        await this.place('Tool Move', chosen.copies.map((copy) => ({ ...copy, matrix: M.multiply(shift, copy.matrix) })));
       }
     },
 
@@ -478,7 +659,7 @@
       b.arrange.disabled = this.busy || !data || !data.placings.length || !printer;
       const target = this.splitTarget();
       b.splitObjects.disabled = this.busy || !target || !target.split.objects;
-      b.splitParts.disabled = this.busy || !target || !target.split.parts;
+      b.splitParts.disabled = this.busy || !((target && target.split.parts) || this.splitPart());
       b.undo.disabled = this.busy || !history.undo;
       b.redo.disabled = this.busy || !history.redo;
       b.undo.title = `Undo [Ctrl+Z]${history.undo ? `\n${history.undo}` : ''}`;
@@ -519,8 +700,9 @@
       if (this.tool === 'move') {
         // An arrow along X and one along Y. An object is not lifted off
         // the bed and the engine does not print one sunk under it, so
-        // there is none along Z.
-        return [0, 1].map((axis) => ({
+        // there is none along Z; a part has one, to move it up or down
+        // within its object.
+        return (this.partMode() ? [0, 1, 2] : [0, 1]).map((axis) => ({
           kind: 'move', id: `move-${axis}`, axis, from: chosen.centre, to: M.along(chosen.centre, UNIT[axis], ARROW * mm),
         }));
       }
@@ -621,12 +803,24 @@
       const frame = this.stage.matrices();
       const hit = this.stage.scene.pick(this.stage.camera, frame, x, y, { plates: false });
       if (!hit || hit.placing === undefined) return null;
-      return { kind: 'object', id: this.data().placings[hit.placing].id, x, y };
+      const placing = this.data().placings[hit.placing];
+      // With Alt the part under the pointer is taken, and moved within
+      // its object (GLCanvas3D.cpp `on_mouse`, the volume mode).
+      if (event.altKey && (this.data().objects[placing.object].part_list || []).length > 1) {
+        const at = this.stage.scene.pickPart(frame, x, y, hit.placing);
+        const part = at === null ? null : this.data().objects[placing.object].part_list[at];
+        if (part) return { kind: 'object', id: placing.id, part: part.id, x, y };
+      }
+      return { kind: 'object', id: placing.id, x, y };
     },
 
     // A drag begins: where everything selected stands is noted.
     begin(grab) {
-      if (grab.kind === 'object' && !this.stage.selection().has(grab.id)) this.stage.select([grab.id]);
+      if (grab.kind === 'object' && grab.part !== undefined) {
+        if (!this.stage.selection().has(grab.id) || !this.stage.parts().has(grab.part)) this.stage.selectParts(grab.id, [grab.part]);
+      } else if (grab.kind === 'object' && (!this.stage.selection().has(grab.id) || this.partMode())) {
+        this.stage.select([grab.id]);
+      }
       const chosen = this.chosen();
       if (!chosen) return false;
       const camera = this.stage.camera;
@@ -635,7 +829,7 @@
       grab.radius = RING_OFFSET + chosen.radius;
       if (grab.kind === 'object') {
         // Across the bed, at the height of the middle of what is held.
-        const held = chosen.copies.find((copy) => copy.id === grab.id) || chosen.copies[0];
+        const held = chosen.copies.find((copy) => copy.id === (grab.part !== undefined ? grab.part : grab.id)) || chosen.copies[0];
         grab.height = held.box ? (held.box[0][2] + held.box[1][2]) / 2 : 0;
         grab.from = camera.onGround(grab.x, grab.y, grab.height);
         if (!grab.from) return false;
@@ -744,6 +938,7 @@
         }
         grab.said = `${round(ratio * 100, 1)}%`;
       }
+      this.showMoving(grab.starts.map((start) => start.copy));
       this.showFields(true);
     },
 
@@ -763,6 +958,7 @@
         start.copy.matrix = start.matrix;
         start.copy.box = start.box;
       }
+      this.stage.scene.moving = null;
     },
 
     // The button is let go: the edit is made, or with `done` false
@@ -780,6 +976,7 @@
       if (grab.kind === 'rotate' && grab.angle) this.fields.relative[grab.handle.axis] += degrees(grab.angle);
       const kept = this.fields.of;
       const made = await this.place(name, grab.starts.map((start) => start.copy));
+      this.stage.scene.moving = null;
       if (!made) this.revert(grab);
       else if (grab.kind === 'rotate') this.fields.of = kept;
       this.refresh();
@@ -929,11 +1126,15 @@
       const world = [0, 1, 2].map((axis) => chosen.box[1][axis] - chosen.box[0][axis]);
       const out = { one, local, position: [chosen.centre[0], chosen.centre[1], chosen.box[0][2]], world, scale: [100, 100, 100], size: world, angles: null, turned: false };
       if (one) {
-        const { sizes, rows } = turnOf(one.matrix);
+        // A part's scale and turn are its own, within its object, as the
+        // reference gives a volume's (GizmoObjectManipulation.cpp
+        // `update_settings_value`); its size is as it is printed.
+        const { sizes, rows } = turnOf(one.P || one.matrix);
         out.scale = sizes.map((size) => size * 100);
         out.angles = anglesOf(rows).map(degrees);
         out.turned = out.angles.some((angle) => Math.abs(angle) > 1e-4);
-        if (local && this.fields.frame === 'object') out.size = [0, 1, 2].map((axis) => (local[1][axis] - local[0][axis]) * sizes[axis]);
+        const printed = turnOf(one.matrix).sizes;
+        if (local && this.fields.frame === 'object') out.size = [0, 1, 2].map((axis) => (local[1][axis] - local[0][axis]) * printed[axis]);
       }
       return out;
     },
@@ -947,7 +1148,7 @@
       this.panel.hidden = !chosen;
       if (!chosen) return;
       const { el } = this.host;
-      const of = `${this.tool}|${[...this.stage.selection()].join(',')}|${this.fields.frame}`;
+      const of = `${this.tool}|${[...this.stage.selection()].join(',')}|${[...this.stage.parts()].join(',')}|${this.fields.frame}`;
       if (this.fields.of !== of) {
         this.fields.of = of;
         this.fields.relative = [0, 0, 0];
@@ -1007,8 +1208,9 @@
         const object = this.fields.frame === 'object' && m.one;
         grid.append(frame(), ...head.slice(1), el('span'),
           // In the object's own coordinates the fields are how far to go
-          // along its own axes; Z is the lowest point, which stays on the bed.
-          ...row('Position', object ? [0, 0, 0] : m.position, { unit: 'mm', key: object ? 'along' : 'position', off: [2] }), el('span'));
+          // along its own axes; Z is the lowest point, which stays on the
+          // bed. A part's Z can be typed: it moves within its object.
+          ...row('Position', object ? [0, 0, 0] : m.position, { unit: 'mm', key: object ? 'along' : 'position', off: this.partMode() ? [] : [2] }), el('span'));
       } else if (this.tool === 'rotate') {
         grid.append(el('span', { className: 'edit-label', textContent: 'World', title: 'Coordinate system used for transform actions.' }), ...head.slice(1), el('span'),
           ...row('Relative', this.fields.relative, { unit: '°', key: 'relative' }),
@@ -1029,7 +1231,10 @@
           ...row('Size', m.size, { unit: 'mm', key: 'size', min: 0.001 }), el('span'));
         foot = [el('label', { className: 'edit-check' }, uniform, ' uniform scale')];
       }
-      this.panel.replaceChildren(el('h3', { textContent: 'Object Operations' }), grid, ...foot);
+      // GizmoObjectManipulation.cpp `update_settings_value`: one part is a
+      // volume, several a group.
+      const title = !this.partMode() ? 'Object Operations' : chosen.copies.length === 1 ? 'Volume Operations' : 'Group Operations';
+      this.panel.replaceChildren(el('h3', { textContent: title }), grid, ...foot);
     },
 
     // A number typed into a field, or one of the reset buttons.
@@ -1037,7 +1242,7 @@
       const chosen = this.chosen();
       if (!chosen || this.busy) return;
       const m = this.measured(chosen);
-      const all = (matrixOf) => chosen.copies.map((copy) => ({ id: copy.id, matrix: matrixOf(copy) }));
+      const all = (matrixOf) => chosen.copies.map((copy) => ({ ...copy, matrix: matrixOf(copy) }));
       const spin = (rows) => about(chosen.pivot, linear(rows));
       const keep = () => { const of = this.fields.of; return () => { this.fields.of = of; this.showFields(); }; };
       if (key === 'position' || key === 'along') {
@@ -1045,7 +1250,7 @@
         // Along the world's axis to where the number says, or that far
         // along the object's own.
         const by = key === 'position' ? M.scale(UNIT[axis], value - m.position[axis]) : M.scale(M.normalize(col(m.one.matrix, axis)), value);
-        by[2] = 0;
+        if (!this.partMode()) by[2] = 0;
         const shift = M.translation(...by);
         this.place('Set Position', all((copy) => M.multiply(shift, copy.matrix)));
       } else if (key === 'relative' || key === 'relative-reset') {
@@ -1071,14 +1276,17 @@
         if (!m.one || (key === 'absolute' && !Number.isFinite(value))) { this.showFields(); return; }
         const angles = key === 'absolute' ? m.angles.map((angle, a) => radians(a === axis ? value : angle)) : [0, 0, 0];
         const rows = turnFrom(angles);
-        const { sizes, flip } = turnOf(m.one.matrix);
-        const matrix = m.one.matrix.slice();
-        for (let c = 0; c < 3; c += 1) for (let r = 0; r < 3; r += 1) matrix[4 * c + r] = rows[r][c] * sizes[c] * (c === 0 && flip ? -1 : 1);
+        // A part's own turn is set within its object.
+        const own = m.one.P || m.one.matrix;
+        const { sizes, flip } = turnOf(own);
+        const next = own.slice();
+        for (let c = 0; c < 3; c += 1) for (let r = 0; r < 3; r += 1) next[4 * c + r] = rows[r][c] * sizes[c] * (c === 0 && flip ? -1 : 1);
         // About the middle of what is selected, which stays where it is.
         const local = m.local || [[0, 0, 0], [0, 0, 0]];
-        const [was, now] = [M.point(m.one.matrix, M.centre(local)), M.point(matrix, M.centre(local))];
-        for (let r = 0; r < 3; r += 1) matrix[12 + r] += was[r] - now[r];
-        this.place('Set Orientation', [{ id: m.one.id, matrix }]);
+        const [was, now] = [M.point(own, M.centre(local)), M.point(next, M.centre(local))];
+        for (let r = 0; r < 3; r += 1) next[12 + r] += was[r] - now[r];
+        const matrix = m.one.C ? M.multiply(m.one.C, next) : next;
+        this.place('Set Orientation', [{ ...m.one, matrix }]);
       } else if (key === 'scale' || key === 'size' || key === 'scale-reset') {
         let by;
         if (key === 'scale-reset') {
@@ -1090,7 +1298,7 @@
           by = whole ? [ratio, ratio, ratio] : UNIT[axis].map((on) => (on ? ratio : 1));
         }
         if (m.one && m.local) {
-          this.place('Set Scale', [{ id: m.one.id, matrix: this.sized(m.one.matrix, m.local, by) }]);
+          this.place('Set Scale', [{ ...m.one, matrix: this.sized(m.one.matrix, m.local, by) }]);
         } else {
           const grow = about(chosen.centre, M.scaling(by[0], by[0], by[0]));
           this.place('Set Scale', all((copy) => M.multiply(grow, copy.matrix)));
