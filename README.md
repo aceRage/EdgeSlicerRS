@@ -33,7 +33,7 @@ replaces it until output matches on the printers we care about.
 | `crates/edge-engine` | The whole pipeline behind one call, for whatever drives it: open a model and list its plates, settle its settings, slice with progress and cancel, G-code, a layer's lines for drawing, a vendor's presets by printer, and its printer models with the presets, picture and sizes of each |
 | `crates/edge-cli` | The `edge` command line |
 | `tools/make_defaults.py` | Asks the reference for its default of every setting and writes the table `edge-config` carries; run again when the pin moves |
-| `tools/make_fixture.py` | Writes small test 3MFs (parts that need supports or a brim, a plain cube, two blocks in two filaments, a comb with thin teeth on the bed, three tiers with a top surface on each, bars over a base for small bridges over infill, a slab with round holes for the hole options, a slab with pockets underneath, three round ones for arc fitting: a post, a post with a hole, a slab with a wide curve and tight ones, and a post that widens as it rises for scarf seams) to compare with the reference on |
+| `tools/make_fixture.py` | Writes small test 3MFs (parts that need supports or a brim, a plain cube, two blocks in two filaments, a comb with thin teeth on the bed, three tiers with a top surface on each, bars over a base for small bridges over infill, a slab with round holes for the hole options, a slab with holes that narrow on the way up for bridging them, a slab with pockets underneath, three round ones for arc fitting: a post, a post with a hole, a slab with a wide curve and tight ones, and a post that widens as it rises for scarf seams) to compare with the reference on |
 | `tools/make_project.py` | Writes one of those parts as a project whose settings are named presets, with as many filaments as are named: how the test prints for a printer are made |
 | `reference/EdgeSlicer` | Pinned submodule of the C++ slicer: profiles, test models, behaviour to match. Read-only here |
 | `vendor/cpp_map` | A copy of the `cpp_map` crate (MIT or Apache-2.0), the skip list under the Voronoi library, changed so that a list is the same shape on every run; patched in for the published crate by both workspaces. Its README says what was changed. Not a member of the workspace, and kept in its own formatting |
@@ -480,8 +480,8 @@ Known gaps: painted supports and seams, per-object setting overrides, typed sett
   so its lines go from one support to the other. Bridges, bottoms and
   tops reach a wall's spacing into the fill beside them, to have
   something to hold on to.
-  The bridging options of the reference's Quality tab are followed, all
-  but one. `bridge_line_width` gives bridges, bridges over infill and
+  The bridging options of the reference's Quality tab are followed.
+  `bridge_line_width` gives bridges, bridges over infill and
   walls over air a width of their own: a round thread is that thick in
   place of the nozzle's bore, a flattened line that wide before
   `bridge_flow` thins it; wider than the nozzle, or no wider than the
@@ -502,8 +502,24 @@ Known gaps: painted supports and seams, per-object setting overrides, typed sett
   beneath. `enable_extra_bridge_layer` lays a second layer of bridge
   over bridges over air (the same way as the first, and the bottom
   shell then starts from the second), over bridges over infill (square
-  to the first), or both. Each is off by default and changes nothing
-  then. `counterbore_hole_bridging` is noted and not followed.
+  to the first), or both. `counterbore_hole_bridging` is for a hole
+  that narrows on the way up, a counterbore printed wide end down,
+  whose narrow part would start with walls laid in the air. On the
+  first layer of the narrow part, what has nothing under it and has
+  the narrow hole on its edge is taken out of what gets walls and laid
+  as a bridge, resting a wall's width on the wide hole's edge, and the
+  layer's walls go round the wide hole (PerimeterGenerator.cpp
+  `process_no_bridge`, with a port of `BridgeDetector`, classic walls
+  or Arachne). `partiallybridge` bridges only what lines can span from
+  one side of the wide hole to the other, the way that spans most: a
+  slot as wide as the narrow hole stays open right across, the rest of
+  that layer over the wide hole is not printed, and the layer above
+  closes the slot down to the hole. `sacrificiallayer` bridges all of
+  it, the narrow hole covered over as well, to be drilled out, where
+  the wide hole's outline is convex. With `bridge_angle` set every
+  such bridge is laid that way, or turned by it from the direction
+  found (`relative_bridge_angle`). Each is off by default and changes
+  nothing then.
 
 - Ironing (`ironing_type`): a finished surface gone over again with
   lines close together and next to no plastic, the nozzle smoothing
@@ -959,9 +975,7 @@ the lettered plate; small ones, which gain most from being run out,
 come out a quarter to a third short, and that is what
 `dont_filter_internal_bridges` at `nofilter` makes more of: below),
 bridges that reach into one another are made one only with
-`bridge_expansion_extra` set, a hole that narrows on the way up gets
-no bridge of its own under the narrow part (`counterbore_hole_bridging`,
-noted), narrow solid areas are filled with the same lines
+`bridge_expansion_extra` set, narrow solid areas are filled with the same lines
 as wide ones where the reference lays loops along them
 (`detect_narrow_internal_solid_infill`, noted), narrow parts of top and
 bottom surfaces get no gap fill
@@ -1920,17 +1934,110 @@ what `limited` would find on the next, and here they do not (138 mm
 more on one layer). On the plain parts (cube, deck, mushroom) neither
 value changes anything in either slicer.
 
-`counterbore_hole_bridging` is not followed: the note stays. In the
-reference it is done where walls are made (PerimeterGenerator.cpp
-`process_no_bridge`): on the first layer of the narrow part of a hole
-the area with nothing under it is taken out of what gets walls and
-handed to the fill as it is, so it is bridged, either the part of it a
-bridge detector says can be spanned from the wide hole's edge
-(`partiallybridge`) or all of it, the narrow hole covered over as well
-(`sacrificiallayer`). It needs the reference's `BridgeDetector` (the
-direction with most anchored lines and the strips it can span), which
-is not here: this engine turns a bridge by the edges it has nothing
-beside.
+`counterbore_hole_bridging`, against the C++ slicer with the same
+settings (C++ slicer / this engine). The part is `tools/make_fixture.py`'s
+`counterbore` with the Snapmaker U1's presets: a slab of eight cells,
+each with a hole that is wide for the first 3 mm and narrow above
+(round in round 3 in 6, 4 in 8 and 5 in 12 mm, 4 in 12 off the middle,
+round over hexagonal, square over round, hexagonal over square) and one
+plain hole straight through. The layers are the first of the narrow
+part and the one above it, cut at 3.15 mm where nothing else is said
+(the first layer is 0.25 mm, so 0.2 mm layers do not divide the 3 mm),
+at 3.10 mm with a 0.2 mm first layer, which does, and at 3.19 mm with
+0.28 mm layers. Lengths are of line laid over all eight cells; the
+last column is in how many of the seven holes that narrow the bridges
+run the same way in both, within a degree.
+
+| | walls on that layer, mm | bridge on it, mm | solid fill on the layer above, mm | bridges the same way |
+| --- | --- | --- | --- | --- |
+| off | 753 / 753 | 1540 / 1625 | 1464 / 1473 | |
+| `partiallybridge` | 1060 / 1060 | 838 / 943 | 1717 / 1715 | 7 |
+| `sacrificiallayer` | 1035 / 1035 | 1771 / 1838 | 1765 / 1769 | 3 |
+| `partiallybridge`, Arachne | 1039 / 1039 | 838 / 949 | 1680 / 1686 | 6 |
+| `sacrificiallayer`, Arachne | 1033 / 1033 | 1771 / 1838 | 1755 / 1762 | 3 |
+| `partiallybridge`, `hole_to_polyhole` | 1062 / 1060 | 854 / 949 | 1711 / 1710 | 4 |
+| `sacrificiallayer`, `hole_to_polyhole` | 1040 / 1040 | 1783 / 1846 | 1764 / 1764 | 1 |
+| `partiallybridge`, 0.2 mm first layer | 1060 / 1060 | 838 / 943 | 1717 / 1715 | 7 |
+| `sacrificiallayer`, 0.2 mm first layer | 1035 / 1035 | 1771 / 1838 | 1765 / 1769 | 3 |
+| `partiallybridge`, 0.28 mm layers | 1056 / 1060 | 882 / 974 | 1783 / 1788 | 5 |
+| `sacrificiallayer`, 0.28 mm layers | 1033 / 1033 | 1840 / 1908 | 1825 / 1822 | 3 |
+
+The walls of that layer are the reference's: they go round the wide
+hole, stepping in a wall's width where a bridge rests on its edge.
+With a sacrificial layer they come to the same length in every cell of
+every row, to 0.05 mm; partly bridged to within 0.5 mm, but for the
+six-sided wide hole with 0.28 mm layers, where a bridge reaches a
+corner of the hexagon here and stops a detector's strip short of it
+there (82.3 mm against 78.9), and two polyholes whose slot runs
+another way (1.1 mm). Over the whole file no layer's walls are off by more than 0.4%,
+and the walls over air that the option is there to be rid of (243 mm
+on that layer with it off) are gone in both. The plain hole is
+untouched. The layers next to that one change in both slicers the same
+way, their fill now lying under or over its walls round the wide hole
+and being made solid: a ring round the wide hole on the four layers
+under it (224 mm a layer in the reference and 256 here, partly
+bridged) and more solid fill on the two above (253 and 742 mm more
+than with the option off in the reference, 243 and 735 here). Further
+up only where the seams fall on the narrow holes' walls changes, and
+further down nothing does. With `enable_extra_bridge_layer` on as well
+both lay the second bridge on the layer above in the six cells whose
+roof is wide enough for one, the same way in five of them (2.50 m of
+bridge in the file against 2.69 m partly bridged, 3.49 against 3.64
+with a sacrificial layer). On 3DBenchy with the same presets one layer
+changes in both, at 34.25 mm, the same in either mode: 43.9 mm more
+bridge and 39.3 mm less wall over air in the reference, 44.5 and 38.4
+here.
+
+The bridges come out longer here, by 12% partly bridged and 4% with a
+sacrificial layer, where they are 5.5% longer with the option off.
+The areas bridged are the same, the walls round them being the same;
+the lines in them are not. The reference leaves out a bridge line that
+does not come half a spacing inside the area and turns its lines short
+of the area's edge where it joins them (FillRectilinear.cpp); this
+engine lays every bridge line that is inside the area at all, from
+edge to edge, so a narrow bridge has a line more: eight where the
+reference has seven in each of the two beside the hexagonal hole in
+the square one. That is how this engine lays any bridge, and is not
+changed here.
+
+Partly bridged, the bridges run along the slot in both slicers, and
+the slot runs the same way in all seven cells with the presets as they
+are and with a 0.2 mm first layer, and in four to six of the seven in
+the other rows. Where it does not, the two ways span the same: a round
+hole in a round one is spanned as well any way round, wherever in it
+the hole is, and a square or six-sided one as well along any of its
+sides. The choice between equals is made by the last nanometre of the
+outline, in the reference as here, and the two clippers do not share
+that. With a sacrificial layer the cover is held all round and is laid
+the short way across, and a round, square or six-sided cover has none,
+so there the last column says little; a wide hole 14 by 6 mm, tried
+apart, is covered across the 6 mm in both, and partly bridged across
+the 6 mm in both.
+
+Different from the reference on purpose, both marked in the code. The
+reference does this to every part of a region with nothing under it
+that can be spanned, so long as the region has a hole anywhere
+(`!surface->expolygon.holes.empty()`); here the hole has to be on the
+edge of that part, which is what makes it a hole that narrows. A deck
+across two posts with a small hole drilled into one post loses the
+walls of its first layer in the reference (118 mm of wall over air
+with the option off, none with it on, in either mode) and keeps them
+here; a table top on four legs with such a hole has, partly bridged,
+only the strips from leg to leg printed in its first layer in the
+reference (1179 mm of bridge where 3472 mm is laid with the option
+off, or with it on and no hole), the layer after going down on air
+between them, and is left as it was here. And a sacrificial layer is
+made only where the wide hole's outline is convex, which the reference
+tells by whether any corner of the outline, simplified, turns the
+wrong way at all: simplifying keeps the outline's first point, and
+where that is in the middle of a straight side rounding leaves it a
+nanometre off, to either side. The hexagonal hole's first point lies a
+nanometre inside here; a corner counts as turning the wrong way only
+from a tenth of a micron.
+
+Noted and not done: with `bridge_angle` set and
+`align_infill_direction_to_model` on, the reference turns that
+direction with the model, whose turn on the bed is not known here.
 
 Travel round the walls (`reduce_crossing_wall`), against the C++
 slicer with the same settings (C++ slicer / this engine). The parts are

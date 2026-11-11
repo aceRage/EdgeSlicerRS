@@ -75,6 +75,10 @@ pub struct WallSettings {
     /// other way round (`overhang_reverse`), where the way round is not
     /// set outright (`wall_direction` at `auto`): none otherwise.
     pub overhang_reverse: Option<crate::OverhangReverse>,
+    /// Set where a hole that narrows on the way up is bridged without
+    /// walls on the first layer of its narrow part
+    /// (`counterbore_hole_bridging`).
+    pub counterbore: Option<crate::Counterbore>,
 }
 
 /// Fuzzy skin as the settings ask for it (`fuzzy_skin` and the settings
@@ -211,6 +215,7 @@ impl Default for WallSettings {
             alternate_extra_wall: false,
             detect_thin_wall: false,
             overhang_reverse: None,
+            counterbore: None,
         }
     }
 }
@@ -386,9 +391,53 @@ impl WallSettings {
                 expected,
             });
         }
+        // `counterbore_hole_bridging`, and what the reference reads with
+        // it where it bridges such a hole (PerimeterGenerator.cpp
+        // `process_no_bridge` and `printable_slices`).
+        let counterbore = match settings.text("counterbore_hole_bridging") {
+            None | Some("none") => None,
+            Some(value) => {
+                let mode = match value {
+                    "partiallybridge" => crate::CounterboreMode::Partial,
+                    "sacrificiallayer" => crate::CounterboreMode::Sacrificial,
+                    other => {
+                        return Err(ConfigError::BadValue {
+                            key: "counterbore_hole_bridging".into(),
+                            found: other.to_owned(),
+                            expected: "none, partiallybridge or sacrificiallayer",
+                        });
+                    }
+                };
+                let angle = number("bridge_angle", 0.0)?;
+                let relative = flag("relative_bridge_angle", false)?;
+                let nozzles = settings.floats("nozzle_diameter")?;
+                let first = nozzles
+                    .as_ref()
+                    .and_then(|nozzles| nozzles.first().copied().flatten())
+                    .unwrap_or(defaults.nozzle_diameter);
+                let unprintable = match &arachne {
+                    Some(arachne) => arachne.min_feature_size_percent * 0.01 * first,
+                    None => {
+                        let smallest = nozzles.into_iter().flatten().flatten();
+                        smallest.fold(first, f64::min) / 3.0
+                    }
+                };
+                Some(crate::Counterbore {
+                    mode,
+                    fixed_angle: (angle > 0.0 && !relative).then(|| angle.to_radians()),
+                    added_angle: if angle > 0.0 && relative {
+                        angle.to_radians()
+                    } else {
+                        0.0
+                    },
+                    unprintable,
+                })
+            }
+        };
         Ok(Self {
             arachne,
             fuzzy,
+            counterbore,
             detect_thin_wall: flag("detect_thin_wall", false)?,
             overhang_reverse: (flag("overhang_reverse", false)?
                 && matches!(settings.text("wall_direction"), None | Some("auto")))
@@ -460,14 +509,24 @@ impl WallSettings {
     /// what is done instead.
     pub fn notes(&self, settings: &Settings) -> Vec<String> {
         let mut notes = Vec::new();
-        let text = |key: &str| settings.text(key).map(str::to_owned);
-        // Present and not the value that turns it off.
-        if let Some(value) = text("counterbore_hole_bridging")
-            && value != "none"
+        // A hole that narrows is bridged (`counterbore`). With one
+        // direction set for every bridge, the reference turns that
+        // direction with the model where the fill is to keep to the
+        // model's axes; the model's turn on the bed is not known here.
+        if self
+            .counterbore
+            .is_some_and(|bore| bore.fixed_angle.is_some())
+            && settings
+                .flag("align_infill_direction_to_model")
+                .ok()
+                .flatten()
+                == Some(true)
         {
-            notes.push(format!(
-                "counterbore_hole_bridging \"{value}\": a hole that narrows is left to bridge as it is"
-            ));
+            notes.push(
+                "counterbore_hole_bridging with bridge_angle and align_infill_direction_to_model: \
+                 the bridges over a hole that narrows are turned by the bed's axes, not the model's"
+                    .to_owned(),
+            );
         }
         if self.only_one_wall_top
             && settings
@@ -1095,6 +1154,53 @@ mod tests {
     }
 
     #[test]
+    fn counterbore_bridging_is_read_with_what_goes_with_it() {
+        let read = |json: &str| WallSettings::from_settings(&Settings::from_json(json).unwrap());
+        assert_eq!(read("{}").unwrap().counterbore, None);
+        assert_eq!(
+            read(r#"{"counterbore_hole_bridging": "none"}"#)
+                .unwrap()
+                .counterbore,
+            None
+        );
+        // Classic walls: a third of the smallest nozzle is unprintable.
+        let partial = read(
+            r#"{"counterbore_hole_bridging": "partiallybridge", "wall_generator": "classic",
+                "nozzle_diameter": ["0.6", "0.4"]}"#,
+        )
+        .unwrap()
+        .counterbore
+        .unwrap();
+        assert_eq!(partial.mode, crate::CounterboreMode::Partial);
+        assert_eq!(partial.fixed_angle, None);
+        assert_eq!(partial.added_angle, 0.0);
+        assert!((partial.unprintable - 0.4 / 3.0).abs() < 1e-12);
+        // Arachne: its least feature size, of the first nozzle; and one
+        // direction for every bridge.
+        let fixed = read(
+            r#"{"counterbore_hole_bridging": "sacrificiallayer", "wall_generator": "arachne",
+                "nozzle_diameter": ["0.4"], "min_feature_size": "25%", "bridge_angle": "90"}"#,
+        )
+        .unwrap()
+        .counterbore
+        .unwrap();
+        assert_eq!(fixed.mode, crate::CounterboreMode::Sacrificial);
+        assert!((fixed.fixed_angle.unwrap() - std::f64::consts::FRAC_PI_2).abs() < 1e-12);
+        assert!((fixed.unprintable - 0.1).abs() < 1e-12);
+        // Or a turn added to the direction found.
+        let added = read(
+            r#"{"counterbore_hole_bridging": "partiallybridge", "bridge_angle": "90",
+                "relative_bridge_angle": "1"}"#,
+        )
+        .unwrap()
+        .counterbore
+        .unwrap();
+        assert_eq!(added.fixed_angle, None);
+        assert!((added.added_angle - std::f64::consts::FRAC_PI_2).abs() < 1e-12);
+        assert!(read(r#"{"counterbore_hole_bridging": "always"}"#).is_err());
+    }
+
+    #[test]
     fn what_is_asked_of_walls_and_not_done_is_said() {
         let notes = |json: &str| {
             let settings = Settings::from_json(json).unwrap();
@@ -1115,9 +1221,22 @@ mod tests {
                 "counterbore_hole_bridging": "partiallybridge",
                 "top_surface_expansion": "0.5", "only_one_wall_top": "1"}"#,
         );
-        // Polyholes are made (edge-slice), and nothing is said of them.
-        assert_eq!(said.len(), 2, "{said:?}");
-        assert!(said[0].starts_with("counterbore_hole_bridging \"partiallybridge\": "));
+        // Polyholes are made (edge-slice) and holes that narrow are
+        // bridged (`counterbore`), and nothing is said of either.
+        assert_eq!(said.len(), 1, "{said:?}");
+        assert!(said[0].starts_with("top_surface_expansion: "));
+        // But one direction for every bridge is not turned with the model.
+        let turned = notes(
+            r#"{"counterbore_hole_bridging": "sacrificiallayer", "bridge_angle": "30",
+                "align_infill_direction_to_model": "1"}"#,
+        );
+        assert_eq!(turned.len(), 1, "{turned:?}");
+        assert!(turned[0].starts_with("counterbore_hole_bridging with bridge_angle"));
+        let relative = notes(
+            r#"{"counterbore_hole_bridging": "sacrificiallayer", "bridge_angle": "30",
+                "relative_bridge_angle": "1", "align_infill_direction_to_model": "1"}"#,
+        );
+        assert!(relative.is_empty(), "{relative:?}");
         // A top surface is only widened where it has one wall.
         let fewer = notes(r#"{"top_surface_expansion": "0.5"}"#);
         assert!(fewer.is_empty(), "{fewer:?}");

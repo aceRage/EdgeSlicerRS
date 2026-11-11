@@ -44,6 +44,16 @@ one of eight sides (too few to be taken for round), a round boss 10 mm
 across standing on a cell, a round tube standing on another with a 4 mm hole
 down through tube and cell, and a block 16 mm tall with a 5 mm hole through
 it from front to back, which no layer sees as a hole.
+
+counterbore is for counterbore_hole_bridging: a slab 8 mm tall of eight
+20 mm cells in two rows, each with a hole up through it that is wide for
+the first 3 mm and narrow above (a layer height that does not divide 3 mm
+puts the step inside a layer). The near row's are round in round: 3 mm in
+6 mm, 4 in 8, 5 in 12, and 4 in 12 with the narrow hole 2.5 mm and 1 mm off
+the middle. The far row has a round 5 mm hole over a hexagonal one 10 mm
+across its flats, a 5 mm square one over a round 10 mm, a hexagonal one
+5 mm across its flats over a 10 mm square, and a plain round 5 mm hole
+straight through, which the option must leave alone.
 """
 import json, math, sys, zipfile
 
@@ -215,6 +225,42 @@ def holes():
     return solids
 
 MESHES["holes"] = holes()
+
+def sided(cx, cy, flat, sides, angles):
+    """Where rays from (cx, cy) at these angles leave a regular polygon of
+    this many sides, flat mm from its middle to each side, with a side
+    square to the ray at angle 0."""
+    step = 2 * math.pi / sides
+    def reach(a):
+        return flat / math.cos((a + step / 2) % step - step / 2)
+    return [(cx + reach(a) * math.cos(a), cy + reach(a) * math.sin(a)) for a in angles]
+
+def counterbore():
+    n = 72
+    angles = [2 * math.pi * i / n for i in range(n)]
+    def ring(cx, cy, r):
+        return [(cx + r * math.cos(a), cy + r * math.sin(a)) for a in angles]
+    xs = [105.5 + 20 * i for i in range(4)]
+    near, far = 126, 146
+    # each cell: where it is, its hole for the first 3 mm, and its hole above
+    cells = [
+        (xs[0], near, ring(xs[0], near, 3), ring(xs[0], near, 1.5)),
+        (xs[1], near, ring(xs[1], near, 4), ring(xs[1], near, 2)),
+        (xs[2], near, ring(xs[2], near, 6), ring(xs[2], near, 2.5)),
+        (xs[3], near, ring(xs[3], near, 6), ring(xs[3] + 2.5, near + 1, 2)),          # off the middle
+        (xs[0], far, sided(xs[0], far, 5, 6, angles), ring(xs[0], far, 2.5)),         # round over hexagonal
+        (xs[1], far, ring(xs[1], far, 5), sided(xs[1], far, 2.5, 4, angles)),         # square over round
+        (xs[2], far, sided(xs[2], far, 5, 4, angles), sided(xs[2], far, 2.5, 6, angles)),  # hexagonal over square
+        (xs[3], far, ring(xs[3], far, 2.5), ring(xs[3], far, 2.5)),                   # straight through
+    ]
+    solids = []
+    for cx, cy, wide, narrow in cells:
+        outline = around(cx, cy, 10, angles)
+        solids.append(prism(outline, 0, 3, wide))
+        solids.append(prism(outline, 3, 5, narrow))
+    return solids
+
+MESHES["counterbore"] = counterbore()
 
 out, source, shape = sys.argv[1:4]
 changes = dict(arg.split("=", 1) for arg in sys.argv[4:])
