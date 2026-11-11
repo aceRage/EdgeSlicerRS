@@ -14,6 +14,7 @@ mod arc;
 mod avoid;
 mod chain;
 mod circle;
+mod contour;
 mod cooling;
 mod inside;
 mod overhang;
@@ -42,6 +43,7 @@ use edge_geom::{ExPolygon, Point2, scaled, unscaled};
 use edge_template::{TemplateError, Value, Variables};
 use rayon::prelude::*;
 
+pub use contour::Contours;
 pub use edge_avoid::{Detour, Slices};
 pub use scarf::{Scarf, ScarfSeam};
 pub use seam::Seam;
@@ -222,6 +224,25 @@ pub fn write_placed(
     scene: &SeamScene<'_>,
     settings: &[PrintSettings],
 ) -> Result<Summary, GcodeError> {
+    write_contoured(out, layers, slices, scene, &Contours::default(), settings)
+}
+
+/// [`write_placed`], with the lines contoured in height laid by their
+/// contours (`zaa_enabled`, `contour.rs`). They too are given beside the
+/// layers: `contours.layers` has an entry for each of `layers`, or none.
+pub fn write_contoured(
+    out: &mut impl Write,
+    layers: &[Layer<'_>],
+    slices: &[Slices<'_>],
+    scene: &SeamScene<'_>,
+    contours: &Contours<'_>,
+    settings: &[PrintSettings],
+) -> Result<Summary, GcodeError> {
+    let profiles = if contours.layers.len() == layers.len() {
+        contours.layers
+    } else {
+        &[]
+    };
     let slices = if slices.len() == layers.len() {
         slices
     } else {
@@ -239,7 +260,7 @@ pub fn write_placed(
     // loops as they will be written, the points they are chosen among
     // being those left (`simplify.rs`), and the writer goes by the same
     // loops, which the plan knows by where they are kept.
-    let walls = simplify::Thinned::walls(layers, settings);
+    let walls = simplify::Thinned::walls(layers, settings, profiles);
     let layers = &walls.layers(layers, 0)[..];
     // One physical layer is every entry at the same height.
     let mut groups: Vec<Range<usize>> = Vec::new();
@@ -355,6 +376,8 @@ pub fn write_placed(
         routes_from: 0,
         ways: HashMap::new(),
         shelters: HashMap::new(),
+        contoured: HashMap::new(),
+        contour_speed: contours.speed_scaling,
     };
     let several = layers.iter().any(|layer| layer.filament > 0);
     writer.preamble(several)?;
@@ -388,12 +411,19 @@ pub fn write_placed(
             let ahead = &groups[index..(index + FITTED_AHEAD).min(groups.len())];
             let until = groups[(index + FITTED_AHEAD).min(groups.len()) - 1].end;
             writer.prefit(&layers[group.start..until]);
-            thinned = simplify::Thinned::lines(&layers[group.start..until], settings);
+            thinned = simplify::Thinned::lines(
+                &layers[group.start..until],
+                settings,
+                profiles.get(group.start..until).unwrap_or(&[]),
+            );
             thinned_from = group.start;
             // And so are the layers made ready to route travel on.
             writer.preroute(layers, ahead, index)?;
         }
         let parts = thinned.layers(&layers[group.clone()], group.start - thinned_from);
+        // Which of the lines about to be laid are contoured, by where
+        // they are kept now.
+        writer.contoured = contour::kept(&parts, profiles.get(group.clone()).unwrap_or(&[]));
         writer.layer(index, &parts, group.start)?;
         // Whole or not at all, and never off the bed: an arc counts by
         // its bulge, which the points it was fitted to do not show.
@@ -647,6 +677,11 @@ struct Writer<'a> {
     /// The areas a way round has been asked to stay within on the layer
     /// being written, by where they are kept.
     shelters: HashMap<(usize, usize), edge_avoid::Shelter>,
+    /// The lines of the layer being written that are contoured in
+    /// height, by where they are kept, and whether a contoured move is
+    /// slowed for its height (`contour.rs`).
+    contoured: HashMap<usize, std::sync::Arc<edge_contour::Profile>>,
+    contour_speed: bool,
 }
 
 /// What the file says about the print outside its G-code.
@@ -745,6 +780,10 @@ struct State {
     /// The stretch of a scarf seam being laid, and how far along it the
     /// nozzle is (`scarf.rs`).
     slope: Option<scarf::Slope>,
+    /// The line contoured in height being laid (`contour.rs`), and the
+    /// heights of the one `wipe_path` is the end of, where it was.
+    contour: Option<contour::Laying>,
+    wipe_heights: Option<std::sync::Arc<edge_contour::Profile>>,
     first_layer: bool,
     /// The speed of the wall loop being laid, where it is small enough
     /// to have one of its own (`small_perimeter_speed`).
@@ -1663,6 +1702,8 @@ impl Writer<'_> {
             if points.len() < 3 {
                 continue;
             }
+            // Contoured in height, where it is (`contour.rs`).
+            self.contour(Some(address(wall)));
             // A loop is held counter-clockwise round material and
             // clockwise round a hole; every wall is laid the same way
             // round, which turns one or the other about.
@@ -1763,6 +1804,7 @@ impl Writer<'_> {
         }
         self.state.small_wall = None;
         self.state.circle_wall = None;
+        self.contour(None);
         Ok(())
     }
 
@@ -1833,6 +1875,7 @@ impl Writer<'_> {
                     // (`small_area_infill_flow_compensation`).
                     let thinned = self.settings.small_area.as_ref();
                     self.state.short_lines = thinned.is_some_and(|model| model.applies(path));
+                    self.contour(Some(address(path)));
                     // Arcs are fitted to the line as it was made and turned
                     // about with it, as in the reference, where fitting
                     // comes before the order lines are laid in is chosen.
@@ -1853,6 +1896,7 @@ impl Writer<'_> {
                         None => self.path(&points, path.role, &path.flow, sheltered, false)?,
                     }
                     self.state.short_lines = false;
+                    self.contour(None);
                 }
             }
         }
@@ -1938,6 +1982,11 @@ impl Writer<'_> {
     /// or now. None when arcs are not asked for, or it is too short for
     /// one.
     fn fit_line(&self, path: &ExtrusionPath) -> Option<arc::Fitted> {
+        // "ZAA: a contoured path carries per-point Z, which an arc move
+        // cannot express."
+        if self.contouring() {
+            return None;
+        }
         match self.fits.get(&(address(path), false)) {
             Some(fitted) => Some(fitted.clone()),
             None => fit(self.settings, &path.points, path.role),
@@ -1952,6 +2001,9 @@ impl Writer<'_> {
     /// (GCode.cpp `extrude_loop`), which cuts the arc the seam is on in
     /// two. None when arcs are not asked for or the gap leaves nothing.
     fn fit_loop(&self, wall: &ExtrusionLoop, turned: bool, seam: Point2) -> Option<arc::Fitted> {
+        if self.contouring() {
+            return None;
+        }
         let mut fitted = match self.fits.get(&(address(wall), turned)) {
             Some(fitted) => fitted.clone(),
             None => fit_closed(self.settings, &wall.polygon.points, turned, wall.role)?,
@@ -1971,6 +2023,11 @@ impl Writer<'_> {
         sheltered: bool,
         closed: bool,
     ) -> io::Result<()> {
+        // A piece of a contoured wall is laid as it is, neither fitted
+        // nor thinned.
+        if self.contouring() {
+            return self.path(points, role, flow, sheltered, closed);
+        }
         match fit(self.settings, points, role) {
             Some(fitted) => self.path_parts(
                 &fitted.points,
@@ -2090,6 +2147,7 @@ impl Writer<'_> {
         if !closed {
             self.state.wipe_path.reverse();
         }
+        self.state.wipe_heights = self.contour_profile();
         Ok(())
     }
 
@@ -2539,7 +2597,10 @@ impl Writer<'_> {
                 .sum::<f64>()
         };
         let length = from.map_or(f64::INFINITY, |from| along(from, &way));
-        if length == 0.0 && self.state.height == Some(self.state.z) {
+        // The height the line it goes to is laid from: the layer's, or a
+        // contoured line's own where it starts (`contour.rs`).
+        let arrival = self.arrival_height(to);
+        if length == 0.0 && self.state.height == Some(arrival) {
             self.state.routing.passed();
             return Ok(());
         }
@@ -2595,8 +2656,16 @@ impl Writer<'_> {
         let z = self.state.z;
         let top = match (lift, self.state.height) {
             (Some(_), _) => z + s.z_hop,
-            // Already up from an earlier lift: stay there.
-            (None, Some(height)) => height.max(z),
+            // Already up from an earlier lift: stay there. Never down
+            // on the way: a contoured line that ends lower than the next
+            // starts goes up to it as it travels, and one that ends
+            // higher comes down once there. Not as the reference, which
+            // travels straight from the one height to the other
+            // (GCode.cpp `travel_to` to `zaa_first_z`), and from a
+            // contoured line to a flat one at the height it ended at,
+            // down in the layer, before it puts it back ("reset Z after
+            // contouring").
+            (None, Some(height)) => height.max(arrival),
             (None, None) => z,
         };
         let (Some(from), Some(height)) = (from, self.state.height) else {
@@ -2814,6 +2883,7 @@ impl Writer<'_> {
         if length == 0.0 {
             return Ok(());
         }
+        self.contour_role(role);
         self.prime()?;
         if self.state.role != Some(role) {
             // Two roles may go by one name, which is then said once.
@@ -2835,7 +2905,27 @@ impl Writer<'_> {
         // On a scarf seam the move climbs as it goes, and lays a share
         // of the line (`scarf.rs`).
         let sloping = self.slope_on(length);
-        let moved = sloping.as_ref().map_or(length, |sloping| sloping.length);
+        let share = match role {
+            Role::TopSolidInfill => s.top_solid_infill_flow_ratio,
+            Role::BottomSurface => s.bottom_solid_infill_flow_ratio,
+            Role::InternalBridge => s.internal_bridge_flow,
+            Role::Brim => s.brim_flow_ratio,
+            _ => sloping.as_ref().map_or(1.0, |sloping| sloping.flow),
+        };
+        // On a line contoured in height the move climbs or falls as it
+        // goes, lays as much as the line is tall, and may be slowed for
+        // it (`contour.rs`).
+        let laid = flow.mm3_per_mm() * s.filament_flow_ratio * s.print_flow_ratio * share;
+        let contoured = self.contour_on((from, to), role, flow, motion.speed, length, laid);
+        let moved = match (&sloping, &contoured) {
+            (Some(sloping), _) => sloping.length,
+            (None, Some(contoured)) => contoured.length,
+            (None, None) => length,
+        };
+        let own = contoured
+            .as_ref()
+            .and_then(|contoured| contoured.speed)
+            .unwrap_or(motion.speed);
         // What a layer slowed to cool leaves at its speed, its time
         // counted: the outer wall where asked, a compensated circle's
         // wall, and the prime tower, whose lines the reference writes
@@ -2847,24 +2937,19 @@ impl Writer<'_> {
             || matches!(role, Role::PrimeTower | Role::PrimeLine)
             || self.circle_wall_held(role);
         let speed = if held {
-            self.timing.fixed += moved / motion.speed;
-            motion.speed
+            self.timing.fixed += moved / own;
+            own
         } else {
             match self.timing.lines.last_mut() {
-                Some(line) if line.1 == motion.speed => line.0 += moved,
-                _ => self.timing.lines.push((moved, motion.speed)),
+                Some(line) if line.1 == own => line.0 += moved,
+                _ => self.timing.lines.push((moved, own)),
             }
-            self.slowdown.apply(motion.speed)
-        };
-        let share = match role {
-            Role::TopSolidInfill => s.top_solid_infill_flow_ratio,
-            Role::BottomSurface => s.bottom_solid_infill_flow_ratio,
-            Role::InternalBridge => s.internal_bridge_flow,
-            Role::Brim => s.brim_flow_ratio,
-            _ => sloping.as_ref().map_or(1.0, |sloping| sloping.flow),
+            self.slowdown.apply(own)
         };
         let short = s.small_area.as_ref().filter(|_| self.state.short_lines);
-        let share = share * short.map_or(1.0, |model| model.share(length));
+        let share = share
+            * short.map_or(1.0, |model| model.share(length))
+            * contoured.as_ref().map_or(1.0, |contoured| contoured.flow);
         let volume =
             length * flow.mm3_per_mm() * s.filament_flow_ratio * s.print_flow_ratio * share;
         let feed = volume / self.filament_area;
@@ -2873,6 +2958,17 @@ impl Writer<'_> {
         match (turn, &sloping) {
             // GCodeWriter.cpp `extrude_to_xyz`: every move of a scarf
             // says its height, the way down too, which stays level.
+            // So does every move of a contoured line.
+            (None, None) if let Some(contoured) = &contoured => {
+                writeln!(
+                    self.out,
+                    "G1 X{:.3} Y{:.3} Z{:.3} E{feed:.5}{feed_word}",
+                    unscaled(to.x),
+                    unscaled(to.y),
+                    contoured.z
+                )?;
+                self.state.height = Some(contoured.z);
+            }
             (None, Some(sloping)) => {
                 writeln!(
                     self.out,
@@ -2964,6 +3060,9 @@ impl Writer<'_> {
             let feed_word = self.feed_word();
             writeln!(self.out, "G1 E-{before:.5}{feed_word}")?;
         }
+        // Over a line contoured in height the wipe keeps to the line's
+        // own height (`contour.rs`).
+        let heights = self.state.wipe_heights.take();
         if let Some(path) = wipe.filter(|_| reach > 0.0) {
             self.state.feedrate = (wipe_speed * 60.0).round();
             writeln!(self.out, ";WIPE_START\nG1 F{:.0}", self.state.feedrate)?;
@@ -2977,9 +3076,10 @@ impl Writer<'_> {
                 } else {
                     String::new()
                 };
+                let height = self.wipe_height(heights.as_deref(), pair[1]);
                 writeln!(
                     self.out,
-                    "G1 X{:.3} Y{:.3}{pulled}",
+                    "G1 X{:.3} Y{:.3}{height}{pulled}",
                     unscaled(pair[1].x),
                     unscaled(pair[1].y)
                 )?;
@@ -3599,6 +3699,8 @@ pub fn role_name(role: Role) -> &'static str {
 mod arc_tests;
 #[cfg(test)]
 mod avoid_tests;
+#[cfg(test)]
+mod contour_tests;
 #[cfg(test)]
 mod ironing_tests;
 #[cfg(test)]

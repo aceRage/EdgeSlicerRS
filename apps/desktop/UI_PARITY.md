@@ -752,8 +752,9 @@ no stage reads at all.
 | Others | 51 | 27 | 1 (`exclude_object`) | 23 | 14 | 23 |
 | All | 433 | 223 | 1 | 209 | 58 | 182 |
 
-Turned on, four more are read with a note: `zaa_enabled`, `spiral_mode`,
-`raft_layers`, `draft_shield`.
+Turned on, three more are read with a note: `spiral_mode`, `raft_layers`,
+`draft_shield`. `zaa_enabled` turned on is followed, and its
+`zaa_speed_scaling` then has a note while layers are slowed to cool.
 
 Nothing is said of an option the reference's rules have greyed out: it is
 off, whoever reads it. Some settings are read only when another turns them on

@@ -92,6 +92,11 @@ pub struct Sliced {
     pub fills_by: Vec<Vec<Vec<ExtrusionPath>>>,
     /// Where on each layer a move to a fill line needs no retraction.
     pub shelter: Vec<Vec<ExPolygon>>,
+    /// What the lines contoured in height are laid by, by filament in
+    /// `used` and layer as the walls and fill are; empty without Z
+    /// contouring. And whether a contoured move is slowed for its height.
+    contours: Vec<Vec<edge_contour::LayerProfiles>>,
+    contour_speed: bool,
     pub supports: Vec<Vec<ExtrusionPath>>,
     /// Skirt and brim, by layer; the skirt's loops come first.
     pub around: Vec<Vec<ExtrusionLoop>>,
@@ -340,6 +345,13 @@ pub fn slice(job: Job, watch: &dyn Watcher) -> Result<Sliced, Failure> {
             tops: &tops,
         },
     )?;
+    // With Z contouring every layer but the first is sliced `zaa_min_z`
+    // above its bottom (`crate::contour`).
+    let zaa = edge_contour::ZaaSettings::read(&settings)?;
+    if let Some(contouring) = &zaa.zaa {
+        crate::contour::plane(contouring, &mut planes, &heights, min[2].into())?;
+    }
+    quality_notes.extend(zaa.notes);
     let borrowed: Vec<edge_slice::Body<'_>> = bodies
         .iter()
         .map(|body| edge_slice::Body {
@@ -567,7 +579,8 @@ pub fn slice(job: Job, watch: &dyn Watcher) -> Result<Sliced, Failure> {
     // any: the roof of a hole that narrows from the layer below
     // (`counterbore_hole_bridging`), which `edge_perimeter`'s
     // `counterbore` has the rest of.
-    let (walls_by, bored_by): (Vec<Vec<Perimeters>>, Vec<Vec<Vec<ExPolygon>>>) = (0..used.len())
+    let (mut walls_by, bored_by): (Vec<Vec<Perimeters>>, Vec<Vec<Vec<ExPolygon>>>) = (0..used
+        .len())
         .map(|filament| {
             (0..layers.len())
                 .into_par_iter()
@@ -577,8 +590,12 @@ pub fn slice(job: Job, watch: &dyn Watcher) -> Result<Sliced, Failure> {
                         .params_at(height, index, layers.len())
                         .map_err(|e| e.to_string())?;
                     if let Some(fuzzy) = &mut params.fuzzy {
-                        // The middle of the layer, where it was sliced.
-                        fuzzy.slice_z = heights.top_of(index) - height / 2.0;
+                        // The middle of the layer, where it was sliced;
+                        // with Z contouring, where that was instead.
+                        fuzzy.slice_z = match zaa.zaa {
+                            Some(_) => planes[index] - f64::from(min[2]),
+                            None => heights.top_of(index) - height / 2.0,
+                        };
                     }
                     // A top surface is told from the part as a whole, on
                     // the layer above and the one below.
@@ -957,6 +974,20 @@ pub fn slice(job: Job, watch: &dyn Watcher) -> Result<Sliced, Failure> {
             }
         }
     }
+    // Z contouring: every layer's walls, top surfaces and ironing laid
+    // at the height of the model's surface under them.
+    let contours = match &zaa.zaa {
+        Some(contouring) => crate::contour::apply(
+            contouring,
+            &bodies,
+            &planes,
+            &heights,
+            min[2].into(),
+            &mut walls_by,
+            &mut fills_by,
+        ),
+        None => Vec::new(),
+    };
     let infill_time = started.elapsed();
 
     step(watch, Stage::Around)?;
@@ -1245,6 +1276,8 @@ pub fn slice(job: Job, watch: &dyn Watcher) -> Result<Sliced, Failure> {
         surfaces_by,
         fills_by,
         shelter,
+        contours,
+        contour_speed: zaa.zaa.is_some_and(|contouring| contouring.speed_scaling),
         supports,
         around,
         skirt_loops,
@@ -1549,7 +1582,22 @@ impl Sliced {
             floor: self.floor,
             part_joints: (self.settings.flag("seam_prefer_part_joints")?).unwrap_or(true),
         };
-        let summary = edge_gcode::write_placed(&mut text, &plan, &slices, &scene, &prints)?;
+        // Each entry's contoured lines, where there are any.
+        let none = edge_contour::LayerProfiles::default();
+        let profiles: Vec<&edge_contour::LayerProfiles> = (self.entries.iter())
+            .filter(|_| !self.contours.is_empty())
+            .map(|turn| {
+                (self.contours.get(turn.filament))
+                    .and_then(|layers| layers.get(turn.layer))
+                    .unwrap_or(&none)
+            })
+            .collect();
+        let contours = edge_gcode::Contours {
+            layers: &profiles,
+            speed_scaling: self.contour_speed,
+        };
+        let summary =
+            edge_gcode::write_contoured(&mut text, &plan, &slices, &scene, &contours, &prints)?;
         Ok(Gcode { text, summary })
     }
 }

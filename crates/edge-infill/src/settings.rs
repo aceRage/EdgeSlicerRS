@@ -112,6 +112,12 @@ pub struct InfillSettings {
     /// Degrees counter-clockwise from +x.
     pub infill_direction: f64,
     pub solid_infill_direction: f64,
+    /// Whether the fill keeps one direction on every layer rather than
+    /// turning a quarter on each odd one: Z contouring's
+    /// `zaa_dont_alternate_fill_direction`, which counts only with
+    /// `zaa_enabled` (Fill.cpp `Layer::make_fills`, FillBase.cpp
+    /// `_infill_direction`).
+    pub steady_direction: bool,
     /// How far the two sets of a lateral lattice lean, in degrees
     /// (`lateral_lattice_angle_1` and `_2`).
     pub lateral_lattice_angles: (f64, f64),
@@ -210,6 +216,17 @@ pub struct InfillSettings {
     pub unsupported: Vec<String>,
 }
 
+/// Whether fill keeps one direction on every layer: with Z contouring on
+/// and `zaa_dont_alternate_fill_direction` set (Fill.cpp, where each
+/// filler's `dont_alternate_fill_direction` is set from the two). Only
+/// the turn from layer to layer goes; a bridge keeps its own direction.
+pub fn steady_direction(settings: &Settings) -> Result<bool, ConfigError> {
+    Ok(settings.flag("zaa_enabled")?.unwrap_or(false)
+        && settings
+            .flag("zaa_dont_alternate_fill_direction")?
+            .unwrap_or(false))
+}
+
 impl Default for InfillSettings {
     fn default() -> Self {
         let unset = FloatOrPercent::Value(0.0);
@@ -223,6 +240,7 @@ impl Default for InfillSettings {
             unsupported_pattern: None,
             infill_direction: 45.0,
             solid_infill_direction: 45.0,
+            steady_direction: false,
             lateral_lattice_angles: (-45.0, 45.0),
             infill_shift_step: 0.4,
             infill_overhang_angle: 60.0,
@@ -491,6 +509,7 @@ impl InfillSettings {
             solid_infill_direction: settings
                 .float("solid_infill_direction")?
                 .unwrap_or(defaults.solid_infill_direction),
+            steady_direction: steady_direction(settings)?,
             minimum_sparse_infill_area: settings
                 .float("minimum_sparse_infill_area")?
                 .unwrap_or(defaults.minimum_sparse_infill_area),
@@ -797,6 +816,7 @@ impl InfillSettings {
             pattern: self.pattern,
             sparse_angle: self.infill_direction.to_radians(),
             solid_angle: self.solid_infill_direction.to_radians(),
+            alternate: !self.steady_direction,
             // Both are shares of the line spacing when given as percentages
             // (Fill.cpp), and an anchor is never longer than a join may be.
             sparse_link_max: self.infill_anchor_max.resolve(sparse.spacing).max(0.0),

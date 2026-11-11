@@ -695,6 +695,10 @@ impl Writer<'_> {
     /// The height the nozzle extrudes at where it is: the layer's, or
     /// lower on the way up a scarf.
     pub(crate) fn laying_height(&self) -> f64 {
+        // On a line contoured in height, its own height where the nozzle is.
+        if let Some(z) = self.state.position.and_then(|at| self.contour_height(at)) {
+            return z;
+        }
         match &self.state.slope {
             // Not below the bed, whatever the layer is said to be.
             Some(slope) => (self.state.z - slope.drop()).max(0.0),
@@ -885,7 +889,15 @@ impl Writer<'_> {
     ) -> io::Result<bool> {
         let s = self.settings;
         let scarf = s.scarf;
-        if path.len() < 3 {
+        // A wall contoured in height has a height of its own at every
+        // point, and no scarf: it is closed with the seam gap. Not as
+        // the reference, which keeps both (ContourZ.cpp's guard against
+        // a scarf, "scarf-joint seams already own the Z of their path",
+        // never meets one, contouring coming before the scarf is made):
+        // GCode.cpp `_extrude` lays a contoured path by its contour first,
+        // so both the scarf's way up and its way down go flat along the
+        // contour at the wall's full flow, the joint's stretch laid twice.
+        if path.len() < 3 || self.contouring() {
             return Ok(false);
         }
         // "the walls of a circle under the auto circle compensation
@@ -973,6 +985,7 @@ impl Writer<'_> {
         // along the flat part and then the way down again ("Fix path
         // for wipe ... The start slope part is ignored as it overlaps
         // with the end part"), or with no way down, along the loop.
+        self.state.wipe_heights = None;
         self.state.wipe_path = if made.ends.is_empty() {
             round
         } else {

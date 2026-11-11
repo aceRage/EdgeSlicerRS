@@ -49,6 +49,7 @@
 
 use std::borrow::Cow;
 
+use edge_contour::{LayerProfiles, Profile};
 use edge_extrusion::{ExtrusionLoop, ExtrusionPath};
 use edge_geom::Point2;
 use rayon::prelude::*;
@@ -126,38 +127,67 @@ impl Thinned {
     /// comes. Layers whose arcs are fitted are left alone.
     #[cfg(test)]
     pub(crate) fn new(layers: &[Layer<'_>], settings: &[PrintSettings]) -> Self {
-        Self::made(layers, settings, true, true)
+        Self::made(layers, settings, true, true, &[])
     }
 
     /// [`Self::new`] for the wall loops alone: what the seams are planned
     /// on (`seam_plan.rs`), for the whole print before anything is laid,
     /// so the points they are chosen among are those that are written.
-    pub(crate) fn walls(layers: &[Layer<'_>], settings: &[PrintSettings]) -> Self {
-        Self::made(layers, settings, true, false)
+    /// A wall contoured in height is left as it is (`contoured`, by
+    /// layer, or empty): its points are where its heights were taken.
+    pub(crate) fn walls(
+        layers: &[Layer<'_>],
+        settings: &[PrintSettings],
+        contoured: &[&LayerProfiles],
+    ) -> Self {
+        Self::made(layers, settings, true, false, contoured)
     }
 
     /// [`Self::new`] for the fill and support lines alone, a stretch of
     /// layers at a time ahead of the writer.
-    pub(crate) fn lines(layers: &[Layer<'_>], settings: &[PrintSettings]) -> Self {
-        Self::made(layers, settings, false, true)
+    pub(crate) fn lines(
+        layers: &[Layer<'_>],
+        settings: &[PrintSettings],
+        contoured: &[&LayerProfiles],
+    ) -> Self {
+        Self::made(layers, settings, false, true, contoured)
     }
 
-    fn made(layers: &[Layer<'_>], settings: &[PrintSettings], walls: bool, lines: bool) -> Self {
+    fn made(
+        layers: &[Layer<'_>],
+        settings: &[PrintSettings],
+        walls: bool,
+        lines: bool,
+        contoured: &[&LayerProfiles],
+    ) -> Self {
         if settings.iter().all(|s| s.arc_fitting) {
             return Self::default();
         }
+        // "ZAA: the contoured polyline IS the sample set; dropping points
+        // would drop contour detail" (ExtrusionEntity.cpp `simplify`).
+        let none = LayerProfiles::default();
         let layers = layers
             .par_iter()
-            .map(|layer| {
+            .enumerate()
+            .map(|(index, layer)| {
+                let contoured = contoured.get(index).copied().unwrap_or(&none);
+                let left = |kept: &[Option<std::sync::Arc<Profile>>], at: usize| {
+                    kept.get(at).is_some_and(Option::is_some)
+                };
                 let s = &settings[layer.filament];
                 if s.arc_fitting {
                     return Kept::default();
                 }
                 let tolerance = arc::tolerance(s.resolution);
-                let thin = |paths: &[ExtrusionPath]| {
+                let thin = |paths: &[ExtrusionPath], kept: &[Option<_>]| {
                     replaced(
                         paths,
-                        |path| open(&path.points, tolerance),
+                        |at, path| {
+                            if left(kept, at) {
+                                return None;
+                            }
+                            open(&path.points, tolerance)
+                        },
                         |path, points| ExtrusionPath {
                             points,
                             role: path.role,
@@ -172,10 +202,10 @@ impl Thinned {
                         .then(|| {
                             replaced(
                                 layer.loops,
-                                |wall| {
+                                |at, wall| {
                                     // Cut into pieces of one width as it is
                                     // laid, and thinned then.
-                                    if !wall.widths.is_empty() {
+                                    if !wall.widths.is_empty() || left(&contoured.loops, at) {
                                         return None;
                                     }
                                     let turned = crate::wall_turned(s, wall);
@@ -189,8 +219,8 @@ impl Thinned {
                             )
                         })
                         .flatten(),
-                    paths: lines.then(|| thin(layer.paths)).flatten(),
-                    support: lines.then(|| thin(layer.support)).flatten(),
+                    paths: lines.then(|| thin(layer.paths, &contoured.paths)).flatten(),
+                    support: lines.then(|| thin(layer.support, &[])).flatten(),
                 }
             })
             .collect();
@@ -227,16 +257,20 @@ impl Thinned {
 /// those points, or none when `thin` changes nothing in any.
 fn replaced<T: Clone>(
     items: &[T],
-    thin: impl Fn(&T) -> Option<Vec<Point2>>,
+    thin: impl Fn(usize, &T) -> Option<Vec<Point2>>,
     with: impl Fn(&T, Vec<Point2>) -> T,
 ) -> Option<Vec<T>> {
-    let first = items.iter().position(|item| thin(item).is_some())?;
+    let first = (items.iter().enumerate()).position(|(at, item)| thin(at, item).is_some())?;
     let mut out = Vec::with_capacity(items.len());
     out.extend_from_slice(&items[..first]);
-    out.extend(items[first..].iter().map(|item| match thin(item) {
-        Some(points) => with(item, points),
-        None => item.clone(),
-    }));
+    out.extend(
+        (items.iter().enumerate())
+            .skip(first)
+            .map(|(at, item)| match thin(at, item) {
+                Some(points) => with(item, points),
+                None => item.clone(),
+            }),
+    );
     Some(out)
 }
 

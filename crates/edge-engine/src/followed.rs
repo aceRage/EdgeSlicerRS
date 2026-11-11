@@ -170,13 +170,20 @@ mod tests {
 
     #[test]
     fn a_setting_read_and_not_followed_has_its_note() {
+        // Z contouring is followed, but not in vase mode, as in the
+        // reference.
         let contoured = asked(r#"{"zaa_enabled": "1", "spiral_mode": "1"}"#);
         assert_eq!(contoured.refused, None);
         let said: Vec<&str> = contoured.notes_on("zaa_enabled").collect();
         assert_eq!(
             said,
-            ["zaa_enabled \"1\": top surfaces are laid flat, not contoured in height"]
+            [
+                "zaa_enabled \"1\": not with spiral_mode, as in the reference: top surfaces are laid flat"
+            ]
         );
+        let plain = asked(r#"{"zaa_enabled": "1"}"#);
+        assert_eq!(plain.notes_on("zaa_enabled").count(), 0);
+        assert!(plain.read.contains("zaa_min_z"));
         assert_eq!(contoured.notes_on("spiral_mode").count(), 1);
         // A note about another setting whose name starts the same way is
         // not this one's.

@@ -23,6 +23,7 @@ replaces it until output matches on the printers we care about.
 | `crates/edge-perimeter` | Walls, the lines that fill the gaps between them, and the infill area inside (classic constant-width generator) |
 | `crates/edge-medial` | The centre line of a narrow region and how wide it is along it (wraps boostvoronoi), what part of the plane lies nearest each of a set of edges, the whole Voronoi diagram of a set of edges as plain data, and lines of changing width as extrusions. The same edges give the same diagram on every run and thread: the library's skip list has its levels from a generator each list owns, not from the thread's random numbers (`vendor/cpp_map`). And wherever they lie: all three are swept in coordinates of the edges' own, the whole diagram about the middle of the box round them, which is handed back with it |
 | `crates/edge-adhesion` | Skirt and brim, with the automatic brim width |
+| `crates/edge-contour` | Z contouring: a top surface, its ironing and the walls round it laid at the height of the model's surface under each point, within the layer (a port of the reference's ContourZ.cpp) |
 | `crates/edge-support` | Supports under overhangs, normal (grid) and tree, with dense tops and feet |
 | `crates/edge-gcode` | Print order, seams, travel, retraction, wipe and lift, cooling, overhangs, and extrusion, written as G-code |
 | `crates/edge-visibility` | How much of a part's outside can be seen from each place on its surface, which is where a seam shows least: points scattered over the mesh, rays cast from each, and the measure at any place taken from the points round it (a port of the visibility measure of the reference's SeamPlacer); and where the parts of an object meet, points on each part's surface that touch another part, which seams are moved to (its `gather_part_joints`) |
@@ -35,7 +36,7 @@ replaces it until output matches on the printers we care about.
 | `crates/edge-cli` | The `edge` command line |
 | `tools/make_defaults.py` | Asks the reference for its default of every setting and writes the table `edge-config` carries; run again when the pin moves |
 | `tools/make_settings_pages.py` | Reads the reference's process, filament and printer pages and option definitions from its source and writes the data the desktop app draws its settings pages from; run again when the pin moves, after `make_defaults.py` |
-| `tools/make_fixture.py` | Writes small test 3MFs (parts that need supports or a brim, a plain cube, two blocks in two filaments, a comb with thin teeth on the bed, three tiers with a top surface on each, bars over a base for small bridges over infill, a slab with round holes for the hole options, a slab with holes that narrow on the way up for bridging them, a slab with pockets underneath, three round ones for arc fitting: a post, a post with a hole, a slab with a wide curve and tight ones, a post that widens as it rises for scarf seams, two of two parts for seams where parts meet: a round post cut in two, and a block with a post pushed half into it, and two with seams painted on: a post with a strip painted to have them, and a cube with two sides painted to keep them off, and a plate on a frame with walls wholly over air) to compare with the reference on |
+| `tools/make_fixture.py` | Writes small test 3MFs (parts that need supports or a brim, a plain cube, two blocks in two filaments, a comb with thin teeth on the bed, three tiers with a top surface on each, bars over a base for small bridges over infill, a slab with round holes for the hole options, a slab with holes that narrow on the way up for bridging them, a slab with pockets underneath, three round ones for arc fitting: a post, a post with a hole, a slab with a wide curve and tight ones, a post that widens as it rises for scarf seams, two of two parts for seams where parts meet: a round post cut in two, and a block with a post pushed half into it, and two with seams painted on: a post with a strip painted to have them, and a cube with two sides painted to keep them off, a plate on a frame with walls wholly over air, and for Z contouring a wedge of 4 degrees, a shallow dome, a ramp meeting a flat, and the wedge with a hole down through it) to compare with the reference on |
 | `tools/make_app.sh` | Builds the desktop app and wraps it in a macOS `.app` that opens with a double click (macOS only) |
 | `tools/make_project.py` | Writes one of those parts as a project whose settings are named presets, with as many filaments as are named, each list holding the value each filament reads at standard flow: how the test prints for a printer are made |
 | `reference/EdgeSlicer` | Pinned submodule of the C++ slicer: profiles, test models, behaviour to match. Read-only here |
@@ -818,6 +819,54 @@ Known gaps: painted supports and seams, per-object setting overrides, typed sett
   from, and with `ironing_fan_speed` set the fan runs at that for as
   long as the ironing lasts. With `ironing_type` at `no ironing` a
   file is byte for byte what it was.
+- Z contouring (`zaa_enabled`, "Z anti-aliasing"): top surfaces,
+  their ironing and the walls round them are laid not flat at their
+  layer's top but at the height of the model's own surface under each
+  point, within the layer, so a shallow slope or a curved top prints
+  without its stair steps. A port of the reference's ContourZ.cpp
+  (`edge-contour`). Every layer but the first is sliced `zaa_min_z`
+  above its bottom rather than through its middle (a `zaa_min_z` over
+  the layer height is refused, as the reference refuses it). Once the
+  fill and ironing are made, each top surface line, ironing line and
+  wall of every layer but the first is cut into points 0.1 mm apart
+  and a ray is cast straight up from each, from the slicing plane, to
+  the parts' surface, the triangles in a tree and the layers on as
+  many threads as there are. How far that is above or below the
+  layer's top is the point's height: a top surface down to the
+  slicing plane and up by `zaa_min_z`, fading to nothing over the
+  0.03 mm above that; ironing a layer either way; a wall never up,
+  and on a surface sloped more than `zaa_minimize_perimeter_height`
+  degrees let down the slope by half its width, faded in over the
+  20 degrees above. The heights are smoothed along the line (three
+  points either side), a line that moves less than 10 µm all along is
+  left flat, and points in line with the two before them in three
+  dimensions are dropped. The writer lays a contoured line point to
+  point with a height on every move and no arcs, leaves it unthinned,
+  lays each move as much as the line is tall there (the mean of its
+  two ends' heights; ironing keeps its flow) and, with
+  `zaa_speed_scaling`, that much slower, never faster than the line's
+  own speed nor slower than 10 mm/s, and held to the hot end's limit,
+  a new speed only where the height has moved 5 % from the one that
+  set the last. With `zaa_dont_alternate_fill_direction` fill and
+  ironing keep one direction on every layer. A wall of changing width
+  is contoured as a whole loop, where the reference contours each of
+  its pieces of one width by itself. As in the reference nothing is
+  contoured with `spiral_mode` or `dithering_local_z_mode` on, and
+  each says so. Four things are not as in the reference, each a
+  mistake there: a contoured wall is closed with the seam gap and no
+  scarf (the reference lays a scarf's way up and way down flat along
+  the contour at full flow, the joint twice); ironing keeps its speed
+  (the reference slows it for its height over the ironing line's own,
+  down to 10 mm/s); a wipe after a contoured line goes back along it
+  at the heights it was laid at (the reference wipes at the height
+  the line ended at, back up a slope through what it has just laid);
+  and a travel never goes down on the way, the nozzle coming down to
+  a line that starts lower once it is there (the reference travels
+  straight from one height to the other). One is noted: where a layer
+  is slowed to cool, a contoured move slowed for its height is held to
+  the layer's cap like any other line, where the reference slows such
+  moves in proportion. With `zaa_enabled` off a file is byte for byte
+  what it was.
 - G-code: `slice --gcode out.gcode` orders each layer (skirt and brim,
   each part's brim whole before the next, then island by island: an
   island's walls from the inside out, each beside the last, then the
@@ -1857,6 +1906,102 @@ climbs from nothing, and the way down over it thins out over the whole
 slope (on the tube with arcs, 0.203 and 0.311 mm of filament against
 0.643 for 20 mm of line); that is how the reference has it, and it is
 not changed here.
+
+Z contouring, 2026-11-11, on parts from `tools/make_fixture.py` with the
+U1's presets (a 0.2 mm layer, `zaa_min_z` 0.05 mm) but where the
+Centauri Carbon's are named (arcs on), and on 3DBenchy with the U1's.
+`wedge` rises 4 degrees, `dome` is a cap 3 mm high on a post, `ramp`
+climbs 7.6 degrees to a flat and `holed` is the wedge with a hole down
+through it. Lengths and filament are the C++ slicer's and this engine's;
+a contoured move is an extruding move that says a height off its layer's
+top. The heights compared are paired: each of the reference's moves of a
+feature against the nearest of this engine's on the same layer, within
+0.05 mm across, at the middle of the reference's move, the 95th centile
+and the most; the plastic a millimetre likewise.
+
+| Part, options | Top surface, m | Outer wall, m | Contoured moves, top and walls | Heights apart, 95% and most | Plastic a mm apart, 95% | Filament, mm | Time |
+|---|---|---|---|---|---|---|---|
+| wedge, off | 1.57 / 1.84 | 2.15 / 2.15 | | | | 611.5 / 610.9 | 5m 10s / 5m 41s |
+| wedge | 1.57 / 1.87 | 2.17 / 2.17 | 3783 / 3783, 150 / 150 | 0, 0.0005 mm | 0.2% | 598.3 / 595.5 | 5m 6s / 5m 42s |
+| and `zaa_min_z` 0.08 | 1.57 / 1.87 | 2.16 / 2.16 | 3795 / 3795, 150 / 150 | 0, 0.0005 mm | 0.1% | 609.4 / 604.1 | 5m 10s / 5m 41s |
+| and fill in one direction | 1.57 / 1.87 | 2.17 / 2.17 | 3783 / 3783, 150 / 150 | 0, 0.0005 mm | 0.2% | 598.5 / 595.1 | 5m 7s / 5m 42s |
+| and ironing | 1.57 / 1.87 | 2.17 / 2.17 | 3783 / 3783, 150 / 150; ironing 7869 / 7869 | 0, 0.0005 mm; ironing 0, 0 | 0.2% | 602.7 / 599.9 | 6m 59s / 7m 34s |
+| dome, off | 0.40 / 0.43 | 1.46 / 1.46 | | | | 390.7 / 392.4 | 4m 9s / 4m 24s |
+| dome | 0.43 / 0.47 | 1.48 / 1.48 | 1314 / 1315, 2638 / 2615 | 0.0005, 0.014 mm | 1.3% | 381.0 / 382.4 | 4m 21s / 4m 27s |
+| and `zaa_min_z` 0.02 | 0.46 / 0.47 | 1.49 / 1.49 | 660 / 661, 2945 / 2936 | 0.0005, 0.016 mm | 1.0% | 377.7 / 379.8 | 4m 26s / 4m 29s |
+| and walls let down past 10 degrees | 0.43 / 0.47 | 1.48 / 1.48 | 1314 / 1315, 2902 / 2871 | 0.0005, 0.019 mm | 1.3% | 375.3 / 376.7 | 4m 28s / 4m 27s |
+| and no speed scaling | 0.43 / 0.47 | 1.48 / 1.48 | 1314 / 1315, 2638 / 2615 | 0.0005, 0.014 mm | 1.3% | 381.0 / 382.4 | 4m 13s / 4m 27s |
+| and ironing | 0.43 / 0.47 | 1.48 / 1.48 | 1314 / 1315, 2638 / 2615; ironing 15986 / 14093 | 0.0005, 0.014 mm; ironing 0.0055, 0.023 | 1.3% | 383.4 / 384.7 | 5m 12s / 5m 23s |
+| and `arachne` | 0.40 / 0.48 | 1.48 / 1.48 | 1581 / 1581, 2240 / 2231 | 0.0008, 0.008 mm | 3.4% | 381.8 / 382.9 | 4m 20s / 4m 28s |
+| and the Centauri Carbon's, arcs | 0.85 / 1.57 | 1.50 / 1.50 | 5026 / 5022, 3865 / 3841 | | | 386.7 / 385.9 | 4m 42s / 5m 34s |
+| ramp, off | 1.81 / 2.11 | 2.01 / 2.01 | | | | 653.8 / 653.3 | 4m 41s / 5m 9s |
+| ramp | 1.84 / 2.11 | 2.01 / 2.01 | 4147 / 4150, 267 / 267 | 0, 0.0005 mm | 0.0% | 641.2 / 640.8 | 4m 43s / 5m 10s |
+| and `arachne` | 1.84 / 2.11 | 2.01 / 2.01 | 4147 / 4150, 267 / 219 | 0.0083, 0.0085 mm | 9.9% | 641.5 / 641.0 | 4m 43s / 5m 11s |
+| holed, off | 2.18 / 2.57 | 3.16 / 3.16 | | | | 882.1 / 881.6 | 6m 31s / 7m 19s |
+| holed | 2.19 / 2.61 | 3.18 / 3.18 | 5263 / 5263, 272 / 272 | 0, 0.0005 mm | 0.3% | 863.6 / 864.4 | 6m 30s / 7m 24s |
+| wedge, scarf seams on all | 1.57 / 1.87 | 2.64 / 2.43 | 3783 / 3783, 488 / 345 | | | 603.6 / 595.5 | 5m 8s / 5m 43s |
+| 3DBenchy, off | 3.45 / 3.87 | 32.78 / 32.78 | | | | 3767.6 / 3774.1 | 38m 43s / 41m 48s |
+| 3DBenchy | 3.54 / 3.83 | 32.59 / 32.73 | 6649 / 5339, 6992 / 7056 | 0.0023, 0.054 mm | 2.4% | 3737.4 / 3754.1 | 39m 4s / 42m 7s |
+
+Where the top surface is the same lines in both files (the wedge, the
+ramp, the holed wedge) every contoured move is the reference's to the
+thousandth of a millimetre written, with the same plastic: the band, the
+smoothing, the 10 µm the line must move and the points dropped come to
+the same points. Where they differ it is the lines that differ, not
+their heights: with contouring off the two already lay the top surfaces
+of these parts differently (the reference's 1.57 m of the wedge's top
+against 1.84 m here, and with the Centauri Carbon's presets on the dome
+0.83 m against 1.52, too few lines alike to pair), and on 3DBenchy the
+reference contours 6649 top surface moves and this engine 5339 of a top
+laid otherwise, the pairs within 0.0023 mm in 95 of 100. A wall of
+changing width (`arachne`) is contoured here as a whole loop and in the
+reference piece by piece, each piece of one width smoothed by itself, so
+near where its pieces meet the two differ by up to 0.009 mm. With
+`zaa_minimize_perimeter_height` at its 35 degrees the dome's walls, on a
+slope of 28 degrees at most, are not let down (the same file as at 0);
+at 10 degrees they are, in both, and take 6 mm less filament. With
+`zaa_dont_alternate_fill_direction` the wedge's top lines run at 45
+degrees on every layer in both files, and its solid fill never at 135.
+No arc is fitted to a contoured move in either file.
+
+Every extruding move in all of these files is between the slicing plane,
+`zaa_min_z` above the layer beneath, and `zaa_min_z` above its own
+layer's top, ironing a layer above it, in both slicers. On the wedge 27
+of the reference's 109 wipes end lower than the line they wipe back over
+was laid there, by up to 0.04 mm, and on the dome 32 of 286 by up to
+0.10 mm; here none does. With scarf seams on all walls the reference
+lays 71 mm of the wedge's contoured outer walls twice, the scarf's way
+up and its way down both flat along the contour, over seven layers;
+here those walls are closed with the seam gap and have no scarf (the
+note says so). On the dome with ironing the reference irons 83 mm at
+10 mm/s and more at other speeds between that and its own, where with
+contouring off it irons all of it at the ironing speed; here all of it
+is at the ironing speed. With speed scaling, a contoured move is slowed
+in step with its height in both: with layers not slowed to cool
+(`slow_down_for_layer_cooling` off) the speeds paired on the wedge and
+the dome are within 4.4% in 95 of 100, as the speeds of the walls are
+with contouring off. Where layers are slowed to cool they part: the
+reference slows contoured moves by the layer's factor whatever their
+speed, and this engine holds them to the layer's cap like any other
+line (a note says so); on 3DBenchy's layers from 11 mm up the
+reference's contoured top moves average about 4000 mm/min and this
+engine's about 7200.
+
+The reference's own file, timed here as the reference plans it, comes
+to its own time to the second, or a second over, on every file (a
+contoured move is read as the move it is, its length in three
+dimensions). With `zaa_enabled` off the G-code is byte for byte what it
+was before any of this on these parts, the other fixtures, 3DBenchy and
+five of the reference's test projects (19 files), and with it on a file is the
+same on one thread as on all of them and from one run to the next.
+What it costs (`edge slice`, best of 7, off and on in turn, on a Mac
+mini busy with other work, so the processor time is the steadier
+figure): 3DBenchy 1.14 s and 1.24 s, 4.9 and 5.4 s of processor time;
+the dome 0.17 s both, 0.49 and 0.51 s; the holed wedge 0.12 and 0.13 s,
+0.26 and 0.28 s. Most of it is building the tree of the parts'
+triangles (225,154 on 3DBenchy), which is now made on as many threads
+as there are; the rays, cast no further than a surface could move a
+point, take some 35 ms there.
 
 Where seams are put, 2026-11-11, on twelve parts from
 `tools/make_fixture.py` with the U1's presets (cube, cylinder, tube,

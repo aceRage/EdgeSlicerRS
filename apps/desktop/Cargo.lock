@@ -846,6 +846,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "edge-contour"
+version = "0.0.0"
+dependencies = [
+ "edge-config",
+ "edge-extrusion",
+ "edge-geom",
+ "edge-mesh",
+ "edge-visibility",
+ "rayon",
+]
+
+[[package]]
 name = "edge-desktop"
 version = "0.0.0"
 dependencies = [
@@ -870,6 +882,7 @@ dependencies = [
  "edge-adhesion",
  "edge-clip",
  "edge-config",
+ "edge-contour",
  "edge-extrusion",
  "edge-gcode",
  "edge-geom",
@@ -908,6 +921,7 @@ version = "0.0.0"
 dependencies = [
  "edge-avoid",
  "edge-config",
+ "edge-contour",
  "edge-extrusion",
  "edge-geom",
  "edge-medial",

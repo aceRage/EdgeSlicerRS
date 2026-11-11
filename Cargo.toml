@@ -19,6 +19,7 @@ edge-arachne = { path = "crates/edge-arachne" }
 edge-avoid = { path = "crates/edge-avoid" }
 edge-clip = { path = "crates/edge-clip" }
 edge-config = { path = "crates/edge-config" }
+edge-contour = { path = "crates/edge-contour" }
 edge-engine = { path = "crates/edge-engine" }
 edge-extrusion = { path = "crates/edge-extrusion" }
 edge-fuzzy = { path = "crates/edge-fuzzy" }
