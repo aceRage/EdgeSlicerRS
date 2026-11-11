@@ -233,26 +233,28 @@
   <h2 id="pt-title">Printer Selection</h2>
   <div id="pt-toolbar">
     <input id="pt-search" type="search" placeholder="Search brand or model" aria-label="Search brand or model" autocomplete="off" spellcheck="false">
-    <span id="pt-count" class="quiet" aria-live="polite"></span>
-    <span id="pt-scope" class="quiet"></span>
-    <button id="pt-all" type="button" class="primary">All</button>
-    <button id="pt-clear" type="button">Clear all</button>
+    <span id="pt-count" aria-live="polite"></span>
+    <span id="pt-scope"></span>
+    <div class="joined">
+      <button id="pt-all" type="button">All</button>
+      <button id="pt-clear" type="button">Clear all</button>
+    </div>
   </div>
   <div id="pt-chips" hidden></div>
   <div id="pt-scroll">
-    <table id="pt-table">
+    <table id="pt-table" class="data-table">
       <thead><tr id="pt-head"></tr></thead>
       <tbody id="pt-body"></tbody>
     </table>
     <p id="pt-none" class="quiet" hidden>No printer matches the search and filters.</p>
   </div>
   <p id="pt-unread" class="quiet" hidden></p>
-  <p id="pt-error" class="error" role="alert" hidden></p>
-  <div class="row end">
+  <div class="dialog-foot">
+    <div class="grow"><p id="pt-error" class="error" role="alert" hidden></p></div>
     <button id="pt-confirm" type="button" class="primary">Confirm</button>
     <button id="pt-cancel" type="button">Cancel</button>
   </div>
-  <div id="pt-pop" hidden></div>
+  <div id="pt-pop" class="popover" hidden></div>
 </dialog>
 
 <div id="menu" role="menu" hidden></div>

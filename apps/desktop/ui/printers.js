@@ -235,15 +235,15 @@ function ptRender() {
     if (!column.label) return cell;
     const sorting = pt.sort.key === column.key ? pt.sort.way : 0;
     cell.setAttribute('aria-sort', sorting > 0 ? 'ascending' : sorting < 0 ? 'descending' : 'none');
-    const title = el('button', { type: 'button', className: 'pt-sort', title: column.tip ? `${column.tip}\nClick to sort` : 'Click to sort' },
-      column.label, el('span', { className: 'pt-way', textContent: sorting > 0 ? ' ▲' : sorting < 0 ? ' ▼' : '' }));
+    const title = el('button', { type: 'button', className: 'th-sort', title: column.tip ? `${column.tip}\nClick to sort` : 'Click to sort' },
+      column.label, el('span', { className: 'th-way', textContent: sorting > 0 ? ' ▲' : sorting < 0 ? ' ▼' : '' }));
     title.addEventListener('click', () => {
       // Up, down, then back to the order given.
       const next = pt.sort.key !== column.key ? 1 : pt.sort.way === 1 ? -1 : pt.sort.way === -1 ? 0 : 1;
       pt.sort = { key: next ? column.key : null, way: next };
       ptRender();
     });
-    const funnel = el('button', { type: 'button', className: `pt-funnel${pt.filters.has(column.key) ? ' on' : ''}`, title: `Filter ${column.label}` });
+    const funnel = el('button', { type: 'button', className: `th-filter${pt.filters.has(column.key) ? ' on' : ''}`, title: `Filter ${column.label}` });
     funnel.setAttribute('aria-label', `Filter ${column.label}`);
     funnel.setAttribute('aria-haspopup', 'dialog');
     funnel.innerHTML = '<svg viewBox="0 0 12 12" aria-hidden="true"><path d="M1,1.5h10L7.2,6.2v4.3L4.8,9.3V6.2Z"/></svg>';
@@ -264,7 +264,7 @@ function ptRender() {
   $('pt-body').replaceChildren(...pt.view.map((row) => {
     const box = el('input', { type: 'checkbox', checked: row.enabled });
     box.setAttribute('aria-label', `Enable ${row.name}`);
-    const picture = el('span', { className: 'pt-cover' });
+    const picture = el('span', { className: 'cover' });
     if (row.cover) {
       picture.dataset.vendor = row.vendor;
       picture.dataset.model = row.model;
@@ -299,7 +299,7 @@ function ptRender() {
     const remove = el('button', { type: 'button', className: 'icon', title: 'Remove this filter', textContent: '✕' });
     remove.setAttribute('aria-label', `Remove the filter on ${column.label}`);
     remove.addEventListener('click', () => { pt.filters.delete(key); ptRender(); });
-    return el('span', { className: 'pt-chip' }, `${column.label}: ${said} `, remove);
+    return el('span', { className: 'chip' }, el('span', { className: 'chip-key', textContent: `${column.label}:` }), ` ${said} `, remove);
   });
   if (filtered) {
     const clear = el('button', { type: 'button', className: 'link', textContent: 'Clear search and filters' });
@@ -359,7 +359,7 @@ function ptOpenPop(column, anchor) {
       box.dataset.value = value;
       return el('label', {}, box, value);
     });
-    const list = el('div', { className: 'pt-values' }, ...boxes);
+    const list = el('div', { className: 'check-list' }, ...boxes);
     const take = () => {
       const ticked = [...list.querySelectorAll('input')].filter((box) => box.checked).map((box) => box.dataset.value);
       apply(ticked.length === values.length ? null : new Set(ticked));
@@ -523,6 +523,6 @@ function initPrinters() {
     if (pt.pop) ptClosePop(); else attempt(ptCancel);
   });
   dialog.addEventListener('pointerdown', (event) => {
-    if (pt.pop && !$('pt-pop').contains(event.target) && !event.target.closest('.pt-funnel')) ptClosePop();
+    if (pt.pop && !$('pt-pop').contains(event.target) && !event.target.closest('.th-filter')) ptClosePop();
   });
 }
