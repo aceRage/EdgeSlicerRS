@@ -264,6 +264,12 @@ pub struct ExtrusionLoop {
     /// line that lays it is wider by what its rounded edges leave empty).
     /// Empty for a loop of one width.
     pub widths: Vec<Coord>,
+    /// Laid clockwise where walls otherwise go counter-clockwise: set
+    /// over a steep overhang on every other layer, so that a wall with
+    /// little under it is not always pulled the same way
+    /// (`overhang_reverse`). Which way round `polygon` is held does not
+    /// change.
+    pub clockwise: bool,
 }
 
 impl ExtrusionLoop {
@@ -362,6 +368,7 @@ mod tests {
         };
         let wall = ExtrusionLoop {
             widths: Vec::new(),
+            clockwise: false,
             polygon: square,
             role: Role::ExternalPerimeter,
             is_hole: false,

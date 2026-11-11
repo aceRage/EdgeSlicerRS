@@ -126,6 +126,11 @@ pub struct InfillSettings {
     pub top_ordered: bool,
     pub bottom_ordered: bool,
     pub solid_ordered: bool,
+    /// Which solid fill has what its lines leave bare filled with lines
+    /// of whatever width fits (`gap_fill_target`), and the shortest such
+    /// line worth laying, in mm (`filter_out_gap_fill`).
+    pub gap_fill_target: crate::GapFillTarget,
+    pub filter_out_gap_fill: f64,
     /// Whether fill under and over the walls of nearby layers is made
     /// solid (`ensure_vertical_shell_thickness` at `ensure_all`).
     pub ensure_vertical_shells: bool,
@@ -170,6 +175,8 @@ impl Default for InfillSettings {
             top_ordered: true,
             bottom_ordered: true,
             solid_ordered: true,
+            gap_fill_target: crate::GapFillTarget::Nowhere,
+            filter_out_gap_fill: 0.0,
             top_joined: false,
             bottom_joined: true,
             solid_joined: true,
@@ -424,6 +431,20 @@ impl InfillSettings {
             top_ordered,
             bottom_ordered,
             solid_ordered,
+            gap_fill_target: match settings.text("gap_fill_target") {
+                None => defaults.gap_fill_target,
+                Some("everywhere") => crate::GapFillTarget::Everywhere,
+                Some("topbottom") => crate::GapFillTarget::TopBottom,
+                Some("nowhere") => crate::GapFillTarget::Nowhere,
+                Some(other) => {
+                    return Err(ConfigError::BadValue {
+                        key: "gap_fill_target".into(),
+                        found: other.to_owned(),
+                        expected: "everywhere, topbottom or nowhere",
+                    });
+                }
+            },
+            filter_out_gap_fill: number("filter_out_gap_fill", defaults.filter_out_gap_fill)?,
             top_joined,
             bottom_joined,
             solid_joined,
@@ -570,6 +591,8 @@ impl InfillSettings {
             top_ordered: self.top_ordered,
             bottom_ordered: self.bottom_ordered,
             solid_ordered: self.solid_ordered,
+            gap_fill: self.gap_fill_target,
+            gap_shortest: self.filter_out_gap_fill,
         })
     }
 }
@@ -599,6 +622,28 @@ mod tests {
         assert!(on.unsupported[0].starts_with("detect_narrow_internal_solid_infill"));
         let off = read(r#"{"detect_narrow_internal_solid_infill": "0"}"#).unwrap();
         assert!(off.unsupported.is_empty());
+    }
+
+    #[test]
+    fn the_fills_own_gap_fill_is_read() {
+        let read = |json: &str| InfillSettings::from_settings(&Settings::from_json(json).unwrap());
+        // Nowhere unless asked for, as in the reference.
+        let unset = read("{}").unwrap();
+        assert_eq!(unset.gap_fill_target, crate::GapFillTarget::Nowhere);
+        let set =
+            read(r#"{"gap_fill_target": "topbottom", "filter_out_gap_fill": "0.4"}"#).unwrap();
+        let params = set.params(0.2, false).unwrap();
+        assert_eq!(
+            (params.gap_fill, params.gap_shortest),
+            (crate::GapFillTarget::TopBottom, 0.4)
+        );
+        assert_eq!(
+            read(r#"{"gap_fill_target": "everywhere"}"#)
+                .unwrap()
+                .gap_fill_target,
+            crate::GapFillTarget::Everywhere
+        );
+        assert!(read(r#"{"gap_fill_target": "sometimes"}"#).is_err());
     }
 
     #[test]

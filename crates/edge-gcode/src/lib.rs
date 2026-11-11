@@ -31,7 +31,7 @@ use edge_geom::{ExPolygon, Point2, scaled, unscaled};
 use edge_template::{TemplateError, Value, Variables};
 
 pub use seam::Seam;
-pub use settings::{Lift, OverhangFan, PrintSettings, WallOrder};
+pub use settings::{Lift, OverhangFan, PrintSettings, WallDirection, WallOrder};
 
 #[derive(Debug, thiserror::Error)]
 pub enum GcodeError {
@@ -552,6 +552,9 @@ struct State {
     /// How high the nozzle actually is, once a move has said.
     height: Option<f64>,
     first_layer: bool,
+    /// The speed of the wall loop being laid, where it is small enough
+    /// to have one of its own (`small_perimeter_speed`).
+    small_wall: Option<f64>,
     /// The tool in use, and what was left retracted in each tool put away.
     tool: usize,
     parked: Vec<(bool, f64)>,
@@ -1274,8 +1277,16 @@ impl Writer<'_> {
         let s = self.settings;
         let own = &layer.loops[island.clone()];
         let mut walls: Vec<&ExtrusionLoop> = nested(own).into_iter().map(|at| &own[at]).collect();
-        if s.wall_order == WallOrder::OuterInner {
-            walls.reverse();
+        match s.wall_order {
+            WallOrder::InnerOuter => {}
+            WallOrder::OuterInner => walls.reverse(),
+            // "Sandwich mode. Apply after 1st layer."
+            WallOrder::InnerOuterInner => {
+                if !self.state.first_layer {
+                    walls.reverse();
+                    walls = sandwich(walls);
+                }
+            }
         }
         // The seams of the island's outermost walls are settled first,
         // so the walls behind them can start alongside.
@@ -1315,7 +1326,29 @@ impl Writer<'_> {
                     (corner, points[corner])
                 }
             };
+            // A small loop goes at its own speed (GCode.cpp `extrude_loop`,
+            // "check loop length for small perimeter").
+            let small = wall.length_mm() <= s.small_perimeter_threshold * std::f64::consts::TAU;
+            self.state.small_wall = small.then(|| {
+                if s.small_perimeter_speed == FloatOrPercent::Value(0.0) {
+                    0.5 * s.outer_wall_speed
+                } else {
+                    s.small_perimeter_speed.resolve(s.outer_wall_speed)
+                }
+            });
             let mut path = seam::open_at(points, edge, start);
+            // A loop is held counter-clockwise round material and
+            // clockwise round a hole; every wall is laid the same way
+            // round, which turns one or the other about.
+            let clockwise = match s.wall_direction {
+                WallDirection::Auto => wall.clockwise,
+                WallDirection::CounterClockwise => false,
+                WallDirection::Clockwise => true,
+            };
+            let turned = wall.is_hole != clockwise;
+            if turned {
+                path.reverse();
+            }
             let whole = (!wall.widths.is_empty()).then(|| path.clone());
             seam::clip_end(&mut path, s.seam_gap);
             let Some(whole) = whole else {
@@ -1326,11 +1359,11 @@ impl Writer<'_> {
             // end to end, each of one width (the reference's
             // `thick_polyline_to_multi_path`).
             let widths: Vec<f64> = wall.widths.iter().map(|&width| width as f64).collect();
-            let widths = seam::clip_widths(
-                &whole,
-                &seam::open_widths_at(points, &widths, edge, start),
-                &path,
-            );
+            let mut widths = seam::open_widths_at(points, &widths, edge, start);
+            if turned {
+                widths.reverse();
+            }
+            let widths = seam::clip_widths(&whole, &widths, &path);
             if path.len() < 2 {
                 continue;
             }
@@ -1348,6 +1381,7 @@ impl Writer<'_> {
             // The nozzle is wiped along the whole wall, not its last piece.
             self.state.wipe_path = line.points;
         }
+        self.state.small_wall = None;
         Ok(())
     }
 
@@ -1478,11 +1512,14 @@ impl Writer<'_> {
                 // The wall's speed where it is fully supported, and where a
                 // quarter, a half, three quarters and nearly all of it hangs
                 // over; a bridge's where nothing is under it (GCode.cpp `_extrude`).
-                let mut usual = if role == Role::ExternalPerimeter {
-                    s.outer_wall_speed
-                } else {
-                    s.inner_wall_speed
-                };
+                let mut usual =
+                    self.state
+                        .small_wall
+                        .unwrap_or(if role == Role::ExternalPerimeter {
+                            s.outer_wall_speed
+                        } else {
+                            s.inner_wall_speed
+                        });
                 if s.filament_max_volumetric_speed > 0.0 {
                     usual = usual.min(s.filament_max_volumetric_speed / flow.mm3_per_mm());
                 }
@@ -1628,8 +1665,8 @@ impl Writer<'_> {
                 s.initial_layer_speed
             }
             _ if first_layer => s.initial_layer_infill_speed,
-            Role::ExternalPerimeter => s.outer_wall_speed,
-            Role::Perimeter => s.inner_wall_speed,
+            Role::ExternalPerimeter => self.state.small_wall.unwrap_or(s.outer_wall_speed),
+            Role::Perimeter => self.state.small_wall.unwrap_or(s.inner_wall_speed),
             Role::SparseInfill => s.sparse_infill_speed,
             Role::SolidInfill | Role::BottomSurface => s.internal_solid_infill_speed,
             Role::TopSolidInfill => s.top_surface_speed,
@@ -2434,6 +2471,83 @@ fn homes(layer: &Layer<'_>) -> Vec<usize> {
             last
         })
         .collect()
+}
+
+/// Walls given outermost first, put in the order that lays the outer
+/// wall between the inner ones: for each outer wall with at least two
+/// walls behind it, those from the innermost out to the second inner
+/// wall, then the outer wall, then the first inner wall. Fewer walls
+/// stay outermost first (PerimeterGenerator.cpp `process_classic`,
+/// "sandwich mode", followed step by step).
+fn sandwich(walls: Vec<&ExtrusionLoop>) -> Vec<&ExtrusionLoop> {
+    if walls.len() <= 2 {
+        return walls;
+    }
+    // First the walls two or more deep are held back until the outer
+    // wall they are met after, so each first inner wall is ahead of them.
+    let mut reordered: Vec<&ExtrusionLoop> = Vec::with_capacity(walls.len());
+    let (mut skipped, mut found_second_internal) = (Vec::new(), false);
+    for &wall in &walls {
+        match wall.depth {
+            0 => {
+                if found_second_internal {
+                    reordered.append(&mut skipped);
+                }
+                reordered.push(wall);
+            }
+            1 => reordered.push(wall),
+            _ => {
+                skipped.push(wall);
+                found_second_internal = true;
+            }
+        }
+    }
+    reordered.append(&mut skipped);
+
+    let mut ordered = walls;
+    let mut position = 0;
+    while position < reordered.len() {
+        let (mut outer, mut first_internal, mut second_internal) = (None, None, None);
+        let mut max_internal = reordered.len() - 1;
+        let mut at = position;
+        while at < reordered.len() {
+            match reordered[at].depth {
+                0 => outer = outer.or(Some(at)),
+                1 if first_internal.is_none() && outer.is_some_and(|outer| at > outer) => {
+                    first_internal = Some(at);
+                }
+                2 if second_internal.is_none()
+                    && outer.is_some()
+                    && first_internal.is_none_or(|first| at > first) =>
+                {
+                    second_internal = Some(at);
+                }
+                _ => {}
+            }
+            // Another outer wall with all three found is another island.
+            if outer.is_some()
+                && first_internal.is_some()
+                && second_internal.is_some()
+                && reordered[at].depth == 0
+            {
+                at -= 1;
+                max_internal = at;
+                break;
+            }
+            at += 1;
+        }
+        let (Some(_), Some(_), Some(second_internal)) = (outer, first_internal, second_internal)
+        else {
+            break;
+        };
+        let inside_out = (second_internal..=max_internal).rev();
+        let outside_in = position..second_internal;
+        for (slot, from) in inside_out.chain(outside_in).enumerate() {
+            ordered[position + slot] = reordered[from];
+        }
+        position = at + 1;
+    }
+    ordered
 }
 
 /// The planned seam a wall should start next to: the nearest one, taking

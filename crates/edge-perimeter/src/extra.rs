@@ -207,26 +207,30 @@ pub(crate) fn over_overhangs_counting(
                 if !first_is_closed_and_anchored {
                     region.reverse();
                 } else {
-                    // Meant to start the loop at its point nearest the
-                    // layer below. The reference writes
-                    // `if (double d = distance < min_dist)`, which gives
-                    // `d` the outcome of the comparison, 1 or 0, and not
-                    // the distance: so `min_dist` is 1 from the first
-                    // point on, and the loop is turned to start at its
-                    // last point that is over the layer below or within a
-                    // unit of it. Turning it leaves the point that closed
-                    // it in the middle, twice over, and the loop open
-                    // where it now starts. All of that is kept.
+                    // The loop is begun at its point furthest onto the
+                    // layer below, and stays a loop.
+                    //
+                    // Not as the reference, on purpose: it means this
+                    // and writes `if (double d = distance < min_dist)`,
+                    // which gives `d` the outcome of the comparison and
+                    // not the distance, so it begins at the last point
+                    // that is over the layer below at all; and it turns
+                    // the points about without taking out the one that
+                    // closed the loop, which leaves that point twice in
+                    // the middle and the loop open where it starts.
                     let front = &mut region[0].points;
+                    front.pop();
                     let mut start = 0;
                     let mut min_dist = f64::MAX;
                     for (index, &point) in front.iter().enumerate() {
-                        if below.signed_distance(point) < min_dist {
-                            min_dist = 1.0;
+                        let distance = below.signed_distance(point);
+                        if distance < min_dist {
+                            min_dist = distance;
                             start = index;
                         }
                     }
                     front.rotate_left(start);
+                    front.extend(front.first().copied());
                 }
                 // The lines with an end over the layer below first, each
                 // lot in the order it has (`std::stable_partition`).
@@ -870,11 +874,11 @@ mod tests {
         assert_eq!(lines.len(), 1);
         let first = &lines[0][0].points;
         assert!(unscaled(first[0].x) < 1.0);
-        // As the reference turns it: the point that closed the loop is
-        // there twice, and the loop is open where it now starts.
+        // Still a loop, with no point in it twice: the reference's slip
+        // here is not copied.
         assert_eq!(first.len(), 5);
-        assert!(first.windows(2).any(|pair| pair[0] == pair[1]));
-        assert_ne!(first.first(), first.last());
+        assert!(first.windows(2).all(|pair| pair[0] != pair[1]));
+        assert_eq!(first.first(), first.last());
         // The rest follow it inward.
         assert!(lines[0].len() > 1);
         assert!((area(&filled) - 400.0).abs() < 1e-6);
