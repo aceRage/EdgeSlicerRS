@@ -21,7 +21,7 @@ pub use clock::timestamp;
 pub use job::{BedType, Chosen, Job, Overrides, Sourced, prepare};
 pub use load::{Loaded, Opened, PlateInfo, open};
 pub use pipeline::{Gcode, Sliced, Timings, slice};
-pub use presets::{Library, Shelf};
+pub use presets::{Library, ModelPreset, PrinterModel, Shelf};
 pub use preview::Stroke;
 
 /// Anything that stops the work, said in words fit to show a person.
