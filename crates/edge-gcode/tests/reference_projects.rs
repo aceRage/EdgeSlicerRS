@@ -214,15 +214,22 @@ fn every_reference_project_exports_well_formed_gcode_that_adds_up() {
             .any(|wall| !wall.widths.is_empty());
         // With arcs a curve is laid by its length along the arc, not
         // from corner to corner, and corners within the resolution of
-        // the line between their neighbours are left out.
-        let tolerance = if print.arc_fitting {
-            2e-3
+        // the line between their neighbours are left out. Without arcs
+        // those corners are left out all the same (`simplify.rs`), so
+        // a curve is laid a little shorter than it was planned, by
+        // about the resolution over three times its radius, and never
+        // longer: 1.5 to 3.4 parts in 100 000 on the projects with the
+        // most small curves, where the two agreed to one in a million
+        // while every corner was written.
+        let (under, over) = if print.arc_fitting {
+            (2e-3, 2e-3)
         } else if varying {
-            1e-4
+            (2e-4, 1e-4)
         } else {
-            1e-6
+            (2e-4, 1e-6)
         };
-        if (summary.filament_mm3 - expected).abs() > tolerance * expected.max(1.0) {
+        let off = summary.filament_mm3 - expected;
+        if off > over * expected.max(1.0) || -off > under * expected.max(1.0) {
             problems.push(format!(
                 "{} mm³ exported of {expected} planned",
                 summary.filament_mm3

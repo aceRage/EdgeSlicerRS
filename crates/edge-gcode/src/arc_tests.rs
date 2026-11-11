@@ -569,7 +569,12 @@ fn ironing_along_a_curve_is_arcs_at_its_own_speed() {
     );
     assert_eq!(first_ironing, 4);
 
-    // Without arcs the same sweep is its 51 straight moves, as long.
+    // Without arcs the same sweep is straight moves, as long: 31 of
+    // them, where it was all 51 before paths were thinned to the
+    // resolution without arcs too (`simplify.rs`). A side of the half
+    // turn is 0.26 mm and a corner 9 µm from the line between its
+    // neighbours, so corners go, though not every other one: the path
+    // is halved from its two ends, which are not the turn's.
     let straight = PrintSettings {
         arc_fitting: false,
         ..settings
@@ -582,7 +587,7 @@ fn ironing_along_a_curve_is_arcs_at_its_own_speed() {
             .iter()
             .filter(|laid| laid.feature == "Ironing")
             .count(),
-        51
+        31
     );
     assert!((summary.filament_mm - plain.filament_mm).abs() < 1e-3 * plain.filament_mm);
 }

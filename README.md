@@ -14,13 +14,14 @@ replaces it until output matches on the printers we care about.
 | `crates/edge-config` | Vendor presets resolved through `inherits`, `include` and `renamed_from`; the reference's defaults for every setting, and the text form it writes settings in |
 | `crates/edge-3mf` | 3MF projects: objects, parts and their roles, instances, plates, project settings, and colours painted onto triangles |
 | `crates/edge-fuzzy` | Fuzzy skin: walls roughened by moving their points or changing their width, with the noise it is drawn from (a port of the reference's FuzzySkin and of the libnoise modules it uses) |
+| `crates/edge-avoid` | Travel routed round the inside of a part's walls where a straight move would cross them: what a layer's moves are routed by, and the way round for each (a port of the reference's AvoidCrossingPerimeters) |
 | `crates/edge-arachne` | Walls of changing width: a region's skeleton, how many lines fit along it and where that number changes, and the lines themselves (a port of the reference's Arachne) |
 | `crates/edge-paint` | Which filament prints what where colours are painted on: each layer shared out from its painted outline, and paint on top and bottom faces carried through the shell |
 | `crates/edge-clip` | Polygon union, difference, intersection, offset, an inner offset with a distance of its own for every vertex, and gap closing (wraps clipper2-rs) |
 | `crates/edge-extrusion` | Extruded line cross-section (flow) and extrusion loops |
 | `crates/edge-parity` | `edge-parity`: runs the reference slicer and this engine on one project and compares time and G-code |
 | `crates/edge-perimeter` | Walls, the lines that fill the gaps between them, and the infill area inside (classic constant-width generator) |
-| `crates/edge-medial` | The centre line of a narrow region and how wide it is along it (wraps boostvoronoi), what part of the plane lies nearest each of a set of edges, the whole Voronoi diagram of a set of edges as plain data, and lines of changing width as extrusions |
+| `crates/edge-medial` | The centre line of a narrow region and how wide it is along it (wraps boostvoronoi), what part of the plane lies nearest each of a set of edges, the whole Voronoi diagram of a set of edges as plain data, and lines of changing width as extrusions. The same edges give the same diagram on every run and thread: the library's skip list has its levels from a generator each list owns, not from the thread's random numbers (`vendor/cpp_map`) |
 | `crates/edge-adhesion` | Skirt and brim, with the automatic brim width |
 | `crates/edge-support` | Supports under overhangs, normal (grid) and tree, with dense tops and feet |
 | `crates/edge-gcode` | Print order, seams, travel, retraction, wipe and lift, cooling, overhangs, and extrusion, written as G-code |
@@ -28,13 +29,14 @@ replaces it until output matches on the printers we care about.
 | `crates/edge-template` | The placeholder language of custom G-code: `{expression}`, `{if}`, `[variable]`, and scripts |
 | `crates/edge-time` | How long a G-code file takes, with acceleration: the file is read as a printer reads it and planned as the reference's estimator plans, or as Klipper does |
 | `crates/edge-tower` | The prime tower a nozzle is primed on after a tool change |
-| `crates/edge-slice` | Mesh to per-layer contours, then to regions with holes; parallel across layers. Elephant foot compensation of the first layers; round holes made polygons of few sides, and round outlines and holes resized by what the filament prints them off by; the last layers' heights tuned so a part comes out its exact height, and layers grown downward under overhangs so they can be printed |
+| `crates/edge-slice` | Mesh to per-layer contours, with the model's corners and not its triangles', then to regions with holes; parallel across layers. Elephant foot compensation of the first layers; round holes made polygons of few sides, and round outlines and holes resized by what the filament prints them off by; the last layers' heights tuned so a part comes out its exact height, and layers grown downward under overhangs so they can be printed |
 | `crates/edge-engine` | The whole pipeline behind one call, for whatever drives it: open a model and list its plates, settle its settings, slice with progress and cancel, G-code, a layer's lines for drawing, a vendor's presets by printer, and its printer models with the presets, picture and sizes of each |
 | `crates/edge-cli` | The `edge` command line |
 | `tools/make_defaults.py` | Asks the reference for its default of every setting and writes the table `edge-config` carries; run again when the pin moves |
 | `tools/make_fixture.py` | Writes small test 3MFs (parts that need supports or a brim, a plain cube, two blocks in two filaments, a comb with thin teeth on the bed, three tiers with a top surface on each, bars over a base for small bridges over infill, a slab with round holes for the hole options, a slab with pockets underneath, three round ones for arc fitting: a post, a post with a hole, a slab with a wide curve and tight ones, and a post that widens as it rises for scarf seams) to compare with the reference on |
 | `tools/make_project.py` | Writes one of those parts as a project whose settings are named presets, with as many filaments as are named: how the test prints for a printer are made |
 | `reference/EdgeSlicer` | Pinned submodule of the C++ slicer: profiles, test models, behaviour to match. Read-only here |
+| `vendor/cpp_map` | A copy of the `cpp_map` crate (MIT or Apache-2.0), the skip list under the Voronoi library, changed so that a list is the same shape on every run; patched in for the published crate by both workspaces. Its README says what was changed. Not a member of the workspace, and kept in its own formatting |
 | `apps/desktop` | The desktop app (Tauri): several projects open at once, each prepared, sliced, looked through layer by layer and exported, in the C++ application's tabs. A workspace of its own |
 
 ## Build and run
@@ -388,16 +390,17 @@ Working:
   below), whatever `seam_slope_type` says. Not written: the
   reference's "; Slow Down Start" and "; Slow Down End" comments round
   them, which only its own cooling stage reads.
-- With either of the two on, the layers are cut without the points
-  where the cutting plane crosses an edge inside a flat face, as the
-  reference cuts them (TriangleMeshSlicer.cpp `coplanar_edges`): they
-  are corners of the mesh's triangles, not of the model. Cut the plain
-  way, a round hole is not round enough to be told for one: where such
-  a point lies a unit or two off its flat, closing the outline by
-  `slice_closing_radius` leaves a kink there, up to some hundredths of
-  a millimetre from where the corner beside it was. With both options
-  off the layers are cut as they always were, kinks and all; cutting
-  them this way always is the better outline and is still to do.
+- Every layer is cut without the points where the cutting plane
+  crosses an edge inside a flat face, as the reference cuts them
+  (TriangleMeshSlicer.cpp `coplanar_edges`): they are corners of the
+  mesh's triangles, not of the model. Left in, such a point lies a unit
+  or two off its flat, and closing the outline by `slice_closing_radius`
+  leaves a kink there, up to some hundredths of a millimetre from where
+  the corner beside it was; a round hole cut that way is not round
+  enough to be told for one. (Until 2026-11-11 this was done only with
+  one of the two hole options on.) Where the plane passes through a
+  corner of the mesh the corner is kept, whichever triangle the contour
+  starts on.
 - Thin walls (`detect_thin_wall`, classic walls): a part too thin for a
   wall down each side gets one line down its middle, as wide as the
   part, laid as an outer wall; a fuzzy skin on the outer wall is on it
@@ -707,7 +710,9 @@ Known gaps: painted supports and seams, per-object setting overrides, typed sett
     it ends at; and when the loop comes round to its start it goes on
     over that stretch, level, laying what is left of the line, to two
     seam gaps short of where the slope ends. The joint is laid at
-    `scarf_joint_speed` where that is slower than the wall, with
+    `scarf_joint_speed` where that is slower than the wall (a
+    percentage is of the wall's own speed, or of the compensation
+    speed on a compensated circle, on a small loop as on any), with
     `scarf_joint_flow_ratio` of the plastic. `external` joins the loops
     round the part so and `all` those round holes too: outer walls,
     and with `seam_slope_inner_walls` inner ones, whose way up starts
@@ -731,7 +736,9 @@ Known gaps: painted supports and seams, per-object setting overrides, typed sett
     inner wall's way up starts two fifths on whatever the seam gap,
     where the reference clips nothing with the gap at 0;
     `scarf_joint_speed` holds the joint on a small loop too, where the
-    reference lets it go at `small_perimeter_speed`; a joint speed of 0
+    reference lets it go at `small_perimeter_speed` (half of a
+    100 mm/s wall is 50 mm/s on a loop small enough to go at 60, as
+    the fix to the reference has it, aceRage/EdgeSlicer#958); a joint speed of 0
     is the wall's own speed, and said, where the reference then goes
     as fast as the hot end melts; and how far a seam may hang out is a
     share of the wall's own width, where the reference takes the width
@@ -739,6 +746,44 @@ Known gaps: painted supports and seams, per-object setting overrides, typed sett
     is different without being wrong there: the nozzle goes down to
     the foot of the slope as a move of its own after the travel, where
     the reference makes an unretracted travel's last leg the way down.
+  - Moves at a wall's seam that hide it, none of which lays anything
+    or is made where it would end off the bed (GCode.cpp
+    `extrude_loop`). With `wipe_on_loops` an outer wall of a part set
+    to have more than one wall ends with a move a fifth of the nozzle's
+    width in from where it started, a third of the corner there round
+    toward the part, at whatever speed the wall ended at; the nozzle
+    leaves, or is wiped, from there. With `wipe_before_external_loop`
+    an outer wall with another wall beside its seam is come at from
+    inside the part: the travel ends a nozzle's width from the wall's
+    start (or the line's width, if that is less), back the way the
+    wall ends and a third of the corner in; the filament comes forward
+    there, and the nozzle moves out to the start at the outer wall's
+    speed. With `wipe_inward` the wipe after an outer wall goes over
+    the inner walls already down behind it, `wipe_inward_distance` in
+    from the wall (half the wall's width unless set, never more than
+    its width) and `wipe_distance` long, pulling nothing back; a
+    retraction the next move needs is then made whole where the wipe
+    ends. The wipe's path is the reference's
+    (GCode/WipePathHelpers.cpp, function for function, and it passes
+    that file's own 36 tests): the wall moved in toward the nearest
+    inner wall with its corners mitred, or moved bodily, or one short
+    move in, whichever comes first that lies over walls already
+    printed all along and on the inner wall's side of the outer one;
+    with none of them, as when the outer wall goes down first, the
+    nozzle is wiped along the wall as ever. All three go with either
+    wall generator, walls laid either way round, every wall order,
+    arcs and scarf seams (after a scarf they are made about where the
+    loop's flat part begins and its way down ends, as in the
+    reference). Two things are not as in the reference, each a mistake
+    there: an outer wall is taken to lie beside the point it is itself
+    come at from, where the reference measures, and on the part's side
+    of a corner of 270 degrees or more (any corner of a square hole)
+    finds that point exactly a nozzle's width away, in reach or out of
+    it by a rounding; and a filament whose own `wipe` is off gets no
+    inward wipe, where the reference makes one if any filament's is
+    on. One thing is narrower: the walls looked for beside a seam are
+    the island's loops, where the reference also has the walls of thin
+    parts that are not loops among them.
   - Order of fill and supports: the fill of an island comes in parts,
     one for each area filled, of whatever kind. The parts are chained by
     their closest ends from where the nozzle is, the shortest hop
@@ -759,6 +804,31 @@ Known gaps: painted supports and seams, per-object setting overrides, typed sett
     face nor a bottom one, walls included
     (RetractWhenCrossingPerimeters.cpp), unless it leaves an outer or
     an overhanging wall.
+  - Travel round the walls (`reduce_crossing_wall`): every travel whose
+    start is known is routed as the reference routes it
+    (AvoidCrossingPerimeters.cpp, GCode.cpp `travel_to`). A move in the
+    part that does not stay within one piece of the layer, clear of its
+    outer wall, follows the layer's outline drawn in by one and a half
+    wall spacings (by less where the part is too narrow for that, so
+    that no piece is lost or parted), from where it first meets it to
+    where it last leaves it, the shorter way about, and is then
+    straightened as far as that outline lets it be. Top surfaces are
+    gone round. Moves between supports are routed by the part's
+    outline as well, and moves to, round and from a skirt, a brim or
+    the prime tower go round holes only, in the hole's own wall. The
+    first move of the print, the one from the first layer's skirt and
+    the one from a brim go straight. A way round longer than
+    `max_travel_detour_distance` allows, a length or a share of the
+    straight move, is not taken. A move is as long as its way round
+    when it is asked whether it retracts; with
+    `reduce_infill_retraction` a way round that stays inside the part
+    goes unretracted; and the lift is made over the first stretch of
+    the way. Everything on a plate is sliced as one, so a move from one
+    object to another is routed as one between two pieces of an object,
+    where the reference takes it round holes only; a note says so.
+    Layers are made ready to route on in parallel, a stretch of them at
+    a time, ahead of being written, and a routed travel that would
+    leave the bed is not made.
   - Cooling: a layer shorter than `slow_down_layer_time` is laid out again
     with its fastest lines slowed, down to `slow_down_min_speed`; the part
     fan follows layer time and the auxiliary fan is driven.
@@ -789,6 +859,25 @@ Known gaps: painted supports and seams, per-object setting overrides, typed sett
     and it takes a counter-clockwise arc whose middle point is exactly
     due east of its centre for no arc at all, which cuts the arc of a
     round wall drawn square to the axes in two on every layer.
+  - Paths without arcs: with arc fitting off, every wall, fill line
+    and support line is thinned to `resolution` before it is written,
+    as the reference thins them (PrintObject.cpp
+    `simplify_extrusion_path`, with its own Douglas-Peucker,
+    MultiPoint.cpp `_douglas_peucker`): a point within `resolution` of
+    the line between those kept is left out, and with a `resolution`
+    of nothing only a point exactly on that line. Sparse infill and
+    supports are held to `resolution` like the rest; their looser
+    limits are for arcs. A wall loop is thinned from its own first
+    point round to that point again, which therefore always stays;
+    the seam is chosen among the points left and the loop opened
+    there, and nothing is thinned after that. A wall whose width
+    changes is thinned piece by piece as it is cut into its widths.
+    Skirt, brim and prime tower are written as made, as there. Two
+    things are not as in the reference: a wall is thinned whole and
+    then measured against the layer beneath, where the reference
+    first cuts it where it hangs clear and thins each stretch; and a
+    loop no wider than `resolution` is left as made, where the
+    reference lays the two points left of it as a line out and back.
 - Skirt and brim: skirt loops around everything, and a brim round the
   outside of each part, either of the width asked for or, with
   `brim_type` `auto_brim` (the default), as wide as the reference's rule of
@@ -1349,21 +1438,35 @@ walls of changing width the corners agree to 0.0005 mm under the circle
 compensation and to 0.013 mm as polyholes, the loops being cut into
 points differently, as they are with no option on.
 
-Two things do not match. At a margin of nothing
+One thing does not match. At a margin of nothing
 (`hole_to_polyhole_threshold = 0`, which both slicers take as a
 ten-thousandth of a millimetre) this engine converts the tube's hole
 below the tube and the reference does not: whether its points keep to
 one distance within 0.0002 mm is decided by rounding that the two do not
-share. And with both options off the same walls are up to 0.17 mm from
-the reference's at their corners, on 173 of the 300 loops: that is the
-kinks closing leaves in an outline cut with the crossings in it (Status,
-above), which the hole options are rid of and the plain cut is not.
+share.
 
-Both options off, the G-code is byte for byte what it was before they
-were followed: on this part, the cube, frame, steps, mushroom and fins,
-two blocks in two filaments, 3DBenchy and both plates of
-`mcbrim_test.3mf`. With both on, the parts made of boxes are line for
-line what they are with both off.
+With both options off the same 300 walls were up to 0.17 mm from the
+reference's: the kinks closing left in an outline cut with the
+crossings in it, which every layer is now cut without (Status, above).
+Measured again on 2026-11-11, each corner of a loop here against the
+nearest corner of the reference's loop: above the first layer the
+furthest is 0.0022 mm (the eight-sided hole; 290 of the 292 loops are
+within 0.0015 mm), where it was 1.2 mm on that hole, which had a ninth
+point part-way along one side, and over 0.01 mm on 274 of them. On the
+first layer the furthest is 0.03 mm, on the eight-sided hole again, as
+it was: the first layer alone is also shrunk for the elephant's foot,
+and the cut does not move that. The walls'
+length over the whole part is the reference's to the rounding of the
+table (16.36 m of outer wall and 16.22 m of inner in both; the inner
+was 16.23 m here), and every layer's is within 0.05% of the
+reference's, where the first was 0.6% over.
+
+With both options off the G-code of the parts made of boxes (the
+`shelf`, `mushroom`, `tower` and `bridge` fixtures, with the U1's
+presets and the Centauri Carbon's) is byte for byte what it was before
+every layer was cut this way; the round parts' and 3DBenchy's is not.
+With both on, the parts made of boxes are line for line what they are
+with both off.
 
 Scarf seams, 2026-11-11, on parts from `tools/make_fixture.py` with the
 U1's presets (classic walls, a seam gap of 0.06 mm) but where the
@@ -1468,6 +1571,121 @@ climbs from nothing, and the way down over it thins out over the whole
 slope (on the tube with arcs, 0.203 and 0.311 mm of filament against
 0.643 for 20 mm of line); that is how the reference has it, and it is
 not changed here.
+
+Moves at the seam (`wipe_on_loops`, `wipe_before_external_loop`,
+`wipe_inward`), 2026-11-11, on parts from `tools/make_fixture.py` with
+the U1's presets (classic walls, inner wall first, two walls, a seam gap
+of 0.06 mm, a 2 mm wipe with none of the 1.5 mm retraction made before
+it) but where the Centauri Carbon's are named, which have arc fitting
+on, a seam gap of 0.04 mm and a 1.2 mm wipe. Neither printer's presets
+turn any of the three on. Figures are the C++ slicer's and this
+engine's. A script goes through both files and takes, for every outer
+wall loop, the moves between the travel to it and its first line and
+between its last line and the next: the move it is come at with, the
+move in it ends with, and its wipe. "All" is the three options
+together.
+
+| Options, part | Outer loops | Come at from inside | End with a move in: loops, mean mm | Wiped: loops, mean mm | Wipe ends this far off the wall, mm | Retractions |
+|---|---|---|---|---|---|---|
+| none, cube | 100 / 100 | 0 / 0 | 0 / 0 | 99 / 100, 2.000 / 2.000 | 0.054 / 0.054 | 200 / 201 |
+| `wipe_on_loops` | 100 / 100 | 0 / 0 | 100 / 100, 0.072 / 0.072 | 99 / 100, 2.000 / 2.000 | 0.036 / 0.036 | 200 / 201 |
+| `wipe_before_external_loop` | 100 / 100 | 99 / 99 | 0 / 0 | 99 / 100, 2.000 / 2.000 | 0.054 / 0.054 | 200 / 201 |
+| `wipe_inward` | 100 / 100 | 0 / 0 | 0 / 0 | 99 / 100, 2.000 / 2.000 | 0.210 / 0.209 | 198 / 201 |
+| at 100% | 100 / 100 | 0 / 0 | 0 / 0 | 99 / 100, 2.000 / 2.000 | 0.421 / 0.417 | 198 / 200 |
+| at 0.1 mm | 100 / 100 | 0 / 0 | 0 / 0 | 99 / 100, 2.000 / 2.000 | 0.100 / 0.100 | 198 / 201 |
+| all | 100 / 100 | 99 / 99 | 100 / 100, 0.072 / 0.072 | 99 / 100, 2.000 / 2.000 | 0.210 / 0.209 | 198 / 201 |
+| all, outer wall first | 100 / 100 | 99 / 99 | 100 / 100, 0.072 / 0.072 | 0 / 1 | | 102 / 102 |
+| all, inner-outer-inner, three walls | 100 / 100 | 99 / 99 | 100 / 100, 0.072 / 0.072 | 99 / 100, 2.000 / 2.000 | 0.210 / 0.209 | 200 / 201 |
+| all, walls clockwise | 100 / 100 | 99 / 99 | 100 / 100, 0.072 / 0.072 | 99 / 100, 2.000 / 2.000 | 0.210 / 0.209 | 199 / 195 |
+| all, `arachne` | 100 / 100 | 99 / 99 | 100 / 100, 0.072 / 0.072 | 99 / 100, 2.000 / 2.000 | 0.210 / 0.209 | 198 / 201 |
+| all, scarf seams on all | 100 / 100 | 99 / 99 | 100 / 100, 0.177 / 0.177 | 100 / 99, 2.000 / 2.000 | 0.209 / 0.210 | 201 / 200 |
+| all, `wipe` off, or `wipe_distance` 0 | 100 / 100 | 99 / 99 | 100 / 100, 0.072 / 0.072 | 0 / 0 | | 200 / 201 |
+| all, `wipe_distance` 8 | 100 / 100 | 99 / 99 | 100 / 100, 0.072 / 0.072 | 99 / 100, 8.000 / 8.000 | 0.210 / 0.209 | 106 / 101 |
+| all, `seam_gap` 0 | 100 / 100 | 99 / 99 | 100 / 100, 0.080 / 0.080 | 99 / 100, 2.000 / 2.000 | 0.210 / 0.209 | 198 / 201 |
+| all, `seam_gap` 0.5 mm | 100 / 100 | 99 / 99 | 100 / 100, 0.465 / 0.465 | 99 / 100, 2.000 / 2.000 | 0.210 / 0.209 | 198 / 201 |
+| all, Centauri Carbon | 100 / 100 | 99 / 99 | 100 / 100, 0.069 / 0.069 | 100 / 100, 1.200 / 1.200 | 0.209 / 0.209 | 202 / 201 |
+| all, frame | 60 / 60 | 58 / 58 | 60 / 60, 0.130 / 0.106 | 60 / 60, 2.000 / 2.000 | 0.207 / 0.206 | 100 / 94 |
+| all, steps | 65 / 65 | 61 / 62 | 65 / 65, 0.099 / 0.088 | 65 / 65, 2.000 / 2.000 | 0.201 / 0.204 | 118 / 124 |
+| all, cylinder | 50 / 50 | 49 / 49 | 50 / 50, 0.119 / 0.121 | 50 / 50, 2.000 / 2.001 | 0.207 / 0.206 | 109 / 118 |
+| all, scarf seams, cylinder | 50 / 50 | 49 / 49 | 50 / 50, 0.170 / 0.173 | 50 / 50, 2.000 / 2.000 | 0.206 / 0.207 | 109 / 123 |
+| all, tube | 80 / 80 | 78 / 77 | 80 / 80, 0.122 / 0.122 | 80 / 80, 2.000 / 1.976 | 0.206 / 0.205 | 156 / 165 |
+| all, outer wall first, tube | 80 / 80 | 78 / 77 | 80 / 80, 0.122 / 0.122 | 2 / 1 | | 120 / 122 |
+| all, walls clockwise, tube | 80 / 80 | 78 / 78 | 80 / 80, 0.122 / 0.122 | 80 / 80, 2.000 / 2.000 | 0.206 / 0.206 | 141 / 164 |
+| all, `arachne`, tube | 80 / 80 | 78 / 78 | 80 / 80, 0.122 / 0.122 | 80 / 80, 2.000 / 2.000 | 0.206 / 0.206 | 154 / 158 |
+| all, scarf seams on all, tube | 80 / 80 | 78 / 77 | 80 / 80, 0.174 / 0.174 | 80 / 80, 2.000 / 1.976 | 0.206 / 0.205 | 158 / 159 |
+| all, `wipe_distance` 8, tube | 80 / 80 | 78 / 77 | 80 / 80, 0.122 / 0.122 | 80 / 80, 8.000 / 7.901 | 0.206 / 0.205 | 121 / 113 |
+| all, holes | 402 / 407 | 390 / 391 | 402 / 406, 0.116 / 0.111 | 402 / 402, 2.000 / 1.953 | 0.205 / 0.226 | 736 / 760 |
+| all, `arachne`, holes | 402 / 402 | 390 / 388 | 402 / 401, 0.116 / 0.112 | 402 / 402, 2.000 / 2.000 | 0.205 / 0.205 | 722 / 723 |
+| all, Centauri Carbon, cylinder | 50 / 50 | 49 / 49 | 50 / 50, 0.104 / 0.105 | 50 / 50, 1.200 / 1.200 | 0.207 / 0.212 | 108 / 108 |
+| all, Centauri Carbon, tube | 80 / 80 | 78 / 68 | 80 / 80, 0.106 / 0.102 | 80 / 80, 1.200 / 1.091 | 0.205 / 0.202 | 172 / 149 |
+| all, arcs, tube | 80 / 80 | 78 / 71 | 80 / 80, 0.122 / 0.118 | 80 / 80, 2.000 / 1.881 | 0.206 / 0.201 | 154 / 163 |
+
+The two slicers put the cube's seam on different corners, so its loops
+are paired by what a corner is like, not where it is: a move is
+measured in its own loop's frame, along the way the loop sets off and
+across it. In every cube row all 100 loops pair, and the move a loop
+is come at with (0.400 mm, 30 degrees in behind its last edge), the
+move in (0.072 mm, a third of the corner round), and the wipe (its
+length, and how far from the wall it ends) are the same in both files
+to the last place written. With `wipe_on_loops` alone the wipe sets
+off from the move in and runs back onto the wall, ending 0.036 mm off
+it in both; inward it runs 0.21 mm inside the wall, half its width,
+0.42 at 100% and 0.10 at 0.1 mm. What is pulled back agrees as it did
+before any of this: with `retract_before_wipe` at 0% and at 70%, 1.130
+and 0.370 mm before and during the wipe in the reference and 1.123 and
+0.377 here (the wipe's speed, the wall's, is F9742 there and F9540
+here, as it was), at 100% the whole 1.5 mm before it in both, and
+after an inward wipe the whole 1.5 mm in one move in both whatever
+that setting. Retraction counts move as they do without the options,
+with the seams' places: on the cube the reference's inward wipe ends
+within a millimetre of where its first two layers' fill starts, and
+those two moves go unretracted.
+
+On round parts the reference's walls have half as many corners, so
+no loop pairs point for point; of the tube's 80 loops 51 have seams
+that turn alike in the two files, and on those the two moves differ
+by at most 0.002 mm and 2 degrees, and the wipe's length and its
+distance from the wall by 0.002 mm (68 loops with `arachne`, 61 laid
+clockwise, 36 with scarf seams, to the same figures or within 0.3
+degrees of them). Where a row's
+means differ the seams do: on the frame the reference starts its
+outer loop on a straight edge and this engine at a corner, and the 29
+loops round the hole, where both start at a corner, are move for move
+the same; on `holes` this engine has five outer loops more than the
+reference with classic walls, as it had.
+
+Fewer loops are come at from inside, or wiped their whole length, in
+three kinds of row, each for the shape of the wall there and not for
+these moves. The tube's first layer: this engine's hole has a notch
+0.16 mm deep in its inner wall there, the seam is put at it, and the
+point to come from has no wall beside it (one loop, wiped 0.12 mm
+straight in where the reference wipes 2 mm). And with arc fitting on,
+the wall round the tube's hole has a hook 0.05 mm long in it on some
+layers, the seam goes to that as the sharpest corner, and a seam that
+doubles back is not come at from inside, and most such are wiped by
+the one short move in: 10 of 78 loops with the Centauri Carbon's
+presets and 7 of 78 with the U1's. The notch and the hook are in the
+files from before this work.
+
+The reference's own file, timed here as the reference plans it, comes
+to within a second of the reference's own time on all 45 files (a
+move that lays nothing was already read as travel, and a wipe that
+pulls nothing back as a wipe). With the three options off, as both
+printers' presets have them, the G-code is byte for byte what it was
+before, on one thread and on seven, on 56 files: seven parts with each
+printer's presets as they are, with `arachne`, with scarf seams on all
+loops and with the outer wall first.
+
+Two things differ from the reference on purpose (Status, above). On
+the frame, the reference comes at the wall round the square hole from
+past its corner on all 29 layers that have one, and so does this
+engine; but there the point is exactly 0.4 mm from the wall it belongs
+to, and the reference only counts a wall nearer than 0.4 mm, so it is
+the rounding of that point's coordinates that lets the move be made.
+Here the wall counts as beside its own point. And the reference makes
+the inward wipe for a filament whose own `wipe` is off, if any other
+filament's is on (found by reading; the two-filament fixture's
+settings name one filament, and the reference prints it in one).
 
 Fuzzy skin differs from the reference in three ways, on purpose:
 
@@ -1678,29 +1896,40 @@ have arc fitting on. The length of every feature is what it was as
 straight moves, to the rounding of the table, and the spiral lifts are
 as many (49, 39 and 29). Fill agrees arc for arc where the two engines
 fill alike: sparse infill 252 arcs against the reference's 252 on the
-cylinder and 380 against 382 on the tube, the bottom surface 22 against
-22 and 64 against 63, and each of the cylinder's layers of solid fill 27
-against 27. That took one correction besides the
+cylinder and 382 against 382 on the tube, the bottom surface 22 against
+22 and 63 against 63, and each of the cylinder's layers of solid fill 27
+or 28 in both. That took one correction besides the
 arcs: with arc fitting on, what is left for infill was outlined at a
 fifth of `resolution` like the walls, where the reference outlines it at
 `resolution` itself, so the fill's turns along a round wall had twice
 the corners and every one of them became an arc. Walls are arcs for the
-same share of their length (98 to 100% on the round parts, 56% on the
-`curve`) but in more pieces on the round parts: 277 against 198 on the
-cylinder, 404 against 278 on the tube, 303 against 325 on the `curve`.
+same share of their length (98 to 99% on the round parts, 56% on the
+`curve`), and in as many pieces wherever the reference's fitter makes
+no mistake: 198 against 198 on the cylinder, 239 against 278 on the
+tube, 295 against 325 on the `curve`.
 On the `curve` the arcs are the reference's own, centre for centre (the
 80 mm bow, the half-round end, the 1.5 mm corners), bar one: on every
 layer the reference has the outer wall's half-round end in two arcs,
 the first stopping two corners short of the end, which is where its
-mistake with a middle point due east stops an arc. On the cylinder and the tube two things
-upstream of the fitter make the difference. A sliced ring here keeps one
-point that is no corner, where its outline starts, between two corners
-of the mesh, and loses the corner next to it; an arc cannot be carried
-round past it, so a ring is two arcs, or three, before its seam cuts
-one of them. (With that point taken out, in a trial, the cylinder's
-walls came to 117 arcs.) And the seam of a round wall is put at the
-ring's start here and a third of the way round it in the reference, so
-it cuts a different arc. Tree supports are arcs for 94% of their length
+mistake with a middle point due east stops an arc. The 39 it has more
+on the tube are the same mistake: the inner wall round the hole is cut
+in two due north of its middle on 39 of the 40 layers. On the
+cylinder and the tube the walls were in more pieces than the
+reference's (277 and 404) until every layer was cut without the
+crossings inside flat faces (Status, above; these figures are from
+after it). A sliced ring kept one point that was no corner, where its
+outline started, between two corners of the mesh, and lost the corner
+next to it; an arc cannot be carried round past such a point, so a ring
+was two arcs, or three, before its seam cut one of them. A ring is now
+its corners and nothing else and starts at the reference's corner: one
+arc and one straight side, the arc cut in two by the seam. The seam of
+a round wall is not where the reference puts it, which cuts the arc
+somewhere else but into as many pieces, unless it falls on the ring's
+start and cuts nothing: on the `holes` fixture that happens here on
+49 loops (the 12 mm hole on 29 layers, the tube on 20), and with the
+reference's mistake on 48 loops of the boss and the tube that part's
+outer walls are 581 arcs against 678.
+Tree supports are arcs for 94% of their length
 against 90% (1825 against 2719 on the `shelf`, whose supports are 30%
 shorter here, as above). On the box-shaped parts nothing changed but
 the spiral lifts, and four arcs on the `mushroom` where a support's
@@ -1853,6 +2082,122 @@ direction with most anchored lines and the strips it can span), which
 is not here: this engine turns a bridge by the edges it has nothing
 beside.
 
+Travel round the walls (`reduce_crossing_wall`), against the C++
+slicer with the same settings (C++ slicer / this engine). The parts are
+`tools/make_fixture.py`'s with the Snapmaker U1's presets (0.4 mm z-hop,
+wipe, `reduce_infill_retraction` on): `frame` and the same with two
+skirt loops and a brim, `holes`, `tube`, `steps` and `comb`; then
+3DBenchy with those presets and the three plates of `mcbrim_test.3mf`
+(plate 1 painted, plates 2 and 3 four objects each in three filaments,
+with supports and a prime tower). Each is sliced with the option off,
+on, on with `max_travel_detour_distance` 10 mm, and on with it at 50%.
+A travel is counted as crossing an outer wall when it goes right
+through one on its own layer: within 1.5 mm of travel either side of
+the crossing it gets a quarter of a millimetre or more from the wall's
+centre line, on opposite sides. Setting off from a wall just laid,
+arriving on the one about to be laid, running along a wall and the
+spiral of a lift are not crossings.
+
+| Part | | Travel, m | Retractions | Travels across an outer wall |
+| --- | --- | --- | --- | --- |
+| `frame` | off | 4.27 / 4.07 | 100 / 94 | 62 / 59 |
+| | on | 5.62 / 5.21 | 121 / 122 | 3 / 4 |
+| | 10 mm | 4.43 / 4.21 | 127 / 123 | 60 / 59 |
+| | 50% | 5.47 / 5.07 | 95 / 93 | 3 / 4 |
+| `frame`, skirt and brim | off | 4.32 / 4.08 | 102 / 96 | 61 / 58 |
+| | on | 5.69 / 5.22 | 123 / 124 | 3 / 3 |
+| | 10 mm | 4.47 / 4.22 | 129 / 125 | 60 / 58 |
+| | 50% | 5.53 / 5.08 | 97 / 95 | 3 / 3 |
+| `holes` | off | 18.72 / 17.81 | 747 / 737 | 394 / 393 |
+| | on | 19.46 / 18.46 | 643 / 643 | 102 / 85 |
+| | 10 mm | 19.24 / 18.35 | 648 / 647 | 105 / 89 |
+| | 50% | 19.24 / 18.19 | 648 / 671 | 104 / 116 |
+| `tube` | off | 2.97 / 2.33 | 156 / 166 | 84 / 26 |
+| | on | 3.25 / 2.39 | 152 / 160 | 4 / 3 |
+| | 10 mm | 3.25 / 2.39 | 152 / 160 | 4 / 3 |
+| | 50% | 3.14 / 2.39 | 152 / 160 | 20 / 3 |
+| `steps` | off | 3.01 / 3.31 | 126 / 123 | 33 / 28 |
+| | on | 3.17 / 3.55 | 138 / 138 | 7 / 6 |
+| | 10 mm | 3.14 / 3.54 | 138 / 138 | 10 / 6 |
+| | 50% | 3.10 / 3.48 | 125 / 124 | 10 / 6 |
+| `comb` | off | 1.37 / 1.51 | 69 / 54 | 47 / 36 |
+| | on | 1.79 / 1.89 | 37 / 23 | 12 / 5 |
+| | 10 mm | 1.43 / 1.54 | 63 / 49 | 39 / 31 |
+| | 50% | 1.43 / 1.53 | 62 / 49 | 38 / 31 |
+| 3DBenchy | off | 29.55 / 30.11 | 1520 / 1734 | 992 / 985 |
+| | on | 33.41 / 34.66 | 1555 / 1717 | 475 / 391 |
+| | 10 mm | 32.20 / 33.51 | 1572 / 1746 | 537 / 437 |
+| | 50% | 31.27 / 32.38 | 1464 / 1529 | 622 / 526 |
+| `mcbrim_test.3mf` plate 1 | off | 64.44 / 58.02 | 2185 / 1921 | 1493 / 1105 |
+| | on | 67.00 / 60.46 | 2126 / 1877 | 1372 / 948 |
+| | 10 mm | 65.77 / 60.07 | 2145 / 1905 | 1390 / 968 |
+| | 50% | 66.36 / 60.27 | 2126 / 1848 | 1372 / 977 |
+| plate 2 | off | 36.33 / 31.54 | 843 / 915 | 434 / 431 |
+| | on | 37.61 / 32.32 | 803 / 922 | 365 / 404 |
+| | 10 mm | 36.84 / 32.16 | 812 / 922 | 373 / 408 |
+| | 50% | 37.33 / 32.24 | 795 / 903 | 365 / 404 |
+| plate 3 | off | 38.91 / 34.85 | 841 / 917 | 434 / 441 |
+| | on | 40.21 / 35.66 | 801 / 922 | 365 / 410 |
+| | 10 mm | 39.43 / 35.49 | 810 / 922 | 373 / 414 |
+| | 50% | 39.99 / 35.56 | 793 / 901 | 365 / 410 |
+
+On the single parts the crossings fall as the reference's do, travel
+grows by about as much (1.35 m and 1.14 m on `frame`, 0.74 and 0.65 on
+`holes`, 3.9 and 4.6 on the Benchy) and retractions move the same way:
+up where short hops to an outer wall become longer than
+`retraction_minimum_travel` by going along it, down where a way round
+stays inside the part (`holes`, `comb`). The ways themselves are the
+reference's: on `frame` both run at the same 0.61 mm inside the
+outline, to the micrometre. What is left crossing with the option on
+is the same in both: the print's first move, the top layer, which is
+all top surface and so has nothing to go along, and thin parts whose
+drawn-in outline is the outline itself. A cube, two blocks in two
+filaments (`twotone`), a part on supports (`mushroom`) and thin fins
+are hardly changed by the option in either slicer: travel within
+0.06 m, retractions within one, and the same travels crossing.
+
+On the plates of several objects it does less here than there
+(plate 2: 69 fewer travels cross in the reference, 27 fewer here, and
+its retractions fall by 40 where here they rise by 7). Two things make
+that, neither of them the routing. The reference's aligned seams on
+those parts lie on the walls between two filaments, inside the part,
+where the hop from the wall behind stays clear of the outline and goes
+straight; here the seams are on the outside, at an inside corner of
+the part, and the same hop is taken along the drawn-in outline and
+round its corner: 0.40 mm straight and 1.27 mm that way, which is over
+`retraction_minimum_travel` (19 of 72 such hops on plate 2). And fill
+that belongs to no island is laid last, with long moves from object to
+object that the reference, printing object by object, does not make.
+
+Not as the reference, on purpose, where it is in error. It picks the
+shorter way round a ring from lengths it has corrected twice over, so
+some moves go the longer way about, by up to the length of the two
+edges they meet the ring on; here the shorter way is taken. It makes
+the outline moves are routed by on a layer's first such move and keeps
+it, and a move between supports leaves the top surfaces in: supports
+come first, so on a layer that has them moves in the part cross top
+surfaces that they go round on other layers; here each kind of move has
+its own. A move that was to go straight (from a brim, say) is routed
+after all once a wipe has moved the nozzle; here it stays straight. And
+two that change nothing a print would show: a point met at the start
+of an edge is left on the ring instead of stepped a tenth of a
+micrometre off it, and the width of a part is misjudged across from the
+edge that closes a ring. With `max_travel_detour_distance` at 50% the
+two differ more than without it (`tube` 20 travels crossing against 3,
+`holes` 104 against 116): whether a way round is within the limit goes
+by where the move starts, and the seams are not in the same places.
+
+The reference's own file, timed here as the reference plans, comes to
+the reference's own time with the option on as with it off (Benchy 40m
+00s, plate 1 65m 44s, `holes` 23m 46s, each to the second). With the
+option off the file is byte for byte what it was, and with it on it is
+the same at any number of threads. What it costs: making the layers
+ready is most of it and is done in parallel, the routing itself is in
+the writer. Plate 1 of `mcbrim_test.3mf`, the largest of these, slices
+in 2.44 s with it on against 2.13 s off on 18 threads (4.04 against
+3.65 on four), and the Benchy in 0.67 s against 0.43 s (2.80 against
+2.04 on one thread), each the best of five taken turn about.
+
 Shells as thick as asked (`top_shell_thickness`,
 `bottom_shell_thickness`), against the C++ slicer on
 `tools/make_fixture.py`'s parts: metres of internal solid fill (C++
@@ -1898,6 +2243,101 @@ process has the top of its lowest tier, at 3 mm, exactly where layer
 this engine does not, so the tier's top and the shell under it lie a
 layer lower here (10-16 against 11-17), each as deep as the other's.
 
+Paths thinned to `resolution`, 2026-11-11, with the U1's presets (arcs
+off, `resolution` 0.012) on parts from `tools/make_fixture.py`, a
+Benchy and the three plates of `tests/mcbrim_test.3mf`. Until now a
+path was thinned only while arcs were fitted to it, and otherwise
+written with every point it was made with. Counted are the extruding
+`G1` moves of each file: the reference's, this engine's before and
+after.
+
+| part | wall moves: reference / before / after | all extruding moves | wall length a layer, most it differs by, mm: before / after | file, kB |
+|---|---|---|---|---|
+| `cylinder` | 6343 / 12449 / 6431 | 8774 / 15139 / 8915 | 0.036 / 0.002 | 393 / 581 / 388 |
+| `tube` | 15215 / 15157 / 15140 | 19830 / 20912 / 19715 | 0.296 / 0.295 | 731 / 767 / 728 |
+| `curve` | 4143 / 4705 / 4109 | 6432 / 7585 / 6632 | 0.554 / 0.539 | 297 / 322 / 289 |
+| `holes` | 28803 / 28713 / 28670 | 45428 / 49302 / 47110 | 4.925 / 4.920 | 1857 / 1919 / 1847 |
+| `funnel` | 7275 / 7466 / 7213 | 10487 / 13447 / 12094 | 0.037 / 0.003 | 458 / 529 / 487 |
+| Benchy | 49982 / 64729 / 61185 | 75299 / 108530 / 91290 | 19.308 / 19.287 | 3438 / 4332 / 3780 |
+| `mcbrim_test.3mf` plate 1 | 85037 / 82041 / 79974 | 172588 / 191458 / 164570 | 859.4 / 859.5 | 6298 / 6448 / 5604 |
+| plate 2 | 40733 / 41888 / 40816 | 89823 / 106818 / 91187 | 12.490 / 12.393 | 3181 / 3586 / 3099 |
+| plate 3 | 40733 / 41917 / 40817 | 89823 / 106774 / 91162 | 12.653 / 12.519 | 3184 / 3587 / 3101 |
+| `cylinder`, `resolution=0.05` | 3174 / 3261 / 3252 | 4903 / 5268 / 5069 | 0.007 / 0.007 | 261 / 260 / 252 |
+| `curve`, `resolution=0.05` | 2114 / 2228 / 2094 | 4092 / 4760 / 4387 | 0.025 / 0.017 | 217 / 222 / 209 |
+| `cylinder`, `resolution=0` | 12679 / 12768 / 12768 | 16406 / 16742 / same file | 0.001 / 0.001 | 685 / 778 / 778 |
+| `curve`, `resolution=0` | 8439 / 11201 / 11201 | 11397 / 15038 / same file | 0.642 / 0.642 | 484 / 630 / 630 |
+| `cylinder`, Arachne | 6360 / 6336 / 6336 | 8783 / 9036 / 8816 | 0.111 / 0.111 | 394 / 394 / 385 |
+| `curve`, Arachne | 3383 / 3477 / 3412 | 5648 / 6234 / 5905 | 0.021 / 0.021 | 275 / 277 / 267 |
+| `holes`, Arachne | 20708 / 20797 / 20497 | 36203 / 40453 / 38217 | 0.232 / 0.231 | 1573 / 1632 / 1559 |
+| Benchy, Arachne | 57778 / 71697 / 69180 | 84068 / 116149 / 104415 | 7.503 / 7.499 | 3880 / 4616 / 4241 |
+| `cylinder`, `seam_slope_type=all` | 7365 / 14507 / 7460 | 9796 / 17197 / 9944 | 0.037 / 0.002 | 434 / 672 / 433 |
+| `funnel`, scarf seams | 8841 / 9174 / 8903 | 12053 / 15155 / 13784 | 0.049 / 0.049 | 520 / 602 / 559 |
+| `curve`, scarf seams | 5084 / 5834 / 4983 | 7373 / 8714 / 7506 | 0.506 / 0.540 | 329 / 361 / 321 |
+| Benchy, scarf seams | 72399 / 91267 / 86980 | 97712 / 135068 / 117085 | 19.804 / 19.810 | 4384 / 5524 / 4936 |
+| `cube` | 796 / 796 / 796 | 3729 / 4069 / same file | 0 / 0 | 328 / 314 / 314 |
+| `cube`, Arachne | 796 / 796 / 796 | 3739 / 4069 / same file | 0 / 0 | 331 / 315 / 315 |
+| `cube`, scarf seams | 4063 / 4063 / 4063 | 6996 / 7336 / same file | 0 / 0 | 443 / 438 / 438 |
+| `frame` | 561 / 501 / 501 | 6083 / 7007 / same file | 0 / 0 | 331 / 316 / 316 |
+| `steps` | 556 / 526 / 526 | 4896 / 5711 / 5707 | 0 / 0 | 330 / 302 / 302 |
+| `mushroom`, supports | 556 / 556 / 556 | 5484 / 5650 / 5648 | 0 / 0 | 353 / 338 / 337 |
+
+The cylinder's rings are 64 or 65 moves in the reference and 65 here,
+where they were 128: a corner of its outer wall, 9.79 mm out, is
+11.8 µm from the line between its neighbours, so every other one goes.
+(The tube's outer rings lie further out, where a corner stands 14 µm
+off, and both engines keep them all; the rings of its hole, and the
+Arachne walls of all these parts, came thinned already.)
+Fill moved most: on the Benchy gap fill is 6680 moves against the
+reference's 6501 (it was 12967), sparse infill 4630 against 4594
+(6612) and the inner walls 21255 against 20866 (23270); on the tube
+solid fill is 1400 against 1409 (1952) and sparse infill 2659 against
+2684 (3133); with gyroid fill the cylinder is 14871 moves against
+14680 (21400). On plates 2 and 3 of the lettered project the walls
+are 40816 and 40817 moves against 40733 (41888 and 41917). With
+`resolution` at nothing no point of a round part lies
+exactly on a line and the files are the same as before. With arc
+fitting on, every file is byte for byte what it was (five of the
+parts above, the Benchy and the three plates).
+
+On the parts made of boxes the walls do not move. `cube` and `frame`
+are the same file; `steps` and `mushroom` lose four moves and two,
+each where a fill line or a support line turns through a stub 2 to
+19 µm long, whose first corner goes as it does in the reference. (In
+`steps` the fan also dips to 99% on four layers, and in other files
+on other layers than before. That is an error of this engine's, there
+before this and not in the reference: the fan's place between its
+two speeds is worked out in double precision here and in single
+there, and with both speeds at 100% the sum here can land a hair
+under and be cut to 99. Which layers it lands on moves with any
+change in a layer's time; `main` has it on eight layers of the
+Benchy.) What is left between the two engines is upstream of this. On the Benchy the outer wall is 39659
+moves against 28799 because a wall measured against the layer beneath
+is laid in the pieces it was measured in, also where neighbouring
+pieces run on at one speed; with `enable_overhang_speed` off it is
+27304 against 27686. On plate 1 the engines lay different lengths of
+wall on ten layers of sixteen, which is where its 859 mm comes from;
+on the other six the walls are 16055 moves against 16074 (16334).
+And a sliced ring here keeps a point that is no corner, as under
+"Arcs" above, so a ring is one move longer than the reference's, the
+wrong one of two corners is sometimes kept beside that point (the
+tube's layer extents differ by up to 0.014 mm on six layers, where
+they differed by up to 0.004), and the ring is thinned from a different corner:
+of the cylinder's 128 this engine keeps the even ones and the
+reference the odd, which is the 0.012 mm their layer extents still
+differ by. Tried with the layers cut so that a ring is exactly its
+mesh corners (a change not yet merged), the cylinder's walls are 6336
+moves against 6343 and with scarf seams 7365 against 7365, the tube's
+15205 against 15215, and the layer extents of both agree to the
+micron.
+
+Slicing is no slower, to what could be measured with other work
+running on the machine: thinning takes about what writing fewer moves
+saves. Plate 1 of `mcbrim_test.3mf`, best of 7: 3.63 s before and
+3.60 s after on all cores, 15.32 s and 15.40 s of processor time on
+one thread; the Benchy 2.94 s and 2.91 s on one thread.
+
 ## Licence
 
 AGPL-3.0, the same as EdgeSlicer, so algorithms may be ported from it.
+`vendor/cpp_map` is another's work under MIT or Apache-2.0, which this
+licence can take in; both texts are kept beside it.

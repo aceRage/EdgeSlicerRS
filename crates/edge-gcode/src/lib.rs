@@ -12,6 +12,7 @@
 //! labels.
 
 mod arc;
+mod avoid;
 mod chain;
 mod circle;
 mod cooling;
@@ -20,7 +21,9 @@ mod overhang;
 mod scarf;
 mod seam;
 mod settings;
+mod simplify;
 mod small_area;
+mod wipe;
 
 use std::{
     collections::HashMap,
@@ -30,12 +33,14 @@ use std::{
 };
 
 use cooling::{Slowdown, Timing};
+use edge_avoid::Kind;
 use edge_config::FloatOrPercent;
 use edge_extrusion::{ExtrusionLoop, ExtrusionPath, Flow, Role};
 use edge_geom::{ExPolygon, Point2, scaled, unscaled};
 use edge_template::{TemplateError, Value, Variables};
 use rayon::prelude::*;
 
+pub use edge_avoid::{Detour, Slices};
 pub use scarf::{Scarf, ScarfSeam};
 pub use seam::Seam;
 pub use settings::{Lift, OverhangFan, PrintSettings, WallDirection, WallOrder};
@@ -185,6 +190,26 @@ pub fn write_tools(
     layers: &[Layer<'_>],
     settings: &[PrintSettings],
 ) -> Result<Summary, GcodeError> {
+    write_routed(out, layers, &[], settings)
+}
+
+/// [`write_tools`], with what travel is routed by where the settings
+/// ask for it to go round the inside of the walls
+/// (`reduce_crossing_wall`): `slices` has an entry for each of `layers`,
+/// or none at all, and travel then goes straight whatever the settings
+/// say. They are given beside the layers and not in them so that
+/// whatever makes layers without them still does.
+pub fn write_routed(
+    out: &mut impl Write,
+    layers: &[Layer<'_>],
+    slices: &[Slices<'_>],
+    settings: &[PrintSettings],
+) -> Result<Summary, GcodeError> {
+    let slices = if slices.len() == layers.len() {
+        slices
+    } else {
+        &[]
+    };
     let first = layers.first().map_or(0, |layer| layer.filament);
     if let Some(layer) = layers.iter().find(|layer| layer.filament >= settings.len()) {
         return Err(GcodeError::NoSettings {
@@ -300,6 +325,11 @@ pub fn write_tools(
         measured_used: 0,
         fits: HashMap::new(),
         off_bed: None,
+        slices,
+        routes: Vec::new(),
+        routes_from: 0,
+        ways: HashMap::new(),
+        shelters: HashMap::new(),
     };
     let several = layers.iter().any(|layer| layer.filament > 0);
     writer.preamble(several)?;
@@ -314,6 +344,10 @@ pub fn write_tools(
     // Tool changes: where in the file, the tool taken up, its temperature.
     let mut changes: Vec<(usize, usize, f64)> = Vec::new();
     let mut second_layer = None;
+    // The stretch of layers in hand with their paths thinned, and the
+    // entry it starts at.
+    let mut thinned = simplify::Thinned::default();
+    let mut thinned_from = 0;
     for (index, group) in groups.iter().enumerate() {
         writer.out.clear();
         reached.push((whole.len(), writer.state.summary.seconds));
@@ -321,12 +355,21 @@ pub fn write_tools(
             second_layer = Some(whole.len());
         }
         // Arcs are fitted a stretch of layers at a time, ahead of
-        // laying them.
+        // laying them; without arcs the paths are thinned to
+        // `resolution` instead, as the reference does one or the other
+        // before it writes anything (PrintObject.cpp
+        // `simplify_extrusion_path`).
         if index % FITTED_AHEAD == 0 {
+            let ahead = &groups[index..(index + FITTED_AHEAD).min(groups.len())];
             let until = groups[(index + FITTED_AHEAD).min(groups.len()) - 1].end;
             writer.prefit(&layers[group.start..until]);
+            thinned = simplify::Thinned::new(&layers[group.start..until], settings);
+            thinned_from = group.start;
+            // And so are the layers made ready to route travel on.
+            writer.preroute(layers, ahead, index)?;
         }
-        writer.layer(index, &layers[group.clone()], group.start)?;
+        let parts = thinned.layers(&layers[group.clone()], group.start - thinned_from);
+        writer.layer(index, &parts, group.start)?;
         // Whole or not at all, and never off the bed: an arc counts by
         // its bulge, which the points it was fitted to do not show.
         if let (Some(reach), Some(bed)) = (writer.off_bed, writer.settings.bed) {
@@ -564,6 +607,19 @@ struct Writer<'a> {
     /// The box round an arc that was found to leave the bed, in mm; the
     /// file is then not written.
     off_bed: Option<[f64; 4]>,
+    /// What each entry's travel is routed by, where travel is to go
+    /// round the inside of the walls; none where it goes straight.
+    slices: &'a [Slices<'a>],
+    /// The layers being written made ready to route on, the first of
+    /// them layer `routes_from` of the print (`avoid.rs`).
+    routes: Vec<edge_avoid::Layer>,
+    routes_from: usize,
+    /// The ways found so far on the layer being written, by where a
+    /// move starts and ends and what kind it is.
+    ways: HashMap<(Point2, Point2, Kind), Vec<Point2>>,
+    /// The areas a way round has been asked to stay within on the layer
+    /// being written, by where they are kept.
+    shelters: HashMap<(usize, usize), edge_avoid::Shelter>,
 }
 
 /// What the file says about the print outside its G-code.
@@ -608,6 +664,10 @@ struct Laid<'a> {
 struct State {
     /// Where the nozzle is, once it has been anywhere.
     position: Option<Point2>,
+    /// Which layer of the print is being written, and how its next
+    /// travel is routed.
+    layer: usize,
+    routing: avoid::Routing,
     /// The current layer's height above the bed.
     z: f64,
     /// How high the nozzle actually is, once a move has said.
@@ -1124,6 +1184,9 @@ impl Writer<'_> {
             }
         }
         self.state.first_layer = index == 0;
+        self.state.layer = index;
+        self.ways.clear();
+        self.shelters.clear();
         // The nozzle itself moves up with the layer's first travel.
         self.state.z = layer.z;
         self.below = if index == 0 {
@@ -1204,6 +1267,15 @@ impl Writer<'_> {
         self.timing = Timing::default();
         self.extruding = false;
         for (offset, layer) in parts.iter().enumerate() {
+            // To a prime tower, on it and away from it are moves outside
+            // the part (GCode.cpp `append_tcr`: `use_external_mp_once`
+            // before the move to the tower and after the tower). The
+            // first move with a tool just taken up starts from nowhere
+            // known and goes straight, here as there.
+            let towered = layer.filament != self.state.tool || !layer.tower.is_empty();
+            if towered {
+                self.state.routing.kind = Kind::Outside;
+            }
             if layer.filament != self.state.tool {
                 let over = layer.tower.first().and_then(|line| line.points.first());
                 self.change_tool(
@@ -1225,11 +1297,22 @@ impl Writer<'_> {
                 .find(|wall| wall.role == Role::Perimeter)
                 .map(|wall| wall.flow);
             self.tower_lines(layer.tower)?;
+            self.state.routing.outside_once |= towered;
+            // So are the moves to and between skirt and brim (GCode.cpp
+            // `use_external_mp` round each). From the first layer's
+            // skirt, and from a brim, the move to whatever is printed
+            // next goes straight (`disable_once`).
+            let mut before = None;
             for around in layer.around {
                 let points = &around.polygon.points;
                 if points.len() < 3 {
                     continue;
                 }
+                self.state.routing.kind = Kind::Outside;
+                if before == Some(Role::Skirt) && around.role != Role::Skirt {
+                    self.state.routing.straight_once |= self.state.first_layer;
+                }
+                before = Some(around.role);
                 // Skirt and brim start wherever is nearest.
                 let (edge, start) = match self.state.position {
                     Some(at) => seam::project(points, at),
@@ -1239,7 +1322,17 @@ impl Writer<'_> {
                 seam::clip_end(&mut path, self.settings.seam_gap);
                 self.path(&path, around.role, &around.flow, false, true)?;
             }
+            self.state.routing.straight_once |= match before {
+                Some(Role::Skirt) => self.state.first_layer,
+                Some(_) => true,
+                None => false,
+            };
+            // Supports stand outside the part, and their moves are
+            // routed by its outline wherever they go (the reference's
+            // `is_support_layer`).
+            self.state.routing.kind = Kind::Support;
             self.lines(&layer.support.iter().collect::<Vec<_>>(), &[])?;
+            self.state.routing.kind = Kind::Part;
             // Ironing has a fan speed of its own once the fan is on at
             // all (CoolingBuffer.cpp: not on the first layers it is
             // kept off for).
@@ -1482,6 +1575,8 @@ impl Writer<'_> {
             Vec::new()
         };
 
+        // The walls laid so far, for a wipe over them (`wipe.rs`).
+        let mut printed = wipe::Printed::default();
         for wall in walls {
             let points = &wall.polygon.points;
             if points.len() < 3 {
@@ -1557,12 +1652,16 @@ impl Writer<'_> {
             // Joined with a scarf, the loop is laid whole and its start
             // on a slope (`scarf.rs`); otherwise it stops short of it.
             if self.scarf_wall(layer, own, wall, turned, &path, (edge, start), &planned)? {
+                self.wipe_after_wall(wall, turned, wall.flow.width, &mut printed)?;
                 continue;
             }
             let whole = (!wall.widths.is_empty()).then(|| path.clone());
             seam::clip_end(&mut path, s.seam_gap);
             let Some(whole) = whole else {
-                match self.fit_loop(wall, turned, path[0]) {
+                let fitted = self.fit_loop(wall, turned, path[0]);
+                let laid = fitted.as_ref().map_or(&path, |fitted| &fitted.points);
+                self.wipe_before_wall(own, wall, turned, laid, wall.flow.width)?;
+                match fitted {
                     Some(fitted) => self.path_parts(
                         &fitted.points,
                         Some(&fitted.parts),
@@ -1573,6 +1672,7 @@ impl Writer<'_> {
                     )?,
                     None => self.path(&path, wall.role, &wall.flow, false, true)?,
                 }
+                self.wipe_after_wall(wall, turned, wall.flow.width, &mut printed)?;
                 continue;
             };
             // A wall whose width changes is laid from its seam as pieces
@@ -1595,11 +1695,17 @@ impl Writer<'_> {
                 points: path,
                 open_ends: (true, true),
             };
-            for piece in edge_medial::varying_width(&line, wall.role, &wall.flow) {
+            let pieces = edge_medial::varying_width(&line, wall.role, &wall.flow);
+            let width = pieces
+                .first()
+                .map_or(wall.flow.width, |piece| piece.flow.width);
+            self.wipe_before_wall(own, wall, turned, &line.points, width)?;
+            for piece in pieces {
                 self.curved(&piece.points, wall.role, &piece.flow, false, true)?;
             }
             // The nozzle is wiped along the whole wall, not its last piece.
             self.state.wipe_path = line.points;
+            self.wipe_after_wall(wall, turned, width, &mut printed)?;
         }
         self.state.small_wall = None;
         self.state.circle_wall = None;
@@ -1651,11 +1757,19 @@ impl Writer<'_> {
                     if reversed {
                         points.reverse();
                     }
-                    let sheltered = self.settings.reduce_infill_retraction
-                        && self
-                            .state
-                            .position
-                            .is_some_and(|at| inside::stays_inside(shelter, at, points[0]));
+                    // By the way the move takes, where it is routed
+                    // (GCode.cpp `travel_to` asks `needs_retraction`
+                    // again of the travel it planned).
+                    let mut sheltered = false;
+                    if self.settings.reduce_infill_retraction
+                        && let Some(at) = self.state.position
+                    {
+                        let way = self.way(points[0]);
+                        sheltered = match way[..] {
+                            [to] => inside::stays_inside(shelter, at, to),
+                            _ => self.way_sheltered(shelter, at, &way),
+                        };
+                    }
                     // A short move of solid fill gets less plastic
                     // (`small_area_infill_flow_compensation`).
                     let thinned = self.settings.small_area.as_ref();
@@ -1807,7 +1921,13 @@ impl Writer<'_> {
                 sheltered,
                 closed,
             ),
-            None => self.path(points, role, flow, sheltered, closed),
+            // With no arcs a piece is thinned by itself, as the
+            // reference thins each path of a loop (LayerRegion.cpp
+            // `simplify_loop`).
+            None => {
+                let points = simplify::piece(self.settings, points);
+                self.path(&points, role, flow, sheltered, closed)
+            }
         }
     }
 
@@ -1872,20 +1992,24 @@ impl Writer<'_> {
                 // The wall's speed where it is fully supported, and where a
                 // quarter, a half, three quarters and nearly all of it hangs
                 // over; a bridge's where nothing is under it (GCode.cpp `_extrude`).
-                let mut usual =
-                    self.state
-                        .small_wall
-                        .unwrap_or(if role == Role::ExternalPerimeter {
-                            s.outer_wall_speed
-                        } else {
-                            s.inner_wall_speed
-                        });
-                if s.filament_max_volumetric_speed > 0.0 {
-                    usual = usual.min(
-                        s.filament_max_volumetric_speed / (flow.mm3_per_mm() * self.scarf_flow()),
-                    );
-                }
-                let usual = self.scarf_speed(usual);
+                // A scarf's speed as a percentage is of the wall's own.
+                let own = if role == Role::ExternalPerimeter {
+                    s.outer_wall_speed
+                } else {
+                    s.inner_wall_speed
+                };
+                let melted = |speed: f64| {
+                    if s.filament_max_volumetric_speed > 0.0 {
+                        speed.min(
+                            s.filament_max_volumetric_speed
+                                / (flow.mm3_per_mm() * self.scarf_flow()),
+                        )
+                    } else {
+                        speed
+                    }
+                };
+                let usual = melted(self.state.small_wall.unwrap_or(own));
+                let usual = self.scarf_speed(usual, melted(own));
                 let step = |speed: FloatOrPercent| {
                     let speed = speed.resolve(usual);
                     if speed < 0.5 { usual } else { speed }
@@ -2249,8 +2373,18 @@ impl Writer<'_> {
     fn travel(&mut self, to: Point2, sheltered: bool) -> io::Result<()> {
         let s = self.settings;
         let from = self.state.position;
-        let length = from.map_or(f64::INFINITY, |from| distance(from, to));
+        // Round the inside of the walls where the move would cross
+        // them, and it is as long as the way round is.
+        let mut way = self.way(to);
+        let along = |from: Point2, way: &[Point2]| {
+            let mut at = from;
+            way.iter()
+                .map(|&point| distance(std::mem::replace(&mut at, point), point))
+                .sum::<f64>()
+        };
+        let length = from.map_or(f64::INFINITY, |from| along(from, &way));
         if length == 0.0 && self.state.height == Some(self.state.z) {
+            self.state.routing.passed();
             return Ok(());
         }
         let exposed = !sheltered
@@ -2261,10 +2395,23 @@ impl Writer<'_> {
         let long = length > s.retraction_minimum_travel && exposed;
         if long {
             self.retract(false)?;
+            // A wipe moves the nozzle, and the way is found again from
+            // where it ends (GCode.cpp `travel_to`). Not as the
+            // reference, on purpose: by then it has forgotten that the
+            // move was to go straight, and routes it after all.
+            if self.state.position != from {
+                way = self.way(to);
+            }
         } else {
             // Nothing to wipe once the nozzle has moved off the line.
             self.state.wipe_path.clear();
         }
+        self.state.routing.passed();
+        // The lift is made over the first stretch of the way and the
+        // rest is gone along at that height (GCode.cpp `travel_to`,
+        // "lift the z to normal height at the beginning").
+        let rest = way.split_off(1);
+        let to = way[0];
         // A wipe moves the nozzle, so the travel is measured from where it ends.
         let from = self.state.position;
         let length = from.map_or(f64::INFINITY, |from| distance(from, to));
@@ -2340,6 +2487,11 @@ impl Writer<'_> {
             }
         }
         self.state.height = Some(top);
+        let mut at = to;
+        for point in rest {
+            let length = distance(std::mem::replace(&mut at, point), point);
+            self.go(point, None, s.travel_speed, length)?;
+        }
         Ok(())
     }
 
@@ -3313,6 +3465,8 @@ pub fn role_name(role: Role) -> &'static str {
 
 #[cfg(test)]
 mod arc_tests;
+#[cfg(test)]
+mod avoid_tests;
 #[cfg(test)]
 mod ironing_tests;
 #[cfg(test)]

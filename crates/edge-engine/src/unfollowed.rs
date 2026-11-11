@@ -6,21 +6,11 @@ use edge_config::Settings;
 
 /// A setting, the value that turns it off, and what is done whatever it
 /// is set to.
-const UNREAD: [(&str, &str, &str); 4] = [
-    (
-        "wipe_inward",
-        "0",
-        "the nozzle is wiped along the wall, not in toward the inner walls",
-    ),
+const UNREAD: [(&str, &str, &str); 2] = [
     (
         "zaa_enabled",
         "0",
         "top surfaces are laid flat, not contoured in height",
-    ),
-    (
-        "reduce_crossing_wall",
-        "0",
-        "travel moves go straight, across walls where those are in the way",
     ),
     (
         "unsupported_wall_last",
@@ -74,7 +64,7 @@ mod tests {
         // Left alone or turned off, nothing to say.
         assert!(notes(&Settings::default(), 1).is_empty());
         let off = Settings::from_json(
-            r#"{"wipe_inward": "0", "zaa_enabled": "0", "reduce_crossing_wall": "0",
+            r#"{"zaa_enabled": "0", "reduce_crossing_wall": "0",
                 "elefant_foot_layers_density": "100%", "enable_extra_bridge_layer": "disabled",
                 "dont_filter_internal_bridges": "disabled", "seam_prefer_part_joints": "1"}"#,
         )
@@ -89,12 +79,13 @@ mod tests {
         .unwrap();
         // How small bridges over infill are sorted out is followed, and
         // so are the density of solid fill over the first layer and the
-        // thinning of short solid lines; nothing is said of them here.
+        // thinning of short solid lines; nothing is said of them here,
+        // nor of a wipe in over the inner walls, nor of travel that
+        // goes round the walls.
         let said = notes(&on, 1);
-        assert_eq!(said.len(), 3, "{said:?}");
+        assert_eq!(said.len(), 1, "{said:?}");
         assert!(said.contains(
-            &"wipe_inward \"1\": the nozzle is wiped along the wall, not in toward the inner walls"
-                .to_owned()
+            &"zaa_enabled \"1\": top surfaces are laid flat, not contoured in height".to_owned()
         ));
         // Ironing is followed, and nothing is said of it here; nor of a
         // second layer of bridge.
