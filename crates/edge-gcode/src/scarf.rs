@@ -807,20 +807,15 @@ impl Writer<'_> {
     /// `unsupported_dist`): the outer wall's line there may be short of
     /// the outline beneath by no more than `scarf_overhang_threshold`
     /// of the wall's width, counted from four tenths of the outer
-    /// wall's width behind its middle. `seam` is on the outer wall and
-    /// `outer` that wall's width; `width` is the width of the wall
-    /// asked about.
-    fn seam_rests(&self, seam: Point2, outer: f64, width: f64) -> bool {
+    /// wall's width behind its middle. `unsupported` is that measure at
+    /// the seam the wall starts at or beside, and `width` the width of
+    /// the wall asked about.
+    fn seam_rests(&self, unsupported: Option<f32>, width: f64) -> bool {
         let threshold = self.settings.scarf.overhang_threshold;
         if threshold <= 0.0 {
             return true;
         }
-        let Some(below) = self.below.as_ref() else {
-            return false;
-        };
-        let away = below.signed_distance(unscaled(seam.x), unscaled(seam.y));
-        // Too far out to say how far: over air.
-        away < below.reach() && away + 0.4 * outer < threshold * width
+        unsupported.is_some_and(|short| f64::from(short) < threshold * width)
     }
 
     /// The loop as the reference would hold it: once round from its
@@ -883,9 +878,9 @@ impl Writer<'_> {
     /// Lays a wall with a scarf seam if it is to have one, and says
     /// whether it did. `own` is the island's walls; `path` is the loop
     /// opened at its seam and turned the way it is laid, `at` where on
-    /// `wall` it was opened (see [`seam::open_at`]), and `planned` the
-    /// seams settled for the island's outermost walls, which the walls
-    /// behind them start beside.
+    /// `wall` it was opened (see [`seam::open_at`]), and `unsupported` how
+    /// far the outer wall's line is short of the layer beneath at the
+    /// seam the wall starts at or beside.
     #[allow(clippy::too_many_arguments)]
     pub(crate) fn scarf_wall(
         &mut self,
@@ -895,7 +890,7 @@ impl Writer<'_> {
         turned: bool,
         path: &[Point2],
         at: (usize, Point2),
-        planned: &[(bool, Point2)],
+        unsupported: Option<f32>,
     ) -> io::Result<bool> {
         let s = self.settings;
         let scarf = s.scarf;
@@ -940,21 +935,7 @@ impl Writer<'_> {
             // The reference asks this of the seam of the outer wall
             // nearest the loop: the wall's own, or the one an inner
             // wall starts beside.
-            let (seam, outer) = if wall.depth == 0 {
-                (path[0], wall.flow.width)
-            } else {
-                let beside = crate::alongside(&wall.polygon.points, wall.is_hole, planned)
-                    .unwrap_or(path[0]);
-                (own.iter())
-                    .filter(|other| other.depth == 0 && other.polygon.points.len() >= 3)
-                    .map(|other| {
-                        let nearest = seam::project(&other.polygon.points, beside).1;
-                        (crate::distance(nearest, beside), nearest, other.flow.width)
-                    })
-                    .min_by(|a, b| a.0.total_cmp(&b.0))
-                    .map_or((path[0], wall.flow.width), |(_, seam, width)| (seam, width))
-            };
-            if !smooth || !self.seam_rests(seam, outer, wall.flow.width) {
+            if !smooth || !self.seam_rests(unsupported, wall.flow.width) {
                 return Ok(false);
             }
         }

@@ -71,6 +71,9 @@ pub struct Sliced {
     /// The first layers' outlines as modelled, before they were shrunk
     /// against elephant foot.
     modelled: Vec<Vec<ExPolygon>>,
+    /// The objects on the plate, as seams are placed by them: each one's
+    /// bounds across the bed and their middle.
+    seam_frames: Vec<(Point2, Point2, Point2)>,
     /// The filaments in use, by number from 1.
     pub used: Vec<usize>,
     /// Each filament's share of every layer; empty with one filament,
@@ -628,6 +631,18 @@ pub fn slice(job: Job, watch: &dyn Watcher) -> Result<Sliced, Failure> {
             )
         })
         .collect();
+    // The same of each object for its seams, which the reference
+    // reckons from the middle of each object's bounds; a bare model is
+    // one object.
+    let seam_frames: Vec<(Point2, Point2, Point2)> = if middles.is_empty() {
+        vec![(
+            Point2::from_mm(min[0].into(), min[1].into()),
+            Point2::from_mm(max[0].into(), max[1].into()),
+            middle,
+        )]
+    } else {
+        middles.clone()
+    };
     let mut supports = edge_support::generate(
         &outlines,
         middle,
@@ -1146,6 +1161,7 @@ pub fn slice(job: Job, watch: &dyn Watcher) -> Result<Sliced, Failure> {
         elephant_layers,
         layers,
         modelled,
+        seam_frames,
         used,
         shares,
         walls_by,
@@ -1392,7 +1408,22 @@ impl Sliced {
         // Whole or not at all: a file cut short by an error must never be
         // left where it could be sent to a printer.
         let mut text = Vec::new();
-        let summary = edge_gcode::write_routed(&mut text, &plan, &slices, &prints)?;
+        // What seams are placed by beside the walls: each layer's
+        // outline, as it is under the layer above, and the objects.
+        let mut printed: Vec<&[ExPolygon]> = Vec::new();
+        for (entry, turn) in self.entries.iter().enumerate() {
+            if entry == 0 || self.entries[entry - 1].layer != turn.layer {
+                printed.push(outlines[turn.layer]);
+            }
+        }
+        let seam_objects: Vec<edge_gcode::SeamObject> = (self.seam_frames.iter())
+            .map(|&(min, max, centre)| edge_gcode::SeamObject { min, max, centre })
+            .collect();
+        let scene = edge_gcode::SeamScene {
+            outlines: &printed,
+            objects: &seam_objects,
+        };
+        let summary = edge_gcode::write_placed(&mut text, &plan, &slices, &scene, &prints)?;
         Ok(Gcode { text, summary })
     }
 }

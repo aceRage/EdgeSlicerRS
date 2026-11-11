@@ -42,6 +42,7 @@ use rayon::prelude::*;
 pub use edge_avoid::{Detour, Slices};
 pub use scarf::{Scarf, ScarfSeam};
 pub use seam::Seam;
+pub use seam_plan::{SeamObject, SeamScene};
 pub use settings::{Lift, OverhangFan, PrintSettings, WallDirection, WallOrder};
 
 #[derive(Debug, thiserror::Error)]
@@ -204,6 +205,20 @@ pub fn write_routed(
     slices: &[Slices<'_>],
     settings: &[PrintSettings],
 ) -> Result<Summary, GcodeError> {
+    write_placed(out, layers, slices, &SeamScene::default(), settings)
+}
+
+/// [`write_routed`], with what seams are placed by beside the walls
+/// themselves: the objects on the plate and each layer's outline. They
+/// too are given beside the layers, and without them the plate is taken
+/// for one object and no point for hidden inside the print.
+pub fn write_placed(
+    out: &mut impl Write,
+    layers: &[Layer<'_>],
+    slices: &[Slices<'_>],
+    scene: &SeamScene<'_>,
+    settings: &[PrintSettings],
+) -> Result<Summary, GcodeError> {
     let slices = if slices.len() == layers.len() {
         slices
     } else {
@@ -319,7 +334,7 @@ pub fn write_routed(
             },
         },
         below: None,
-        seams: seam_plan::Plan::new(layers, &groups),
+        seams: seam_plan::Plan::new(layers, &groups, settings, scene),
         inner_wall: None,
         measured: Vec::new(),
         measured_used: 0,
@@ -704,9 +719,6 @@ struct State {
     auxiliary_fan: Option<u8>,
     role: Option<Role>,
     width: f64,
-    /// Seams of the layer below, and of this one so far.
-    seams: Vec<Point2>,
-    next_seams: Vec<Point2>,
     summary: Summary,
 }
 
@@ -1333,7 +1345,6 @@ impl Writer<'_> {
             self.islands(layer, ironing_fan)?;
         }
         self.fan_over_air(false)?;
-        self.state.seams = std::mem::take(&mut self.state.next_seams);
         Ok(())
     }
 
@@ -1516,66 +1527,6 @@ impl Writer<'_> {
                 }
             }
         }
-        // The seams of the island's outermost walls are settled first,
-        // so the walls behind them can start alongside.
-        // A seam is kept off what hangs out over the layer beneath
-        // before anything else is weighed.
-        let planned: Vec<(bool, Point2)> = if s.seam == Seam::Nearest {
-            Vec::new()
-        } else {
-            walls
-                .iter()
-                .filter(|wall| wall.depth == 0 && wall.polygon.points.len() >= 3)
-                .map(|wall| {
-                    let points = &wall.polygon.points;
-                    if s.seam == Seam::Random {
-                        let picked = (self.seams.candidates(self.state.layer, wall))
-                            .and_then(|(candidates, width)| seam::random_point(candidates, width));
-                        return (wall.is_hole, picked.unwrap_or(points[0]));
-                    }
-                    let overhangs = self
-                        .seams
-                        .overhangs(self.state.layer, wall)
-                        .unwrap_or_default();
-                    let corner = seam::choose_among(
-                        points,
-                        s.seam,
-                        s.nozzle_diameter,
-                        None,
-                        &self.state.seams,
-                        &seam::resting(&overhangs, wall.flow.width as f32),
-                    );
-                    (wall.is_hole, points[corner.unwrap_or(0)])
-                })
-                .collect()
-        };
-        self.state
-            .next_seams
-            .extend(planned.iter().map(|(_, seam)| *seam));
-        // How far each of those walls turns at its seam, for the walls
-        // behind that are to start further round: nothing where the seam
-        // is not at a corner.
-        let seam_turns: Vec<(Point2, f64)> = if s.staggered_inner_seams && s.seam != Seam::Random {
-            walls
-                .iter()
-                .filter(|wall| wall.depth == 0 && wall.polygon.points.len() >= 3)
-                .zip(&planned)
-                .map(|(wall, (_, seam))| {
-                    let points = &wall.polygon.points;
-                    let turn = points
-                        .iter()
-                        .position(|point| point == seam)
-                        .map_or(0.0, |corner| {
-                            seam::turn_at(points, corner, s.nozzle_diameter)
-                        });
-                    // Round a hole the walls turn the other way.
-                    (*seam, if wall.is_hole { -turn } else { turn })
-                })
-                .collect()
-        } else {
-            Vec::new()
-        };
-
         // The walls laid so far, for a wipe over them (`wipe.rs`).
         let mut printed = wipe::Printed::default();
         for wall in walls {
@@ -1592,57 +1543,22 @@ impl Writer<'_> {
                 WallDirection::Clockwise => true,
             };
             let turned = wall.is_hole != clockwise;
-            let (edge, start) = match alongside(points, wall.is_hole, &planned) {
-                Some(target) => {
-                    let (edge, start) = seam::project(points, target);
-                    if s.staggered_inner_seams && wall.depth > 0 {
-                        // On round the wall, the way it is laid, by how
-                        // deep it lies behind the seam it starts beside
-                        // and no less than its own width (SeamPlacer.cpp
-                        // `place_seam`, "do the staggering"). At a
-                        // corner the distance to that seam is more than
-                        // the depth, and is brought back by the corner's
-                        // angle; in an inside corner it is less. The
-                        // reference also starts an inside corner's walls
-                        // nearer the corner before it moves them on,
-                        // which is not done here.
-                        let behind =
-                            unscaled(target.x - start.x).hypot(unscaled(target.y - start.y));
-                        let turn = seam_turns
-                            .iter()
-                            .find(|(seam, _)| *seam == target)
-                            .map_or(0.0, |(_, turn)| *turn);
-                        let beta = (turn / 2.0).cos();
-                        let depth = if turn < -1e-4 && beta > 1e-6 {
-                            std::f64::consts::SQRT_2 * behind / beta
-                        } else {
-                            behind * beta / std::f64::consts::SQRT_2
-                        };
-                        let depth = wall.flow.width.max(depth);
-                        seam::advance(points, edge, start, scaled(depth) as f64, turned)
-                    } else {
-                        (edge, start)
-                    }
-                }
-                None => {
-                    // An outermost wall's seam is kept off what hangs
-                    // out; a wall behind one has no such measure.
-                    let overhangs = self
-                        .seams
-                        .overhangs(self.state.layer, wall)
-                        .unwrap_or_default();
-                    let corner = seam::choose_among(
-                        points,
-                        Seam::Nearest,
-                        s.nozzle_diameter,
-                        self.state.position,
-                        &[],
-                        &seam::resting(&overhangs, wall.flow.width as f32),
-                    )
-                    .unwrap_or(0);
-                    (corner, points[corner])
-                }
+            // An outermost wall starts at its seam and a wall behind
+            // one beside it (`seam_plan.rs`).
+            let placed = self.seams.place(
+                self.state.layer,
+                wall,
+                turned,
+                self.state.position,
+                s.staggered_inner_seams,
+            );
+            let (edge, start) = match placed {
+                Some(placed) => (placed.edge, placed.start),
+                // With no outer wall on the layer to go by, at the
+                // point nearest the nozzle.
+                None => seam::project(points, self.state.position.unwrap_or(points[0])),
             };
+            let unsupported = placed.map(|placed| placed.unsupported);
             // A small loop goes at its own speed (GCode.cpp `extrude_loop`,
             // "check loop length for small perimeter").
             let small = wall.length_mm() <= s.small_perimeter_threshold * std::f64::consts::TAU;
@@ -1660,7 +1576,7 @@ impl Writer<'_> {
             }
             // Joined with a scarf, the loop is laid whole and its start
             // on a slope (`scarf.rs`); otherwise it stops short of it.
-            if self.scarf_wall(layer, own, wall, turned, &path, (edge, start), &planned)? {
+            if self.scarf_wall(layer, own, wall, turned, &path, (edge, start), unsupported)? {
                 self.wipe_after_wall(wall, turned, wall.flow.width, &mut printed)?;
                 continue;
             }
@@ -3287,44 +3203,6 @@ fn sandwich(walls: Vec<&ExtrusionLoop>) -> Vec<&ExtrusionLoop> {
         position = at + 1;
     }
     ordered
-}
-
-/// The planned seam a wall should start next to: the nearest one, taking
-/// those of its own kind (around the part, or around a hole) first. None
-/// when no seams were planned.
-fn alongside(points: &[Point2], is_hole: bool, planned: &[(bool, Point2)]) -> Option<Point2> {
-    let (mut min_x, mut min_y, mut max_x, mut max_y) = (i64::MAX, i64::MAX, i64::MIN, i64::MIN);
-    for point in points {
-        (min_x, max_x) = (min_x.min(point.x), max_x.max(point.x));
-        (min_y, max_y) = (min_y.min(point.y), max_y.max(point.y));
-    }
-    // How far a seam is from the box around the wall: a cheap lower bound
-    // that rules most seams out before the wall itself is measured.
-    let outside = |seam: Point2| {
-        let dx = (min_x - seam.x).max(seam.x - max_x).max(0);
-        let dy = (min_y - seam.y).max(seam.y - max_y).max(0);
-        unscaled(dx).hypot(unscaled(dy))
-    };
-    let same: Vec<Point2> = planned
-        .iter()
-        .filter(|(hole, _)| *hole == is_hole)
-        .map(|(_, seam)| *seam)
-        .collect();
-    let candidates = if same.is_empty() {
-        planned.iter().map(|(_, seam)| *seam).collect()
-    } else {
-        same
-    };
-    let nearest_box = candidates
-        .iter()
-        .map(|seam| outside(*seam))
-        .fold(f64::INFINITY, f64::min);
-    candidates
-        .into_iter()
-        .filter(|seam| outside(*seam) <= nearest_box + 2.0)
-        .map(|seam| (distance(seam::project(points, seam).1, seam), seam))
-        .min_by(|a, b| a.0.total_cmp(&b.0))
-        .map(|(_, seam)| seam)
 }
 
 /// A length of time as the reference writes it: `1d 2h 3m 4s`, without
