@@ -301,9 +301,15 @@ more and thinner trunks, and kept further from the stem (2.8 mm against 1.6 mm, 
 the middle layer's least distance). Its bridge under the cap runs across
 the lines of the support's roof where the reference's runs along them,
 and came out flatter with a few blobs; the two were printed in different
-filaments, so the look of the surfaces is not a fair comparison. Trees
-as they are now (paired branches, hooked loops, a sheet on the bed)
-have not been printed. Normal (grid) supports have not been on hardware. Without a printer
+filaments, so the look of the surfaces is not a fair comparison. The
+same fixture was printed again on the U1 with trees as they are now
+(paired branches, hooked loops, a sheet on the bed), and the owner
+judged it better than the first: the cap was carried, the first layer
+went down as one sheet with a scalloped edge, the branches can be seen
+joining in pairs on the way down, and the support came away in one
+piece but for a small fragment. The underside of the cap was not
+photographed, and the C++ slicer's file was not printed beside it this
+time. Normal (grid) supports have not been on hardware. Without a printer
 profile a generic preamble is written and the file is only good for viewing.
 
 Multi-filament printing is a first working version. Where parts of
