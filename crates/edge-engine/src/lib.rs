@@ -18,6 +18,7 @@ mod presets;
 mod preview;
 mod scene;
 mod toolpath;
+mod unfollowed;
 
 use std::{error::Error, fmt};
 
@@ -25,7 +26,7 @@ pub use clock::timestamp;
 pub use job::{BedType, Chosen, Job, Overrides, Sourced, prepare};
 pub use load::{Loaded, Opened, PlateInfo, open};
 pub use pipeline::{Gcode, Sliced, Timings, slice};
-pub use presets::{Library, Shelf};
+pub use presets::{Library, ModelPreset, PrinterModel, Shelf};
 pub use preview::Stroke;
 pub use scene::{Mark, Placing, Scene, SceneObject, ScenePlate, plate_position};
 pub use toolpath::{Feature, Move, MoveKind, Toolpath, ToolpathLayer, read_toolpath};

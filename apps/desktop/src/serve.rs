@@ -21,6 +21,8 @@ use crate::api::Session;
 const PAGE: &str = include_str!("../ui/index.html");
 const SCRIPT: &str = include_str!("../ui/app.js");
 const STYLE: &str = include_str!("../ui/style.css");
+const PRINTERS_SCRIPT: &str = include_str!("../ui/printers.js");
+const PRINTERS_STYLE: &str = include_str!("../ui/printers.css");
 /// The 3D views' scripts, under `ui/gl`.
 const GL: [(&str, &str); 9] = [
     ("math.js", include_str!("../ui/gl/math.js")),
@@ -130,6 +132,22 @@ fn handle(mut request: Request, session: &Arc<Session>, token: &str, port: u16) 
                 200,
                 "text/css; charset=utf-8",
                 asset("style.css", STYLE),
+            );
+        }
+        (Method::Get, "/printers.js") => {
+            respond(
+                request,
+                200,
+                "text/javascript; charset=utf-8",
+                asset("printers.js", PRINTERS_SCRIPT),
+            );
+        }
+        (Method::Get, "/printers.css") => {
+            respond(
+                request,
+                200,
+                "text/css; charset=utf-8",
+                asset("printers.css", PRINTERS_STYLE),
             );
         }
         (Method::Get, path) if path.starts_with("/gl/") => {

@@ -338,6 +338,173 @@ fn a_projects_plates_are_listed_with_what_is_on_each() {
     assert!(model.plate_list().is_empty());
 }
 
+/// A vendor's printer models, as the printer selection lists them: the
+/// nozzles each is sold with, its picture, the presets made for it and
+/// the sizes of its usual one.
+#[test]
+fn a_vendors_printer_models_are_listed_with_their_presets() {
+    let library = Library::new(reference("resources/profiles"));
+    let models = library.models("Snapmaker").unwrap();
+    // The index's own order: the U1 is its first entry.
+    let u1 = &models[0];
+    assert_eq!(u1.model, "Snapmaker U1");
+    assert_eq!(u1.name, "Snapmaker U1");
+    assert_eq!(u1.vendor, "Snapmaker");
+    assert_eq!(u1.model_id.as_deref(), Some("SM_U1"));
+    assert_eq!(u1.variants, ["0.2", "0.4", "0.6", "0.8", "0.4+0.6"]);
+    assert_eq!(u1.bed_model.as_deref(), Some("Snapmaker U1_bed.stl"));
+    assert_eq!(u1.bed_texture.as_deref(), Some("Snapmaker U1_texture.svg"));
+    assert!(
+        u1.default_materials
+            .contains(&"Generic PLA @U1 0.4 nozzle".to_owned())
+    );
+    assert_eq!(u1.default_bed_type, None);
+    let a1 = library
+        .models("BBL")
+        .unwrap()
+        .into_iter()
+        .find(|model| model.model == "Bambu Lab A1 mini")
+        .unwrap();
+    assert_eq!(a1.default_bed_type.as_deref(), Some("Textured PEI Plate"));
+    let cover = u1.cover.as_ref().expect("the U1 has a picture");
+    assert!(cover.is_file());
+    assert_eq!(
+        cover.file_name().and_then(|name| name.to_str()),
+        Some("Snapmaker U1_cover.png")
+    );
+    // A preset for each nozzle, each naming the model and its nozzle.
+    let preset = |variant: &str| {
+        u1.machines
+            .iter()
+            .find(|preset| preset.variant == variant)
+            .map(|preset| preset.name.as_str())
+    };
+    assert_eq!(preset("0.4"), Some("Snapmaker U1 (0.4 nozzle)"));
+    assert_eq!(preset("0.2"), Some("Snapmaker U1 (0.2 nozzle)"));
+    for variant in &u1.variants {
+        assert!(
+            preset(variant).is_some(),
+            "no preset for a {variant} nozzle"
+        );
+    }
+    // The sizes are those of the preset for a 0.4 nozzle: four toolheads.
+    let bed = u1.bed.expect("the U1's bed is given");
+    assert!(
+        (bed[0] - 270.0).abs() < 2.0 && (bed[1] - 270.0).abs() < 2.0,
+        "{bed:?}"
+    );
+    assert!(u1.height.is_some_and(|height| (height - 270.0).abs() < 2.0));
+    assert_eq!(u1.nozzles, Some(4));
+
+    // Every model of every vendor is listed, each preset under one model;
+    // a model with a preset has its sizes read from one of them.
+    let mut count = 0;
+    for vendor in library.vendors().unwrap() {
+        for model in library.models(&vendor).unwrap() {
+            count += 1;
+            assert_eq!(model.vendor, vendor);
+            assert!(!model.name.is_empty());
+            if !model.machines.is_empty() {
+                assert!(model.nozzles.is_some(), "{vendor} {}", model.model);
+            }
+        }
+    }
+    assert!(count > 300, "only {count} models were found");
+}
+
+/// A vendor that is not there is an error; one without printers lists
+/// none; a model whose file is missing is left out and the rest stay.
+#[test]
+fn printer_models_of_a_folder_made_for_the_test() {
+    let dir = tempfile::tempdir().unwrap();
+    let library = Library::new(dir.path());
+    assert!(library.models("Nobody").is_err());
+
+    std::fs::write(dir.path().join("Empty.json"), r#"{ "name": "Empty" }"#).unwrap();
+    assert_eq!(library.models("Empty").unwrap(), []);
+
+    let vendor = dir.path().join("Maker");
+    std::fs::create_dir_all(vendor.join("machine")).unwrap();
+    std::fs::write(
+        dir.path().join("Maker.json"),
+        r#"{
+            "name": "Maker",
+            "machine_model_list": [
+                { "name": "Maker One", "sub_path": "machine/Maker One.json" },
+                { "name": "Maker Gone", "sub_path": "machine/Maker Gone.json" }
+            ],
+            "machine_list": [
+                { "name": "common", "sub_path": "machine/common.json" },
+                { "name": "Maker One 0.6 nozzle", "sub_path": "machine/one06.json" },
+                { "name": "Maker One HF 0.4 nozzle", "sub_path": "machine/one04hf.json" },
+                { "name": "Maker One 0.4 nozzle", "sub_path": "machine/one04.json" }
+            ]
+        }"#,
+    )
+    .unwrap();
+    let write =
+        |name: &str, text: &str| std::fs::write(vendor.join("machine").join(name), text).unwrap();
+    write(
+        "Maker One.json",
+        r#"{ "type": "machine_model", "name": "Maker One", "nozzle_diameter": "0.6; 0.4", "default_materials": "PLA A;PLA B;" }"#,
+    );
+    write(
+        "common.json",
+        r#"{ "type": "machine", "name": "common", "instantiation": "false", "printer_model": "Maker One",
+             "printable_area": ["0x0", "200x0", "200x180", "0x180"], "printable_height": "150" }"#,
+    );
+    write(
+        "one06.json",
+        r#"{ "type": "machine", "name": "Maker One 0.6 nozzle", "inherits": "common", "instantiation": "true",
+             "printer_variant": "0.6", "nozzle_diameter": ["0.6"], "printable_height": "140" }"#,
+    );
+    write(
+        "one04hf.json",
+        r#"{ "type": "machine", "name": "Maker One HF 0.4 nozzle", "inherits": "common", "instantiation": "true",
+             "printer_variant": "0.4", "nozzle_diameter": ["0.4", "0.4"] }"#,
+    );
+    write(
+        "one04.json",
+        r#"{ "type": "machine", "name": "Maker One 0.4 nozzle", "inherits": "common", "instantiation": "true",
+             "printer_variant": "0.4", "nozzle_diameter": ["0.4"] }"#,
+    );
+    let models = library.models("Maker").unwrap();
+    assert_eq!(models.len(), 1, "the model without a file is left out");
+    let one = &models[0];
+    assert_eq!(one.variants, ["0.6", "0.4"]);
+    assert_eq!(one.default_materials, ["PLA A", "PLA B"]);
+    assert_eq!(one.cover, None);
+    assert_eq!(one.model_id, None);
+    // The presets that can be picked, in the index's order; the one that
+    // is only inherited from is not among them.
+    let names: Vec<&str> = one
+        .machines
+        .iter()
+        .map(|preset| preset.name.as_str())
+        .collect();
+    assert_eq!(
+        names,
+        [
+            "Maker One 0.6 nozzle",
+            "Maker One HF 0.4 nozzle",
+            "Maker One 0.4 nozzle"
+        ]
+    );
+    // Sizes from the 0.4 preset with the shortest name, not the first.
+    assert_eq!(one.bed, Some([200.0, 180.0]));
+    assert_eq!(one.height, Some(150.0));
+    assert_eq!(one.nozzles, Some(1));
+}
+
+/// What a filament preset is made of is known to its vendor's shelf.
+#[test]
+fn a_shelf_knows_what_a_filament_is_made_of() {
+    let library = Library::new(reference("resources/profiles"));
+    let shelf = library.shelf("Snapmaker").unwrap();
+    assert_eq!(shelf.filament_type("Snapmaker PLA @U1"), Some("PLA"));
+    assert_eq!(shelf.filament_type("no such filament"), None);
+}
+
 #[test]
 fn a_project_is_a_scene_of_objects_on_their_plates() {
     use edge_engine::Mark;

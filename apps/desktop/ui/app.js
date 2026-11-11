@@ -163,6 +163,8 @@ const state = {
   // The project shown, in full, and what it would be sliced with.
   project: null,
   settled: null,
+  // The printers added and the one the project shown is on.
+  printers: null,
   vendors: [],
   sliceAll: false,
   // What the page keeps for each open project, by id.
@@ -198,13 +200,7 @@ const plateKey = (project = state.project) => (project && project.plate !== null
 
 // ---- presets ----
 
-const machinesByVendor = new Map();
 const presetsByMachine = new Map();
-
-async function machinesOf(vendor) {
-  if (!machinesByVendor.has(vendor)) machinesByVendor.set(vendor, (await call('machines', { vendor })).machines);
-  return machinesByVendor.get(vendor);
-}
 
 async function presetsOf(vendor, machine) {
   const key = `${vendor}|${machine}`;
@@ -212,29 +208,12 @@ async function presetsOf(vendor, machine) {
   return presetsByMachine.get(key);
 }
 
-const among = (names, ...wanted) => wanted.find((name) => name && names.includes(name)) || names[0] || null;
-
-// The presets a printer starts with: what was last used with it, else
-// what its own profile usually prints with.
-async function presetsFor(vendor, machine, count) {
-  if (!machine) return { vendor, machine: null, process: null, filaments: [] };
-  const usual = await presetsOf(vendor, machine);
-  const process = among(usual.processes, remembered.get(`process.${machine}`), usual.usual_process);
-  const filament = among(usual.filaments, remembered.get(`filament.${machine}`), usual.usual_filament);
-  const filaments = Array.from({ length: filament ? count : 0 }, (_, index) =>
-    among(usual.filaments, remembered.get(`filament.${machine}.${index + 1}`), filament));
-  return { vendor, machine, process, filaments };
-}
-
-// A project that has no printer yet is given one: the last used, else the
-// first there is. It is what the project starts with, not a change to it.
+// A project that has no printer yet is given one: the one last selected,
+// else the first of those added, with what was last used with it. It is
+// what the project starts with, not a change to it.
 async function withPresets(project) {
-  if (project.choices.vendor || !state.vendors.length) return project;
-  const vendor = among(state.vendors, remembered.get('vendor'));
-  const machines = await machinesOf(vendor);
-  const machine = among(machines, remembered.get(`machine.${vendor}`));
-  const chosen = await presetsFor(vendor, machine, project.filament_count);
-  return call('project_set', { project: project.id, ...chosen, initial: true });
+  if (project.choices.source !== 'presets' || project.choices.machine || !state.vendors.length) return project;
+  return call('printer_select', { project: project.id, initial: true });
 }
 
 function fill(select, names, value, labels = null) {
@@ -306,20 +285,17 @@ async function showSidebar() {
   const project = state.project;
   const choices = project.choices;
   const fromPresets = choices.source === 'presets';
-  state.settled = await call('settled', { project: project.id });
+  const [settled, printers] = await Promise.all([
+    call('settled', { project: project.id }),
+    call('printers', { project: project.id }),
+  ]);
   if (project.id !== activeId()) return;
+  state.settled = settled;
+  state.printers = printers;
   const { printer, process } = state.settled;
 
-  // Printer.
-  $('source-row').hidden = !project.has_settings;
-  $('source').value = choices.source;
-  $('printer-presets').hidden = !fromPresets;
-  $('saved-printer').hidden = fromPresets;
-  $('saved-printer').textContent = project.saved.printer || 'The project names no printer.';
-  if (fromPresets) {
-    fill($('vendor'), state.vendors, choices.vendor);
-    fill($('machine'), choices.vendor ? await machinesOf(choices.vendor) : [], choices.machine);
-  }
+  // Printer: the list, the picture and the nozzles (printers.js).
+  showPrinterBlock();
   const bed = $('bed');
   if (printer) {
     const types = printer.bed_types;
@@ -336,8 +312,6 @@ async function showSidebar() {
   }
   const facts = [];
   if (printer) {
-    const nozzles = [...new Set(printer.nozzle_diameter || [])];
-    if (nozzles.length) facts.push(`${nozzles.join(' / ')} mm nozzle`);
     if (printer.bed) {
       const size = [printer.bed[2] - printer.bed[0], printer.bed[3] - printer.bed[1]];
       if (printer.height) size.push(printer.height);
@@ -392,36 +366,14 @@ function brightness(colour) {
   return (0.299 * parts[0] + 0.587 * parts[1] + 0.114 * parts[2]) / 255;
 }
 
-async function vendorChanged() {
-  const vendor = $('vendor').value;
-  remembered.set('vendor', vendor);
-  const machines = await machinesOf(vendor);
-  const machine = among(machines, remembered.get(`machine.${vendor}`));
-  await setProject({ ...(await presetsFor(vendor, machine, state.project.filament_count)), bed_type: null });
-}
-
-async function machineChanged() {
-  const [vendor, machine] = [$('vendor').value, $('machine').value];
-  remembered.set(`machine.${vendor}`, machine);
-  // Another printer has its own plates: the one chosen for the last is let go.
-  await setProject({ ...(await presetsFor(vendor, machine, state.project.filament_count)), bed_type: null });
-}
-
+// What is chosen for a printer (filaments, process, bed type) is kept
+// with that printer by the session, for the next time it is selected.
 async function filamentChanged() {
-  const machine = state.project.choices.machine;
   const filaments = [...$('filaments').querySelectorAll('select')].map((select) => select.value);
-  for (const [index, name] of filaments.entries()) remembered.set(`filament.${machine}.${index + 1}`, name);
-  remembered.set(`filament.${machine}`, filaments[0]);
   await setProject({ filaments });
 }
 
-$('source').addEventListener('change', () => attempt(() => setProject({ source: $('source').value })));
-$('vendor').addEventListener('change', () => attempt(vendorChanged));
-$('machine').addEventListener('change', () => attempt(machineChanged));
-$('process').addEventListener('change', () => attempt(() => {
-  remembered.set(`process.${state.project.choices.machine}`, $('process').value);
-  return setProject({ process: $('process').value });
-}));
+$('process').addEventListener('change', () => attempt(() => setProject({ process: $('process').value })));
 $('bed').addEventListener('change', () => attempt(() => setProject({ bed_type: $('bed').value })));
 for (const input of document.querySelectorAll('[data-over]')) {
   input.addEventListener('change', () => attempt(async () => {
@@ -447,12 +399,12 @@ $('profiles').addEventListener('click', () => attempt(async () => {
   if (!dir) return;
   await loadLibrary(await call('set_profiles', { dir }));
   await showProject();
+  await firstRun();
 }));
 
 async function loadLibrary(library) {
   $('profiles-dir').textContent = library.dir || 'none';
   state.vendors = library.vendors;
-  machinesByVendor.clear();
   presetsByMachine.clear();
 }
 
@@ -1850,11 +1802,14 @@ document.addEventListener('keydown', (event) => {
 
 (async () => {
   showStripShape();
+  initPrinters();
   try {
     await loadLibrary(await call('library'));
     await applyListing(await call('projects'));
     const { model } = await call('startup');
     if (model) await openProject(model);
+    // With no printer added yet, the printer selection opens by itself.
+    await firstRun();
   } catch (error) {
     say(error.message, true);
   }

@@ -58,6 +58,10 @@ pub struct Session {
 struct State {
     library: Option<Library>,
     shelves: HashMap<String, Arc<Shelf>>,
+    /// Each vendor's printer models, read once and kept.
+    catalogue: HashMap<String, Arc<Vec<edge_engine::PrinterModel>>>,
+    /// What is kept between runs: the printers added, what was last used.
+    store: store::Store,
     /// The open projects, in the order the strip shows them. Never empty.
     projects: Vec<Project>,
     /// The id of the project shown.
@@ -306,6 +310,9 @@ fn bed_of(settings: &Settings) -> Option<[f64; 4]> {
     extent
 }
 
+mod printers;
+mod store;
+
 /// The build plates the engine knows the bed temperature of, each with the
 /// name the reference shows it by (PrintConfig.cpp `curr_bed_type`).
 const PLATES: [(&str, &str); 6] = [
@@ -343,21 +350,7 @@ const PLATES_U1_ALL: [(&str, &str); 6] = [
 /// `Sidebar::update_presets`). A printer that is not Bambu's, not a U1 and
 /// does not say it takes several plates has its own default and no choice.
 fn bed_types(printer: &Settings, vendor: Option<&str>, chosen: Option<&str>) -> Value {
-    let model = printer.text("printer_model").unwrap_or_default();
-    let name = printer.text("printer_settings_id").unwrap_or_default();
-    let is_u1 = [model, name]
-        .iter()
-        .any(|text| text.contains("Snapmaker") && text.contains("U1"));
-    let several = matches!(
-        printer.text("support_multi_bed_types"),
-        Some("1") | Some("true")
-    );
-    let is_bambu = vendor == Some("BBL") || model.starts_with("Bambu Lab");
-    let offered: &[(&str, &str)] = match (is_u1, several) {
-        (true, false) => &PLATES_U1,
-        (true, true) => &PLATES_U1_ALL,
-        (false, _) => &PLATES,
-    };
+    let plates = plates_for(printer, vendor);
     // A profile gives its default by name or by its number in the
     // reference's list (PrintConfig.hpp `BedType`), as `prepare` reads it.
     let default = match printer.text("default_bed_type").map(str::trim) {
@@ -375,13 +368,49 @@ fn bed_types(printer: &Settings, vendor: Option<&str>, chosen: Option<&str>) -> 
         .or(default)
         .unwrap_or("Cool Plate");
     json!({
-        "enabled": is_bambu || several || is_u1,
+        "enabled": plates.enabled,
         "in_force": in_force,
-        "choices": offered
+        "choices": plates
+            .offered
             .iter()
             .map(|(value, label)| json!({ "value": value, "label": label }))
             .collect::<Vec<_>>(),
     })
+}
+
+/// The plates a printer's "Bed type" list offers, and whether there is a
+/// choice among them.
+struct Plates {
+    enabled: bool,
+    /// A Snapmaker U1, which has plates of its own.
+    u1: bool,
+    /// The printer says it takes every plate (`support_multi_bed_types`).
+    several: bool,
+    offered: &'static [(&'static str, &'static str)],
+}
+
+fn plates_for(printer: &Settings, vendor: Option<&str>) -> Plates {
+    let model = printer.text("printer_model").unwrap_or_default();
+    let name = printer.text("printer_settings_id").unwrap_or_default();
+    let is_u1 = [model, name]
+        .iter()
+        .any(|text| text.contains("Snapmaker") && text.contains("U1"));
+    let several = matches!(
+        printer.text("support_multi_bed_types"),
+        Some("1") | Some("true")
+    );
+    let is_bambu = vendor == Some("BBL") || model.starts_with("Bambu Lab");
+    let offered: &'static [(&'static str, &'static str)] = match (is_u1, several) {
+        (true, false) => &PLATES_U1,
+        (true, true) => &PLATES_U1_ALL,
+        (false, _) => &PLATES,
+    };
+    Plates {
+        enabled: is_bambu || several || is_u1,
+        u1: is_u1,
+        several,
+        offered,
+    }
 }
 
 impl Project {
@@ -450,6 +479,12 @@ impl Project {
             .or(file.plates.first())
             .map(|plate| plate.id);
         self.choices.from_presets = file.settings.is_none();
+        // A project's own bed type is in force until another is chosen
+        // for it: the one that went with the printer the empty project
+        // was on is not a choice made for this file.
+        if file.settings.is_some() {
+            self.choices.bed_type = None;
+        }
         self.baseline = self.choices.clone();
         self.file = Some(file);
         self.tab = "prepare";
@@ -622,12 +657,25 @@ impl State {
         let mut project = Project::new(self.next_id, name);
         self.next_id += 1;
         let started_from = &self.projects[from].choices;
+        // The bed type goes with the printer: the one the project it was
+        // started from is on, or for one sliced with its own settings the
+        // one last used with that printer.
+        let bed_type = if started_from.from_presets {
+            started_from.bed_type.clone()
+        } else {
+            started_from
+                .machine
+                .as_ref()
+                .and_then(|machine| self.store.data.printers.get(machine))
+                .and_then(|kept| kept.bed_type.clone())
+        };
         project.choices = Choices {
             from_presets: true,
             vendor: started_from.vendor.clone(),
             machine: started_from.machine.clone(),
             process: started_from.process.clone(),
             filaments: started_from.filaments.clone(),
+            bed_type,
             ..Choices::default()
         };
         project.baseline = project.choices.clone();
@@ -761,14 +809,36 @@ fn over(args: &Value, key: &str, least: f64) -> Result<Option<Option<f64>>, Stri
 }
 
 impl Session {
+    /// A session that keeps its settings where this user's are kept. A
+    /// test build keeps them for the run only, so no test reads or
+    /// writes the settings of whoever runs it.
     pub fn new(startup: Option<PathBuf>) -> Self {
+        let settings = if cfg!(test) {
+            None
+        } else {
+            store::default_dir()
+        };
+        Self::with_settings(startup, settings)
+    }
+
+    /// A session that keeps its settings in `settings`, or with none for
+    /// the run only. The profiles are those `EDGE_PROFILES` names, else
+    /// the folder last chosen, else the ones beside this build.
+    pub fn with_settings(startup: Option<PathBuf>, settings: Option<PathBuf>) -> Self {
+        let store = store::Store::open(settings);
         let dir = std::env::var_os("EDGE_PROFILES")
             .map(PathBuf::from)
+            .or_else(|| {
+                let chosen = store.data.profiles_dir.as_ref().map(PathBuf::from);
+                chosen.filter(|dir| dir.is_dir())
+            })
             .or_else(profiles_beside);
         Self {
             state: Mutex::new(State {
                 library: dir.map(Library::new),
                 shelves: HashMap::new(),
+                catalogue: HashMap::new(),
+                store,
                 // The project a window starts with.
                 projects: vec![Project::new(1, UNTITLED.to_owned())],
                 active: 1,
@@ -821,11 +891,24 @@ impl Session {
                     return Err(format!("{} is not a folder", dir.display()));
                 }
                 let mut state = lock(&self.state);
+                // Kept for the next run; if it cannot be, it is said and
+                // the folder is not changed.
+                let chosen = shown(&dir);
+                state
+                    .store
+                    .change(|data| data.profiles_dir = Some(chosen))?;
                 state.library = Some(Library::new(dir));
                 state.shelves.clear();
+                state.catalogue.clear();
                 drop(state);
                 self.library()
             }
+            "printers" => self.printers(args),
+            "printer_catalogue" => self.printer_catalogue(),
+            "printer_cover" => self.printer_cover(args),
+            "printers_save" => self.printers_save(args),
+            "printers_default" => self.printers_default(args),
+            "printer_select" => self.printer_select(args),
             "machines" => {
                 let shelf = self.shelf(needed(args, "vendor")?)?;
                 Ok(json!({ "machines": shelf.machines() }))
@@ -1174,7 +1257,9 @@ impl Session {
         if args.get("initial").and_then(Value::as_bool) == Some(true) {
             project.baseline = project.choices.clone();
         }
-        Ok(project.detail())
+        let detail = project.detail();
+        printers::remember(&mut state, at, args);
+        Ok(detail)
     }
 
     /// The printer's settings a project would be sliced with and where
