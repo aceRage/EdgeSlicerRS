@@ -57,7 +57,10 @@ impl Grid {
                 let b = points[(index + 1) % points.len()];
                 let edge = grid.edges.len() as u32;
                 grid.edges.push((ring as u32, index as u32));
-                grid.cells_along(a, b, |cell| listed.push((cell as u32, edge)));
+                grid.cells_along(a, b, |cell| {
+                    listed.push((cell as u32, edge));
+                    false
+                });
             }
         }
         listed.sort_unstable();
@@ -85,11 +88,14 @@ impl Grid {
             .clamp(0, self.cols - 1)
     }
 
-    /// Every cell the segment from `a` to `b` passes through, row by row,
-    /// with a unit to spare either side. Cells beyond the grid's edge are
-    /// counted as the ones on it.
-    fn cells_along(&self, a: Point2, b: Point2, mut visit: impl FnMut(usize)) {
-        for row in self.row(a.y.min(b.y))..=self.row(a.y.max(b.y)) {
+    /// Every cell the segment from `a` to `b` passes through, row by row
+    /// from `a`'s to `b`'s, with a unit to spare either side. Cells
+    /// beyond the grid's edge are counted as the ones on it. Stops, and
+    /// says so, as soon as `visit` says it has seen enough.
+    fn cells_along(&self, a: Point2, b: Point2, mut visit: impl FnMut(usize) -> bool) -> bool {
+        let (first, last) = (self.row(a.y), self.row(b.y));
+        let mut row = first;
+        loop {
             // The stretch of the segment within this row of cells.
             let (x0, x1) = if a.y == b.y {
                 (a.x as f64, b.x as f64)
@@ -105,9 +111,23 @@ impl Grid {
             };
             let col = |x: f64| self.col(x as Coord);
             for col in col(x0.min(x1) - 2.0)..=col(x0.max(x1) + 2.0) {
-                visit((row * self.cols + col) as usize);
+                if visit((row * self.cols + col) as usize) {
+                    return true;
+                }
             }
+            if row == last {
+                return false;
+            }
+            row += if last > first { 1 } else { -1 };
         }
+    }
+
+    fn cell(&self, cell: usize) -> impl Iterator<Item = (usize, usize)> + '_ {
+        let range = self.starts[cell] as usize..self.starts[cell + 1] as usize;
+        self.items[range].iter().map(|&edge| {
+            let (ring, index) = self.edges[edge as usize];
+            (ring as usize, index as usize)
+        })
     }
 
     fn collect(&self, cell: usize, found: &mut Vec<u32>) {
@@ -128,8 +148,44 @@ impl Grid {
     /// through, as (ring, edge).
     pub(crate) fn along(&self, a: Point2, b: Point2) -> impl Iterator<Item = (usize, usize)> + '_ {
         let mut found = Vec::new();
-        self.cells_along(a, b, |cell| self.collect(cell, &mut found));
+        self.cells_along(a, b, |cell| {
+            self.collect(cell, &mut found);
+            false
+        });
         self.listed(found)
+    }
+
+    /// Whether `hit` says yes to any edge in the cells the segment from
+    /// `a` to `b` passes through, asked in the order the segment comes
+    /// to them and no further than the first yes. An edge that lies in
+    /// several cells may be asked about more than once.
+    pub(crate) fn any_along(
+        &self,
+        a: Point2,
+        b: Point2,
+        mut hit: impl FnMut(usize, usize) -> bool,
+    ) -> bool {
+        self.cells_along(a, b, |cell| {
+            self.cell(cell).any(|(ring, edge)| hit(ring, edge))
+        })
+    }
+
+    /// Shows `visit` the edges in the cells the square of `radius` about
+    /// `point` touches. An edge that lies in several of them is shown
+    /// more than once.
+    pub(crate) fn each_near(
+        &self,
+        point: Point2,
+        radius: Coord,
+        mut visit: impl FnMut(usize, usize),
+    ) {
+        for row in self.row(point.y - radius)..=self.row(point.y + radius) {
+            for col in self.col(point.x - radius)..=self.col(point.x + radius) {
+                for (ring, edge) in self.cell((row * self.cols + col) as usize) {
+                    visit(ring, edge);
+                }
+            }
+        }
     }
 
     /// The edges in the cells the square of `radius` about `point` touches.
@@ -147,17 +203,31 @@ impl Grid {
         self.listed(found)
     }
 
-    /// The edges in the cells from `point` to the grid's edge in the
-    /// direction of +x: all that a ray that way could cross.
-    pub(crate) fn rightward(&self, point: Point2) -> impl Iterator<Item = (usize, usize)> + '_ {
-        let mut found = Vec::new();
+    /// Shows `visit` the edges in the cells from `point` to the grid's
+    /// edge in the direction of +x, all that a ray that way could cross,
+    /// each with whether this is the showing to count it at: an edge
+    /// lies in several cells, and is counted in the one that holds
+    /// `x_of` of it, which is asked for where the edge crosses the ray.
+    /// One that crosses behind the point is counted in the point's own
+    /// cell if it is there at all, so that rounding in `x_of` can leave
+    /// out none that crosses ahead by a hair.
+    pub(crate) fn each_rightward(
+        &self,
+        point: Point2,
+        x_of: impl Fn(usize, usize) -> Coord,
+        mut visit: impl FnMut(usize, usize, bool),
+    ) {
         // A point above or below every edge is beside none of them.
-        if (self.min.y..self.min.y + self.rows * self.cell).contains(&point.y) {
-            let row = self.row(point.y);
-            for col in self.col(point.x)..self.cols {
-                self.collect((row * self.cols + col) as usize, &mut found);
+        if !(self.min.y..self.min.y + self.rows * self.cell).contains(&point.y) {
+            return;
+        }
+        let row = self.row(point.y);
+        let first = self.col(point.x);
+        for col in first..self.cols {
+            for (ring, edge) in self.cell((row * self.cols + col) as usize) {
+                let at = self.col(x_of(ring, edge));
+                visit(ring, edge, at == col || (col == first && at < first));
             }
         }
-        self.listed(found)
     }
 }

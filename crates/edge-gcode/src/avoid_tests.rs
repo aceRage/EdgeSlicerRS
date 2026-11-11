@@ -464,3 +464,65 @@ fn the_settings_are_read() {
             .is_none()
     );
 }
+
+#[test]
+fn a_way_round_is_sheltered_as_a_straight_move_is() {
+    // The areas sorted into cells answer as looking at every edge
+    // does: a frame, an island in its hole, and a triangle apart, asked
+    // about moves all over them, on their edges and through their
+    // corners.
+    let island = ExPolygon {
+        contour: rect(14.0, 14.0, 26.0, 26.0),
+        holes: Vec::new(),
+    };
+    let triangle = ExPolygon {
+        contour: Polygon {
+            points: [(50.0, 0.0), (70.0, 10.5), (55.5, 30.0)]
+                .map(|(x, y)| Point2::from_mm(x, y))
+                .to_vec(),
+        },
+        holes: Vec::new(),
+    };
+    let areas = [frame(), island, triangle];
+    let sorted = edge_avoid::Shelter::new(&areas);
+    let mut seed = 0x2545_f491_4f6c_dd1d_u64;
+    let mut next = |span: f64| {
+        seed ^= seed << 13;
+        seed ^= seed >> 7;
+        seed ^= seed << 17;
+        // Half of them on a 0.5 mm lattice, to land on edges and corners.
+        let value = (seed >> 11) as f64 / (1u64 << 53) as f64 * span - 5.0;
+        if seed & 1 == 0 {
+            (value * 2.0).round() / 2.0
+        } else {
+            value
+        }
+    };
+    let (mut inside_count, mut outside_count) = (0, 0);
+    for _ in 0..20_000 {
+        let a = Point2::from_mm(next(80.0), next(45.0));
+        let b = Point2::from_mm(next(80.0), next(45.0));
+        let wanted = inside::stays_inside(&areas, a, b);
+        assert_eq!(sorted.holds(a, b), wanted, "{a:?} {b:?}");
+        if wanted {
+            inside_count += 1;
+        } else {
+            outside_count += 1;
+        }
+    }
+    assert!(inside_count > 500 && outside_count > 500);
+    // Short moves, most of which stay inside.
+    for _ in 0..20_000 {
+        let (x, y) = (next(80.0), next(45.0));
+        let a = Point2::from_mm(x, y);
+        let b = Point2::from_mm(x + next(12.0) / 4.0, y + next(12.0) / 4.0);
+        assert_eq!(
+            sorted.holds(a, b),
+            inside::stays_inside(&areas, a, b),
+            "{a:?} {b:?}"
+        );
+    }
+    assert!(
+        !edge_avoid::Shelter::new(&[]).holds(Point2::from_mm(0.0, 0.0), Point2::from_mm(1.0, 1.0))
+    );
+}

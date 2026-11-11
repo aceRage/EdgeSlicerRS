@@ -16,10 +16,12 @@
 mod grid;
 mod route;
 mod shape;
+mod shelter;
 
 pub use edge_clip::ClipError;
 use edge_geom::{ExPolygon, Point2, scaled};
 use route::Boundary;
+pub use shelter::Shelter;
 
 /// What a layer's moves are routed by.
 #[derive(Clone, Copy, Debug)]
@@ -46,7 +48,7 @@ pub struct Needs {
 }
 
 /// What a move is between.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
 pub enum Kind {
     /// Walls and fill of the part. A move that stays within one piece of
     /// the layer, clear of its outer wall, goes straight.
@@ -104,6 +106,12 @@ impl Layer {
     /// first, so on a layer that has them its moves in the part cross
     /// top surfaces that the same moves go round on a layer that has
     /// none. Here each kind of move has its own.
+    ///
+    /// The reference also draws the outline in by the nozzle's diameter
+    /// and not by the spacing of the walls when the first move was
+    /// between supports, a support layer having no walls to measure
+    /// (`get_perimeter_spacing`); here the walls' spacing serves every
+    /// kind of move, a hundredth of a millimetre from that.
     pub fn new(slices: &Slices<'_>, needs: Needs) -> Result<Self, ClipError> {
         let spacing = scaled(slices.spacing) as f64;
         let within = shape::within_walls(slices.outline, scaled(slices.outer_width) as f64)?;

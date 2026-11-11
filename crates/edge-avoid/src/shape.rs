@@ -142,7 +142,8 @@ fn contour_distance(
         };
         let mut found = false;
         let mut distance = f64::MAX;
-        for (ring, ipt) in grid.near(point, search_radius as Coord) {
+        // An edge shown twice changes nothing: the nearest is kept.
+        grid.each_near(point, search_radius as Coord, |ring, ipt| {
             let points = &rings[ring].points;
             let first = points[ipt];
             let v = between(first, points[(ipt + 1) % points.len()]);
@@ -162,7 +163,7 @@ fn contour_distance(
             if !((!found || dist < distance)
                 && dir_inside.0 * bisector.0 + dir_inside.1 * bisector.1 > 0.0)
             {
-                continue;
+                return;
             }
             let mut accept = true;
             if ring == own {
@@ -204,7 +205,7 @@ fn contour_distance(
                 distance = dist;
                 found = true;
             }
-        }
+        });
         out.push(if found {
             distance.min(search_radius)
         } else {

@@ -8,7 +8,7 @@
 use std::{io, ops::Range};
 
 use edge_avoid::{Kind, Needs};
-use edge_geom::{Point2, unscaled};
+use edge_geom::{ExPolygon, Point2, unscaled};
 use rayon::prelude::*;
 
 use crate::{Layer, Writer};
@@ -94,7 +94,12 @@ impl Writer<'_> {
     /// travel is not routed, where the move crosses nothing, and for a
     /// move that is to go straight (GCode.cpp `travel_to`, which routes
     /// every move whose start is known, long or short).
-    pub(crate) fn way(&self, to: Point2) -> Vec<Point2> {
+    ///
+    /// A way found is kept for as long as its layer is being written: a
+    /// move is asked about when it is decided whether it retracts and
+    /// again when it is made, and once more for each when a layer is
+    /// laid out a second time, slower.
+    pub(crate) fn way(&mut self, to: Point2) -> Vec<Point2> {
         let routing = self.state.routing;
         let layer = self
             .state
@@ -114,6 +119,42 @@ impl Writer<'_> {
         } else {
             routing.kind
         };
+        if let Some(way) = self.ways.get(&(from, to, kind)) {
+            return way.clone();
+        }
+        let way = self.found_way(layer, from, to, kind);
+        self.ways.insert((from, to, kind), way.clone());
+        way
+    }
+
+    /// Whether a way round, from `from`, stays within `shelter` all
+    /// along: every stretch of it as [`inside::stays_inside`] has one
+    /// straight move. A way has many stretches where a straight move is
+    /// one, so the areas are sorted into cells the first time a layer
+    /// asks and kept for as long as it is being written.
+    pub(crate) fn way_sheltered(
+        &mut self,
+        shelter: &[ExPolygon],
+        from: Point2,
+        way: &[Point2],
+    ) -> bool {
+        let areas = self
+            .shelters
+            .entry((shelter.as_ptr() as usize, shelter.len()))
+            .or_insert_with(|| edge_avoid::Shelter::new(shelter));
+        let mut at = from;
+        way.iter()
+            .all(|&point| areas.holds(std::mem::replace(&mut at, point), point))
+    }
+
+    /// The way `layer` gives for a move, held to the bed.
+    fn found_way(
+        &self,
+        layer: &edge_avoid::Layer,
+        from: Point2,
+        to: Point2,
+        kind: Kind,
+    ) -> Vec<Point2> {
         let way = layer.route(from, to, kind, self.settings.max_travel_detour);
         // Never off the bed. A way round follows the part's own outline
         // from inside it, so this cannot happen to a print that is on

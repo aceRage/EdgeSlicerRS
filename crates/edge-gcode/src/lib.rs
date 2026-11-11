@@ -323,6 +323,8 @@ pub fn write_routed(
         slices,
         routes: Vec::new(),
         routes_from: 0,
+        ways: HashMap::new(),
+        shelters: HashMap::new(),
     };
     let several = layers.iter().any(|layer| layer.filament > 0);
     writer.preamble(several)?;
@@ -597,6 +599,12 @@ struct Writer<'a> {
     /// them layer `routes_from` of the print (`avoid.rs`).
     routes: Vec<edge_avoid::Layer>,
     routes_from: usize,
+    /// The ways found so far on the layer being written, by where a
+    /// move starts and ends and what kind it is.
+    ways: HashMap<(Point2, Point2, Kind), Vec<Point2>>,
+    /// The areas a way round has been asked to stay within on the layer
+    /// being written, by where they are kept.
+    shelters: HashMap<(usize, usize), edge_avoid::Shelter>,
 }
 
 /// What the file says about the print outside its G-code.
@@ -1156,6 +1164,8 @@ impl Writer<'_> {
         }
         self.state.first_layer = index == 0;
         self.state.layer = index;
+        self.ways.clear();
+        self.shelters.clear();
         // The nozzle itself moves up with the layer's first travel.
         self.state.z = layer.z;
         self.below = if index == 0 {
@@ -1238,7 +1248,9 @@ impl Writer<'_> {
         for (offset, layer) in parts.iter().enumerate() {
             // To a prime tower, on it and away from it are moves outside
             // the part (GCode.cpp `append_tcr`: `use_external_mp_once`
-            // before the move to the tower and after the tower).
+            // before the move to the tower and after the tower). The
+            // first move with a tool just taken up starts from nowhere
+            // known and goes straight, here as there.
             let towered = layer.filament != self.state.tool || !layer.tower.is_empty();
             if towered {
                 self.state.routing.kind = Kind::Outside;
@@ -1709,14 +1721,16 @@ impl Writer<'_> {
                     // By the way the move takes, where it is routed
                     // (GCode.cpp `travel_to` asks `needs_retraction`
                     // again of the travel it planned).
-                    let sheltered = self.settings.reduce_infill_retraction
-                        && self.state.position.is_some_and(|at| {
-                            let mut at = at;
-                            self.way(points[0]).into_iter().all(|point| {
-                                let from = std::mem::replace(&mut at, point);
-                                inside::stays_inside(shelter, from, point)
-                            })
-                        });
+                    let mut sheltered = false;
+                    if self.settings.reduce_infill_retraction
+                        && let Some(at) = self.state.position
+                    {
+                        let way = self.way(points[0]);
+                        sheltered = match way[..] {
+                            [to] => inside::stays_inside(shelter, at, to),
+                            _ => self.way_sheltered(shelter, at, &way),
+                        };
+                    }
                     // Arcs are fitted to the line as it was made and turned
                     // about with it, as in the reference, where fitting
                     // comes before the order lines are laid in is chosen.

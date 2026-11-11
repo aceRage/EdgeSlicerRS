@@ -132,7 +132,7 @@ impl Boundary {
     /// Whether the segment from `a` to `b` meets or touches any ring
     /// (`FirstIntersectionVisitor`, `Geometry::segments_intersect`).
     pub(crate) fn blocks(&self, a: Point2, b: Point2) -> bool {
-        self.grid.along(a, b).any(|(ring, edge)| {
+        self.grid.any_along(a, b, |ring, edge| {
             let (c, d) = self.edge(ring, edge);
             segments_intersect(c, d, a, b)
         })
@@ -141,17 +141,28 @@ impl Boundary {
     /// Whether `point` is within the rings, counting how many of them a
     /// ray from it crosses: inside an outline and not in a hole of it.
     pub(crate) fn holds(&self, point: Point2) -> bool {
-        let mut inside = false;
-        for (ring, edge) in self.grid.rightward(point) {
+        // Where an edge crosses the level of the point, which says in
+        // which one cell of those it lies in it is to be counted.
+        let crossing = |ring: usize, edge: usize| {
             let (c, d) = self.edge(ring, edge);
-            if (c.y > point.y) != (d.y > point.y) {
-                let side = i128::from(d.x - c.x) * i128::from(point.y - c.y)
-                    - i128::from(point.x - c.x) * i128::from(d.y - c.y);
-                if (side > 0) == (d.y > c.y) {
-                    inside = !inside;
-                }
+            if c.y == d.y {
+                return c.x;
             }
-        }
+            let t = (point.y - c.y) as f64 / (d.y - c.y) as f64;
+            (c.x as f64 + t.clamp(0.0, 1.0) * (d.x - c.x) as f64) as Coord
+        };
+        let mut inside = false;
+        self.grid
+            .each_rightward(point, crossing, |ring, edge, counted| {
+                let (c, d) = self.edge(ring, edge);
+                if counted && (c.y > point.y) != (d.y > point.y) {
+                    let side = i128::from(d.x - c.x) * i128::from(point.y - c.y)
+                        - i128::from(point.x - c.x) * i128::from(d.y - c.y);
+                    if (side > 0) == (d.y > c.y) {
+                        inside = !inside;
+                    }
+                }
+            });
         inside
     }
 
@@ -441,27 +452,28 @@ impl Boundary {
     }
 
     /// The way with every point left out that it can go straight past
-    /// without meeting a ring (`simplify_travel`).
+    /// without meeting a ring (`simplify_travel`): from each point it
+    /// goes on to the last of those ahead that it can reach straight,
+    /// looking no further than the first that is kept, which is never
+    /// gone straight to. The reference tries every point ahead in turn
+    /// and keeps the last that can be reached; looking from the far end
+    /// back finds the same one, and sooner where the way is open.
     fn straightened(&self, way: &[Step]) -> Vec<Step> {
         let mut out = Vec::with_capacity(way.len());
         out.push(way[0]);
         let mut index = 1;
         while index < way.len() {
             let current = way[index - 1].point;
-            let mut next = way[index];
-            if !next.kept {
-                let from = index + 1;
-                for (ahead, step) in way.iter().enumerate().skip(from) {
-                    if step.kept {
-                        break;
-                    }
-                    if step.point == current || !self.blocks(current, step.point) {
-                        next = *step;
-                        index = ahead;
-                    }
-                }
+            if !way[index].kept {
+                let ahead = index + 1;
+                let kept = way[ahead..].iter().position(|step| step.kept);
+                let limit = kept.map_or(way.len(), |kept| ahead + kept);
+                let reached = (ahead..limit).rev().find(|&ahead| {
+                    way[ahead].point == current || !self.blocks(current, way[ahead].point)
+                });
+                index = reached.unwrap_or(index);
             }
-            out.push(next);
+            out.push(way[index]);
             index += 1;
         }
         out
