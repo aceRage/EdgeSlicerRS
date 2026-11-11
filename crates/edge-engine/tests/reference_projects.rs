@@ -238,7 +238,7 @@ fn a_tool_is_changed_over_the_prime_tower() {
         let (x, y) = lines[..at]
             .iter()
             .rev()
-            .filter(|line| line.starts_with("G1 "))
+            .filter(|line| ["G1 ", "G2 ", "G3 "].iter().any(|g| line.starts_with(g)))
             .find_map(|line| Some((word(line, 'X')?, word(line, 'Y')?)))
             .expect("a move before the change");
         assert!(

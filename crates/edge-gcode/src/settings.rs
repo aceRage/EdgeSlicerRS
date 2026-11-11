@@ -134,6 +134,11 @@ pub struct PrintSettings {
     pub seam_gap: f64,
     /// Curves are cut into segments that stray no further than this, in mm.
     pub resolution: f64,
+    /// Whether stretches of a path that lie on a circle are written as
+    /// arcs, `G2` and `G3` (`enable_arc_fitting`), within `resolution`
+    /// of the path. Never in spiral vase mode, as in the reference
+    /// (LayerRegion.cpp `simplify_path`).
+    pub arc_fitting: bool,
     /// The bed's extent in mm: min x, min y, max x, max y.
     pub bed: Option<[f64; 4]>,
 
@@ -296,6 +301,7 @@ impl Default for PrintSettings {
             seam: Seam::Aligned,
             seam_gap: 0.04,
             resolution: 0.01,
+            arc_fitting: false,
             bed: None,
             filament_diameter: 1.75,
             filament_flow_ratio: 1.0,
@@ -475,11 +481,6 @@ impl PrintSettings {
                 "exclude_object",
                 "0",
                 "objects are not labelled for cancelling",
-            ),
-            (
-                "enable_arc_fitting",
-                "0",
-                "curves are written as straight moves",
             ),
             (
                 "slowdown_for_curled_perimeters",
@@ -710,6 +711,8 @@ impl PrintSettings {
                 .resolve(nozzle_diameter)
                 .max(0.0),
             resolution: number("resolution", defaults.resolution)?,
+            arc_fitting: flag("enable_arc_fitting", defaults.arc_fitting)?
+                && !flag("spiral_mode", false)?,
             bed,
             filament_diameter: number("filament_diameter", defaults.filament_diameter)?,
             filament_flow_ratio: number("filament_flow_ratio", defaults.filament_flow_ratio)?,

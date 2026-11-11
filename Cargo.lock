@@ -343,6 +343,7 @@ dependencies = [
  "edge-slice",
  "edge-template",
  "edge-time",
+ "rayon",
  "thiserror",
 ]
 

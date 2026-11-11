@@ -43,13 +43,24 @@ fn projects_under(dir: &Path, found: &mut Vec<PathBuf>) {
 /// comments a move.
 fn malformed(line: &str) -> bool {
     let mut words = line.split(' ');
-    !line.contains(';')
-        && words.next() == Some("G1")
-        && !words.all(|word| {
-            let mut chars = word.chars();
-            matches!(chars.next(), Some('X' | 'Y' | 'Z' | 'E' | 'F'))
-                && chars.as_str().parse::<f64>().is_ok_and(f64::is_finite)
-        })
+    if line.contains(';') {
+        return false;
+    }
+    // An arc says where its centre is as well, and a whole turn says
+    // that it is one.
+    let letters: &[char] = match words.next() {
+        Some("G1") => &['X', 'Y', 'Z', 'E', 'F'],
+        Some("G2" | "G3") => &['X', 'Y', 'Z', 'I', 'J', 'P', 'E', 'F'],
+        _ => return false,
+    };
+    let well_formed = words.all(|word| {
+        let mut chars = word.chars();
+        chars.next().is_some_and(|letter| letters.contains(&letter))
+            && chars.as_str().parse::<f64>().is_ok_and(f64::is_finite)
+    });
+    let arc_without_centre =
+        !line.starts_with("G1") && !(line.contains(" I") && line.contains(" J"));
+    !well_formed || arc_without_centre
 }
 
 #[test]
@@ -200,7 +211,16 @@ fn every_reference_project_exports_well_formed_gcode_that_adds_up() {
             .iter()
             .flat_map(|layer| &layer.loops)
             .any(|wall| !wall.widths.is_empty());
-        let tolerance = if varying { 1e-4 } else { 1e-6 };
+        // With arcs a curve is laid by its length along the arc, not
+        // from corner to corner, and corners within the resolution of
+        // the line between their neighbours are left out.
+        let tolerance = if print.arc_fitting {
+            2e-3
+        } else if varying {
+            1e-4
+        } else {
+            1e-6
+        };
         if (summary.filament_mm3 - expected).abs() > tolerance * expected.max(1.0) {
             problems.push(format!(
                 "{} mm³ exported of {expected} planned",
@@ -208,7 +228,11 @@ fn every_reference_project_exports_well_formed_gcode_that_adds_up() {
             ));
         }
         // Summed from the text; each move is rounded to 1e-5 mm.
-        let moves = || text.lines().filter(|line| line.starts_with("G1 "));
+        let moves = || {
+            text.lines().filter(|line| {
+                line.starts_with("G1 ") || line.starts_with("G2 ") || line.starts_with("G3 ")
+            })
+        };
         let fed: f64 = moves()
             .filter(|line| line.contains(" X"))
             .filter_map(|line| word(line, 'E'))
@@ -241,7 +265,8 @@ fn every_reference_project_exports_well_formed_gcode_that_adds_up() {
         for line in text.lines() {
             if let Some(z) = line.strip_prefix(";Z:") {
                 layer_z = z.parse().unwrap();
-            } else if line.starts_with("G1 ") && word(line, 'Z').is_some_and(|z| z < layer_z - 1e-9)
+            } else if (line.starts_with("G1 ") || line.starts_with("G3 "))
+                && word(line, 'Z').is_some_and(|z| z < layer_z - 1e-9)
             {
                 problems.push(format!("nozzle below the layer at {layer_z}: {line}"));
                 break;
