@@ -14,6 +14,7 @@ mod paint;
 mod pipeline;
 mod presets;
 mod preview;
+mod unfollowed;
 
 use std::{error::Error, fmt};
 

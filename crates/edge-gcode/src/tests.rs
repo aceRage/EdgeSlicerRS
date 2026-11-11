@@ -219,6 +219,104 @@ fn walls_follow_the_configured_order_island_by_island() {
     );
 }
 
+/// Where each stretch of extrusion in `text` begins.
+fn extrusion_starts(text: &str) -> Vec<(f64, f64)> {
+    let mut found = Vec::new();
+    let mut at = (0.0, 0.0);
+    let mut extruding = false;
+    for line in text.lines().filter(|line| line.starts_with("G1 ")) {
+        let to = (
+            word(line, 'X').unwrap_or(at.0),
+            word(line, 'Y').unwrap_or(at.1),
+        );
+        let extrudes = word(line, 'E').is_some_and(|e| e > 0.0) && to != at;
+        if extrudes && !extruding {
+            found.push(at);
+        }
+        if to != at || word(line, 'Z').is_some() {
+            extruding = extrudes;
+        }
+        at = to;
+    }
+    found
+}
+
+#[test]
+fn inner_walls_can_start_further_round_than_the_wall_outside_them() {
+    // Three walls nested half a millimetre apart, seams kept in line.
+    let loops: Vec<ExtrusionLoop> = (0..3)
+        .map(|depth| {
+            wall(
+                depth as f64 * 0.5,
+                depth as f64 * 0.5,
+                10.0 - depth as f64,
+                depth,
+            )
+        })
+        .collect();
+    let aligned = PrintSettings {
+        seam: Seam::Aligned,
+        ..basic()
+    };
+    let staggered = PrintSettings {
+        staggered_inner_seams: true,
+        ..aligned.clone()
+    };
+    let starts = |settings: &PrintSettings| {
+        let (text, _) = print(&one_layer(&loops, &[0..3], &[]), settings);
+        extrusion_starts(&text)
+    };
+    let (plain, moved) = (starts(&aligned), starts(&staggered));
+    assert_eq!((plain.len(), moved.len()), (3, 3));
+    // Laid innermost first: the outer wall, last, starts where it did.
+    assert_eq!(plain[2], moved[2]);
+    // Each inner wall starts on along its own side by its width or more,
+    // the deeper one further, and still on its own loop.
+    let width = flow().width;
+    let shift =
+        |index: usize| (moved[index].0 - plain[index].0).hypot(moved[index].1 - plain[index].1);
+    assert!(
+        shift(1) >= width - 1e-3 && shift(1) < 2.0 * width,
+        "{}",
+        shift(1)
+    );
+    assert!(
+        shift(0) >= shift(1) - 1e-3 && shift(0) < 4.0 * width,
+        "{}",
+        shift(0)
+    );
+    for (index, depth) in [(0, 2.0), (1, 1.0)] {
+        let (x, y) = moved[index];
+        let (low, high) = (depth * 0.5, 10.0 - depth * 0.5);
+        let on_side = |v: f64| (v - low).abs() < 1e-3 || (v - high).abs() < 1e-3;
+        assert!(on_side(x) || on_side(y), "({x}, {y})");
+    }
+}
+
+#[test]
+fn a_random_seam_starts_each_layer_somewhere_else() {
+    let loops = [wall(0.0, 0.0, 10.0, 0)];
+    let random = PrintSettings {
+        seam: Seam::Random,
+        ..basic()
+    };
+    let layer = one_layer(&loops, &[0..1], &[])[0];
+    let layers: Vec<Layer<'_>> = (1..=6)
+        .map(|index| Layer {
+            z: 0.2 * f64::from(index),
+            ..layer
+        })
+        .collect();
+    let (text, _) = print(&layers, &random);
+    let mut starts = extrusion_starts(&text);
+    assert_eq!(starts.len(), 6);
+    starts.sort_by(|a, b| a.0.total_cmp(&b.0).then(a.1.total_cmp(&b.1)));
+    starts.dedup();
+    assert!(starts.len() >= 5, "{starts:?}");
+    // And the same file again another time.
+    assert_eq!(print(&layers, &random).0, text);
+}
+
 #[test]
 fn a_small_wall_loop_goes_at_its_own_speed() {
     // A wall 40 mm round and one 8 mm round, on the second layer.
