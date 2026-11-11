@@ -65,6 +65,8 @@ A first pass at the C++ application's main window, not yet the
 application: `apps/desktop/UI_PARITY.md` lists, for each of its tabs and
 for the project strip, what the C++ offers, what is here, and what is
 not yet.
+How the page looks is the app's own (dark first, spare); the tokens and
+the controls it is built from are described in `apps/desktop/ui/STYLE.md`.
 
 - **The project strip**, at the far left: several projects open at once
   (eight at most), each with its own file, plate, presets, slices and
