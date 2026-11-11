@@ -116,6 +116,7 @@ impl From<Role> for Feature {
             Role::SparseInfill => Feature::SparseInfill,
             Role::SolidInfill => Feature::SolidInfill,
             Role::TopSolidInfill => Feature::TopSurface,
+            Role::Ironing => Feature::Ironing,
             Role::BottomSurface => Feature::BottomSurface,
             Role::BridgeInfill => Feature::Bridge,
             Role::InternalBridge => Feature::InternalBridge,
