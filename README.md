@@ -32,7 +32,7 @@ replaces it until output matches on the printers we care about.
 | `crates/edge-engine` | The whole pipeline behind one call, for whatever drives it: open a model and list its plates, settle its settings, slice with progress and cancel, G-code, a layer's lines for drawing, a vendor's presets by printer, and its printer models with the presets, picture and sizes of each |
 | `crates/edge-cli` | The `edge` command line |
 | `tools/make_defaults.py` | Asks the reference for its default of every setting and writes the table `edge-config` carries; run again when the pin moves |
-| `tools/make_fixture.py` | Writes small test 3MFs (parts that need supports or a brim, a plain cube, two blocks in two filaments, a comb with thin teeth on the bed, three tiers with a top surface on each, bars over a base for small bridges over infill, a slab with round holes for the hole options, a slab with pockets underneath, and three round ones for arc fitting: a post, a post with a hole, a slab with a wide curve and tight ones) to compare with the reference on |
+| `tools/make_fixture.py` | Writes small test 3MFs (parts that need supports or a brim, a plain cube, two blocks in two filaments, a comb with thin teeth on the bed, three tiers with a top surface on each, bars over a base for small bridges over infill, a slab with round holes for the hole options, a slab with pockets underneath, three round ones for arc fitting: a post, a post with a hole, a slab with a wide curve and tight ones, and a post that widens as it rises for scarf seams) to compare with the reference on |
 | `tools/make_project.py` | Writes one of those parts as a project whose settings are named presets, with as many filaments as are named: how the test prints for a printer are made |
 | `reference/EdgeSlicer` | Pinned submodule of the C++ slicer: profiles, test models, behaviour to match. Read-only here |
 | `apps/desktop` | The desktop app (Tauri): several projects open at once, each prepared, sliced, looked through layer by layer and exported, in the C++ application's tabs. A workspace of its own |
@@ -354,11 +354,11 @@ Working:
   walls' own, the first layer's speed, the hot end's flow and a small
   loop's lower speed still holding them, and they are not slowed to
   give a layer time to cool; a loop any of which is laid as an overhang
-  wall is a wall like any other. Not done: the scarf seam such walls
-  are to be joined with (`apply_scarf_seam_on_circles`, on unless turned
-  off; a note says so), and the reference's "; Slow Down Start" and
-  "; Slow Down End" comments round them, which only its own cooling
-  stage reads.
+  wall is a wall like any other. They are joined with a scarf seam
+  (`apply_scarf_seam_on_circles`, on unless turned off; scarf seams,
+  below), whatever `seam_slope_type` says. Not written: the
+  reference's "; Slow Down Start" and "; Slow Down End" comments round
+  them, which only its own cooling stage reads.
 - With either of the two on, the layers are cut without the points
   where the cutting plane crosses an edge inside a flat face, as the
   reference cuts them (TriangleMeshSlicer.cpp `coplanar_edges`): they
@@ -547,6 +547,48 @@ Known gaps: painted supports and seams, per-object setting overrides, typed sett
     `staggered_inner_seams` each inner wall starts on round from the
     wall outside it by its depth, so the seams do not lie one behind
     another.
+  - Scarf seams (`seam_slope_type`): a loop joined this way is laid
+    whole, with no gap at its seam. Its first 20 mm
+    (`seam_slope_min_length`, or all of it with
+    `seam_slope_entire_loop`) climb from the top of the layer beneath,
+    or from `seam_slope_start_height` above it, to the layer's own
+    height, in moves no longer than a tenth of that length
+    (`seam_slope_steps`), each laying as much of the line as the height
+    it ends at; and when the loop comes round to its start it goes on
+    over that stretch, level, laying what is left of the line, to two
+    seam gaps short of where the slope ends. The joint is laid at
+    `scarf_joint_speed` where that is slower than the wall, with
+    `scarf_joint_flow_ratio` of the plastic. `external` joins the loops
+    round the part so and `all` those round holes too: outer walls,
+    and with `seam_slope_inner_walls` inner ones, whose way up starts
+    two fifths of the slope on, so the joints do not lie side by side;
+    never on the first layer, nor a loop that starts over air. With
+    `seam_slope_conditional` only loops with no corner sharper than
+    `scarf_angle_threshold` whose seam is short of the layer beneath by
+    less than `scarf_overhang_threshold` of the wall's width. The walls
+    of a circle the auto circle compensation resized are joined so
+    whatever those say (`apply_scarf_seam_on_circles`). A slope that
+    crosses a stretch over air climbs on through it as an overhang
+    wall. With arc fitting the slope is straight moves through the
+    points its arcs were drawn by and the rest of the loop keeps its
+    arcs, as in the reference; a wall of changing width has its slope
+    run on from one width into the next. The nozzle comes down to the
+    foot of the slope where it would come down to the layer, never
+    lower than the layer's bottom, and is wiped on round the loop from
+    where the slope came up. Five things are not as in the reference,
+    each a mistake there: a slope of no length is a plain seam with
+    its gap, where the reference closes the loop with neither; an
+    inner wall's way up starts two fifths on whatever the seam gap,
+    where the reference clips nothing with the gap at 0;
+    `scarf_joint_speed` holds the joint on a small loop too, where the
+    reference lets it go at `small_perimeter_speed`; a joint speed of 0
+    is the wall's own speed, and said, where the reference then goes
+    as fast as the hot end melts; and how far a seam may hang out is a
+    share of the wall's own width, where the reference takes the width
+    as set, which is 0 when it is left to follow the nozzle. One thing
+    is different without being wrong there: the nozzle goes down to
+    the foot of the slope as a move of its own after the travel, where
+    the reference makes an unretracted travel's last leg the way down.
   - Order of fill and supports: the fill of an island comes in parts,
     one for each area filled, of whatever kind. The parts are chained by
     their closest ends from where the nozzle is, the shortest hop
@@ -1137,9 +1179,10 @@ and 3 fifths of a side on five layers running; the nearly round hole,
 the eight-sided one and the hole from front to back are as drawn in
 both. (The circle compensation rows are with
 `apply_scarf_seam_on_circles` off. With it on, as it is unless turned
-off, the reference's outer walls come to 20.97 m and its inner walls to
-19.78 m: its scarf seams lay the start of each such loop twice. The
-loops themselves are the same.) With eight sides at most the 0.06 m is
+off, the outer walls come to 20.97 m in both and the inner walls to
+19.78 m in the reference's file and 19.79 m here: the scarf seams lay
+the start of each such loop twice. The loops themselves are the same.)
+With eight sides at most the 0.06 m is
 overhang: the corners of a 12 mm hole in eight sides stand out over the
 layer beneath as it turns, and the two slicers cut a wall into overhang
 and wall differently.
@@ -1172,6 +1215,110 @@ were followed: on this part, the cube, frame, steps, mushroom and fins,
 two blocks in two filaments, 3DBenchy and both plates of
 `mcbrim_test.3mf`. With both on, the parts made of boxes are line for
 line what they are with both off.
+
+Scarf seams, 2026-11-11, on parts from `tools/make_fixture.py` with the
+U1's presets (classic walls, a seam gap of 0.06 mm) but where the
+Centauri Carbon's are named, which have arc fitting on and a seam gap
+of 0.04 mm. `funnel` is new for this: a round post that widens as it
+rises, each 0.2 mm layer lying 0.06, 0.12, 0.18 and at the top 0.24 mm
+outside the one beneath. Lengths are the C++ slicer's and this
+engine's; a way up or down is a run of moves that say a height as they
+lay (two to a joint), counted over the whole file and paired by kind
+and length, and the last column is the most any pair differs by.
+
+| Options, part | Outer wall, m | Inner wall, m | Ways up and down | Furthest apart: length, height |
+|---|---|---|---|---|
+| `external`, cylinder | 4.04 / 4.04 | 2.89 / 2.89 | 98 / 98 | 0.001 mm, 0.004 mm |
+| `external`, tube | 5.29 / 5.29 | 4.41 / 4.41 | 78 / 78 | 0.002 mm, 0.004 mm |
+| `all`, tube | 6.06 / 6.06 | 4.41 / 4.41 | 156 / 156 | 0.001 mm, 0.004 mm |
+| `all` and inner walls, tube | 6.06 / 6.06 | 5.31 / 5.31 | 308 / 308 | 0.001 mm, 0.004 mm |
+| and outer wall first | 6.06 / 6.06 | 5.31 / 5.31 | 308 / 308 | 0.001 mm, 0.004 mm |
+| and walls clockwise | 6.06 / 6.06 | 5.31 / 5.31 | 308 / 308 | 0.001 mm, 0.005 mm |
+| and seams at the nearest point | 6.06 / 6.06 | 5.31 / 5.31 | 308 / 308 | 0.002 mm, 0.002 mm |
+| and `arachne` | 6.06 / 6.06 | 5.31 / 5.31 | 308 / 308 | 0.001 mm, 0.006 mm |
+| and the whole loop | 8.91 / 8.91 | 8.69 / 8.69 | 308 / 308 | |
+| `external`, cube | 9.79 / 9.79 | 7.44 / 7.44 | 198 / 198 | none, none |
+| and `arachne` | 9.79 / 9.79 | 7.44 / 7.44 | 198 / 198 | none, none |
+| and 40 steps | 9.79 / 9.79 | 7.44 / 7.44 | 198 / 198 | none, none |
+| and conditional | 7.82 / 7.82 | 7.44 / 7.44 | 0 / 0 | |
+| `external` and conditional, cylinder | 4.04 / 4.04 | 2.89 / 2.89 | 98 / 98 | 0.001 mm, 0.004 mm |
+| `external` and the whole loop, cylinder | 6.07 / 6.08 | 2.89 / 2.89 | 98 / 98 | |
+| started at 50%, or at 0.1 mm, cylinder | 4.04 / 4.04 | 2.89 / 2.89 | 98 / 98 | 0.001 mm, 0.002 mm |
+| 10 mm in 3 steps, cylinder | 3.55 / 3.55 | 2.89 / 2.89 | 98 / 98 | 0.001 mm, 0.010 mm |
+| at 20 mm/s with 0.9 of the flow, cylinder | 4.04 / 4.04 | 2.89 / 2.89 | 98 / 98 | 0.001 mm, 0.004 mm |
+| at 50% and inner walls, cylinder | 4.04 / 4.04 | 3.46 / 3.46 | 194 / 194 | 0.001 mm, 0.004 mm |
+| `seam_position` `random`, cylinder | 4.04 / 4.04 | 2.89 / 2.89 | 98 / 98 | 0.001 mm, 0.007 mm |
+| `all`, steps | 6.53 / 6.53 | 5.00 / 5.00 | 126 / 126 | none, 0.007 mm |
+| `external`, mushroom | 5.51 / 5.51 | 3.83 / 3.83 | 136 / 136 | none, none |
+| and conditional | 4.16 / 4.16 | 3.83 / 3.83 | 0 / 0 | |
+| `external`, funnel | 3.36 / 3.36 | 2.19 / 2.19 | 98 / 98 | 0.001 mm, 0.005 mm |
+| and conditional | 3.16 / 3.16 | 2.19 / 2.19 | 78 / 78 | 0.001 mm, 0.005 mm |
+| with a threshold of 20% | 2.96 / 2.96 | 2.19 / 2.19 | 58 / 58 | 0.001 mm, 0.005 mm |
+| with a threshold of 0 | 3.36 / 3.36 | 2.19 / 2.19 | 98 / 98 | 0.001 mm, 0.005 mm |
+| and inner walls | 3.16 / 3.16 | 2.66 / 2.66 | 156 / 156 | 0.002 mm, 0.012 mm |
+| `all`, seams at the back, holes | 23.06 / 23.07 | 16.22 / 16.23 | 792 / 792 | |
+| `enable_circle_compensation`, holes | 20.97 / 20.97 | 19.78 / 19.79 | 1034 / 1034 | |
+| and no scarf on circles | 16.59 / 16.59 | 16.44 / 16.44 | 0 / 0 | |
+| arcs: `all`, curve | 3.66 / 3.66 | 2.90 / 2.91 | 58 / 58 | 0.001 mm, 0.002 mm |
+| arcs: `all` and inner walls, tube | 6.07 / 6.07 | 5.32 / 5.33 | 308 / 308 | 0.002 mm, 0.012 mm |
+| arcs: `external` and the whole loop, cylinder | 6.08 / 6.08 | 2.89 / 2.89 | 98 / 98 | |
+| arcs: `all`, inner walls, `arachne`, curve | 3.65 / 3.65 | 3.24 / 3.24 | 114 / 114 | 0.001 mm, 0.005 mm |
+| arcs: `enable_circle_compensation`, holes | 20.99 / 20.99 | 19.80 / 19.81 | 1034 / 1034 | |
+
+Where the last column is empty the pairs cannot be told apart by
+length: a slope the length of its loop, or a layer of many loops whose
+seams the two slicers put in different places. The same loops are
+joined in every row, and on the cube, whose loops are the same points
+in both files, the joint is the reference's move for move: on the layer
+at 5.05 mm the way up is 17 moves, 16 of 1.224 mm and a last of
+0.42 mm, from Z 4.861 to 5.05, feeding 0.00188, 0.00440, 0.00672 mm
+and so on to 0.03681, and the way down 17 moves feeding from 0.03529 mm
+to 0.00003, the same figures in both to the last place. On the round parts the reference's walls have
+half as many corners (its sides are 0.96 mm, this engine's 0.48), so a
+way up has 21 moves there and 42 here, and since each move is laid at
+the flow its far end is to have, the way up comes to 0.3200 mm of
+filament there and 0.3127 here and the way down to 0.2918 and 0.2990:
+0.6118 for the joint in both. Height along the slope agrees to the
+0.01 mm of a move's difference in length. The joint's feed rate is the
+wall's in both, with what a layer is slowed by to cool (which the two
+reckon a few percent apart, as with no scarf); at a `scarf_joint_speed`
+of 20 mm/s every way up and down is at F1200 in both files, and at 50%
+the wipe after an outer wall is at F6000 in both. On the funnel a
+conditional scarf stops where the wall leans out 0.24 mm a layer at the
+default threshold and where it leans 0.18 mm at 20%, on the same layers
+in both, and on the mushroom the cap's first layer, which starts over
+air, has none in either. Where a slope crosses a stretch over air
+(`holes`, seams at the back, over the hole that runs from front to
+back) both files climb through it as an overhang wall at the bridge's
+speed, 20 such moves in each.
+
+The reference's own file, timed here as the reference plans it, comes
+to within a second of the reference's own time on all 50 files (a move that
+climbs as it lays was already read as the move it is: its length is
+the slope's, and the Z axis's limits hold it). With `seam_slope_type` at
+`none` and no compensated circles the G-code is byte for byte what it
+was before any of this, on these parts and on 16 projects besides (the
+two these take their settings from and 14 of the reference's test
+data), and a file is the same on one thread as on all of them. Every extruding move in the 50 files is at its
+layer's height or, on a scarf, between the layer's bottom and its top.
+
+Three rows are left out of the table because they differ on purpose
+(Status, above). With `seam_slope_min_length` at 0, which the Centauri
+Carbon's presets have, the reference closes each loop of the cylinder
+with no gap at all, and here it stops a seam gap short as with no
+scarf. With `seam_gap` at 0 the reference starts an inner wall's way up
+at the seam, 5.89 m of inner wall on the tube, where here it starts two
+fifths of the slope on as it does at any other gap, 5.28 m (5.31 m in
+both at 0.06 mm). And with `small_perimeter_threshold` at 3 mm,
+`small_perimeter_speed` at 60 mm/s and `scarf_joint_speed` at 20, the
+reference lays the joints of the `holes` part's small loops at 60 mm/s
+and this engine at 20: its file comes to 37m 33s and this engine's to
+43m 9s (23m 32s and 24m 59s with no scarf). An inner wall's joint is a
+fifth short of plastic in both: its way up, cut to three fifths, still
+climbs from nothing, and the way down over it thins out over the whole
+slope (on the tube with arcs, 0.203 and 0.311 mm of filament against
+0.643 for 20 mm of line); that is how the reference has it, and it is
+not changed here.
 
 Fuzzy skin differs from the reference in three ways, on purpose:
 

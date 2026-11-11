@@ -35,6 +35,34 @@ fn a_long_move_speeds_up_cruises_and_slows_down() {
 }
 
 #[test]
+fn a_move_that_climbs_as_it_extrudes_is_timed_along_its_slope() {
+    // The way up a scarf seam: the nozzle rises as it lays. 100 mm
+    // along and 0.2 mm up is a move 0.2 µm longer than the same laid
+    // flat, at the same speed; and so is the way down, which says its
+    // height and stays at it.
+    let limits = klipper(1000.0, 500.0);
+    for model in [Model::Reference, Model::Klipper] {
+        let seconds = |gcode: &str| estimate(gcode, &limits, model).seconds;
+        let flat = seconds("G1 X100 E5 F6000\n");
+        let up = seconds("G1 X100 Z0.2 E5 F6000\n");
+        assert!(close(flat, 1.1), "{model:?}: {flat}");
+        assert!(up > flat && up - flat < 1e-5, "{model:?}: {up}");
+        let down = seconds("G1 Z0.2 F600\nG92 X0\nG1 X100 Z0.2 E5 F6000\n");
+        let lift = seconds("G1 Z0.2 F600\n");
+        assert!(
+            (down - lift - flat).abs() < 0.02,
+            "{model:?}: {down} {lift}"
+        );
+        // A steep climb is held to what the Z axis can do: at 20 mm/s,
+        // 10 mm up takes half a second and more, however fast it is
+        // asked to go along.
+        let steep = seconds("G1 X10 Z10 E1 F6000\n");
+        assert!(steep > 0.5 && steep < 1.0, "{model:?}: {steep}");
+        assert!(steep > 2.0 * seconds("G1 X10 E1 F6000\n"));
+    }
+}
+
+#[test]
 fn klipper_holds_a_short_moves_peak_to_the_cruise_ratio() {
     // 10 mm, too short to reach 200 mm/s at 1000 mm/s². Flat out it would
     // peak at 100 mm/s in the middle: 0.2 s. With half the move to be

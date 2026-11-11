@@ -359,7 +359,7 @@ fn round_holes_and_outlines_are_resized_and_their_walls_told_apart() {
 }
 
 #[test]
-fn compensated_walls_go_at_the_compensation_speed_and_the_seam_is_said() {
+fn compensated_walls_go_at_the_compensation_speed_and_are_joined_on_a_slope() {
     // Walls at 30 and 40 mm/s, and nothing else to hold a wall back.
     let slow = [
         ("outer_wall_speed", "[30"),
@@ -395,16 +395,23 @@ fn compensated_walls_go_at_the_compensation_speed_and_the_seam_is_said() {
     on.push(("enable_circle_compensation", "1"));
     let made = sliced(&on);
     assert_eq!(feeds(&made).into_iter().collect::<Vec<_>>(), [30, 40, 70]);
-    // The scarf seam such walls are asked to have is not made, and
-    // that is said; with it turned off there is nothing to say.
-    let said: Vec<&String> = made
-        .notes()
-        .filter(|note| note.contains("circle"))
-        .collect();
-    assert_eq!(said.len(), 1, "{said:?}");
-    assert!(said[0].starts_with("apply_scarf_seam_on_circles"));
+    // Such walls are joined with a scarf seam, whatever is asked of
+    // other walls: moves that climb as they lay, which nothing else in
+    // the file does. Nothing is said of it; turned off, there are none.
+    let climbing = |sliced: &Sliced| {
+        let text = String::from_utf8(gcode(sliced)).unwrap();
+        (text.lines())
+            .filter(|line| line.starts_with("G1 X") && line.contains(" Z") && line.contains(" E"))
+            .count()
+    };
+    assert_eq!(climbing(&plain), 0);
+    assert!(climbing(&made) > 100);
+    assert!(made.notes().all(|note| !note.contains("circle")));
     on.push(("apply_scarf_seam_on_circles", "0"));
-    assert!(sliced(&on).notes().all(|note| !note.contains("circle")));
+    let off = sliced(&on);
+    assert_eq!(climbing(&off), 0);
+    assert_eq!(feeds(&off).into_iter().collect::<Vec<_>>(), [30, 40, 70]);
+    assert!(off.notes().all(|note| !note.contains("circle")));
 }
 
 #[test]

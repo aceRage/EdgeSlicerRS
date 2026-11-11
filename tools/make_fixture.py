@@ -31,6 +31,11 @@ the other end's corners rounded to 1.5 mm, for arc fitting (use a source with
 enable_arc_fitting=1, or give it as a change). The reference loads the filament preset named in the settings again,
 so a change to a filament's own settings, such as filament_type, is undone.
 
+funnel is for what goes by how far a round wall hangs out (a conditional scarf
+seam's scarf_overhang_threshold): a round post that widens as it rises, straight
+for 2 mm and then each 2 mm more steeply, every 0.2 mm layer's outline lying
+0.06, 0.12, 0.18 and at the top 0.24 mm outside the one beneath.
+
 holes is for the hole options (hole_to_polyhole, enable_circle_compensation):
 a slab 6 mm tall of ten 16 mm cells in two rows. The near row has round
 holes straight down through it, 2, 3, 5, 8 and 12 mm across, each in 64
@@ -85,6 +90,25 @@ def prism(outline, z0, dz, hole=None):
             t.extend([(n + i, n + j, 3 * n + j), (n + i, 3 * n + j, 3 * n + i)])
     return v, t
 
+def frustum(cx, cy, r0, r1, n, z0, dz):
+    """A round post in n sides whose radius goes from r0 at z0 to r1 at z0 + dz."""
+    v = [(x, y, z0) for x, y in circle(cx, cy, r0, n)] + [(x, y, z0 + dz) for x, y in circle(cx, cy, r1, n)]
+    v += [(cx, cy, z0), (cx, cy, z0 + dz)]
+    t = []
+    for i in range(n):
+        j = (i + 1) % n
+        t += [(i, j, n + j), (i, n + j, n + i), (2 * n, j, i), (2 * n + 1, n + i, n + j)]
+    return v, t
+
+def funnel():
+    """Five round sections one on another, each 2 mm tall: the first straight,
+    the rest wider at the top by 0.6, 1.2, 1.8 and 2.4 mm of radius."""
+    solids, r, z = [], 6.0, 0.0
+    for grow in (0.0, 0.6, 1.2, 1.8, 2.4):
+        solids.append(frustum(135.5, 136, r, r + grow, 128, z, 2))
+        r, z = r + grow, z + 2
+    return solids
+
 def curve_outline():
     """A slab about 40 x 16 mm: its far side bows out on a 80 mm radius, its
     right end is a half circle and its left corners are rounded to 1.5 mm."""
@@ -104,6 +128,7 @@ MESHES = {
     # a round post 24 mm across with a 12 mm hole through it
     "tube": [prism(circle(135.5, 136, 12, 128), 0, 8, circle(135.5, 136, 6, 128))],
     "curve": [prism(curve_outline(), 0, 6)],
+    "funnel": funnel(),
 }
 
 SHAPES = {
