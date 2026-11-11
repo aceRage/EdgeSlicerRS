@@ -24,7 +24,7 @@ replaces it until output matches on the printers we care about.
 | `crates/edge-adhesion` | Skirt and brim, with the automatic brim width |
 | `crates/edge-support` | Supports under overhangs, normal (grid) and tree, with dense tops and feet |
 | `crates/edge-gcode` | Print order, seams, travel, retraction, wipe and lift, cooling, overhangs, and extrusion, written as G-code |
-| `crates/edge-infill` | Top, bottom, bridge, solid, bridged-over-infill and sparse surfaces, and the lines that fill them |
+| `crates/edge-infill` | Top, bottom, bridge, solid, bridged-over-infill and sparse surfaces, and the lines that fill them; and ironing: which areas are gone over again, and the lines that do it |
 | `crates/edge-template` | The placeholder language of custom G-code: `{expression}`, `{if}`, `[variable]`, and scripts |
 | `crates/edge-time` | How long a G-code file takes, with acceleration: the file is read as a printer reads it and planned as the reference's estimator plans, or as Klipper does |
 | `crates/edge-tower` | The prime tower a nozzle is primed on after a tool change |
@@ -32,7 +32,7 @@ replaces it until output matches on the printers we care about.
 | `crates/edge-engine` | The whole pipeline behind one call, for whatever drives it: open a model and list its plates, settle its settings, slice with progress and cancel, G-code, a layer's lines for drawing, a vendor's presets by printer, and its printer models with the presets, picture and sizes of each |
 | `crates/edge-cli` | The `edge` command line |
 | `tools/make_defaults.py` | Asks the reference for its default of every setting and writes the table `edge-config` carries; run again when the pin moves |
-| `tools/make_fixture.py` | Writes small test 3MFs (parts that need supports or a brim, a plain cube, two blocks in two filaments, a comb with thin teeth on the bed) to compare with the reference on |
+| `tools/make_fixture.py` | Writes small test 3MFs (parts that need supports or a brim, a plain cube, two blocks in two filaments, a comb with thin teeth on the bed, three tiers with a top surface on each) to compare with the reference on |
 | `tools/make_project.py` | Writes one of those parts as a project whose settings are named presets, with as many filaments as are named: how the test prints for a printer are made |
 | `reference/EdgeSlicer` | Pinned submodule of the C++ slicer: profiles, test models, behaviour to match. Read-only here |
 | `apps/desktop` | The desktop app (Tauri): several projects open at once, each prepared, sliced, looked through layer by layer and exported, in the C++ application's tabs. A workspace of its own |
@@ -318,6 +318,37 @@ Known gaps: painted supports and seams, per-object setting overrides, typed sett
   tops reach a wall's spacing into the fill beside them, to have
   something to hold on to.
 
+- Ironing (`ironing_type`): a finished surface gone over again with
+  lines close together and next to no plastic, the nozzle smoothing
+  what is there. A port of the reference's `Layer::make_ironing`
+  (Fill.cpp). `top` irons wherever a layer faces up with nothing over
+  it, at whatever height; `topmost` the last layer of each object;
+  `solid` every layer that is solid right through, walls and all, and
+  on any other layer what faces up, what lies on the bed and whatever
+  of its fill is solid (never a bridge). The ironed area is kept
+  `ironing_inset` from the edge of the layer, half a nozzle when that
+  is left at zero, and from nothing else: a top surface is ironed right
+  up to what stands on it, and over its own walls. Lines are
+  `ironing_spacing` apart (never under 0.05 mm) and carry
+  `ironing_flow` percent of a layer's plastic shared out over that
+  spacing: with the U1's presets a line 0.0075 mm tall and 0.402 mm
+  wide, 0.003 mm³ a millimetre. `ironing_pattern` is `rectilinear`,
+  straight lines swept from one side of the area to the other and
+  joined along its edge where that is no more than three spacings, or
+  `concentric`, loops that follow the edge from the outside in. Straight
+  lines run along the top surface's own (`solid_infill_direction`, a
+  quarter turn on every other layer, or `top_layer_direction` on every
+  layer) turned by `ironing_angle`, or with `ironing_angle_fixed` at
+  that angle itself on every layer, and lie on a grid through the
+  middle of their object. A filament's own `filament_ironing_flow`,
+  `_spacing`, `_inset` and `_speed` are used in place of the process's
+  where it sets them. Each filament irons its own share of a layer.
+  The writer lays an island's ironing last, when its walls and fill
+  are down, as `;TYPE:Ironing`, at `ironing_speed` and the default
+  acceleration, each area swept from the side it was made to start
+  from, and with `ironing_fan_speed` set the fan runs at that for as
+  long as the ironing lasts. With `ironing_type` at `no ironing` a
+  file is byte for byte what it was.
 - G-code: `slice --gcode out.gcode` orders each layer (skirt and brim,
   each part's brim whole before the next, then island by island: an
   island's walls from the inside out, each beside the last, then the
@@ -882,6 +913,95 @@ not read: the settings fuzz every part alike.
 
 Classic walls are untouched: every file that sets `classic` is byte for
 byte what it was.
+
+Ironing. With the U1's presets (lines 0.15 mm apart, 10% flow,
+30 mm/s) on parts from `tools/make_fixture.py` (`cube`; `steps`, three
+tiers with a top surface on each, the lowest with a hole through it;
+`twotone`, in two filaments) and on plate 2 of `mcbrim_test.3mf`, the
+lettered plate. C++ slicer against this engine: the layers ironed, the
+ironing laid, and the time ironing adds, which is each slicer's file
+timed here as the reference plans, less the same slicer's file with
+ironing off.
+
+| Part, `ironing_type` | Layers ironed | Ironing, m | Time added |
+|---|---|---|---|
+| cube, `top` | 1 / 1, the same | 2.561 / 2.561 | 85 s / 85 s |
+| cube, `topmost` | 1 / 1, the same | 2.561 / 2.561 | 85 s / 85 s |
+| cube, `solid` | 8 / 8, the same | 18.284 / 18.284 | 574 s / 614 s |
+| steps, `top` | 3 / 3, the same | 7.251 / 7.251 | 243 s / 243 s |
+| steps, `topmost` | 1 / 1, the same | 1.254 / 1.254 | 40 s / 40 s |
+| steps, `solid` | 18 / 18, the same | 51.346 / 51.303 | 1601 s / 1724 s |
+| twotone, `top` | 2 / 2, the same | 5.148 / 5.148 | 173 s / 173 s |
+| twotone, `topmost` | 1 / 1, the same | 2.561 / 2.561 | 86 s / 86 s |
+| twotone, `solid` | 13 / 13, the same | 36.827 / 36.855 | 1167 s / 1248 s |
+| lettered plate, `top` | 3 / 3, the same | 13.457 / 14.557 | 486 s / 520 s |
+| lettered plate, `topmost` | 1 / 1, the same | 2.257 / 2.256 | 88 s / 88 s |
+| lettered plate, `solid` | 16 / 16, the same | 136.78 / 143.37 | 4754 s / 5220 s |
+
+On the three made parts the ironing of a layer is the reference's to a
+tenth of a millimetre of path on every layer of `top` and `topmost`,
+with the lines in the same places and swept from the same corner (on
+the cube and the two-colour part the box round a layer's ironing and
+the point it starts at agree to 0.001 mm on every layer; on the top
+tier of `steps` the first line is laid from its other end, which moves
+the turns to the other side and the box by 0.07 mm), at the same width
+(0.40 mm), plastic (0.003 mm³ a millimetre), speed (30 mm/s) and
+acceleration, and last in its island in both. Every
+other feature is what this engine lays without ironing, to the
+millimetre and the filament fed. The same holds with the options
+changed, on `steps` with `top`: an inset of 0.6 mm with lines 0.1 mm
+apart at 15% flow (9.929 m in both), `ironing_angle` at 30 (7.244 m),
+that angle fixed (7.252 m), `concentric` (7.138 m, the same loops,
+begun at the same corner or, where two corners are as near the middle
+of the object, at the other of them), `ironing_speed` at 15 (the time added is 483 s in both),
+`top_layer_direction` at 20, and with `only_one_wall_top` off and the
+top surface `monotonic`.
+
+Where the two differ, and why:
+
+- A first layer that is ironed (`solid`) is ironed at
+  `initial_layer_infill_speed` by the reference, 105 mm/s with the U1's
+  presets where ironing is set to 30: its writer gives every line of
+  the first layer but a bottom surface's the first layer's speed
+  outright, ironing with the rest (GCode.cpp `_extrude`). Here ironing
+  never goes faster than its own speed, and on the first layer no
+  faster than that layer's fill either. That is the whole of the 7% by
+  which `solid` takes longer here on the made parts: with
+  `initial_layer_infill_speed` set to 30 the time added is 612 s
+  against 614 s on the cube and 1724 s in both on `steps`.
+- On two layers of `steps` with `solid` the ironing is 4.7% short of
+  the reference's (519 mm against 545 mm, 381 mm against 398 mm): those
+  are the layers whose only solid fill is the band under a bridge's
+  edge, which this engine draws a little narrower (206 mm of solid
+  fill there against 217 mm), and ironing follows the fill.
+- Two filaments' shares of a layer meet 0.05 mm from where the
+  reference's regions do, so on `twotone` with `solid` one filament
+  irons 0.25% more and the other as much less.
+- On the lettered plate this engine irons 8% more with `top` and 5%
+  more with `solid`, all of it on the layers where parts in different
+  filaments lie side by side, and all of it within 0.2 mm of where they
+  meet. The reference keeps ironing the inset back from the edge of the
+  layer's outline, and its outline has cracks a few micrometres wide
+  where two parts of an object do not meet exactly, so it keeps the
+  inset back from those as well; this engine closes such cracks when it
+  slices (see the painted plate above), and irons up to where the parts
+  meet, as the reference itself does where they meet exactly (on
+  `twotone`, flush, both iron to the join; with the second block moved
+  3 micrometres away the reference stops 0.2 mm short of it, 2561 mm on
+  that layer where it laid 2587 mm, and this engine lays 2587 mm). The
+  last layer, all one filament, is the reference's to 0.04%.
+
+Not as the reference besides: the fan is set for ironing before the
+move to it and given back straight after, where the reference changes
+it as the first ironing line begins and as the next line of another
+kind does; the file has no `;HEIGHT:` comment under `;TYPE:Ironing`
+(this engine writes a layer's height once, at its start); where the
+loops of a `concentric` area fall into several nests each is taken
+nearest first; `solid_infill_rotate_template` and
+`align_infill_direction_to_model` are noted and not followed;
+ironing the dense top of a support (`support_ironing`) is noted by the
+supports and not done; and the reference's ironing flow calibration
+and its dithering of ironing through an image are not here.
 
 Sparse patterns. Nineteen of the reference's twenty-seven are laid:
 `grid`, `rectilinear`, `alignedrectilinear`,

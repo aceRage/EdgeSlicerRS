@@ -730,6 +730,99 @@ pub fn slice(job: Job, watch: &dyn Watcher) -> Result<Sliced, Failure> {
         surfaces_by.push(surfaces);
         fills_by.push(fills);
     }
+    // Ironing: the surfaces `ironing_type` names are gone over again
+    // once everything else in their island is down (Fill.cpp
+    // `Layer::make_ironing`, which the reference runs after all the fill
+    // is made). Each filament irons its own share of a layer, as the
+    // reference irons a region with that region's solid fill filament,
+    // "to not contaminate the print with another material leaking from
+    // the nozzle".
+    let ironing = edge_infill::IroningSettings::from_settings(&settings)?;
+    let mut ironing_notes = Vec::new();
+    if ironing.enabled() {
+        ironing_notes.clone_from(&ironing.unsupported);
+        // The last layer of each object: the last whose middle, where it
+        // is sliced, is still inside the object. A bare model is one
+        // object, and ends with the print.
+        let lasts: Vec<(Point2, Point2, usize)> = objects
+            .iter()
+            .filter_map(Mesh::bounds)
+            .map(|(lo, hi)| {
+                (
+                    Point2::from_mm(lo[0].into(), lo[1].into()),
+                    Point2::from_mm(hi[0].into(), hi[1].into()),
+                    planes
+                        .iter()
+                        .rposition(|plane| *plane <= f64::from(hi[2]))
+                        .unwrap_or(0),
+                )
+            })
+            .collect();
+        let opening = infill.shells(layer_height)?.opening;
+        for (filament, fills) in fills_by.iter_mut().enumerate() {
+            let own = ironing.for_filament(used[filament], layer_height);
+            let slices: Vec<&[ExPolygon]> = (0..layers.len())
+                .map(|index| share(filament, index))
+                .collect();
+            let faces = edge_infill::exposed(&slices, &outlines, opening)?;
+            let (surfaces, perimeters) = (&surfaces_by[filament], &walls_by[filament]);
+            let ironed = (0..layers.len())
+                .into_par_iter()
+                .map(|index| {
+                    // The object standing at a point is the one with the
+                    // smallest bounds that hold it, as for sparse fill.
+                    let ends_here = |point: Point2| {
+                        lasts
+                            .iter()
+                            .filter(|(low, high, _)| {
+                                point.x >= low.x
+                                    && point.x <= high.x
+                                    && point.y >= low.y
+                                    && point.y <= high.y
+                            })
+                            .min_by_key(|(low, high, _)| {
+                                i128::from(high.x - low.x) * i128::from(high.y - low.y)
+                            })
+                            .map_or(layers.len() - 1, |&(_, _, last)| last)
+                            == index
+                    };
+                    let areas = edge_infill::ironing_areas(
+                        &edge_infill::IronedLayer {
+                            slices: slices[index],
+                            faces: &faces[index],
+                            on_bed: index == 0,
+                            surfaces: &surfaces[index],
+                            infill: &perimeters[index].infill,
+                            // As modelled: the reference keeps a layer
+                            // shrunk against elephant foot its outline
+                            // from before (PrintObjectSlice.cpp,
+                            // "Store the uncompensated value there"),
+                            // and ironing is kept back from that.
+                            outline: outlines[index],
+                            ends_here: &ends_here,
+                        },
+                        &own,
+                    )
+                    .map_err(|e| e.to_string())?;
+                    edge_infill::iron(
+                        &areas,
+                        index,
+                        &own,
+                        &|area| {
+                            frame_of(&middles, area.contour.points.first().copied())
+                                .map_or(middle, |frame| frame.origin)
+                        },
+                        // Numbered on from the layer's surfaces.
+                        surfaces[index].len() as u32 + 1,
+                    )
+                    .map_err(|e| e.to_string())
+                })
+                .collect::<Result<Vec<Vec<ExtrusionPath>>, String>>()?;
+            for (layer, lines) in fills.iter_mut().zip(ironed) {
+                layer.extend(lines);
+            }
+        }
+    }
     let infill_time = started.elapsed();
 
     step(watch, Stage::Around)?;
@@ -811,6 +904,7 @@ pub fn slice(job: Job, watch: &dyn Watcher) -> Result<Sliced, Failure> {
     // What the walls were asked for and do not do goes with these.
     let mut order_notes = walls.notes(&settings);
     order_notes.extend(size_notes);
+    order_notes.extend(ironing_notes);
     order_notes.extend(crate::unfollowed::notes(&settings, bodies.len()));
     if used.len() > 1 {
         if let Some(kind) = settings.text("toolchange_ordering")

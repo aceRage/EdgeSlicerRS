@@ -205,6 +205,13 @@ impl SupportSettings {
                     &["0"][..],
                     "the dense top is printed in the part's filament",
                 ),
+                // With it go `support_ironing_pattern`, `_flow`,
+                // `_spacing`, `_inset`, `_speed` and `_direction`.
+                (
+                    "support_ironing",
+                    &["0"][..],
+                    "the dense top of a support is not ironed",
+                ),
             ] {
                 if let Some(value) = text(key)
                     && !plain.contains(&value)
