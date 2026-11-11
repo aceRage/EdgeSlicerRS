@@ -1892,6 +1892,102 @@ slope (on the tube with arcs, 0.203 and 0.311 mm of filament against
 0.643 for 20 mm of line); that is how the reference has it, and it is
 not changed here.
 
+Z contouring, 2026-11-11, on parts from `tools/make_fixture.py` with the
+U1's presets (a 0.2 mm layer, `zaa_min_z` 0.05 mm) but where the
+Centauri Carbon's are named (arcs on), and on 3DBenchy with the U1's.
+`wedge` rises 4 degrees, `dome` is a cap 3 mm high on a post, `ramp`
+climbs 7.6 degrees to a flat and `holed` is the wedge with a hole down
+through it. Lengths and filament are the C++ slicer's and this engine's;
+a contoured move is an extruding move that says a height off its layer's
+top. The heights compared are paired: each of the reference's moves of a
+feature against the nearest of this engine's on the same layer, within
+0.05 mm across, at the middle of the reference's move, the 95th centile
+and the most; the plastic a millimetre likewise.
+
+| Part, options | Top surface, m | Outer wall, m | Contoured moves, top and walls | Heights apart, 95% and most | Plastic a mm apart, 95% | Filament, mm | Time |
+|---|---|---|---|---|---|---|---|
+| wedge, off | 1.57 / 1.84 | 2.15 / 2.15 | | | | 611.5 / 610.9 | 5m 10s / 5m 41s |
+| wedge | 1.57 / 1.87 | 2.17 / 2.17 | 3783 / 3783, 150 / 150 | 0, 0.0005 mm | 0.2% | 598.3 / 595.5 | 5m 6s / 5m 42s |
+| and `zaa_min_z` 0.08 | 1.57 / 1.87 | 2.16 / 2.16 | 3795 / 3795, 150 / 150 | 0, 0.0005 mm | 0.1% | 609.4 / 604.1 | 5m 10s / 5m 41s |
+| and fill in one direction | 1.57 / 1.87 | 2.17 / 2.17 | 3783 / 3783, 150 / 150 | 0, 0.0005 mm | 0.2% | 598.5 / 595.1 | 5m 7s / 5m 42s |
+| and ironing | 1.57 / 1.87 | 2.17 / 2.17 | 3783 / 3783, 150 / 150; ironing 7869 / 7869 | 0, 0.0005 mm; ironing 0, 0 | 0.2% | 602.7 / 599.9 | 6m 59s / 7m 34s |
+| dome, off | 0.40 / 0.43 | 1.46 / 1.46 | | | | 390.7 / 392.4 | 4m 9s / 4m 24s |
+| dome | 0.43 / 0.47 | 1.48 / 1.48 | 1314 / 1315, 2638 / 2615 | 0.0005, 0.014 mm | 1.3% | 381.0 / 382.4 | 4m 21s / 4m 27s |
+| and `zaa_min_z` 0.02 | 0.46 / 0.47 | 1.49 / 1.49 | 660 / 661, 2945 / 2936 | 0.0005, 0.016 mm | 1.0% | 377.7 / 379.8 | 4m 26s / 4m 29s |
+| and walls let down past 10 degrees | 0.43 / 0.47 | 1.48 / 1.48 | 1314 / 1315, 2902 / 2871 | 0.0005, 0.019 mm | 1.3% | 375.3 / 376.7 | 4m 28s / 4m 27s |
+| and no speed scaling | 0.43 / 0.47 | 1.48 / 1.48 | 1314 / 1315, 2638 / 2615 | 0.0005, 0.014 mm | 1.3% | 381.0 / 382.4 | 4m 13s / 4m 27s |
+| and ironing | 0.43 / 0.47 | 1.48 / 1.48 | 1314 / 1315, 2638 / 2615; ironing 15986 / 14093 | 0.0005, 0.014 mm; ironing 0.0055, 0.023 | 1.3% | 383.4 / 384.7 | 5m 12s / 5m 23s |
+| and `arachne` | 0.40 / 0.48 | 1.48 / 1.48 | 1581 / 1581, 2240 / 2231 | 0.0008, 0.008 mm | 3.4% | 381.8 / 382.9 | 4m 20s / 4m 28s |
+| and the Centauri Carbon's, arcs | 0.85 / 1.57 | 1.50 / 1.50 | 5026 / 5022, 3865 / 3841 | | | 386.7 / 385.9 | 4m 42s / 5m 34s |
+| ramp, off | 1.81 / 2.11 | 2.01 / 2.01 | | | | 653.8 / 653.3 | 4m 41s / 5m 9s |
+| ramp | 1.84 / 2.11 | 2.01 / 2.01 | 4147 / 4150, 267 / 267 | 0, 0.0005 mm | 0.0% | 641.2 / 640.8 | 4m 43s / 5m 10s |
+| and `arachne` | 1.84 / 2.11 | 2.01 / 2.01 | 4147 / 4150, 267 / 219 | 0.0083, 0.0085 mm | 9.9% | 641.5 / 641.0 | 4m 43s / 5m 11s |
+| holed, off | 2.18 / 2.57 | 3.16 / 3.16 | | | | 882.1 / 881.6 | 6m 31s / 7m 19s |
+| holed | 2.19 / 2.61 | 3.18 / 3.18 | 5263 / 5263, 272 / 272 | 0, 0.0005 mm | 0.3% | 863.6 / 864.4 | 6m 30s / 7m 24s |
+| wedge, scarf seams on all | 1.57 / 1.87 | 2.64 / 2.43 | 3783 / 3783, 488 / 345 | | | 603.6 / 595.5 | 5m 8s / 5m 43s |
+| 3DBenchy, off | 3.45 / 3.87 | 32.78 / 32.78 | | | | 3767.6 / 3774.1 | 38m 43s / 41m 48s |
+| 3DBenchy | 3.54 / 3.83 | 32.59 / 32.73 | 6649 / 5339, 6992 / 7056 | 0.0023, 0.054 mm | 2.4% | 3737.4 / 3754.1 | 39m 4s / 42m 7s |
+
+Where the top surface is the same lines in both files (the wedge, the
+ramp, the holed wedge) every contoured move is the reference's to the
+thousandth of a millimetre written, with the same plastic: the band, the
+smoothing, the 10 µm the line must move and the points dropped come to
+the same points. Where they differ it is the lines that differ, not
+their heights: with contouring off the two already lay the top surfaces
+of these parts differently (the reference's 1.57 m of the wedge's top
+against 1.84 m here, and with the Centauri Carbon's presets on the dome
+0.83 m against 1.52, too few lines alike to pair), and on 3DBenchy the
+reference contours 6649 top surface moves and this engine 5339 of a top
+laid otherwise, the pairs within 0.0023 mm in 95 of 100. A wall of
+changing width (`arachne`) is contoured here as a whole loop and in the
+reference piece by piece, each piece of one width smoothed by itself, so
+near where its pieces meet the two differ by up to 0.009 mm. With
+`zaa_minimize_perimeter_height` at its 35 degrees the dome's walls, on a
+slope of 28 degrees at most, are not let down (the same file as at 0);
+at 10 degrees they are, in both, and take 6 mm less filament. With
+`zaa_dont_alternate_fill_direction` the wedge's top lines run at 45
+degrees on every layer in both files, and its solid fill never at 135.
+No arc is fitted to a contoured move in either file.
+
+Every extruding move in all of these files is between the slicing plane,
+`zaa_min_z` above the layer beneath, and `zaa_min_z` above its own
+layer's top, ironing a layer above it, in both slicers. On the wedge 27
+of the reference's 109 wipes end lower than the line they wipe back over
+was laid there, by up to 0.04 mm, and on the dome 32 of 286 by up to
+0.10 mm; here none does. With scarf seams on all walls the reference
+lays 71 mm of the wedge's contoured outer walls twice, the scarf's way
+up and its way down both flat along the contour, over seven layers;
+here those walls are closed with the seam gap and have no scarf (the
+note says so). On the dome with ironing the reference irons 83 mm at
+10 mm/s and more at other speeds between that and its own, where with
+contouring off it irons all of it at the ironing speed; here all of it
+is at the ironing speed. With speed scaling, a contoured move is slowed
+in step with its height in both: with layers not slowed to cool
+(`slow_down_for_layer_cooling` off) the speeds paired on the wedge and
+the dome are within 4.4% in 95 of 100, as the speeds of the walls are
+with contouring off. Where layers are slowed to cool they part: the
+reference slows contoured moves by the layer's factor whatever their
+speed, and this engine holds them to the layer's cap like any other
+line (a note says so); on 3DBenchy's layers from 11 mm up the
+reference's contoured top moves average about 4000 mm/min and this
+engine's about 7200.
+
+The reference's own file, timed here as the reference plans it, comes
+to its own time to the second, or a second over, on every file (a
+contoured move is read as the move it is, its length in three
+dimensions). With `zaa_enabled` off the G-code is byte for byte what it
+was before any of this on these parts, the other fixtures, 3DBenchy and
+five of the reference's test projects (19 files), and with it on a file is the
+same on one thread as on all of them and from one run to the next.
+What it costs (`edge slice`, best of 7, off and on in turn, on a Mac
+mini busy with other work, so the processor time is the steadier
+figure): 3DBenchy 1.14 s and 1.24 s, 4.9 and 5.4 s of processor time;
+the dome 0.17 s both, 0.49 and 0.51 s; the holed wedge 0.12 and 0.13 s,
+0.26 and 0.28 s. Most of it is building the tree of the parts'
+triangles (225,154 on 3DBenchy), which is now made on as many threads
+as there are; the rays, cast no further than a surface could move a
+point, take some 35 ms there.
+
 Where seams are put, 2026-11-11, on twelve parts from
 `tools/make_fixture.py` with the U1's presets (cube, cylinder, tube,
 curve, holes, funnel, frame, fins, comb, steps, mushroom, twotone), each
