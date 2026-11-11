@@ -167,6 +167,9 @@ struct Done {
     model: PathBuf,
     /// How the bed surface was settled when none was chosen.
     bed_type: BedType,
+    /// The settings set by hand that nothing in this slice read, each
+    /// with its value: they changed nothing in the print.
+    unread: Vec<(String, String)>,
 }
 
 /// One object on a plate seen from above: its outline in mm where the
@@ -767,7 +770,10 @@ fn slice_plate(
     work: &Work,
 ) -> Result<Done, edge_engine::Failure> {
     let loaded = edge_engine::open(path, plate)?.place()?;
-    let job = edge_engine::prepare(loaded, chosen, overrides)?;
+    // What the slice asks for by name is noted, so that a setting set by
+    // hand that nothing read can be said with the print.
+    let reads = edge_config::Reads::default();
+    let job = edge_engine::prepare_noted(loaded, chosen, overrides, &reads)?;
     let bed_type = job.bed_type.clone();
     let sliced = edge_engine::slice(job, &Watch(work))?;
     {
@@ -778,11 +784,19 @@ fn slice_plate(
     let gcode = sliced
         .gcode(&edge_engine::timestamp())
         .map_err(|e| e.to_string());
+    let read = reads.keys();
+    let unread = overrides
+        .settings
+        .iter()
+        .filter(|(key, _)| !read.contains(*key))
+        .map(|(key, value)| (key.to_owned(), edge_config::serialized(key, value)))
+        .collect();
     Ok(Done {
         sliced,
         gcode,
         model: path.to_owned(),
         bed_type,
+        unread,
     })
 }
 
@@ -1733,6 +1747,11 @@ fn summary(done: &Done, plate: Option<u32>) -> Value {
         ));
     }
     gaps.extend(sliced.notes().cloned());
+    // Set by hand, and asked for by nothing: said in the form of the
+    // engine's own notes, after them.
+    gaps.extend(done.unread.iter().map(|(key, value)| {
+        format!("{key} \"{value}\": not read by the engine; it changes nothing in this print")
+    }));
 
     let gcode = match &done.gcode {
         Err(error) => json!({ "error": error }),

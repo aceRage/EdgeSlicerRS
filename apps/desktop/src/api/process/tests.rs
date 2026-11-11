@@ -108,6 +108,11 @@ fn the_pages_are_the_references_in_its_order_and_words() {
         }
     }
     assert_eq!(named.len(), options.len());
+    // And each is a setting the reference's defaults table knows: the
+    // two are made from the same pin.
+    for key in &named {
+        assert!(edge_config::reference_knows(key), "{key}");
+    }
     // The reference's own words, kinds, units and limits.
     let height = &options["layer_height"];
     assert_eq!(height["label"], "Layer height");
@@ -377,7 +382,7 @@ fn a_value_an_option_does_not_take_is_refused_with_the_reason() {
 #[test]
 fn what_the_engine_does_with_an_option_is_its_own_answer() {
     let session = Arc::new(Session::new(None));
-    on_presets(&session);
+    let id = on_presets(&session);
     let plain = ask(&session, "process", Value::Null);
     // Read by a slice: followed.
     for key in [
@@ -423,6 +428,46 @@ fn what_the_engine_does_with_an_option_is_its_own_answer() {
             .as_str()
             .unwrap()
             .contains("vase mode is not followed")
+    );
+    // The same is said with the print: the engine's notes, and after
+    // them what was set here that the slice never asked for.
+    ask(&session, "slice", json!({ "project": id }));
+    assert_eq!(wait(&session, id)["state"], "done");
+    let summary = ask(&session, "summary", json!({ "project": id }));
+    let gaps: Vec<&str> = summary["gaps"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|gap| gap.as_str().unwrap())
+        .collect();
+    assert!(
+        gaps.contains(&"zaa_enabled \"1\": top surfaces are laid flat, not contoured in height"),
+        "{gaps:?}"
+    );
+    assert!(
+        gaps.contains(
+            &"hollow_interior \"1\": not read by the engine; it changes nothing in this print"
+        ),
+        "{gaps:?}"
+    );
+    // What was read is not among them, set by hand or not.
+    assert!(!gaps.iter().any(|gap| gap.starts_with("layer_height")));
+    ask(
+        &session,
+        "process_set",
+        json!({ "key": "top_shell_layers", "value": 6 }),
+    );
+    ask(&session, "slice", json!({ "project": id }));
+    assert_eq!(wait(&session, id)["state"], "done");
+    let summary = ask(&session, "summary", json!({ "project": id }));
+    assert!(
+        !summary["gaps"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|gap| gap.as_str().unwrap().starts_with("top_shell_layers")),
+        "{}",
+        summary["gaps"]
     );
 }
 

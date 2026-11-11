@@ -24,7 +24,8 @@ mod rules;
 
 use std::{
     collections::{BTreeMap, BTreeSet},
-    sync::{Arc, OnceLock},
+    hash::{DefaultHasher, Hash, Hasher},
+    sync::{Arc, Mutex, OnceLock},
 };
 
 use edge_config::{Settings, Value as Setting};
@@ -504,8 +505,50 @@ fn preset_values(choices: &Choices, basis: &Basis) -> BTreeMap<String, String> {
         .collect()
 }
 
-/// The answer of `process` and `process_set`.
+/// What tells one set of settings to answer for from another: the
+/// project, what is set by hand, and every value of every preset and of
+/// the project's own settings under it.
+fn fingerprint(id: u32, choices: &Choices, basis: &Basis, filaments: usize) -> u64 {
+    let mut hasher = DefaultHasher::new();
+    (id, filaments, choices.from_presets, &choices.bed_type).hash(&mut hasher);
+    choices.over.hash(&mut hasher);
+    let presets = [&basis.chosen.machine, &basis.chosen.process]
+        .into_iter()
+        .flatten()
+        .chain(&basis.chosen.filaments);
+    for (name, settings) in presets {
+        name.hash(&mut hasher);
+        for (key, value) in settings.iter() {
+            (key, edge_config::serialized(key, value)).hash(&mut hasher);
+        }
+    }
+    if let Some(project) = &basis.project {
+        for (key, value) in project.iter() {
+            (key, edge_config::serialized(key, value)).hash(&mut hasher);
+        }
+    }
+    hasher.finish()
+}
+
+/// The answer of `process` and `process_set`. Working it out slices the
+/// engine's block, so the last few answers are kept: the sidebar asks
+/// again whenever anything about the project is shown anew.
 fn described(id: u32, choices: &Choices, basis: &Basis, filaments: usize) -> Value {
+    static KEPT: Mutex<Vec<(u64, Value)>> = Mutex::new(Vec::new());
+    let key = fingerprint(id, choices, basis, filaments);
+    if let Some((_, answer)) = lock(&KEPT).iter().find(|(kept, _)| *kept == key) {
+        return answer.clone();
+    }
+    let answer = worked_out(id, choices, basis, filaments);
+    let mut kept = lock(&KEPT);
+    if kept.len() >= 16 {
+        kept.remove(0);
+    }
+    kept.push((key, answer.clone()));
+    answer
+}
+
+fn worked_out(id: u32, choices: &Choices, basis: &Basis, filaments: usize) -> Value {
     let pages = pages();
     let values = preset_values(choices, basis);
     let set = overrides(choices, basis);

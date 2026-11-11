@@ -67,29 +67,9 @@ fn block(project: Option<&Settings>) -> Loaded {
 /// settings under both, exactly as [`crate::prepare`] takes them.
 pub fn followed(chosen: &Chosen, overrides: &Overrides, project: Option<&Settings>) -> Followed {
     let reads = Reads::default();
-    let noted = |settings: &Settings| {
-        let mut settings = settings.clone();
-        settings.noted_by(&reads);
-        settings
-    };
-    let named = |preset: &(String, Settings)| (preset.0.clone(), noted(&preset.1));
-    let chosen = Chosen {
-        machine: chosen.machine.as_ref().map(named),
-        process: chosen.process.as_ref().map(named),
-        filaments: chosen.filaments.iter().map(named).collect(),
-    };
-    let overrides = Overrides {
-        settings: noted(&overrides.settings),
-        ..overrides.clone()
-    };
-    let mut loaded = block(project);
-    if let Some(settings) = &mut loaded.settings {
-        settings.noted_by(&reads);
-    }
     let mut notes = Vec::new();
     let sliced = (|| -> Result<(), Failure> {
-        let mut job = crate::prepare(loaded, &chosen, &overrides)?;
-        job.settings.noted_by(&reads);
+        let mut job = crate::prepare_noted(block(project), chosen, overrides, &reads)?;
         // The block is put in the middle of the bed, as a bare model is:
         // a project's settings say nothing of where this one would be.
         job.is_project = false;

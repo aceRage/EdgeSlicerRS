@@ -29,7 +29,7 @@ use std::{error::Error, fmt};
 
 pub use clock::timestamp;
 pub use followed::{Followed, followed, settled};
-pub use job::{BedType, Chosen, Job, Overrides, Sourced, prepare};
+pub use job::{BedType, Chosen, Job, Overrides, Sourced, prepare, prepare_noted};
 pub use load::{Loaded, Opened, PlateInfo, open};
 pub use pipeline::{Gcode, Sliced, Timings, slice};
 pub use presets::{Library, ModelPreset, PrinterModel, Shelf};

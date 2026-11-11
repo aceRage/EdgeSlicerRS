@@ -1,4 +1,4 @@
-use edge_config::{Settings, Value};
+use edge_config::{Reads, Settings, Value};
 
 use crate::{Failure, Loaded};
 
@@ -258,4 +258,39 @@ pub fn prepare(mut loaded: Loaded, chosen: &Chosen, overrides: &Overrides) -> Re
         bed_type,
         remarks,
     })
+}
+
+/// [`prepare`], with every setting asked for by name from here to the
+/// end of the slice noted in `reads`: by `prepare` itself, which looks
+/// in the presets, the project and what is set over them for the layer
+/// heights, and by every stage that is given the job's settings after.
+/// What `reads` holds once the G-code is written is what the print
+/// depended on; a setting that is not there changed nothing in it.
+pub fn prepare_noted(
+    mut loaded: Loaded,
+    chosen: &Chosen,
+    overrides: &Overrides,
+    reads: &Reads,
+) -> Result<Job, Failure> {
+    let noted = |settings: &Settings| {
+        let mut settings = settings.clone();
+        settings.noted_by(reads);
+        settings
+    };
+    let named = |preset: &(String, Settings)| (preset.0.clone(), noted(&preset.1));
+    let chosen = Chosen {
+        machine: chosen.machine.as_ref().map(named),
+        process: chosen.process.as_ref().map(named),
+        filaments: chosen.filaments.iter().map(named).collect(),
+    };
+    let overrides = Overrides {
+        settings: noted(&overrides.settings),
+        ..overrides.clone()
+    };
+    if let Some(settings) = &mut loaded.settings {
+        settings.noted_by(reads);
+    }
+    let mut job = prepare(loaded, &chosen, &overrides)?;
+    job.settings.noted_by(reads);
+    Ok(job)
 }
