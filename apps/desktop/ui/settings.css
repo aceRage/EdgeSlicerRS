@@ -1,12 +1,17 @@
-/* The sidebar's process pages (process.js). Tokens and the controls are
-   the page's own (style.css, STYLE.md); here are the two components the
-   pages brought (a switch, a box of text) and what is theirs alone. */
+/* The pages of settings (settings.js): the process's in the sidebar, a
+   filament's or the printer's in the panel that takes its place. Tokens
+   and the controls are the page's own (style.css, STYLE.md); here are the
+   components the pages brought (a switch, a box of text, the panel) and
+   what is theirs alone. */
 
 /* The sidebar takes the room a page of settings wants where the window
    has it to give: 300 px in a narrow window, up to 380 px in a wide one.
    Under 761 px the page is one column (style.css), which this leaves be. */
 @media (min-width: 761px) {
   #plater { grid-template-columns: clamp(300px, 24vw, 380px) minmax(0, 1fr); }
+  /* A filament's or the printer's pages hold boxes of G-code: the
+     sidebar is wider while they are open, the plate keeping the rest. */
+  #plater.presets-open { grid-template-columns: clamp(340px, 30vw, 520px) minmax(0, 1fr); }
 }
 
 /* ---- components ---- */
@@ -57,28 +62,16 @@ textarea.code { font: var(--size-small)/1.5 var(--font-mono); white-space: pre; 
 
 /* ---- the Process section ---- */
 
-/* The pages' tabs: as many to a line as fit, each with the number of its
-   settings set by hand. The one open carries the accent. */
-#process-tabs { display: flex; flex-wrap: wrap; gap: 0 2px; margin-top: var(--space-1); border-bottom: 1px solid var(--line-1); }
-.process-tab {
-  display: flex;
-  align-items: center;
-  gap: 5px;
-  height: 26px;
-  margin-bottom: -1px;
-  padding: 0 7px;
-  border: 0;
-  border-bottom: 2px solid transparent;
-  border-radius: var(--radius-m) var(--radius-m) 0 0;
-  background: none;
-  color: var(--text-2);
-  font-size: var(--size-label);
-}
-.process-tab:hover:not(:disabled) { color: var(--text-1); }
-.process-tab[aria-selected="true"] { color: var(--text-1); font-weight: 600; border-bottom-color: var(--accent); }
+/* The pages' tabs, the process's in the sidebar and a filament's or the
+   printer's in the panel: the page's tabs (.tabs.scrolls, style.css),
+   smaller, on one line that scrolls sideways where the sidebar is too
+   narrow for all of them; each with the number of its settings set by
+   hand. */
+#process-tabs, #preset-tabs { margin-top: var(--space-1); }
+.tabs > .process-tab { gap: 5px; height: 28px; padding: 0 var(--space-2); font-size: var(--size-label); }
 .process-count { color: var(--accent); font: 600 var(--size-caps) var(--font-mono); }
 
-#process-page { display: flex; flex-direction: column; gap: var(--space-2); min-width: 0; }
+#process-page, #preset-page { display: flex; flex-direction: column; gap: var(--space-2); min-width: 0; }
 .process-page { display: flex; flex-direction: column; gap: 6px; min-width: 0; }
 /* A group's label, as in any section: small capitals running on into a hairline. */
 .process-page > h3 { display: flex; align-items: center; gap: var(--space-2); margin-top: var(--space-2); }
@@ -163,7 +156,10 @@ button.opt-reset svg { width: 13px; height: 13px; fill: none; stroke: currentCol
 
 /* ---- the search ---- */
 
-#process-found { display: flex; flex-direction: column; gap: 1px; max-height: 60vh; overflow-y: auto; }
+/* The list stands in the body, under the pinned head, in the place of the
+   page and its tabs while there is something searched for: the sidebar's
+   or the panel's scroll is its scroll. */
+#process-found, #preset-found { display: flex; flex-direction: column; gap: 1px; }
 .found-row {
   display: grid;
   grid-template-columns: minmax(0, 1fr);
@@ -178,3 +174,56 @@ button.opt-reset svg { width: 13px; height: 13px; fill: none; stroke: currentCol
 .found-where { color: var(--text-2); font-size: var(--size-small); }
 .found-key { color: var(--text-3); font: var(--size-small) var(--font-mono); overflow-wrap: anywhere; }
 .found-row.away .found-label { color: var(--text-off); }
+
+/* An option the reference sets in a dialog of its own, or that is not a
+   setting to change here: shown, not offered. */
+.opt.fixed .opt-field input, .opt.fixed .opt-field textarea { color: var(--text-2); }
+
+/* A filament's override (the "Setting Overrides" page): a tick box before
+   the label turns the filament's own value on. */
+.opt-head > input.opt-override { flex: none; }
+
+/* ---- the panel: a filament's or the printer's pages ---- */
+
+/* It takes the place of the sidebar's sections; the status line and the
+   profiles folder stay under it. One scroll, as the sidebar's: the head
+   (the way back, the title, the swatches, the search, the tabs) is a
+   .fold-pin that stays in sight while the page scrolls under it (style.css,
+   app.js). */
+#side.presets-open > #side-scroll { display: none; }
+#preset-panel { flex: 1; min-height: 0; display: flex; flex-direction: column; }
+#preset-panel[hidden] { display: none; }
+#preset-scroll { flex: 1; min-height: 0; overflow-y: auto; scrollbar-gutter: stable; }
+#preset-scroll > .fold-pin { padding-bottom: var(--space-1); }
+#preset-head {
+  display: flex;
+  align-items: center;
+  gap: var(--space-1);
+  padding: var(--space-2) var(--space-2) var(--space-2) var(--space-1);
+  border-bottom: 1px solid var(--line-1);
+}
+#preset-heading { flex: 1; min-width: 0; }
+#preset-title { margin: 0; color: var(--text-1); font-size: var(--size-title); font-weight: 600; text-transform: none; letter-spacing: 0; }
+#preset-title:focus { outline: none; }
+#preset-name { margin: 0; color: var(--text-2); font-size: var(--size-small); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+/* The filaments of the project, to go from one's pages to another's. */
+#preset-filaments { display: flex; flex-wrap: wrap; gap: var(--space-1); padding: var(--space-2) var(--space-3) 0; }
+#preset-filaments .swatch {
+  width: var(--control-s);
+  height: var(--control-s);
+  padding: 0;
+  border: 0;
+  border-radius: var(--radius-s);
+  background: var(--surface-well);
+  box-shadow: inset 0 0 0 1px var(--line-swatch);
+  color: var(--text-1);
+  font: 700 var(--size-small) var(--font-mono);
+}
+#preset-filaments .swatch[aria-pressed="true"] { box-shadow: inset 0 0 0 1px var(--line-swatch), 0 0 0 2px var(--surface-panel), 0 0 0 3px var(--accent); }
+#preset-tools { padding-top: var(--space-2); }
+
+/* The edit icon of a filament's row and of the printer's card. */
+.filament > button.tool, .printer-head > button.tool { color: var(--text-2); }
+.filament > button.tool:hover:not(:disabled), .printer-head > button.tool:hover:not(:disabled) { color: var(--text-1); }
+.printer-head { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: center; }
+.printer-head > button.tool { margin-right: var(--space-1); }

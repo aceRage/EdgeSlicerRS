@@ -62,26 +62,26 @@ impl Config<'_> {
 /// name is shown and can be set.
 #[derive(Default)]
 pub(super) struct Toggles {
-    line: BTreeMap<&'static str, bool>,
-    field: BTreeMap<&'static str, bool>,
+    line: BTreeMap<String, bool>,
+    field: BTreeMap<String, bool>,
 }
 
 impl Toggles {
-    fn line(&mut self, key: &'static str, shown: bool) {
-        self.line.insert(key, shown);
+    pub(super) fn line(&mut self, key: &str, shown: bool) {
+        self.line.insert(key.to_owned(), shown);
     }
 
-    fn lines(&mut self, keys: &[&'static str], shown: bool) {
+    pub(super) fn lines(&mut self, keys: &[&str], shown: bool) {
         for key in keys {
             self.line(key, shown);
         }
     }
 
-    fn field(&mut self, key: &'static str, enabled: bool) {
-        self.field.insert(key, enabled);
+    pub(super) fn field(&mut self, key: &str, enabled: bool) {
+        self.field.insert(key.to_owned(), enabled);
     }
 
-    fn fields(&mut self, keys: &[&'static str], enabled: bool) {
+    pub(super) fn fields(&mut self, keys: &[&str], enabled: bool) {
         for key in keys {
             self.field(key, enabled);
         }

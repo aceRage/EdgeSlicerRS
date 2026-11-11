@@ -159,8 +159,8 @@
         b.add, b.addPlate, gap(), b.arrange, gap(), b.move, b.rotate, b.scale, gap(), b.undo, b.redo);
       this.bar.setAttribute('role', 'toolbar');
       this.bar.setAttribute('aria-label', 'Prepare');
-      this.panel = el('div', { className: 'edit-panel', id: 'edit-panel', hidden: true });
-      this.warning = el('p', { className: 'edit-warning', id: 'edit-warning', hidden: true });
+      this.panel = el('div', { className: 'edit-panel overlay', id: 'edit-panel', hidden: true });
+      this.warning = el('p', { className: 'edit-warning overlay', id: 'edit-warning', hidden: true });
       this.warning.setAttribute('role', 'status');
       this.host.stageNode.append(this.bar, this.panel, this.warning);
     },

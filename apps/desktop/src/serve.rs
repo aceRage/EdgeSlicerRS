@@ -23,8 +23,8 @@ const SCRIPT: &str = include_str!("../ui/app.js");
 const STYLE: &str = include_str!("../ui/style.css");
 const PRINTERS_SCRIPT: &str = include_str!("../ui/printers.js");
 const PRINTERS_STYLE: &str = include_str!("../ui/printers.css");
-const PROCESS_SCRIPT: &str = include_str!("../ui/process.js");
-const PROCESS_STYLE: &str = include_str!("../ui/process.css");
+const SETTINGS_SCRIPT: &str = include_str!("../ui/settings.js");
+const SETTINGS_STYLE: &str = include_str!("../ui/settings.css");
 /// The 3D views' scripts, under `ui/gl`.
 const GL: [(&str, &str); 9] = [
     ("math.js", include_str!("../ui/gl/math.js")),
@@ -150,20 +150,20 @@ fn handle(mut request: Request, session: &Arc<Session>, token: &str, port: u16) 
                 asset("printers.js", PRINTERS_SCRIPT),
             );
         }
-        (Method::Get, "/process.js") => {
+        (Method::Get, "/settings.js") => {
             respond(
                 request,
                 200,
                 "text/javascript; charset=utf-8",
-                asset("process.js", PROCESS_SCRIPT),
+                asset("settings.js", SETTINGS_SCRIPT),
             );
         }
-        (Method::Get, "/process.css") => {
+        (Method::Get, "/settings.css") => {
             respond(
                 request,
                 200,
                 "text/css; charset=utf-8",
-                asset("process.css", PROCESS_STYLE),
+                asset("settings.css", SETTINGS_STYLE),
             );
         }
         (Method::Get, "/printers.css") => {

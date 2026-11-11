@@ -74,14 +74,14 @@
         low: el('div', { className: 'gl-thumb low' }),
       };
       this.labels = {
-        high: el('output', { className: 'gl-layer-label high' }),
-        low: el('output', { className: 'gl-layer-label low' }),
+        high: el('output', { className: 'gl-layer-label high overlay chip-label' }),
+        low: el('output', { className: 'gl-layer-label low overlay chip-label' }),
       };
       this.track = el('div', { className: 'gl-track', tabIndex: 0 }, this.fill, this.thumbs.low, this.thumbs.high);
       this.track.setAttribute('role', 'slider');
       this.track.setAttribute('aria-orientation', 'vertical');
       this.track.setAttribute('aria-label', 'Layers');
-      this.oneButton = el('button', { type: 'button', className: 'gl-one', textContent: '1', title: 'On/Off one layer mode of the vertical slider [L]' });
+      this.oneButton = el('button', { type: 'button', className: 'gl-one overlay', textContent: '1', title: 'On/Off one layer mode of the vertical slider [L]' });
       this.oneButton.setAttribute('aria-pressed', 'false');
       this.oneButton.addEventListener('click', () => this.setOne(!this.one));
       this.node = el('div', { className: 'gl-layers', hidden: true }, this.labels.high, this.labels.low, this.track, this.oneButton);
@@ -200,7 +200,7 @@
       this.value = 0;
       this.fill = el('div', { className: 'gl-fill' });
       this.thumb = el('div', { className: 'gl-thumb' });
-      this.label = el('output', { className: 'gl-move-label' });
+      this.label = el('output', { className: 'gl-move-label overlay chip-label' });
       this.track = el('div', { className: 'gl-track', tabIndex: 0 }, this.fill, this.thumb, this.label);
       this.track.setAttribute('role', 'slider');
       this.track.setAttribute('aria-label', 'Moves');
