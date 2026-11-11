@@ -28,7 +28,7 @@ replaces it until output matches on the printers we care about.
 | `crates/edge-template` | The placeholder language of custom G-code: `{expression}`, `{if}`, `[variable]`, and scripts |
 | `crates/edge-time` | How long a G-code file takes, with acceleration: the file is read as a printer reads it and planned as the reference's estimator plans, or as Klipper does |
 | `crates/edge-tower` | The prime tower a nozzle is primed on after a tool change |
-| `crates/edge-slice` | Mesh to per-layer contours, then to regions with holes; parallel across layers. Elephant foot compensation of the first layers |
+| `crates/edge-slice` | Mesh to per-layer contours, then to regions with holes; parallel across layers. Elephant foot compensation of the first layers; round holes made polygons of few sides, and round outlines and holes resized by what the filament prints them off by |
 | `crates/edge-engine` | The whole pipeline behind one call, for whatever drives it: open a model and list its plates, settle its settings, slice with progress and cancel, G-code, a layer's lines for drawing, a vendor's presets by printer, and its printer models with the presets, picture and sizes of each |
 | `crates/edge-cli` | The `edge` command line |
 | `tools/make_defaults.py` | Asks the reference for its default of every setting and writes the table `edge-config` carries; run again when the pin moves |
@@ -65,6 +65,8 @@ A first pass at the C++ application's main window, not yet the
 application: `apps/desktop/UI_PARITY.md` lists, for each of its tabs and
 for the project strip, what the C++ offers, what is here, and what is
 not yet.
+How the page looks is the app's own (dark first, spare); the tokens and
+the controls it is built from are described in `apps/desktop/ui/STYLE.md`.
 
 - **The project strip**, at the far left: several projects open at once
   (eight at most), each with its own file, plate, presets, slices and
@@ -253,6 +255,58 @@ Working:
   is resized as a whole and each filament keeps its share of it. Not
   used on a plate with colour painted on it, and a note says so: the
   reference leaves out the painted object only.
+- Polyholes (`hole_to_polyhole`): a round hole that runs up through
+  the part is walled as a polygon of few sides with its flats on the
+  circle, so the hole prints the size it is drawn (PrintObject.cpp
+  `_transform_hole_to_polyholes` and `create_polyholes`). A hole is
+  round when it has more than eight points, is convex, and its points
+  and the middles of its sides keep within `hole_to_polyhole_threshold`
+  (a length, or a share of the radius) of one distance from its middle;
+  it is converted where it runs through two layers or more, or is on
+  the first layer. The number of sides comes from the radius and the
+  nozzle of the filament the hole is in (twice the diameter in mm for a
+  0.4 mm nozzle, three at least, `hole_to_polyhole_max_edges` at most),
+  and with `hole_to_polyhole_twisted` each layer's polygon is turned
+  two fifths of a side from the one below. It is done last, as in the
+  reference: round the hole as XY compensation, elephant foot
+  compensation and the circle compensation left it, so the first
+  layer's hole, which elephant foot compensation opens, gets a polygon
+  of its own, and with that compensation spread over several layers
+  the layers between the first and the last of them keep their round
+  hole.
+- Auto circle compensation (`enable_circle_compensation`): outlines and
+  holes that are circles (eight points or more, all near one distance
+  from the middle) are resized by `c1 * speed + c2 * diameter + c3`,
+  held between two limits, with the filament's own
+  `circle_compensation_speed`, `counter_coef_1` to `3`,
+  `counter_limit_min` and `max` for outlines and `hole_coef_1` to `3`,
+  `hole_limit_min` and `max` for holes (LayerRegion.cpp
+  `auto_circle_compensation`, which the reference has from Bambu
+  Studio); a filament that carries none has the reference's defaults.
+  `circle_compensation_manual_offset` takes half of itself off either:
+  positive makes holes larger and outlines smaller. It is done after
+  XY compensation and elephant foot compensation, layer by layer. The
+  walls round a circle under the filament's `diameter_limit` are told
+  apart (every outline wall of a round island, and every wall round a
+  round hole) and laid at the compensation speed in place of the
+  walls' own, the first layer's speed, the hot end's flow and a small
+  loop's lower speed still holding them, and they are not slowed to
+  give a layer time to cool; a loop any of which is laid as an overhang
+  wall is a wall like any other. Not done: the scarf seam such walls
+  are to be joined with (`apply_scarf_seam_on_circles`, on unless turned
+  off; a note says so), and the reference's "; Slow Down Start" and
+  "; Slow Down End" comments round them, which only its own cooling
+  stage reads.
+- With either of the two on, the layers are cut without the points
+  where the cutting plane crosses an edge inside a flat face, as the
+  reference cuts them (TriangleMeshSlicer.cpp `coplanar_edges`): they
+  are corners of the mesh's triangles, not of the model. Cut the plain
+  way, a round hole is not round enough to be told for one: where such
+  a point lies a unit or two off its flat, closing the outline by
+  `slice_closing_radius` leaves a kink there, up to some hundredths of
+  a millimetre from where the corner beside it was. With both options
+  off the layers are cut as they always were, kinks and all; cutting
+  them this way always is the better outline and is still to do.
 - Thin walls (`detect_thin_wall`, classic walls): a part too thin for a
   wall down each side gets one line down its middle, as wide as the
   part, laid as an outer wall; a fuzzy skin on the outer wall is on it
@@ -941,6 +995,73 @@ sixth lay their walls in the same order in both, with either
 generator; on the mushroom with `overhang_reverse`, a threshold of 0
 and the outer wall left alone, the inner wall of every odd layer is
 clockwise in both, and at the default threshold no wall is, in both.
+
+The hole options, on a part made for them (`tools/make_fixture.py`,
+`holes`: a slab with round holes 2, 3, 5, 8 and 12 mm across, each in
+64 sides, a hole that is nearly round, one of eight sides, a round boss,
+a round tube, and a hole from front to back) with the U1's presets, 80
+layers. Each of the 300 outer walls round a hole or a boss was found in
+both files and measured from the middle it goes round: how many sides
+it has, how far out its corners are, how far out its flats are, and
+which way its first corner lies. The most any of them differs, and the
+walls' length over the whole part (C++ slicer / this engine):
+
+| Options | Sides | Corners | Flats | Turned | Outer wall, m | Inner wall, m |
+|---|---|---|---|---|---|---|
+| `hole_to_polyhole` | the same | under 0.0001 mm | 0.0009 mm | 0.03 deg | 16.53 / 16.53 | 16.42 / 16.42 |
+| and not twisted | the same | under 0.0001 mm | 0.0004 mm | 0.03 deg | 16.53 / 16.53 | 16.42 / 16.42 |
+| and 8 sides at most | the same | 0.0002 mm | 0.0013 mm | 0.03 deg | 16.57 / 16.63 | 16.54 / 16.54 |
+| and a margin of 5% | the same | 0.0002 mm | 0.0009 mm | 0.02 deg | 16.62 / 16.62 | 16.51 / 16.51 |
+| and XY compensation (hole +0.1, outline -0.05) | the same | 0.0002 mm | 0.0011 mm | 0.01 deg | 16.65 / 16.65 | 16.53 / 16.53 |
+| and elephant foot over 3 layers | the same | under 0.0001 mm | 0.0009 mm | 0.03 deg | 16.52 / 16.52 | 16.42 / 16.42 |
+| `enable_circle_compensation` | the same | 0.0002 mm | 0.0003 mm | | 16.59 / 16.59 | 16.44 / 16.44 |
+| and a manual offset of 0.1 | the same | under 0.0001 mm | 0.0003 mm | | 16.65 / 16.65 | 16.50 / 16.50 |
+| and a manual offset of -0.2 | the same | 0.0004 mm | 0.0003 mm | | 16.47 / 16.47 | 16.33 / 16.33 |
+| and XY compensation | the same | under 0.0001 mm | 0.0003 mm | | 16.70 / 16.70 | 16.54 / 16.54 |
+| both options | the same | 0.0001 mm | 0.0009 mm | 0.02 deg | 16.73 / 16.73 | 16.60 / 16.60 |
+
+The polygons have 4, 6, 10, 16 and 24 sides for the five holes and 8
+for the tube's (5, 7, 11, 17, 25 and 9 on the first layer, whose holes
+elephant foot compensation has opened by 0.15 mm), turned 0, 2, 4, 1
+and 3 fifths of a side on five layers running; the nearly round hole,
+the eight-sided one and the hole from front to back are as drawn in
+both. (The circle compensation rows are with
+`apply_scarf_seam_on_circles` off. With it on, as it is unless turned
+off, the reference's outer walls come to 20.97 m and its inner walls to
+19.78 m: its scarf seams lay the start of each such loop twice. The
+loops themselves are the same.) With eight sides at most the 0.06 m is
+overhang: the corners of a 12 mm hole in eight sides stand out over the
+layer beneath as it turns, and the two slicers cut a wall into overhang
+and wall differently.
+
+With the walls at 60 and 80 mm/s and the circle compensation on, the
+walls round the round holes and bosses are written at 162 mm/s in the
+reference's file and 159 here (the compensation speed of 200 mm/s, held
+by the hot end's flow; the 3 mm/s between them is on every wall of this
+part that goes at full speed, with no option on as well), and the wall
+round the nearly round hole at 60 in both.
+With the coefficients a filament ships with (a project of Bambu's
+presets for an H2S and its PLA Basic, start G-code replaced, arcs off)
+all 300 loops agree to 0.0004 mm in size and to the mm/s in speed. With
+walls of changing width the corners agree to 0.0005 mm under the circle
+compensation and to 0.013 mm as polyholes, the loops being cut into
+points differently, as they are with no option on.
+
+Two things do not match. At a margin of nothing
+(`hole_to_polyhole_threshold = 0`, which both slicers take as a
+ten-thousandth of a millimetre) this engine converts the tube's hole
+below the tube and the reference does not: whether its points keep to
+one distance within 0.0002 mm is decided by rounding that the two do not
+share. And with both options off the same walls are up to 0.17 mm from
+the reference's at their corners, on 173 of the 300 loops: that is the
+kinks closing leaves in an outline cut with the crossings in it (Status,
+above), which the hole options are rid of and the plain cut is not.
+
+Both options off, the G-code is byte for byte what it was before they
+were followed: on this part, the cube, frame, steps, mushroom and fins,
+two blocks in two filaments, 3DBenchy and both plates of
+`mcbrim_test.3mf`. With both on, the parts made of boxes are line for
+line what they are with both off.
 
 Fuzzy skin differs from the reference in three ways, on purpose:
 

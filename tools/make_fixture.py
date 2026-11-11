@@ -20,10 +20,23 @@ the second in filament 2 and 4 mm tall, so there is a tool change on every
 layer up to 4 mm and none above; comb is a spine with teeth 0.5 to 2 mm
 wide standing on the bed, and twocomb the same with the teeth in filament 2,
 for the first layer's elephant foot compensation; steps is three tiers with a
-top surface on each, the lowest with a hole through it, for ironing. The reference loads the filament preset named in the settings again,
+top surface on each, the lowest with a hole through it, for ironing. cylinder
+is a round post, tube a round post with a round hole through it, and curve a
+slab with one long side bowed out on a 80 mm radius, one end a half circle and
+the other end's corners rounded to 1.5 mm, for arc fitting (use a source with
+enable_arc_fitting=1, or give it as a change). The reference loads the filament preset named in the settings again,
 so a change to a filament's own settings, such as filament_type, is undone.
+
+holes is for the hole options (hole_to_polyhole, enable_circle_compensation):
+a slab 6 mm tall of ten 16 mm cells in two rows. The near row has round
+holes straight down through it, 2, 3, 5, 8 and 12 mm across, each in 64
+sides. The far row has a hole that is nearly round (an ellipse 5 by 5.4 mm),
+one of eight sides (too few to be taken for round), a round boss 10 mm
+across standing on a cell, a round tube standing on another with a 4 mm hole
+down through tube and cell, and a block 16 mm tall with a 5 mm hole through
+it from front to back, which no layer sees as a hole.
 """
-import json, sys, zipfile
+import json, math, sys, zipfile
 
 def box(x0, y0, z0, dx, dy, dz):
     v = [(x0, y0, z0), (x0 + dx, y0, z0), (x0 + dx, y0 + dy, z0), (x0, y0 + dy, z0),
@@ -31,6 +44,63 @@ def box(x0, y0, z0, dx, dy, dz):
     t = [(0, 2, 1), (0, 3, 2), (4, 5, 6), (4, 6, 7), (0, 1, 5), (0, 5, 4),
          (1, 2, 6), (1, 6, 5), (2, 3, 7), (2, 7, 6), (3, 0, 4), (3, 4, 7)]
     return v, t
+
+def circle(cx, cy, r, n, start=0.0, sweep=2 * math.pi, closed=True):
+    """Points counter-clockwise on a circle: n steps over sweep, the last left off if closed."""
+    return [(cx + r * math.cos(start + sweep * i / n), cy + r * math.sin(start + sweep * i / n))
+            for i in range(n if closed else n + 1)]
+
+def prism(outline, z0, dz, hole=None):
+    """A counter-clockwise outline pulled up from z0 by dz. A convex outline is
+    capped as a fan about its middle; with a hole (counter-clockwise too, as
+    many points as the outline, starting at the same angle) the caps are the
+    strip between the two."""
+    n = len(outline)
+    v = [(x, y, z0) for x, y in outline] + [(x, y, z0 + dz) for x, y in outline]
+    t = []
+    def wall(base, flip):
+        for i in range(n):
+            j = (i + 1) % n
+            a, b, c, d = base + i, base + j, base + n + j, base + n + i
+            t.extend([(a, c, b), (a, d, c)] if flip else [(a, b, c), (a, c, d)])
+    wall(0, False)
+    if hole is None:
+        mx, my = sum(x for x, _ in outline) / n, sum(y for _, y in outline) / n
+        v += [(mx, my, z0), (mx, my, z0 + dz)]
+        for i in range(n):
+            j = (i + 1) % n
+            t.append((2 * n, j, i))
+            t.append((2 * n + 1, n + i, n + j))
+    else:
+        assert len(hole) == n
+        v += [(x, y, z0) for x, y in hole] + [(x, y, z0 + dz) for x, y in hole]
+        wall(2 * n, True)
+        for i in range(n):
+            j = (i + 1) % n
+            t.extend([(i, 2 * n + j, j), (i, 2 * n + i, 2 * n + j)])
+            t.extend([(n + i, n + j, 3 * n + j), (n + i, 3 * n + j, 3 * n + i)])
+    return v, t
+
+def curve_outline():
+    """A slab about 40 x 16 mm: its far side bows out on a 80 mm radius, its
+    right end is a half circle and its left corners are rounded to 1.5 mm."""
+    x0, y0, w, h, r = 115.5, 128.0, 32.0, 16.0, 1.5
+    points = circle(x0 + r, y0 + r, r, 12, math.pi, math.pi / 2, closed=False)          # near left corner
+    points += circle(x0 + w, y0 + h / 2, h / 2, 64, -math.pi / 2, math.pi, closed=False)   # right end
+    half = math.asin((w - r) / 2 / 80.0)                                                   # far side, right to left
+    cx, cy = x0 + r + (w - r) / 2, y0 + h - 80.0 * math.cos(half)
+    points += circle(cx, cy, 80.0, 96, math.pi / 2 - half, 2 * half, closed=False)[1:]
+    points += circle(x0 + r, y0 + h - r, r, 12, math.pi / 2, math.pi / 2, closed=False)[1:] # far left corner
+    return points
+
+# Shapes that are not boxes: each a list of (vertices, triangles).
+MESHES = {
+    # a round post 20 mm across, in 128 sides
+    "cylinder": [prism(circle(135.5, 136, 10, 128), 0, 10)],
+    # a round post 24 mm across with a 12 mm hole through it
+    "tube": [prism(circle(135.5, 136, 12, 128), 0, 8, circle(135.5, 136, 6, 128))],
+    "curve": [prism(curve_outline(), 0, 6)],
+}
 
 SHAPES = {
     # Each is centred where the reference's arranger puts a single part: 135.5 x 136.
@@ -74,19 +144,57 @@ SHAPES["twocomb"] = SHAPES["comb"]
 # The filament each box of a shape is printed in, where it is not all the first.
 FILAMENTS = {"twotone": [1, 2], "twocomb": [1] + [2] * 7}
 
+def around(cx, cy, half, angles):
+    """Where rays from the middle of a square at these angles leave it: the
+    square's outline, with a point for each point of a hole in its middle."""
+    return [(cx + half / max(abs(math.cos(a)), abs(math.sin(a))) * math.cos(a),
+             cy + half / max(abs(math.cos(a)), abs(math.sin(a))) * math.sin(a)) for a in angles]
+
+def cell(cx, cy, z0, dz, hole):
+    """A 16 mm square cell about (cx, cy) with a hole down through it, given
+    as (rx, ry, sides); none leaves it solid."""
+    if hole is None:
+        return box(cx - 8, cy - 8, z0, 16, 16, dz)
+    rx, ry, n = hole
+    angles = [2 * math.pi * i / n for i in range(n)]
+    return prism(around(cx, cy, 8, angles), z0, dz,
+                 [(cx + rx * math.cos(a), cy + ry * math.sin(a)) for a in angles])
+
+def lying(solid, y0):
+    """A prism drawn in x and z and pulled along y from y0: its y and z
+    change places, which turns every triangle over."""
+    v, t = solid
+    return [(x, y0 + z, y) for x, y, z in v], [(a, c, b) for a, b, c in t]
+
+def holes():
+    xs = [103.5 + 16 * i for i in range(5)]
+    near, far = 128, 144
+    solids = [cell(x, near, 0, 6, (d / 2, d / 2, 64)) for x, d in zip(xs, (2, 3, 5, 8, 12))]
+    solids.append(cell(xs[0], far, 0, 6, (2.5, 2.7, 64)))          # nearly round
+    solids.append(cell(xs[1], far, 0, 6, (3, 3, 8)))               # eight sides
+    solids.append(cell(xs[2], far, 0, 6, None))
+    solids.append(prism(circle(xs[2], far, 5, 64), 6, 4))          # a boss
+    solids.append(cell(xs[3], far, 0, 6, (2, 2, 64)))
+    solids.append(prism(circle(xs[3], far, 5, 64), 6, 4, circle(xs[3], far, 2, 64)))  # a tube
+    # the hole from front to back: drawn about (x, z) = (xs[4], 8), pulled along y
+    solids.append(lying(cell(xs[4], 8, 0, 16, (2.5, 2.5, 64)), far - 8))
+    return solids
+
+MESHES["holes"] = holes()
+
 out, source, shape = sys.argv[1:4]
 changes = dict(arg.split("=", 1) for arg in sys.argv[4:])
 objects = []
-for index, dims in enumerate(SHAPES[shape]):
-    v, t = box(*dims)
+solids = MESHES[shape] if shape in MESHES else [box(*dims) for dims in SHAPES[shape]]
+for index, (v, t) in enumerate(solids):
     xml = ['  <object id="%d" type="model"><mesh><vertices>' % (index + 1)]
-    xml += ['   <vertex x="%g" y="%g" z="%g"/>' % p for p in v]
+    xml += ['   <vertex x="%.9g" y="%.9g" z="%.9g"/>' % p for p in v]
     xml.append('  </vertices><triangles>')
     xml += ['   <triangle v1="%d" v2="%d" v3="%d"/>' % tri for tri in t]
     xml.append('  </triangles></mesh></object>')
     objects.append("\n".join(xml))
-parent = len(SHAPES[shape]) + 1
-components = "".join('<component objectid="%d"/>' % (i + 1) for i in range(len(SHAPES[shape])))
+parent = len(solids) + 1
+components = "".join('<component objectid="%d"/>' % (i + 1) for i in range(len(solids)))
 model = f'''<?xml version="1.0" encoding="UTF-8"?>
 <model unit="millimeter" xml:lang="en-US" xmlns="http://schemas.microsoft.com/3dmanufacturing/core/2015/02">
  <resources>

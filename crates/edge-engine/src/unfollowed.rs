@@ -13,11 +13,6 @@ const UNREAD: [(&str, &str, &str); 9] = [
         "the nozzle is wiped along the wall, not in toward the inner walls",
     ),
     (
-        "enable_circle_compensation",
-        "0",
-        "round holes and bosses are printed at the size they are drawn",
-    ),
-    (
         "elefant_foot_layers_density",
         "100%",
         "solid fill on the first layers is laid at its full density",

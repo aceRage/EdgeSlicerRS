@@ -4,11 +4,23 @@ use edge_clip::{ClipError, Join};
 use edge_geom::{Coord, ExPolygon, Point2, Polygon};
 use edge_mesh::Mesh;
 use rayon::prelude::*;
-use rustc_hash::FxHashMap;
+use rustc_hash::{FxHashMap, FxHashSet};
 
+mod circle_compensation;
 mod elephant_foot;
+mod flat;
+mod polyholes;
+mod rings;
 
+pub use circle_compensation::{
+    Circle, CircleCompensation, Marked, approx_circle, auto_circle_compensation, compensation,
+};
 pub use elephant_foot::compensate_elephant_foot;
+pub use polyholes::{
+    Margin, Polyholes, RoundHole, Share, create_polyholes, hole_to_polyholes, polyhole_edges,
+    round_hole,
+};
+pub use rings::{Replaced, centroid, same_ring};
 
 #[derive(Clone, Debug)]
 pub struct Layer {
@@ -56,6 +68,17 @@ pub fn layer_planes(
 /// either misses a plane or crosses it through exactly two of its edges, and
 /// horizontal faces never produce degenerate contours.
 pub fn slice(mesh: &Mesh, planes: &[f64]) -> Vec<Layer> {
+    slice_with(mesh, planes, None)
+}
+
+/// As [`slice`], leaving out of each contour the points where the plane
+/// crosses an edge inside a flat face, as the reference does: they are
+/// no corners of the model, only of its triangles.
+pub fn slice_without_flat_crossings(mesh: &Mesh, planes: &[f64]) -> Vec<Layer> {
+    slice_with(mesh, planes, Some(&flat::flat_edges(mesh)))
+}
+
+fn slice_with(mesh: &Mesh, planes: &[f64], flat: Option<&FxHashSet<u64>>) -> Vec<Layer> {
     assert!(planes.is_sorted(), "planes must be sorted ascending");
 
     // Half-open range of planes each triangle crosses: lowest < plane <= highest.
@@ -96,7 +119,7 @@ pub fn slice(mesh: &Mesh, planes: &[f64]) -> Vec<Layer> {
     planes
         .par_iter()
         .enumerate()
-        .map(|(plane, &z)| slice_layer(mesh, z, &buckets[offsets[plane]..offsets[plane + 1]]))
+        .map(|(plane, &z)| slice_layer(mesh, z, &buckets[offsets[plane]..offsets[plane + 1]], flat))
         .collect()
 }
 
@@ -144,6 +167,31 @@ pub fn slice_regions(
     bodies: &[Body<'_>],
     planes: &[f64],
     closing_radius: Coord,
+) -> Result<Vec<LayerRegions>, ClipError> {
+    slice_regions_with(bodies, planes, closing_radius, slice)
+}
+
+/// As [`slice_regions`], cut by [`slice_without_flat_crossings`].
+///
+/// Closing an outline that has those points on it does not give the
+/// outline back: where one lies a unit or two off its flat, growing and
+/// shrinking by the closing radius leaves a kink, some hundredths of a
+/// millimetre from where the corner beside it was. A round hole cut the
+/// plain way is therefore not round enough to be told for one, and the
+/// hole options have their layers cut this way.
+pub fn slice_regions_without_flat_crossings(
+    bodies: &[Body<'_>],
+    planes: &[f64],
+    closing_radius: Coord,
+) -> Result<Vec<LayerRegions>, ClipError> {
+    slice_regions_with(bodies, planes, closing_radius, slice_without_flat_crossings)
+}
+
+fn slice_regions_with(
+    bodies: &[Body<'_>],
+    planes: &[f64],
+    closing_radius: Coord,
+    slice: fn(&Mesh, &[f64]) -> Vec<Layer>,
 ) -> Result<Vec<LayerRegions>, ClipError> {
     let sliced: Vec<(Vec<Layer>, Option<Vec<Layer>>)> = bodies
         .iter()
@@ -250,8 +298,10 @@ struct Segment {
 
 const NONE: u32 = u32::MAX;
 
-/// Every triangle in `triangles` must cross the plane at `z`.
-fn slice_layer(mesh: &Mesh, z: f64, triangles: &[u32]) -> Layer {
+/// Every triangle in `triangles` must cross the plane at `z`. A point cut
+/// on an edge in `flat` is left out of its contour.
+fn slice_layer(mesh: &Mesh, z: f64, triangles: &[u32], flat: Option<&FxHashSet<u64>>) -> Layer {
+    let kept = |edge: u64| flat.is_none_or(|flat| !flat.contains(&edge));
     // Each triangle contributes one segment between two mesh edges, and
     // segments chain by edge identity, so contours close exactly with no
     // distance tolerance. A watertight mesh has one segment leaving each edge.
@@ -319,7 +369,7 @@ fn slice_layer(mesh: &Mesh, z: f64, triangles: &[u32]) -> Layer {
                 match take(&mut unused, to) {
                     Some(segment) => {
                         // Planes through a vertex yield zero-length segments.
-                        if points.last() != Some(&segment.point) {
+                        if points.last() != Some(&segment.point) && kept(segment.from) {
                             points.push(segment.point);
                         }
                         to = segment.to;
@@ -329,6 +379,10 @@ fn slice_layer(mesh: &Mesh, z: f64, triangles: &[u32]) -> Layer {
             };
             if points.len() > 1 && points.last() == points.first() {
                 points.pop();
+            }
+            // "The seed point is also a triangle junction."
+            if closed && !kept(first.from) && !points.is_empty() {
+                points.remove(0);
             }
             if !closed {
                 open_chains += 1;

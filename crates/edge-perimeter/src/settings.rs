@@ -462,23 +462,12 @@ impl WallSettings {
         let mut notes = Vec::new();
         let text = |key: &str| settings.text(key).map(str::to_owned);
         // Present and not the value that turns it off.
-        for (key, off, instead) in [
-            (
-                "hole_to_polyhole",
-                "0",
-                "round holes are walled as they are drawn",
-            ),
-            (
-                "counterbore_hole_bridging",
-                "none",
-                "a hole that narrows is left to bridge as it is",
-            ),
-        ] {
-            if let Some(value) = text(key)
-                && value != off
-            {
-                notes.push(format!("{key} \"{value}\": {instead}"));
-            }
+        if let Some(value) = text("counterbore_hole_bridging")
+            && value != "none"
+        {
+            notes.push(format!(
+                "counterbore_hole_bridging \"{value}\": a hole that narrows is left to bridge as it is"
+            ));
         }
         if self.only_one_wall_top
             && settings
@@ -1111,8 +1100,7 @@ mod tests {
         // Nothing to say of settings at what turns them off.
         assert!(
             notes(
-                r#"{"hole_to_polyhole": "0",
-                    "counterbore_hole_bridging": "none",
+                r#"{"counterbore_hole_bridging": "none",
                     "top_surface_expansion": "0", "only_one_wall_top": "1"}"#
             )
             .is_empty()
@@ -1122,8 +1110,9 @@ mod tests {
                 "counterbore_hole_bridging": "partiallybridge",
                 "top_surface_expansion": "0.5", "only_one_wall_top": "1"}"#,
         );
-        assert_eq!(said.len(), 3, "{said:?}");
-        assert!(said[0].starts_with("hole_to_polyhole \"1\": "));
+        // Polyholes are made (edge-slice), and nothing is said of them.
+        assert_eq!(said.len(), 2, "{said:?}");
+        assert!(said[0].starts_with("counterbore_hole_bridging \"partiallybridge\": "));
         // A top surface is only widened where it has one wall.
         let fewer = notes(r#"{"top_surface_expansion": "0.5"}"#);
         assert!(fewer.is_empty(), "{fewer:?}");

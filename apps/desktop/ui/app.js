@@ -152,6 +152,333 @@ document.addEventListener('pointerdown', (event) => {
   if (!$('menu').hidden && !$('menu').contains(event.target)) hideMenu();
 });
 
+// ---- controls ----
+
+// The page's own list in place of a <select>'s system popup. The <select>
+// stays in the page, out of sight, and stays what the page fills, reads
+// and listens to: the list shows its options as they are (groups, lines,
+// what is off or hidden), and picking one sets its value and sends its
+// 'change', as picking in the system's popup does. `trigger` is an
+// element of the page's to be the closed face (it holds a `.lb-value`
+// for the name of what is selected); without one the list makes its own
+// and comes back wrapped with it, to stand where the <select> stood.
+// `decorate(row, option)` may add to a row of the open list.
+//
+// The keys are those of a list that is only picked from (ARIA's
+// select-only combobox): closed, Down, Up, Enter, Space, Home and End
+// open it; open, the arrows, Home, End, Page Up and Page Down move,
+// Enter and Space pick, Escape and Tab close it and leave things as
+// they were; a letter typed goes to the next row that starts with what
+// was typed. The keys never leave the closed face, so there is nothing
+// to give them back to.
+let listboxes = 0;
+function listbox(select, { trigger = null, decorate = null, bare = false } = {}) {
+  const id = `lb${++listboxes}`;
+  const face = trigger || el('div', { className: `lb-trigger${bare ? ' bare' : ''}` });
+  let shown = face.querySelector('.lb-value');
+  if (!shown) {
+    shown = el('span', { className: 'lb-value' });
+    face.append(shown);
+  }
+  let wrap = null;
+  if (trigger) {
+    select.classList.add('lb-native');
+  } else {
+    wrap = el('span', { className: 'lb' });
+    if (select.parentNode) select.replaceWith(wrap);
+    wrap.append(select, face);
+  }
+  face.setAttribute('role', 'combobox');
+  face.setAttribute('aria-haspopup', 'listbox');
+  face.setAttribute('aria-expanded', 'false');
+  // Named as the <select> is: by its own label, else by the <label> it is in or that points at it.
+  const labels = [...(select.labels || [])];
+  const named = select.getAttribute('aria-label')
+    || labels.map((label) => [...label.childNodes].filter((node) => node.nodeType === 3).map((node) => node.textContent).join(' ').trim()).join(' ');
+  if (named) face.setAttribute('aria-label', named);
+  for (const label of labels) {
+    label.addEventListener('click', (event) => {
+      if (face.contains(event.target)) return;
+      event.preventDefault();
+      face.focus();
+    });
+  }
+
+  let pop = null;
+  let rows = [];
+  let active = -1;
+  let typed = '';
+  let typedAt = 0;
+
+  const sync = () => {
+    const option = select.selectedOptions[0] || null;
+    shown.textContent = option ? option.label : '';
+    face.classList.toggle('placeholder', !option || option.disabled);
+    face.setAttribute('aria-disabled', String(select.disabled));
+    face.tabIndex = select.disabled ? -1 : 0;
+    if (select.title) {
+      face.title = select.title;
+    } else {
+      face.removeAttribute('title');
+      delete face.dataset.tip;
+    }
+  };
+
+  const setActive = (index) => {
+    if (active >= 0 && rows[active]) rows[active].node.classList.remove('active');
+    active = index;
+    if (index < 0 || !rows[index]) {
+      face.removeAttribute('aria-activedescendant');
+      return;
+    }
+    rows[index].node.classList.add('active');
+    rows[index].node.scrollIntoView({ block: 'nearest' });
+    face.setAttribute('aria-activedescendant', rows[index].node.id);
+  };
+
+  // The next row from `from` going `by` that can be picked; `from` itself when there is none.
+  const step = (from, by) => {
+    for (let at = from + by; at >= 0 && at < rows.length; at += by) {
+      if (!rows[at].option.disabled) return at;
+    }
+    return from;
+  };
+  const edge = (last) => (last ? step(rows.length, -1) : step(-1, 1));
+
+  const outside = (event) => {
+    if (!pop || pop.contains(event.target) || face.contains(event.target)) return;
+    hide();
+  };
+  const moved = (event) => { if (pop && !pop.contains(event.target)) hide(); };
+
+  function hide() {
+    if (!pop) return;
+    pop.remove();
+    pop = null;
+    rows = [];
+    active = -1;
+    face.setAttribute('aria-expanded', 'false');
+    face.removeAttribute('aria-controls');
+    face.removeAttribute('aria-activedescendant');
+    document.removeEventListener('pointerdown', outside, true);
+    document.removeEventListener('scroll', moved, true);
+    window.removeEventListener('resize', hide);
+  }
+
+  function show() {
+    if (pop || select.disabled) return;
+    pop = el('div', { className: 'lb-pop', id: `${id}-list` });
+    pop.setAttribute('role', 'listbox');
+    if (named) pop.setAttribute('aria-label', named);
+    rows = [];
+    const row = (option, into) => {
+      if (option.hidden) return;
+      const node = el('div', { className: 'lb-option', id: `${id}-${rows.length}` }, el('span', { className: 'lb-text', textContent: option.label }));
+      node.setAttribute('role', 'option');
+      node.setAttribute('aria-selected', String(option.selected));
+      if (option.disabled) node.setAttribute('aria-disabled', 'true');
+      if (option.title) node.title = option.title;
+      if (decorate) decorate(node, option);
+      const index = rows.length;
+      node.addEventListener('pointermove', () => { if (active !== index && !option.disabled) setActive(index); });
+      node.addEventListener('click', () => choose(index));
+      rows.push({ node, option });
+      into.append(node);
+    };
+    for (const child of select.children) {
+      if (child.tagName === 'OPTGROUP') {
+        const title = el('div', { className: 'lb-group-label', id: `${id}-g${pop.children.length}`, textContent: child.label });
+        const group = el('div', { className: 'lb-group' }, title);
+        group.setAttribute('role', 'group');
+        group.setAttribute('aria-labelledby', title.id);
+        for (const option of child.children) row(option, group);
+        pop.append(group);
+      } else if (child.tagName === 'HR') {
+        const line = el('div', { className: 'lb-sep' });
+        line.setAttribute('role', 'separator');
+        pop.append(line);
+      } else {
+        row(child, pop);
+      }
+    }
+    // A press in the list does not take the keys from the closed face.
+    pop.addEventListener('pointerdown', (event) => event.preventDefault());
+    // Inside the dialog it was opened from, where there is one: the rest of the page is out of reach while a dialog is up.
+    (face.closest('dialog') || document.body).append(pop);
+    // Under the closed face, or over it where there is more room; never wider or taller than the window.
+    const box = face.getBoundingClientRect();
+    const below = window.innerHeight - box.bottom - 12;
+    const above = box.top - 12;
+    const over = below < 200 && above > below;
+    pop.style.minWidth = `${Math.min(box.width, window.innerWidth - 16)}px`;
+    pop.style.maxHeight = `${Math.max(96, Math.min(440, over ? above : below))}px`;
+    pop.style.left = `${Math.max(8, Math.min(box.left, window.innerWidth - pop.offsetWidth - 8))}px`;
+    if (over) pop.style.bottom = `${window.innerHeight - box.top + 4}px`;
+    else pop.style.top = `${box.bottom + 4}px`;
+    face.setAttribute('aria-expanded', 'true');
+    face.setAttribute('aria-controls', pop.id);
+    const on = rows.findIndex((known) => known.option.selected && !known.option.disabled);
+    setActive(on >= 0 ? on : edge(false));
+    // What is selected, in the middle of a list that scrolls.
+    if (on >= 0) rows[on].node.scrollIntoView({ block: 'center' });
+    document.addEventListener('pointerdown', outside, true);
+    document.addEventListener('scroll', moved, true);
+    window.addEventListener('resize', hide);
+  }
+
+  function choose(index) {
+    const picked = rows[index];
+    if (!picked || picked.option.disabled) return;
+    const value = picked.option.value;
+    hide();
+    if (select.value !== value) {
+      select.value = value;
+      select.dispatchEvent(new Event('change', { bubbles: true }));
+    }
+    sync();
+  }
+
+  face.addEventListener('click', () => { if (pop) hide(); else show(); });
+  face.addEventListener('focusout', hide);
+  // A name cut short is given whole under the pointer, unless the <select> has a tooltip of its own.
+  face.addEventListener('pointerover', () => {
+    if (select.title || pop || face.dataset.tip !== undefined) return;
+    if (shown.scrollWidth > shown.clientWidth) face.title = shown.textContent;
+    else face.removeAttribute('title');
+  });
+  face.addEventListener('keydown', (event) => {
+    if (select.disabled || event.ctrlKey || event.metaKey) return;
+    const key = event.key;
+    const letter = key.length === 1 && (key !== ' ' || (typed && Date.now() - typedAt < 700));
+    if (letter) {
+      // What was typed in the last moment, to the next row that starts with it; one letter again goes on to the next.
+      event.preventDefault();
+      typed = Date.now() - typedAt < 700 ? typed + key.toLowerCase() : key.toLowerCase();
+      typedAt = Date.now();
+      show();
+      const same = [...typed].every((char) => char === typed[0]);
+      const wanted = same ? typed[0] : typed;
+      const from = same ? active + 1 : Math.max(active, 0);
+      for (let n = 0; n < rows.length; n += 1) {
+        const at = (from + n) % rows.length;
+        if (!rows[at].option.disabled && rows[at].option.label.toLowerCase().startsWith(wanted)) { setActive(at); break; }
+      }
+      return;
+    }
+    if (!pop) {
+      if (!['ArrowDown', 'ArrowUp', 'Enter', ' ', 'Home', 'End'].includes(key)) return;
+      event.preventDefault();
+      show();
+      if (key === 'Home') setActive(edge(false));
+      if (key === 'End') setActive(edge(true));
+      return;
+    }
+    if (key === 'Escape') {
+      // The list closes; what it stands in (a dialog, the page) does not hear of it.
+      event.preventDefault();
+      event.stopPropagation();
+      hide();
+    } else if (key === 'Tab') {
+      hide();
+    } else if (key === 'Enter' || key === ' ' || (key === 'ArrowUp' && event.altKey)) {
+      event.preventDefault();
+      choose(active);
+    } else if (key === 'ArrowDown' || key === 'ArrowUp') {
+      event.preventDefault();
+      setActive(step(active, key === 'ArrowDown' ? 1 : -1));
+    } else if (key === 'Home' || key === 'End') {
+      event.preventDefault();
+      setActive(edge(key === 'End'));
+    } else if (key === 'PageDown' || key === 'PageUp') {
+      event.preventDefault();
+      let at = active;
+      for (let n = 0; n < 10; n += 1) at = step(at, key === 'PageDown' ? 1 : -1);
+      setActive(at);
+    }
+  });
+
+  // Whatever the page does to the <select> shows in the closed face; an open list is closed, its rows being of what was.
+  new MutationObserver(() => { hide(); sync(); }).observe(select, { childList: true, subtree: true, attributes: true });
+  sync();
+  return wrap || face;
+}
+
+// Tooltips of the page's own: what an element's `title` says is shown
+// in the page's look, under the pointer after a moment and beside what
+// the keys are on. The title is put aside while it is shown, so the
+// system's tooltip does not come up beside it, and given back after.
+// Where the browser cannot lay a thing over an open dialog (no popover),
+// titles are left to the system.
+const tips = { node: null, from: null, timer: null, watch: null };
+
+function hideTip() {
+  clearTimeout(tips.timer);
+  if (tips.watch) tips.watch.disconnect();
+  if (tips.from && tips.from.dataset.tip !== undefined) {
+    if (!tips.from.hasAttribute('title')) tips.from.setAttribute('title', tips.from.dataset.tip);
+    delete tips.from.dataset.tip;
+  }
+  if (tips.node) tips.node.remove();
+  Object.assign(tips, { node: null, from: null, timer: null, watch: null });
+}
+
+function showTip(from, wait) {
+  if (tips.from === from) return;
+  hideTip();
+  if (!from.title) return;
+  tips.from = from;
+  const put = () => {
+    if (from.hasAttribute('title')) {
+      from.dataset.tip = from.title;
+      from.removeAttribute('title');
+    }
+  };
+  put();
+  // A title set again while it is shown is put aside too, and shown.
+  tips.watch = new MutationObserver(() => {
+    if (!from.title) return;
+    put();
+    if (tips.node) tips.node.textContent = from.dataset.tip;
+  });
+  tips.watch.observe(from, { attributes: true, attributeFilter: ['title'] });
+  tips.timer = setTimeout(() => {
+    if (!from.isConnected || !from.dataset.tip) { hideTip(); return; }
+    const node = el('div', { className: 'tip', textContent: from.dataset.tip });
+    node.setAttribute('role', 'tooltip');
+    node.popover = 'manual';
+    document.body.append(node);
+    node.showPopover();
+    tips.node = node;
+    // Under what it is about, in the middle; over it where there is no room under; inside the window.
+    const box = from.getBoundingClientRect();
+    const own = node.getBoundingClientRect();
+    const left = Math.max(6, Math.min(box.left + box.width / 2 - own.width / 2, window.innerWidth - own.width - 6));
+    const under = box.bottom + 6 + own.height <= window.innerHeight - 6;
+    node.style.left = `${left}px`;
+    node.style.top = `${under ? box.bottom + 6 : Math.max(6, box.top - own.height - 6)}px`;
+  }, wait);
+}
+
+if ('popover' in HTMLElement.prototype) {
+  const titled = (target) => (target instanceof Element ? target.closest('[title]:not([title=""]), [data-tip]') : null);
+  document.addEventListener('pointerover', (event) => {
+    const from = titled(event.target);
+    if (from) showTip(from, 450);
+    else if (tips.from && !tips.from.contains(event.target)) hideTip();
+  });
+  document.addEventListener('pointerout', (event) => {
+    if (tips.from && !(event.relatedTarget instanceof Node && tips.from.contains(event.relatedTarget))) hideTip();
+  });
+  document.addEventListener('focusin', (event) => {
+    const from = titled(event.target);
+    if (from && event.target.matches(':focus-visible')) showTip(from, 450);
+  });
+  document.addEventListener('focusout', hideTip);
+  document.addEventListener('pointerdown', hideTip, true);
+  document.addEventListener('keydown', hideTip, true);
+  document.addEventListener('scroll', hideTip, true);
+}
+
 // ---- state ----
 
 const state = {
@@ -333,13 +660,16 @@ async function showSidebar() {
     }
     let name;
     if (fromPresets) {
-      name = el('select', { ariaLabel: `Filament ${index + 1}` });
-      name.dataset.filament = index + 1;
+      const list = el('select', { ariaLabel: `Filament ${index + 1}` });
+      list.dataset.filament = index + 1;
       // A filament past the last chosen prints with the last, as the engine has it.
-      fill(name, offered, choices.filaments[Math.min(index, choices.filaments.length - 1)]);
-      name.addEventListener('change', filamentChanged);
+      fill(list, offered, choices.filaments[Math.min(index, choices.filaments.length - 1)]);
+      list.addEventListener('change', filamentChanged);
+      name = listbox(list, { bare: true });
     } else {
-      name = el('span', { className: 'value', textContent: (project.saved.filaments || [])[index] || 'not named' });
+      // Cut short where it does not fit, and whole in its tooltip.
+      const saved = (project.saved.filaments || [])[index] || 'not named';
+      name = el('span', { className: 'value', textContent: saved, title: saved });
     }
     return el('div', { className: 'filament' }, swatch, name);
   }));
@@ -357,6 +687,8 @@ async function showSidebar() {
     input.value = choices[key] === null ? '' : choices[key];
     const usual = process ? process[key] : null;
     input.placeholder = usual === null || usual === undefined ? '' : String(usual);
+    // Marked where it is set over the preset.
+    input.closest('.unit').classList.toggle('set', choices[key] !== null);
   }
   showDevice();
 }
@@ -373,6 +705,9 @@ async function filamentChanged() {
   await setProject({ filaments });
 }
 
+// The sidebar's lists are the page's own (listbox); the printer's is set up with its card, in printers.js.
+listbox($('process'));
+listbox($('bed'), { bare: true });
 $('process').addEventListener('change', () => attempt(() => setProject({ process: $('process').value })));
 $('bed').addEventListener('change', () => attempt(() => setProject({ bed_type: $('bed').value })));
 for (const input of document.querySelectorAll('[data-over]')) {
@@ -404,6 +739,7 @@ $('profiles').addEventListener('click', () => attempt(async () => {
 
 async function loadLibrary(library) {
   $('profiles-dir').textContent = library.dir || 'none';
+  $('profiles-dir').title = library.dir || '';
   state.vendors = library.vendors;
   presetsByMachine.clear();
 }
