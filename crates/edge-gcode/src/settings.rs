@@ -89,6 +89,10 @@ pub struct PrintSettings {
     /// is a round thread instead of a flattened line.
     pub bridge_flow: f64,
     pub thick_bridges: bool,
+    /// The width set for everything laid as a bridge, in mm
+    /// (`bridge_line_width`); none leaves a wall over air as wide as the
+    /// inner walls.
+    pub bridge_line_width: Option<f64>,
     /// May be a percentage of the outer wall's acceleration.
     pub bridge_acceleration: FloatOrPercent,
     /// Solid fill laid over sparse fill; a percentage is of the bridge's speed.
@@ -285,6 +289,7 @@ impl Default for PrintSettings {
             }),
             bridge_flow: 1.0,
             thick_bridges: false,
+            bridge_line_width: None,
             bridge_acceleration: FloatOrPercent::Percent(50.0),
             internal_bridge_speed: FloatOrPercent::Percent(150.0),
             small_perimeter_threshold: 0.0,
@@ -682,6 +687,7 @@ impl PrintSettings {
             },
             bridge_flow: number("bridge_flow", defaults.bridge_flow)?,
             thick_bridges: flag("thick_bridges", defaults.thick_bridges)?,
+            bridge_line_width: edge_extrusion::bridge_line_width(settings)?,
             bridge_acceleration: listed_share("bridge_acceleration", defaults.bridge_acceleration)?,
             internal_bridge_speed: listed_share(
                 "internal_bridge_speed",

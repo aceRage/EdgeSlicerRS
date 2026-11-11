@@ -7,6 +7,10 @@ use std::f64::consts::PI;
 use edge_config::FloatOrPercent;
 use edge_geom::{Coord, Point2, Polygon, UNITS_PER_MM, scaled};
 
+mod bridge_width;
+
+pub use bridge_width::{bridge_line_width, check_bridge_line_width};
+
 #[derive(Debug, PartialEq, thiserror::Error)]
 pub enum FlowError {
     #[error("layer height {0} mm is not positive")]

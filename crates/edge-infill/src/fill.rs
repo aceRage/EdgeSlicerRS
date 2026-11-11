@@ -179,6 +179,24 @@ impl FillParams {
 }
 
 impl FillParams {
+    /// The direction a bridge over infill is laid in on a layer, in
+    /// radians: across the sparse lines beneath. For a grid that is along
+    /// its other set; for plain lines, square to the layer below's.
+    pub fn internal_bridge_angle(&self, layer_index: usize) -> f64 {
+        self.sparse_angle
+            + match self.pattern {
+                Pattern::Lines | Pattern::ZigZag | Pattern::CrossZag => {
+                    if layer_index % 2 == 1 {
+                        FRAC_PI_2
+                    } else {
+                        0.0
+                    }
+                }
+                Pattern::AlignedLines => FRAC_PI_2,
+                _ => 0.0,
+            }
+    }
+
     /// The distance between a lateral honeycomb's lines where they run
     /// singly: its cells are two thirds single wall and a third double,
     /// so it is laid a third further apart than its density says.
@@ -381,19 +399,17 @@ pub fn fill_within(
                 Lay::Cut(LINES_INSET),
                 &[surface.angle.unwrap_or(params.solid_angle + turned)],
             ),
-            // Across the sparse lines beneath: for a grid, along its
-            // other set; for plain lines, square to the layer below's.
+            // Across the sparse lines beneath, unless the surface has a
+            // direction of its own: a second layer of bridge is laid
+            // across the first.
             SurfaceKind::InternalBridge => (
                 params.internal_bridge,
                 Role::InternalBridge,
                 params.internal_bridge_spacing,
                 Lay::Cut(LINES_INSET),
-                &[params.sparse_angle
-                    + match params.pattern {
-                        Pattern::Lines | Pattern::ZigZag | Pattern::CrossZag => turned,
-                        Pattern::AlignedLines => FRAC_PI_2,
-                        _ => 0.0,
-                    }],
+                &[surface
+                    .angle
+                    .unwrap_or_else(|| params.internal_bridge_angle(layer_index))],
             ),
             // The reference's output has top and bottom lines spread to
             // fit and solid lines inside the part at their own pitch,
@@ -1298,6 +1314,28 @@ mod tests {
         let first = &lines[0].points;
         let (dx, dy) = (first[1].x - first[0].x, first[1].y - first[0].y);
         assert_eq!(dx.abs(), dy.abs(), "at 45 degrees");
+        // The way it would be laid on a layer is the same on every
+        // layer for a grid, and turns with the layers for plain lines.
+        assert_eq!(base.internal_bridge_angle(3), base.sparse_angle);
+        let plain = params(Pattern::Lines, 0.2);
+        assert_eq!(plain.internal_bridge_angle(2), plain.sparse_angle);
+        assert_eq!(
+            plain.internal_bridge_angle(3),
+            plain.sparse_angle + FRAC_PI_2
+        );
+        // One with a direction of its own, as a second layer of bridge
+        // has, is laid that way: here along x.
+        let across = Surface {
+            angle: Some(0.0),
+            ..surface(SurfaceKind::InternalBridge, 20.0)
+        };
+        let lines = fill(&[across], 3, &base).unwrap();
+        let longest = lines
+            .iter()
+            .flat_map(|line| line.points.windows(2))
+            .max_by_key(|pair| (pair[1].x - pair[0].x).abs() + (pair[1].y - pair[0].y).abs())
+            .unwrap();
+        assert_eq!(longest[0].y, longest[1].y, "along x");
     }
 
     #[test]

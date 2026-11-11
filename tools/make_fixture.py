@@ -120,6 +120,12 @@ SHAPES = {
     "frame": [(115.5, 116, 0, 40, 5, 6), (115.5, 151, 0, 40, 5, 6), (115.5, 116, 0, 5, 40, 6), (150.5, 116, 0, 5, 40, 6)],
     # a plate with three fins on it, 0.5, 0.8 and 1.1 mm thick, for thin walls
     "fins": [(115.5, 126, 0, 40, 20, 1), (120.5, 131, 1, 0.5, 10, 5), (130.5, 131, 1, 0.8, 10, 5), (140.5, 131, 1, 1.1, 10, 5)],
+    # a base 45 x 20 x 6 mm with five bars across it, 1, 2, 3 and 5 mm
+    # apart: the base's top shows between them in strips of those widths,
+    # so the solid layers under each strip are small bridges over infill
+    # of different sizes (dont_filter_internal_bridges, enable_extra_bridge_layer)
+    "gaps": [(113, 126, 0, 45, 20, 6)] + [
+        (113 + x, 126, 6, w, 20, 3) for x, w in ((0, 8), (9, 6), (17, 6), (26, 6), (37, 8))],
     # two blocks that touch, one in each of two filaments
     "twotone": [(115.5, 126, 0, 20, 20, 6), (135.5, 126, 0, 20, 20, 4)],
     # a spine with seven teeth standing on the bed, 0.5 to 2 mm wide, for

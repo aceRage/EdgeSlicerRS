@@ -694,10 +694,12 @@ pub fn slice(job: Job, watch: &dyn Watcher) -> Result<Sliced, Failure> {
     let classifying = Instant::now();
     let solid_spacing = infill.params(layer_height, false)?.solid.scaled_spacing();
     // Solid over sparse fill is laid as a bridge across it.
-    let bridged_by = anchored_by
-        .iter()
-        .map(|surfaces| edge_infill::bridge_over_infill(surfaces, &beneath, solid_spacing))
-        .collect::<Result<Vec<_>, _>>()?;
+    // Which is worth bridging is `dont_filter_internal_bridges`' to say.
+    let bridged_by = edge_infill::bridge_over_infill_by(
+        &anchored_by,
+        &beneath,
+        &infill.over_infill(layer_height)?,
+    )?;
     // And the sparse fill under a bridge's edge, where that edge runs
     // along the walls, is made solid to carry it.
     let edges = edge_infill::bridge_edges(&bridged_by, solid_spacing)?;
@@ -705,6 +707,14 @@ pub fn slice(job: Job, watch: &dyn Watcher) -> Result<Sliced, Failure> {
         .iter()
         .map(|surfaces| edge_infill::carry_bridge_edges(surfaces, &edges, solid_spacing))
         .collect::<Result<Vec<_>, _>>()?;
+    // A second layer of bridge over those, where the profile asks
+    // (`enable_extra_bridge_layer`); over a bridge over air it is made
+    // when surfaces are told apart.
+    let bridged_by = if infill.extra_bridge_layer.internal() {
+        edge_infill::second_internal_bridges(&bridged_by, &infill.params(layer_height, false)?)?
+    } else {
+        bridged_by
+    };
     classify_time += classifying.elapsed();
     for (surfaces, perimeters) in bridged_by.into_iter().zip(&walls_by) {
         let fills = surfaces
