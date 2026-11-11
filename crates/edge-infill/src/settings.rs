@@ -2,7 +2,9 @@ use edge_config::{ConfigError, FloatOrPercent, Settings};
 use edge_extrusion::{Flow, FlowError, LineWidths};
 use edge_geom::{Coord, scaled};
 
-use crate::{Anchoring, FillParams, InternalBridgeFilter, OverInfill, Shells, WallsAround};
+use crate::{
+    Anchoring, FillParams, InternalBridgeFilter, NarrowFill, OverInfill, Shells, WallsAround,
+};
 
 /// Sparse fill patterns this engine can lay.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -186,6 +188,15 @@ pub struct InfillSettings {
     /// layers are shrunk for the elephant's foot).
     pub elephant_foot_density: f64,
     pub elephant_foot_layers: usize,
+    /// Whether the narrow parts of solid fill inside the part are told
+    /// from the rest and filled with loops along their outline
+    /// (`detect_narrow_internal_solid_infill`).
+    pub detect_narrow_solid: bool,
+    /// How far short of where it began such a loop stops, in mm or as a
+    /// share of the nozzle (`seam_gap`), and the smallest nozzle on the
+    /// printer, in mm, which sets how thin a loop may be.
+    pub seam_gap: FloatOrPercent,
+    pub smallest_nozzle: f64,
     /// Settings present in the input that are not honoured, each with
     /// what is done instead.
     pub unsupported: Vec<String>,
@@ -241,6 +252,9 @@ impl Default for InfillSettings {
             ensure_vertical_shells: true,
             elephant_foot_density: 1.0,
             elephant_foot_layers: 1,
+            detect_narrow_solid: true,
+            seam_gap: FloatOrPercent::Percent(10.0),
+            smallest_nozzle: 0.4,
             unsupported: Vec::new(),
         }
     }
@@ -421,14 +435,6 @@ impl InfillSettings {
                 false
             }
         };
-        // Solid areas too narrow for lines across them: the reference
-        // lays loops along those, of whatever width fits.
-        if flag("detect_narrow_internal_solid_infill", false)? {
-            unsupported.push(
-                "detect_narrow_internal_solid_infill \"1\": narrow solid areas are filled with the same lines as wide ones"
-                    .to_owned(),
-            );
-        }
         // From half to all of it: the reference will not slice a project
         // that says anything else ("not in range [50,100]").
         let elephant_foot_density =
@@ -582,6 +588,18 @@ impl InfillSettings {
                 .map_or(defaults.elephant_foot_layers, |layers| {
                     usize::try_from(layers).unwrap_or(0).max(1)
                 }),
+            detect_narrow_solid: flag(
+                "detect_narrow_internal_solid_infill",
+                defaults.detect_narrow_solid,
+            )?,
+            seam_gap: settings
+                .float_or_percent("seam_gap")?
+                .unwrap_or(defaults.seam_gap),
+            // Whichever tool lays them (`min_physical_nozzle_diameter`).
+            smallest_nozzle: settings
+                .floats("nozzle_diameter")?
+                .and_then(|nozzles| nozzles.into_iter().flatten().reduce(f64::min))
+                .unwrap_or(defaults.smallest_nozzle),
             unsupported,
         })
     }
@@ -792,6 +810,12 @@ impl InfillSettings {
             gap_shortest: self.filter_out_gap_fill,
             elephant_foot_density: self.elephant_foot_density,
             elephant_foot_layers: self.elephant_foot_layers,
+            // The gap is a share of the nozzle the fill is laid with
+            // (Fill.cpp, `loop_clipping`).
+            narrow: self.detect_narrow_solid.then(|| NarrowFill {
+                nozzle: self.smallest_nozzle,
+                seam_gap: self.seam_gap.resolve(nozzle).max(0.0),
+            }),
         })
     }
 }
@@ -815,12 +839,27 @@ mod tests {
     }
 
     #[test]
-    fn narrow_solid_areas_laid_as_loops_are_said_not_to_be() {
+    fn narrow_solid_areas_are_told_apart_unless_that_is_turned_off() {
         let read = |json: &str| InfillSettings::from_settings(&Settings::from_json(json).unwrap());
+        // On unless turned off, as in the reference, and nothing is
+        // said of it either way.
+        let unset = read("{}").unwrap();
+        assert!(unset.detect_narrow_solid && unset.unsupported.is_empty());
         let on = read(r#"{"detect_narrow_internal_solid_infill": "1"}"#).unwrap();
-        assert!(on.unsupported[0].starts_with("detect_narrow_internal_solid_infill"));
+        assert!(on.detect_narrow_solid && on.unsupported.is_empty());
         let off = read(r#"{"detect_narrow_internal_solid_infill": "0"}"#).unwrap();
-        assert!(off.unsupported.is_empty());
+        assert!(!off.detect_narrow_solid && off.unsupported.is_empty());
+        assert_eq!(off.params(0.2, false).unwrap().narrow, None);
+        // The loops stop the seam gap short, a share of the nozzle the
+        // fill is laid with, and are no thinner than the smallest
+        // nozzle on the printer allows.
+        let set = read(r#"{"seam_gap": "15%", "nozzle_diameter": ["0.6", "0.4", "0.8"]}"#).unwrap();
+        let narrow = set.params(0.2, false).unwrap().narrow.unwrap();
+        assert!((narrow.seam_gap - 0.09).abs() < 1e-12);
+        assert_eq!(narrow.nozzle, 0.4);
+        let stock = unset.params(0.2, false).unwrap().narrow.unwrap();
+        assert!((stock.seam_gap - 0.04).abs() < 1e-12);
+        assert_eq!(stock.nozzle, 0.4);
     }
 
     #[test]

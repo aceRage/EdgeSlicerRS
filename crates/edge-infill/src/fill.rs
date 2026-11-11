@@ -4,7 +4,18 @@ use edge_clip::{ClipError, Join};
 use edge_extrusion::{ExtrusionPath, Flow, Role};
 use edge_geom::{ExPolygon, Point2, scaled};
 
-use crate::{Pattern, Surface, SurfaceKind, curves, lines};
+use crate::{NarrowFill, Pattern, Surface, SurfaceKind, curves, lines, narrow};
+
+/// Why a layer could not be filled.
+#[derive(Debug, thiserror::Error)]
+pub enum FillError {
+    #[error(transparent)]
+    Clip(#[from] ClipError),
+    /// The loops a narrow solid area is filled with are walls of
+    /// changing width, and are worked out as those are.
+    #[error("the loops of a narrow solid area could not be worked out: {0}")]
+    Narrow(#[from] edge_arachne::Error),
+}
 
 /// What filling one layer needs.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -68,6 +79,11 @@ pub struct FillParams {
     /// `elefant_foot_compensation_layers`): see [`Self::solid_density`].
     pub elephant_foot_density: f64,
     pub elephant_foot_layers: usize,
+    /// What filling the narrow parts of solid fill inside the part with
+    /// loops needs, where they are told from the rest
+    /// (`detect_narrow_internal_solid_infill`); none fills them with the
+    /// same lines as the wide parts.
+    pub narrow: Option<NarrowFill>,
 }
 
 /// Where the fill's own gap fill goes (`gap_fill_target`): solid fill
@@ -283,7 +299,7 @@ pub fn fill(
     surfaces: &[Surface],
     layer_index: usize,
     params: &FillParams,
-) -> Result<Vec<ExtrusionPath>, ClipError> {
+) -> Result<Vec<ExtrusionPath>, FillError> {
     fill_from(surfaces, layer_index, params, &|_| Frame {
         origin: params.origin,
         bounds: None,
@@ -312,7 +328,7 @@ pub fn fill_from(
     layer_index: usize,
     params: &FillParams,
     frame_of: &dyn Fn(&Surface) -> Frame,
-) -> Result<Vec<ExtrusionPath>, ClipError> {
+) -> Result<Vec<ExtrusionPath>, FillError> {
     fill_within(surfaces, layer_index, params, frame_of, &[])
 }
 
@@ -321,15 +337,44 @@ pub fn fill_from(
 /// of it is then filled with lines of whatever width fits, where
 /// [`FillParams::gap_fill`] asks (FillBase.cpp `_create_gap_fill`). With
 /// no such area there is no such fill.
+///
+/// Where [`FillParams::narrow`] asks, the narrow parts of the solid fill
+/// inside the part are told from the rest and filled with loops along
+/// their outline, kept within `no_overlap` (Fill.cpp `group_fills`,
+/// "detect narrow internal solid infill area and use
+/// ipConcentricInternal pattern instead"). The reference tells them
+/// apart over all of a layer's solid fill at once, areas that touch
+/// taken as one; so it is done here, and on a layer with nothing
+/// narrow the areas are filled one by one as they came.
+///
+/// Of what is so told apart, a patch under three line spacings across
+/// both ways and under four spacings squared in area is left out, wide
+/// or narrow, as in the reference ("drop degenerate internal-solid
+/// slivers"): all it could hold is a dot shorter than it is wide, and
+/// telling narrow from wide leaves one in a corner of every area its
+/// lines cross at a slant. (The reference has a second reason, which
+/// is not one here: whether such a patch came through its own clipping
+/// changed from one run to the next of the same project.) With
+/// narrow areas not told apart nothing is left out, as before.
 pub fn fill_within(
     surfaces: &[Surface],
     layer_index: usize,
     params: &FillParams,
     frame_of: &dyn Fn(&Surface) -> Frame,
     no_overlap: &[ExPolygon],
-) -> Result<Vec<ExtrusionPath>, ClipError> {
+) -> Result<Vec<ExtrusionPath>, FillError> {
     let turned = if layer_index % 2 == 1 { FRAC_PI_2 } else { 0.0 };
     let mut paths = Vec::new();
+    // The solid fill told apart: its wide parts stand where the first
+    // of the solid areas stood, and the narrow parts are filled last.
+    let told = match &params.narrow {
+        Some(_) => told_apart(surfaces, params, params.solid_angle + turned)?,
+        None => None,
+    };
+    let (surfaces, narrow_areas): (&[Surface], &[ExPolygon]) = match &told {
+        Some((surfaces, narrow)) => (surfaces, narrow),
+        None => (surfaces, &[]),
+    };
     // How sparse lines' ends are joined along the outline they are cut
     // to. Nothing is joined when the profile allows no join at all
     // (`infill_anchor_max` of zero), nor anchored.
@@ -444,7 +489,16 @@ pub fn fill_within(
             ),
             // The reference's output has top and bottom lines spread to
             // fit and solid lines inside the part at their own pitch,
-            // on every part compared; the source gives no reason seen.
+            // on every part compared. Its source spreads them all; the
+            // solid lines keep their pitch because the area they fill
+            // has been told apart from its narrow parts first, which
+            // cuts it along its own lines to a whole number of
+            // spacings, where there is nothing to spread. A solid area
+            // with no narrow part is not cut, and there the reference
+            // does spread its lines (a round boss 8 mm across: lines
+            // 0.429 mm wide where these are 0.42), as it does all of
+            // them with `detect_narrow_internal_solid_infill` off. That
+            // is not done here yet.
             SurfaceKind::Bottom => (
                 params.solid,
                 Role::BottomSurface,
@@ -826,6 +880,17 @@ pub fn fill_within(
                 let first = if thinned {
                     let (sin, cos) = angles[0].sin_cos();
                     origin.y as f64 * cos - origin.x as f64 * sin
+                } else if told.is_some() && surface.kind == SurfaceKind::InternalSolid {
+                    // The wide part of solid fill told apart from its
+                    // narrow part is cut along its own lines, a whole
+                    // number of spacings across: its first line and its
+                    // last would lie exactly where joined lines turn,
+                    // which is neither inside that outline nor out of
+                    // it. The reference lays its lines a hair past the
+                    // half spacing (FillRectilinear.cpp, `x0 +=
+                    // (line_spacing + SCALED_EPSILON) / 2`), which keeps
+                    // the first and drops the last; so here.
+                    low + (pitch + SCALED_EPSILON) / 2.0
                 } else {
                     low + pitch / 2.0
                 };
@@ -875,12 +940,82 @@ pub fn fill_within(
             paths.extend(gaps);
         }
     }
+    if let Some(narrow) = &params.narrow {
+        for (number, area) in narrow_areas.iter().enumerate() {
+            let part = ExtrusionPath::LOOPED | (surfaces.len() + number + 1) as u32;
+            paths.extend(narrow::loops(
+                area,
+                no_overlap,
+                &params.solid,
+                narrow,
+                part,
+            )?);
+        }
+    }
     Ok(paths)
+}
+
+/// A layer's surfaces to fill with lines, and its areas to fill with loops.
+type Told = (Vec<Surface>, Vec<ExPolygon>);
+
+/// A layer's surfaces with the solid fill inside the part told apart
+/// into wide and narrow: the surfaces to fill with lines, the wide parts
+/// among them, and the narrow areas. None when nothing is narrow.
+fn told_apart(
+    surfaces: &[Surface],
+    params: &FillParams,
+    direction: f64,
+) -> Result<Option<Told>, ClipError> {
+    let solid: Vec<ExPolygon> = surfaces
+        .iter()
+        .filter(|surface| surface.kind == SurfaceKind::InternalSolid)
+        .map(|surface| surface.area.clone())
+        .collect();
+    // Areas that touch are one, made so with the reference's safety
+    // offset; one by itself is taken as it is (`group_fills`).
+    let solid = if solid.len() > 1 {
+        edge_clip::offset(&solid, SAFETY_OFFSET, Join::MITER)?
+    } else {
+        solid
+    };
+    let spacing = params.solid.scaled_spacing();
+    let Some(mut split) = narrow::split(&solid, spacing, direction)? else {
+        return Ok(None);
+    };
+    // Too small to hold more than a dot (`group_fills`, "drop
+    // degenerate internal-solid slivers").
+    let dot = |area: &ExPolygon| {
+        let points = &area.contour.points;
+        let across = |of: fn(&Point2) -> edge_geom::Coord| {
+            let all = points.iter().map(of);
+            all.clone().max().unwrap_or(0) - all.min().unwrap_or(0)
+        };
+        across(|point| point.x) < 3 * spacing
+            && across(|point| point.y) < 3 * spacing
+            && area.area_mm2().abs() < 4.0 * params.solid.spacing * params.solid.spacing
+    };
+    split.wide.retain(|area| !dot(area));
+    split.narrow.retain(|area| !dot(area));
+    let mut wide = Some(split.wide);
+    let mut told = Vec::with_capacity(surfaces.len());
+    for surface in surfaces {
+        if surface.kind != SurfaceKind::InternalSolid {
+            told.push(surface.clone());
+        } else if let Some(wide) = wide.take() {
+            told.extend(
+                wide.into_iter()
+                    .map(|area| Surface::new(SurfaceKind::InternalSolid, area)),
+            );
+        }
+    }
+    Ok(Some((told, split.narrow)))
 }
 
 /// Added to an offset so that edges meant to coincide overlap instead
 /// (ClipperUtils.hpp `ClipperSafetyOffset`).
 const SAFETY_OFFSET: edge_geom::Coord = 10;
+/// libslic3r's `SCALED_EPSILON`: a tenth of a micron, in scaled units.
+const SCALED_EPSILON: f64 = 100.0;
 /// How much of its spacing a line may lose where it is squeezed
 /// (libslic3r.h `INSET_OVERLAP_TOLERANCE`).
 const INSET_OVERLAP_TOLERANCE: f64 = 0.4;
@@ -958,6 +1093,7 @@ mod tests {
     use edge_geom::{ExPolygon, Point2, Polygon};
 
     use super::*;
+    use crate::NarrowFill;
 
     fn surface(kind: SurfaceKind, side: f64) -> Surface {
         let points = [(0.0, 0.0), (side, 0.0), (side, side), (0.0, side)]
@@ -1005,6 +1141,7 @@ mod tests {
             gap_shortest: 0.0,
             elephant_foot_density: 1.0,
             elephant_foot_layers: 1,
+            narrow: None,
         }
     }
 
@@ -1775,5 +1912,201 @@ mod tests {
         assert!(gaps(1.0, 1) > 0);
         assert_eq!(gaps(0.7, 1), 0);
         assert!(gaps(0.7, 2) > 0);
+    }
+    fn strip(kind: SurfaceKind, x0: f64, y0: f64, x1: f64, y1: f64) -> Surface {
+        Surface {
+            kind,
+            area: ExPolygon {
+                contour: Polygon {
+                    points: [(x0, y0), (x1, y0), (x1, y1), (x0, y1)]
+                        .map(|(x, y)| Point2::from_mm(x, y))
+                        .to_vec(),
+                },
+                holes: Vec::new(),
+            },
+            angle: None,
+        }
+    }
+
+    fn telling_narrow() -> FillParams {
+        FillParams {
+            narrow: Some(NarrowFill {
+                nozzle: 0.4,
+                seam_gap: 0.06,
+            }),
+            ..params(Pattern::Lines, 0.2)
+        }
+    }
+
+    #[test]
+    fn a_narrow_solid_area_is_filled_with_loops_where_that_is_asked() {
+        let narrow = [strip(SurfaceKind::InternalSolid, 0.0, 0.0, 20.0, 1.2)];
+        // Left alone, the same lines as a wide area: short strokes
+        // across the strip, joined at both sides.
+        let lines = fill(&narrow, 0, &params(Pattern::Lines, 0.2)).unwrap();
+        assert!(lines.iter().all(|path| !path.looped()));
+        let strokes = lines.iter().flat_map(|path| path.points.windows(2)).count();
+        assert!(strokes > 60, "{strokes}");
+        // Told apart, loops along it: solid fill still, a part of
+        // their own, in far fewer moves and with as much plastic.
+        let loops = fill(&narrow, 0, &telling_narrow()).unwrap();
+        assert!(loops.iter().all(ExtrusionPath::looped));
+        assert!(loops.iter().all(|path| path.role == Role::SolidInfill));
+        let moves = loops.iter().flat_map(|path| path.points.windows(2)).count();
+        assert!(moves < 20, "{moves}");
+        let volume =
+            |paths: &[ExtrusionPath]| -> f64 { paths.iter().map(ExtrusionPath::volume_mm3).sum() };
+        assert!((volume(&loops) / volume(&lines) - 1.0).abs() < 0.15);
+        // Along the strip, not across it.
+        let long = loops
+            .iter()
+            .flat_map(|path| path.points.windows(2))
+            .filter(|pair| (pair[1].x - pair[0].x).abs() > 15_000_000)
+            .count();
+        assert!(long >= 3, "{long}");
+
+        // A wide area is laid as it was, and so is everything that is
+        // not solid fill inside the part, however narrow.
+        let wide = [surface(SurfaceKind::InternalSolid, 20.0)];
+        for layer in [0, 1] {
+            let told = fill(&wide, layer, &telling_narrow()).unwrap();
+            let lines: Vec<ExtrusionPath> =
+                told.iter().filter(|path| !path.looped()).cloned().collect();
+            // All but a corner, which is the next test's.
+            assert!(
+                length(&lines)
+                    > 0.98 * length(&fill(&wide, layer, &params(Pattern::Lines, 0.2)).unwrap())
+            );
+        }
+        for kind in [
+            SurfaceKind::Top,
+            SurfaceKind::Bottom,
+            SurfaceKind::Bridge,
+            SurfaceKind::InternalBridge,
+            SurfaceKind::Sparse,
+        ] {
+            let other = [strip(kind, 0.0, 0.0, 20.0, 1.2)];
+            assert_eq!(
+                fill(&other, 0, &telling_narrow()).unwrap(),
+                fill(&other, 0, &params(Pattern::Lines, 0.2)).unwrap(),
+                "{kind:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn slanting_lines_leave_one_corner_of_a_solid_square_to_loops() {
+        // Lines at 45 degrees across a square: the corner they end in
+        // is narrow and gets a small triangle of loops; the tip of the
+        // corner they begin in is too small to hold more than a dot and
+        // gets nothing, as in the reference.
+        let square = [surface(SurfaceKind::InternalSolid, 20.0)];
+        let told = fill(&square, 0, &telling_narrow()).unwrap();
+        let loops: Vec<&ExtrusionPath> = told.iter().filter(|path| path.looped()).collect();
+        assert!(!loops.is_empty());
+        assert!(
+            loops
+                .iter()
+                .flat_map(|path| &path.points)
+                .all(|point| point.x > 17_500_000 && point.y < 2_500_000)
+        );
+        let laid: f64 = loops.iter().map(|path| path.length_mm()).sum();
+        assert!((3.0..9.0).contains(&laid), "{laid}");
+        // The lines keep out of that corner, and nothing else changes.
+        let lines: Vec<&ExtrusionPath> = told.iter().filter(|path| !path.looped()).collect();
+        assert!(
+            lines
+                .iter()
+                .flat_map(|path| &path.points)
+                .all(|point| point.x < 18_500_000 || point.y > 1_500_000)
+        );
+        // The wide part is a whole number of spacings across, cut along
+        // its own lines: a line lies half a spacing in from where it
+        // was cut off the narrow corner, and none half a spacing in
+        // from its other end, as the reference has them.
+        let full = telling_narrow();
+        let spacing = full.solid.spacing;
+        let wide = narrow::split(
+            &[square[0].area.clone()],
+            full.solid.scaled_spacing(),
+            full.solid_angle,
+        )
+        .unwrap()
+        .unwrap()
+        .wide;
+        let (low, high) = lines::extent_across(&wide[0], full.solid_angle).unwrap();
+        let (sin, cos) = full.solid_angle.sin_cos();
+        let mut across: Vec<f64> = lines
+            .iter()
+            .flat_map(|path| path.points.windows(2))
+            .filter(|pair| {
+                ((pair[1].x - pair[0].x) as f64).hypot((pair[1].y - pair[0].y) as f64) > 1e6
+            })
+            .map(|pair| (pair[0].y as f64 * cos - pair[0].x as f64 * sin) / 1e6)
+            .collect();
+        across.sort_by(f64::total_cmp);
+        let (first, last) = (across[0], across[across.len() - 1]);
+        assert!(((high - low) / 1e6 / spacing).fract() < 1e-3);
+        assert!(
+            (first - (low / 1e6 + 0.5 * spacing)).abs() < 1e-3,
+            "{first}"
+        );
+        assert!((last - (high / 1e6 - 1.5 * spacing)).abs() < 1e-3, "{last}");
+        // The loops are a part of their own, after the lines.
+        assert!(lines.iter().all(|path| path.part == 1));
+        assert!(
+            loops
+                .iter()
+                .all(|path| path.part == (ExtrusionPath::LOOPED | 2))
+        );
+    }
+
+    #[test]
+    fn solid_areas_that_touch_are_told_apart_as_one() {
+        // Two strips 2 mm wide side by side are 4 mm of solid fill,
+        // which slanting lines cross in strokes 5 mm long: wide, and
+        // each is filled with lines as it came. One by itself is
+        // crossed in strokes of little over 2 mm, each as short as the
+        // last, and is narrow.
+        let both = [
+            strip(SurfaceKind::InternalSolid, 0.0, 0.0, 20.0, 2.0),
+            strip(SurfaceKind::InternalSolid, 0.0, 2.0, 20.0, 4.0),
+        ];
+        // Layer 0 has its lines at 45 degrees; the two strips' ends
+        // are corners like any other, so only what is not a loop is
+        // compared.
+        let told = fill(&both, 0, &telling_narrow()).unwrap();
+        let lines = length(
+            &told
+                .iter()
+                .filter(|path| !path.looped())
+                .cloned()
+                .collect::<Vec<_>>(),
+        );
+        let loops = length(
+            &told
+                .iter()
+                .filter(|path| path.looped())
+                .cloned()
+                .collect::<Vec<_>>(),
+        );
+        assert!(lines > 10.0 * loops, "{lines} {loops}");
+        let alone = fill(&both[..1], 0, &telling_narrow()).unwrap();
+        assert!(alone.iter().all(ExtrusionPath::looped));
+    }
+
+    #[test]
+    fn loops_keep_their_density_over_the_first_layer() {
+        // Solid fill laid thinner over the first layer is the wide
+        // part's lines; a narrow area's loops are laid as ever.
+        let narrow = [strip(SurfaceKind::InternalSolid, 0.0, 0.0, 20.0, 1.2)];
+        let thin = FillParams {
+            elephant_foot_density: 0.5,
+            ..telling_narrow()
+        };
+        assert_eq!(
+            fill(&narrow, 1, &thin).unwrap(),
+            fill(&narrow, 1, &telling_narrow()).unwrap()
+        );
     }
 }

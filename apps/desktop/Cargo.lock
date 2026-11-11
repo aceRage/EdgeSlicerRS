@@ -918,6 +918,7 @@ version = "0.0.0"
 name = "edge-infill"
 version = "0.0.0"
 dependencies = [
+ "edge-arachne",
  "edge-clip",
  "edge-config",
  "edge-extrusion",
