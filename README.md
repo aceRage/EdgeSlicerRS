@@ -36,6 +36,7 @@ replaces it until output matches on the printers we care about.
 | `tools/make_defaults.py` | Asks the reference for its default of every setting and writes the table `edge-config` carries; run again when the pin moves |
 | `tools/make_process_pages.py` | Reads the reference's process pages and option definitions from its source and writes the data the desktop app draws its settings pages from; run again when the pin moves, after `make_defaults.py` |
 | `tools/make_fixture.py` | Writes small test 3MFs (parts that need supports or a brim, a plain cube, two blocks in two filaments, a comb with thin teeth on the bed, three tiers with a top surface on each, bars over a base for small bridges over infill, a slab with round holes for the hole options, a slab with holes that narrow on the way up for bridging them, a slab with pockets underneath, three round ones for arc fitting: a post, a post with a hole, a slab with a wide curve and tight ones, and a post that widens as it rises for scarf seams) to compare with the reference on |
+| `tools/make_app.sh` | Builds the desktop app and wraps it in a macOS `.app` that opens with a double click (macOS only) |
 | `tools/make_project.py` | Writes one of those parts as a project whose settings are named presets, with as many filaments as are named: how the test prints for a printer are made |
 | `reference/EdgeSlicer` | Pinned submodule of the C++ slicer: profiles, test models, behaviour to match. Read-only here |
 | `vendor/cpp_map` | A copy of the `cpp_map` crate (MIT or Apache-2.0), the skip list under the Voronoi library, changed so that a list is the same shape on every run; patched in for the published crate by both workspaces. Its README says what was changed. Not a member of the workspace, and kept in its own formatting |
@@ -64,6 +65,12 @@ cargo run -- model.3mf         # the window, with a model open
 cargo run -- --serve 4710      # no window: the same page at http://127.0.0.1:4710/
 cargo test
 ```
+
+On a Mac, `tools/make_app.sh` builds the release app and wraps it in
+`target/EdgeSlicerRS.app` (or the path given), which opens as a window with
+a double click or `open target/EdgeSlicerRS.app`. The bundle finds the
+profiles in `reference/EdgeSlicer` of the source tree it was built from, so
+it works while that tree stays where it is; build it again after pulling.
 
 A first pass at the C++ application's main window, not yet the
 application: `apps/desktop/UI_PARITY.md` lists, for each of its tabs and
@@ -170,10 +177,12 @@ narrow: the three-plate project, a Benchy and a 20 mm cube turned, moved
 and zoomed, the views and their keys, objects and plates selected by a
 click, each plate sliced and looked through in every view type with the
 two-thumbed slider, the moves slider and the legend's switches; the
-inventory has the sizes and times measured. The tabbed window itself (Tauri) has not
-been run since it got its tabs and strip; before that the owner ran it by hand, and its
-file dialogs, slicing and layer view worked, with G-code byte for byte
-the command line's but for the time in its first line. Not built on
+inventory has the sizes and times measured. The tabbed window itself (Tauri, WebKit on a Mac) was
+opened again with the restyle, with the three-plate project, at its first
+size (1280 × 820) and its least (900 × 560), dark and light, and looked at
+(not driven: nothing was clicked in it); before that the owner ran it by
+hand, and its file dialogs, slicing and layer view worked, with G-code
+byte for byte the command line's but for the time in its first line. Not built on
 Windows or Linux.
 
 ## Status
