@@ -77,16 +77,28 @@ impl Stroke {
 }
 
 /// Whether a stroke is to go: a short one deep in a run of short ones,
-/// or at the end of a run that did not begin beside a long stroke
-/// (`can_line_note_be_removed`).
+/// or one with nothing kept after it, in a run that did not begin
+/// beside a long stroke (`can_line_note_be_removed`).
 ///
-/// Where a run began is read off the strokes before this one, as the
-/// reference reads it (`is_initial_line_touching_long_lines`): what they
-/// were last told, in this pass over the columns or an earlier one. A
-/// short stroke that ends its run right after a long one therefore
-/// goes, and of a longer run of them the first two stay. That is what
-/// leaves a square's lines two short ones in the corner they run out
-/// in and makes loops of the rest, and it is kept as it is.
+/// Where its run began is what the stroke itself was last told: by the
+/// run that reached it, or of itself where a run began with it. So a
+/// short stroke that ends the lines right after a long one stays a
+/// line, and of short strokes running out into a corner the first
+/// stays and loops are made of the rest.
+///
+/// Not as the reference, where this goes against what it is plainly
+/// for. Its `is_initial_line_touching_long_lines` is described as
+/// answering for the stroke asked about ("this information was
+/// propagated into the current line") and reads what the strokes
+/// before it were told instead, in this pass over the columns or an
+/// earlier one. The stroke a run begins with is then never asked what
+/// was noted of it, only the strokes after it are: a lone short stroke
+/// after a long one goes, the very one the note is made to keep, and is
+/// laid by itself as a narrow area; and of a run into a corner the
+/// first two stay, the second on what the first was told a pass
+/// before. What `filter_vibrating_extrusions` was written to replace
+/// (PrusaSlicer's FillEnsuring.cpp before 2.9) asked every stroke of a
+/// run, the first too, where that run began.
 fn goes(columns: &[Vec<Stroke>], column: usize, index: usize) -> bool {
     let stroke = &columns[column][index];
     if !stroke.is_short() {
@@ -95,15 +107,11 @@ fn goes(columns: &[Vec<Stroke>], column: usize, index: usize) -> bool {
     if stroke.state.short > DEPTH {
         return true;
     }
-    let began_beside_long = stroke
-        .before
-        .iter()
-        .any(|&other| columns[column - 1][other].state.began_beside_long);
     let carries_on = stroke
         .after
         .iter()
         .any(|&other| !columns[column + 1][other].removed);
-    !began_beside_long && !carries_on
+    !stroke.state.began_beside_long && !carries_on
 }
 
 /// Takes out of the strokes of an area, column by column, the short ones
@@ -733,13 +741,15 @@ mod tests {
     #[test]
     fn slanting_lines_leave_a_corner_of_a_square_to_loops() {
         // Lines at 45 degrees get shorter into two corners of a square.
-        // Where the strokes run out, the last few short ones have no
-        // long stroke to follow and go; where they begin, the short
-        // ones lead into long ones and stay. So the corner the strokes
-        // end in is narrow, as in the reference, which lays a small
-        // triangle of loops in one corner of every solid layer of a
-        // cube; the corner they begin in keeps all but its very tip,
-        // which no stroke reaches and is too small for anything.
+        // Where the strokes run out, the first short one stays beside
+        // the last long one and the rest, with nothing kept after
+        // them, go; where they begin, the short ones lead into long
+        // ones and stay. So the corner the strokes end in is narrow: a
+        // small triangle of loops in one corner of every solid layer
+        // of a cube. The reference has it one stroke smaller (1.65 mm2
+        // of this square), keeping the first two short strokes. The
+        // corner they begin in keeps all but its very tip, which no
+        // stroke reaches and is too small for anything.
         let square = [rect(0.0, 0.0, 20.0, 20.0)];
         let told = split(&square, SPACING, 45f64.to_radians())
             .unwrap()
@@ -762,7 +772,7 @@ mod tests {
             panic!("{corners:?}")
         };
         // The corner the columns end in, as the reference counts them.
-        assert!((1.0..3.0).contains(&corner), "{corner}");
+        assert!((2.6..3.1).contains(&corner), "{corner}");
         assert!(x > 18.0 && y < 2.0, "{x} {y}");
         assert!(
             tip < 0.5 && tip_x < 1.0 && tip_y > 19.0,
@@ -833,6 +843,52 @@ mod tests {
         let gone = removed(&deep);
         assert_eq!((gone[0][0], gone[9][0]), (false, false));
         assert!(gone[6..9].iter().all(|column| column[0]), "{gone:?}");
+    }
+
+    #[test]
+    fn where_a_run_began_is_asked_of_the_stroke_itself() {
+        // Lines running out into a corner: after the last long stroke,
+        // five short ones and then nothing. The run from the first of
+        // them began beside a long stroke and all five stay for it;
+        // the run from the second did not, and goes, back to the
+        // stroke it began with. The first stays. (In the reference
+        // the second stays too: it is asked what the first was told,
+        // not what it was.)
+        let mut corner = strokes(&[
+            &[(0.0, 10.0)],
+            &[(0.0, 3.5)],
+            &[(0.0, 2.8)],
+            &[(0.0, 2.0)],
+            &[(0.0, 1.3)],
+            &[(0.0, 0.5)],
+        ]);
+        filter(&mut corner);
+        assert_eq!(
+            removed(&corner),
+            [[false], [false], [true], [true], [true], [true]]
+        );
+        // One short stroke after a long one and nothing after it: a
+        // run that began beside a long stroke, and it stays. (The
+        // reference asks the long stroke, which no run has reached,
+        // and takes the short one out.)
+        let mut lone = strokes(&[&[(0.0, 10.0)], &[(0.0, 10.0)], &[(0.0, 2.4)]]);
+        filter(&mut lone);
+        assert_eq!(removed(&lone), [[false], [false], [false]]);
+        // With no long stroke before it, it goes.
+        let mut alone = strokes(&[&[(20.0, 30.0)], &[(0.0, 2.4)]]);
+        filter(&mut alone);
+        assert_eq!(removed(&alone), [[false], [true]]);
+        // Short strokes that lead into long ones stay, wherever they
+        // began: the corner the lines begin in.
+        let mut leading = strokes(&[
+            &[(0.0, 1.0)],
+            &[(0.0, 1.7)],
+            &[(0.0, 2.5)],
+            &[(0.0, 3.2)],
+            &[(0.0, 10.0)],
+        ]);
+        filter(&mut leading);
+        assert_eq!(removed(&leading), [[false]; 5]);
     }
 
     #[test]
