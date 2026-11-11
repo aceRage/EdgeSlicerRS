@@ -6,7 +6,7 @@ use edge_config::Settings;
 
 /// A setting, the value that turns it off, and what is done whatever it
 /// is set to.
-const UNREAD: [(&str, &str, &str); 8] = [
+const UNREAD: [(&str, &str, &str); 6] = [
     (
         "wipe_inward",
         "0",
@@ -16,11 +16,6 @@ const UNREAD: [(&str, &str, &str); 8] = [
         "elefant_foot_layers_density",
         "100%",
         "solid fill on the first layers is laid at its full density",
-    ),
-    (
-        "precise_z_height",
-        "0",
-        "layer heights are not adjusted to bring the part to its exact height",
     ),
     (
         "zaa_enabled",
@@ -41,11 +36,6 @@ const UNREAD: [(&str, &str, &str); 8] = [
         "unsupported_wall_last",
         "0",
         "a wall loop with nothing under it keeps its place among the walls",
-    ),
-    (
-        "make_overhang_printable",
-        "0",
-        "overhangs are printed as modelled",
     ),
 ];
 
@@ -72,6 +62,16 @@ pub(crate) fn notes(settings: &Settings, parts: usize) -> Vec<String> {
                 .to_owned(),
         );
     }
+    // Vase mode is not here yet. It is said apart from the list, and
+    // plainly: the part comes out a different print, with its walls,
+    // fill and top as an ordinary one has them.
+    if matches!(settings.text("spiral_mode"), Some("1" | "true")) {
+        notes.push(
+            "spiral_mode \"1\": vase mode is not followed; the part is printed as an ordinary \
+             print, with every wall, its fill and its top layers"
+                .to_owned(),
+        );
+    }
     notes
 }
 
@@ -93,7 +93,7 @@ mod tests {
 
         let on = Settings::from_json(
             r#"{"wipe_inward": "1", "zaa_enabled": "1", "reduce_crossing_wall": "1",
-                "elefant_foot_layers_density": "70%", "make_overhang_printable": "1",
+                "elefant_foot_layers_density": "70%", "small_area_infill_flow_compensation": "1",
                 "dont_filter_internal_bridges": "nofilter"}"#,
         )
         .unwrap();
@@ -112,11 +112,25 @@ mod tests {
         )
         .unwrap();
         assert!(notes(&ironed, 1).is_empty());
+        // Nor of a precise height or printable overhangs, which have
+        // their own notes for what they leave undone.
+        let shaped =
+            Settings::from_json(r#"{"precise_z_height": "1", "make_overhang_printable": "1"}"#)
+                .unwrap();
+        assert!(notes(&shaped, 1).is_empty());
 
         // Hiding seams where parts meet is on unless turned off, and
         // only means anything with more than one part.
         assert_eq!(notes(&Settings::default(), 2).len(), 1);
         let hidden_off = Settings::from_json(r#"{"seam_prefer_part_joints": "0"}"#).unwrap();
         assert!(notes(&hidden_off, 2).is_empty());
+
+        // Vase mode is said when it is on, and only then.
+        let vase = Settings::from_json(r#"{"spiral_mode": "1"}"#).unwrap();
+        let said = notes(&vase, 1);
+        assert_eq!(said.len(), 1, "{said:?}");
+        assert!(said[0].starts_with("spiral_mode \"1\": vase mode is not followed"));
+        let plain = Settings::from_json(r#"{"spiral_mode": "0"}"#).unwrap();
+        assert!(notes(&plain, 1).is_empty());
     }
 }

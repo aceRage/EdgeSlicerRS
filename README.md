@@ -28,11 +28,11 @@ replaces it until output matches on the printers we care about.
 | `crates/edge-template` | The placeholder language of custom G-code: `{expression}`, `{if}`, `[variable]`, and scripts |
 | `crates/edge-time` | How long a G-code file takes, with acceleration: the file is read as a printer reads it and planned as the reference's estimator plans, or as Klipper does |
 | `crates/edge-tower` | The prime tower a nozzle is primed on after a tool change |
-| `crates/edge-slice` | Mesh to per-layer contours, then to regions with holes; parallel across layers. Elephant foot compensation of the first layers; round holes made polygons of few sides, and round outlines and holes resized by what the filament prints them off by |
+| `crates/edge-slice` | Mesh to per-layer contours, then to regions with holes; parallel across layers. Elephant foot compensation of the first layers; round holes made polygons of few sides, and round outlines and holes resized by what the filament prints them off by; the last layers' heights tuned so a part comes out its exact height, and layers grown downward under overhangs so they can be printed |
 | `crates/edge-engine` | The whole pipeline behind one call, for whatever drives it: open a model and list its plates, settle its settings, slice with progress and cancel, G-code, a layer's lines for drawing, a vendor's presets by printer, and its printer models with the presets, picture and sizes of each |
 | `crates/edge-cli` | The `edge` command line |
 | `tools/make_defaults.py` | Asks the reference for its default of every setting and writes the table `edge-config` carries; run again when the pin moves |
-| `tools/make_fixture.py` | Writes small test 3MFs (parts that need supports or a brim, a plain cube, two blocks in two filaments, a comb with thin teeth on the bed, three tiers with a top surface on each, bars over a base for small bridges over infill, a slab with round holes for the hole options, three round ones for arc fitting: a post, a post with a hole, a slab with a wide curve and tight ones, and a post that widens as it rises for scarf seams) to compare with the reference on |
+| `tools/make_fixture.py` | Writes small test 3MFs (parts that need supports or a brim, a plain cube, two blocks in two filaments, a comb with thin teeth on the bed, three tiers with a top surface on each, bars over a base for small bridges over infill, a slab with round holes for the hole options, a slab with pockets underneath, three round ones for arc fitting: a post, a post with a hole, a slab with a wide curve and tight ones, and a post that widens as it rises for scarf seams) to compare with the reference on |
 | `tools/make_project.py` | Writes one of those parts as a project whose settings are named presets, with as many filaments as are named: how the test prints for a printer are made |
 | `reference/EdgeSlicer` | Pinned submodule of the C++ slicer: profiles, test models, behaviour to match. Read-only here |
 | `apps/desktop` | The desktop app (Tauri): several projects open at once, each prepared, sliced, looked through layer by layer and exported, in the C++ application's tabs. A workspace of its own |
@@ -211,6 +211,68 @@ Working:
   first layer's outer wall lies within 0.011 mm of the C++ slicer's
   everywhere; it was up to 0.17 mm off while wide parts were shrunk by
   the whole amount and narrow ones not at all.
+- A precise height (`precise_z_height`): layers are laid from the bed
+  up for as long as the middle of one is still inside the part, so the
+  last ends up to half a layer above or below the part's top; with this
+  on, the last five layers share that difference out between them, each
+  made a little thinner or thicker within what the nozzles in use allow
+  (`min_layer_height`, `max_layer_height`), and are cut through their
+  middles as they then lie. A port of the reference's
+  `adjust_layer_series_to_align_object_height` (Slicing.cpp). Walls,
+  fill, skirt, prime tower and supports on those layers are laid at the
+  layer's own height. Not as the reference, marked in the code: a layer
+  that has reached the least or greatest height takes no further share
+  (the reference gives it one, and overshoots; it shows only where the
+  five layers differ in height, which they do not here). On a 20 mm
+  cube at 0.2 mm on a 0.25 mm first layer both slicers end at 20.05 mm
+  without it and with it lay the last five layers at 0.19 mm, to
+  19.24, 19.43, 19.62, 19.81 and 20.00 mm; on one 20.14 mm tall, at
+  0.218 mm, to 20.14 mm. All 100 layers are at the C++ slicer's heights
+  in both, walls and layer extents the same to 0.000 mm and plastic per
+  millimetre the same on the changed layers, supports included. A shell
+  is measured in the layers as tuned: five of 0.19 mm come to 0.95 mm,
+  under the 1 mm of the U1's `top_shell_thickness`, so a sixth layer is
+  made solid under the cube's top, as in the reference (5.56 m of
+  internal solid fill there and 5.57 m here). Noted
+  and not done: a part of fewer than six layers, or a difference the
+  five cannot take up, is left as it was; and everything on a plate is
+  cut at the same heights, so only the tallest object comes out exact
+  (the reference tunes each object).
+- Overhangs made printable (`make_overhang_printable`, with
+  `make_overhang_printable_angle` and
+  `make_overhang_printable_hole_size`): from the top layer down, each
+  layer is made to hold the layer above less what a layer may reach out
+  past the one beneath at the angle set (measured from upright: 90
+  changes nothing, 0 lets nothing overhang), so a slope grows under
+  every overhang down to where it meets the part or the bed. The roof
+  of a hole in the underside is not sloped but filled, hole and all,
+  unless the hole is smaller than the size set. A port of the
+  reference's `apply_conical_overhang` (PrintObjectSlice.cpp), done
+  where the reference does it: on the layers as cut, before paint, size
+  compensation and the elephant's foot; a brim goes round what the
+  slope puts on the bed. On a layer in several filaments what is added
+  goes to the filament above it. Not as the reference, marked in the
+  code: the reach is `tan(angle)` times the height of the layer that
+  overhangs, where the reference takes the `layer_height` setting for
+  every layer (with a precise height on as well, a slope under the
+  changed layers lies up to 0.043 mm from the C++ slicer's); and
+  everything on the plate is grown as one stack, which differs only
+  where a part floats over nothing. Against the C++ slicer, same layers
+  throughout: on the mushroom at the default 55° the wall length of a
+  layer differs by 0.01% on average and 0.1% at most, layer extents by
+  0.001 mm and 0.004 mm; at 30° by 0.02% and 0.005 mm at most; on the
+  shelf by 0.00% and 0.002 mm; on the 3DBenchy, with a precise height
+  as well, by 0.07% on average (as without either) and 0.013 mm at
+  most. On a slab with two pockets underneath (`tools/make_fixture.py`,
+  `pocket`) both are filled by default and the bridge over them
+  (0.43 m in the C++ slicer's file, 0.46 m here) goes in both; with a
+  hole size of 50 mm² the 16 mm² pocket is kept and the 100 mm² one
+  filled, walls and extents the same to 0.000 mm. A part whose slope reaches the bed gets the same
+  1.12 m of brim in both. Growing the layers is done one after another
+  and takes about 0.2 s on the 3DBenchy's 240 layers. Noted and not
+  done: on a part with colour painted on it, what is added is printed
+  in the filament the part is made of. Not read: the option set for one
+  part or modifier, as with every setting.
 - Every preset the reference ships resolves. `slice` takes layer heights and
   the closing radius from the command line, a process preset, or the 3MF's
   own settings, in that order.
@@ -390,7 +452,27 @@ Known gaps: painted supports and seams, per-object setting overrides, typed sett
   shell of it is made solid too, so a leaning wall stays as thick
   measured straight up as it is sideways; walls between two filaments
   inside a part do not count (`discover_vertical_shells`). Any other
-  value of that setting is noted and not followed. Fill over air takes `bridge_flow`
+  value of that setting is noted and not followed.
+  A shell is as many layers as `top_shell_layers` or
+  `bottom_shell_layers` says, and as many more as it takes to measure
+  `top_shell_thickness` or `bottom_shell_thickness`: a layer is shell
+  under a top face while the layers from its top to the face's come to
+  less than the thickness set, and over a bottom face or a bridge while
+  those from its bottom to the face's do, each layer at the height it
+  has. That is the reference's rule in both the places it makes shells
+  (PrintObject.cpp `discover_vertical_shells` and
+  `discover_horizontal_shells`). Zero leaves it to the count, and with
+  no layers asked for there is no shell whatever the thickness. While
+  only the count was followed, a 20 mm cube with the Snapmaker U1's
+  0.16 mm process (six layers, 1 mm) got 6.34 m of internal solid fill
+  where the C++ slicer lays 7.22 m; it gets 7.22 m now, on the same
+  layers (more under Comparing with the reference). Where the count
+  already makes the thickness, as five layers of 0.2 mm do with the
+  U1's 0.2 mm process, the file is byte for byte what it was. Noted
+  and not done: paint on a top or bottom face is carried as deep as
+  the thickness takes in layers of the layer height, which is not the
+  shell's depth where the first layer or the last five are of another
+  height. Fill over air takes `bridge_flow`
   and `bridge_density`, and runs along the edges it has nothing beside,
   so its lines go from one support to the other. Bridges, bottoms and
   tops reach a wall's spacing into the fill beside them, to have
@@ -794,7 +876,7 @@ noted), narrow solid areas are filled with the same lines
 as wide ones where the reference lays loops along them
 (`detect_narrow_internal_solid_infill`, noted), narrow parts of top and
 bottom surfaces get no gap fill
-(`gap_fill_target`), shell thickness in mm is ignored, and eight of the
+(`gap_fill_target`), and eight of the
 reference's sparse patterns are not laid (below). Gap closing runs across objects, so two separate objects closer than twice
 the radius merge; the reference closes within one object only.
 
@@ -1620,6 +1702,51 @@ bridge detector says can be spanned from the wide hole's edge
 direction with most anchored lines and the strips it can span), which
 is not here: this engine turns a bridge by the edges it has nothing
 beside.
+
+Shells as thick as asked (`top_shell_thickness`,
+`bottom_shell_thickness`), against the C++ slicer on
+`tools/make_fixture.py`'s parts: metres of internal solid fill (C++
+slicer / this engine), what this engine laid while it followed the
+count alone, and the layers with solid fill inside them, counted from
+0, which are the same in both slicers in every row. The first eight
+rows are whole stock processes; the rest are the U1's 0.2 mm process
+(five top layers and 1 mm, three bottom layers and no thickness, a
+first layer of 0.25 mm) with what is named changed. Top and bottom
+surfaces are the same length in both to 0.01 m in every row, and each
+file is the same made on one thread and on many.
+
+| Part and settings | Solid fill, m | By count | Layers solid inside |
+| --- | --- | --- | --- |
+| `cube`, U1 0.08 mm (9 layers, 0.8 mm) | 11.93 / 11.95 | 11.10 | 1-6, 238-247 of 249 |
+| `cube`, U1 0.10 mm Color Mixing (5, 0.6 mm) | 6.96 / 6.97 | 6.12 | 1-4, 193-198 of 200 |
+| `cube`, U1 0.12 mm (5, 0.6 mm) | 6.18 / 6.19 | same file | 1-4, 160-164 of 166 |
+| `cube`, U1 0.16 mm (6, 1 mm) | 7.22 / 7.22 | 6.34 | 1-3, 117-123 of 125 |
+| `cube`, U1 0.20 mm (5, 1 mm) | 4.68 / 4.68 | same file | 1-2, 94-98 of 100 |
+| `cube`, U1 0.24 mm (4, 1 mm) | 4.80 / 4.80 | 3.87 | 1-2, 78-82 of 84 |
+| `cube`, U1 0.28 mm (4, 1 mm) | 3.96 / 3.96 | same file | 1-2, 67-70 of 72 |
+| `cube`, Centauri Carbon 0.16 mm (5, 1 mm; bottom 3, 0.6 mm) | 7.22 / 7.22 | 4.57 | 1-3, 117-123 of 125 |
+| `cube`, `layer_height` 0.16, 0.12, 0.08 | 6.33 / 6.34, 7.91 / 7.92, 11.09 / 11.10 | 4.57, 4.46, 4.36 | 1-2 and 116-122, 156-164, 234-246 |
+| `cube`, 0.16, `top_shell_thickness=0` | 4.56 / 4.57 | same file | 1-2, 118-122 |
+| `cube`, 0.16, `top_shell_layers=0` | 1.77 / 1.77 | same file | 1-2; no top surface in either |
+| `cube`, `bottom_shell_thickness=1` | 6.49 / 6.50 | 4.68 | 1-4, 94-98 |
+| `cube`, 0.12, `bottom_shell_thickness=0.8` | 10.50 / 10.51 | 4.46 | 1-5, 156-164 |
+| the same with `bottom_shell_layers=0` | 6.18 / 6.19 | 2.73 | 156-164; no bottom surface in either |
+| `steps`, 0.16 | 18.74 / 18.76 | 13.53 | 1-2, 10-16, 29-35, 54-60 |
+| `steps`, 0.12, `bottom_shell_thickness=0.8` | 31.04 / 31.08 | 13.22 | 1-5, 14-22, 39-47, 72-80 |
+| `mushroom`, 0.16 | 14.88 / 14.88 | 10.68 | 1-2, 63-64, 79-85 |
+| `mushroom`, 0.12, `bottom_shell_thickness=0.8` | 26.68 / 26.70 | 10.43 | 1-5, 83-88, 106-114 |
+| `cube`, `precise_z_height=1` | 5.56 / 5.57 | 4.66 | 1-2, 93-98 |
+| `cube`, 0.16, `ensure_vertical_shell_thickness=none` | 6.33 / 6.34 | 4.57 | 1-2, 116-122 |
+
+The lowest layer of each run under a top is the band of sparse fill
+made solid under the edge of a bridge over infill, not shell. The
+shell over the underside of the mushroom's cap, a bridge, is made up
+to the thickness as the one over the bed is. One
+part differs, and did before: `steps` with the U1's own 0.16 mm
+process has the top of its lowest tier, at 3 mm, exactly where layer
+18 is cut; the reference takes that layer for part of the tier and
+this engine does not, so the tier's top and the shell under it lie a
+layer lower here (10-16 against 11-17), each as deep as the other's.
 
 ## Licence
 
