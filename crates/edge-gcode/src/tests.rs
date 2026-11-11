@@ -2895,3 +2895,51 @@ fn a_speed_within_one_mm_a_second_of_the_last_is_not_written() {
     let slowest = speeds.iter().copied().fold(f64::INFINITY, f64::min);
     assert!((30.0..36.0).contains(&slowest), "{slowest}");
 }
+
+#[test]
+fn loops_over_air_go_last_and_those_out_of_reach_after_the_fill() {
+    // A block beneath; above it an inner wall on the block, a wall over
+    // air just beside that one, and an outer wall over air far out.
+    let block = [ExPolygon {
+        contour: wall(0.0, 0.0, 10.0, 0).polygon,
+        holes: Vec::new(),
+    }];
+    let base = [wall(0.0, 0.0, 10.0, 0)];
+    let loops = [
+        wall(-5.0, -5.0, 20.0, 0),
+        wall(-0.3, -0.3, 10.6, 1),
+        wall(0.1, 0.1, 9.8, 2),
+    ];
+    let fill = [line((2.0, 5.0), (8.0, 5.0), Role::SparseInfill)];
+    let first = one_layer(&base, &[0..1], &[])[0];
+    let second = Layer {
+        z: 0.4,
+        below: &block,
+        ..one_layer(&loops, &[0..3], &fill)[0]
+    };
+    let laid = |unsupported_wall_last: bool, infill_first: bool| {
+        let settings = PrintSettings {
+            wall_order: WallOrder::OuterInner,
+            unsupported_wall_last,
+            infill_first,
+            ..basic()
+        };
+        let text = print(&[first, second], &settings).0;
+        let second = &text[text.find(";Z:0.4").unwrap()..];
+        features(second).join(", ")
+    };
+    // Outer wall first, as asked.
+    let off = laid(false, false);
+    assert_eq!(off, "Overhang wall, Inner wall, Sparse infill");
+    // The wall resting on the block first, the one beside it next, and
+    // the outer one, which nothing anchored is near, after the fill.
+    let on = laid(true, false);
+    assert_eq!(
+        on,
+        "Inner wall, Overhang wall, Sparse infill, Overhang wall"
+    );
+    // With the fill first nothing is held back, but the walls over air
+    // still come last, innermost first.
+    let first_fill = laid(true, true);
+    assert_eq!(first_fill, "Sparse infill, Inner wall, Overhang wall");
+}

@@ -24,6 +24,7 @@ mod seam_plan;
 mod settings;
 mod simplify;
 mod small_area;
+mod unsupported;
 mod wipe;
 
 use std::{
@@ -1508,14 +1509,23 @@ impl Writer<'_> {
                     _ => rest.push(path),
                 }
             }
+            // Loops wholly over air, with `unsupported_wall_last`.
+            let held = self.held(&layer.loops[layer.islands[island].clone()], &with_walls);
             if self.settings.infill_first {
                 self.lines(&rest, layer.shelter)?;
             }
             self.lines(&over_air, layer.shelter)?;
-            self.walls(layer, &layer.islands[island])?;
+            self.walls(layer, &layer.islands[island], held.as_ref(), false)?;
             self.lines(&with_walls, layer.shelter)?;
             if !self.settings.infill_first {
                 self.lines(&rest, layer.shelter)?;
+                // Then the loops left hanging in mid air, now that the
+                // fill can anchor them (GCode.cpp `process_layer`, the
+                // second `extrude_perimeters`). With the fill laid first
+                // nothing is held back: the fill is down already.
+                if let Some(held) = held.as_ref().filter(|held| held.any_after_fill()) {
+                    self.walls(layer, &layer.islands[island], Some(held), true)?;
+                }
             }
             self.ironing(&ironing, layer.shelter, ironing_fan)?;
         }
@@ -1584,22 +1594,70 @@ impl Writer<'_> {
         }
     }
 
-    /// One island's walls in the configured order.
-    fn walls(&mut self, layer: &Layer<'_>, island: &Range<usize>) -> io::Result<()> {
+    /// Which of an island's loops are over air and which of those wait
+    /// for its fill, where `unsupported_wall_last` asks and overhangs are
+    /// told apart on this layer; none otherwise, or where no loop is over
+    /// air. `thin` are the island's walls that are no loops.
+    fn held(&self, own: &[ExtrusionLoop], thin: &[&ExtrusionPath]) -> Option<unsupported::Held> {
+        if !self.settings.unsupported_wall_last {
+            return None;
+        }
+        let (below, by) = self.clear_of()?;
+        let over_air: Vec<bool> = (own.iter())
+            .map(|wall| unsupported::over_air(below, by, wall))
+            .collect();
+        if !over_air.contains(&true) {
+            return None;
+        }
+        Some(unsupported::held(
+            own,
+            over_air,
+            thin,
+            unsupported::reach(own),
+        ))
+    }
+
+    /// One island's walls in the configured order. With `held`, the loops
+    /// over air go after the rest, innermost first, and those that wait
+    /// for the fill are left out, or with `after_fill` are all that is laid.
+    fn walls(
+        &mut self,
+        layer: &Layer<'_>,
+        island: &Range<usize>,
+        held: Option<&unsupported::Held>,
+        after_fill: bool,
+    ) -> io::Result<()> {
         let s = self.settings;
         let own = &layer.loops[island.clone()];
-        let mut walls: Vec<&ExtrusionLoop> = nested(own).into_iter().map(|at| &own[at]).collect();
+        let mut order = nested(own);
         match s.wall_order {
             WallOrder::InnerOuter => {}
-            WallOrder::OuterInner => walls.reverse(),
+            WallOrder::OuterInner => order.reverse(),
             // "Sandwich mode. Apply after 1st layer."
             WallOrder::InnerOuterInner => {
                 if !self.state.first_layer {
-                    walls.reverse();
-                    walls = sandwich(walls);
+                    order.reverse();
+                    let walls: Vec<&ExtrusionLoop> = order.iter().map(|&at| &own[at]).collect();
+                    let sandwiched = sandwich(walls);
+                    order = sandwiched
+                        .into_iter()
+                        .map(|wall| {
+                            own.iter()
+                                .position(|other| std::ptr::eq(other, wall))
+                                .expect("a wall of the island")
+                        })
+                        .collect();
                 }
             }
         }
+        // Loops over air last (PerimeterGenerator.cpp
+        // `defer_unsupported_loops`, after the wall order is settled).
+        if let Some(held) = held {
+            order = unsupported::reorder(own, order, held);
+            let hold = !s.infill_first;
+            order.retain(|&at| !hold || held.after_fill[at] == after_fill);
+        }
+        let walls: Vec<&ExtrusionLoop> = order.into_iter().map(|at| &own[at]).collect();
         // The walls laid so far, for a wipe over them (`wipe.rs`).
         let mut printed = wipe::Printed::default();
         for wall in walls {

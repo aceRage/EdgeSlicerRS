@@ -35,7 +35,7 @@ replaces it until output matches on the printers we care about.
 | `crates/edge-cli` | The `edge` command line |
 | `tools/make_defaults.py` | Asks the reference for its default of every setting and writes the table `edge-config` carries; run again when the pin moves |
 | `tools/make_settings_pages.py` | Reads the reference's process, filament and printer pages and option definitions from its source and writes the data the desktop app draws its settings pages from; run again when the pin moves, after `make_defaults.py` |
-| `tools/make_fixture.py` | Writes small test 3MFs (parts that need supports or a brim, a plain cube, two blocks in two filaments, a comb with thin teeth on the bed, three tiers with a top surface on each, bars over a base for small bridges over infill, a slab with round holes for the hole options, a slab with holes that narrow on the way up for bridging them, a slab with pockets underneath, three round ones for arc fitting: a post, a post with a hole, a slab with a wide curve and tight ones, a post that widens as it rises for scarf seams, two of two parts for seams where parts meet: a round post cut in two, and a block with a post pushed half into it, and two with seams painted on: a post with a strip painted to have them, and a cube with two sides painted to keep them off) to compare with the reference on |
+| `tools/make_fixture.py` | Writes small test 3MFs (parts that need supports or a brim, a plain cube, two blocks in two filaments, a comb with thin teeth on the bed, three tiers with a top surface on each, bars over a base for small bridges over infill, a slab with round holes for the hole options, a slab with holes that narrow on the way up for bridging them, a slab with pockets underneath, three round ones for arc fitting: a post, a post with a hole, a slab with a wide curve and tight ones, a post that widens as it rises for scarf seams, two of two parts for seams where parts meet: a round post cut in two, and a block with a post pushed half into it, and two with seams painted on: a post with a strip painted to have them, and a cube with two sides painted to keep them off, and a plate on a frame with walls wholly over air) to compare with the reference on |
 | `tools/make_app.sh` | Builds the desktop app and wraps it in a macOS `.app` that opens with a double click (macOS only) |
 | `tools/make_project.py` | Writes one of those parts as a project whose settings are named presets, with as many filaments as are named, each list holding the value each filament reads at standard flow: how the test prints for a printer are made |
 | `reference/EdgeSlicer` | Pinned submodule of the C++ slicer: profiles, test models, behaviour to match. Read-only here |
@@ -428,7 +428,17 @@ Working:
   overhang turned about on every other layer (`overhang_reverse`, with
   its threshold and `overhang_reverse_internal_only`). A wall loop no
   longer than a circle of `small_perimeter_threshold` goes at
-  `small_perimeter_speed`.
+  `small_perimeter_speed`. With `unsupported_wall_last` a loop wholly
+  over air goes after the island's other walls, innermost first, and
+  one that comes within a wall spacing and a half of none of the
+  anchored walls waits until the island's fill is down, as the
+  reference has it (PerimeterGenerator.cpp `defer_unsupported_loops`);
+  here the loop is told by the same cut against the layer beneath that
+  makes its overhang walls, as it is laid. On the parts compared
+  (`ledge`, `mushroom`, `shelf`, `bridge`, each wall order, classic and
+  Arachne walls) the layers that change are the same in both files and
+  their walls go down in the same order; with it off the files are what
+  they were, to the byte.
 - Gap fill: a gap between walls too narrow for another wall gets a line
   down its middle, as wide as the gap is at each point, found as the
   reference finds it (the medial axis of the gap). On whenever
