@@ -380,6 +380,7 @@ mod tests {
         };
         let project = Project {
             kept: None,
+            custom_gcode: Default::default(),
             objects: vec![Object {
                 kept: None,
                 id: 7,

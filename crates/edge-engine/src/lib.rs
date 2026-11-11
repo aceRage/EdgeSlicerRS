@@ -17,6 +17,7 @@ mod followed;
 mod holes;
 mod job;
 pub mod lay_on_face;
+mod layer_codes;
 mod layer_heights;
 mod load;
 mod model;

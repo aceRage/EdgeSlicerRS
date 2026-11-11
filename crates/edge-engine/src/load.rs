@@ -58,6 +58,8 @@ pub struct Loaded {
     /// there by hand ([`crate::Model`]): a model without settings of its
     /// own is then not moved to the middle of the bed.
     pub placed: bool,
+    /// The G-code set at the plate's layers, when it has an entry.
+    pub custom_gcode: Option<edge_3mf::CustomGcode>,
 }
 
 /// One plate of a project, as it is listed before anything is placed.
@@ -266,6 +268,7 @@ pub(crate) fn lone(path: &Path, solid: Mesh) -> Result<Loaded, Failure> {
         first_layer_sequence: Vec::new(),
         bounds,
         placed: false,
+        custom_gcode: None,
     })
 }
 
@@ -335,6 +338,11 @@ pub(crate) fn placed(
         first_layer_sequence,
         bounds,
         placed: false,
+        // Plate 1's for a project without plates, as the reference reads it.
+        custom_gcode: project
+            .custom_gcode
+            .get(&plate.map_or(1, |index| project.plates[index].id))
+            .cloned(),
     })
 }
 
@@ -440,6 +448,7 @@ mod tests {
         // A box with a hole cut in it, and a plain one.
         let project = Project {
             kept: None,
+            custom_gcode: Default::default(),
             objects: vec![
                 Object {
                     kept: None,

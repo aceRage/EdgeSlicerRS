@@ -931,3 +931,76 @@ fn a_painted_projects_part_deleted_and_given_a_filament_keeps_the_rest_of_its_pa
     assert_eq!(shape.parts().len(), 2);
     assert!(shape.parts().iter().all(|part| part.paint.is_some()));
 }
+
+/// The tops of a plate's layers, as its G-code gives them.
+fn layer_tops(gcode: &[u8]) -> Vec<f64> {
+    String::from_utf8_lossy(gcode)
+        .lines()
+        .filter_map(|line| line.strip_prefix(";Z:")?.parse().ok())
+        .collect()
+}
+
+/// A pause and a custom line set at a plate's layers are written at the
+/// start of those layers, as the reference writes them; saved, they go
+/// with the project and slice alike when it is opened again; and they go
+/// with their plate when one before it is taken away.
+#[test]
+fn g_code_set_at_layers_is_written_there_and_saved_with_its_plate() {
+    use edge_3mf::{CustomGcode, CustomItem, CustomKind, CustomMode};
+    let mut model = twopart();
+    let plain = sliced(&model, Some(1)).unwrap();
+    let tops = layer_tops(&plain);
+    let item = |z: f64, kind: CustomKind, extra: &str| CustomItem {
+        print_z: z,
+        kind,
+        extruder: 1,
+        color: String::new(),
+        extra: extra.into(),
+        gcode: String::new(),
+    };
+    let info = CustomGcode {
+        mode: Some(CustomMode::SingleExtruder),
+        items: vec![
+            item(tops[4], CustomKind::PausePrint, ""),
+            item(
+                tops[9],
+                CustomKind::Custom,
+                "M117 hi {not a placeholder}\nG4 S1",
+            ),
+        ],
+    };
+    model.set_custom_gcode(Some(1), info.clone()).unwrap();
+    assert_eq!(model.custom_gcode(Some(1)), Some(&info));
+    let text = String::from_utf8(sliced(&model, Some(1)).unwrap()).unwrap();
+    let pause = edge_gcode::gcode_template(model.settings().unwrap(), "machine_pause_gcode")
+        .unwrap_or_default();
+    let layer = |z: f64| {
+        let from = text.find(&format!(";Z:{z:.3}\n")).unwrap();
+        let to = text[from + 4..]
+            .find(";Z:")
+            .map_or(text.len(), |at| from + 4 + at);
+        &text[from..to]
+    };
+    assert!(layer(tops[4]).contains(&format!("\n;PAUSE_PRINT\n{pause}\n\n")));
+    assert!(layer(tops[9]).contains("\n;CUSTOM_GCODE\nM117 hi {not a placeholder}\nG4 S1\nG1 "));
+    assert_eq!(text.matches(";PAUSE_PRINT").count(), 1);
+
+    let (again, _) = saved_as_edited(&model, "custom.3mf", &[Some(1)]);
+    assert_eq!(again.custom_gcode(Some(1)), Some(&info));
+
+    // On plate 2, with plate 1 taken away: plate 1's now.
+    let mut moved = again.clone();
+    let mut model = twopart();
+    model.add_plate(Some(&U1)).unwrap();
+    model.set_custom_gcode(Some(2), info.clone()).unwrap();
+    model.remove_plate(Some(&U1), 1).unwrap();
+    assert_eq!(model.custom_gcode(Some(1)), Some(&info));
+    // Emptied, the plate keeps an entry with none, as the reference does.
+    let none = CustomGcode {
+        mode: Some(CustomMode::SingleExtruder),
+        items: Vec::new(),
+    };
+    moved.set_custom_gcode(Some(1), none.clone()).unwrap();
+    let (emptied, _) = saved_as_edited(&moved, "emptied.3mf", &[]);
+    assert_eq!(emptied.custom_gcode(Some(1)), Some(&none));
+}
