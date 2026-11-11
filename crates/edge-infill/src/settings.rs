@@ -63,6 +63,12 @@ pub struct InfillSettings {
     pub top_joined: bool,
     pub bottom_joined: bool,
     pub solid_joined: bool,
+    /// Whether each is swept from one side to the other, no line laid
+    /// between two already down: so for `monotonic` and `monotonicline`,
+    /// not for `rectilinear`.
+    pub top_ordered: bool,
+    pub bottom_ordered: bool,
+    pub solid_ordered: bool,
     /// Whether fill under and over the walls of nearby layers is made
     /// solid (`ensure_vertical_shell_thickness` at `ensure_all`).
     pub ensure_vertical_shells: bool,
@@ -101,6 +107,9 @@ impl Default for InfillSettings {
             bridge_density: 1.0,
             thick_internal_bridges: true,
             internal_bridge_density: 1.0,
+            top_ordered: true,
+            bottom_ordered: true,
+            solid_ordered: true,
             top_joined: false,
             bottom_joined: true,
             solid_joined: true,
@@ -178,24 +187,35 @@ impl InfillSettings {
         }
         // Straight lines are all this engine lays on a surface; any other
         // pattern is laid as joined lines and said so.
-        let mut joined = |key: &str, default: bool| match settings
+        // (joined, swept in order)
+        let mut joined = |key: &str, default: (bool, bool)| match settings
             .texts(key)
             .and_then(|pattern| pattern.first())
             .map(String::as_str)
         {
             None => default,
-            Some("monotonicline") => false,
-            Some("monotonic" | "rectilinear") => true,
+            Some("monotonicline") => (false, true),
+            Some("monotonic") => (true, true),
+            Some("rectilinear") => (true, false),
             Some(other) => {
                 unsupported.push(format!(
                     "{key} \"{other}\": laid as straight lines joined at their ends"
                 ));
-                true
+                (true, false)
             }
         };
-        let top_joined = joined("top_surface_pattern", defaults.top_joined);
-        let bottom_joined = joined("bottom_surface_pattern", defaults.bottom_joined);
-        let solid_joined = joined("internal_solid_infill_pattern", defaults.solid_joined);
+        let (top_joined, top_ordered) = joined(
+            "top_surface_pattern",
+            (defaults.top_joined, defaults.top_ordered),
+        );
+        let (bottom_joined, bottom_ordered) = joined(
+            "bottom_surface_pattern",
+            (defaults.bottom_joined, defaults.bottom_ordered),
+        );
+        let (solid_joined, solid_ordered) = joined(
+            "internal_solid_infill_pattern",
+            (defaults.solid_joined, defaults.solid_ordered),
+        );
         // The reference has a different way of laying shells for each
         // other value; only this one is ported.
         let ensure_vertical_shells = match settings
@@ -270,6 +290,9 @@ impl InfillSettings {
                 "internal_bridge_density",
                 defaults.internal_bridge_density,
             )?,
+            top_ordered,
+            bottom_ordered,
+            solid_ordered,
             top_joined,
             bottom_joined,
             solid_joined,
@@ -406,6 +429,9 @@ impl InfillSettings {
             top_joined: self.top_joined,
             bottom_joined: self.bottom_joined,
             solid_joined: self.solid_joined,
+            top_ordered: self.top_ordered,
+            bottom_ordered: self.bottom_ordered,
+            solid_ordered: self.solid_ordered,
         })
     }
 }
@@ -471,10 +497,19 @@ mod tests {
             (set.top_joined, set.bottom_joined, set.solid_joined),
             (true, false, true)
         );
+        // Both monotonic patterns are swept in order; rectilinear is not.
+        assert_eq!(
+            (unset.top_ordered, unset.bottom_ordered, unset.solid_ordered),
+            (true, true, true)
+        );
+        assert_eq!(
+            (set.top_ordered, set.bottom_ordered, set.solid_ordered),
+            (true, true, false)
+        );
         assert!(set.unsupported.is_empty());
         // A pattern not laid here is said, and laid as joined lines.
         let other = read(r#"{"top_surface_pattern": "concentric"}"#).unwrap();
-        assert!(other.top_joined);
+        assert!(other.top_joined && !other.top_ordered);
         assert!(other.unsupported[0].starts_with("top_surface_pattern \"concentric\""));
     }
 

@@ -43,6 +43,12 @@ pub struct FillParams {
     pub top_joined: bool,
     pub bottom_joined: bool,
     pub solid_joined: bool,
+    /// Whether each of those is swept from one side to the other so that
+    /// no line is laid between two already down (the reference's
+    /// `monotonic` and `monotonicline`; `rectilinear` is not).
+    pub top_ordered: bool,
+    pub bottom_ordered: bool,
+    pub solid_ordered: bool,
 }
 
 /// How a surface's lines meet the edge of its area.
@@ -64,7 +70,13 @@ enum Lay {
     /// Solid lines as `FillRectilinear.cpp` lays them: run to within
     /// `LINES_INSET` of the edge, and turned half a spacing inside it
     /// where they are joined. `fitted` spreads them to fill the width.
-    Turned { joined: bool, fitted: bool },
+    /// `ordered` lays them in one sweep across the area, where no line
+    /// goes down between two already laid.
+    Turned {
+        joined: bool,
+        fitted: bool,
+        ordered: bool,
+    },
 }
 
 /// How far a line's centre stops short of the area's edge, as a share of
@@ -114,6 +126,7 @@ pub fn fill(
                 params.top.spacing,
                 Lay::Turned {
                     joined: params.top_joined,
+                    ordered: params.top_ordered,
                     fitted: true,
                 },
                 &[params.solid_angle + turned],
@@ -148,6 +161,7 @@ pub fn fill(
                 params.solid.spacing,
                 Lay::Turned {
                     joined: params.bottom_joined,
+                    ordered: params.bottom_ordered,
                     fitted: true,
                 },
                 &[params.solid_angle + turned],
@@ -158,6 +172,7 @@ pub fn fill(
                 params.solid.spacing,
                 Lay::Turned {
                     joined: params.solid_joined,
+                    ordered: params.solid_ordered,
                     fitted: false,
                 },
                 &[params.solid_angle + turned],
@@ -184,7 +199,12 @@ pub fn fill(
                     let spacing = scaled(spacing);
                     for points in lines::paths(area, spacing, angles, min_length, scaled(max_link))
                     {
-                        paths.push(ExtrusionPath { points, role, flow });
+                        paths.push(ExtrusionPath {
+                            points,
+                            role,
+                            flow,
+                            in_turn: false,
+                        });
                     }
                 }
             }
@@ -208,8 +228,14 @@ pub fn fill(
                     first,
                     angles[0],
                     unlimited,
+                    false,
                 ) {
-                    paths.push(ExtrusionPath { points, role, flow });
+                    paths.push(ExtrusionPath {
+                        points,
+                        role,
+                        flow,
+                        in_turn: false,
+                    });
                 }
             }
             Lay::Anchored => {
@@ -230,7 +256,7 @@ pub fn fill(
                     // FillBase.cpp `create_boundary_infill_graph`.
                     beside: (0.8 * line as f64) as i64,
                     beside_clip: (1.7 * line as f64) as i64,
-                    sweep: false,
+                    order: lines::Order::Nearest,
                 };
                 // Each direction's lines pass through the origin. None
                 // lies within a line's spacing of the area's own edge,
@@ -256,14 +282,23 @@ pub fn fill(
                     for points in
                         lines::paths_anchored(area, scaled(spacing) as f64, &rows, angles, joining)
                     {
-                        let path = ExtrusionPath { points, role, flow };
+                        let path = ExtrusionPath {
+                            points,
+                            role,
+                            flow,
+                            in_turn: false,
+                        };
                         if path.length_mm() >= least {
                             paths.push(path);
                         }
                     }
                 }
             }
-            Lay::Turned { joined, fitted } => {
+            Lay::Turned {
+                joined,
+                fitted,
+                ordered,
+            } => {
                 let Some((low, high)) = lines::extent_across(&surface.area, angles[0]) else {
                     continue;
                 };
@@ -295,9 +330,16 @@ pub fn fill(
                 // The first line lies half a pitch in from the area's own
                 // edge, not on a grid shared with other areas.
                 let first = low + pitch / 2.0;
-                for points in lines::paths_turned(&outer, &inner, pitch, first, angles[0], max_link)
-                {
-                    paths.push(ExtrusionPath { points, role, flow });
+                // Swept lines are one run: each after the one before.
+                let lines =
+                    lines::paths_turned(&outer, &inner, pitch, first, angles[0], max_link, ordered);
+                for (index, points) in lines.into_iter().enumerate() {
+                    paths.push(ExtrusionPath {
+                        points,
+                        role,
+                        flow,
+                        in_turn: ordered && index > 0,
+                    });
                 }
             }
         }
@@ -346,6 +388,9 @@ mod tests {
             top_joined: false,
             bottom_joined: true,
             solid_joined: true,
+            top_ordered: true,
+            bottom_ordered: true,
+            solid_ordered: true,
         }
     }
 
@@ -639,6 +684,17 @@ mod tests {
         let ends = xs(&top);
         assert_eq!(ends.len(), 2);
         assert!((ends[0] - reach).abs() < 1e-5 && (ends[1] - (10.0 - reach)).abs() < 1e-5);
+
+        // Swept in order, each line is laid after the one before it;
+        // laid in any order, none is tied to another.
+        assert!(!top[0].in_turn && top[1..].iter().all(|line| line.in_turn));
+        let loose = FillParams {
+            top_ordered: false,
+            ..base
+        };
+        let any = fill(&[surface(SurfaceKind::Top, 10.0)], 0, &loose).unwrap();
+        assert_eq!(any.len(), top.len());
+        assert!(any.iter().all(|line| !line.in_turn));
 
         // Joined, the lines are one path that turns half a spacing inside
         // the edge; only its two loose ends reach as far as separate lines.

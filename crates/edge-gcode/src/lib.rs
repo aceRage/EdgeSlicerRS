@@ -1306,39 +1306,55 @@ impl Writer<'_> {
     /// Moves that stay inside `shelter` may skip retraction.
     fn lines(&mut self, paths: &[&ExtrusionPath], shelter: &[ExPolygon]) -> io::Result<()> {
         for group in paths.chunk_by(|a, b| a.role == b.role) {
-            let mut remaining: Vec<&ExtrusionPath> = group
-                .iter()
-                .copied()
-                .filter(|path| path.points.len() >= 2)
+            // A path is a run of one, taken from whichever end is nearer.
+            // Paths laid in turn make one run between them, begun at its
+            // first point and laid as given (the reference's `no_sort`).
+            let mut remaining: Vec<Vec<&ExtrusionPath>> = group
+                .chunk_by(|_, next| next.in_turn)
+                .map(|run| {
+                    run.iter()
+                        .copied()
+                        .filter(|path| path.points.len() >= 2)
+                        .collect::<Vec<_>>()
+                })
+                .filter(|run| !run.is_empty())
                 .collect();
             while !remaining.is_empty() {
                 let ends =
                     |path: &ExtrusionPath| [path.points[0], path.points[path.points.len() - 1]];
-                let nearest = self.nearest(remaining.iter().map(|path| ends(path).into_iter()));
-                let path = remaining.remove(nearest);
-                let [head, tail] = ends(path);
-                // A tree branch's wall is laid hook first, never from its
-                // far end (SupportCommon.cpp `tree_supports_generate_paths`).
-                // It is known by its ends: an open support line that comes
-                // back to within its hook's length of where it began.
-                let hooked = path.role == Role::Support
-                    && head != tail
-                    && distance(head, tail) <= HOOK_REACH * path.flow.spacing;
-                let reversed = !hooked
-                    && self
-                        .state
-                        .position
-                        .is_some_and(|at| distance(at, tail) < distance(at, head));
-                let mut points: Vec<Point2> = path.points.clone();
-                if reversed {
-                    points.reverse();
+                let nearest = self.nearest(remaining.iter().map(|run| {
+                    let [head, tail] = ends(run[0]);
+                    let free = run.len() == 1;
+                    std::iter::once(head).chain(free.then_some(tail))
+                }));
+                let run = remaining.remove(nearest);
+                let kept = run.len() > 1;
+                for path in run {
+                    let [head, tail] = ends(path);
+                    // A tree branch's wall is laid hook first, never from its
+                    // far end (SupportCommon.cpp `tree_supports_generate_paths`).
+                    // It is known by its ends: an open support line that comes
+                    // back to within its hook's length of where it began.
+                    let hooked = path.role == Role::Support
+                        && head != tail
+                        && distance(head, tail) <= HOOK_REACH * path.flow.spacing;
+                    let reversed = !kept
+                        && !hooked
+                        && self
+                            .state
+                            .position
+                            .is_some_and(|at| distance(at, tail) < distance(at, head));
+                    let mut points: Vec<Point2> = path.points.clone();
+                    if reversed {
+                        points.reverse();
+                    }
+                    let sheltered = self.settings.reduce_infill_retraction
+                        && self
+                            .state
+                            .position
+                            .is_some_and(|at| inside::stays_inside(shelter, at, points[0]));
+                    self.path(&points, path.role, &path.flow, sheltered, false)?;
                 }
-                let sheltered = self.settings.reduce_infill_retraction
-                    && self
-                        .state
-                        .position
-                        .is_some_and(|at| inside::stays_inside(shelter, at, points[0]));
-                self.path(&points, path.role, &path.flow, sheltered, false)?;
             }
         }
         Ok(())
@@ -2250,35 +2266,42 @@ fn homes(layer: &Layer<'_>) -> Vec<usize> {
         })
         .collect();
     order.sort();
+    let home = |path: &ExtrusionPath| {
+        let Some(&first) = path.points.first() else {
+            return layer.islands.len();
+        };
+        let mut probes = vec![first];
+        if let Some(&second) = path.points.get(1) {
+            probes.push(Point2 {
+                x: (first.x + second.x) / 2,
+                y: (first.y + second.y) / 2,
+            });
+        }
+        if let Some((low, high)) = bounds(&mut path.points.iter().copied()) {
+            probes.push(Point2 {
+                x: (low.x + high.x) / 2,
+                y: (low.y + high.y) / 2,
+            });
+        }
+        probes
+            .iter()
+            .find_map(|&probe| {
+                order.iter().map(|&(_, index)| index).find(|&index| {
+                    outlines(&layer.islands[index]).any(|outline| inside::within(outline, probe))
+                })
+            })
+            .unwrap_or(layer.islands.len())
+    };
+    // A path laid in turn goes wherever the one before it went.
+    let mut last = layer.islands.len();
     layer
         .paths
         .iter()
         .map(|path| {
-            let Some(&first) = path.points.first() else {
-                return layer.islands.len();
-            };
-            let mut probes = vec![first];
-            if let Some(&second) = path.points.get(1) {
-                probes.push(Point2 {
-                    x: (first.x + second.x) / 2,
-                    y: (first.y + second.y) / 2,
-                });
+            if !path.in_turn {
+                last = home(path);
             }
-            if let Some((low, high)) = bounds(&mut path.points.iter().copied()) {
-                probes.push(Point2 {
-                    x: (low.x + high.x) / 2,
-                    y: (low.y + high.y) / 2,
-                });
-            }
-            probes
-                .iter()
-                .find_map(|&probe| {
-                    order.iter().map(|&(_, index)| index).find(|&index| {
-                        outlines(&layer.islands[index])
-                            .any(|outline| inside::within(outline, probe))
-                    })
-                })
-                .unwrap_or(layer.islands.len())
+            last
         })
         .collect()
 }

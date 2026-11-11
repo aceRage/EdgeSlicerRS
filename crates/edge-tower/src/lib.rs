@@ -758,6 +758,7 @@ pub fn plan(
             points,
             role: Role::PrimeTower,
             flow,
+            in_turn: false,
         };
         let per_mm = |width: f64| height * (width - height * (1.0 - PI / 4.0));
         // What the layer lays is measured from its own front.
@@ -813,6 +814,7 @@ pub fn plan(
                             points: std::mem::take(&mut points),
                             role: Role::PrimeTower,
                             flow: rammed,
+                            in_turn: false,
                         });
                         y += pitch;
                         rightward = !rightward;
@@ -825,6 +827,7 @@ pub fn plan(
                         points,
                         role: Role::PrimeTower,
                         flow: rammed,
+                        in_turn: false,
                     });
                 }
                 // The new nozzle's rows carry on in the far half of the
@@ -894,6 +897,7 @@ pub fn plan(
                 points: points[..2].to_vec(),
                 role: Role::PrimeLine,
                 flow,
+                in_turn: false,
             });
             if points.len() > 2 {
                 block.lines.push(path(points[1..].to_vec()));

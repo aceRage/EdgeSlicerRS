@@ -712,6 +712,7 @@ pub(crate) fn fill(
                     points,
                     role,
                     flow: *flow,
+                    in_turn: false,
                 });
             }
             continue;
@@ -720,6 +721,7 @@ pub(crate) fn fill(
             points,
             role,
             flow: *flow,
+            in_turn: false,
         }));
     }
     Ok(())
