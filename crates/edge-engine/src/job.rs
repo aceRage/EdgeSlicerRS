@@ -144,6 +144,11 @@ pub fn prepare(mut loaded: Loaded, chosen: &Chosen, overrides: &Overrides) -> Re
         .max()
         .unwrap_or(1);
     let mut remarks = Vec::new();
+    for kind in &loaded.unread_paint {
+        remarks.push(format!(
+            "the project has {kind} painted on it, which is not followed: the settings alone decide"
+        ));
+    }
     let named = chosen.filaments.len();
     // As many filaments as the model prints in or presets were named for.
     let described = filaments.max(named);

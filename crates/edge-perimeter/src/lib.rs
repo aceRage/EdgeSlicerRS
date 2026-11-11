@@ -3,11 +3,14 @@
 //!
 //! `classic` is a port of the constant-width generator in the reference
 //! (`PerimeterGenerator::process_classic`, PerimeterGenerator.cpp), with
-//! the gaps between walls filled by lines of whatever width fits. Not
-//! ported yet: thin-wall detection, overhang and bridge handling, extra
-//! and one-wall-on-top perimeters, fuzzy skin, spiral vase, and the
-//! nesting order loops are printed in.
+//! the gaps between walls filled by lines of whatever width fits;
+//! [`arachne`] lays walls of changing width. Both follow one wall over
+//! top surfaces, a precise outer wall, walls over fill that hangs over
+//! air (`extra`) and fuzzy skin (`edge-fuzzy`). Not ported: thin-wall
+//! detection, spiral vase, and the nesting order loops are printed in,
+//! which the writer settles.
 
+mod extra;
 mod settings;
 
 use std::ops::Range;
@@ -18,7 +21,7 @@ use edge_extrusion::{
 };
 use edge_geom::{Coord, ExPolygon, scaled, unscaled};
 
-pub use settings::{ArachneSettings, WallSettings};
+pub use settings::{ArachneSettings, FuzzySettings, WallSettings};
 
 /// How much of its spacing an external wall may lose before a narrow island
 /// gets a thinner wall instead (PerimeterGenerator.cpp).
@@ -37,6 +40,8 @@ pub enum Error {
     Flow(#[from] FlowError),
     #[error("walls of changing width: {0}")]
     Arachne(#[from] edge_arachne::Error),
+    #[error("fuzzy skin: {0}")]
+    Fuzzy(#[from] edge_fuzzy::Error),
 }
 
 /// Everything the generator needs for one layer.
@@ -62,6 +67,39 @@ pub struct Params {
     /// Set where walls are of changing width; the layer is then walled
     /// by [`arachne`].
     pub arachne: Option<ArachneParams>,
+    /// The outer wall stands clear of the wall behind it by their widths
+    /// and not their spacings, so that the wall behind does not push it
+    /// outward (`precise_outer_wall`).
+    pub precise_outer_wall: bool,
+    /// Set where fill that hangs over air gets walls of its own
+    /// (`extra_perimeters_on_overhangs`).
+    pub over_air: Option<OverAir>,
+    /// Set where walls on this layer get a fuzzy skin (`fuzzy_skin`).
+    pub fuzzy: Option<Fuzzy>,
+}
+
+/// What a fuzzy skin needs on one layer.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Fuzzy {
+    pub config: edge_fuzzy::FuzzyConfig,
+    /// The height the layer was sliced at, in mm: the noise that is not
+    /// random is sampled there, so that it runs on from layer to layer.
+    pub slice_z: f64,
+    /// Set, to the nozzle's bore in mm, where walls that hang over air
+    /// are to be left smooth (`fuzzy_skin_skip_overhangs`).
+    pub smooth_over_air: Option<f64>,
+}
+
+/// What `extra_perimeters_on_overhangs` needs on a layer with one below.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct OverAir {
+    /// What a wall over air is laid with.
+    pub flow: Flow,
+    /// The layer below counts as holding up this much beyond its
+    /// outline: half the nozzle's bore.
+    pub grow_lower: Coord,
+    /// The number of walls asked for.
+    pub wall_loops: usize,
 }
 
 /// What walls of changing width are made to on one layer: see
@@ -102,6 +140,7 @@ pub struct OneWallTop {
 /// The part's outlines on the layers next to the one being walled.
 #[derive(Clone, Copy, Debug)]
 pub struct Around<'a> {
+    /// Empty on the part's last layer.
     pub upper: &'a [ExPolygon],
     pub lower: Option<&'a [ExPolygon]>,
 }
@@ -181,6 +220,84 @@ fn split_top_surfaces(
     }))
 }
 
+/// What one layer's fuzzy skin is made within, worked out once for the
+/// layer (`group_region_by_fuzzify`, FuzzySkin.cpp). Fuzzy skin here is
+/// the same all over the layer: nothing paints it on or off.
+struct Fuzzed {
+    fuzzy: Fuzzy,
+    regions: [edge_fuzzy::Region; 1],
+    /// Where walls are near enough the layer below to be roughened.
+    supported: Option<Vec<ExPolygon>>,
+    /// What holds an outer wall up, and an inner one, where walls over
+    /// air are to stay smooth.
+    held: Option<[Vec<edge_geom::Polygon>; 2]>,
+    layer_height: f64,
+    ext_width: Coord,
+}
+
+impl Fuzzed {
+    fn new(params: &Params, around: Option<&Around<'_>>) -> Result<Option<Self>, Error> {
+        let Some(fuzzy) = params.fuzzy else {
+            return Ok(None);
+        };
+        let lower = around.and_then(|around| around.lower);
+        let regions = [edge_fuzzy::Region {
+            config: fuzzy.config,
+            area: Vec::new(),
+        }];
+        let ext_width = params.outer.scaled_width();
+        let supported =
+            edge_fuzzy::supported_area(&regions, fuzzy.config.layer_id, lower, ext_width)?;
+        let held = match (fuzzy.smooth_over_air, lower) {
+            (Some(nozzle), Some(lower)) => {
+                let grown = |by: f64| -> Result<Vec<edge_geom::Polygon>, Error> {
+                    Ok(edge_clip::offset(lower, scaled(by), Join::MITER)?
+                        .into_iter()
+                        .flat_map(|piece| std::iter::once(piece.contour).chain(piece.holes))
+                        .collect())
+                };
+                if params.arachne.is_some() {
+                    // Half the nozzle beyond the layer below, which is
+                    // what these walls are measured against.
+                    let all = grown(nozzle / 2.0)?;
+                    Some([all.clone(), all])
+                } else {
+                    // The nearest of the outlines the classic walls are
+                    // measured against (`generate_lower_polygons_series`,
+                    // with its six samples).
+                    let nearest = |width: f64| {
+                        let (start, end) = (-0.5 * width, 0.5 * nozzle);
+                        grown(start + 0.5 * (end - start) / 5.0)
+                    };
+                    Some([nearest(params.outer.width)?, nearest(params.inner.width)?])
+                }
+            }
+            _ => None,
+        };
+        Ok(Some(Self {
+            fuzzy,
+            regions,
+            supported,
+            held,
+            layer_height: params.outer.height,
+            ext_width,
+        }))
+    }
+
+    fn context(&self) -> edge_fuzzy::Context<'_> {
+        edge_fuzzy::Context {
+            regions: &self.regions,
+            layer_id: self.fuzzy.config.layer_id,
+            slice_z: self.fuzzy.slice_z,
+            layer_height: self.layer_height,
+            supported: self.supported.as_deref(),
+            support_external: self.held.as_ref().map(|held| held[0].as_slice()),
+            support_internal: self.held.as_ref().map(|held| held[1].as_slice()),
+            ext_width: self.ext_width,
+        }
+    }
+}
+
 /// What gaps too narrow for a wall are filled with.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct GapFill {
@@ -208,6 +325,10 @@ pub struct Perimeters {
     pub gap_fill: Vec<ExtrusionPath>,
     /// Gaps left empty because their centre line could not be worked out.
     pub gaps_skipped: usize,
+    /// Walls over fill that hangs over air and cannot be bridged, in
+    /// the overhang wall's role and in the order they are to be laid:
+    /// ahead of the loops of the island they are in.
+    pub over_air: Vec<ExtrusionPath>,
 }
 
 /// Concentric constant-width walls for one layer's regions.
@@ -229,8 +350,13 @@ pub fn classic_between(
     let ext_width = params.outer.scaled_width();
     let ext_spacing = params.outer.scaled_spacing();
     let spacing = params.inner.scaled_spacing();
-    // Centre-line distance between the external wall and the one behind it.
-    let ext_spacing2 = scaled(0.5 * (params.outer.spacing + params.inner.spacing));
+    // Centre-line distance between the external wall and the one behind
+    // it: by their widths where the outer wall is to be precise.
+    let ext_spacing2 = if params.precise_outer_wall {
+        scaled(0.5 * (params.outer.width + params.inner.width))
+    } else {
+        scaled(0.5 * (params.outer.spacing + params.inner.spacing))
+    };
     // Loops keep their full spacing; this smaller figure only decides when
     // an area is too narrow to take another loop at all.
     let min_spacing = (spacing as f64 * (1.0 - INSET_OVERLAP_TOLERANCE)) as Coord;
@@ -241,6 +367,7 @@ pub fn classic_between(
     )?;
     let narrow_area = unscaled(ext_width + ext_min_spacing_smaller) * NARROW_LOOP_LENGTH_THRESHOLD;
 
+    let fuzzed = Fuzzed::new(params, around.as_ref())?;
     let mut result = Perimeters::default();
     for island in regions {
         let first_loop = result.loops.len();
@@ -327,6 +454,19 @@ pub fn classic_between(
             depth += 1;
         }
 
+        // The walls are placed smooth and roughened afterwards, so that
+        // what lies behind them is where it would be without.
+        if let Some(fuzzed) = &fuzzed {
+            let context = fuzzed.context();
+            for wall in &mut result.loops[first_loop..] {
+                wall.polygon = edge_fuzzy::apply_to_polygon(
+                    &wall.polygon,
+                    &context,
+                    wall.depth,
+                    !wall.is_hole,
+                )?;
+            }
+        }
         if result.loops.len() > first_loop {
             result.islands.push(first_loop..result.loops.len());
         }
@@ -382,6 +522,15 @@ pub fn classic_between(
             infill.extend(edge_clip::offset(&reached, top_overlap, Join::MITER)?);
             infill = edge_clip::union_ex(&infill)?;
         }
+        if result.loops.len() > first_loop {
+            wall_over_air(
+                &mut infill,
+                &mut result.over_air,
+                &mut result.gaps_skipped,
+                params,
+                around.as_ref(),
+            )?;
+        }
         result.infill.extend(infill);
     }
     Ok(result)
@@ -405,8 +554,7 @@ const LOOP_WIDTH_TOLERANCE: Coord = 50_000;
 /// known, a top surface keeps only its outer wall, as the reference has
 /// it with `top_surface_expansion` at zero; the inner walls are then
 /// numbered by the pass that made them, where the reference numbers
-/// them again by which wall each touches. Extra walls over overhangs
-/// and fuzzy skin are not here.
+/// them again by which wall each touches.
 pub fn arachne(
     regions: &[ExPolygon],
     params: &Params,
@@ -423,28 +571,36 @@ pub fn arachne(
     let flow_of = |flow: &Flow, width: Coord| {
         flow.with_width(unscaled(width) + height * (1.0 - 0.25 * std::f64::consts::PI))
     };
-    let walled = |outline: &[ExPolygon], bead_width_0: Coord, inset_count: usize| {
-        edge_arachne::generate(
-            outline,
-            &edge_arachne::Params {
-                bead_width_0,
-                bead_width_x: spacing,
-                inset_count,
-                wall_0_inset: 0,
-                layer_height: height,
-                min_bead_width: tuning.min_bead_width,
-                min_feature_size: tuning.min_feature_size,
-                min_length_factor: tuning.min_length_factor,
-                wall_transition_length: tuning.wall_transition_length,
-                wall_transition_angle: tuning.wall_transition_angle,
-                wall_transition_filter_deviation: tuning.wall_transition_filter_deviation,
-                wall_distribution_count: tuning.wall_distribution_count,
-                is_top_or_bottom_layer: tuning.is_top_or_bottom_layer,
-                wall_maximum_resolution: tuning.wall_maximum_resolution,
-                wall_maximum_deviation: tuning.wall_maximum_deviation,
-            },
-        )
+    // A precise outer wall is made half its overlap further in and set
+    // back out by as much, which leaves the overlap to the wall behind.
+    let wall_0_inset = if params.precise_outer_wall {
+        -(ext_width / 2 - ext_spacing / 2)
+    } else {
+        0
     };
+    let walled =
+        |outline: &[ExPolygon], bead_width_0: Coord, inset_count: usize, wall_0_inset: Coord| {
+            edge_arachne::generate(
+                outline,
+                &edge_arachne::Params {
+                    bead_width_0,
+                    bead_width_x: spacing,
+                    inset_count,
+                    wall_0_inset,
+                    layer_height: height,
+                    min_bead_width: tuning.min_bead_width,
+                    min_feature_size: tuning.min_feature_size,
+                    min_length_factor: tuning.min_length_factor,
+                    wall_transition_length: tuning.wall_transition_length,
+                    wall_transition_angle: tuning.wall_transition_angle,
+                    wall_transition_filter_deviation: tuning.wall_transition_filter_deviation,
+                    wall_distribution_count: tuning.wall_distribution_count,
+                    is_top_or_bottom_layer: tuning.is_top_or_bottom_layer,
+                    wall_maximum_resolution: tuning.wall_maximum_resolution,
+                    wall_maximum_deviation: tuning.wall_maximum_deviation,
+                },
+            )
+        };
     // One wall over top surfaces needs a wall to give up and the layers
     // next to this one to tell a top surface by.
     let one_wall_top = params
@@ -453,6 +609,7 @@ pub fn arachne(
         .zip(around.as_ref())
         .filter(|_| params.wall_loops > 1);
 
+    let fuzzed = Fuzzed::new(params, around.as_ref())?;
     let mut result = Perimeters::default();
     for island in regions {
         let first_loop = result.loops.len();
@@ -461,7 +618,11 @@ pub fn arachne(
         // its outer edge lies on the outline.
         let last = edge_clip::offset(
             &simplified,
-            -((ext_width as f64 / 2.0 - ext_spacing as f64 / 2.0) as Coord),
+            if params.precise_outer_wall {
+                -(ext_width - ext_spacing)
+            } else {
+                -((ext_width as f64 / 2.0 - ext_spacing as f64 / 2.0) as Coord)
+            },
             Join::MITER,
         )?;
         let first_pass = walled(
@@ -472,6 +633,7 @@ pub fn arachne(
             } else {
                 params.wall_loops
             },
+            wall_0_inset,
         )?;
         let (mut perimeters, mut infill_contour) = (first_pass.toolpaths, first_pass.inner_contour);
         let mut top_fills: Vec<ExPolygon> = Vec::new();
@@ -512,7 +674,7 @@ pub fn arachne(
             let mut full: Option<edge_arachne::Walls> = None;
             let mut full_pass = || -> Result<edge_arachne::Walls, Error> {
                 if full.is_none() {
-                    full = Some(walled(&last, ext_spacing, inner_walls + 1)?);
+                    full = Some(walled(&last, ext_spacing, inner_walls + 1, wall_0_inset)?);
                 }
                 Ok(full.clone().unwrap_or_default())
             };
@@ -552,7 +714,7 @@ pub fn arachne(
             if uncovered {
                 // The inner walls go round what is not a top surface.
                 let inner_region = edge_clip::difference(&infill_contour, &tops)?;
-                let inner = walled(&inner_region, spacing, inner_walls)?;
+                let inner = walled(&inner_region, spacing, inner_walls, 0)?;
                 let mut inner_paths = inner.toolpaths;
                 if !perimeters.is_empty() {
                     for line in inner_paths.iter_mut().flatten() {
@@ -570,6 +732,19 @@ pub fn arachne(
                 let full = full_pass()?;
                 perimeters = full.toolpaths;
                 infill_contour = full.inner_contour;
+            }
+        }
+
+        if let Some(fuzzed) = &fuzzed {
+            let context = fuzzed.context();
+            for wall in perimeters.iter_mut().flatten() {
+                if wall.junctions.is_empty() {
+                    continue;
+                }
+                // A wall that is not a loop counts as one round the part.
+                let is_contour = !wall.is_closed || wall.is_contour();
+                let closed = wall.is_closed;
+                edge_fuzzy::apply_to_line(wall, &context, is_contour, closed)?;
             }
         }
 
@@ -685,9 +860,53 @@ pub fn arachne(
             infill.extend(edge_clip::offset(&top_fills, top_inset, Join::MITER)?);
             infill = edge_clip::union_ex(&infill)?;
         }
+        if result.loops.len() > first_loop {
+            wall_over_air(
+                &mut infill,
+                &mut result.over_air,
+                &mut result.gaps_skipped,
+                params,
+                around.as_ref(),
+            )?;
+        }
         result.infill.extend(infill);
     }
     Ok(result)
+}
+
+/// Where [`Params::over_air`] is set and there is a layer below, walls
+/// what of an island's fill hangs over air and cannot be bridged, and
+/// takes what those walls cover out of the fill
+/// (`PerimeterGenerator::apply_extra_perimeters`).
+fn wall_over_air(
+    infill: &mut Vec<ExPolygon>,
+    walls: &mut Vec<ExtrusionPath>,
+    gaps_skipped: &mut usize,
+    params: &Params,
+    around: Option<&Around<'_>>,
+) -> Result<(), Error> {
+    let Some((over_air, lower)) = params
+        .over_air
+        .as_ref()
+        .zip(around.and_then(|around| around.lower))
+    else {
+        return Ok(());
+    };
+    // What holds a line up: the layer below and half a nozzle beyond it.
+    let lower = edge_clip::offset(lower, over_air.grow_lower, Join::MITER)?;
+    let (extra, filled) = extra::over_overhangs_counting(
+        infill,
+        &lower,
+        over_air.wall_loops,
+        &over_air.flow,
+        gaps_skipped,
+    )?;
+    if extra.is_empty() {
+        return Ok(());
+    }
+    walls.extend(extra.into_iter().flatten());
+    *infill = edge_clip::difference(infill, &filled)?;
+    Ok(())
 }
 
 /// The points of each wall with a length to it.
@@ -835,6 +1054,9 @@ mod tests {
             resolution: scaled(0.01),
             gap_fill: None,
             arachne: None,
+            precise_outer_wall: false,
+            over_air: None,
+            fuzzy: None,
         }
     }
 
@@ -1385,5 +1607,137 @@ mod tests {
             .map(|wall| (wall.depth, wall.is_hole))
             .collect();
         assert_eq!(order, [(0, false), (0, true), (1, false), (1, true)]);
+    }
+
+    /// The width in mm of an axis-aligned loop round a block at the origin.
+    fn across(wall: &ExtrusionLoop) -> f64 {
+        let xs = wall.polygon.points.iter().map(|point| point.x);
+        unscaled(xs.clone().max().unwrap() - xs.min().unwrap())
+    }
+
+    #[test]
+    fn a_precise_outer_wall_stays_put_and_the_wall_behind_gives_way() {
+        // Walls 0.45 mm wide lie 0.407 mm apart: the inner wall overlaps
+        // the outer by what their rounded edges leave. Made precise, the
+        // outer wall is where it was and the inner one further in.
+        for base in [params(2), varying(2)] {
+            let precise = Params {
+                precise_outer_wall: true,
+                ..base
+            };
+            let plain = classic(&[block(0.0, 0.0, 20.0, 20.0)], &base).unwrap();
+            let walls = classic(&[block(0.0, 0.0, 20.0, 20.0)], &precise).unwrap();
+            assert_eq!((plain.loops.len(), walls.loops.len()), (2, 2));
+            assert!((across(&walls.loops[0]) - across(&plain.loops[0])).abs() < 1e-3);
+            assert!((across(&walls.loops[0]) - 19.55).abs() < 1e-3);
+            let (width, spacing) = (base.outer.width, base.outer.spacing);
+            let apart =
+                |walls: &Perimeters| (across(&walls.loops[0]) - across(&walls.loops[1])) / 2.0;
+            assert!((apart(&plain) - spacing).abs() < 2e-3);
+            // Walls of changing width give up half of what the classic
+            // ones do, as in the reference.
+            let expected = if base.arachne.is_some() {
+                0.5 * (width + spacing)
+            } else {
+                width
+            };
+            assert!((apart(&walls) - expected).abs() < 2e-3, "{}", apart(&walls));
+        }
+    }
+
+    /// A fuzzy skin of this kind on the fourth layer, otherwise as the
+    /// reference has it unset: 0.2 mm deep, a point every 0.3 mm.
+    fn fuzzy(kind: edge_fuzzy::FuzzyType) -> Fuzzy {
+        Fuzzy {
+            config: FuzzySettings {
+                kind,
+                ..FuzzySettings::default()
+            }
+            .config(3),
+            slice_z: 0.7,
+            smooth_over_air: None,
+        }
+    }
+
+    #[test]
+    fn a_fuzzy_skin_roughens_the_walls_asked_for_and_nothing_else() {
+        let part = [block(0.0, 0.0, 20.0, 20.0)];
+        for base in [params(2), varying(2)] {
+            let rough = Params {
+                fuzzy: Some(fuzzy(edge_fuzzy::FuzzyType::External)),
+                ..base
+            };
+            let plain = classic(&part, &base).unwrap();
+            let walls = classic(&part, &rough).unwrap();
+            assert_eq!(walls.loops.len(), 2);
+            // The outer wall is a point every 0.3 mm or so, each up to
+            // 0.2 mm to one side, and the longer for it.
+            let outer = &walls.loops[0];
+            assert!(
+                outer.polygon.points.len() > 200,
+                "{}",
+                outer.polygon.points.len()
+            );
+            assert!(outer.length_mm() > plain.loops[0].length_mm() * 1.05);
+            assert!((across(outer) - across(&plain.loops[0])).abs() <= 0.4 + 1e-6);
+            assert!(outer.polygon.is_ccw());
+            // The wall behind it and the fill are where they were.
+            assert_eq!(walls.loops[1].polygon, plain.loops[1].polygon);
+            assert_eq!(walls.infill, plain.infill);
+            // And the same again another time.
+            assert_eq!(classic(&part, &rough).unwrap(), walls);
+
+            // Every wall, where every wall is asked for.
+            let all = Params {
+                fuzzy: Some(fuzzy(edge_fuzzy::FuzzyType::AllWalls)),
+                ..base
+            };
+            let walls = classic(&part, &all).unwrap();
+            assert!(
+                walls
+                    .loops
+                    .iter()
+                    .all(|wall| wall.polygon.points.len() > 200)
+            );
+        }
+    }
+
+    #[test]
+    fn a_fuzzy_skin_keeps_off_walls_with_nothing_near_beneath() {
+        // The layer below is the left half only.
+        let part = [block(0.0, 0.0, 20.0, 20.0)];
+        let lower = [block(0.0, 0.0, 10.0, 20.0)];
+        let around = Some(Around {
+            upper: &[],
+            lower: Some(&lower),
+        });
+        for base in [params(2), varying(2)] {
+            let rough = Params {
+                fuzzy: Some(fuzzy(edge_fuzzy::FuzzyType::External)),
+                ..base
+            };
+            let smooth = classic(&part, &base).unwrap().loops[0].polygon.clone();
+            let walls = classic_between(&part, &rough, around).unwrap();
+            let outer = &walls.loops[0].polygon;
+            let xs = smooth.points.iter().map(|point| point.x);
+            let (left, right) = (xs.clone().min().unwrap(), xs.max().unwrap());
+            let ys = smooth.points.iter().map(|point| point.y);
+            let (low, high) = (ys.clone().min().unwrap(), ys.max().unwrap());
+            let on_smooth = |point: &Point2| {
+                point.x == left || point.x == right || point.y == low || point.y == high
+            };
+            // Roughened over the layer below, and left alone from a
+            // line's width and the fuzz's depth beyond it.
+            let (near, far): (Vec<&Point2>, Vec<&Point2>) = outer
+                .points
+                .iter()
+                .partition(|point| point.x < scaled(10.0));
+            assert!(near.iter().filter(|point| !on_smooth(point)).count() > 50);
+            assert!(
+                far.iter()
+                    .filter(|point| point.x > scaled(11.0))
+                    .all(|point| on_smooth(point))
+            );
+        }
     }
 }

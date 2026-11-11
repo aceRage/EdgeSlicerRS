@@ -1,5 +1,6 @@
 //! One `.model` part: mesh and component objects plus the build list.
 
+use std::collections::BTreeSet;
 use std::sync::Arc;
 
 use edge_mesh::{Mesh, Transform};
@@ -19,6 +20,9 @@ use crate::{
 pub(crate) struct ModelFile {
     pub objects: Vec<RawObject>,
     pub items: Vec<Reference>,
+    /// What is painted on triangles here other than colour, none of
+    /// which this reader takes in: named so that it can be said.
+    pub unread_paint: BTreeSet<&'static str>,
 }
 
 pub(crate) struct RawObject {
@@ -122,7 +126,22 @@ pub(crate) fn parse(text: &str, part: &str) -> Result<ModelFile, Error> {
                 let Some(object) = &mut open else { continue };
                 let mut corners = [u32::MAX; 3];
                 let mut paint = None;
+                let unread = &mut file.unread_paint;
                 attributes(&element, part, |key, value| {
+                    // bbs_3mf.cpp: the other things a triangle may be
+                    // painted with.
+                    let other = match key {
+                        "paint_fuzzy_skin" | "paint_fuzzy" => Some("fuzzy skin"),
+                        "paint_seam" => Some("seams"),
+                        "paint_supports" => Some("supports"),
+                        _ => None,
+                    };
+                    if let Some(other) = other {
+                        if !value.is_empty() {
+                            unread.insert(other);
+                        }
+                        return Ok(());
+                    }
                     let corner = match key {
                         "v1" => 0,
                         "v2" => 1,
@@ -294,4 +313,42 @@ fn transform(part: &str, text: &str, scale: f64) -> Result<Transform, Error> {
         *offset *= scale;
     }
     Ok(Transform { rows })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn paint_that_is_not_colour_is_named_and_left_alone() {
+        let model = |triangle: &str| {
+            format!(
+                r#"<?xml version="1.0" encoding="UTF-8"?>
+<model unit="millimeter" xmlns="http://schemas.microsoft.com/3dmanufacturing/core/2015/02">
+ <resources><object id="1" type="model"><mesh>
+  <vertices><vertex x="0" y="0" z="0"/><vertex x="1" y="0" z="0"/><vertex x="0" y="1" z="0"/></vertices>
+  <triangles><triangle v1="0" v2="1" v3="2" {triangle}/></triangles>
+ </mesh></object></resources>
+ <build><item objectid="1"/></build>
+</model>"#
+            )
+        };
+        let unread = |triangle: &str| -> Vec<&'static str> {
+            parse(&model(triangle), "3D/3dmodel.model")
+                .unwrap()
+                .unread_paint
+                .into_iter()
+                .collect()
+        };
+        assert!(unread("").is_empty());
+        assert!(unread(r#"paint_color="4""#).is_empty());
+        assert_eq!(unread(r#"paint_fuzzy_skin="4""#), ["fuzzy skin"]);
+        assert_eq!(unread(r#"paint_fuzzy="8""#), ["fuzzy skin"]);
+        assert_eq!(
+            unread(r#"paint_seam="4" paint_supports="8""#),
+            ["seams", "supports"]
+        );
+        // An empty attribute paints nothing.
+        assert!(unread(r#"paint_seam="""#).is_empty());
+    }
 }

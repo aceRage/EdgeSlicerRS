@@ -885,6 +885,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "edge-fuzzy"
+version = "0.0.0"
+dependencies = [
+ "edge-arachne",
+ "edge-clip",
+ "edge-geom",
+ "thiserror 2.0.21",
+]
+
+[[package]]
 name = "edge-gcode"
 version = "0.0.0"
 dependencies = [
@@ -951,6 +961,7 @@ dependencies = [
  "edge-clip",
  "edge-config",
  "edge-extrusion",
+ "edge-fuzzy",
  "edge-geom",
  "edge-medial",
  "thiserror 2.0.21",

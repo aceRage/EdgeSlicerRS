@@ -18,6 +18,7 @@ edge-clip = { path = "crates/edge-clip" }
 edge-config = { path = "crates/edge-config" }
 edge-engine = { path = "crates/edge-engine" }
 edge-extrusion = { path = "crates/edge-extrusion" }
+edge-fuzzy = { path = "crates/edge-fuzzy" }
 edge-gcode = { path = "crates/edge-gcode" }
 edge-geom = { path = "crates/edge-geom" }
 edge-mesh = { path = "crates/edge-mesh" }

@@ -1,5 +1,6 @@
 use edge_config::{ConfigError, FloatOrPercent, Settings};
 use edge_extrusion::{Flow, FlowError, LineWidths};
+use edge_fuzzy::{FuzzyConfig, FuzzyMode, FuzzyType, NoiseType};
 use edge_geom::{Coord, scaled};
 
 use crate::Params;
@@ -46,6 +47,85 @@ pub struct WallSettings {
     /// Set where walls are of changing width (`wall_generator` at
     /// `arachne`, which is the reference's default); none for `classic`.
     pub arachne: Option<ArachneSettings>,
+    /// The outer wall keeps its full width clear of the wall behind it
+    /// (`precise_outer_wall`). Only with inner walls laid first, as in
+    /// the reference; false otherwise, whatever was asked.
+    pub precise_outer_wall: bool,
+    /// Walls are checked against the layer below (`detect_overhang_wall`).
+    pub detect_overhang_wall: bool,
+    /// Fill that hangs over air and cannot be bridged gets walls of its
+    /// own (`extra_perimeters_on_overhangs`).
+    pub extra_perimeters_on_overhangs: bool,
+    /// How much plastic a line over air gets, and whether as a round
+    /// thread: what the walls over overhangs are laid with.
+    pub bridge_flow: f64,
+    pub thick_bridges: bool,
+    pub fuzzy: FuzzySettings,
+}
+
+/// Fuzzy skin as the settings ask for it (`fuzzy_skin` and the settings
+/// that tune it), lengths in mm.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct FuzzySettings {
+    pub kind: FuzzyType,
+    pub thickness: f64,
+    pub point_distance: f64,
+    pub first_layer: bool,
+    pub noise: NoiseType,
+    pub scale: f64,
+    pub octaves: i32,
+    pub persistence: f64,
+    pub mode: FuzzyMode,
+    pub ripples_per_layer: i32,
+    /// A percentage of a ripple.
+    pub ripple_offset: f64,
+    pub layers_between_ripple_offset: i32,
+    /// Walls that hang over air are left smooth.
+    pub skip_overhangs: bool,
+}
+
+impl Default for FuzzySettings {
+    fn default() -> Self {
+        Self {
+            kind: FuzzyType::None,
+            thickness: 0.2,
+            point_distance: 0.3,
+            first_layer: false,
+            noise: NoiseType::Classic,
+            scale: 1.0,
+            octaves: 4,
+            persistence: 0.5,
+            mode: FuzzyMode::Displacement,
+            ripples_per_layer: 15,
+            ripple_offset: 50.0,
+            layers_between_ripple_offset: 1,
+            skip_overhangs: false,
+        }
+    }
+}
+
+impl FuzzySettings {
+    /// What the fuzzing is done to on layer `index`, as the reference
+    /// builds it (`group_region_by_fuzzify`, FuzzySkin.cpp).
+    pub fn config(&self, index: usize) -> FuzzyConfig {
+        FuzzyConfig {
+            kind: self.kind,
+            // Cut short as `scaled<coord_t>` cuts them.
+            thickness: (self.thickness / 1e-6) as Coord,
+            point_distance: (self.point_distance / 1e-6) as Coord,
+            first_layer: self.first_layer,
+            noise: self.noise,
+            scale: self.scale,
+            octaves: self.octaves,
+            persistence: self.persistence,
+            mode: self.mode,
+            ripples_per_layer: self.ripples_per_layer,
+            ripple_offset: self.ripple_offset,
+            layers_between_ripple_offset: self.layers_between_ripple_offset,
+            layer_id: index as i32,
+            skip_overhangs: self.skip_overhangs,
+        }
+    }
 }
 
 /// What `wall_generator = arachne` is tuned by. The percentages are of
@@ -107,6 +187,12 @@ impl Default for WallSettings {
             gap_infill_speed: 30.0,
             filter_out_gap_fill: 0.0,
             arachne: Some(ArachneSettings::default()),
+            precise_outer_wall: false,
+            detect_overhang_wall: true,
+            extra_perimeters_on_overhangs: false,
+            bridge_flow: 1.0,
+            thick_bridges: false,
+            fuzzy: FuzzySettings::default(),
         }
     }
 }
@@ -200,8 +286,99 @@ impl WallSettings {
                 });
             }
         };
+        let flag = |key: &str, default: bool| -> Result<bool, ConfigError> {
+            Ok(settings.flag(key)?.unwrap_or(default))
+        };
+        // PerimeterGenerator.cpp: "ignore precise_outer_wall if
+        // wall_sequence is not InnerOuter".
+        let inner_first = matches!(
+            settings.text("wall_sequence"),
+            None | Some("inner wall/outer wall")
+        );
+        // One of a setting's named values.
+        fn named<T>(
+            settings: &Settings,
+            key: &str,
+            default: T,
+            read: fn(&str) -> Option<T>,
+            expected: &'static str,
+        ) -> Result<T, ConfigError> {
+            match settings.text(key) {
+                None => Ok(default),
+                Some(text) => read(text).ok_or_else(|| ConfigError::BadValue {
+                    key: key.into(),
+                    found: text.to_owned(),
+                    expected,
+                }),
+            }
+        }
+        let whole = |key: &str, default: i32| -> Result<i32, ConfigError> {
+            Ok(settings.integer(key)?.map_or(default, |found| found as i32))
+        };
+        let unfuzzed = FuzzySettings::default();
+        let fuzzy = FuzzySettings {
+            kind: named(
+                settings,
+                "fuzzy_skin",
+                unfuzzed.kind,
+                FuzzyType::from_text,
+                "none, external, hole, all, allwalls or disabled_fuzzy",
+            )?,
+            thickness: number("fuzzy_skin_thickness", unfuzzed.thickness)?,
+            point_distance: number("fuzzy_skin_point_distance", unfuzzed.point_distance)?,
+            first_layer: flag("fuzzy_skin_first_layer", unfuzzed.first_layer)?,
+            noise: named(
+                settings,
+                "fuzzy_skin_noise_type",
+                unfuzzed.noise,
+                NoiseType::from_text,
+                "classic, perlin, billow, ridgedmulti, voronoi or ripple",
+            )?,
+            scale: number("fuzzy_skin_scale", unfuzzed.scale)?,
+            octaves: whole("fuzzy_skin_octaves", unfuzzed.octaves)?,
+            persistence: number("fuzzy_skin_persistence", unfuzzed.persistence)?,
+            mode: named(
+                settings,
+                "fuzzy_skin_mode",
+                unfuzzed.mode,
+                FuzzyMode::from_text,
+                "displacement, extrusion or combined",
+            )?,
+            ripples_per_layer: whole("fuzzy_skin_ripples_per_layer", unfuzzed.ripples_per_layer)?,
+            ripple_offset: percent("fuzzy_skin_ripple_offset", unfuzzed.ripple_offset)?,
+            layers_between_ripple_offset: whole(
+                "fuzzy_skin_layers_between_ripple_offset",
+                unfuzzed.layers_between_ripple_offset,
+            )?,
+            skip_overhangs: flag("fuzzy_skin_skip_overhangs", unfuzzed.skip_overhangs)?,
+        };
+        // What the reference's limits keep out and its code cannot take:
+        // a point distance of nothing never gets along a wall.
+        if let Err(error) = fuzzy.config(1).validate() {
+            let (key, expected) = match error {
+                edge_fuzzy::Error::PointDistance(_) => {
+                    ("fuzzy_skin_point_distance", "more than zero")
+                }
+                edge_fuzzy::Error::Octaves(_) => ("fuzzy_skin_octaves", "1 to 30"),
+                _ => ("fuzzy_skin_scale", "a number other than zero"),
+            };
+            return Err(ConfigError::BadValue {
+                key: key.into(),
+                found: error.to_string(),
+                expected,
+            });
+        }
         Ok(Self {
             arachne,
+            fuzzy,
+            precise_outer_wall: inner_first && flag("precise_outer_wall", false)?,
+            detect_overhang_wall: flag("detect_overhang_wall", defaults.detect_overhang_wall)?,
+            extra_perimeters_on_overhangs: flag(
+                "extra_perimeters_on_overhangs",
+                defaults.extra_perimeters_on_overhangs,
+            )?,
+            bridge_flow: number("bridge_flow", defaults.bridge_flow)?,
+            thick_bridges: flag("thick_bridges", defaults.thick_bridges)?,
             wall_loops: count("wall_loops", defaults.wall_loops)?,
             outer_wall_line_width: width("outer_wall_line_width", defaults.outer_wall_line_width)?,
             inner_wall_line_width: width("inner_wall_line_width", defaults.inner_wall_line_width)?,
@@ -248,10 +425,61 @@ impl WallSettings {
         })
     }
 
-    /// What the settings ask of the walls that is not done, each with
-    /// what is done instead. Nothing at present.
-    pub fn notes(&self) -> Vec<String> {
-        Vec::new()
+    /// What `settings` ask of the walls that is not done, each with
+    /// what is done instead.
+    pub fn notes(&self, settings: &Settings) -> Vec<String> {
+        let mut notes = Vec::new();
+        let text = |key: &str| settings.text(key).map(str::to_owned);
+        // Present and not the value that turns it off.
+        for (key, off, instead) in [
+            (
+                "wall_direction",
+                "auto",
+                "walls go counter-clockwise round the part and clockwise round its holes",
+            ),
+            (
+                "alternate_extra_wall",
+                "0",
+                "every layer has the same number of walls",
+            ),
+            (
+                "hole_to_polyhole",
+                "0",
+                "round holes are walled as they are drawn",
+            ),
+            (
+                "counterbore_hole_bridging",
+                "none",
+                "a hole that narrows is left to bridge as it is",
+            ),
+        ] {
+            if let Some(value) = text(key)
+                && value != off
+            {
+                notes.push(format!("{key} \"{value}\": {instead}"));
+            }
+        }
+        // Thin walls belong to the classic walls only: the others lay a
+        // line down any part too thin for two.
+        if self.arachne.is_none() && text("detect_thin_wall").is_some_and(|value| value != "0") {
+            notes.push(
+                "detect_thin_wall: parts thinner than a wall are left to gap fill or left out"
+                    .to_owned(),
+            );
+        }
+        if self.only_one_wall_top
+            && settings
+                .float("top_surface_expansion")
+                .ok()
+                .flatten()
+                .is_some_and(|expansion| expansion > 0.0)
+        {
+            notes.push(
+                "top_surface_expansion: top surfaces are not widened under the walls beside them"
+                    .to_owned(),
+            );
+        }
+        notes
     }
 
     /// What the generator needs for layer `index` of `layer_count`, which
@@ -283,6 +511,41 @@ impl WallSettings {
         // where there is a top shell to make one of it.
         if let Some(arachne) = &mut params.arachne {
             arachne.is_top_or_bottom_layer = index == 0 || index + 1 == layer_count;
+        }
+        // A fuzzy skin on this layer's walls, where any is asked for.
+        let config = self.fuzzy.config(index);
+        let layer = index as i32;
+        if (0..2).any(|depth| {
+            edge_fuzzy::should_fuzzify(&config, layer, depth, true)
+                || edge_fuzzy::should_fuzzify(&config, layer, depth, false)
+        }) {
+            params.fuzzy = Some(crate::Fuzzy {
+                config,
+                slice_z: 0.0,
+                // FuzzySkin.cpp `fuzzy_skip_overhangs_wanted`.
+                smooth_over_air: (index > 0 && self.detect_overhang_wall && config.skip_overhangs)
+                    .then_some(self.nozzle_diameter),
+            });
+            // PerimeterGenerator.cpp: arc fitting's finer outline is
+            // for walls that are not about to be roughened.
+            if edge_fuzzy::should_fuzzify(&config, layer, 0, true) {
+                params.resolution = scaled(self.resolution.max(1e-4));
+            }
+        }
+        // Fill over air gets walls of its own where walls are checked
+        // against the layer below at all, there are walls, and there is
+        // a layer below (`PerimeterGenerator::apply_extra_perimeters`).
+        if index > 0
+            && self.detect_overhang_wall
+            && self.extra_perimeters_on_overhangs
+            && self.wall_loops > 0
+        {
+            params.over_air = Some(crate::OverAir {
+                // `LayerRegion::bridging_flow` of the inner wall's.
+                flow: params.inner.bridging(self.bridge_flow, self.thick_bridges),
+                grow_lower: scaled(self.nozzle_diameter / 2.0),
+                wall_loops: self.wall_loops,
+            });
         }
         // Below the last layer a top surface keeps only its outer wall,
         // where there is a top shell to make one of it.
@@ -329,6 +592,9 @@ impl WallSettings {
                 shortest: scaled(self.filter_out_gap_fill),
             }),
             one_wall_top: None,
+            precise_outer_wall: self.precise_outer_wall,
+            over_air: None,
+            fuzzy: None,
             arachne: self.arachne.map(|arachne| {
                 // Of the nozzle's diameter, and kept in single precision,
                 // as the reference keeps them (`make_paths_params`).
@@ -575,8 +841,180 @@ mod tests {
         // One wall over top surfaces is told to these walls as to the
         // classic ones.
         let asked = read(r#"{"only_one_wall_top": "1"}"#).unwrap();
-        assert!(asked.notes().is_empty());
+        assert!(asked.notes(&Settings::default()).is_empty());
         assert!(asked.params_at(0.2, 4, 10).unwrap().one_wall_top.is_some());
+    }
+
+    #[test]
+    fn a_precise_outer_wall_needs_inner_walls_first() {
+        let read = |json: &str| {
+            WallSettings::from_settings(&Settings::from_json(json).unwrap())
+                .unwrap()
+                .params(0.2, false)
+                .unwrap()
+                .precise_outer_wall
+        };
+        assert!(!read("{}"));
+        assert!(read(r#"{"precise_outer_wall": "1"}"#));
+        assert!(read(
+            r#"{"precise_outer_wall": "1", "wall_sequence": "inner wall/outer wall"}"#
+        ));
+        assert!(!read(
+            r#"{"precise_outer_wall": "1", "wall_sequence": "outer wall/inner wall"}"#
+        ));
+        assert!(!read(
+            r#"{"precise_outer_wall": "1", "wall_sequence": "inner-outer-inner wall"}"#
+        ));
+    }
+
+    #[test]
+    fn walls_over_air_are_asked_for_above_the_first_layer() {
+        let settings = WallSettings::from_settings(
+            &Settings::from_json(
+                r#"{"extra_perimeters_on_overhangs": "1", "bridge_flow": "0.8", "wall_loops": "3",
+                    "nozzle_diameter": ["0.4"]}"#,
+            )
+            .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(settings.params_at(0.2, 0, 10).unwrap().over_air, None);
+        let asked = settings.params_at(0.2, 3, 10).unwrap();
+        let over_air = asked.over_air.unwrap();
+        assert_eq!((over_air.grow_lower, over_air.wall_loops), (200_000, 3));
+        assert_eq!(over_air.flow, asked.inner.bridging(0.8, false));
+        // Not without the check against the layer below, nor with no walls.
+        for off in [
+            WallSettings {
+                detect_overhang_wall: false,
+                ..settings
+            },
+            WallSettings {
+                wall_loops: 0,
+                ..settings
+            },
+            WallSettings {
+                extra_perimeters_on_overhangs: false,
+                ..settings
+            },
+        ] {
+            assert_eq!(off.params_at(0.2, 3, 10).unwrap().over_air, None);
+        }
+    }
+
+    #[test]
+    fn a_fuzzy_skin_is_read_and_told_to_the_layers_it_is_on() {
+        let read = |json: &str| WallSettings::from_settings(&Settings::from_json(json).unwrap());
+        // None unless asked for.
+        let unset = read("{}").unwrap();
+        assert_eq!(unset.fuzzy, FuzzySettings::default());
+        assert_eq!(unset.params_at(0.2, 3, 10).unwrap().fuzzy, None);
+        let disabled = read(r#"{"fuzzy_skin": "disabled_fuzzy"}"#).unwrap();
+        assert_eq!(disabled.params_at(0.2, 3, 10).unwrap().fuzzy, None);
+
+        let set = read(
+            r#"{"fuzzy_skin": "allwalls", "fuzzy_skin_thickness": "0.3", "fuzzy_skin_point_distance": "0.8",
+                "fuzzy_skin_first_layer": "0", "fuzzy_skin_noise_type": "perlin", "fuzzy_skin_scale": "2",
+                "fuzzy_skin_octaves": "5", "fuzzy_skin_persistence": "0.4", "fuzzy_skin_mode": "combined",
+                "fuzzy_skin_ripples_per_layer": "20", "fuzzy_skin_ripple_offset": "25%",
+                "fuzzy_skin_layers_between_ripple_offset": "2", "fuzzy_skin_skip_overhangs": "1",
+                "enable_arc_fitting": "1", "resolution": "0.01", "nozzle_diameter": ["0.4"]}"#,
+        )
+        .unwrap();
+        // Not on the first layer unless that is asked for too.
+        assert_eq!(set.params_at(0.2, 0, 10).unwrap().fuzzy, None);
+        let params = set.params_at(0.2, 4, 10).unwrap();
+        let fuzzy = params.fuzzy.unwrap();
+        let config = fuzzy.config;
+        assert_eq!(
+            (config.kind, config.noise, config.mode),
+            (FuzzyType::AllWalls, NoiseType::Perlin, FuzzyMode::Combined)
+        );
+        assert_eq!(
+            (config.thickness, config.point_distance),
+            (300_000, 800_000)
+        );
+        assert_eq!(
+            (config.scale, config.octaves, config.persistence),
+            (2.0, 5, 0.4)
+        );
+        assert_eq!(
+            (
+                config.ripples_per_layer,
+                config.ripple_offset,
+                config.layers_between_ripple_offset
+            ),
+            (20, 25.0, 2)
+        );
+        assert_eq!((config.layer_id, config.skip_overhangs), (4, true));
+        // Smooth over air where walls are checked against the layer below.
+        assert_eq!(fuzzy.smooth_over_air, Some(0.4));
+        let unchecked = WallSettings {
+            detect_overhang_wall: false,
+            ..set
+        };
+        assert_eq!(
+            unchecked
+                .params_at(0.2, 4, 10)
+                .unwrap()
+                .fuzzy
+                .unwrap()
+                .smooth_over_air,
+            None
+        );
+        // A wall about to be roughened is not given arc fitting's finer
+        // outline; the first layer, which stays smooth, is.
+        assert_eq!(params.resolution, 10_000);
+        assert_eq!(set.params_at(0.2, 0, 10).unwrap().resolution, 2_000);
+        let first = WallSettings {
+            fuzzy: FuzzySettings {
+                first_layer: true,
+                ..set.fuzzy
+            },
+            ..set
+        };
+        assert!(first.params_at(0.2, 0, 10).unwrap().fuzzy.is_some());
+
+        // What cannot be carried out is refused.
+        assert!(read(r#"{"fuzzy_skin": "furry"}"#).is_err());
+        assert!(read(r#"{"fuzzy_skin_noise_type": "pink"}"#).is_err());
+        assert!(read(r#"{"fuzzy_skin_mode": "both"}"#).is_err());
+        assert!(read(r#"{"fuzzy_skin": "external", "fuzzy_skin_point_distance": "0"}"#).is_err());
+        assert!(
+            read(r#"{"fuzzy_skin": "external", "fuzzy_skin_noise_type": "perlin", "fuzzy_skin_octaves": "0"}"#)
+                .is_err()
+        );
+    }
+
+    #[test]
+    fn what_is_asked_of_walls_and_not_done_is_said() {
+        let notes = |json: &str| {
+            let settings = Settings::from_json(json).unwrap();
+            WallSettings::from_settings(&settings)
+                .unwrap()
+                .notes(&settings)
+        };
+        // Nothing to say of settings at what turns them off.
+        assert!(
+            notes(
+                r#"{"wall_direction": "auto", "alternate_extra_wall": "0", "hole_to_polyhole": "0",
+                    "counterbore_hole_bridging": "none", "detect_thin_wall": "0",
+                    "top_surface_expansion": "0", "only_one_wall_top": "1"}"#
+            )
+            .is_empty()
+        );
+        let said = notes(
+            r#"{"wall_direction": "ccw", "alternate_extra_wall": "1", "hole_to_polyhole": "1",
+                "counterbore_hole_bridging": "partiallybridge", "detect_thin_wall": "1",
+                "wall_generator": "classic", "top_surface_expansion": "0.5", "only_one_wall_top": "1"}"#,
+        );
+        assert_eq!(said.len(), 6, "{said:?}");
+        assert!(said[0].starts_with("wall_direction \"ccw\": "));
+        // Thin walls are no loss to walls of changing width, and a top
+        // surface is only widened where it has one wall.
+        let fewer = notes(
+            r#"{"detect_thin_wall": "1", "wall_generator": "arachne", "top_surface_expansion": "0.5"}"#,
+        );
+        assert!(fewer.is_empty(), "{fewer:?}");
     }
 
     #[test]
