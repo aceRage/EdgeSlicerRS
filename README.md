@@ -121,7 +121,7 @@ Known gaps: painted supports and seams, per-object setting overrides, typed sett
 - Infill: each layer's inside is split into top, bottom, bridge, solid
   shell and sparse areas (`top_shell_layers`, `bottom_shell_layers`,
   `sparse_infill_density`, `minimum_sparse_infill_area`) and filled with
-  lines, or for sparse areas one of nine patterns (below). Solid lines run to the edge of their
+  lines, or for sparse areas one of nineteen patterns (below). Solid lines run to the edge of their
   area and, where one is joined to the next, turn half a line spacing
   inside it, as the reference's do. `top_surface_pattern`,
   `bottom_surface_pattern` and `internal_solid_infill_pattern` say whether
@@ -438,7 +438,7 @@ the lettered plate), narrow solid areas are filled with the same lines
 as wide ones where the reference lays loops along them
 (`detect_narrow_internal_solid_infill`, noted), narrow parts of top and
 bottom surfaces get no gap fill
-(`gap_fill_target`), shell thickness in mm is ignored, and eighteen of the
+(`gap_fill_target`), shell thickness in mm is ignored, and eight of the
 reference's sparse patterns are not laid (below). Gap closing runs across objects, so two separate objects closer than twice
 the radius merge; the reference closes within one object only.
 
@@ -621,21 +621,33 @@ object's own middle, as in the reference; it used to be through the
 middle of everything on the plate, which put the lines of every object
 but a lone one somewhere else than the reference's.
 
-Sparse patterns. Nine of the reference's twenty-seven are laid:
+Sparse patterns. Nineteen of the reference's twenty-seven are laid:
 `grid`, `rectilinear`, `alignedrectilinear`,
 `triangles`, `tri-hexagon`, `cubic`, `quartercubic`, `crosshatch` (the
 reference's default, and what 130 of the 184 Elegoo process profiles
-set) and `gyroid`. Between them they are every pattern the Snapmaker
+set), `gyroid`, `honeycomb`, `3dhoneycomb`, `lateral-honeycomb`,
+`lateral-lattice`, `zigzag`, `crosszag`, `hilbertcurve`,
+`archimedeanchords`, `octagramspiral` and `tpmsd`. The first nine are
+every pattern the Snapmaker
 and Elegoo profiles in the reference ask for. The six made of straight
 lines are the sets of lines FillRectilinear.cpp hands to
 `fill_surface_by_multilines`, each set's direction and sideways move
 taken from there (cubic and quarter cubic move with the layer's
-height). Cross hatch and gyroid are ports of FillCrossHatch.cpp and of
-`make_gyroid_waves` in FillGyroid.cpp: the pattern is laid over the
-area, cut to it, and its ends joined and anchored along the outline as
-the crossing lines' are. On a 20 mm cube with the U1's presets, C++
-slicer against this engine, sparse fill in metres and how much of each
-file's sparse plastic lies within 0.3 mm of the other's:
+height); the lateral lattice and lateral honeycomb are two more such
+sets, leaning by `lateral_lattice_angle_1` and `_2` and by
+`infill_overhang_angle`. `zigzag` and `crosszag` are rectilinear lines
+joined only to the row after, from alternate ends row by row, so the
+joins fall on the same side layer after layer (`has_consistent_pattern`);
+a cross zag's lines move `infill_shift_step` every second layer. The
+rest are laid over the area, cut to it, and their ends joined and
+anchored along the outline as the crossing lines' are: cross hatch
+(FillCrossHatch.cpp), gyroid (`make_gyroid_waves` in FillGyroid.cpp),
+honeycomb (FillHoneycomb.cpp), 3D honeycomb (Fill3DHoneycomb.cpp),
+TPMS-D (FillTpmsD.cpp) and the three curves that fill a plane with one
+line (FillPlanePath.cpp), which are laid over the whole object and are
+joined only up to half density, as there. On a 20 mm cube with the U1's
+presets, C++ slicer against this engine, sparse fill in metres and how
+much of each file's sparse plastic lies within 0.3 mm of the other's:
 
 | Pattern | At 15% | Lies together | Also at |
 |---|---|---|---|
@@ -648,20 +660,39 @@ file's sparse plastic lies within 0.3 mm of the other's:
 | `quartercubic` | 13.79 / 13.81 | | 10%: 9.76 / 9.73, 93% |
 | `crosshatch` | 14.18 / 14.20 | 98.6% | 40%: 31.90 / 31.72, 99.4% |
 | `gyroid` | 13.29 / 13.29 | 99.9% | 5%: 5.37 / 5.37, 99.6% |
+| `honeycomb` | 16.81 / 16.89 | 98.5% | |
+| `3dhoneycomb` | 12.62 / 12.69 | 94% | |
+| `lateral-honeycomb` | 14.52 / 14.56 | 94% | |
+| `lateral-lattice` | 13.84 / 13.93 | 97% | |
+| `zigzag` | 14.06 / 14.06 | 99.9% | |
+| `crosszag` | 14.11 / 14.11 | 99.9% | |
+| `hilbertcurve` | 13.59 / 13.59 | 98% | |
+| `archimedeanchords` | 14.16 / 14.16 | 99.8% | |
+| `octagramspiral` | 14.21 / 14.21 | 98% | |
+| `tpmsd` | 14.41 / 14.42 | 92% | |
 
 Where less than everything lies together the pattern's own lines are
 in the same places, checked line by line; what differs is which wall a
-join or an anchor runs along. On plate 2 of `mcbrim_test.3mf`, four
+join or an anchor runs along (for `tpmsd`, `3dhoneycomb` and
+`lateral-honeycomb` that is most of the difference there is). On plate
+2 of `mcbrim_test.3mf`, four
 objects of several parts each, cross hatch, gyroid, cubic and grid lie
 98% together and come to within 1% of the reference's length (they lay
-45 to 50% together before each object had its own middle).
+45 to 50% together before each object had its own middle), and
+honeycomb, 3D honeycomb, the Hilbert curve and the lateral lattice
+come to within 0.5% of its length. `rectilinear`, `zigzag` and
+`crosszag` are 1%, 3.7% and 0.6% from it there, and lie only 77 to 79%
+together: their lines are at the reference's offsets, but in areas as
+small as a letter's the runs along the walls that join them are much of
+the plastic, and they are not always taken along the same wall.
 
-Not laid, and printed as a grid with a note: `zigzag`, `crosszag`,
-`lockedzag`, `honeycomb`, `3dhoneycomb`, `lateral-honeycomb`,
-`lateral-lattice`, `tpmsd`, `tpmsfk`, `concentric`, `spiralinset`,
-`hilbertcurve`, `archimedeanchords`, `octagramspiral`, `adaptivecubic`,
-`supportcubic` and `lightning`. `fill_multiline` above one,
-`gyroid_optimized` and `sparse_infill_rotate_template` are noted and
+Not laid, and printed as a grid with a note: `lockedzag`, `tpmsfk`,
+`concentric`, `spiralinset`, `adaptivecubic`, `supportcubic` and
+`lightning`. `fill_multiline` above one,
+`gyroid_optimized`, `sparse_infill_rotate_template`,
+`infill_complete_top` (the closed tops of 3D honeycomb cells) and
+`symmetric_infill_y_axis` (a zigzag mirrored about the object's
+middle) are noted and
 not followed, and `line` is noted as laid like `rectilinear`; the
 adaptive forms of the gyroid and corner smoothing are not looked at.
 

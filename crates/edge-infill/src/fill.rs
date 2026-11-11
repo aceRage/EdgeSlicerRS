@@ -40,6 +40,12 @@ pub struct FillParams {
     /// The height of the top of the layer above the bed, in mm: patterns
     /// that change from layer to layer are laid by it.
     pub z: f64,
+    /// How far each set of a lateral lattice leans, in radians.
+    pub lattice_leans: (f64, f64),
+    /// How far a cross zag's lines move sideways every second layer, mm.
+    pub cross_step: f64,
+    /// How steeply a lateral honeycomb's walls lean, in radians.
+    pub overhang_lean: f64,
     /// Whether the lines of a top surface, of a bottom surface and of
     /// solid fill inside the part are joined end to end. The reference's
     /// `monotonicline` pattern leaves them separate.
@@ -64,9 +70,47 @@ impl FillParams {
         let along = self.sparse_angle;
         let third = std::f64::consts::FRAC_PI_3;
         match self.pattern {
-            Pattern::Lines | Pattern::AlignedLines | Pattern::CrossHatch | Pattern::Gyroid => {
-                Vec::new()
+            Pattern::Lines
+            | Pattern::AlignedLines
+            | Pattern::ZigZag
+            | Pattern::CrossZag
+            | Pattern::CrossHatch
+            | Pattern::Gyroid
+            | Pattern::Honeycomb
+            | Pattern::Honeycomb3D
+            | Pattern::TpmsD
+            | Pattern::Hilbert
+            | Pattern::Archimedean
+            | Pattern::Octagram => Vec::new(),
+            // One set of lines for a third of the height of a cell, then
+            // two that part and come together again over two thirds, the
+            // next cell half a pitch along (`FillLateralHoneycomb`).
+            Pattern::LateralHoneycomb => {
+                let half = 0.5 * self.lateral_pitch();
+                let cell = 3.0 * half / self.overhang_lean.tan();
+                let thirds = 3.0 * self.z / cell;
+                let whole = thirds as i64;
+                let offset = if ((whole + 1) / 3) % 2 == 1 {
+                    half
+                } else {
+                    0.0
+                };
+                if (whole + 1) % 3 != 0 {
+                    vec![(along + FRAC_PI_2, offset)]
+                } else {
+                    let apart = (1.0 - (thirds - whole as f64)) * half;
+                    vec![
+                        (along + FRAC_PI_2, offset - apart),
+                        (along + FRAC_PI_2, offset + apart),
+                    ]
+                }
             }
+            // Both sets square to the fill's direction, each moved by
+            // its lean times the height.
+            Pattern::LateralLattice => vec![
+                (along + FRAC_PI_2, self.lattice_leans.0.tan() * self.z),
+                (along + FRAC_PI_2, self.lattice_leans.1.tan() * self.z),
+            ],
             Pattern::Grid => vec![(along, 0.0), (along + FRAC_PI_2, 0.0)],
             Pattern::Triangles => {
                 vec![
@@ -115,6 +159,15 @@ impl FillParams {
                 ]
             }
         }
+    }
+}
+
+impl FillParams {
+    /// The distance between a lateral honeycomb's lines where they run
+    /// singly: its cells are two thirds single wall and a third double,
+    /// so it is laid a third further apart than its density says.
+    fn lateral_pitch(&self) -> f64 {
+        (4.0 / 3.0) * self.sparse.spacing / self.density
     }
 }
 
@@ -167,18 +220,34 @@ pub fn fill(
     layer_index: usize,
     params: &FillParams,
 ) -> Result<Vec<ExtrusionPath>, ClipError> {
-    fill_from(surfaces, layer_index, params, &|_| params.origin)
+    fill_from(surfaces, layer_index, params, &|_| Frame {
+        origin: params.origin,
+        bounds: None,
+    })
 }
 
-/// As [`fill`], with the point each surface's sparse pattern is laid
-/// through given by `origin_of`: the reference lays every object's
-/// pattern through that object's own middle, so the pattern sits the same
-/// way in a part wherever the part is and whatever stands beside it.
+/// The object a surface belongs to, as far as laying a sparse pattern in
+/// it goes.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Frame {
+    /// The middle of the object across the bed: the point its pattern is
+    /// laid through.
+    pub origin: Point2,
+    /// The least and greatest corners of the object across the bed, for
+    /// the patterns laid over the whole object and cut to each area.
+    /// Without them such a pattern is laid over the area's own bounds.
+    pub bounds: Option<(Point2, Point2)>,
+}
+
+/// As [`fill`], with the object each surface belongs to given by
+/// `frame_of`: the reference lays every object's pattern through that
+/// object's own middle, so the pattern sits the same way in a part
+/// wherever the part is and whatever stands beside it.
 pub fn fill_from(
     surfaces: &[Surface],
     layer_index: usize,
     params: &FillParams,
-    origin_of: &dyn Fn(&Surface) -> Point2,
+    frame_of: &dyn Fn(&Surface) -> Frame,
 ) -> Result<Vec<ExtrusionPath>, ClipError> {
     let turned = if layer_index % 2 == 1 { FRAC_PI_2 } else { 0.0 };
     let mut paths = Vec::new();
@@ -206,7 +275,8 @@ pub fn fill_from(
     for (number, surface) in surfaces.iter().enumerate() {
         // Each surface's lines are one part, laid together.
         let part = number as u32 + 1;
-        let origin = origin_of(surface);
+        let frame = frame_of(surface);
+        let origin = frame.origin;
         // (flow, role, line spacing in mm, how the lines end, directions)
         let (flow, role, spacing, lay, angles): (Flow, Role, f64, Lay, &[f64]) = match surface.kind
         {
@@ -226,7 +296,21 @@ pub fn fill_from(
                     Lay::Zigzag,
                     &[params.sparse_angle],
                 ),
-                Pattern::CrossHatch | Pattern::Gyroid => (
+                Pattern::ZigZag | Pattern::CrossZag => (
+                    params.sparse,
+                    Role::SparseInfill,
+                    params.sparse.spacing / params.density,
+                    Lay::Zigzag,
+                    &[params.sparse_angle + turned],
+                ),
+                Pattern::CrossHatch
+                | Pattern::Gyroid
+                | Pattern::TpmsD
+                | Pattern::Honeycomb3D
+                | Pattern::Honeycomb
+                | Pattern::Hilbert
+                | Pattern::Archimedean
+                | Pattern::Octagram => (
                     params.sparse,
                     Role::SparseInfill,
                     params.sparse.spacing / params.density,
@@ -237,7 +321,11 @@ pub fn fill_from(
                 _ => (
                     params.sparse,
                     Role::SparseInfill,
-                    sweeps.len() as f64 * params.sparse.spacing / params.density,
+                    if params.pattern == Pattern::LateralHoneycomb {
+                        params.lateral_pitch()
+                    } else {
+                        sweeps.len() as f64 * params.sparse.spacing / params.density
+                    },
                     Lay::Anchored,
                     &sweep_angles,
                 ),
@@ -270,7 +358,7 @@ pub fn fill_from(
                 Lay::Cut(LINES_INSET),
                 &[params.sparse_angle
                     + match params.pattern {
-                        Pattern::Lines => turned,
+                        Pattern::Lines | Pattern::ZigZag | Pattern::CrossZag => turned,
                         Pattern::AlignedLines => FRAC_PI_2,
                         _ => 0.0,
                     }],
@@ -341,7 +429,21 @@ pub fn fill_from(
                 let inner =
                     edge_clip::offset(&outer, -scaled(TURN_INSET * flow.spacing), Join::MITER)?;
                 let (sin, cos) = angles[0].sin_cos();
-                let first = origin.y as f64 * cos - origin.x as f64 * sin;
+                // A cross zag's lines move a step every second layer,
+                // one way on even layers and the other on odd (Fill.cpp,
+                // `horiz_move`).
+                let moved = if params.pattern == Pattern::CrossZag {
+                    let steps = (layer_index / 2) as f64 * params.cross_step;
+                    if layer_index.is_multiple_of(2) {
+                        -steps
+                    } else {
+                        steps
+                    }
+                } else {
+                    0.0
+                };
+                let first =
+                    origin.y as f64 * cos - origin.x as f64 * sin + moved * edge_geom::UNITS_PER_MM;
                 // No join is too long: sparse lines have no limit there
                 // (Fill.cpp sets `link_max_length` only above 80% density).
                 let unlimited = edge_geom::Coord::MAX / 4;
@@ -352,7 +454,13 @@ pub fn fill_from(
                     first,
                     angles[0],
                     unlimited,
-                    false,
+                    // The zigzags keep their joins on the same side
+                    // from layer to layer.
+                    if matches!(params.pattern, Pattern::ZigZag | Pattern::CrossZag) {
+                        lines::Order::Consistent
+                    } else {
+                        lines::Order::Sweep
+                    },
                 ) {
                     paths.push(ExtrusionPath {
                         points,
@@ -370,8 +478,16 @@ pub fn fill_from(
                 // The reference turns the area so the pattern lies square
                 // to the axes, about the middle of what is printed; the
                 // gyroid a further 45° back (`CorrectionAngle`).
+                // Honeycomb is laid without turning the area: it turns
+                // its own lines.
+                // The curves that fill the plane are a quarter turn on
+                // (`_infill_direction`).
                 let angle = match params.pattern {
-                    Pattern::Gyroid => angles[0] - std::f64::consts::FRAC_PI_4,
+                    Pattern::Gyroid | Pattern::TpmsD => angles[0] - std::f64::consts::FRAC_PI_4,
+                    Pattern::Honeycomb => 0.0,
+                    Pattern::Hilbert | Pattern::Archimedean | Pattern::Octagram => {
+                        angles[0] + FRAC_PI_2
+                    }
                     _ => angles[0],
                 };
                 let (sin, cos) = angle.sin_cos();
@@ -424,7 +540,80 @@ pub fn fill_from(
                         Pattern::Gyroid => {
                             curves::gyroid(bounds, flow.spacing, params.density, params.z)
                         }
+                        Pattern::TpmsD => {
+                            curves::tpms_d(bounds, flow.spacing, params.density, params.z)
+                        }
+                        Pattern::Honeycomb3D => curves::honeycomb_3d(
+                            bounds,
+                            flow.spacing,
+                            params.density,
+                            params.z,
+                            flow.height,
+                        ),
+                        // A third of a turn on from each layer to the
+                        // next, and a quarter on from the fill's
+                        // direction (`_layer_angle`, `_infill_direction`).
+                        Pattern::Honeycomb => curves::honeycomb(
+                            bounds,
+                            flow.spacing,
+                            params.density,
+                            angles[0]
+                                + std::f64::consts::FRAC_PI_3 * (layer_index % 3) as f64
+                                + FRAC_PI_2,
+                        ),
+                        Pattern::Hilbert | Pattern::Archimedean | Pattern::Octagram => {
+                            // Laid over the whole object, turned as the
+                            // area is.
+                            let over = match frame.bounds {
+                                Some((low, high)) => {
+                                    let corners = [
+                                        low,
+                                        Point2 {
+                                            x: high.x,
+                                            y: low.y,
+                                        },
+                                        high,
+                                        Point2 {
+                                            x: low.x,
+                                            y: high.y,
+                                        },
+                                    ]
+                                    .map(turned);
+                                    corners.iter().fold(
+                                        (corners[0], corners[0]),
+                                        |(low, high), p| {
+                                            (
+                                                Point2 {
+                                                    x: low.x.min(p.x),
+                                                    y: low.y.min(p.y),
+                                                },
+                                                Point2 {
+                                                    x: high.x.max(p.x),
+                                                    y: high.y.max(p.y),
+                                                },
+                                            )
+                                        },
+                                    )
+                                }
+                                None => bounds,
+                            };
+                            let curve = match params.pattern {
+                                Pattern::Hilbert => curves::Curve::Hilbert,
+                                Pattern::Archimedean => curves::Curve::Archimedean,
+                                _ => curves::Curve::Octagram,
+                            };
+                            curves::plane_path(curve, over, flow.spacing, params.density)
+                        }
                         _ => curves::crosshatch(bounds, flow.spacing, params.density, params.z),
+                    };
+                    // Honeycomb's pieces are all kept; the others drop
+                    // the scraps.
+                    let least = match params.pattern {
+                        Pattern::CrossHatch
+                        | Pattern::Gyroid
+                        | Pattern::TpmsD
+                        | Pattern::Honeycomb3D => least,
+                        _ => 0.0,
                     };
                     let mut pieces = edge_clip::clip_lines(&pattern, std::slice::from_ref(&area))?;
                     pieces.retain(|piece| {
@@ -437,7 +626,17 @@ pub fn fill_from(
                             .sum();
                         length >= scaled(least) as f64
                     });
-                    for points in lines::paths_joined(&area, pieces, sparse_joining(line)) {
+                    // The plane-filling curves are joined only up to half
+                    // density (FillPlanePath.cpp).
+                    let joining = match params.pattern {
+                        Pattern::Hilbert | Pattern::Archimedean | Pattern::Octagram
+                            if params.density > 0.5 =>
+                        {
+                            lines::Joining::default()
+                        }
+                        _ => sparse_joining(line),
+                    };
+                    for points in lines::paths_joined(&area, pieces, joining) {
                         paths.push(ExtrusionPath {
                             points: points.into_iter().map(back).collect(),
                             role,
@@ -531,8 +730,19 @@ pub fn fill_from(
                 // edge, not on a grid shared with other areas.
                 let first = low + pitch / 2.0;
                 // Swept lines are one run: each after the one before.
-                let lines =
-                    lines::paths_turned(&outer, &inner, pitch, first, angles[0], max_link, ordered);
+                let lines = lines::paths_turned(
+                    &outer,
+                    &inner,
+                    pitch,
+                    first,
+                    angles[0],
+                    max_link,
+                    if ordered {
+                        lines::Order::Monotonic
+                    } else {
+                        lines::Order::Sweep
+                    },
+                );
                 for (index, points) in lines.into_iter().enumerate() {
                     paths.push(ExtrusionPath {
                         points,
@@ -587,6 +797,9 @@ mod tests {
             sparse_anchor: 0.0,
             origin: Point2::from_mm(0.0, 0.0),
             z: 0.2,
+            lattice_leans: (-FRAC_PI_2 / 2.0, FRAC_PI_2 / 2.0),
+            cross_step: 0.4,
+            overhang_lean: 60f64.to_radians(),
             top_joined: false,
             bottom_joined: true,
             solid_joined: true,
@@ -806,6 +1019,110 @@ mod tests {
                 .unwrap()
                 .is_empty()
         );
+    }
+
+    #[test]
+    fn the_other_sparse_patterns_lay_their_share_too() {
+        // (pattern, least and most of what the density asks, over these
+        // layers.) Honeycomb's walls are two lines side by side for a
+        // third of their length, 3D honeycomb's zigzags open and close,
+        // and a lateral honeycomb's lines are one set where its walls
+        // are upright and two where they part: all as in the reference.
+        for (pattern, least, most) in [
+            (Pattern::Honeycomb, 1.2, 1.32),
+            (Pattern::Honeycomb3D, 0.75, 1.05),
+            (Pattern::LateralLattice, 0.95, 1.05),
+            (Pattern::LateralHoneycomb, 0.7, 1.55),
+            (Pattern::ZigZag, 0.97, 1.08),
+            (Pattern::CrossZag, 0.97, 1.08),
+            (Pattern::Hilbert, 0.95, 1.05),
+            (Pattern::Archimedean, 0.95, 1.05),
+            (Pattern::Octagram, 0.95, 1.05),
+            (Pattern::TpmsD, 0.88, 1.16),
+        ] {
+            for layer in [0usize, 1, 2, 3, 7, 12, 20, 33] {
+                let params = FillParams {
+                    z: 0.2 * (layer + 1) as f64,
+                    ..params(pattern, 0.2)
+                };
+                let paths = fill(&[surface(SurfaceKind::Sparse, 100.0)], layer, &params).unwrap();
+                let share = length(&paths) * params.sparse.spacing / (0.2 * 10_000.0);
+                assert!(
+                    (least..=most).contains(&share),
+                    "{pattern:?} on layer {layer} covered {share} of what its density asks"
+                );
+                assert!(paths.iter().all(|path| path.role == Role::SparseInfill));
+                // Nothing is laid outside the area.
+                assert!(paths.iter().flat_map(|path| &path.points).all(|p| {
+                    (0..=100_000_000).contains(&p.x) && (0..=100_000_000).contains(&p.y)
+                }));
+            }
+        }
+        let at = |pattern: Pattern, layer: usize| {
+            let params = FillParams {
+                z: 0.2 * (layer + 1) as f64,
+                ..params(pattern, 0.2)
+            };
+            fill(&[surface(SurfaceKind::Sparse, 60.0)], layer, &params).unwrap()
+        };
+        // A zigzag lies the same on every second layer, turning between;
+        // a cross zag has moved on by then; honeycomb comes round every
+        // third.
+        assert_eq!(at(Pattern::ZigZag, 1), at(Pattern::ZigZag, 5));
+        assert_ne!(at(Pattern::ZigZag, 1), at(Pattern::ZigZag, 2));
+        assert_ne!(at(Pattern::CrossZag, 1), at(Pattern::CrossZag, 5));
+        assert_ne!(at(Pattern::Honeycomb, 0), at(Pattern::Honeycomb, 1));
+        assert_eq!(at(Pattern::Honeycomb, 0), at(Pattern::Honeycomb, 3));
+        // The curves that fill a plane stay put; the rest change with height.
+        for pattern in [Pattern::Hilbert, Pattern::Archimedean, Pattern::Octagram] {
+            assert_eq!(at(pattern, 0), at(pattern, 9), "{pattern:?}");
+        }
+        for pattern in [
+            Pattern::Honeycomb3D,
+            Pattern::LateralLattice,
+            Pattern::LateralHoneycomb,
+            Pattern::TpmsD,
+        ] {
+            assert_ne!(at(pattern, 0), at(pattern, 9), "{pattern:?}");
+        }
+    }
+
+    #[test]
+    fn a_curve_over_the_plane_is_laid_over_the_whole_object() {
+        // A 20 mm square in the corner of an object 100 mm across: told
+        // of the object, the curve is the object's, cut to the square.
+        let mut square = surface(SurfaceKind::Sparse, 20.0);
+        for point in &mut square.area.contour.points {
+            *point = Point2 {
+                x: point.x + 70_000_000,
+                y: point.y + 70_000_000,
+            };
+        }
+        let params = params(Pattern::Archimedean, 0.2);
+        let origin = Point2::from_mm(50.0, 50.0);
+        let laid = |bounds| {
+            fill_from(std::slice::from_ref(&square), 0, &params, &|_| Frame {
+                origin,
+                bounds,
+            })
+            .unwrap()
+        };
+        let own = laid(None);
+        let whole = laid(Some((
+            Point2::from_mm(0.0, 0.0),
+            Point2::from_mm(100.0, 100.0),
+        )));
+        assert_ne!(own, whole);
+        // Every piece of it is an arc about the object's middle, not
+        // the square's, and about as much is laid either way.
+        let far = |path: &ExtrusionPath| {
+            path.points
+                .iter()
+                .map(|p| ((p.x - origin.x) as f64).hypot((p.y - origin.y) as f64) / 1e6)
+                .fold(0.0, f64::max)
+        };
+        assert!(whole.iter().all(|path| far(path) > 20.0 * 2f64.sqrt()));
+        assert!((length(&whole) / length(&own) - 1.0).abs() < 0.15);
     }
 
     #[test]

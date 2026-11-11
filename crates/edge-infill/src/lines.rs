@@ -65,6 +65,12 @@ pub enum Order {
     /// (FillRectilinear.cpp `traverse_graph_generate_polylines`). No
     /// anchors are run.
     Sweep,
+    /// As [`Order::Sweep`], but a line is only ever joined to the one on
+    /// the next row, and lines are begun from alternate ends row by row:
+    /// the reference's way with patterns meant to lie the same on every
+    /// layer (`has_consistent_pattern`), whose joins then fall on the
+    /// same side layer after layer.
+    Consistent,
     /// Swept from the first row to the last, so that no line is laid
     /// between two already down: see [`monotonic`]. A line is joined only
     /// to the one laid next, and the paths come out in the order they are
@@ -344,9 +350,10 @@ pub fn paths_anchored(
 /// `outer`, and where it is joined to its neighbour it turns short of the
 /// edge, on the outline of `inner`, which lies inside `outer`. A line that
 /// does not reach into `inner` at all is left out, as there. A `max_link`
-/// of zero joins nothing, and every line then runs edge to edge. With
-/// `monotonic` the paths come in the order they are to be laid, each from
-/// its first point ([`Order::Monotonic`]).
+/// of zero joins nothing, and every line then runs edge to edge. `order`
+/// is [`Order::Sweep`], [`Order::Consistent`] or [`Order::Monotonic`];
+/// with the last the paths come in the order they are to be laid, each
+/// from its first point.
 pub fn paths_turned(
     outer: &[ExPolygon],
     inner: &[ExPolygon],
@@ -354,17 +361,13 @@ pub fn paths_turned(
     first: f64,
     angle: f64,
     max_link: Coord,
-    monotonic: bool,
+    order: Order,
 ) -> Vec<Vec<Point2>> {
     let rings: Vec<&Polygon> = inner.iter().flat_map(ExPolygon::rings).collect();
     let edge: Vec<&Polygon> = outer.iter().flat_map(ExPolygon::rings).collect();
     let joining = Joining {
         max_link,
-        order: if monotonic {
-            Order::Monotonic
-        } else {
-            Order::Sweep
-        },
+        order,
         ..Joining::default()
     };
     lay(
@@ -792,14 +795,30 @@ fn join(
         }
         starts = Some(turns.into_iter().map(|(_, entry)| entry).collect());
     }
-    if joining.order == Order::Sweep {
+    if matches!(joining.order, Order::Sweep | Order::Consistent) {
+        let consistent = joining.order == Order::Consistent;
+        // Row by row; consistently, odd rows from their far ends.
+        let begun: Vec<usize> = by_row
+            .chunk_by(|&a, &b| {
+                (crossings[a].direction, crossings[a].row)
+                    == (crossings[b].direction, crossings[b].row)
+            })
+            .flat_map(|row| {
+                let turned = consistent && crossings[row[0]].row.rem_euclid(2) == 0;
+                let mut row = row.to_vec();
+                if turned {
+                    row.reverse();
+                }
+                row
+            })
+            .collect();
         candidates.clear();
         // From the first line not yet passed, along it, and on to the
         // line beside it whose end is next along the outline; the nearer
         // of the two where both sides offer one. A path ends where
         // neither does.
         let mut passed = vec![false; segments.len()];
-        for &start in by_row {
+        for &start in &begun {
             let mut at = start;
             while let Some(segment) = crossings[at].segment.filter(|&segment| !passed[segment]) {
                 passed[segment] = true;
@@ -816,7 +835,7 @@ fn join(
                     let there = &crossings[to];
                     distance <= joining.max_link as f64
                         && there.direction == here.0
-                        && (there.row - here.1).abs() == 1
+                        && (there.row - here.1 == 1 || (!consistent && there.row - here.1 == -1))
                         && there.link.is_none()
                         && there.segment.is_some_and(|segment| !passed[segment])
                 })
@@ -1311,7 +1330,7 @@ mod tests {
                 0.0,
                 angle,
                 Coord::MAX / 4,
-                false,
+                Order::Sweep,
             );
             assert_eq!(paths.len(), 1, "at {angle} rad");
         }
@@ -1324,7 +1343,7 @@ mod tests {
             0.0,
             0.0,
             scaled(1.0),
-            false,
+            Order::Sweep,
         );
         assert!(limited.len() > 1);
     }
@@ -1394,10 +1413,10 @@ mod tests {
         cup.contour.points.reverse();
         for area in [&holed, &arch, &cup] {
             let (outer, inner) = drawn_in(area, 0.2);
-            let rows = paths_turned(&outer, &inner, 1e6, 0.5e6, 0.0, 0, true);
+            let rows = paths_turned(&outer, &inner, 1e6, 0.5e6, 0.0, 0, Order::Monotonic);
             assert!(swept(&rows));
             // The same rows as when they are laid in any order.
-            let any = paths_turned(&outer, &inner, 1e6, 0.5e6, 0.0, 0, false);
+            let any = paths_turned(&outer, &inner, 1e6, 0.5e6, 0.0, 0, Order::Sweep);
             assert_eq!(rows.len(), any.len());
             assert!((length(&rows) - length(&any)).abs() < 1e-6);
             // Each row begins where the nozzle is nearer: a millimetre up
@@ -1418,10 +1437,26 @@ mod tests {
             holes: Vec::new(),
         };
         let (outer, inner) = drawn_in(&square, 0.5);
-        let one = paths_turned(&outer, &inner, 1e6, 1e6, 0.0, Coord::MAX / 4, true);
+        let one = paths_turned(
+            &outer,
+            &inner,
+            1e6,
+            1e6,
+            0.0,
+            Coord::MAX / 4,
+            Order::Monotonic,
+        );
         assert_eq!(one.len(), 1);
         let (outer, inner) = drawn_in(&holed, 0.2);
-        let joined = paths_turned(&outer, &inner, 1e6, 0.5e6, 0.0, Coord::MAX / 4, true);
+        let joined = paths_turned(
+            &outer,
+            &inner,
+            1e6,
+            0.5e6,
+            0.0,
+            Coord::MAX / 4,
+            Order::Monotonic,
+        );
         assert!((1..=4).contains(&joined.len()), "{} paths", joined.len());
     }
 
@@ -1445,7 +1480,7 @@ mod tests {
             holes: Vec::new(),
         };
         let (outer, inner) = drawn_in(&comb, 0.2);
-        let rows = paths_turned(&outer, &inner, 1e6, 0.5e6, 0.0, 0, true);
+        let rows = paths_turned(&outer, &inner, 1e6, 0.5e6, 0.0, 0, Order::Monotonic);
         // Four rows of spine and six on each tooth.
         assert_eq!(rows.len(), 4 + 16 * 6);
         assert!(swept(&rows));
@@ -1500,7 +1535,7 @@ mod tests {
         let outer = [whole(rect(0.0, 0.0, 10.0, 10.0))];
         let inner = [whole(rect(0.5, 0.5, 9.5, 9.5))];
         // Rows at y = 1 .. 9.
-        let joined = paths_turned(&outer, &inner, 1e6, 1e6, 0.0, scaled(3.0), false);
+        let joined = paths_turned(&outer, &inner, 1e6, 1e6, 0.0, scaled(3.0), Order::Sweep);
         assert_eq!(joined.len(), 1);
         let path = &joined[0];
         // Both loose ends reach the edge; every turn is half a millimetre in.
@@ -1515,19 +1550,81 @@ mod tests {
         assert_eq!(length(&joined), 2.0 * 9.5 + 7.0 * 9.0 + 8.0);
 
         // Unjoined, each of the nine rows runs the full 10 mm.
-        let separate = paths_turned(&outer, &inner, 1e6, 1e6, 0.0, 0, false);
+        let separate = paths_turned(&outer, &inner, 1e6, 1e6, 0.0, 0, Order::Sweep);
         assert_eq!(separate.len(), 9);
         assert_eq!(length(&separate), 90.0);
 
         // A row that does not reach the inner outline is not laid.
         let low = [whole(rect(0.5, 2.0, 9.5, 8.0))];
-        let rows = paths_turned(&outer, &low, 1e6, 0.5e6, 0.0, 0, false);
+        let rows = paths_turned(&outer, &low, 1e6, 0.5e6, 0.0, 0, Order::Sweep);
         assert_eq!(rows.len(), 6);
         assert!(
             rows.iter()
                 .all(|row| row[0].y >= scaled(2.0) && row[0].y < scaled(8.0))
         );
-        assert!(paths_turned(&outer, &[], 1e6, 0.0, 0.0, 0, false).is_empty());
+        assert!(paths_turned(&outer, &[], 1e6, 0.0, 0.0, 0, Order::Sweep).is_empty());
+    }
+
+    #[test]
+    fn consistent_rows_are_joined_only_to_the_row_after() {
+        let whole = |polygon| ExPolygon {
+            contour: polygon,
+            holes: Vec::new(),
+        };
+        // A square: one zigzag, as long as a sweep's.
+        let outer = [whole(rect(0.0, 0.0, 10.0, 10.0))];
+        let inner = [whole(rect(0.5, 0.5, 9.5, 9.5))];
+        let lay = |outer: &[ExPolygon], inner: &[ExPolygon], order| {
+            paths_turned(outer, inner, 1e6, 1e6, 0.0, scaled(30.0), order)
+        };
+        let (swept, kept) = (
+            lay(&outer, &inner, Order::Sweep),
+            lay(&outer, &inner, Order::Consistent),
+        );
+        assert_eq!((swept.len(), kept.len()), (1, 1));
+        assert_eq!(length(&swept), length(&kept));
+
+        // A U: rows across two prongs, and across the whole at the foot.
+        let u = |inset: f64| {
+            whole(Polygon {
+                points: [
+                    (inset, inset),
+                    (20.0 - inset, inset),
+                    (20.0 - inset, 20.0 - inset),
+                    (13.0 + inset, 20.0 - inset),
+                    (13.0 + inset, 6.0 + inset),
+                    (7.0 - inset, 6.0 + inset),
+                    (7.0 - inset, 20.0 - inset),
+                    (inset, 20.0 - inset),
+                ]
+                .iter()
+                .map(|&(x, y)| Point2::from_mm(x, y))
+                .collect(),
+            })
+        };
+        let kept = lay(&[u(0.0)], &[u(0.5)], Order::Consistent);
+        // Along any one path the rows only ever go up.
+        for path in &kept {
+            let rows: Vec<i64> = path
+                .windows(2)
+                .filter(|pair| pair[0].y == pair[1].y)
+                .map(|pair| pair[0].y)
+                .collect();
+            assert!(rows.windows(2).all(|pair| pair[1] > pair[0]), "{rows:?}");
+        }
+        // Every row is laid: the same plastic across as a sweep's rows.
+        let across = |paths: &[Vec<Point2>]| -> i64 {
+            paths
+                .iter()
+                .flat_map(|path| path.windows(2))
+                .filter(|pair| pair[0].y == pair[1].y)
+                .map(|pair| (pair[1].x - pair[0].x).abs())
+                .sum()
+        };
+        assert_eq!(
+            across(&kept),
+            across(&lay(&[u(0.0)], &[u(0.5)], Order::Sweep))
+        );
     }
 
     #[test]

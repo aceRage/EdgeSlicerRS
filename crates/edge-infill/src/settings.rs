@@ -30,6 +30,35 @@ pub enum Pattern {
     CrossHatch,
     /// Waves that swing between two directions as the layers go up.
     Gyroid,
+    /// Hexagons, turned a third of the way round on each layer.
+    Honeycomb,
+    /// Two sets of lines the same way that lean against each other as
+    /// the layers go up (`lateral-lattice`).
+    LateralLattice,
+    /// Zigzags along one axis, then the other, that open and close as
+    /// the layers go up: cells with eight sides and six (`3dhoneycomb`).
+    Honeycomb3D,
+    /// Honeycomb stood on edge: one set of lines that splits in two and
+    /// closes again as the layers go up (`lateral-honeycomb`).
+    LateralHoneycomb,
+    /// Waves along the diagonals that open and close as the layers go up,
+    /// after the Schwarz D surface (`tpmsd`).
+    TpmsD,
+    /// One line that visits every square of a grid over the object
+    /// (`hilbertcurve`).
+    Hilbert,
+    /// One spiral out from the middle of the object, in short chords
+    /// (`archimedeanchords`).
+    Archimedean,
+    /// One spiral of eight-pointed stars out from the middle of the
+    /// object (`octagramspiral`).
+    Octagram,
+    /// Lines turned 90° each layer, joined on the same side layer after
+    /// layer (`zigzag`).
+    ZigZag,
+    /// Lines turned 90° each layer, each direction's moved a step
+    /// sideways every second layer (`crosszag`).
+    CrossZag,
 }
 
 /// The settings infill depends on, read once per print. Defaults are the
@@ -46,6 +75,15 @@ pub struct InfillSettings {
     /// Degrees counter-clockwise from +x.
     pub infill_direction: f64,
     pub solid_infill_direction: f64,
+    /// How far the two sets of a lateral lattice lean, in degrees
+    /// (`lateral_lattice_angle_1` and `_2`).
+    pub lateral_lattice_angles: (f64, f64),
+    /// How far a cross zag's lines move sideways every second layer, in
+    /// mm (`infill_shift_step`).
+    pub infill_shift_step: f64,
+    /// How steeply a lateral honeycomb's walls lean, in degrees from
+    /// upright (`infill_overhang_angle`).
+    pub infill_overhang_angle: f64,
     /// In mm².
     pub minimum_sparse_infill_area: f64,
     /// Longest stretch of wall two sparse lines are joined along; a
@@ -107,6 +145,9 @@ impl Default for InfillSettings {
             unsupported_pattern: None,
             infill_direction: 45.0,
             solid_infill_direction: 45.0,
+            lateral_lattice_angles: (-45.0, 45.0),
+            infill_shift_step: 0.4,
+            infill_overhang_angle: 60.0,
             minimum_sparse_infill_area: 15.0,
             infill_anchor_max: FloatOrPercent::Value(20.0),
             infill_anchor: FloatOrPercent::Percent(400.0),
@@ -172,6 +213,16 @@ impl InfillSettings {
                 "quartercubic" => (Pattern::QuarterCubic, None),
                 "crosshatch" => (Pattern::CrossHatch, None),
                 "gyroid" => (Pattern::Gyroid, None),
+                "honeycomb" => (Pattern::Honeycomb, None),
+                "lateral-lattice" => (Pattern::LateralLattice, None),
+                "zigzag" => (Pattern::ZigZag, None),
+                "3dhoneycomb" => (Pattern::Honeycomb3D, None),
+                "lateral-honeycomb" => (Pattern::LateralHoneycomb, None),
+                "tpmsd" => (Pattern::TpmsD, None),
+                "hilbertcurve" => (Pattern::Hilbert, None),
+                "archimedeanchords" => (Pattern::Archimedean, None),
+                "octagramspiral" => (Pattern::Octagram, None),
+                "crosszag" => (Pattern::CrossZag, None),
                 other => (Pattern::Grid, Some(other.to_owned())),
             },
         };
@@ -229,6 +280,20 @@ impl InfillSettings {
         {
             unsupported.push(
                 "sparse_infill_rotate_template: sparse fill keeps to infill_direction".to_owned(),
+            );
+        }
+        if pattern == Pattern::Honeycomb3D && settings.flag("infill_complete_top")? == Some(true) {
+            unsupported.push(
+                "infill_complete_top \"1\": the tops of 3D honeycomb cells are left open"
+                    .to_owned(),
+            );
+        }
+        if matches!(pattern, Pattern::ZigZag | Pattern::CrossZag)
+            && settings.flag("symmetric_infill_y_axis")? == Some(true)
+        {
+            unsupported.push(
+                "symmetric_infill_y_axis \"1\": the zigzag is not mirrored about the object's middle"
+                    .to_owned(),
             );
         }
         if settings.text("sparse_infill_pattern") == Some("line") {
@@ -305,6 +370,20 @@ impl InfillSettings {
             infill_direction: settings
                 .float("infill_direction")?
                 .unwrap_or(defaults.infill_direction),
+            lateral_lattice_angles: (
+                settings
+                    .float("lateral_lattice_angle_1")?
+                    .unwrap_or(defaults.lateral_lattice_angles.0),
+                settings
+                    .float("lateral_lattice_angle_2")?
+                    .unwrap_or(defaults.lateral_lattice_angles.1),
+            ),
+            infill_shift_step: settings
+                .float("infill_shift_step")?
+                .unwrap_or(defaults.infill_shift_step),
+            infill_overhang_angle: settings
+                .float("infill_overhang_angle")?
+                .unwrap_or(defaults.infill_overhang_angle),
             solid_infill_direction: settings
                 .float("solid_infill_direction")?
                 .unwrap_or(defaults.solid_infill_direction),
@@ -479,6 +558,12 @@ impl InfillSettings {
                 .max(0.0),
             origin: edge_geom::Point2::from_mm(0.0, 0.0),
             z: 0.0,
+            lattice_leans: (
+                self.lateral_lattice_angles.0.to_radians(),
+                self.lateral_lattice_angles.1.to_radians(),
+            ),
+            cross_step: self.infill_shift_step,
+            overhang_lean: self.infill_overhang_angle.to_radians(),
             top_joined: self.top_joined,
             bottom_joined: self.bottom_joined,
             solid_joined: self.solid_joined,
@@ -602,15 +687,25 @@ mod tests {
             ("quartercubic", Pattern::QuarterCubic),
             ("crosshatch", Pattern::CrossHatch),
             ("gyroid", Pattern::Gyroid),
+            ("honeycomb", Pattern::Honeycomb),
+            ("3dhoneycomb", Pattern::Honeycomb3D),
+            ("lateral-honeycomb", Pattern::LateralHoneycomb),
+            ("lateral-lattice", Pattern::LateralLattice),
+            ("zigzag", Pattern::ZigZag),
+            ("crosszag", Pattern::CrossZag),
+            ("hilbertcurve", Pattern::Hilbert),
+            ("archimedeanchords", Pattern::Archimedean),
+            ("octagramspiral", Pattern::Octagram),
+            ("tpmsd", Pattern::TpmsD),
         ] {
             let found = read(&format!(r#"{{"sparse_infill_pattern": "{name}"}}"#)).unwrap();
             assert_eq!((found.pattern, found.unsupported_pattern), (pattern, None));
         }
         // One that is not is laid as a grid, and said.
-        let other = read(r#"{"sparse_infill_pattern": "honeycomb"}"#).unwrap();
+        let other = read(r#"{"sparse_infill_pattern": "lightning"}"#).unwrap();
         assert_eq!(
             (other.pattern, other.unsupported_pattern.as_deref()),
-            (Pattern::Grid, Some("honeycomb"))
+            (Pattern::Grid, Some("lightning"))
         );
         // With none set it is the reference's default.
         assert_eq!(read("{}").unwrap().pattern, Pattern::CrossHatch);
@@ -630,6 +725,42 @@ mod tests {
                 "{key} is not noted"
             );
         }
+        for (asked, key) in [
+            (
+                r#"{"sparse_infill_pattern": "3dhoneycomb", "infill_complete_top": "1"}"#,
+                "infill_complete_top",
+            ),
+            (
+                r#"{"sparse_infill_pattern": "zigzag", "symmetric_infill_y_axis": "1"}"#,
+                "symmetric_infill_y_axis",
+            ),
+            (
+                r#"{"sparse_infill_pattern": "crosszag", "symmetric_infill_y_axis": "1"}"#,
+                "symmetric_infill_y_axis",
+            ),
+        ] {
+            let notes = read(asked).unwrap().unsupported;
+            assert!(notes.iter().any(|note| note.starts_with(key)), "{asked}");
+        }
+        // Neither is said of a pattern it does not touch.
+        assert!(
+            read(r#"{"sparse_infill_pattern": "grid", "infill_complete_top": "1", "symmetric_infill_y_axis": "1"}"#)
+                .unwrap()
+                .unsupported
+                .is_empty()
+        );
+        // What shapes the lateral patterns and the cross zag is read.
+        let leaning = read(
+            r#"{"sparse_infill_pattern": "lateral-lattice", "lateral_lattice_angle_1": "-30",
+                "lateral_lattice_angle_2": "60", "infill_shift_step": "0.6", "infill_overhang_angle": "50"}"#,
+        )
+        .unwrap()
+        .params(0.2, false)
+        .unwrap();
+        assert!((leaning.lattice_leans.0 + 30f64.to_radians()).abs() < 1e-12);
+        assert!((leaning.lattice_leans.1 - 60f64.to_radians()).abs() < 1e-12);
+        assert_eq!(leaning.cross_step, 0.6);
+        assert!((leaning.overhang_lean - 50f64.to_radians()).abs() < 1e-12);
         let line = read(r#"{"sparse_infill_pattern": "line"}"#).unwrap();
         assert_eq!(line.pattern, Pattern::Lines);
         assert!(

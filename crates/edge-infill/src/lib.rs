@@ -17,7 +17,7 @@ pub mod lines;
 mod settings;
 mod surfaces;
 
-pub use fill::{FillParams, fill, fill_from};
+pub use fill::{FillParams, Frame, fill, fill_from};
 pub use settings::{InfillSettings, Pattern};
 pub use surfaces::{
     Anchoring, Beneath, Shells, Surface, SurfaceKind, WallsAround, anchor, bridge_edges,

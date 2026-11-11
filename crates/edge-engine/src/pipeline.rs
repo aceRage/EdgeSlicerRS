@@ -100,10 +100,13 @@ pub struct Sliced {
     pub timings: Timings,
 }
 
-/// The middle of the object a point belongs to: of the objects whose
-/// bounds hold it, the one with the smallest bounds, so an object stood
-/// inside another's outline is told from it.
-fn middle_of(objects: &[(Point2, Point2, Point2)], point: Option<Point2>) -> Option<Point2> {
+/// The object a point belongs to, for laying its sparse pattern: of the
+/// objects whose bounds hold the point, the one with the smallest bounds,
+/// so an object stood inside another's outline is told from it.
+fn frame_of(
+    objects: &[(Point2, Point2, Point2)],
+    point: Option<Point2>,
+) -> Option<edge_infill::Frame> {
     let point = point?;
     objects
         .iter()
@@ -111,7 +114,10 @@ fn middle_of(objects: &[(Point2, Point2, Point2)], point: Option<Point2>) -> Opt
             point.x >= low.x && point.x <= high.x && point.y >= low.y && point.y <= high.y
         })
         .min_by_key(|(low, high, _)| i128::from(high.x - low.x) * i128::from(high.y - low.y))
-        .map(|(_, _, middle)| *middle)
+        .map(|&(low, high, middle)| edge_infill::Frame {
+            origin: middle,
+            bounds: Some((low, high)),
+        })
 }
 
 /// The G-code for a sliced model.
@@ -496,8 +502,12 @@ pub fn slice(job: Job, watch: &dyn Watcher) -> Result<Sliced, Failure> {
                 params.origin = middle;
                 params.z = first_layer_height + index as f64 * layer_height;
                 edge_infill::fill_from(surfaces, index, &params, &|surface| {
-                    middle_of(&middles, surface.area.contour.points.first().copied())
-                        .unwrap_or(middle)
+                    frame_of(&middles, surface.area.contour.points.first().copied()).unwrap_or(
+                        edge_infill::Frame {
+                            origin: middle,
+                            bounds: None,
+                        },
+                    )
                 })
                 .map_err(|e| e.to_string())
             })
