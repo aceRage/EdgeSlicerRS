@@ -21,6 +21,7 @@ fixed-width face for values.
 | `style.css`, part 3 | The components, each written once |
 | `style.css`, part 4 | The page's parts, in the order they stand on it |
 | `printers.css` | The printer card and Printer Selection: only what is theirs alone |
+| `process.css` | The process pages (`process.js`): the switch and the box of text, which came with them, the option row, the pages' tabs, the search's list; and the sidebar's width |
 | `gl/gl.css` | What lies over the 3D views |
 | `app.js`, "controls" | `listbox` (the page's own list for a `<select>`) and the tooltips |
 
@@ -141,7 +142,60 @@ as they stand: 28 px high, on the well, a hairline round them.
 - A search field carries its magnifier and its own clear mark.
 - Tick boxes and radio buttons are the page's own; nothing to add.
 - A label is a `<label>`: over its field by default, or to its left in a
-  `.grid` (label, then field of 96 px) or a `.card-row`.
+  `.grid` (label, then field of 96 px), a `.card-row` or an option row.
+- A length that may be a percentage is a text field in a `.unit` with
+  `class="number"` (the fixed-width face); its unit is filled in as it is
+  typed: "mm" after a number, nothing after one that carries its own %.
+- A box of text is a `<textarea>`: on the well, a hairline round it, at
+  least two lines, pulled taller by its corner. `class="code"` sets it in
+  the fixed-width face without wrapping, for G-code and scripts.
+- A field that can also be picked from carries a chevron at its end
+  (`button.icon.opt-more`), which opens the values with `showMenu`.
+
+### Switch
+
+```html
+<label class="switch">Advance <input type="checkbox" role="switch"></label>
+```
+
+Two states of one thing that take effect at once ("Advance"): a tick box
+drawn as a track with a knob, the accent when on. Its word comes first, as
+the C++ has it. A tick box stays a tick box wherever a setting is on or off.
+
+### Option rows
+
+One setting of many, in a page of them (`process.js` `processRow`):
+
+```html
+<div class="opt [set] [off] [unread] [noted] [wide]" data-key="…">
+  <span class="opt-head"><label class="opt-label" for="…" title="…">Layer height</label><span class="opt-follow" role="img" title="…"></span></span>
+  <span class="opt-field"><!-- a tick box, .unit, a list, a text field --></span>
+  <button type="button" class="icon opt-reset" title="…" aria-label="…"><svg …/></button>
+</div>
+```
+
+- The controls stand in one column (112 px, up to 150 px where the sidebar
+  is wider); a label that does not fit goes on to a second line, and is
+  never cut. A tick box stands at the head of the column.
+- `.set`: set by hand. A bar of the accent at the head of the control, the
+  label in bold, and the reset arrow (hidden otherwise). This is what the
+  accent means in a form: yours, not the preset's.
+- `.off`: greyed out by another setting. The label in `--text-off`, the
+  control disabled.
+- `.unread` / `.noted`: what the engine does with it, in `.opt-follow`: a
+  ring in `--text-3` (not read), a dot in `--warn` (followed with a note).
+  Quiet on purpose; the sentence is in the label's tooltip, where the keys
+  reach it too.
+- `.wide`: a box of text takes the row under its label.
+- Rows under a `.process-page > h3` group label; several options of one
+  C++ line under an `.opt-line-label`, indented.
+
+### Tabs within a section
+
+`#process-tabs` holds `button.process-tab[role="tab"]`: text buttons on a
+hairline, the open one with the accent under it, as many to a line as fit.
+A `span.process-count` in a tab is how many of its settings are set by
+hand. Left and Right, Home and End move between them.
 
 ### Lists: `listbox(select, options)`
 
@@ -293,3 +347,7 @@ folder) and a browser: dark and light, a window of 700 px and a wide one, a
 very long preset name, the keys alone (Tab through it; the focus ring must
 always be in sight), and the contrast of any new pairing of text and
 surface.
+
+The sidebar is 300 px wide in a narrow window and up to 380 px in a wide one
+(`clamp(300px, 24vw, 380px)`, in `process.css`): look at a form in it at
+both ends.

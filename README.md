@@ -30,9 +30,10 @@ replaces it until output matches on the printers we care about.
 | `crates/edge-time` | How long a G-code file takes, with acceleration: the file is read as a printer reads it and planned as the reference's estimator plans, or as Klipper does |
 | `crates/edge-tower` | The prime tower a nozzle is primed on after a tool change |
 | `crates/edge-slice` | Mesh to per-layer contours, with the model's corners and not its triangles', then to regions with holes; parallel across layers. Elephant foot compensation of the first layers; round holes made polygons of few sides, and round outlines and holes resized by what the filament prints them off by; the last layers' heights tuned so a part comes out its exact height, and layers grown downward under overhangs so they can be printed |
-| `crates/edge-engine` | The whole pipeline behind one call, for whatever drives it: open a model and list its plates, settle its settings, slice with progress and cancel, G-code, a layer's lines for drawing, a vendor's presets by printer, and its printer models with the presets, picture and sizes of each |
+| `crates/edge-engine` | The whole pipeline behind one call, for whatever drives it: open a model and list its plates, settle its settings, slice with progress and cancel, G-code, a layer's lines for drawing, a vendor's presets by printer, and its printer models with the presets, picture and sizes of each; and, for a set of settings, which of them a slice reads and what it notes (`followed`) |
 | `crates/edge-cli` | The `edge` command line |
 | `tools/make_defaults.py` | Asks the reference for its default of every setting and writes the table `edge-config` carries; run again when the pin moves |
+| `tools/make_process_pages.py` | Reads the reference's process pages and option definitions from its source and writes the data the desktop app draws its settings pages from; run again when the pin moves, after `make_defaults.py` |
 | `tools/make_fixture.py` | Writes small test 3MFs (parts that need supports or a brim, a plain cube, two blocks in two filaments, a comb with thin teeth on the bed, three tiers with a top surface on each, bars over a base for small bridges over infill, a slab with round holes for the hole options, a slab with pockets underneath, three round ones for arc fitting: a post, a post with a hole, a slab with a wide curve and tight ones, and a post that widens as it rises for scarf seams) to compare with the reference on |
 | `tools/make_project.py` | Writes one of those parts as a project whose settings are named presets, with as many filaments as are named: how the test prints for a printer are made |
 | `reference/EdgeSlicer` | Pinned submodule of the C++ slicer: profiles, test models, behaviour to match. Read-only here |
@@ -81,9 +82,11 @@ the controls it is built from are described in `apps/desktop/ui/STYLE.md`.
   or the project's own; a filament preset for each filament the file
   prints in and the process, which follow a change of printer as the
   C++ application's do; the bed type the printer takes, remembered for
-  each printer; layer height,
-  initial layer height, wall loops and the gap closing radius set over
-  the preset; the scene in 3D: the printer's bed (the vendor's model
+  each printer; the C++ application's six pages of process settings
+  ("Quality" to "Others", 433 options, drawn from data made from its
+  source), any of which is set over the preset for the project, with a
+  mark on each option the engine does not read and the engine's note on
+  each it follows in part; the scene in 3D: the printer's bed (the vendor's model
   and picture of it where its profile has them), every plate of the
   project where the C++ application stands it, each object in its
   filaments' colours, painted colours included; a click selects an
@@ -121,8 +124,9 @@ above instead. Meshes and moves come from the session as bytes, each
 object once and a print a stretch at a time (`src/api/scene.rs` has the
 layouts).
 
-It has no arranging or editing of the model, no settings
-editor beyond those four, no saving of projects and no installer. The
+It has no arranging or editing of the model, no editing or saving of
+presets (a setting changed is the open project's), no filament or
+printer settings pages, no saving of projects and no installer. The
 vendor profiles are found in `reference/EdgeSlicer` beside the source, or
 wherever `EDGE_PROFILES` points; the folder can be changed in the window,
 and is then kept.
