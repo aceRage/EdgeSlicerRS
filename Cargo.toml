@@ -22,6 +22,7 @@ edge-geom = { path = "crates/edge-geom" }
 edge-mesh = { path = "crates/edge-mesh" }
 edge-infill = { path = "crates/edge-infill" }
 edge-medial = { path = "crates/edge-medial" }
+edge-paint = { path = "crates/edge-paint" }
 edge-perimeter = { path = "crates/edge-perimeter" }
 edge-slice = { path = "crates/edge-slice" }
 edge-support = { path = "crates/edge-support" }
