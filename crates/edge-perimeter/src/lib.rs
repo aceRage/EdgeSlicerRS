@@ -413,7 +413,13 @@ pub fn classic_between(
             infill = edge_clip::union_ex(&infill)?;
         }
         if result.loops.len() > first_loop {
-            wall_over_air(&mut infill, &mut result.over_air, params, around.as_ref())?;
+            wall_over_air(
+                &mut infill,
+                &mut result.over_air,
+                &mut result.gaps_skipped,
+                params,
+                around.as_ref(),
+            )?;
         }
         result.infill.extend(infill);
     }
@@ -732,7 +738,13 @@ pub fn arachne(
             infill = edge_clip::union_ex(&infill)?;
         }
         if result.loops.len() > first_loop {
-            wall_over_air(&mut infill, &mut result.over_air, params, around.as_ref())?;
+            wall_over_air(
+                &mut infill,
+                &mut result.over_air,
+                &mut result.gaps_skipped,
+                params,
+                around.as_ref(),
+            )?;
         }
         result.infill.extend(infill);
     }
@@ -746,6 +758,7 @@ pub fn arachne(
 fn wall_over_air(
     infill: &mut Vec<ExPolygon>,
     walls: &mut Vec<ExtrusionPath>,
+    gaps_skipped: &mut usize,
     params: &Params,
     around: Option<&Around<'_>>,
 ) -> Result<(), Error> {
@@ -758,24 +771,19 @@ fn wall_over_air(
     };
     // What holds a line up: the layer below and half a nozzle beyond it.
     let lower = edge_clip::offset(lower, over_air.grow_lower, Join::MITER)?;
-    let (extra, filled) = over_overhangs(infill, &lower, over_air.wall_loops, &over_air.flow)?;
+    let (extra, filled) = extra::over_overhangs_counting(
+        infill,
+        &lower,
+        over_air.wall_loops,
+        &over_air.flow,
+        gaps_skipped,
+    )?;
     if extra.is_empty() {
         return Ok(());
     }
     walls.extend(extra.into_iter().flatten());
     *infill = edge_clip::difference(infill, &filled)?;
     Ok(())
-}
-
-// SHIM: stands in until `extra::over_overhangs` lands.
-#[allow(clippy::type_complexity)]
-fn over_overhangs(
-    _infill: &[ExPolygon],
-    _lower: &[ExPolygon],
-    _wall_loops: usize,
-    _flow: &Flow,
-) -> Result<(Vec<Vec<ExtrusionPath>>, Vec<ExPolygon>), Error> {
-    Ok((Vec::new(), Vec::new()))
 }
 
 /// The points of each wall with a length to it.

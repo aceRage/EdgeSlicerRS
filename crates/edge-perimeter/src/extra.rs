@@ -12,9 +12,6 @@
 //! a cut line come out in another order and lines may start at another
 //! corner; what is covered is the same.
 
-// Nothing calls `over_overhangs` yet. This goes once something does.
-#![allow(dead_code)]
-
 use std::collections::{BTreeMap, BTreeSet};
 
 use edge_clip::{ClipError, Join};
@@ -46,6 +43,7 @@ type Line = Vec<Point2>;
 ///
 /// A gap whose centre line cannot be found is left without its line and
 /// not reported; [`over_overhangs_counting`] counts them.
+#[cfg(test)]
 pub(crate) fn over_overhangs(
     infill_area: &[ExPolygon],
     lower: &[ExPolygon],
