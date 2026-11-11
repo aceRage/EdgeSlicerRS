@@ -1325,6 +1325,7 @@ impl From<Opened> for Model {
                     filament: 1,
                     mesh: Arc::new(mesh),
                     paint: None,
+                    seam: None,
                     transform: Transform::IDENTITY,
                     decoration: false,
                 }]);

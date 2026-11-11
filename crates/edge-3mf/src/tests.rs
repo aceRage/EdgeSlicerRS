@@ -415,7 +415,15 @@ fn each_instances_parts_are_given_one_by_one_for_where_they_meet() {
             box_mesh([2.0; 3]),
             box_mesh([2.0; 3]),
             box_mesh([1.0; 3]),
-            box_mesh([3.0; 3]),
+            // The other object's box is painted to keep seams off.
+            {
+                let mesh = box_mesh([3.0; 3]);
+                let (vertices, triangles) = mesh.split_at(mesh.find("<triangles>").unwrap());
+                format!(
+                    "{vertices}{}",
+                    triangles.replace("/>", r#" paint_seam="8"/>"#)
+                )
+            },
         ),
         r#"<item objectid="5" transform="1 0 0 0 1 0 0 0 1 10 10 0"/>
            <item objectid="5" transform="1 0 0 0 1 0 0 0 1 30 10 0"/>
@@ -469,6 +477,18 @@ fn each_instances_parts_are_given_one_by_one_for_where_they_meet() {
     assert_eq!(second.len(), 1);
     assert!(second[0].alone);
     assert_eq!(second[0].parts.len(), 1);
+    // Its seam paint, where it stands; nothing on the first's.
+    assert!(second[0].enforcers.is_empty());
+    assert_eq!(second[0].blockers.len(), 12);
+    assert!(
+        (second[0].blockers.iter().flatten()).all(|corner| corner[0] >= 50.0 && corner[0] <= 53.0)
+    );
+    assert!(
+        first
+            .iter()
+            .all(|copy| copy.blockers.is_empty() && copy.enforcers.is_empty())
+    );
+    assert!(project.unread_paint.is_empty());
     // The whole project: the first object has two copies.
     let all = project.instance_parts(None);
     assert_eq!(

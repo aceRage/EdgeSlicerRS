@@ -413,6 +413,7 @@ mod tests {
             filament: 1,
             mesh,
             paint: None,
+            seam: None,
             transform: Transform::IDENTITY,
             decoration: false,
         };

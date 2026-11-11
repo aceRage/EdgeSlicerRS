@@ -1515,6 +1515,8 @@ impl Sliced {
                     .seam_parts
                     .get(object)
                     .is_some_and(|object| object.alone),
+                enforcers: (self.seam_parts.get(object)).map_or(&[], |object| &object.enforcers),
+                blockers: (self.seam_parts.get(object)).map_or(&[], |object| &object.blockers),
             })
             .collect();
         let scene = edge_gcode::SeamScene {

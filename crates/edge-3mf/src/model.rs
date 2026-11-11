@@ -5,7 +5,7 @@ use std::sync::Arc;
 
 use edge_mesh::{Mesh, Transform};
 
-use crate::paint::{self, Facet};
+use crate::paint::{self, Facet, SeamFacet};
 use quick_xml::{
     Reader,
     events::{BytesStart, Event},
@@ -20,8 +20,8 @@ use crate::{
 pub(crate) struct ModelFile {
     pub objects: Vec<RawObject>,
     pub items: Vec<Reference>,
-    /// What is painted on triangles here other than colour, none of
-    /// which this reader takes in: named so that it can be said.
+    /// What is painted on triangles here other than colour and seams,
+    /// none of which this reader takes in: named so that it can be said.
     pub unread_paint: BTreeSet<&'static str>,
 }
 
@@ -32,8 +32,13 @@ pub(crate) struct RawObject {
 }
 
 pub(crate) enum Shape {
-    /// A mesh, and its triangles as painted when any of them is.
-    Mesh(Arc<Mesh>, Option<Arc<Vec<Facet>>>),
+    /// A mesh, its triangles as painted for filaments when any of them
+    /// is, and the pieces of them painted for seams when any are.
+    Mesh(
+        Arc<Mesh>,
+        Option<Arc<Vec<Facet>>>,
+        Option<Arc<Vec<SeamFacet>>>,
+    ),
     Components(Vec<Reference>),
 }
 
@@ -68,6 +73,8 @@ struct OpenObject {
     triangles: Vec<[u32; 3]>,
     /// Each triangle's `paint_color`, where it has one.
     paint: Vec<Option<Box<str>>>,
+    /// Each triangle's `paint_seam`, where it has one.
+    seam: Vec<Option<Box<str>>>,
     components: Vec<Reference>,
 }
 
@@ -125,14 +132,13 @@ pub(crate) fn parse(text: &str, part: &str) -> Result<ModelFile, Error> {
             "triangle" => {
                 let Some(object) = &mut open else { continue };
                 let mut corners = [u32::MAX; 3];
-                let mut paint = None;
+                let (mut paint, mut seam) = (None, None);
                 let unread = &mut file.unread_paint;
                 attributes(&element, part, |key, value| {
                     // bbs_3mf.cpp: the other things a triangle may be
                     // painted with.
                     let other = match key {
                         "paint_fuzzy_skin" | "paint_fuzzy" => Some("fuzzy skin"),
-                        "paint_seam" => Some("seams"),
                         "paint_supports" => Some("supports"),
                         _ => None,
                     };
@@ -150,6 +156,10 @@ pub(crate) fn parse(text: &str, part: &str) -> Result<ModelFile, Error> {
                             paint = (!value.is_empty()).then(|| Box::from(value));
                             return Ok(());
                         }
+                        "paint_seam" => {
+                            seam = (!value.is_empty()).then(|| Box::from(value));
+                            return Ok(());
+                        }
                         _ => return Ok(()),
                     };
                     corners[corner] = number(part, key, value)?;
@@ -157,6 +167,7 @@ pub(crate) fn parse(text: &str, part: &str) -> Result<ModelFile, Error> {
                 })?;
                 object.triangles.push(corners);
                 object.paint.push(paint);
+                object.seam.push(seam);
             }
             "object" => {
                 let mut object = OpenObject::default();
@@ -248,6 +259,17 @@ fn close(object: OpenObject, part: &str) -> Result<RawObject, Error> {
             }
             Arc::new(facets)
         });
+        // Only the pieces painted for seams are kept.
+        let seam = object.seam.iter().any(Option::is_some).then(|| {
+            let mut facets = Vec::new();
+            for (triangle, code) in object.triangles.iter().zip(&object.seam) {
+                if let Some(code) = code.as_deref().filter(|_| sound(triangle)) {
+                    let corners = triangle.map(|corner| object.vertices[corner as usize]);
+                    paint::decode_seam(code, corners, &mut facets);
+                }
+            }
+            Arc::new(facets)
+        });
         let mut triangles = object.triangles;
         triangles.retain(sound);
         Shape::Mesh(
@@ -256,6 +278,7 @@ fn close(object: OpenObject, part: &str) -> Result<RawObject, Error> {
                 triangles,
             }),
             paint,
+            seam,
         )
     } else {
         Shape::Components(object.components)
@@ -319,6 +342,8 @@ fn transform(part: &str, text: &str, scale: f64) -> Result<Transform, Error> {
 mod tests {
     use super::*;
 
+    use crate::paint::SeamPaint;
+
     #[test]
     fn paint_that_is_not_colour_is_named_and_left_alone() {
         let model = |triangle: &str| {
@@ -344,11 +369,35 @@ mod tests {
         assert!(unread(r#"paint_color="4""#).is_empty());
         assert_eq!(unread(r#"paint_fuzzy_skin="4""#), ["fuzzy skin"]);
         assert_eq!(unread(r#"paint_fuzzy="8""#), ["fuzzy skin"]);
-        assert_eq!(
-            unread(r#"paint_seam="4" paint_supports="8""#),
-            ["seams", "supports"]
-        );
+        // Seams painted on or off are read.
+        assert_eq!(unread(r#"paint_seam="4" paint_supports="8""#), ["supports"]);
         // An empty attribute paints nothing.
         assert!(unread(r#"paint_seam="""#).is_empty());
+
+        // Seams painted on and off are read: the triangle cut in four
+        // (the code read backwards, the last piece first), the middle
+        // piece and one corner wanted, one corner kept off, one left; what
+        // cannot be read paints nothing.
+        let seams = |triangle: &str| -> Vec<(SeamPaint, f32)> {
+            let file = parse(&model(triangle), "3D/3dmodel.model").unwrap();
+            match &file.objects[0].body {
+                Shape::Mesh(_, _, Some(seam)) => (seam.iter())
+                    .map(|facet| (facet.kind, facet.corners[0][0]))
+                    .collect(),
+                _ => Vec::new(),
+            }
+        };
+        assert_eq!(seams(r#"paint_seam="4""#), [(SeamPaint::Enforcer, 0.0)]);
+        assert_eq!(seams(r#"paint_seam="8""#), [(SeamPaint::Blocker, 0.0)]);
+        assert_eq!(
+            seams(r#"paint_seam="80443""#),
+            [
+                (SeamPaint::Enforcer, 0.5),
+                (SeamPaint::Enforcer, 0.5),
+                (SeamPaint::Blocker, 0.0)
+            ]
+        );
+        assert!(seams(r#"paint_seam="0""#).is_empty());
+        assert!(seams(r#"paint_seam="x4""#).is_empty());
     }
 }

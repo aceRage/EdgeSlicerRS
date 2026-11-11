@@ -3,6 +3,10 @@
 //! filament it is painted for, or how it is cut into smaller triangles
 //! that each say the same of themselves.
 //!
+//! Seams painted on or off (`paint_seam`) are stored the same way, a
+//! triangle's state then saying whether a seam is wanted there or kept
+//! off it (TriangleSelector.hpp `EnforcerBlockerType`).
+//!
 //! A port of the reference's `FacetsAnnotation::set_triangle_from_string`
 //! (Model.cpp) and of `TriangleSelector::deserialize` and `perform_split`
 //! (TriangleSelector.cpp).
@@ -15,6 +19,41 @@ use edge_mesh::Triangle;
 pub struct Facet {
     pub corners: Triangle,
     pub filament: u8,
+}
+
+/// A triangle of a mesh painted to have its seams (an enforcer) or to
+/// keep them off (a blocker).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct SeamFacet {
+    pub corners: Triangle,
+    pub kind: SeamPaint,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SeamPaint {
+    /// A seam is wanted here (`EnforcerBlockerType::ENFORCER`, 1).
+    Enforcer,
+    /// A seam is kept off here (`BLOCKER`, 2).
+    Blocker,
+}
+
+/// Adds to `out` the painted pieces of a triangle whose `paint_seam` is
+/// `code`; a code that cannot be read adds nothing, as in the reference.
+pub(crate) fn decode_seam(code: &str, corners: Triangle, out: &mut Vec<SeamFacet>) {
+    let mut pieces = Vec::new();
+    if decode(code, corners, &mut pieces) {
+        out.extend(pieces.into_iter().filter_map(|piece| {
+            let kind = match piece.filament {
+                1 => SeamPaint::Enforcer,
+                2 => SeamPaint::Blocker,
+                _ => return None,
+            };
+            Some(SeamFacet {
+                corners: piece.corners,
+                kind,
+            })
+        }));
+    }
 }
 
 /// The reference reads no deeper, so a corrupt code cannot run away.

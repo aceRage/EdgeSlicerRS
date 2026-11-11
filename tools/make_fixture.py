@@ -19,7 +19,9 @@ between the two fills one and keeps the other.
 
 Shapes: mushroom and shelf need supports; tower and bar get an automatic
 brim; bridge is a deck across two posts; cube is a plain 20 mm cube;
-halves is a round post cut in two
+enforced is the round post with a
+strip of its side painted to have the seam (paint_seam), and blocked the
+cube with two of its sides painted to keep the seam off them. halves is a round post cut in two
 down the middle, and inset a block with a round post pushed half into its
 side, each two parts of one object in one filament, for seams moved to where
 parts meet; twotone is two blocks side by side, the first in filament 1 and 6 mm tall,
@@ -276,6 +278,27 @@ MESHES["halves"] = [
 ]
 MESHES["inset"] = [box(120.5, 126, 0, 20, 20, 8), prism(circle(140.5, 136, 5, 64), 0, 12)]
 
+# Seams painted on (paint_seam, as the reference stores it: "4" a triangle
+# enforced, "8" one blocked). enforced is the round post with a strip of
+# its side 20 degrees wide enforced, toward the front left; blocked is
+# the cube with its right and back faces blocked; both are the one part.
+MESHES["enforced"] = MESHES["cylinder"]
+MESHES["blocked"] = [box(125.5, 126, 0, 20, 20, 20)]
+
+def side_angle(v, tri):
+    """The angle about the post's middle of a triangle of its side, or None for its caps."""
+    zs = [v[i][2] for i in tri]
+    if max(zs) - min(zs) < 1e-6:
+        return None
+    x = sum(v[i][0] for i in tri) / 3 - 135.5
+    y = sum(v[i][1] for i in tri) / 3 - 136
+    return math.degrees(math.atan2(y, x)) % 360
+
+SEAM_PAINT = {
+    "enforced": lambda v, tri: "4" if (side_angle(v, tri) or 0) and 200 <= side_angle(v, tri) <= 220 else "",
+    "blocked": lambda v, tri: "8" if all(v[i][0] == 145.5 for i in tri) or all(v[i][1] == 146 for i in tri) else "",
+}
+
 out, source, shape = sys.argv[1:4]
 changes = dict(arg.split("=", 1) for arg in sys.argv[4:])
 objects = []
@@ -284,7 +307,9 @@ for index, (v, t) in enumerate(solids):
     xml = ['  <object id="%d" type="model"><mesh><vertices>' % (index + 1)]
     xml += ['   <vertex x="%.9g" y="%.9g" z="%.9g"/>' % p for p in v]
     xml.append('  </vertices><triangles>')
-    xml += ['   <triangle v1="%d" v2="%d" v3="%d"/>' % tri for tri in t]
+    paint = SEAM_PAINT.get(shape, lambda v, tri: "")
+    xml += ['   <triangle v1="%d" v2="%d" v3="%d"%s/>' % (tri + (
+        ' paint_seam="%s"' % paint(v, tri) if paint(v, tri) else "",)) for tri in t]
     xml.append('  </triangles></mesh></object>')
     objects.append("\n".join(xml))
 parent = len(solids) + 1
