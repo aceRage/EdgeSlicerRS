@@ -337,3 +337,162 @@ fn a_projects_plates_are_listed_with_what_is_on_each() {
     .unwrap();
     assert!(model.plate_list().is_empty());
 }
+
+#[test]
+fn a_project_is_a_scene_of_objects_on_their_plates() {
+    use edge_engine::Mark;
+    let opened = edge_engine::open(&reference("tests/mcbrim_test.3mf"), None).unwrap();
+    let scene = opened.scene();
+    let plates: Vec<u32> = scene.plates.iter().map(|plate| plate.id).collect();
+    assert_eq!(plates, [1, 2, 3]);
+    assert!(!scene.bare && !scene.objects.is_empty());
+    // Every copy stands on a plate of the file, and what it holds is what
+    // slicing takes from that plate: the same triangles.
+    for (index, plate) in opened.plate_list().iter().enumerate() {
+        let on_it: Vec<_> = scene
+            .placings
+            .iter()
+            .filter(|placing| placing.plate == Some(index) && placing.printable)
+            .collect();
+        assert_eq!(on_it.len(), plate.objects.len(), "plate {}", plate.id);
+        let printed: usize = on_it
+            .iter()
+            .map(|placing| {
+                scene.objects[placing.object]
+                    .marks
+                    .iter()
+                    .filter(|mark| matches!(mark, Mark::Filament(_)))
+                    .count()
+            })
+            .sum();
+        let loaded = edge_engine::open(&reference("tests/mcbrim_test.3mf"), Some(plate.id))
+            .unwrap()
+            .place()
+            .unwrap();
+        let sliced: usize = loaded.objects.iter().map(|mesh| mesh.triangles.len()).sum();
+        // Paint cuts triangles up, so a painted object has more to show.
+        assert!(printed >= sliced && sliced > 0, "plate {}", plate.id);
+        // Measured from its own plate: where slicing has it.
+        let (low, high) = loaded.bounds;
+        for placing in on_it {
+            let object = &scene.objects[placing.object];
+            let (min, max) = object.bounds.unwrap();
+            let centre = placing.transform.apply(std::array::from_fn(|axis| {
+                f64::from(min[axis] + max[axis]) / 2.0
+            }));
+            for axis in 0..2 {
+                assert!(
+                    centre[axis] >= f64::from(low[axis]) - 1e-3
+                        && centre[axis] <= f64::from(high[axis]) + 1e-3,
+                    "plate {}: {centre:?} outside {low:?}..{high:?}",
+                    plate.id
+                );
+            }
+        }
+    }
+    for object in &scene.objects {
+        assert_eq!(object.marks.len(), object.triangles.len());
+        let count = object.vertices.len() as u32;
+        assert!(object.triangles.iter().flatten().all(|at| *at < count));
+    }
+    // A bare model is one object on no plate.
+    let bare = edge_engine::open(
+        &reference("resources/handy_models/OrcaToleranceTest.stl"),
+        None,
+    )
+    .unwrap()
+    .scene();
+    assert!(bare.bare && bare.plates.is_empty());
+    assert_eq!((bare.objects.len(), bare.placings.len()), (1, 1));
+}
+
+#[test]
+fn the_gcode_reads_back_as_the_moves_of_the_print() {
+    use edge_engine::{Feature, MoveKind};
+    let sliced = edge_engine::slice(
+        job("tests/data/support_corpus/twopart_groups.3mf"),
+        &Unwatched,
+    )
+    .unwrap();
+    let gcode = sliced.gcode("2026-11-10 at 00:00:00").unwrap();
+    let path = edge_engine::read_toolpath(&gcode.text);
+    // A layer for each layer sliced, each at its height.
+    assert_eq!(path.layers.len(), sliced.layers.len());
+    for (index, layer) in path.layers.iter().enumerate() {
+        assert!((f64::from(layer.z) - sliced.top_of(index)).abs() < 1e-3);
+        assert!((f64::from(layer.height) - sliced.height_of(index)).abs() < 1e-3);
+        assert_eq!(path.moves[layer.first].layer as usize, index);
+    }
+    assert_eq!(path.layers[0].first, 0);
+    assert!(
+        path.moves
+            .windows(2)
+            .all(|pair| pair[0].layer <= pair[1].layer)
+    );
+
+    // The filament laid is the filament the writer counted, bar what the
+    // start G-code purges, which the reader shows as the file's own.
+    let mut laid = 0.0;
+    let mut features = std::collections::BTreeSet::new();
+    for pair in path.moves.windows(2) {
+        let (from, to) = (pair[0], pair[1]);
+        if to.kind != MoveKind::Extrude {
+            continue;
+        }
+        features.insert(to.feature);
+        assert!(to.width > 0.05 && to.height > 0.05, "{to:?}");
+        if to.feature != Feature::Custom {
+            let length = (0..2)
+                .map(|axis| f64::from(to.to[axis] - from.to[axis]).powi(2))
+                .sum::<f64>()
+                .sqrt();
+            // The reference's cross-section of a line: a rectangle with
+            // rounded ends.
+            let (w, h) = (f64::from(to.width), f64::from(to.height));
+            laid += length * (h * (w - h) + std::f64::consts::FRAC_PI_4 * h * h);
+        }
+    }
+    let counted = gcode.summary.filament_mm3;
+    assert!(
+        (laid - counted).abs() < 0.05 * counted,
+        "{laid} mm3 drawn, {counted} mm3 fed"
+    );
+    assert!(features.contains(&Feature::OuterWall) && features.contains(&Feature::Custom));
+    // What moves between lines is there too, and a seam for an outer
+    // wall that closes.
+    let count = |kind| path.moves.iter().filter(|step| step.kind == kind).count();
+    // The last retraction of a print is not taken back.
+    assert!(count(MoveKind::Retract).abs_diff(count(MoveKind::Unretract)) <= 1);
+    assert!(count(MoveKind::Retract) >= gcode.summary.retractions);
+    assert!(count(MoveKind::Travel) > 60 && count(MoveKind::Wipe) > 60);
+    // (One that starts as an overhang wall is not told to be closed, by
+    // the reference either.)
+    let seams = count(MoveKind::Seam);
+    assert!(
+        seams + 3 >= sliced.layers.len() && seams <= 2 * sliced.layers.len(),
+        "{seams} seams"
+    );
+    // The same file reads the same.
+    assert_eq!(path, edge_engine::read_toolpath(&gcode.text));
+
+    // Without G-code, the lines alone.
+    let lines = sliced.toolpath_of_lines();
+    assert_eq!(lines.layers.len(), sliced.layers.len());
+    let strokes: usize = (0..sliced.layers.len())
+        .map(|index| sliced.strokes(index).len())
+        .sum();
+    assert_eq!(
+        lines
+            .moves
+            .iter()
+            .filter(|step| step.kind == MoveKind::Start)
+            .count(),
+        strokes
+    );
+    assert!(
+        lines
+            .moves
+            .iter()
+            .all(|step| matches!(step.kind, MoveKind::Start | MoveKind::Extrude))
+    );
+}
