@@ -1,3 +1,4 @@
+use edge_config::variants::{self, Flow};
 use edge_config::{Reads, Settings, Value};
 
 use crate::{Failure, Loaded};
@@ -65,34 +66,19 @@ pub struct Job {
     pub remarks: Vec<String>,
 }
 
-/// A filament preset describes one filament: each of its lists holds
-/// that filament's one value. A project's lists hold a value for every
-/// filament in turn. This makes the second of the first: filament `n` of
-/// `count` takes the `n`th preset, or the last when there are fewer, and
-/// what is not a list comes from the first.
-fn for_filaments(presets: &[&Settings], count: usize) -> Settings {
-    let first = presets[0];
-    let mut merged = first.clone();
-    let single: Vec<(String, String)> = first
-        .iter()
-        .filter_map(|(key, value)| match value {
-            Value::Many(values) if values.len() == 1 => Some((key.to_owned(), values[0].clone())),
-            _ => None,
-        })
-        .collect();
-    for (key, own) in single {
-        let values = (0..count)
-            .map(|filament| {
-                let preset = presets[filament.min(presets.len() - 1)];
-                match preset.get(&key) {
-                    Some(Value::Many(values)) if values.len() == 1 => values[0].clone(),
-                    _ => own.clone(),
-                }
-            })
-            .collect();
-        merged.insert(&key, Value::Many(values));
-    }
-    merged
+/// Each filament's flow (`filament_volume_type`): as set by hand, else as
+/// the project has it, else standard for all. A filament past the list's
+/// end prints at standard flow, as in the reference (PrintConfig.cpp
+/// `get_config_idx`).
+fn flows(overrides: &Overrides, project: Option<&Settings>) -> Result<Vec<Flow>, Failure> {
+    let given = [Some(&overrides.settings), project]
+        .into_iter()
+        .flatten()
+        .find_map(|settings| settings.texts("filament_volume_type"));
+    Ok(match given {
+        Some(texts) => Flow::list(texts)?,
+        None => Vec::new(),
+    })
 }
 
 /// Layer height, first layer height and closing radius, each from the first
@@ -139,7 +125,13 @@ fn slice_settings(
 /// Settles what a model is sliced with: the project's own settings, then
 /// the presets chosen over them, then what the person set.
 pub fn prepare(mut loaded: Loaded, chosen: &Chosen, overrides: &Overrides) -> Result<Job, Failure> {
-    let project_settings = loaded.settings.take();
+    let mut project_settings = loaded.settings.take();
+    let flows = flows(overrides, project_settings.as_ref())?;
+    // A project saved by the reference's application may hold its
+    // filaments' flow variants side by side; one entry per filament here.
+    if let Some(project) = &mut project_settings {
+        variants::unpack_flow_variants(project, &flows);
+    }
     let is_project = project_settings.is_some();
     let placed = loaded.placed;
     let [layer_height, first_layer_height, closing_radius] = slice_settings(
@@ -179,8 +171,12 @@ pub fn prepare(mut loaded: Loaded, chosen: &Chosen, overrides: &Overrides) -> Re
                 "the model prints in {filaments} filaments and {named} filament presets were chosen; \"{last}\" is used for the rest"
             ));
         }
-        let presets: Vec<&Settings> = chosen.filaments.iter().map(|(_, preset)| preset).collect();
-        for_filaments(&presets, described)
+        let presets: Vec<(&str, &Settings)> = (chosen.filaments.iter())
+            .map(|(name, preset)| (name.as_str(), preset))
+            .collect();
+        let (settings, notes) = variants::for_filaments(&presets, described, &flows);
+        remarks.extend(notes);
+        settings
     });
     // Later sources replace earlier ones: project, then the presets named.
     let mut settings = project_settings.unwrap_or_default();
@@ -196,6 +192,17 @@ pub fn prepare(mut loaded: Loaded, chosen: &Chosen, overrides: &Overrides) -> Re
     }
     // What was set by hand comes over all of them.
     settings.overlay(&overrides.settings);
+    // A printer laid out per extruder and nozzle variant: each extruder's
+    // own variant's values.
+    remarks.extend(variants::for_extruders(&mut settings));
+    if flows.contains(&Flow::HighFlow)
+        && (settings.texts("process_flow_support")).is_some_and(|support| support.len() > 1)
+    {
+        remarks.push(
+            "a filament prints at high flow, but the process preset's high-flow values are not followed: its standard ones are used"
+                .to_owned(),
+        );
+    }
     // The presets are named in the file, as the reference names them, for
     // whoever reads it back.
     if let Some((name, _)) = &chosen.process {
@@ -327,5 +334,94 @@ mod tests {
         };
         assert_eq!(said(loaded(false)), 0);
         assert_eq!(said(loaded(true)), 1);
+    }
+
+    /// Two blocks side by side, the second in filament 2, with the U1's
+    /// shipped presets: PLA Matte for filament 1 and PETG-CF for filament
+    /// 2, each with a standard and a high-flow value of most settings.
+    fn two_filaments_on_the_u1(overrides: &Overrides) -> Result<Job, Failure> {
+        let profiles = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../../reference/EdgeSlicer/resources/profiles");
+        let vendor = edge_config::Vendor::open(&profiles, "Snapmaker").unwrap();
+        let preset = |kind, name: &str| (name.to_owned(), vendor.resolve(kind, name).unwrap());
+        use edge_config::Kind;
+        let chosen = Chosen {
+            machine: Some(preset(Kind::Machine, "Snapmaker U1 (0.4 nozzle)")),
+            process: Some(preset(
+                Kind::Process,
+                "0.20mm Standard @Snapmaker U1 (0.4 nozzle)",
+            )),
+            filaments: vec![
+                preset(Kind::Filament, "Snapmaker PLA Matte @U1"),
+                preset(Kind::Filament, "Snapmaker PETG-CF @U1 0.4 nozzle"),
+            ],
+        };
+        let block = |x: f32| {
+            edge_mesh::Mesh::from_triangle_soup(edge_mesh::primitives::cuboid(
+                [x, 0.0, 0.0],
+                [x + 10.0, 10.0, 1.0],
+            ))
+        };
+        let mut loaded = crate::load::lone(std::path::Path::new("two.3mf"), block(0.0)).unwrap();
+        loaded.bodies.push(edge_3mf::Body {
+            solid: block(20.0),
+            negative: None,
+            filament: 2,
+        });
+        loaded.bounds = ([0.0; 3], [30.0, 10.0, 1.0]);
+        prepare(loaded, &chosen, overrides)
+    }
+
+    #[test]
+    fn each_filament_takes_its_own_presets_values_into_the_gcode() {
+        let job = two_filaments_on_the_u1(&Overrides::default()).unwrap();
+        let texts = |key: &str| job.settings.texts(key).unwrap().to_vec();
+        // Not filament 1's high-flow 220 and 0.99.
+        assert_eq!(texts("nozzle_temperature"), ["215", "255"]);
+        assert_eq!(texts("filament_flow_ratio"), ["1", "0.95"]);
+        assert_eq!(texts("filament_max_volumetric_speed"), ["22", "12"]);
+        assert_eq!(texts("fan_max_speed"), ["100", "40"]);
+        assert!(job.remarks.iter().all(|remark| !remark.contains("high")));
+        let sliced = crate::slice(job, &crate::Unwatched).unwrap();
+        let text =
+            String::from_utf8(sliced.gcode("1970-01-01 at 00:00:01 UTC").unwrap().text).unwrap();
+        let heats = |tool: &str| -> Vec<String> {
+            (text.lines())
+                .filter(|line| line.starts_with("M104 ") || line.starts_with("M109 "))
+                .filter(|line| line.split_whitespace().any(|word| word == tool))
+                .filter_map(|line| line.split_whitespace().find(|word| word.starts_with('S')))
+                .filter(|word| *word != "S0")
+                .map(str::to_owned)
+                .collect()
+        };
+        let (t0, t1) = (heats("T0"), heats("T1"));
+        assert!(t0.contains(&"S215".to_owned()), "{t0:?}");
+        assert!(t1.contains(&"S255".to_owned()), "{t1:?}");
+        assert!(!t1.contains(&"S220".to_owned()), "{t1:?}");
+    }
+
+    #[test]
+    fn a_filament_set_to_high_flow_takes_its_presets_high_flow_values() {
+        let overrides = Overrides {
+            settings: Settings::from_json(r#"{"filament_volume_type": ["standard", "high_flow"]}"#)
+                .unwrap(),
+            ..Overrides::default()
+        };
+        let job = two_filaments_on_the_u1(&overrides).unwrap();
+        let texts = |key: &str| job.settings.texts(key).unwrap().to_vec();
+        assert_eq!(texts("nozzle_temperature"), ["215", "260"]);
+        assert_eq!(texts("filament_flow_ratio"), ["1", "1.01"]);
+        // The process's own high-flow speeds are not followed, and it says so.
+        assert!(
+            job.remarks
+                .iter()
+                .any(|remark| remark.contains("high-flow values"))
+        );
+        let wrong = Overrides {
+            settings: Settings::from_json(r#"{"filament_volume_type": ["fast"]}"#).unwrap(),
+            ..Overrides::default()
+        };
+        // A flow that is not one is refused, not read as standard.
+        assert!(two_filaments_on_the_u1(&wrong).is_err());
     }
 }
