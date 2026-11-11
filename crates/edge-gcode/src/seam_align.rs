@@ -22,7 +22,9 @@
 //!   precision by a QR decomposition; the two agree to what single
 //!   precision holds.
 
-use crate::seam_plan::{Candidate, Comparator, LayerSeams, angle_penalty, find_next_seam_in_layer};
+use crate::seam_plan::{
+    Candidate, Comparator, LayerSeams, Paint, angle_penalty, find_next_seam_in_layer,
+};
 
 /// How far a seam is looked for from the one on the next layer, in line
 /// widths (`seam_align_tolerable_dist_factor`).
@@ -295,8 +297,17 @@ pub(crate) fn align(layers: &mut [LayerSeams], comparator: &Comparator) {
             .map(|place| [place.position[0], place.position[1]])
             .collect();
         let heights: Vec<f32> = places.iter().map(|place| place.position[2]).collect();
+        // A painted point and the middle of a joint count for more again.
         let weights: Vec<f32> = (places.iter())
-            .map(|place| 1.0 / (0.1 + angle_penalty(place.angle)))
+            .map(|place| {
+                1.0 / (0.1 + angle_penalty(place.angle))
+                    + if place.paint == Paint::Enforced {
+                        3.0
+                    } else {
+                        0.0
+                    }
+                    + if place.central_part_joint { 3.0 } else { 0.0 }
+            })
             .collect();
         // How long the line is, which says how many stretches the curve
         // has: a seam where the line bends more than its wall does
@@ -311,7 +322,10 @@ pub(crate) fn align(layers: &mut [LayerSeams], comparator: &Comparator) {
                     sub(places[at + 1].position, place.position),
                 );
             }
-            let curling = if f64::from(bend) > 2.0 * f64::from(place.angle.abs()) {
+            let curling = if f64::from(bend) > 2.0 * f64::from(place.angle.abs())
+                && place.paint != Paint::Enforced
+                && !place.central_part_joint
+            {
                 -0.8
             } else {
                 1.0
@@ -327,15 +341,34 @@ pub(crate) fn align(layers: &mut [LayerSeams], comparator: &Comparator) {
 
         // Each seam goes to the curve, the less the sharper its corner.
         for (&at, place) in string.iter().zip(&places) {
-            let keep = (place.angle.abs() / SHARP).powf(3.0).min(1.0);
+            let mut keep = (place.angle.abs() / SHARP).powf(3.0).min(1.0);
+            // A painted point keeps to its place more.
+            if place.paint == Paint::Enforced {
+                keep = keep.max(0.4);
+            }
             let fitted = curve.at(place.position[2]);
-            let settled = [
+            let mut settled = [
                 keep * place.position[0] + (1.0 - keep) * fitted[0],
                 keep * place.position[1] + (1.0 - keep) * fitted[1],
                 place.position[2],
             ];
             let layer = &mut layers[at.0];
             let perimeter = &mut layer.perimeters[layer.points[at.1].perimeter as usize];
+            if place.central_part_joint {
+                // Along the joint, but never off it: no further than half
+                // a line's width from the joint's point.
+                let shift = [
+                    settled[0] - place.position[0],
+                    settled[1] - place.position[1],
+                    settled[2] - place.position[2],
+                ];
+                let (moved, most) = (length(shift), 0.5 * perimeter.flow_width);
+                if moved > most {
+                    settled = std::array::from_fn(|axis| {
+                        place.position[axis] + shift[axis] * (most / moved)
+                    });
+                }
+            }
             perimeter.seam = at.1;
             perimeter.finalized = Some(settled);
         }

@@ -257,7 +257,9 @@ mod tests {
             filament,
             mesh,
             paint: None,
+            seam: None,
             transform: Transform::IDENTITY,
+            decoration: false,
         }
     }
 

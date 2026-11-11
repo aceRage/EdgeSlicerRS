@@ -19,10 +19,8 @@ const UNREAD: [(&str, &str, &str); 2] = [
     ),
 ];
 
-/// What `settings` ask for that nothing follows. `parts` is how many
-/// bodies are on the plate: hiding seams where parts meet, on unless
-/// turned off, has nothing to act on with one.
-pub(crate) fn notes(settings: &Settings, parts: usize) -> Vec<String> {
+/// What `settings` ask for that nothing follows.
+pub(crate) fn notes(settings: &Settings) -> Vec<String> {
     let mut notes: Vec<String> = UNREAD
         .iter()
         .filter_map(|(key, off, instead)| {
@@ -31,17 +29,6 @@ pub(crate) fn notes(settings: &Settings, parts: usize) -> Vec<String> {
                 .then(|| format!("{key} \"{value}\": {instead}"))
         })
         .collect();
-    if parts > 1
-        && !matches!(
-            settings.text("seam_prefer_part_joints"),
-            Some("0" | "false")
-        )
-    {
-        notes.push(
-            "seam_prefer_part_joints: seams are placed part by part, not moved to where parts meet"
-                .to_owned(),
-        );
-    }
     // Vase mode is not here yet. It is said apart from the list, and
     // plainly: the part comes out a different print, with its walls,
     // fill and top as an ordinary one has them.
@@ -62,14 +49,14 @@ mod tests {
     #[test]
     fn settings_nothing_reads_are_said_when_they_are_on() {
         // Left alone or turned off, nothing to say.
-        assert!(notes(&Settings::default(), 1).is_empty());
+        assert!(notes(&Settings::default()).is_empty());
         let off = Settings::from_json(
             r#"{"zaa_enabled": "0", "reduce_crossing_wall": "0",
                 "elefant_foot_layers_density": "100%", "enable_extra_bridge_layer": "disabled",
                 "dont_filter_internal_bridges": "disabled", "seam_prefer_part_joints": "1"}"#,
         )
         .unwrap();
-        assert!(notes(&off, 1).is_empty());
+        assert!(notes(&off).is_empty());
 
         let on = Settings::from_json(
             r#"{"wipe_inward": "1", "zaa_enabled": "1", "reduce_crossing_wall": "1",
@@ -82,7 +69,7 @@ mod tests {
         // thinning of short solid lines; nothing is said of them here,
         // nor of a wipe in over the inner walls, nor of travel that
         // goes round the walls.
-        let said = notes(&on, 1);
+        let said = notes(&on);
         assert_eq!(said.len(), 1, "{said:?}");
         assert!(said.contains(
             &"zaa_enabled \"1\": top surfaces are laid flat, not contoured in height".to_owned()
@@ -93,26 +80,25 @@ mod tests {
             r#"{"ironing_type": "top", "enable_extra_bridge_layer": "apply_to_all"}"#,
         )
         .unwrap();
-        assert!(notes(&ironed, 1).is_empty());
+        assert!(notes(&ironed).is_empty());
         // Nor of a precise height or printable overhangs, which have
         // their own notes for what they leave undone.
         let shaped =
             Settings::from_json(r#"{"precise_z_height": "1", "make_overhang_printable": "1"}"#)
                 .unwrap();
-        assert!(notes(&shaped, 1).is_empty());
+        assert!(notes(&shaped).is_empty());
 
-        // Hiding seams where parts meet is on unless turned off, and
-        // only means anything with more than one part.
-        assert_eq!(notes(&Settings::default(), 2).len(), 1);
-        let hidden_off = Settings::from_json(r#"{"seam_prefer_part_joints": "0"}"#).unwrap();
-        assert!(notes(&hidden_off, 2).is_empty());
+        // Seams moved to where parts meet are followed, and nothing is
+        // said of them.
+        let joints = Settings::from_json(r#"{"seam_prefer_part_joints": "1"}"#).unwrap();
+        assert!(notes(&joints).is_empty());
 
         // Vase mode is said when it is on, and only then.
         let vase = Settings::from_json(r#"{"spiral_mode": "1"}"#).unwrap();
-        let said = notes(&vase, 1);
+        let said = notes(&vase);
         assert_eq!(said.len(), 1, "{said:?}");
         assert!(said[0].starts_with("spiral_mode \"1\": vase mode is not followed"));
         let plain = Settings::from_json(r#"{"spiral_mode": "0"}"#).unwrap();
-        assert!(notes(&plain, 1).is_empty());
+        assert!(notes(&plain).is_empty());
     }
 }

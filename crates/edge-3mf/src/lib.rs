@@ -28,7 +28,7 @@ use rayon::prelude::*;
 use model::{ModelFile, RawObject, Shape};
 use model_settings::{ModelSettings, ObjectSettings};
 use package::Package;
-pub use paint::Facet;
+pub use paint::{Facet, SeamFacet, SeamPaint};
 use xml::malformed;
 
 const DEFAULT_MODEL_PART: &str = "3D/3dmodel.model";
@@ -56,8 +56,9 @@ pub struct Project {
     pub plates: Vec<Plate>,
     /// The full settings the project was saved with, when it carries them.
     pub settings: Option<Settings>,
-    /// What is painted on the project's models other than colour (fuzzy
-    /// skin, seams, supports), in order of name. None of it is read.
+    /// What is painted on the project's models other than colour and
+    /// seams (fuzzy skin, supports), in order of name. None of it is
+    /// read.
     pub unread_paint: Vec<&'static str>,
 }
 
@@ -82,8 +83,14 @@ pub struct Part {
     /// The mesh's triangles as painted for filaments, cut up where the
     /// paint cuts them, when any of them is painted.
     pub paint: Option<Arc<Vec<Facet>>>,
+    /// The pieces of the mesh's triangles painted to have seams or to
+    /// keep them off, when any are.
+    pub seam: Option<Arc<Vec<SeamFacet>>>,
     /// Places the mesh in its object's coordinates.
     pub transform: Transform,
+    /// Whether the part is embossed text or an embossed picture, which
+    /// decorates a surface rather than being a piece of the object.
+    pub decoration: bool,
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -402,6 +409,69 @@ impl Project {
             .collect()
     }
 
+    /// The printed parts of each of those instances, each part a mesh of
+    /// its own, in the same order and coordinates: for where parts meet,
+    /// which seams are moved to. With each, whether its seams may also be
+    /// moved to where other objects stand against it.
+    pub fn instance_parts(&self, plate: Option<usize>) -> Vec<InstanceParts> {
+        let printable: Vec<(&Object, &Instance)> = self.printable(plate).collect();
+        printable
+            .iter()
+            // As `instance_meshes` leaves them out: those with nothing
+            // printed.
+            .filter(|(object, _)| {
+                (object.parts.iter())
+                    .any(|part| part.kind == PartKind::Normal && !part.mesh.triangles.is_empty())
+            })
+            .map(|&(object, instance)| {
+                let parts = (object.parts.iter())
+                    .filter(|part| part.kind == PartKind::Normal && !part.decoration)
+                    .filter(|part| !part.mesh.triangles.is_empty())
+                    .map(|part| {
+                        let mut mesh = Mesh::default();
+                        mesh.append(&part.mesh, &part.transform.then(&instance.transform));
+                        mesh
+                    })
+                    .collect();
+                // The reference's seams are an object's, shared by all
+                // its copies, so other objects count only for an object
+                // with one copy on the plate; and only for one whose
+                // layers are its own, not those of an object the same in
+                // every respect, which the reference slices once and
+                // lays twice (Print.cpp `is_print_object_the_same`,
+                // SeamPlacer.cpp `gather_part_joints`).
+                let copies = (printable.iter())
+                    .filter(|(other, _)| std::ptr::eq(*other, object))
+                    .count();
+                let twin = (printable.iter()).any(|(other, copy)| {
+                    !std::ptr::eq(*other, object) && same(object, instance, other, copy)
+                });
+                // Seams painted on any part, whatever it is
+                // (`gather_enforcers_blockers`).
+                let (mut enforcers, mut blockers) = (Vec::new(), Vec::new());
+                for part in &object.parts {
+                    let Some(seam) = &part.seam else { continue };
+                    let placed = part.transform.then(&instance.transform);
+                    for facet in seam.iter() {
+                        let corners = facet
+                            .corners
+                            .map(|corner| placed.apply(corner.map(f64::from)).map(|c| c as f32));
+                        match facet.kind {
+                            SeamPaint::Enforcer => enforcers.push(corners),
+                            SeamPaint::Blocker => blockers.push(corners),
+                        }
+                    }
+                }
+                InstanceParts {
+                    parts,
+                    alone: copies == 1 && !twin,
+                    enforcers,
+                    blockers,
+                }
+            })
+            .collect()
+    }
+
     /// Whether anything on a plate (or in the whole project for `None`)
     /// has a Precise Seam part, which is not followed.
     pub fn has_precise_seams(&self, plate: Option<usize>) -> bool {
@@ -444,6 +514,50 @@ pub struct Painted {
     /// Every triangle of its printed parts with the filament it is
     /// painted for, 0 where it is not painted.
     pub facets: Vec<Facet>,
+}
+
+/// One instance's printed parts, each by itself.
+#[derive(Clone, Debug)]
+pub struct InstanceParts {
+    /// Each normal part but embossed text and pictures, in world
+    /// coordinates.
+    pub parts: Vec<Mesh>,
+    /// Whether the instance is the only copy of its object on the plate
+    /// and no other object is the same as it.
+    pub alone: bool,
+    /// The pieces of any of its parts painted to have seams, and to keep
+    /// them off, in world coordinates.
+    pub enforcers: Vec<edge_mesh::Triangle>,
+    pub blockers: Vec<edge_mesh::Triangle>,
+}
+
+/// Whether two objects are the same in all the reference asks before it
+/// slices one for both (Print.cpp `is_print_object_the_same`): placed
+/// alike but for where they stand across the bed, the same parts, each
+/// the same mesh, placed alike, in the same filament and painted alike.
+/// The settings of each, which it also asks, are not read here.
+fn same(a: &Object, a_copy: &Instance, b: &Object, b_copy: &Instance) -> bool {
+    let (ma, mb) = (&a_copy.transform.rows, &b_copy.transform.rows);
+    // All but the move across the bed.
+    let alike = ma[..3] == mb[..3] && ma[3][2] == mb[3][2];
+    alike
+        && a.parts.len() == b.parts.len()
+        && a.parts.iter().zip(&b.parts).all(|(a, b)| {
+            a.kind == b.kind
+                && Arc::ptr_eq(&a.mesh, &b.mesh)
+                && a.transform == b.transform
+                && a.filament == b.filament
+                && match (&a.paint, &b.paint) {
+                    (None, None) => true,
+                    (Some(a), Some(b)) => Arc::ptr_eq(a, b),
+                    _ => false,
+                }
+                && match (&a.seam, &b.seam) {
+                    (None, None) => true,
+                    (Some(a), Some(b)) => Arc::ptr_eq(a, b),
+                    _ => false,
+                }
+        })
 }
 
 /// Printed material and, for objects that have negative parts, the volume
@@ -588,14 +702,16 @@ fn parts(
     let object_filament =
         chosen(settings.and_then(|settings| settings.extruder)).unwrap_or(1) as usize;
     let components = match &object.body {
-        Shape::Mesh(mesh, paint) => {
+        Shape::Mesh(mesh, paint, seam) => {
             return Ok(vec![Part {
                 name: object.name.clone(),
                 kind: PartKind::Normal,
                 filament: object_filament,
                 mesh: mesh.clone(),
                 paint: paint.clone(),
+                seam: seam.clone(),
                 transform: Transform::IDENTITY,
+                decoration: false,
             }]);
         }
         Shape::Components(components) => components,
@@ -614,7 +730,7 @@ fn parts(
             1,
             &mut leaves,
         )?;
-        for (name, mesh, paint, transform) in leaves {
+        for (name, mesh, paint, seam, transform) in leaves {
             parts.push(Part {
                 name: part_settings.and_then(|s| s.name.clone()).or(name),
                 kind: part_settings.map_or(PartKind::Normal, |s| s.kind()),
@@ -622,7 +738,9 @@ fn parts(
                     .map_or(object_filament, |extruder| extruder as usize),
                 mesh,
                 paint,
+                seam,
                 transform,
+                decoration: part_settings.is_some_and(|s| s.decoration),
             });
         }
     }
@@ -635,6 +753,7 @@ type Leaf = (
     Option<String>,
     Arc<Mesh>,
     Option<Arc<Vec<Facet>>>,
+    Option<Arc<Vec<SeamFacet>>>,
     Transform,
 );
 
@@ -654,8 +773,14 @@ fn flatten(
     }
     let object = find(files, file, id)?;
     match &object.body {
-        Shape::Mesh(mesh, paint) => {
-            leaves.push((object.name.clone(), mesh.clone(), paint.clone(), transform));
+        Shape::Mesh(mesh, paint, seam) => {
+            leaves.push((
+                object.name.clone(),
+                mesh.clone(),
+                paint.clone(),
+                seam.clone(),
+                transform,
+            ));
         }
         Shape::Components(components) => {
             for component in components {
