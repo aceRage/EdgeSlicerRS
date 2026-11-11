@@ -431,6 +431,45 @@ Working:
   side to side follow that surface's lines as a group, where the
   reference slips each in among them wherever that saves travel
   (`insert_gap_fill`).
+- Small area flow compensation (`small_area_infill_flow_compensation`,
+  off by default, with its curve
+  `small_area_infill_flow_compensation_model`): a small area fills with
+  lines too short for the nozzle to get up to speed on and comes out
+  overfilled, so a short move of solid fill is laid with a share of its
+  plastic that falls with its length. The curve is given as points, a
+  length in mm and a share (the reference's own: nothing at 0 mm, 44%
+  at 0.2 mm, 76% at 0.8 mm, 92% at 3 mm, all of it from 10 mm), and
+  drawn through them so that it never overshoots between two. Each
+  move of a top surface, a bottom surface or solid fill inside the
+  part is thinned by its own length, where that kind of fill is set to
+  a pattern of straight lines (`rectilinear`, `alignedrectilinear`,
+  `monotonic`, `monotonicline`); nothing else is touched. A port of
+  the reference's GCode/SmallAreaInfillFlowCompensator.cpp and
+  GCode/PchipInterpolatorHelper.cpp and of where its writer applies
+  them (GCode.cpp `_needSAFC`, `_extrude`); a model it refuses (lengths
+  that do not start at 0 and rise, shares that do not rise to 1, fewer
+  than two points) is an error here too. On a 20 mm cube, a frame and
+  the three tiers of `steps`, on the U1 and the Centauri Carbon, the
+  filament fed per mm of move is the reference's for every length of
+  move on top surfaces, to the last figure its file gives (on the U1's
+  cube: 0.02517 mm a mm on moves of 0.8 to 1.5 mm, 0.02924 on 3 to 5 mm,
+  0.03104 on those over 10 mm), on bottom surfaces wherever the two lay
+  the same moves, and for the lines and joins of solid fill inside the
+  part (a join between two lines, 0.53 mm long: 0.02089 in both where
+  it was 0.03073; lines of 3 to 5 mm 0.02886 against 0.02887; over
+  10 mm unchanged). Not as the reference, each
+  where it goes against what it is for: it thins the loops a narrow
+  solid area is filled with as if every stretch of a loop were a line
+  (round a 20 mm tube, cut into chords of half a millimetre, such loops
+  are laid at 68% to 74% of their plastic from end to end), and here a
+  loop keeps its flow; and it takes a bottom surface for whatever is on
+  the first layer, so one resting on supports is never compensated
+  there, where here each kind of fill goes by its own pattern on every
+  layer (which changes nothing yet: this engine lays a bottom surface
+  only on the bed). A join that follows a curved wall is cut into more
+  moves here than in the reference, each thinned by its own length: on
+  a round tube the joins of a solid layer are fed 0.84 mm of filament
+  against 0.87 mm.
 
 Known gaps: painted supports and seams, per-object setting overrides, typed settings
 (values are text until a stage needs them), and modifier parts.
