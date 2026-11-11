@@ -109,6 +109,73 @@ pub fn inside_walls(
         .collect()
 }
 
+/// A layer's top faces and its bottom faces.
+type Faces = (Vec<ExPolygon>, Vec<ExPolygon>);
+
+/// Where each layer's cross-section has nothing above it, and nothing
+/// below it (PrintObject::detect_surfaces_type). With no shell layers of
+/// a kind, that kind of face gets no special treatment at all.
+fn faces(
+    slices: &[&[ExPolygon]],
+    outlines: &[&[ExPolygon]],
+    shells: &Shells,
+) -> Result<Vec<Faces>, ClipError> {
+    let count = slices.len();
+    let exposed = |layer: usize, neighbour: Option<usize>| match neighbour {
+        Some(neighbour) => edge_clip::opening(
+            &edge_clip::difference(slices[layer], outlines[neighbour])?,
+            shells.opening,
+            Join::MITER,
+        ),
+        None => Ok(slices[layer].to_vec()),
+    };
+    (0..count)
+        .into_par_iter()
+        .map(|layer| {
+            let bottom = if shells.bottom_layers == 0 {
+                Vec::new()
+            } else {
+                exposed(layer, layer.checked_sub(1))?
+            };
+            let mut top = if shells.top_layers == 0 {
+                Vec::new()
+            } else {
+                exposed(layer, Some(layer + 1).filter(|&above| above < count))?
+            };
+            // A single-layer-thick area is both; it is laid as a bottom.
+            if !top.is_empty() && !bottom.is_empty() {
+                top = edge_clip::difference(&top, &bottom)?;
+            }
+            Ok((top, bottom))
+        })
+        .collect()
+}
+
+/// The part of each layer's cross-section that is neither a top face nor
+/// a bottom one, walls and all: what the reference calls its internal
+/// slices, where a move between fill lines needs no retraction
+/// (RetractWhenCrossingPerimeters.cpp `travel_inside_internal_regions`).
+/// `slices` and `outlines` are as for `classify`.
+pub fn internal(
+    slices: &[&[ExPolygon]],
+    outlines: &[&[ExPolygon]],
+    shells: &Shells,
+) -> Result<Vec<Vec<ExPolygon>>, ClipError> {
+    assert_eq!(slices.len(), outlines.len(), "one outline per layer");
+    let faces = faces(slices, outlines, shells)?;
+    slices
+        .par_iter()
+        .zip(faces)
+        .map(|(slices, (top, bottom))| {
+            if top.is_empty() && bottom.is_empty() {
+                return Ok(slices.to_vec());
+            }
+            let exposed: Vec<ExPolygon> = top.into_iter().chain(bottom).collect();
+            edge_clip::difference(slices, &exposed)
+        })
+        .collect()
+}
+
 /// Splits each layer's infill area by what it is. `slices[i]` is layer
 /// `i`'s cross-section as printed, `outlines[i]` its cross-section as
 /// modelled, `infill[i]` the part of the slice left inside the walls, and
@@ -132,37 +199,7 @@ pub fn classify(
     assert_eq!(slices.len(), outlines.len(), "one outline per layer");
     let count = slices.len();
 
-    // Where each layer's cross-section has nothing above it, and nothing
-    // below it (PrintObject::detect_surfaces_type). With no shell layers of
-    // a kind, that kind of face gets no special treatment at all.
-    let exposed = |layer: usize, neighbour: Option<usize>| match neighbour {
-        Some(neighbour) => edge_clip::opening(
-            &edge_clip::difference(slices[layer], outlines[neighbour])?,
-            shells.opening,
-            Join::MITER,
-        ),
-        None => Ok(slices[layer].to_vec()),
-    };
-    let faces: Vec<(Vec<ExPolygon>, Vec<ExPolygon>)> = (0..count)
-        .into_par_iter()
-        .map(|layer| {
-            let bottom = if shells.bottom_layers == 0 {
-                Vec::new()
-            } else {
-                exposed(layer, layer.checked_sub(1))?
-            };
-            let mut top = if shells.top_layers == 0 {
-                Vec::new()
-            } else {
-                exposed(layer, Some(layer + 1).filter(|&above| above < count))?
-            };
-            // A single-layer-thick area is both; it is laid as a bottom.
-            if !top.is_empty() && !bottom.is_empty() {
-                top = edge_clip::difference(&top, &bottom)?;
-            }
-            Ok((top, bottom))
-        })
-        .collect::<Result<_, ClipError>>()?;
+    let faces = faces(slices, outlines, shells)?;
 
     (0..count)
         .into_par_iter()
@@ -865,6 +902,31 @@ mod tests {
     }
 
     use SurfaceKind::*;
+
+    #[test]
+    fn internal_slices_leave_out_the_faces_and_keep_the_walls() {
+        // A wide block for two layers with a narrow one on top of it.
+        let layers = [
+            block(0.0, 0.0, 20.0, 10.0),
+            block(0.0, 0.0, 20.0, 10.0),
+            block(0.0, 0.0, 10.0, 10.0),
+            block(0.0, 0.0, 10.0, 10.0),
+        ];
+        let slices: Vec<&[ExPolygon]> = layers.iter().map(Vec::as_slice).collect();
+        let area = |layer: &[ExPolygon]| layer.iter().map(ExPolygon::area_mm2).sum::<f64>();
+        let found = internal(&slices, &slices, &shells(3, 2)).unwrap();
+        // The first layer is all bottom and the last all top; the second
+        // is internal under the narrow block and a top face beside it,
+        // and the third whole: nothing is taken off for walls.
+        assert!(found[0].is_empty());
+        assert!((area(&found[1]) - 100.0).abs() < 0.5);
+        assert!((area(&found[2]) - 100.0).abs() < 1e-6);
+        assert!(found[3].is_empty());
+        // With no shells of either kind there are no faces to leave out.
+        let bare = internal(&slices, &slices, &shells(0, 0)).unwrap();
+        assert!((area(&bare[0]) - 200.0).abs() < 1e-6);
+        assert!((area(&bare[3]) - 100.0).abs() < 1e-6);
+    }
 
     #[test]
     fn a_plain_block_has_shells_at_both_ends_and_sparse_between() {

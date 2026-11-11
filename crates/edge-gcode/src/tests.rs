@@ -74,7 +74,7 @@ fn one_layer<'a>(
         loops,
         islands,
         paths,
-        infill_area: &[],
+        shelter: &[],
         below: &[],
     }]
 }
@@ -232,7 +232,7 @@ fn speeds_follow_role_layer_and_the_melt_limit() {
             loops: &loops,
             islands: &[0..1],
             paths: &fill,
-            infill_area: &[],
+            shelter: &[],
             below: &[],
         },
         Layer {
@@ -247,7 +247,7 @@ fn speeds_follow_role_layer_and_the_melt_limit() {
             loops: &loops,
             islands: &[0..1],
             paths: &fill,
-            infill_area: &[],
+            shelter: &[],
             below: &[],
         },
     ];
@@ -301,7 +301,7 @@ fn temperatures_change_after_the_first_layer() {
         loops: &loops,
         islands: &[0..1],
         paths: &[],
-        infill_area: &[],
+        shelter: &[],
         below: &[],
     };
     let settings = PrintSettings {
@@ -362,7 +362,7 @@ fn fill_lines_are_taken_nearest_end_first() {
 }
 
 #[test]
-fn moves_inside_the_infill_area_can_skip_retraction() {
+fn moves_inside_the_shelter_can_skip_retraction() {
     // Two fill lines 6 mm apart, far over the 2 mm minimum.
     let fill = [
         line((1.0, 1.0), (9.0, 1.0), Role::SparseInfill),
@@ -389,7 +389,7 @@ fn moves_inside_the_infill_area_can_skip_retraction() {
         loops: &[],
         islands: &[],
         paths: &fill,
-        infill_area: &area,
+        shelter: &area,
         below: &[],
     }];
 
@@ -415,11 +415,168 @@ fn moves_inside_the_infill_area_can_skip_retraction() {
         holes: vec![gap],
     }];
     let layer = [Layer {
-        infill_area: &holed,
+        shelter: &holed,
         below: &[],
         ..layer[0]
     }];
     assert_eq!(print(&layer, &reduced).1.retractions, 2);
+}
+
+/// Where each feature's first line starts, in the order printed.
+fn starts(text: &str) -> Vec<(&str, f64, f64)> {
+    let (mut at, mut found) = ((0.0, 0.0), Vec::new());
+    let mut pending = None;
+    for line in text.lines() {
+        if let Some(kind) = line.strip_prefix(";TYPE:") {
+            pending = Some(kind);
+        } else if line.starts_with("G1 ") {
+            let before = at;
+            at = (
+                word(line, 'X').unwrap_or(at.0),
+                word(line, 'Y').unwrap_or(at.1),
+            );
+            if word(line, 'E').is_some_and(|e| e > 0.0)
+                && at != before
+                && let Some(kind) = pending.take()
+            {
+                found.push((kind, before.0, before.1));
+            }
+        }
+    }
+    found
+}
+
+#[test]
+fn an_island_is_finished_before_the_next_is_begun() {
+    // Two squares 30 mm apart, each with a wall, a gap line and fill.
+    let loops = [wall(0.0, 0.0, 10.0, 0), wall(30.0, 0.0, 10.0, 0)];
+    let fill = [
+        line((2.0, 3.0), (8.0, 3.0), Role::GapFill),
+        line((32.0, 3.0), (38.0, 3.0), Role::GapFill),
+        line((2.0, 5.0), (8.0, 5.0), Role::SolidInfill),
+        line((32.0, 5.0), (38.0, 5.0), Role::SolidInfill),
+    ];
+    let (text, _) = print(&one_layer(&loops, &[0..1, 1..2], &fill), &basic());
+    let order: Vec<(&str, bool)> = starts(&text)
+        .into_iter()
+        .map(|(kind, x, _)| (kind, x > 20.0))
+        .collect();
+    assert_eq!(
+        order,
+        [
+            ("Outer wall", false),
+            ("Gap infill", false),
+            ("Internal solid infill", false),
+            ("Outer wall", true),
+            ("Gap infill", true),
+            ("Internal solid infill", true),
+        ]
+    );
+
+    // With the fill first, it still goes island by island.
+    let first = PrintSettings {
+        infill_first: true,
+        ..basic()
+    };
+    let (text, _) = print(&one_layer(&loops, &[0..1, 1..2], &fill), &first);
+    let sides: Vec<bool> = starts(&text)
+        .into_iter()
+        .map(|(_, x, _)| x > 20.0)
+        .collect();
+    assert_eq!(sides, [false, false, false, true, true, true]);
+}
+
+#[test]
+fn fill_goes_with_the_smallest_island_that_holds_it() {
+    // A small square standing in the hole of a large one, and a line
+    // outside both.
+    let mut hole = wall(10.0, 10.0, 20.0, 0);
+    hole.polygon.points.reverse();
+    hole.is_hole = true;
+    let loops = [wall(0.0, 0.0, 40.0, 0), hole, wall(15.0, 15.0, 10.0, 0)];
+    let fill = [
+        line((17.0, 20.0), (23.0, 20.0), Role::SolidInfill),
+        line((2.0, 5.0), (38.0, 5.0), Role::SolidInfill),
+        line((50.0, 5.0), (60.0, 5.0), Role::SolidInfill),
+    ];
+    let layer = one_layer(&loops, &[0..2, 2..3], &fill);
+    assert_eq!(homes(&layer[0]), [1, 0, 2]);
+}
+
+#[test]
+fn walls_are_laid_from_the_inside_out_each_next_to_its_neighbour() {
+    // Two walls round a square and two round the hole in it.
+    let ring = |x: f64, side: f64, depth: usize, is_hole: bool| {
+        let mut wall = wall(x, x, side, depth);
+        if is_hole {
+            wall.polygon.points.reverse();
+            wall.is_hole = true;
+        }
+        wall
+    };
+    let loops = [
+        ring(0.0, 40.0, 0, false),
+        ring(15.0, 10.0, 0, true),
+        ring(0.5, 39.0, 1, false),
+        ring(14.5, 11.0, 1, true),
+    ];
+    // The hole's inner wall and then its outer, and the same for the
+    // outline: never the two inner walls one after the other.
+    assert_eq!(nested(&loops), [3, 1, 2, 0]);
+    // A second hole is finished before the outline is begun.
+    let more = [
+        loops.to_vec(),
+        vec![ring(30.0, 4.0, 0, true), ring(29.5, 5.0, 1, true)],
+    ]
+    .concat();
+    assert_eq!(nested(&more), [3, 1, 5, 4, 2, 0]);
+    // A wall with nothing round it is still laid.
+    assert_eq!(nested(&loops[1..2]), [0]);
+
+    let (text, _) = print(&one_layer(&loops, &[0..4], &[]), &basic());
+    assert_eq!(
+        features(&text),
+        ["Inner wall", "Outer wall", "Inner wall", "Outer wall"]
+    );
+    let outer_first = PrintSettings {
+        wall_order: WallOrder::OuterInner,
+        ..basic()
+    };
+    let (text, _) = print(&one_layer(&loops, &[0..4], &[]), &outer_first);
+    assert_eq!(
+        features(&text),
+        ["Outer wall", "Inner wall", "Outer wall", "Inner wall"]
+    );
+}
+
+#[test]
+fn a_move_off_an_overhanging_wall_retracts_even_in_the_shelter() {
+    let block = Polygon {
+        points: [(0.0, 0.0), (10.0, 0.0), (10.0, 10.0), (0.0, 10.0)]
+            .map(|(x, y)| Point2::from_mm(x, y))
+            .to_vec(),
+    };
+    let area = [ExPolygon {
+        contour: block,
+        holes: Vec::new(),
+    }];
+    let reduced = PrintSettings {
+        reduce_infill_retraction: true,
+        ..basic()
+    };
+    let count = |first: Role| {
+        let fill = [
+            line((1.0, 1.0), (9.0, 1.0), first),
+            line((9.0, 7.0), (1.0, 7.0), Role::SparseInfill),
+        ];
+        let layer = [Layer {
+            shelter: &area,
+            ..one_layer(&[], &[], &fill)[0]
+        }];
+        print(&layer, &reduced).1.retractions
+    };
+    assert_eq!(count(Role::SolidInfill), 1);
+    assert_eq!(count(Role::OverhangPerimeter), 2);
 }
 
 /// A wall and one fill line on each of `count` layers, 0.2 mm apart.
@@ -439,7 +596,7 @@ fn printed(count: usize, settings: &PrintSettings) -> String {
             loops: &loops,
             islands: &[0..1],
             paths: &fill,
-            infill_area: &[],
+            shelter: &[],
             below: &[],
         })
         .collect();
@@ -1411,7 +1568,7 @@ fn wall_over_a_smaller_plate(settings: &PrintSettings, measured: bool) -> String
         loops,
         islands: &[0..1],
         paths: &[],
-        infill_area: &[],
+        shelter: &[],
         below,
     };
     let layers = [

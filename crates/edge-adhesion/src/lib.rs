@@ -371,7 +371,8 @@ fn island_width(
     pairs(width)
 }
 
-/// The brim around the first layer of some objects, outermost loop first.
+/// The brim around the first layer of some objects, one piece of it
+/// after another, each outermost loop first.
 /// Each island's outline, holes filled in, is given a band of its width
 /// beyond the gap; the bands are united, kept off every island, and filled
 /// with loops a line apart working in from both edges (Brim.cpp
@@ -430,42 +431,47 @@ pub fn brim(
 
     let detail = scaled(0.0125);
     let spacing = flow.spacing;
-    let mut left = edge_clip::offset(
-        &edge_clip::simplify(&area, detail)?,
-        scaled(-0.5 * spacing),
-        join,
-    )?;
-    // Each pass gives the next line in from every edge: outlines working
-    // inward, and the edges nearest the parts working outward.
-    let (mut from_outside, mut from_parts) = (Vec::new(), Vec::new());
-    let mut pass = 0;
-    while !left.is_empty() {
-        left = edge_clip::simplify(&left, detail)?;
-        for region in &left {
-            from_outside.push((region.contour.clone(), false, pass));
-            from_parts.extend(region.holes.iter().map(|hole| (hole.clone(), true, pass)));
-        }
-        let shrunk = edge_clip::offset(&left, scaled(-1.3 * spacing), join)?;
-        left = edge_clip::offset(
-            &edge_clip::simplify(&shrunk, detail)?,
-            scaled(0.3 * spacing),
+    // One piece of the band at a time, so the nozzle finishes the brim
+    // of one part before it leaves for the next (the reference lays each
+    // object's brim by itself).
+    let mut loops = Vec::new();
+    for piece in &area {
+        let mut left = edge_clip::offset(
+            &edge_clip::simplify(std::slice::from_ref(piece), detail)?,
+            scaled(-0.5 * spacing),
             join,
         )?;
-        pass += 1;
+        // Each pass gives the next line in from every edge: outlines working
+        // inward, and the edges nearest the parts working outward.
+        let (mut from_outside, mut from_parts) = (Vec::new(), Vec::new());
+        let mut pass = 0;
+        while !left.is_empty() {
+            left = edge_clip::simplify(&left, detail)?;
+            for region in &left {
+                from_outside.push((region.contour.clone(), false, pass));
+                from_parts.extend(region.holes.iter().map(|hole| (hole.clone(), true, pass)));
+            }
+            let shrunk = edge_clip::offset(&left, scaled(-1.3 * spacing), join)?;
+            left = edge_clip::offset(
+                &edge_clip::simplify(&shrunk, detail)?,
+                scaled(0.3 * spacing),
+                join,
+            )?;
+            pass += 1;
+        }
+        // Printed from the outside in, ending against the parts.
+        from_parts.reverse();
+        loops.extend(from_outside.into_iter().chain(from_parts).map(
+            |(polygon, is_hole, depth)| ExtrusionLoop {
+                polygon,
+                role: Role::Brim,
+                is_hole,
+                depth,
+                flow,
+            },
+        ));
     }
-    // Printed from the outside in, ending against the parts.
-    from_parts.reverse();
-    Ok(from_outside
-        .into_iter()
-        .chain(from_parts)
-        .map(|(polygon, is_hole, depth)| ExtrusionLoop {
-            polygon,
-            role: Role::Brim,
-            is_hole,
-            depth,
-            flow,
-        })
-        .collect())
+    Ok(loops)
 }
 
 /// The skirt for one layer, outermost loop first: loops around the convex
@@ -859,6 +865,46 @@ mod tests {
         assert_eq!(read(r#"{"brim_type": "no_brim"}"#).brim, BrimKind::None);
         let ears = read(r#"{"brim_type": "brim_ears", "brim_width": "5"}"#);
         assert_eq!((ears.brim, ears.unsupported.len()), (BrimKind::None, 1));
+    }
+
+    #[test]
+    fn each_parts_brim_is_laid_whole_before_the_next() {
+        // Two squares too far apart for their brims to meet.
+        let (left, right) = ([square(0.0, 0.0, 20.0)], [square(60.0, 0.0, 20.0)]);
+        let on_bed = [
+            Footing {
+                footprint: &left,
+                height: 10.0,
+            },
+            Footing {
+                footprint: &right,
+                height: 10.0,
+            },
+        ];
+        let settings = AdhesionSettings {
+            brim: BrimKind::Outer,
+            brim_width: 5.0,
+            ..AdhesionSettings::default()
+        };
+        let loops = brim(&on_bed, &[], &settings, 0.2).unwrap();
+        let sides: Vec<bool> = loops
+            .iter()
+            .map(|line| unscaled(line.polygon.points[0].x) > 40.0)
+            .collect();
+        assert!(sides.len() >= 4 && sides.contains(&true) && sides.contains(&false));
+        // One change of side in all: every loop of one, then of the other.
+        assert_eq!(
+            sides.windows(2).filter(|pair| pair[0] != pair[1]).count(),
+            1
+        );
+        // And each part's loops still work in from the outside.
+        let own: Vec<f64> = loops
+            .iter()
+            .zip(&sides)
+            .filter(|(line, side)| !**side && !line.is_hole)
+            .map(|(line, _)| line.length_mm())
+            .collect();
+        assert!(own.windows(2).all(|pair| pair[0] > pair[1]));
     }
 
     #[test]

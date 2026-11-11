@@ -77,6 +77,8 @@ pub struct Sliced {
     pub walls_by: Vec<Vec<Perimeters>>,
     pub surfaces_by: Vec<Vec<Vec<Surface>>>,
     pub fills_by: Vec<Vec<Vec<ExtrusionPath>>>,
+    /// Where on each layer a move to a fill line needs no retraction.
+    pub shelter: Vec<Vec<ExPolygon>>,
     pub supports: Vec<Vec<ExtrusionPath>>,
     /// Skirt and brim, by layer; the skirt's loops come first.
     pub around: Vec<Vec<ExtrusionLoop>>,
@@ -335,10 +337,20 @@ pub fn slice(job: Job, watch: &dyn Watcher) -> Result<Sliced, Failure> {
     };
     let inside_all = edge_infill::inside_walls(&inside_by, &printed, around)?;
     let mut anchored_by = Vec::with_capacity(used.len());
+    let mut shelter: Vec<Vec<ExPolygon>> = vec![Vec::new(); layers.len()];
     for (filament, inside_walls) in inside_by.iter().enumerate() {
         let slices: Vec<&[ExPolygon]> = (0..layers.len())
             .map(|index| share(filament, index))
             .collect();
+        // Each filament's pieces are kept apart, as the reference keeps
+        // its regions': a move from one into another is not sheltered.
+        for (all, own) in shelter.iter_mut().zip(edge_infill::internal(
+            &slices,
+            &outlines,
+            &infill.shells(layer_height)?,
+        )?) {
+            all.extend(own);
+        }
         // Whatever the filament, a surface is a top or a bottom by what
         // the whole part has above and below it.
         let surfaces = edge_infill::classify(
@@ -405,10 +417,11 @@ pub fn slice(job: Job, watch: &dyn Watcher) -> Result<Sliced, Failure> {
                 edge_infill::fill(surfaces, index, &params).map_err(|e| e.to_string())
             })
             .collect::<Result<Vec<Vec<ExtrusionPath>>, String>>()?;
-        // The lines that fill gaps between walls go with the fill.
+        // The lines that fill gaps between walls go with the fill, and
+        // before it: the reference lays them with the walls.
         let mut fills = fills;
         for (layer, walls) in fills.iter_mut().zip(perimeters) {
-            layer.extend(walls.gap_fill.iter().cloned());
+            layer.splice(0..0, walls.gap_fill.iter().cloned());
         }
         surfaces_by.push(surfaces);
         fills_by.push(fills);
@@ -676,6 +689,7 @@ pub fn slice(job: Job, watch: &dyn Watcher) -> Result<Sliced, Failure> {
         walls_by,
         surfaces_by,
         fills_by,
+        shelter,
         supports,
         around,
         skirt_loops,
@@ -842,7 +856,7 @@ impl Sliced {
                     loops: &own.loops,
                     islands: &own.islands,
                     paths: &self.fills_by[*filament][index],
-                    infill_area: &own.infill,
+                    shelter: &self.shelter[index],
                     below: if index > 0 { outlines[index - 1] } else { &[] },
                 }
             })

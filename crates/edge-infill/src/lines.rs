@@ -48,6 +48,12 @@ pub struct Joining {
     /// How much of each end of a line is not counted for `beside`, so
     /// that a line does not rule out the outline it ends on.
     pub beside_clip: Coord,
+    /// Ends are joined by following the lines from the first row on,
+    /// each to its neighbour on the row before or after, instead of
+    /// nearest pairs first: the reference's way with solid lines, which
+    /// keeps a zigzag whole where the outline curves (FillRectilinear.cpp
+    /// `traverse_graph_generate_polylines`). No anchors are run.
+    pub sweep: bool,
 }
 
 /// How far the point `t` along a→b is from the segment c→d.
@@ -335,6 +341,7 @@ pub fn paths_turned(
     let edge: Vec<&Polygon> = outer.iter().flat_map(ExPolygon::rings).collect();
     let joining = Joining {
         max_link,
+        sweep: true,
         ..Joining::default()
     };
     lay(
@@ -601,6 +608,42 @@ fn lay(
         }
         segment
     }
+    if joining.sweep {
+        candidates.clear();
+        // From the first line not yet passed, along it, and on to the
+        // line beside it whose end is next along the outline; the nearer
+        // of the two where both sides offer one. A path ends where
+        // neither does.
+        let mut passed = vec![false; segments.len()];
+        for &start in &by_row {
+            let mut at = start;
+            while let Some(segment) = crossings[at].segment.filter(|&segment| !passed[segment]) {
+                passed[segment] = true;
+                let [a, b] = segments[segment];
+                let far = if a == at { b } else { a };
+                let Some(own) = free[far] else { break };
+                let here = (crossings[far].direction, crossings[far].row);
+                let next = [
+                    (own.to_next, own.next, true),
+                    (own.to_prev, own.prev, false),
+                ]
+                .into_iter()
+                .filter(|&(distance, to, _)| {
+                    let there = &crossings[to];
+                    distance <= joining.max_link as f64
+                        && there.direction == here.0
+                        && (there.row - here.1).abs() == 1
+                        && there.link.is_none()
+                        && there.segment.is_some_and(|segment| !passed[segment])
+                })
+                .min_by(|a, b| a.0.total_cmp(&b.0));
+                let Some((_, to, forward)) = next else { break };
+                crossings[far].link = Some((to, forward));
+                crossings[to].link = Some((far, !forward));
+                at = to;
+            }
+        }
+    }
     for (distance, from, to) in candidates {
         if taken(&free, from) || taken(&free, to) {
             continue;
@@ -796,6 +839,46 @@ mod tests {
         assert_eq!(joined[0].len(), 18);
         // Links longer than allowed are not made.
         assert_eq!(paths(&square, scaled(1.0), &[0.0], 0, scaled(0.5)).len(), 9);
+    }
+
+    #[test]
+    fn solid_lines_round_a_curve_stay_one_zigzag() {
+        // A disc: along its outline the ends of neighbouring rows are
+        // never the same distance apart, which is where joining the
+        // nearest ends first used to leave the zigzag in pieces.
+        let disc = |radius: f64| ExPolygon {
+            contour: Polygon {
+                points: (0..180)
+                    .map(|step| {
+                        let angle = f64::from(step) * std::f64::consts::TAU / 180.0;
+                        Point2::from_mm(20.0 + radius * angle.cos(), 20.0 + radius * angle.sin())
+                    })
+                    .collect(),
+            },
+            holes: Vec::new(),
+        };
+        for angle in [0.0, FRAC_PI_2 / 2.0, 1.0] {
+            let paths = paths_turned(
+                &[disc(10.0)],
+                &[disc(9.8)],
+                scaled(0.45) as f64,
+                0.0,
+                angle,
+                Coord::MAX / 4,
+            );
+            assert_eq!(paths.len(), 1, "at {angle} rad");
+        }
+        // With joins held to a length, the rows near the top and bottom,
+        // whose ends lie far apart along the outline, are left apart.
+        let limited = paths_turned(
+            &[disc(10.0)],
+            &[disc(9.8)],
+            scaled(0.45) as f64,
+            0.0,
+            0.0,
+            scaled(1.0),
+        );
+        assert!(limited.len() > 1);
     }
 
     #[test]

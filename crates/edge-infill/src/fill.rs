@@ -230,6 +230,7 @@ pub fn fill(
                     // FillBase.cpp `create_boundary_infill_graph`.
                     beside: (0.8 * line as f64) as i64,
                     beside_clip: (1.7 * line as f64) as i64,
+                    sweep: false,
                 };
                 // Each direction's lines pass through the origin. None
                 // lies within a line's spacing of the area's own edge,
@@ -273,11 +274,11 @@ pub fn fill(
                 )?;
                 let inner =
                     edge_clip::offset(&outer, -scaled(TURN_INSET * flow.spacing), Join::MITER)?;
-                let max_link = if joined {
-                    SOLID_LINK_SPACINGS * flow.spacing
-                } else {
-                    0.0
-                };
+                // No join is too long. Fill.cpp means to stop at three
+                // spacings above 80% density, but works that out from the
+                // filler's spacing before it is set, while it is still
+                // zero, and zero is no limit.
+                let max_link = if joined { edge_geom::Coord::MAX / 4 } else { 0 };
                 // Fitted lines are spread, by up to a fifth, so that a
                 // whole number of them fills the area's width with none
                 // left over, and each is made as wide as its share
@@ -294,8 +295,7 @@ pub fn fill(
                 // The first line lies half a pitch in from the area's own
                 // edge, not on a grid shared with other areas.
                 let first = low + pitch / 2.0;
-                for points in
-                    lines::paths_turned(&outer, &inner, pitch, first, angles[0], scaled(max_link))
+                for points in lines::paths_turned(&outer, &inner, pitch, first, angles[0], max_link)
                 {
                     paths.push(ExtrusionPath { points, role, flow });
                 }
