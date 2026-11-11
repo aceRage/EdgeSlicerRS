@@ -18,8 +18,9 @@
 //!
 //! Where a wall hangs clear it is another path in the reference, cut out
 //! of the loop before any of this (PerimeterGenerator.cpp: the loop
-//! against the layer beneath grown by half a nozzle). [`stretches`] makes
-//! that cut here, and each stretch is measured by itself.
+//! against the layer beneath grown by half a nozzle, its corners
+//! mitred). [`stretches`] makes that cut here, and each stretch is
+//! measured by itself.
 //!
 //! Not ported: the slowing over lines of the layer beneath that are
 //! expected to curl (`slowdown_for_curled_perimeters`, the reference's
@@ -40,6 +41,8 @@ pub(crate) struct Below {
     /// the left of every edge: contours run counter-clockwise and holes
     /// clockwise.
     edges: Vec<[f64; 4]>,
+    /// For each edge, the edge that follows it round its ring.
+    next: Vec<u32>,
     /// Further than this many mm from the outline a point is simply
     /// inside or outside. Cells are this size, so the edges within reach
     /// of a point are all in its cell or the eight round it.
@@ -61,8 +64,10 @@ impl Below {
     /// any distance asked for needs to be told apart.
     pub(crate) fn new(regions: &[ExPolygon], reach: f64) -> Option<Self> {
         let mut edges = Vec::new();
+        let mut next: Vec<u32> = Vec::new();
         for ring in regions.iter().flat_map(ExPolygon::rings) {
             let points = &ring.points;
+            let first = edges.len();
             for (index, from) in points.iter().enumerate() {
                 let to = points[(index + 1) % points.len()];
                 if *from != to {
@@ -72,7 +77,11 @@ impl Below {
                         unscaled(to.x),
                         unscaled(to.y),
                     ]);
+                    next.push(edges.len() as u32);
                 }
+            }
+            if let Some(last) = next.last_mut().filter(|_| edges.len() > first) {
+                *last = first as u32;
             }
         }
         if edges.is_empty() {
@@ -87,6 +96,7 @@ impl Below {
         let rows = ((max.1 - min.1) / reach) as usize + 1;
         let mut below = Self {
             edges,
+            next,
             reach,
             min,
             columns,
@@ -181,14 +191,14 @@ impl Below {
         if inside { -reach } else { reach }
     }
 
-    /// [`Self::signed_distance`] told apart further: at any distance
-    /// outside the outline, and as far as `inside` mm within it (beyond
-    /// that, `-inside` or the reach, whichever is further). What the
+    /// [`Self::signed_distance`] told apart further, for a point where
+    /// that is already known to be `near`: at any distance outside the
+    /// outline, and as far as `inside` mm within it (beyond that,
+    /// `-inside` or the reach, whichever is further). What the
     /// reference asks of its tree of lines (AABBTreeLines.hpp
     /// `distance_from_lines_extra`), which has no limit either way; a
     /// wall is not judged by anything deeper in than twice its width.
-    pub(crate) fn distance(&self, x: f64, y: f64, inside: f64) -> f64 {
-        let near = self.signed_distance(x, y);
+    fn distance_from(&self, near: f64, x: f64, y: f64, inside: f64) -> f64 {
         if near.abs() < self.reach {
             near
         } else if near > 0.0 {
@@ -295,6 +305,159 @@ impl Below {
         found.sort_by(f64::total_cmp);
         found
     }
+
+    /// The corner that the outline grown by `by` mm has past the end of
+    /// an edge, where the outline turns towards the material there: the
+    /// corner's points in order, from the end of the edge's own line
+    /// moved out to the start of the next edge's, and how many of the
+    /// four there are. None where the outline turns the other way or
+    /// goes straight on, and the two lines moved out meet or cross.
+    ///
+    /// As the reference grows an outline (ClipperUtils.cpp `offset`,
+    /// which is clipper.cpp `ClipperOffset` with its mitre limit at 3):
+    /// the two lines are carried on to where they meet (`DoMiter`),
+    /// unless that is further from the corner than three times `by`,
+    /// when the corner is cut across at `by` from it (`DoSquare`).
+    fn corner(&self, index: usize, by: f64) -> Option<([(f64, f64); 4], usize)> {
+        let [ax, ay, bx, by_] = self.edges[index];
+        let [_, _, cx, cy] = self.edges[self.next[index] as usize];
+        let unit = |dx: f64, dy: f64| {
+            let length = dx.hypot(dy);
+            (dx / length, dy / length)
+        };
+        let (u1, u2) = (unit(bx - ax, by_ - ay), unit(cx - bx, cy - by_));
+        // Away from the material, which is on the left.
+        let (n1, n2) = ((u1.1, -u1.0), (u2.1, -u2.0));
+        let sin = n1.0 * n2.1 - n1.1 * n2.0;
+        let cos = n1.0 * n2.0 + n1.1 * n2.1;
+        if sin < 0.0 || (sin == 0.0 && cos > 0.0) {
+            return None;
+        }
+        let from = (bx + by * n1.0, by_ + by * n1.1);
+        let to = (bx + by * n2.0, by_ + by * n2.1);
+        // "if (r >= m_miterLim) DoMiter(j, k, r); else DoSquare(j, k);"
+        // with `m_miterLim = 2 / (MiterLimit * MiterLimit)`.
+        if 1.0 + cos >= 2.0 / 9.0 {
+            let reach = by / (1.0 + cos);
+            let tip = (bx + (n1.0 + n2.0) * reach, by_ + (n1.1 + n2.1) * reach);
+            Some(([from, tip, to, to], 3))
+        } else {
+            let along = by * (sin.atan2(cos) / 4.0).tan();
+            Some((
+                [
+                    from,
+                    (from.0 + along * u1.0, from.1 + along * u1.1),
+                    (to.0 - along * u2.0, to.1 - along * u2.1),
+                    to,
+                ],
+                4,
+            ))
+        }
+    }
+
+    /// The edges that touch the cells round a point, or a box of
+    /// points, and those `margin` mm further out; none when the box is
+    /// off the grid by more than that.
+    fn edges_round(&self, low: (f64, f64), high: (f64, f64), margin: f64) -> Vec<u32> {
+        let off = high.0 + margin < self.min.0
+            || high.1 + margin < self.min.1
+            || low.0 - margin > self.min.0 + self.columns as f64 * self.reach
+            || low.1 - margin > self.min.1 + self.rows as f64 * self.reach;
+        let mut edges: Vec<u32> = Vec::new();
+        if off {
+            return edges;
+        }
+        let (left, right) = (self.column(low.0 - margin), self.column(high.0 + margin));
+        let (bottom, top) = (self.row(low.1 - margin), self.row(high.1 + margin));
+        for row in bottom..=top {
+            for column in left..=right {
+                edges.extend_from_slice(&self.cells[row * self.columns + column]);
+            }
+        }
+        edges.sort_unstable();
+        edges.dedup();
+        edges
+    }
+
+    /// Whether a point is outside the outline grown by `by` mm, corners
+    /// as the reference grows them ([`Self::corner`]): what a line whose
+    /// middle is there hangs clear by. `by` may be a third of the reach
+    /// at most, which is as far as a corner goes.
+    pub(crate) fn clear(&self, x: f64, y: f64, by: f64) -> bool {
+        debug_assert!(3.0 * by <= self.reach + 1e-9);
+        let away = self.signed_distance(x, y);
+        if away <= by {
+            // Within `by` of the outline, which the grown outline is
+            // nowhere nearer than.
+            return false;
+        }
+        if away >= self.reach {
+            return true;
+        }
+        // Further than `by` from every edge, and still within the
+        // grown outline if it is in one of its corners.
+        !self
+            .edges_round((x, y), (x, y), self.reach)
+            .into_iter()
+            .any(|index| {
+                let Some((points, count)) = self.corner(index as usize, by) else {
+                    return false;
+                };
+                // The corner's points and the outline's own corner are
+                // a shape with no dents, gone round with the inside on
+                // the left.
+                let [_, _, bx, by_] = self.edges[index as usize];
+                let mut from = (bx, by_);
+                points[..count]
+                    .iter()
+                    .chain(std::iter::once(&(bx, by_)))
+                    .all(|&to| {
+                        let side = (to.0 - from.0) * (y - from.1) - (to.1 - from.1) * (x - from.0);
+                        from = to;
+                        side >= 0.0
+                    })
+            })
+    }
+
+    /// Where the line from `a` to `b` (in mm) may pass from one side of
+    /// the outline grown by `by` mm to the other, as how far along the
+    /// line each place is, in order: wherever it meets an edge moved
+    /// out by `by` or a corner's line. Not every such place is on the
+    /// grown outline, which is those lines' outermost run: [`Self::clear`]
+    /// tells which side the parts between them are on.
+    fn grown_hits(&self, a: (f64, f64), b: (f64, f64), by: f64) -> Vec<f64> {
+        let low = (a.0.min(b.0), a.1.min(b.1));
+        let high = (a.0.max(b.0), a.1.max(b.1));
+        let mut found: Vec<f64> = Vec::new();
+        let v1 = (b.0 - a.0, b.1 - a.1);
+        let mut meet = |c: (f64, f64), d: (f64, f64)| {
+            let v2 = (d.0 - c.0, d.1 - c.1);
+            let denom = v1.0 * v2.1 - v1.1 * v2.0;
+            if denom == 0.0 {
+                return;
+            }
+            let v12 = (a.0 - c.0, a.1 - c.1);
+            let t1 = (v2.0 * v12.1 - v2.1 * v12.0) / denom;
+            let t2 = (v1.0 * v12.1 - v1.1 * v12.0) / denom;
+            if t1 > 0.0 && t1 < 1.0 && (0.0..=1.0).contains(&t2) {
+                found.push(t1);
+            }
+        };
+        for index in self.edges_round(low, high, 3.0 * by) {
+            let [cx, cy, dx, dy] = self.edges[index as usize];
+            let length = (dx - cx).hypot(dy - cy);
+            let out = (by * (dy - cy) / length, -by * (dx - cx) / length);
+            meet((cx + out.0, cy + out.1), (dx + out.0, dy + out.1));
+            if let Some((points, count)) = self.corner(index as usize, by) {
+                for pair in points[..count].windows(2) {
+                    meet(pair[0], pair[1]);
+                }
+            }
+        }
+        found.sort_by(f64::total_cmp);
+        found.dedup();
+        found
+    }
 }
 
 /// A stretch of a wall that is over the layer beneath all the way, or
@@ -305,105 +468,154 @@ pub(crate) struct Stretch {
     pub(crate) clear: bool,
 }
 
-/// A path cut where it leaves `grown` and where it comes back over it,
-/// its stretches in the order they are laid. `grown` is the layer
-/// beneath grown by half a nozzle: a line whose middle is further out
-/// than that hangs clear, and is an overhang wall.
+/// A path cut where it leaves the layer beneath grown by `by` mm and
+/// where it comes back over it, its stretches in the order they are
+/// laid. A line whose middle is further out than that hangs clear, and
+/// is an overhang wall; `by` is half the nozzle's width.
 ///
 /// The reference makes the cut when the walls are made
 /// (PerimeterGenerator.cpp `extrusion_paths_append` of `intersection_pl`
 /// and `diff_pl` of the loop against `lower_polygons_series->back()`, or
-/// with Arachne walls `clip_extrusion` against `lower_slices_polygons`),
-/// with its clipping library; here the same places are found as the
-/// path is laid.
-pub(crate) fn stretches(grown: &Below, points: &[Point2]) -> Vec<Stretch> {
-    let mut out: Vec<Stretch> = Vec::new();
+/// with Arachne walls `clip_extrusion` against `lower_slices_polygons`:
+/// in both, `offset(*this->lower_slices, scale_(nozzle_diameter / 2))`),
+/// with its clipping library. Here the same places are found as the
+/// path is laid, and without growing the outline: by where the path
+/// meets the lines the grown outline is made of.
+pub(crate) fn stretches(below: &Below, by: f64, points: &[Point2]) -> Vec<Stretch> {
+    (stretches_measured(below, by, points).into_iter())
+        .map(|(stretch, _)| stretch)
+        .collect()
+}
+
+/// [`stretches`], each with the [`Below::signed_distance`] of its points,
+/// which the cutting asks for and the measuring after it wants again.
+pub(crate) fn stretches_measured(
+    below: &Below,
+    by: f64,
+    points: &[Point2],
+) -> Vec<(Stretch, Vec<f64>)> {
+    let mut out: Vec<(Stretch, Vec<f64>)> = Vec::new();
     let Some(first) = points.first() else {
         return out;
     };
     let mm = |point: &Point2| (unscaled(point.x), unscaled(point.y));
-    let mut away = grown.signed_distance(unscaled(first.x), unscaled(first.y));
+    let mut away = below.signed_distance(unscaled(first.x), unscaled(first.y));
     for pair in points.windows(2) {
         let (a, b) = (mm(&pair[0]), mm(&pair[1]));
         let at = |along: f64| (a.0 + along * (b.0 - a.0), a.1 + along * (b.1 - a.1));
         let start_away = away;
-        away = grown.signed_distance(b.0, b.1);
-        // A line shorter than its start is from the outline cannot reach
-        // it, and is all on the side it starts on. Any other changes
-        // sides only where it meets the outline, and which side each
-        // part of it is on is asked at that part's middle, so a line
-        // that only touches the outline is not cut.
-        let mut cuts = Vec::new();
-        let apart = start_away.abs() > (b.0 - a.0).hypot(b.1 - a.1);
-        if !apart {
-            cuts = grown.hits(a, b, 0.0);
-            cuts.retain(|&along| along > 0.0 && along < 1.0);
-            cuts.dedup();
-        }
+        away = below.signed_distance(b.0, b.1);
+        // A line too short to get from where its ends are to the grown
+        // outline stays within it. Any other changes sides only where
+        // it meets one of the lines that outline is made of, and which
+        // side each part of it is on is asked at that part's middle.
+        let length = (b.0 - a.0).hypot(b.1 - a.1);
+        let within = within(below, by, (a, start_away), (b, away), length, 3);
+        let cuts = if within {
+            Vec::new()
+        } else {
+            below.grown_hits(a, b, by)
+        };
         let mut from = 0.0;
         for index in 0..=cuts.len() {
             let to = cuts.get(index).copied().unwrap_or(1.0);
-            let state = if apart {
-                start_away > 0.0
-            } else {
+            let state = !within && {
                 let (x, y) = at((from + to) / 2.0);
-                grown.signed_distance(x, y) > 0.0
-            };
-            let start = if index == 0 {
-                pair[0]
-            } else {
-                let (x, y) = at(from);
-                Point2 {
-                    x: scaled(x),
-                    y: scaled(y),
-                }
+                below.clear(x, y, by)
             };
             match out.last_mut() {
-                Some(last) if last.clear == state => {}
-                Some(last) => {
-                    if last.points.last() != Some(&start) {
+                Some((last, _)) if last.clear == state => {}
+                last => {
+                    // Where this part starts: the line's own start, or
+                    // the cut before it.
+                    let (start, start_away) = if index == 0 {
+                        (pair[0], start_away)
+                    } else {
+                        let (x, y) = at(from);
+                        let start = Point2 {
+                            x: scaled(x),
+                            y: scaled(y),
+                        };
+                        let away = below.signed_distance(unscaled(start.x), unscaled(start.y));
+                        (start, away)
+                    };
+                    if let Some((last, aways)) = last
+                        && last.points.last() != Some(&start)
+                    {
                         last.points.push(start);
+                        aways.push(start_away);
                     }
-                    out.push(Stretch {
-                        points: vec![start],
-                        clear: state,
-                    });
+                    out.push((
+                        Stretch {
+                            points: vec![start],
+                            clear: state,
+                        },
+                        vec![start_away],
+                    ));
                 }
-                None => out.push(Stretch {
-                    points: vec![*first],
-                    clear: state,
-                }),
             }
             from = to;
         }
-        let last = out.last_mut().expect("a line has at least one part");
+        let (last, aways) = out.last_mut().expect("a line has at least one part");
         last.points.push(pair[1]);
+        aways.push(away);
     }
     // A cut that lands on a point of the path leaves a stretch of no
     // length, which is no stretch; its neighbours are then one.
-    out.retain(|stretch| {
+    out.retain(|(stretch, _)| {
         stretch
             .points
             .iter()
             .any(|point| *point != stretch.points[0])
     });
-    let mut joined: Vec<Stretch> = Vec::with_capacity(out.len());
-    for stretch in out {
+    let mut joined: Vec<(Stretch, Vec<f64>)> = Vec::with_capacity(out.len());
+    for (stretch, aways) in out {
         match joined.last_mut() {
-            Some(last) if last.clear == stretch.clear => {
+            Some((last, known)) if last.clear == stretch.clear => {
                 last.points.extend_from_slice(&stretch.points[1..]);
+                known.extend_from_slice(&aways[1..]);
             }
-            _ => joined.push(stretch),
+            _ => joined.push((stretch, aways)),
         }
     }
     if joined.is_empty() {
         // A path of no length is laid, or left out, as it was given.
-        joined.push(Stretch {
+        let stretch = Stretch {
             points: points.to_vec(),
-            clear: grown.signed_distance(unscaled(first.x), unscaled(first.y)) > 0.0,
-        });
+            clear: below.clear(unscaled(first.x), unscaled(first.y), by),
+        };
+        let aways = (points.iter())
+            .map(|point| below.signed_distance(unscaled(point.x), unscaled(point.y)))
+            .collect();
+        joined.push((stretch, aways));
     }
     joined
+}
+
+/// Whether the line between two points, each given with its
+/// [`Below::signed_distance`], is sure to stay within the outline grown
+/// by `by`: a point `t` mm along it is no further out than its start is
+/// and `t` more, nor than its end is and what is left of its length.
+/// A line too long to say so of is halved, `halvings` times at most.
+fn within(
+    below: &Below,
+    by: f64,
+    from: ((f64, f64), f64),
+    to: ((f64, f64), f64),
+    length: f64,
+    halvings: u32,
+) -> bool {
+    if (from.1 + to.1 + length) / 2.0 <= by {
+        return true;
+    }
+    // Nothing is known of a point at the reach or beyond but that.
+    if halvings == 0 || from.1 > by || to.1 > by {
+        return false;
+    }
+    let middle = ((from.0.0 + to.0.0) / 2.0, (from.0.1 + to.0.1) / 2.0);
+    let middle = (middle, below.signed_distance(middle.0, middle.1));
+    within(below, by, from, middle, length / 2.0, halvings - 1)
+        && within(below, by, middle, to, length / 2.0, halvings - 1)
 }
 
 /// The speed of a line by how far it is short of full support
@@ -536,9 +748,15 @@ impl Gauge<'_> {
 
     /// A place on the wall, measured.
     fn sample(&self, x: f64, y: f64, own: Option<Point2>) -> Sample {
+        self.sample_from(self.below.signed_distance(x, y), x, y, own)
+    }
+
+    /// [`Self::sample`] of a place whose [`Below::signed_distance`] is
+    /// already known to be `near`.
+    fn sample_from(&self, near: f64, x: f64, y: f64, own: Option<Point2>) -> Sample {
         let away = self
             .below
-            .distance(x, y, 2.0 * f64::from(self.width) + EPSILON);
+            .distance_from(near, x, y, 2.0 * f64::from(self.width) + EPSILON);
         Sample {
             x,
             y,
@@ -569,25 +787,34 @@ impl Gauge<'_> {
 
     /// The points the wall through `path` is written by, each with how
     /// the line from it to the next is printed. The path's own points
-    /// are all among them, in order.
-    pub(crate) fn readings(&self, path: &[Point2]) -> Vec<Reading> {
-        let Some(first) = path.first() else {
+    /// are all among them, in order. The [`Below::signed_distance`] of
+    /// each of them may be `known` already (the reference's
+    /// `known_distance`).
+    pub(crate) fn readings(&self, path: &[Point2], known: Option<&[f64]>) -> Vec<Reading> {
+        if path.is_empty() {
             return Vec::new();
-        };
+        }
         let width = f64::from(self.width);
         let half = self.half();
         // "minimum spacing threshold for any newly generated points":
         // a quarter of the line's width.
         let spacing = width * 0.25;
-        let own = |point: &Point2| self.sample(unscaled(point.x), unscaled(point.y), Some(*point));
+        let own = |index: usize| {
+            let point = path[index];
+            let (x, y) = (unscaled(point.x), unscaled(point.y));
+            match known {
+                Some(known) => self.sample_from(known[index], x, y, Some(point)),
+                None => self.sample(x, y, Some(point)),
+            }
+        };
 
         // The path's points, and where it crosses the outline beneath
         // ("Intersection handling").
         let over = |sample: &Sample| f64::from(sample.short) > f64::from(half) + EPSILON;
         let mut points: Vec<Sample> = Vec::with_capacity(path.len() * 3 / 2);
-        points.push(own(first));
-        for point in &path[1..] {
-            let next = own(point);
+        points.push(own(0));
+        for index in 1..path.len() {
+            let next = own(index);
             let previous = points[points.len() - 1];
             if over(&previous) != over(&next) {
                 // The reference keeps `previous` by reference while it
@@ -792,6 +1019,12 @@ mod tests {
         }
     }
 
+    impl Below {
+        fn distance(&self, x: f64, y: f64, inside: f64) -> f64 {
+            self.distance_from(self.signed_distance(x, y), x, y, inside)
+        }
+    }
+
     fn square(x: f64, y: f64, side: f64) -> ExPolygon {
         outline(&[(x, y), (x + side, y), (x + side, y + side), (x, y + side)])
     }
@@ -958,7 +1191,7 @@ mod tests {
             fan_at: None,
         };
         let path = [Point2::from_mm(5.0, 5.0), Point2::from_mm(15.0, 5.0)];
-        let readings = gauge.readings(&path);
+        let readings = gauge.readings(&path, None);
         assert_eq!(
             summary(&readings),
             [
@@ -984,7 +1217,7 @@ mod tests {
             Point2::from_mm(8.0, 8.0),
         ];
         assert_eq!(
-            summary(&gauge.readings(&inside)),
+            summary(&gauge.readings(&inside, None)),
             [(2.0, 2.0, 100.0), (8.0, 2.0, 100.0), (8.0, 8.0, 100.0)]
         );
     }
@@ -1017,7 +1250,7 @@ mod tests {
         };
         let path = [Point2::from_mm(4.5, 0.2), Point2::from_mm(36.5, 0.2)];
         assert_eq!(
-            summary(&gauge.readings(&path)),
+            summary(&gauge.readings(&path, None)),
             [
                 (4.5, 0.2, 100.0),
                 (17.5, 0.2, 20.0),
@@ -1052,12 +1285,12 @@ mod tests {
         };
         let short = [Point2::from_mm(17.6, 0.2), Point2::from_mm(19.5, 0.2)];
         assert_eq!(
-            summary(&gauge.readings(&short)),
+            summary(&gauge.readings(&short, None)),
             [(17.6, 0.2, 100.0), (19.5, 0.2, 100.0)]
         );
         let longer = [Point2::from_mm(17.4, 0.2), Point2::from_mm(19.6, 0.2)];
         assert_eq!(
-            summary(&gauge.readings(&longer)),
+            summary(&gauge.readings(&longer, None)),
             [(17.4, 0.2, 20.0), (18.5, 0.2, 20.0), (19.6, 0.2, 100.0)]
         );
     }
@@ -1077,7 +1310,7 @@ mod tests {
         let path: Vec<Point2> = (0..=40)
             .map(|step| Point2::from_mm(29.75 + 0.006 * step as f64, 5.0 + 0.5 * step as f64))
             .collect();
-        let readings = gauge.readings(&path);
+        let readings = gauge.readings(&path, None);
         assert_eq!(readings.len(), path.len());
         assert!(
             readings
@@ -1117,7 +1350,7 @@ mod tests {
             speeds: &speeds,
             fan_at: Some(0.5),
         }
-        .readings(&path);
+        .readings(&path, None);
         assert!(cooled.iter().all(|reading| reading.speed == 5.0));
         let ends: Vec<f64> = cooled
             .iter()
@@ -1133,38 +1366,42 @@ mod tests {
             speeds: &speeds,
             fan_at: None,
         }
-        .readings(&path);
+        .readings(&path, None);
         let ends: Vec<f64> = plain.iter().map(|reading| unscaled(reading.at.x)).collect();
         assert_eq!(ends, [5.0, 10.0, 15.0]);
     }
 
     #[test]
     fn a_path_is_cut_where_it_leaves_the_grown_outline_and_comes_back() {
-        let grown = Below::new(&[square(0.0, 0.0, 10.0)], 0.6).unwrap();
+        // A plate 10 mm square and a nozzle of 0.4 mm: a line hangs
+        // clear from 0.2 mm beyond the plate's edge.
+        let below = Below::new(&[square(0.0, 0.0, 10.0)], 0.6).unwrap();
         let at = |x: f64, y: f64| Point2::from_mm(x, y);
+        let cut = |path: &[Point2]| stretches(&below, 0.2, path);
         // Out over one side, round, and back over it further up.
         let path = [at(5.0, 5.0), at(15.0, 5.0), at(15.0, 8.0), at(5.0, 8.0)];
         assert_eq!(
-            stretches(&grown, &path),
+            cut(&path),
             [
                 Stretch {
-                    points: vec![at(5.0, 5.0), at(10.0, 5.0)],
+                    points: vec![at(5.0, 5.0), at(10.2, 5.0)],
                     clear: false,
                 },
                 Stretch {
-                    points: vec![at(10.0, 5.0), at(15.0, 5.0), at(15.0, 8.0), at(10.0, 8.0)],
+                    points: vec![at(10.2, 5.0), at(15.0, 5.0), at(15.0, 8.0), at(10.2, 8.0)],
                     clear: true,
                 },
                 Stretch {
-                    points: vec![at(10.0, 8.0), at(5.0, 8.0)],
+                    points: vec![at(10.2, 8.0), at(5.0, 8.0)],
                     clear: false,
                 },
             ]
         );
-        // Wholly over it, wholly clear of it, and with a point on it.
-        let over = [at(2.0, 2.0), at(8.0, 2.0), at(8.0, 8.0)];
+        // Wholly over it, wholly clear of it, and with a point on the
+        // grown outline.
+        let over = [at(2.0, 2.0), at(8.0, 2.0), at(10.1, 8.0)];
         assert_eq!(
-            stretches(&grown, &over),
+            cut(&over),
             [Stretch {
                 points: over.to_vec(),
                 clear: false,
@@ -1172,28 +1409,102 @@ mod tests {
         );
         let off = [at(12.0, 2.0), at(18.0, 2.0), at(18.0, 8.0)];
         assert_eq!(
-            stretches(&grown, &off),
+            cut(&off),
             [Stretch {
                 points: off.to_vec(),
                 clear: true,
             }]
         );
-        let through = [at(5.0, 5.0), at(10.0, 5.0), at(15.0, 5.0)];
-        let cut = stretches(&grown, &through);
-        assert_eq!(cut.len(), 2);
-        assert_eq!(cut[0].points, [at(5.0, 5.0), at(10.0, 5.0)]);
-        assert_eq!(cut[1].points, [at(10.0, 5.0), at(15.0, 5.0)]);
+        let through = [at(5.0, 5.0), at(10.2, 5.0), at(15.0, 5.0)];
+        let parts = cut(&through);
+        assert_eq!(parts.len(), 2);
+        assert_eq!(parts[0].points, [at(5.0, 5.0), at(10.2, 5.0)]);
+        assert_eq!(parts[1].points, [at(10.2, 5.0), at(15.0, 5.0)]);
         // Right across and out the other side: three stretches of one line.
         let across = [at(-5.0, 5.0), at(15.0, 5.0)];
-        let cut = stretches(&grown, &across);
+        let parts = cut(&across);
         assert_eq!(
-            cut.iter().map(|stretch| stretch.clear).collect::<Vec<_>>(),
+            parts
+                .iter()
+                .map(|stretch| stretch.clear)
+                .collect::<Vec<_>>(),
             [true, false, true]
         );
-        assert_eq!(cut[1].points, [at(0.0, 5.0), at(10.0, 5.0)]);
-        // A line that touches a corner from outside is not cut there.
-        let past = [at(5.0, 15.0), at(15.0, 5.0)];
-        assert_eq!(stretches(&grown, &past).len(), 1);
-        assert!(stretches(&grown, &[]).is_empty());
+        assert_eq!(parts[1].points, [at(-0.2, 5.0), at(10.2, 5.0)]);
+        // A line that touches the grown outline's corner from outside
+        // is not cut there.
+        let past = [at(5.4, 15.0), at(15.0, 5.4)];
+        assert_eq!(cut(&past).len(), 1);
+        assert!(cut(&[]).is_empty());
+    }
+
+    #[test]
+    fn the_grown_outline_has_the_corners_the_reference_gives_it() {
+        // ClipperOffset with a mitre limit of 3: a square corner is
+        // carried out to a point, 0.2 mm out on both sides, where going
+        // by the distance from the plate would round it off at 0.2 mm
+        // from the corner.
+        let below = Below::new(&[square(0.0, 0.0, 10.0)], 0.6).unwrap();
+        // 0.212 mm from the corner, and within the mitre.
+        assert!(below.signed_distance(10.15, 10.15) > 0.2);
+        assert!(!below.clear(10.15, 10.15, 0.2));
+        assert!(!below.clear(10.199, 10.199, 0.2));
+        assert!(below.clear(10.201, 10.199, 0.2));
+        assert!(below.clear(10.199, 10.201, 0.2));
+        // Along a side there is no more to it than the distance.
+        assert!(!below.clear(10.199, 5.0, 0.2));
+        assert!(below.clear(10.201, 5.0, 0.2));
+        assert!(!below.clear(5.0, 5.0, 0.2));
+        assert!(below.clear(13.0, 5.0, 0.2));
+        // A line past the corner on the slant is cut where it meets the
+        // mitre's two sides, though all of it is further than 0.2 mm
+        // from the plate.
+        let at = |x: f64, y: f64| Point2::from_mm(x, y);
+        let parts = stretches(&below, 0.2, &[at(9.8, 10.5), at(10.5, 9.8)]);
+        assert_eq!(
+            parts
+                .iter()
+                .map(|stretch| stretch.clear)
+                .collect::<Vec<_>>(),
+            [true, false, true]
+        );
+        assert_eq!(parts[1].points, [at(10.1, 10.2), at(10.2, 10.1)]);
+        // One that only touches the mitre's point is not cut.
+        assert_eq!(
+            stretches(&below, 0.2, &[at(9.9, 10.5), at(10.5, 9.9)]).len(),
+            1
+        );
+
+        // A corner sharper than 39 degrees, whose mitre would reach
+        // further than three times the distance, is cut across at that
+        // distance from it: a spike 20 mm long and 2 mm wide at its
+        // foot, pointing along x, grown by 0.2 mm.
+        let spike = outline(&[(0.0, -1.0), (20.0, 0.0), (0.0, 1.0)]);
+        let below = Below::new(&[spike], 0.6).unwrap();
+        assert!(!below.clear(20.19, 0.0, 0.2));
+        assert!(below.clear(20.21, 0.0, 0.2));
+        // Beside the tip the cut runs square to the spike, out to the
+        // lines of its two sides: 0.19 mm past the tip and 0.15 mm off
+        // its middle is inside, where nothing of the spike is within
+        // 0.2 mm.
+        assert!(below.signed_distance(20.19, 0.15) > 0.2);
+        assert!(!below.clear(20.19, 0.15, 0.2));
+        assert!(below.clear(20.19, 0.25, 0.2));
+
+        // Where the outline turns away from the material there is no
+        // corner to add: inside the bend of an L, 0.25 mm from both
+        // arms, a line hangs clear.
+        let bend = outline(&[
+            (0.0, 0.0),
+            (10.0, 0.0),
+            (10.0, 5.0),
+            (5.0, 5.0),
+            (5.0, 10.0),
+            (0.0, 10.0),
+        ]);
+        let below = Below::new(&[bend], 0.6).unwrap();
+        assert!(below.clear(5.25, 5.25, 0.2));
+        assert!(!below.clear(5.15, 5.25, 0.2));
+        assert!(!below.clear(5.25, 5.15, 0.2));
     }
 }

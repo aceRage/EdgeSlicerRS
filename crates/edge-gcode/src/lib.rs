@@ -319,7 +319,6 @@ pub fn write_routed(
             },
         },
         below: None,
-        grown: Vec::new(),
         inner_wall: None,
         measured: Vec::new(),
         measured_used: 0,
@@ -592,11 +591,6 @@ struct Writer<'a> {
     file: FileInfo,
     /// The outline of the layer beneath the one being written.
     below: Option<overhang::Below>,
-    /// That outline grown by half a nozzle, which a wall hangs clear of
-    /// where its middle is outside it: one for each nozzle size among
-    /// the filaments that tell such walls apart, by the bits of the
-    /// distance grown.
-    grown: Vec<(u64, overhang::Below)>,
     /// The line the layer's inner walls are printed with, when it has any.
     inner_wall: Option<Flow>,
     /// Walls measured against it so far this layer, each with what tells
@@ -1239,30 +1233,16 @@ impl Writer<'_> {
         self.below = if index == 0 {
             None
         } else {
-            // Nothing a wall is judged by reaches further than its own
-            // width from the outline beneath.
-            overhang::Below::new(layer.below, (1.5 * s.nozzle_diameter).max(0.6))
+            // What is asked of it most often is within a wall's width
+            // of the outline beneath, and the corners of that outline
+            // grown by half a nozzle reach three times as far as that:
+            // by the widest nozzle a wall of this print may be laid
+            // with.
+            let widest = (self.all.iter())
+                .map(|filament| filament.nozzle_diameter)
+                .fold(s.nozzle_diameter, f64::max);
+            overhang::Below::new(layer.below, (1.5 * widest).max(0.6))
         };
-        // Grown by half a nozzle, for telling the walls that hang clear
-        // (PerimeterGenerator.cpp `m_lower_slices_polygons` and
-        // `generate_lower_polygons_series`: `offset(*this->lower_slices,
-        // scale_(nozzle_diameter / 2))`, with the corners it gives).
-        self.grown.clear();
-        if self.below.is_some() {
-            let all = self.all;
-            for filament in all.iter().filter(|s| s.detect_overhang_wall) {
-                let by = 0.5 * filament.nozzle_diameter;
-                if self.grown.iter().any(|(known, _)| *known == by.to_bits()) {
-                    continue;
-                }
-                let grown = edge_clip::offset(layer.below, scaled(by), edge_clip::Join::MITER)
-                    .map_err(|e| io::Error::other(e.to_string()))?;
-                let reach = (1.5 * filament.nozzle_diameter).max(0.6);
-                if let Some(grown) = overhang::Below::new(&grown, reach) {
-                    self.grown.push((by.to_bits(), grown));
-                }
-            }
-        }
 
         // Lay the layer out to see how long it takes; if that is too short
         // for it to cool, lay it out again, slower.
@@ -2107,16 +2087,16 @@ impl Writer<'_> {
         Ok(())
     }
 
-    /// The layer beneath grown by half the nozzle's width, where the
-    /// walls that hang clear of it are told apart
-    /// (`detect_overhang_wall`) and there is a layer beneath.
-    pub(crate) fn grown(&self) -> Option<&overhang::Below> {
+    /// The layer beneath and how far beyond it a line's middle has to be
+    /// for the line to hang clear, half the nozzle's width, where such
+    /// walls are told apart (`detect_overhang_wall`) and there is a layer
+    /// beneath: what [`overhang::stretches`] and [`overhang::Below::clear`]
+    /// go by.
+    pub(crate) fn clear_of(&self) -> Option<(&overhang::Below, f64)> {
         let s = self.settings;
-        let by = (0.5 * s.nozzle_diameter).to_bits();
+        let below = self.below.as_ref()?;
         (s.detect_overhang_wall && !self.state.first_layer)
-            .then(|| self.grown.iter().find(|(known, _)| *known == by))
-            .flatten()
-            .map(|(_, grown)| grown)
+            .then_some((below, 0.5 * s.nozzle_diameter))
     }
 
     /// A wall measured against the layer beneath: cut into the stretches
@@ -2126,12 +2106,19 @@ impl Writer<'_> {
     /// `variable_speed`).
     fn measure(&self, points: &[Point2], laid: &Laid<'_>) -> Vec<Run> {
         let s = self.settings;
-        let stretches = match self.grown() {
-            Some(grown) => overhang::stretches(grown, points),
-            None => vec![overhang::Stretch {
-                points: points.to_vec(),
-                clear: false,
-            }],
+        // Each stretch with how far its points are from the outline
+        // beneath, where cutting it has found that out already.
+        let stretches: Vec<(overhang::Stretch, Option<Vec<f64>>)> = match self.clear_of() {
+            Some((below, by)) => (overhang::stretches_measured(below, by, points).into_iter())
+                .map(|(stretch, known)| (stretch, Some(known)))
+                .collect(),
+            None => vec![(
+                overhang::Stretch {
+                    points: points.to_vec(),
+                    clear: false,
+                },
+                None,
+            )],
         };
         let Some(below) = self
             .below
@@ -2139,7 +2126,7 @@ impl Writer<'_> {
             .filter(|_| s.enable_overhang_speed || laid.fan)
         else {
             return (stretches.into_iter())
-                .map(|stretch| Run {
+                .map(|(stretch, _)| Run {
                     points: stretch.points,
                     clear: stretch.clear,
                     readings: Vec::new(),
@@ -2148,7 +2135,7 @@ impl Writer<'_> {
                 .collect();
         };
         (stretches.into_iter())
-            .map(|stretch| {
+            .map(|(stretch, known)| {
                 let (role, flow, motion) = laid.of(stretch.clear);
                 // The speed the overhang speeds are shares of: the
                 // wall's own setting, the inner walls' for a stretch
@@ -2206,7 +2193,7 @@ impl Writer<'_> {
                     speeds: &speeds,
                     fan_at,
                 }
-                .readings(&stretch.points);
+                .readings(&stretch.points, known.as_deref());
                 // "with the slowdown off the points only carry the
                 // overhang fan transitions"
                 if !s.enable_overhang_speed {

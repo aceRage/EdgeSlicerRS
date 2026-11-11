@@ -51,12 +51,12 @@ impl Writer<'_> {
     /// they are laid: only where overhanging walls are told apart
     /// (`detect_overhang_wall`), and never on the first layer.
     fn hangs_clear(&self, wall: &ExtrusionLoop) -> bool {
-        let Some(grown) = self.grown() else {
+        let Some((below, by)) = self.clear_of() else {
             return false;
         };
         let mut round = wall.polygon.points.clone();
         round.extend(wall.polygon.points.first().copied());
-        overhang::stretches(grown, &round)
+        overhang::stretches(below, by, &round)
             .iter()
             .any(|stretch| stretch.clear)
     }

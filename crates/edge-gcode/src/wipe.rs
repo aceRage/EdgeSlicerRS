@@ -234,8 +234,8 @@ impl Writer<'_> {
     /// Whether a wall hangs clear of the layer beneath where it starts,
     /// and so starts as an overhang wall.
     fn starts_clear(&self, start: Point2) -> bool {
-        self.grown()
-            .is_some_and(|grown| grown.signed_distance(unscaled(start.x), unscaled(start.y)) > 0.0)
+        self.clear_of()
+            .is_some_and(|(below, by)| below.clear(unscaled(start.x), unscaled(start.y), by))
     }
 
     /// Comes at an outer wall from inside the part, if that is asked for

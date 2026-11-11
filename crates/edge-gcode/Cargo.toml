@@ -7,7 +7,6 @@ publish.workspace = true
 
 [dependencies]
 edge-avoid.workspace = true
-edge-clip.workspace = true
 edge-config.workspace = true
 edge-extrusion.workspace = true
 edge-geom.workspace = true

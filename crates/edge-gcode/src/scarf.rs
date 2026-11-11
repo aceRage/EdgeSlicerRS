@@ -781,8 +781,8 @@ impl Writer<'_> {
     /// Whether the line from `first` to `second` starts clear of the
     /// layer beneath, as the walls are judged when they are laid.
     fn over_air(&self, first: Point2, second: Point2) -> bool {
-        self.grown().is_some_and(|grown| {
-            overhang::stretches(grown, &[first, second])
+        self.clear_of().is_some_and(|(below, by)| {
+            overhang::stretches(below, by, &[first, second])
                 .first()
                 .is_some_and(|stretch| stretch.clear)
         })
