@@ -17,6 +17,7 @@ mod circle;
 mod cooling;
 mod inside;
 mod overhang;
+mod scarf;
 mod seam;
 mod settings;
 
@@ -34,6 +35,7 @@ use edge_geom::{ExPolygon, Point2, scaled, unscaled};
 use edge_template::{TemplateError, Value, Variables};
 use rayon::prelude::*;
 
+pub use scarf::{Scarf, ScarfSeam};
 pub use seam::Seam;
 pub use settings::{Lift, OverhangFan, PrintSettings, WallDirection, WallOrder};
 
@@ -609,6 +611,9 @@ struct State {
     z: f64,
     /// How high the nozzle actually is, once a move has said.
     height: Option<f64>,
+    /// The stretch of a scarf seam being laid, and how far along it the
+    /// nozzle is (`scarf.rs`).
+    slope: Option<scarf::Slope>,
     first_layer: bool,
     /// The speed of the wall loop being laid, where it is small enough
     /// to have one of its own (`small_perimeter_speed`).
@@ -1545,6 +1550,11 @@ impl Writer<'_> {
             if turned {
                 path.reverse();
             }
+            // Joined with a scarf, the loop is laid whole and its start
+            // on a slope (`scarf.rs`); otherwise it stops short of it.
+            if self.scarf_wall(layer, own, wall, turned, &path, (edge, start), &planned)? {
+                continue;
+            }
             let whole = (!wall.widths.is_empty()).then(|| path.clone());
             seam::clip_end(&mut path, s.seam_gap);
             let Some(whole) = whole else {
@@ -1805,6 +1815,19 @@ impl Writer<'_> {
         closed: bool,
     ) -> io::Result<()> {
         self.travel(points[0], sheltered)?;
+        self.lay_path(points, parts, role, flow, closed)
+    }
+
+    /// Extrudes along a path the nozzle is at the start of; the rest is
+    /// as [`Self::path_parts`].
+    fn lay_path(
+        &mut self,
+        points: &[Point2],
+        parts: Option<&[arc::Part]>,
+        role: Role,
+        flow: &Flow,
+        closed: bool,
+    ) -> io::Result<()> {
         let s = self.settings;
         let motion = self.motion(role, flow, self.state.first_layer);
         // Bridges always get the overhang fan, and with no threshold set
@@ -1849,8 +1872,11 @@ impl Writer<'_> {
                             s.inner_wall_speed
                         });
                 if s.filament_max_volumetric_speed > 0.0 {
-                    usual = usual.min(s.filament_max_volumetric_speed / flow.mm3_per_mm());
+                    usual = usual.min(
+                        s.filament_max_volumetric_speed / (flow.mm3_per_mm() * self.scarf_flow()),
+                    );
                 }
+                let usual = self.scarf_speed(usual);
                 let step = |speed: FloatOrPercent| {
                     let speed = speed.resolve(usual);
                     if speed < 0.5 { usual } else { speed }
@@ -2144,7 +2170,7 @@ impl Writer<'_> {
             Role::SupportInterface => s.support_interface_speed,
         };
         let speed = if s.filament_max_volumetric_speed > 0.0 {
-            wanted.min(s.filament_max_volumetric_speed / flow.mm3_per_mm())
+            wanted.min(s.filament_max_volumetric_speed / (flow.mm3_per_mm() * self.scarf_flow()))
         } else {
             wanted
         };
@@ -2483,15 +2509,19 @@ impl Writer<'_> {
             self.extruding = true;
             self.timing.fixed = 0.0;
         }
+        // On a scarf seam the move climbs as it goes, and lays a share
+        // of the line (`scarf.rs`).
+        let sloping = self.slope_on(length);
+        let moved = sloping.as_ref().map_or(length, |sloping| sloping.length);
         let held = role == Role::ExternalPerimeter && s.dont_slow_down_outer_wall
             || self.circle_wall_held(role);
         let speed = if held {
-            self.timing.fixed += length / motion.speed;
+            self.timing.fixed += moved / motion.speed;
             motion.speed
         } else {
             match self.timing.lines.last_mut() {
-                Some(line) if line.1 == motion.speed => line.0 += length,
-                _ => self.timing.lines.push((length, motion.speed)),
+                Some(line) if line.1 == motion.speed => line.0 += moved,
+                _ => self.timing.lines.push((moved, motion.speed)),
             }
             self.slowdown.apply(motion.speed)
         };
@@ -2500,15 +2530,27 @@ impl Writer<'_> {
             Role::BottomSurface => s.bottom_solid_infill_flow_ratio,
             Role::InternalBridge => s.internal_bridge_flow,
             Role::Brim => s.brim_flow_ratio,
-            _ => 1.0,
+            _ => sloping.as_ref().map_or(1.0, |sloping| sloping.flow),
         };
         let volume =
             length * flow.mm3_per_mm() * s.filament_flow_ratio * s.print_flow_ratio * share;
         let feed = volume / self.filament_area;
         self.feed(speed);
         let feed_word = self.feed_word();
-        match turn {
-            None => writeln!(
+        match (turn, &sloping) {
+            // GCodeWriter.cpp `extrude_to_xyz`: every move of a scarf
+            // says its height, the way down too, which stays level.
+            (None, Some(sloping)) => {
+                writeln!(
+                    self.out,
+                    "G1 X{:.3} Y{:.3} Z{:.3} E{feed:.5}{feed_word}",
+                    unscaled(to.x),
+                    unscaled(to.y),
+                    sloping.z
+                )?;
+                self.state.height = Some(sloping.z);
+            }
+            (None, None) => writeln!(
                 self.out,
                 "G1 X{:.3} Y{:.3} E{feed:.5}{feed_word}",
                 unscaled(to.x),
@@ -2518,7 +2560,7 @@ impl Writer<'_> {
             // counter-clockwise and G2 clockwise, and I and J say where
             // the centre is from where the move starts, to the same
             // three places as X and Y.
-            Some(arc) => writeln!(
+            (Some(arc), _) => writeln!(
                 self.out,
                 "G{} X{:.3} Y{:.3} I{:.3} J{:.3} E{feed:.5}{feed_word}",
                 if arc.ccw { 3 } else { 2 },
@@ -2536,7 +2578,7 @@ impl Writer<'_> {
             used.0 += feed;
             used.1 += volume;
         }
-        self.state.summary.seconds += length / speed;
+        self.state.summary.seconds += moved / speed;
         self.state.position = Some(to);
         Ok(())
     }
@@ -2641,7 +2683,8 @@ impl Writer<'_> {
     /// to extrude.
     fn prime(&mut self) -> io::Result<()> {
         let s = self.settings;
-        let z = self.state.z;
+        // The layer's height, or the foot of a scarf seam.
+        let z = self.laying_height();
         if self.state.height != Some(z) {
             self.feed(s.z_speed);
             let feed_word = self.feed_word();
@@ -3261,5 +3304,7 @@ pub fn role_name(role: Role) -> &'static str {
 mod arc_tests;
 #[cfg(test)]
 mod ironing_tests;
+#[cfg(test)]
+mod scarf_tests;
 #[cfg(test)]
 mod tests;

@@ -2,7 +2,7 @@ use edge_config::{ConfigError, FloatOrPercent, Settings, Value as Setting};
 use edge_extrusion::Flow;
 use edge_template::{Value, Variables};
 
-use crate::seam::Seam;
+use crate::{scarf::Scarf, seam::Seam};
 
 /// How the nozzle rises before a travel (`z_hop_types`).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -146,6 +146,8 @@ pub struct PrintSettings {
     pub staggered_inner_seams: bool,
     /// How far short of its start a wall loop stops, in mm.
     pub seam_gap: f64,
+    /// Which wall loops are joined on a slope instead, and how.
+    pub scarf: Scarf,
     /// Curves are cut into segments that stray no further than this, in mm.
     pub resolution: f64,
     /// Whether stretches of a path that lie on a circle are written as
@@ -323,6 +325,7 @@ impl Default for PrintSettings {
             seam: Seam::Aligned,
             staggered_inner_seams: false,
             seam_gap: 0.04,
+            scarf: Scarf::default(),
             resolution: 0.01,
             arc_fitting: false,
             bed: None,
@@ -495,7 +498,6 @@ impl PrintSettings {
                 "All Surfaces",
                 "the nozzle lifts over every surface",
             ),
-            ("seam_slope_type", "none", "seams are plain butt joints"),
             ("wipe_on_loops", "0", "walls end without the inward move"),
             (
                 "wipe_before_external_loop",
@@ -519,20 +521,7 @@ impl PrintSettings {
                 unsupported.push(format!("{key} \"{value}\": {instead}"));
             }
         }
-        // A compensated circle's walls are to be joined with a scarf seam
-        // (GCode.cpp `extrude_loop`), and there are none here.
-        if settings
-            .flag("enable_circle_compensation")?
-            .unwrap_or(false)
-            && settings
-                .flag("apply_scarf_seam_on_circles")?
-                .unwrap_or(true)
-        {
-            unsupported.push(
-                "apply_scarf_seam_on_circles \"1\": the walls of compensated circles are joined with a plain butt seam"
-                    .into(),
-            );
-        }
+        let scarf = Scarf::read(settings, &mut unsupported)?;
         if first("internal_bridge_fan_speed")?.is_some_and(|speed| speed >= 0.0) {
             unsupported.push(
                 "internal_bridge_fan_speed: bridges over infill get the overhang fan speed".into(),
@@ -764,6 +753,7 @@ impl PrintSettings {
                 .unwrap_or(FloatOrPercent::Percent(10.0))
                 .resolve(nozzle_diameter)
                 .max(0.0),
+            scarf,
             resolution: number("resolution", defaults.resolution)?,
             arc_fitting: flag("enable_arc_fitting", defaults.arc_fitting)?
                 && !flag("spiral_mode", false)?,
