@@ -31,6 +31,23 @@ pub(crate) struct PartSettings {
     pub kind: PartKind,
     /// The filament this part is printed in, if not the object's.
     pub extruder: Option<u32>,
+    /// Whether the part names one of Precise Seam's types
+    /// (`precise_seam_type`), which a modifier part then is.
+    pub precise_seam: bool,
+}
+
+impl PartSettings {
+    /// What the part is: a modifier that names a Precise Seam type is
+    /// one, whichever order its metadata comes in; on any other part the
+    /// name is passed over (bbs_3mf.cpp, "Apply the seam mode after all
+    /// base-type metadata").
+    pub fn kind(&self) -> PartKind {
+        if self.kind == PartKind::Modifier && self.precise_seam {
+            PartKind::PreciseSeam
+        } else {
+            self.kind
+        }
+    }
 }
 
 #[derive(Default)]
@@ -137,6 +154,11 @@ pub(crate) fn parse(text: &str, part: &str) -> Result<ModelSettings, Error> {
                     Scope::Object(object) if key == "extruder" => {
                         settings.objects.entry(*object).or_default().extruder =
                             Some(number(part, "extruder", &value)?);
+                    }
+                    Scope::Part(object, id) if key == "precise_seam_type" => {
+                        let object = settings.objects.entry(*object).or_default();
+                        object.parts.entry(*id).or_default().precise_seam =
+                            crate::is_precise_seam(&value);
                     }
                     Scope::Part(object, id) if key == "extruder" => {
                         let object = settings.objects.entry(*object).or_default();

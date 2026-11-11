@@ -25,6 +25,7 @@ replaces it until output matches on the printers we care about.
 | `crates/edge-adhesion` | Skirt and brim, with the automatic brim width |
 | `crates/edge-support` | Supports under overhangs, normal (grid) and tree, with dense tops and feet |
 | `crates/edge-gcode` | Print order, seams, travel, retraction, wipe and lift, cooling, overhangs, and extrusion, written as G-code |
+| `crates/edge-visibility` | How much of a part's outside can be seen from each place on its surface, which is where a seam shows least: points scattered over the mesh, rays cast from each, and the measure at any place taken from the points round it (a port of the visibility measure of the reference's SeamPlacer) |
 | `crates/edge-infill` | Top, bottom, bridge, solid, bridged-over-infill and sparse surfaces, and the lines that fill them, with loops for the narrow parts of solid fill; and ironing: which areas are gone over again, and the lines that do it |
 | `crates/edge-template` | The placeholder language of custom G-code: `{expression}`, `{if}`, `[variable]`, and scripts |
 | `crates/edge-time` | How long a G-code file takes, with acceleration: the file is read as a printer reads it and planned as the reference's estimator plans, or as Klipper does |
@@ -786,14 +787,72 @@ Known gaps: painted supports and seams, per-object setting overrides, typed sett
   gap fill and the fill that lie in it), holds speeds to the
   hot end's melt rate, sets acceleration by feature, and reports filament,
   weight and time. Following the reference:
-  - Seams: each outer wall starts at its best corner by the reference's
-    angle score and stays in line with the layer below; inner walls start
-    alongside. Walls stop `seam_gap` short of their start. With
-    `seam_position` at `random` the outer wall starts somewhere else on
-    its loop on every layer, the same on every run; with
-    `staggered_inner_seams` each inner wall starts on round from the
-    wall outside it by its depth, so the seams do not lie one behind
-    another.
+  - Seams: every point of every outermost wall, as it is written
+    (without arcs thinned to `resolution`, which is done to the walls
+    of the whole print first), is weighed as a place
+    for its seam before the file is written, as the reference's
+    SeamPlacer weighs it, object by object and in each object's own
+    coordinates. First, how far the wall's line hangs out over the
+    layer beneath there (the middle of the line outside that layer's
+    outline, with 0.65 of the line's width, less the layer's height):
+    of two points either of which hangs out, the one that hangs out
+    less is the better. Then whether the point lies hidden inside the
+    layer's own outline, more than half a mm, which it can where two
+    materials meet. Then a score of two parts. One is how much of the
+    part's outside can be seen from there: 30000 points are scattered
+    over each object's mesh, 25 rays are cast from each over the half
+    of the sky it faces, and a point is seen less by a 25th for each
+    ray that runs into the part; a place on a wall takes the measure
+    of the points within reach of it (`edge-visibility`, parallel
+    across the points and the same at any thread count; volumes cut
+    out of an object, its negative parts, are let through). The other
+    is the angle the wall turns through there, taken between the
+    points an arm of the nozzle's width either side, least where it
+    folds into the part and most on a straight run; it counts for 0.6
+    beside the first, and whole for the nearest corner. With
+    `seam_position` at `aligned` the best score takes the
+    seam; at `nearest` the distance from where the nozzle is counts
+    beside it, and the seam is picked as the wall is laid; at `back`
+    the point furthest back takes it whatever its score (and nothing
+    is measured of what is seen); `aligned_back`, `aligned_front`,
+    `left` and `right` lean to that side of the bed, a point of the
+    surface that faces the other way counting as easier seen by up to
+    as much again; `random` picks a
+    place along the stretches that set off from points about as good as
+    the best, by a figure made from the wall's first point, the same on
+    every run. Of points as good as each other the first is taken,
+    counting from where the reference's walls start, which is the
+    point after a wall's lowest (its clipping library lists a polygon
+    so; this engine's starts one elsewhere). An inner wall starts
+    beside the seam of the outer wall nearest it: at the point nearest
+    the seam, or where the outer wall folds inward there, in its own
+    corner; with `staggered_inner_seams` on round from that by its
+    depth and no less than its own width, so the seams do not lie one
+    behind another. Walls stop `seam_gap` short of their start. For
+    every position but `nearest` and `random` the seams are then lined
+    up as the reference lines them up: taken best first, each seam not
+    yet in a line gathers one, upward and downward, of the seam or a
+    point no worse by much (0.3 of the score, a tenth of the line's
+    width of overhang, 1.5 mm at the back) within four line widths on
+    each next layer; a line of six or more has a smooth curve fitted
+    through it (a cubic B-spline of one stretch to every 4 mm of line,
+    each seam counting for more the sharper its corner), and each seam
+    is moved to the curve, the less the sharper its corner, a corner of
+    55 degrees or more not at all. What differs by intent: where a
+    line stops short of the top layer the reference, turning to look
+    downward, steps down twice and leaves the layer beneath the line's
+    first seam out of it (a slip; a line of twenty seams or more is
+    seldom put right by its second tries), and here that layer is in
+    the line; a wall is
+    measured against everything on the layer beneath, not its own
+    object's layer alone; a loop opened at a seam that is not one of
+    its points is opened at the nearest point of the loop, where the
+    reference takes the nearest of its stretches that rest; and a mesh
+    is measured for visibility as it is, where the reference first
+    thins one of more than 16000 triangles to that many by collapsing
+    its short edges, for speed, so that on such a part the points
+    scattered are not the reference's own and the measure differs by
+    what the thinning loses.
   - Scarf seams (`seam_slope_type`): a loop joined this way is laid
     whole, with no gap at its seam. Its first 20 mm
     (`seam_slope_min_length`, or all of it with
@@ -1158,8 +1217,9 @@ them painted on says so when it is sliced.
 Not done in G-code: supports only where painted (none are
 generated, and a note says so), the older tree styles (`tree_slim`,
 `tree_strong`, `tree_hybrid`: organic-style trees are built, with a note),
-rafts, brims inside holes, draft shields, seams placed by visibility or kept
-off overhangs, a fan speed of its own for bridges over infill, walls
+rafts, brims inside holes, draft shields, seams moved to where parts meet
+(`seam_prefer_part_joints`), painted on or off, or put by Precise Seam
+parts (read as helpers, not printed, with a note), a fan speed of its own for bridges over infill, walls
 slowed over curled edges, preview pictures in the file
 (thumbnails), and object labels for cancelling (`EXCLUDE_OBJECT`). Bridge fill keeps its own speed along its whole
 length, where the reference also slows it near its anchors. A setting that asks for one of these is listed as a
@@ -1693,6 +1753,181 @@ climbs from nothing, and the way down over it thins out over the whole
 slope (on the tube with arcs, 0.203 and 0.311 mm of filament against
 0.643 for 20 mm of line); that is how the reference has it, and it is
 not changed here.
+
+Where seams are put, 2026-11-11, on twelve parts from
+`tools/make_fixture.py` with the U1's presets (cube, cylinder, tube,
+curve, holes, funnel, frame, fins, comb, steps, mushroom, twotone), each
+sliced with `seam_position` at `aligned`, `aligned_back`, `nearest`,
+`back` and `random`, and on the Benchy and the three plates of
+`mcbrim_test.3mf` as they are (`aligned`). A script pairs every outer
+wall loop of the reference's file with this engine's on the same layer
+by the middle and size of its bounds and takes how far apart the two
+start. The share of loops whose seams are within 0.05 mm and within
+1 mm of the reference's, by stage of the work:
+
+| | loops | before | overhangs | comparators | visibility | lined up |
+| --- | --- | --- | --- | --- | --- | --- |
+| `aligned` | 1021 | 2.6%, 12.3% | 3.2%, 12.9% | 14.8%, 25.7% | 34.5%, 39.5% | 40.0%, 56.4% |
+| `aligned_back` | 1011 | 13.2%, 31.1% | 13.5%, 31.4% | 18.0%, 41.5% | 27.3%, 36.5% | 46.3%, 69.9% |
+| `back` | 1011 | 69.8%, 91.6% | 70.1%, 91.9% | 71.2%, 87.4% | 71.2%, 87.4% | 72.5%, 94.0% |
+| `nearest` | 1019 | 14.6%, 22.7% | 15.0%, 23.1% | 16.6%, 24.7% | 25.1%, 32.2% | 25.1%, 32.2% |
+| `random` | 1016 | 0.0%, 7.4% | 0.1%, 7.4% | 23.2%, 30.0% | 23.2%, 30.0% | 23.2%, 30.0% |
+| Benchy | 745 | 35.1%, 41.7% | 43.1%, 52.8% | 24.6%, 31.7% | 64.0%, 80.9% | 49.9%, 61.3% |
+| every loop, with the three plates | 6235 | 20.6%, 31.9% | 21.9%, 33.5% | 26.6%, 38.3% | 37.4%, 46.7% | 39.8%, 53.6% |
+
+Overhangs (a seam kept off what hangs out over the layer beneath):
+the Benchy gains most, its worst seam 34 mm from the reference's where
+it was 54; on the `holes` part 4 to 6 loops more are within 0.05 mm at
+each setting, those beside the hole that runs from front to back as it
+closes over; nothing else moves but two or three `random` seams round
+holes, which are now picked going round the way the reference goes.
+With scarf seams on (`seam_slope_type=all`, `seam_slope_inner_walls=1`)
+the `holes` part's layer at 10.45 mm was 8.4% short of the reference's
+wall: each side of the closing hole is an island 6.7 by 15.6 mm whose
+side by the hole is an overhang wall, the reference's seams are at the
+corners away from it and this engine's were at the corners by it, and a
+loop that starts over air has no scarf in either slicer. Both seams are
+now where the reference's are, to the micron, and wall length per layer
+is off by 0.03% on average (0.14% before), the most 0.6% on the first
+layer as with no scarf. Travel and retractions on the Benchy: 26.96 m
+and 1520 in the reference's file, 27.78 m and 1685 here before, 26.24 m
+and 1746 now.
+
+Comparators (the reference's own way of telling two points apart, its
+angles, points hidden where two materials meet, each object measured
+from its own middle, walls counted from where the reference's start,
+and inner walls started as it starts them): the cube at `aligned` goes
+from none of its 100 seams to all of them, every corner of a box being
+as good as another and the first then taken; `random` from none within
+0.05 mm to 23%, 48% on the cube and 50% on the frame. A random seam is
+put by the sine of a figure made from its wall's first point to the
+nanometre, times 43758, so two slicers whose walls differ in the last
+digit scatter their seams differently, and that is all the rest is:
+on round walls the two never agree. The Benchy loses what it gained,
+24.6% from 43.1%: with nothing known yet of what can be seen from
+where, the best angle takes every seam, where the reference weighs
+visibility beside it and the simpler rule before happened to follow
+it more often. At the back the round parts (cylinder, tube, funnel)
+are within 1.7 mm where they were within 1 mm: their seams follow the
+one beneath from corner to corner, with no curve yet to draw them
+straight.
+
+Visibility (how much of the part's outside can be seen from each place,
+by rays cast from 30000 points on its mesh): the Benchy goes from 24.6%
+within 0.05 mm to 64.0% and from 31.7% within 1 mm to 80.9%, its mean
+distance from the reference's seams from 5.3 mm to 1.4; the mushroom
+and the fins at `aligned_back` from 27.5% and 62.5% to all of their
+seams, the mushroom at `aligned` from none to 72.5%, the `holes` part
+at `aligned` from none to 27.1% and at `nearest` from 18.5% to 32.4%.
+The `back` and `random` do not go by what is seen and are as they
+were. It costs time: 30000 points and 750000 rays an object, 0.17 s
+more on the Benchy (0.48 s to 0.65 s for the whole run, best of 7),
+0.54 s on plate 1 of `mcbrim_test.3mf` with its many objects (2.30 s to
+2.85 s), 0.02 s on the `holes` part.
+
+Lined up (the reference's lines of seams, each with its fitted curve):
+the cube at `aligned_back` goes from the other back corner on every
+layer to the reference's on all 100, as it does at `aligned_front`,
+`left` and `right`; the mushroom at `aligned` from 72.5% to every seam;
+the comb at `back` from 1 seam of 15 to all; the round parts come
+within 1 mm where they were up to 10 mm off (tube at `aligned` and
+`aligned_back`, cylinder at `aligned_back`, 100% each from none; the
+funnel at `back` and `aligned_back` 70% and 74% from none), and within
+0.05 mm on about half the tube's loops. They could not do better
+then: this engine's round walls had twice the reference's corners, so
+the points a seam may sit on were not the same points, and the
+cylinder at `aligned`, whose every point is as good as another, had its
+seam 10 mm round from the reference's (with main merged in they do;
+see below). The same holds for the frame, the steps
+and the `holes` slab, where the reference's seam is on a straight side
+at a point of its outline that this engine's outline does not have
+(where two of the boxes the part is built of meet; a seam can only
+sit on a point of its wall or be drawn between such points, so the
+reference's outline has one there). The two blocks of `twotone` are
+two parts of one object, and there the reference puts both seams in
+the middle of the side where the parts meet, which is
+`seam_prefer_part_joints`, on unless turned off and not done here; the
+plates of `mcbrim_test.3mf`, objects of several parts, are the same
+case, and it is why they hardly agree (4.7%, 1.5% and 1.5% of their
+loops within 0.05 mm).
+
+The Benchy loses 14 points on the way, and that is a toss-up, not a
+miss. It is its own mirror image, and of its 745 loops 457 have their
+seam within 1 mm of the reference's, 196 within 1 mm of the mirror
+image of the reference's, and 92 elsewhere (603, 53 and 89 before the
+seams were lined up). Which of two mirrored places is taken is settled
+by which has the better score, and the two differ only by the scatter
+of the sample points; the Benchy's mesh has more than 16000 triangles,
+so the points are not the reference's own (Status, above), and a whole
+line of seams goes the way its best seam does. On a part of fewer
+triangles the points are the reference's: the cube's four leaning
+positions each pick the reference's corner of two.
+
+The reference's skipped layer (Status, above) is in its files, and the
+figures show it: with the slip copied, for the measure only, `aligned`
+comes to 49.2% and 60.8% (40.0% and 56.4% without), the steps at
+`aligned` to 75.4% from 53.8%, the `holes` part at `aligned` to 36.3%
+from 16.4%, and the Benchy to 51.9% and 63.8%. It is not copied.
+
+At `aligned_front`, `left` and `right`, on the cube, the `holes` part,
+the mushroom and the tube (651 loops each): 31.0% and 45.6%, 38.9% and
+61.3%, 45.9% and 68.0%. Travel and retractions hardly move with any of
+this: on the Benchy 26.96 m and 1520 in the reference's file, 26.49 m
+and 1707 here; on the `holes` part at `aligned` 17.35 m and 747, 16.84 m
+and 738. With scarf seams on, the `holes` part's wall length per layer
+is off by 0.03% on average, the most 0.6% on the first layer, and both
+loops of the layer at 10.45 mm still start where the reference's do.
+Lining seams up costs no time that shows: the Benchy's run is 0.65 s
+before it and after.
+
+With main merged in (layers cut without flat crossings, so a ring is
+its mesh's corners; walls thinned to `resolution` before they are
+written, and the seams now planned on the thinned loops, so a seam's
+candidates are the points that are written), 2026-11-11, on the same
+parts and the bent `curve`, which the script now pairs (the reference
+stands it 0.73 mm further back than the file has it, being centred by
+its bounds; the script moves this engine's walls onto the reference's
+where the two have the same size). Main as it was, against main with
+the seams:
+
+| | loops | main | with the seams |
+| --- | --- | --- | --- |
+| `aligned` | 1051 | 6.3%, 9.2% | 42.9%, 58.3% |
+| `aligned_back` | 1051 | 12.3%, 28.9% | 52.7%, 69.9% |
+| `back` | 1051 | 76.6%, 92.2% | 88.2%, 94.3% |
+| `nearest` | 1051 | 22.7%, 30.0% | 42.8%, 46.7% |
+| `random` | 1051 | 0.1%, 7.1% | 25.7%, 31.3% |
+| `aligned_front`, `left`, `right` | 1953 | 25.0%, 27.1% | 46.1%, 64.3% |
+| Benchy | 744 | 33.9%, 40.7% | 49.5%, 62.2% |
+| the three plates | 412 | 1.9%, 1.9% | 2.4%, 5.1% |
+| every loop | 8364 | 23.8%, 31.1% | 47.0%, 58.6% |
+
+(On the old base with the same script the seams came to 39.4% and
+54.9% of every loop.) The round parts gain most: the tube is within
+0.05 mm on all 80 loops at every position but `nearest` and `random`,
+where it was within 1 mm and on about half; the cylinder at `back` and
+`aligned_back` on all 50, where it was within 0.5 mm. The cylinder at
+`aligned` is 4.8 mm off on every layer, and that is the mirror image
+of the reference's seam across the part's middle (10 mm off before):
+every point of a round wall scores about the same, and which of the two
+mirrored places wins is settled by the scatter of what can be seen.
+The funnel is where it was, 76% and 72% within 1 mm at `aligned_back`
+and `back`: both slicers line its seams up the back, but the
+reference's line leans 2 mm across the part's 50 layers and this
+engine's stands upright, the two crossing at about the 43rd layer
+(within 0.05 mm there); at `aligned` its seams are elsewhere
+altogether, 10 mm off on average. The `curve` is within 1 mm on every
+loop at `aligned`, `aligned_back` and `back` (0.5 mm, 0.16 mm and
+none), as on main. Travel and retractions on the Benchy: 26.96 m and
+1520 in the reference's file, 29.00 m and 1708 on main, 27.39 m and
+1727 with the seams; on the `holes` part at `aligned` 17.35 m and 747,
+17.08 m and 752, 17.41 m and 754. With scarf seams on the `holes` part
+(`seam_slope_type=all`, `seam_slope_inner_walls=1`) wall length per
+layer is off by less than 0.005% on average and by less than 0.05% on
+any layer, where main is off by 0.21% on average and 16.8% on the layer at
+10.45 mm. Time, best of 5: the Benchy 0.49 s on main and 0.67 s with
+the seams, plate 1 of `mcbrim_test.3mf` 2.54 s and 3.05 s, nearly all
+of it the visibility measure.
 
 Moves at the seam (`wipe_on_loops`, `wipe_before_external_loop`,
 `wipe_inward`), 2026-11-11, on parts from `tools/make_fixture.py` with

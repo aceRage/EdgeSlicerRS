@@ -332,3 +332,67 @@ fn negative_parts_make_their_instances_separate_bodies() {
     // The merged mesh is the printed material only.
     assert_eq!(project.mesh(None).signed_volume(), 2250.0);
 }
+
+#[test]
+fn precise_seam_parts_are_read_as_helpers_not_printed_and_said_to_be_there() {
+    let root = model(
+        "millimeter",
+        &format!(
+            r#"<object id="1">{}</object><object id="2">{}</object><object id="3">{}</object>
+               <object id="4">{}</object><object id="5">{}</object>
+               <object id="6"><components><component objectid="1"/><component objectid="2"/>
+                 <component objectid="3"/><component objectid="4"/></components></object>"#,
+            box_mesh([10.0; 3]),
+            box_mesh([2.0; 3]),
+            box_mesh([3.0; 3]),
+            box_mesh([4.0; 3]),
+            box_mesh([5.0; 3])
+        ),
+        r#"<item objectid="6"/><item objectid="5" transform="1 0 0 0 1 0 0 0 1 30 0 0"/>"#,
+    );
+    // A modifier naming a Precise Seam type (before its name, which the
+    // order does not matter for), a part of the older inline kind, and
+    // a normal part that names one, which it stays.
+    let model_settings = r#"<config>
+      <object id="6">
+        <part id="1" subtype="normal_part"/>
+        <part id="2" subtype="modifier_part">
+          <metadata key="precise_seam_type" value="precise_seam_center"/>
+          <metadata key="name" value="Seam here"/>
+        </part>
+        <part id="3" subtype="precise_seam_blocked"/>
+        <part id="4" subtype="normal_part"><metadata key="precise_seam_type" value="precise_seam_left"/></part>
+      </object>
+      <plate><metadata key="plater_id" value="1"/>
+        <model_instance><metadata key="object_id" value="6"/><metadata key="instance_id" value="0"/></model_instance>
+      </plate>
+      <plate><metadata key="plater_id" value="2"/>
+        <model_instance><metadata key="object_id" value="5"/><metadata key="instance_id" value="0"/></model_instance>
+      </plate>
+    </config>"#;
+    let project = Project::read(package(&[
+        ("3D/3dmodel.model", &root),
+        (MODEL_SETTINGS_PART, model_settings),
+    ]))
+    .unwrap();
+    let object = project.objects.iter().find(|o| o.id == 6).unwrap();
+    let kinds: Vec<_> = object.parts.iter().map(|p| p.kind).collect();
+    assert_eq!(
+        kinds,
+        [
+            PartKind::Normal,
+            PartKind::PreciseSeam,
+            PartKind::PreciseSeam,
+            PartKind::Normal
+        ]
+    );
+    assert_eq!(object.parts[1].name.as_deref(), Some("Seam here"));
+    // Neither helper is printed: the body is the two normal parts.
+    let bodies = project.bodies(Some(0));
+    assert_eq!(bodies.len(), 1);
+    let (_, max) = bodies[0].solid.bounds().unwrap();
+    assert_eq!(max, [10.0; 3]);
+    assert!(project.has_precise_seams(Some(0)));
+    assert!(!project.has_precise_seams(Some(1)));
+    assert!(project.has_precise_seams(None));
+}

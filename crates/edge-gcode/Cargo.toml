@@ -13,6 +13,7 @@ edge-geom.workspace = true
 edge-medial.workspace = true
 edge-template.workspace = true
 edge-time.workspace = true
+edge-visibility.workspace = true
 rayon.workspace = true
 thiserror.workspace = true
 

@@ -61,6 +61,10 @@ fn same(a: &Loaded, b: &Loaded) {
     for (one, other) in a.objects.iter().zip(&b.objects) {
         assert_eq!(bits(one), bits(other));
     }
+    assert_eq!(a.negatives.len(), b.negatives.len());
+    for (one, other) in a.negatives.iter().zip(&b.negatives) {
+        assert_eq!(bits(one), bits(other));
+    }
     assert_eq!(a.settings.is_some(), b.settings.is_some());
     assert_eq!(a.unread_paint, b.unread_paint);
     assert_eq!(a.plate, b.plate);
@@ -160,6 +164,8 @@ fn a_copy_that_is_moved_slices_where_it_stands_and_only_its_plate_changes() {
     let edited = model.place(Some(2)).unwrap();
     assert_eq!(file.bodies.len(), edited.bodies.len());
     assert_eq!(file.objects.len(), edited.objects.len());
+    // What seams are placed by has an entry for each object still.
+    assert_eq!(edited.negatives.len(), edited.objects.len());
     let shifts: Vec<f32> = file
         .objects
         .iter()

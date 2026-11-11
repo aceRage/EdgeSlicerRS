@@ -86,7 +86,8 @@ fn mark_of(kind: PartKind, filament: usize) -> Mark {
         // A filament past the last a triangle can carry is shown as the last.
         PartKind::Normal => Mark::Filament(filament.clamp(1, 255) as u8),
         PartKind::Negative => Mark::Negative,
-        PartKind::Modifier => Mark::Modifier,
+        // Precise Seam's helper geometry is shown as a modifier is.
+        PartKind::Modifier | PartKind::PreciseSeam => Mark::Modifier,
         PartKind::SupportBlocker => Mark::SupportBlocker,
         PartKind::SupportEnforcer => Mark::SupportEnforcer,
     }

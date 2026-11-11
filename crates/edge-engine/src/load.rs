@@ -31,9 +31,15 @@ pub struct Loaded {
     pub settings: Option<Settings>,
     /// For a project, what is painted on its models that is not read.
     pub unread_paint: Vec<&'static str>,
+    /// Whether anything to slice has a Precise Seam part, which is not
+    /// followed.
+    pub precise_seams: bool,
     /// For a project, each object on the plate by itself, for what depends
     /// on which object is which. Empty for a bare model, which is one object.
     pub objects: Vec<Mesh>,
+    /// What is cut out of each of those objects (its negative parts): an
+    /// empty mesh for an object with none.
+    pub negatives: Vec<Mesh>,
     /// Which of the project's plates this is, counting from 0.
     pub plate: usize,
     /// The order the plate sets for filaments on the first layer, as
@@ -244,7 +250,9 @@ pub(crate) fn lone(path: &Path, solid: Mesh) -> Result<Loaded, Failure> {
         painted: Vec::new(),
         settings: None,
         unread_paint: Vec::new(),
+        precise_seams: false,
         objects: Vec::new(),
+        negatives: Vec::new(),
         plate: 0,
         first_layer_sequence: Vec::new(),
         bounds,
@@ -268,9 +276,11 @@ pub(crate) fn placed(
     let mut bodies = project.bodies(plate);
     let mut painted = project.painted(plate);
     let mut objects = project.instance_meshes(plate);
+    let mut negatives = project.instance_negatives(plate);
     if let Some((x, y)) = origin {
         shift(&mut bodies, -x, -y);
         shift_meshes(objects.iter_mut(), -x, -y);
+        shift_meshes(negatives.iter_mut(), -x, -y);
         for object in &mut painted {
             shift_meshes(
                 std::iter::once(&mut object.solid).chain(object.negative.as_mut()),
@@ -293,7 +303,9 @@ pub(crate) fn placed(
         painted,
         settings,
         unread_paint: project.unread_paint.clone(),
+        precise_seams: project.has_precise_seams(plate),
         objects,
+        negatives,
         plate: plate.unwrap_or(0),
         first_layer_sequence,
         bounds,
@@ -372,6 +384,86 @@ mod tests {
         assert_eq!(plate_origin(0, 2, None), Some((0.0, 0.0)));
         assert_eq!(plate_origin(1, 2, None), None);
         assert_eq!(plate_origin(1, 2, Some(&Settings::default())), None);
+    }
+
+    #[test]
+    fn what_is_cut_out_of_each_object_stands_where_the_object_does() {
+        use edge_3mf::{Instance, InstanceRef, Object, Part, PartKind, Plate};
+        use edge_mesh::Transform;
+        use std::sync::Arc;
+        let cube = |min: [f32; 3], max: [f32; 3]| {
+            Arc::new(Mesh::from_triangle_soup(edge_mesh::primitives::cuboid(
+                min, max,
+            )))
+        };
+        let part = |kind, mesh| Part {
+            name: None,
+            kind,
+            filament: 1,
+            mesh,
+            paint: None,
+            transform: Transform::IDENTITY,
+        };
+        let at = |x, y| Instance {
+            transform: Transform::translation([x, y, 0.0]),
+            printable: true,
+        };
+        // A box with a hole cut in it, and a plain one.
+        let project = Project {
+            objects: vec![
+                Object {
+                    id: 1,
+                    name: None,
+                    parts: vec![
+                        part(PartKind::Normal, cube([0.0; 3], [10.0; 3])),
+                        part(PartKind::Negative, cube([2.0; 3], [4.0; 3])),
+                    ],
+                    instances: vec![at(100.0, 50.0)],
+                },
+                Object {
+                    id: 2,
+                    name: None,
+                    parts: vec![part(PartKind::Normal, cube([0.0; 3], [5.0; 3]))],
+                    instances: vec![at(130.0, 50.0)],
+                },
+            ],
+            plates: vec![Plate {
+                id: 1,
+                name: String::new(),
+                first_layer_sequence: Vec::new(),
+                instances: vec![
+                    InstanceRef {
+                        object: 0,
+                        instance: 0,
+                    },
+                    InstanceRef {
+                        object: 1,
+                        instance: 0,
+                    },
+                ],
+            }],
+            settings: None,
+            unread_paint: Vec::new(),
+        };
+        let loaded = placed(
+            Path::new("cut.3mf"),
+            &project,
+            Some(0),
+            Some((80.0, 40.0)),
+            None,
+        )
+        .unwrap();
+        assert_eq!(loaded.objects.len(), 2);
+        assert_eq!(loaded.negatives.len(), 2);
+        assert_eq!(
+            loaded.objects[0].bounds(),
+            Some(([20.0, 10.0, 0.0], [30.0, 20.0, 10.0]))
+        );
+        assert_eq!(
+            loaded.negatives[0].bounds(),
+            Some(([22.0, 12.0, 2.0], [24.0, 14.0, 4.0]))
+        );
+        assert!(loaded.negatives[1].triangles.is_empty());
     }
 
     #[test]

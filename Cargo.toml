@@ -33,6 +33,7 @@ edge-slice = { path = "crates/edge-slice" }
 edge-support = { path = "crates/edge-support" }
 edge-template = { path = "crates/edge-template" }
 edge-time = { path = "crates/edge-time" }
+edge-visibility = { path = "crates/edge-visibility" }
 edge-tower = { path = "crates/edge-tower" }
 # Voronoi diagrams of line segments, a port of Boost.Polygon's. Only
 # edge-medial may depend on it.

@@ -160,6 +160,12 @@ pub fn prepare(mut loaded: Loaded, chosen: &Chosen, overrides: &Overrides) -> Re
             "the project has {kind} painted on it, which is not followed: the settings alone decide"
         ));
     }
+    if loaded.precise_seams {
+        remarks.push(
+            "the project has Precise Seam parts, which are not followed: their seams are placed as any other's, by seam_position"
+                .to_owned(),
+        );
+    }
     let named = chosen.filaments.len();
     // As many filaments as the model prints in or presets were named for.
     let described = filaments.max(named);
@@ -297,4 +303,29 @@ pub fn prepare_noted(
     let mut job = prepare(loaded, &chosen, &overrides)?;
     job.settings.noted_by(reads);
     Ok(job)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_project_with_precise_seam_parts_says_they_are_not_followed() {
+        let loaded = |precise_seams: bool| {
+            let cube = edge_mesh::Mesh::from_triangle_soup(edge_mesh::primitives::cuboid(
+                [0.0; 3], [10.0; 3],
+            ));
+            let mut loaded = crate::load::lone(std::path::Path::new("cube.3mf"), cube).unwrap();
+            loaded.precise_seams = precise_seams;
+            loaded
+        };
+        let said = |loaded: Loaded| {
+            let job = prepare(loaded, &Chosen::default(), &Overrides::default()).unwrap();
+            (job.remarks.iter())
+                .filter(|remark| remark.contains("Precise Seam"))
+                .count()
+        };
+        assert_eq!(said(loaded(false)), 0);
+        assert_eq!(said(loaded(true)), 1);
+    }
 }

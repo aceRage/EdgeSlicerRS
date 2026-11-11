@@ -1,12 +1,9 @@
 //! Where a wall loop starts and ends: its seam.
 //!
-//! The reference's SeamPlacer scores every corner of the outer wall by how
-//! visible it is from outside (by casting rays at the model), by its angle
-//! and by overhang, then lines seams up between layers along a curve. This
-//! keeps the angle score and its weights and replaces the rest with
-//! something much simpler: among corners that score about the same, take
-//! the one nearest the seam on the layer below. Visibility and overhangs
-//! are not looked at.
+//! Which point of a wall its seam goes to is settled in `seam_plan.rs`,
+//! as the reference's SeamPlacer settles it. Here are the setting, and
+//! what is done with a loop once its seam is known: opening it there,
+//! moving a start on round it, and stopping it short of where it began.
 
 use edge_geom::{Point2, unscaled};
 
@@ -17,172 +14,20 @@ pub enum Seam {
     Nearest,
     /// The best corner, kept in line from layer to layer.
     Aligned,
-    /// As `Aligned`, preferring the back (or front) among equals.
+    /// As `Aligned`, leaning to the back, the front, the left or the
+    /// right of the bed: what faces the other way counts as easier seen.
     AlignedBack,
     AlignedFront,
-    /// The corner furthest back (highest Y), or furthest to one side.
-    Back,
     Left,
     Right,
+    /// The point furthest back (highest Y) that is fit for a seam.
+    Back,
     /// Anywhere along the loop, a different place on every layer.
     Random,
 }
 
-/// Corners whose scores are this close count as equally good.
-const SIMILAR: f64 = 0.05;
-
-/// The reference's bell curve (SeamPlacer.cpp `gauss`): `peak` at `mean`,
-/// falling off faster the larger `falloff` is.
-fn gauss(value: f64, mean: f64, peak: f64, falloff: f64) -> f64 {
-    let offset = value - mean;
-    peak * ((1.0 / (falloff * offset * offset + 1.0)).exp() - 1.0) / (std::f64::consts::E - 1.0)
-}
-
-/// How bad a corner is as a seam, by the angle the wall turns through
-/// there: negative for a corner that folds inward, where a seam hides best,
-/// zero on a straight run, where it shows most.
-pub fn angle_penalty(turn: f64) -> f64 {
-    gauss(turn, 0.0, 1.0, 3.0) + 1.0 / (2.0 + (-turn).exp())
-}
-
 fn mm(a: Point2, b: Point2) -> f64 {
     unscaled(b.x - a.x).hypot(unscaled(b.y - a.y))
-}
-
-/// The angle the loop turns through at each corner, in radians, positive
-/// to the left. Measured between points at least `arm` mm either side, so
-/// a curve cut into many short edges still reads as a curve.
-fn turns(points: &[Point2], arm: f64) -> Vec<f64> {
-    let count = points.len();
-    let reach = |from: usize, step: usize| {
-        let mut at = from;
-        for _ in 1..count {
-            at = (at + step) % count;
-            if mm(points[from], points[at]) >= arm {
-                break;
-            }
-        }
-        points[at]
-    };
-    (0..count)
-        .map(|index| {
-            let (before, here, after) = (reach(index, count - 1), points[index], reach(index, 1));
-            let (ax, ay) = (unscaled(here.x - before.x), unscaled(here.y - before.y));
-            let (bx, by) = (unscaled(after.x - here.x), unscaled(after.y - here.y));
-            (ax * by - ay * bx).atan2(ax * bx + ay * by)
-        })
-        .collect()
-}
-
-/// The corner of a loop to start at. `points` run counter-clockwise around
-/// material and clockwise around a hole, which makes a corner that folds
-/// into the part a right turn either way. `nozzle` is where the nozzle is
-/// and `previous` the seams of the layer below.
-pub fn choose(
-    points: &[Point2],
-    seam: Seam,
-    nozzle_diameter: f64,
-    nozzle: Option<Point2>,
-    previous: &[Point2],
-) -> usize {
-    if points.len() < 3 {
-        return 0;
-    }
-    let extreme = |key: fn(&Point2) -> i64| {
-        (0..points.len())
-            .max_by_key(|&index| (key(&points[index]), std::cmp::Reverse(index)))
-            .unwrap_or(0)
-    };
-    match seam {
-        Seam::Back => return extreme(|point| point.y),
-        Seam::Left => return extreme(|point| -point.x),
-        Seam::Right => return extreme(|point| point.x),
-        _ => {}
-    }
-
-    let turns = turns(points, nozzle_diameter);
-    // The angle counts for everything when the seam goes to the nearest
-    // corner and for 0.6 when it is aligned (SeamPlacer.hpp).
-    let weight = if seam == Seam::Nearest { 1.0 } else { 0.6 };
-    let scores: Vec<f64> = (0..points.len())
-        .map(|index| {
-            let distance = match (seam, nozzle) {
-                (Seam::Nearest, Some(at)) => 1.0 - gauss(mm(at, points[index]), 0.0, 1.0, 0.005),
-                _ => 0.0,
-            };
-            weight * angle_penalty(turns[index]) + distance
-        })
-        .collect();
-    let best = scores.iter().copied().fold(f64::INFINITY, f64::min);
-    let lowest = |key: &dyn Fn(usize) -> f64| {
-        (0..points.len())
-            .filter(|&index| scores[index] <= best + SIMILAR)
-            .min_by(|&a, &b| key(a).total_cmp(&key(b)).then(a.cmp(&b)))
-            .unwrap_or(0)
-    };
-    match seam {
-        Seam::Nearest => lowest(&|index| scores[index]),
-        Seam::AlignedBack => lowest(&|index| -(points[index].y as f64)),
-        Seam::AlignedFront => lowest(&|index| points[index].y as f64),
-        _ if previous.is_empty() => lowest(&|index| scores[index]),
-        _ => lowest(&|index| {
-            previous
-                .iter()
-                .map(|seam| mm(*seam, points[index]))
-                .fold(f64::INFINITY, f64::min)
-        }),
-    }
-}
-
-/// How far the loop turns at one of its corners, in radians, positive to
-/// the left: as [`choose`] measures it.
-pub fn turn_at(points: &[Point2], corner: usize, nozzle_diameter: f64) -> f64 {
-    turns(points, nozzle_diameter)
-        .get(corner)
-        .copied()
-        .unwrap_or(0.0)
-}
-
-/// A point somewhere along a closed loop, by a figure made from the
-/// loop's first point and the height `z` of the layer, in mm: the same
-/// for the same loop, and scattered from layer to layer (SeamPlacer.cpp
-/// `pick_random_seam_point`, in single precision as it is there).
-///
-/// Not as the reference in one thing: it picks among the points it
-/// counts as equally good, which leaves out those over a steep overhang
-/// or painted against; here any point of the loop may be picked.
-pub fn random_point(points: &[Point2], z: f64) -> Point2 {
-    let Some(&first) = points.first() else {
-        return Point2 { x: 0, y: 0 };
-    };
-    let at = |point: Point2| (unscaled(point.x) as f32, unscaled(point.y) as f32);
-    let (x, y) = at(first);
-    let mut rand = ((x * 12.9898 + y * 78.233 + z as f32 * 133.3333).sin() * 43_758.547).abs();
-    rand -= rand.trunc();
-    let count = points.len();
-    let edges: Vec<(f32, f32, f32)> = (0..count)
-        .map(|index| {
-            let (ax, ay) = at(points[index]);
-            let (bx, by) = at(points[(index + 1) % count]);
-            let (dx, dy) = (bx - ax, by - ay);
-            (dx, dy, dx.hypot(dy))
-        })
-        .collect();
-    let mut picked = edges.iter().map(|edge| edge.2).sum::<f32>() * rand;
-    let mut index = 0;
-    while index + 1 < count && picked - edges[index].2 > 0.0 {
-        picked -= edges[index].2;
-        index += 1;
-    }
-    let (dx, dy, length) = edges[index];
-    if length <= 0.0 {
-        return points[index];
-    }
-    let (ax, ay) = at(points[index]);
-    Point2::from_mm(
-        f64::from(ax + dx / length * picked),
-        f64::from(ay + dy / length * picked),
-    )
 }
 
 /// The place `distance` scaled units further round a closed loop from
@@ -375,75 +220,6 @@ mod tests {
             .collect()
     }
 
-    /// An L: the corner at (5, 5) folds inward, the other five outward.
-    fn ell() -> Vec<Point2> {
-        points(&[
-            (0.0, 0.0),
-            (10.0, 0.0),
-            (10.0, 5.0),
-            (5.0, 5.0),
-            (5.0, 10.0),
-            (0.0, 10.0),
-        ])
-    }
-
-    #[test]
-    fn inward_corners_score_best_and_straight_runs_worst() {
-        let quarter = std::f64::consts::FRAC_PI_2;
-        assert!(angle_penalty(-quarter) < angle_penalty(quarter));
-        assert!(angle_penalty(quarter) < angle_penalty(0.0));
-        assert!((angle_penalty(0.0) - (1.0 + 1.0 / 3.0)).abs() < 1e-12);
-    }
-
-    #[test]
-    fn the_seam_hides_in_the_inward_corner() {
-        for seam in [Seam::Aligned, Seam::AlignedBack, Seam::Nearest] {
-            assert_eq!(choose(&ell(), seam, 0.4, None, &[]), 3, "{seam:?}");
-        }
-        // A hole runs clockwise; its corners all fold into the part, so
-        // with nothing to choose between them the first is taken.
-        let hole = points(&[(0.0, 0.0), (0.0, 10.0), (10.0, 10.0), (10.0, 0.0)]);
-        assert_eq!(choose(&hole, Seam::Aligned, 0.4, None, &[]), 0);
-    }
-
-    #[test]
-    fn equal_corners_follow_the_layer_below_or_the_named_side() {
-        let square = points(&[(0.0, 0.0), (10.0, 0.0), (10.0, 10.0), (0.0, 10.0)]);
-        assert_eq!(choose(&square, Seam::Aligned, 0.4, None, &[]), 0);
-        let below = points(&[(50.0, 50.0), (10.1, 9.9)]);
-        assert_eq!(choose(&square, Seam::Aligned, 0.4, None, &below), 2);
-        // Back is the highest Y; of two equally far back, the earlier corner.
-        assert_eq!(choose(&square, Seam::AlignedBack, 0.4, None, &below), 2);
-        assert_eq!(choose(&square, Seam::Back, 0.4, None, &[]), 2);
-        assert_eq!(choose(&square, Seam::AlignedFront, 0.4, None, &below), 0);
-        assert_eq!(choose(&square, Seam::Right, 0.4, None, &[]), 1);
-        assert_eq!(choose(&square, Seam::Left, 0.4, None, &[]), 0);
-        // Nearest goes to the corner by the nozzle.
-        let at = Some(Point2::from_mm(-1.0, 11.0));
-        assert_eq!(choose(&square, Seam::Nearest, 0.4, at, &[]), 3);
-        // The directional seams ignore the angle: on the L the back wins
-        // over the inward corner.
-        assert_eq!(choose(&ell(), Seam::Back, 0.4, None, &[]), 4);
-    }
-
-    #[test]
-    fn a_round_wall_keeps_its_seam_where_it_was() {
-        let circle = |turn: f64| -> Vec<Point2> {
-            (0..90)
-                .map(|step| {
-                    let angle = turn + f64::from(step) * std::f64::consts::TAU / 90.0;
-                    Point2::from_mm(20.0 * angle.cos(), 20.0 * angle.sin())
-                })
-                .collect()
-        };
-        let first = circle(0.0);
-        let seam = first[choose(&first, Seam::Aligned, 0.4, None, &[])];
-        // The layer above has its corners elsewhere; the seam stays close.
-        let second = circle(0.3);
-        let above = second[choose(&second, Seam::Aligned, 0.4, None, &[seam])];
-        assert!(mm(seam, above) < 0.75, "moved {} mm", mm(seam, above));
-    }
-
     #[test]
     fn a_loop_opens_at_a_point_on_an_edge() {
         let square = points(&[(0.0, 0.0), (10.0, 0.0), (10.0, 10.0), (0.0, 10.0)]);
@@ -484,37 +260,6 @@ mod tests {
             points(&[(0.0, 0.0), (1.0, 0.0), (1.0, 1.0)])
         );
         assert_eq!(head(&path, 50.0), path);
-    }
-
-    #[test]
-    fn a_random_seam_is_on_the_loop_and_moves_from_layer_to_layer() {
-        let square: Vec<Point2> = [(0.0, 0.0), (20.0, 0.0), (20.0, 20.0), (0.0, 20.0)]
-            .map(|(x, y)| Point2::from_mm(x, y))
-            .to_vec();
-        let on_loop = |point: Point2| {
-            let (x, y) = (unscaled(point.x), unscaled(point.y));
-            let edge = |v: f64| v.abs() < 1e-3 || (v - 20.0).abs() < 1e-3;
-            (edge(x) && (-1e-3..=20.001).contains(&y)) || (edge(y) && (-1e-3..=20.001).contains(&x))
-        };
-        let picked: Vec<Point2> = (0..40)
-            .map(|layer| random_point(&square, 0.1 + 0.2 * f64::from(layer)))
-            .collect();
-        assert!(picked.iter().all(|&point| on_loop(point)));
-        // The same for the same loop and height; not all in one place.
-        assert_eq!(random_point(&square, 0.5), random_point(&square, 0.5));
-        let mut distinct = picked.clone();
-        distinct.sort_by_key(|point| (point.x, point.y));
-        distinct.dedup();
-        assert!(distinct.len() > 30, "{}", distinct.len());
-        // Spread over all four sides.
-        for side in [
-            |p: &Point2| p.y < 1_000,
-            |p: &Point2| p.x > 19_999_000,
-            |p: &Point2| p.y > 19_999_000,
-            |p: &Point2| p.x < 1_000,
-        ] {
-            assert!(picked.iter().any(side));
-        }
     }
 
     #[test]

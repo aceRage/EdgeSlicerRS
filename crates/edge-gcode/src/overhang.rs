@@ -127,11 +127,6 @@ impl Below {
         (((y - self.min.1) / self.reach).max(0.0) as usize).min(self.rows - 1)
     }
 
-    /// As far as [`Self::signed_distance`] tells distances apart, in mm.
-    pub(crate) fn reach(&self) -> f64 {
-        self.reach
-    }
-
     /// Distance in mm from a point to the outline: negative over the layer
     /// beneath, positive over air, and no further than the reach either way.
     pub(crate) fn signed_distance(&self, x: f64, y: f64) -> f64 {
@@ -257,6 +252,27 @@ impl Below {
             ring += 1;
         }
         best
+    }
+
+    /// Distance in mm from a point to the outline however far that is:
+    /// negative over the layer beneath, positive over air. What a seam is
+    /// kept off overhangs by, which tells one point far over air from
+    /// another (the reference's `AABBTreeLines::LinesDistancer`,
+    /// `distance_from_lines<true>`: the distance to the nearest edge,
+    /// signed by counting the edges a ray from the point crosses).
+    pub(crate) fn distance(&self, x: f64, y: f64) -> f64 {
+        let nearest = self.nearest(x, y, f64::INFINITY);
+        let row = ((y - self.min.1) / self.reach).floor();
+        let mut inside = false;
+        if row >= 0.0 && row < self.rows as f64 {
+            for &index in &self.bands[row as usize] {
+                let [ax, ay, bx, by] = self.edges[index as usize];
+                if (ay > y) != (by > y) && x < ax + (y - ay) / (by - ay) * (bx - ax) {
+                    inside = !inside;
+                }
+            }
+        }
+        if inside { -nearest } else { nearest }
     }
 
     /// Where the line from `a` to `b` (in mm) meets the outline, as how
@@ -1020,7 +1036,7 @@ mod tests {
     }
 
     impl Below {
-        fn distance(&self, x: f64, y: f64, inside: f64) -> f64 {
+        fn distance_within(&self, x: f64, y: f64, inside: f64) -> f64 {
             self.distance_from(self.signed_distance(x, y), x, y, inside)
         }
     }
@@ -1087,24 +1103,24 @@ mod tests {
         let below = Below::new(&[square(0.0, 0.0, 20.0)], 0.6).unwrap();
         let near = |found: f64, wanted: f64| (found - wanted).abs() < 1e-9;
         // Outside, however far: off the grid, off a corner, and close by.
-        assert!(near(below.distance(23.5, 4.0, 0.9), 3.5));
-        assert!(near(below.distance(120.0, 10.0, 0.9), 100.0));
-        assert!(near(below.distance(23.0, 24.0, 0.9), 5.0));
-        assert!(near(below.distance(-7.0, -24.0, 0.9), 25.0));
-        assert!(near(below.distance(20.25, 4.0, 0.9), 0.25));
+        assert!(near(below.distance_within(23.5, 4.0, 0.9), 3.5));
+        assert!(near(below.distance_within(120.0, 10.0, 0.9), 100.0));
+        assert!(near(below.distance_within(23.0, 24.0, 0.9), 5.0));
+        assert!(near(below.distance_within(-7.0, -24.0, 0.9), 25.0));
+        assert!(near(below.distance_within(20.25, 4.0, 0.9), 0.25));
         // Inside, as deep as was asked for and no deeper.
-        assert!(near(below.distance(0.3, 10.0, 0.9), -0.3));
-        assert!(near(below.distance(0.8, 10.0, 0.9), -0.8));
-        assert!(near(below.distance(10.0, 10.0, 0.9), -0.9));
-        assert!(near(below.distance(4.0, 10.0, 7.5), -4.0));
-        assert!(near(below.distance(10.0, 10.0, 30.0), -10.0));
+        assert!(near(below.distance_within(0.3, 10.0, 0.9), -0.3));
+        assert!(near(below.distance_within(0.8, 10.0, 0.9), -0.8));
+        assert!(near(below.distance_within(10.0, 10.0, 0.9), -0.9));
+        assert!(near(below.distance_within(4.0, 10.0, 7.5), -4.0));
+        assert!(near(below.distance_within(10.0, 10.0, 30.0), -10.0));
         // With no more asked than the reach, the reach.
-        assert!(near(below.distance(10.0, 10.0, 0.5), -0.6));
+        assert!(near(below.distance_within(10.0, 10.0, 0.5), -0.6));
         // What it adds agrees with what was there within the reach.
         for step in 0..=80 {
             let x = 19.0 + 0.025 * step as f64;
             assert!(near(
-                below.distance(x, 7.0, 0.9).clamp(-0.6, 0.6),
+                below.distance_within(x, 7.0, 0.9).clamp(-0.6, 0.6),
                 below.signed_distance(x, 7.0)
             ));
         }

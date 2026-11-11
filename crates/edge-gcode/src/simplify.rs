@@ -124,7 +124,25 @@ impl Thinned {
     /// Thins the layers given, all at once on as many threads as there
     /// are: what is left of a path does not depend on when its turn
     /// comes. Layers whose arcs are fitted are left alone.
+    #[cfg(test)]
     pub(crate) fn new(layers: &[Layer<'_>], settings: &[PrintSettings]) -> Self {
+        Self::made(layers, settings, true, true)
+    }
+
+    /// [`Self::new`] for the wall loops alone: what the seams are planned
+    /// on (`seam_plan.rs`), for the whole print before anything is laid,
+    /// so the points they are chosen among are those that are written.
+    pub(crate) fn walls(layers: &[Layer<'_>], settings: &[PrintSettings]) -> Self {
+        Self::made(layers, settings, true, false)
+    }
+
+    /// [`Self::new`] for the fill and support lines alone, a stretch of
+    /// layers at a time ahead of the writer.
+    pub(crate) fn lines(layers: &[Layer<'_>], settings: &[PrintSettings]) -> Self {
+        Self::made(layers, settings, false, true)
+    }
+
+    fn made(layers: &[Layer<'_>], settings: &[PrintSettings], walls: bool, lines: bool) -> Self {
         if settings.iter().all(|s| s.arc_fitting) {
             return Self::default();
         }
@@ -136,7 +154,7 @@ impl Thinned {
                     return Kept::default();
                 }
                 let tolerance = arc::tolerance(s.resolution);
-                let lines = |paths: &[ExtrusionPath]| {
+                let thin = |paths: &[ExtrusionPath]| {
                     replaced(
                         paths,
                         |path| open(&path.points, tolerance),
@@ -150,25 +168,29 @@ impl Thinned {
                     )
                 };
                 Kept {
-                    loops: replaced(
-                        layer.loops,
-                        |wall| {
-                            // Cut into pieces of one width as it is
-                            // laid, and thinned then.
-                            if !wall.widths.is_empty() {
-                                return None;
-                            }
-                            let turned = crate::wall_turned(s, wall);
-                            ring(&wall.polygon.points, turned, tolerance)
-                        },
-                        |wall, points| {
-                            let mut wall = wall.clone();
-                            wall.polygon.points = points;
-                            wall
-                        },
-                    ),
-                    paths: lines(layer.paths),
-                    support: lines(layer.support),
+                    loops: walls
+                        .then(|| {
+                            replaced(
+                                layer.loops,
+                                |wall| {
+                                    // Cut into pieces of one width as it is
+                                    // laid, and thinned then.
+                                    if !wall.widths.is_empty() {
+                                        return None;
+                                    }
+                                    let turned = crate::wall_turned(s, wall);
+                                    ring(&wall.polygon.points, turned, tolerance)
+                                },
+                                |wall, points| {
+                                    let mut wall = wall.clone();
+                                    wall.polygon.points = points;
+                                    wall
+                                },
+                            )
+                        })
+                        .flatten(),
+                    paths: lines.then(|| thin(layer.paths)).flatten(),
+                    support: lines.then(|| thin(layer.support)).flatten(),
                 }
             })
             .collect();
