@@ -76,6 +76,10 @@ pub struct Params {
     pub over_air: Option<OverAir>,
     /// Set where walls on this layer get a fuzzy skin (`fuzzy_skin`).
     pub fuzzy: Option<Fuzzy>,
+    /// A part too thin for a wall down each side gets one line down its
+    /// middle, as wide as the part (`detect_thin_wall`). Classic walls
+    /// only: walls of changing width do as much by themselves.
+    pub thin_walls: bool,
 }
 
 /// What a fuzzy skin needs on one layer.
@@ -382,10 +386,45 @@ pub fn classic_between(
         // wall it may come.
         let (mut top_fills, mut fill_clip): (Vec<ExPolygon>, Vec<ExPolygon>) = Default::default();
         let mut depth: isize = 0;
+        let mut thin: Vec<edge_medial::ThickPolyline> = Vec::new();
         while loop_number >= 0 {
             let mut offsets = Vec::new();
             let mut narrow = Vec::new();
-            if depth == 0 {
+            if depth == 0 && params.thin_walls {
+                // The outer wall goes only where there is room for it
+                // down both sides: "the minimum thickness of a single
+                // loop is ext_width/2 + ext_spacing/2 + spacing/2 +
+                // width/2".
+                let ext_min_spacing =
+                    (ext_spacing as f64 * (1.0 - INSET_OVERLAP_TOLERANCE)) as Coord;
+                offsets = edge_clip::offset2(
+                    &last,
+                    -((ext_width as f64 / 2.0 + ext_min_spacing as f64 / 2.0 - 1.0) as Coord),
+                    (ext_min_spacing as f64 / 2.0 - 1.0) as Coord,
+                    Join::MITER,
+                )?;
+                // What that wall does not cover, less what is too thin
+                // to print at all, gets a line down its middle.
+                let min_width = scaled(params.outer.nozzle_diameter / 3.0);
+                let uncovered = edge_clip::opening(
+                    &edge_clip::difference(
+                        &last,
+                        &edge_clip::offset(&offsets, ext_width / 2 + SAFETY_OFFSET, Join::MITER)?,
+                    )?,
+                    min_width / 2,
+                    Join::MITER,
+                )?;
+                for piece in &uncovered {
+                    match edge_medial::medial_axis(
+                        piece,
+                        min_width as f64,
+                        (ext_width + ext_spacing2) as f64,
+                    ) {
+                        Ok(found) => thin.extend(found),
+                        Err(_) => result.gaps_skipped += 1,
+                    }
+                }
+            } else if depth == 0 {
                 for piece in &last {
                     let piece = std::slice::from_ref(piece);
                     let fits = edge_clip::offset2(
@@ -470,6 +509,49 @@ pub fn classic_between(
         if result.loops.len() > first_loop {
             result.islands.push(first_loop..result.loops.len());
         }
+        // Thin walls are outer walls that are not loops; a fuzzy skin on
+        // the outer wall is on them too (`traverse_loops`).
+        if let Some(fuzzed) = &fuzzed
+            && edge_fuzzy::should_fuzzify(
+                &fuzzed.fuzzy.config,
+                fuzzed.fuzzy.config.layer_id,
+                0,
+                true,
+            )
+        {
+            let context = fuzzed.context();
+            for line in &mut thin {
+                if line.points.len() < 2 || line.widths.len() != 2 * (line.points.len() - 1) {
+                    continue;
+                }
+                // A junction takes the width its segment ends with, the
+                // first one the width the first segment starts with.
+                let mut wall = edge_arachne::ExtrusionLine::new(0, true);
+                wall.junctions = line
+                    .points
+                    .iter()
+                    .enumerate()
+                    .map(|(at, &p)| edge_arachne::Junction {
+                        p,
+                        w: line.widths[if at == 0 { 0 } else { 2 * at - 1 }] as Coord,
+                        perimeter_index: 0,
+                    })
+                    .collect();
+                let closed = line.is_closed();
+                edge_fuzzy::apply_to_line(&mut wall, &context, true, closed)?;
+                line.points = wall.junctions.iter().map(|junction| junction.p).collect();
+                line.widths = wall
+                    .junctions
+                    .windows(2)
+                    .flat_map(|pair| [pair[0].w as f64, pair[1].w as f64])
+                    .collect();
+            }
+        }
+        result.gap_fill.extend(edge_medial::variable_width(
+            &thin,
+            Role::ExternalPerimeter,
+            &params.outer,
+        ));
 
         if let Some(fill) = &params.gap_fill
             && !gaps.is_empty()
@@ -1057,6 +1139,7 @@ mod tests {
             precise_outer_wall: false,
             over_air: None,
             fuzzy: None,
+            thin_walls: false,
         }
     }
 
@@ -1739,5 +1822,57 @@ mod tests {
                     .all(|point| on_smooth(point))
             );
         }
+    }
+
+    #[test]
+    fn a_part_too_thin_for_two_walls_gets_one_line_down_its_middle() {
+        // Half a millimetre across: no room for a wall down each side.
+        let fin = [block(0.0, 0.0, 10.0, 0.5)];
+        let thin = Params {
+            thin_walls: true,
+            ..params(2)
+        };
+        let walls = classic(&fin, &thin).unwrap();
+        assert!(walls.loops.is_empty() && walls.islands.is_empty());
+        assert_eq!(walls.gap_fill.len(), 1);
+        let line = &walls.gap_fill[0];
+        // An outer wall down its middle and most of its length, spaced
+        // to fill the fin: wider than it by what a line's rounded edges
+        // leave empty, as the reference lays it.
+        assert_eq!(line.role, Role::ExternalPerimeter);
+        let wide = 0.5 + 0.2 * (1.0 - std::f64::consts::FRAC_PI_4);
+        assert!((line.flow.width - wide).abs() < 0.02, "{}", line.flow.width);
+        assert!(
+            line.points
+                .iter()
+                .all(|point| (point.y - scaled(0.25)).abs() < 2_000)
+        );
+        assert!(
+            line.length_mm() > 9.0 && line.length_mm() < 10.01,
+            "{}",
+            line.length_mm()
+        );
+        assert!(walls.infill.is_empty());
+
+        // A part with room for its walls is walled as it is without,
+        // though a loop may begin at another of its corners.
+        let part = [block(0.0, 0.0, 20.0, 20.0)];
+        let (with, without) = (
+            classic(&part, &thin).unwrap(),
+            classic(&part, &params(2)).unwrap(),
+        );
+        assert_eq!(with.infill, without.infill);
+        assert!(with.gap_fill.is_empty());
+        let sides = |walls: &Perimeters| walls.loops.iter().map(side).collect::<Vec<f64>>();
+        assert_eq!(sides(&with), sides(&without));
+
+        // A fuzzy skin on the outer wall is on the thin wall too.
+        let rough = Params {
+            fuzzy: Some(fuzzy(edge_fuzzy::FuzzyType::External)),
+            ..thin
+        };
+        let fuzzed = classic(&fin, &rough).unwrap();
+        let points: usize = fuzzed.gap_fill.iter().map(|line| line.points.len()).sum();
+        assert!(points > 20, "{points}");
     }
 }

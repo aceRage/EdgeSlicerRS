@@ -65,6 +65,8 @@ pub struct WallSettings {
     /// to the walls (`alternate_extra_wall`). False where there is no
     /// sparse fill to tie, whatever was asked, as in the reference.
     pub alternate_extra_wall: bool,
+    /// Parts too thin for two walls get one line (`detect_thin_wall`).
+    pub detect_thin_wall: bool,
 }
 
 /// Fuzzy skin as the settings ask for it (`fuzzy_skin` and the settings
@@ -198,6 +200,7 @@ impl Default for WallSettings {
             thick_bridges: false,
             fuzzy: FuzzySettings::default(),
             alternate_extra_wall: false,
+            detect_thin_wall: false,
         }
     }
 }
@@ -376,6 +379,7 @@ impl WallSettings {
         Ok(Self {
             arachne,
             fuzzy,
+            detect_thin_wall: flag("detect_thin_wall", false)?,
             alternate_extra_wall: flag("alternate_extra_wall", false)?
                 // Cut to a whole number, as the reference reads it.
                 && percent("sparse_infill_density", 20.0)? as i64 > 0,
@@ -456,14 +460,6 @@ impl WallSettings {
             {
                 notes.push(format!("{key} \"{value}\": {instead}"));
             }
-        }
-        // Thin walls belong to the classic walls only: the others lay a
-        // line down any part too thin for two.
-        if self.arachne.is_none() && text("detect_thin_wall").is_some_and(|value| value != "0") {
-            notes.push(
-                "detect_thin_wall: parts thinner than a wall are left to gap fill or left out"
-                    .to_owned(),
-            );
         }
         if self.only_one_wall_top
             && settings
@@ -598,6 +594,7 @@ impl WallSettings {
             precise_outer_wall: self.precise_outer_wall,
             over_air: None,
             fuzzy: None,
+            thin_walls: self.detect_thin_wall && self.arachne.is_none(),
             arachne: self.arachne.map(|arachne| {
                 // Of the nozzle's diameter, and kept in single precision,
                 // as the reference keeps them (`make_paths_params`).
@@ -1019,23 +1016,20 @@ mod tests {
         assert!(
             notes(
                 r#"{"hole_to_polyhole": "0",
-                    "counterbore_hole_bridging": "none", "detect_thin_wall": "0",
+                    "counterbore_hole_bridging": "none",
                     "top_surface_expansion": "0", "only_one_wall_top": "1"}"#
             )
             .is_empty()
         );
         let said = notes(
             r#"{"hole_to_polyhole": "1",
-                "counterbore_hole_bridging": "partiallybridge", "detect_thin_wall": "1",
-                "wall_generator": "classic", "top_surface_expansion": "0.5", "only_one_wall_top": "1"}"#,
+                "counterbore_hole_bridging": "partiallybridge",
+                "top_surface_expansion": "0.5", "only_one_wall_top": "1"}"#,
         );
-        assert_eq!(said.len(), 4, "{said:?}");
+        assert_eq!(said.len(), 3, "{said:?}");
         assert!(said[0].starts_with("hole_to_polyhole \"1\": "));
-        // Thin walls are no loss to walls of changing width, and a top
-        // surface is only widened where it has one wall.
-        let fewer = notes(
-            r#"{"detect_thin_wall": "1", "wall_generator": "arachne", "top_surface_expansion": "0.5"}"#,
-        );
+        // A top surface is only widened where it has one wall.
+        let fewer = notes(r#"{"top_surface_expansion": "0.5"}"#);
         assert!(fewer.is_empty(), "{fewer:?}");
     }
 
