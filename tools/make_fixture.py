@@ -17,7 +17,9 @@ Shapes: mushroom and shelf need supports; tower and bar get an automatic
 brim; bridge is a deck across two posts; cube is a plain 20 mm cube;
 twotone is two blocks side by side, the first in filament 1 and 6 mm tall,
 the second in filament 2 and 4 mm tall, so there is a tool change on every
-layer up to 4 mm and none above. The reference loads the filament preset named in the settings again,
+layer up to 4 mm and none above; comb is a spine with teeth 0.5 to 2 mm
+wide standing on the bed, and twocomb the same with the teeth in filament 2,
+for the first layer's elephant foot compensation. The reference loads the filament preset named in the settings again,
 so a change to a filament's own settings, such as filament_type, is undone.
 """
 import json, sys, zipfile
@@ -49,9 +51,15 @@ SHAPES = {
     "fins": [(115.5, 126, 0, 40, 20, 1), (120.5, 131, 1, 0.5, 10, 5), (130.5, 131, 1, 0.8, 10, 5), (140.5, 131, 1, 1.1, 10, 5)],
     # two blocks that touch, one in each of two filaments
     "twotone": [(115.5, 126, 0, 20, 20, 6), (135.5, 126, 0, 20, 20, 4)],
+    # a spine with seven teeth standing on the bed, 0.5 to 2 mm wide, for
+    # what the first layer's elephant foot compensation leaves of thin parts
+    "comb": [(115.5, 129, 0, 40, 6, 3)] + [
+        (117.5 + 5.5 * i, 135, 0, w, 8, 3) for i, w in enumerate((0.5, 0.7, 0.9, 1.0, 1.1, 1.3, 2.0))],
 }
+# the comb again, its teeth in a second filament
+SHAPES["twocomb"] = SHAPES["comb"]
 # The filament each box of a shape is printed in, where it is not all the first.
-FILAMENTS = {"twotone": [1, 2]}
+FILAMENTS = {"twotone": [1, 2], "twocomb": [1] + [2] * 7}
 
 out, source, shape = sys.argv[1:4]
 changes = dict(arg.split("=", 1) for arg in sys.argv[4:])
