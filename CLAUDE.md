@@ -73,14 +73,14 @@ to a stage and say in the PR what moved.
   `Session::call` in `src/api.rs` (or `Session::call_bytes` beside it, for
   the meshes and moves that are answered in bytes), which stays free of
   Tauri so the window and `--serve` share it and it can be tested without
-  either. The page has no build step, uses no library and loads nothing
-  from the network.
+  either. The page has no build step and loads nothing from the network.
 - The desktop app's look is its own. What the C++ application offers
   (its controls, options, behaviour and wording) is what parity means;
   how it looks is not copied. Design for dark mode first, with light
   kept working; modern web styling, streamlined and spare, nearer the
   newer PrusaSlicer look than Bambu Studio's. Not a reason to restyle
-  what is built, but new UI is made this way.
+  what is built, but new UI is made this way. The page's own code is
+  preferred to a library; that is a preference, not a rule.
 - The time in a file comes from `edge-time`, which reads the finished
   G-code back. Anything new the writer emits that takes time or changes
   how moves are planned (a wait, a limit, a macro) has to be read there
