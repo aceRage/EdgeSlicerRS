@@ -20,6 +20,7 @@ mod inside;
 mod overhang;
 mod scarf;
 mod seam;
+mod seam_plan;
 mod settings;
 mod wipe;
 
@@ -318,6 +319,7 @@ pub fn write_routed(
             },
         },
         below: None,
+        seams: seam_plan::Plan::new(layers, &groups),
         inner_wall: None,
         measured: Vec::new(),
         measured_used: 0,
@@ -580,6 +582,8 @@ struct Writer<'a> {
     file: FileInfo,
     /// The outline of the layer beneath the one being written.
     below: Option<overhang::Below>,
+    /// What each outer wall's seam is chosen by (`seam_plan.rs`).
+    seams: seam_plan::Plan,
     /// The line the layer's inner walls are printed with, when it has any.
     inner_wall: Option<Flow>,
     /// Walls measured against it so far this layer, each with what tells
@@ -1514,6 +1518,8 @@ impl Writer<'_> {
         }
         // The seams of the island's outermost walls are settled first,
         // so the walls behind them can start alongside.
+        // A seam is kept off what hangs out over the layer beneath
+        // before anything else is weighed.
         let planned: Vec<(bool, Point2)> = if s.seam == Seam::Nearest {
             Vec::new()
         } else {
@@ -1523,13 +1529,23 @@ impl Writer<'_> {
                 .map(|wall| {
                     let points = &wall.polygon.points;
                     if s.seam == Seam::Random {
-                        // By the height the layer was sliced at.
-                        let z = layer.z - layer.height / 2.0;
-                        return (wall.is_hole, seam::random_point(points, z));
+                        let picked = (self.seams.candidates(self.state.layer, wall))
+                            .and_then(|(candidates, width)| seam::random_point(candidates, width));
+                        return (wall.is_hole, picked.unwrap_or(points[0]));
                     }
-                    let corner =
-                        seam::choose(points, s.seam, s.nozzle_diameter, None, &self.state.seams);
-                    (wall.is_hole, points[corner])
+                    let overhangs = self
+                        .seams
+                        .overhangs(self.state.layer, wall)
+                        .unwrap_or_default();
+                    let corner = seam::choose_among(
+                        points,
+                        s.seam,
+                        s.nozzle_diameter,
+                        None,
+                        &self.state.seams,
+                        &seam::resting(&overhangs, wall.flow.width as f32),
+                    );
+                    (wall.is_hole, points[corner.unwrap_or(0)])
                 })
                 .collect()
         };
@@ -1609,13 +1625,21 @@ impl Writer<'_> {
                     }
                 }
                 None => {
-                    let corner = seam::choose(
+                    // An outermost wall's seam is kept off what hangs
+                    // out; a wall behind one has no such measure.
+                    let overhangs = self
+                        .seams
+                        .overhangs(self.state.layer, wall)
+                        .unwrap_or_default();
+                    let corner = seam::choose_among(
                         points,
                         Seam::Nearest,
                         s.nozzle_diameter,
                         self.state.position,
                         &[],
-                    );
+                        &seam::resting(&overhangs, wall.flow.width as f32),
+                    )
+                    .unwrap_or(0);
                     (corner, points[corner])
                 }
             };

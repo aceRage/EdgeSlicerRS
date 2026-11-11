@@ -547,7 +547,17 @@ Known gaps: painted supports and seams, per-object setting overrides, typed sett
     its loop on every layer, the same on every run; with
     `staggered_inner_seams` each inner wall starts on round from the
     wall outside it by its depth, so the seams do not lie one behind
-    another.
+    another. A seam is kept off what hangs out over the layer beneath,
+    whatever `seam_position` is, before anything else is weighed: every
+    point of every outer wall is measured against the layer beneath
+    before the file is written (the reference's measure: how far the
+    middle of the line is outside that layer's outline, with 0.65 of
+    the line's width, less the layer's height), and the seam goes to a
+    point that hangs out no more than the one that hangs out least,
+    give or take a tenth of the line's width, which is what the
+    reference lets a seam be moved by when it lines seams up. A seam
+    put anywhere (`random`) is picked from the stretches that set off
+    from such points, as the reference picks it.
   - Scarf seams (`seam_slope_type`): a loop joined this way is laid
     whole, with no gap at its seam. Its first 20 mm
     (`seam_slope_min_length`, or all of it with
@@ -886,8 +896,9 @@ them painted on says so when it is sliced.
 Not done in G-code: supports only where painted (none are
 generated, and a note says so), the older tree styles (`tree_slim`,
 `tree_strong`, `tree_hybrid`: organic-style trees are built, with a note),
-rafts, brims inside holes, draft shields, seams placed by visibility or kept
-off overhangs, a fan speed of its own for bridges over infill, walls
+rafts, brims inside holes, draft shields, seams placed by visibility, lined
+up along a curve fitted through the layers, moved to where parts meet
+(`seam_prefer_part_joints`) or painted on or off, a fan speed of its own for bridges over infill, walls
 slowed over curled edges, preview pictures in the file
 (thumbnails), and object labels for cancelling (`EXCLUDE_OBJECT`). Bridge fill keeps its own speed along its whole
 length, where the reference also slows it near its anchors. A setting that asks for one of these is listed as a
@@ -1387,6 +1398,48 @@ climbs from nothing, and the way down over it thins out over the whole
 slope (on the tube with arcs, 0.203 and 0.311 mm of filament against
 0.643 for 20 mm of line); that is how the reference has it, and it is
 not changed here.
+
+Where seams are put, 2026-11-11, on twelve parts from
+`tools/make_fixture.py` with the U1's presets (cube, cylinder, tube,
+curve, holes, funnel, frame, fins, comb, steps, mushroom, twotone), each
+sliced with `seam_position` at `aligned`, `aligned_back`, `nearest`,
+`back` and `random`, and on the Benchy and the three plates of
+`mcbrim_test.3mf` as they are (`aligned`). A script pairs every outer
+wall loop of the reference's file with this engine's on the same layer
+by the middle and size of its bounds and takes how far apart the two
+start. The share of loops whose seams are within 0.05 mm and within
+1 mm of the reference's, by stage of the work:
+
+| | loops | before | overhangs |
+| --- | --- | --- | --- |
+| `aligned` | 1021 | 2.6%, 12.3% | 3.2%, 12.9% |
+| `aligned_back` | 1011 | 13.2%, 31.1% | 13.5%, 31.4% |
+| `back` | 1011 | 69.8%, 91.6% | 70.1%, 91.9% |
+| `nearest` | 1019 | 14.6%, 22.7% | 15.0%, 23.1% |
+| `random` | 1016 | 0.0%, 7.4% | 0.1%, 7.4% |
+| Benchy | 745 | 35.1%, 41.7% | 43.1%, 52.8% |
+| every loop, with the three plates | 6235 | 20.6%, 31.9% | 21.9%, 33.5% |
+
+Overhangs (a seam kept off what hangs out over the layer beneath):
+the Benchy gains most, its worst seam 34 mm from the reference's where
+it was 54; on the `holes` part 4 to 6 loops more are within 0.05 mm at
+each setting, those beside the hole that runs from front to back as it
+closes over; nothing else moves but two or three `random` seams round
+holes, which are now picked going round the way the reference goes.
+With scarf seams on (`seam_slope_type=all`, `seam_slope_inner_walls=1`)
+the `holes` part's layer at 10.45 mm was 8.4% short of the reference's
+wall: each side of the closing hole is an island 6.7 by 15.6 mm whose
+side by the hole is an overhang wall, the reference's seams are at the
+corners away from it and this engine's were at the corners by it, and a
+loop that starts over air has no scarf in either slicer. Both seams are
+now where the reference's are, to the micron, and wall length per layer
+is off by 0.03% on average (0.14% before), the most 0.6% on the first
+layer as with no scarf. Travel and retractions on the Benchy: 26.96 m
+and 1520 in the reference's file, 27.78 m and 1685 here before, 26.24 m
+and 1746 now. What is left is the reference's visibility measure, which
+is what puts most `aligned` and `nearest` seams where they are, its
+lining up of seams along a curve, and for `random` the object's own
+middle, which its scatter is reckoned from.
 
 Moves at the seam (`wipe_on_loops`, `wipe_before_external_loop`,
 `wipe_inward`), 2026-11-11, on parts from `tools/make_fixture.py` with

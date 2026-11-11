@@ -164,6 +164,57 @@ impl Below {
         }
         if inside { -reach } else { reach }
     }
+
+    /// Distance in mm from a point to the outline however far that is:
+    /// negative over the layer beneath, positive over air. What a seam is
+    /// kept off overhangs by, which tells one point far over air from
+    /// another (the reference's `AABBTreeLines::LinesDistancer`,
+    /// `distance_from_lines<true>`: the distance to the nearest edge,
+    /// signed by counting the edges a ray from the point crosses).
+    pub(crate) fn distance(&self, x: f64, y: f64) -> f64 {
+        let reach = self.reach;
+        // The cell the point is in, which may be off the grid.
+        let column = ((x - self.min.0) / reach).floor() as i64;
+        let row = ((y - self.min.1) / reach).floor() as i64;
+        let (columns, rows) = (self.columns as i64, self.rows as i64);
+        let mut nearest = f64::MAX;
+        let furthest =
+            (column.abs().max((column - columns).abs())).max(row.abs().max((row - rows).abs())) + 1;
+        // Ring by ring outward: a cell `ring` cells off is no nearer than
+        // `ring - 1` cells.
+        for ring in 0..=furthest {
+            if (ring - 1) as f64 * reach > nearest {
+                break;
+            }
+            for at_row in (row - ring).max(0)..=(row + ring).min(rows - 1) {
+                let edge_row = (at_row - row).abs() == ring;
+                let step = if edge_row { 1 } else { (2 * ring).max(1) };
+                let mut at_column = column - ring;
+                while at_column <= column + ring {
+                    if (0..columns).contains(&at_column) {
+                        for &index in &self.cells[(at_row * columns + at_column) as usize] {
+                            let [ax, ay, bx, by] = self.edges[index as usize];
+                            let (dx, dy) = (bx - ax, by - ay);
+                            let along = (((x - ax) * dx + (y - ay) * dy) / (dx * dx + dy * dy))
+                                .clamp(0.0, 1.0);
+                            nearest = nearest.min((x - ax - along * dx).hypot(y - ay - along * dy));
+                        }
+                    }
+                    at_column += step;
+                }
+            }
+        }
+        let mut inside = false;
+        if (0..rows).contains(&row) {
+            for &index in &self.bands[row as usize] {
+                let [ax, ay, bx, by] = self.edges[index as usize];
+                if (ay > y) != (by > y) && x < ax + (y - ay) / (by - ay) * (bx - ax) {
+                    inside = !inside;
+                }
+            }
+        }
+        if inside { -nearest } else { nearest }
+    }
 }
 
 /// One straight move of a wall, printed one way throughout.

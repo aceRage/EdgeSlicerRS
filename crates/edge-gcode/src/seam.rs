@@ -3,12 +3,16 @@
 //! The reference's SeamPlacer scores every corner of the outer wall by how
 //! visible it is from outside (by casting rays at the model), by its angle
 //! and by overhang, then lines seams up between layers along a curve. This
-//! keeps the angle score and its weights and replaces the rest with
+//! keeps the angle score and its weights, and keeps seams off what hangs
+//! out over the layer beneath as the reference does, before anything else
+//! is weighed (`seam_plan.rs` has the measure). The rest is replaced with
 //! something much simpler: among corners that score about the same, take
-//! the one nearest the seam on the layer below. Visibility and overhangs
-//! are not looked at.
+//! the one nearest the seam on the layer below. Visibility is not looked
+//! at.
 
 use edge_geom::{Point2, unscaled};
+
+use crate::seam_plan::Candidate;
 
 /// The `seam_position` setting.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -78,6 +82,7 @@ fn turns(points: &[Point2], arm: f64) -> Vec<f64> {
 /// material and clockwise around a hole, which makes a corner that folds
 /// into the part a right turn either way. `nozzle` is where the nozzle is
 /// and `previous` the seams of the layer below.
+#[cfg(test)]
 pub fn choose(
     points: &[Point2],
     seam: Seam,
@@ -85,13 +90,25 @@ pub fn choose(
     nozzle: Option<Point2>,
     previous: &[Point2],
 ) -> usize {
+    choose_among(points, seam, nozzle_diameter, nozzle, previous, &|_| true).unwrap_or(0)
+}
+
+/// As [`choose`], of the corners `allowed` only; none where there is no
+/// such corner.
+pub fn choose_among(
+    points: &[Point2],
+    seam: Seam,
+    nozzle_diameter: f64,
+    nozzle: Option<Point2>,
+    previous: &[Point2],
+    allowed: &dyn Fn(usize) -> bool,
+) -> Option<usize> {
     if points.len() < 3 {
-        return 0;
+        return None;
     }
+    let open: Vec<usize> = (0..points.len()).filter(|&index| allowed(index)).collect();
     let extreme = |key: fn(&Point2) -> i64| {
-        (0..points.len())
-            .max_by_key(|&index| (key(&points[index]), std::cmp::Reverse(index)))
-            .unwrap_or(0)
+        (open.iter().copied()).max_by_key(|&index| (key(&points[index]), std::cmp::Reverse(index)))
     };
     match seam {
         Seam::Back => return extreme(|point| point.y),
@@ -113,12 +130,13 @@ pub fn choose(
             weight * angle_penalty(turns[index]) + distance
         })
         .collect();
-    let best = scores.iter().copied().fold(f64::INFINITY, f64::min);
+    let best = (open.iter())
+        .map(|&index| scores[index])
+        .fold(f64::INFINITY, f64::min);
     let lowest = |key: &dyn Fn(usize) -> f64| {
-        (0..points.len())
+        (open.iter().copied())
             .filter(|&index| scores[index] <= best + SIMILAR)
             .min_by(|&a, &b| key(a).total_cmp(&key(b)).then(a.cmp(&b)))
-            .unwrap_or(0)
     };
     match seam {
         Seam::Nearest => lowest(&|index| scores[index]),
@@ -134,6 +152,23 @@ pub fn choose(
     }
 }
 
+/// Which corners of a wall a seam is kept to by how far each hangs out
+/// over the layer beneath (`overhangs`, in mm, by corner): those that
+/// hang out no more than the one that hangs out least, give or take a
+/// tenth of the line's width. The reference weighs this before anything
+/// but paint (SeamPlacer.cpp `SeamComparator::is_first_better`, "avoid
+/// overhangs": of two points either of which hangs out, the one that
+/// hangs out less is the better), and then lets a seam be moved into
+/// line with its neighbours to a point that hangs out no more than a
+/// tenth of the line's width more (`is_first_not_much_worse`). A wall
+/// that hangs out a little all round, as a round one that widens does,
+/// is one whose points differ by less than that, and its seam is then
+/// put by everything else that is weighed, as theirs is once aligned.
+pub fn resting(overhangs: &[f32], flow_width: f32) -> impl Fn(usize) -> bool + '_ {
+    let least = overhangs.iter().copied().fold(f32::INFINITY, f32::min);
+    move |corner| (overhangs.get(corner)).is_none_or(|over| *over - least <= 0.1 * flow_width)
+}
+
 /// How far the loop turns at one of its corners, in radians, positive to
 /// the left: as [`choose`] measures it.
 pub fn turn_at(points: &[Point2], corner: usize, nozzle_diameter: f64) -> f64 {
@@ -143,46 +178,67 @@ pub fn turn_at(points: &[Point2], corner: usize, nozzle_diameter: f64) -> f64 {
         .unwrap_or(0.0)
 }
 
-/// A point somewhere along a closed loop, by a figure made from the
-/// loop's first point and the height `z` of the layer, in mm: the same
-/// for the same loop, and scattered from layer to layer (SeamPlacer.cpp
-/// `pick_random_seam_point`, in single precision as it is there).
-///
-/// Not as the reference in one thing: it picks among the points it
-/// counts as equally good, which leaves out those over a steep overhang
-/// or painted against; here any point of the loop may be picked.
-pub fn random_point(points: &[Point2], z: f64) -> Point2 {
-    let Some(&first) = points.first() else {
-        return Point2 { x: 0, y: 0 };
-    };
-    let at = |point: Point2| (unscaled(point.x) as f32, unscaled(point.y) as f32);
-    let (x, y) = at(first);
-    let mut rand = ((x * 12.9898 + y * 78.233 + z as f32 * 133.3333).sin() * 43_758.547).abs();
+/// Whether seam point `a` is no worse than `b` by much, for a seam put
+/// anywhere (SeamPlacer.cpp `SeamComparator::is_first_not_much_worse`
+/// with `spRandom`): it is unless one of them hangs out over the layer
+/// beneath and they differ in that by more than a tenth of the line's
+/// width. Paint and points hidden inside the print, which the reference
+/// weighs here too, are not looked at.
+fn about_as_good(a: &Candidate, b: &Candidate, flow_width: f32) -> bool {
+    if (a.overhang > 0.0 || b.overhang > 0.0) && (a.overhang - b.overhang).abs() > 0.1 * flow_width
+    {
+        return a.overhang < b.overhang;
+    }
+    true
+}
+
+/// A point somewhere along an outer wall, by a figure made from the
+/// wall's first point and the height its layer was sliced at: the same
+/// for the same wall, and scattered from layer to layer. Only the
+/// stretches that set off from points about as good as the best are
+/// picked among, which leaves out those over a steep overhang.
+/// `candidates` are the wall's (`seam_plan.rs`). A port of SeamPlacer.cpp
+/// `pick_random_seam_point`, in single precision as it is there.
+pub fn random_point(candidates: &[Candidate], flow_width: f32) -> Option<Point2> {
+    let first = candidates.first()?;
+    let [x, y, z] = first.position;
+    let mut rand = ((x * 12.9898 + y * 78.233 + z * 133.3333).sin() * 43_758.547).abs();
     rand -= rand.trunc();
-    let count = points.len();
-    let edges: Vec<(f32, f32, f32)> = (0..count)
-        .map(|index| {
-            let (ax, ay) = at(points[index]);
-            let (bx, by) = at(points[(index + 1) % count]);
-            let (dx, dy) = (bx - ax, by - ay);
-            (dx, dy, dx.hypot(dy))
-        })
-        .collect();
-    let mut picked = edges.iter().map(|edge| edge.2).sum::<f32>() * rand;
-    let mut index = 0;
-    while index + 1 < count && picked - edges[index].2 > 0.0 {
-        picked -= edges[index].2;
-        index += 1;
+    let count = candidates.len();
+    // The points as good as the best met so far, each with the stretch
+    // on to the next point: its length and which way it goes.
+    let mut example = 0;
+    let mut viable: Vec<(usize, f32, [f32; 2])> = Vec::new();
+    for index in 0..count {
+        let (here, best) = (&candidates[index], &candidates[example]);
+        let similar =
+            about_as_good(here, best, flow_width) && about_as_good(best, here, flow_width);
+        if !similar && about_as_good(best, here, flow_width) {
+            continue;
+        }
+        if !similar {
+            example = index;
+            viable.clear();
+        }
+        let next = candidates[(index + 1) % count].position;
+        let (dx, dy) = (next[0] - here.position[0], next[1] - here.position[1]);
+        viable.push((index, (dx * dx + dy * dy).sqrt(), [dx, dy]));
     }
-    let (dx, dy, length) = edges[index];
+    let mut picked = viable.iter().map(|edge| edge.1).sum::<f32>() * rand;
+    let mut at = 0;
+    while at + 1 < viable.len() && picked - viable[at].1 > 0.0 {
+        picked -= viable[at].1;
+        at += 1;
+    }
+    let (index, length, [dx, dy]) = viable[at];
+    let from = candidates[index].position;
     if length <= 0.0 {
-        return points[index];
+        return Some(Point2::from_mm(from[0].into(), from[1].into()));
     }
-    let (ax, ay) = at(points[index]);
-    Point2::from_mm(
-        f64::from(ax + dx / length * picked),
-        f64::from(ay + dy / length * picked),
-    )
+    Some(Point2::from_mm(
+        f64::from(from[0] + dx / length * picked),
+        f64::from(from[1] + dy / length * picked),
+    ))
 }
 
 /// The place `distance` scaled units further round a closed loop from
@@ -486,6 +542,18 @@ mod tests {
         assert_eq!(head(&path, 50.0), path);
     }
 
+    /// A wall's points as places for its seam, at height `z`, each
+    /// hanging out by `overhang(corner)`.
+    fn candidates(points: &[Point2], z: f64, overhang: impl Fn(usize) -> f32) -> Vec<Candidate> {
+        (points.iter().enumerate())
+            .map(|(corner, point)| Candidate {
+                position: [unscaled(point.x) as f32, unscaled(point.y) as f32, z as f32],
+                corner: corner as u32,
+                overhang: overhang(corner),
+            })
+            .collect()
+    }
+
     #[test]
     fn a_random_seam_is_on_the_loop_and_moves_from_layer_to_layer() {
         let square: Vec<Point2> = [(0.0, 0.0), (20.0, 0.0), (20.0, 20.0), (0.0, 20.0)]
@@ -496,12 +564,13 @@ mod tests {
             let edge = |v: f64| v.abs() < 1e-3 || (v - 20.0).abs() < 1e-3;
             (edge(x) && (-1e-3..=20.001).contains(&y)) || (edge(y) && (-1e-3..=20.001).contains(&x))
         };
+        let at = |z: f64| random_point(&candidates(&square, z, |_| 0.0), 0.42).unwrap();
         let picked: Vec<Point2> = (0..40)
-            .map(|layer| random_point(&square, 0.1 + 0.2 * f64::from(layer)))
+            .map(|layer| at(0.1 + 0.2 * f64::from(layer)))
             .collect();
         assert!(picked.iter().all(|&point| on_loop(point)));
         // The same for the same loop and height; not all in one place.
-        assert_eq!(random_point(&square, 0.5), random_point(&square, 0.5));
+        assert_eq!(at(0.5), at(0.5));
         let mut distinct = picked.clone();
         distinct.sort_by_key(|point| (point.x, point.y));
         distinct.dedup();
@@ -515,6 +584,152 @@ mod tests {
         ] {
             assert!(picked.iter().any(side));
         }
+        assert_eq!(random_point(&[], 0.42), None);
+    }
+
+    #[test]
+    fn a_random_seam_keeps_off_what_hangs_out() {
+        let square: Vec<Point2> = [(0.0, 0.0), (20.0, 0.0), (20.0, 20.0), (0.0, 20.0)]
+            .map(|(x, y)| Point2::from_mm(x, y))
+            .to_vec();
+        // The two left corners hang out by half a mm: only the stretches
+        // that set off from the right ones are picked among, the right
+        // side and the top.
+        let left = |corner: usize| if corner == 0 || corner == 3 { 0.5 } else { 0.0 };
+        let picked: Vec<Point2> = (0..40)
+            .map(|layer| {
+                let z = 0.1 + 0.2 * f64::from(layer);
+                random_point(&candidates(&square, z, left), 0.42).unwrap()
+            })
+            .collect();
+        assert!(
+            (picked.iter()).all(|p| p.x > 19_999_000 || p.y > 19_999_000),
+            "{picked:?}"
+        );
+        assert!(picked.iter().any(|p| p.x < 19_000_000));
+        assert!(picked.iter().any(|p| p.y < 19_000_000));
+        // A point that hangs out by less than a tenth of the line's
+        // width more than another is as good as it: with all four out by
+        // about as much, every side is picked from.
+        let all = |corner: usize| 0.3 + 0.01 * corner as f32;
+        let picked: Vec<Point2> = (0..40)
+            .map(|layer| {
+                let z = 0.1 + 0.2 * f64::from(layer);
+                random_point(&candidates(&square, z, all), 0.42).unwrap()
+            })
+            .collect();
+        assert!(picked.iter().any(|p| p.y < 1_000));
+        assert!(picked.iter().any(|p| p.x < 1_000));
+        // With one corner that rests among three well out, the seam is
+        // on the stretch that sets off from it.
+        let one = |corner: usize| if corner == 2 { 0.0 } else { 0.4 };
+        let point = random_point(&candidates(&square, 0.3, one), 0.42).unwrap();
+        assert!(point.y > 19_999_000);
+    }
+
+    #[test]
+    fn a_seam_is_kept_to_the_corners_that_rest() {
+        let square = points(&[(0.0, 0.0), (10.0, 0.0), (10.0, 10.0), (0.0, 10.0)]);
+        let all = |_: usize| true;
+        let not_first = |corner: usize| corner != 0;
+        let below = points(&[(0.2, 0.1)]);
+        for seam in [
+            Seam::Nearest,
+            Seam::Aligned,
+            Seam::AlignedBack,
+            Seam::AlignedFront,
+            Seam::Back,
+            Seam::Left,
+            Seam::Right,
+            Seam::Random,
+        ] {
+            // Among them all, as `choose`.
+            let at = Some(Point2::from_mm(-1.0, 4.0));
+            assert_eq!(
+                choose_among(&square, seam, 0.4, at, &below, &all),
+                Some(choose(&square, seam, 0.4, at, &below)),
+                "{seam:?}"
+            );
+            // Among none there is none.
+            assert_eq!(
+                choose_among(&square, seam, 0.4, at, &below, &|_| false),
+                None
+            );
+        }
+        // The seam on the layer below is by the first corner; without
+        // it the nearest of the others as good, the earlier of two as near.
+        assert_eq!(choose(&square, Seam::Aligned, 0.4, None, &below), 0);
+        assert_eq!(
+            choose_among(&square, Seam::Aligned, 0.4, None, &below, &not_first),
+            Some(1)
+        );
+        let nearer = points(&[(0.1, 0.2)]);
+        assert_eq!(
+            choose_among(&square, Seam::Aligned, 0.4, None, &nearer, &not_first),
+            Some(3)
+        );
+        // The side asked for, among those allowed.
+        assert_eq!(
+            choose_among(&square, Seam::Left, 0.4, None, &[], &not_first),
+            Some(3)
+        );
+        assert_eq!(
+            choose_among(&square, Seam::AlignedFront, 0.4, None, &[], &not_first),
+            Some(1)
+        );
+        // A corner that hides the seam better is taken only if allowed.
+        assert_eq!(
+            choose_among(&ell(), Seam::Aligned, 0.4, None, &[], &|corner| corner != 3),
+            Some(0)
+        );
+        // Two points are no loop.
+        assert_eq!(
+            choose_among(&square[..2], Seam::Aligned, 0.4, None, &[], &all),
+            None
+        );
+
+        // Which corners rest: those that hang out by nothing, or with
+        // none the one that hangs out least.
+        let rests = |overhangs: &[f32]| -> Vec<usize> {
+            let rests = resting(overhangs, 0.42);
+            (0..overhangs.len())
+                .filter(|&corner| rests(corner))
+                .collect()
+        };
+        assert_eq!(rests(&[0.0, 0.3, 0.0, 0.1]), [0, 2]);
+        assert_eq!(rests(&[0.4, 0.3, 0.2, 0.25]), [2]);
+        assert_eq!(rests(&[0.0; 4]), [0, 1, 2, 3]);
+        // A tenth of the line's width more is no worse.
+        assert_eq!(rests(&[0.0, 0.04, 0.05, 0.0]), [0, 1, 3]);
+        assert_eq!(rests(&[0.31, 0.3, 0.33, 0.35]), [0, 1, 2]);
+        // With nothing known of a wall every corner will do.
+        assert!((0..4).all(resting(&[], 0.42)));
+        // The inward corner of the L hangs out: the seam goes to the
+        // best of the others, and at the back to the furthest back that
+        // rests.
+        let ell_over = [0.0, 0.0, 0.0, 0.2, 0.3, 0.0];
+        assert_eq!(
+            choose_among(
+                &ell(),
+                Seam::Aligned,
+                0.4,
+                None,
+                &[],
+                &resting(&ell_over, 0.42)
+            ),
+            Some(0)
+        );
+        assert_eq!(
+            choose_among(
+                &ell(),
+                Seam::Back,
+                0.4,
+                None,
+                &[],
+                &resting(&ell_over, 0.42)
+            ),
+            Some(5)
+        );
     }
 
     #[test]

@@ -975,7 +975,7 @@ fn a_compensated_circles_walls_are_joined_so_whatever_else_is_asked() {
 }
 
 #[test]
-fn a_slope_goes_on_over_air_as_an_overhang_wall_and_none_starts_there() {
+fn a_slope_goes_on_over_air_as_an_overhang_wall() {
     let s = PrintSettings {
         detect_overhang_wall: true,
         bridge_speed: 25.0,
@@ -1029,12 +1029,101 @@ fn a_slope_goes_on_over_air_as_an_overhang_wall_and_none_starts_there() {
     assert!(down.iter().any(|laid| laid.feature == "Overhang wall"));
     assert!(down.iter().all(|laid| laid.z == Some(0.4)));
     assert!((down.iter().map(|laid| laid.length).sum::<f64>() - 19.9).abs() < 0.01);
+}
 
-    // A wall that starts over air has no scarf.
-    let text = printed(&loops, &notched(38.0, 44.0), &s);
+/// Where the second layer's first extruding move starts.
+fn second_layer_start(text: &str) -> (f64, f64) {
+    let mut at = (f64::NAN, f64::NAN);
+    for line in text
+        .lines()
+        .skip_while(|line| !line.starts_with(";Z:0.400"))
+    {
+        if !line.starts_with("G1 ") {
+            continue;
+        }
+        let to = word(line, 'X').zip(word(line, 'Y'));
+        if to.is_some() && word(line, 'E').is_some_and(|fed| fed > 0.0) {
+            break;
+        }
+        at = to.unwrap_or(at);
+    }
+    at
+}
+
+#[test]
+fn a_seam_keeps_off_what_hangs_out_and_a_wall_all_over_air_has_no_scarf() {
+    let s = PrintSettings {
+        detect_overhang_wall: true,
+        bridge_speed: 25.0,
+        ..settings()
+    };
+    // A square wall 20 mm a side whose first corner, at (40, 40), is the
+    // nearest to where the nozzle is. Beneath it a plate with a notch cut
+    // from x = 38 to 44 up to y = 45: that corner and the first 4 mm of
+    // the wall have nothing under them.
+    let loops = [wall(square(40.0, 40.0, 20.0), 0, false)];
+    let notched = |plate: (f64, f64)| {
+        vec![ExPolygon {
+            contour: Polygon {
+                points: vec![
+                    mm(plate.0, plate.0),
+                    mm(38.0, plate.0),
+                    mm(38.0, 45.0),
+                    mm(44.0, 45.0),
+                    mm(44.0, plate.0),
+                    mm(plate.1, plate.0),
+                    mm(plate.1, plate.1),
+                    mm(plate.0, plate.1),
+                ],
+            },
+            holes: Vec::new(),
+        }]
+    };
+    let under = notched((30.0, 70.0));
+    // The seam is not put at the corner over the notch, with a scarf or
+    // without one (the reference's seams keep off what hangs out before
+    // anything else is weighed, SeamPlacer.cpp `is_first_better`): it
+    // goes to a corner that rests, one of the two nearest.
+    let plain = PrintSettings {
+        scarf: Scarf::default(),
+        ..s.clone()
+    };
+    let text = printed(&loops, &under, &plain);
+    let (moves, _) = second_layer(&text);
+    assert_eq!(second_layer_start(&text), (40.0, 60.0));
+    assert_eq!(moves[0].feature, "Outer wall");
+    assert!(moves.iter().all(|laid| laid.z.is_none()));
+
+    // So the wall is joined with a scarf there, and what is over the
+    // notch is an overhang wall each time it is passed.
+    let text = printed(&loops, &under, &s);
+    let (moves, others) = second_layer(&text);
+    assert!(others.is_empty(), "{others:?}");
+    // (The way up starts short of the seam by the gap left there.)
+    assert_eq!(second_layer_start(&text), (40.0, 59.9));
+    let (up, down) = joint(&moves);
+    let length = |moves: &[Laid]| moves.iter().map(|laid| laid.length).sum::<f64>();
+    assert!((length(&up) - 19.9).abs() < 0.01);
+    assert!((length(&down) - 19.9).abs() < 0.01);
+    assert!(up[0].at < 0.22 && up.windows(2).all(|pair| pair[0].at <= pair[1].at));
+    assert!(down.iter().all(|laid| laid.z == Some(0.4)));
+    assert!((length(&moves) - (80.0 + 20.0 - 0.2)).abs() < 0.02);
+    let over: Vec<Laid> = (moves.iter().copied())
+        .filter(|laid| laid.feature == "Overhang wall")
+        .collect();
+    assert!(!over.is_empty());
+    assert!(over.iter().all(|laid| laid.speed == 25.0));
+
+    // A wall with no corner that rests starts at the one that hangs out
+    // least, over air, and a wall that starts over air has no scarf:
+    // over a plate that stops short of it all round it is laid as it is
+    // with no scarf.
+    let small = notched((41.0, 59.0));
+    let text = printed(&loops, &small, &s);
     let (moves, _) = second_layer(&text);
     assert_eq!(moves[0].feature, "Overhang wall");
-    assert!(moves.iter().all(|laid| laid.z.is_none()));
+    assert_eq!(sloped_moves(&text), 0);
+    assert_eq!(text, printed(&loops, &small, &plain));
 }
 
 #[test]
