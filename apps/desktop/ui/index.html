@@ -7,6 +7,7 @@
 <title>EdgeSlicerRS</title>
 <link rel="stylesheet" href="style.css">
 <link rel="stylesheet" href="printers.css">
+<link rel="stylesheet" href="process.css">
 <link rel="stylesheet" href="gl/gl.css">
 <link rel="stylesheet" href="edit.css">
 </head>
@@ -99,25 +100,23 @@
         </section>
 
         <section class="fold" id="s-process">
-          <h2><button type="button" class="fold-title" title="Click to collapse / expand" aria-expanded="true">Process</button></h2>
+          <h2 class="with-tools">
+            <button type="button" class="fold-title" title="Click to collapse / expand" aria-expanded="true">Process</button>
+            <button type="button" id="process-reset" class="icon tool" title="Click to reset all settings to the last saved preset." aria-label="Reset all process settings to the preset" hidden>
+              <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M3.5,8a4.5,4.5 0 1 0 1.4,-3.3M3.2,2.6v2.5h2.5"/></svg>
+            </button>
+            <label class="switch" title="Shows the advanced settings with the simple ones">Advance <input type="checkbox" id="process-advanced" role="switch"></label>
+          </h2>
           <div class="fold-body">
             <p id="saved-process" class="value" hidden></p>
             <label id="process-row">Preset <select id="process"></select></label>
-            <h3>Quality</h3>
-            <div class="grid">
-              <label for="o-layer">Layer height</label>
-              <span class="unit"><input id="o-layer" data-over="layer_height" type="number" min="0.01" step="0.01" inputmode="decimal"> mm</span>
-              <label for="o-first">Initial layer height</label>
-              <span class="unit"><input id="o-first" data-over="first_layer_height" type="number" min="0.01" step="0.01" inputmode="decimal"> mm</span>
-              <label for="o-closing">Slice gap closing radius</label>
-              <span class="unit"><input id="o-closing" data-over="closing_radius" type="number" min="0" step="0.001" inputmode="decimal"> mm</span>
-            </div>
-            <h3>Strength</h3>
-            <div class="grid">
-              <label for="o-walls">Wall loops</label>
-              <span class="unit"><input id="o-walls" data-over="wall_loops" type="number" min="0" step="1" inputmode="numeric"></span>
-            </div>
-            <p class="quiet">Left empty, a setting is as the preset or the project has it.</p>
+            <!-- The reference's pages of process settings, drawn from data by process.js. -->
+            <input type="search" id="process-search" placeholder="Search in preset…" aria-label="Search in preset" role="combobox" aria-controls="process-found" aria-expanded="false" aria-autocomplete="list" autocomplete="off" spellcheck="false">
+            <div id="process-found" role="listbox" aria-label="Settings found" hidden></div>
+            <div id="process-tabs" role="tablist" aria-label="Process settings"></div>
+            <p id="process-refused" class="error" hidden></p>
+            <p id="process-none" class="quiet" hidden>Nothing on this page with the settings as they are.</p>
+            <div id="process-page" role="tabpanel"></div>
           </div>
         </section>
 
@@ -280,6 +279,7 @@
 <script src="scene-edit.js"></script>
 <script src="objects.js"></script>
 <script src="printers.js"></script>
+<script src="process.js"></script>
 <script src="app.js"></script>
 </body>
 </html>

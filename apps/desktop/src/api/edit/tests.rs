@@ -192,6 +192,32 @@ fn a_moved_object_is_sliced_where_it_stands_and_undo_puts_it_back() {
     assert_eq!(renamed["project"]["edit"]["redo"], Value::Null);
     assert_eq!(renamed["project"]["plates"][0]["objects"][0], "bracket");
 
+    // A process setting set by hand is the project's, not the model's:
+    // an edit leaves it, and taking the edit back does not take it back,
+    // as the reference's undo history holds the model and not the presets.
+    ask(&session, "project_set", json!({ "layer_height": 0.28 }));
+    let moved_again = edit(
+        &session,
+        json!({ "op": "transform", "copies": [moved(&placing, [3.0, 0.0, 0.0])] }),
+    );
+    assert_eq!(moved_again["project"]["choices"]["layer_height"], 0.28);
+    let undone = ask(&session, "undo", json!({}));
+    assert_eq!(undone["done"], "Move Object");
+    assert_eq!(undone["project"]["choices"]["layer_height"], 0.28);
+    assert_eq!(undone["project"]["edit"]["undo"], "Rename Object");
+    // And setting one is not a step of the history.
+    ask(&session, "project_set", json!({ "layer_height": null }));
+    assert_eq!(
+        ask(&session, "project", json!({}))["edit"]["undo"],
+        "Rename Object"
+    );
+    assert_eq!(
+        ask(&session, "project", json!({}))["edit"]["redo"],
+        "Move Object"
+    );
+    ask(&session, "redo", json!({}));
+    ask(&session, "undo", json!({}));
+
     // What cannot be done changes nothing.
     assert!(
         refused(&session, "scene_edit", json!({ "op": "fold" })).contains("no edit named fold")
