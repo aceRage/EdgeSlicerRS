@@ -6,7 +6,7 @@ use edge_config::Settings;
 
 /// A setting, the value that turns it off, and what is done whatever it
 /// is set to.
-const UNREAD: [(&str, &str, &str); 9] = [
+const UNREAD: [(&str, &str, &str); 8] = [
     (
         "wipe_inward",
         "0",
