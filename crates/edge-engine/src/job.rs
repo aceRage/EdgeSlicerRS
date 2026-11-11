@@ -26,6 +26,10 @@ pub struct Overrides {
     pub wall_loops: Option<usize>,
     /// Which build plate is on the printer, e.g. "Textured PEI Plate".
     pub bed_type: Option<String>,
+    /// Any other setting, by its name and in the text a profile gives it
+    /// in: these replace what the presets and the project say. A height
+    /// or a radius given above comes before one given here.
+    pub settings: Settings,
 }
 
 /// A slicing setting's value and where it came from.
@@ -100,7 +104,11 @@ fn slice_settings(
         if let Some(value) = flag {
             return Ok(Some((value, "command line")));
         }
-        for (settings, source) in [(preset, "process preset"), (project, "project settings")] {
+        for (settings, source) in [
+            (Some(&overrides.settings), "set by hand"),
+            (preset, "process preset"),
+            (project, "project settings"),
+        ] {
             if let Some(value) = settings
                 .map(|settings| settings.float(key))
                 .transpose()?
@@ -177,6 +185,8 @@ pub fn prepare(mut loaded: Loaded, chosen: &Chosen, overrides: &Overrides) -> Re
     {
         settings.overlay(preset);
     }
+    // What was set by hand comes over all of them.
+    settings.overlay(&overrides.settings);
     // The presets are named in the file, as the reference names them, for
     // whoever reads it back.
     if let Some((name, _)) = &chosen.process {

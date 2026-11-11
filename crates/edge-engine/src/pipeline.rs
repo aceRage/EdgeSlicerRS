@@ -1246,6 +1246,16 @@ impl Sliced {
             )
     }
 
+    /// Every note of what is not done, with the fill pattern that had to
+    /// be replaced first: all there is to say of the settings this print
+    /// was sliced with that it does not follow.
+    pub fn gaps(&self) -> Vec<String> {
+        let pattern = self.infill.unsupported_pattern.as_ref().map(|pattern| {
+            format!("sparse_infill_pattern \"{pattern}\": grid is used in its place")
+        });
+        pattern.into_iter().chain(self.notes().cloned()).collect()
+    }
+
     /// The filaments in use that the printer has no tool for.
     pub fn without_a_tool(&self) -> impl Iterator<Item = usize> + '_ {
         self.used

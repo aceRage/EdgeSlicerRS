@@ -264,6 +264,7 @@ fn slice(args: SliceArgs) -> Result<(), Failure> {
         closing_radius: args.closing_radius,
         wall_loops: args.wall_loops,
         bed_type: args.bed_type.clone(),
+        ..Overrides::default()
     };
     let job = edge_engine::prepare(loaded, &chosen, &overrides)?;
     match &job.bed_type {
