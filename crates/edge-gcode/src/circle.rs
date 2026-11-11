@@ -51,26 +51,14 @@ impl Writer<'_> {
     /// they are laid: only where overhanging walls are told apart
     /// (`detect_overhang_wall`), and never on the first layer.
     fn hangs_clear(&self, wall: &ExtrusionLoop) -> bool {
-        let s = self.settings;
-        let (Some(below), false, true) = (
-            self.below.as_ref(),
-            self.state.first_layer,
-            s.detect_overhang_wall,
-        ) else {
+        let Some(grown) = self.grown() else {
             return false;
         };
         let mut round = wall.polygon.points.clone();
         round.extend(wall.polygon.points.first().copied());
-        overhang::Judge {
-            below,
-            width: wall.flow.width,
-            clear_beyond: Some(0.5 * s.nozzle_diameter),
-            speed: &|_| 0.0,
-            fan_at: None,
-        }
-        .pieces(&round)
-        .iter()
-        .any(|piece| piece.clear)
+        overhang::stretches(grown, &round)
+            .iter()
+            .any(|stretch| stretch.clear)
     }
 
     /// A wall's speed: the compensated circle's, the small loop's, or
