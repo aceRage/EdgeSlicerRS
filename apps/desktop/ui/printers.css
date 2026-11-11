@@ -1,0 +1,128 @@
+/* The sidebar's printer list and "Select/Remove printers" (printers.js).
+   Colours are the page's own (style.css). */
+
+/* ---- the printer block ---- */
+
+h2.with-tools { display: flex; align-items: center; }
+h2.with-tools .fold-title { flex: 1; }
+#printer-settings { flex: none; width: 24px; height: 24px; color: var(--quiet); border-radius: 4px; }
+#printer-settings:hover { color: var(--text); background: var(--bg); }
+#printer-settings svg { width: 16px; height: 16px; fill: none; stroke: currentColor; stroke-width: 1.3; stroke-linecap: round; }
+
+#printer-row {
+  display: grid;
+  grid-template-columns: 48px minmax(0, 1fr);
+  align-items: center;
+  gap: 8px;
+  padding: 6px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--field);
+}
+#printer-row:hover, #printer-row:focus-within { border-color: var(--accent); }
+#printer-row select { border: 0; background: transparent; font-weight: 600; padding-left: 2px; }
+#printer-row select:focus-visible { outline: none; }
+
+/* A model's picture; a grey box where it has none, as the reference's placeholder. */
+#printer-cover, .pt-cover {
+  display: block;
+  border-radius: 4px;
+  background: rgba(128, 128, 128, 0.16);
+  overflow: hidden;
+}
+#printer-cover { width: 48px; height: 48px; }
+#printer-cover img, .pt-cover img { display: block; width: 100%; height: 100%; object-fit: contain; background: #ffffff; }
+
+#nozzles { display: flex; flex-direction: column; gap: 6px; }
+#nozzles h3 { margin-top: 2px; }
+#nozzle-tiles { display: flex; flex-wrap: wrap; gap: 6px; }
+.nozzle-tile {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  min-width: 44px;
+  padding: 3px 6px;
+  border: 1px solid var(--line);
+  border-radius: 5px;
+  background: var(--field);
+  line-height: 1.25;
+}
+.nozzle-tile small { color: var(--quiet); font-size: 10px; }
+.nozzle-tile b { font-weight: 600; }
+
+/* ---- Printer Selection ---- */
+
+#printers-dialog {
+  width: min(1000px, 90vw);
+  height: min(720px, 90vh);
+  max-width: none;
+  max-height: none;
+  padding: 16px;
+}
+#printers-dialog[open] { display: flex; flex-direction: column; gap: 10px; }
+#printers-dialog h2 { font-size: 16px; }
+
+#pt-toolbar { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+#pt-search { flex: 1 1 220px; max-width: 320px; padding: 6px 8px; border: 1px solid var(--line); border-radius: 5px; background: var(--field); color: var(--text); font: inherit; }
+#pt-count { margin-left: auto; white-space: nowrap; }
+#pt-scope { white-space: nowrap; }
+#pt-toolbar button { min-width: 84px; }
+
+#pt-chips { display: flex; align-items: center; flex-wrap: wrap; gap: 6px 10px; }
+.pt-chip { padding: 2px 8px; border: 1px solid var(--line); border-radius: 12px; background: var(--bg); font-size: 12px; }
+.pt-chip button { color: var(--quiet); }
+
+#pt-scroll { flex: 1; min-height: 0; overflow: auto; border: 1px solid var(--line); border-radius: 6px; background: var(--field); }
+#pt-table { width: 100%; border-collapse: collapse; table-layout: fixed; }
+#pt-table th {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  padding: 0 4px 0 8px;
+  background: var(--panel);
+  border-bottom: 1px solid var(--line);
+  text-align: left;
+  white-space: nowrap;
+  font-weight: 600;
+}
+#pt-table th.check { width: 104px; }
+#pt-table th.icon { width: 48px; }
+#pt-table th.num { width: 96px; text-align: right; }
+#pt-table th:nth-child(3) { width: 19%; }
+#pt-table th:last-child { width: 118px; }
+.pt-sort { padding: 7px 0; border: 0; background: none; font-weight: 600; }
+.pt-way { color: var(--accent); }
+.pt-funnel { padding: 3px; margin-left: 2px; border: 0; background: none; color: var(--quiet); vertical-align: middle; opacity: 0.55; }
+.pt-funnel:hover, .pt-funnel.on { opacity: 1; }
+.pt-funnel.on { color: var(--accent); }
+.pt-funnel svg { display: block; width: 12px; height: 12px; fill: none; stroke: currentColor; stroke-width: 1.2; stroke-linejoin: round; }
+.pt-funnel.on svg { fill: currentColor; }
+
+#pt-table td { padding: 4px 8px; border-bottom: 1px solid var(--line); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+#pt-table td.check { text-align: center; }
+#pt-table td.icon { padding: 3px 4px; }
+#pt-table td.num { text-align: right; font-variant-numeric: tabular-nums; }
+#pt-table td.na { color: var(--quiet); }
+#pt-table tbody tr { cursor: pointer; }
+#pt-table tbody tr:hover { background: var(--bg); }
+#pt-table tbody tr.on td:nth-child(4) { font-weight: 600; }
+.pt-cover { width: 32px; height: 32px; margin: 0 auto; }
+#pt-none { padding: 24px; text-align: center; }
+
+#pt-pop {
+  position: absolute;
+  z-index: 3;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  width: 240px;
+  padding: 10px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: var(--panel);
+  box-shadow: 0 6px 24px rgba(0, 0, 0, 0.3);
+}
+#pt-pop h3 { margin: 0; }
+#pt-pop input[type="search"], #pt-pop input[type="text"] { padding: 5px 6px; border: 1px solid var(--line); border-radius: 5px; background: var(--field); color: var(--text); font: inherit; }
+.pt-values { display: flex; flex-direction: column; gap: 2px; max-height: 240px; overflow-y: auto; }
+.pt-values label { flex-direction: row; align-items: center; gap: 6px; color: var(--text); font-size: 13px; }

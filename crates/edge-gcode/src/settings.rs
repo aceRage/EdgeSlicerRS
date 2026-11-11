@@ -61,6 +61,12 @@ pub struct PrintSettings {
     pub sparse_infill_speed: f64,
     pub internal_solid_infill_speed: f64,
     pub top_surface_speed: f64,
+    /// Ironing lines: the process's speed, or the filament's own where
+    /// it sets one (`ironing_speed`, `filament_ironing_speed`).
+    pub ironing_speed: f64,
+    /// The part fan while ironing, in percent; none when ironing gets
+    /// the layer's (`ironing_fan_speed` below zero).
+    pub ironing_fan_speed: Option<f64>,
     pub bridge_speed: f64,
     /// Lines that fill the gaps between walls.
     pub gap_infill_speed: f64,
@@ -130,6 +136,10 @@ pub struct PrintSettings {
 
     pub nozzle_diameter: f64,
     pub seam: Seam,
+    /// Each inner wall starts a little further round than the wall
+    /// outside it, so the seams do not lie one behind another
+    /// (`staggered_inner_seams`).
+    pub staggered_inner_seams: bool,
     /// How far short of its start a wall loop stops, in mm.
     pub seam_gap: f64,
     /// Curves are cut into segments that stray no further than this, in mm.
@@ -261,6 +271,8 @@ impl Default for PrintSettings {
             sparse_infill_speed: 100.0,
             internal_solid_infill_speed: 100.0,
             top_surface_speed: 100.0,
+            ironing_speed: 20.0,
+            ironing_fan_speed: None,
             bridge_speed: 25.0,
             gap_infill_speed: 30.0,
             detect_overhang_wall: true,
@@ -299,6 +311,7 @@ impl Default for PrintSettings {
             wipe_speed: None,
             nozzle_diameter: 0.4,
             seam: Seam::Aligned,
+            staggered_inner_seams: false,
             seam_gap: 0.04,
             resolution: 0.01,
             arc_fitting: false,
@@ -458,6 +471,7 @@ impl PrintSettings {
             Some("back") => Seam::Back,
             Some("left") => Seam::Left,
             Some("right") => Seam::Right,
+            Some("random") => Seam::Random,
             Some(other) => {
                 unsupported.push(format!("seam_position \"{other}\": aligned seams are used"));
                 Seam::Aligned
@@ -598,6 +612,19 @@ impl PrintSettings {
                 defaults.internal_solid_infill_speed,
             )?,
             top_surface_speed: number("top_surface_speed", defaults.top_surface_speed)?,
+            // "The active filament's ironing speed override wins when
+            // set" (GCode.cpp `_extrude`); a filament the list has no
+            // entry for keeps the process's speed, and does not borrow
+            // another's (PrintConfig.hpp `ironing_filament_override`).
+            ironing_speed: match settings
+                .floats("filament_ironing_speed")?
+                .and_then(|speeds| speeds.get(index).copied().flatten())
+                .filter(|speed| *speed > 0.0)
+            {
+                Some(own) => own,
+                None => number("ironing_speed", defaults.ironing_speed)?,
+            },
+            ironing_fan_speed: first("ironing_fan_speed")?.filter(|speed| *speed >= 0.0),
             bridge_speed: number("bridge_speed", defaults.bridge_speed)?,
             gap_infill_speed: number("gap_infill_speed", defaults.gap_infill_speed)?,
             detect_overhang_wall: flag("detect_overhang_wall", defaults.detect_overhang_wall)?,
@@ -705,6 +732,7 @@ impl PrintSettings {
             },
             nozzle_diameter,
             seam,
+            staggered_inner_seams: flag("staggered_inner_seams", false)?,
             seam_gap: settings
                 .float_or_percent("seam_gap")?
                 .unwrap_or(FloatOrPercent::Percent(10.0))
@@ -1287,13 +1315,19 @@ mod tests {
         let read =
             |json: &str| PrintSettings::from_settings(&Settings::from_json(json).unwrap()).unwrap();
         let settings = read(
-            r#"{"wall_sequence": "outer wall last", "seam_position": "random", "curr_bed_type": "Glass"}"#,
+            r#"{"wall_sequence": "outer wall last", "seam_position": "hidden", "curr_bed_type": "Glass"}"#,
         );
         assert_eq!(settings.wall_order, WallOrder::InnerOuter);
         assert_eq!(
             read(r#"{"wall_sequence": "inner-outer-inner wall"}"#).wall_order,
             WallOrder::InnerOuterInner
         );
+        let seams = read(r#"{"seam_position": "random", "staggered_inner_seams": "1"}"#);
+        assert_eq!(
+            (seams.seam, seams.staggered_inner_seams),
+            (Seam::Random, true)
+        );
+        assert!(seams.unsupported.is_empty());
         assert_eq!(settings.bed_temperature, None);
         assert_eq!(settings.unsupported.len(), 3);
         assert!(

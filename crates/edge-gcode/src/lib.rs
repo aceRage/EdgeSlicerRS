@@ -1166,6 +1166,7 @@ impl Writer<'_> {
             .map(cooling::pwm)
             .filter(|over_air| *over_air > speed);
         self.settle_fan(speed, over_air);
+        self.settle_ironing_fan(speed);
         if self.state.fan != Some(speed) {
             fans.push_str(&format!("M106 S{speed}\n"));
             self.state.fan = Some(speed);
@@ -1226,7 +1227,15 @@ impl Writer<'_> {
                 self.path(&path, around.role, &around.flow, false, true)?;
             }
             self.lines(&layer.support.iter().collect::<Vec<_>>(), &[])?;
-            self.islands(layer)?;
+            // Ironing has a fan speed of its own once the fan is on at
+            // all (CoolingBuffer.cpp: not on the first layers it is
+            // kept off for).
+            let ironing_fan = self
+                .settings
+                .ironing_fan_speed
+                .filter(|_| index >= self.settings.close_fan_the_first_x_layers)
+                .map(cooling::pwm);
+            self.islands(layer, ironing_fan)?;
         }
         self.fan_over_air(false)?;
         self.state.seams = std::mem::take(&mut self.state.next_seams);
@@ -1280,9 +1289,11 @@ impl Writer<'_> {
     }
 
     /// Islands nearest first, each finished before the next is begun: its
-    /// walls and the fill that lies in it, in the configured order
-    /// (GCode.cpp `process_layer`). Fill in no island comes last.
-    fn islands(&mut self, layer: &Layer<'_>) -> io::Result<()> {
+    /// walls and the fill that lies in it, in the configured order, and
+    /// last its ironing, over all of that (GCode.cpp `process_layer`).
+    /// Fill in no island comes last. `ironing_fan` is the fan's speed
+    /// while ironing, when ironing has one of its own on this layer.
+    fn islands(&mut self, layer: &Layer<'_>, ironing_fan: Option<u8>) -> io::Result<()> {
         let homes = homes(layer);
         let fill = |island: usize| -> Vec<&ExtrusionPath> {
             layer
@@ -1309,10 +1320,12 @@ impl Writer<'_> {
             // loops. Gap fill stays with the fill, as in the reference
             // (Fill.cpp, where `thin_fills` join the fills).
             let (mut over_air, mut with_walls, mut rest) = (Vec::new(), Vec::new(), Vec::new());
+            let mut ironing = Vec::new();
             for path in fill(island) {
                 match path.role {
                     Role::OverhangPerimeter => over_air.push(path),
                     Role::ExternalPerimeter | Role::Perimeter => with_walls.push(path),
+                    Role::Ironing => ironing.push(path),
                     _ => rest.push(path),
                 }
             }
@@ -1325,8 +1338,71 @@ impl Writer<'_> {
             if !self.settings.infill_first {
                 self.lines(&rest, layer.shelter)?;
             }
+            self.ironing(&ironing, layer.shelter, ironing_fan)?;
         }
-        self.lines(&fill(layer.islands.len()), layer.shelter)
+        let (ironing, rest): (Vec<&ExtrusionPath>, Vec<&ExtrusionPath>) = fill(layer.islands.len())
+            .into_iter()
+            .partition(|path| path.role == Role::Ironing);
+        self.lines(&rest, layer.shelter)?;
+        self.ironing(&ironing, layer.shelter, ironing_fan)
+    }
+
+    /// An island's ironing, once its walls and fill are down (GCode.cpp
+    /// `process_layer`, "ironing": `extrude_infill` again, for the
+    /// ironing alone). The areas ironed are chained as fill is, and the
+    /// lines of each keep the order they were made in. With a fan speed
+    /// of its own (`ironing_fan_speed`) the fan is set to it for as long
+    /// as the ironing lasts (GCode.cpp `apply_role_based_fan_speed`,
+    /// CoolingBuffer.cpp). The reference changes the fan as the first
+    /// ironing line begins and back as the next line of another kind
+    /// does; here it is changed before the move to the ironing and back
+    /// straight after it.
+    fn ironing(
+        &mut self,
+        paths: &[&ExtrusionPath],
+        shelter: &[ExPolygon],
+        fan: Option<u8>,
+    ) -> io::Result<()> {
+        if paths.is_empty() {
+            return Ok(());
+        }
+        let Some(fan) = fan else {
+            return self.lines(paths, shelter);
+        };
+        // What is laid over air is behind: its fan gives way first.
+        self.fan_over_air(false)?;
+        self.out.extend_from_slice(FAN_IRONING);
+        writeln!(self.out, "ON {fan}")?;
+        self.lines(paths, shelter)?;
+        self.out.extend_from_slice(FAN_IRONING);
+        writeln!(self.out, "OFF {fan}")
+    }
+
+    /// Turns the layer's ironing fan markers into fan commands, now that
+    /// the layer's own fan speed is known: the ironing speed where
+    /// ironing starts and `layer` where it ends, or nothing where the
+    /// two are the same (CoolingBuffer.cpp skips a command for the speed
+    /// the fan already runs at).
+    fn settle_ironing_fan(&mut self, layer: u8) {
+        if find(&self.out, FAN_IRONING).is_none() {
+            return;
+        }
+        let text = std::mem::take(&mut self.out);
+        for line in text.split_inclusive(|byte| *byte == b'\n') {
+            let Some(marked) = line.strip_prefix(FAN_IRONING) else {
+                self.out.extend_from_slice(line);
+                continue;
+            };
+            let marked = String::from_utf8_lossy(marked);
+            let mut words = marked.split_whitespace();
+            let on = words.next() == Some("ON");
+            let ironing: Option<u8> = words.next().and_then(|word| word.parse().ok());
+            if let Some(ironing) = ironing.filter(|ironing| *ironing != layer) {
+                let speed = if on { ironing } else { layer };
+                self.out
+                    .extend_from_slice(format!("M106 S{speed}\n").as_bytes());
+            }
+        }
     }
 
     /// One island's walls in the configured order.
@@ -1355,6 +1431,11 @@ impl Writer<'_> {
                 .filter(|wall| wall.depth == 0 && wall.polygon.points.len() >= 3)
                 .map(|wall| {
                     let points = &wall.polygon.points;
+                    if s.seam == Seam::Random {
+                        // By the height the layer was sliced at.
+                        let z = layer.z - layer.height / 2.0;
+                        return (wall.is_hole, seam::random_point(points, z));
+                    }
                     let corner =
                         seam::choose(points, s.seam, s.nozzle_diameter, None, &self.state.seams);
                     (wall.is_hole, points[corner])
@@ -1364,14 +1445,76 @@ impl Writer<'_> {
         self.state
             .next_seams
             .extend(planned.iter().map(|(_, seam)| *seam));
+        // How far each of those walls turns at its seam, for the walls
+        // behind that are to start further round: nothing where the seam
+        // is not at a corner.
+        let seam_turns: Vec<(Point2, f64)> = if s.staggered_inner_seams && s.seam != Seam::Random {
+            walls
+                .iter()
+                .filter(|wall| wall.depth == 0 && wall.polygon.points.len() >= 3)
+                .zip(&planned)
+                .map(|(wall, (_, seam))| {
+                    let points = &wall.polygon.points;
+                    let turn = points
+                        .iter()
+                        .position(|point| point == seam)
+                        .map_or(0.0, |corner| {
+                            seam::turn_at(points, corner, s.nozzle_diameter)
+                        });
+                    // Round a hole the walls turn the other way.
+                    (*seam, if wall.is_hole { -turn } else { turn })
+                })
+                .collect()
+        } else {
+            Vec::new()
+        };
 
         for wall in walls {
             let points = &wall.polygon.points;
             if points.len() < 3 {
                 continue;
             }
+            // A loop is held counter-clockwise round material and
+            // clockwise round a hole; every wall is laid the same way
+            // round, which turns one or the other about.
+            let clockwise = match s.wall_direction {
+                WallDirection::Auto => wall.clockwise,
+                WallDirection::CounterClockwise => false,
+                WallDirection::Clockwise => true,
+            };
+            let turned = wall.is_hole != clockwise;
             let (edge, start) = match alongside(points, wall.is_hole, &planned) {
-                Some(target) => seam::project(points, target),
+                Some(target) => {
+                    let (edge, start) = seam::project(points, target);
+                    if s.staggered_inner_seams && wall.depth > 0 {
+                        // On round the wall, the way it is laid, by how
+                        // deep it lies behind the seam it starts beside
+                        // and no less than its own width (SeamPlacer.cpp
+                        // `place_seam`, "do the staggering"). At a
+                        // corner the distance to that seam is more than
+                        // the depth, and is brought back by the corner's
+                        // angle; in an inside corner it is less. The
+                        // reference also starts an inside corner's walls
+                        // nearer the corner before it moves them on,
+                        // which is not done here.
+                        let behind =
+                            unscaled(target.x - start.x).hypot(unscaled(target.y - start.y));
+                        let turn = seam_turns
+                            .iter()
+                            .find(|(seam, _)| *seam == target)
+                            .map_or(0.0, |(_, turn)| *turn);
+                        let beta = (turn / 2.0).cos();
+                        let depth = if turn < -1e-4 && beta > 1e-6 {
+                            std::f64::consts::SQRT_2 * behind / beta
+                        } else {
+                            behind * beta / std::f64::consts::SQRT_2
+                        };
+                        let depth = wall.flow.width.max(depth);
+                        seam::advance(points, edge, start, scaled(depth) as f64, turned)
+                    } else {
+                        (edge, start)
+                    }
+                }
                 None => {
                     let corner = seam::choose(
                         points,
@@ -1394,15 +1537,6 @@ impl Writer<'_> {
                 }
             });
             let mut path = seam::open_at(points, edge, start);
-            // A loop is held counter-clockwise round material and
-            // clockwise round a hole; every wall is laid the same way
-            // round, which turns one or the other about.
-            let clockwise = match s.wall_direction {
-                WallDirection::Auto => wall.clockwise,
-                WallDirection::CounterClockwise => false,
-                WallDirection::Clockwise => true,
-            };
-            let turned = wall.is_hole != clockwise;
             if turned {
                 path.reverse();
             }
@@ -1975,6 +2109,19 @@ impl Writer<'_> {
             {
                 s.initial_layer_speed
             }
+            // Not as the reference, which gives every line of the first
+            // layer but a bottom surface's the first layer's speed
+            // outright (GCode.cpp `_extrude`), ironing with the rest: a
+            // first layer ironed (`ironing_type` at `solid`) is then
+            // ironed at `initial_layer_infill_speed`, 105 mm/s with the
+            // U1's presets where ironing is set to 30. Ironing is slow
+            // because that is how it smooths, so here it is never laid
+            // faster than its own speed, and on the first layer no
+            // faster than that layer's fill either.
+            Role::Ironing if first_layer && s.initial_layer_infill_speed > 0.0 => {
+                s.ironing_speed.min(s.initial_layer_infill_speed)
+            }
+            Role::Ironing => s.ironing_speed,
             _ if first_layer => s.initial_layer_infill_speed,
             Role::ExternalPerimeter => self.state.small_wall.unwrap_or(s.outer_wall_speed),
             Role::Perimeter => self.state.small_wall.unwrap_or(s.inner_wall_speed),
@@ -2012,6 +2159,7 @@ impl Writer<'_> {
             Role::Skirt
             | Role::Brim
             | Role::GapFill
+            | Role::Ironing
             | Role::Support
             | Role::SupportInterface
             | Role::PrimeTower
@@ -2675,9 +2823,15 @@ fn run_ends(run: &[&ExtrusionPath]) -> [Point2; 2] {
 /// for a tree branch's wall, which is laid hook first (SupportCommon.cpp
 /// `tree_supports_generate_paths`) and is known by its ends: an open
 /// support line that comes back to within its hook's length of where it
-/// began. Lines laid in turn may not.
+/// began. Lines laid in turn may not, and nor may an ironing line, even
+/// one that is the whole of its area's ironing: it is swept from the side
+/// it was made to start from (the reference's collection of an area's
+/// ironing is `no_sort`, Fill.cpp `make_ironing`).
 fn run_reversible(run: &[&ExtrusionPath]) -> bool {
     let [path] = run else { return false };
+    if path.role == Role::Ironing {
+        return false;
+    }
     let [head, tail] = run_ends(run);
     let hooked = path.role == Role::Support
         && head != tail
@@ -2997,6 +3151,10 @@ fn find(text: &[u8], needle: &[u8]) -> Option<usize> {
 const FAN_MARK: &[u8] = b";_FAN_OVER_AIR_";
 const FAN_OVER_AIR: &[u8] = b";_FAN_OVER_AIR_ON\n";
 const FAN_AS_LAYER: &[u8] = b";_FAN_OVER_AIR_OFF\n";
+/// Starts the line a layer is written with where ironing begins and
+/// where it ends, when ironing has a fan speed of its own: `ON` or
+/// `OFF`, and that speed.
+const FAN_IRONING: &[u8] = b";_FAN_IRONING_";
 
 /// The arcs in a path, when arcs are asked for and it has the three
 /// points one takes: the path within the tolerance of its kind, and how
@@ -3078,6 +3236,7 @@ pub fn role_name(role: Role) -> &'static str {
         Role::SolidInfill => "Internal solid infill",
         Role::TopSolidInfill => "Top surface",
         Role::BottomSurface => "Bottom surface",
+        Role::Ironing => "Ironing",
         Role::BridgeInfill => "Bridge",
         Role::InternalBridge => "Internal Bridge",
         Role::GapFill => "Gap infill",
@@ -3091,5 +3250,7 @@ pub fn role_name(role: Role) -> &'static str {
 
 #[cfg(test)]
 mod arc_tests;
+#[cfg(test)]
+mod ironing_tests;
 #[cfg(test)]
 mod tests;

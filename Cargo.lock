@@ -308,6 +308,7 @@ dependencies = [
  "edge-support",
  "edge-tower",
  "rayon",
+ "tempfile",
 ]
 
 [[package]]

@@ -191,6 +191,9 @@ pub enum Role {
     TopSolidInfill,
     /// Fill resting on the bed.
     BottomSurface,
+    /// Lines laid again over a finished surface, close together and with
+    /// next to no plastic, to smooth it (the reference's `erIroning`).
+    Ironing,
     /// Fill laid over air.
     BridgeInfill,
     /// Solid fill laid across the sparse fill beneath it, the first layer

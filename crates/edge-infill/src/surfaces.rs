@@ -110,12 +110,12 @@ pub fn inside_walls(
 }
 
 /// A layer's top faces and its bottom faces.
-type Faces = (Vec<ExPolygon>, Vec<ExPolygon>);
+pub(crate) type Faces = (Vec<ExPolygon>, Vec<ExPolygon>);
 
 /// Where each layer's cross-section has nothing above it, and nothing
 /// below it (PrintObject::detect_surfaces_type). With no shell layers of
 /// a kind, that kind of face gets no special treatment at all.
-fn faces(
+pub(crate) fn faces(
     slices: &[&[ExPolygon]],
     outlines: &[&[ExPolygon]],
     shells: &Shells,

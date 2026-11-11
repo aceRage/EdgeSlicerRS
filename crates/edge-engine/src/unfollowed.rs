@@ -6,12 +6,7 @@ use edge_config::Settings;
 
 /// A setting, the value that turns it off, and what is done whatever it
 /// is set to.
-const UNREAD: [(&str, &str, &str); 12] = [
-    (
-        "staggered_inner_seams",
-        "0",
-        "inner walls start beside the outer wall's seam on every layer",
-    ),
+const UNREAD: [(&str, &str, &str); 10] = [
     (
         "wipe_inward",
         "0",
@@ -32,7 +27,6 @@ const UNREAD: [(&str, &str, &str); 12] = [
         "0",
         "layer heights are not adjusted to bring the part to its exact height",
     ),
-    ("ironing_type", "no ironing", "no surface is ironed"),
     (
         "zaa_enabled",
         "0",
@@ -108,7 +102,7 @@ mod tests {
         // Left alone or turned off, nothing to say.
         assert!(notes(&Settings::default(), 1).is_empty());
         let off = Settings::from_json(
-            r#"{"ironing_type": "no ironing", "zaa_enabled": "0", "reduce_crossing_wall": "0",
+            r#"{"wipe_inward": "0", "zaa_enabled": "0", "reduce_crossing_wall": "0",
                 "elefant_foot_layers_density": "100%", "enable_extra_bridge_layer": "disabled",
                 "dont_filter_internal_bridges": "disabled", "seam_prefer_part_joints": "1"}"#,
         )
@@ -116,14 +110,20 @@ mod tests {
         assert!(notes(&off, 1).is_empty());
 
         let on = Settings::from_json(
-            r#"{"ironing_type": "top", "zaa_enabled": "1", "reduce_crossing_wall": "1",
+            r#"{"wipe_inward": "1", "zaa_enabled": "1", "reduce_crossing_wall": "1",
                 "elefant_foot_layers_density": "70%", "make_overhang_printable": "1",
                 "dont_filter_internal_bridges": "nofilter"}"#,
         )
         .unwrap();
         let said = notes(&on, 1);
         assert_eq!(said.len(), 6, "{said:?}");
-        assert!(said.contains(&"ironing_type \"top\": no surface is ironed".to_owned()));
+        assert!(said.contains(
+            &"wipe_inward \"1\": the nozzle is wiped along the wall, not in toward the inner walls"
+                .to_owned()
+        ));
+        // Ironing is followed, and nothing is said of it here.
+        let ironed = Settings::from_json(r#"{"ironing_type": "top"}"#).unwrap();
+        assert!(notes(&ironed, 1).is_empty());
 
         // Hiding seams where parts meet is on unless turned off, and
         // only means anything with more than one part.

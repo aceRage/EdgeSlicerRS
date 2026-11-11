@@ -1,0 +1,745 @@
+//! What the 3D views ask for: a project as a scene (its bed, its plates,
+//! its objects as meshes) for Prepare, and a sliced plate as moves for
+//! Preview.
+//!
+//! What is small is answered as JSON through [`Session::call`]. Meshes and
+//! moves are large, so they are answered as bytes through
+//! [`Session::call_bytes`], in the layouts written out below: the page
+//! hands them to the graphics card as they come, without reading them
+//! number by number. Every number in them is little-endian.
+//!
+//! A mesh is sent once for each object, in the object's own coordinates;
+//! the copies of an object are only where they stand (`scene`). Moves are
+//! asked for a stretch at a time (`toolpath_moves`), so the first layers
+//! are on screen before the last have been sent. Nothing is sent twice:
+//! `scene` gives a `key` and `toolpath` a `run` that change only when
+//! what they describe does.
+
+use std::{
+    collections::{BTreeSet, HashMap},
+    path::{Path, PathBuf},
+    sync::{Arc, Mutex, Weak},
+};
+
+use edge_config::Settings;
+use edge_engine::{Feature, Mark, MoveKind, Scene, SceneObject, Toolpath};
+use serde_json::{Value, json};
+
+use super::{Done, File, Session, bed_of, lock};
+
+/// The calls answered here as JSON.
+pub(super) const JSON: [&str; 2] = ["scene", "toolpath"];
+
+/// The calls answered here as bytes.
+pub(super) const BYTES: [&str; 4] = ["scene_mesh", "bed_model", "bed_texture", "toolpath_moves"];
+
+/// What is kept between calls so that a file is read once and a G-code
+/// file turned into moves once. An entry goes when what it was made from
+/// does.
+#[derive(Default)]
+pub(super) struct Cache {
+    scenes: Kept<File, Read>,
+    paths: Kept<Done, Paths>,
+    /// The printers every vendor's profiles describe, for the folder they
+    /// were read from.
+    models: Mutex<Option<(PathBuf, Arc<Models>)>>,
+}
+
+/// What was made from something, by where that something is in memory,
+/// for as long as it is still there.
+type Kept<From, Made> = Mutex<HashMap<usize, (Weak<From>, Arc<Made>)>>;
+
+/// A file read as a scene.
+#[derive(Default)]
+struct Read {
+    scene: Scene,
+    /// For each copy, the least and greatest corners of its printed
+    /// material where it stands on its plate; none for a copy that has
+    /// none.
+    reach: Vec<Option<[[f64; 3]; 2]>>,
+}
+
+/// The corners of each copy's printed material, from every vertex of it:
+/// a copy that is turned takes less room than its object's own box would.
+fn reach_of(scene: &Scene) -> Vec<Option<[[f64; 3]; 2]>> {
+    scene
+        .placings
+        .iter()
+        .map(|placing| {
+            let object = &scene.objects[placing.object];
+            let mut reach: Option<[[f64; 3]; 2]> = None;
+            let printed = object
+                .triangles
+                .iter()
+                .zip(&object.marks)
+                .filter(|(_, mark)| matches!(mark, Mark::Filament(_)))
+                .flat_map(|(triangle, _)| triangle);
+            for corner in printed {
+                let point = placing
+                    .transform
+                    .apply(object.vertices[*corner as usize].map(f64::from));
+                let [low, high] = reach.get_or_insert([point, point]);
+                for axis in 0..3 {
+                    low[axis] = low[axis].min(point[axis]);
+                    high[axis] = high[axis].max(point[axis]);
+                }
+            }
+            reach
+        })
+        .collect()
+}
+
+/// Printer model name to (vendor, the model's own file under the vendor's folder).
+type Models = HashMap<String, (String, String)>;
+
+// ---- meshes ----
+
+/// The first four bytes of a mesh.
+pub const MESH_MAGIC: &[u8; 4] = b"EDGM";
+/// The size of what comes before a mesh's vertices.
+pub const MESH_HEADER: usize = 24;
+
+/// What a triangle's mark byte says when it is not a filament.
+pub const MARK_NEGATIVE: u8 = 251;
+pub const MARK_MODIFIER: u8 = 252;
+pub const MARK_SUPPORT_BLOCKER: u8 = 253;
+pub const MARK_SUPPORT_ENFORCER: u8 = 254;
+/// The highest filament a mark byte can say; one above is given as this.
+pub const MARK_LAST_FILAMENT: u8 = 250;
+
+fn mark_byte(mark: Mark) -> u8 {
+    match mark {
+        Mark::Filament(filament) => filament.clamp(1, MARK_LAST_FILAMENT),
+        Mark::Negative => MARK_NEGATIVE,
+        Mark::Modifier => MARK_MODIFIER,
+        Mark::SupportBlocker => MARK_SUPPORT_BLOCKER,
+        Mark::SupportEnforcer => MARK_SUPPORT_ENFORCER,
+    }
+}
+
+/// How long [`mesh_bytes`] is for an object, without making it.
+fn mesh_size(object: &SceneObject) -> usize {
+    let marks = match uniform_mark(object) {
+        Some(_) => 0,
+        None => object.marks.len().next_multiple_of(4),
+    };
+    MESH_HEADER + 12 * object.vertices.len() + 12 * object.triangles.len() + marks
+}
+
+/// The one mark every triangle has, when they all have the same.
+fn uniform_mark(object: &SceneObject) -> Option<u8> {
+    let first = object.marks.first().copied().map(mark_byte).unwrap_or(1);
+    object
+        .marks
+        .iter()
+        .all(|mark| mark_byte(*mark) == first)
+        .then_some(first)
+}
+
+/// A mesh as bytes. All numbers little-endian:
+///
+/// | at | size | what |
+/// | --- | --- | --- |
+/// | 0 | 4 | the letters `EDGM` |
+/// | 4 | 4 | `u32` version, 1 |
+/// | 8 | 4 | `u32` V, the number of vertices |
+/// | 12 | 4 | `u32` T, the number of triangles |
+/// | 16 | 4 | `u32` flags: bit 0 set when a mark for each triangle follows |
+/// | 20 | 4 | `u32` the mark every triangle has when none follow, else 0 |
+/// | 24 | 12·V | for each vertex `f32` x, y, z in mm, in the object's own coordinates |
+/// | 24+12·V | 12·T | for each triangle `u32` a, b, c: its corners as indices of vertices, anticlockwise seen from outside |
+/// | 24+12·V+12·T | T | with bit 0 of the flags: for each triangle a `u8` mark |
+/// | … | 0–3 | zeros, to a length that is a multiple of 4 |
+///
+/// A mark is the filament a triangle prints in, 1 to 250 (a higher one is
+/// given as 250), or 251 for a negative part, 252 for a modifier, 253 for
+/// a support blocker and 254 for a support enforcer.
+pub fn mesh_bytes(object: &SceneObject) -> Vec<u8> {
+    let uniform = uniform_mark(object);
+    let mut out = Vec::with_capacity(mesh_size(object));
+    out.extend_from_slice(MESH_MAGIC);
+    out.extend_from_slice(&1u32.to_le_bytes());
+    out.extend_from_slice(&(object.vertices.len() as u32).to_le_bytes());
+    out.extend_from_slice(&(object.triangles.len() as u32).to_le_bytes());
+    out.extend_from_slice(&u32::from(uniform.is_none()).to_le_bytes());
+    out.extend_from_slice(&u32::from(uniform.unwrap_or(0)).to_le_bytes());
+    for vertex in &object.vertices {
+        for value in vertex {
+            out.extend_from_slice(&value.to_le_bytes());
+        }
+    }
+    for triangle in &object.triangles {
+        for corner in triangle {
+            out.extend_from_slice(&corner.to_le_bytes());
+        }
+    }
+    if uniform.is_none() {
+        out.extend(object.marks.iter().map(|mark| mark_byte(*mark)));
+        out.resize(out.len().next_multiple_of(4), 0);
+    }
+    out
+}
+
+// ---- moves ----
+
+/// The first four bytes of a stretch of moves.
+pub const MOVES_MAGIC: &[u8; 4] = b"EDGT";
+/// The size of what comes before the moves of a stretch.
+pub const MOVES_HEADER: usize = 24;
+/// The size of one move.
+pub const MOVE_SIZE: usize = 32;
+/// The most moves one answer carries: 8 MB.
+pub const MOVES_AT_ONCE: usize = 1 << 18;
+
+/// One move as bytes. All numbers little-endian:
+///
+/// | at | size | what |
+/// | --- | --- | --- |
+/// | 0 | 12 | `f32` x, y, z: where the nozzle is when the move ends, in mm, on its plate |
+/// | 12 | 4 | `f32` the speed asked for, in mm/s |
+/// | 16 | 2 | `u16` height of the line laid, in thousandths of a mm (65535 for more) |
+/// | 18 | 2 | `u16` width of the line laid, likewise |
+/// | 20 | 2 | `i16` how far the path turns here into the next move of the same line, in ten-thousandths of a radian, anticlockwise positive |
+/// | 22 | 2 | `u16` nozzle temperature last set, in °C |
+/// | 24 | 4 | `u32` layer, from 0 |
+/// | 28 | 1 | `u8` what the move is: 0 start, 1 travel, 2 line laid, 3 wipe, 4 retraction, 5 unretraction, 6 seam, 7 tool change |
+/// | 29 | 1 | `u8` feature of a line laid, by the reference's numbers (libvgcode `EGCodeExtrusionRole`): 1 inner wall, 2 outer wall and so on; 0 for any other move |
+/// | 30 | 1 | `u8` filament, from 1 |
+/// | 31 | 1 | `u8` part cooling fan, in percent |
+///
+/// A move goes from where the move before it ended. A start, and the
+/// marks from 4 up, draw no line: a start is only a place to go from.
+fn move_bytes(out: &mut Vec<u8>, step: &edge_engine::Move) {
+    let thousandths = |mm: f32| (f64::from(mm) * 1e3).round().clamp(0.0, 65535.0) as u16;
+    for value in step.to {
+        out.extend_from_slice(&value.to_le_bytes());
+    }
+    out.extend_from_slice(&step.feedrate.to_le_bytes());
+    out.extend_from_slice(&thousandths(step.height).to_le_bytes());
+    out.extend_from_slice(&thousandths(step.width).to_le_bytes());
+    let turn = (f64::from(step.turn) * 1e4)
+        .round()
+        .clamp(-32767.0, 32767.0) as i16;
+    out.extend_from_slice(&turn.to_le_bytes());
+    out.extend_from_slice(&step.temperature.to_le_bytes());
+    out.extend_from_slice(&step.layer.to_le_bytes());
+    out.extend_from_slice(&[step.kind as u8, step.feature as u8, step.filament, step.fan]);
+}
+
+/// A sliced plate as moves: what `toolpath` says of them, and every move
+/// as [`move_bytes`] writes it, one after another.
+pub(super) struct Paths {
+    index: Value,
+    records: Vec<u8>,
+}
+
+fn paths_of(done: &Done) -> Paths {
+    let (source, path) = match &done.gcode {
+        Ok(gcode) => ("gcode", edge_engine::read_toolpath(&gcode.text)),
+        Err(_) => ("lines", done.sliced.toolpath_of_lines()),
+    };
+    let mut records = Vec::with_capacity(path.moves.len() * MOVE_SIZE);
+    for step in &path.moves {
+        move_bytes(&mut records, step);
+    }
+    Paths {
+        index: index_of(source, &path),
+        records,
+    }
+}
+
+/// What the page needs to know of a toolpath before it asks for moves.
+fn index_of(source: &str, path: &Toolpath) -> Value {
+    let mut features = BTreeSet::new();
+    let mut filaments = BTreeSet::new();
+    let mut counts = [0usize; 8];
+    // The corners of everything laid, which is what a view is fitted to.
+    let mut reach: Option<([f32; 3], [f32; 3])> = None;
+    for (at, step) in path.moves.iter().enumerate() {
+        counts[step.kind as usize] += 1;
+        if step.kind != MoveKind::Extrude {
+            continue;
+        }
+        features.insert(step.feature as u8);
+        filaments.insert(step.filament);
+        // The file's own lines (a purge at the edge of the bed) are not
+        // the part.
+        if step.feature == Feature::Custom {
+            continue;
+        }
+        let from = path.moves[at.saturating_sub(1)].to;
+        for point in [from, step.to] {
+            let (low, high) = reach.get_or_insert((point, point));
+            for axis in 0..3 {
+                low[axis] = low[axis].min(point[axis]);
+                high[axis] = high[axis].max(point[axis]);
+            }
+        }
+    }
+    let mm = |value: f32| (f64::from(value) * 1e3).round() / 1e3;
+    json!({
+        // "gcode": the moves of the file that would be exported. "lines":
+        // no G-code could be written, so only the lines as sliced, in no
+        // printing order and with nothing between them.
+        "source": source,
+        "moves": path.moves.len(),
+        "move_size": MOVE_SIZE,
+        "at_once": MOVES_AT_ONCE,
+        "layers": {
+            "first": path.layers.iter().map(|layer| layer.first).collect::<Vec<_>>(),
+            "z": path.layers.iter().map(|layer| mm(layer.z)).collect::<Vec<_>>(),
+            "height": path.layers.iter().map(|layer| mm(layer.height)).collect::<Vec<_>>(),
+        },
+        "features": features,
+        "filaments": filaments,
+        "counts": {
+            "travel": counts[MoveKind::Travel as usize],
+            "line": counts[MoveKind::Extrude as usize],
+            "wipe": counts[MoveKind::Wipe as usize],
+            "retract": counts[MoveKind::Retract as usize],
+            "unretract": counts[MoveKind::Unretract as usize],
+            "seam": counts[MoveKind::Seam as usize],
+            "tool_change": counts[MoveKind::ToolChange as usize],
+        },
+        "box": reach.map(|(low, high)| [low.map(mm), high.map(mm)]),
+    })
+}
+
+// ---- the bed ----
+
+/// The corners of `printable_area`, each "XxY", as they are given.
+fn bed_shape(settings: &Settings) -> Vec<[f64; 2]> {
+    settings
+        .texts("printable_area")
+        .unwrap_or_default()
+        .iter()
+        .filter_map(|corner| {
+            let (x, y) = corner.split_once('x')?;
+            Some([x.trim().parse().ok()?, y.trim().parse().ok()?])
+        })
+        .collect()
+}
+
+/// A file name a profile gives, if it is only that: nothing that could
+/// lead out of the vendor's folder.
+fn plain_name(name: &str) -> Option<&str> {
+    let plain = !name.is_empty()
+        && !name.contains(['/', '\\'])
+        && name != "."
+        && name != ".."
+        && !name.contains(':');
+    plain.then_some(name)
+}
+
+/// Every printer model the vendors' profiles describe, from each vendor's
+/// own list (`machine_model_list` in `<Vendor>.json`).
+fn models_in(dir: &Path) -> Models {
+    let mut models = Models::new();
+    let mut vendors: Vec<PathBuf> = std::fs::read_dir(dir)
+        .map(|entries| {
+            entries
+                .filter_map(|entry| Some(entry.ok()?.path()))
+                .filter(|path| path.extension().is_some_and(|ext| ext == "json"))
+                .collect()
+        })
+        .unwrap_or_default();
+    // In order of name, so two vendors with a model of one name always
+    // settle the same way: the first has it.
+    vendors.sort();
+    for path in vendors {
+        let Some(vendor) = path
+            .file_stem()
+            .map(|stem| stem.to_string_lossy().into_owned())
+        else {
+            continue;
+        };
+        let Some(listed) = std::fs::read_to_string(&path)
+            .ok()
+            .and_then(|text| serde_json::from_str::<Value>(&text).ok())
+        else {
+            continue;
+        };
+        for model in listed["machine_model_list"]
+            .as_array()
+            .into_iter()
+            .flatten()
+        {
+            if let (Some(name), Some(file)) = (model["name"].as_str(), model["sub_path"].as_str()) {
+                models
+                    .entry(name.to_owned())
+                    .or_insert_with(|| (vendor.clone(), file.to_owned()));
+            }
+        }
+    }
+    models
+}
+
+/// The files a printer's vendor draws its bed with.
+#[derive(Default)]
+struct BedFiles {
+    /// An STL of the bed, its origin at the middle of the printable area.
+    model: Option<PathBuf>,
+    /// A picture laid over the plate: an SVG or a PNG.
+    texture: Option<PathBuf>,
+}
+
+impl Session {
+    /// A project's file as a scene, read once.
+    fn scene_of(&self, file: &Arc<File>) -> Result<Arc<Read>, String> {
+        let key = Arc::as_ptr(file) as usize;
+        if let Some((held, scene)) = lock(&self.scene.scenes).get(&key)
+            && held.upgrade().is_some_and(|held| Arc::ptr_eq(&held, file))
+        {
+            return Ok(scene.clone());
+        }
+        let scene = edge_engine::open(&file.path, None)
+            .map_err(|e| e.to_string())?
+            .scene();
+        let scene = Arc::new(Read {
+            reach: reach_of(&scene),
+            scene,
+        });
+        let mut scenes = lock(&self.scene.scenes);
+        scenes.retain(|_, (held, _)| held.strong_count() > 0);
+        scenes.insert(key, (Arc::downgrade(file), scene.clone()));
+        Ok(scene)
+    }
+
+    /// A sliced plate as moves, worked out once.
+    fn paths(&self, done: &Arc<Done>) -> Arc<Paths> {
+        let key = Arc::as_ptr(done) as usize;
+        if let Some((held, paths)) = lock(&self.scene.paths).get(&key)
+            && held.upgrade().is_some_and(|held| Arc::ptr_eq(&held, done))
+        {
+            return paths.clone();
+        }
+        let made = Arc::new(paths_of(done));
+        let mut paths = lock(&self.scene.paths);
+        paths.retain(|_, (held, _)| held.strong_count() > 0);
+        paths.insert(key, (Arc::downgrade(done), made.clone()));
+        made
+    }
+
+    /// Where the vendor of a printer keeps the model and the picture of
+    /// its bed, as the reference finds them (Preset.cpp
+    /// `system_printer_bed_model`, `system_printer_bed_texture`): named
+    /// by the printer model's own file, beside the vendor's presets.
+    fn bed_files(&self, printer: &Settings) -> BedFiles {
+        let Some(dir) = lock(&self.state)
+            .library
+            .as_ref()
+            .map(|library| library.dir().to_owned())
+        else {
+            return BedFiles::default();
+        };
+        let models = {
+            let mut held = lock(&self.scene.models);
+            match &*held {
+                Some((from, models)) if *from == dir => models.clone(),
+                _ => {
+                    let models = Arc::new(models_in(&dir));
+                    *held = Some((dir.clone(), models.clone()));
+                    models
+                }
+            }
+        };
+        let Some((vendor, file)) = printer
+            .text("printer_model")
+            .and_then(|model| models.get(model))
+        else {
+            return BedFiles::default();
+        };
+        let folder = dir.join(vendor);
+        let described = file
+            .split('/')
+            .try_fold(folder.clone(), |path, part| {
+                Some(path.join(plain_name(part)?))
+            })
+            .and_then(|path| std::fs::read_to_string(path).ok())
+            .and_then(|text| serde_json::from_str::<Value>(&text).ok())
+            .unwrap_or(Value::Null);
+        let beside = |key: &str, kinds: &[&str]| {
+            let path = folder.join(plain_name(described[key].as_str()?)?);
+            let kind = path.extension()?.to_str()?.to_ascii_lowercase();
+            (kinds.contains(&kind.as_str()) && path.is_file()).then_some(path)
+        };
+        BedFiles {
+            model: beside("bed_model", &["stl"]),
+            texture: beside("bed_texture", &["svg", "png"]),
+        }
+    }
+
+    /// The printer a project would be sliced with, and its file.
+    fn stage_of(&self, args: &Value) -> Result<Stage, String> {
+        let (id, choices, file, plate) = {
+            let state = lock(&self.state);
+            let project = &state.projects[state.target(args)?];
+            (
+                project.id,
+                project.choices.clone(),
+                project.file.clone(),
+                project.plate,
+            )
+        };
+        let printer = self
+            .printer_of(&choices, file.as_deref())?
+            .map(|(_, settings)| settings);
+        Ok(Stage {
+            id,
+            file,
+            plate,
+            printer,
+        })
+    }
+
+    /// A project as a scene, for Prepare: the bed of its printer, its
+    /// plates where they stand, each object once and each copy's place.
+    fn scene(&self, args: &Value) -> Result<Value, String> {
+        let stage = self.stage_of(args)?;
+        let printer = stage.printer.as_deref();
+        let bed = printer.and_then(bed_of);
+        let files = printer
+            .map(|printer| self.bed_files(printer))
+            .unwrap_or_default();
+        let read = match &stage.file {
+            Some(file) => self.scene_of(file)?,
+            None => Arc::new(Read::default()),
+        };
+        let scene = &read.scene;
+        // The plates in their grid, as the reference lays them out: a
+        // fifth of a bed apart, the bed taken in whole millimetres.
+        let (width, depth) = bed.map_or((0.0, 0.0), |[x0, y0, x1, y1]| {
+            ((x1 - x0).trunc(), (y1 - y0).trunc())
+        });
+        let origin = |index: usize| match bed {
+            Some(_) => edge_engine::plate_position(index, scene.plates.len(), width, depth),
+            None => (0.0, 0.0),
+        };
+        let mm = |value: f64| (value * 1e3).round() / 1e3;
+
+        // A bare model has no place of its own: the middle of the bed,
+        // standing on it, which is where slicing puts it.
+        let lone = scene
+            .objects
+            .first()
+            .and_then(|object| object.bounds)
+            .filter(|_| scene.bare);
+        let settle = match (lone, bed) {
+            (Some((low, high)), Some([x0, y0, x1, y1])) => [
+                (x0 + x1) / 2.0 - f64::from(low[0] + high[0]) / 2.0,
+                (y0 + y1) / 2.0 - f64::from(low[1] + high[1]) / 2.0,
+                -f64::from(low[2]),
+            ],
+            (Some((low, _)), None) => [0.0, 0.0, -f64::from(low[2])],
+            _ => [0.0; 3],
+        };
+
+        let placings: Vec<Value> = scene
+            .placings
+            .iter()
+            .zip(&read.reach)
+            .map(|(placing, reach)| {
+                let (x, y) = placing.plate.map_or((0.0, 0.0), origin);
+                let rows = placing.transform.rows;
+                let moved = [x + settle[0], y + settle[1], settle[2]];
+                let at: [f64; 3] = std::array::from_fn(|axis| rows[3][axis] + moved[axis]);
+                // Its corners where it stands in the scene.
+                let reach = reach.map(|corners| {
+                    corners.map(|corner| {
+                        std::array::from_fn::<_, 3, _>(|axis| mm(corner[axis] + moved[axis]))
+                    })
+                });
+                json!({
+                    "object": placing.object,
+                    "plate": placing.plate.map(|index| scene.plates[index].id),
+                    "printable": placing.printable,
+                    // Column by column, as the graphics card takes a
+                    // matrix: the object's coordinates to the scene's.
+                    "matrix": [
+                        rows[0][0], rows[0][1], rows[0][2], 0.0,
+                        rows[1][0], rows[1][1], rows[1][2], 0.0,
+                        rows[2][0], rows[2][1], rows[2][2], 0.0,
+                        at[0], at[1], at[2], 1.0,
+                    ],
+                    "box": reach,
+                })
+            })
+            .collect();
+        let objects: Vec<Value> = scene
+            .objects
+            .iter()
+            .map(|object| {
+                let filaments: BTreeSet<u8> = object
+                    .marks
+                    .iter()
+                    .filter_map(|mark| match mark {
+                        Mark::Filament(filament) => Some(*filament),
+                        _ => None,
+                    })
+                    .collect();
+                json!({
+                    "name": object.name,
+                    "vertices": object.vertices.len(),
+                    "triangles": object.triangles.len(),
+                    "bytes": mesh_size(object),
+                    "filaments": filaments,
+                })
+            })
+            .collect();
+        let plates: Vec<Value> = scene
+            .plates
+            .iter()
+            .enumerate()
+            .map(|(index, plate)| {
+                let (x, y) = origin(index);
+                json!({ "id": plate.id, "name": plate.name, "origin": [mm(x), mm(y)] })
+            })
+            .collect();
+        let named = |path: &Option<PathBuf>| {
+            path.as_ref()
+                .and_then(|path| Some(path.file_name()?.to_string_lossy().into_owned()))
+        };
+        let key = format!(
+            "{}:{:x}",
+            stage.id,
+            stage
+                .file
+                .as_ref()
+                .map_or(0, |file| Arc::as_ptr(file) as usize)
+        );
+        Ok(json!({
+            "project": stage.id,
+            // Changes when the file does: an object's mesh is the same
+            // for as long as this is.
+            "key": key,
+            "bare": scene.bare,
+            "bed": {
+                "box": bed,
+                "shape": printer.map(bed_shape).unwrap_or_default(),
+                "height": printer.and_then(|printer| printer.float("printable_height").ok().flatten()),
+                "model": named(&files.model),
+                "texture": named(&files.texture),
+            },
+            "plates": plates,
+            "plate": stage.plate,
+            "colours": stage
+                .file
+                .as_ref()
+                .and_then(|file| file.settings.as_ref())
+                .and_then(|settings| settings.texts("filament_colour")),
+            "objects": objects,
+            "placings": placings,
+        }))
+    }
+
+    /// What `toolpath_moves` will give for a sliced plate.
+    fn toolpath(&self, args: &Value) -> Result<Value, String> {
+        let (done, plate) = self.done(args)?;
+        let run = {
+            let state = lock(&self.state);
+            state.projects[state.target(args)?].run
+        };
+        let mut index = self.paths(&done).index.clone();
+        index["plate"] = json!(plate);
+        index["run"] = json!(run);
+        Ok(index)
+    }
+
+    pub(super) fn scene_json(&self, name: &str, args: &Value) -> Result<Value, String> {
+        match name {
+            "scene" => self.scene(args),
+            "toolpath" => self.toolpath(args),
+            other => Err(format!("there is no call named {other}")),
+        }
+    }
+
+    pub(super) fn scene_bytes(&self, name: &str, args: &Value) -> Result<Vec<u8>, String> {
+        match name {
+            "scene_mesh" => {
+                let stage = self.stage_of(args)?;
+                let file = stage
+                    .file
+                    .ok_or("the project is empty: it has no objects")?;
+                let read = self.scene_of(&file)?;
+                let scene = &read.scene;
+                let index = super::whole(args, "object")? as usize;
+                let object = scene.objects.get(index).ok_or_else(|| {
+                    format!(
+                        "there is no object {index}; there are {}",
+                        scene.objects.len()
+                    )
+                })?;
+                Ok(mesh_bytes(object))
+            }
+            "bed_model" => {
+                let stage = self.stage_of(args)?;
+                let path = stage
+                    .printer
+                    .as_deref()
+                    .and_then(|printer| self.bed_files(printer).model)
+                    .ok_or("the printer's profile has no model of its bed")?;
+                let scene = edge_engine::open(&path, None)
+                    .map_err(|e| e.to_string())?
+                    .scene();
+                Ok(mesh_bytes(&scene.objects[0]))
+            }
+            "bed_texture" => {
+                let stage = self.stage_of(args)?;
+                let path = stage
+                    .printer
+                    .as_deref()
+                    .and_then(|printer| self.bed_files(printer).texture)
+                    .ok_or("the printer's profile has no picture of its bed")?;
+                std::fs::read(&path).map_err(|e| format!("{}: {e}", path.display()))
+            }
+            "toolpath_moves" => {
+                let (done, _) = self.done(args)?;
+                let paths = self.paths(&done);
+                let total = paths.records.len() / MOVE_SIZE;
+                let from = super::whole(args, "from")? as usize;
+                if from > total {
+                    return Err(format!("there is no move {from}; there are {total}"));
+                }
+                let count = (super::whole(args, "count")? as usize)
+                    .min(total - from)
+                    .min(MOVES_AT_ONCE);
+                Ok(moves_bytes(&paths.records, from, count))
+            }
+            other => Err(format!("there is no call named {other}")),
+        }
+    }
+}
+
+/// A stretch of moves as bytes. All numbers little-endian:
+///
+/// | at | size | what |
+/// | --- | --- | --- |
+/// | 0 | 4 | the letters `EDGT` |
+/// | 4 | 4 | `u32` version, 1 |
+/// | 8 | 4 | `u32` the index of the first move here |
+/// | 12 | 4 | `u32` N, how many moves are here: what was asked for, less at the end, and never more than 262144 |
+/// | 16 | 4 | `u32` how many moves the print has in all |
+/// | 20 | 4 | `u32` the size of one move, 32 |
+/// | 24 | 32·N | the moves, each as [`move_bytes`] has it |
+fn moves_bytes(records: &[u8], from: usize, count: usize) -> Vec<u8> {
+    let mut out = Vec::with_capacity(MOVES_HEADER + count * MOVE_SIZE);
+    out.extend_from_slice(MOVES_MAGIC);
+    out.extend_from_slice(&1u32.to_le_bytes());
+    out.extend_from_slice(&(from as u32).to_le_bytes());
+    out.extend_from_slice(&(count as u32).to_le_bytes());
+    out.extend_from_slice(&((records.len() / MOVE_SIZE) as u32).to_le_bytes());
+    out.extend_from_slice(&(MOVE_SIZE as u32).to_le_bytes());
+    out.extend_from_slice(&records[from * MOVE_SIZE..(from + count) * MOVE_SIZE]);
+    out
+}
+
+/// A project as the 3D views need it.
+struct Stage {
+    id: u32,
+    file: Option<Arc<File>>,
+    plate: Option<u32>,
+    printer: Option<Arc<Settings>>,
+}
+
+#[cfg(test)]
+mod tests;

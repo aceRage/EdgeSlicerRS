@@ -1,0 +1,915 @@
+'use strict';
+
+// The stage in 3D: Prepare's scene and Preview's print on one canvas with
+// one camera, as the reference's two views share theirs (Plater.cpp
+// `set_current_panel`). app.js says what is to be shown (`update`); this
+// asks the session for what it takes, keeps it on the graphics card, and
+// answers the mouse and the keys as the reference's canvas does
+// (GLCanvas3D.cpp `on_mouse`, `on_mouse_wheel`, `on_char`, `on_key`).
+(function (GL) {
+  const M = GL.math;
+  const { el } = GL.controls;
+  const T = GL.Toolpath;
+
+  // GLCanvas3D.cpp: TRACKBALLSIZE, the margins a view is fitted with.
+  const ORBIT = (Math.PI * 0.8) / 180;
+  const MARGIN = { box: 1.25, bed: 2.0, plate: 1.25 };
+  // A press that moves less than this is a click.
+  const CLICK = 4;
+  // How many prints' moves are kept on the graphics card at once.
+  const PRINTS_KEPT = 3;
+
+  const hex = (colour) => [1, 3, 5].map((at) => parseInt(colour.slice(at, at + 2), 16));
+  const css = (colour) => `rgb(${colour.join(',')})`;
+
+  const stage = {
+    active: false,
+    // What was asked of the session for the 3D views, and how long things took.
+    stats: { calls: 0, bytes: 0, json: 0, events: [] },
+
+    // Sets the 3D stage up on `host.canvas`. False where the browser has
+    // no WebGL2: the page then keeps its view from above.
+    init(host) {
+      this.host = host;
+      try {
+        this.renderer = new GL.Renderer(host.canvas);
+      } catch (error) {
+        host.note.textContent = error.missing
+          ? 'The 3D view needs WebGL2, which this browser does not offer. The plate is shown from above instead.'
+          : `The 3D view could not be started (${error.message}). The plate is shown from above instead.`;
+        host.note.hidden = false;
+        host.canvas.hidden = true;
+        return false;
+      }
+      this.canvas = host.canvas;
+      this.scene = new GL.Scene(this.renderer);
+      this.camera = new GL.Camera();
+      this.marker = this.renderer.meshFromPoints(T.arrow());
+      this.model = null;
+      this.shown = null;          // the project the camera is on
+      this.sceneKey = '';
+      this.sceneTurn = 0;
+      this.bedModelOf = '';
+      this.bedPictureOf = '';
+      this.prints = new Map();    // "project:plate:run" -> { path, ... }
+      this.print = null;
+      this.prefs = {
+        perspective: host.remembered.get('gl.perspective') !== '0',
+        autoPerspective: host.remembered.get('gl.auto_perspective') === '1',
+        // The reference keeps this off until asked ("Zoom to mouse
+        // position"); here it starts on.
+        zoomToMouse: host.remembered.get('gl.zoom_to_mouse') !== '0',
+        reverseZoom: host.remembered.get('gl.reverse_zoom') === '1',
+        navigator: host.remembered.get('gl.navigator') !== '0',
+        labels: host.remembered.get('gl.labels') === '1',
+      };
+      this.camera.perspective = this.prefs.perspective;
+      this.build(host.stage);
+      this.listen();
+      host.stage.classList.add('gl');
+      this.active = true;
+      return true;
+    },
+
+    // ---- what is laid over the view ----
+
+    build(parent) {
+      this.navigator = new GL.controls.Navigator(parent, (view) => this.view(view));
+      const fit = el('button', { type: 'button', className: 'gl-fit', title: 'Fit in all view [Z]', textContent: '⤢' });
+      fit.setAttribute('aria-label', 'Fit in all view');
+      fit.addEventListener('click', () => this.fit('part'));
+      const menu = el('button', { type: 'button', className: 'gl-view', textContent: 'View ▾' });
+      menu.setAttribute('aria-haspopup', 'menu');
+      menu.addEventListener('click', () => {
+        const box = menu.getBoundingClientRect();
+        this.host.menu(box.left, box.top - 8, this.viewMenu(), true);
+      });
+      this.tools = el('div', { className: 'gl-tools' }, fit, menu);
+      parent.append(this.tools);
+      this.labels = el('div', { className: 'gl-labels' });
+      parent.append(this.labels);
+      this.readout = el('div', { className: 'gl-readout', hidden: true });
+      parent.append(this.readout);
+      this.loading = el('div', { className: 'gl-loading', hidden: true });
+      parent.append(this.loading);
+      this.layerSlider = new GL.controls.LayerSlider(parent, {
+        onChange: (low, high, which) => this.layersChanged(low, high, which),
+        onMenu: (x, y) => this.host.menu(x, y, [['Jump to Layer', () => this.host.jump()]]),
+      });
+      this.moveSlider = new GL.controls.MoveSlider(parent, { onChange: (value) => this.moveChanged(value) });
+      this.navigator.node.hidden = !this.prefs.navigator;
+    },
+
+    setPref(name, key, value) {
+      this.prefs[name] = value;
+      this.host.remembered.set(`gl.${key}`, value ? '1' : '0');
+      if (name === 'perspective') this.camera.perspective = value;
+      this.navigator.node.hidden = !this.prefs.navigator;
+      this.frame();
+    },
+
+    // The reference's View menu, and of its Preferences what the camera
+    // takes (MainFrame.cpp, Preferences.cpp).
+    viewMenu() {
+      const p = this.prefs;
+      return [
+        ['Default View', () => this.view('default')],
+        ['Top', () => this.view('top')],
+        ['Bottom', () => this.view('bottom')],
+        ['Front', () => this.view('front')],
+        ['Rear', () => this.view('rear')],
+        ['Left', () => this.view('left')],
+        ['Right', () => this.view('right')],
+        null,
+        ['Use Perspective View', () => this.setPref('perspective', 'perspective', true), { checked: p.perspective }],
+        ['Use Orthogonal View', () => this.setPref('perspective', 'perspective', false), { checked: !p.perspective }],
+        ['Auto Perspective', () => this.setPref('autoPerspective', 'auto_perspective', !p.autoPerspective), { checked: p.autoPerspective }],
+        null,
+        ['Zoom to mouse position', () => this.setPref('zoomToMouse', 'zoom_to_mouse', !p.zoomToMouse), { checked: p.zoomToMouse }],
+        ['Reverse mouse zoom', () => this.setPref('reverseZoom', 'reverse_zoom', !p.reverseZoom), { checked: p.reverseZoom }],
+        null,
+        ['Show 3D Navigator', () => this.setPref('navigator', 'navigator', !p.navigator), { checked: p.navigator }],
+        ['Show Labels', () => this.setPref('labels', 'labels', !p.labels), { checked: p.labels }],
+      ];
+    },
+
+    // ---- the session ----
+
+    async call(name, args) {
+      const answer = await this.host.call(name, args);
+      this.stats.calls += 1;
+      this.stats.json += JSON.stringify(answer).length;
+      return answer;
+    },
+
+    async bytes(name, args) {
+      const answer = await this.host.bytes(name, args);
+      this.stats.calls += 1;
+      this.stats.bytes += answer.byteLength;
+      return answer;
+    },
+
+    note(what, since, more = {}) {
+      this.stats.events.push({ what, ms: Math.round(performance.now() - since), ...more });
+    },
+
+    // ---- what is shown ----
+
+    // Shows what app.js says is on the stage: `model` is the project, the
+    // tab, what the project would be sliced with, the summary of its
+    // slice in Preview, and the page's own notes on it (`kept`).
+    update(model) {
+      if (!this.active) return;
+      const before = this.model;
+      this.model = model;
+      const project = model.project;
+      if (!project || model.tab === 'device') return;
+      const mine = this.mine();
+      // Each project keeps its own camera; the two tabs share it.
+      if (this.shown !== project.id) {
+        if (before && before.project && before.kept.gl && this.shown === before.project.id) before.kept.gl.camera = this.camera.save();
+        this.shown = project.id;
+        if (mine.camera) this.camera.load(mine.camera);
+      }
+      this.wantScene();
+      const preview = model.tab === 'preview';
+      const printed = this.print;
+      if (preview && model.summary) this.wantPrint();
+      else this.print = null;
+      // A print that was held already has its legend to show at once.
+      if (this.print && this.print !== printed && this.print.path) this.host.legend();
+      if (preview) this.followPlate();
+      this.syncControls();
+      this.frame();
+    },
+
+    // In Preview the plate shown is the only one there is to see, and it
+    // stands where it stands among the others: the camera goes with it,
+    // as far as it is from the plate the camera was last turned to. (The
+    // reference leaves the camera where it was, which can be on a plate
+    // that is not drawn.)
+    followPlate() {
+      const mine = this.mine();
+      const plate = this.plateOrigin();
+      if (!plate) return;
+      if (mine.plateAt && (mine.plateAt[0] !== plate[0] || mine.plateAt[1] !== plate[1])) {
+        this.camera.target = M.add(this.camera.target, [plate[0] - mine.plateAt[0], plate[1] - mine.plateAt[1], 0]);
+      }
+      mine.plateAt = plate.slice();
+    },
+
+    // The page's own notes on the project shown, for the 3D views.
+    mine() {
+      const kept = this.model.kept;
+      if (!kept.gl) kept.gl = { camera: null, fitted: '', selection: new Set(), low: {}, moveAt: {}, plateAt: null };
+      return kept.gl;
+    },
+
+    plateId() {
+      const project = this.model.project;
+      return project.plate === undefined ? null : project.plate;
+    },
+
+    plateOrigin() {
+      const plate = this.scene.data && this.scene.data.project === this.model.project.id ? this.scene.plate(this.plateId()) : null;
+      return plate ? plate.origin : null;
+    },
+
+    // Asks for the project's scene when it is not the one held: another
+    // project, another file, another printer.
+    wantScene() {
+      const { project, settled } = this.model;
+      const printer = settled && settled.printer ? `${settled.printer.name}|${JSON.stringify(settled.printer.bed)}` : '';
+      const key = `${project.id}|${project.path || ''}|${project.empty}|${printer}`;
+      if (key === this.sceneKey) {
+        if (this.scene.data) this.scene.data.plate = this.plateId();
+        return;
+      }
+      this.sceneKey = key;
+      const turn = ++this.sceneTurn;
+      const since = performance.now();
+      const sent = this.stats.bytes;
+      this.call('scene', { project: project.id }).then(async (data) => {
+        if (turn !== this.sceneTurn) return;
+        const mine = this.mine();
+        this.scene.set(data);
+        this.scene.keep(this.openKeys(data));
+        // A bed that is new to the project, or of another size, is
+        // looked at afresh, as the reference's window starts.
+        const bed = JSON.stringify([data.bed.box, data.plates.length]);
+        if (mine.fitted !== bed) {
+          mine.fitted = bed;
+          this.view('default');
+        }
+        mine.selection = new Set([...mine.selection].filter((index) => index < data.placings.length));
+        this.frame();
+        await Promise.all([this.wantBed(data, turn), this.wantMeshes(data, turn, since, sent)]);
+      }).catch((error) => { if (turn === this.sceneTurn) this.host.say(error.message, true); });
+    },
+
+    // The keys of this scene and of those of the other projects still
+    // open: their meshes are kept, so that coming back to one sends nothing.
+    openKeys(data) {
+      const open = new Set(this.host.open());
+      const keys = new Set([data.key]);
+      for (const key of this.scene.meshes.keys()) {
+        const scene = key.slice(0, key.lastIndexOf(':'));
+        const project = Number(scene.split(':')[0]);
+        if (open.has(project) && project !== data.project) keys.add(scene);
+      }
+      return [...keys];
+    },
+
+    // The meshes the scene has not got yet, one object after another,
+    // those of the plate shown first.
+    async wantMeshes(data, turn, since, sent) {
+      const order = [...data.objects.keys()].filter((object) => !this.scene.meshes.has(`${data.key}:${object}`));
+      const onPlate = new Set(data.placings.filter((placing) => placing.plate === data.plate).map((placing) => placing.object));
+      order.sort((a, b) => Number(onPlate.has(b)) - Number(onPlate.has(a)));
+      let first = true;
+      for (const object of order) {
+        this.say(`Loading ${data.objects[object].name || 'the model'}…`);
+        const bytes = await this.bytes('scene_mesh', { project: data.project, object });
+        if (turn !== this.sceneTurn) return;
+        this.scene.addMesh(`${data.key}:${object}`, this.renderer.meshFromBytes(bytes));
+        this.draw();
+        if (first) this.note('scene: first object drawn', since, { bytes: this.stats.bytes - sent });
+        first = false;
+        // Let the page breathe between two objects.
+        await new Promise((resolve) => setTimeout(resolve, 0));
+        if (turn !== this.sceneTurn) return;
+      }
+      this.say('');
+      if (order.length) {
+        const triangles = data.objects.reduce((sum, object) => sum + object.triangles, 0);
+        this.note('scene: all objects drawn', since, { bytes: this.stats.bytes - sent, triangles, objects: order.length });
+      }
+    },
+
+    // The vendor's model and picture of the bed, when the printer's
+    // profile has them and they are not the ones held.
+    async wantBed(data, turn) {
+      const { model, texture } = data.bed;
+      const printer = this.sceneKey.split('|').slice(3).join('|');
+      if (`${printer}|${model}` !== this.bedModelOf) {
+        this.bedModelOf = `${printer}|${model}`;
+        this.scene.setBedModel(null);
+        if (model) {
+          try {
+            const bytes = await this.bytes('bed_model', { project: data.project });
+            if (turn === this.sceneTurn) this.scene.setBedModel(this.renderer.meshFromBytes(bytes));
+          } catch { this.bedModelOf = ''; }
+          this.frame();
+        }
+      }
+      if (`${printer}|${texture}` !== this.bedPictureOf) {
+        this.bedPictureOf = `${printer}|${texture}`;
+        this.scene.setBedPicture(null);
+        if (texture) {
+          try {
+            const bytes = await this.bytes('bed_texture', { project: data.project });
+            const image = await this.imageOf(bytes, /\.svg$/i.test(texture) ? 'image/svg+xml' : 'image/png');
+            if (turn === this.sceneTurn) this.scene.setBedPicture(this.renderer.picture(image));
+          } catch { this.bedPictureOf = ''; }
+          this.frame();
+        }
+      }
+    },
+
+    // A picture's bytes as a canvas of at most 2048 pixels a side, which
+    // is as fine as the reference draws a bed's picture.
+    imageOf(bytes, kind) {
+      const data = new Uint8Array(bytes);
+      let text = '';
+      for (let at = 0; at < data.length; at += 0x8000) text += String.fromCharCode(...data.subarray(at, at + 0x8000));
+      return new Promise((resolve, reject) => {
+        const image = new Image();
+        image.onload = () => {
+          const [wide, high] = [image.naturalWidth || 1024, image.naturalHeight || 1024];
+          const scale = 2048 / Math.max(wide, high);
+          const canvas = document.createElement('canvas');
+          canvas.width = Math.max(1, Math.round(wide * scale));
+          canvas.height = Math.max(1, Math.round(high * scale));
+          canvas.getContext('2d').drawImage(image, 0, 0, canvas.width, canvas.height);
+          resolve(canvas);
+        };
+        image.onerror = () => reject(new Error('the picture of the bed cannot be read'));
+        image.src = `data:${kind};base64,${btoa(text)}`;
+      });
+    },
+
+    // The moves of the plate's slice: those held when it was looked at
+    // before, else asked for, a stretch at a time.
+    wantPrint() {
+      const project = this.model.project;
+      const plate = this.plateId();
+      const key = `${project.id}:${plate}:${project.status.run}`;
+      let print = this.prints.get(key);
+      if (!print) {
+        print = { key, path: null };
+        // An earlier slice of the plate is let go, and the oldest of more
+        // than a few.
+        const plateOf = (known) => known.slice(0, known.lastIndexOf(':'));
+        for (const [old, other] of [...this.prints]) {
+          if (plateOf(old) !== plateOf(key) && this.prints.size < PRINTS_KEPT) continue;
+          if (other.path) other.path.dispose();
+          this.prints.delete(old);
+        }
+        this.prints.set(key, print);
+        this.loadPrint(print, project.id, plate);
+      }
+      this.print = print;
+    },
+
+    async loadPrint(print, project, plate) {
+      const since = performance.now();
+      const sent = this.stats.bytes;
+      const args = { project, plate: plate === null ? undefined : plate };
+      try {
+        const index = await this.call('toolpath', args);
+        if (!this.prints.has(print.key)) return;
+        const path = new T(this.renderer, index);
+        print.path = path;
+        this.host.legend();
+        this.syncControls();
+        let first = true;
+        while (!path.complete) {
+          const bytes = await this.bytes('toolpath_moves', { ...args, from: path.loaded, count: index.at_once });
+          if (!this.prints.has(print.key)) return;
+          if (!path.append(bytes)) throw new Error('the moves stopped short');
+          if (this.print === print) {
+            this.say(path.complete ? '' : `Loading the print… ${Math.round((100 * path.loaded) / path.total)}%`);
+            this.syncControls();
+            this.draw();
+          }
+          if (first) this.note('print: first moves drawn', since, { bytes: this.stats.bytes - sent, moves: path.loaded });
+          first = false;
+          await new Promise((resolve) => setTimeout(resolve, 0));
+        }
+        this.note('print: all moves drawn', since, { bytes: this.stats.bytes - sent, moves: path.total });
+        if (this.print === print) {
+          this.host.legend();
+          this.frame();
+        }
+      } catch (error) {
+        // A slice that was let go while its moves were on their way is
+        // nothing to say; it is asked for again when it is there again.
+        if (print.path) print.path.dispose();
+        this.prints.delete(print.key);
+        if (this.print !== print) return;
+        this.print = null;
+        this.say('');
+        this.host.say(error.message, true);
+      }
+    },
+
+    say(text) {
+      this.loading.textContent = text;
+      this.loading.hidden = !text;
+    },
+
+    // ---- Preview's sliders and legend ----
+
+    path() {
+      return this.print && this.print.path ? this.print.path : null;
+    },
+
+    // The layers shown, as [lowest, highest], and the move the print has
+    // got to (null: all of them).
+    range() {
+      const path = this.path();
+      if (!path) return null;
+      const plate = String(this.plateId() ?? 0);
+      const mine = this.mine();
+      const last = path.layers.first.length - 1;
+      const high = Math.max(0, Math.min(last, this.model.kept.layerAt[this.plateId() ?? 0] ?? last));
+      const low = this.layerSlider.one ? high : Math.max(0, Math.min(high, mine.low[plate] ?? 0));
+      const [from, end] = [path.layerStart(low), path.layerEnd(high)];
+      const at = mine.moveAt[plate];
+      return { low, high, last, from, end, to: at === null || at === undefined ? end : Math.max(from + 1, Math.min(end, at)) };
+    },
+
+    syncControls() {
+      const preview = this.model && this.model.tab === 'preview';
+      const path = preview ? this.path() : null;
+      const range = this.range();
+      if (!path || !range) {
+        this.layerSlider.set(0, 0, 0, () => ['', '']);
+        this.moveSlider.set(0, 0, 0);
+        this.readout.hidden = true;
+        return;
+      }
+      this.layerSlider.set(range.last + 1, range.low, range.high, (layer) => [String(layer + 1), path.layers.z[layer].toFixed(2)]);
+      // The moves slider runs over the moves of the layers shown that
+      // have come in so far.
+      this.moveSlider.set(range.from + 1, Math.min(range.end, Math.max(path.loaded, range.from + 1)), range.to);
+      this.showReadout(path, range);
+    },
+
+    // Where the nozzle is and what it is doing there, while the print is
+    // stopped part of the way (GCodeViewer.cpp, the position window).
+    showReadout(path, range) {
+      const stopped = range.to < range.end && range.to - 1 < path.loaded;
+      this.readout.hidden = !stopped;
+      if (!stopped) return;
+      const move = path.move(range.to - 1);
+      const kinds = ['Noop', 'Travel', 'Extrude', 'Wipe', 'Retract', 'Unretract', 'Seam', 'Tool Change'];
+      const view = T.VIEWS.find((known) => known.name === this.model.kept.viewType) || T.VIEWS[0];
+      const digits = (value) => (Math.abs(value) > 9999 ? 1 : Math.abs(value) > 999 ? 2 : 3);
+      const what = move.kind === T.KIND.line ? T.FEATURES[move.feature][0] : kinds[move.kind];
+      const detail = {
+        0: what, 1: `Tool: ${move.filament}`, 2: what, 3: `Height: ${move.height.toFixed(2)}`, 4: `Width: ${move.width.toFixed(2)}`,
+        5: `Flow: ${move.flow.toFixed(2)}`, 6: `Fan: ${move.fan.toFixed(0)}`, 7: `Temperature: ${move.temperature.toFixed(0)}`,
+      }[view.id];
+      this.readout.replaceChildren(
+        ...['X', 'Y', 'Z'].flatMap((axis, at) => [el('b', { className: `gl-${axis.toLowerCase()}`, textContent: `${axis} ` }), `${move.at[at].toFixed(digits(move.at[at]))}  `]),
+        el('br'),
+        `Speed: ${move.feedrate.toFixed(0)}  ${detail}`,
+      );
+    },
+
+    layersChanged(low, high, which) {
+      const mine = this.mine();
+      const plate = this.plateId() ?? 0;
+      mine.low[String(plate)] = low;
+      // Moving a layer thumb puts the moves slider back at its end.
+      mine.moveAt[String(plate)] = null;
+      this.model.kept.layerAt[plate] = high;
+      this.host.noted();
+      this.syncControls();
+      this.frame();
+      void which;
+    },
+
+    moveChanged(value) {
+      const range = this.range();
+      if (!range) return;
+      this.mine().moveAt[String(this.plateId() ?? 0)] = value >= range.end ? null : value;
+      this.syncControls();
+      this.frame();
+    },
+
+    // app.js's own ways of going to a layer (the arrow keys, "Jump to
+    // Layer") move the thumb taken up.
+    setLayer(index) {
+      if (!this.path()) return;
+      this.layerSlider.move(index);
+    },
+
+    stepLayer(by) {
+      if (this.path()) this.layerSlider.step(by);
+    },
+
+    // What the legend offers and lists, for app.js to put in its table:
+    // the view types there is the data for, and the rows of the one
+    // chosen. A row that can be hidden or shown calls `changed`.
+    legend(kept, summary, filamentColour) {
+      const path = this.path();
+      const index = path ? path.index : null;
+      const views = T.VIEWS.filter((view) => !view.needs || (index && index.source === 'gcode'));
+      const view = views.find((known) => known.name === kept.viewType) || views[0];
+      if (!kept.options) kept.options = new Set(T.OPTIONS.filter((option) => option.shown).map((option) => option.name));
+      const head = (...names) => el('tr', {}, ...names.map((name) => el('th', { textContent: name })));
+      const rows = (changed) => {
+        const toggle = (set, key, name, colour, on) => {
+          const off = set.has(key) !== on;
+          const eye = el('button', { type: 'button', className: 'eye', textContent: off ? '○' : '●', title: off ? 'Show' : 'Hide' });
+          eye.setAttribute('aria-label', `${off ? 'Show' : 'Hide'} ${name}`);
+          eye.setAttribute('aria-pressed', String(!off));
+          const swatch = el('span', { className: 'swatch' });
+          swatch.style.background = colour;
+          const row = el('tr', { className: `row${off ? ' off' : ''}` }, el('td', {}, swatch, name), el('td', {}, eye));
+          row.addEventListener('click', () => {
+            if (set.has(key)) set.delete(key); else set.add(key);
+            changed();
+          });
+          return row;
+        };
+        // The marks and the moves between lines, those the print has.
+        const options = (only = null) => {
+          const present = T.OPTIONS.filter((option) => index && index.counts[option.count] > 0 && (!only || only.includes(option.name)));
+          if (!present.length) return [];
+          return [head('Options', 'Display'), ...present.map((option) => toggle(kept.options, option.name, option.name, css(option.colour), true))];
+        };
+        if (view.id === 0) {
+          // Before the moves are in, the features the slice is known to have.
+          const features = index ? index.features.map((feature) => T.FEATURES[feature]) : summary.roles.map((name) => T.FEATURES.find(([known]) => known === name) || [name, [255, 255, 255]]);
+          return [head('Line Type', 'Display'), ...features.map(([name, colour]) => toggle(kept.hidden, name, name, css(colour), false)), ...options()];
+        }
+        if (view.id === 1) {
+          const filaments = index ? index.filaments : summary.filaments;
+          return [head('Filament', 'Display'), ...filaments.map((filament) => toggle(kept.hidden, `f${filament}`, `Filament ${filament}`, filamentColour(summary, filament), false)), ...options()];
+        }
+        const range = path ? path.range(view.id, this.hiddenFeatures(kept), kept.options.has('Travel'), kept.options.has('Wipe')) : [0, 0, 0];
+        const steps = T.steps(range).reverse();
+        return [head(view.title), ...steps.map((value) => {
+          const swatch = el('span', { className: 'swatch' });
+          swatch.style.background = css(T.rangeColour(value, range));
+          return el('tr', {}, el('td', {}, swatch, value.toFixed(view.decimals)));
+        }), ...(view.id === 2 ? options(['Travel']) : [])];
+      };
+      return { types: views.map((known) => known.name), rows };
+    },
+
+    hiddenFeatures(kept) {
+      const hidden = new Set();
+      T.FEATURES.forEach(([name], feature) => { if (kept.hidden.has(name)) hidden.add(feature); });
+      return hidden;
+    },
+
+    // ---- the camera ----
+
+    // The plate shown, as a box on the ground.
+    plateBox() {
+      return this.scene.plateBox(this.plateId());
+    },
+
+    // What the camera turns about (GLCanvas3D.cpp `on_mouse`): in
+    // Preview the middle of the plate; in Prepare the middle of what is
+    // selected, else of the objects on the plate, else of the plate.
+    pivot() {
+      const plate = this.plateBox();
+      if (this.model.tab !== 'preview') {
+        const mine = this.mine();
+        const id = this.plateId();
+        const box = this.scene.boxOf((placing, index) => mine.selection.has(index))
+          || this.scene.boxOf((placing) => placing.plate === id || this.scene.plates.length === 1);
+        if (box) return M.centre(box);
+      }
+      return plate ? M.centre(plate) : this.camera.target;
+    },
+
+    // A named view (Camera::select_view), with the reference's
+    // "Default View": from the front and above, the bed in sight.
+    view(name) {
+      const camera = this.camera;
+      this.sized();
+      const plate = this.plateBox();
+      const origin = this.plateOrigin();
+      if (name === 'default') {
+        camera.selectView('plate', this.prefs.autoPerspective);
+        if (plate) camera.zoomToBox(plate, MARGIN.bed);
+        if (origin) this.mine().plateAt = origin.slice();
+      } else if (name === 'this plate') {
+        // PartPlateList::select_plate_view.
+        if (plate) {
+          const centre = M.centre(plate);
+          camera.lookAt(M.add(centre, [0, 0, camera.distance]), centre, [0, 1, 0]);
+        }
+        if (origin) this.mine().plateAt = origin.slice();
+        camera.selectView('topfront', this.prefs.autoPerspective);
+      } else {
+        camera.selectView(name, this.prefs.autoPerspective);
+      }
+      this.prefs.perspective = camera.perspective;
+      this.frame();
+    },
+
+    // "Fit in all view" (GLCanvas3D::ZoomToFit): from the front and
+    // above, what is selected in sight, else the bed. `bed` is the
+    // default view.
+    fit(what) {
+      if (!this.active || !this.model || !this.model.project) return;
+      const camera = this.camera;
+      if (what === 'bed') {
+        this.view('default');
+        return;
+      }
+      this.sized();
+      camera.selectView('plate', this.prefs.autoPerspective);
+      const mine = this.mine();
+      const selected = this.model.tab !== 'preview' ? this.scene.boxOf((placing, index) => mine.selection.has(index)) : null;
+      const plate = this.plateBox();
+      if (selected) camera.zoomToBox(selected, MARGIN.box);
+      else if (plate) camera.zoomToBox(plate, MARGIN.bed);
+      const origin = this.plateOrigin();
+      if (origin) this.mine().plateAt = origin.slice();
+      this.frame();
+    },
+
+    // ---- the mouse and the keys ----
+
+    listen() {
+      const canvas = this.canvas;
+      let press = null;
+      const at = (event) => {
+        const box = canvas.getBoundingClientRect();
+        return [event.clientX - box.left, event.clientY - box.top];
+      };
+      canvas.addEventListener('contextmenu', (event) => event.preventDefault());
+      canvas.addEventListener('pointerdown', (event) => {
+        if (!this.model || press) return;
+        canvas.focus({ preventScroll: true });
+        canvas.setPointerCapture(event.pointerId);
+        const [x, y] = at(event);
+        press = { id: event.pointerId, button: event.button, x, y, from: [x, y], moved: false, pivot: null };
+        if (event.button === 0) {
+          // With Ctrl or Cmd, about the point of the bed in the middle
+          // of the view.
+          const centre = event.ctrlKey || event.metaKey ? this.camera.onGround(this.camera.viewport[0] / 2, this.camera.viewport[1] / 2) : null;
+          press.pivot = centre || this.pivot();
+        }
+        canvas.classList.add('dragging');
+      });
+      canvas.addEventListener('pointermove', (event) => {
+        if (!press || event.pointerId !== press.id) return;
+        const [x, y] = at(event);
+        const [dx, dy] = [x - press.x, y - press.y];
+        if (!press.moved && Math.hypot(x - press.from[0], y - press.from[1]) < CLICK) return;
+        press.moved = true;
+        press.x = x;
+        press.y = y;
+        if (press.button === 0) {
+          // The left button turns the view.
+          this.camera.rotateOnSphere(dx * ORBIT, dy * ORBIT, true, press.pivot);
+          if (this.prefs.autoPerspective) this.camera.perspective = true;
+        } else {
+          // The right and the middle button move it.
+          this.camera.pan(dx, dy);
+        }
+        this.frame();
+      });
+      const release = (event) => {
+        if (!press || event.pointerId !== press.id) return;
+        const done = press;
+        press = null;
+        canvas.classList.remove('dragging');
+        if (!done.moved && event.type === 'pointerup') this.click(done, event);
+      };
+      canvas.addEventListener('pointerup', release);
+      canvas.addEventListener('pointercancel', release);
+      canvas.addEventListener('wheel', (event) => {
+        event.preventDefault();
+        if (!this.model) return;
+        // A notch of a wheel is a step; a pad sends many small ones, and
+        // a pinch comes as a wheel with Ctrl.
+        const notch = event.deltaMode === 1 ? 3 : event.ctrlKey ? 10 : 100;
+        const steps = (-event.deltaY / notch) * (this.prefs.reverseZoom ? -1 : 1);
+        const [x, y] = at(event);
+        if (this.prefs.zoomToMouse) this.camera.zoomAt(steps, x, y);
+        else this.camera.updateZoom(steps);
+        this.frame();
+      }, { passive: false });
+      document.addEventListener('keydown', (event) => this.key(event));
+      new ResizeObserver(() => this.draw()).observe(canvas);
+      window.matchMedia('(prefers-color-scheme: dark)').addEventListener('change', () => this.frame());
+      canvas.addEventListener('webglcontextlost', (event) => {
+        event.preventDefault();
+        this.host.say('The graphics card took the 3D view away; reload the page to have it back.', true);
+      });
+    },
+
+    // A click: in Prepare it selects (GLCanvas3D.cpp `on_mouse`, the left
+    // and right button released without a drag).
+    click(press, event) {
+      if (this.model.tab !== 'prepare' || !this.scene.data) return;
+      const mine = this.mine();
+      const frame = this.matrices();
+      const hit = this.scene.pick(this.camera, frame, press.x, press.y, { plates: true });
+      if (hit && hit.placing !== undefined) {
+        if (press.button === 0 && (event.ctrlKey || event.metaKey)) {
+          // Ctrl adds an object to those selected, or takes it away.
+          if (mine.selection.has(hit.placing)) mine.selection.delete(hit.placing); else mine.selection.add(hit.placing);
+        } else if (press.button === 0 || press.button === 2) {
+          mine.selection = new Set([hit.placing]);
+        }
+      } else if (hit && hit.plate && press.button === 0) {
+        // A click on a plate selects the plate and lets go of the objects.
+        mine.selection = new Set();
+        if (hit.plate.id !== null && hit.plate.id !== this.plateId()) this.host.plate(hit.plate.id);
+      } else if (!event.shiftKey) {
+        mine.selection = new Set();
+      }
+      this.frame();
+    },
+
+    key(event) {
+      if (!this.active || !this.model || this.model.tab === 'device' || document.querySelector('dialog[open]')) return;
+      if (event.target.matches('input, select, textarea') || event.altKey) return;
+      const command = event.ctrlKey || event.metaKey;
+      const key = event.key.length === 1 ? event.key.toLowerCase() : event.key;
+      const done = () => { event.preventDefault(); this.frame(); };
+      if (command && !event.shiftKey) {
+        // Ctrl+0 to Ctrl+7: the views, as the reference binds them.
+        const views = { 0: 'default', 1: 'top', 2: 'bottom', 3: 'front', 4: 'rear', 5: 'left', 6: 'right', 7: 'this plate' };
+        const digit = /^(Digit|Numpad)([0-7])$/.exec(event.code);
+        if (digit) { this.view(views[digit[2]]); done(); return; }
+        if (key === 'a' && this.model.tab === 'prepare' && this.scene.data) {
+          // Select all objects: those on the plate shown.
+          const id = this.plateId();
+          this.mine().selection = new Set(this.scene.data.placings.flatMap((placing, index) => (placing.plate === id || this.scene.plates.length === 1 ? [index] : [])));
+          done();
+          return;
+        }
+        if (key === 'e') { this.setPref('labels', 'labels', !this.prefs.labels); done(); return; }
+        return;
+      }
+      if (command) return;
+      if (key === 'i' || key === 'o') { this.camera.updateZoom(key === 'i' ? 1 : -1); done(); return; }
+      if (key === 'Escape' && this.model.tab === 'prepare' && this.mine().selection.size) { this.mine().selection = new Set(); done(); return; }
+      if (this.model.tab !== 'preview' || !this.path()) return;
+      const fast = event.shiftKey ? 5 : 1;
+      if (key === 'l' && !event.shiftKey) { this.layerSlider.setOne(!this.layerSlider.one); done(); return; }
+      if (key === 'ArrowLeft' || key === 'ArrowRight') { this.moveSlider.step((key === 'ArrowRight' ? 1 : -1) * fast); done(); return; }
+      if (key === 'Home') { this.moveSlider.move(this.moveSlider.least); done(); return; }
+      if (key === 'End') { this.moveSlider.move(this.moveSlider.most); done(); }
+    },
+
+    // ---- drawing ----
+
+    frame() {
+      if (this.pending || !this.active) return;
+      this.pending = requestAnimationFrame(() => {
+        this.pending = 0;
+        this.draw();
+      });
+    },
+
+    // The camera is told how large the view is.
+    sized() {
+      this.renderer.resize();
+      this.camera.viewport = this.renderer.css.slice();
+    },
+
+    // The camera's matrices for the view as it is now.
+    matrices() {
+      this.sized();
+      let box = this.scene.bounds();
+      const path = this.path();
+      const origin = this.plateOrigin() || [0, 0];
+      if (path && path.index.box) {
+        box = M.union(box, [M.add(path.index.box[0], [...origin, 0]), M.add(path.index.box[1], [...origin, 0])]);
+      }
+      this.camera.sceneBox = box;
+      return this.camera.matrices(box);
+    },
+
+    draw() {
+      if (!this.active) return;
+      if (this.pending) {
+        cancelAnimationFrame(this.pending);
+        this.pending = 0;
+      }
+      const r = this.renderer;
+      const model = this.model;
+      r.resize();
+      if (!model || !model.project || model.tab === 'device' || r.css[0] < 2 || r.css[1] < 2) return;
+      const frame = this.matrices();
+      const mine = this.mine();
+      const plate = this.plateId();
+      // From under the bed, the bed is seen through (3DBed.cpp, `bottom`).
+      const below = this.camera.forward[2] >= 0;
+      r.begin(this.scene.background);
+      if (model.tab === 'prepare') {
+        this.scene.drawObjects(frame, 0);
+        this.scene.drawBed(frame, { current: plate, all: true, below });
+        this.scene.drawObjects(frame, 1);
+        this.scene.drawSelection(frame, mine.selection);
+      } else {
+        this.scene.drawBed(frame, { current: plate, all: false, below });
+        const path = this.path();
+        const range = this.range();
+        // The objects under the print, seen through; while there is no
+        // print, they are all there is to show of the plate.
+        this.scene.drawShells(frame, plate);
+        if (path && range) {
+          const kept = model.kept;
+          const view = T.VIEWS.find((known) => known.name === kept.viewType) || T.VIEWS[0];
+          const options = kept.options || new Set(['Seams']);
+          const hiddenFeatures = this.hiddenFeatures(kept);
+          const colours = {};
+          for (const filament of path.index.filaments) colours[filament] = hex(this.host.filamentColour(model.summary, filament));
+          path.setColours(colours);
+          const origin = [...(this.plateOrigin() || [0, 0]), 0];
+          path.draw(frame, origin, range.from, range.to, {
+            view: view.id,
+            range: view.id >= 2 ? path.range(view.id, hiddenFeatures, options.has('Travel'), options.has('Wipe')) : [0, 0, 0],
+            hiddenFeatures,
+            hiddenFilaments: [...kept.hidden].filter((key) => /^f\d+$/.test(key)).map((key) => Number(key.slice(1))),
+            options,
+          });
+          // The nozzle, while the print is stopped part of the way.
+          if (range.to < range.end && range.to - 1 < path.loaded) {
+            const at = M.add(path.move(range.to - 1).at, origin);
+            r.blend(true, true);
+            r.drawMesh(this.marker, frame, M.translation(...at), { tint: [1, 1, 1, 0.5] });
+            r.blend(false);
+          }
+        }
+      }
+      this.navigator.update(this.camera);
+      this.showLabels(frame);
+      mine.camera = this.camera.save();
+      this.drawn = (this.drawn || 0) + 1;
+    },
+
+    // The names of the objects on the plate shown, over them ("Show Labels").
+    showLabels(frame) {
+      const data = this.scene.data;
+      const wanted = this.prefs.labels && data && this.model.tab === 'prepare';
+      this.labels.hidden = !wanted;
+      if (!wanted) return;
+      const matrix = M.multiply(frame.projection, frame.view);
+      const [width, height] = this.renderer.css;
+      const plate = this.plateId();
+      const mine = this.mine();
+      const shown = [];
+      data.placings.forEach((placing, index) => {
+        const name = data.objects[placing.object].name;
+        if (!name || !placing.box || (placing.plate !== plate && this.scene.plates.length > 1)) return;
+        const top = [(placing.box[0][0] + placing.box[1][0]) / 2, (placing.box[0][1] + placing.box[1][1]) / 2, placing.box[1][2]];
+        const at = M.point(matrix, top);
+        shown.push({ name, x: (at[0] * 0.5 + 0.5) * width, y: (1 - (at[1] * 0.5 + 0.5)) * height, selected: mine.selection.has(index) });
+      });
+      while (this.labels.children.length > shown.length) this.labels.lastChild.remove();
+      while (this.labels.children.length < shown.length) this.labels.append(el('span'));
+      shown.forEach((label, at) => {
+        const node = this.labels.children[at];
+        if (node.textContent !== label.name) node.textContent = label.name;
+        node.className = label.selected ? 'selected' : '';
+        node.style.left = `${label.x}px`;
+        node.style.top = `${label.y}px`;
+      });
+    },
+
+    // Turns the view round for a number of frames and says how long the
+    // frames took: for measuring, not for looking at. The browser shows
+    // a frame no sooner than the screen takes one, so `repeat` draws the
+    // scene that many times a frame, to find how much room there is.
+    async measure(frames = 120, repeat = 1) {
+      const gl = this.renderer.gl;
+      const pivot = this.pivot();
+      const times = [];
+      const spans = [];
+      let last = performance.now();
+      for (let frame = 0; frame < frames; frame += 1) {
+        await new Promise((resolve) => requestAnimationFrame(resolve));
+        const now = performance.now();
+        if (frame) spans.push(now - last);
+        last = now;
+        this.camera.rotateOnSphere((2 * Math.PI) / frames, 0, true, pivot);
+        const start = performance.now();
+        for (let again = 0; again < repeat; again += 1) this.draw();
+        gl.finish();
+        times.push(performance.now() - start);
+      }
+      const mean = (list) => list.reduce((sum, value) => sum + value, 0) / Math.max(list.length, 1);
+      const round = (value) => Math.round(value * 100) / 100;
+      return {
+        frames,
+        repeat,
+        draw_ms: round(mean(times)),
+        draw_ms_worst: round(Math.max(...times)),
+        between_frames_ms: round(mean(spans)),
+        between_frames_ms_worst: round(Math.max(...spans)),
+        gpu_bytes: this.renderer.bytes,
+        renderer: (() => {
+          const info = gl.getExtension('WEBGL_debug_renderer_info');
+          return info ? gl.getParameter(info.UNMASKED_RENDERER_WEBGL) : gl.getParameter(gl.RENDERER);
+        })(),
+      };
+    },
+  };
+
+  GL.stage = stage;
+})(window.EdgeGL);

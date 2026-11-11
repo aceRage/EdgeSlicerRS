@@ -133,6 +133,7 @@ fn laid(text: &str) -> Vec<Laid> {
         "Brim",
         "Support",
         "Prime tower",
+        "Ironing",
     ];
     let mut out = Vec::new();
     let (mut at, mut speed, mut feature) = (None::<(f64, f64)>, 0.0, "");
@@ -276,6 +277,16 @@ fn a_seam_gap_shortens_the_last_arc() {
     assert!(((last.to.0 - 50.0).hypot(last.to.1 - 50.0) - 10.0).abs() < 0.005);
 }
 
+/// Twice the area a run of moves goes round, in mm²: positive
+/// counter-clockwise, negative clockwise. An arc counts by its ends,
+/// which is enough to tell which way a loop goes.
+fn turning(moves: &[Laid]) -> f64 {
+    moves
+        .iter()
+        .map(|laid| laid.from.0 * laid.to.1 - laid.to.0 * laid.from.1)
+        .sum()
+}
+
 #[test]
 fn a_hole_and_a_wall_laid_clockwise_turn_the_other_way() {
     // A hole's points run clockwise and it is laid counter-clockwise
@@ -289,17 +300,122 @@ fn a_hole_and_a_wall_laid_clockwise_turn_the_other_way() {
     let moves = laid(&text);
     assert!(arc_count(&moves) >= 2);
     assert!(moves.iter().all(|laid| laid.g != 2), "{moves:?}");
+    assert!(turning(&moves) > 0.0);
 
     let clockwise = PrintSettings {
         wall_direction: WallDirection::Clockwise,
         ..arcs()
     };
-    let (text, _) = print(&layers, &clockwise);
+    let (text, summary) = print(&layers, &clockwise);
     let moves = laid(&text);
     assert!(arc_count(&moves) >= 2);
     assert!(moves.iter().all(|laid| laid.g != 3), "{moves:?}");
     let around: f64 = moves.iter().map(|laid| laid.length).sum();
     assert!((around - TAU * 16.0).abs() < 0.03, "{around}");
+    // Each loop once round the other way, ending where it began, and
+    // fed by its length.
+    assert!(turning(&moves) < 0.0);
+    for wall in moves.chunk_by(|a, b| a.to == b.from) {
+        assert_eq!(wall[0].from, wall[wall.len() - 1].to);
+        assert!(turning(wall) < 0.0, "{wall:?}");
+    }
+    let fed: f64 = moves.iter().map(|laid| laid.fed).sum();
+    assert!((fed - summary.filament_mm).abs() < 1e-4);
+
+    // One wall marked to be laid clockwise where the rest are not, as
+    // over a steep overhang on every other layer: that one alone turns.
+    let mut marked = round_wall(50.0, 50.0, 10.0, 0);
+    marked.clockwise = true;
+    let loops = [round_wall(50.0, 50.0, 14.0, 0), marked];
+    let layers = [layer(0.2, &loops, &[0..1, 1..2], &[])];
+    let moves = laid(&print(&layers, &arcs()).0);
+    let walls: Vec<&[Laid]> = moves.chunk_by(|a, b| a.to == b.from).collect();
+    assert_eq!(walls.len(), 2, "{moves:?}");
+    for wall in &walls {
+        let radius = (wall[0].from.0 - 50.0).hypot(wall[0].from.1 - 50.0);
+        let own = if radius > 12.0 { 3 } else { 2 };
+        assert!(wall.iter().any(|laid| laid.g == own), "{wall:?}");
+        assert!(wall.iter().all(|laid| laid.g == 1 || laid.g == own));
+        assert_eq!(turning(wall) > 0.0, own == 3);
+    }
+}
+
+#[test]
+fn a_staggered_inner_seam_cuts_a_round_wall_further_round() {
+    // Two round walls, the inner behind the outer. With aligned seams
+    // the inner starts beside the outer wall's seam; staggered, it
+    // starts further round by its own width at least, at a place that
+    // is no corner of the wall, and the arc is cut there instead.
+    let loops = [
+        round_wall(50.0, 50.0, 10.0, 0),
+        round_wall(50.0, 50.0, 9.55, 1),
+    ];
+    let layers = [layer(0.2, &loops, &[0..2], &[])];
+    let aligned = PrintSettings {
+        seam: Seam::Aligned,
+        ..arcs()
+    };
+    let staggered = PrintSettings {
+        staggered_inner_seams: true,
+        ..aligned.clone()
+    };
+    let starts = |settings: &PrintSettings| {
+        let (text, summary) = print(&layers, settings);
+        let moves = laid(&text);
+        let inner: Vec<Laid> = moves
+            .iter()
+            .copied()
+            .filter(|laid| laid.feature == "Inner wall")
+            .collect();
+        let outer: Vec<Laid> = moves
+            .iter()
+            .copied()
+            .filter(|laid| laid.feature == "Outer wall")
+            .collect();
+        // Both are arcs, once round counter-clockwise from their seams.
+        for wall in [&inner, &outer] {
+            assert!(arc_count(wall) >= 1, "{wall:?}");
+            assert!(wall.iter().all(|laid| laid.g != 2));
+            assert_eq!(wall[0].from, wall[wall.len() - 1].to);
+            assert!(turning(wall) > 0.0);
+        }
+        let around: f64 = inner.iter().map(|laid| laid.length).sum();
+        assert!((around - TAU * 9.55).abs() < 0.02, "{around}");
+        let fed: f64 = moves.iter().map(|laid| laid.fed).sum();
+        assert!((fed - summary.filament_mm).abs() < 1e-4);
+        (outer[0].from, inner[0].from)
+    };
+    let angle = |p: (f64, f64)| (p.1 - 50.0).atan2(p.0 - 50.0);
+    let (outer, beside) = starts(&aligned);
+    let (same_outer, further) = starts(&staggered);
+    assert_eq!(outer, same_outer);
+    // Beside the outer seam: on the line from it to the middle.
+    assert!((angle(beside) - angle(outer)).abs() < 0.03);
+    // Staggered: on round the way the wall is laid, by its width or
+    // more, and still on the wall.
+    let on = (angle(further) - angle(outer)).rem_euclid(TAU) * 9.55;
+    assert!((0.44..2.0).contains(&on), "{on} mm on round");
+    assert!(((further.0 - 50.0).hypot(further.1 - 50.0) - 9.55).abs() < 0.02);
+
+    // Laid clockwise, the inner seam goes on round the other way.
+    let clockwise = PrintSettings {
+        wall_direction: WallDirection::Clockwise,
+        ..staggered
+    };
+    let (text, _) = print(&layers, &clockwise);
+    let moves = laid(&text);
+    let inner: Vec<&Laid> = moves
+        .iter()
+        .filter(|laid| laid.feature == "Inner wall")
+        .collect();
+    assert!(inner.iter().any(|laid| laid.g == 2) && inner.iter().all(|laid| laid.g != 3));
+    let outer_start = moves
+        .iter()
+        .find(|laid| laid.feature == "Outer wall")
+        .unwrap()
+        .from;
+    let back = (angle(outer_start) - angle(inner[0].from)).rem_euclid(TAU) * 9.55;
+    assert!((0.44..2.0).contains(&back), "{back} mm back round");
 }
 
 #[test]
@@ -370,6 +486,104 @@ fn sparse_infill_and_supports_are_held_less_closely() {
     assert_eq!(laid_as(Role::SupportInterface, true), (1, 1));
     assert_eq!(laid_as(Role::SolidInfill, false), (0, 12));
     assert_eq!(laid_as(Role::TopSolidInfill, false), (0, 12));
+}
+
+#[test]
+fn ironing_along_a_curve_is_arcs_at_its_own_speed() {
+    // The reference irons with lines that are fill like any other when
+    // paths are fitted (Fill.cpp `make_ironing` puts them with the
+    // layer's fills, PrintObject.cpp `simplify_extrusion_path` fits those
+    // within the resolution): a sweep that follows a round edge between
+    // its straight runs is laid with an arc there.
+    let ironing_flow = Flow {
+        width: 0.4 + 0.0075 * (1.0 - 0.25 * PI),
+        height: 0.0075,
+        spacing: 0.4,
+        nozzle_diameter: 0.4,
+    };
+    let mut sweep = vec![Point2::from_mm(40.0, 50.0), Point2::from_mm(50.0, 50.0)];
+    sweep.extend(
+        on_circle(50.0, 54.0, 4.0, -90.0, 90.0, 48)
+            .into_iter()
+            .skip(1),
+    );
+    sweep.push(Point2::from_mm(40.0, 58.0));
+    let paths = [
+        ExtrusionPath {
+            points: sweep,
+            role: Role::Ironing,
+            flow: ironing_flow,
+            in_turn: false,
+            part: 0,
+        },
+        // And a straight line of it, which is a straight move.
+        ExtrusionPath {
+            points: vec![Point2::from_mm(40.0, 62.0), Point2::from_mm(54.0, 62.0)],
+            role: Role::Ironing,
+            flow: ironing_flow,
+            in_turn: false,
+            part: 0,
+        },
+    ];
+    let loops = [square_wall(30.0, 40.0, 30.0)];
+    let layers = [layer(0.2, &loops, &[0..1], &paths)];
+    let settings = PrintSettings {
+        ironing_speed: 17.0,
+        ..arcs()
+    };
+    let (text, summary) = print(&layers, &settings);
+    assert!(text.contains(";TYPE:Ironing"));
+    let moves = laid(&text);
+    let ironing: Vec<&Laid> = moves
+        .iter()
+        .filter(|laid| laid.feature == "Ironing")
+        .collect();
+    // Two straight runs, the half turn between them as one arc, and
+    // the straight line: four moves, all at ironing speed.
+    assert_eq!(ironing.len(), 4, "{ironing:?}");
+    assert_eq!(arc_count(&moves), 1);
+    let arc = ironing.iter().find(|laid| laid.g != 1).unwrap();
+    // (The fitted circle is a few microns inside the sweep's own.)
+    assert!((arc.length - 4.0 * PI).abs() < 0.03, "{arc:?}");
+    assert!(ironing.iter().all(|laid| laid.speed == 17.0));
+    // The arc feeds what the same length of straight ironing does.
+    let per_mm = ironing_flow.mm3_per_mm() / (PI * 0.875 * 0.875);
+    for laid in &ironing {
+        assert!(
+            (laid.fed - laid.length * per_mm).abs() < 2e-5,
+            "{laid:?} against {per_mm} a mm"
+        );
+    }
+    let fed: f64 = moves.iter().map(|laid| laid.fed).sum();
+    assert!((fed - summary.filament_mm).abs() < 1e-4);
+    // The wall is laid first and the ironing last, as without arcs.
+    let first_ironing = moves
+        .iter()
+        .position(|laid| laid.feature == "Ironing")
+        .unwrap();
+    assert!(
+        moves[..first_ironing]
+            .iter()
+            .all(|laid| laid.feature == "Outer wall")
+    );
+    assert_eq!(first_ironing, 4);
+
+    // Without arcs the same sweep is its 51 straight moves, as long.
+    let straight = PrintSettings {
+        arc_fitting: false,
+        ..settings
+    };
+    let (text, plain) = print(&layers, &straight);
+    let plain_moves = laid(&text);
+    assert_eq!(arc_count(&plain_moves), 0);
+    assert_eq!(
+        plain_moves
+            .iter()
+            .filter(|laid| laid.feature == "Ironing")
+            .count(),
+        51
+    );
+    assert!((summary.filament_mm - plain.filament_mm).abs() < 1e-3 * plain.filament_mm);
 }
 
 #[test]

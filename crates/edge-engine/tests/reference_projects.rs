@@ -337,3 +337,329 @@ fn a_projects_plates_are_listed_with_what_is_on_each() {
     .unwrap();
     assert!(model.plate_list().is_empty());
 }
+
+/// A vendor's printer models, as the printer selection lists them: the
+/// nozzles each is sold with, its picture, the presets made for it and
+/// the sizes of its usual one.
+#[test]
+fn a_vendors_printer_models_are_listed_with_their_presets() {
+    let library = Library::new(reference("resources/profiles"));
+    let models = library.models("Snapmaker").unwrap();
+    // The index's own order: the U1 is its first entry.
+    let u1 = &models[0];
+    assert_eq!(u1.model, "Snapmaker U1");
+    assert_eq!(u1.name, "Snapmaker U1");
+    assert_eq!(u1.vendor, "Snapmaker");
+    assert_eq!(u1.model_id.as_deref(), Some("SM_U1"));
+    assert_eq!(u1.variants, ["0.2", "0.4", "0.6", "0.8", "0.4+0.6"]);
+    assert_eq!(u1.bed_model.as_deref(), Some("Snapmaker U1_bed.stl"));
+    assert_eq!(u1.bed_texture.as_deref(), Some("Snapmaker U1_texture.svg"));
+    assert!(
+        u1.default_materials
+            .contains(&"Generic PLA @U1 0.4 nozzle".to_owned())
+    );
+    assert_eq!(u1.default_bed_type, None);
+    let a1 = library
+        .models("BBL")
+        .unwrap()
+        .into_iter()
+        .find(|model| model.model == "Bambu Lab A1 mini")
+        .unwrap();
+    assert_eq!(a1.default_bed_type.as_deref(), Some("Textured PEI Plate"));
+    let cover = u1.cover.as_ref().expect("the U1 has a picture");
+    assert!(cover.is_file());
+    assert_eq!(
+        cover.file_name().and_then(|name| name.to_str()),
+        Some("Snapmaker U1_cover.png")
+    );
+    // A preset for each nozzle, each naming the model and its nozzle.
+    let preset = |variant: &str| {
+        u1.machines
+            .iter()
+            .find(|preset| preset.variant == variant)
+            .map(|preset| preset.name.as_str())
+    };
+    assert_eq!(preset("0.4"), Some("Snapmaker U1 (0.4 nozzle)"));
+    assert_eq!(preset("0.2"), Some("Snapmaker U1 (0.2 nozzle)"));
+    for variant in &u1.variants {
+        assert!(
+            preset(variant).is_some(),
+            "no preset for a {variant} nozzle"
+        );
+    }
+    // The sizes are those of the preset for a 0.4 nozzle: four toolheads.
+    let bed = u1.bed.expect("the U1's bed is given");
+    assert!(
+        (bed[0] - 270.0).abs() < 2.0 && (bed[1] - 270.0).abs() < 2.0,
+        "{bed:?}"
+    );
+    assert!(u1.height.is_some_and(|height| (height - 270.0).abs() < 2.0));
+    assert_eq!(u1.nozzles, Some(4));
+
+    // Every model of every vendor is listed, each preset under one model;
+    // a model with a preset has its sizes read from one of them.
+    let mut count = 0;
+    for vendor in library.vendors().unwrap() {
+        for model in library.models(&vendor).unwrap() {
+            count += 1;
+            assert_eq!(model.vendor, vendor);
+            assert!(!model.name.is_empty());
+            if !model.machines.is_empty() {
+                assert!(model.nozzles.is_some(), "{vendor} {}", model.model);
+            }
+        }
+    }
+    assert!(count > 300, "only {count} models were found");
+}
+
+/// A vendor that is not there is an error; one without printers lists
+/// none; a model whose file is missing is left out and the rest stay.
+#[test]
+fn printer_models_of_a_folder_made_for_the_test() {
+    let dir = tempfile::tempdir().unwrap();
+    let library = Library::new(dir.path());
+    assert!(library.models("Nobody").is_err());
+
+    std::fs::write(dir.path().join("Empty.json"), r#"{ "name": "Empty" }"#).unwrap();
+    assert_eq!(library.models("Empty").unwrap(), []);
+
+    let vendor = dir.path().join("Maker");
+    std::fs::create_dir_all(vendor.join("machine")).unwrap();
+    std::fs::write(
+        dir.path().join("Maker.json"),
+        r#"{
+            "name": "Maker",
+            "machine_model_list": [
+                { "name": "Maker One", "sub_path": "machine/Maker One.json" },
+                { "name": "Maker Gone", "sub_path": "machine/Maker Gone.json" }
+            ],
+            "machine_list": [
+                { "name": "common", "sub_path": "machine/common.json" },
+                { "name": "Maker One 0.6 nozzle", "sub_path": "machine/one06.json" },
+                { "name": "Maker One HF 0.4 nozzle", "sub_path": "machine/one04hf.json" },
+                { "name": "Maker One 0.4 nozzle", "sub_path": "machine/one04.json" }
+            ]
+        }"#,
+    )
+    .unwrap();
+    let write =
+        |name: &str, text: &str| std::fs::write(vendor.join("machine").join(name), text).unwrap();
+    write(
+        "Maker One.json",
+        r#"{ "type": "machine_model", "name": "Maker One", "nozzle_diameter": "0.6; 0.4", "default_materials": "PLA A;PLA B;" }"#,
+    );
+    write(
+        "common.json",
+        r#"{ "type": "machine", "name": "common", "instantiation": "false", "printer_model": "Maker One",
+             "printable_area": ["0x0", "200x0", "200x180", "0x180"], "printable_height": "150" }"#,
+    );
+    write(
+        "one06.json",
+        r#"{ "type": "machine", "name": "Maker One 0.6 nozzle", "inherits": "common", "instantiation": "true",
+             "printer_variant": "0.6", "nozzle_diameter": ["0.6"], "printable_height": "140" }"#,
+    );
+    write(
+        "one04hf.json",
+        r#"{ "type": "machine", "name": "Maker One HF 0.4 nozzle", "inherits": "common", "instantiation": "true",
+             "printer_variant": "0.4", "nozzle_diameter": ["0.4", "0.4"] }"#,
+    );
+    write(
+        "one04.json",
+        r#"{ "type": "machine", "name": "Maker One 0.4 nozzle", "inherits": "common", "instantiation": "true",
+             "printer_variant": "0.4", "nozzle_diameter": ["0.4"] }"#,
+    );
+    let models = library.models("Maker").unwrap();
+    assert_eq!(models.len(), 1, "the model without a file is left out");
+    let one = &models[0];
+    assert_eq!(one.variants, ["0.6", "0.4"]);
+    assert_eq!(one.default_materials, ["PLA A", "PLA B"]);
+    assert_eq!(one.cover, None);
+    assert_eq!(one.model_id, None);
+    // The presets that can be picked, in the index's order; the one that
+    // is only inherited from is not among them.
+    let names: Vec<&str> = one
+        .machines
+        .iter()
+        .map(|preset| preset.name.as_str())
+        .collect();
+    assert_eq!(
+        names,
+        [
+            "Maker One 0.6 nozzle",
+            "Maker One HF 0.4 nozzle",
+            "Maker One 0.4 nozzle"
+        ]
+    );
+    // Sizes from the 0.4 preset with the shortest name, not the first.
+    assert_eq!(one.bed, Some([200.0, 180.0]));
+    assert_eq!(one.height, Some(150.0));
+    assert_eq!(one.nozzles, Some(1));
+}
+
+/// What a filament preset is made of is known to its vendor's shelf.
+#[test]
+fn a_shelf_knows_what_a_filament_is_made_of() {
+    let library = Library::new(reference("resources/profiles"));
+    let shelf = library.shelf("Snapmaker").unwrap();
+    assert_eq!(shelf.filament_type("Snapmaker PLA @U1"), Some("PLA"));
+    assert_eq!(shelf.filament_type("no such filament"), None);
+}
+
+#[test]
+fn a_project_is_a_scene_of_objects_on_their_plates() {
+    use edge_engine::Mark;
+    let opened = edge_engine::open(&reference("tests/mcbrim_test.3mf"), None).unwrap();
+    let scene = opened.scene();
+    let plates: Vec<u32> = scene.plates.iter().map(|plate| plate.id).collect();
+    assert_eq!(plates, [1, 2, 3]);
+    assert!(!scene.bare && !scene.objects.is_empty());
+    // Every copy stands on a plate of the file, and what it holds is what
+    // slicing takes from that plate: the same triangles.
+    for (index, plate) in opened.plate_list().iter().enumerate() {
+        let on_it: Vec<_> = scene
+            .placings
+            .iter()
+            .filter(|placing| placing.plate == Some(index) && placing.printable)
+            .collect();
+        assert_eq!(on_it.len(), plate.objects.len(), "plate {}", plate.id);
+        let printed: usize = on_it
+            .iter()
+            .map(|placing| {
+                scene.objects[placing.object]
+                    .marks
+                    .iter()
+                    .filter(|mark| matches!(mark, Mark::Filament(_)))
+                    .count()
+            })
+            .sum();
+        let loaded = edge_engine::open(&reference("tests/mcbrim_test.3mf"), Some(plate.id))
+            .unwrap()
+            .place()
+            .unwrap();
+        let sliced: usize = loaded.objects.iter().map(|mesh| mesh.triangles.len()).sum();
+        // Paint cuts triangles up, so a painted object has more to show.
+        assert!(printed >= sliced && sliced > 0, "plate {}", plate.id);
+        // Measured from its own plate: where slicing has it.
+        let (low, high) = loaded.bounds;
+        for placing in on_it {
+            let object = &scene.objects[placing.object];
+            let (min, max) = object.bounds.unwrap();
+            let centre = placing.transform.apply(std::array::from_fn(|axis| {
+                f64::from(min[axis] + max[axis]) / 2.0
+            }));
+            for axis in 0..2 {
+                assert!(
+                    centre[axis] >= f64::from(low[axis]) - 1e-3
+                        && centre[axis] <= f64::from(high[axis]) + 1e-3,
+                    "plate {}: {centre:?} outside {low:?}..{high:?}",
+                    plate.id
+                );
+            }
+        }
+    }
+    for object in &scene.objects {
+        assert_eq!(object.marks.len(), object.triangles.len());
+        let count = object.vertices.len() as u32;
+        assert!(object.triangles.iter().flatten().all(|at| *at < count));
+    }
+    // A bare model is one object on no plate.
+    let bare = edge_engine::open(
+        &reference("resources/handy_models/OrcaToleranceTest.stl"),
+        None,
+    )
+    .unwrap()
+    .scene();
+    assert!(bare.bare && bare.plates.is_empty());
+    assert_eq!((bare.objects.len(), bare.placings.len()), (1, 1));
+}
+
+#[test]
+fn the_gcode_reads_back_as_the_moves_of_the_print() {
+    use edge_engine::{Feature, MoveKind};
+    let sliced = edge_engine::slice(
+        job("tests/data/support_corpus/twopart_groups.3mf"),
+        &Unwatched,
+    )
+    .unwrap();
+    let gcode = sliced.gcode("2026-11-10 at 00:00:00").unwrap();
+    let path = edge_engine::read_toolpath(&gcode.text);
+    // A layer for each layer sliced, each at its height.
+    assert_eq!(path.layers.len(), sliced.layers.len());
+    for (index, layer) in path.layers.iter().enumerate() {
+        assert!((f64::from(layer.z) - sliced.top_of(index)).abs() < 1e-3);
+        assert!((f64::from(layer.height) - sliced.height_of(index)).abs() < 1e-3);
+        assert_eq!(path.moves[layer.first].layer as usize, index);
+    }
+    assert_eq!(path.layers[0].first, 0);
+    assert!(
+        path.moves
+            .windows(2)
+            .all(|pair| pair[0].layer <= pair[1].layer)
+    );
+
+    // The filament laid is the filament the writer counted, bar what the
+    // start G-code purges, which the reader shows as the file's own.
+    let mut laid = 0.0;
+    let mut features = std::collections::BTreeSet::new();
+    for pair in path.moves.windows(2) {
+        let (from, to) = (pair[0], pair[1]);
+        if to.kind != MoveKind::Extrude {
+            continue;
+        }
+        features.insert(to.feature);
+        assert!(to.width > 0.05 && to.height > 0.05, "{to:?}");
+        if to.feature != Feature::Custom {
+            let length = (0..2)
+                .map(|axis| f64::from(to.to[axis] - from.to[axis]).powi(2))
+                .sum::<f64>()
+                .sqrt();
+            // The reference's cross-section of a line: a rectangle with
+            // rounded ends.
+            let (w, h) = (f64::from(to.width), f64::from(to.height));
+            laid += length * (h * (w - h) + std::f64::consts::FRAC_PI_4 * h * h);
+        }
+    }
+    let counted = gcode.summary.filament_mm3;
+    assert!(
+        (laid - counted).abs() < 0.05 * counted,
+        "{laid} mm3 drawn, {counted} mm3 fed"
+    );
+    assert!(features.contains(&Feature::OuterWall) && features.contains(&Feature::Custom));
+    // What moves between lines is there too, and a seam for an outer
+    // wall that closes.
+    let count = |kind| path.moves.iter().filter(|step| step.kind == kind).count();
+    // The last retraction of a print is not taken back.
+    assert!(count(MoveKind::Retract).abs_diff(count(MoveKind::Unretract)) <= 1);
+    assert!(count(MoveKind::Retract) >= gcode.summary.retractions);
+    assert!(count(MoveKind::Travel) > 60 && count(MoveKind::Wipe) > 60);
+    // (One that starts as an overhang wall is not told to be closed, by
+    // the reference either.)
+    let seams = count(MoveKind::Seam);
+    assert!(
+        seams + 3 >= sliced.layers.len() && seams <= 2 * sliced.layers.len(),
+        "{seams} seams"
+    );
+    // The same file reads the same.
+    assert_eq!(path, edge_engine::read_toolpath(&gcode.text));
+
+    // Without G-code, the lines alone.
+    let lines = sliced.toolpath_of_lines();
+    assert_eq!(lines.layers.len(), sliced.layers.len());
+    let strokes: usize = (0..sliced.layers.len())
+        .map(|index| sliced.strokes(index).len())
+        .sum();
+    assert_eq!(
+        lines
+            .moves
+            .iter()
+            .filter(|step| step.kind == MoveKind::Start)
+            .count(),
+        strokes
+    );
+    assert!(
+        lines
+            .moves
+            .iter()
+            .all(|step| matches!(step.kind, MoveKind::Start | MoveKind::Extrude))
+    );
+}

@@ -21,6 +21,20 @@ use crate::api::Session;
 const PAGE: &str = include_str!("../ui/index.html");
 const SCRIPT: &str = include_str!("../ui/app.js");
 const STYLE: &str = include_str!("../ui/style.css");
+const PRINTERS_SCRIPT: &str = include_str!("../ui/printers.js");
+const PRINTERS_STYLE: &str = include_str!("../ui/printers.css");
+/// The 3D views' scripts, under `ui/gl`.
+const GL: [(&str, &str); 9] = [
+    ("math.js", include_str!("../ui/gl/math.js")),
+    ("camera.js", include_str!("../ui/gl/camera.js")),
+    ("shaders.js", include_str!("../ui/gl/shaders.js")),
+    ("renderer.js", include_str!("../ui/gl/renderer.js")),
+    ("scene.js", include_str!("../ui/gl/scene.js")),
+    ("toolpath.js", include_str!("../ui/gl/toolpath.js")),
+    ("controls.js", include_str!("../ui/gl/controls.js")),
+    ("stage.js", include_str!("../ui/gl/stage.js")),
+    ("gl.css", include_str!("../ui/gl/gl.css")),
+];
 /// A file of the page. A debug build reads it from the source folder each
 /// time, so a change to the page shows on reload; any other build serves
 /// what it was built with.
@@ -51,12 +65,33 @@ fn token() -> String {
 }
 
 fn respond(request: Request, status: u16, kind: &str, body: String) {
+    respond_bytes(request, status, kind, body.into_bytes());
+}
+
+fn respond_bytes(request: Request, status: u16, kind: &str, body: Vec<u8>) {
     let header = Header::from_bytes("Content-Type", kind).expect("a plain header");
     let _ = request.respond(
-        Response::from_string(body)
+        Response::from_data(body)
             .with_status_code(status)
             .with_header(header),
     );
+}
+
+/// The arguments of a call, from the body of its request; else what to
+/// answer instead.
+fn arguments(request: &mut Request, token: &str) -> Result<Value, (u16, &'static str)> {
+    if header(request, "X-Edge-Token") != Some(token) {
+        return Err((403, "this call is not from the page"));
+    }
+    let mut body = String::new();
+    let read = request
+        .as_reader()
+        .take(LONGEST_CALL + 1)
+        .read_to_string(&mut body);
+    if read.is_err() || body.len() as u64 > LONGEST_CALL {
+        return Err((400, "the call could not be read"));
+    }
+    serde_json::from_str(&body).map_err(|_| (400, "the call is not JSON"))
 }
 
 fn header<'a>(request: &'a Request, name: &'static str) -> Option<&'a str> {
@@ -99,33 +134,52 @@ fn handle(mut request: Request, session: &Arc<Session>, token: &str, port: u16) 
                 asset("style.css", STYLE),
             );
         }
-        (Method::Post, path) if path.starts_with("/api/") => {
-            if header(&request, "X-Edge-Token") != Some(token) {
-                return respond(
-                    request,
-                    403,
-                    "text/plain",
-                    "this call is not from the page".into(),
-                );
-            }
-            let mut body = String::new();
-            let read = request
-                .as_reader()
-                .take(LONGEST_CALL + 1)
-                .read_to_string(&mut body);
-            if read.is_err() || body.len() as u64 > LONGEST_CALL {
-                return respond(
-                    request,
-                    400,
-                    "text/plain",
-                    "the call could not be read".into(),
-                );
-            }
-            let args: Value = match serde_json::from_str(&body) {
-                Ok(args) => args,
-                Err(_) => {
-                    return respond(request, 400, "text/plain", "the call is not JSON".into());
+        (Method::Get, "/printers.js") => {
+            respond(
+                request,
+                200,
+                "text/javascript; charset=utf-8",
+                asset("printers.js", PRINTERS_SCRIPT),
+            );
+        }
+        (Method::Get, "/printers.css") => {
+            respond(
+                request,
+                200,
+                "text/css; charset=utf-8",
+                asset("printers.css", PRINTERS_STYLE),
+            );
+        }
+        (Method::Get, path) if path.starts_with("/gl/") => {
+            let name = &path["/gl/".len()..];
+            match GL.iter().find(|(known, _)| *known == name) {
+                Some((name, built_in)) => {
+                    let kind = if name.ends_with(".css") {
+                        "text/css; charset=utf-8"
+                    } else {
+                        "text/javascript; charset=utf-8"
+                    };
+                    respond(request, 200, kind, asset(&format!("gl/{name}"), built_in));
                 }
+                None => respond(request, 404, "text/plain", "nothing here".into()),
+            }
+        }
+        // A call answered in bytes: the bytes themselves, or 422 with the
+        // sentence that says why not.
+        (Method::Post, path) if path.starts_with("/bytes/") => {
+            let args = match arguments(&mut request, token) {
+                Ok(args) => args,
+                Err((status, why)) => return respond(request, status, "text/plain", why.into()),
+            };
+            match session.call_bytes(&path["/bytes/".len()..], &args) {
+                Ok(bytes) => respond_bytes(request, 200, "application/octet-stream", bytes),
+                Err(error) => respond(request, 422, "text/plain; charset=utf-8", error),
+            }
+        }
+        (Method::Post, path) if path.starts_with("/api/") => {
+            let args = match arguments(&mut request, token) {
+                Ok(args) => args,
+                Err((status, why)) => return respond(request, status, "text/plain", why.into()),
             };
             let answer = match session.call(&path["/api/".len()..], &args) {
                 Ok(value) => json!({ "ok": value }),
