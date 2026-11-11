@@ -37,7 +37,7 @@ replaces it until output matches on the printers we care about.
 | `tools/make_settings_pages.py` | Reads the reference's process, filament and printer pages and option definitions from its source and writes the data the desktop app draws its settings pages from; run again when the pin moves, after `make_defaults.py` |
 | `tools/make_fixture.py` | Writes small test 3MFs (parts that need supports or a brim, a plain cube, two blocks in two filaments, a comb with thin teeth on the bed, three tiers with a top surface on each, bars over a base for small bridges over infill, a slab with round holes for the hole options, a slab with holes that narrow on the way up for bridging them, a slab with pockets underneath, three round ones for arc fitting: a post, a post with a hole, a slab with a wide curve and tight ones, a post that widens as it rises for scarf seams, two of two parts for seams where parts meet: a round post cut in two, and a block with a post pushed half into it, and two with seams painted on: a post with a strip painted to have them, and a cube with two sides painted to keep them off) to compare with the reference on |
 | `tools/make_app.sh` | Builds the desktop app and wraps it in a macOS `.app` that opens with a double click (macOS only) |
-| `tools/make_project.py` | Writes one of those parts as a project whose settings are named presets, with as many filaments as are named: how the test prints for a printer are made |
+| `tools/make_project.py` | Writes one of those parts as a project whose settings are named presets, with as many filaments as are named, each list holding the value each filament reads at standard flow: how the test prints for a printer are made |
 | `reference/EdgeSlicer` | Pinned submodule of the C++ slicer: profiles, test models, behaviour to match. Read-only here |
 | `vendor/cpp_map` | A copy of the `cpp_map` crate (MIT or Apache-2.0), the skip list under the Voronoi library, changed so that a list is the same shape on every run; patched in for the published crate by both workspaces. Its README says what was changed. Not a member of the workspace, and kept in its own formatting |
 | `apps/desktop` | The desktop app (Tauri): several projects open at once, each prepared, sliced, looked through layer by layer and exported, in the C++ application's tabs. A workspace of its own |
@@ -1170,7 +1170,21 @@ Known gaps: painted supports and seams, per-object setting overrides, typed sett
   - Filament presets are named one for each filament (`--filament`
     given again for filament 2, and so on). One alone is used for every
     filament, and a filament past the last named takes the last; a note
-    says so either way. A model printed in a
+    says so either way. Many filament presets hold two values of a
+    setting, one for a standard nozzle and one for a high-flow nozzle
+    (`filament_flow_support`, or a Bambu preset's
+    `filament_extruder_variant`); each filament takes its own preset's
+    value for the flow it prints at (`filament_volume_type`, standard
+    unless set), and every per-filament list comes out one entry per
+    filament, as the reference's command line writes it given presets by
+    name (`edge_config::variants`, whose doc says what the reference
+    does). A project the reference's application saved with those
+    values side by side (`filament_flow_step_size`) is read the same way,
+    and a printer laid out per extruder and nozzle variant (Bambu's H2D)
+    has each extruder read its own nozzle's retraction values. A
+    filament set to high flow whose preset has no high-flow values, and
+    a process preset's own high-flow speeds, which are not followed, are
+    noted. A model printed in a
     filament its settings say nothing of gets no G-code and a sentence
     saying which. Printer scripts are given a bed temperature for every
     filament.

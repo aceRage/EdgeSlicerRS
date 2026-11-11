@@ -3,6 +3,7 @@
 
 mod defaults;
 mod settings;
+pub mod variants;
 mod vendor;
 
 use std::{io, path::PathBuf};
