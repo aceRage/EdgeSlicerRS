@@ -21,7 +21,7 @@ fixed-width face for values.
 | `style.css`, part 3 | The components, each written once |
 | `style.css`, part 4 | The page's parts, in the order they stand on it |
 | `printers.css` | The printer card and Printer Selection: only what is theirs alone |
-| `process.css` | The process pages (`process.js`): the switch and the box of text, which came with them, the option row, the pages' tabs, the search's list; and the sidebar's width |
+| `settings.css` | The pages of settings (`settings.js`; the process's, a filament's, the printer's): the switch and the box of text, which came with them, the option row, the pages' tabs, the search's list, the panel a filament's or the printer's pages open in; and the sidebar's width |
 | `gl/gl.css` | What lies over the 3D views that `gl/` draws: the navigator, the sliders, the position window, the labels |
 | `edit.css` | Prepare as an editor: where its toolbar and the number fields stand over the stage, the object list |
 | `app.js`, "controls" | `listbox` (the page's own list for a `<select>`) and the tooltips |
@@ -188,7 +188,8 @@ the C++ has it. A tick box stays a tick box wherever a setting is on or off.
 
 ### Option rows
 
-One setting of many, in a page of them (`process.js` `processRow`):
+One setting of many, in a page of them (`settings.js` `settingsRow`; the
+same row on every kind's pages):
 
 ```html
 <div class="opt [set] [off] [unread] [noted] [wide]" data-key="…">
@@ -211,8 +212,16 @@ One setting of many, in a page of them (`process.js` `processRow`):
   Quiet on purpose; the sentence is in the label's tooltip, where the keys
   reach it too.
 - `.wide`: a box of text takes the row under its label.
+- `.fixed`: shown, not offered (set in a dialog of the reference's own, or
+  not a setting to change here): as `.off`, the reason in the label's
+  tooltip.
+- A filament's override (`input.opt-override` at the head of `.opt-head`):
+  a tick box before the label turns the filament's own value on; off, the
+  field is disabled and shows the value in force in its place.
 - Rows under a `.process-page > h3` group label; several options of one
-  C++ line under an `.opt-line-label`, indented.
+  C++ line under an `.opt-line-label`, indented. An extruder's own option
+  is named `key#n` in `data-key`; field ids are `po-` (process), `fo-`
+  (filament), `mo-` (printer) and the name.
 
 ### Tabs
 
@@ -224,19 +233,40 @@ One setting of many, in a page of them (`process.js` `processRow`):
 
 Text (with an icon, if it has one) on a hairline, the open one with 2 px
 of the accent under it and its text in bold. One look for the main tabs
-(`#tabs`, 40 px, with the C++ tab icons) and the process pages' tabs
-(`#process-tabs`, 28 px and smaller type; a `span.process-count` in a tab is
-how many of its settings are set by hand).
+(`#tabs`, 40 px, with the C++ tab icons) and the tabs of the pages of
+settings (`#process-tabs` in the sidebar, `#preset-tabs` in the panel:
+`button.process-tab`, 28 px and smaller type; a `span.process-count` in a
+tab is how many of its settings are set by hand).
 
 `.scrolls` keeps the tabs on one line: where they do not fit they are
 scrolled sideways, by a trackpad, by the wheel (`app.js` turns it), by the
 keys (Left, Right, Home, End, which give the next tab the keys), and the
 open tab is always scrolled into sight. The tab cut at the edge is what
-says there are more. The process pages' tabs are this: six tabs do not fit
-the sidebar's 300 px, and two rows of tabs read as two rows of choices, the
-lower of which moves when the upper is picked. An overflow menu was the
-other way; it would hide pages behind a click and need its own keys, and
-the row is short enough that scrolling it is little to ask.
+says there are more. Every row of pages' tabs is this, the process's, a
+filament's and the printer's alike: six tabs do not fit the sidebar's
+300 px, and two rows of tabs read as two rows of choices, the lower of
+which moves when the upper is picked. An overflow menu was the other way;
+it would hide pages behind a click and need its own keys, and the row is
+short enough that scrolling it is little to ask.
+
+### The panel: `#preset-panel`
+
+A filament's or the printer's pages take the place of the sidebar's
+sections (`#side.presets-open` hides `#side-scroll`) and the sidebar widens
+to `clamp(340px, 30vw, 520px)` while they are open (`#plater.presets-open`);
+the status line and the profiles folder stay under them. Its head
+(`#preset-head`): the way back (`button.icon.tool`, a chevron, "Back to the
+sidebar [Esc]"), the title in `--size-title` with the preset's name under
+it cut with an ellipsis, the reset-all arrow and "Advance". For a filament,
+`#preset-filaments` holds a numbered swatch for each filament
+(`aria-pressed` on the one shown, ringed in the accent). Then the search,
+the tabs, and the page, which scrolls alone. Escape anywhere in it but in a
+list or a box of text goes back, and the keys go back to what opened it.
+
+Opened by an edit icon (`button.icon.tool`, a pencil, "Click to edit
+preset"): in the last column of a filament's row, and at the right of the
+printer card's head (`.printer-head`), outside the part that opens the list
+of printers. It is `--text-2` until pointed at.
 
 ### Lists: `listbox(select, options)`
 
@@ -514,5 +544,6 @@ after its arguments it is light whatever the system is, which checks light
 without touching the system's setting.
 
 The sidebar is 300 px wide in a narrow window and up to 380 px in a wide one
-(`clamp(300px, 24vw, 380px)`, in `process.css`): look at a form in it at
-both ends.
+(`clamp(300px, 24vw, 380px)`, in `settings.css`), 340 to 520 px while a
+filament's or the printer's pages are open: look at a form in it at both
+ends, and at a box of G-code at 900 px, the window's minimum.

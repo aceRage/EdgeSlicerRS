@@ -263,7 +263,7 @@ fn a_value_set_is_the_projects_own_over_the_preset() {
         assert_eq!(
             speeds.len(),
             basis
-                .under()
+                .under(Book::Process)
                 .unwrap()
                 .texts("outer_wall_speed")
                 .unwrap()
@@ -596,7 +596,7 @@ fn a_project_with_nothing_chosen_has_the_references_defaults() {
 
 #[test]
 fn values_are_shown_and_held_in_the_shape_the_settings_have() {
-    let pages = pages();
+    let pages = pages(Book::Process);
     let option = |key: &str| &pages.options[key];
     let many =
         |items: &[&str]| Setting::Many(items.iter().map(|item| (*item).to_owned()).collect());

@@ -42,15 +42,15 @@ impl Followed {
 }
 
 /// The block that is sliced to find out: 12 mm square and 2.4 mm high, in
-/// one filament. Large enough for walls, fill, a top and a bottom, small
-/// enough to take a few milliseconds.
-fn block(project: Option<&Settings>) -> Loaded {
+/// one filament (`filament`, from 1). Large enough for walls, fill, a top
+/// and a bottom, small enough to take a few milliseconds.
+fn block(project: Option<&Settings>, filament: usize) -> Loaded {
     let (min, max) = ([0.0; 3], [12.0, 12.0, 2.4]);
     Loaded {
         bodies: vec![Body {
             solid: Mesh::from_triangle_soup(primitives::cuboid(min, max)),
             negative: None,
-            filament: 1,
+            filament,
         }],
         painted: Vec::new(),
         settings: project.cloned(),
@@ -69,10 +69,23 @@ fn block(project: Option<&Settings>) -> Loaded {
 /// the presets chosen, what is set over them, and a project's own
 /// settings under both, exactly as [`crate::prepare`] takes them.
 pub fn followed(chosen: &Chosen, overrides: &Overrides, project: Option<&Settings>) -> Followed {
+    followed_in(chosen, overrides, project, 1)
+}
+
+/// [`followed`], with the block printed in filament `filament` (from 1):
+/// what is set for that filament alone is then what the slice uses, and
+/// a value of it the engine refuses is found.
+pub fn followed_in(
+    chosen: &Chosen,
+    overrides: &Overrides,
+    project: Option<&Settings>,
+    filament: usize,
+) -> Followed {
     let reads = Reads::default();
     let mut notes = Vec::new();
     let sliced = (|| -> Result<(), Failure> {
-        let mut job = crate::prepare_noted(block(project), chosen, overrides, &reads)?;
+        let block = block(project, filament.max(1));
+        let mut job = crate::prepare_noted(block, chosen, overrides, &reads)?;
         // The block is put in the middle of the bed, as a bare model is:
         // a project's settings say nothing of where this one would be.
         job.is_project = false;
@@ -97,7 +110,7 @@ pub fn settled(
     overrides: &Overrides,
     project: Option<&Settings>,
 ) -> Result<Settings, Failure> {
-    crate::prepare(block(project), chosen, overrides).map(|job| job.settings)
+    crate::prepare(block(project, 1), chosen, overrides).map(|job| job.settings)
 }
 
 #[cfg(test)]
@@ -192,7 +205,7 @@ mod tests {
             settings: Settings::from_json(r#"{"layer_height": "0.3", "wall_loops": "4"}"#).unwrap(),
             ..Overrides::default()
         };
-        let job = crate::prepare(block(None), &chosen, &overrides).unwrap();
+        let job = crate::prepare(block(None, 1), &chosen, &overrides).unwrap();
         assert_eq!(job.layer_height, (0.3, "set by hand"));
         assert_eq!(job.settings.text("layer_height"), Some("0.3"));
         assert_eq!(job.settings.text("wall_loops"), Some("4"));
@@ -201,7 +214,7 @@ mod tests {
             layer_height: Some(0.1),
             ..overrides.clone()
         };
-        let job = crate::prepare(block(None), &chosen, &outright).unwrap();
+        let job = crate::prepare(block(None, 1), &chosen, &outright).unwrap();
         assert_eq!(job.layer_height, (0.1, "command line"));
         let answer = followed(&chosen, &overrides, None);
         assert_eq!(answer.refused, None);
