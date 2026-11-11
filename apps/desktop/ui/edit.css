@@ -1,0 +1,135 @@
+/* Prepare as an editor: the toolbar and the number fields over the 3D
+   stage (scene-edit.js) and the object list of the sidebar (objects.js).
+   Only what is theirs alone; everything else is style.css's, and every
+   colour and size is a token of its part 1. STYLE.md has the toolbar and
+   the tree as components. */
+
+/* ---- a toolbar: icon tools in a row on something that floats ---- */
+
+.toolbar {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  padding: 3px;
+  border: 1px solid var(--line-2);
+  border-radius: var(--radius-l);
+  background: var(--surface-float);
+  box-shadow: var(--shadow-float);
+  color: var(--text-1);
+}
+.toolbar button.icon.tool { width: var(--control-m); height: var(--control-m); border-radius: var(--radius-m); color: var(--text-2); }
+.toolbar button.icon.tool svg { width: 16px; height: 16px; }
+.toolbar button.icon.tool:focus-visible { outline: 2px solid var(--focus); outline-offset: -2px; }
+/* The tool that is open. */
+.toolbar button.icon.tool[aria-pressed="true"] { color: var(--accent); background: var(--accent-soft); }
+.toolbar-gap { align-self: stretch; width: 1px; margin: 3px 3px; background: var(--line-2); }
+
+#edit-bar { position: absolute; top: var(--space-3); left: 50%; transform: translateX(-50%); z-index: var(--z-overlay); }
+
+/* The stage's older overlays give every button and list on it the stage's
+   own dark look (style.css, "#stage button"); what is laid over it here is
+   on the tokens, in light as in dark. */
+#stage .toolbar button.icon.tool, #stage .edit-panel button.icon.tool { border: 0; background: none; color: var(--text-2); }
+#stage .toolbar button.icon.tool:hover:not(:disabled), #stage .edit-panel button.icon.tool:hover:not(:disabled) { color: var(--text-1); background: var(--fill-hover); }
+#stage .toolbar button.icon.tool[aria-pressed="true"] { color: var(--accent); background: var(--accent-soft); }
+#stage .edit-panel select { border-color: var(--line-2); background-color: var(--surface-well); color: var(--text-1); }
+#stage .edit-panel .quiet { color: var(--text-3); }
+
+/* ---- the number fields of the tool that is open ---- */
+
+.edit-panel {
+  position: absolute;
+  top: 56px;
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: var(--z-overlay);
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  max-width: calc(100% - 24px);
+  padding: var(--space-2) var(--space-3) var(--space-3);
+  border: 1px solid var(--line-2);
+  border-radius: var(--radius-l);
+  background: var(--surface-float);
+  box-shadow: var(--shadow-float);
+  color: var(--text-1);
+  font-size: var(--size-label);
+}
+.edit-panel h3 { margin: 0; }
+.edit-grid { display: grid; grid-template-columns: minmax(78px, auto) repeat(3, 86px) var(--control-s); align-items: center; gap: var(--space-1) var(--space-2); }
+.edit-grid > b { text-align: center; font: 700 var(--size-small) var(--font-mono); }
+.edit-grid > select { height: var(--control-s); min-width: 0; font-size: var(--size-small); }
+.edit-grid .unit { height: var(--control-s); min-width: 0; }
+.edit-grid .unit input { width: 100%; min-width: 0; font-size: var(--size-small); }
+.edit-grid .unit:has(input:disabled) { color: var(--text-off); background: transparent; }
+.edit-label { color: var(--text-2); }
+.edit-check { display: flex; flex-direction: row; align-items: center; gap: var(--space-2); color: var(--text-2); }
+/* The axes' own colours, as the reference letters them (ColorRGB::X, Y, Z). */
+.edit-panel .gl-x { color: rgb(255, 60, 91); }
+.edit-panel .gl-y { color: rgb(100, 200, 24); }
+.edit-panel .gl-z { color: rgb(47, 136, 233); }
+
+/* What stops the plate from being printed, said over the stage. */
+.edit-warning {
+  position: absolute;
+  left: 50%;
+  bottom: 52px;
+  transform: translateX(-50%);
+  z-index: var(--z-overlay);
+  max-width: min(560px, calc(100% - 24px));
+  margin: 0;
+  padding: var(--space-2) var(--space-3);
+  border: 1px solid var(--danger);
+  border-radius: var(--radius-l);
+  background: var(--surface-float);
+  box-shadow: var(--shadow-float);
+  color: var(--text-1);
+  font-size: var(--size-label);
+  white-space: pre-line;
+}
+
+#view3d.on-handle { cursor: pointer; }
+
+/* ---- the object list: a tree of plates and what stands on them ---- */
+
+.tree { display: flex; flex-direction: column; border: 1px solid var(--line-2); border-radius: var(--radius-l); background: var(--surface-raised); overflow: hidden; }
+.tree[hidden] { display: none; }
+.obj-head, .obj-row { display: grid; grid-template-columns: minmax(0, 1fr) var(--control-s) 54px; align-items: center; gap: var(--space-1); }
+.obj-head {
+  padding: 5px var(--space-1) 5px 10px;
+  border-bottom: 1px solid var(--line-1);
+  color: var(--text-3);
+  font-size: var(--size-caps);
+  font-weight: 600;
+  letter-spacing: var(--caps-spacing);
+  text-transform: uppercase;
+}
+.obj-head > :last-child { text-align: center; }
+.obj-plate { display: flex; align-items: center; gap: var(--space-1); min-height: var(--control-m); padding: 0 var(--space-1) 0 2px; border-top: 1px solid var(--line-1); }
+.obj-head + .obj-plate { border-top: 0; }
+.obj-plate-name { flex: 1; min-width: 0; padding: 4px var(--space-2); border: 0; background: none; color: var(--text-2); font-size: var(--size-small); font-weight: 600; text-align: left; }
+.obj-plate-name:disabled { opacity: 1; color: var(--text-3); }
+.obj-plate.current .obj-plate-name { color: var(--accent); }
+.obj-empty { margin: 0; padding: 2px 10px 6px; }
+.obj-row { min-height: var(--control-m); padding: 0 var(--space-1) 0 2px; }
+.obj-row.child .obj-name { padding-left: 22px; color: var(--text-2); }
+.obj-row[aria-selected="true"] { background: var(--accent-soft); box-shadow: inset 2px 0 0 var(--accent); }
+.obj-row.off .obj-name { color: var(--text-off); }
+.obj-name { min-width: 0; padding: 4px var(--space-2); border: 0; background: none; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; text-align: left; }
+.obj-name:hover:not(:disabled), .obj-plate-name:hover:not(:disabled) { background: var(--fill-hover); }
+.obj-name:focus-visible, .obj-plate-name:focus-visible { outline: 2px solid var(--focus); outline-offset: -2px; }
+input.obj-rename { height: var(--control-s); min-width: 0; margin: 0 2px; }
+.obj-print { font-size: 9px; }
+.obj-print[aria-pressed="false"] { color: var(--text-off); }
+.obj-fila { display: flex; align-items: center; min-width: 0; }
+.obj-fila .lb { flex: 1; }
+.obj-fila .lb-trigger { height: var(--control-s); padding-left: var(--space-1); font: var(--size-small) var(--font-mono); }
+.obj-fila .swatch, .lb-option .swatch { flex: none; width: 10px; height: 10px; margin-right: 5px; border-radius: var(--radius-s); box-shadow: inset 0 0 0 1px rgba(128, 128, 128, 0.45); }
+
+/* One column: the stage is low, so the fields stand at its foot, clear
+   of what they are about. */
+@media (max-width: 760px) {
+  #edit-bar { top: var(--space-2); }
+  .edit-panel { top: auto; bottom: var(--space-2); }
+  .edit-warning { bottom: auto; top: 48px; }
+}

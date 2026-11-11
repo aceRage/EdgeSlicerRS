@@ -35,6 +35,12 @@ const GL: [(&str, &str); 9] = [
     ("stage.js", include_str!("../ui/gl/stage.js")),
     ("gl.css", include_str!("../ui/gl/gl.css")),
 ];
+/// The files of the tools that change what stands on the plates.
+const EDIT: [(&str, &str); 3] = [
+    ("scene-edit.js", include_str!("../ui/scene-edit.js")),
+    ("objects.js", include_str!("../ui/objects.js")),
+    ("edit.css", include_str!("../ui/edit.css")),
+];
 /// A file of the page. A debug build reads it from the source folder each
 /// time, so a change to the page shows on reload; any other build serves
 /// what it was built with.
@@ -149,6 +155,18 @@ fn handle(mut request: Request, session: &Arc<Session>, token: &str, port: u16) 
                 "text/css; charset=utf-8",
                 asset("printers.css", PRINTERS_STYLE),
             );
+        }
+        (Method::Get, path) if EDIT.iter().any(|(known, _)| path[1..] == **known) => {
+            let (name, built_in) = EDIT
+                .iter()
+                .find(|(known, _)| path[1..] == **known)
+                .expect("one of them is it");
+            let kind = if name.ends_with(".css") {
+                "text/css; charset=utf-8"
+            } else {
+                "text/javascript; charset=utf-8"
+            };
+            respond(request, 200, kind, asset(name, built_in));
         }
         (Method::Get, path) if path.starts_with("/gl/") => {
             let name = &path["/gl/".len()..];
