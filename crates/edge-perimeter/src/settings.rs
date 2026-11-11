@@ -249,17 +249,9 @@ impl WallSettings {
     }
 
     /// What the settings ask of the walls that is not done, each with
-    /// what is done instead.
+    /// what is done instead. Nothing at present.
     pub fn notes(&self) -> Vec<String> {
-        let mut notes = Vec::new();
-        if self.arachne.is_some() && self.only_one_wall_top && self.top_shell_layers > 0 {
-            notes.push(
-                "only_one_wall_top \"1\" with wall_generator \"arachne\": a top surface below \
-                 the last layer keeps all its walls"
-                    .to_owned(),
-            );
-        }
-        notes
+        Vec::new()
     }
 
     /// What the generator needs for layer `index` of `layer_count`, which
@@ -293,13 +285,8 @@ impl WallSettings {
             arachne.is_top_or_bottom_layer = index == 0 || index + 1 == layer_count;
         }
         // Below the last layer a top surface keeps only its outer wall,
-        // where there is a top shell to make one of it. (Not with walls
-        // of changing width yet: see `notes`.)
-        if self.arachne.is_none()
-            && self.only_one_wall_top
-            && self.top_shell_layers > 0
-            && index + 1 < layer_count
-        {
+        // where there is a top shell to make one of it.
+        if self.only_one_wall_top && self.top_shell_layers > 0 && index + 1 < layer_count {
             let infill = self.sparse_infill_line_width.resolve(self.nozzle_diameter);
             let infill = if infill > 0.0 {
                 infill
@@ -585,17 +572,11 @@ mod tests {
                 .is_none()
         );
 
-        // One wall over top surfaces is not done with these walls, and said.
+        // One wall over top surfaces is told to these walls as to the
+        // classic ones.
         let asked = read(r#"{"only_one_wall_top": "1"}"#).unwrap();
-        assert!(asked.notes()[0].starts_with("only_one_wall_top"));
-        assert!(asked.params_at(0.2, 4, 10).unwrap().one_wall_top.is_none());
-        assert!(
-            read(r#"{"only_one_wall_top": "1", "wall_generator": "classic"}"#)
-                .unwrap()
-                .notes()
-                .is_empty()
-        );
-        assert!(read("{}").unwrap().notes().is_empty());
+        assert!(asked.notes().is_empty());
+        assert!(asked.params_at(0.2, 4, 10).unwrap().one_wall_top.is_some());
     }
 
     #[test]

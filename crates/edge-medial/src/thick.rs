@@ -184,6 +184,16 @@ fn same_loop(a: &ThickPolyline, b: &ThickPolyline) -> bool {
     })
 }
 
+/// One line as extrusions end to end, cut wherever its width has drifted
+/// by more than a twentieth of a millimetre, whether or not it comes
+/// round to where it began: what a wall of changing width is laid as.
+pub fn varying_width(line: &ThickPolyline, role: Role, flow: &Flow) -> Vec<ExtrusionPath> {
+    if line.points.len() < 2 {
+        return Vec::new();
+    }
+    open(line, role, flow, scaled(0.05) as f64)
+}
+
 /// Extrusions for a set of centre lines, in the order given. `flow` gives
 /// the layer height and nozzle; each path takes its width from the line.
 pub fn variable_width(lines: &[ThickPolyline], role: Role, flow: &Flow) -> Vec<ExtrusionPath> {

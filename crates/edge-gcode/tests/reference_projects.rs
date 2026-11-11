@@ -193,7 +193,15 @@ fn every_reference_project_exports_well_formed_gcode_that_adds_up() {
                 })
                 .sum::<f64>();
         let expected = planned * print.filament_flow_ratio * print.print_flow_ratio;
-        if (summary.filament_mm3 - expected).abs() > 1e-6 * expected.max(1.0) {
+        // A wall whose width changes is planned here at its average
+        // width and laid in pieces of one width each, cut from wherever
+        // its seam falls, so the two agree less closely.
+        let varying = perimeters
+            .iter()
+            .flat_map(|layer| &layer.loops)
+            .any(|wall| !wall.widths.is_empty());
+        let tolerance = if varying { 1e-4 } else { 1e-6 };
+        if (summary.filament_mm3 - expected).abs() > tolerance * expected.max(1.0) {
             problems.push(format!(
                 "{} mm³ exported of {expected} planned",
                 summary.filament_mm3

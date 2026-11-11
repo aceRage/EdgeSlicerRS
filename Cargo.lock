@@ -328,6 +328,7 @@ dependencies = [
  "edge-extrusion",
  "edge-geom",
  "edge-infill",
+ "edge-medial",
  "edge-perimeter",
  "edge-slice",
  "edge-template",

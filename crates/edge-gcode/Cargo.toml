@@ -9,6 +9,7 @@ publish.workspace = true
 edge-config.workspace = true
 edge-extrusion.workspace = true
 edge-geom.workspace = true
+edge-medial.workspace = true
 edge-template.workspace = true
 edge-time.workspace = true
 thiserror.workspace = true

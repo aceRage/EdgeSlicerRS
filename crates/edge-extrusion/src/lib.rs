@@ -256,7 +256,14 @@ pub struct ExtrusionLoop {
     pub is_hole: bool,
     /// How many walls lie between this one and the surface; 0 is outermost.
     pub depth: usize,
+    /// What the loop is laid with; for a loop whose width changes, at its
+    /// average width.
     pub flow: Flow,
+    /// For a loop whose width changes along it: the width at each point
+    /// of `polygon`, in scaled units, as the wall generator gives it (the
+    /// line that lays it is wider by what its rounded edges leave empty).
+    /// Empty for a loop of one width.
+    pub widths: Vec<Coord>,
 }
 
 impl ExtrusionLoop {
@@ -354,6 +361,7 @@ mod tests {
                 .to_vec(),
         };
         let wall = ExtrusionLoop {
+            widths: Vec::new(),
             polygon: square,
             role: Role::ExternalPerimeter,
             is_hole: false,
