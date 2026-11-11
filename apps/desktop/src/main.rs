@@ -1,5 +1,6 @@
-//! EdgeSlicerRS on the desktop: one window that opens a model, slices it
-//! with the engine, shows its layers and exports G-code.
+//! EdgeSlicerRS on the desktop: one window holding several projects, each
+//! prepared, sliced with the engine, looked through layer by layer and
+//! exported as G-code, in the tabs of the C++ application.
 //!
 //! `edge-desktop model.3mf` opens that model. `edge-desktop --serve [port]`
 //! opens no window and serves the same page to a browser on this machine

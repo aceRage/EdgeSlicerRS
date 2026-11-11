@@ -8,107 +8,206 @@
 <link rel="stylesheet" href="style.css">
 </head>
 <body>
-<aside id="side">
-  <header>
-    <h1>EdgeSlicerRS</h1>
+
+<!-- The project strip: the open projects, at the far left of every tab. -->
+<nav id="strip" aria-label="Open projects">
+  <div id="strip-head">
+    <button id="strip-fold" type="button" class="icon" title="Collapse the project strip" aria-label="Collapse the project strip">«</button>
+    <button id="project-new" type="button" class="icon" title="New project" aria-label="New project">
+      <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M.5,13.5V1.5a1,1,0,0,1,1-1h12a1,1,0,0,1,1,1v12a1,1,0,0,1-1,1H1.5A1,1,0,0,1,.5,13.5Zm3-6h3m2,0h3m-4-4v8"/></svg>
+    </button>
+    <button id="project-open" type="button" class="icon" title="Open project" aria-label="Open project">
+      <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M.5,5.5H4.672a2,2,0,0,0,1.414-.586L7.914,3.086A2,2,0,0,1,9.328,2.5H14.5"/><rect x="0.5" y="0.5" width="14" height="14" rx="1"/></svg>
+    </button>
+  </div>
+  <ol id="projects"></ol>
+  <div id="strip-grip" title="Drag to widen the project strip"></div>
+</nav>
+
+<div id="frame">
+  <header id="tabbar">
+    <div id="tabs" role="tablist" aria-label="Main tabs">
+      <button type="button" role="tab" id="tab-prepare" data-tab="prepare" aria-controls="plater">
+        <svg viewBox="0 0 20 20" aria-hidden="true"><path d="M1.5,6.5l7.776,3.888a.5.5,0,0,0,.448,0L17.5,6.5,9.724,2.612a.5.5,0,0,0-.448,0Z"/><path d="M1.5,6.5v8l7.776,3.888a.5.5,0,0,0,.448,0L17.5,14.5v-8"/></svg>
+        Prepare
+      </button>
+      <button type="button" role="tab" id="tab-preview" data-tab="preview" aria-controls="plater">
+        <svg viewBox="0 0 20 20" aria-hidden="true"><path d="M1.5,6.5l7.776,3.888a.5.5,0,0,0,.448,0L17.5,6.5,9.724,2.612a.5.5,0,0,0-.448,0Z"/><path d="M2.5,14l-1,.5,7.776,3.888a.5.5,0,0,0,.448,0L17.5,14.5l-1-.5"/><path d="M2.5,10l-1,.5,7.776,3.888a.5.5,0,0,0,.448,0L17.5,10.5l-1-.5"/></svg>
+        Preview
+      </button>
+      <button type="button" role="tab" id="tab-device" data-tab="device" aria-controls="device">
+        <svg viewBox="0 0 20 20" aria-hidden="true"><path d="M4.5,14.5h10M8.5,9.5l1,2l1-2M4.5,6.5H7M12,6.5h2.5"/><rect x="7.5" y="4.5" width="4" height="5" rx="0.5"/><rect x="1.5" y="2.5" width="16" height="15" rx="1"/></svg>
+        Device
+      </button>
+    </div>
+    <div id="side-tools">
+      <div class="split">
+        <button id="slice" type="button" class="primary" disabled>Slice plate</button>
+        <button id="slice-more" type="button" class="primary" aria-haspopup="menu" aria-label="Slice plate or slice all">▾</button>
+      </div>
+      <button id="export" type="button" disabled>Export G-code file</button>
+    </div>
   </header>
 
-  <section aria-labelledby="h-model">
-    <h2 id="h-model">Model</h2>
-    <button id="open" type="button">Open a model…</button>
-    <form id="ask" hidden>
-      <label for="ask-text" id="ask-label"></label>
-      <input id="ask-text" type="text" autocomplete="off" spellcheck="false">
-      <div class="row">
-        <button type="submit" class="primary">OK</button>
-        <button type="button" id="ask-cancel">Cancel</button>
+  <!-- Prepare and Preview share the sidebar and the stage, as the reference's two tabs share its plater. -->
+  <div id="plater" role="tabpanel">
+    <aside id="side">
+      <section class="fold" id="s-printer">
+        <h2><button type="button" class="fold-title" title="Click to collapse / expand" aria-expanded="true">Printer</button></h2>
+        <div class="fold-body">
+          <label id="source-row">Sliced with
+            <select id="source">
+              <option value="project">the project's own settings</option>
+              <option value="presets">presets chosen here</option>
+            </select>
+          </label>
+          <p id="saved-printer" class="value" hidden></p>
+          <div id="printer-presets" class="stack">
+            <label>Vendor <select id="vendor"></select></label>
+            <label>Printer <select id="machine"></select></label>
+          </div>
+          <label>Bed type <select id="bed"></select></label>
+          <p id="printer-info" class="quiet"></p>
+        </div>
+      </section>
+
+      <section class="fold" id="s-filament">
+        <h2><button type="button" class="fold-title" title="Click to collapse / expand" aria-expanded="true">Filament Management</button></h2>
+        <div class="fold-body">
+          <h3>Filaments</h3>
+          <div id="filaments" class="stack"></div>
+        </div>
+      </section>
+
+      <section class="fold" id="s-process">
+        <h2><button type="button" class="fold-title" title="Click to collapse / expand" aria-expanded="true">Process</button></h2>
+        <div class="fold-body">
+          <p id="saved-process" class="value" hidden></p>
+          <label id="process-row">Preset <select id="process"></select></label>
+          <h3>Quality</h3>
+          <div class="grid">
+            <label for="o-layer">Layer height</label>
+            <span class="unit"><input id="o-layer" data-over="layer_height" type="number" min="0.01" step="0.01" inputmode="decimal"> mm</span>
+            <label for="o-first">Initial layer height</label>
+            <span class="unit"><input id="o-first" data-over="first_layer_height" type="number" min="0.01" step="0.01" inputmode="decimal"> mm</span>
+            <label for="o-closing">Slice gap closing radius</label>
+            <span class="unit"><input id="o-closing" data-over="closing_radius" type="number" min="0" step="0.001" inputmode="decimal"> mm</span>
+          </div>
+          <h3>Strength</h3>
+          <div class="grid">
+            <label for="o-walls">Wall loops</label>
+            <span class="unit"><input id="o-walls" data-over="wall_loops" type="number" min="0" step="1" inputmode="numeric"></span>
+          </div>
+          <p class="quiet">Left empty, a setting is as the preset or the project has it.</p>
+        </div>
+      </section>
+
+      <p id="status" role="status" class="quiet"></p>
+
+      <footer>
+        <p class="quiet">Profiles: <span id="profiles-dir">none</span></p>
+        <button id="profiles" type="button" class="link">Change…</button>
+      </footer>
+    </aside>
+
+    <main id="stage">
+      <canvas id="view" tabindex="-1" aria-label="The plate"></canvas>
+      <p id="empty"></p>
+
+      <div id="plates" aria-label="Select Plate" hidden></div>
+
+      <div id="fit">
+        <button type="button" data-fit="part" title="Zoom to the objects [Z]">Fit part</button>
+        <button type="button" data-fit="bed">Fit bed</button>
       </div>
-    </form>
-    <p id="model-name" class="quiet">Nothing open. An STL or a 3MF project.</p>
-    <label id="plate-row" hidden>Plate
-      <select id="plate"></select>
-    </label>
-  </section>
 
-  <section aria-labelledby="h-settings">
-    <h2 id="h-settings">Settings</h2>
-    <label>Sliced with
-      <select id="source">
-        <option value="project">the project's own settings</option>
-        <option value="presets">presets chosen here</option>
-      </select>
-    </label>
-    <p id="project-presets" class="quiet" hidden></p>
-    <div id="presets">
-      <label>Vendor <select id="vendor"></select></label>
-      <label>Printer <select id="machine"></select></label>
-      <label>Process <select id="process"></select></label>
-      <div id="filaments"></div>
-    </div>
-    <label>Bed surface
-      <select id="bed">
-        <option value="">as the project or the printer has it</option>
-        <option>Cool Plate</option>
-        <option>Engineering Plate</option>
-        <option>High Temp Plate</option>
-        <option>Textured PEI Plate</option>
-        <option>Textured Cool Plate</option>
-        <option>Supertack Plate</option>
-      </select>
-    </label>
-  </section>
+      <div id="legend" hidden>
+        <div id="legend-head">
+          <button type="button" id="legend-fold" class="icon" aria-expanded="true" title="Fold or unfold the legend">▾</button>
+          <select id="view-type" aria-label="View type"></select>
+        </div>
+        <div id="legend-body">
+          <table id="legend-rows"></table>
+          <div id="estimate">
+            <h3 id="estimate-title">Total estimation</h3>
+            <dl id="figures"></dl>
+            <p id="timed" class="quiet"></p>
+          </div>
+        </div>
+      </div>
 
-  <section>
-    <div class="row">
-      <button id="slice" type="button" class="primary" disabled>Slice</button>
-      <button id="cancel" type="button" hidden>Cancel</button>
-    </div>
-    <div id="progress" hidden><div id="bar"></div></div>
-    <p id="status" role="status" class="quiet"></p>
-  </section>
+      <div id="vslider" hidden>
+        <output id="layer-label"></output>
+        <div id="vtrack" role="slider" tabindex="0" aria-orientation="vertical" aria-label="Layer"><div id="vfill"></div><div id="vthumb"></div></div>
+      </div>
 
-  <section id="result" aria-labelledby="h-print" hidden>
-    <h2 id="h-print">Print</h2>
-    <dl id="figures"></dl>
-    <p id="gcode-error" class="error" hidden></p>
-    <ul id="problems" class="error"></ul>
-    <button id="export" type="button">Export G-code…</button>
-    <p id="exported" class="quiet"></p>
-    <ul id="remarks" class="plain"></ul>
-    <details id="gaps">
-      <summary></summary>
-      <p class="quiet">The profile turns these on. The print goes ahead without them.</p>
-      <ul></ul>
-    </details>
-  </section>
+      <details id="notes" open hidden>
+        <summary>About this print</summary>
+        <p id="gcode-error" class="error" hidden></p>
+        <ul id="problems" class="error"></ul>
+        <ul id="remarks" class="plain"></ul>
+        <details id="gaps">
+          <summary></summary>
+          <p class="quiet">The profile turns these on. The print goes ahead without them.</p>
+          <ul></ul>
+        </details>
+        <p id="exported" class="quiet"></p>
+      </details>
 
-  <footer>
-    <p class="quiet">Profiles: <span id="profiles-dir">none</span></p>
-    <button id="profiles" type="button" class="link">Change…</button>
-  </footer>
-</aside>
-
-<main>
-  <canvas id="view" aria-label="Layer preview"></canvas>
-  <p id="empty">Open a model and slice it to look through its layers.</p>
-  <div id="legend" hidden></div>
-  <div id="fit" hidden>
-    <button type="button" data-fit="part">Fit part</button>
-    <button type="button" data-fit="bed">Fit bed</button>
+      <div id="progress" hidden>
+        <p id="progress-label"></p>
+        <div id="progress-track"><div id="bar"></div></div>
+        <button id="cancel" type="button">Cancel</button>
+      </div>
+    </main>
   </div>
-  <div id="layerbar" hidden>
-    <button type="button" id="down" aria-label="Layer below">−</button>
-    <input id="layer" type="range" min="0" max="0" value="0" aria-label="Layer">
-    <button type="button" id="up" aria-label="Layer above">+</button>
-    <output id="layer-label" for="layer"></output>
-    <label class="inline">Colour by
-      <select id="colour">
-        <option value="feature">feature</option>
-        <option value="filament">filament</option>
-      </select>
-    </label>
-  </div>
-</main>
+
+  <!-- Device: the printer of the project shown. Nothing here reaches the printer yet. -->
+  <section id="device" role="tabpanel" hidden>
+    <div id="device-page">
+      <h1 id="device-name"></h1>
+      <p id="device-source" class="quiet"></p>
+      <dl id="device-facts"></dl>
+      <h2>Printer Connection</h2>
+      <p id="device-connection"></p>
+      <p class="quiet" id="device-offline"></p>
+    </div>
+  </section>
+</div>
+
+<dialog id="ask">
+  <form method="dialog">
+    <label for="ask-text" id="ask-label"></label>
+    <input id="ask-text" type="text" autocomplete="off" spellcheck="false">
+    <div class="row end">
+      <button type="submit" value="ok" class="primary">OK</button>
+      <button type="submit" value="cancel" formnovalidate>Cancel</button>
+    </div>
+  </form>
+</dialog>
+
+<dialog id="confirm">
+  <form method="dialog">
+    <h2 id="confirm-title"></h2>
+    <p id="confirm-text"></p>
+    <ul id="confirm-list" class="pick"></ul>
+    <div class="row end">
+      <button type="submit" value="ok" class="primary" id="confirm-ok"></button>
+      <button type="submit" value="cancel" id="confirm-cancel"></button>
+    </div>
+  </form>
+</dialog>
+
+<dialog id="stats">
+  <form method="dialog">
+    <h2>Statistics of All Plates</h2>
+    <table id="stats-table"></table>
+    <div class="row end"><button type="submit" value="ok">Close</button></div>
+  </form>
+</dialog>
+
+<div id="menu" role="menu" hidden></div>
+
 <script src="app.js"></script>
 </body>
 </html>
