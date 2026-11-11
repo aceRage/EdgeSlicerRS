@@ -29,6 +29,7 @@ fn wall(x: f64, y: f64, side: f64) -> ExtrusionLoop {
     ExtrusionLoop {
         widths: Vec::new(),
         clockwise: false,
+        circle_compensation: false,
         polygon: Polygon {
             points: [(x, y), (x + side, y), (x + side, y + side), (x, y + side)]
                 .map(|(x, y)| Point2::from_mm(x, y))

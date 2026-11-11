@@ -21,6 +21,7 @@ fn wall(x: f64, y: f64, side: f64, depth: usize) -> ExtrusionLoop {
     ExtrusionLoop {
         widths: Vec::new(),
         clockwise: false,
+        circle_compensation: false,
         polygon: Polygon {
             points: points.to_vec(),
         },
