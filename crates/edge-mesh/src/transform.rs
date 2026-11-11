@@ -61,6 +61,42 @@ impl Transform {
     pub fn is_mirrored(&self) -> bool {
         self.determinant() < 0.0
     }
+
+    /// The map that undoes this one; none when it squashes space flat.
+    pub fn inverse(&self) -> Option<Transform> {
+        let det = self.determinant();
+        if !det.is_finite() || det.abs() < 1e-300 {
+            return None;
+        }
+        let r = &self.rows;
+        // The adjugate over the determinant, for the linear part.
+        let cofactor =
+            |a: usize, b: usize, c: usize, d: usize| r[a][b] * r[c][d] - r[a][d] * r[c][b];
+        let linear = [
+            [
+                cofactor(1, 1, 2, 2) / det,
+                -cofactor(0, 1, 2, 2) / det,
+                cofactor(0, 1, 1, 2) / det,
+            ],
+            [
+                -cofactor(1, 0, 2, 2) / det,
+                cofactor(0, 0, 2, 2) / det,
+                -cofactor(0, 0, 1, 2) / det,
+            ],
+            [
+                cofactor(1, 0, 2, 1) / det,
+                -cofactor(0, 0, 2, 1) / det,
+                cofactor(0, 0, 1, 1) / det,
+            ],
+        ];
+        let t = r[3];
+        let offset: [f64; 3] = std::array::from_fn(|c| {
+            -(t[0] * linear[0][c] + t[1] * linear[1][c] + t[2] * linear[2][c])
+        });
+        Some(Transform {
+            rows: [linear[0], linear[1], linear[2], offset],
+        })
+    }
 }
 
 impl Default for Transform {
@@ -88,6 +124,26 @@ mod tests {
             rotate_z.apply(shift.apply(p))
         );
         assert_eq!(Transform::IDENTITY.then(&shift), shift);
+    }
+
+    #[test]
+    fn inverse_undoes() {
+        let map = Transform {
+            rows: [
+                [0.0, 2.0, 0.0],
+                [-1.0, 0.0, 0.5],
+                [0.0, 0.0, -3.0],
+                [4.0, -5.0, 6.0],
+            ],
+        };
+        let back = map.inverse().expect("not flat");
+        for p in [[1.0, 2.0, 3.0], [-7.0, 0.5, 11.0]] {
+            let there = back.apply(map.apply(p));
+            for axis in 0..3 {
+                assert!((there[axis] - p[axis]).abs() < 1e-12, "{there:?} {p:?}");
+            }
+        }
+        assert!(Transform::scaling(0.0).inverse().is_none());
     }
 
     #[test]

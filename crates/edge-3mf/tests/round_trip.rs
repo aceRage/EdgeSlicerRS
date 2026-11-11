@@ -386,3 +386,100 @@ fn the_version_claimed_is_the_pinned_references() {
         "{line}"
     );
 }
+
+/// An object of three parts (a tetrahedron, a connector, a tetrahedron),
+/// cut, its second part a cut connector.
+fn cut_object() -> Project {
+    let tetra = |id: u32, x: u32| {
+        format!(
+            r#"<object id="{id}" type="model"><mesh>
+  <vertices><vertex x="{x}" y="0" z="0"/><vertex x="{}" y="0" z="0"/><vertex x="{x}" y="1" z="0"/><vertex x="{x}" y="0" z="1"/></vertices>
+  <triangles><triangle v1="0" v2="2" v3="1"/><triangle v1="0" v2="1" v3="3"/><triangle v1="1" v2="2" v3="3"/><triangle v1="0" v2="3" v3="2"/></triangles>
+ </mesh></object>"#,
+            x + 1
+        )
+    };
+    let model = format!(
+        r#"<?xml version="1.0" encoding="UTF-8"?>
+<model unit="millimeter" xmlns="http://schemas.microsoft.com/3dmanufacturing/core/2015/02">
+ <resources>{}{}{}<object id="4" type="model"><components>
+  <component objectid="1"/><component objectid="2"/><component objectid="3"/>
+ </components></object></resources>
+ <build><item objectid="4" transform="1 0 0 0 1 0 0 0 1 10 10 0"/></build>
+</model>"#,
+        tetra(1, 0),
+        tetra(2, 2),
+        tetra(3, 4)
+    );
+    let settings = r#"<?xml version="1.0" encoding="UTF-8"?>
+<config>
+  <object id="4">
+    <metadata key="name" value="Half"/>
+    <part id="1" subtype="normal_part"><metadata key="name" value="A"/></part>
+    <part id="2" subtype="negative_part"><metadata key="name" value="Plug"/></part>
+    <part id="3" subtype="normal_part"><metadata key="name" value="B"/></part>
+  </object>
+</config>"#;
+    let cut = r#"<?xml version="1.0" encoding="utf-8"?>
+<objects>
+ <object id="1"><cut_id id="7" check_sum="1" connectors_cnt="1"/><connectors><connector volume_id="1" type="0" r_tolerance="0" h_tolerance="0"/></connectors></object>
+</objects>
+"#;
+    Project::read(Cursor::new(package(&[
+        ("3D/3dmodel.model", &model),
+        ("Metadata/model_settings.config", settings),
+        ("Metadata/cut_information.xml", cut),
+    ])))
+    .unwrap()
+}
+
+fn cut_text(project: &Project) -> Option<String> {
+    use std::io::Read;
+    let mut archive = zip::ZipArchive::new(Cursor::new(saved(project))).unwrap();
+    let mut text = String::new();
+    archive
+        .by_name("Metadata/cut_information.xml")
+        .ok()?
+        .read_to_string(&mut text)
+        .unwrap();
+    Some(text)
+}
+
+#[test]
+fn a_cut_connector_follows_its_part_and_one_gone_is_asked_about() {
+    let project = cut_object();
+    assert!(
+        cut_text(&project)
+            .unwrap()
+            .contains(r#"<connector volume_id="1""#)
+    );
+    // The part before the connector deleted: the connector is the first.
+    let mut fewer = project.clone();
+    fewer.objects[0].parts.remove(0);
+    assert!(edge_3mf::losses(&fewer, true).is_empty());
+    let text = cut_text(&fewer).unwrap();
+    assert!(text.contains(r#"<connector volume_id="0""#), "{text}");
+    assert!(text.contains(r#"<cut_id id="7""#));
+    // A part added after it: as it was.
+    let mut more = project.clone();
+    let added = more.objects[0].parts[0].clone();
+    more.objects[0].parts.push(edge_3mf::Part {
+        kept: None,
+        ..added
+    });
+    assert!(
+        cut_text(&more)
+            .unwrap()
+            .contains(r#"<connector volume_id="1""#)
+    );
+    // The connector deleted: the cut information would name another part,
+    // so it is not written, and that is asked about first.
+    let mut gone = project.clone();
+    gone.objects[0].parts.remove(1);
+    let losses = edge_3mf::losses(&gone, true);
+    assert!(
+        losses.iter().any(|loss| loss.contains("cut information")),
+        "{losses:?}"
+    );
+    assert!(cut_text(&gone).is_none());
+}

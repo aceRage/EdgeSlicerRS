@@ -559,13 +559,38 @@ impl Session {
                     "filaments": filaments,
                     "filament": if own.len() == 1 { Some(own[0]) } else { None },
                     "parts": object.parts(),
-                    // Each part with its name, what it is and its filament,
-                    // for the list (an object of several parts lists them).
-                    "part_list": object.shape().parts().iter().map(|part| json!({
-                        "name": part.name,
-                        "kind": part_kind(part.kind),
-                        "filament": part.filament,
-                    })).collect::<Vec<_>>(),
+                    // The filament the object itself is set to, when it is:
+                    // what a part set to "default" prints in.
+                    "own_filament": object.filament(),
+                    // Each part, in order: a number that stays its own
+                    // through every edit, its name, what it is, the filament
+                    // it prints in and the one it was given itself (null:
+                    // "default", its object's), where it stands in the
+                    // object (its matrix, column by column, from its own
+                    // coordinates to the object's), the box round its own
+                    // mesh, where its triangles are in the object's mesh
+                    // (the first and how many), whether "Split" can be done
+                    // to it, and how many settings of its own it carries.
+                    "part_list": object.shape().parts().iter().enumerate().map(|(at, part)| {
+                        let rows = part.transform.rows;
+                        json!({
+                            "id": object.shape().part_ids()[at],
+                            "name": part.name,
+                            "kind": part_kind(part.kind),
+                            "filament": part.filament,
+                            "own": part.own_filament,
+                            "matrix": [
+                                rows[0][0], rows[0][1], rows[0][2], 0.0,
+                                rows[1][0], rows[1][1], rows[1][2], 0.0,
+                                rows[2][0], rows[2][1], rows[2][2], 0.0,
+                                rows[3][0], rows[3][1], rows[3][2], 1.0,
+                            ],
+                            "box": part.mesh.bounds().map(|(low, high)| [low, high]),
+                            "triangles": mesh.parts.get(at),
+                            "split": object.shape().part_splits(at),
+                            "settings": part.settings().len(),
+                        })
+                    }).collect::<Vec<_>>(),
                     // What "Split to objects" and "Split to parts" can be
                     // done to (GUI_ObjectList.cpp `is_splittable`).
                     "split": {
@@ -721,7 +746,7 @@ fn moves_bytes(records: &[u8], from: usize, count: usize) -> Vec<u8> {
 
 /// What a part is, as the list names it (the reference's
 /// `ModelVolumeType`).
-fn part_kind(kind: edge_engine::PartKind) -> &'static str {
+pub(super) fn part_kind(kind: edge_engine::PartKind) -> &'static str {
     use edge_engine::PartKind;
     match kind {
         PartKind::Normal => "part",
@@ -731,6 +756,21 @@ fn part_kind(kind: edge_engine::PartKind) -> &'static str {
         PartKind::SupportEnforcer => "support_enforcer",
         PartKind::PreciseSeam => "precise_seam",
     }
+}
+
+/// A part's kind from the name [`part_kind`] gives it.
+pub(super) fn kind_of(name: &str) -> Option<edge_engine::PartKind> {
+    use edge_engine::PartKind;
+    [
+        PartKind::Normal,
+        PartKind::Negative,
+        PartKind::Modifier,
+        PartKind::SupportBlocker,
+        PartKind::SupportEnforcer,
+        PartKind::PreciseSeam,
+    ]
+    .into_iter()
+    .find(|kind| part_kind(*kind) == name)
 }
 
 /// A project as the 3D views need it.

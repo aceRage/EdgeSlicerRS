@@ -1,6 +1,6 @@
 use std::path::{Path, PathBuf};
 
-use edge_3mf::{Body, InstanceParts, Painted, Project};
+use edge_3mf::{Body, InstanceParts, Painted, PartKind, Project};
 use edge_config::Settings;
 use edge_gcode::PrintSettings;
 use edge_mesh::Mesh;
@@ -34,6 +34,10 @@ pub struct Loaded {
     /// Whether anything to slice has a Precise Seam part, which is not
     /// followed.
     pub precise_seams: bool,
+    /// The other kinds of part that anything to slice has and that are
+    /// not followed, as a person would name them: "modifiers", "support
+    /// blockers", "support enforcers".
+    pub unfollowed_parts: Vec<&'static str>,
     /// For a project, each object on the plate by itself, for what depends
     /// on which object is which. Empty for a bare model, which is one object.
     pub objects: Vec<Mesh>,
@@ -254,6 +258,7 @@ pub(crate) fn lone(path: &Path, solid: Mesh) -> Result<Loaded, Failure> {
         settings: None,
         unread_paint: Vec::new(),
         precise_seams: false,
+        unfollowed_parts: Vec::new(),
         objects: Vec::new(),
         negatives: Vec::new(),
         parts: Vec::new(),
@@ -314,6 +319,15 @@ pub(crate) fn placed(
         settings,
         unread_paint: project.unread_paint.clone(),
         precise_seams: project.has_precise_seams(plate),
+        unfollowed_parts: [
+            (PartKind::Modifier, "modifiers"),
+            (PartKind::SupportBlocker, "support blockers"),
+            (PartKind::SupportEnforcer, "support enforcers"),
+        ]
+        .into_iter()
+        .filter(|(kind, _)| project.has_parts_of(plate, *kind))
+        .map(|(_, name)| name)
+        .collect(),
         objects,
         negatives,
         parts,
@@ -412,6 +426,7 @@ mod tests {
             name: None,
             kind,
             filament: 1,
+            own_filament: None,
             mesh,
             paint: None,
             seam: None,
@@ -430,6 +445,7 @@ mod tests {
                     kept: None,
                     id: 1,
                     name: None,
+                    filament: None,
                     parts: vec![
                         part(PartKind::Normal, cube([0.0; 3], [10.0; 3])),
                         part(PartKind::Negative, cube([2.0; 3], [4.0; 3])),
@@ -440,6 +456,7 @@ mod tests {
                     kept: None,
                     id: 2,
                     name: None,
+                    filament: None,
                     parts: vec![part(PartKind::Normal, cube([0.0; 3], [5.0; 3]))],
                     instances: vec![at(130.0, 50.0)],
                 },

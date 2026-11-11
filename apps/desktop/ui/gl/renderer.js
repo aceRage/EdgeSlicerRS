@@ -300,8 +300,9 @@
     }
 
     // A shaded mesh. `model` takes it into the scene; `pass` is 0 for
-    // what is opaque, 1 for what is not, 2 for all of it.
-    drawMesh(mesh, frame, model, { palette = null, tint = [0, 0, 0, -1], alpha = 1, ghost = false, pass = 2, emission = 0, volume = null } = {}) {
+    // what is opaque, 1 for what is not, 2 for all of it. `range`: only
+    // these triangles, [first, how many].
+    drawMesh(mesh, frame, model, { palette = null, tint = [0, 0, 0, -1], alpha = 1, ghost = false, pass = 2, emission = 0, volume = null, range = null } = {}) {
       const gl = this.gl;
       const u = this.use('mesh');
       const viewModel = M.multiply(frame.view, model);
@@ -327,19 +328,22 @@
       gl.enable(gl.CULL_FACE);
       gl.frontFace(M.determinant3(model) < 0 ? gl.CW : gl.CCW);
       gl.bindVertexArray(mesh.vao);
-      gl.drawArrays(gl.TRIANGLES, 0, mesh.count);
+      if (range) gl.drawArrays(gl.TRIANGLES, range[0] * 3, range[1] * 3);
+      else gl.drawArrays(gl.TRIANGLES, 0, mesh.count);
       gl.frontFace(gl.CCW);
       gl.disable(gl.CULL_FACE);
     }
 
-    // Anything with positions first, in one colour.
-    drawFlat(thing, matrix, colour, mode = this.gl.TRIANGLES) {
+    // Anything with positions first, in one colour. `range`: only these
+    // triangles of a mesh, [first, how many].
+    drawFlat(thing, matrix, colour, mode = this.gl.TRIANGLES, range = null) {
       const gl = this.gl;
       const u = this.use('flat');
       gl.uniformMatrix4fv(u.u_matrix, false, matrix);
       gl.uniform4fv(u.u_color, colour);
       gl.bindVertexArray(thing.vao);
-      gl.drawArrays(mode, 0, thing.count);
+      if (range) gl.drawArrays(mode, range[0] * 3, range[1] * 3);
+      else gl.drawArrays(mode, 0, thing.count);
     }
 
     // Lines, `width` pixels wide as the page counts pixels.

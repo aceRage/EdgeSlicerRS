@@ -208,3 +208,82 @@ fn an_empty_project_is_saved_on_the_printer_it_is_on() {
         Some(MACHINE)
     );
 }
+
+/// What the list shows of each part of the first object.
+fn parts_shown(session: &Arc<Session>, id: u64) -> Vec<Value> {
+    let scene = ask(session, "scene", json!({ "project": id }));
+    scene["objects"][0]["part_list"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|part| {
+            json!({
+                "name": part["name"], "kind": part["kind"], "filament": part["filament"],
+                "own": part["own"], "matrix": part["matrix"], "box": part["box"],
+                "settings": part["settings"],
+            })
+        })
+        .collect()
+}
+
+#[test]
+fn parts_edited_are_saved_and_opened_again_as_they_were_left() {
+    let dir = tempfile::tempdir().unwrap();
+    let session = Arc::new(Session::new(None));
+    let (id, _) = open_copy(
+        &session,
+        dir.path(),
+        "tests/data/support_corpus/twopart_groups.3mf",
+    );
+    let scene = ask(&session, "scene", json!({ "project": id }));
+    let object = scene["objects"][0]["id"].clone();
+    let parts = scene["objects"][0]["part_list"].as_array().unwrap().clone();
+    let edit = |args: Value| {
+        let mut args = args;
+        args["project"] = json!(id);
+        ask(&session, "scene_edit", args)
+    };
+    // A filament of its own for the second part, the third moved 5 mm
+    // along X, the first deleted, a cube added as a modifier.
+    edit(
+        json!({ "op": "part_filament", "object": object, "parts": [parts[1]["id"]], "filament": 2 }),
+    );
+    let mut matrix = parts[2]["matrix"].clone();
+    matrix[12] = json!(matrix[12].as_f64().unwrap() + 5.0);
+    edit(
+        json!({ "op": "part_transform", "object": object, "parts": [{ "id": parts[2]["id"], "matrix": matrix }] }),
+    );
+    edit(json!({ "op": "part_delete", "object": object, "parts": [parts[0]["id"]] }));
+    edit(json!({ "op": "part_add", "object": object, "kind": "modifier", "shape": "Cube" }));
+    assert_eq!(tile(&session, id)["dirty"], true);
+    let left = parts_shown(&session, id);
+    assert_eq!(left.len(), 3);
+
+    let to = dir.path().join("parts.3mf");
+    let answer = ask(
+        &session,
+        "project_save",
+        json!({ "project": id, "path": to }),
+    );
+    assert_eq!(answer["saved"], true, "{answer}");
+    assert_eq!(tile(&session, id)["dirty"], false);
+
+    // Opened again (in another session: opened in this one, it is the
+    // project already open): the parts as they were left.
+    let other = Arc::new(Session::new(None));
+    let again = ask(&other, "project_open", json!({ "path": to }))["id"]
+        .as_u64()
+        .unwrap();
+    assert_eq!(parts_shown(&other, again), left);
+    assert_eq!(left[0]["own"], 2);
+    assert_eq!(left[0]["settings"], 5);
+    assert_eq!(left[2]["kind"], "modifier");
+
+    // Undone after the save: the project differs from its file again, and
+    // the file is as it was saved.
+    let saved = std::fs::read(&to).unwrap();
+    ask(&session, "undo", json!({ "project": id }));
+    assert_eq!(tile(&session, id)["dirty"], true);
+    assert_eq!(parts_shown(&session, id).len(), 2);
+    assert_eq!(std::fs::read(&to).unwrap(), saved);
+}

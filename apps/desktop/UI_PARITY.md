@@ -21,7 +21,8 @@ The last column reads:
   14; seventh pass: "Lay on face", "Mirror", "Split to objects" and
   "Split to parts", in section 13; eighth pass: saving projects, the
   "Files" rows of section 2, the strip's saving in section 5, and
-  section 15).
+  section 15; ninth pass: the parts of an object, "Parts" in section 13,
+  and what a saved project holds of them in section 15).
 - **differs** — built, but on purpose not as the C++ does it; the cell says how.
 - **not yet** — not built, with what it waits for. Nothing in this column is
   shown in the page as a control that does nothing.
@@ -155,7 +156,7 @@ does with each option.
 | A 3D view of every plate with the objects on it, orbit / pan / zoom, selection | `View3D`, `GLCanvas3D` | **added**, in 3D: section 9. Where the browser has no WebGL2, the view from above the first pass built is kept: the bed of the printer chosen with its grid and each object's outline (its convex hull), name and size, drag to move, wheel to zoom, "Fit part" [Z] and "Fit bed" |
 | Main toolbar: "Add" [Ctrl+I], "Add plate", "Auto orient all/selected objects" [Q], "Arrange all objects" [A] with its options, "Split to objects", "Split to parts", "Variable layer height", "Assembly View" | `GLCanvas3D::_init_main_toolbar` l.9274 | **added**: "Add", "Add plate", "Arrange all objects" (section 13; the arrangement is a plain one, not the reference's), "Split to objects" and "Split to parts". **not yet**: auto orient (the engine does not do it), variable layer height, the assembly view, the arrangement's options |
 | Gizmos: "Move" [M], "Rotate" [R], "Scale" [S], "Lay on face" [F], "Cut" [C], "Mesh Boolean" [B], "Support Painting" [L], "Seam painting" [P], "Paint-on fuzzy skin" [H], "Color Painting" [N], "Texture displacement", "Emboss" [T], "SVG", "Measure" [U], "Assemble" [Y], "Simplify", "Brim Ears" [E], "Sculpt", "Edit", "Fillet / chamfer (CAD)" | `Gizmos/GLGizmosManager.cpp::init` l.224 | **added**: "Move", "Rotate" and "Scale" with their number fields, and "Lay on face" [F] (section 13). **not yet**: the rest |
-| Object list: plates, objects, parts, instances, layer ranges; columns "Name", printable, "Fila.", paint marks; the object, part and plate menus | `GUI_ObjectList.cpp`, `GUI_Factories.cpp` | **added**: plates, objects and instances with "Name", printable and "Fila.", and the object's and the plate's menus (section 13). **not yet**: parts, layer ranges, the paint marks, settings of an object |
+| Object list: plates, objects, parts, instances, layer ranges; columns "Name", printable, "Fila.", paint marks; the object, part and plate menus | `GUI_ObjectList.cpp`, `GUI_Factories.cpp` | **added**: plates, objects, parts and instances with "Name", printable and "Fila.", and the object's, the part's and the plate's menus (section 13). **not yet**: layer ranges, the paint marks, settings of an object or a part |
 | View options: "Realistic View", "X-Ray", "Center of Mass", "Show 3D Navigator", Ctrl+0..6 views | `GLCanvas3D.cpp` l.8297, View menu | **added**: the navigator and the views (section 9). **not yet**: the three view options |
 
 ### Plates
@@ -373,8 +374,8 @@ the project is on.
 | `summary` | `project?`, `plate?` | as before, and `plate`, `widths`, `heights`. `gaps` ends with each setting set by hand that the slice did not read |
 | `layer` | `project?`, `plate?`, `index` | as before |
 | `export` | `project?`, `plate?`, `path` | `{ path, bytes }` |
-| `scene` | `project?` | the project for Prepare in 3D: `{ project, key, bare, bed { box, shape, height, model, texture }, plates: [{ id, name, origin }], plate, colours, objects: [{ id, name, mesh, vertices, triangles, bytes, filaments, filament, parts }], placings: [{ id, object, plate, printable, matrix (16 numbers, column by column), box, over }] }`. An object also has `part_list: [{ name, kind (part, negative, modifier, support_blocker, support_enforcer, precise_seam), filament }]` and `split: { objects, parts }` (whether "Split to objects" and "Split to parts" can be done to it). An object's `id` and a copy's (a placing's) `id` stay theirs through every edit; `mesh` is the number of the object's mesh, the same for as long as the mesh is; `filament` is the object's own when its parts agree; `over` says a copy reaches over the edge of its plate |
-| `scene_edit` | `project?`, `op` and what it takes (section 13) | `{ project, scene, done, made, note }`: the project and its scene as they then are, the edit's name in the history, the copies it made, and something to tell the person or null |
+| `scene` | `project?` | the project for Prepare in 3D: `{ project, key, bare, bed { box, shape, height, model, texture }, plates: [{ id, name, origin }], plate, colours, objects: [{ id, name, mesh, vertices, triangles, bytes, filaments, filament, parts }], placings: [{ id, object, plate, printable, matrix (16 numbers, column by column), box, over }] }`. An object also has `own_filament` (the filament it is set to itself, or null: what its parts set to "default" print in), `part_list: [{ id, name, kind (part, negative, modifier, support_blocker, support_enforcer, precise_seam), filament, own (the part's own filament, or null for "default"), matrix (16 numbers, column by column: the part's own coordinates to the object's), box (round the part's own mesh), triangles ([first, how many] of the object's mesh), split (whether "Split" can be done to the part), settings (how many settings of its own the file gives it) }]` and `split: { objects, parts }` (whether "Split to objects" and "Split to parts" can be done to it). A part's `id` stays its own through every edit that leaves it there. An object's `id` and a copy's (a placing's) `id` stay theirs through every edit; `mesh` is the number of the object's mesh, the same for as long as the mesh is; `filament` is the object's own when its parts agree; `over` says a copy reaches over the edge of its plate |
+| `scene_edit` | `project?`, `op` and what it takes (section 13) | `{ project, scene, done, made, note, part }`: the project and its scene as they then are, the edit's name in the history, the copies it made, something to tell the person or null, and the part it made (`part_add`) or null |
 | `undo`, `redo` | `project?` | `{ project, scene, done }`; an error when there is nothing to take back or to make again |
 | `scene_faces` | `project?`, `copy` | the faces "Lay on face" offers for a copy, largest first: `{ project, copy, faces: [{ normal, area, drawn }] }`, `normal` outward in the object's own coordinates (what `lay_on_face` takes), `area` in mm² at the printed size, `drawn` the outline to draw over the face (rounded and lifted as the reference draws it), in the object's own coordinates |
 | `toolpath` | `project?`, `plate?` | a sliced plate's moves, before they are asked for: `{ source: "gcode" \| "lines", moves, move_size, at_once, layers { first, z, height }, features, filaments, counts { travel, line, wipe, retract, unretract, seam, tool_change }, box, plate, run }` |
@@ -499,7 +500,7 @@ reference's own numbers; each is named in `scene.js` with where it is from.
 | Pinch to zoom, two fingers to move and to turn | l.6136–6169 | **added**: the pinch (a browser sends it as a wheel). **not yet**: the other two |
 | A click on an object selects it; Ctrl adds it to the selection or takes it away; a click on nothing lets go of everything (not with Shift held); a right click selects | l.6423–6551, l.6749–6858 | **added** |
 | A click on a plate selects the plate and lets go of the objects | Plater.cpp l.30481 | **added** |
-| Alt: "Select a part"; Shift: "Select objects by rectangle"; a double click opens the object's settings; the right button's menus | l.6423–6551, l.6871 | **added**: the right button's menu on an object and on a plate (section 13). **differs**: Shift with a click adds to what is selected, as Ctrl does. **not yet**: parts are not told apart, the rectangle, object settings |
+| Alt: "Select a part"; Shift: "Select objects by rectangle"; a double click opens the object's settings; the right button's menus | l.6423–6551, l.6871 | **added**: Alt with a click selects the part under the pointer, Alt with Shift adds it to the parts of that copy selected or takes it away, and Alt with a drag moves the part within its object (section 13, "Parts"); the right button's menu on an object, on the parts selected and on a plate. **differs**: Shift with a click adds to what is selected, as Ctrl does. **not yet**: the rectangle, object settings |
 | Dragging an object moves it on the bed | l.6553–6608 | **added** (section 13) |
 | Hovering changes no colour (the hover colours are commented out) | 3DScene.cpp l.362 | the same |
 | What is under the pointer is found by casting a ray at the meshes | `_picking_pass` l.9819, `SceneRaycaster` | **differs**: the one pixel under the pointer is drawn with every object and plate in a colour of its own, and read back (`renderer.js` `pick`) |
@@ -793,6 +794,7 @@ is of that model.
 | What is on no plate is not sliced | `PartPlate::obj_to_instance_set`, the "unprintable plate" | **added**: it is in no plate's list (`plates[].objects`), counts for no plate's filaments, and the list has it under "Outside" |
 | An instance over the edge of its plate stops the plate from being sliced: "An object is laid over the boundary of plate or exceeds the height limit. Please solve the problem by moving it totally on or off the plate, and confirming that the height is within the build volume." | `Plater::validate_current_plate` l.30333, GLCanvas3D.cpp l.4920 | **added**: the same words over the stage while the plate shown has such an object (`placings[].over`), and from `slice`, which refuses the plate. What reaches out of the plate is drawn darker (**had**). **not yet**: the height limit |
 | What was moved, turned or sized is stood on the bed again: an instance that stood on the bed stands on it after a turn or a new size; one left in the air after a move is brought down; one that was sunk stays sunk | `GLCanvas3D::do_move` l.7029, `do_rotate` l.7153, `do_scale` l.7296 | **added** (`Model::stand_in_scene`). **not yet**: sinking an object under the bed by moving it down, which the engine would not cut off at the bed |
+| An object is made of volumes (`ModelVolume`): model parts, negative volumes, modifiers, support blockers and enforcers (and Precise Seam's), each with its own mesh, its transformation within the object, name, config (`extruder` among it) and paint; every instance of the object has them alike | `libslic3r/Model.hpp` | **added**: each part of a `Shape` has a number that stays its own (`Shape::part_ids`), and the model edits parts (`Model::set_part_filament`, `rename_part`, `remove_parts`, `set_part_transforms`, `mirror_parts`, `split_part`, `set_part_kind`, `add_part`, `add_generic`, `add_from`). The 3MF reader now gives a part's own filament (`Part::own_filament`), the settings its metadata carries (`Part::settings`, kept and not read by a slice) and the object's own filament (`Object::filament`). A part moved within its object is sliced where it then is, in its filament; an untouched project slices as before, byte for byte |
 | A change to what is on a plate lets go of that plate's slice and no other | `PartPlate::update_slice_result_valid_state` | **added**: each plate has a `PlateStamp` (what its slice depends on: the shapes on it, where each stands, whether it is printed, the plate's place and first-layer order); an edit lets go of the slices whose stamp changed and calls a running slice off. A name is not in it: renaming keeps a slice. **differs**: taking a plate away numbers the later ones anew, and their slices go, the plate's number being in what is sliced (the prime tower's place) |
 
 ### `scene_edit`
@@ -819,6 +821,14 @@ undo history.
 | `split_objects` | `object` | "Split to objects": an object for each piece of the object's one mesh, or for each of its printed parts; each has a copy wherever the object had one, on the same plates, standing where its piece stood (brought down to the bed when it was in the air); `made` is the new copies. `note` says when modifiers or negative parts were left out. Refused, nothing changed: "The selected object couldn't be split." | "Split to Objects" |
 | `split_parts` | `object` | "Split to parts": the object's one part becomes a part for each piece of its mesh. Refused: "The target object contains only one part and can not be split." | "Split to parts" |
 | `lay_on_face` | `copy`, `normal` (three numbers, a face's from `scene_faces`) | turns the copy so that face points straight down, about the middle of its box, and stands it on the bed | "Gizmo-Place on Face" |
+| `part_filament` | `object`, `parts: [id]`, `filament` (from 1; 0 or null: "default", the object's) | a part's or a modifier's own filament | "Change Filament" |
+| `part_rename` | `object`, `part`, `name` | | "Rename Part" |
+| `part_delete` | `object`, `parts: [id]` | takes parts out; refused for the last printed part: "Deleting the last solid part is not allowed." When one part is left, its own filament becomes the object's | "Delete part" |
+| `part_transform` | `object`, `parts: [{ id, matrix }]` (each part's own coordinates to the object's), `name?` | sets where parts stand within their object, in every copy of it, then stands each copy on the bed again | as `transform` |
+| `part_mirror` | `copy`, `parts: [id]`, `axis` | mirrors parts along an axis of the scene, as they stand in that copy, about the middle of the box round them | "Mirror Object" |
+| `part_split` | `object`, `part` | "Split" of a part: a part for each piece of its mesh, in its place, each given the filament it printed in as its own. Refused: "The target object contains only one part and can not be split." | "Split to parts" |
+| `part_type` | `object`, `parts: [id]`, `kind` (`part`, `negative`, `modifier`, `support_blocker`, `support_enforcer`, `precise_seam`) | "Change type"; refused for the last printed part: "The type of the last solid object part is not to be changed." | "Change part type" |
+| `part_add` | `object`, `kind`, and `path` (a file, "Load...") or `shape` (`Cube`), `copy?` | adds a part; `part` in the answer is its number | "Load Part" / "Load Modifier", "Add primitive" |
 
 ### Undo and redo
 
@@ -837,7 +847,8 @@ undo history.
 | --- | --- | --- |
 | A click selects an instance; Ctrl adds or takes away; a click on nothing or Esc lets go; Ctrl+A selects all | GLCanvas3D.cpp l.6423–6551 | **had** (section 9); now by the copies' `id`, so what is selected survives every edit that leaves it there. Shift adds as Ctrl does |
 | Del or Backspace deletes what is selected | `Plater::remove_selected` l.25120, GUI_ObjectList.cpp l.4586 | **added** |
-| The list and the canvas show one selection | `ObjectList::update_selections`, `update_selections_on_canvas` | **added**, both ways |
+| The list and the canvas show one selection | `ObjectList::update_selections`, `update_selections_on_canvas` | **added**, both ways, parts as well as objects |
+| Selection modes: instances or volumes, one at a time; Alt picks the volume mode for a click (`set_volume_selection_mode(evt.AltDown() ? Volume : Instance)`), Alt+Shift adds a volume of the same instance or takes it away | GLCanvas3D.cpp l.6444–6510, `Selection::add_volumes` | **added**: Alt with a click selects the part under the pointer (picked by drawing that copy's parts each in a colour of its own), Alt+Shift adds or takes away a part of the same copy, a click without Alt selects the object again. The part is marked as the object is, its outline and the corners of its box. Parts are of one object; while they are selected, nothing else is |
 | The right button: the object's menu ("Delete", "Clone", "Printable", "Rename", "Fill bed with copies", "Set as an individual object", "Mirror", "Split", the settings…) | `GUI_Factories.cpp` l.649–1181 | **added**: "Delete" [Del], "Clone" [Ctrl+K], "Printable", "Rename", and the "Split" and "Mirror" sub-menus (below). **not yet**: the rest (see "Left for later") |
 | Ctrl+C / Ctrl+V copy and paste objects; Ctrl+K "Clone" asks how many | `Plater::copy_selection_to_clipboard` l.29941, `paste_from_clipboard`, `clone_selection` l.29965 | **added**: Ctrl+C notes what is selected, Ctrl+V puts a copy of each on the plate shown, Ctrl+K one beside each. **differs**: Ctrl+K makes one clone at a press and asks nothing; the clipboard is the page's, not the system's. **not yet**: Ctrl+X |
 | A clone or a paste is put on a free place found by the arranger | `Plater::find_new_position` l.16128, `Selection::paste_objects_from_clipboard` l.3384 | **differs**: the free place nearest what it was made of, by the boxes round the copies, 6 mm apart; beside the plates when the plate has no room |
@@ -852,7 +863,10 @@ too (at the head of Process).
 
 | C++ | Where | Here |
 | --- | --- | --- |
-| A tree: each plate ("Plate 1", with its name), under it the objects on it, under an object its parts, its instances when it has several, its layer ranges; what is on no plate under "Outside" | `ObjectDataViewModel.cpp` l.523, l.563 | **added**: plates, objects, instances ("Instance 1"), "Outside"; an object of several parts lists each part under it, before its instances, with its name, what it is in the tooltip ("Part", "Negative Part", "Modifier", "Support Blocker", "Support Enforcer"; a part that is not printed is quiet and slanted) and a printed part's filament. A file without plates lists its objects alone. **not yet**: selecting a part (a click on one selects its object), a part's own filament from the list, its menu, layer ranges |
+| A tree: each plate ("Plate 1", with its name), under it the objects on it, under an object its parts, its instances when it has several, its layer ranges; what is on no plate under "Outside" | `ObjectDataViewModel.cpp` l.523, l.563 | **added**: plates, objects, instances ("Instance 1"), "Outside"; an object of several parts lists each part under it, before its instances: the mark of its kind, its name, what it is in the tooltip ("Part", "Negative Part", "Modifier", "Support Blocker", "Support Enforcer", "Precise Seam"; a part that is not printed is quiet and slanted) and, for a part or a modifier, its filament. A file without plates lists its objects alone. **not yet**: layer ranges |
+| A part's row: a click selects the volume; Ctrl and Shift add parts of the same object; mixing kinds is refused with "Selection conflicts" ("If the first selected item is an object, the second should also be an object.", "If the first selected item is a part, the second should be a part in the same object.") | `ObjectList::selection_changed`, `check_last_selection` l.5619, `fix_multiselection_conflicts` | **added**: the same rules and words, said in the status line; nothing changes. A part is selected as it stands in the first copy the row is under |
+| A part's "Fila.": "default" and each filament (`BitmapChoiceRenderer`); "default" follows the object's filament; a part without its own shows the object's number; the object's own choice clears its parts' (`set_extruder`) | GUI_ObjectList.cpp l.777–810, l.1205–1226, ExtraRenderers.cpp l.320 | **added**: a list on a part's and a modifier's row, "default" first; closed, it shows the number the part then prints in. The object's list still sets every part, as before |
+| Renaming a part: a double click on its name, or F2 ("Rename Part") | `ObjectList::rename_item`, `update_name_in_model` l.1250 | **added**, as an object's name |
 | Columns "Name", printable (a mark to click), visibility, "Fila." (a list of the project's filaments, each with its colour), the marks for support paint, colour paint, sinking, settings | GUI_ObjectList.cpp l.445–510 | **added**: "Name", printable, "Fila.". An object whose parts print in several filaments shows "…" until one is chosen for all of it. **not yet**: hiding an object, the marks |
 | A click selects; Ctrl and Shift select several | `ObjectList::selection_changed` | **added** |
 | A double click on the name, or F2, renames in place; an empty name leaves the name as it was; `<>:/\|?*"` are not allowed | `ObjectList::rename_item` l.6307, `update_name_in_model` l.1233 | **added**: Enter takes the name, Escape or an empty name leaves it. **not yet**: the characters that are not allowed (nothing is written under an object's name yet) |
@@ -873,6 +887,7 @@ lasts only what is seen changes; letting go makes one `scene_edit`.
 | "Rotate" [R]: a ring for each axis round the selection, the radius the bounding sphere's and 5 mm; a drag turns about the axis; with the pointer between a third and two thirds of the radius the turn goes by eighths, from the ring to a tenth beyond it by 5° | `GLGizmoRotate::on_dragging` l.102, l.211–217 | **added**, with those regions. One object turns about its own middle, several about the middle of them all. **not yet**: the scale of ticks drawn round the ring, the readout beside the pointer (the fields show the angle as it goes) |
 | "Scale" [S]: grips at the foot of the box, two for X and two for Y, one above for Z, and four at the corners for all three at once; the size goes with how far the pointer is drawn out from the middle; Shift goes by 5%; Ctrl keeps the far side where it is ("Single sided scaling") | `GLGizmoScale3D::update_grabbers_data` l.220, `calc_ratio`, `do_scale_along_axis` l.414 | **added**: the grips along the object's own axes and at its corners, the steps with Shift; several objects have the corners only and grow about their middle. **not yet**: single sided scaling |
 | Esc closes the tool before it lets go of what is selected; the tool's key again closes it | `GLGizmosManager::on_key` | **added** |
+| With parts selected (the volume mode) the gizmos move, turn and size the parts within their object; `do_move` / `do_rotate` / `do_scale` set each volume's transformation and bring a flying instance down | GLCanvas3D.cpp `do_move` l.7029–7110, `do_rotate` l.7205 | **added**: Move (with an arrow along Z for a part: up or down within its object), Rotate and Scale act on the parts selected, and so does dragging with Alt; letting go makes one `part_transform`. While a drag lasts only the parts move on screen, in every copy of the object. "Lay on face" stays the object's (off while parts are selected), and so does which plate a copy is on |
 
 ### The number fields
 
@@ -887,6 +902,7 @@ as the reference's is.
 | Scale: "World" / "Object", "Scale" in percent with its reset, "Size" in mm, "uniform scale" | `do_render_scale_input_window` l.1721 | **added**. An object that is turned is sized as a whole in the world's coordinates, as in the C++ |
 | Inches for millimetres ("in") | `m_imperial_units` | **not yet**: no preferences |
 | What is typed is a step of its own: "Set Position", "Set Orientation", "Set Scale" | `change_position_value` l.286 and on | **added** |
+| The panel's title: "Object Operations" for an instance, "Volume Operations" for one part, "Group Operations" for several; a volume's scale and turn are its own, within its object | `GizmoObjectManipulation::update_settings_value` l.87–160 | **added**: the three titles; for a part "Scale" and "Absolute" are the part's own, "Size" as it is printed, and its "Position" Z can be typed. The list of coordinates is "World" / "Object", as the C++'s ("Part" is commented out there) |
 
 ### Split to objects, Split to parts
 
@@ -993,18 +1009,40 @@ the options. Steps 1 to 3 give arrangements that can be compared with the
 reference's on fixtures; the comparison needs the reference run with
 `--arrange`, which `edge-parity` does not do yet.
 
+### Parts
+
+Read from `GUI_ObjectList.cpp` (`load_subobject`, `load_modifier`,
+`load_generic_subobject`, `create_mesh`, `del_subobject_from_object`,
+`change_part_type`, `set_volume_type`, `split`, `set_extruder`),
+`GUI_Factories.cpp` (`create_bbl_part_menu`, the part menu the list
+shows; `part_menu`; `append_menu_items_add_volume`;
+`append_menu_item_change_filament`), `ExtraRenderers.cpp`
+(`BitmapChoiceRenderer`), `GLCanvas3D.cpp` (`on_mouse`, `do_move`),
+`Selection.cpp` (`center`, `drop`, `mirror`) and
+`Gizmos/GizmoObjectManipulation.cpp`.
+
+| C++ | Where | Here |
+| --- | --- | --- |
+| The part menu: "Delete", "Edit text", "Repair", "Simplify", "Center", "Drop", "Mirror", "Hide"/"Show", "Separate", "Split" ("To objects", "To parts", "By painted colour"), "Edit in Parameter Table", "Change type", "Reload from disk", "Replace with STL", "Edit in Blender", "Edit in FreeCAD", "Fillet / chamfer", "Export as one STL", then "Change Filament", "Override paint", the support groups, "Precise Seam Type" | GUI_Factories.cpp l.2539–2585, l.2998 | **added**: "Delete", "Center", "Drop" (both "Move Object" steps), "Mirror" ▸ "Along X axis"…, "Split" ▸ "To objects" (off, as the C++ has it for a part) and "To parts", "Change type", "Change Filament" ("Default" and each filament by its preset's name; "Set Filament for selected items" for several; only with more than one filament, for parts and modifiers). **differs**: "Change type" is a sub-menu of the six kinds, where the C++ asks in a dialog ("Choose part type", "Type:"); "Split" is on whenever "To parts" can be done (see "Errors found in the C++"). **not yet**: the rest (each needs something the model does not have: text and SVG parts, mesh repair and simplifying, hiding, a part made an object of its own, per-part settings, reloading from a file, exporting). "Rename" is not in the C++'s shown part menu either; a double click or F2 renames |
+| "Add part", "Add negative part", "Add modifier", "Add support blocker", "Add support enforcer", "Add precise seam" in the object's menu, each "Load..." and the generic shapes "Cube", "Cylinder", "Sphere", "Cone", "Disc", "Torus", text, SVG… | GUI_Factories.cpp l.426, l.659, l.922 | **added**: the first five, each with "Load..." (an STL's or a 3MF's printed geometry, as it stands in its file, named after it: "Load Part" / "Load Modifier") and "Cube" (a tenth of the bed's greater side, square to the bed, beside the right front corner of the object's box at its foot: "Add primitive", named "Generic-Cube"). The part made is selected. **not yet**: "Add precise seam", "Height range Modifier", "Color Pattern...", and "Cylinder", "Sphere", "Cone", "Disc", "Torus" and the rest, which wait for `edge_mesh::primitives` to make them (it makes boxes only) |
+| A new model part takes the object's `extruder` as its own; any other kind none | GUI_ObjectList.cpp l.2416–2421, l.2529–2534 | **added** |
+| Deleting a part: not the last solid one ("Deleting the last solid part is not allowed."); when one volume is left, its config goes to the object | l.2856–2913 | **added**, the filament going to the object; a part's other settings stay with the part (the model keeps no settings of an object's) |
+| Changing a part's type: the last solid part keeps its type ("The type of the last solid object part is not to be changed."); the volumes are sorted by type after | `change_part_type` l.5819, `set_volume_type` l.5930 | **added**. **differs**: a part keeps its place in the list; the reference sorts the volumes by type |
+| "Split" of a part: a part for each piece, named with `_1`, `_2`…, each given the original's filament (`extruder_id`) | `ModelVolume::split` Model.cpp l.3186 | **added**, the pieces in the part's place, keeping its transform (see the error at l.3014 below) |
+| Modifiers carry settings for the region inside them; support blockers and enforcers say where supports go | `PrintObject`, `SupportMaterial` | **not followed** by the engine: their settings are kept with the part (`Part::settings`) and not read. They are kept through every edit, listed and drawn see-through in their colours, and a print with any of them says so under "About this print" ("the project has modifiers, which are not followed: …", "the project has support blockers, which are not followed: supports go where the settings put them") |
+
 ### Left for later
 
 | C++ | Waits for |
 | --- | --- |
-| "Lay on face": its second mode, "Face under cursor" (any flat face under the pointer, recessed ones too, and Alt to use it for a moment), and laying one part of an object on a face | the first needs the page to grow a flat face from the triangle under the pointer (`grow_flat_face`) and to warn of a recessed one; the second, parts that can be selected (see below) |
+| "Lay on face": its second mode, "Face under cursor" (any flat face under the pointer, recessed ones too, and Alt to use it for a moment), and laying one part of an object on a face | the first needs the page to grow a flat face from the triangle under the pointer (`grow_flat_face`) and to warn of a recessed one; the second, the faces of one part (`scene_faces` for a part) and a turn of the part within its object |
 | "Fill bed with copies" (`GUI_Factories.cpp` l.1146, `FillBedJob.cpp`) | the reference's arrangement: it asks the arranger how many more fit |
 | Sinking an object under the bed; the arrow along Z; "Drop" | the engine cutting what is under the bed away (it slices from an object's lowest point) |
 | "Auto orient", "Cut", "Mesh Boolean", "Simplify" | mesh operations the engine does not have |
 | "Split" > "By painted colour" ("Convert the part's colour painting into separate parts, one per filament") | cutting a mesh along its painted borders, which the engine does only layer by layer while slicing |
-| Selecting a part in the list or the scene, and what is done to one part: "Split" of one part of several, its own filament, moving, turning, mirroring or laying it on a face, deleting it, its menu | parts that can be selected: the list shows them, read only, and a click on one selects its object |
-| Mirroring one part of an object (the part's menu), and the other instances of the object taking the mirror too | parts that can be selected; instances kept alike, which no tool here does yet |
-| Parts in the list, a filament for one part, modifiers and their settings, "Set as an individual object" | per-object and per-part settings, which the engine does not read (section 12) |
+| The other instances of an object taking a mirror or a turn of the object too | instances kept alike, which no tool here does yet (a part's edits are every instance's, as in the C++) |
+| A modifier's and a part's own settings ("Edit in Parameter Table", "Add settings"), "Separate" / "Set as an individual object", copying and pasting parts | per-object and per-part settings, which the engine does not read (section 12); copying parts in the model |
+| "Center" and "Drop" for an object; "Hide" / "Show" of a part | nothing; not built in this pass |
 | Saving the project with its edits | **added**: section 15 |
 | The glow round what is selected, the red background while something is over the edge, the ticks of the rotate ring | nothing; they are looks, left for a pass on the stage's own drawing |
 | Rectangle selection (Shift with a drag), dragging rows of the list | nothing; not built in this pass |
@@ -1077,6 +1115,46 @@ on the stage or in the list (it does not seem to send the page a second
 button), so the object's menu was opened by a `contextmenu` event on the
 list's row, or by `GL.edit.menu`, and then gone through with the mouse. The screenshots are under `target/ui-shots/tools/`.
 
+The eighth pass (parts): in the engine, `crates/edge-3mf/src/tests.rs`
+(an object's and a part's own filament and a part's settings read) and
+`crates/edge-engine/tests/parts.rs` (a part's own filament printed and given
+back to "default"; a part moved, lifted, both lifted and brought down; the
+last solid part kept; a part made a modifier and a negative part; a part of
+two pieces split in its place; a part mirrored about its middle, still a
+solid; a part renamed and a cube added beside the object). In the session
+(`src/api/edit/tests.rs`): `twopart_groups.3mf`'s second part in filament 2
+slices with both filaments and undo gives the bytes back; its third part
+moved 15 mm slices elsewhere and undo gives the bytes back; a cube modifier,
+a part from a file, renamed, split, retyped, deleted (the last solid part
+refused both ways), mirrored, and the seven steps taken back by name. The
+CLI's G-code is the starting commit's byte for byte for the three plates of
+`mcbrim_test.3mf`, `twopart_groups.3mf`, the `halves` and `inset`
+fixtures and eight more projects (`twotone` fails alike in both: its
+settings name one filament).
+
+In the served page (the app's browser pane, 1280 × 820, dark and light),
+with `mcbrim_test.3mf` and the `twotone` fixture on the U1's presets: a part
+of `mcbrim_test.3mf` selected in the list (its outline and box in the
+scene), its filament list ("default", 1 to 7) and another filament picked;
+`twotone`'s first part selected by Alt and a click in the scene, given
+filament 2 from the part menu ("Change Filament"), the scene's colour
+changed, sliced: Preview's "Filament" view showed one filament; undone with
+the toolbar, sliced again: two filaments and a prime tower. The part moved
+76 mm by the Move arrow ("Volume Operations"), lifted 5 mm by typing Z,
+sliced (55 layers, to 11.05 mm); deleted with Del (the object then in
+filament 2), undone with Ctrl+Z; a two-shell STL added by "Add part" ▸
+"Load...", split with the toolbar's "Split to parts", one piece made a
+modifier ("Change type", see-through, the print's note under "About this
+print"); "Add modifier" ▸ "Cube"; a part renamed by a double click; turned
+by 45° typed into "Relative"; mirrored from its menu, sliced; each step
+undone back to an unmodified project. Two parts selected with Cmd in the
+list ("Group Operations"); an object then Cmd-clicked gave "Selection
+conflicts". The browser pane's own clicks with Cmd and with Alt and a drag
+did not always reach the page, so Alt with a drag was run through the
+editor's own `grab`, `drag` and `drop` (the part moved 48.74 mm, "Move
+Object"). The screenshots are under the session's scratch folder,
+`ui_parts/shots/`.
+
 ### Errors found in the C++
 
 - `3DScene.cpp` l.351: `#ifdef ENABBLE_OUTSIDE_COLOR` (misspelt) opens a
@@ -1100,6 +1178,22 @@ list's row, or by `GL.edit.menu`, and then gone through with the mouse. The scre
   which of them are paired (and so how "Split to objects" and "Split to
   parts" divide the mesh) can change from one run to the next. Here the
   pairs are worked out in one pass, in order.
+- `GUI_Factories.cpp` l.2576–2577 (`create_bbl_part_menu`, the part menu
+  the object list shows): the "Split" sub-menu is enabled by
+  `can_split(true) || can_split_by_color()`, but for a part
+  `ObjectList::is_splittable(true)` is always false (GUI_ObjectList.cpp
+  l.3496, `type == itVolume`), so unless the part is painted the whole
+  sub-menu is off and its "To parts", enabled by `can_split(false)`, can
+  never be reached from a part's menu. Here "Split" is on when "To parts"
+  can be done.
+- `GUI_ObjectList.cpp` l.2892–2903 (`del_subobject_from_object`): after the
+  last volume's config is applied to the object it is reset, and only then
+  is `last_volume->config.has("extruder")` asked, which is always false; the
+  block is dead (the extruder already went over with `apply`).
+- `Model.cpp` l.3253–3262 (`ModelVolume::split`): the loop that drops
+  volumes whose convex hull is degenerate runs over all of the object's
+  volumes, not only the new pieces, so splitting one part can delete another,
+  unrelated flat part of the same object. Here only the pieces are checked.
 - `libslic3r/Model.cpp` l.3014: `ModelVolume::center_geometry_after_creation`
   moves the part by the shift of its mesh as it is (`translate(shift)`),
   not by that shift turned and sized by the part's own transform. Called
@@ -1312,10 +1406,10 @@ entry, in a fixed order:
 | `[Content_Types].xml`, `_rels/.rels` | written afresh, as the reference writes them; `_rels/.rels` names the cover (`Auxiliaries/.thumbnails/…` when the file had one, else the first plate's picture while that is written) |
 | `3D/3dmodel.model`: the header, an object of components for each object, the build (each copy: transform, printable) | written afresh. The header keeps every `<metadata>` the file had (title, designer, licence, description…), with `Application` "EdgeSlicer-2.4.9.0" (the pinned reference's version, `edge_3mf::REFERENCE_VERSION`, checked against the submodule by a test), `BambuStudio:3mfVersion` 1, the dates and the designer's id empty as the reference writes them. The reference reads a file as a whole project (plates, settings, presets) only when its `Application` names EdgeSlicer, Snapmaker Orca or Bambu Studio, so the reference's own name is the one written. Transforms are written as the shortest text that reads back to the same number (the reference writes 9 digits) |
 | `3D/Objects/<name>_<n>.model`, `3D/_rels/3dmodel.model.rels` | written afresh: a file for each object, each mesh of it that no earlier part has (the same mesh painted alike is written once and named from every part that has it, as `ShareMesh` does); vertices as the shortest text that reads back to the same `f32`; each triangle with every attribute it carried as the file had it (`paint_color`, `paint_seam`, `paint_supports`, `paint_fuzzy_skin`, texture layers, `face_property`). A `/` or another character a path cannot hold in an object's name is written `_` in the file's name (the reference writes the name as it is) |
-| `Metadata/model_settings.config` | written afresh from the model: each object's name and filament and each part's (`extruder`: the object's when its printed parts agree, each part's own only where it differs), each part's `subtype`. Kept as the file had them: every other metadata and setting of each object and part (per-object and per-part settings, modifiers' settings, `matrix`, `source_*`, Precise Seam's type, embossed text and SVG descriptions, `mesh_stat`), each plate's own (`locked`, `bed_type`, `print_sequence`, `first_layer_print_sequence`, `spiral_mode`, `filament_map_mode`, `filament_maps` with one entry for each filament, `print_history`…), each copy's place in the assembly view while its object has all its copies, and each copy's `identify_id` (the number the reference labels it with in G-code) while it has. Plates are numbered as they stand, each with its name and its copies |
+| `Metadata/model_settings.config` | written afresh from the model: each object's name and filament (`extruder`), each part's name, `subtype`, own filament (`extruder`, none for "default") and, once it has moved, `matrix` (see "Parts" below). Kept as the file had them, where the part is still what it was read as: every other metadata and setting of each object and part (per-object and per-part settings, modifiers' settings, `matrix`, `source_*`, Precise Seam's type, embossed text and SVG descriptions, `mesh_stat`), each plate's own (`locked`, `bed_type`, `print_sequence`, `first_layer_print_sequence`, `spiral_mode`, `filament_map_mode`, `filament_maps` with one entry for each filament, `print_history`…), each copy's place in the assembly view while its object has all its copies, and each copy's `identify_id` (the number the reference labels it with in G-code) while it has. Plates are numbered as they stand, each with its name and its copies |
 | `Metadata/project_settings.config` | the settings, below |
 | `Metadata/slice_info.config` | written afresh: the header alone, as the reference writes a project saved unsliced |
-| `Metadata/layer_heights_profile.txt` (variable layer height), `layer_config_ranges.xml` (height ranges and their settings), `brim_ear_points.txt`, `cut_information.xml` (cut connectors) | kept, each object's line or block written under its place in the list as it stands, so they follow an object when one before it is deleted; a clone carries its original's, as the reference's clone does |
+| `Metadata/layer_heights_profile.txt` (variable layer height), `layer_config_ranges.xml` (height ranges and their settings), `brim_ear_points.txt`, `cut_information.xml` (cut connectors) | kept, each object's line or block written under its place in the list as it stands, so they follow an object when one before it is deleted; a clone carries its original's, as the reference's clone does. A cut connector names its part by the part's place among the object's parts, which is written as it now stands (a part before it deleted, one added after it); once the connector's part itself is deleted or split, the object's cut information is not written, and that is asked about first |
 | `Metadata/custom_gcode_per_layer.xml` (pauses, colour changes, custom G-code at layers) | kept, each plate's under its number as it stands |
 | `Metadata/plate_<n>.png`, `_small`, `plate_no_light_<n>`, `top_<n>`, `pick_<n>` | kept for each plate while it is as it was read (`PlateStamp`: what is on it and where, its filaments and first-layer order), under its number now; a plate that has changed is saved without pictures, which would show it as it was. **not yet**: drawing new ones |
 | `Metadata/process_settings_<n>.config`, `filament_settings_<n>.config`, `machine_settings_<n>.config` (presets the file carries) | kept while the project is saved with its file's own settings; with presets chosen here they are not, and that is asked about first |
@@ -1328,6 +1422,31 @@ The same project gives the same bytes: the order is fixed and every entry
 carries one time, `SOURCE_DATE_EPOCH` when it is set, else 1980-01-01. A
 file is written to `<path>.tmp` and moved into place once whole, so what was
 at `path` is left as it was when writing fails.
+
+### Parts
+
+A part keeps what its file held of it in one place, `edge_3mf::PartKept`
+(its `<part>` entries in order, its `subtype` as written, what its mesh's
+triangles carry, and what it was read as); `Part::settings()` lists its own
+settings from there. What a part was read as (its name, kind, own
+filament, place in its object, mesh, place among the parts) tells the
+writer what has been edited since: an entry the edit did not touch is
+written as the file had it, so an unedited project is written as before.
+
+| Edit | What the saved project holds | Read back by the reference as |
+| --- | --- | --- |
+| A part given a filament of its own; put back to "Default" | its `extruder`, set in place or added after its metadata; for "Default" none (`ModelVolume::extruder_id` then takes the object's) | the part's volume in that filament; "Default" prints in the object's |
+| An object given a filament | the object's `extruder`; its parts' own taken away, as the C++ clears them | every part in the object's filament |
+| A part renamed | its `name`, in its place among the entries | the volume's name |
+| A part deleted | its `<part>`, mesh and entries gone with it; the others' places close up (they are written in order). The last part of an object left alone gives its own settings to the object, and its filament, as the C++ applies the last volume's config to the object (GUI_ObjectList.cpp `del_subobject_from_object`) | the object without it |
+| A part moved, turned, scaled, mirrored | its component's `transform` (what places it) and its `matrix` (the C++ reads it only for "Reload from disk", `source.transform`) | the volume where it stands, mirrored where it is |
+| A part split | each piece a part of the part's kind with its settings and its filament as its own, named `_1`, `_2`…, without its `source_*`, embossed text, `matrix` or `mesh_stat` of the whole, and without the paint, as Model.cpp `ModelVolume::split` makes each piece a copy of the part with the source and facets reset | the pieces, each with the part's settings |
+| A part's kind changed | its `subtype`; made a Precise Seam part, `modifier_part` with `precise_seam_type` "precise_seam_center" (the type the C++ gives one) and its settings kept under `precise_seam_config:`; made something else, those undone | the volume of that kind |
+| A part added (a file's, or a cube) | a `<part>` with its name, kind, `matrix`, filament when it has its own, and `mesh_stat` | the added volume |
+
+What each triangle carries (paint) is written only with the mesh it was
+read with: a split part's pieces are new meshes and carry none, as in the
+C++.
 
 ### The settings
 
@@ -1355,7 +1474,10 @@ What the file held that a save would not keep is listed, and nothing is
 written until the person says to: the presets it carries when presets are
 chosen here; what goes by objects' places (above) once an object of the
 file is deleted; the assembly view of an object some of whose copies were
-deleted; an entry whose name reaches outside the file. The reference never
+deleted; the cut information of an object whose connector part was deleted
+or split; an entry whose name reaches outside the file. A part's own edits
+lose nothing else: what a deleted part held goes with it, and a split
+part's settings go with each piece. The reference never
 asks this, keeping everything it reads; the words are this app's. `edge
 save` lists the same and writes only with `--accept-losses`.
 
@@ -1411,6 +1533,39 @@ save` lists the same and writes only with `--accept-losses`.
   conflicting paths, as it should be; this engine does not check that.
 - Not checked: the window's own close question (the window was not
   opened in this pass; the page's side and the session's are as above).
+- Parts (ninth pass). `crates/edge-engine/tests/save.rs`: on
+  `twopart_groups.3mf` (a part with settings of its own), a two-part
+  project built in the test (a painted part of two pieces with settings,
+  a part with a filament of its own) and `mcbrim_test.3mf` (painted
+  parts): a part's own filament and "Default", an object's filament, a
+  rename, deleting one part and all but one, moving, turning, scaling and
+  mirroring, splitting, each kind and Precise Seam and back, a cube and a
+  file added; each saved, opened again, is the edited model (names, kinds,
+  filaments, transforms to the bit, meshes, paint, settings), slices to the
+  same G-code, and saves twice to the same bytes, with nothing asked.
+  `crates/edge-3mf/tests/round_trip.rs`: a cut connector follows its part
+  and one deleted is asked about. `src/api/save/tests.rs`: parts edited
+  through `scene_edit`, saved as, are as left when the file is opened in
+  another session; undo after the save marks the project unsaved. The
+  same edits on the fixtures `twotone`, `halves`, `inset` and on
+  `mcbrim_test.3mf`, through the engine (17 edits each, every one the same
+  model and the same G-code after saving), and the CLI's G-code of the
+  lettered plates, `twopart_groups`, the fixtures and a Benchy byte for
+  byte what main's binary writes.
+- The C++ slicer (headless, `edge-parity`) on each saved file, with a
+  project of seven filaments: a part given filament 2 is printed in it
+  (twotone, a twopart part: filament 2 used for that part's volume), put
+  back to "Default" and an object's filament print in the object's; a
+  part moved, turned or scaled has its toolpaths where it now is (5 mm
+  further in X for a move); a part deleted is gone (its filament no
+  longer used); a negative part, a modifier, a blocker and an enforcer
+  are not printed; a Precise Seam part is read as one and, made a part
+  again, printed as before; a split part's pieces print in its filament
+  with its settings (the same material as before the split); a cube
+  modifier adds nothing printed and a part added from a file is printed;
+  on `mcbrim_test.3mf` plate 1 a part deleted, moved or made negative
+  changes the filament used as it does here. A file added at a place
+  partly off the bed is refused by both slicers alike.
 
 ### Not yet
 
@@ -1434,6 +1589,13 @@ save` lists the same and writes only with `--accept-losses`.
 - `bbs_3mf.cpp` l.8302: an object's file is named `3D/Objects/<name>_<id>.model`
   from its name as it is, so a `/` in a name makes a folder of it (and `..`
   climbs one).
+- `bbs_3mf.cpp` l.9463 with l.6048–6052 and l.6151–6152: a part's
+  `matrix` is written as `volume->get_matrix() * source.transform`, and
+  read back into `source.transform` while the component's transform
+  places the volume; so every save and open multiplies the part's
+  placement into its `matrix` once more (a part at Z 11 is written at 22
+  the next time). Only "Reload from disk" reads it. Found by reading; here
+  a moved part's `matrix` is where it stands.
 - `bbs_3mf.cpp` l.9274–9276: `_add_project_embedded_presets_to_archive`
   builds a header line into `out` that is never used.
 - `bbs_3mf.cpp` l.8039: the cover's `rel-5` line is written without the

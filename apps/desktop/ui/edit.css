@@ -87,6 +87,10 @@
    not printed (a modifier, a negative part) in the quiet colour. */
 .obj-row.part.helper .obj-name { color: var(--text-3); font-style: italic; }
 .obj-fila-number { padding-left: var(--space-1); font: var(--size-small) var(--font-mono); color: var(--text-2); }
+/* A part's row: the mark of its kind before its name. */
+.obj-row.part .obj-name { display: flex; align-items: center; gap: 5px; }
+.obj-kind { flex: none; width: 13px; height: 13px; fill: none; stroke: currentColor; stroke-width: 1.3; stroke-linecap: round; stroke-linejoin: round; }
+.obj-label { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
 .obj-name { min-width: 0; padding: 4px var(--space-2); border: 0; background: none; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; text-align: left; }
 .obj-name:hover:not(:disabled), .obj-plate-name:hover:not(:disabled) { background: var(--fill-hover); }
 .obj-name:focus-visible, .obj-plate-name:focus-visible { outline: 2px solid var(--focus); outline-offset: -2px; }

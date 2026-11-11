@@ -455,11 +455,20 @@ parent's row indented by 22 px. A name too long is cut with an ellipsis and
 given whole in its `title`. The value's list is a `bare` listbox, as in a
 card's row. A name is renamed in place: the name becomes a field of the
 same height, Enter takes it, Escape leaves it. A part of an object (`.obj-row.child.part`)
-is a child row with no tool and its filament as a swatch and a number
-(`.obj-fila-number`, fixed-width, `--text-2`), not a list: it is read
-only. A part that is not printed (`.helper`: a modifier, a negative
-part) has its name in `--text-3`, slanted; what it is is in the name's
-tooltip.
+is a child row with no tool: in its name the mark of its kind first
+(`svg.obj-kind`, 13 px, a stroke of `currentColor` like every icon; one
+drawing for each kind in `objects.js`), then the name (`.obj-label`, cut
+with an ellipsis); for a part or a modifier its filament as a swatch and
+a `bare` list whose first entry is "default" (closed, it shows the number
+the part then prints in). It is selected like any row (the accent's tint
+and bar), and only parts of one object are selected at once. A part that
+is not printed (`.helper`: a modifier, a negative part, a support blocker
+or enforcer) has its name in `--text-3`, slanted; what it is is in the
+name's tooltip.
+
+What is said when a click is refused ("Selection conflicts" and why) goes
+in the status line, which keeps a `\n` as a new line (`white-space:
+pre-line`); no dialog is opened for it.
 
 ### What lies over the stage
 

@@ -238,6 +238,7 @@ impl Model {
                                 .map(|name| name.to_string_lossy().into_owned())
                         })?
                     }),
+                filament: object.filament,
                 parts: object.shape.parts.clone(),
                 instances: object
                     .copies

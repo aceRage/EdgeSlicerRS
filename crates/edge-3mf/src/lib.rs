@@ -77,6 +77,10 @@ pub struct Object {
     /// The object's id in the 3MF, which plates and settings refer to.
     pub id: u32,
     pub name: Option<String>,
+    /// The filament the object itself was given (its `extruder`), counting
+    /// from 1, when it was: its parts without one of their own print in
+    /// it, and in filament 1 when it has none.
+    pub filament: Option<usize>,
     pub parts: Vec<Part>,
     pub instances: Vec<Instance>,
     /// What the file holds of it beyond this, kept to be written back.
@@ -90,6 +94,10 @@ pub struct Part {
     /// Which filament the part is printed in, counting from 1: its own
     /// choice, or else its object's, or else the first.
     pub filament: usize,
+    /// The filament the part was given itself (its own `extruder`), when
+    /// it was; without one it follows its object (the reference's
+    /// "default"), and `filament` is the object's.
+    pub own_filament: Option<usize>,
     /// Shared between parts and objects that reuse the same geometry.
     pub mesh: Arc<Mesh>,
     /// The mesh's triangles as painted for filaments, cut up where the
@@ -104,8 +112,20 @@ pub struct Part {
     /// decorates a surface rather than being a piece of the object.
     pub decoration: bool,
     /// What the file holds of it beyond this (its settings, what its
-    /// triangles carry), kept to be written back.
+    /// triangles carry, what it was read as), kept to be written back:
+    /// see [`Part::settings`].
     pub kept: Option<Arc<PartKept>>,
+}
+
+impl Part {
+    /// The part's own settings as its file carries them, in the file's
+    /// order ([`PartKept::settings`]); none for a part no file held.
+    pub fn settings(&self) -> Vec<(String, String)> {
+        self.kept
+            .as_deref()
+            .map(PartKept::settings)
+            .unwrap_or_default()
+    }
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -231,6 +251,10 @@ impl Project {
                         name: object_settings
                             .and_then(|s| s.name.clone())
                             .or_else(|| raw.name.clone()),
+                        filament: object_settings
+                            .and_then(|s| s.extruder)
+                            .filter(|extruder| *extruder > 0)
+                            .map(|extruder| extruder as usize),
                         parts: parts(&files, file, raw, object_settings, &kept_parts)?,
                         instances: Vec::new(),
                         kept: Some(Arc::new(ObjectKept {
@@ -616,8 +640,14 @@ impl Project {
     /// Whether anything on a plate (or in the whole project for `None`)
     /// has a Precise Seam part, which is not followed.
     pub fn has_precise_seams(&self, plate: Option<usize>) -> bool {
+        self.has_parts_of(plate, PartKind::PreciseSeam)
+    }
+
+    /// Whether anything printable on a plate (or in the whole project for
+    /// `None`) has a part of this kind.
+    pub fn has_parts_of(&self, plate: Option<usize>, kind: PartKind) -> bool {
         self.printable(plate)
-            .any(|(object, _)| (object.parts.iter()).any(|part| part.kind == PartKind::PreciseSeam))
+            .any(|(object, _)| (object.parts.iter()).any(|part| part.kind == kind))
     }
 
     /// The printable instances on a plate, each with its object.
@@ -831,8 +861,32 @@ fn find<'a>(
 }
 
 /// An object's parts: itself when it is a mesh, otherwise one per mesh found
-/// under each of its components.
+/// under each of its components; each part keeps what it was read as, to
+/// tell an edit of it when it is written back.
 fn parts(
+    files: &HashMap<String, ModelFile>,
+    file: &str,
+    object: &RawObject,
+    settings: Option<&ObjectSettings>,
+    kept: &HashMap<u32, PartKept>,
+) -> Result<Vec<Part>, Error> {
+    let mut parts = read_parts(files, file, object, settings, kept)?;
+    for (index, part) in parts.iter_mut().enumerate() {
+        let read = kept::PartRead {
+            index,
+            name: part.name.clone(),
+            kind: part.kind,
+            own_filament: part.own_filament,
+            transform: part.transform,
+            mesh: part.mesh.clone(),
+        };
+        let own = part.kept.get_or_insert_with(Default::default);
+        Arc::make_mut(own).read = Some(read);
+    }
+    Ok(parts)
+}
+
+fn read_parts(
     files: &HashMap<String, ModelFile>,
     file: &str,
     object: &RawObject,
@@ -849,6 +903,7 @@ fn parts(
                 name: object.name.clone(),
                 kind: PartKind::Normal,
                 filament: object_filament,
+                own_filament: None,
                 mesh: mesh.clone(),
                 paint: paint.clone(),
                 seam: seam.clone(),
@@ -877,14 +932,16 @@ fn parts(
             &mut leaves,
         )?;
         for (name, mesh, paint, seam, extras, transform) in leaves {
+            let own =
+                chosen(part_settings.and_then(|s| s.extruder)).map(|extruder| extruder as usize);
             let mut part_kept = kept.get(&component.object).cloned().unwrap_or_default();
             part_kept.extras = extras;
             parts.push(Part {
                 kept: Some(Arc::new(part_kept)),
                 name: part_settings.and_then(|s| s.name.clone()).or(name),
                 kind: part_settings.map_or(PartKind::Normal, |s| s.kind()),
-                filament: chosen(part_settings.and_then(|s| s.extruder))
-                    .map_or(object_filament, |extruder| extruder as usize),
+                filament: own.unwrap_or(object_filament),
+                own_filament: own,
                 mesh,
                 paint,
                 seam,
