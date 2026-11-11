@@ -306,3 +306,34 @@ fn each_filament_can_have_a_preset_of_its_own() {
         job.remarks
     );
 }
+
+#[test]
+fn a_projects_plates_are_listed_with_what_is_on_each() {
+    let project = reference("tests/mcbrim_test.3mf");
+    let opened = edge_engine::open(&project, None).unwrap();
+    let plates = opened.plate_list();
+    assert_eq!(
+        plates.iter().map(|plate| plate.id).collect::<Vec<_>>(),
+        opened.plates()
+    );
+    assert_eq!(plates.len(), 3);
+    for plate in &plates {
+        // What a plate is listed with is what taking that plate gives.
+        let taken = edge_engine::open(&project, Some(plate.id)).unwrap();
+        assert_eq!(plate.filaments, taken.filaments(), "plate {}", plate.id);
+        assert_eq!(
+            plate.objects.is_empty(),
+            plate.filaments.is_empty(),
+            "plate {}",
+            plate.id
+        );
+    }
+    assert!(plates.iter().any(|plate| plate.filaments.len() > 1));
+    // A bare model has no plates to list.
+    let model = edge_engine::open(
+        &reference("resources/handy_models/OrcaToleranceTest.stl"),
+        None,
+    )
+    .unwrap();
+    assert!(model.plate_list().is_empty());
+}
