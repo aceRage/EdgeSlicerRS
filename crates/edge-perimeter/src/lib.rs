@@ -6,10 +6,14 @@
 //! the gaps between walls filled by lines of whatever width fits;
 //! [`arachne`] lays walls of changing width. Both follow one wall over
 //! top surfaces, a precise outer wall, walls over fill that hangs over
-//! air (`extra`) and fuzzy skin (`edge-fuzzy`). Not ported: thin-wall
+//! air (`extra`) and fuzzy skin (`edge-fuzzy`); before either, a hole
+//! that narrows from the layer below can be bridged without walls
+//! (`counterbore`). Not ported: thin-wall
 //! detection, spiral vase, and the nesting order loops are printed in,
 //! which the writer settles.
 
+mod bridge_detector;
+mod counterbore;
 mod extra;
 mod settings;
 
@@ -21,6 +25,7 @@ use edge_extrusion::{
 };
 use edge_geom::{Coord, ExPolygon, scaled, unscaled};
 
+pub use counterbore::{Counterbore, CounterboreMode, Counterbores, split_counterbores};
 pub use settings::{ArachneSettings, FuzzySettings, WallSettings};
 
 /// How much of its spacing an external wall may lose before a narrow island
