@@ -940,6 +940,19 @@ pub fn slice(job: Job, watch: &dyn Watcher) -> Result<Sliced, Failure> {
     order_notes.extend(size_notes);
     order_notes.extend(ironing_notes);
     order_notes.extend(crate::unfollowed::notes(&settings, bodies.len()));
+    // Everything on the plate is sliced as one, so travel that goes
+    // round the walls takes a move from one object to another as it
+    // takes one between two pieces of an object: along the inside of
+    // each. The reference keeps objects apart and takes such a move
+    // round their holes only (AvoidCrossingPerimeters.cpp
+    // `get_boundary_external`).
+    if objects.len() > 1 && settings.flag("reduce_crossing_wall")?.unwrap_or(false) {
+        order_notes.push(
+            "reduce_crossing_wall: a move from one object to another follows the inside of each \
+             as far as it can, where the reference takes it round their holes only"
+                .to_owned(),
+        );
+    }
     if used.len() > 1 {
         if let Some(kind) = settings.text("toolchange_ordering")
             && kind != "default"
@@ -1339,10 +1352,37 @@ impl Sliced {
                 .into());
             }
         }
+        // What travel is routed by where it is to go round the inside of
+        // the walls (`reduce_crossing_wall`): each layer's outline, all
+        // filaments together, its top surfaces, and how its walls are
+        // spaced (AvoidCrossingPerimeters.cpp `get_boundary`,
+        // `get_perimeter_spacing`, `get_external_perimeter_width`).
+        let routed = self.print.reduce_crossing_wall;
+        let tops: Vec<Vec<ExPolygon>> = (0..self.layers.len())
+            .filter(|_| routed)
+            .map(|index| {
+                (self.surfaces_by.iter())
+                    .flat_map(|surfaces| &surfaces[index])
+                    .filter(|surface| surface.kind == edge_infill::SurfaceKind::Top)
+                    .map(|surface| surface.area.clone())
+                    .collect()
+            })
+            .collect();
+        let mut slices = Vec::new();
+        for turn in self.entries.iter().filter(|_| routed) {
+            let index = turn.layer;
+            let walls = self.walls.params(self.height_of(index), index == 0)?;
+            slices.push(edge_gcode::Slices {
+                outline: &self.layers[index].regions,
+                tops: &tops[index],
+                spacing: walls.inner.spacing,
+                outer_width: walls.outer.width,
+            });
+        }
         // Whole or not at all: a file cut short by an error must never be
         // left where it could be sent to a printer.
         let mut text = Vec::new();
-        let summary = edge_gcode::write_tools(&mut text, &plan, &prints)?;
+        let summary = edge_gcode::write_routed(&mut text, &plan, &slices, &prints)?;
         Ok(Gcode { text, summary })
     }
 }

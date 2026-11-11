@@ -12,6 +12,7 @@
 //! labels.
 
 mod arc;
+mod avoid;
 mod chain;
 mod circle;
 mod cooling;
@@ -28,12 +29,14 @@ use std::{
 };
 
 use cooling::{Slowdown, Timing};
+use edge_avoid::Kind;
 use edge_config::FloatOrPercent;
 use edge_extrusion::{ExtrusionLoop, ExtrusionPath, Flow, Role};
 use edge_geom::{ExPolygon, Point2, scaled, unscaled};
 use edge_template::{TemplateError, Value, Variables};
 use rayon::prelude::*;
 
+pub use edge_avoid::{Detour, Slices};
 pub use seam::Seam;
 pub use settings::{Lift, OverhangFan, PrintSettings, WallDirection, WallOrder};
 
@@ -182,6 +185,26 @@ pub fn write_tools(
     layers: &[Layer<'_>],
     settings: &[PrintSettings],
 ) -> Result<Summary, GcodeError> {
+    write_routed(out, layers, &[], settings)
+}
+
+/// [`write_tools`], with what travel is routed by where the settings
+/// ask for it to go round the inside of the walls
+/// (`reduce_crossing_wall`): `slices` has an entry for each of `layers`,
+/// or none at all, and travel then goes straight whatever the settings
+/// say. They are given beside the layers and not in them so that
+/// whatever makes layers without them still does.
+pub fn write_routed(
+    out: &mut impl Write,
+    layers: &[Layer<'_>],
+    slices: &[Slices<'_>],
+    settings: &[PrintSettings],
+) -> Result<Summary, GcodeError> {
+    let slices = if slices.len() == layers.len() {
+        slices
+    } else {
+        &[]
+    };
     let first = layers.first().map_or(0, |layer| layer.filament);
     if let Some(layer) = layers.iter().find(|layer| layer.filament >= settings.len()) {
         return Err(GcodeError::NoSettings {
@@ -297,6 +320,9 @@ pub fn write_tools(
         measured_used: 0,
         fits: HashMap::new(),
         off_bed: None,
+        slices,
+        routes: Vec::new(),
+        routes_from: 0,
     };
     let several = layers.iter().any(|layer| layer.filament > 0);
     writer.preamble(several)?;
@@ -320,8 +346,11 @@ pub fn write_tools(
         // Arcs are fitted a stretch of layers at a time, ahead of
         // laying them.
         if index % FITTED_AHEAD == 0 {
+            let ahead = &groups[index..(index + FITTED_AHEAD).min(groups.len())];
             let until = groups[(index + FITTED_AHEAD).min(groups.len()) - 1].end;
             writer.prefit(&layers[group.start..until]);
+            // And so are the layers made ready to route travel on.
+            writer.preroute(layers, ahead, index)?;
         }
         writer.layer(index, &layers[group.clone()], group.start)?;
         // Whole or not at all, and never off the bed: an arc counts by
@@ -561,6 +590,13 @@ struct Writer<'a> {
     /// The box round an arc that was found to leave the bed, in mm; the
     /// file is then not written.
     off_bed: Option<[f64; 4]>,
+    /// What each entry's travel is routed by, where travel is to go
+    /// round the inside of the walls; none where it goes straight.
+    slices: &'a [Slices<'a>],
+    /// The layers being written made ready to route on, the first of
+    /// them layer `routes_from` of the print (`avoid.rs`).
+    routes: Vec<edge_avoid::Layer>,
+    routes_from: usize,
 }
 
 /// What the file says about the print outside its G-code.
@@ -605,6 +641,10 @@ struct Laid<'a> {
 struct State {
     /// Where the nozzle is, once it has been anywhere.
     position: Option<Point2>,
+    /// Which layer of the print is being written, and how its next
+    /// travel is routed.
+    layer: usize,
+    routing: avoid::Routing,
     /// The current layer's height above the bed.
     z: f64,
     /// How high the nozzle actually is, once a move has said.
@@ -1115,6 +1155,7 @@ impl Writer<'_> {
             }
         }
         self.state.first_layer = index == 0;
+        self.state.layer = index;
         // The nozzle itself moves up with the layer's first travel.
         self.state.z = layer.z;
         self.below = if index == 0 {
@@ -1195,6 +1236,13 @@ impl Writer<'_> {
         self.timing = Timing::default();
         self.extruding = false;
         for (offset, layer) in parts.iter().enumerate() {
+            // To a prime tower, on it and away from it are moves outside
+            // the part (GCode.cpp `append_tcr`: `use_external_mp_once`
+            // before the move to the tower and after the tower).
+            let towered = layer.filament != self.state.tool || !layer.tower.is_empty();
+            if towered {
+                self.state.routing.kind = Kind::Outside;
+            }
             if layer.filament != self.state.tool {
                 let over = layer.tower.first().and_then(|line| line.points.first());
                 self.change_tool(
@@ -1216,11 +1264,22 @@ impl Writer<'_> {
                 .find(|wall| wall.role == Role::Perimeter)
                 .map(|wall| wall.flow);
             self.tower_lines(layer.tower)?;
+            self.state.routing.outside_once |= towered;
+            // So are the moves to and between skirt and brim (GCode.cpp
+            // `use_external_mp` round each). From the first layer's
+            // skirt, and from a brim, the move to whatever is printed
+            // next goes straight (`disable_once`).
+            let mut before = None;
             for around in layer.around {
                 let points = &around.polygon.points;
                 if points.len() < 3 {
                     continue;
                 }
+                self.state.routing.kind = Kind::Outside;
+                if before == Some(Role::Skirt) && around.role != Role::Skirt {
+                    self.state.routing.straight_once |= self.state.first_layer;
+                }
+                before = Some(around.role);
                 // Skirt and brim start wherever is nearest.
                 let (edge, start) = match self.state.position {
                     Some(at) => seam::project(points, at),
@@ -1230,7 +1289,17 @@ impl Writer<'_> {
                 seam::clip_end(&mut path, self.settings.seam_gap);
                 self.path(&path, around.role, &around.flow, false, true)?;
             }
+            self.state.routing.straight_once |= match before {
+                Some(Role::Skirt) => self.state.first_layer,
+                Some(_) => true,
+                None => false,
+            };
+            // Supports stand outside the part, and their moves are
+            // routed by its outline wherever they go (the reference's
+            // `is_support_layer`).
+            self.state.routing.kind = Kind::Support;
             self.lines(&layer.support.iter().collect::<Vec<_>>(), &[])?;
+            self.state.routing.kind = Kind::Part;
             // Ironing has a fan speed of its own once the fan is on at
             // all (CoolingBuffer.cpp: not on the first layers it is
             // kept off for).
@@ -1637,11 +1706,17 @@ impl Writer<'_> {
                     if reversed {
                         points.reverse();
                     }
+                    // By the way the move takes, where it is routed
+                    // (GCode.cpp `travel_to` asks `needs_retraction`
+                    // again of the travel it planned).
                     let sheltered = self.settings.reduce_infill_retraction
-                        && self
-                            .state
-                            .position
-                            .is_some_and(|at| inside::stays_inside(shelter, at, points[0]));
+                        && self.state.position.is_some_and(|at| {
+                            let mut at = at;
+                            self.way(points[0]).into_iter().all(|point| {
+                                let from = std::mem::replace(&mut at, point);
+                                inside::stays_inside(shelter, from, point)
+                            })
+                        });
                     // Arcs are fitted to the line as it was made and turned
                     // about with it, as in the reference, where fitting
                     // comes before the order lines are laid in is chosen.
@@ -2214,8 +2289,18 @@ impl Writer<'_> {
     fn travel(&mut self, to: Point2, sheltered: bool) -> io::Result<()> {
         let s = self.settings;
         let from = self.state.position;
-        let length = from.map_or(f64::INFINITY, |from| distance(from, to));
+        // Round the inside of the walls where the move would cross
+        // them, and it is as long as the way round is.
+        let mut way = self.way(to);
+        let along = |from: Point2, way: &[Point2]| {
+            let mut at = from;
+            way.iter()
+                .map(|&point| distance(std::mem::replace(&mut at, point), point))
+                .sum::<f64>()
+        };
+        let length = from.map_or(f64::INFINITY, |from| along(from, &way));
         if length == 0.0 && self.state.height == Some(self.state.z) {
+            self.state.routing.passed();
             return Ok(());
         }
         let exposed = !sheltered
@@ -2226,10 +2311,23 @@ impl Writer<'_> {
         let long = length > s.retraction_minimum_travel && exposed;
         if long {
             self.retract(false)?;
+            // A wipe moves the nozzle, and the way is found again from
+            // where it ends (GCode.cpp `travel_to`). Not as the
+            // reference, on purpose: by then it has forgotten that the
+            // move was to go straight, and routes it after all.
+            if self.state.position != from {
+                way = self.way(to);
+            }
         } else {
             // Nothing to wipe once the nozzle has moved off the line.
             self.state.wipe_path.clear();
         }
+        self.state.routing.passed();
+        // The lift is made over the first stretch of the way and the
+        // rest is gone along at that height (GCode.cpp `travel_to`,
+        // "lift the z to normal height at the beginning").
+        let rest = way.split_off(1);
+        let to = way[0];
         // A wipe moves the nozzle, so the travel is measured from where it ends.
         let from = self.state.position;
         let length = from.map_or(f64::INFINITY, |from| distance(from, to));
@@ -2305,6 +2403,11 @@ impl Writer<'_> {
             }
         }
         self.state.height = Some(top);
+        let mut at = to;
+        for point in rest {
+            let length = distance(std::mem::replace(&mut at, point), point);
+            self.go(point, None, s.travel_speed, length)?;
+        }
         Ok(())
     }
 
@@ -3259,6 +3362,8 @@ pub fn role_name(role: Role) -> &'static str {
 
 #[cfg(test)]
 mod arc_tests;
+#[cfg(test)]
+mod avoid_tests;
 #[cfg(test)]
 mod ironing_tests;
 #[cfg(test)]

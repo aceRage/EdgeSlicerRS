@@ -6,7 +6,7 @@ use edge_config::Settings;
 
 /// A setting, the value that turns it off, and what is done whatever it
 /// is set to.
-const UNREAD: [(&str, &str, &str); 8] = [
+const UNREAD: [(&str, &str, &str); 7] = [
     (
         "wipe_inward",
         "0",
@@ -26,11 +26,6 @@ const UNREAD: [(&str, &str, &str); 8] = [
         "zaa_enabled",
         "0",
         "top surfaces are laid flat, not contoured in height",
-    ),
-    (
-        "reduce_crossing_wall",
-        "0",
-        "travel moves go straight, across walls where those are in the way",
     ),
     (
         "small_area_infill_flow_compensation",
@@ -98,9 +93,10 @@ mod tests {
         )
         .unwrap();
         // How small bridges over infill are sorted out is followed, and
-        // nothing is said of it here.
+        // nothing is said of it here; nor of travel that goes round the
+        // walls.
         let said = notes(&on, 1);
-        assert_eq!(said.len(), 5, "{said:?}");
+        assert_eq!(said.len(), 4, "{said:?}");
         assert!(said.contains(
             &"wipe_inward \"1\": the nozzle is wiped along the wall, not in toward the inner walls"
                 .to_owned()
