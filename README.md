@@ -21,7 +21,7 @@ replaces it until output matches on the printers we care about.
 | `crates/edge-extrusion` | Extruded line cross-section (flow) and extrusion loops |
 | `crates/edge-parity` | `edge-parity`: runs the reference slicer and this engine on one project and compares time and G-code |
 | `crates/edge-perimeter` | Walls, the lines that fill the gaps between them, and the infill area inside (classic constant-width generator) |
-| `crates/edge-medial` | The centre line of a narrow region and how wide it is along it (wraps boostvoronoi), what part of the plane lies nearest each of a set of edges, the whole Voronoi diagram of a set of edges as plain data, and lines of changing width as extrusions. The same edges give the same diagram on every run and thread: the library's skip list has its levels from a generator each list owns, not from the thread's random numbers (`vendor/cpp_map`) |
+| `crates/edge-medial` | The centre line of a narrow region and how wide it is along it (wraps boostvoronoi), what part of the plane lies nearest each of a set of edges, the whole Voronoi diagram of a set of edges as plain data, and lines of changing width as extrusions. The same edges give the same diagram on every run and thread: the library's skip list has its levels from a generator each list owns, not from the thread's random numbers (`vendor/cpp_map`). And wherever they lie: all three are swept in coordinates of the edges' own, the whole diagram about the middle of the box round them, which is handed back with it |
 | `crates/edge-adhesion` | Skirt and brim, with the automatic brim width |
 | `crates/edge-support` | Supports under overhangs, normal (grid) and tree, with dense tops and feet |
 | `crates/edge-gcode` | Print order, seams, travel, retraction, wipe and lift, cooling, overhangs, and extrusion, written as G-code |
@@ -1348,8 +1348,28 @@ skeleton (`SkeletalTrapezoidation`), the number of lines that fit is
 decided along the skeleton by the reference's beading strategies, each
 change in that number is given a stretch of skeleton to happen over,
 and the lines are laid across each trapezoid, joined end to end and
-simplified. A diagram that comes out broken is built again for the
-outline turned by a few odd angles, as the reference does. With the
+simplified. A diagram that comes out broken, or does not come out, is
+built again for the outline turned by a few odd angles, as the
+reference does. The reference's outlines are in their object's own
+coordinates, measured from the middle of the object's box, and its
+diagrams are made there; this engine's outlines are in the plate's, so
+the diagram is made of the outline measured from the middle of its own
+box, its vertices rounded to the grid there and then moved back, and
+an outline is turned about that middle. Where on the plate an object
+stands then makes no difference to a diagram. It did: the Voron design
+cube's notched layers, 49 to 79 mm from the origin with two edges a
+nanometre out of line, gave a broken first diagram (in Boost.Polygon's
+library as well, fed the same numbers) and were built turned. Over the
+reference projects and the parts compared here that was 27 outlines in
+36 325, all but two of them that cube's; about their own middle all
+36 325 come out sound the first time. On the cube the walls moved
+nearer the C++ slicer's (with the U1's presets, over the layers that
+changed, the walls' lengths are 0.50 mm from the reference's in all,
+where they were 0.83 mm); elsewhere a wall here and there moved by a
+few hundredths of a millimetre, as near the reference's after as
+before. The rest of the skeleton is still worked out in the plate's
+coordinates, and a node of it can lie a nanometre or two from where
+the reference's arithmetic would put it. With the
 U1's presets and `wall_generator` set to `arachne`, C++ slicer against
 this engine, walls in metres:
 
