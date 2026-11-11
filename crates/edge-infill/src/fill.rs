@@ -98,7 +98,9 @@ pub fn fill(
 ) -> Result<Vec<ExtrusionPath>, ClipError> {
     let turned = if layer_index % 2 == 1 { FRAC_PI_2 } else { 0.0 };
     let mut paths = Vec::new();
-    for surface in surfaces {
+    for (number, surface) in surfaces.iter().enumerate() {
+        // Each surface's lines are one part, laid together.
+        let part = number as u32 + 1;
         // (flow, role, line spacing in mm, how the lines end, directions)
         let (flow, role, spacing, lay, angles): (Flow, Role, f64, Lay, &[f64]) = match surface.kind
         {
@@ -204,6 +206,7 @@ pub fn fill(
                             role,
                             flow,
                             in_turn: false,
+                            part,
                         });
                     }
                 }
@@ -235,6 +238,7 @@ pub fn fill(
                         role,
                         flow,
                         in_turn: false,
+                        part,
                     });
                 }
             }
@@ -287,6 +291,7 @@ pub fn fill(
                             role,
                             flow,
                             in_turn: false,
+                            part,
                         };
                         if path.length_mm() >= least {
                             paths.push(path);
@@ -339,6 +344,7 @@ pub fn fill(
                         role,
                         flow,
                         in_turn: ordered && index > 0,
+                        part,
                     });
                 }
             }
@@ -688,6 +694,19 @@ mod tests {
         // Swept in order, each line is laid after the one before it;
         // laid in any order, none is tied to another.
         assert!(!top[0].in_turn && top[1..].iter().all(|line| line.in_turn));
+        // And all the lines of one surface are one part.
+        assert!(top.iter().all(|line| line.part == 1));
+        let two = fill(
+            &[
+                surface(SurfaceKind::Top, 10.0),
+                surface(SurfaceKind::InternalSolid, 10.0),
+            ],
+            0,
+            &base,
+        )
+        .unwrap();
+        assert_eq!(two.iter().filter(|line| line.part == 1).count(), top.len());
+        assert!(two[top.len()..].iter().all(|line| line.part == 2));
         let loose = FillParams {
             top_ordered: false,
             ..base

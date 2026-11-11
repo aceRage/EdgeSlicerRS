@@ -35,6 +35,7 @@ fn line(a: (f64, f64), b: (f64, f64), role: Role) -> ExtrusionPath {
         role,
         flow: flow(),
         in_turn: false,
+        part: 0,
     }
 }
 
@@ -493,6 +494,7 @@ fn lines_laid_in_turn_keep_their_order_and_direction() {
     let rows = |in_turn: bool| {
         [1.0, 9.0, 5.0].map(|y| ExtrusionPath {
             in_turn: in_turn && y != 1.0,
+            part: 0,
             ..line((1.0, y), (9.0, y), Role::TopSolidInfill)
         })
     };
@@ -527,6 +529,44 @@ fn lines_laid_in_turn_keep_their_order_and_direction() {
     fill[2].in_turn = false;
     let layer = one_layer(&loops, &[0..1, 1..2], &fill);
     assert_eq!(homes(&layer[0]), [0, 0, 1]);
+}
+
+#[test]
+fn fill_is_laid_area_by_area_whatever_its_kind() {
+    // Three areas in a row: top fill on the left and on the right, solid
+    // fill between them, two lines each. Given kind by kind.
+    let area = |x: f64, role: Role, part: u32| {
+        [1.0, 2.0].map(|y| ExtrusionPath {
+            part,
+            ..line((x, y), (x + 5.0, y), role)
+        })
+    };
+    let fill: Vec<ExtrusionPath> = [
+        area(0.0, Role::TopSolidInfill, 1),
+        area(20.0, Role::TopSolidInfill, 2),
+        area(10.0, Role::SolidInfill, 3),
+    ]
+    .concat();
+    let (text, _) = print(&one_layer(&[], &[], &fill), &basic());
+    // Left to right, the solid area in its place between the two tops,
+    // and both lines of an area before the next area is begun.
+    let xs: Vec<f64> = moves(&text)
+        .filter(|line| word(line, 'E').is_some_and(|e| e > 0.0))
+        .filter_map(|line| word(line, 'X'))
+        .map(|x| (x / 10.0).floor())
+        .collect();
+    assert_eq!(xs, [0.0, 0.0, 1.0, 1.0, 2.0, 2.0]);
+    assert_eq!(
+        features(&text),
+        ["Top surface", "Internal solid infill", "Top surface"]
+    );
+
+    // Lines that are no part of an area keep to their kind: gap fill
+    // first, as it is given, then the fill.
+    let mut with_gaps = vec![line((22.0, 5.0), (24.0, 5.0), Role::GapFill)];
+    with_gaps.extend(fill);
+    let (text, _) = print(&one_layer(&[], &[], &with_gaps), &basic());
+    assert_eq!(features(&text)[0], "Gap infill");
 }
 
 #[test]

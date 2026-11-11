@@ -170,12 +170,25 @@ Known gaps: painted supports and seams, per-object setting overrides, typed sett
 - G-code: `slice --gcode out.gcode` orders each layer (skirt and brim,
   each part's brim whole before the next, then island by island: an
   island's walls from the inside out, each beside the last, then the
-  gap fill and the fill that lie in it, nearest end first), holds speeds to the
+  gap fill and the fill that lie in it), holds speeds to the
   hot end's melt rate, sets acceleration by feature, and reports filament,
   weight and time. Following the reference:
   - Seams: each outer wall starts at its best corner by the reference's
     angle score and stays in line with the layer below; inner walls start
     alongside. Walls stop `seam_gap` short of their start.
+  - Order of fill and supports: the fill of an island comes in parts,
+    one for each area filled, of whatever kind. The parts are chained by
+    their closest ends from where the nozzle is, the shortest hop
+    between two ends first, and then the lines of each part the same
+    way, so an area is finished before the next is begun
+    (ShortestPath.cpp `chain_segments_greedy_constrained_reversals_`,
+    which `chain_and_reorder_extrusion_entities` orders with). Where
+    that chain would turn round a line that may not be turned, a swept
+    surface or a tree branch's wall, the lines are taken nearest first
+    instead, as there. Gap fill and supports are chained the same way,
+    each kind by itself. The reference finds near points with a k-d
+    tree; here every point is looked at and of two equally near the
+    earlier wins, so equal hops can be taken in a different order.
   - Travel: retraction with wipe, and straight, ramped or spiral lifts
     (`z_hop_types`), at feedrates the Z axis can follow. With
     `reduce_infill_retraction` a move to a fill line goes unretracted
@@ -357,9 +370,13 @@ a wall and a space, where it wins over what the sides say. Not a port
 line for line: a triangle's cut colours an edge of the outline when it
 lies within 0.15 mm of it, where the reference walks a grid and tests
 angles; runs of colour under 0.2 mm go to their neighbour; islands of
-paint too small for a classic wall are not dropped. What a filament is
-painted is united with what it had, where the reference keeps regions
-apart in places and walls them separately. The bounded depths
+paint too small for a classic wall are not dropped. Two parts of an
+object rarely meet exactly: their meshes follow the same curve with
+different corners, and cracks a few micrometres wide are left between
+them. This engine closes those cracks when it slices. The reference
+does not, so where paint makes both sides of a crack one filament it
+lays walls round the crack, a slit of two loops in the middle of a
+solid area. That is not copied. The bounded depths
 (`paint_depth_mode` at `walls` or `millimeters`), interlocking and
 `top_color_penetration_layers` are noted and not followed. Painted
 supports, seams and fuzzy skin are not read.
@@ -413,9 +430,7 @@ reference looks for a short one with an ant colony run on random
 numbers, and here the shortest is worked out exactly for up to twelve
 regions and the best of the nearest-next orders is kept for more.
 Where the reference tells two rows are beside each other by following
-the outline between them, here they are when they overlap. The pieces
-of a layer's fill are then taken nearest start first, where the
-reference chains them by their closest ends. A bridge reaches 0.4 mm onto each support where the reference's
+the outline between them, here they are when they overlap. A bridge reaches 0.4 mm onto each support where the reference's
 reaches 0.8 mm, internal bridges are not run out to the
 sparse lines that carry them nor turned as the reference turns them
 (they come within 6% of the reference's on plain parts and 9% over on
@@ -560,11 +575,16 @@ reference's in all, where it was 11.3% before the paint was read: on
 the middle layers the border between two colours has moved in from the
 rim to where the reference has it, and the tool that prints the rim
 feeds 1186 mm there against the reference's 1398 mm (it fed 1027 mm).
-What is left: for three layers under each inlay the reference walls
-off a small box of the surrounding colour that is not here (why it
-does was not found), and it fills narrow parts of the top surface with
-gap fill (405 mm against 310 mm for the inlays' tool on their top
-layer). The plate takes 0.9 s to slice, most of it the painting:
+What is left: between the bottom shell and the inlays the reference
+lays small loops of wall that are not here, 49 of them on the fifth
+layer. They are walls round the cracks between parts described above:
+each is as wide as two half walls and as long as its crack, they stand
+on the border between two parts, they are there only with the paint
+(with it stripped from the project the reference lays none), and they
+start above the bottom shell, where the bottom face's paint keeps the
+two sides different colours. And the reference fills narrow parts of
+the top surface with gap fill (405 mm against 310 mm for the inlays'
+tool on their top layer). The plate takes 0.9 s to slice, most of it the painting:
 eight objects of 85,000 triangles each.
 
 Top and bottom surfaces now come to the reference's length within 0.1%,
@@ -628,8 +648,8 @@ order tools are taken in, the order within a layer with where a
 move may go unretracted, and the monotonic order of surface lines.
 
 Retractions on the lettered plates were 41% over the reference's and
-are now within 3% (plate 2: 868 against 848, from 1199; plate 3: 869
-against 846), with 13% and 10% less travel than the reference. Four
+are now within 3% (plate 2: 869 against 848, from 1199; plate 3: 871
+against 846), with 14% and 11% less travel than the reference. Four
 things did it: an island is finished, walls and fill, before the next
 is begun, where every island's walls used to be laid first and each
 kind of fill then took another trip round the layer; moves between
@@ -644,6 +664,14 @@ supports (a support's lines are not sheltered, and there is twice the
 support the reference lays under these parts), and seams: where an
 outer wall's seam sits on a sharp tip the inner wall ends 1.7 mm from
 it and the move retracts, and the reference puts those seams elsewhere.
+
+Chaining fill and supports by their closest ends, as the reference
+does, took 2 m of travel and 38 retractions off the painted plate 1
+(57.30 m and 1703, from 59.25 m and 1741; the reference has 64.44 m
+and 2188) and 0.3 m of travel off plates 2 and 3, whose retractions
+moved by two at most. The mushroom with tree supports has 14 more
+retractions (1722 against the reference's 1741) and 0.1 m less travel.
+The plain parts are what they were.
 
 ## Licence
 

@@ -11,6 +11,7 @@
 //! Not done: seams placed by visibility, arc fitting, progress (`M73`)
 //! and object labels.
 
+mod chain;
 mod cooling;
 mod inside;
 mod overhang;
@@ -1145,7 +1146,7 @@ impl Writer<'_> {
                 .iter()
                 .find(|wall| wall.role == Role::Perimeter)
                 .map(|wall| wall.flow);
-            self.lines(&layer.tower.iter().collect::<Vec<_>>(), &[])?;
+            self.tower_lines(layer.tower)?;
             for around in layer.around {
                 let points = &around.polygon.points;
                 if points.len() < 3 {
@@ -1301,49 +1302,47 @@ impl Writer<'_> {
         Ok(())
     }
 
-    /// Open lines kind by kind as they come, each kind in nearest-end-first
-    /// order so the nozzle works across an area instead of jumping about.
-    /// Moves that stay inside `shelter` may skip retraction.
+    /// Open lines, ordered as the reference orders them. Fill comes in
+    /// parts, one for each area filled: the parts are chained by their
+    /// closest ends from where the nozzle is, and then the lines of each
+    /// part the same way, so an area is finished before the next is
+    /// begun (GCode.cpp `extrude_infill`, ShortestPath.cpp
+    /// `chain_and_reorder_extrusion_entities`). Lines that are no part of
+    /// an area are chained kind by kind as they come. Lines laid in turn
+    /// keep their order and direction, and a tree branch's wall is never
+    /// begun at its far end. Moves that stay inside `shelter` may skip
+    /// retraction.
     fn lines(&mut self, paths: &[&ExtrusionPath], shelter: &[ExPolygon]) -> io::Result<()> {
-        for group in paths.chunk_by(|a, b| a.role == b.role) {
-            // A path is a run of one, taken from whichever end is nearer.
-            // Paths laid in turn make one run between them, begun at its
-            // first point and laid as given (the reference's `no_sort`).
-            let mut remaining: Vec<Vec<&ExtrusionPath>> = group
-                .chunk_by(|_, next| next.in_turn)
-                .map(|run| {
-                    run.iter()
-                        .copied()
-                        .filter(|path| path.points.len() >= 2)
-                        .collect::<Vec<_>>()
-                })
-                .filter(|run| !run.is_empty())
+        // Fill of every kind is ordered together; other lines by kind.
+        for stage in paths
+            .chunk_by(|a, b| (a.part != 0 && b.part != 0) || a.role == b.role && a.part == b.part)
+        {
+            let mut parts: Vec<Part<'_>> = stage
+                .chunk_by(|a, b| a.role == b.role && a.part == b.part && (a.part != 0 || b.in_turn))
+                .filter_map(Part::new)
                 .collect();
-            while !remaining.is_empty() {
-                let ends =
-                    |path: &ExtrusionPath| [path.points[0], path.points[path.points.len() - 1]];
-                let nearest = self.nearest(remaining.iter().map(|run| {
-                    let [head, tail] = ends(run[0]);
-                    let free = run.len() == 1;
-                    std::iter::once(head).chain(free.then_some(tail))
-                }));
-                let run = remaining.remove(nearest);
-                let kept = run.len() > 1;
-                for path in run {
-                    let [head, tail] = ends(path);
-                    // A tree branch's wall is laid hook first, never from its
-                    // far end (SupportCommon.cpp `tree_supports_generate_paths`).
-                    // It is known by its ends: an open support line that comes
-                    // back to within its hook's length of where it began.
-                    let hooked = path.role == Role::Support
-                        && head != tail
-                        && distance(head, tail) <= HOOK_REACH * path.flow.spacing;
-                    let reversed = !kept
-                        && !hooked
-                        && self
-                            .state
-                            .position
-                            .is_some_and(|at| distance(at, tail) < distance(at, head));
+            let ends: Vec<[Point2; 2]> = parts.iter().map(Part::ends).collect();
+            let turnable: Vec<bool> = parts.iter().map(Part::reversible).collect();
+            let order = chain::chain(&ends, &|part| turnable[part], self.state.position);
+            for (part, turned) in order {
+                let part = std::mem::take(&mut parts[part]);
+                // The lines of an area, chained in their turn from here.
+                let members: Vec<(&ExtrusionPath, bool)> = if part.runs.len() == 1 {
+                    let reversed = turned && part.reversible();
+                    part.runs[0].iter().map(|path| (*path, reversed)).collect()
+                } else {
+                    let ends: Vec<[Point2; 2]> =
+                        part.runs.iter().map(|run| run_ends(run)).collect();
+                    let turnable: Vec<bool> =
+                        part.runs.iter().map(|run| run_reversible(run)).collect();
+                    chain::chain(&ends, &|run| turnable[run], self.state.position)
+                        .into_iter()
+                        .flat_map(|(run, reversed)| {
+                            part.runs[run].iter().map(move |path| (*path, reversed))
+                        })
+                        .collect()
+                };
+                for (path, reversed) in members {
                     let mut points: Vec<Point2> = path.points.clone();
                     if reversed {
                         points.reverse();
@@ -1356,6 +1355,29 @@ impl Writer<'_> {
                     self.path(&points, path.role, &path.flow, sheltered, false)?;
                 }
             }
+        }
+        Ok(())
+    }
+
+    /// The prime tower's lines, nearest end first: they are given in the
+    /// order they are meant to go down, and the next is always the nearest.
+    fn tower_lines(&mut self, paths: &[ExtrusionPath]) -> io::Result<()> {
+        let mut remaining: Vec<&ExtrusionPath> =
+            paths.iter().filter(|path| path.points.len() >= 2).collect();
+        while !remaining.is_empty() {
+            let ends = |path: &ExtrusionPath| [path.points[0], path.points[path.points.len() - 1]];
+            let nearest = self.nearest(remaining.iter().map(|path| ends(path).into_iter()));
+            let path = remaining.remove(nearest);
+            let [head, tail] = ends(path);
+            let reversed = self
+                .state
+                .position
+                .is_some_and(|at| distance(at, tail) < distance(at, head));
+            let mut points: Vec<Point2> = path.points.clone();
+            if reversed {
+                points.reverse();
+            }
+            self.path(&points, path.role, &path.flow, false, false)?;
         }
         Ok(())
     }
@@ -2142,6 +2164,63 @@ impl Writer<'_> {
         // The times follow, once the file has been timed.
         Ok(summary)
     }
+}
+
+/// Lines laid together: the lines of one filled area, or a line by
+/// itself. Its runs are what may be reordered within it: a run is a line,
+/// or several laid in turn.
+#[derive(Default)]
+struct Part<'a> {
+    runs: Vec<Vec<&'a ExtrusionPath>>,
+}
+
+impl<'a> Part<'a> {
+    /// `None` when none of the lines is long enough to lay.
+    fn new(paths: &[&'a ExtrusionPath]) -> Option<Self> {
+        let runs: Vec<Vec<&ExtrusionPath>> = paths
+            .chunk_by(|_, next| next.in_turn)
+            .map(|run| {
+                run.iter()
+                    .copied()
+                    .filter(|path| path.points.len() >= 2)
+                    .collect::<Vec<_>>()
+            })
+            .filter(|run| !run.is_empty())
+            .collect();
+        (!runs.is_empty()).then_some(Self { runs })
+    }
+
+    /// Where the part begins and ends as it is given.
+    fn ends(&self) -> [Point2; 2] {
+        let (first, last) = (&self.runs[0], &self.runs[self.runs.len() - 1]);
+        [run_ends(first)[0], run_ends(last)[1]]
+    }
+
+    /// Whether the part may be begun at its far end: not when its lines
+    /// are laid in turn (the reference's `no_sort`).
+    fn reversible(&self) -> bool {
+        self.runs.len() > 1 || run_reversible(&self.runs[0])
+    }
+}
+
+/// Where a run begins and ends.
+fn run_ends(run: &[&ExtrusionPath]) -> [Point2; 2] {
+    let last = run[run.len() - 1];
+    [run[0].points[0], last.points[last.points.len() - 1]]
+}
+
+/// Whether a run may be laid from its far end: a single line may, but
+/// for a tree branch's wall, which is laid hook first (SupportCommon.cpp
+/// `tree_supports_generate_paths`) and is known by its ends: an open
+/// support line that comes back to within its hook's length of where it
+/// began. Lines laid in turn may not.
+fn run_reversible(run: &[&ExtrusionPath]) -> bool {
+    let [path] = run else { return false };
+    let [head, tail] = run_ends(run);
+    let hooked = path.role == Role::Support
+        && head != tail
+        && distance(head, tail) <= HOOK_REACH * path.flow.spacing;
+    !hooked
 }
 
 /// An island's walls from the inside out, each wall next to the one it

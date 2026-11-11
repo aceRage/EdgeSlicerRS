@@ -759,6 +759,7 @@ pub fn plan(
             role: Role::PrimeTower,
             flow,
             in_turn: false,
+            part: 0,
         };
         let per_mm = |width: f64| height * (width - height * (1.0 - PI / 4.0));
         // What the layer lays is measured from its own front.
@@ -815,6 +816,7 @@ pub fn plan(
                             role: Role::PrimeTower,
                             flow: rammed,
                             in_turn: false,
+                            part: 0,
                         });
                         y += pitch;
                         rightward = !rightward;
@@ -828,6 +830,7 @@ pub fn plan(
                         role: Role::PrimeTower,
                         flow: rammed,
                         in_turn: false,
+                        part: 0,
                     });
                 }
                 // The new nozzle's rows carry on in the far half of the
@@ -898,6 +901,7 @@ pub fn plan(
                 role: Role::PrimeLine,
                 flow,
                 in_turn: false,
+                part: 0,
             });
             if points.len() > 2 {
                 block.lines.push(path(points[1..].to_vec()));

@@ -88,11 +88,12 @@ pub(crate) fn settings(
 /// painted object's areas in turn. A layer that was all one filament's,
 /// `base`, is first set down as that filament's.
 ///
-/// What a filament is given is united with what it had. The reference
-/// makes a region of each part of an object and each colour painted on
-/// it, and keeps two apart when their settings differ, so in places it
-/// lays walls between areas that print in the same filament; here there
-/// are none.
+/// What a filament is given is united with what it had, cracks and all:
+/// two parts of an object seldom meet exactly, and slicing here closes
+/// the cracks between them. The reference leaves them, so where paint
+/// makes both sides of a crack one filament it lays walls round the
+/// crack, loops as wide as two half walls in the middle of a solid
+/// area. That is not copied.
 pub(crate) fn apply(
     layer: &mut LayerRegions,
     painted: &[&[Share]],
