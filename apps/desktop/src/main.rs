@@ -29,6 +29,19 @@ fn call(
     session.call(&name, &args)
 }
 
+/// The same for what is answered in bytes (a mesh, a print's moves): the
+/// page is handed them as they are, not as JSON.
+#[tauri::command(async)]
+fn call_bytes(
+    session: tauri::State<'_, Arc<Session>>,
+    name: String,
+    args: Value,
+) -> Result<tauri::ipc::Response, String> {
+    session
+        .call_bytes(&name, &args)
+        .map(tauri::ipc::Response::new)
+}
+
 /// Asks the person for a model to open, a folder of profiles, or where to
 /// save G-code. None when they change their mind.
 #[tauri::command(async)]
@@ -69,7 +82,7 @@ fn main() {
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
         .manage(session)
-        .invoke_handler(tauri::generate_handler![call, pick])
+        .invoke_handler(tauri::generate_handler![call, call_bytes, pick])
         .run(tauri::generate_context!())
         .expect("the window could not be opened");
 }
