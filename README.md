@@ -13,12 +13,13 @@ replaces it until output matches on the printers we care about.
 | `crates/edge-mesh` | Indexed triangle mesh, transforms, STL read/write |
 | `crates/edge-config` | Vendor presets resolved through `inherits`, `include` and `renamed_from`; the reference's defaults for every setting, and the text form it writes settings in |
 | `crates/edge-3mf` | 3MF projects: objects, parts and their roles, instances, plates, project settings, and colours painted onto triangles |
+| `crates/edge-arachne` | Walls of changing width: a region's skeleton, how many lines fit along it and where that number changes, and the lines themselves (a port of the reference's Arachne) |
 | `crates/edge-paint` | Which filament prints what where colours are painted on: each layer shared out from its painted outline, and paint on top and bottom faces carried through the shell |
 | `crates/edge-clip` | Polygon union, difference, intersection, offset and gap closing (wraps clipper2-rs) |
 | `crates/edge-extrusion` | Extruded line cross-section (flow) and extrusion loops |
 | `crates/edge-parity` | `edge-parity`: runs the reference slicer and this engine on one project and compares time and G-code |
 | `crates/edge-perimeter` | Walls, the lines that fill the gaps between them, and the infill area inside (classic constant-width generator) |
-| `crates/edge-medial` | The centre line of a narrow region and how wide it is along it (wraps boostvoronoi), what part of the plane lies nearest each of a set of edges, and lines of changing width as extrusions |
+| `crates/edge-medial` | The centre line of a narrow region and how wide it is along it (wraps boostvoronoi), what part of the plane lies nearest each of a set of edges, the whole Voronoi diagram of a set of edges as plain data, and lines of changing width as extrusions |
 | `crates/edge-adhesion` | Skirt and brim, with the automatic brim width |
 | `crates/edge-support` | Supports under overhangs, normal (grid) and tree, with dense tops and feet |
 | `crates/edge-gcode` | Print order, seams, travel, retraction, wipe and lift, cooling, overhangs, and extrusion, written as G-code |
@@ -111,6 +112,15 @@ Working:
   `outer_wall_line_width`, `inner_wall_line_width`, `line_width`,
   `initial_layer_line_width`, `infill_wall_overlap`, `resolution`), and the
   infill area left inside them. `slice --svg` draws each wall at its real width.
+- Walls of changing width (`wall_generator` at `arachne`, the reference's
+  default; the U1 and Elegoo presets set `classic`): as many lines as fit
+  across a part wherever it is measured, each as wide as its share, so a
+  thin part is one line and nothing is left to gap fill. A port of the
+  reference's Arachne, tuned by the same settings (`min_bead_width`,
+  `initial_layer_min_bead_width`, `min_feature_size`,
+  `wall_transition_length`, `wall_transition_angle`,
+  `wall_transition_filter_deviation`, `wall_distribution_count`,
+  `min_length_factor`, `wall_maximum_resolution`, `wall_maximum_deviation`).
 - Gap fill: a gap between walls too narrow for another wall gets a line
   down its middle, as wide as the gap is at each point, found as the
   reference finds it (the medial axis of the gap). On whenever
@@ -417,8 +427,7 @@ or extra perimeters over overhangs. A top surface below the last layer
 keeps only its outer wall, as the reference's `only_one_wall_top` does with
 `top_surface_expansion` at zero (PerimeterGenerator.cpp
 `split_top_surfaces`); the other way of doing it, with an expansion set, is
-not ported. Arachne (variable width) is not
-started. Overhangs are measured as the reference measures them but probed
+not ported. Overhangs are measured as the reference measures them but probed
 at fixed steps, so a wall's speed changes at slightly different places.
 Infill is not all a port yet: solid lines are joined along
 the walls in sweep order, each to its neighbour on the next row
@@ -620,6 +629,53 @@ presets was 18% under). Each object's pattern is laid through that
 object's own middle, as in the reference; it used to be through the
 middle of everything on the plate, which put the lines of every object
 but a lone one somewhere else than the reference's.
+
+Walls of changing width. `edge-arachne` is a port of the reference's
+Arachne (src/libslic3r/Arachne): the outline is prepared as
+`WallToolPaths` prepares it, cut into the trapezoids of its Voronoi
+skeleton (`SkeletalTrapezoidation`), the number of lines that fit is
+decided along the skeleton by the reference's beading strategies, each
+change in that number is given a stretch of skeleton to happen over,
+and the lines are laid across each trapezoid, joined end to end and
+simplified. A diagram that comes out broken is built again for the
+outline turned by a few odd angles, as the reference does. With the
+U1's presets and `wall_generator` set to `arachne`, C++ slicer against
+this engine, walls in metres:
+
+| Part | Outer wall | Inner wall |
+|---|---|---|
+| 20 mm cube | 7.82 / 7.82 | 7.44 / 7.44 |
+| tower | 8.90 / 8.90 | 7.63 / 7.63 |
+| mushroom | 4.16 / 4.16 | 3.83 / 3.83 |
+| shelf | 4.22 / 4.22 | 3.83 / 3.91 |
+| `mcbrim_test.3mf` plate 2, lettered | 21.08 / 21.12 | 19.10 / 19.18 |
+| `mcbrim_test.3mf` plate 1, painted | 44.18 / 42.35 | 39.19 / 38.31 |
+
+(The lettered and painted plates with `only_one_wall_top` off.) On the
+lettered plate a layer's walls are 0.25% from the reference's in length
+on average, and laid over one another the two engines' lines coincide
+through the thin strokes, where the widths change. Not a port of the
+whole of `process_arachne`, and what differs is said here:
+
+- A loop of one width goes to the writer as a classic loop does, to be
+  ordered and given its seam there. Every other wall (a line down the
+  middle of a thin part, a loop whose width changes along it) is a line
+  of its own, cut where its width changes by more than 0.05 mm, laid
+  with the fill after the loops and begun where it happens to begin. The
+  reference orders all of them together (`getRegionOrder`) and seams a
+  loop whatever its widths.
+- `only_one_wall_top` is not followed with these walls below the last
+  layer: a top surface there keeps all its walls, and a note says so. On
+  the lettered plate that is 5% more inner wall and 22% less top surface
+  than the reference.
+- On the painted plate walls are 2 to 4% short of the reference's; not
+  yet looked into.
+- Extra walls over overhangs, fuzzy skin, `precise_outer_wall` and the
+  check of a diagram that needs exact arithmetic
+  (`is_voronoi_diagram_planar_angle`) are not here.
+
+Classic walls are untouched: every file that sets `classic` is byte for
+byte what it was.
 
 Sparse patterns. Nineteen of the reference's twenty-seven are laid:
 `grid`, `rectilinear`, `alignedrectilinear`,

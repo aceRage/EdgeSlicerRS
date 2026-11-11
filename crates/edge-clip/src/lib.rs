@@ -50,6 +50,19 @@ pub fn union<'a>(
     boolean(ClipType::Union, polygons.into_iter(), std::iter::empty())
 }
 
+/// The regions covered an odd number of times by `polygons`, whichever way
+/// each is wound: what is inside one contour and not inside another
+/// within it.
+pub fn union_even_odd<'a>(
+    polygons: impl IntoIterator<Item = &'a Polygon>,
+) -> Result<Vec<ExPolygon>, ClipError> {
+    let mut clipper = Clipper64::new();
+    clipper.set_preserve_collinear(false);
+    clipper.add_subject(&paths(polygons.into_iter()));
+    let (tree, _open) = clipper.execute_tree(ClipType::Union, FillRule::EvenOdd)?;
+    Ok(regions_of(&tree))
+}
+
 /// Unites regions that may overlap or touch.
 pub fn union_ex(regions: &[ExPolygon]) -> Result<Vec<ExPolygon>, ClipError> {
     boolean(ClipType::Union, rings(regions), std::iter::empty())

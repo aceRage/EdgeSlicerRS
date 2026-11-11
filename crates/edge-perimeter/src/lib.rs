@@ -18,7 +18,7 @@ use edge_extrusion::{
 };
 use edge_geom::{Coord, ExPolygon, scaled, unscaled};
 
-pub use settings::WallSettings;
+pub use settings::{ArachneSettings, WallSettings};
 
 /// How much of its spacing an external wall may lose before a narrow island
 /// gets a thinner wall instead (PerimeterGenerator.cpp).
@@ -35,6 +35,8 @@ pub enum Error {
     Clip(#[from] ClipError),
     #[error(transparent)]
     Flow(#[from] FlowError),
+    #[error("walls of changing width: {0}")]
+    Arachne(#[from] edge_arachne::Error),
 }
 
 /// Everything the generator needs for one layer.
@@ -57,6 +59,25 @@ pub struct Params {
     /// Set where a top surface with more of the part above it elsewhere
     /// keeps only its outer wall (`only_one_wall_top`).
     pub one_wall_top: Option<OneWallTop>,
+    /// Set where walls are of changing width; the layer is then walled
+    /// by [`arachne`].
+    pub arachne: Option<ArachneParams>,
+}
+
+/// What walls of changing width are made to on one layer: see
+/// `edge_arachne::Params`, which these become.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct ArachneParams {
+    pub min_bead_width: f32,
+    pub min_feature_size: f32,
+    pub min_length_factor: f32,
+    pub wall_transition_length: f32,
+    pub wall_transition_angle: f32,
+    pub wall_transition_filter_deviation: f32,
+    pub wall_distribution_count: i32,
+    pub is_top_or_bottom_layer: bool,
+    pub wall_maximum_resolution: Coord,
+    pub wall_maximum_deviation: Coord,
 }
 
 /// What `only_one_wall_top` needs on a layer that is not the last.
@@ -181,7 +202,10 @@ pub struct Perimeters {
     /// Where infill goes, already overlapping the innermost wall.
     pub infill: Vec<ExPolygon>,
     /// Lines down the middle of the gaps between walls, each as wide as
-    /// its gap.
+    /// its gap. With walls of changing width there are no gaps, and what
+    /// is here are the walls that are not loops of one width: lines down
+    /// the middle of thin parts, and loops whose width changes, in their
+    /// wall roles.
     pub gap_fill: Vec<ExtrusionPath>,
     /// Gaps left empty because their centre line could not be worked out.
     pub gaps_skipped: usize,
@@ -200,6 +224,9 @@ pub fn classic_between(
     params: &Params,
     around: Option<Around<'_>>,
 ) -> Result<Perimeters, Error> {
+    if let Some(tuning) = &params.arachne {
+        return arachne(regions, params, tuning);
+    }
     let ext_width = params.outer.scaled_width();
     let ext_spacing = params.outer.scaled_spacing();
     let spacing = params.inner.scaled_spacing();
@@ -361,6 +388,160 @@ pub fn classic_between(
     Ok(result)
 }
 
+/// A loop's width may differ by this much along it and still be laid as
+/// one width, in scaled units: what the reference allows a path before
+/// cutting it (`variable_width`).
+const LOOP_WIDTH_TOLERANCE: Coord = 50_000;
+
+/// Walls of changing width for one layer's regions: as many as fit
+/// wherever the region is measured, up to `wall_loops`
+/// (`PerimeterGenerator::process_arachne`, PerimeterGenerator.cpp).
+///
+/// Not a port of the whole of it. The reference orders the walls itself
+/// and keeps a loop a loop whatever its widths; here the loops of one
+/// width go to the writer as the classic ones do, to be ordered and
+/// given their seams there, and every other wall is a line of its own
+/// laid with the fill. One wall over top surfaces, extra walls over
+/// overhangs and fuzzy skin are not here.
+pub fn arachne(
+    regions: &[ExPolygon],
+    params: &Params,
+    tuning: &ArachneParams,
+) -> Result<Perimeters, Error> {
+    let ext_width = params.outer.scaled_width();
+    let ext_spacing = params.outer.scaled_spacing();
+    let spacing = params.inner.scaled_spacing();
+    let ext_spacing2 = scaled(0.5 * (params.outer.spacing + params.inner.spacing));
+    let height = params.outer.height;
+    // A wall's width here is what the reference calls its spacing; the
+    // line that lays it is wider by what its rounded edges leave empty.
+    let flow_of = |flow: &Flow, width: Coord| {
+        flow.with_width(unscaled(width) + height * (1.0 - 0.25 * std::f64::consts::PI))
+    };
+
+    let mut result = Perimeters::default();
+    for island in regions {
+        let first_loop = result.loops.len();
+        let simplified = edge_clip::simplify(std::slice::from_ref(island), params.resolution)?;
+        // In by what the outer wall is wider than its spacing, so that
+        // its outer edge lies on the outline.
+        let last = edge_clip::offset(
+            &simplified,
+            -((ext_width as f64 / 2.0 - ext_spacing as f64 / 2.0) as Coord),
+            Join::MITER,
+        )?;
+        let walls = edge_arachne::generate(
+            &last,
+            &edge_arachne::Params {
+                bead_width_0: ext_spacing,
+                bead_width_x: spacing,
+                inset_count: params.wall_loops,
+                wall_0_inset: 0,
+                layer_height: height,
+                min_bead_width: tuning.min_bead_width,
+                min_feature_size: tuning.min_feature_size,
+                min_length_factor: tuning.min_length_factor,
+                wall_transition_length: tuning.wall_transition_length,
+                wall_transition_angle: tuning.wall_transition_angle,
+                wall_transition_filter_deviation: tuning.wall_transition_filter_deviation,
+                wall_distribution_count: tuning.wall_distribution_count,
+                is_top_or_bottom_layer: tuning.is_top_or_bottom_layer,
+                wall_maximum_resolution: tuning.wall_maximum_resolution,
+                wall_maximum_deviation: tuning.wall_maximum_deviation,
+            },
+        )?;
+
+        let mut lines = Vec::new();
+        for depth in &walls.toolpaths {
+            let mut holes = Vec::new();
+            for wall in depth {
+                if wall.junctions.len() < 2 {
+                    continue;
+                }
+                let (role, flow) = if wall.inset_idx == 0 {
+                    (Role::ExternalPerimeter, &params.outer)
+                } else {
+                    (Role::Perimeter, &params.inner)
+                };
+                let widths = wall.junctions.iter().map(|junction| junction.w);
+                let (least, most) = (widths.clone().min().unwrap_or(0), widths.max().unwrap_or(0));
+                if wall.is_closed
+                    && most - least <= LOOP_WIDTH_TOLERANCE
+                    && wall.junctions.len() > 3
+                {
+                    let is_hole = !wall.is_contour();
+                    let mut polygon = wall.to_polygon();
+                    // A closed wall ends on the point it began at.
+                    if polygon.points.len() > 1 && polygon.points.first() == polygon.points.last() {
+                        polygon.points.pop();
+                    }
+                    // Counter-clockwise round material, clockwise round a hole.
+                    if polygon.is_ccw() == is_hole {
+                        polygon.points.reverse();
+                    }
+                    let made = ExtrusionLoop {
+                        polygon,
+                        role,
+                        is_hole,
+                        depth: wall.inset_idx,
+                        flow: flow_of(flow, wall.junctions[0].w)?,
+                    };
+                    if is_hole {
+                        holes.push(made);
+                    } else {
+                        result.loops.push(made);
+                    }
+                    continue;
+                }
+                // Two widths a segment: where it starts and where it ends.
+                let line = edge_medial::ThickPolyline {
+                    points: wall.junctions.iter().map(|junction| junction.p).collect(),
+                    widths: wall
+                        .junctions
+                        .windows(2)
+                        .flat_map(|pair| [pair[0].w as f64, pair[1].w as f64])
+                        .collect(),
+                    open_ends: (!wall.is_closed, !wall.is_closed),
+                };
+                lines.extend(edge_medial::variable_width(&[line], role, flow));
+            }
+            result.loops.extend(holes);
+        }
+        if result.loops.len() > first_loop {
+            result.islands.push(first_loop..result.loops.len());
+        }
+        result.gap_fill.extend(lines);
+
+        // Infill reaches from the inside of the innermost wall back
+        // into it by the overlap set.
+        let mut infill_contour = walls.inner_contour;
+        let wall_count = walls.toolpaths.len();
+        let inside_spacing = if wall_count == 1 {
+            ext_spacing2
+        } else {
+            spacing
+        };
+        if edge_clip::offset(&infill_contour, -inside_spacing / 2, Join::MITER)?.is_empty() {
+            infill_contour.clear();
+        }
+        let inset = match wall_count {
+            0 => 0,
+            1 => ext_spacing,
+            _ => spacing,
+        };
+        let inset = scaled(unscaled(inset) * params.infill_overlap_percent / 100.0);
+        let min_infill_spacing =
+            (params.solid_infill_spacing as f64 * (1.0 - INSET_OVERLAP_TOLERANCE)) as Coord;
+        result.infill.extend(edge_clip::offset2(
+            &edge_clip::simplify(&infill_contour, params.resolution)?,
+            -min_infill_spacing / 2,
+            inset + min_infill_spacing / 2,
+            Join::MITER,
+        )?);
+    }
+    Ok(result)
+}
+
 /// Lines down the middle of whatever part of `gaps` is too narrow for a
 /// wall and wide enough to print (PerimeterGenerator.cpp, "fill gaps").
 fn fill_gaps(
@@ -458,6 +639,7 @@ mod tests {
             one_wall_top: None,
             resolution: scaled(0.01),
             gap_fill: None,
+            arachne: None,
         }
     }
 
@@ -783,5 +965,111 @@ mod tests {
         assert!(infill < 0.5, "{infill} mm² of infill left");
         let without = classic(&[block(0.0, 0.0, 30.0, 2.2)], &params(2)).unwrap();
         assert!(without.gap_fill.is_empty());
+    }
+
+    /// As [`params`], with walls of changing width at the reference's
+    /// defaults for a 0.4 mm nozzle.
+    fn varying(wall_loops: usize) -> Params {
+        Params {
+            arachne: Some(ArachneParams {
+                min_bead_width: 0.34,
+                min_feature_size: 0.1,
+                min_length_factor: 0.5,
+                wall_transition_length: 0.4,
+                wall_transition_angle: 10.0,
+                wall_transition_filter_deviation: 0.1,
+                wall_distribution_count: 1,
+                is_top_or_bottom_layer: false,
+                wall_maximum_resolution: 500_000,
+                wall_maximum_deviation: 25_000,
+            }),
+            ..params(wall_loops)
+        }
+    }
+
+    #[test]
+    fn walls_of_changing_width_are_the_classic_ones_where_there_is_room() {
+        let square = [block(0.0, 0.0, 20.0, 20.0)];
+        let (plain, varied) = (
+            classic(&square, &params(2)).unwrap(),
+            classic(&square, &varying(2)).unwrap(),
+        );
+        // The same two loops, as wide and in the same places, and the
+        // same area left for infill.
+        assert_eq!(varied.loops.len(), 2);
+        assert_eq!(varied.islands, plain.islands);
+        assert!(varied.gap_fill.is_empty());
+        for (ours, theirs) in varied.loops.iter().zip(&plain.loops) {
+            assert_eq!(
+                (ours.role, ours.depth, ours.is_hole),
+                (theirs.role, theirs.depth, false)
+            );
+            assert!(ours.polygon.is_ccw());
+            assert!((ours.flow.width - theirs.flow.width).abs() < 1e-6);
+            assert!((side(ours) - side(theirs)).abs() < 1e-3);
+        }
+        let area = |walls: &Perimeters| walls.infill.iter().map(ExPolygon::area_mm2).sum::<f64>();
+        assert!(
+            (area(&varied) - area(&plain)).abs() < 0.05,
+            "{} against {}",
+            area(&varied),
+            area(&plain)
+        );
+    }
+
+    #[test]
+    fn a_thin_part_is_one_line_as_wide_as_the_part() {
+        // 0.6 mm across: no room for two walls, and classic walls would
+        // leave it to gap fill or leave it out.
+        let strip = arachne(
+            &[block(0.0, 0.0, 30.0, 0.6)],
+            &varying(2),
+            &varying(2).arachne.unwrap(),
+        )
+        .unwrap();
+        assert!(strip.loops.is_empty() && strip.infill.is_empty());
+        assert!(!strip.gap_fill.is_empty());
+        let length: f64 = strip.gap_fill.iter().map(ExtrusionPath::length_mm).sum();
+        assert!((length - 29.4).abs() < 0.1, "{length} mm");
+        for line in &strip.gap_fill {
+            assert_eq!(line.role, Role::ExternalPerimeter);
+            // The part's width less what the outer wall's line is wider
+            // than its spacing, plus what any line is.
+            assert!(
+                (line.flow.width - 0.6).abs() < 0.01,
+                "{} mm wide",
+                line.flow.width
+            );
+            assert!(line.points.iter().all(|p| (p.y - 300_000).abs() < 2_000));
+        }
+    }
+
+    #[test]
+    fn a_hole_is_walled_clockwise_and_nothing_is_laid_twice() {
+        let mut ring = block(0.0, 0.0, 20.0, 20.0);
+        ring.holes.push(Polygon {
+            points: [(8.0, 8.0), (8.0, 12.0), (12.0, 12.0), (12.0, 8.0)]
+                .map(|(x, y)| Point2::from_mm(x, y))
+                .to_vec(),
+        });
+        let walls = classic(&[ring], &varying(2)).unwrap();
+        assert_eq!(walls.loops.len(), 4);
+        let holes: Vec<&ExtrusionLoop> = walls.loops.iter().filter(|wall| wall.is_hole).collect();
+        assert_eq!(holes.len(), 2);
+        assert!(holes.iter().all(|wall| !wall.polygon.is_ccw()));
+        assert!(
+            walls
+                .loops
+                .iter()
+                .filter(|wall| !wall.is_hole)
+                .all(|wall| wall.polygon.is_ccw())
+        );
+        // Each depth's outer loop before its hole's.
+        let order: Vec<(usize, bool)> = walls
+            .loops
+            .iter()
+            .map(|wall| (wall.depth, wall.is_hole))
+            .collect();
+        assert_eq!(order, [(0, false), (0, true), (1, false), (1, true)]);
     }
 }
