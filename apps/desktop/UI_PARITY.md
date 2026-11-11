@@ -15,7 +15,8 @@ The last column reads:
 - **added** — built in the pass that wrote the row (first pass: Prepare,
   Preview, Device, the project strip; second pass: the sidebar's printer
   block, "Sidebar: Printer" in section 2, and section 8; third pass: the 3D
-  views, sections 9 to 11).
+  views, sections 9 to 11; fourth pass: the process pages, "Sidebar:
+  Process" in section 2 and section 12).
 - **differs** — built, but on purpose not as the C++ does it; the cell says how.
 - **not yet** — not built, with what it waits for. Nothing in this column is
   shown in the page as a control that does nothing.
@@ -77,7 +78,7 @@ runs, is section 8.
 | In the list's own row: the edit icon (opens the printer's settings), "Connect to printer" (opens "Devices"), "The machine has been connected and is currently in working mode" | Plater.cpp l.2659–2686, PresetComboBoxes.cpp l.1907–1985 | **not yet**: needs a settings editor, and a printer connection (section 4) |
 | Leaving a printer or filament preset with unsaved changes asks first ("Unsaved Changes") | `Tab::select_preset` Tab.cpp l.9037–9105 | not needed: presets are not edited |
 | **Another printer, the process**: the one last used with that printer ("Remember printer configuration", on unless turned off); else the one of the same name (alias: the name up to "@") cut for it; else the printer's `default_print_profile`; else the first that fits | `PresetBundle::update_selections` l.2432, `update_compatible` l.7171 (`PreferedPrintProfileMatch` l.7213), Tab.cpp l.9196–9306 | **added** (`printer_select`), in that order, a process that still fits staying before the search by name. **not yet**: the profile remembered for each layer height, the preference itself |
-| **Another printer, the process settings changed by hand** are carried over: "Kept %1% process settings from \"%2%\" (revertable)." | `capture_print_settings_carry`, `apply_print_settings_carry` Tab.cpp l.9096, l.9314 | **had**, in effect: the four settings set over the preset stay set when the printer changes. **not yet**: the notice, reverting |
+| **Another printer, the process settings changed by hand** are carried over: "Kept %1% process settings from \"%2%\" (revertable)."; each carried value stays marked as changed and can be reverted | `capture_print_settings_carry`, `apply_print_settings_carry` Tab.cpp l.9096, l.9314 | **added**: every process setting set over the preset stays set, with the same sentence in the status line (one setting: "Kept 1 process setting from …"), and each is given back with its own reset or all with the reset in the Process title bar. **differs**: said for a change of process preset too, where the C++ asks ("Unsaved Changes": transfer, discard, save); line widths and layer heights are kept across nozzle sizes, where the C++ lets them "follow the new nozzle size" |
 | **Another printer, the filaments**: each one that fits stays; one that does not is replaced by the one of the same name cut for the new printer, else by one of the same `filament_type`, the printer's `default_filament_profile` before others. The filaments last used with the printer are read back and then put aside again for the project's (Tab.cpp l.9251) | `update_compatible` l.7275–7357, Tab.cpp l.9235–9306 | **added**, the same rule for each slot (`Shelf::filament_type` gives the material). A slot with nothing in it yet, as in a new project, takes what was last used in it with that printer, else the printer's usual. **differs**: every slot's usual filament is the printer's first `default_filament_profile`, the engine handing out one |
 | **Another printer, the number of filaments**: the larger of the printer's nozzles and the project's filaments; it never shrinks | `TabPrinter::extruders_count_changed` Tab.cpp l.7355, l.3005 | **not yet**: there is a filament for each the file prints in, as before (the engine prints the filaments the file assigns; see "Add one filament") |
 | **Another printer, the bed**: the plate takes the printer's bed and height, objects are moved to keep their place on it, every plate's slice is dropped | Plater.cpp l.18554–18703, `on_config_change` l.29200 | **added**: the bed and height (`plate_view`), fitted to the stage anew; the slices are dropped (**had**). **not yet**: moving the objects; they stay where the file puts them |
@@ -105,12 +106,36 @@ runs, is section 8.
 
 ### Sidebar: Process
 
+The pages are drawn from data, not written: `src/api/process_pages.json`,
+made from the pinned source by `tools/make_process_pages.py` (Tab.cpp
+`TabPrint::build` for the pages, groups and lines; `libslic3r/PrintConfig.cpp`
+for each option; the defaults table of `tools/make_defaults.py`). After a pin
+bump: `tools/make_defaults.py <EdgeSlicer executable>`, then
+`tools/make_process_pages.py`. Section 12 has the numbers and what the engine
+does with each option.
+
 | C++ | Where | Here |
 | --- | --- | --- |
-| Section "Process" with the process preset list | `ParamsPanel::ParamsPanel` l.210, `Tab.cpp` l.300 | **added** as its own section (before: one list among the presets) |
-| Pages "Quality", "Strength", "Speed", "Support", "Multimaterial", "Others", each a page of settings | `TabPrint::build`, Tab.cpp l.3441 | **added**: the four settings the engine takes over a preset, under the C++ names and pages — Quality: "Layer height", "Initial layer height", "Slice gap closing radius"; Strength: "Wall loops". Empty is "as the preset has it", whose value is shown in grey. A change marks the project modified and drops its slices, as in the C++. **not yet**: every other setting (the engine reads them from the preset; there is no editor) |
-| "Global" / "Objects" switch, per-object, per-part and per-layer settings, "View all object's settings" | `ParamsPanel::create_layout` l.364, `TabPrintModel` l.5035 | **not yet** |
-| "Advance" switch, search ("Search in preset"), "Compare presets", save and delete preset, favourites, "Manage process presets" | ParamsPanel.cpp l.210–257, Tab.cpp l.300–420 | **not yet** |
+| Section "Process" with the process preset list | `ParamsPanel::ParamsPanel` l.210, `Tab.cpp` l.300 | **added** as its own section (first pass) |
+| Pages "Quality", "Strength", "Speed", "Support", "Multimaterial", "Others", each a page of option groups; a row of tabs picks the page | `TabPrint::build`, Tab.cpp l.3441 | **added**: the six pages with every group and every option in the C++ order, 433 options. A page's controls are built when it is first opened. Before: four settings ("Layer height", "Initial layer height", "Slice gap closing radius", "Wall loops") |
+| An option's label, its tooltip with "parameter name: key" under it, its unit after the field | `libslic3r/PrintConfig.cpp`, Field.cpp `get_formatted_tooltip_text` l.109 | **added**, the C++ strings. **differs**: a length that may be a percentage ("mm or %") shows "mm" after a plain number and nothing after one typed with its %. **not yet**: the wiki link behind a label (the page loads nothing from the network) |
+| Controls by kind: a tick box (`coBool`), a number with its unit (`coInt`, `coFloat`, `coPercent`), a length or a percentage (`coFloatOrPercent`), a list (`coEnum`), a list that also takes a typed value (`i_enum_open`, `f_enum_open`: the infill anchors, the support interface layers), text, a box of text for G-code, scripts and notes | Field.cpp, OptionsGroup.cpp | **added**: the controls of `ui/STYLE.md`; a list is the page's own listbox; a list that takes a typed value is a field with a chevron that opens the values as a menu |
+| One line with several options under one label: "Overhang speed" with its four ranges, "Bridge" with external and internal | Tab.cpp l.3703–3714 | **differs**: the line's label and tooltip, then a row for each option under it; four fields do not fit beside a label in a sidebar |
+| A value for each nozzle flow variant (the speeds, accelerations and jerks: `coFloats`), picked by the variant selector at the top of the tab | `register_flow_variant_view`, Tab.cpp l.3670 | **differs**: one field, showing the first variant's value and setting every variant alike. **not yet**: a value for each variant (the engine reads the first) |
+| A changed option is marked (its label orange) with an arrow that puts it back: "Click to drop current modify and reset to saved value." | Tab.cpp l.10523, `OG_CustomCtrl` | **added**: a bar of the accent on the control, the label in bold, and the arrow with the same tooltip. Here a change is the project's own over the preset (`process_set`), not an edit to the preset: the preset's value is what the arrow goes back to and what an emptied field shows in grey |
+| How many options are changed | the preset's "* " mark, the tab's orange title | **added**: a count on each page's tab ("2 settings changed") |
+| "Click to reset all settings to the last saved preset." | Tab.cpp l.2229 | **added**: the arrow in the Process title bar, there while anything is changed |
+| A change marks the project modified and drops the slices | `Tab::on_value_change`, `Plater::on_config_change` | **added** (**had** for the four) |
+| A value out of range or not a number: "Invalid numeric.", "Value is out of range.", "Value %s is out of range. The valid range is from %d to %d.", "%s can't be a percentage"; the field goes back | Field.cpp l.386–498 | **added**, said in the status line before anything is sent, with the limit; the session holds to the same limits (`process_set`). **differs**: a length over `max_literal` is refused with its range, where the C++ asks whether a percentage was meant. **added** beyond the C++: a value in range that the engine would stop at (a 5 mm layer on a 0.4 nozzle) is refused with the engine's own reason, found by asking it |
+| Options shown, hidden and greyed out by what the others are set to | `ConfigManipulation::toggle_print_fff_options` l.757–1441 | **added**: the whole function, every page's rules (`src/api/process/rules.rs`, in the C++ order; `toggle_line` hides, `toggle_field` greys out). The printer's side of them (G-code flavor, Bambu or not, tower type, extruder variants) is read from the settings a slice gets; the number of filaments is the project's. **not yet**: the values the C++ changes by itself while toggling (arc fitting off under extrusion rate smoothing, a multi-line fill back to one line, the reverse threshold to 0%); "Brim ear radius" as the label of "Brim width" with brim ears |
+| Settings that need one another: "Spiral mode only works when…", "Change these settings automatically?" and the rest | `ConfigManipulation::update_print_fff_config` l.150–756 | **not yet**: the questions; a value is taken as it is set |
+| "Advance" switch: off, the simple options; on, the advanced ones too; a page with nothing to show in the mode is not among the tabs. Developer options with "Develop mode" (Preferences) | ParamsPanel.cpp l.229, `ConfigOptionMode`, GUI_App.cpp l.8520, `Tab::update_visibility` | **added**: the switch, off to start with as in the C++, kept by the page; 54 options without it (no Speed page), 428 with. **not yet**: develop mode, so the 5 developer options are not shown |
+| Search ("Search in preset"): finds options by label, jumps to the page and the option | Tab.cpp l.382–420, `Search.cpp` | **added**: every word typed must be in the label, the name (`seam_slope_type`), the group or the page; the list shows label, page › group and name; Enter or a click opens the page, goes to the row and marks it for a moment; Escape clears. An option the rules hide is listed greyed, and its group is gone to |
+| What the slicer does with an option | — | this app's own (**added**): a quiet ring beside an option the engine does not read with the settings as they are, a dot beside one it follows with a note, each said in the label's tooltip; nothing is hidden for it and every option can still be set (section 12) |
+| The support sets row ("Support set": apply, save, delete) | Tab.cpp l.3776, `support_set_create_widget` | **not yet**: it writes files of user presets |
+| "Global" / "Objects" switch, per-object, per-part and per-layer settings, "View all object's settings"; the tool selector at the top of the tab ([Plate] [T1 0.4] …) | `ParamsPanel::create_layout` l.364, `TabPrintModel` l.5035, `create_tool_selector` | **not yet**: the engine reads one set of settings for a plate |
+| "Compare presets", save ("Save current …") and delete preset, favourites, "Manage process presets" | ParamsPanel.cpp l.238, Tab.cpp l.300–420 | **not yet**: there are no user presets (`edge-config` reads vendor profiles only); what is changed is kept with the project while it is open |
+| The filament's and the printer's own pages of settings | `TabFilament::build`, `TabPrinter::build` | **not yet**: their own passes; the tool and the calls here are made to take them (a page list for each, the same options source) |
 
 ### The bed
 
@@ -312,7 +337,7 @@ the project is on.
 | `machines { vendor }` | | `{ machines }` |
 | `presets { vendor, machine }` | | `{ processes, filaments, usual_process, usual_filament }` |
 | `projects` | — | the strip: `{ active, max_open, projects: [{ id, name, path, dirty, empty, plate, tab, slicing, plates_with_objects, plates_sliced }] }` |
-| `project` | `project?` | a strip entry and `file`, `plates: [{ id, name, filaments, objects, sliced, failed }]`, `sliced`, `failed`, `has_settings`, `used`, `filament_count`, `colours`, `saved { printer, process, filaments }`, `choices { source, vendor, machine, process, filaments, bed_type, layer_height, first_layer_height, wall_loops, closing_radius }`, `view`, `status` |
+| `project` | `project?` | a strip entry and `file`, `plates: [{ id, name, filaments, objects, sliced, failed }]`, `sliced`, `failed`, `has_settings`, `used`, `filament_count`, `colours`, `saved { printer, process, filaments }`, `choices { source, vendor, machine, process, filaments, bed_type, over { key: value }, layer_height, first_layer_height, wall_loops, closing_radius }` (`over` is every process setting set over the preset; the four after it are four of them under their older names), `view`, `status` |
 | `project_new` | — | the strip and `id`; or the strip and `full: true` |
 | `project_open` | `path` | the strip and `id` (`already: true` when it was open); or `full: true` |
 | `project_select` | `id` | the strip |
@@ -320,12 +345,15 @@ the project is on.
 | `project_move` | `id`, `index` | the strip |
 | `project_close` | `id`, `discard?`, `stop?` | the strip and `closed: true`; or `closed: false`, `ask: "unsaved" \| "slicing"`, `name` |
 | `project_set` (what is set for `bed_type`, `process` or `filaments` is kept with the printer the project is on) | `project?` and any of `plate`, `tab` (`prepare` / `preview`), `view` (a small object), `source` (`project` / `presets`), `vendor`, `machine`, `process`, `filaments`, `bed_type`, `layer_height`, `first_layer_height`, `wall_loops`, `closing_radius` (null to clear), `initial` (these are what it starts with) | as `project`. A change to what it is sliced with drops its slices and stops one that is running |
+| `process_pages` | — | the process pages as the reference has them: `{ pages: [{ title, groups: [{ title, lines: [{ keys, label?, tooltip? }] }] }], options: { key: { label, tooltip, type (bool, int, float, percent, float_or_percent, enum, string, strings), unit?, min?, max?, max_literal?, values?, labels?, open?, mode (simple, advanced, developer), list?, multiline?, code?, full_width?, height?, default } } }`. The same for every project; asked for once |
+| `process` | `project?` | `{ project, source, name, values { key: value } (by the preset, or the project's own settings, or the default), set { key: value } (what is set over them), counts { page: number set }, changed, hidden: [key], off: [key] (the reference's rules), unread: [key] (what a slice with these settings does not read), notes { key: [sentence] } (the engine's notes), refused (why the engine would stop, or null) }` |
+| `process_set` | `project?` and `key` with `value` (null gives it back to the preset), or `reset: true` (gives all back) | as `process`. An error, with nothing changed, for a value the option does not take or the engine would stop at. A change drops the project's slices |
 | `settled` | `project?` | `{ printer: { source, name, vendor, model, variant, nozzle_diameter, bed, height, gcode_flavor, host_type, print_host, print_host_webui, has_api_key, bed_types { enabled, in_force, choices } }, process: { name, layer_height, first_layer_height, wall_loops, closing_radius } }`, either null when nothing is chosen |
 | `plate_view` | `project?`, `plate?` | `{ project, plate, bed, height, objects: [{ name, outline, box, height }] }` |
 | `slice` | `project?`, `plate?` or `all: true` | `{ project, run }`; `status` says how it goes |
 | `cancel` | `project?` | — |
 | `status` | `project?` | `{ project, run, state, label, step, steps, plate, at, of, error }`, `state` being idle, slicing, done, failed or cancelled |
-| `summary` | `project?`, `plate?` | as before, and `plate`, `widths`, `heights` |
+| `summary` | `project?`, `plate?` | as before, and `plate`, `widths`, `heights`. `gaps` ends with each setting set by hand that the slice did not read |
 | `layer` | `project?`, `plate?`, `index` | as before |
 | `export` | `project?`, `plate?`, `path` | `{ path, bytes }` |
 | `scene` | `project?` | the project for Prepare in 3D: `{ project, key, bare, bed { box, shape, height, model, texture }, plates: [{ id, name, origin }], plate, colours, objects: [{ name, vertices, triangles, bytes, filaments }], placings: [{ object, plate, printable, matrix (16 numbers, column by column), box }] }`. `key` changes only when the file does |
@@ -623,3 +651,93 @@ build of the app with the engine optimised:
 | Moves sent | 0.25 MB | 4.21 MB | 6.72 MB |
 | On screen after `toolpath` is asked for | 10 ms | 0.09 s | 0.02–0.18 s |
 | Frame while turning, Prepare / Preview | 16.7 ms (the screen's own) | 16.7 ms | 16.7 ms; drawn 16 times a frame, 19.8 ms / 16.7 ms: about 1.2 ms a draw in Prepare, under 1 ms in Preview |
+
+## 12. The process pages: the options, and what the engine does with them
+
+### Where the pages come from
+
+`tools/make_process_pages.py` reads three things and runs nothing:
+
+- `TabPrint::build` (Tab.cpp l.3441–4032) for the pages, the groups and the
+  lines in order: `add_options_page`, `new_optgroup`,
+  `append_single_option_line("key")`, an `Option` shaped before it is
+  appended (`is_code`, `multiline`, `full_width`, `height`), and a `Line` of
+  several options with its own label and tooltip. Commented-out lines are not
+  read. A group that holds only a widget of the C++'s own (the support sets)
+  has no options and is left out.
+- `PrintConfigDef` (PrintConfig.cpp) for each option: `label`, `full_label`,
+  `tooltip`, `sidetext`, `min`, `max`, `max_literal`, `mode` (simple unless
+  set), `enum_values` and `enum_labels` (pushed, inserted at the head, or
+  copied from another option), `gui_type` (a list that takes a typed value),
+  `ratio_over`, `multiline`, `readonly`.
+- `crates/edge-config/src/reference_defaults.txt` for the defaults, which is
+  the reference's own account of them.
+
+`--check` fails when the file is not what the source gives. The session
+includes the file (`src/api/process.rs`), hands it to the page
+(`process_pages`) and checks values against it (`process_set`), so the page
+and the session cannot disagree about a limit or a list.
+
+| Page | Groups | Options | Simple | Advanced | Developer |
+| --- | --- | --- | --- | --- | --- |
+| Quality | Layer height, Line width, Seam, Precision, Ironing, Z contouring, Wall generator, Walls and surfaces, Bridging, Overhangs | 104 | 6 | 97 | 1 |
+| Strength | Walls, Top/bottom shells, Hollowing, Infill, Advanced | 73 | 17 | 56 | 0 |
+| Speed | Initial layer speed, Other layers speed, Overhang speed, Layer time control, Travel speed, Acceleration, Junction Deviation, Jerk(XY), Advanced | 64 | 0 | 64 | 0 |
+| Support | Support, Raft, Support filament, Support ironing, Over-support surfaces, Advanced, Tree supports, Side stabilizers | 78 | 11 | 67 | 0 |
+| Multimaterial | Prime tower, Filament for Features, Ooze prevention, Flush options, Advanced, Color Mixing (Experimental) | 63 | 6 | 54 | 3 |
+| Others | Skirt, Brim, Special mode, Fuzzy Skin, G-code output, Change extrusion role G-code, Post-processing Scripts, Notes | 51 | 14 | 36 | 1 |
+
+### What the engine does with an option
+
+The page keeps no list of followed settings. `edge_engine::followed` answers
+for the settings as they stand: it slices a 12 mm block with exactly what a
+model would be sliced with (the presets, what is set over them, a project's
+own settings under both), writes its G-code, and says
+
+- which settings were asked for by name on the way (`edge_config::Reads`,
+  which `Settings` notes into; going through all of them, as the settings
+  block at the end of a G-code file does, asks for none);
+- the notes the stages gave (`Sliced::gaps`: the same sentences "About this
+  print" shows);
+- why the slice stopped, if it did.
+
+An option is then one of three things, shown beside its label:
+
+| The engine's answer | Shown as |
+| --- | --- |
+| Read, no note about it | nothing: it is followed |
+| A note that starts with its name | a dot; the tooltip starts "Followed with a note:" and gives the engine's sentence |
+| Not read | a ring, and the label a shade quieter; the tooltip says the engine does not read it with the settings as they are, so changing it changes nothing in the print |
+
+What the engine answers for the Snapmaker U1's "0.20mm Standard" process as
+it is (the 12 mm block, one filament), page by page. "Unread and in sight"
+are the options a ring is drawn beside: unread, and neither hidden nor
+greyed out by the rules. "Unread either way" are those still unread with
+supports, a raft, ironing, fuzzy skin, a brim, a prime tower, a scarf seam,
+Arachne walls, gyroid fill and the rest of the switches turned on: the ones
+no stage reads at all.
+
+| Page | Options | Read | Read, with a note | Unread | Unread and in sight | Unread either way |
+| --- | --- | --- | --- | --- | --- | --- |
+| Quality | 104 | 84 | 0 | 20 | 1 | 6 |
+| Strength | 73 | 33 | 0 | 40 | 13 | 37 |
+| Speed | 64 | 33 | 0 | 31 | 10 | 31 |
+| Support | 78 | 25 | 0 | 53 | 2 | 43 |
+| Multimaterial | 63 | 21 | 0 | 42 | 18 | 42 |
+| Others | 51 | 27 | 1 (`exclude_object`) | 23 | 14 | 23 |
+| All | 433 | 223 | 1 | 209 | 58 | 182 |
+
+Turned on, four more are read with a note: `zaa_enabled`, `spiral_mode`,
+`raft_layers`, `draft_shield`.
+
+Nothing is said of an option the reference's rules have greyed out: it is
+off, whoever reads it. Some settings are read only when another turns them on
+(the Arachne widths with `wall_generator` at `arachne`, the support patterns
+with supports on); those are hidden or greyed by the rules while they are
+off, and the answer is asked again after every change.
+
+The same is said with the print. A real slice notes what it reads too
+(`prepare_noted`), and "About this print" lists, after the engine's notes,
+each setting set by hand that nothing read: `hollow_interior "1": not read by
+the engine; it changes nothing in this print`.
+

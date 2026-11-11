@@ -41,7 +41,9 @@ to a stage and say in the PR what moved.
   it from here; C++ changes go through the EdgeSlicer repo. Bump the pin
   deliberately, in its own commit. After a bump run
   `tools/make_defaults.py <EdgeSlicer executable>`, which rewrites the
-  table of the reference's defaults in `edge-config`.
+  table of the reference's defaults in `edge-config`, and then
+  `tools/make_process_pages.py`, which rewrites the data the desktop
+  app draws its process settings pages from.
 - The reference slicer defines correct output. Where this engine differs on
   purpose, say so in the code and in the PR.
 - That does not extend to the reference's own mistakes. A workaround it

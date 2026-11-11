@@ -619,7 +619,7 @@ async function showSidebar() {
   if (project.id !== activeId()) return;
   state.settled = settled;
   state.printers = printers;
-  const { printer, process } = state.settled;
+  const { printer } = state.settled;
 
   // Printer: the list, the picture and the nozzles (printers.js).
   showPrinterBlock();
@@ -682,14 +682,8 @@ async function showSidebar() {
     const processes = choices.machine ? (await presetsOf(choices.vendor, choices.machine)).processes : [];
     fill($('process'), processes, choices.process);
   }
-  for (const input of document.querySelectorAll('[data-over]')) {
-    const key = input.dataset.over;
-    input.value = choices[key] === null ? '' : choices[key];
-    const usual = process ? process[key] : null;
-    input.placeholder = usual === null || usual === undefined ? '' : String(usual);
-    // Marked where it is set over the preset.
-    input.closest('.unit').classList.toggle('set', choices[key] !== null);
-  }
+  // The pages of process settings, and what is set over the preset (process.js).
+  await showProcess();
   showDevice();
 }
 
@@ -710,19 +704,6 @@ listbox($('process'));
 listbox($('bed'), { bare: true });
 $('process').addEventListener('change', () => attempt(() => setProject({ process: $('process').value })));
 $('bed').addEventListener('change', () => attempt(() => setProject({ bed_type: $('bed').value })));
-for (const input of document.querySelectorAll('[data-over]')) {
-  input.addEventListener('change', () => attempt(async () => {
-    const value = input.value.trim() === '' ? null : Number(input.value);
-    try {
-      await setProject({ [input.dataset.over]: value });
-      say('');
-    } catch (error) {
-      // What cannot be set is said, and the field goes back to what holds.
-      await showSidebar();
-      throw error;
-    }
-  }));
-}
 for (const title of document.querySelectorAll('.fold-title')) {
   title.addEventListener('click', () => {
     const folded = title.closest('.fold').classList.toggle('folded');

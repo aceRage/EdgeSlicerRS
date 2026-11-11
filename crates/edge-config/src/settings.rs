@@ -1,4 +1,7 @@
-use std::collections::BTreeMap;
+use std::{
+    collections::{BTreeMap, BTreeSet},
+    sync::{Arc, Mutex},
+};
 
 use crate::ConfigError;
 
@@ -29,10 +32,61 @@ impl FloatOrPercent {
 }
 
 /// Flat key to value settings, ordered by key so output is deterministic.
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
-pub struct Settings(BTreeMap<String, Value>);
+#[derive(Clone, Debug, Default)]
+pub struct Settings(BTreeMap<String, Value>, Option<Reads>);
+
+/// Two sets of settings are equal when they hold the same values,
+/// whoever is noting what is read from them.
+impl PartialEq for Settings {
+    fn eq(&self, other: &Self) -> bool {
+        self.0 == other.0
+    }
+}
+
+impl Eq for Settings {}
+
+/// The names of the settings asked for by name from the [`Settings`] it
+/// was given to ([`Settings::noted_by`]), whether they were there or not.
+/// What only goes through all of them ([`Settings::iter`], as the list of
+/// settings at the end of a G-code file does) asks for none.
+#[derive(Clone, Debug, Default)]
+pub struct Reads(Arc<Mutex<BTreeSet<String>>>);
+
+impl Reads {
+    /// The names asked for so far, in order.
+    pub fn keys(&self) -> BTreeSet<String> {
+        self.0
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone()
+    }
+
+    fn note(&self, key: &str) {
+        let mut keys = self
+            .0
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if !keys.contains(key) {
+            keys.insert(key.to_owned());
+        }
+    }
+}
 
 impl Settings {
+    /// From here on every setting asked for by name is noted in `reads`,
+    /// in these settings and in every copy made of them afterwards.
+    pub fn noted_by(&mut self, reads: &Reads) {
+        self.1 = Some(reads.clone());
+    }
+
+    /// The value under `key`, noted as asked for when anyone is noting.
+    fn value(&self, key: &str) -> Option<&Value> {
+        if let Some(reads) = &self.1 {
+            reads.note(key);
+        }
+        self.0.get(key)
+    }
+
     /// Parses a JSON object of strings and string lists. Numbers and booleans
     /// are accepted and kept as their text; nested structures are rejected.
     pub fn from_json(text: &str) -> Result<Self, String> {
@@ -57,7 +111,7 @@ impl Settings {
             };
             settings.insert(key, value);
         }
-        Ok(Self(settings))
+        Ok(Self(settings, None))
     }
 
     pub fn to_json(&self) -> String {
@@ -76,7 +130,7 @@ impl Settings {
     }
 
     pub fn get(&self, key: &str) -> Option<&Value> {
-        self.0.get(key)
+        self.value(key)
     }
 
     pub fn insert(&mut self, key: impl Into<String>, value: Value) -> Option<Value> {
@@ -117,7 +171,7 @@ impl Settings {
 
     /// A single-valued setting; `None` when absent or stored as a list.
     pub fn text(&self, key: &str) -> Option<&str> {
-        match self.0.get(key)? {
+        match self.value(key)? {
             Value::One(text) => Some(text),
             Value::Many(_) => None,
         }
@@ -125,14 +179,14 @@ impl Settings {
 
     /// A setting's entries; a single value reads as a one-entry list.
     pub fn texts(&self, key: &str) -> Option<&[String]> {
-        Some(match self.0.get(key)? {
+        Some(match self.value(key)? {
             Value::One(text) => std::slice::from_ref(text),
             Value::Many(items) => items,
         })
     }
 
     pub fn float(&self, key: &str) -> Result<Option<f64>, ConfigError> {
-        let Some(value) = self.0.get(key) else {
+        let Some(value) = self.value(key) else {
             return Ok(None);
         };
         let Value::One(text) = value else {
@@ -283,6 +337,29 @@ mod tests {
         assert!(settings.integer("overlap").is_err() && settings.flag("bad").is_err());
         assert_eq!(FloatOrPercent::Percent(150.0).resolve(0.4), 0.6);
         assert_eq!(FloatOrPercent::Value(0.5).resolve(0.4), 0.5);
+    }
+
+    #[test]
+    fn what_is_asked_for_by_name_is_noted() {
+        let mut settings =
+            Settings::from_json(r#"{"a": "1", "b": ["2", "3"], "c": "4", "d": "5"}"#).unwrap();
+        // Nobody noting: nothing is kept, and nothing changes.
+        assert_eq!(settings.text("a"), Some("1"));
+        let reads = Reads::default();
+        settings.noted_by(&reads);
+        assert!(reads.keys().is_empty());
+        assert_eq!(settings.float("a").unwrap(), Some(1.0));
+        assert_eq!(settings.texts("b").unwrap().len(), 2);
+        assert_eq!(settings.flag("missing").unwrap(), None);
+        // Going through all of them asks for none by name.
+        assert_eq!(settings.iter().count(), 4);
+        // A copy is noted with what it was copied from.
+        let copy = settings.clone();
+        assert_eq!(copy.integer("c").unwrap(), Some(4));
+        let keys: Vec<String> = reads.keys().into_iter().collect();
+        assert_eq!(keys, ["a", "b", "c", "missing"]);
+        // Who is noting is no part of what the settings are.
+        assert_eq!(settings, Settings::from_json(&settings.to_json()).unwrap());
     }
 
     #[test]
