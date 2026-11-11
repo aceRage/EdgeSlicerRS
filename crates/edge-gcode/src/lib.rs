@@ -1136,7 +1136,7 @@ impl Writer<'_> {
                         speed: ram.speed,
                         ..self.motion(line.role, &line.flow, self.state.first_layer)
                     };
-                    self.travel(line.points[0], false)?;
+                    self.travel(line.points[0], false, None)?;
                     for point in &line.points[1..] {
                         self.extrude(*point, line.role, &line.flow, motion)?;
                     }
@@ -1146,7 +1146,7 @@ impl Writer<'_> {
             }
             None => {
                 if let Some(over) = over.filter(|_| self.state.primed) {
-                    self.travel(over, false)?;
+                    self.travel(over, false, None)?;
                 }
             }
         }
@@ -1361,7 +1361,7 @@ impl Writer<'_> {
                 )?;
                 // The new tool comes in through the gap in the tower's wall.
                 for point in layer.enter {
-                    self.travel(*point, false)?;
+                    self.travel(*point, false, None)?;
                 }
             }
             self.inner_wall = layer
@@ -2002,7 +2002,7 @@ impl Writer<'_> {
         sheltered: bool,
         closed: bool,
     ) -> io::Result<()> {
-        self.travel(points[0], sheltered)?;
+        self.travel(points[0], sheltered, Some(role))?;
         self.lay_path(points, parts, role, flow, closed)
     }
 
@@ -2524,8 +2524,9 @@ impl Writer<'_> {
     }
 
     /// `sheltered` says the move may go unretracted however long it is,
-    /// unless it leaves an outer wall, which always retracts.
-    fn travel(&mut self, to: Point2, sheltered: bool) -> io::Result<()> {
+    /// unless it leaves an outer wall, which always retracts. `role` is
+    /// what the move is to, where it goes to a line.
+    fn travel(&mut self, to: Point2, sheltered: bool, role: Option<Role>) -> io::Result<()> {
         let s = self.settings;
         let from = self.state.position;
         // Round the inside of the walls where the move would cross
@@ -2541,6 +2542,26 @@ impl Writer<'_> {
         if length == 0.0 && self.state.height == Some(self.state.z) {
             self.state.routing.passed();
             return Ok(());
+        }
+        // Every travel goes at the travel acceleration, set before the
+        // retraction and so the wipe too, but for a short one into an
+        // outer wall or an overhang wall, which keeps that wall's, so
+        // the nozzle does not slow down just before the wall it is about
+        // to lay (GCode.cpp `travel_to`). On the first layer, the first
+        // layer's. Short is shorter than `retraction_minimum_travel` in a
+        // straight line.
+        let straight = from.map_or(f64::INFINITY, |from| distance(from, to));
+        let short = straight < s.retraction_minimum_travel;
+        if self.state.first_layer && s.initial_layer_acceleration > 0.0 {
+            self.accelerate(s.initial_layer_acceleration)?;
+        } else if s.default_acceleration > 0.0 {
+            let bridge = s.bridge_acceleration.resolve(s.outer_wall_acceleration);
+            let wanted = match role {
+                Some(Role::OverhangPerimeter) if short => bridge,
+                Some(Role::ExternalPerimeter) if short => s.outer_wall_acceleration,
+                _ => s.travel_acceleration,
+            };
+            self.accelerate(wanted)?;
         }
         let exposed = !sheltered
             || matches!(
@@ -2570,20 +2591,6 @@ impl Writer<'_> {
         // A wipe moves the nozzle, so the travel is measured from where it ends.
         let from = self.state.position;
         let length = from.map_or(f64::INFINITY, |from| distance(from, to));
-        // The first layer is gentle throughout. Above it, long moves get the
-        // travel acceleration; short hops between neighbouring lines keep
-        // whatever is set, rather than switching twice for a millimetre.
-        if self.state.first_layer && s.initial_layer_acceleration > 0.0 {
-            self.accelerate(s.initial_layer_acceleration)?;
-        } else if long {
-            let travel = if s.travel_acceleration > 0.0 {
-                s.travel_acceleration
-            } else {
-                s.default_acceleration
-            };
-            self.accelerate(travel)?;
-        }
-
         let lift = self.state.pending_lift.take();
         let z = self.state.z;
         let top = match (lift, self.state.height) {

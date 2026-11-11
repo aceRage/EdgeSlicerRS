@@ -1290,9 +1290,26 @@ fn acceleration_follows_the_feature_and_the_first_layer() {
         [
             // The whole first layer, travel included, is gentle.
             "SET_VELOCITY_LIMIT ACCEL=500 ACCEL_TO_DECEL=250 MINIMUM_CRUISE_RATIO=0.5",
-            // Second layer: travel, the outer wall, then fill at the default.
-            "SET_VELOCITY_LIMIT ACCEL=10000 ACCEL_TO_DECEL=5000 MINIMUM_CRUISE_RATIO=0.5",
+            // Second layer: the outer wall, then fill at the default. With
+            // no travel acceleration set, travel keeps whatever is set
+            // (GCode.cpp `travel_to`; it went at the default before).
             "SET_VELOCITY_LIMIT ACCEL=5000 ACCEL_TO_DECEL=2500 MINIMUM_CRUISE_RATIO=0.5",
+            "SET_VELOCITY_LIMIT ACCEL=10000 ACCEL_TO_DECEL=5000 MINIMUM_CRUISE_RATIO=0.5",
+        ]
+    );
+    // With one, every travel is at it, short hops too, and from before
+    // the retraction: up to the second layer, to the fill after the
+    // wall, and from the fill to the next layer.
+    let travelling = PrintSettings {
+        travel_acceleration: 12000.0,
+        ..klipper.clone()
+    };
+    assert_eq!(
+        limits(&travelling)[1..],
+        [
+            "SET_VELOCITY_LIMIT ACCEL=12000 ACCEL_TO_DECEL=6000 MINIMUM_CRUISE_RATIO=0.5",
+            "SET_VELOCITY_LIMIT ACCEL=5000 ACCEL_TO_DECEL=2500 MINIMUM_CRUISE_RATIO=0.5",
+            "SET_VELOCITY_LIMIT ACCEL=12000 ACCEL_TO_DECEL=6000 MINIMUM_CRUISE_RATIO=0.5",
             "SET_VELOCITY_LIMIT ACCEL=10000 ACCEL_TO_DECEL=5000 MINIMUM_CRUISE_RATIO=0.5",
         ]
     );
@@ -1301,7 +1318,7 @@ fn acceleration_follows_the_feature_and_the_first_layer() {
         accel_to_decel_factor: None,
         ..klipper.clone()
     };
-    assert_eq!(limits(&marlin)[..2], ["M204 S500", "M204 S10000"]);
+    assert_eq!(limits(&marlin)[..2], ["M204 S500", "M204 S5000"]);
     // With no accelerations set, the printer's own are left alone.
     assert!(limits(&basic()).is_empty());
 }
