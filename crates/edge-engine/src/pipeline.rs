@@ -333,9 +333,14 @@ pub fn slice(job: Job, watch: &dyn Watcher) -> Result<Sliced, Failure> {
                     } else {
                         layer_height
                     };
-                    let params = walls
+                    let mut params = walls
                         .params_at(height, index, layers.len())
                         .map_err(|e| e.to_string())?;
+                    if let Some(fuzzy) = &mut params.fuzzy {
+                        // The middle of the layer, where it was sliced.
+                        fuzzy.slice_z =
+                            first_layer_height + index as f64 * layer_height - height / 2.0;
+                    }
                     // A top surface is told from the part as a whole, on
                     // the layer above and the one below.
                     let around = Some(edge_perimeter::Around {
@@ -603,7 +608,7 @@ pub fn slice(job: Job, watch: &dyn Watcher) -> Result<Sliced, Failure> {
     }
     // What the profile asks of the order and is not followed.
     // What the walls were asked for and do not do goes with these.
-    let mut order_notes = walls.notes();
+    let mut order_notes = walls.notes(&settings);
     if used.len() > 1 {
         if let Some(kind) = settings.text("toolchange_ordering")
             && kind != "default"

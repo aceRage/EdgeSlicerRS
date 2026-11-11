@@ -10,6 +10,7 @@ edge-arachne.workspace = true
 edge-clip.workspace = true
 edge-config.workspace = true
 edge-extrusion.workspace = true
+edge-fuzzy.workspace = true
 edge-geom.workspace = true
 edge-medial.workspace = true
 thiserror.workspace = true

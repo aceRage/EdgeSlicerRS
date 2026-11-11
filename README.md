@@ -13,6 +13,7 @@ replaces it until output matches on the printers we care about.
 | `crates/edge-mesh` | Indexed triangle mesh, transforms, STL read/write |
 | `crates/edge-config` | Vendor presets resolved through `inherits`, `include` and `renamed_from`; the reference's defaults for every setting, and the text form it writes settings in |
 | `crates/edge-3mf` | 3MF projects: objects, parts and their roles, instances, plates, project settings, and colours painted onto triangles |
+| `crates/edge-fuzzy` | Fuzzy skin: walls roughened by moving their points or changing their width, with the noise it is drawn from (a port of the reference's FuzzySkin and of the libnoise modules it uses) |
 | `crates/edge-arachne` | Walls of changing width: a region's skeleton, how many lines fit along it and where that number changes, and the lines themselves (a port of the reference's Arachne) |
 | `crates/edge-paint` | Which filament prints what where colours are painted on: each layer shared out from its painted outline, and paint on top and bottom faces carried through the shell |
 | `crates/edge-clip` | Polygon union, difference, intersection, offset and gap closing (wraps clipper2-rs) |
@@ -121,6 +122,26 @@ Working:
   `wall_transition_length`, `wall_transition_angle`,
   `wall_transition_filter_deviation`, `wall_distribution_count`,
   `min_length_factor`, `wall_maximum_resolution`, `wall_maximum_deviation`).
+- A precise outer wall (`precise_outer_wall`, with inner walls laid
+  first, as the reference has it): the outer wall keeps clear of the
+  wall behind it by their widths, not their spacings, so the wall behind
+  does not push it outward. Both wall generators follow it.
+- Walls over air (`extra_perimeters_on_overhangs`): where the fill of a
+  layer hangs over nothing and cannot be bridged, it is covered with
+  lines that start from what holds it up and work inward, each against
+  the one before, laid as overhang walls ahead of the island's loops. A
+  port of the reference's `generate_extra_perimeters_over_overhangs`.
+- Fuzzy skin (`fuzzy_skin` at `external`, `hole`, `all` or `allwalls`):
+  a point every `fuzzy_skin_point_distance` or so along a wall, moved up
+  to `fuzzy_skin_thickness` to one side (`displacement`), or the wall
+  made wider and narrower there (`extrusion`, with walls of changing
+  width), or both (`combined`). The noise is the reference's: `classic`
+  (random), `perlin`, `billow`, `ridgedmulti`, `voronoi` and `ripple`,
+  with `fuzzy_skin_scale`, `fuzzy_skin_octaves`,
+  `fuzzy_skin_persistence` and the ripple settings; not on the first
+  layer unless `fuzzy_skin_first_layer`; kept off walls with nothing
+  near beneath them, and off every wall over air with
+  `fuzzy_skin_skip_overhangs`.
 - Gap fill: a gap between walls too narrow for another wall gets a line
   down its middle, as wide as the gap is at each point, found as the
   reference finds it (the medial axis of the gap). On whenever
@@ -389,7 +410,8 @@ lays walls round the crack, a slit of two loops in the middle of a
 solid area. That is not copied. The bounded depths
 (`paint_depth_mode` at `walls` or `millimeters`), interlocking and
 `top_color_penetration_layers` are noted and not followed. Painted
-supports, seams and fuzzy skin are not read.
+supports, seams and fuzzy skin are not read; a project that has any of
+them painted on says so when it is sliced.
 
 Not done in G-code: supports only where painted (none are
 generated, and a note says so), the older tree styles (`tree_slim`,
@@ -422,8 +444,8 @@ provided stops the export with the variable's name.
   and `MINIMUM_CRUISE_RATIO`, as the reference writes them: current
   Klipper reads only the second.
 
-Walls do not yet have thin-wall detection (the U1 profiles leave it off),
-or extra perimeters over overhangs. A top surface below the last layer
+Walls do not yet have thin-wall detection (the U1 profiles leave it off).
+A top surface below the last layer
 keeps only its outer wall, as the reference's `only_one_wall_top` does with
 `top_surface_expansion` at zero (PerimeterGenerator.cpp
 `split_top_surfaces`); the other way of doing it, with an expansion set, is
@@ -669,17 +691,56 @@ being split differently, not these walls. Not a port of the whole of
 `process_arachne`, and what differs is said here:
 
 - The walls that are not loops (lines down the middle of thin parts)
-  are laid with the fill, after the loops, and begun where they happen
-  to begin. The reference orders them with the loops (`getRegionOrder`).
+  are laid after the island's loops, whichever of walls and fill goes
+  first, and begun where they happen to begin. The reference orders
+  them among the loops (`getRegionOrder`).
 - With one wall over top surfaces the inner walls keep the numbers of
   the pass that made them; the reference numbers them again by which
   wall each touches (`renumber_inner_walls_by_depth`), which decides
   their order with `inner-outer-inner`. With `top_surface_expansion`
   set, the reference cuts the inner walls where they run over the top
   surface instead; that is not ported, for these walls or the classic.
-- Extra walls over overhangs, fuzzy skin, `precise_outer_wall` and the
-  check of a diagram that needs exact arithmetic
-  (`is_voronoi_diagram_planar_angle`) are not here.
+- The check of a diagram that needs exact arithmetic
+  (`is_voronoi_diagram_planar_angle`) is not here.
+
+Wall options, with the U1's presets, C++ slicer against this engine:
+
+| Option, part | Feature | C++ slicer | This engine |
+|---|---|---|---|
+| `precise_outer_wall`, cube, classic | Inner wall | 7.40 m | 7.40 m |
+| `precise_outer_wall`, cube, `arachne` | Inner wall | 7.42 m | 7.42 m |
+| `extra_perimeters_on_overhangs`, shelf | Overhang wall | 0.62 m (0.10 m off) | 0.62 m |
+| `extra_perimeters_on_overhangs`, mushroom | Overhang wall | 2.50 m (0.23 m off) | 2.49 m |
+| `fuzzy_skin` `external`, cube, classic | Outer wall | 8.82 m (7.82 m off) | 8.83 m |
+| `fuzzy_skin` `external`, cube, `arachne` | Outer wall | 8.89 m | 8.87 m |
+| `fuzzy_skin` `all`, `perlin`, cube | Outer wall | 8.06 m | 8.05 m |
+| `fuzzy_skin` `allwalls`, `extrusion`, cube, `arachne` | Outer wall | 7.88 m | 7.87 m |
+| `fuzzy_skin` `external`, `ripple`, cube, `arachne` | Outer wall | 7.94 m | 7.96 m |
+
+Fuzzy skin differs from the reference in three ways, on purpose:
+
+- The reference's fuzz is random and comes out differently every time
+  it slices. Here each wall's random numbers are seeded from the wall
+  itself (its layer's height, its first point, how many points it has),
+  so a file is the same on every run and at any thread count, which is
+  why the lengths above only agree to a fraction of a percent.
+- `voronoi` noise is libnoise's as written. The reference's result
+  depends on what compiled it: libnoise's value noise overflows a signed
+  integer on purpose, and a compiler that takes that for impossible
+  (clang, so the macOS build) drops a mask and returns noise from -3 to
+  1 where libnoise documents -1 to 1, pushing walls out by up to three
+  times the thickness set. A compiler that wraps gives what this engine
+  gives; MSVC is expected to, which has not been checked on Windows. On
+  the mushroom the macOS build lays 1.24 m of overhang
+  wall with `voronoi` fuzz where this engine lays 0.23 m, as both do
+  with any other noise.
+- A wall is cut where fuzz starts and stops by plain geometry, not
+  through the clipping library the reference uses for it.
+
+Fuzzy skin painted on a model, or set for one part by a modifier, is
+not read: the settings fuzz every part alike. Thin walls (classic) are
+not made, so there are none to fuzz. `overhang_reverse` is not
+followed, with or without fuzzy skin, and a note says so.
 
 Classic walls are untouched: every file that sets `classic` is byte for
 byte what it was.
