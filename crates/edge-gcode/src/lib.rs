@@ -14,6 +14,7 @@ mod arc;
 mod avoid;
 mod chain;
 mod circle;
+mod contour;
 mod cooling;
 mod inside;
 mod overhang;
@@ -24,6 +25,7 @@ mod seam_plan;
 mod settings;
 mod simplify;
 mod small_area;
+mod unsupported;
 mod wipe;
 
 use std::{
@@ -41,6 +43,7 @@ use edge_geom::{ExPolygon, Point2, scaled, unscaled};
 use edge_template::{TemplateError, Value, Variables};
 use rayon::prelude::*;
 
+pub use contour::Contours;
 pub use edge_avoid::{Detour, Slices};
 pub use scarf::{Scarf, ScarfSeam};
 pub use seam::Seam;
@@ -221,6 +224,25 @@ pub fn write_placed(
     scene: &SeamScene<'_>,
     settings: &[PrintSettings],
 ) -> Result<Summary, GcodeError> {
+    write_contoured(out, layers, slices, scene, &Contours::default(), settings)
+}
+
+/// [`write_placed`], with the lines contoured in height laid by their
+/// contours (`zaa_enabled`, `contour.rs`). They too are given beside the
+/// layers: `contours.layers` has an entry for each of `layers`, or none.
+pub fn write_contoured(
+    out: &mut impl Write,
+    layers: &[Layer<'_>],
+    slices: &[Slices<'_>],
+    scene: &SeamScene<'_>,
+    contours: &Contours<'_>,
+    settings: &[PrintSettings],
+) -> Result<Summary, GcodeError> {
+    let profiles = if contours.layers.len() == layers.len() {
+        contours.layers
+    } else {
+        &[]
+    };
     let slices = if slices.len() == layers.len() {
         slices
     } else {
@@ -238,7 +260,7 @@ pub fn write_placed(
     // loops as they will be written, the points they are chosen among
     // being those left (`simplify.rs`), and the writer goes by the same
     // loops, which the plan knows by where they are kept.
-    let walls = simplify::Thinned::walls(layers, settings);
+    let walls = simplify::Thinned::walls(layers, settings, profiles);
     let layers = &walls.layers(layers, 0)[..];
     // One physical layer is every entry at the same height.
     let mut groups: Vec<Range<usize>> = Vec::new();
@@ -354,6 +376,8 @@ pub fn write_placed(
         routes_from: 0,
         ways: HashMap::new(),
         shelters: HashMap::new(),
+        contoured: HashMap::new(),
+        contour_speed: contours.speed_scaling,
     };
     let several = layers.iter().any(|layer| layer.filament > 0);
     writer.preamble(several)?;
@@ -387,12 +411,19 @@ pub fn write_placed(
             let ahead = &groups[index..(index + FITTED_AHEAD).min(groups.len())];
             let until = groups[(index + FITTED_AHEAD).min(groups.len()) - 1].end;
             writer.prefit(&layers[group.start..until]);
-            thinned = simplify::Thinned::lines(&layers[group.start..until], settings);
+            thinned = simplify::Thinned::lines(
+                &layers[group.start..until],
+                settings,
+                profiles.get(group.start..until).unwrap_or(&[]),
+            );
             thinned_from = group.start;
             // And so are the layers made ready to route travel on.
             writer.preroute(layers, ahead, index)?;
         }
         let parts = thinned.layers(&layers[group.clone()], group.start - thinned_from);
+        // Which of the lines about to be laid are contoured, by where
+        // they are kept now.
+        writer.contoured = contour::kept(&parts, profiles.get(group.clone()).unwrap_or(&[]));
         writer.layer(index, &parts, group.start)?;
         // Whole or not at all, and never off the bed: an arc counts by
         // its bulge, which the points it was fitted to do not show.
@@ -646,6 +677,11 @@ struct Writer<'a> {
     /// The areas a way round has been asked to stay within on the layer
     /// being written, by where they are kept.
     shelters: HashMap<(usize, usize), edge_avoid::Shelter>,
+    /// The lines of the layer being written that are contoured in
+    /// height, by where they are kept, and whether a contoured move is
+    /// slowed for its height (`contour.rs`).
+    contoured: HashMap<usize, std::sync::Arc<edge_contour::Profile>>,
+    contour_speed: bool,
 }
 
 /// What the file says about the print outside its G-code.
@@ -704,8 +740,6 @@ struct Laid<'a> {
     /// The fan comes on where no more than this share of the wall's
     /// width is supported; none when it does not go by that.
     fan_at: Option<f32>,
-    /// The wall's speed as it is written where it is supported.
-    written: f64,
 }
 
 impl<'a> Laid<'a> {
@@ -746,6 +780,10 @@ struct State {
     /// The stretch of a scarf seam being laid, and how far along it the
     /// nozzle is (`scarf.rs`).
     slope: Option<scarf::Slope>,
+    /// The line contoured in height being laid (`contour.rs`), and the
+    /// heights of the one `wipe_path` is the end of, where it was.
+    contour: Option<contour::Laying>,
+    wipe_heights: Option<std::sync::Arc<edge_contour::Profile>>,
     first_layer: bool,
     /// The speed of the wall loop being laid, where it is small enough
     /// to have one of its own (`small_perimeter_speed`).
@@ -1137,7 +1175,7 @@ impl Writer<'_> {
                         speed: ram.speed,
                         ..self.motion(line.role, &line.flow, self.state.first_layer)
                     };
-                    self.travel(line.points[0], false)?;
+                    self.travel(line.points[0], false, None)?;
                     for point in &line.points[1..] {
                         self.extrude(*point, line.role, &line.flow, motion)?;
                     }
@@ -1147,7 +1185,7 @@ impl Writer<'_> {
             }
             None => {
                 if let Some(over) = over.filter(|_| self.state.primed) {
-                    self.travel(over, false)?;
+                    self.travel(over, false, None)?;
                 }
             }
         }
@@ -1362,7 +1400,7 @@ impl Writer<'_> {
                 )?;
                 // The new tool comes in through the gap in the tower's wall.
                 for point in layer.enter {
-                    self.travel(*point, false)?;
+                    self.travel(*point, false, None)?;
                 }
             }
             self.inner_wall = layer
@@ -1508,14 +1546,23 @@ impl Writer<'_> {
                     _ => rest.push(path),
                 }
             }
+            // Loops wholly over air, with `unsupported_wall_last`.
+            let held = self.held(&layer.loops[layer.islands[island].clone()], &with_walls);
             if self.settings.infill_first {
                 self.lines(&rest, layer.shelter)?;
             }
             self.lines(&over_air, layer.shelter)?;
-            self.walls(layer, &layer.islands[island])?;
+            self.walls(layer, &layer.islands[island], held.as_ref(), false)?;
             self.lines(&with_walls, layer.shelter)?;
             if !self.settings.infill_first {
                 self.lines(&rest, layer.shelter)?;
+                // Then the loops left hanging in mid air, now that the
+                // fill can anchor them (GCode.cpp `process_layer`, the
+                // second `extrude_perimeters`). With the fill laid first
+                // nothing is held back: the fill is down already.
+                if let Some(held) = held.as_ref().filter(|held| held.any_after_fill()) {
+                    self.walls(layer, &layer.islands[island], Some(held), true)?;
+                }
             }
             self.ironing(&ironing, layer.shelter, ironing_fan)?;
         }
@@ -1584,22 +1631,70 @@ impl Writer<'_> {
         }
     }
 
-    /// One island's walls in the configured order.
-    fn walls(&mut self, layer: &Layer<'_>, island: &Range<usize>) -> io::Result<()> {
+    /// Which of an island's loops are over air and which of those wait
+    /// for its fill, where `unsupported_wall_last` asks and overhangs are
+    /// told apart on this layer; none otherwise, or where no loop is over
+    /// air. `thin` are the island's walls that are no loops.
+    fn held(&self, own: &[ExtrusionLoop], thin: &[&ExtrusionPath]) -> Option<unsupported::Held> {
+        if !self.settings.unsupported_wall_last {
+            return None;
+        }
+        let (below, by) = self.clear_of()?;
+        let over_air: Vec<bool> = (own.iter())
+            .map(|wall| unsupported::over_air(below, by, wall))
+            .collect();
+        if !over_air.contains(&true) {
+            return None;
+        }
+        Some(unsupported::held(
+            own,
+            over_air,
+            thin,
+            unsupported::reach(own),
+        ))
+    }
+
+    /// One island's walls in the configured order. With `held`, the loops
+    /// over air go after the rest, innermost first, and those that wait
+    /// for the fill are left out, or with `after_fill` are all that is laid.
+    fn walls(
+        &mut self,
+        layer: &Layer<'_>,
+        island: &Range<usize>,
+        held: Option<&unsupported::Held>,
+        after_fill: bool,
+    ) -> io::Result<()> {
         let s = self.settings;
         let own = &layer.loops[island.clone()];
-        let mut walls: Vec<&ExtrusionLoop> = nested(own).into_iter().map(|at| &own[at]).collect();
+        let mut order = nested(own);
         match s.wall_order {
             WallOrder::InnerOuter => {}
-            WallOrder::OuterInner => walls.reverse(),
+            WallOrder::OuterInner => order.reverse(),
             // "Sandwich mode. Apply after 1st layer."
             WallOrder::InnerOuterInner => {
                 if !self.state.first_layer {
-                    walls.reverse();
-                    walls = sandwich(walls);
+                    order.reverse();
+                    let walls: Vec<&ExtrusionLoop> = order.iter().map(|&at| &own[at]).collect();
+                    let sandwiched = sandwich(walls);
+                    order = sandwiched
+                        .into_iter()
+                        .map(|wall| {
+                            own.iter()
+                                .position(|other| std::ptr::eq(other, wall))
+                                .expect("a wall of the island")
+                        })
+                        .collect();
                 }
             }
         }
+        // Loops over air last (PerimeterGenerator.cpp
+        // `defer_unsupported_loops`, after the wall order is settled).
+        if let Some(held) = held {
+            order = unsupported::reorder(own, order, held);
+            let hold = !s.infill_first;
+            order.retain(|&at| !hold || held.after_fill[at] == after_fill);
+        }
+        let walls: Vec<&ExtrusionLoop> = order.into_iter().map(|at| &own[at]).collect();
         // The walls laid so far, for a wipe over them (`wipe.rs`).
         let mut printed = wipe::Printed::default();
         for wall in walls {
@@ -1607,6 +1702,8 @@ impl Writer<'_> {
             if points.len() < 3 {
                 continue;
             }
+            // Contoured in height, where it is (`contour.rs`).
+            self.contour(Some(address(wall)));
             // A loop is held counter-clockwise round material and
             // clockwise round a hole; every wall is laid the same way
             // round, which turns one or the other about.
@@ -1707,6 +1804,7 @@ impl Writer<'_> {
         }
         self.state.small_wall = None;
         self.state.circle_wall = None;
+        self.contour(None);
         Ok(())
     }
 
@@ -1722,8 +1820,13 @@ impl Writer<'_> {
     /// retraction.
     fn lines(&mut self, paths: &[&ExtrusionPath], shelter: &[ExPolygon]) -> io::Result<()> {
         // Fill of every kind is ordered together; other lines by kind.
-        for stage in paths
-            .chunk_by(|a, b| (a.part != 0 && b.part != 0) || a.role == b.role && a.part == b.part)
+        // A line of gap fill between walls is a filled area of its own
+        // there, chained with the rest (Fill.cpp `make_fills` gives each
+        // of a region's `thin_fills` a collection of its own among its
+        // `fills`, which `extrude_infill` chains together).
+        let fill = |path: &ExtrusionPath| path.part != 0 || path.role == Role::GapFill;
+        for stage in
+            paths.chunk_by(|a, b| (fill(a) && fill(b)) || a.role == b.role && a.part == b.part)
         {
             let mut parts: Vec<Part<'_>> = stage
                 .chunk_by(|a, b| a.role == b.role && a.part == b.part && (a.part != 0 || b.in_turn))
@@ -1772,6 +1875,7 @@ impl Writer<'_> {
                     // (`small_area_infill_flow_compensation`).
                     let thinned = self.settings.small_area.as_ref();
                     self.state.short_lines = thinned.is_some_and(|model| model.applies(path));
+                    self.contour(Some(address(path)));
                     // Arcs are fitted to the line as it was made and turned
                     // about with it, as in the reference, where fitting
                     // comes before the order lines are laid in is chosen.
@@ -1792,6 +1896,7 @@ impl Writer<'_> {
                         None => self.path(&points, path.role, &path.flow, sheltered, false)?,
                     }
                     self.state.short_lines = false;
+                    self.contour(None);
                 }
             }
         }
@@ -1877,6 +1982,11 @@ impl Writer<'_> {
     /// or now. None when arcs are not asked for, or it is too short for
     /// one.
     fn fit_line(&self, path: &ExtrusionPath) -> Option<arc::Fitted> {
+        // "ZAA: a contoured path carries per-point Z, which an arc move
+        // cannot express."
+        if self.contouring() {
+            return None;
+        }
         match self.fits.get(&(address(path), false)) {
             Some(fitted) => Some(fitted.clone()),
             None => fit(self.settings, &path.points, path.role),
@@ -1891,6 +2001,9 @@ impl Writer<'_> {
     /// (GCode.cpp `extrude_loop`), which cuts the arc the seam is on in
     /// two. None when arcs are not asked for or the gap leaves nothing.
     fn fit_loop(&self, wall: &ExtrusionLoop, turned: bool, seam: Point2) -> Option<arc::Fitted> {
+        if self.contouring() {
+            return None;
+        }
         let mut fitted = match self.fits.get(&(address(wall), turned)) {
             Some(fitted) => fitted.clone(),
             None => fit_closed(self.settings, &wall.polygon.points, turned, wall.role)?,
@@ -1910,6 +2023,11 @@ impl Writer<'_> {
         sheltered: bool,
         closed: bool,
     ) -> io::Result<()> {
+        // A piece of a contoured wall is laid as it is, neither fitted
+        // nor thinned.
+        if self.contouring() {
+            return self.path(points, role, flow, sheltered, closed);
+        }
         match fit(self.settings, points, role) {
             Some(fitted) => self.path_parts(
                 &fitted.points,
@@ -1941,7 +2059,7 @@ impl Writer<'_> {
         sheltered: bool,
         closed: bool,
     ) -> io::Result<()> {
-        self.travel(points[0], sheltered)?;
+        self.travel(points[0], sheltered, Some(role))?;
         self.lay_path(points, parts, role, flow, closed)
     }
 
@@ -2011,17 +2129,6 @@ impl Writer<'_> {
                 cooled,
                 fan: fan.is_some(),
                 fan_at: fan.and_then(|fan| fan.at).map(|at| at as f32),
-                // Not as the reference, which writes a wall's own speed
-                // as it is (GCode.cpp `_extrude`, `F = speed * 60`):
-                // here it is a whole number of mm/s wherever overhangs
-                // slow walls down, as this engine has always written it.
-                // Kept so that a part with no overhang is the file it
-                // was; the reference's way is `motion.speed` alone.
-                written: if s.enable_overhang_speed {
-                    motion.speed.round().min(motion.speed)
-                } else {
-                    motion.speed
-                },
             };
             let runs = match known {
                 Some(runs) => runs,
@@ -2040,6 +2147,7 @@ impl Writer<'_> {
         if !closed {
             self.state.wipe_path.reverse();
         }
+        self.state.wipe_heights = self.contour_profile();
         Ok(())
     }
 
@@ -2104,8 +2212,7 @@ impl Writer<'_> {
                 } else {
                     s.inner_wall_speed
                 };
-                let melts =
-                    s.filament_max_volumetric_speed / (flow.mm3_per_mm() * self.scarf_flow());
+                let melts = s.filament_max_volumetric_speed / self.melted(role, flow);
                 let reference = if s.filament_max_volumetric_speed <= 0.0 {
                     own
                 } else if own == 0.0 {
@@ -2205,14 +2312,6 @@ impl Writer<'_> {
             } else {
                 laid.cooled || run.cooled
             })?;
-            let motion = Motion {
-                speed: if run.clear {
-                    motion.speed
-                } else {
-                    laid.written
-                },
-                ..motion
-            };
             // Part of a wall keeps the arcs of that stretch by itself:
             // the reference makes separate paths of the stretches
             // before it fits arcs to any.
@@ -2286,11 +2385,9 @@ impl Writer<'_> {
             } else if (set - wanted).abs() > 60.0 {
                 set = wanted;
             }
-            let speed = match (set == own, run.clear) {
-                (true, false) => laid.written,
-                (true, true) => motion.speed,
-                (false, _) => set / 60.0,
-            };
+            // A wall's own speed as it is (GCode.cpp `_extrude`,
+            // `F = speed * 60`).
+            let speed = if set == own { motion.speed } else { set / 60.0 };
             self.fan_over_air(fan)?;
             self.extrude(to, role, flow, Motion { speed, ..motion })?;
         }
@@ -2400,7 +2497,7 @@ impl Writer<'_> {
             Role::SupportInterface => s.support_interface_speed,
         };
         let speed = if s.filament_max_volumetric_speed > 0.0 {
-            wanted.min(s.filament_max_volumetric_speed / (flow.mm3_per_mm() * self.scarf_flow()))
+            wanted.min(s.filament_max_volumetric_speed / self.melted(role, flow))
         } else {
             wanted
         };
@@ -2439,6 +2536,25 @@ impl Writer<'_> {
         }
     }
 
+    /// What a line lays per mm where the hot end's limit is worked out,
+    /// in mm³: its own cross-section with the flow ratios it is laid
+    /// with, the filament's, the print's and its kind's (GCode.cpp
+    /// `_extrude`, `_mm3_per_mm`, which the speed is capped by), or on a
+    /// scarf the scarf's. The prime tower's lines are not laid by
+    /// `_extrude` in the reference, and keep their cross-section alone.
+    fn melted(&self, role: Role, flow: &Flow) -> f64 {
+        let s = self.settings;
+        let share = match role {
+            Role::PrimeTower | Role::PrimeLine => return flow.mm3_per_mm() * self.scarf_flow(),
+            Role::TopSolidInfill => s.top_solid_infill_flow_ratio,
+            Role::BottomSurface => s.bottom_solid_infill_flow_ratio,
+            Role::InternalBridge => s.internal_bridge_flow,
+            Role::Brim => s.brim_flow_ratio,
+            _ => self.scarf_flow(),
+        };
+        flow.mm3_per_mm() * s.filament_flow_ratio * s.print_flow_ratio * share
+    }
+
     /// Tells the printer a new acceleration limit, if it is a change.
     fn accelerate(&mut self, acceleration: f64) -> io::Result<()> {
         if acceleration <= 0.0 || acceleration == self.state.acceleration {
@@ -2466,8 +2582,9 @@ impl Writer<'_> {
     }
 
     /// `sheltered` says the move may go unretracted however long it is,
-    /// unless it leaves an outer wall, which always retracts.
-    fn travel(&mut self, to: Point2, sheltered: bool) -> io::Result<()> {
+    /// unless it leaves an outer wall, which always retracts. `role` is
+    /// what the move is to, where it goes to a line.
+    fn travel(&mut self, to: Point2, sheltered: bool, role: Option<Role>) -> io::Result<()> {
         let s = self.settings;
         let from = self.state.position;
         // Round the inside of the walls where the move would cross
@@ -2480,9 +2597,32 @@ impl Writer<'_> {
                 .sum::<f64>()
         };
         let length = from.map_or(f64::INFINITY, |from| along(from, &way));
-        if length == 0.0 && self.state.height == Some(self.state.z) {
+        // The height the line it goes to is laid from: the layer's, or a
+        // contoured line's own where it starts (`contour.rs`).
+        let arrival = self.arrival_height(to);
+        if length == 0.0 && self.state.height == Some(arrival) {
             self.state.routing.passed();
             return Ok(());
+        }
+        // Every travel goes at the travel acceleration, set before the
+        // retraction and so the wipe too, but for a short one into an
+        // outer wall or an overhang wall, which keeps that wall's, so
+        // the nozzle does not slow down just before the wall it is about
+        // to lay (GCode.cpp `travel_to`). On the first layer, the first
+        // layer's. Short is shorter than `retraction_minimum_travel` in a
+        // straight line.
+        let straight = from.map_or(f64::INFINITY, |from| distance(from, to));
+        let short = straight < s.retraction_minimum_travel;
+        if self.state.first_layer && s.initial_layer_acceleration > 0.0 {
+            self.accelerate(s.initial_layer_acceleration)?;
+        } else if s.default_acceleration > 0.0 {
+            let bridge = s.bridge_acceleration.resolve(s.outer_wall_acceleration);
+            let wanted = match role {
+                Some(Role::OverhangPerimeter) if short => bridge,
+                Some(Role::ExternalPerimeter) if short => s.outer_wall_acceleration,
+                _ => s.travel_acceleration,
+            };
+            self.accelerate(wanted)?;
         }
         let exposed = !sheltered
             || matches!(
@@ -2512,26 +2652,20 @@ impl Writer<'_> {
         // A wipe moves the nozzle, so the travel is measured from where it ends.
         let from = self.state.position;
         let length = from.map_or(f64::INFINITY, |from| distance(from, to));
-        // The first layer is gentle throughout. Above it, long moves get the
-        // travel acceleration; short hops between neighbouring lines keep
-        // whatever is set, rather than switching twice for a millimetre.
-        if self.state.first_layer && s.initial_layer_acceleration > 0.0 {
-            self.accelerate(s.initial_layer_acceleration)?;
-        } else if long {
-            let travel = if s.travel_acceleration > 0.0 {
-                s.travel_acceleration
-            } else {
-                s.default_acceleration
-            };
-            self.accelerate(travel)?;
-        }
-
         let lift = self.state.pending_lift.take();
         let z = self.state.z;
         let top = match (lift, self.state.height) {
             (Some(_), _) => z + s.z_hop,
-            // Already up from an earlier lift: stay there.
-            (None, Some(height)) => height.max(z),
+            // Already up from an earlier lift: stay there. Never down
+            // on the way: a contoured line that ends lower than the next
+            // starts goes up to it as it travels, and one that ends
+            // higher comes down once there. Not as the reference, which
+            // travels straight from the one height to the other
+            // (GCode.cpp `travel_to` to `zaa_first_z`), and from a
+            // contoured line to a flat one at the height it ended at,
+            // down in the layer, before it puts it back ("reset Z after
+            // contouring").
+            (None, Some(height)) => height.max(arrival),
             (None, None) => z,
         };
         let (Some(from), Some(height)) = (from, self.state.height) else {
@@ -2749,6 +2883,7 @@ impl Writer<'_> {
         if length == 0.0 {
             return Ok(());
         }
+        self.contour_role(role);
         self.prime()?;
         if self.state.role != Some(role) {
             // Two roles may go by one name, which is then said once.
@@ -2770,19 +2905,6 @@ impl Writer<'_> {
         // On a scarf seam the move climbs as it goes, and lays a share
         // of the line (`scarf.rs`).
         let sloping = self.slope_on(length);
-        let moved = sloping.as_ref().map_or(length, |sloping| sloping.length);
-        let held = role == Role::ExternalPerimeter && s.dont_slow_down_outer_wall
-            || self.circle_wall_held(role);
-        let speed = if held {
-            self.timing.fixed += moved / motion.speed;
-            motion.speed
-        } else {
-            match self.timing.lines.last_mut() {
-                Some(line) if line.1 == motion.speed => line.0 += moved,
-                _ => self.timing.lines.push((moved, motion.speed)),
-            }
-            self.slowdown.apply(motion.speed)
-        };
         let share = match role {
             Role::TopSolidInfill => s.top_solid_infill_flow_ratio,
             Role::BottomSurface => s.bottom_solid_infill_flow_ratio,
@@ -2790,8 +2912,44 @@ impl Writer<'_> {
             Role::Brim => s.brim_flow_ratio,
             _ => sloping.as_ref().map_or(1.0, |sloping| sloping.flow),
         };
+        // On a line contoured in height the move climbs or falls as it
+        // goes, lays as much as the line is tall, and may be slowed for
+        // it (`contour.rs`).
+        let laid = flow.mm3_per_mm() * s.filament_flow_ratio * s.print_flow_ratio * share;
+        let contoured = self.contour_on((from, to), role, flow, motion.speed, length, laid);
+        let moved = match (&sloping, &contoured) {
+            (Some(sloping), _) => sloping.length,
+            (None, Some(contoured)) => contoured.length,
+            (None, None) => length,
+        };
+        let own = contoured
+            .as_ref()
+            .and_then(|contoured| contoured.speed)
+            .unwrap_or(motion.speed);
+        // What a layer slowed to cool leaves at its speed, its time
+        // counted: the outer wall where asked, a compensated circle's
+        // wall, and the prime tower, whose lines the reference writes
+        // without the marks that make a line adjustable (WipeTower2.cpp
+        // writes them itself, not GCode.cpp `_extrude`, and
+        // CoolingBuffer.cpp slows only what is marked
+        // `;_EXTRUDE_SET_SPEED`).
+        let held = role == Role::ExternalPerimeter && s.dont_slow_down_outer_wall
+            || matches!(role, Role::PrimeTower | Role::PrimeLine)
+            || self.circle_wall_held(role);
+        let speed = if held {
+            self.timing.fixed += moved / own;
+            own
+        } else {
+            match self.timing.lines.last_mut() {
+                Some(line) if line.1 == own => line.0 += moved,
+                _ => self.timing.lines.push((moved, own)),
+            }
+            self.slowdown.apply(own)
+        };
         let short = s.small_area.as_ref().filter(|_| self.state.short_lines);
-        let share = share * short.map_or(1.0, |model| model.share(length));
+        let share = share
+            * short.map_or(1.0, |model| model.share(length))
+            * contoured.as_ref().map_or(1.0, |contoured| contoured.flow);
         let volume =
             length * flow.mm3_per_mm() * s.filament_flow_ratio * s.print_flow_ratio * share;
         let feed = volume / self.filament_area;
@@ -2800,6 +2958,17 @@ impl Writer<'_> {
         match (turn, &sloping) {
             // GCodeWriter.cpp `extrude_to_xyz`: every move of a scarf
             // says its height, the way down too, which stays level.
+            // So does every move of a contoured line.
+            (None, None) if let Some(contoured) = &contoured => {
+                writeln!(
+                    self.out,
+                    "G1 X{:.3} Y{:.3} Z{:.3} E{feed:.5}{feed_word}",
+                    unscaled(to.x),
+                    unscaled(to.y),
+                    contoured.z
+                )?;
+                self.state.height = Some(contoured.z);
+            }
             (None, Some(sloping)) => {
                 writeln!(
                     self.out,
@@ -2891,6 +3060,9 @@ impl Writer<'_> {
             let feed_word = self.feed_word();
             writeln!(self.out, "G1 E-{before:.5}{feed_word}")?;
         }
+        // Over a line contoured in height the wipe keeps to the line's
+        // own height (`contour.rs`).
+        let heights = self.state.wipe_heights.take();
         if let Some(path) = wipe.filter(|_| reach > 0.0) {
             self.state.feedrate = (wipe_speed * 60.0).round();
             writeln!(self.out, ";WIPE_START\nG1 F{:.0}", self.state.feedrate)?;
@@ -2904,9 +3076,10 @@ impl Writer<'_> {
                 } else {
                     String::new()
                 };
+                let height = self.wipe_height(heights.as_deref(), pair[1]);
                 writeln!(
                     self.out,
-                    "G1 X{:.3} Y{:.3}{pulled}",
+                    "G1 X{:.3} Y{:.3}{height}{pulled}",
                     unscaled(pair[1].x),
                     unscaled(pair[1].y)
                 )?;
@@ -3526,6 +3699,8 @@ pub fn role_name(role: Role) -> &'static str {
 mod arc_tests;
 #[cfg(test)]
 mod avoid_tests;
+#[cfg(test)]
+mod contour_tests;
 #[cfg(test)]
 mod ironing_tests;
 #[cfg(test)]

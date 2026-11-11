@@ -588,7 +588,7 @@ impl Session {
                             "box": part.mesh.bounds().map(|(low, high)| [low, high]),
                             "triangles": mesh.parts.get(at),
                             "split": object.shape().part_splits(at),
-                            "settings": part.settings.len(),
+                            "settings": part.settings().len(),
                         })
                     }).collect::<Vec<_>>(),
                     // What "Split to objects" and "Split to parts" can be

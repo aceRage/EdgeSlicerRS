@@ -10,6 +10,7 @@ edge-adhesion.workspace = true
 edge-3mf.workspace = true
 edge-clip.workspace = true
 edge-config.workspace = true
+edge-contour.workspace = true
 edge-extrusion.workspace = true
 edge-gcode.workspace = true
 edge-geom.workspace = true
@@ -25,6 +26,7 @@ rayon.workspace = true
 [dev-dependencies]
 edge-extrusion.workspace = true
 tempfile.workspace = true
+zip.workspace = true
 
 [lints]
 workspace = true

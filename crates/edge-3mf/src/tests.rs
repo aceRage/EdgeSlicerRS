@@ -157,9 +157,9 @@ fn bambu_layout_reads_parts_roles_plates_and_settings() {
         .map(|p| (p.filament, p.own_filament))
         .collect();
     assert_eq!(filaments, [(3, None), (2, Some(2))]);
-    assert!(object.parts[0].settings.is_empty());
+    assert!(object.parts[0].settings().is_empty());
     assert_eq!(
-        object.parts[1].settings,
+        object.parts[1].settings(),
         [
             ("sparse_infill_density".to_owned(), "40%".to_owned()),
             ("wall_loops".to_owned(), "4".to_owned())

@@ -19,6 +19,8 @@ between the two fills one and keeps the other.
 
 Shapes: mushroom and shelf need supports; tower and bar get an automatic
 brim; bridge is a deck across two posts; cube is a plain 20 mm cube;
+ledge is a plate on a frame, overhanging all round and with a hole over the
+frame's, for walls wholly over air (unsupported_wall_last);
 enforced is the round post with a
 strip of its side painted to have the seam (paint_seam), and blocked the
 cube with two of its sides painted to keep the seam off them. halves is a round post cut in two
@@ -49,6 +51,13 @@ one of eight sides (too few to be taken for round), a round boss 10 mm
 across standing on a cell, a round tube standing on another with a 4 mm hole
 down through tube and cell, and a block 16 mm tall with a 5 mm hole through
 it from front to back, which no layer sees as a hole.
+
+wedge, dome, ramp and holed are for Z contouring (zaa_enabled): a block
+30 x 20 mm whose top rises 4 degrees along x, from 3 mm to 5.1; a round
+post 24 mm across and 2 mm tall under a spherical cap 3 mm high, which meets
+it at 28 degrees; a block 35 x 20 mm whose top climbs 7.6 degrees from 2 mm
+to 4 over its first 15 mm and is flat beyond; and a block 30 mm square with
+the wedge's top and a round hole 8 mm across down through it.
 
 counterbore is for counterbore_hole_bridging: a slab 8 mm tall of eight
 20 mm cells in two rows, each with a hole up through it that is wide for
@@ -187,6 +196,14 @@ SHAPES = {
     # two partly covered by what stands on them
     "steps": [(115.5, 121, 0, 4, 30, 3), (127.5, 121, 0, 28, 30, 3), (119.5, 121, 0, 8, 11, 3), (119.5, 140, 0, 8, 11, 3),
               (133.5, 121, 3, 22, 30, 3), (145.5, 126, 6, 10, 20, 4)],
+    # a frame 20 mm square and 4 mm tall round a 10 mm hole, and on it a plate
+    # 3 mm tall reaching 0.7 mm further out all round, with a 4 mm hole over
+    # the middle of the frame's: on the plate's first layer its outer wall
+    # hangs clear beside an inner wall that rests on the frame, and the walls
+    # round its hole hang clear with nothing near them, the bridge under the
+    # plate their only anchor (unsupported_wall_last)
+    "ledge": [(125.5, 126, 0, 20, 5, 4), (125.5, 141, 0, 20, 5, 4), (125.5, 131, 0, 5, 10, 4), (140.5, 131, 0, 5, 10, 4),
+              (124.8, 125.3, 4, 21.4, 8.7, 3), (124.8, 138, 4, 21.4, 8.7, 3), (124.8, 134, 4, 8.7, 4, 3), (137.5, 134, 4, 8.7, 4, 3)],
 }
 # the comb again, its teeth in a second filament
 SHAPES["twocomb"] = SHAPES["comb"]
@@ -266,6 +283,53 @@ def counterbore():
     return solids
 
 MESHES["counterbore"] = counterbore()
+
+def slanted(outline, z0, top, hole=None):
+    """prism, with the top at height top(x, y) where prism's is flat: top is
+    linear in x and y, so every cap triangle lies on the one sloped plane."""
+    v, t = prism(outline, z0, 1, hole)
+    n = len(outline)
+    tops = set(range(n, 2 * n))
+    if hole is None:
+        tops.add(2 * n + 1)
+    else:
+        tops |= set(range(3 * n, 4 * n))
+    return [(x, y, top(x, y) if i in tops else z) for i, (x, y, z) in enumerate(v)], t
+
+def dome(cx, cy, r, base, cap, rings=48, n=128):
+    """A round post r mm in radius and base mm tall under a spherical cap
+    cap mm high: rings of latitude from the cap's rim up to its top."""
+    sphere = (r * r + cap * cap) / (2 * cap)
+    rim = math.asin(r / sphere)
+    v = [(x, y, 0) for x, y in circle(cx, cy, r, n)]
+    for k in range(rings):
+        a = rim * (1 - k / rings)
+        v += [(x, y, base + sphere * math.cos(a) - (sphere - cap)) for x, y in circle(cx, cy, sphere * math.sin(a), n)]
+    v += [(cx, cy, 0), (cx, cy, base + cap)]
+    bottom, apex = len(v) - 2, len(v) - 1
+    t = []
+    for k in range(rings):
+        for i in range(n):
+            j = (i + 1) % n
+            a, b, c, d = k * n + i, k * n + j, (k + 1) * n + j, (k + 1) * n + i
+            t += [(a, b, c), (a, c, d)]
+    for i in range(n):
+        j = (i + 1) % n
+        t += [(bottom, j, i), (apex, rings * n + i, rings * n + j)]
+    return v, t
+
+# Shallow slopes and curved tops, for Z contouring (zaa_enabled). wedge is
+# a block 30 x 20 mm whose top rises 4 degrees along x, from 3 mm to 5.1;
+# dome a round post 24 mm across and 2 mm tall under a cap 3 mm high, which
+# meets it at 28 degrees; ramp a block 35 x 20 mm whose top climbs from
+# 2 mm to 4 over its first 15 mm (7.6 degrees) and is flat at 4 mm beyond;
+# and holed the wedge with a round hole 8 mm across down through it.
+WEDGE = lambda x, y: 3 + (x - 120.5) * math.tan(math.radians(4))
+MESHES["wedge"] = [slanted([(120.5, 126), (150.5, 126), (150.5, 146), (120.5, 146)], 0, WEDGE)]
+MESHES["dome"] = [dome(135.5, 136, 12, 2, 3)]
+MESHES["ramp"] = [lying(prism([(118, 0), (153, 0), (153, 4), (133, 4), (118, 2)], 0, 20), 126)]
+MESHES["holed"] = [slanted(around(135.5, 136, 15, [2 * math.pi * i / 64 for i in range(64)]), 0, WEDGE,
+                           [(135.5 + 4 * math.cos(2 * math.pi * i / 64), 136 + 4 * math.sin(2 * math.pi * i / 64)) for i in range(64)])]
 
 # Two parts of one object, for seams moved to where parts meet
 # (seam_prefer_part_joints): halves is a round post 20 mm across and 10 mm

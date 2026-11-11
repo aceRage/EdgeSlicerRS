@@ -20,7 +20,7 @@ pub struct Hit {
     pub t: f32,
 }
 
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, PartialEq)]
 struct Node {
     min: [f64; 3],
     max: [f64; 3],
@@ -154,8 +154,100 @@ pub(crate) fn closest_on_triangle(p: [f64; 3], [a, b, c]: [[f64; 3]; 3]) -> [f64
     ]
 }
 
+/// Above this many triangles the two halves of a node are made side by
+/// side; the tree is the same either way.
+const SIDE_BY_SIDE: usize = 1 << 13;
+
+/// Makes the node of `order` (the triangles from `from` on in the tree's
+/// order) and all beneath it at the end of `nodes`, the first child
+/// straight after its parent and then the second's; gives its place.
+fn grow(
+    nodes: &mut Vec<Node>,
+    order: &mut [u32],
+    from: usize,
+    boxes: &[([f64; 3], [f64; 3])],
+    side_by_side: usize,
+) -> usize {
+    let (mut min, mut max) = ([f64::MAX; 3], [f64::MIN; 3]);
+    let (mut low, mut high) = ([f64::MAX; 3], [f64::MIN; 3]);
+    for &triangle in order.iter() {
+        let (least, most) = boxes[triangle as usize];
+        for axis in 0..3 {
+            min[axis] = min[axis].min(least[axis]);
+            max[axis] = max[axis].max(most[axis]);
+            let middle = least[axis] + most[axis];
+            low[axis] = low[axis].min(middle);
+            high[axis] = high[axis].max(middle);
+        }
+    }
+    let here = nodes.len();
+    nodes.push(Node {
+        min,
+        max,
+        at: from as u32,
+        count: order.len() as u32,
+    });
+    if order.len() <= LEAF {
+        return here;
+    }
+    // Halved across the axis the triangles' middles spread furthest
+    // along.
+    let axis = (0..3)
+        .max_by(|&a, &b| {
+            (high[a] - low[a])
+                .total_cmp(&(high[b] - low[b]))
+                .then(b.cmp(&a))
+        })
+        .unwrap_or(0);
+    let half = order.len() / 2;
+    let key = |triangle: &u32| {
+        let (least, most) = boxes[*triangle as usize];
+        least[axis] + most[axis]
+    };
+    order.select_nth_unstable_by(half, |a, b| key(a).total_cmp(&key(b)).then(a.cmp(b)));
+    let large = order.len() > side_by_side;
+    let (first, second) = order.split_at_mut(half);
+    let second = if large {
+        // Each half in a list of its own, its places counted from its
+        // own start, then put after the parent with them moved on.
+        let (mut made_first, mut made_second) = rayon::join(
+            || {
+                let mut made = Vec::new();
+                grow(&mut made, first, from, boxes, side_by_side);
+                made
+            },
+            || {
+                let mut made = Vec::new();
+                grow(&mut made, second, from + half, boxes, side_by_side);
+                made
+            },
+        );
+        let moved = |made: &mut Vec<Node>, by: usize| {
+            for node in made.iter_mut().filter(|node| node.count == 0) {
+                node.at += by as u32;
+            }
+        };
+        moved(&mut made_first, nodes.len());
+        nodes.append(&mut made_first);
+        let second = nodes.len();
+        moved(&mut made_second, second);
+        nodes.append(&mut made_second);
+        second
+    } else {
+        grow(nodes, first, from, boxes, side_by_side);
+        grow(nodes, second, from + half, boxes, side_by_side)
+    };
+    nodes[here].at = second as u32;
+    nodes[here].count = 0;
+    here
+}
+
 impl Bvh {
     pub fn new(mesh: &Triangles) -> Self {
+        Self::made(mesh, SIDE_BY_SIDE)
+    }
+
+    fn made(mesh: &Triangles, side_by_side: usize) -> Self {
         let count = mesh.indices.len();
         let mut bvh = Self {
             nodes: Vec::with_capacity(count / 2 + 1),
@@ -177,56 +269,10 @@ impl Bvh {
                 (min, max)
             })
             .collect();
-        bvh.build(&boxes, 0, count);
+        let mut order = std::mem::take(&mut bvh.order);
+        grow(&mut bvh.nodes, &mut order, 0, &boxes, side_by_side);
+        bvh.order = order;
         bvh
-    }
-
-    /// Makes the node of `order[from..to]` and all beneath it; gives its
-    /// place.
-    fn build(&mut self, boxes: &[([f64; 3], [f64; 3])], from: usize, to: usize) -> usize {
-        let (mut min, mut max) = ([f64::MAX; 3], [f64::MIN; 3]);
-        let (mut low, mut high) = ([f64::MAX; 3], [f64::MIN; 3]);
-        for &triangle in &self.order[from..to] {
-            let (least, most) = boxes[triangle as usize];
-            for axis in 0..3 {
-                min[axis] = min[axis].min(least[axis]);
-                max[axis] = max[axis].max(most[axis]);
-                let middle = least[axis] + most[axis];
-                low[axis] = low[axis].min(middle);
-                high[axis] = high[axis].max(middle);
-            }
-        }
-        let here = self.nodes.len();
-        self.nodes.push(Node {
-            min,
-            max,
-            at: from as u32,
-            count: (to - from) as u32,
-        });
-        if to - from <= LEAF {
-            return here;
-        }
-        // Halved across the axis the triangles' middles spread furthest
-        // along.
-        let axis = (0..3)
-            .max_by(|&a, &b| {
-                (high[a] - low[a])
-                    .total_cmp(&(high[b] - low[b]))
-                    .then(b.cmp(&a))
-            })
-            .unwrap_or(0);
-        let half = from + (to - from) / 2;
-        let key = |triangle: &u32| {
-            let (least, most) = boxes[*triangle as usize];
-            least[axis] + most[axis]
-        };
-        self.order[from..to]
-            .select_nth_unstable_by(half - from, |a, b| key(a).total_cmp(&key(b)).then(a.cmp(b)));
-        self.build(boxes, from, half);
-        let second = self.build(boxes, half, to);
-        self.nodes[here].at = second as u32;
-        self.nodes[here].count = 0;
-        here
     }
 
     /// Whether a ray reaches a box before `far`
@@ -263,13 +309,14 @@ impl Bvh {
         mesh: &Triangles,
         origin: [f64; 3],
         direction: [f64; 3],
+        reach: f64,
         mut found: impl FnMut(Hit) -> f64,
     ) {
         if self.nodes.is_empty() {
             return;
         }
         let inverse = direction.map(|d| 1.0 / d);
-        let mut far = f64::INFINITY;
+        let mut far = reach;
         // The tree halves its triangles at every node, so it is no
         // deeper than the bits of a count of them.
         let mut stack = [0usize; 64];
@@ -290,7 +337,9 @@ impl Bvh {
             let from = node.at as usize;
             for &triangle in &self.order[from..from + node.count as usize] {
                 let corners = [0, 1, 2].map(|which| corner(mesh, triangle, which));
-                if let Some(t) = intersect(origin, direction, corners).filter(|t| *t > 0.0) {
+                if let Some(t) =
+                    intersect(origin, direction, corners).filter(|t| *t > 0.0 && *t <= reach)
+                {
                     far = found(Hit {
                         triangle,
                         t: t as f32,
@@ -309,8 +358,20 @@ impl Bvh {
         origin: [f64; 3],
         direction: [f64; 3],
     ) -> Option<Hit> {
+        self.first_hit_within(mesh, origin, direction, f64::INFINITY)
+    }
+
+    /// [`Self::first_hit`], if it is no further along the ray than
+    /// `reach`: no box beyond that is looked in.
+    pub fn first_hit_within(
+        &self,
+        mesh: &Triangles,
+        origin: [f64; 3],
+        direction: [f64; 3],
+        reach: f64,
+    ) -> Option<Hit> {
         let mut best: Option<Hit> = None;
-        self.each_hit(mesh, origin, direction, |hit| {
+        self.each_hit(mesh, origin, direction, reach, |hit| {
             if best.is_none_or(|kept| {
                 hit.t < kept.t || (hit.t == kept.t && hit.triangle < kept.triangle)
             }) {
@@ -396,11 +457,62 @@ impl Bvh {
     /// (`intersect_ray_all_hits`).
     pub fn all_hits(&self, mesh: &Triangles, origin: [f64; 3], direction: [f64; 3]) -> Vec<Hit> {
         let mut hits = Vec::new();
-        self.each_hit(mesh, origin, direction, |hit| {
+        self.each_hit(mesh, origin, direction, f64::INFINITY, |hit| {
             hits.push(hit);
             f64::INFINITY
         });
         hits.sort_by(|a, b| a.t.total_cmp(&b.t).then(a.triangle.cmp(&b.triangle)));
         hits
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A grid of little tilted squares, `n` by `n`, two triangles each.
+    fn tiles(n: usize) -> Triangles {
+        let mut mesh = Triangles::default();
+        for i in 0..n {
+            for j in 0..n {
+                let (x, y) = (i as f32, j as f32);
+                let z = ((i * 7 + j * 3) % 11) as f32 * 0.1;
+                let at = mesh.vertices.len() as u32;
+                mesh.vertices.extend([
+                    [x, y, z],
+                    [x + 1.0, y, z + 0.2],
+                    [x + 1.0, y + 1.0, z],
+                    [x, y + 1.0, z + 0.1],
+                ]);
+                mesh.indices
+                    .extend([[at, at + 1, at + 2], [at, at + 2, at + 3]]);
+            }
+        }
+        mesh
+    }
+
+    #[test]
+    fn halves_made_side_by_side_make_the_same_tree() {
+        let mesh = tiles(120);
+        assert!(mesh.indices.len() > 4 * SIDE_BY_SIDE / 2);
+        let alone = Bvh::made(&mesh, usize::MAX);
+        let together = Bvh::new(&mesh);
+        assert_eq!(alone.nodes, together.nodes);
+        assert_eq!(alone.order, together.order);
+        // And a ray finds what it found, and nothing past its reach.
+        let hit = together.first_hit(&mesh, [10.5, 20.5, -1.0], [0.0, 0.0, 1.0]);
+        assert_eq!(
+            hit,
+            alone.first_hit(&mesh, [10.5, 20.5, -1.0], [0.0, 0.0, 1.0])
+        );
+        let t = f64::from(hit.unwrap().t);
+        assert_eq!(
+            together.first_hit_within(&mesh, [10.5, 20.5, -1.0], [0.0, 0.0, 1.0], t + 1e-3),
+            hit
+        );
+        assert_eq!(
+            together.first_hit_within(&mesh, [10.5, 20.5, -1.0], [0.0, 0.0, 1.0], t - 1e-3),
+            None
+        );
     }
 }

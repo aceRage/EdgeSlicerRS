@@ -38,33 +38,7 @@ pub(crate) struct PartSettings {
     /// carries a text or shape description (bbs_3mf.cpp `TEXT_TAG`,
     /// `SHAPE_TAG`; Model.hpp `ModelVolume::is_text`, `is_svg`).
     pub decoration: bool,
-    /// The rest of its metadata, in order: its own settings.
-    pub settings: Vec<(String, String)>,
 }
-
-/// What a part's metadata says that is not one of its settings: read
-/// above, or about where it came from (bbs_3mf.cpp `_load_model_from_file`,
-/// the keys it takes before handing the rest to the part's config).
-const NOT_SETTINGS: [&str; 18] = [
-    "name",
-    "extruder",
-    "matrix",
-    "mesh_shared",
-    "volume_type",
-    "part_type",
-    "precise_seam_type",
-    "source_file",
-    "source_object_id",
-    "source_volume_id",
-    "source_offset_x",
-    "source_offset_y",
-    "source_offset_z",
-    "source_in_inches",
-    "source_in_meters",
-    "cad_body_file",
-    "airbrush_field_file",
-    "texture_displacement",
-];
 
 impl PartSettings {
     /// What the part is: a modifier that names a Precise Seam type is
@@ -201,17 +175,6 @@ pub(crate) fn parse(text: &str, part: &str) -> Result<ModelSettings, Error> {
                         let object = settings.objects.entry(*object).or_default();
                         object.parts.entry(*id).or_default().extruder =
                             Some(number(part, "extruder", &value)?);
-                    }
-                    Scope::Part(object, id)
-                        if !key.is_empty() && !NOT_SETTINGS.contains(&key.as_str()) =>
-                    {
-                        let object = settings.objects.entry(*object).or_default();
-                        object
-                            .parts
-                            .entry(*id)
-                            .or_default()
-                            .settings
-                            .push((key, value));
                     }
                     Scope::Plate => {
                         if let Some(plate) = settings.plates.last_mut() {

@@ -89,6 +89,7 @@ const asking = {
   model: 'Path of an STL or 3MF file on this machine',
   folder: 'Path of the folder of vendor profiles',
   gcode: 'Save the G-code as (a full path)',
+  project: 'Save the project as (a full path)',
 };
 
 function modal(dialog) {
@@ -1276,13 +1277,8 @@ async function closeProject(id) {
       return true;
     }
     if (answer.ask === 'unsaved') {
-      // The reference offers to save; a project cannot be saved here yet.
-      const sure = await confirmBox(
-        'Close project',
-        `"${answer.name}" has unsaved changes.\nA project cannot be saved yet: what was chosen for it is lost when it closes.`,
-        "Don't save", 'Cancel',
-      );
-      if (!sure) return false;
+      // "Save them before closing it?" (save.js).
+      if (!(await saveBeforeClosing(id, answer.name))) return false;
       args.discard = true;
     } else {
       const sure = await confirmBox('Close project', `"${answer.name}" is slicing. Stop slicing and close it?`, 'Yes', 'No');
@@ -1375,6 +1371,9 @@ $('strip').addEventListener('contextmenu', (event) => {
   if (tile) {
     const id = Number(tile.dataset.id);
     showMenu(event.clientX, event.clientY, [
+      ['Save', () => attempt(() => saveProject(id))],
+      ['Save as...', () => attempt(() => saveProject(id, true))],
+      null,
       ['Close', () => attempt(() => closeProject(id))],
       ['Close others', () => attempt(() => closeOthers(id)), { disabled: state.listing.projects.length < 2 }],
     ]);

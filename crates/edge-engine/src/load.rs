@@ -422,6 +422,7 @@ mod tests {
             )))
         };
         let part = |kind, mesh| Part {
+            kept: None,
             name: None,
             kind,
             filament: 1,
@@ -431,7 +432,6 @@ mod tests {
             seam: None,
             transform: Transform::IDENTITY,
             decoration: false,
-            settings: Vec::new(),
         };
         let at = |x, y| Instance {
             transform: Transform::translation([x, y, 0.0]),
@@ -439,8 +439,10 @@ mod tests {
         };
         // A box with a hole cut in it, and a plain one.
         let project = Project {
+            kept: None,
             objects: vec![
                 Object {
+                    kept: None,
                     id: 1,
                     name: None,
                     filament: None,
@@ -451,6 +453,7 @@ mod tests {
                     instances: vec![at(100.0, 50.0)],
                 },
                 Object {
+                    kept: None,
                     id: 2,
                     name: None,
                     filament: None,
@@ -459,6 +462,7 @@ mod tests {
                 },
             ],
             plates: vec![Plate {
+                kept: None,
                 id: 1,
                 name: String::new(),
                 first_layer_sequence: Vec::new(),

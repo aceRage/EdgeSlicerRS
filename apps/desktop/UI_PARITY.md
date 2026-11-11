@@ -19,8 +19,10 @@ The last column reads:
   Process" in section 2 and section 12; fifth pass: Prepare as an editor,
   section 13; sixth pass: the filament's and the printer's pages, section
   14; seventh pass: "Lay on face", "Mirror", "Split to objects" and
-  "Split to parts", in section 13; eighth pass: the parts of an object,
-  "Parts" in section 13).
+  "Split to parts", in section 13; eighth pass: saving projects, the
+  "Files" rows of section 2, the strip's saving in section 5, and
+  section 15; ninth pass: the parts of an object, "Parts" in section 13,
+  and what a saved project holds of them in section 15).
 - **differs** — built, but on purpose not as the C++ does it; the cell says how.
 - **not yet** — not built, with what it waits for. Nothing in this column is
   shown in the page as a control that does nothing.
@@ -181,9 +183,9 @@ does with each option.
 | C++ | Where | Here |
 | --- | --- | --- |
 | "New Project" [Ctrl+N], "Open Project..." [Ctrl+O], "Recent projects" | `MainFrame::init_menubar_as_editor` l.3385 | **added** through the strip (section 5). **not yet**: a menu bar, recent projects |
-| "Save Project" [Ctrl+S], "Save Project as..." [Ctrl+Shift+S] | the same | **not yet**: the engine does not write projects |
+| "Save Project" [Ctrl+S] ("Save current project to file"), "Save Project as..." [Ctrl+Shift+S] ("Save current project as"): to the project file it was opened from, else (an STL, a new project, a project opened from a ZIP) through the save dialog, "Save file as:", "3MF files", "Untitled.3mf"; written as `SplitModel \| ShareMesh \| FullPathSources`; the project is then that file and saved; "Failed to save the project.\nPlease check whether the folder exists online or if other programs open the project file." | MainFrame.cpp l.3444–3458, Plater.cpp `save_project` l.21961, `get_export_file` l.15728 | **added** (`project_save`, `ui/save.js`): the keys and a project tile's "Save" / "Save as..." (below, section 5), the same rules and words; the file is the reference's project file (section 15). An STL opened as a project is saved as a 3MF beside it, its name offered. **differs**: no menu bar was added: the keys and the tile's menu are where the C++ has them too, and a File menu of two entries would be a bar for little; in `--serve` the dialog is the page's own (a path is typed). What the file held that the save would not keep is listed and asked about first (this app's own question, the reference keeping all it reads) |
 | "Import 3MF/STL/STEP/SVG/OBJ/AMF/GLB..." [Ctrl+I] adds geometry to the project shown; dropping files on the window; "Open as project" / "Import geometry only" | l.3385, `PlaterDropTarget::OnDropFiles` l.13122 | **added**: "Add" [Ctrl+I] puts an STL's or a 3MF's geometry in the project shown, a 3MF always as "Import geometry only" (section 13). The strip's Open still opens a file as a project of its own, an STL as much as a 3MF (**had**). **not yet**: the other formats, dropping files, the question which of the two is meant |
-| Export: STL, STEP, generic and Bambu 3MF, preset bundles | the same | **not yet** |
+| Export: STL, STEP, generic and Bambu 3MF, preset bundles | the same | **not yet**. `edge save` (the command line) writes the same project file as "Save Project" |
 
 ## 3. Preview
 
@@ -295,20 +297,20 @@ Read from `ProjectStrip.cpp/.hpp`, `ProjectSessions.hpp` and their uses in
 | Tiles: a thumbnail of the plate the project is on, rendered again a moment after it changes; an empty bed for an empty plate; a page with a folded corner until there is a picture | `render_active_thumbnail`, `on_paint`, `classify_tile_render` | **added**: the plate from above (bed and outlines), drawn again when the plate or the printer changes; the empty bed and the page likewise |
 | The name under the thumbnail on at most two lines, broken only after a space, `_`, `-` or `.`, cut short with an ellipsis; the name is the file's without folder and extension | `wrap_name_two_lines`, `name_from_path` | **added**, the rule ported |
 | The active project has an accent frame | `on_paint` | **added** (this app's accent, orange, not the C++ green) |
-| An orange dot (top left) marks unsaved changes | `on_poll` (`is_project_dirty`), `on_paint` | **added**: the dot marks a project whose model is not the one it was opened with (an edit taken back by undo is no change), or whose choices (presets in use, bed type, the process settings set here) are no longer those it was opened with. Nothing saves a project yet |
+| An orange dot (top left) marks unsaved changes | `on_poll` (`is_project_dirty`), `on_paint` | **added**: the dot marks a project whose model is not the one it was opened or last saved with (an edit taken back by undo is no change), or whose choices (presets in use, bed type, the settings set here) are no longer those it was opened or saved with. Saving clears it |
 | A badge (bottom right): going round while the project slices, a tick once every plate that holds objects is sliced; also for projects out of sight | `slice_badge`, `on_poll` (every 500 ms) | **added**, from `projects`, asked for twice a second (more often while something slices) |
 | Tooltip: the name, the file, "Unsaved changes", "Slicing" | `tooltip_for` | **added** |
 | A cross (top right, on hover) and the middle mouse button close a project ("Close project") | `hit_test`, `on_left_down`, `on_middle_down` | **added** |
-| Closing asks first: with unsaved changes, "\"%s\" has unsaved changes. Save them before closing it?" (Yes / No / Cancel); while slicing, "\"%s\" is slicing. Stop slicing and close it?" | `close_project` | **added** (`project_close`, which answers `ask` until told `discard` / `stop`). **differs**: the first offers "Don't save" and "Cancel" and says a project cannot be saved yet |
+| Closing asks first: with unsaved changes, "\"%s\" has unsaved changes. Save them before closing it?" (Yes / No / Cancel); while slicing, "\"%s\" is slicing. Stop slicing and close it?" | `close_project` | **added** (`project_close`, which answers `ask` until told `discard` / `stop`), the three answers: Yes saves (asking where for a project with no project file; a save called off keeps it open) |
 | Closing the project shown shows the next one, else the one before; closing one out of sight changes nothing on screen; closing the last one leaves a new empty "Untitled", so the strip always has one | `successor_on_close`, `close_project` | **added** |
 | A tile dragged up or down moves to where the line shows | `on_motion`, `drop_index_at`, `ProjectSessions::move` | **added** (`project_move`) |
 | More tiles than fit: the wheel scrolls the strip | `on_wheel` | **added** |
-| Tile menu: "Save", "Save as...", "Send...", "Close", "Close others", "Reveal in Finder" / "Show in Explorer", "Open in new window" | `show_item_menu` | **added**: "Close", "Close others". **not yet**: saving, sending, showing the file, a second window |
+| Tile menu: "Save", "Save as...", "Send...", "Close", "Close others", "Reveal in Finder" / "Show in Explorer", "Open in new window" | `show_item_menu` | **added**: "Save", "Save as...", "Close", "Close others". **not yet**: sending, showing the file, a second window |
 | Strip menu: "Show thumbnails" / "Show names only", "Default width", "Collapse the project strip" / "Show the project strip" | `show_strip_menu` | **added** |
 | The right edge is dragged to widen the strip: 88 to 200, names alone at least 120; remembered | `StripLayout`, `on_motion`, `project_strip_width` | **added**, remembered by the page |
 | The chevron folds the strip to a 24 wide rail: New and Open stacked, a mark for each project (filled for the active one, a ring when sliced, the unsaved dot); remembered | `set_collapsed`, `on_paint` | **added** |
-| Closing the window with several projects open: one dialog, "Unsaved projects", lists every unsaved one to save, not save, or cancel | `confirm_close_all`, MainFrame.cpp l.604 | **not yet**: the window closes at once. What is lost is what the dot marks |
-| "Reopen the open projects at the next start" (off unless asked for): the projects written out at exit and read back | `save_session_for_restart`, `restore_session`, `SessionManifest` | **not yet**: needs writing projects. Reloading the page (`--serve`) does find every project as it was, the session being the server's |
+| Closing the window with several projects open: one dialog, "Unsaved projects", "These projects have unsaved changes. Save the ticked ones before closing?", every unsaved one ticked, "Save" / "Don't save" / "Cancel"; with one project, "EdgeSlicer - Save": "The current project has unsaved changes, save it before continue?" (Yes / No / Cancel) | `confirm_close_all`, MainFrame.cpp l.604, Plater.cpp `close_with_confirm` l.25050 | **added** in the window: it is held open while a project is unsaved (`unsaved`), the page asks in these words ("EdgeSlicerRS - Save"), saves what is ticked and then closes it. **not yet**: "Remember my choice."; in a browser (`--serve`) nothing is asked, the session outliving the page |
+| "Reopen the open projects at the next start" (off unless asked for): the projects written out at exit and read back | `save_session_for_restart`, `restore_session`, `SessionManifest` | **not yet**: projects can be written now (section 15); the preference and the manifest are not built. Reloading the page (`--serve`) does find every project as it was, the session being the server's |
 | Project files opened from Explorer / Finder go into the strip ("Open project files from Explorer / Finder in": "New project tab" / "The current project") | `open_files_from_shell`, GUI_App.cpp l.9202 | **added** for a file named when the app is started (`startup`, **had**). **not yet**: a file handed to an app that is already running |
 
 ## 6. Shortcuts
@@ -322,7 +324,8 @@ Read from `ProjectStrip.cpp/.hpp`, `ProjectSessions.hpp` and their uses in
 | Up / Down: the layer slider; Shift or Ctrl with them: five at a time | **added** (Up / Down by one **had**) |
 | Shift+G: "Jump to Layer" | **added** |
 | Z: zoom to the objects | **added**: "Fit in all view" in 3D (section 9); "Fit part" from above |
-| Ctrl+S, Ctrl+Shift+S, Ctrl+I, Ctrl+G, Ctrl+Shift+G, Ctrl+P (Preferences), "?" (the list of shortcuts) | **not yet** |
+| Ctrl+S "Save Project", Ctrl+Shift+S "Save Project as..." | **added** (and Cmd on a Mac), anywhere in the page but in a dialog; in a browser they are taken from the browser's own |
+| Ctrl+G, Ctrl+Shift+G, Ctrl+P (Preferences), "?" (the list of shortcuts) | **not yet** (Ctrl+I is "Add", section 13) |
 | Left / Right, Home / End (the move slider), L (one layer mode), C (G-code window) | **added** in 3D: all but C (no G-code window) |
 | A, Shift+A, Q, Shift+Q, the gizmo keys, Ctrl+0..6, Ctrl+A / D / Z / Y / C / V / X, Del, 1–9, arrows to move objects | **added** in 3D: Ctrl+0..7 (the views), Ctrl+A, Esc, I and O, Ctrl+E (section 9); A, Shift+A, M, R, S, F, Ctrl+Z, Ctrl+Y, Ctrl+C, Ctrl+V, Ctrl+K, Ctrl+I, Del and the arrows (section 13). **not yet**: Q and Shift+Q, the other gizmos' keys, Ctrl+D, Ctrl+X, 1–9 (the filament of what is selected) |
 
@@ -354,6 +357,8 @@ the project is on.
 | `project_cycle` | `step` (1 or -1) | the strip |
 | `project_move` | `id`, `index` | the strip |
 | `project_close` | `id`, `discard?`, `stop?` | the strip and `closed: true`; or `closed: false`, `ask: "unsaved" \| "slicing"`, `name` |
+| `project_save` | `project?`, `path?`, `accept?`, `suggest?` | saves the project as a project file (section 15): to `path`, else to the 3MF it was opened from (`.3mf` is added to a path without it). The strip and `saved: true`, `path`; the project then goes by that file and is saved. Or the strip and `saved: false` with `ask: "path"`, `name`, `suggested` (it has no project file: ask where, offering that path), or with `ask: "losses"`, `name`, `losses` (sentences: what its file held that would not be kept; nothing was written; `accept: true` writes it all the same). With `suggest: true` only `{ suggested }`, for "Save as..." |
+| `unsaved` | — | `{ unsaved: [{ id, name, path }], projects }`: the projects with unsaved changes, for the question asked before the window closes |
 | `project_set` (what is set for `bed_type`, `process` or `filaments` is kept with the printer the project is on) | `project?` and any of `plate`, `tab` (`prepare` / `preview`), `view` (a small object), `source` (`project` / `presets`), `vendor`, `machine`, `process`, `filaments`, `bed_type`, `layer_height`, `first_layer_height`, `wall_loops`, `closing_radius` (null to clear), `initial` (these are what it starts with) | as `project`. A change to what it is sliced with drops its slices and stops one that is running |
 | `process_pages` | — | the process pages as the reference has them: `{ pages: [{ title, groups: [{ title, lines: [{ keys, label?, tooltip? }] }] }], options: { key: { label, tooltip, type (bool, int, float, percent, float_or_percent, enum, string, strings), unit?, min?, max?, max_literal?, values?, labels?, open?, mode (simple, advanced, developer), list?, multiline?, code?, full_width?, height?, default } } }`. The same for every project; asked for once |
 | `process` | `project?` | `{ project, source, name, values { key: value } (by the preset, or the project's own settings, or the default), set { key: value } (what is set over them), counts { page: number set }, changed, hidden: [key], off: [key] (the reference's rules), unread: [key] (what a slice with these settings does not read), notes { key: [sentence] } (the engine's notes), refused (why the engine would stop, or null) }` |
@@ -748,8 +753,9 @@ no stage reads at all.
 | Others | 51 | 27 | 1 (`exclude_object`) | 23 | 14 | 23 |
 | All | 433 | 223 | 1 | 209 | 58 | 182 |
 
-Turned on, four more are read with a note: `zaa_enabled`, `spiral_mode`,
-`raft_layers`, `draft_shield`.
+Turned on, three more are read with a note: `spiral_mode`, `raft_layers`,
+`draft_shield`. `zaa_enabled` turned on is followed, and its
+`zaa_speed_scaling` then has a note while layers are slowed to cool.
 
 Nothing is said of an option the reference's rules have greyed out: it is
 off, whoever reads it. Some settings are read only when another turns them on
@@ -1037,7 +1043,7 @@ shows; `part_menu`; `append_menu_items_add_volume`;
 | The other instances of an object taking a mirror or a turn of the object too | instances kept alike, which no tool here does yet (a part's edits are every instance's, as in the C++) |
 | A modifier's and a part's own settings ("Edit in Parameter Table", "Add settings"), "Separate" / "Set as an individual object", copying and pasting parts | per-object and per-part settings, which the engine does not read (section 12); copying parts in the model |
 | "Center" and "Drop" for an object; "Hide" / "Show" of a part | nothing; not built in this pass |
-| Saving the project with its edits | writing 3MF |
+| Saving the project with its edits | **added**: section 15 |
 | The glow round what is selected, the red background while something is over the edge, the ticks of the rotate ring | nothing; they are looks, left for a pass on the stage's own drawing |
 | Rectangle selection (Shift with a drag), dragging rows of the list | nothing; not built in this pass |
 | A printer with another bed moving every object to keep its place | deciding the rule: here a copy keeps its place on its own plate, and what was on no plate stays where it stood beside the first |
@@ -1377,3 +1383,152 @@ screenshots are under `target/ui-shots/presets/`.
   filament 1's last, whatever their own presets say. Left as it is in this
   pass (it changes what an untouched project slices to); the pages show and
   set what the engine reads.
+
+## 15. What a saved project holds
+
+Read from `libslic3r/Format/bbs_3mf.cpp` (`_BBS_3MF_Exporter`, and
+`_BBS_3MF_Importer` for what the reference reads back),
+`libslic3r/PresetBundle.cpp` (`full_fff_config`, `full_config_secure`,
+`load_config_file_config`), `libslic3r/Preset.cpp` (`load_external_preset`)
+and `libslic3r/Config.cpp` (`save_to_json`). The writer is
+`crates/edge-3mf/src/write.rs`, what is kept from a file
+`crates/edge-3mf/src/kept.rs`, the model's side
+`crates/edge-engine/src/save.rs`, the session's `src/api/save.rs`, the
+page's `ui/save.js`; `edge save` on the command line writes the same file.
+
+### The package
+
+The reference's "Save Project" layout (`SplitModel | ShareMesh`), entry by
+entry, in a fixed order:
+
+| Entry | Here |
+| --- | --- |
+| `[Content_Types].xml`, `_rels/.rels` | written afresh, as the reference writes them; `_rels/.rels` names the cover (`Auxiliaries/.thumbnails/…` when the file had one, else the first plate's picture while that is written) |
+| `3D/3dmodel.model`: the header, an object of components for each object, the build (each copy: transform, printable) | written afresh. The header keeps every `<metadata>` the file had (title, designer, licence, description…), with `Application` "EdgeSlicer-2.4.9.0" (the pinned reference's version, `edge_3mf::REFERENCE_VERSION`, checked against the submodule by a test), `BambuStudio:3mfVersion` 1, the dates and the designer's id empty as the reference writes them. The reference reads a file as a whole project (plates, settings, presets) only when its `Application` names EdgeSlicer, Snapmaker Orca or Bambu Studio, so the reference's own name is the one written. Transforms are written as the shortest text that reads back to the same number (the reference writes 9 digits) |
+| `3D/Objects/<name>_<n>.model`, `3D/_rels/3dmodel.model.rels` | written afresh: a file for each object, each mesh of it that no earlier part has (the same mesh painted alike is written once and named from every part that has it, as `ShareMesh` does); vertices as the shortest text that reads back to the same `f32`; each triangle with every attribute it carried as the file had it (`paint_color`, `paint_seam`, `paint_supports`, `paint_fuzzy_skin`, texture layers, `face_property`). A `/` or another character a path cannot hold in an object's name is written `_` in the file's name (the reference writes the name as it is) |
+| `Metadata/model_settings.config` | written afresh from the model: each object's name and filament and each part's (`extruder`: the object's when its printed parts agree, each part's own only where it differs), each part's `subtype`. Kept as the file had them: every other metadata and setting of each object and part (per-object and per-part settings, modifiers' settings, `matrix`, `source_*`, Precise Seam's type, embossed text and SVG descriptions, `mesh_stat`), each plate's own (`locked`, `bed_type`, `print_sequence`, `first_layer_print_sequence`, `spiral_mode`, `filament_map_mode`, `filament_maps` with one entry for each filament, `print_history`…), each copy's place in the assembly view while its object has all its copies, and each copy's `identify_id` (the number the reference labels it with in G-code) while it has. Plates are numbered as they stand, each with its name and its copies |
+| `Metadata/project_settings.config` | the settings, below |
+| `Metadata/slice_info.config` | written afresh: the header alone, as the reference writes a project saved unsliced |
+| `Metadata/layer_heights_profile.txt` (variable layer height), `layer_config_ranges.xml` (height ranges and their settings), `brim_ear_points.txt`, `cut_information.xml` (cut connectors) | kept, each object's line or block written under its place in the list as it stands, so they follow an object when one before it is deleted; a clone carries its original's, as the reference's clone does |
+| `Metadata/custom_gcode_per_layer.xml` (pauses, colour changes, custom G-code at layers) | kept, each plate's under its number as it stands |
+| `Metadata/plate_<n>.png`, `_small`, `plate_no_light_<n>`, `top_<n>`, `pick_<n>` | kept for each plate while it is as it was read (`PlateStamp`: what is on it and where, its filaments and first-layer order), under its number now; a plate that has changed is saved without pictures, which would show it as it was. **not yet**: drawing new ones |
+| `Metadata/process_settings_<n>.config`, `filament_settings_<n>.config`, `machine_settings_<n>.config` (presets the file carries) | kept while the project is saved with its file's own settings; with presets chosen here they are not, and that is asked about first |
+| `Metadata/cut_recipe.xml` and its meshes, `edgeslicer_height_patterns.json`, `Metadata/showcase/` | not read here and kept by each object's place in the list: kept as they were while every object of the file is at its place; once one is deleted they are not kept, and that is asked about first |
+| Every other entry (`Auxiliaries/`, embossing SVGs, CAD bodies, airbrush fields, texture layers, image fill…) | kept byte for byte |
+| `Metadata/plate_<n>.gcode` and `.md5`, `plate_<n>.json`, `filament_sequence.json`, `_rels/model_settings.config.rels` | not written: a slice saved with the project. A saved project is unsliced, as the reference's "Save Project" writes it |
+| An entry whose name reaches outside the package (`../`, a drive, a leading `/`) | not written, and said before saving |
+
+The same project gives the same bytes: the order is fixed and every entry
+carries one time, `SOURCE_DATE_EPOCH` when it is set, else 1980-01-01. A
+file is written to `<path>.tmp` and moved into place once whole, so what was
+at `path` is left as it was when writing fails.
+
+### The settings
+
+| Project | Written |
+| --- | --- |
+| On its file's own settings, nothing set over them | the file's `project_settings.config` as it was, and the presets it carries |
+| On its file's own settings, with process, filament or printer settings or the bed type set here | the file's own, each setting set here taking the value the engine settles it to (`edge_engine::own_settings`), everything else as the file has it; what was set is added to the file's `different_settings_to_system`; the file's presets go with it |
+| On presets chosen here | what a slice reads (`edge_engine::settled`: the presets with everything they inherit, the file's own settings under them, what was set over them, the reference's defaults for the rest), only the reference's own options and the names (`printer_settings_id`, `print_settings_id`, `filament_settings_id`), a value from the defaults' table in the text a project holds (its escapes taken out); `different_settings_to_system` lists, for the process, each filament and the printer, the settings set here (`edge_engine::project_settings`) |
+| No printer chosen (an STL, an empty project) | none: the reference opens it on the presets it is on |
+
+`different_settings_to_system` is written truthfully, as the reference
+reads it (Preset.cpp `load_external_preset`): when it opens the file it
+takes every setting of a preset that is not listed from the preset the file
+names, so a setting listed is one set here and a value the engine settled
+otherwise for an unlisted one is the preset's again. Written as JSON with
+keys in order and four spaces to a level (`save_to_json`), with `name`
+"project_settings", `from` "project", `version`. `print_host`,
+`print_host_webui`, `printhost_apikey`, `printhost_cafile`,
+`printhost_user`, `printhost_password` and `printhost_port` are never
+written (`full_config_secure`), whichever way the settings come (tested).
+
+### Asked before saving
+
+What the file held that a save would not keep is listed, and nothing is
+written until the person says to: the presets it carries when presets are
+chosen here; what goes by objects' places (above) once an object of the
+file is deleted; the assembly view of an object some of whose copies were
+deleted; an entry whose name reaches outside the file. The reference never
+asks this, keeping everything it reads; the words are this app's. `edge
+save` lists the same and writes only with `--accept-losses`.
+
+### How it was checked
+
+- `crates/edge-3mf/tests/round_trip.rs`: every 3MF the reference ships or
+  tests with (36), read, written and read again, is the same project:
+  objects, names, parts, kinds, filaments, meshes to the bit, colour and
+  seam paint, what every triangle carries, copies, plates, settings (but
+  what reaches a printer); written again from what was read back, the same
+  bytes. A plain file's layout, the paint kept on its triangle, a plate's
+  own settings, the assembly view, a slice and a name reaching outside
+  left out; a printer's address left out; the version claimed is the
+  pinned reference's.
+- `crates/edge-engine/tests/save.rs`: every reference project saved and
+  opened again places to the bit on every plate; `mcbrim_test.3mf` and
+  `twopart_groups.3mf` slice to the same bytes; `mcbrim_test.3mf` with a
+  copy moved, one deleted, an object given filament 5 and renamed slices
+  from the saved file as it did in memory, plate by plate, keeps the
+  pictures of no plate it changed and all of those it did not; cut
+  information follows its objects when the first is deleted; a variable
+  layer height is kept; settings settled here name what was set by hand;
+  a bare STL is saved standing in the middle of the bed.
+- `src/api/save/tests.rs`: saving over the file opened, the unsaved mark
+  cleared and back with undo; an STL asked where, saved as a 3MF with the
+  presets and a process setting; the losses asked about first; an empty
+  project saved.
+- Both slicers on every reference project and five fixtures
+  (`tools/make_fixture.py`: cube, enforced, blocked, halves, twotone),
+  each plate of the original and of the file `edge save` wrote
+  (`SOURCE_DATE_EPOCH=1`): this engine's G-code is the same to the byte for
+  every one (those it refuses, it refuses alike); the C++ slicer's is the
+  same to the byte for `mcbrim_test.3mf` (three plates), `pa_pattern`,
+  `auto_pa_line_dual`, `auto_pa_line_single`, `cylinder_drawcut`,
+  `stabilizer_v1`, `onepart_group` and the four `twopart_groups*`. For the
+  five fixtures, which are not the reference's own projects (no
+  `Application`), every move is the same and only the settings listed in
+  the G-code's comments differ: the reference reads a project of its own
+  through its presets, which lays a U1's lists out per nozzle
+  (`accel_to_decel_enable = 1,1`). The rest it slices in neither form
+  headless (no printer in the file, or files it refuses).
+- In the served page (1280 × 820, dark and light), `mcbrim_test.3mf`
+  (a copy) with a copy moved, one deleted, an object given filament 5 and
+  `wall_loops` set to 5: saved by the tile's "Save" and by Cmd+S, the dot
+  gone and the path said; "Save as..." with the page's dialog to a path
+  typed without `.3mf`, the tile renamed; closing it unsaved asked "Save
+  them before closing it?" with Yes / No / Cancel. The C++ slicer, given
+  the saved file, prints the moved copy where it was moved (its first
+  layer's lines there, none left where it stood), plate 2 without the
+  deleted copy (its filament 6 no longer used), plate 3's object in
+  filament 5 (4.71 g where it was 2.26 g), and `wall_loops = 5`. A move
+  that put the copy into its neighbour was refused by the C++ slicer for
+  conflicting paths, as it should be; this engine does not check that.
+- Not checked: the window's own close question (the window was not
+  opened in this pass; the page's side and the session's are as above).
+
+### Not yet
+
+- Drawing a plate's pictures, and the project's cover.
+- "Export plate sliced file", "Export all sliced file" (a project with its
+  G-code), and "Export Bambu 3MF".
+- Reading back, or keeping, what a project is saved with beyond the file:
+  "Reopen the open projects at the next start", recent projects, crash
+  backups.
+
+### Errors found in the C++
+
+- `bbs_3mf.cpp` l.7954: the small thumbnail is checked with
+  `if (png_data != nullptr)`, the large one's pointer (freed at l.7912),
+  where `small_png_data` is meant; a small picture that failed to encode is
+  then written from a null pointer.
+- `bbs_3mf.cpp` l.7945: the small thumbnail's pixel index is
+  `i / sw * W + j / sh` with `i` stepping by `sh` and `j` by `sw`: rows and
+  columns swapped. Harmless while the picture is square (512 to 128), wrong
+  for any other.
+- `bbs_3mf.cpp` l.8302: an object's file is named `3D/Objects/<name>_<id>.model`
+  from its name as it is, so a `/` in a name makes a folder of it (and `..`
+  climbs one).
+- `bbs_3mf.cpp` l.9274–9276: `_add_project_embedded_presets_to_archive`
+  builds a header line into `out` that is never used.
+- `bbs_3mf.cpp` l.8039: the cover's `rel-5` line is written without the
+  space the others have (wording only).

@@ -260,6 +260,7 @@ mod tests {
 
     fn part(kind: PartKind, filament: usize, mesh: Arc<Mesh>) -> Part {
         Part {
+            kept: None,
             name: None,
             kind,
             filament,
@@ -269,7 +270,6 @@ mod tests {
             seam: None,
             transform: Transform::IDENTITY,
             decoration: false,
-            settings: Vec::new(),
         }
     }
 
@@ -293,6 +293,7 @@ mod tests {
         );
         second.transform = Transform::translation([0.0, 5.0, 0.0]);
         let object = Object {
+            kept: None,
             id: 1,
             name: Some("two parts".into()),
             filament: None,
@@ -334,6 +335,7 @@ mod tests {
             },
         ]));
         let scene = object_of(&Object {
+            kept: None,
             id: 1,
             name: None,
             filament: None,
@@ -353,6 +355,7 @@ mod tests {
             rows: [[-1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0], [0.0; 3]],
         };
         let scene = object_of(&Object {
+            kept: None,
             id: 1,
             name: None,
             filament: None,
@@ -376,7 +379,9 @@ mod tests {
             printable,
         };
         let project = Project {
+            kept: None,
             objects: vec![Object {
+                kept: None,
                 id: 7,
                 name: Some("block".into()),
                 filament: None,
@@ -390,6 +395,7 @@ mod tests {
             }],
             plates: vec![
                 Plate {
+                    kept: None,
                     id: 1,
                     name: String::new(),
                     first_layer_sequence: Vec::new(),
@@ -399,6 +405,7 @@ mod tests {
                     }],
                 },
                 Plate {
+                    kept: None,
                     id: 2,
                     name: "second".into(),
                     first_layer_sequence: Vec::new(),
