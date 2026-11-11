@@ -87,7 +87,7 @@
 .gl-track:focus-visible .gl-thumb.active, .gl-moves .gl-track:focus-visible .gl-thumb { box-shadow: 0 0 0 2px var(--surface-float), 0 0 0 4px var(--focus); }
 
 /* The layers slider. */
-.gl-layers { position: absolute; top: max(10%, 52px); right: 10px; bottom: 92px; z-index: var(--z-overlay); width: 56px; }
+.gl-layers { position: absolute; top: max(10%, 72px); right: 10px; bottom: 92px; z-index: var(--z-overlay); width: 56px; }
 .gl-layers .gl-track { top: 0; bottom: 34px; right: 15px; width: 8px; }
 .gl-layers .gl-fill { left: 0; right: 0; }
 .gl-layers .gl-thumb { left: -6px; margin-bottom: -9px; }
