@@ -6,11 +6,10 @@
 //! `discover_horizontal_shells`. Fill lines are parallel lines, placed,
 //! joined and anchored as the reference's `FillRectilinear` and
 //! `Fill::connect_infill` do it.
-//! Not done: the lengths the reference goes to in running internal bridges out to
-//! the lines that carry them, vertical shell thickness, shell thickness in mm,
-//! gap fill inside solid fill, and every sparse
-//! pattern but lines and grid.
+//! Bridges over infill are run out to the sparse lines that carry them and
+//! turned to cross them, as `PrintObject::bridge_over_infill` does.
 
+mod anchored;
 mod bridges;
 mod counterbore;
 mod curves;
@@ -25,7 +24,8 @@ mod surfaces;
 pub use counterbore::bridge_counterbores;
 pub use fill::{FillError, FillParams, Frame, GapFillTarget, fill, fill_from, fill_within};
 pub use internal_bridges::{
-    InternalBridgeFilter, OverInfill, bridge_over_infill_by, second_internal_bridges,
+    BridgeDirection, InternalBridgeFilter, OverInfill, bridge_over_infill_by,
+    second_internal_bridges,
 };
 pub use ironing::{
     IronedLayer, Ironing, IroningPattern, IroningSettings, IroningType, exposed, iron,
@@ -34,6 +34,6 @@ pub use ironing::{
 pub use narrow::NarrowFill;
 pub use settings::{ExtraBridgeLayer, InfillSettings, Pattern};
 pub use surfaces::{
-    Anchoring, Beneath, Shells, Surface, SurfaceKind, WallsAround, anchor, bridge_edges,
-    bridge_over_infill, carry_bridge_edges, classify, inside_walls, internal, shell_depths,
+    Anchoring, Beneath, Shells, Surface, SurfaceKind, WallsAround, anchor, classify, inside_walls,
+    internal, shell_depths,
 };

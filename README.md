@@ -661,9 +661,24 @@ Known gaps: painted supports and seams, per-object setting overrides, typed sett
   beneath, at `internal_bridge_speed`. What it lies over is taken from
   the whole layer beneath, whatever the filament, so a colour that
   starts part of the way up a part is bridged over the fill of the
-  colour under it. Under the edge of such a bridge, where the edge runs
-  along the walls of the layer below, a band of that layer's sparse fill
-  is made solid to carry the ends of its lines
+  colour under it. Each patch is run out, the way its lines go, to the
+  sparse lines that carry it, a thread's width past the first line at
+  either end, into the sparse and solid fill beside it: the sparse
+  lines of the layer beneath are laid for this as they will be laid,
+  from that layer's sparse surfaces (the reference lays them again,
+  `generate_sparse_infill_polylines_for_anchoring`; here they are laid
+  only under layers with something to bridge, and are not printed).
+  Its direction is chosen by those lines: every 2 mm or so along its
+  outline the nearest line votes for running square to itself, and a
+  patch run out near one already made takes that one's direction; for
+  a Hilbert curve or octagram spiral it is square to the pattern's
+  direction, for 3D honeycomb and cross hatch 45° on from it, and
+  `internal_bridge_angle` sets it or, with `relative_bridge_angle`,
+  turns it. A patch is kept to where the sparse fill beneath is deep
+  enough for a thick bridge's thread to sink into and not bridged
+  within that depth already. Under the edge of such a bridge, where the
+  edge runs along the walls of the layer below, a band of that layer's
+  sparse fill is made solid to carry the ends of its lines
   (PrintObject.cpp `bridge_over_infill`).
   With `ensure_vertical_shell_thickness` at `ensure_all`, whatever of a
   layer's fill is not over and under the fill of the layers within a
@@ -726,9 +741,7 @@ Known gaps: painted supports and seams, per-object setting overrides, typed sett
   lets smaller patches of solid fill over sparse fill be bridged (the
   first sorting-out of `bridge_over_infill` with one spacing where the
   default has three, and with no filter every patch found, four
-  spacings round it), kept as the reference keeps them to where a
-  thick bridge's thread has sparse fill to sink into and no bridge just
-  beneath. `enable_extra_bridge_layer` lays a second layer of bridge
+  spacings round it), and run out as any other. `enable_extra_bridge_layer` lays a second layer of bridge
   over bridges over air (the same way as the first, and the bottom
   shell then starts from the second), over bridges over infill (square
   to the first), or both. `counterbore_hole_bridging` is for a hole
@@ -1323,13 +1336,9 @@ numbers, and here the shortest is worked out exactly for up to twelve
 regions and the best of the nearest-next orders is kept for more.
 Where the reference tells two rows are beside each other by following
 the outline between them, here they are when they overlap. A bridge reaches 0.4 mm onto each support where the reference's
-reaches 0.8 mm, internal bridges are not run out to the
-sparse lines that carry them nor turned as the reference turns them
-(on plain parts, where there is nothing to run out, they are the
-reference's length to 0.1%, and 2% over on plate 2 of
-`mcbrim_test.3mf`; small ones, which gain most from being run out,
-come out a third short, and that is what
-`dont_filter_internal_bridges` at `nofilter` makes more of: below),
+reaches 0.8 mm, a bridge over infill is turned the other way from the
+reference's on about one layer in five where the vote between the two
+directions of a grid is close (below, under Bridges over infill),
 bridges that reach into one another are made one only with
 `bridge_expansion_extra` set, narrow parts of top and
 bottom surfaces get no gap fill
@@ -2519,9 +2528,10 @@ apart, so that the solid layers under the strips of top between them
 are small bridges over infill of different sizes. With every option
 off bridges and bridges over infill are the reference's length to
 0.1% (laid from edge to edge, as they were, bridges were 2 to 6% over
-and bridges over infill up to 5%), but for `gaps`, 33% under, whose
-bridges are small and are run out in the reference; that is the
-difference each row starts from. Besides the
+and bridges over infill up to 5%); `gaps`, whose bridges over infill
+are small and are run out to the sparse lines that carry them, was 33%
+under until they were run out here too, and is now the reference's
+length to 0.1 mm. Besides the
 features shown only the solid and sparse fill a bridge takes the place
 of moves, in either slicer, and with the options off the file is byte
 for byte what it was.
@@ -2533,13 +2543,13 @@ for byte what it was.
 | | `shelf` | Bridge | 0.42 / 0.42 | 0.66 / 0.66 |
 | `bridge_expansion_extra` 2, 6, 50 | `bridge`, all solid (`top_shell_layers=16`) | Bridge | 0.69 / 0.69 | 0.77 / 0.77, 0.94 / 0.94, 1.02 / 1.02 |
 | `bridge_expansion_extra` 3 | `mushroom`, all solid | Bridge | 2.02 / 2.02 | 2.14 / 2.14 |
-| `dont_filter_internal_bridges` `limited` | `gaps` | Bridge over infill | 2.58 / 1.73 | 2.58 / 1.85 |
-| `dont_filter_internal_bridges` `nofilter` | `gaps` | Bridge over infill | 2.58 / 1.73 | 2.88 / 2.42 |
-| | a wedge, top at 14° | Bridge over infill | 0.00 / 0.07 | 5.61 / 3.43 |
+| `dont_filter_internal_bridges` `limited` | `gaps` | Bridge over infill | 2.58 / 2.58 | 2.58 / 2.58 |
+| `dont_filter_internal_bridges` `nofilter` | `gaps` | Bridge over infill | 2.58 / 2.58 | 2.88 / 2.88 |
+| | a wedge 2 to 9.5 mm tall, top at 14° | Bridge over infill | 0.00 / 0.00 | 4.16 / 4.10 |
 | `enable_extra_bridge_layer` `external_bridge_only` | `bridge` | Bridge | 0.67 / 0.67 | 1.33 / 1.33 |
 | | `mushroom` | Bridge | 1.97 / 1.97 | 3.94 / 3.94 |
 | `enable_extra_bridge_layer` `internal_bridge_only` | `cube` | Bridge over infill | 0.84 / 0.84 | 1.68 / 1.68 |
-| | `gaps` | Bridge over infill | 2.58 / 1.73 | 5.14 / 3.46 |
+| | `gaps` | Bridge over infill | 2.58 / 2.58 | 5.14 / 5.13 |
 
 Where the two columns agree they agree to a tenth of a millimetre or
 two in a metre (the deck's bridge 666.2 mm in both, doubled 1332.3;
@@ -2565,18 +2575,89 @@ of line laid, 7 to 21 mm² less is filled on each such layer of a
 sloping part than with the option off); here everything that is not
 second bridge stays what it was.
 
-What is still off is `dont_filter_internal_bridges`. With no filter
-the bridges appear on the same layers as the reference's (every second
-layer under a sloping top: a bridge is not laid over one just beneath
-it), but each is about 60% of the reference's length, 150 mm a layer
-against 240 mm on the wedge, because the reference then runs each
-patch out to the sparse lines that carry it and this engine does not,
-for any bridge over infill. For the same reason `limited` adds a
-little here where it adds nothing in the reference: on `gaps` the
-reference's bridges on the first solid layer, run out, already cover
-what `limited` would find on the next, and here they do not (120 mm
-more on one layer). On the plain parts (cube, deck, mushroom) neither
-value changes anything in either slicer.
+With no filter the bridges over infill appear on the same layers as
+the reference's (every second layer under a sloping top: a bridge is
+not laid over one just beneath it) and are its length to 1.5% (the
+wedge's 4.10 m against 4.16 m; 2.42 m before they were run out to the
+sparse lines that carry them). `limited` adds nothing on `gaps` in
+either slicer now: the bridges on the first solid layer, run out,
+already cover what it would find on the next. On the plain parts
+(cube, deck, mushroom) neither value changes anything in either
+slicer.
+
+Bridges over infill, before and after they were run out to the sparse
+lines that carry them and turned as the reference turns them
+(PrintObject.cpp `bridge_over_infill`), in metres of path, C++ slicer /
+this engine before / after, with the Snapmaker U1's presets but where
+`_cc` says the Centauri Carbon's; the Benchy and `mcbrim_test.3mf`
+plates as saved:
+
+| Part | Bridge over infill | Internal solid fill | Sparse fill | Filament, mm |
+| --- | --- | --- | --- | --- |
+| `gaps` | 2.58 / 1.73 / 2.58 | 11.29 / 11.25 / 11.30 | 10.22 / 10.38 / 10.22 | 1423.3 / 1393.0 / 1423.8 |
+| `holes` | 5.41 / 4.73 / 5.40 | 29.67 / 29.61 / 29.65 | 22.16 / 22.29 / 22.16 | 3314.1 / 3287.4 / 3311.5 |
+| `steps` | 2.74 / 2.36 / 2.74 | 13.83 / 13.82 / 13.84 | 7.35 / 7.41 / 7.35 | 1300.5 / 1287.1 / 1300.8 |
+| `shelf` | 2.29 / 2.10 / 2.29 | 12.06 / 12.07 / 12.07 | 2.93 / 2.96 / 2.93 | 981.3 / 975.1 / 981.5 |
+| `gaps_cc` | 2.35 / 1.80 / 2.36 | 11.30 / 11.28 / 11.32 | 11.16 / 11.31 / 11.17 | 1400.2 / 1378.4 / 1401.6 |
+| `holes_cc` | 4.86 / 4.52 / 4.87 | 29.73 / 29.57 / 29.60 | 23.85 / 24.04 / 23.98 | 3238.2 / 3225.1 / 3240.6 |
+| `steps_cc` | 2.47 / 2.25 / 2.46 | 13.83 / 13.83 / 13.85 | 8.27 / 8.30 / 8.27 | 1275.1 / 1265.5 / 1275.2 |
+| Benchy | 3.48 / 2.43 / 3.63 | 21.35 / 20.23 / 20.80 | 16.24 / 16.56 / 16.23 | 3767.6 / 3718.4 / 3773.4 |
+| `mcbrim_test.3mf` plate 1 | 3.02 / 3.01 / 3.59 | 50.51 / 49.41 / 48.85 | 5.62 / 6.93 / 6.89 | 6886.5 / 6809.0 / 6814.2 |
+| `mcbrim_test.3mf` plate 2 | 2.60 / 2.66 / 2.66 | 24.29 / 24.52 / 24.52 | 2.72 / 2.72 / 2.72 | 4462.7 / 4463.3 / 4463.3 |
+
+`cube`, `frame`, `tube`, `mushroom` and `counterbore` (whose bridges over
+infill cover whole layers, with nothing to run out) are unchanged and
+the reference's length to 0.1%, as are `cylinder_drawcut.3mf` and
+`twopart_groups.3mf`. Bridge over infill, `gaps` / `holes`, with one
+setting changed:
+
+| Setting | `gaps` | `holes` |
+| --- | --- | --- |
+| `sparse_infill_pattern` rectilinear | 2.28 / 1.73 / 2.29 | 5.18 / 4.74 / 5.17 |
+| gyroid | 2.18 / 1.73 / 2.18 | 5.33 / 4.73 / 5.29 |
+| cubic | 2.70 / 1.73 / 2.70 | 5.39 / 4.73 / 5.39 |
+| honeycomb | 2.75 / 1.73 / 2.74 | 5.26 / 4.73 / 5.25 |
+| `sparse_infill_density` 10% | 2.75 / 1.73 / 2.75 | 5.55 / 4.73 / 5.53 |
+| 40% | 2.23 / 1.73 / 2.22 | 5.14 / 4.73 / 5.14 |
+| `dont_filter_internal_bridges` `limited` | 2.58 / 1.85 / 2.58 | 5.43 / 4.86 / 5.42 |
+| `nofilter` | 2.88 / 2.42 / 2.88 | 6.81 / 6.02 / 6.71 |
+| `thick_internal_bridges` 0 | 3.50 / 2.34 / 3.48 | 7.29 / 6.39 / 7.29 |
+| `enable_extra_bridge_layer` `internal_bridge_only` | 5.14 / 3.46 / 5.13 | 10.79 / 9.46 / 10.77 |
+| `top_shell_layers` 1, `top_shell_thickness` 0 | 0.00 / 0.00 / 0.00 | 0.22 / 0.00 / 0.00 |
+| `layer_height` 0.12 | 2.62 / 1.72 / 2.63 | 5.37 / 4.73 / 5.39 |
+
+Patch by patch, on the layers where the solid fill beneath them is the
+same in both, the bridges cover the reference's area: on `gaps` at
+z = 5.25 one patch of 560.6 mm² in both (it was four strips, 214.9 mm²
+in all) at 135° in both, its lines' ends on the reference's to 0.3 mm
+on average; at z = 8.25 five patches of 490.5 mm² in both. `holes` at
+z = 5.25 is 1847.2 mm² against 1848.0 (1645.7 before), the ends 0.04
+mm from the reference's on average; `shelf`, `steps` (z = 9.25) and the
+Benchy's at z = 5.65, 7.65 and 19.65 the same to 0.3%. Over the 56
+parts and settings compared, the direction of each layer's bridges
+over infill is the reference's on 138 of 170 layers (56 before). The
+rest are close votes: on a part laid out symmetrically about the
+pattern's origin, as all of these are, a point of a patch's outline
+can be exactly as near a line of each of a grid's two directions, and
+which is taken is the reference's search tree's to say; three of the
+five patches on `gaps` at z = 8.25 are turned as the reference turns
+them, and `steps` at 5.25, `frame` and `tube` are each turned the
+other way. Where the surfaces differ the bridges follow: on the Benchy
+the reference has a band of solid fill one layer lower (14.05 against
+14.25 mm, 213 against 266 mm of bridge) and a different top surface
+round the cabin roof; on plate 1 the sparse fill beneath, 23% more of
+it here, gives its bridges other directions and 19% more length;
+with `top_shell_layers` 1 `holes` has half the reference's solid fill
+under its tops (39 against 78 mm at z = 5.85) and none of it is
+bridged where the reference bridges 220 mm, and `steps` has a sliver
+of solid fill the reference has not, which is bridged here (167 mm).
+
+It costs 10 ms of the Benchy's 100 ms of telling surfaces apart and 24
+of plate 1's 241 (best of seven); a whole slice of either is within
+the noise of what it was (0.64 to 0.70 s and 3.0 to 3.15 s, best of
+five, before and after). Layers whose bridges cannot lie on one
+another are worked on at once, and each patch grows and cuts only the
+fill near it.
 
 `counterbore_hole_bridging`, against the C++ slicer with the same
 settings (C++ slicer / this engine). The part is `tools/make_fixture.py`'s

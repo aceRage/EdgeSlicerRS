@@ -1,9 +1,12 @@
+use std::f64::consts::PI;
+
 use edge_config::{ConfigError, FloatOrPercent, Settings};
 use edge_extrusion::{Flow, FlowError, LineWidths};
 use edge_geom::{Coord, scaled};
 
 use crate::{
-    Anchoring, FillParams, InternalBridgeFilter, NarrowFill, OverInfill, Shells, WallsAround,
+    Anchoring, BridgeDirection, FillParams, InternalBridgeFilter, NarrowFill, OverInfill, Shells,
+    WallsAround,
 };
 
 /// Sparse fill patterns this engine can lay.
@@ -158,6 +161,11 @@ pub struct InfillSettings {
     /// How small bridges over infill are sorted out
     /// (`dont_filter_internal_bridges`).
     pub internal_bridge_filter: InternalBridgeFilter,
+    /// The direction bridges over infill are laid in, in degrees, where
+    /// it is not zero (`internal_bridge_angle`); with
+    /// `relative_bridge_angle` it turns the direction found instead.
+    pub internal_bridge_angle: f64,
+    pub relative_bridge_angle: bool,
     /// Which bridges get a second layer (`enable_extra_bridge_layer`).
     pub extra_bridge_layer: ExtraBridgeLayer,
     /// Whether top surface, bottom surface and internal solid lines are
@@ -240,6 +248,8 @@ impl Default for InfillSettings {
             thick_internal_bridges: true,
             internal_bridge_density: 1.0,
             internal_bridge_filter: InternalBridgeFilter::Filter,
+            internal_bridge_angle: 0.0,
+            relative_bridge_angle: false,
             extra_bridge_layer: ExtraBridgeLayer::None,
             top_ordered: true,
             bottom_ordered: true,
@@ -335,19 +345,13 @@ impl InfillSettings {
         };
         // Asked for and not done: said, never passed over.
         let mut unsupported = Vec::new();
-        for (key, instead) in [
-            ("bridge_angle", "each bridge is turned to span its own gap"),
-            (
-                "internal_bridge_angle",
-                "bridges over infill run across the lines beneath them",
-            ),
-        ] {
-            if let Some(FloatOrPercent::Value(value) | FloatOrPercent::Percent(value)) =
-                settings.float_or_percent(key)?
-                && value != 0.0
-            {
-                unsupported.push(format!("{key} \"{value}\": {instead}"));
-            }
+        if let Some(FloatOrPercent::Value(value) | FloatOrPercent::Percent(value)) =
+            settings.float_or_percent("bridge_angle")?
+            && value != 0.0
+        {
+            unsupported.push(format!(
+                "bridge_angle \"{value}\": each bridge is turned to span its own gap"
+            ));
         }
         // What the profile asks of a sparse pattern that is not done.
         if settings
@@ -546,6 +550,8 @@ impl InfillSettings {
                     });
                 }
             },
+            internal_bridge_angle: number("internal_bridge_angle", defaults.internal_bridge_angle)?,
+            relative_bridge_angle: flag("relative_bridge_angle", defaults.relative_bridge_angle)?,
             extra_bridge_layer: match settings.text("enable_extra_bridge_layer") {
                 None => defaults.extra_bridge_layer,
                 Some("disabled") => ExtraBridgeLayer::None,
@@ -715,8 +721,8 @@ impl InfillSettings {
         })
     }
 
-    /// What picking out the bridges over infill needs on layers of this
-    /// height (`PrintObject::bridge_over_infill`).
+    /// What laying bridges over infill needs on layers of this height
+    /// (`PrintObject::bridge_over_infill`).
     pub fn over_infill(&self, layer_height: f64) -> Result<OverInfill, FlowError> {
         let params = self.params(layer_height, false)?;
         // The round thread of a thick bridge, whether or not bridges
@@ -724,21 +730,28 @@ impl InfillSettings {
         let thread = params
             .solid
             .bridging_sized(self.bridge_flow, true, self.bridge_line_width)?;
-        // libslic3r's `EPSILON`.
-        const EPSILON: f64 = 1e-4;
-        // A thread sinks nine tenths of its height
-        // (`target_flow_height_factor`). The reference takes the nine
-        // tenths twice over where it looks for sparse fill beneath
-        // (`gather_areas_w_depth` is handed a height that already has
-        // them and takes them again), and once where it looks for a
-        // bridge beneath; both are as it has them.
-        let sunk = 0.9 * thread.height;
+        let direction = self.infill_direction.to_radians();
         Ok(OverInfill {
             spacing: params.solid.scaled_spacing(),
             filter: self.internal_bridge_filter,
             thread_spacing: thread.scaled_spacing(),
-            sparse_depth: (((0.9 * sunk + EPSILON) / layer_height) as usize).max(1),
-            bridged_depth: ((sunk + EPSILON) / layer_height) as usize,
+            thread_width: thread.scaled_width(),
+            thread_height: thread.height,
+            direction: match self.pattern {
+                Pattern::Hilbert | Pattern::Octagram => BridgeDirection::AcrossPattern(direction),
+                Pattern::Honeycomb3D | Pattern::CrossHatch => {
+                    BridgeDirection::Fixed((self.infill_direction + 45.0) * 2.0 * PI / 360.0)
+                }
+                _ => BridgeDirection::FromLines,
+            },
+            // PrintObject.cpp, "Preserve the user's absolute or relative
+            // internal bridge angle override": only one above zero counts.
+            set_angle: (self.internal_bridge_angle > 0.0).then(|| {
+                (
+                    self.internal_bridge_angle.to_radians(),
+                    self.relative_bridge_angle,
+                )
+            }),
         })
     }
 
@@ -1144,9 +1157,22 @@ mod tests {
             .unsupported
             .is_empty()
         );
+        // Bridges over infill are laid at `internal_bridge_angle` now, so
+        // only `bridge_angle` is said.
         let set = read(r#"{"bridge_angle": "30", "internal_bridge_angle": "45"}"#).unwrap();
-        assert_eq!(set.unsupported.len(), 2);
+        assert_eq!(set.unsupported.len(), 1);
         assert!(set.unsupported[0].starts_with("bridge_angle \"30\""));
+        let over = set.over_infill(0.2).unwrap();
+        assert_eq!(over.set_angle, Some((45f64.to_radians(), false)));
+        let turned = read(r#"{"internal_bridge_angle": "45", "relative_bridge_angle": "1"}"#)
+            .unwrap()
+            .over_infill(0.2)
+            .unwrap();
+        assert_eq!(turned.set_angle, Some((45f64.to_radians(), true)));
+        assert_eq!(
+            read("{}").unwrap().over_infill(0.2).unwrap().set_angle,
+            None
+        );
     }
 
     #[test]
@@ -1220,9 +1246,9 @@ mod tests {
         }
         assert!(read(r#"{"dont_filter_internal_bridges": "1"}"#).is_err());
         // Solid lines 0.45 mm wide; a thick bridge's thread is the
-        // nozzle's 0.4 mm across and sinks 0.36 mm: one 0.2 mm layer deep
-        // either way, three 0.1 mm layers, and at 0.4 mm still one layer
-        // of sparse fill but no bridge beneath to mind.
+        // nozzle's 0.4 mm across, whatever the layer height. (How deep it
+        // sinks was counted in layers here once; it is now measured
+        // against the layers' own heights.)
         let unset = read("{}").unwrap();
         let over = unset.over_infill(0.2).unwrap();
         assert_eq!(
@@ -1232,17 +1258,34 @@ mod tests {
                 450_000
             )
         );
-        assert_eq!((over.sparse_depth, over.bridged_depth), (1, 1));
-        let fine = unset.over_infill(0.1).unwrap();
-        assert_eq!((fine.sparse_depth, fine.bridged_depth), (3, 3));
-        let coarse = unset.over_infill(0.4).unwrap();
-        assert_eq!((coarse.sparse_depth, coarse.bridged_depth), (1, 0));
-        // A thread thinned by `bridge_flow` or `bridge_line_width` sinks
-        // less: 0.3 mm across, 0.27 mm deep, 0.243 mm for sparse fill.
+        assert_eq!((over.thread_width, over.thread_height), (400_000, 0.4));
+        assert_eq!(unset.over_infill(0.1).unwrap().thread_height, 0.4);
+        // A thread thinned by `bridge_line_width` is thinner every way.
         let thin = read(r#"{"bridge_line_width": "0.3", "thick_bridges": "1"}"#).unwrap();
         let over = thin.over_infill(0.1).unwrap();
-        assert_eq!((over.sparse_depth, over.bridged_depth), (2, 2));
         assert_eq!(over.thread_spacing, 350_000);
+        assert_eq!((over.thread_width, over.thread_height), (300_000, 0.3));
+        // Which way it runs goes by the pattern beneath.
+        let pattern = |name: &str| {
+            read(&format!(
+                r#"{{"sparse_infill_pattern": "{name}", "infill_direction": "30"}}"#
+            ))
+            .unwrap()
+            .over_infill(0.2)
+            .unwrap()
+            .direction
+        };
+        assert_eq!(pattern("grid"), BridgeDirection::FromLines);
+        assert_eq!(pattern("gyroid"), BridgeDirection::FromLines);
+        assert_eq!(
+            pattern("hilbertcurve"),
+            BridgeDirection::AcrossPattern(30f64.to_radians())
+        );
+        assert_eq!(
+            pattern("3dhoneycomb"),
+            BridgeDirection::Fixed(75.0 * 2.0 * PI / 360.0)
+        );
+        assert_eq!(pattern("crosshatch"), pattern("3dhoneycomb"));
     }
 
     #[test]
