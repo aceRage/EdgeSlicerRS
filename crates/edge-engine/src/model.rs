@@ -133,18 +133,29 @@ fn within(reach: &Reach, bed: [f64; 4]) -> bool {
 pub struct Shape {
     stamp: u64,
     parts: Vec<Part>,
+    /// A number for each part that stays the part's through every edit
+    /// that leaves it there, in the order of `parts`.
+    ids: Vec<u64>,
     /// The convex hull of its printed parts, worked out when first asked.
     hull: OnceLock<Option<Hull>>,
-    /// Whether its one part is of several pieces, worked out when first
-    /// asked; false for a shape of several parts.
-    pieces: OnceLock<bool>,
+    /// Whether each part's mesh is of several pieces, worked out when
+    /// first asked.
+    pieces: OnceLock<Vec<bool>>,
 }
 
 impl Shape {
     fn new(parts: Vec<Part>) -> Arc<Self> {
+        let ids = parts.iter().map(|_| fresh()).collect();
+        Self::keeping(parts, ids)
+    }
+
+    /// A shape of these parts, each keeping the number it had.
+    fn keeping(parts: Vec<Part>, ids: Vec<u64>) -> Arc<Self> {
+        debug_assert_eq!(parts.len(), ids.len());
         Arc::new(Self {
             stamp: fresh(),
             parts,
+            ids,
             hull: OnceLock::new(),
             pieces: OnceLock::new(),
         })
@@ -160,10 +171,27 @@ impl Shape {
     /// Whether "Split to parts" can be done to it (`is_splittable(false)`
     /// with the object selected): it has one part, of several pieces.
     pub fn splits_to_parts(&self) -> bool {
-        self.parts.len() == 1
-            && *self
-                .pieces
-                .get_or_init(|| edge_mesh::split::is_splittable(&self.parts[0].mesh))
+        self.parts.len() == 1 && self.part_splits(0)
+    }
+
+    /// Whether part `at` can be split ("Split" of a part:
+    /// `ModelVolume::is_splittable`): its mesh is of several pieces.
+    pub fn part_splits(&self, at: usize) -> bool {
+        self.pieces
+            .get_or_init(|| {
+                self.parts
+                    .iter()
+                    .map(|part| edge_mesh::split::is_splittable(&part.mesh))
+                    .collect()
+            })
+            .get(at)
+            .copied()
+            .unwrap_or(false)
+    }
+
+    /// The number of each part, in order: see [`Shape::parts`].
+    pub fn part_ids(&self) -> &[u64] {
+        &self.ids
     }
 
     /// Its parts, in order.
@@ -206,6 +234,7 @@ impl Shape {
         object_of(&Object {
             id: 0,
             name: Some(name.to_owned()),
+            filament: None,
             parts: self.parts.clone(),
             instances: Vec::new(),
         })
@@ -249,6 +278,10 @@ impl Shape {
 pub struct ModelObject {
     id: u64,
     name: String,
+    /// The filament the object itself is set to, counting from 1, when it
+    /// is: its parts without one of their own print in it, else in the
+    /// first (the reference's object `extruder`, 0 for none).
+    filament: Option<usize>,
     shape: Arc<Shape>,
     copies: Vec<ModelCopy>,
 }
@@ -275,6 +308,17 @@ impl ModelObject {
     /// How many parts it is made of.
     pub fn parts(&self) -> usize {
         self.shape.parts.len()
+    }
+
+    /// The filament the object itself is set to, when it is: what a part
+    /// without one of its own prints in ("default"), else filament 1.
+    pub fn filament(&self) -> Option<usize> {
+        self.filament
+    }
+
+    /// What a part without a filament of its own prints in.
+    fn default_filament(&self) -> usize {
+        self.filament.unwrap_or(1)
     }
 }
 
@@ -359,6 +403,17 @@ pub struct PlateStamp {
     copies: Vec<(u64, [u64; 12])>,
     /// A bare model, which slicing puts in the middle of the bed.
     lone: bool,
+}
+
+/// A part to add to an object: see [`Model::add_part`].
+#[derive(Clone, Debug)]
+pub struct NewPart {
+    pub name: String,
+    pub kind: PartKind,
+    /// In its own coordinates.
+    pub mesh: edge_mesh::Mesh,
+    /// Takes the mesh to the object's coordinates.
+    pub transform: Transform,
 }
 
 /// Why an edit was not made.
@@ -578,6 +633,7 @@ impl Model {
                 .map(|(at, object)| Object {
                     id: at as u32 + 1,
                     name: Some(object.name.clone()).filter(|name| !name.is_empty()),
+                    filament: object.filament,
                     parts: object.shape.parts.clone(),
                     instances: object
                         .copies
@@ -867,8 +923,9 @@ impl Model {
     }
 
     /// Sets the filament an object prints in, counting from 1: every
-    /// printed part of it takes it, as the reference clears the parts' own
-    /// choice when the object's is set. What is painted on it stays.
+    /// part of it takes it, as the reference clears the parts' own choice
+    /// when the object's is set (GUI_ObjectList.cpp, `set_extruder` on an
+    /// object). What is painted on it stays.
     pub fn set_filament(
         &mut self,
         bed: Option<&Bed>,
@@ -880,13 +937,14 @@ impl Model {
             return Err(refused("filaments are counted from 1"));
         }
         self.settle(bed);
-        let mut parts = self.objects[at].shape.parts.clone();
+        let shape = self.objects[at].shape.clone();
+        let mut parts = shape.parts.clone();
         for part in &mut parts {
-            if part.kind == PartKind::Normal {
-                part.filament = filament;
-            }
+            part.own_filament = None;
+            part.filament = filament;
         }
-        self.objects[at].shape = Shape::new(parts);
+        self.objects[at].filament = Some(filament);
+        self.objects[at].shape = Shape::keeping(parts, shape.ids.clone());
         Ok(())
     }
 
@@ -1116,6 +1174,7 @@ impl Model {
             objects.push(ModelObject {
                 id: fresh(),
                 name,
+                filament: held.filament,
                 shape,
                 copies,
             });
@@ -1146,11 +1205,9 @@ impl Model {
     }
 
     /// Splits an object of one part into parts, one for each piece of its
-    /// mesh (the reference's "Split to parts": GUI_ObjectList.cpp
-    /// `ObjectList::split`, Model.cpp `ModelVolume::split`): each in the
-    /// part's filament, named after it with `_1`, `_2`, …, the paint on it
-    /// let go; a piece that encloses nothing (whose convex hull is flat)
-    /// is dropped. The object stays where it stands.
+    /// mesh (the reference's "Split to parts" on an object:
+    /// GUI_ObjectList.cpp `ObjectList::split`): [`Model::split_part`] on
+    /// its one part. The object stays where it stands.
     pub fn split_to_parts(&mut self, bed: Option<&Bed>, object: u64) -> Result<(), Failure> {
         let at = self.object_at(object)?;
         let shape = self.objects[at].shape.clone();
@@ -1159,13 +1216,276 @@ impl Model {
                 "The target object contains only one part and can not be split.",
             ));
         }
-        let part = &shape.parts[0];
-        let name = part
+        self.split_part(bed, object, shape.ids[0])
+    }
+
+    // ---- parts ----
+
+    fn part_at(&self, at: usize, part: u64) -> Result<usize, Failure> {
+        self.objects[at]
+            .shape
+            .ids
+            .iter()
+            .position(|id| *id == part)
+            .ok_or_else(|| refused(format!("there is no part {part}")))
+    }
+
+    fn parts_at(&self, at: usize, parts: &[u64]) -> Result<Vec<usize>, Failure> {
+        if parts.is_empty() {
+            return Err(refused("no part was named"));
+        }
+        let mut found = parts
+            .iter()
+            .map(|part| self.part_at(at, *part))
+            .collect::<Result<Vec<_>, _>>()?;
+        found.sort_unstable();
+        found.dedup();
+        Ok(found)
+    }
+
+    /// Gives an object other parts, each with its number, then stands
+    /// every copy of it on the bed again and settles which plate it is
+    /// on: what the reference does after a part has changed
+    /// (Plater.cpp `changed_object`, `ModelObject::ensure_on_bed`;
+    /// GLCanvas3D.cpp `do_move`, which brings a flying instance down and
+    /// notifies the plates of every instance of an object whose part
+    /// moved). A copy that was sunk stays sunk; one that stood stands.
+    fn reshape(&mut self, bed: Option<&Bed>, at: usize, parts: Vec<Part>, ids: Vec<u64>) {
+        self.objects[at].shape = Shape::keeping(parts, ids);
+        let copies: Vec<u64> = self.objects[at].copies.iter().map(|copy| copy.id).collect();
+        for copy in copies {
+            if let Some((scene, _)) = self.in_scene(bed, copy) {
+                self.stand_in_scene(bed, copy, scene);
+            }
+        }
+    }
+
+    /// Sets the filament parts print in (GUI_ObjectList.cpp `set_extruder`
+    /// on a part): a filament of their own, counting from 1, or none, to
+    /// follow their object ("default"). For a part or a modifier, the
+    /// kinds the reference gives a filament to ("Change Filament",
+    /// GUI_Factories.cpp `append_menu_item_change_filament`).
+    pub fn set_part_filament(
+        &mut self,
+        bed: Option<&Bed>,
+        object: u64,
+        parts: &[u64],
+        filament: Option<usize>,
+    ) -> Result<(), Failure> {
+        let at = self.object_at(object)?;
+        let found = self.parts_at(at, parts)?;
+        if filament == Some(0) {
+            return Err(refused("filaments are counted from 1"));
+        }
+        let shape = self.objects[at].shape.clone();
+        if found.iter().any(|index| {
+            !matches!(
+                shape.parts[*index].kind,
+                PartKind::Normal | PartKind::Modifier
+            )
+        }) {
+            return Err(refused(
+                "only a part or a modifier has a filament of its own",
+            ));
+        }
+        self.settle(bed);
+        let default = self.objects[at].default_filament();
+        let mut list = shape.parts.clone();
+        for index in found {
+            list[index].own_filament = filament;
+            list[index].filament = filament.unwrap_or(default);
+        }
+        self.objects[at].shape = Shape::keeping(list, shape.ids.clone());
+        Ok(())
+    }
+
+    /// Gives a part another name (GUI_ObjectList.cpp `update_name_in_model`).
+    pub fn rename_part(
+        &mut self,
+        bed: Option<&Bed>,
+        object: u64,
+        part: u64,
+        name: &str,
+    ) -> Result<(), Failure> {
+        let at = self.object_at(object)?;
+        let index = self.part_at(at, part)?;
+        let name = name.trim();
+        if name.is_empty() {
+            return Err(refused("The name cannot be empty."));
+        }
+        self.settle(bed);
+        let shape = self.objects[at].shape.clone();
+        let mut list = shape.parts.clone();
+        list[index].name = Some(name.to_owned());
+        self.objects[at].shape = Shape::keeping(list, shape.ids.clone());
+        Ok(())
+    }
+
+    /// Takes parts out of an object (GUI_ObjectList.cpp
+    /// `del_subobject_from_object`). The last of its printed parts cannot
+    /// go: "Deleting the last solid part is not allowed." When one part
+    /// is left, its own filament becomes the object's, as the reference
+    /// gives the last part's settings to the object.
+    pub fn remove_parts(
+        &mut self,
+        bed: Option<&Bed>,
+        object: u64,
+        parts: &[u64],
+    ) -> Result<(), Failure> {
+        let at = self.object_at(object)?;
+        let found = self.parts_at(at, parts)?;
+        let shape = self.objects[at].shape.clone();
+        let solid_left = shape
+            .parts
+            .iter()
+            .enumerate()
+            .any(|(index, part)| part.kind == PartKind::Normal && !found.contains(&index));
+        if !solid_left {
+            return Err(refused("Deleting the last solid part is not allowed."));
+        }
+        self.settle(bed);
+        let (mut list, ids): (Vec<Part>, Vec<u64>) = shape
+            .parts
+            .iter()
+            .cloned()
+            .zip(shape.ids.iter().copied())
+            .enumerate()
+            .filter(|(index, _)| !found.contains(index))
+            .map(|(_, held)| held)
+            .unzip();
+        if let [last] = list.as_mut_slice()
+            && let Some(own) = last.own_filament.take()
+        {
+            self.objects[at].filament = Some(own);
+        }
+        self.reshape(bed, at, list, ids);
+        Ok(())
+    }
+
+    /// Sets where parts stand within their object: each part's transform,
+    /// which takes its mesh to the object's coordinates. Every copy of the
+    /// object has its parts alike, as the reference's instances share
+    /// their volumes; each is then stood on the bed again.
+    pub fn set_part_transforms(
+        &mut self,
+        bed: Option<&Bed>,
+        object: u64,
+        to: &[(u64, Transform)],
+    ) -> Result<(), Failure> {
+        let at = self.object_at(object)?;
+        if to.is_empty() {
+            return Err(refused("no part was named"));
+        }
+        let mut places = Vec::new();
+        for (part, transform) in to {
+            places.push((self.part_at(at, *part)?, *transform));
+            let sound = transform
+                .rows
+                .iter()
+                .flatten()
+                .all(|value| value.is_finite())
+                && transform.determinant().abs() > 1e-12;
+            if !sound {
+                return Err(refused("that would squash the part to nothing"));
+            }
+        }
+        self.settle(bed);
+        let shape = self.objects[at].shape.clone();
+        let mut list = shape.parts.clone();
+        for (index, transform) in places {
+            list[index].transform = transform;
+        }
+        self.reshape(bed, at, list, shape.ids.clone());
+        Ok(())
+    }
+
+    /// Mirrors parts of an object along an axis of the scene (0 for X, 1
+    /// for Y, 2 for Z), as they stand in one copy of it, about the middle
+    /// of the box round them there (Selection.cpp `mirror` in its volume
+    /// mode). The mirror is kept in each part's transform, so every copy's
+    /// parts are mirrored alike.
+    pub fn mirror_parts(
+        &mut self,
+        bed: Option<&Bed>,
+        copy: u64,
+        parts: &[u64],
+        axis: usize,
+    ) -> Result<(), Failure> {
+        if axis > 2 {
+            return Err(refused("an axis is X, Y or Z"));
+        }
+        let (at, _) = self.copy_at(copy)?;
+        let found = self.parts_at(at, parts)?;
+        self.settle(bed);
+        let (scene, _) = self
+            .in_scene(bed, copy)
+            .ok_or_else(|| refused(format!("there is no copy {copy}")))?;
+        let back = scene
+            .inverse()
+            .ok_or_else(|| refused("the object is squashed flat"))?;
+        let shape = self.objects[at].shape.clone();
+        let mut low = [f64::INFINITY; 3];
+        let mut high = [f64::NEG_INFINITY; 3];
+        for index in &found {
+            let part = &shape.parts[*index];
+            let placed = part.transform.then(&scene);
+            for vertex in &part.mesh.vertices {
+                let point = placed.apply(vertex.map(f64::from));
+                for axis in 0..3 {
+                    low[axis] = low[axis].min(point[axis]);
+                    high[axis] = high[axis].max(point[axis]);
+                }
+            }
+        }
+        let middle: [f64; 3] = if low[0].is_finite() {
+            std::array::from_fn(|at| (low[at] + high[at]) / 2.0)
+        } else {
+            [0.0; 3]
+        };
+        let mut flip = Transform::IDENTITY;
+        flip.rows[axis][axis] = -1.0;
+        let about = Transform::translation(middle.map(|value| -value))
+            .then(&flip)
+            .then(&Transform::translation(middle));
+        let to: Vec<(u64, Transform)> = found
+            .iter()
+            .map(|index| {
+                let part = &shape.parts[*index];
+                (
+                    shape.ids[*index],
+                    part.transform.then(&scene).then(&about).then(&back),
+                )
+            })
+            .collect();
+        let object = self.objects[at].id;
+        self.set_part_transforms(bed, object, &to)
+    }
+
+    /// Splits a part into parts, one for each piece of its mesh, in its
+    /// place among the object's parts (the reference's "Split" of a part:
+    /// GUI_ObjectList.cpp `ObjectList::split`, Model.cpp
+    /// `ModelVolume::split`): each of its kind, named after it with `_1`,
+    /// `_2`, …, given the filament it printed in as its own (Model.cpp,
+    /// "always set the extruder id the same as original"), the paint on
+    /// it let go; a piece that encloses nothing (whose convex hull is
+    /// flat) is dropped. Its pieces keep its transform, so they stay
+    /// where they were.
+    pub fn split_part(&mut self, bed: Option<&Bed>, object: u64, part: u64) -> Result<(), Failure> {
+        let at = self.object_at(object)?;
+        let index = self.part_at(at, part)?;
+        let shape = self.objects[at].shape.clone();
+        if !shape.part_splits(index) {
+            return Err(refused(
+                "The target object contains only one part and can not be split.",
+            ));
+        }
+        let held = &shape.parts[index];
+        let name = held
             .name
             .clone()
             .filter(|name| !name.is_empty())
             .unwrap_or_else(|| self.name_of(at));
-        let parts: Vec<Part> = edge_mesh::split::split(&part.mesh)
+        let pieces: Vec<Part> = edge_mesh::split::split(&held.mesh)
             .into_iter()
             .filter(|piece| !piece.triangles.is_empty())
             .enumerate()
@@ -1179,18 +1499,220 @@ impl Model {
                 mesh: Arc::new(piece),
                 paint: None,
                 seam: None,
-                ..part.clone()
+                own_filament: Some(held.filament),
+                ..held.clone()
             })
             .collect();
-        self.settle(bed);
-        let shape = Shape::new(parts);
-        let object = &mut self.objects[at];
-        object.shape = shape;
-        let shape = object.shape.clone();
-        for copy in &mut object.copies {
-            copy.reach = shape.reach(&copy.local);
+        if pieces.is_empty() {
+            return Err(refused(
+                "The target object contains only one part and can not be split.",
+            ));
         }
+        self.settle(bed);
+        let mut list = shape.parts.clone();
+        let mut ids = shape.ids.clone();
+        let count = pieces.len();
+        list.splice(index..=index, pieces);
+        ids.splice(index..=index, (0..count).map(|_| fresh()));
+        self.reshape(bed, at, list, ids);
         Ok(())
+    }
+
+    /// Makes parts another kind (GUI_ObjectList.cpp `change_part_type`,
+    /// `set_volume_type`). The last printed part of an object stays one:
+    /// "The type of the last solid object part is not to be changed."
+    /// Each part keeps its place in the list, its name, filament and
+    /// paint.
+    pub fn set_part_kind(
+        &mut self,
+        bed: Option<&Bed>,
+        object: u64,
+        parts: &[u64],
+        kind: PartKind,
+    ) -> Result<(), Failure> {
+        let at = self.object_at(object)?;
+        let found = self.parts_at(at, parts)?;
+        let shape = self.objects[at].shape.clone();
+        if kind != PartKind::Normal {
+            let solid_left = shape
+                .parts
+                .iter()
+                .enumerate()
+                .any(|(index, part)| part.kind == PartKind::Normal && !found.contains(&index));
+            if !solid_left {
+                return Err(refused(
+                    "The type of the last solid object part is not to be changed.",
+                ));
+            }
+        }
+        if found.iter().all(|index| shape.parts[*index].kind == kind) {
+            return Err(refused("the parts are of that type already"));
+        }
+        self.settle(bed);
+        let mut list = shape.parts.clone();
+        for index in found {
+            list[index].kind = kind;
+        }
+        self.reshape(bed, at, list, shape.ids.clone());
+        Ok(())
+    }
+
+    /// Adds a part to an object and answers its number: a mesh of the
+    /// kind given, named, placed in the object's coordinates by
+    /// `transform` (GUI_ObjectList.cpp `load_modifier` for a file,
+    /// `load_generic_subobject` for a shape). A printed part takes the
+    /// object's own filament as its own, if the object has one; any other
+    /// none, as the reference sets the new volume's `extruder`.
+    pub fn add_part(
+        &mut self,
+        bed: Option<&Bed>,
+        object: u64,
+        part: NewPart,
+    ) -> Result<u64, Failure> {
+        let at = self.object_at(object)?;
+        if part.mesh.triangles.is_empty() {
+            return Err(refused("there is nothing in that part"));
+        }
+        self.settle(bed);
+        let own = (part.kind == PartKind::Normal)
+            .then_some(self.objects[at].filament)
+            .flatten();
+        let made = Part {
+            name: Some(part.name),
+            kind: part.kind,
+            filament: own.unwrap_or(self.objects[at].default_filament()),
+            own_filament: own,
+            mesh: Arc::new(part.mesh),
+            paint: None,
+            seam: None,
+            transform: part.transform,
+            decoration: false,
+            settings: Vec::new(),
+        };
+        let shape = self.objects[at].shape.clone();
+        let mut list = shape.parts.clone();
+        let mut ids = shape.ids.clone();
+        let id = fresh();
+        list.push(made);
+        ids.push(id);
+        self.reshape(bed, at, list, ids);
+        Ok(id)
+    }
+
+    /// Adds a generic shape to an object as a part of the kind given
+    /// (GUI_ObjectList.cpp `load_generic_subobject`, `create_mesh`), beside
+    /// the copy named (the object's first when none is): only "Cube" so
+    /// far, a tenth of the bed's greater side, named "Generic-Cube".
+    /// Answers the new part's number.
+    pub fn add_generic(
+        &mut self,
+        bed: Option<&Bed>,
+        object: u64,
+        copy: Option<u64>,
+        kind: PartKind,
+        shape: &str,
+    ) -> Result<u64, Failure> {
+        let at = self.object_at(object)?;
+        if shape != "Cube" {
+            return Err(refused(format!("there is no shape named {shape}")));
+        }
+        let bed = bed
+            .ok_or_else(|| refused("no printer is chosen: there is no bed to size the shape by"))?;
+        let copy = match copy {
+            Some(copy) => {
+                if self.copy_at(copy)?.0 != at {
+                    return Err(refused(format!("copy {copy} is not of object {object}")));
+                }
+                copy
+            }
+            None => self.objects[at]
+                .copies
+                .first()
+                .map(|copy| copy.id)
+                .ok_or_else(|| refused("the object has no copy"))?,
+        };
+        // Given its place first, so that the shape goes beside it where
+        // it then stands.
+        self.settle(Some(bed));
+        let side = 0.1 * (bed.max[0] - bed.min[0]).max(bed.max[1] - bed.min[1]);
+        let half = (side / 2.0) as f32;
+        let transform = self.beside(Some(bed), copy, [side; 3])?;
+        self.add_part(
+            Some(bed),
+            object,
+            NewPart {
+                name: format!("Generic-{shape}"),
+                kind,
+                mesh: edge_mesh::Mesh::from_triangle_soup(edge_mesh::primitives::cuboid(
+                    [-half; 3], [half; 3],
+                )),
+                transform,
+            },
+        )
+    }
+
+    /// Adds what another model prints to an object as one part of the
+    /// kind given, named after its file (GUI_ObjectList.cpp
+    /// `load_modifier`, from "Load..."): every printed part of it where
+    /// its copies stand on their plates, in one mesh, taken in the
+    /// object's own coordinates. Answers the new part's number.
+    pub fn add_from(
+        &mut self,
+        bed: Option<&Bed>,
+        object: u64,
+        other: &Model,
+        kind: PartKind,
+    ) -> Result<u64, Failure> {
+        let mut mesh = edge_mesh::Mesh::default();
+        for held in &other.objects {
+            for copy in &held.copies {
+                for part in held.shape.printed() {
+                    mesh.append(&part.mesh, &part.transform.then(&copy.local));
+                }
+            }
+        }
+        let name = other
+            .path
+            .as_deref()
+            .and_then(Path::file_name)
+            .map(|name| name.to_string_lossy().into_owned())
+            .unwrap_or_default();
+        self.add_part(
+            bed,
+            object,
+            NewPart {
+                name,
+                kind,
+                mesh,
+                transform: Transform::IDENTITY,
+            },
+        )
+    }
+
+    /// Where a generic shape added to an object goes, in the object's
+    /// coordinates (GUI_ObjectList.cpp `load_generic_subobject`): square
+    /// to the bed whatever the copy's turn, its middle half its size
+    /// beyond the right front corner of the box round the copy, at the
+    /// height of its foot. `size` is the shape's own box.
+    pub fn beside(
+        &self,
+        bed: Option<&Bed>,
+        copy: u64,
+        size: [f64; 3],
+    ) -> Result<Transform, Failure> {
+        let (scene, reach) = self
+            .in_scene(bed, copy)
+            .ok_or_else(|| refused(format!("there is no copy {copy}")))?;
+        let back = scene
+            .inverse()
+            .ok_or_else(|| refused("the object is squashed flat"))?;
+        let [low, high] = reach.ok_or_else(|| refused("the object has nothing printed in it"))?;
+        let middle = [
+            high[0] + size[0] / 2.0,
+            low[1] + size[1] / 2.0,
+            low[2] + size[2] / 2.0,
+        ];
+        Ok(Transform::translation(middle).then(&back))
     }
 
     // ---- plates ----
@@ -1409,6 +1931,7 @@ impl Model {
                 } else {
                     object.name.clone()
                 },
+                filament: object.filament,
                 shape: object.shape.clone(),
                 copies,
             });
@@ -1448,9 +1971,10 @@ impl Model {
         let mut added = Vec::new();
         for copy in copies {
             let (object, at) = self.copy_at(*copy)?;
-            let (name, shape) = (
+            let (name, shape, filament) = (
                 self.objects[object].name.clone(),
                 self.objects[object].shape.clone(),
+                self.objects[object].filament,
             );
             let held = self.objects[object].copies[at].clone();
             let own = self.plate_of(*copy);
@@ -1472,6 +1996,7 @@ impl Model {
             self.objects.push(ModelObject {
                 id: fresh(),
                 name,
+                filament,
                 shape,
                 copies: vec![seated],
             });
@@ -1677,11 +2202,13 @@ impl From<Opened> for Model {
                     name: None,
                     kind: PartKind::Normal,
                     filament: 1,
+                    own_filament: None,
                     mesh: Arc::new(mesh),
                     paint: None,
                     seam: None,
                     transform: Transform::IDENTITY,
                     decoration: false,
+                    settings: Vec::new(),
                 }]);
                 let reach = shape.reach(&Transform::IDENTITY);
                 Self {
@@ -1689,6 +2216,7 @@ impl From<Opened> for Model {
                     objects: vec![ModelObject {
                         id: fresh(),
                         name: String::new(),
+                        filament: None,
                         shape,
                         copies: vec![ModelCopy {
                             id: fresh(),
@@ -1751,6 +2279,7 @@ impl From<Opened> for Model {
                         ModelObject {
                             id: fresh(),
                             name: object.name.clone().unwrap_or_default(),
+                            filament: object.filament,
                             shape,
                             copies,
                         }

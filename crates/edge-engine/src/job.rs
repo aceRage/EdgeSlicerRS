@@ -197,6 +197,14 @@ pub fn prepare(mut loaded: Loaded, chosen: &Chosen, overrides: &Overrides) -> Re
                 .to_owned(),
         );
     }
+    for kind in &loaded.unfollowed_parts {
+        remarks.push(match *kind {
+            "modifiers" => "the project has modifiers, which are not followed: what they set (settings, a filament) is not read, and the plate's settings print all of it".to_owned(),
+            other => format!(
+                "the project has {other}, which are not followed: supports go where the settings put them"
+            ),
+        });
+    }
     let named = chosen.filaments.len();
     // As many filaments as the model prints in or presets were named for.
     let described = filaments.max(named);

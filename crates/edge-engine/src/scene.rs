@@ -35,6 +35,9 @@ pub struct SceneObject {
     /// The least and greatest corners of its printed material, in its own
     /// coordinates; none when it has none.
     pub bounds: Option<([f32; 3], [f32; 3])>,
+    /// Where each part's triangles are among `triangles`, in the order of
+    /// the parts: the first and how many.
+    pub parts: Vec<[u32; 2]>,
 }
 
 /// One copy of an object, where it stands.
@@ -107,6 +110,7 @@ pub(crate) fn object_of(object: &edge_3mf::Object) -> SceneObject {
         ..SceneObject::default()
     };
     for part in &object.parts {
+        let first = scene.triangles.len() as u32;
         // Mirrored, a triangle faces the other way round.
         let mirrored = part.transform.is_mirrored();
         let place = |corner: [f32; 3]| -> [f32; 3] {
@@ -158,6 +162,9 @@ pub(crate) fn object_of(object: &edge_3mf::Object) -> SceneObject {
                 }
             }
         }
+        scene
+            .parts
+            .push([first, scene.triangles.len() as u32 - first]);
     }
     scene
 }
@@ -212,6 +219,7 @@ fn model_scene(mesh: &Mesh) -> Scene {
             triangles: mesh.triangles.clone(),
             marks: vec![Mark::Filament(1); mesh.triangles.len()],
             bounds: mesh.bounds(),
+            parts: vec![[0, mesh.triangles.len() as u32]],
         }],
         placings: vec![Placing {
             object: 0,
@@ -255,11 +263,13 @@ mod tests {
             name: None,
             kind,
             filament,
+            own_filament: None,
             mesh,
             paint: None,
             seam: None,
             transform: Transform::IDENTITY,
             decoration: false,
+            settings: Vec::new(),
         }
     }
 
@@ -285,6 +295,7 @@ mod tests {
         let object = Object {
             id: 1,
             name: Some("two parts".into()),
+            filament: None,
             parts: vec![
                 part(PartKind::Normal, 1, cube([0.0; 3], [4.0, 4.0, 4.0])),
                 second,
@@ -325,6 +336,7 @@ mod tests {
         let scene = object_of(&Object {
             id: 1,
             name: None,
+            filament: None,
             parts: vec![painted],
             instances: Vec::new(),
         });
@@ -343,6 +355,7 @@ mod tests {
         let scene = object_of(&Object {
             id: 1,
             name: None,
+            filament: None,
             parts: vec![mirrored],
             instances: Vec::new(),
         });
@@ -366,6 +379,7 @@ mod tests {
             objects: vec![Object {
                 id: 7,
                 name: Some("block".into()),
+                filament: None,
                 parts: vec![part(PartKind::Normal, 1, cube([0.0; 3], [1.0, 1.0, 1.0]))],
                 // On plate 1, on plate 2 (which starts at x 240) and on none.
                 instances: vec![

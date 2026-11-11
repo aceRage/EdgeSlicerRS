@@ -105,6 +105,7 @@ fn a_mesh_is_laid_out_byte_for_byte_as_written() {
             Mark::SupportEnforcer,
         ],
         bounds: None,
+        parts: vec![[0, 3]],
     };
     let bytes = mesh_bytes(&object);
     #[rustfmt::skip]

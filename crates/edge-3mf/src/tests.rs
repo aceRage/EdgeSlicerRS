@@ -105,8 +105,9 @@ fn bambu_layout_reads_parts_roles_plates_and_settings() {
 <config>
   <object id="4">
     <metadata key="name" value="Bracket"/>
-    <part id="1" subtype="normal_part"><metadata key="name" value="Body"/></part>
-    <part id="2" subtype="modifier_part"><metadata key="name" value="Dense zone"/><mesh_stat edges_fixed="0"/></part>
+    <metadata key="extruder" value="3"/>
+    <part id="1" subtype="normal_part"><metadata key="name" value="Body"/><metadata key="matrix" value="1 0 0 0 0 1 0 0 0 0 1 0 0 0 0 1"/><metadata key="source_file" value="b.stl"/></part>
+    <part id="2" subtype="modifier_part"><metadata key="name" value="Dense zone"/><metadata key="extruder" value="2"/><metadata key="sparse_infill_density" value="40%"/><metadata key="wall_loops" value="4"/><mesh_stat edges_fixed="0"/></part>
   </object>
   <plate>
     <metadata key="plater_id" value="1"/><metadata key="plater_name" value="First"/>
@@ -144,6 +145,24 @@ fn bambu_layout_reads_parts_roles_plates_and_settings() {
         [
             (Some("Body"), PartKind::Normal),
             (Some("Dense zone"), PartKind::Modifier)
+        ]
+    );
+    // The object's filament, each part's own, and the settings a part
+    // carries, in the file's order; its name, matrix and source are not
+    // among them.
+    assert_eq!(object.filament, Some(3));
+    let filaments: Vec<_> = object
+        .parts
+        .iter()
+        .map(|p| (p.filament, p.own_filament))
+        .collect();
+    assert_eq!(filaments, [(3, None), (2, Some(2))]);
+    assert!(object.parts[0].settings.is_empty());
+    assert_eq!(
+        object.parts[1].settings,
+        [
+            ("sparse_infill_density".to_owned(), "40%".to_owned()),
+            ("wall_loops".to_owned(), "4".to_owned())
         ]
     );
 

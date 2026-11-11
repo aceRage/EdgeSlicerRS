@@ -38,7 +38,7 @@ pub use followed::{Followed, followed, followed_in, settled};
 pub use job::{BedType, Chosen, Job, Overrides, Sourced, prepare, prepare_noted};
 pub use load::{Loaded, Opened, PlateInfo, open};
 pub use model::{
-    Bed, MAX_PLATES, Model, ModelCopy, ModelObject, ModelPlate, PlateStamp, Reach, Shape,
+    Bed, MAX_PLATES, Model, ModelCopy, ModelObject, ModelPlate, NewPart, PlateStamp, Reach, Shape,
 };
 pub use pipeline::{Gcode, Sliced, Timings, slice};
 pub use presets::{Library, ModelPreset, PrinterModel, Shelf};

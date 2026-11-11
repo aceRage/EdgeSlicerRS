@@ -839,10 +839,11 @@ fn shells_are_split_to_parts_and_to_objects_and_slice_where_they_stood() {
     assert_eq!(parts["project"]["sliced"], false);
     let listed = &parts["scene"]["objects"][0];
     assert_eq!(listed["parts"], 2);
-    assert_eq!(
-        listed["part_list"][0],
-        json!({ "name": "pair.stl_1", "kind": "part", "filament": 1 })
-    );
+    assert_eq!(listed["part_list"][0]["name"], "pair.stl_1");
+    assert_eq!(listed["part_list"][0]["kind"], "part");
+    assert_eq!(listed["part_list"][0]["filament"], 1);
+    // Each piece given the filament its part printed in, as its own.
+    assert_eq!(listed["part_list"][0]["own"], 1);
     assert_eq!(listed["part_list"][1]["name"], "pair.stl_2");
     assert_eq!(listed["split"], json!({ "objects": true, "parts": false }));
     assert_eq!(
@@ -882,4 +883,237 @@ fn shells_are_split_to_parts_and_to_objects_and_slice_where_they_stood() {
     let back = ask(&session, "undo", json!({}));
     assert_eq!(back["done"], "Split to parts");
     assert_eq!(back["scene"]["objects"][0]["parts"], 1);
+}
+
+/// The parts of the object in the scene's first object, as listed.
+fn part_list(scene: &Value) -> Vec<Value> {
+    scene["objects"][0]["part_list"].as_array().unwrap().clone()
+}
+
+#[test]
+fn a_part_takes_its_own_filament_and_is_sliced_in_it() {
+    let dir = tempfile::tempdir().unwrap();
+    let session = Arc::new(Session::new(None));
+    let project = open(&session, SMALL);
+    let scene = ask(&session, "scene", json!({}));
+    let object = scene["objects"][0]["id"].clone();
+    let parts = part_list(&scene);
+    assert_eq!(parts.len(), 3);
+    // Each part's triangles, one after another, make the object's mesh.
+    let mut at = 0;
+    for part in &parts {
+        let [first, count] =
+            [&part["triangles"][0], &part["triangles"][1]].map(|v| v.as_u64().unwrap());
+        assert_eq!(first, at);
+        at += count;
+        assert!(part["id"].as_u64().is_some());
+        assert_eq!(part["own"], Value::Null);
+        assert_eq!(numbers(&part["matrix"]).len(), 16);
+    }
+    assert_eq!(at, scene["objects"][0]["triangles"].as_u64().unwrap());
+
+    sliced(&session, project, None);
+    let before = gcode(&session, project, dir.path());
+
+    // The second part in filament 2: the project now prints in two, and
+    // the slice has the second filament's lines.
+    let answer = edit(
+        &session,
+        json!({ "op": "part_filament", "object": object, "parts": [parts[1]["id"]], "filament": 2 }),
+    );
+    assert_eq!(answer["done"], "Change Filament");
+    let listed = part_list(&answer["scene"]);
+    assert_eq!(listed[1]["filament"], 2);
+    assert_eq!(listed[1]["own"], 2);
+    assert_eq!(listed[1]["id"], parts[1]["id"]);
+    assert_eq!(answer["project"]["plates"][0]["filaments"], json!([1, 2]));
+    assert_eq!(answer["scene"]["objects"][0]["filament"], Value::Null);
+    sliced(&session, project, None);
+    assert_eq!(
+        ask(&session, "toolpath", json!({}))["filaments"],
+        json!([1, 2])
+    );
+    assert_ne!(gcode(&session, project, dir.path()), before);
+
+    // "default" again (0), then undo and redo.
+    let answer = edit(
+        &session,
+        json!({ "op": "part_filament", "object": object, "parts": [parts[1]["id"]], "filament": 0 }),
+    );
+    assert_eq!(part_list(&answer["scene"])[1]["own"], Value::Null);
+    assert_eq!(answer["project"]["plates"][0]["filaments"], json!([1]));
+    ask(&session, "undo", json!({}));
+    let back = ask(&session, "undo", json!({}));
+    assert_eq!(part_list(&back["scene"])[1]["own"], Value::Null);
+    sliced(&session, project, None);
+    assert_eq!(gcode(&session, project, dir.path()), before);
+}
+
+#[test]
+fn a_part_moved_within_its_object_is_sliced_there_and_undo_puts_it_back() {
+    let dir = tempfile::tempdir().unwrap();
+    let session = Arc::new(Session::new(None));
+    let project = open(&session, SMALL);
+    let scene = ask(&session, "scene", json!({}));
+    let object = scene["objects"][0]["id"].clone();
+    let parts = part_list(&scene);
+    sliced(&session, project, None);
+    let before = gcode(&session, project, dir.path());
+    let reach = ask(&session, "toolpath", json!({}))["box"].clone();
+
+    // The last part 15 mm along +X within the object.
+    let mut matrix = numbers(&parts[2]["matrix"]);
+    matrix[12] += 15.0;
+    let answer = edit(
+        &session,
+        json!({ "op": "part_transform", "object": object, "name": "Gizmo-Move", "parts": [{ "id": parts[2]["id"], "matrix": matrix }] }),
+    );
+    assert_eq!(answer["done"], "Gizmo-Move");
+    assert_eq!(answer["project"]["sliced"], false);
+    let moved_box = numbers(&answer["scene"]["placings"][0]["box"][1]);
+    let was_box = numbers(&scene["placings"][0]["box"][1]);
+    assert!(moved_box[0] > was_box[0]);
+    sliced(&session, project, None);
+    let after = ask(&session, "toolpath", json!({}))["box"].clone();
+    assert_ne!(after, reach);
+    // Undo: the same bytes as before.
+    assert_eq!(ask(&session, "undo", json!({}))["done"], "Gizmo-Move");
+    sliced(&session, project, None);
+    assert_eq!(gcode(&session, project, dir.path()), before);
+    // A name that is not one of the reference's is refused.
+    assert!(refused(
+        &session,
+        "scene_edit",
+        json!({ "op": "part_transform", "object": object, "name": "Fly", "parts": [{ "id": parts[2]["id"], "matrix": matrix }] }),
+    )
+    .contains("Fly"));
+}
+
+#[test]
+fn parts_are_renamed_deleted_retyped_split_and_added() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = boxes(
+        &dir.path().join("lone.stl"),
+        &[([0.0; 3], [20.0, 20.0, 10.0])],
+    );
+    let pair = boxes(
+        &dir.path().join("pair.stl"),
+        &[
+            ([0.0; 3], [5.0, 5.0, 5.0]),
+            ([10.0, 0.0, 0.0], [5.0, 5.0, 5.0]),
+        ],
+    );
+    let session = Arc::new(Session::new(None));
+    let project = stl_project(&session, &path);
+    let scene = ask(&session, "scene", json!({}));
+    let object = scene["objects"][0]["id"].clone();
+
+    // A cube added as a modifier, beside the object: a tenth of the U1's
+    // 270 mm bed; nothing printed moves, and the slice says it is not
+    // followed.
+    let answer = edit(
+        &session,
+        json!({ "op": "part_add", "object": object, "kind": "modifier", "shape": "Cube" }),
+    );
+    assert_eq!(answer["done"], "Add primitive");
+    let listed = part_list(&answer["scene"]);
+    assert_eq!(listed.len(), 2);
+    assert_eq!(listed[1]["name"], "Generic-Cube");
+    assert_eq!(listed[1]["kind"], "modifier");
+    assert_eq!(listed[1]["id"], answer["part"]);
+    let cube = numbers(&listed[1]["box"][1]);
+    assert!((cube[0] - 13.5).abs() < 1e-4, "{cube:?}");
+    sliced(&session, project, None);
+    let summary = ask(&session, "summary", json!({}));
+    let said = summary["remarks"].to_string();
+    assert!(said.contains("modifiers, which are not followed"), "{said}");
+
+    // A part from a file of two shells: "Load Part", named after it.
+    let answer = edit(
+        &session,
+        json!({ "op": "part_add", "object": object, "kind": "part", "path": pair }),
+    );
+    assert_eq!(answer["done"], "Load Part");
+    let listed = part_list(&answer["scene"]);
+    assert_eq!(listed[2]["name"], "pair.stl");
+    assert_eq!(listed[2]["split"], true);
+    let pair_id = listed[2]["id"].clone();
+
+    // Renamed, split in its place, retyped.
+    let answer = edit(
+        &session,
+        json!({ "op": "part_rename", "object": object, "part": pair_id, "name": "posts" }),
+    );
+    assert_eq!(answer["done"], "Rename Part");
+    let answer = edit(
+        &session,
+        json!({ "op": "part_split", "object": object, "part": pair_id }),
+    );
+    assert_eq!(answer["done"], "Split to parts");
+    let listed = part_list(&answer["scene"]);
+    let names: Vec<&Value> = listed.iter().map(|part| &part["name"]).collect();
+    assert_eq!(names[2..], [&json!("posts_1"), &json!("posts_2")]);
+    let answer = edit(
+        &session,
+        json!({ "op": "part_type", "object": object, "parts": [listed[3]["id"]], "kind": "negative" }),
+    );
+    assert_eq!(answer["done"], "Change part type");
+    assert_eq!(part_list(&answer["scene"])[3]["kind"], "negative");
+
+    // The last solid part neither goes nor changes its kind; the others do.
+    let solid: Vec<Value> = part_list(&answer["scene"])
+        .iter()
+        .filter(|part| part["kind"] == "part")
+        .map(|part| part["id"].clone())
+        .collect();
+    assert_eq!(
+        refused(
+            &session,
+            "scene_edit",
+            json!({ "op": "part_delete", "object": object, "parts": solid })
+        ),
+        "Deleting the last solid part is not allowed."
+    );
+    assert_eq!(
+        refused(
+            &session,
+            "scene_edit",
+            json!({ "op": "part_type", "object": object, "parts": solid, "kind": "modifier" })
+        ),
+        "The type of the last solid object part is not to be changed."
+    );
+    let answer = edit(
+        &session,
+        json!({ "op": "part_delete", "object": object, "parts": [listed[1]["id"], listed[3]["id"]] }),
+    );
+    assert_eq!(answer["done"], "Delete part");
+    assert_eq!(part_list(&answer["scene"]).len(), 2);
+
+    // Mirrored in the copy shown.
+    let copy = answer["scene"]["placings"][0]["id"].clone();
+    let answer = edit(
+        &session,
+        json!({ "op": "part_mirror", "copy": copy, "parts": [listed[2]["id"]], "axis": "y" }),
+    );
+    assert_eq!(answer["done"], "Mirror Object");
+    sliced(&session, project, None);
+
+    // Seven steps to take back, the last first.
+    let names: Vec<Value> = (0..7)
+        .map(|_| ask(&session, "undo", json!({}))["done"].clone())
+        .collect();
+    assert_eq!(
+        names,
+        [
+            "Mirror Object",
+            "Delete part",
+            "Change part type",
+            "Split to parts",
+            "Rename Part",
+            "Load Part",
+            "Add primitive"
+        ]
+        .map(|name| json!(name))
+    );
+    assert_eq!(part_list(&ask(&session, "scene", json!({}))).len(), 1);
 }

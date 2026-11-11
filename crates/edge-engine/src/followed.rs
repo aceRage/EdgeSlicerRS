@@ -56,6 +56,7 @@ fn block(project: Option<&Settings>, filament: usize) -> Loaded {
         settings: project.cloned(),
         unread_paint: Vec::new(),
         precise_seams: false,
+        unfollowed_parts: Vec::new(),
         objects: Vec::new(),
         negatives: Vec::new(),
         parts: Vec::new(),

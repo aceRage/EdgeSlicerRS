@@ -19,10 +19,14 @@ use std::{
     sync::{Arc, atomic::Ordering},
 };
 
-use edge_engine::{Bed, Model, Transform};
+use edge_engine::{Bed, Model, PartKind, Transform};
 use serde_json::{Value, json};
 
-use super::{File, Project, Session, lock, needed, scene::Stage, text, whole};
+use super::{
+    File, Project, Session, lock, needed,
+    scene::{Stage, kind_of},
+    text, whole,
+};
 
 /// The calls answered here.
 pub(super) const JSON: [&str; 4] = ["scene_edit", "undo", "redo", "scene_faces"];
@@ -194,6 +198,29 @@ struct Outcome {
     show: Option<u32>,
     /// Something to tell the person.
     note: Option<String>,
+    /// The part it made, for the page to select.
+    part: Option<u64>,
+}
+
+/// The parts a call names under `parts`: each a number, or for
+/// `part_transform` each `{ id, matrix }`.
+fn part_places(args: &Value) -> Result<Vec<(u64, Transform)>, String> {
+    args.get("parts")
+        .and_then(Value::as_array)
+        .filter(|list| !list.is_empty())
+        .ok_or("parts was not given")?
+        .iter()
+        .map(|item| {
+            let id = item
+                .get("id")
+                .and_then(Value::as_u64)
+                .ok_or("a part's id was not given")?;
+            Ok((
+                id,
+                transform_of(item.get("matrix").unwrap_or(&Value::Null))?,
+            ))
+        })
+        .collect()
 }
 
 impl Session {
@@ -370,6 +397,98 @@ impl Session {
                     .map_err(failed)?;
                 outcome.name = "Gizmo-Place on Face".into();
             }
+            "part_filament" => {
+                // 0 or null: "default", the object's.
+                let filament = match args.get("filament") {
+                    None | Some(Value::Null) => None,
+                    Some(value) => {
+                        Some(value.as_u64().ok_or("filament is not a whole number")? as usize)
+                            .filter(|filament| *filament > 0)
+                    }
+                };
+                model
+                    .set_part_filament(bed, whole(args, "object")?, &ids(args, "parts")?, filament)
+                    .map_err(failed)?;
+                outcome.name = "Change Filament".into();
+            }
+            "part_rename" => {
+                model
+                    .rename_part(
+                        bed,
+                        whole(args, "object")?,
+                        whole(args, "part")?,
+                        needed(args, "name")?,
+                    )
+                    .map_err(failed)?;
+                outcome.name = "Rename Part".into();
+            }
+            "part_delete" => {
+                model
+                    .remove_parts(bed, whole(args, "object")?, &ids(args, "parts")?)
+                    .map_err(failed)?;
+                outcome.name = "Delete part".into();
+            }
+            "part_transform" => {
+                let name = text(args, "name").unwrap_or("Move Object");
+                if !TRANSFORMS.contains(&name) {
+                    return Err(format!("name cannot be {name}"));
+                }
+                model
+                    .set_part_transforms(bed, whole(args, "object")?, &part_places(args)?)
+                    .map_err(failed)?;
+                outcome.name = name.to_owned();
+            }
+            "part_mirror" => {
+                let axis = match needed(args, "axis")? {
+                    "x" => 0,
+                    "y" => 1,
+                    "z" => 2,
+                    other => return Err(format!("axis cannot be {other}")),
+                };
+                model
+                    .mirror_parts(bed, whole(args, "copy")?, &ids(args, "parts")?, axis)
+                    .map_err(failed)?;
+                outcome.name = "Mirror Object".into();
+            }
+            "part_split" => {
+                model
+                    .split_part(bed, whole(args, "object")?, whole(args, "part")?)
+                    .map_err(failed)?;
+                outcome.name = "Split to parts".into();
+            }
+            "part_type" => {
+                let kind = needed(args, "kind")?;
+                let kind = kind_of(kind)
+                    .ok_or_else(|| format!("there is no kind of part named {kind}"))?;
+                model
+                    .set_part_kind(bed, whole(args, "object")?, &ids(args, "parts")?, kind)
+                    .map_err(failed)?;
+                outcome.name = "Change part type".into();
+            }
+            "part_add" => {
+                let object = whole(args, "object")?;
+                let kind = needed(args, "kind")?;
+                let kind = kind_of(kind)
+                    .ok_or_else(|| format!("there is no kind of part named {kind}"))?;
+                let part = match (added, text(args, "shape")) {
+                    (Some(file), _) => {
+                        outcome.name = if kind == PartKind::Normal {
+                            "Load Part"
+                        } else {
+                            "Load Modifier"
+                        }
+                        .into();
+                        model.add_from(bed, object, file, kind)
+                    }
+                    (None, Some(shape)) => {
+                        outcome.name = "Add primitive".into();
+                        let copy = args.get("copy").and_then(Value::as_u64);
+                        model.add_generic(bed, object, copy, kind, shape)
+                    }
+                    (None, None) => return Err("path or shape was not given".into()),
+                };
+                outcome.part = Some(part.map_err(failed)?);
+            }
             other => return Err(format!("there is no edit named {other}")),
         }
         Ok(outcome)
@@ -407,7 +526,9 @@ impl Session {
         // A file to add is read before anything is changed, with the
         // session free to answer other calls.
         let added = match (needed(args, "op")?, text(args, "path")) {
-            ("add", Some(path)) => Some(Model::open(Path::new(path)).map_err(|e| e.to_string())?),
+            ("add" | "part_add", Some(path)) => {
+                Some(Model::open(Path::new(path)).map_err(|e| e.to_string())?)
+            }
             ("add", None) => return Err("path was not given".into()),
             _ => None,
         };
@@ -455,7 +576,7 @@ impl Session {
         }
         self.edited(
             stage.id,
-            json!({ "done": outcome.name, "made": outcome.made, "note": outcome.note }),
+            json!({ "done": outcome.name, "made": outcome.made, "note": outcome.note, "part": outcome.part }),
         )
     }
 
