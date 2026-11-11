@@ -462,54 +462,76 @@ Working:
   wide ones, as before. A port of the reference's `split_solid_surface`
   and `filter_vibrating_extrusions`, of where `group_fills` uses them
   (Fill/Fill.cpp) and of Fill/FillConcentricInternal.cpp. So a 20 mm
-  cube gets a triangle of loops 1.3 mm on a side in one corner of
-  every solid layer, the corner its slanting lines end in, and loops
-  for the whole of the layer of strips that carries the edges of the
-  bridge over its sparse fill: in the reference's file and now here in
-  the same places (the triangle's box is the same to the hundredth of
-  a millimetre, and each solid layer's lines are the reference's line
-  for line, 64 of them at the same places and of the same lengths to
-  two microns; so are the 27 of a `mushroom`'s solid layer, and all
-  but two of the 258 of a `frame`'s).
+  cube gets a triangle of loops in one corner of every solid layer,
+  the corner its slanting lines end in, and loops for the whole of the
+  layer of strips that carries the edges of the bridge over its sparse
+  fill: where the reference's file has them. The triangle is one
+  stroke larger here, two loops, the outer 1.9 mm on a side, where
+  the reference has one loop 1.3 mm on a side and a dot 0.16 mm long
+  in the middle of it: where a run of short strokes began is asked of
+  the stroke itself here (below), and of the short strokes running
+  out into a corner the first stays a line, where the reference keeps
+  two. Of the 64 lines of a solid layer of the cube 62 are the
+  reference's, at the same places and of the same lengths to three
+  microns, the last before the triangle is loops here and the one
+  before it 0.24 mm longer; so with 24 of the 26 of a `mushroom`'s
+  solid layer and 255 of the 257 of a `frame`'s. (Asked the
+  reference's way the triangle's box was the reference's to the
+  hundredth of a millimetre and the cube's lines its own, all 64.)
   On the U1's presets, reference against this engine, loops in metres
-  by areas on layers: cube 0.164 against 0.164 (6 on 6 in both),
-  `frame` 0.582 against 0.583 (6 on 6), `steps` 0.844 against 0.828
-  (22 on 14), `comb` 0.191 against 0.191 (6 on 6), `fins` 0.017
-  against 0.017 (3 on 3), `mushroom` 0.261 against 0.261 (8 on 8),
-  `holes` 2.869 against 2.860 (126 areas against 127, on 47 layers);
+  by areas on layers: cube 0.164 against 0.182 (6 on 6 in both),
+  `frame` 0.582 against 0.601 (6 on 6), `steps` 0.844 against 0.911
+  (22 on 14), `comb` 0.191 against 0.210 (6 on 6), `fins` 0.017
+  against 0.029 (3 on 3), `mushroom` 0.261 against 0.289 (8 on 8),
+  `holes` 2.869 against 2.930 (126 areas against 124, on 47 layers);
   with the Centauri Carbon's the same to 0.001 m but for `steps`
-  (0.848 against 0.834) and `holes` (2.895 against 2.769, 116 areas
-  against 124). All the solid fill inside the part on those eight
-  parts is now within 0.1% of the reference's length on the U1 (it
-  was 0.0% to 0.2% over, and 1.0% under on the `tube`); with arcs
-  fitted its solid fill has 140 arcs against the reference's 137 on
-  the cylinder (179 before), 337 against 339 on the `tube` (476) and
-  7 against 7 on the `mushroom` (none). On the three plates of
-  `mcbrim_test.3mf` the reference lays 13.6 m, 5.3 m and 5.3 m of its
-  solid fill as loops and this engine 12.1 m, 5.2 m and 5.2 m, where
-  it laid none; solid fill in all is 49.56 m against 50.51 m on plate
-  1 (1.9% under, from 1.0% over) and 24.53 m against 24.29 m on the
-  other two (1.0% over, from 3.5%). Plate 1 is under because on four
+  (0.848 against 0.904) and `holes` (2.895 against 2.904, 116 areas
+  against 114). Pieces of solid fill under a millimetre long, dots:
+  none here on the first six of those parts, where the reference lays
+  3 to 14, one in each triangle, and 44 against 60 on `holes`. All
+  the solid fill inside the part on those eight parts is within 0.2%
+  of the reference's length on the U1 but for the `tube`, 0.6% under
+  (before narrow areas were told apart it was 0.0% to 0.2% over, and
+  1.0% under on the `tube`); with arcs fitted its solid fill had 140
+  arcs against the reference's 137 on the cylinder (179 before), 337
+  against 339 on the `tube` (476) and 7 against 7 on the `mushroom`
+  (none), counted while a run's start was asked the reference's way;
+  the `mushroom`'s seven were its dots, and are gone with them. On
+  the three plates of `mcbrim_test.3mf` the reference lays 13.6 m, 5.3 m and 5.3 m of its
+  solid fill as loops and this engine 12.3 m, 5.3 m and 5.3 m, where
+  it laid none; solid fill in all is 49.57 m against 50.51 m on plate
+  1 (1.9% under, from 1.0% over) and 24.59 m against 24.29 m on the
+  other two (1.2% over, from 3.5%). Plate 1 is under because on four
   of its layers this engine has less solid area to fill, whatever it
   is filled with (with the option off in both, those layers are 2%,
   4%, 6% and 54% short: bridges over infill and sparse fill are
   sorted out differently there, as above), and the joins of short
   lines no longer make up for it; layer by layer the two files differ
-  by 1.25 m in all where they differed by 2.00 m. Not as the reference, each marked in the
+  by 1.28 m in all where they differed by 2.00 m. Not as the reference, each marked in the
   code: there every loop starts at its point nearest the object's own
   origin, the place the last one ended at never being noted, and here
   where the one before it ended; a line that is no loop is not
   shortened by the seam gap at its end; the loops of an area are laid
   each after the one that starts nearest, not in the reference's chain
-  of nearest pairs; and two mistakes in `filter_vibrating_extrusions`
+  of nearest pairs; and three mistakes in `filter_vibrating_extrusions`
   and in the tracing of the wide part are not carried over (a stroke
   reached by two runs of short strokes counts the first comer's run
   there, not the deeper; a run of strokes that finds the stroke beside
-  it taken goes on into that one all the same). Round a `tube` on the
-  U1 this engine lays a loop of 4 mm on each solid layer that the
-  reference does not: the slanting lines run out against the round
-  wall a few hundredths of a millimetre differently in the two, and
-  what is left there is just too thick here to go with the wide part.
+  it taken goes on into that one all the same; and whether a stroke's
+  run began beside a long stroke is read there off the strokes before
+  it, whatever they were last told, where the function that reads it
+  is described as answering for the stroke itself and what it
+  replaced in PrusaSlicer asked every stroke of a run where that run
+  began: so the stroke a run begins with is never asked, a lone short
+  stroke after a long one is taken out, the one the note is made to
+  keep, and of a run into a corner the first two stay). Round a
+  `tube` that is seen as one line: the last stroke against the round
+  wall is a short one after a long one, the reference takes it out and
+  lays a line of 4.3 mm there by itself as a narrow area on each solid
+  layer, and here it stays with the lines, which have none to lay
+  there (strokes are counted half a spacing from where the fill puts
+  its lines), as they have none in the same place on the other side
+  of the tube in either.
   Not done: a solid area with nothing narrow in it has its lines
   spread to fill its width in the reference, as top and bottom
   surfaces have, and not here (a round boss 8 mm across: lines 0.429 mm
@@ -542,7 +564,7 @@ Working:
   it was 0.03073; lines of 3 to 5 mm 0.02887 against 0.02887; over
   10 mm 0.03064 against 0.03064). Turning it on takes 3.3 mm of
   filament off the U1's cube in the reference and 3.1 mm here, 22.2 mm
-  and 22.0 mm off the `frame`, 11.2 mm and 10.0 mm off `steps`. Not as
+  and 21.9 mm off the `frame`, 11.2 mm and 9.8 mm off `steps`. Not as
   the reference, each where it goes against what it is for: it thins
   the loops a narrow solid area is filled with as if every stretch of
   a loop were a line (round a 20 mm tube, cut into chords of half a
@@ -1934,9 +1956,10 @@ against 90% (1825 against 2719 on the `shelf`, whose supports are 30%
 shorter here, as above). On the box-shaped parts nothing changed but
 the spiral lifts, and four arcs on the `mushroom` where a support's
 outline turns a corner; the reference has five to eight arcs there,
-each a dot of narrow solid fill it lays as a loop, and since
-`detect_narrow_internal_solid_infill` is followed this engine has them
-too (seven against seven with the Centauri Carbon's presets).
+each a dot of narrow solid fill it lays as a loop, which this engine
+does not lay: its triangle of loops there is a stroke larger and has
+a second loop where the reference's has the dot (Narrow solid areas,
+above).
 
 The reference still does more in that time (time planning, ironing out
 its fill order), so the speed gap will narrow as stages are added;
