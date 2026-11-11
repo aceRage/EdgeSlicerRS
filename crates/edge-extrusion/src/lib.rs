@@ -234,11 +234,25 @@ pub struct ExtrusionPath {
     /// path that stands by itself. Paths with the same number, next to
     /// each other in a list, are laid together: the nozzle finishes one
     /// area before it goes to another (the reference's collection of
-    /// extrusions for a surface).
+    /// extrusions for a surface). Numbers from [`Self::LOOPED`] up are
+    /// kept for areas filled with loops.
     pub part: u32,
 }
 
 impl ExtrusionPath {
+    /// Part numbers from here up are areas filled with loops along
+    /// their outline, not with straight lines across them: the narrow
+    /// solid areas of `detect_narrow_internal_solid_infill`. Their
+    /// paths are solid fill in everything but how short a stretch of
+    /// one may be, which says nothing of the size of the area.
+    pub const LOOPED: u32 = 1 << 31;
+
+    /// Whether the path is one of the loops an area is filled with
+    /// ([`Self::LOOPED`]).
+    pub fn looped(&self) -> bool {
+        self.part >= Self::LOOPED
+    }
+
     pub fn length_mm(&self) -> f64 {
         self.points
             .windows(2)

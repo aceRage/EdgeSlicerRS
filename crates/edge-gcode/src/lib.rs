@@ -22,6 +22,7 @@ mod scarf;
 mod seam;
 mod settings;
 mod simplify;
+mod small_area;
 mod wipe;
 
 use std::{
@@ -681,6 +682,9 @@ struct State {
     /// The speed of the wall loop being laid, where it goes round a
     /// circle the auto circle compensation resized (`circle.rs`).
     circle_wall: Option<f64>,
+    /// Whether the fill line being laid has its short moves thinned
+    /// (`small_area.rs`).
+    short_lines: bool,
     /// The tool in use, and what was left retracted in each tool put away.
     tool: usize,
     parked: Vec<(bool, f64)>,
@@ -1766,6 +1770,10 @@ impl Writer<'_> {
                             _ => self.way_sheltered(shelter, at, &way),
                         };
                     }
+                    // A short move of solid fill gets less plastic
+                    // (`small_area_infill_flow_compensation`).
+                    let thinned = self.settings.small_area.as_ref();
+                    self.state.short_lines = thinned.is_some_and(|model| model.applies(path));
                     // Arcs are fitted to the line as it was made and turned
                     // about with it, as in the reference, where fitting
                     // comes before the order lines are laid in is chosen.
@@ -1785,6 +1793,7 @@ impl Writer<'_> {
                         }
                         None => self.path(&points, path.role, &path.flow, sheltered, false)?,
                     }
+                    self.state.short_lines = false;
                 }
             }
         }
@@ -2684,6 +2693,8 @@ impl Writer<'_> {
             Role::Brim => s.brim_flow_ratio,
             _ => sloping.as_ref().map_or(1.0, |sloping| sloping.flow),
         };
+        let short = s.small_area.as_ref().filter(|_| self.state.short_lines);
+        let share = share * short.map_or(1.0, |model| model.share(length));
         let volume =
             length * flow.mm3_per_mm() * s.filament_flow_ratio * s.print_flow_ratio * share;
         let feed = volume / self.filament_area;
