@@ -634,9 +634,7 @@ const LOOP_WIDTH_TOLERANCE: Coord = 50_000;
 /// (lines down the middle of thin parts) are laid with the fill. Where
 /// [`Params::one_wall_top`] is set and the layers next to this one are
 /// known, a top surface keeps only its outer wall, as the reference has
-/// it with `top_surface_expansion` at zero; the inner walls are then
-/// numbered by the pass that made them, where the reference numbers
-/// them again by which wall each touches.
+/// it with `top_surface_expansion` at zero.
 pub fn arachne(
     regions: &[ExPolygon],
     params: &Params,
@@ -802,6 +800,17 @@ pub fn arachne(
                     for line in inner_paths.iter_mut().flatten() {
                         line.inset_idx += 1;
                     }
+                }
+                // The inner walls start at the top surface's edge as
+                // well as behind the outer wall, and are numbered from
+                // there: numbered again by which wall each touches.
+                if perimeters.len() == 1 {
+                    let outer_touch = if params.precise_outer_wall {
+                        ext_spacing + spacing / 2
+                    } else {
+                        (ext_spacing + spacing) / 2
+                    };
+                    renumber_inner_walls(&perimeters[0], &mut inner_paths, outer_touch, spacing);
                 }
                 perimeters.extend(inner_paths);
                 let mut both = tops.clone();
@@ -989,6 +998,158 @@ fn wall_over_air(
     walls.extend(extra.into_iter().flatten());
     *infill = edge_clip::difference(infill, &filled)?;
     Ok(())
+}
+
+/// Whether two walls run alongside each other: some point of one within
+/// half their two widths of the other, or within `min_threshold` if that
+/// is more (`arachne_lines_touch`).
+fn lines_touch(
+    a: &edge_arachne::ExtrusionLine,
+    b: &edge_arachne::ExtrusionLine,
+    min_threshold: f64,
+) -> bool {
+    let one_way = |from: &edge_arachne::ExtrusionLine, to: &edge_arachne::ExtrusionLine| {
+        from.junctions.iter().any(|junction| {
+            let (px, py) = (junction.p.x as f64, junction.p.y as f64);
+            to.junctions.windows(2).any(|pair| {
+                let (sx, sy) = (pair[0].p.x as f64, pair[0].p.y as f64);
+                let (dx, dy) = (pair[1].p.x as f64 - sx, pair[1].p.y as f64 - sy);
+                let length2 = dx * dx + dy * dy;
+                let along = if length2 > 0.0 {
+                    (((px - sx) * dx + (py - sy) * dy) / length2).clamp(0.0, 1.0)
+                } else {
+                    0.0
+                };
+                // The width of `to` at its nearest point.
+                let width = pair[0].w as f64 + along * (pair[1].w - pair[0].w) as f64;
+                let touching = min_threshold.max(0.5 * (junction.w as f64 + width));
+                (sx + along * dx - px).hypot(sy + along * dy - py) <= touching
+            })
+        })
+    };
+    one_way(a, b) || one_way(b, a)
+}
+
+/// Numbers the inner walls made in a second pass by how far each is
+/// from the outer walls: one touching an outer wall is 1, one touching
+/// a wall numbered k that was itself made as k + 1 is k + 1, and any
+/// other takes one more than the deepest wall it touches. A wall that
+/// touches none keeps the number it was made with
+/// (`renumber_inner_walls_by_depth`). The walls come back grouped by
+/// number, group g holding those numbered g + 1.
+fn renumber_inner_walls(
+    outer_walls: &[edge_arachne::ExtrusionLine],
+    inner_walls: &mut Vec<edge_arachne::VariableWidthLines>,
+    outer_touch: Coord,
+    inner_touch: Coord,
+) {
+    let mut lines: Vec<edge_arachne::ExtrusionLine> = std::mem::take(inner_walls)
+        .into_iter()
+        .flatten()
+        .filter(|line| !line.junctions.is_empty())
+        .collect();
+    if lines.is_empty() {
+        return;
+    }
+    // Walls whose bounds, grown by their widest point, do not overlap
+    // cannot touch.
+    let bounds_of = |line: &edge_arachne::ExtrusionLine| -> [Coord; 4] {
+        let mut bounds = [Coord::MAX, Coord::MAX, Coord::MIN, Coord::MIN];
+        let mut widest = 0;
+        for junction in &line.junctions {
+            bounds[0] = bounds[0].min(junction.p.x);
+            bounds[1] = bounds[1].min(junction.p.y);
+            bounds[2] = bounds[2].max(junction.p.x);
+            bounds[3] = bounds[3].max(junction.p.y);
+            widest = widest.max(junction.w);
+        }
+        [
+            bounds[0] - widest,
+            bounds[1] - widest,
+            bounds[2] + widest,
+            bounds[3] + widest,
+        ]
+    };
+    let overlap = |a: &[Coord; 4], b: &[Coord; 4]| {
+        a[0] <= b[2] && b[0] <= a[2] && a[1] <= b[3] && b[1] <= a[3]
+    };
+    let bounds: Vec<[Coord; 4]> = lines.iter().map(bounds_of).collect();
+    // Whole units put walls made exactly the touching distance apart a
+    // few of them further.
+    let rounding = 1_000.0;
+    let (outer_threshold, inner_threshold) =
+        (outer_touch as f64 + rounding, inner_touch as f64 + rounding);
+    let touch = |a: usize, b: usize| {
+        overlap(&bounds[a], &bounds[b]) && lines_touch(&lines[a], &lines[b], inner_threshold)
+    };
+
+    // The walls numbered from the outer walls.
+    let mut depth = vec![0usize; lines.len()];
+    let mut frontier = Vec::new();
+    for outer in outer_walls {
+        let outer_bounds = bounds_of(outer);
+        for at in 0..lines.len() {
+            if depth[at] == 0
+                && lines[at].inset_idx == 1
+                && overlap(&outer_bounds, &bounds[at])
+                && lines_touch(outer, &lines[at], outer_threshold)
+            {
+                depth[at] = 1;
+                frontier.push(at);
+            }
+        }
+    }
+    let mut numbered = frontier.clone();
+    let mut level = 1;
+    while !frontier.is_empty() {
+        let mut next = Vec::new();
+        for at in 0..lines.len() {
+            if depth[at] == 0
+                && lines[at].inset_idx == level + 1
+                && frontier.iter().any(|&from| touch(from, at))
+            {
+                depth[at] = level + 1;
+                next.push(at);
+            }
+        }
+        numbered.extend(&next);
+        frontier = next;
+        level += 1;
+    }
+    // The others, working away from those.
+    frontier = numbered;
+    while !frontier.is_empty() {
+        let mut next = Vec::new();
+        for at in 0..lines.len() {
+            if depth[at] != 0 {
+                continue;
+            }
+            let deepest = frontier
+                .iter()
+                .filter(|&&from| touch(from, at))
+                .map(|&from| depth[from])
+                .max()
+                .unwrap_or(0);
+            if deepest > 0 {
+                depth[at] = deepest + 1;
+                next.push(at);
+            }
+        }
+        frontier = next;
+    }
+
+    let numbers: Vec<usize> = lines
+        .iter()
+        .zip(&depth)
+        .map(|(line, &depth)| if depth > 0 { depth } else { line.inset_idx })
+        .collect();
+    for (mut line, number) in lines.drain(..).zip(numbers) {
+        line.inset_idx = number;
+        if inner_walls.len() < number {
+            inner_walls.resize(number, Vec::new());
+        }
+        inner_walls[number - 1].push(line);
+    }
 }
 
 /// The points of each wall with a length to it.
@@ -1874,5 +2035,57 @@ mod tests {
         let fuzzed = classic(&fin, &rough).unwrap();
         let points: usize = fuzzed.gap_fill.iter().map(|line| line.points.len()).sum();
         assert!(points > 20, "{points}");
+    }
+
+    #[test]
+    fn inner_walls_are_numbered_by_how_far_they_are_from_the_outer_wall() {
+        // Lines 0.4 mm wide and 0.4 mm apart, the outer wall along y = 0.
+        let line = |y: f64, inset_idx: usize| edge_arachne::ExtrusionLine {
+            inset_idx,
+            is_odd: false,
+            is_closed: false,
+            junctions: [0.0, 10.0]
+                .map(|x| edge_arachne::Junction {
+                    p: Point2::from_mm(x, y),
+                    w: scaled(0.4),
+                    perimeter_index: inset_idx,
+                })
+                .to_vec(),
+        };
+        let outer = [line(0.0, 0)];
+        // Made behind the outer wall as 1 and 2; and from the far edge
+        // (a top surface's) as 1, with one behind that as 2; and one off
+        // by itself.
+        let mut inner = vec![
+            vec![line(0.4, 1), line(1.6, 1), line(9.0, 1)],
+            vec![line(0.8, 2), line(1.2, 2)],
+        ];
+        renumber_inner_walls(&outer, &mut inner, scaled(0.4), scaled(0.4));
+        let found: Vec<Vec<i64>> = inner
+            .iter()
+            .map(|group| {
+                let mut ys: Vec<i64> = group.iter().map(|wall| wall.junctions[0].p.y).collect();
+                ys.sort();
+                ys
+            })
+            .collect();
+        // 0.4 touches the outer wall; 0.8 was made as 2 and touches it;
+        // 1.2 touches 0.8 and is 3, 1.6 touches 1.2 and is 4; the one
+        // that touches nothing keeps its 1.
+        assert_eq!(
+            found,
+            [
+                vec![scaled(0.4), scaled(9.0)],
+                vec![scaled(0.8)],
+                vec![scaled(1.2)],
+                vec![scaled(1.6)]
+            ]
+        );
+        assert!(
+            inner
+                .iter()
+                .enumerate()
+                .all(|(group, walls)| { walls.iter().all(|wall| wall.inset_idx == group + 1) })
+        );
     }
 }
