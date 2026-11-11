@@ -639,6 +639,25 @@ Known gaps: painted supports and seams, per-object setting overrides, typed sett
     and it takes a counter-clockwise arc whose middle point is exactly
     due east of its centre for no arc at all, which cuts the arc of a
     round wall drawn square to the axes in two on every layer.
+  - Paths without arcs: with arc fitting off, every wall, fill line
+    and support line is thinned to `resolution` before it is written,
+    as the reference thins them (PrintObject.cpp
+    `simplify_extrusion_path`, with its own Douglas-Peucker,
+    MultiPoint.cpp `_douglas_peucker`): a point within `resolution` of
+    the line between those kept is left out, and with a `resolution`
+    of nothing only a point exactly on that line. Sparse infill and
+    supports are held to `resolution` like the rest; their looser
+    limits are for arcs. A wall loop is thinned from its own first
+    point round to that point again, which therefore always stays;
+    the seam is chosen among the points left and the loop opened
+    there, and nothing is thinned after that. A wall whose width
+    changes is thinned piece by piece as it is cut into its widths.
+    Skirt, brim and prime tower are written as made, as there. Two
+    things are not as in the reference: a wall is thinned whole and
+    then measured against the layer beneath, where the reference
+    first cuts it where it hangs clear and thins each stretch; and a
+    loop no wider than `resolution` is left as made, where the
+    reference lays the two points left of it as a line out and back.
 - Skirt and brim: skirt loops around everything, and a brim round the
   outside of each part, either of the width asked for or, with
   `brim_type` `auto_brim` (the default), as wide as the reference's rule of
@@ -1747,6 +1766,99 @@ process has the top of its lowest tier, at 3 mm, exactly where layer
 18 is cut; the reference takes that layer for part of the tier and
 this engine does not, so the tier's top and the shell under it lie a
 layer lower here (10-16 against 11-17), each as deep as the other's.
+
+Paths thinned to `resolution`, 2026-11-11, with the U1's presets (arcs
+off, `resolution` 0.012) on parts from `tools/make_fixture.py`, a
+Benchy and the three plates of `tests/mcbrim_test.3mf`. Until now a
+path was thinned only while arcs were fitted to it, and otherwise
+written with every point it was made with. Counted are the extruding
+`G1` moves of each file: the reference's, this engine's before and
+after.
+
+| part | wall moves: reference / before / after | all extruding moves | wall length a layer, most it differs by, mm: before / after | file, kB |
+|---|---|---|---|---|
+| `cylinder` | 6343 / 12449 / 6431 | 8774 / 15139 / 8915 | 0.036 / 0.002 | 393 / 581 / 388 |
+| `tube` | 15215 / 15157 / 15140 | 19830 / 20912 / 19715 | 0.296 / 0.295 | 731 / 767 / 728 |
+| `curve` | 4143 / 4705 / 4109 | 6432 / 7585 / 6632 | 0.554 / 0.539 | 297 / 322 / 289 |
+| `holes` | 28803 / 28713 / 28670 | 45428 / 49302 / 47110 | 4.925 / 4.920 | 1857 / 1919 / 1847 |
+| `funnel` | 7275 / 7466 / 7213 | 10487 / 13447 / 12094 | 0.037 / 0.003 | 458 / 529 / 487 |
+| Benchy | 49982 / 64729 / 61185 | 75299 / 108530 / 91290 | 19.308 / 19.287 | 3438 / 4332 / 3780 |
+| `mcbrim_test.3mf` plate 1 | 85037 / 82041 / 79974 | 172588 / 191458 / 164570 | 859.4 / 859.5 | 6298 / 6448 / 5604 |
+| plate 2 | 40733 / 41888 / 40816 | 89823 / 106818 / 91187 | 12.490 / 12.393 | 3181 / 3586 / 3099 |
+| plate 3 | 40733 / 41917 / 40817 | 89823 / 106774 / 91162 | 12.653 / 12.519 | 3184 / 3587 / 3101 |
+| `cylinder`, `resolution=0.05` | 3174 / 3261 / 3252 | 4903 / 5268 / 5069 | 0.007 / 0.007 | 261 / 260 / 252 |
+| `curve`, `resolution=0.05` | 2114 / 2228 / 2094 | 4092 / 4760 / 4387 | 0.025 / 0.017 | 217 / 222 / 209 |
+| `cylinder`, `resolution=0` | 12679 / 12768 / 12768 | 16406 / 16742 / same file | 0.001 / 0.001 | 685 / 778 / 778 |
+| `curve`, `resolution=0` | 8439 / 11201 / 11201 | 11397 / 15038 / same file | 0.642 / 0.642 | 484 / 630 / 630 |
+| `cylinder`, Arachne | 6360 / 6336 / 6336 | 8783 / 9036 / 8816 | 0.111 / 0.111 | 394 / 394 / 385 |
+| `curve`, Arachne | 3383 / 3477 / 3412 | 5648 / 6234 / 5905 | 0.021 / 0.021 | 275 / 277 / 267 |
+| `holes`, Arachne | 20708 / 20797 / 20497 | 36203 / 40453 / 38217 | 0.232 / 0.231 | 1573 / 1632 / 1559 |
+| Benchy, Arachne | 57778 / 71697 / 69180 | 84068 / 116149 / 104415 | 7.503 / 7.499 | 3880 / 4616 / 4241 |
+| `cylinder`, `seam_slope_type=all` | 7365 / 14507 / 7460 | 9796 / 17197 / 9944 | 0.037 / 0.002 | 434 / 672 / 433 |
+| `funnel`, scarf seams | 8841 / 9174 / 8903 | 12053 / 15155 / 13784 | 0.049 / 0.049 | 520 / 602 / 559 |
+| `curve`, scarf seams | 5084 / 5834 / 4983 | 7373 / 8714 / 7506 | 0.506 / 0.540 | 329 / 361 / 321 |
+| Benchy, scarf seams | 72399 / 91267 / 86980 | 97712 / 135068 / 117085 | 19.804 / 19.810 | 4384 / 5524 / 4936 |
+| `cube` | 796 / 796 / 796 | 3729 / 4069 / same file | 0 / 0 | 328 / 314 / 314 |
+| `cube`, Arachne | 796 / 796 / 796 | 3739 / 4069 / same file | 0 / 0 | 331 / 315 / 315 |
+| `cube`, scarf seams | 4063 / 4063 / 4063 | 6996 / 7336 / same file | 0 / 0 | 443 / 438 / 438 |
+| `frame` | 561 / 501 / 501 | 6083 / 7007 / same file | 0 / 0 | 331 / 316 / 316 |
+| `steps` | 556 / 526 / 526 | 4896 / 5711 / 5707 | 0 / 0 | 330 / 302 / 302 |
+| `mushroom`, supports | 556 / 556 / 556 | 5484 / 5650 / 5648 | 0 / 0 | 353 / 338 / 337 |
+
+The cylinder's rings are 64 or 65 moves in the reference and 65 here,
+where they were 128: a corner of its outer wall, 9.79 mm out, is
+11.8 µm from the line between its neighbours, so every other one goes.
+(The tube's outer rings lie further out, where a corner stands 14 µm
+off, and both engines keep them all; the rings of its hole, and the
+Arachne walls of all these parts, came thinned already.)
+Fill moved most: on the Benchy gap fill is 6680 moves against the
+reference's 6501 (it was 12967), sparse infill 4630 against 4594
+(6612) and the inner walls 21255 against 20866 (23270); on the tube
+solid fill is 1400 against 1409 (1952) and sparse infill 2659 against
+2684 (3133); with gyroid fill the cylinder is 14871 moves against
+14680 (21400). On plates 2 and 3 of the lettered project the walls
+are 40816 and 40817 moves against 40733 (41888 and 41917). With
+`resolution` at nothing no point of a round part lies
+exactly on a line and the files are the same as before. With arc
+fitting on, every file is byte for byte what it was (five of the
+parts above, the Benchy and the three plates).
+
+On the parts made of boxes the walls do not move. `cube` and `frame`
+are the same file; `steps` and `mushroom` lose four moves and two,
+each where a fill line or a support line turns through a stub 2 to
+19 µm long, whose first corner goes as it does in the reference. (In
+`steps` the fan also dips to 99% on four layers, and in other files
+on other layers than before. That is an error of this engine's, there
+before this and not in the reference: the fan's place between its
+two speeds is worked out in double precision here and in single
+there, and with both speeds at 100% the sum here can land a hair
+under and be cut to 99. Which layers it lands on moves with any
+change in a layer's time; `main` has it on eight layers of the
+Benchy.) What is left between the two engines is upstream of this. On the Benchy the outer wall is 39659
+moves against 28799 because a wall measured against the layer beneath
+is laid in the pieces it was measured in, also where neighbouring
+pieces run on at one speed; with `enable_overhang_speed` off it is
+27304 against 27686. On plate 1 the engines lay different lengths of
+wall on ten layers of sixteen, which is where its 859 mm comes from;
+on the other six the walls are 16055 moves against 16074 (16334).
+And a sliced ring here keeps a point that is no corner, as under
+"Arcs" above, so a ring is one move longer than the reference's, the
+wrong one of two corners is sometimes kept beside that point (the
+tube's layer extents differ by up to 0.014 mm on six layers, where
+they differed by up to 0.004), and the ring is thinned from a different corner:
+of the cylinder's 128 this engine keeps the even ones and the
+reference the odd, which is the 0.012 mm their layer extents still
+differ by. Tried with the layers cut so that a ring is exactly its
+mesh corners (a change not yet merged), the cylinder's walls are 6336
+moves against 6343 and with scarf seams 7365 against 7365, the tube's
+15205 against 15215, and the layer extents of both agree to the
+micron.
+
+Slicing is no slower, to what could be measured with other work
+running on the machine: thinning takes about what writing fewer moves
+saves. Plate 1 of `mcbrim_test.3mf`, best of 7: 3.63 s before and
+3.60 s after on all cores, 15.32 s and 15.40 s of processor time on
+one thread; the Benchy 2.94 s and 2.91 s on one thread.
 
 ## Licence
 
