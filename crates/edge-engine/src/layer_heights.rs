@@ -139,7 +139,6 @@ pub(crate) fn settle(
                 heights.tail.push((*height, top));
                 *plane = bottom + top - height / 2.0;
             }
-            notes.extend(thin_shells(settings, &as_set, &heights.all())?);
         }
     }
     if stack.tops.iter().any(|own| (top - own).abs() >= SAME) {
@@ -150,49 +149,6 @@ pub(crate) fn settle(
         );
     }
     Ok((heights, notes))
-}
-
-/// The shells are counted in layers here (`top_shell_layers`,
-/// `bottom_shell_layers`). The reference adds a layer wherever that many
-/// come to less than `top_shell_thickness` or `bottom_shell_thickness`
-/// (PrintObject.cpp `discover_horizontal_shells`), which thinner layers
-/// at the top of a print can bring about. That is not done; a note says
-/// where the thinning is what makes a shell fall short.
-fn thin_shells(
-    settings: &Settings,
-    before: &[f64],
-    after: &[f64],
-) -> Result<Vec<String>, ConfigError> {
-    let mut notes = Vec::new();
-    let from = after.len() - ADJUSTED_LAYERS;
-    for (layers, thickness, top) in [
-        ("top_shell_layers", "top_shell_thickness", true),
-        ("bottom_shell_layers", "bottom_shell_thickness", false),
-    ] {
-        let count = usize::try_from(settings.integer(layers)?.unwrap_or(0)).unwrap_or(0);
-        let asked = settings.float(thickness)?.unwrap_or(0.0);
-        // A shell under the top of the print, or over a face that looks
-        // down from the lowest of the changed layers.
-        let shell = if top {
-            after.len().saturating_sub(count)..after.len()
-        } else {
-            from..from + count
-        };
-        if count == 0 || shell.end > after.len() {
-            continue;
-        }
-        let (was, is): (f64, f64) = (
-            before[shell.clone()].iter().sum(),
-            after[shell].iter().sum(),
-        );
-        if is < asked - SAME && was >= asked - SAME {
-            notes.push(format!(
-                "precise_z_height \"1\": {count} of the thinner layers at the top make a shell of {is:.3} mm, \
-                 under the {asked} mm of {thickness}; no layer is added to make it up"
-            ));
-        }
-    }
-    Ok(notes)
 }
 
 /// The least and the greatest height a layer may be given: what the
@@ -409,42 +365,6 @@ mod tests {
         let (_, notes) = settle(&on, &mut cut, &stack(20.0, &[20.0, 12.0])).unwrap();
         assert_eq!(notes.len(), 1);
         assert!(notes[0].contains("tallest object"), "{}", notes[0]);
-    }
-
-    #[test]
-    fn a_shell_made_thinner_than_asked_is_said() {
-        // Five layers of 0.19 mm make 0.95 mm where 1 mm is asked.
-        let on = read(&format!(
-            r#"{{"precise_z_height": "1", "top_shell_layers": "5", "top_shell_thickness": "1.0",
-                "bottom_shell_layers": "3", "bottom_shell_thickness": "0", {U1}}}"#
-        ));
-        let mut cut = planes(100);
-        let (_, notes) = settle(&on, &mut cut, &stack(20.0, &[20.0])).unwrap();
-        assert_eq!(notes.len(), 1, "{notes:?}");
-        assert!(notes[0].contains("0.950 mm"), "{}", notes[0]);
-        assert!(notes[0].contains("top_shell_thickness"), "{}", notes[0]);
-
-        // Thicker layers leave the shell no thinner than it was, and a
-        // shell that was already short of what is asked is not this
-        // option's doing.
-        let mut cut = planes(100);
-        let (_, notes) = settle(&on, &mut cut, &stack(20.1, &[20.1])).unwrap();
-        assert!(notes.is_empty(), "{notes:?}");
-        let short = read(&format!(
-            r#"{{"precise_z_height": "1", "top_shell_layers": "3", "top_shell_thickness": "1.0", {U1}}}"#
-        ));
-        let mut cut = planes(100);
-        let (_, notes) = settle(&short, &mut cut, &stack(20.0, &[20.0])).unwrap();
-        assert!(notes.is_empty(), "{notes:?}");
-
-        // A bottom shell over a face in the changed layers.
-        let bottom = read(&format!(
-            r#"{{"precise_z_height": "1", "bottom_shell_layers": "3", "bottom_shell_thickness": "0.6", {U1}}}"#
-        ));
-        let mut cut = planes(100);
-        let (_, notes) = settle(&bottom, &mut cut, &stack(20.0, &[20.0])).unwrap();
-        assert_eq!(notes.len(), 1, "{notes:?}");
-        assert!(notes[0].contains("bottom_shell_thickness"), "{}", notes[0]);
     }
 
     #[test]

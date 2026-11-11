@@ -121,6 +121,7 @@ fn every_reference_project_exports_well_formed_gcode_that_adds_up() {
             &slices,
             &inside,
             &inside_all,
+            &vec![0.2; slices.len()],
             &infill.shells(0.2).unwrap(),
         )
         .unwrap();

@@ -360,7 +360,8 @@ pub fn slice(job: Job, watch: &dyn Watcher) -> Result<Sliced, Failure> {
     let mut paint_notes = Vec::new();
     if !painted.is_empty() {
         let outer = walls.params(layer_height, false)?.outer;
-        let (paint, notes) = crate::paint::settings(&settings, &outer, layer_height)?;
+        let (paint, notes) =
+            crate::paint::settings(&settings, &outer, layer_height, &heights.all())?;
         paint_notes = notes;
         let base = bodies.first().map_or(1, |body| body.filament);
         // Worked out side by side, then applied in the order given.
@@ -668,6 +669,9 @@ pub fn slice(job: Job, watch: &dyn Watcher) -> Result<Sliced, Failure> {
     let inside_all = edge_infill::inside_walls(&inside_by, &printed, around)?;
     let mut anchored_by = Vec::with_capacity(used.len());
     let mut shelter: Vec<Vec<ExPolygon>> = vec![Vec::new(); layers.len()];
+    // A shell is as thick as `top_shell_thickness` and
+    // `bottom_shell_thickness` ask, measured in the layers as they lie.
+    let thick = heights.all();
     for (filament, inside_walls) in inside_by.iter().enumerate() {
         let slices: Vec<&[ExPolygon]> = (0..layers.len())
             .map(|index| share(filament, index))
@@ -688,6 +692,7 @@ pub fn slice(job: Job, watch: &dyn Watcher) -> Result<Sliced, Failure> {
             &outlines,
             inside_walls,
             &inside_all,
+            &thick,
             &infill.shells(layer_height)?,
         )?;
         // Bridges, bottoms and tops reach into the fill beside them, and

@@ -229,15 +229,15 @@ Working:
   19.24, 19.43, 19.62, 19.81 and 20.00 mm; on one 20.14 mm tall, at
   0.218 mm, to 20.14 mm. All 100 layers are at the C++ slicer's heights
   in both, walls and layer extents the same to 0.000 mm and plastic per
-  millimetre the same on the changed layers, supports included. Noted
+  millimetre the same on the changed layers, supports included. A shell
+  is measured in the layers as tuned: five of 0.19 mm come to 0.95 mm,
+  under the 1 mm of the U1's `top_shell_thickness`, so a sixth layer is
+  made solid under the cube's top, as in the reference (5.56 m of
+  internal solid fill there and 5.57 m here). Noted
   and not done: a part of fewer than six layers, or a difference the
-  five cannot take up, is left as it was; everything on a plate is cut
-  at the same heights, so only the tallest object comes out exact (the
-  reference tunes each object); and the shells are counted in layers,
-  where the reference adds a layer when thinner ones leave a shell
-  under `top_shell_thickness` (five layers of 0.19 mm under 1 mm: it
-  lays a sixth solid layer under the cube's top, 5.56 m of solid fill
-  against 4.66 m here).
+  five cannot take up, is left as it was; and everything on a plate is
+  cut at the same heights, so only the tallest object comes out exact
+  (the reference tunes each object).
 - Overhangs made printable (`make_overhang_printable`, with
   `make_overhang_printable_angle` and
   `make_overhang_printable_hole_size`): from the top layer down, each
@@ -452,7 +452,27 @@ Known gaps: painted supports and seams, per-object setting overrides, typed sett
   shell of it is made solid too, so a leaning wall stays as thick
   measured straight up as it is sideways; walls between two filaments
   inside a part do not count (`discover_vertical_shells`). Any other
-  value of that setting is noted and not followed. Fill over air takes `bridge_flow`
+  value of that setting is noted and not followed.
+  A shell is as many layers as `top_shell_layers` or
+  `bottom_shell_layers` says, and as many more as it takes to measure
+  `top_shell_thickness` or `bottom_shell_thickness`: a layer is shell
+  under a top face while the layers from its top to the face's come to
+  less than the thickness set, and over a bottom face or a bridge while
+  those from its bottom to the face's do, each layer at the height it
+  has. That is the reference's rule in both the places it makes shells
+  (PrintObject.cpp `discover_vertical_shells` and
+  `discover_horizontal_shells`). Zero leaves it to the count, and with
+  no layers asked for there is no shell whatever the thickness. While
+  only the count was followed, a 20 mm cube with the Snapmaker U1's
+  0.16 mm process (six layers, 1 mm) got 6.34 m of internal solid fill
+  where the C++ slicer lays 7.22 m; it gets 7.22 m now, on the same
+  layers (more under Comparing with the reference). Where the count
+  already makes the thickness, as five layers of 0.2 mm do with the
+  U1's 0.2 mm process, the file is byte for byte what it was. Noted
+  and not done: paint on a top or bottom face is carried as deep as
+  the thickness takes in layers of the layer height, which is not the
+  shell's depth where the first layer or the last five are of another
+  height. Fill over air takes `bridge_flow`
   and `bridge_density`, and runs along the edges it has nothing beside,
   so its lines go from one support to the other. Bridges, bottoms and
   tops reach a wall's spacing into the fill beside them, to have
@@ -814,7 +834,7 @@ noted), narrow solid areas are filled with the same lines
 as wide ones where the reference lays loops along them
 (`detect_narrow_internal_solid_infill`, noted), narrow parts of top and
 bottom surfaces get no gap fill
-(`gap_fill_target`), shell thickness in mm is ignored, and eight of the
+(`gap_fill_target`), and eight of the
 reference's sparse patterns are not laid (below). Gap closing runs across objects, so two separate objects closer than twice
 the radius merge; the reference closes within one object only.
 
@@ -1535,6 +1555,51 @@ bridge detector says can be spanned from the wide hole's edge
 direction with most anchored lines and the strips it can span), which
 is not here: this engine turns a bridge by the edges it has nothing
 beside.
+
+Shells as thick as asked (`top_shell_thickness`,
+`bottom_shell_thickness`), against the C++ slicer on
+`tools/make_fixture.py`'s parts: metres of internal solid fill (C++
+slicer / this engine), what this engine laid while it followed the
+count alone, and the layers with solid fill inside them, counted from
+0, which are the same in both slicers in every row. The first eight
+rows are whole stock processes; the rest are the U1's 0.2 mm process
+(five top layers and 1 mm, three bottom layers and no thickness, a
+first layer of 0.25 mm) with what is named changed. Top and bottom
+surfaces are the same length in both to 0.01 m in every row, and each
+file is the same made on one thread and on many.
+
+| Part and settings | Solid fill, m | By count | Layers solid inside |
+| --- | --- | --- | --- |
+| `cube`, U1 0.08 mm (9 layers, 0.8 mm) | 11.93 / 11.95 | 11.10 | 1-6, 238-247 of 249 |
+| `cube`, U1 0.10 mm Color Mixing (5, 0.6 mm) | 6.96 / 6.97 | 6.12 | 1-4, 193-198 of 200 |
+| `cube`, U1 0.12 mm (5, 0.6 mm) | 6.18 / 6.19 | same file | 1-4, 160-164 of 166 |
+| `cube`, U1 0.16 mm (6, 1 mm) | 7.22 / 7.22 | 6.34 | 1-3, 117-123 of 125 |
+| `cube`, U1 0.20 mm (5, 1 mm) | 4.68 / 4.68 | same file | 1-2, 94-98 of 100 |
+| `cube`, U1 0.24 mm (4, 1 mm) | 4.80 / 4.80 | 3.87 | 1-2, 78-82 of 84 |
+| `cube`, U1 0.28 mm (4, 1 mm) | 3.96 / 3.96 | same file | 1-2, 67-70 of 72 |
+| `cube`, Centauri Carbon 0.16 mm (5, 1 mm; bottom 3, 0.6 mm) | 7.22 / 7.22 | 4.57 | 1-3, 117-123 of 125 |
+| `cube`, `layer_height` 0.16, 0.12, 0.08 | 6.33 / 6.34, 7.91 / 7.92, 11.09 / 11.10 | 4.57, 4.46, 4.36 | 1-2 and 116-122, 156-164, 234-246 |
+| `cube`, 0.16, `top_shell_thickness=0` | 4.56 / 4.57 | same file | 1-2, 118-122 |
+| `cube`, 0.16, `top_shell_layers=0` | 1.77 / 1.77 | same file | 1-2; no top surface in either |
+| `cube`, `bottom_shell_thickness=1` | 6.49 / 6.50 | 4.68 | 1-4, 94-98 |
+| `cube`, 0.12, `bottom_shell_thickness=0.8` | 10.50 / 10.51 | 4.46 | 1-5, 156-164 |
+| the same with `bottom_shell_layers=0` | 6.18 / 6.19 | 2.73 | 156-164; no bottom surface in either |
+| `steps`, 0.16 | 18.74 / 18.76 | 13.53 | 1-2, 10-16, 29-35, 54-60 |
+| `steps`, 0.12, `bottom_shell_thickness=0.8` | 31.04 / 31.08 | 13.22 | 1-5, 14-22, 39-47, 72-80 |
+| `mushroom`, 0.16 | 14.88 / 14.88 | 10.68 | 1-2, 63-64, 79-85 |
+| `mushroom`, 0.12, `bottom_shell_thickness=0.8` | 26.68 / 26.70 | 10.43 | 1-5, 83-88, 106-114 |
+| `cube`, `precise_z_height=1` | 5.56 / 5.57 | 4.66 | 1-2, 93-98 |
+| `cube`, 0.16, `ensure_vertical_shell_thickness=none` | 6.33 / 6.34 | 4.57 | 1-2, 116-122 |
+
+The lowest layer of each run under a top is the band of sparse fill
+made solid under the edge of a bridge over infill, not shell. The
+shell over the underside of the mushroom's cap, a bridge, is made up
+to the thickness as the one over the bed is. One
+part differs, and did before: `steps` with the U1's own 0.16 mm
+process has the top of its lowest tier, at 3 mm, exactly where layer
+18 is cut; the reference takes that layer for part of the tier and
+this engine does not, so the tier's top and the shell under it lie a
+layer lower here (10-16 against 11-17), each as deep as the other's.
 
 ## Licence
 

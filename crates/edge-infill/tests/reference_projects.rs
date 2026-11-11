@@ -91,6 +91,7 @@ fn surfaces_partition_the_infill_area_and_every_one_is_filled() {
             &slices,
             &inside,
             &inside_all,
+            &vec![0.2; slices.len()],
             &infill.shells(0.2).unwrap(),
         )
         .unwrap();
