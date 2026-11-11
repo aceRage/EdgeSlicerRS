@@ -53,6 +53,19 @@ unsafe_code = "deny"
 [profile.dev.package."*"]
 opt-level = 2
 
+# The Voronoi library checks in a debug build that no number it works
+# with is a NaN, and stops if one is. One turns up now and then, as it
+# does in Boost's own: the square root of a determinant that rounding
+# has left a hair under nothing, in the quick form of a circle event
+# (`lazy_circle_formation::pss`). Which events are tried depends on the
+# library's skip list, whose levels are random, so the same outline
+# stopped a test on one run in three and not on the others (the Voron
+# cube's layer at 11.3 mm). A release build has no such check and gives
+# the same walls every run; tests are held to what ships.
+[profile.dev.package.boostvoronoi]
+opt-level = 2
+debug-assertions = false
+
 # Light optimisation for this workspace's own code as well: the tests that
 # run whole projects spend their time in it.
 [profile.dev]
