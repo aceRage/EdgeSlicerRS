@@ -692,7 +692,7 @@ process's pages here; the filament's and the printer's in section 14):
   the reference's own account of them.
 
 `--check` fails when the file is not what the source gives. The session
-includes the file (`src/api/process.rs`), hands it to the page
+includes the file (`src/api/settings.rs`), hands it to the page
 (`process_pages`) and checks values against it (`process_set`), so the page
 and the session cannot disagree about a limit or a list.
 
