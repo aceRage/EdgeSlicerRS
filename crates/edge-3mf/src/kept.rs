@@ -82,7 +82,8 @@ pub struct ObjectKept {
 
 /// What a part of a file holds that [`crate::Part`] does not. This is the
 /// one keeper of a part's metadata: its settings ([`PartKept::settings`])
-/// are read from here.
+/// are read from here, and edits that move them (a part split, the last
+/// part left of an object) go through here.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct PartKept {
     /// Its `subtype` as written (`normal_part`, `modifier_part`, …).
@@ -90,8 +91,37 @@ pub struct PartKept {
     /// Its metadata and settings, and its other children, in order.
     pub(crate) entries: Vec<Entry>,
     /// What its mesh's triangles carry; shared by every part that uses
-    /// the same mesh of the file.
+    /// the same mesh of the file. Only for the mesh it was read with.
     pub(crate) extras: Option<Arc<Extras>>,
+    /// What the part was read as, to tell what has been edited since:
+    /// none for a part the file did not hold as it is (a piece of a part
+    /// split).
+    pub(crate) read: Option<PartRead>,
+}
+
+/// What a part was read as.
+#[derive(Clone, Debug)]
+pub(crate) struct PartRead {
+    /// Its place among its object's parts in the file: what the cut
+    /// connectors of `Metadata/cut_information.xml` go by.
+    pub index: usize,
+    pub name: Option<String>,
+    pub kind: crate::PartKind,
+    pub own_filament: Option<usize>,
+    pub transform: edge_mesh::Transform,
+    /// The mesh it was read with, which what its triangles carry is of.
+    pub mesh: Arc<edge_mesh::Mesh>,
+}
+
+impl PartialEq for PartRead {
+    fn eq(&self, other: &Self) -> bool {
+        self.index == other.index
+            && self.name == other.name
+            && self.kind == other.kind
+            && self.own_filament == other.own_filament
+            && self.transform == other.transform
+            && Arc::ptr_eq(&self.mesh, &other.mesh)
+    }
 }
 
 /// What a part's metadata says that is not one of its settings: read into
@@ -119,8 +149,12 @@ const NOT_SETTINGS: [&str; 18] = [
     "texture_displacement",
 ];
 
+/// Where a Precise Seam part's settings are kept, dormant, in its metadata
+/// (bbs_3mf.cpp `PRECISE_SEAM_CONFIG_PREFIX`).
+pub(crate) const PRECISE_SEAM_PREFIX: &str = "precise_seam_config:";
+
 /// Whether a part's metadata key is one of its settings.
-fn is_setting(key: &str) -> bool {
+pub(crate) fn is_setting(key: &str) -> bool {
     !key.is_empty() && !NOT_SETTINGS.contains(&key)
 }
 
@@ -139,10 +173,81 @@ impl PartKept {
         self.entries
             .iter()
             .filter_map(|entry| match entry {
-                Entry::Meta { key, value } if is_setting(key) => Some((key.clone(), value.clone())),
+                Entry::Meta { key, value } if is_setting(key) => {
+                    // A Precise Seam part's, kept dormant under a prefix.
+                    let key = key.strip_prefix(PRECISE_SEAM_PREFIX).unwrap_or(key);
+                    Some((key.to_owned(), value.clone()))
+                }
                 _ => None,
             })
             .collect()
+    }
+
+    /// What one piece of the part keeps when it is split (Model.cpp
+    /// `ModelVolume::split`): its kind and settings, as each piece is a copy
+    /// of the part; not where it came from (`source` is reset), its text
+    /// (`text_configuration` is reset), what its triangles carry (the
+    /// facets are reset) or its matrix and mesh statistics, which are of
+    /// the piece.
+    pub fn piece(&self) -> PartKept {
+        let entries = self
+            .entries
+            .iter()
+            .filter(|entry| match entry {
+                Entry::Meta { key, .. } => {
+                    !(key.starts_with("source_") || key == "matrix" || key == "name")
+                }
+                Entry::Raw(raw) => !(raw.starts_with("<mesh_stat") || is_text(raw)),
+            })
+            .cloned()
+            .collect();
+        PartKept {
+            subtype: self.subtype.clone(),
+            entries,
+            extras: None,
+            read: None,
+        }
+    }
+
+    /// The part without its settings: what is left of it once they are
+    /// given to its object.
+    pub fn without_settings(&self) -> PartKept {
+        PartKept {
+            entries: self
+                .entries
+                .iter()
+                .filter(|entry| !matches!(entry, Entry::Meta { key, .. } if is_setting(key)))
+                .cloned()
+                .collect(),
+            ..self.clone()
+        }
+    }
+}
+
+/// Whether an entry of a part is its text's description (bbs_3mf.cpp
+/// `TEXT_TAG`).
+fn is_text(raw: &str) -> bool {
+    raw.starts_with("<slic3rpe:text")
+}
+
+impl ObjectKept {
+    /// The object with a part's settings given to it, each set over what
+    /// the object had: what the reference does when one part is left of an
+    /// object (GUI_ObjectList.cpp `del_subobject_from_object`,
+    /// `object->config.apply(last_volume->config)`).
+    pub fn with_settings_of(&self, part: &PartKept) -> ObjectKept {
+        let mut object = self.clone();
+        for (key, value) in part.settings() {
+            match object
+                .entries
+                .iter_mut()
+                .find(|entry| entry.key() == Some(key.as_str()))
+            {
+                Some(entry) => *entry = Entry::Meta { key, value },
+                None => object.entries.push(Entry::Meta { key, value }),
+            }
+        }
+        object
     }
 }
 

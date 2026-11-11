@@ -185,6 +185,14 @@ pub fn losses(project: &Project, presets: bool) -> Vec<String> {
             ));
         }
     }
+    for object in &project.objects {
+        if let Some(Err(())) = cut_of(object) {
+            losses.push(format!(
+                "The cut information of \"{}\" (its connectors): a part a connector is was deleted or split, so it would be another part's.",
+                object.name.as_deref().unwrap_or("")
+            ));
+        }
+    }
     if !presets && kept.has_presets() {
         let names: Vec<&str> = kept
             .files
@@ -452,26 +460,18 @@ fn write_entries(out: &mut String, entries: &[Entry], indent: &str) {
     }
 }
 
-/// An object's own entries and each part's, with the filaments as they
-/// stand now. What the file had is kept as it was where the filaments
-/// are still what it says; where not, the object's `extruder` is the one
-/// all its printed parts share (else what it was), and each part names
-/// its own only where it differs from the object's, as the reference
-/// leaves a part's choice empty when it is the object's.
+/// An object's own entries and each part's, as the object and its parts
+/// stand now. What the file had is kept as it was wherever the part is
+/// still what it was read as; what has been edited since (a name, a kind,
+/// a filament, where a part stands in its object) is written as it is now,
+/// in its place among the entries, as the reference writes it
+/// (bbs_3mf.cpp `_add_model_config_file_to_archive`). A part's own
+/// filament is written as its `extruder`, and none for one that follows its
+/// object ("default"), which the reference reads as the object's
+/// (Model.cpp `ModelVolume::extruder_id`).
 fn entries_of(object: &Object, name: &str) -> (Vec<Entry>, Vec<Vec<Entry>>) {
     let own = object.kept.as_deref();
     let mut entries = own.map(|own| own.entries.clone()).unwrap_or_default();
-    let read_object = chosen(&entries).unwrap_or(1);
-    let printed: Vec<usize> = object
-        .parts
-        .iter()
-        .filter(|part| part.kind == PartKind::Normal)
-        .map(|part| part.filament)
-        .collect();
-    let object_filament = match printed.split_first() {
-        Some((first, rest)) if rest.iter().all(|other| other == first) => *first,
-        _ => read_object,
-    };
     // The name as it stands.
     match entries.iter().position(|entry| entry.key() == Some("name")) {
         Some(at) => {
@@ -489,58 +489,145 @@ fn entries_of(object: &Object, name: &str) -> (Vec<Entry>, Vec<Vec<Entry>>) {
         ),
         None => {}
     }
-    let new = own.is_none();
-    if new || object_filament != read_object {
-        set_entry(&mut entries, "extruder", Some(object_filament.to_string()));
+    // The object's own filament, where it is not what the file says.
+    if own.is_none() || chosen(&entries) != object.filament {
+        set_entry(
+            &mut entries,
+            "extruder",
+            object.filament.map(|filament| filament.to_string()),
+        );
     }
-    let parts = object
-        .parts
-        .iter()
-        .map(|part| {
-            let kept = part.kept.as_deref();
-            let mut part_entries = kept
-                .map(|kept| kept.entries.clone())
-                .unwrap_or_default();
-            let as_read = chosen(&part_entries).unwrap_or(read_object);
-            if kept.is_none_or(|kept| kept.subtype.is_none()) {
-                // A part the file did not describe: its name and where it
-                // stands in the object, as the reference writes them.
-                if let Some(name) = &part.name
-                    && !part_entries.iter().any(|entry| entry.key() == Some("name"))
-                {
-                    part_entries.insert(
-                        0,
-                        Entry::Meta {
-                            key: "name".into(),
-                            value: name.clone(),
-                        },
-                    );
-                }
-                if !part_entries.iter().any(|entry| entry.key() == Some("matrix")) {
-                    part_entries.push(Entry::Meta {
-                        key: "matrix".into(),
-                        value: matrix_text(&part.transform),
-                    });
-                }
-            }
-            let unchanged = object_filament == read_object && part.filament == as_read;
-            if !unchanged {
-                let own = (part.filament != object_filament).then(|| part.filament.to_string());
-                set_entry(&mut part_entries, "extruder", own);
-            }
-            if !part_entries
-                .iter()
-                .any(|entry| matches!(entry, Entry::Raw(raw) if raw.starts_with("<mesh_stat")))
-            {
-                part_entries.push(Entry::Raw(
-                    r#"<mesh_stat edges_fixed="0" degenerate_facets="0" facets_removed="0" facets_reversed="0" backwards_edges="0"/>"#
-                        .into(),
-                ));
-            }
-            part_entries
-        })
-        .collect();
+    let parts = object.parts.iter().map(part_entries).collect();
     (entries, parts)
+}
+
+/// A part's entries: see [`entries_of`].
+fn part_entries(part: &Part) -> Vec<Entry> {
+    let kept = part.kept.as_deref();
+    let read = kept.and_then(|kept| kept.read.as_ref());
+    let mut entries = kept.map(|kept| kept.entries.clone()).unwrap_or_default();
+    // Its kind, where it has been changed: a Precise Seam part is written a
+    // modifier that names its seam type, with its settings kept dormant
+    // under a prefix; any other kind has neither.
+    let was_seam = read.map_or_else(
+        || {
+            entries
+                .iter()
+                .any(|entry| entry.key() == Some("precise_seam_type"))
+        },
+        |read| read.kind == PartKind::PreciseSeam,
+    );
+    let is_seam = part.kind == PartKind::PreciseSeam;
+    if read.is_none_or(|read| read.kind != part.kind) && was_seam != is_seam {
+        for entry in &mut entries {
+            if let Entry::Meta { key, .. } = entry {
+                if is_seam && kept::is_setting(key) {
+                    *key = format!("{}{key}", kept::PRECISE_SEAM_PREFIX);
+                } else if !is_seam && let Some(bare) = key.strip_prefix(kept::PRECISE_SEAM_PREFIX) {
+                    *key = bare.to_owned();
+                }
+            }
+        }
+        entries.retain(|entry| entry.key() != Some("precise_seam_type"));
+        if is_seam {
+            // The type the reference gives a part made one
+            // (GUI_ObjectList.cpp `change_part_type`).
+            entries.insert(
+                0,
+                Entry::Meta {
+                    key: "precise_seam_type".into(),
+                    value: "precise_seam_center".into(),
+                },
+            );
+        }
+    }
+    // A part the file did not describe (an object that is one mesh) is
+    // given its name and where it stands, as the reference writes them.
+    let described = kept.is_some_and(|kept| kept.subtype.is_some());
+    // Its name, where it is not what was read.
+    if let Some(name) = &part.name
+        && (!described || read.is_none_or(|read| read.name.as_ref() != Some(name)))
+    {
+        let value = Some(name.clone());
+        if entries.iter().any(|entry| entry.key() == Some("name")) {
+            set_entry(&mut entries, "name", value);
+        } else {
+            let at = usize::from(entries.first().and_then(Entry::key) == Some("precise_seam_type"));
+            entries.insert(
+                at,
+                Entry::Meta {
+                    key: "name".into(),
+                    value: name.clone(),
+                },
+            );
+        }
+    }
+    // Where it stands in its object, where it has moved: the reference
+    // reads this only for "Reload from disk" (`source.transform`); the
+    // component's transform is what places it.
+    let has_matrix = entries.iter().any(|entry| entry.key() == Some("matrix"));
+    if read.is_none_or(|read| read.transform != part.transform) || (!described && !has_matrix) {
+        let value = matrix_text(&part.transform);
+        if has_matrix {
+            set_entry(&mut entries, "matrix", Some(value));
+        } else {
+            let at = entries
+                .iter()
+                .position(|entry| entry.key() == Some("name"))
+                .map_or(0, |at| at + 1);
+            entries.insert(
+                at,
+                Entry::Meta {
+                    key: "matrix".into(),
+                    value,
+                },
+            );
+        }
+    }
+    // Its own filament, where it is not what was read.
+    let as_read = read.map_or_else(|| chosen(&entries), |read| read.own_filament);
+    if as_read != part.own_filament {
+        let value = part.own_filament.map(|filament| filament.to_string());
+        if entries.iter().any(|entry| entry.key() == Some("extruder")) || value.is_none() {
+            set_entry(&mut entries, "extruder", value);
+        } else if let Some(value) = value {
+            // After its other metadata, before what is not metadata.
+            let at = entries
+                .iter()
+                .rposition(|entry| matches!(entry, Entry::Meta { .. }))
+                .map_or(0, |at| at + 1);
+            entries.insert(
+                at,
+                Entry::Meta {
+                    key: "extruder".into(),
+                    value,
+                },
+            );
+        }
+    }
+    if !entries
+        .iter()
+        .any(|entry| matches!(entry, Entry::Raw(raw) if raw.starts_with("<mesh_stat")))
+    {
+        entries.push(Entry::Raw(
+            r#"<mesh_stat edges_fixed="0" degenerate_facets="0" facets_removed="0" facets_reversed="0" backwards_edges="0"/>"#
+                .into(),
+        ));
+    }
+    entries
+}
+
+/// The `subtype` a part is written with: as the file had it while its kind
+/// is what was read.
+fn subtype_of(part: &Part) -> String {
+    let kept = part.kept.as_deref();
+    let unchanged = kept
+        .and_then(|kept| kept.read.as_ref())
+        .is_none_or(|read| read.kind == part.kind);
+    match kept.and_then(|kept| kept.subtype.clone()) {
+        Some(written) if unchanged => written,
+        _ => subtype(part.kind).to_owned(),
+    }
 }
 
 /// Where one part's mesh is written: the object file and the id there.
@@ -554,7 +641,15 @@ struct Placed {
 /// mesh, painted alike (bbs_3mf.cpp: `ShareMesh` compares every kind of
 /// paint).
 fn extras_of(part: &Part) -> Option<&Arc<Extras>> {
-    part.kept.as_ref().and_then(|kept| kept.extras.as_ref())
+    let kept = part.kept.as_deref()?;
+    // Of the mesh it was read with, by the triangle's place: not of a mesh
+    // that has taken its place.
+    if let Some(read) = &kept.read
+        && !Arc::ptr_eq(&read.mesh, &part.mesh)
+    {
+        return None;
+    }
+    kept.extras.as_ref()
 }
 
 fn same_extras(a: Option<&Arc<Extras>>, b: Option<&Arc<Extras>>) -> bool {
@@ -1011,10 +1106,61 @@ fn by_place_files(project: &Project, kept: Option<&Kept>) -> Vec<(&'static str, 
         }
         files.push((kept::BRIM_POINTS, text));
     }
-    if let Some(text) = xml(owns(|own| own.cut.as_ref())) {
+    let cuts: Vec<(usize, String)> = project
+        .objects
+        .iter()
+        .enumerate()
+        .filter_map(|(at, object)| Some((at + 1, cut_of(object)?.ok()?)))
+        .collect();
+    if let Some(text) = xml(cuts.iter().map(|(at, text)| (*at, text)).collect()) {
         files.push((kept::CUT_INFORMATION, text));
     }
     files
+}
+
+/// An object's cut information (`Metadata/cut_information.xml`) with each
+/// connector naming its part by the part's place now, as the reference
+/// writes it (bbs_3mf.cpp `_add_cut_information_file_to_archive`, which
+/// numbers the volumes in order): none when it has none; an error when a
+/// part a connector names is no longer there as it was (deleted, or split
+/// into pieces), as the reference would refuse the file ("Invalid cut
+/// connector volume_id") or give the connector to another part.
+fn cut_of(object: &Object) -> Option<Result<String, ()>> {
+    let text = object.kept.as_ref()?.cut.as_ref()?;
+    // Where each part read from the file stands now.
+    let mut now: HashMap<usize, usize> = HashMap::new();
+    for (at, part) in object.parts.iter().enumerate() {
+        if let Some(read) = part.kept.as_ref().and_then(|kept| kept.read.as_ref()) {
+            now.entry(read.index).or_insert(at);
+        }
+    }
+    const KEY: &str = "volume_id=\"";
+    let mut out = String::with_capacity(text.len());
+    let mut rest = text.as_str();
+    while let Some(found) = rest.find(KEY) {
+        let start = found + KEY.len();
+        out.push_str(&rest[..start]);
+        let Some(length) = rest[start..].find('"') else {
+            return Some(Err(()));
+        };
+        let number = &rest[start..start + length];
+        let Some(place) = number
+            .trim()
+            .parse::<usize>()
+            .ok()
+            .and_then(|was| now.get(&was))
+        else {
+            return Some(Err(()));
+        };
+        if number.trim().parse::<usize>().ok() == Some(*place) {
+            out.push_str(number);
+        } else {
+            out.push_str(&place.to_string());
+        }
+        rest = &rest[start + length..];
+    }
+    out.push_str(rest);
+    Some(Ok(out))
 }
 
 fn custom_gcode(project: &Project, kept: Option<&Kept>) -> Option<String> {
@@ -1055,11 +1201,7 @@ fn model_settings(
         for ((part, placed), part_entries) in
             object.parts.iter().zip(&written.components).zip(&parts)
         {
-            let kind = part
-                .kept
-                .as_ref()
-                .and_then(|kept| kept.subtype.clone())
-                .unwrap_or_else(|| subtype(part.kind).to_owned());
+            let kind = subtype_of(part);
             let _ = writeln!(
                 out,
                 r#"    <part id="{}" subtype="{}">"#,

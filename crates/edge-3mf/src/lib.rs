@@ -861,8 +861,32 @@ fn find<'a>(
 }
 
 /// An object's parts: itself when it is a mesh, otherwise one per mesh found
-/// under each of its components.
+/// under each of its components; each part keeps what it was read as, to
+/// tell an edit of it when it is written back.
 fn parts(
+    files: &HashMap<String, ModelFile>,
+    file: &str,
+    object: &RawObject,
+    settings: Option<&ObjectSettings>,
+    kept: &HashMap<u32, PartKept>,
+) -> Result<Vec<Part>, Error> {
+    let mut parts = read_parts(files, file, object, settings, kept)?;
+    for (index, part) in parts.iter_mut().enumerate() {
+        let read = kept::PartRead {
+            index,
+            name: part.name.clone(),
+            kind: part.kind,
+            own_filament: part.own_filament,
+            transform: part.transform,
+            mesh: part.mesh.clone(),
+        };
+        let own = part.kept.get_or_insert_with(Default::default);
+        Arc::make_mut(own).read = Some(read);
+    }
+    Ok(parts)
+}
+
+fn read_parts(
     files: &HashMap<String, ModelFile>,
     file: &str,
     object: &RawObject,

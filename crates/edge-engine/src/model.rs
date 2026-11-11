@@ -1379,10 +1379,19 @@ impl Model {
             .filter(|(index, _)| !found.contains(index))
             .map(|(_, held)| held)
             .unzip();
-        if let [last] = list.as_mut_slice()
-            && let Some(own) = last.own_filament.take()
-        {
-            self.objects[at].filament = Some(own);
+        if let [last] = list.as_mut_slice() {
+            if let Some(own) = last.own_filament.take() {
+                self.objects[at].filament = Some(own);
+            }
+            // The rest of its own settings go to the object as well, as
+            // the reference applies the last part's config to its object
+            // and clears the part's.
+            if let (Some(part), Some(object)) = (&last.kept, &self.objects[at].kept)
+                && !part.settings().is_empty()
+            {
+                self.objects[at].kept = Some(Arc::new(object.with_settings_of(part)));
+                last.kept = Some(Arc::new(part.without_settings()));
+            }
         }
         self.reshape(bed, at, list, ids);
         Ok(())
@@ -1526,6 +1535,9 @@ impl Model {
                 paint: None,
                 seam: None,
                 own_filament: Some(held.filament),
+                // Its kind and settings go with each piece, not what the
+                // part's triangles carried or where it came from.
+                kept: held.kept.as_deref().map(|kept| Arc::new(kept.piece())),
                 ..held.clone()
             })
             .collect();
