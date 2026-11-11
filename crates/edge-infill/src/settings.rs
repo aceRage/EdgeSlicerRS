@@ -93,6 +93,12 @@ impl ExtraBridgeLayer {
 pub struct InfillSettings {
     pub top_shell_layers: usize,
     pub bottom_shell_layers: usize,
+    /// The least a top shell and a bottom shell are to measure, in mm
+    /// (`top_shell_thickness`, `bottom_shell_thickness`): layers are
+    /// added to the count until it is reached. Zero leaves it to the
+    /// count, and so does a count of zero, which is no shell at all.
+    pub top_shell_thickness: f64,
+    pub bottom_shell_thickness: f64,
     pub sparse_infill_density_percent: f64,
     pub pattern: Pattern,
     /// The configured sparse pattern when it is one not implemented here,
@@ -184,6 +190,8 @@ impl Default for InfillSettings {
         Self {
             top_shell_layers: 4,
             bottom_shell_layers: 3,
+            top_shell_thickness: 0.6,
+            bottom_shell_thickness: 0.0,
             sparse_infill_density_percent: 20.0,
             pattern: Pattern::CrossHatch,
             unsupported_pattern: None,
@@ -247,6 +255,17 @@ impl InfillSettings {
                     expected: "zero or more",
                 })
             })
+        };
+        // From nothing up, as the reference allows.
+        let thickness = |key: &str, default: f64| -> Result<f64, ConfigError> {
+            match settings.float(key)? {
+                Some(found) if found.is_nan() || found < 0.0 => Err(ConfigError::BadValue {
+                    key: key.into(),
+                    found: found.to_string(),
+                    expected: "zero or more",
+                }),
+                found => Ok(found.unwrap_or(default)),
+            }
         };
         let (pattern, unsupported_pattern) = match settings
             .texts("sparse_infill_pattern")
@@ -409,6 +428,11 @@ impl InfillSettings {
         Ok(Self {
             top_shell_layers: count("top_shell_layers", defaults.top_shell_layers)?,
             bottom_shell_layers: count("bottom_shell_layers", defaults.bottom_shell_layers)?,
+            top_shell_thickness: thickness("top_shell_thickness", defaults.top_shell_thickness)?,
+            bottom_shell_thickness: thickness(
+                "bottom_shell_thickness",
+                defaults.bottom_shell_thickness,
+            )?,
             sparse_infill_density_percent: density,
             pattern,
             unsupported_pattern,
@@ -550,6 +574,8 @@ impl InfillSettings {
         Ok(Shells {
             top_layers: self.top_shell_layers,
             bottom_layers: self.bottom_shell_layers,
+            top_thickness: self.top_shell_thickness,
+            bottom_thickness: self.bottom_shell_thickness,
             sparse_density: self.sparse_infill_density_percent / 100.0,
             minimum_sparse_area: self.minimum_sparse_infill_area,
             opening: scaled(outer.width / 10.0),
@@ -799,6 +825,38 @@ mod tests {
             (shells.top_layers, shells.bottom_layers, shells.opening),
             (4, 3, 45_000)
         );
+        // The reference's 0.6 mm under a top, and no least over a bottom.
+        assert_eq!((shells.top_thickness, shells.bottom_thickness), (0.6, 0.0));
+    }
+
+    #[test]
+    fn reads_how_thick_the_shells_are_to_be() {
+        let read = |json: &str| InfillSettings::from_settings(&Settings::from_json(json).unwrap());
+        let settings = read(
+            r#"{"top_shell_layers": "6", "top_shell_thickness": "1.0",
+                "bottom_shell_layers": "4", "bottom_shell_thickness": "0.8"}"#,
+        )
+        .unwrap();
+        assert_eq!(
+            (
+                settings.top_shell_thickness,
+                settings.bottom_shell_thickness
+            ),
+            (1.0, 0.8)
+        );
+        let shells = settings.shells(0.16).unwrap();
+        assert_eq!((shells.top_layers, shells.bottom_layers), (6, 4));
+        assert_eq!((shells.top_thickness, shells.bottom_thickness), (1.0, 0.8));
+        assert!(settings.unsupported.is_empty());
+        // Zero leaves it to the count; less than nothing is no thickness.
+        let unset = read(r#"{"top_shell_thickness": "0", "bottom_shell_thickness": "0"}"#).unwrap();
+        assert_eq!(
+            (unset.top_shell_thickness, unset.bottom_shell_thickness),
+            (0.0, 0.0)
+        );
+        assert!(read(r#"{"top_shell_thickness": "-1"}"#).is_err());
+        assert!(read(r#"{"bottom_shell_thickness": "-0.2"}"#).is_err());
+        assert!(read(r#"{"top_shell_thickness": "thick"}"#).is_err());
     }
 
     #[test]

@@ -29,11 +29,11 @@ replaces it until output matches on the printers we care about.
 | `crates/edge-template` | The placeholder language of custom G-code: `{expression}`, `{if}`, `[variable]`, and scripts |
 | `crates/edge-time` | How long a G-code file takes, with acceleration: the file is read as a printer reads it and planned as the reference's estimator plans, or as Klipper does |
 | `crates/edge-tower` | The prime tower a nozzle is primed on after a tool change |
-| `crates/edge-slice` | Mesh to per-layer contours, then to regions with holes; parallel across layers. Elephant foot compensation of the first layers; round holes made polygons of few sides, and round outlines and holes resized by what the filament prints them off by |
+| `crates/edge-slice` | Mesh to per-layer contours, then to regions with holes; parallel across layers. Elephant foot compensation of the first layers; round holes made polygons of few sides, and round outlines and holes resized by what the filament prints them off by; the last layers' heights tuned so a part comes out its exact height, and layers grown downward under overhangs so they can be printed |
 | `crates/edge-engine` | The whole pipeline behind one call, for whatever drives it: open a model and list its plates, settle its settings, slice with progress and cancel, G-code, a layer's lines for drawing, a vendor's presets by printer, and its printer models with the presets, picture and sizes of each |
 | `crates/edge-cli` | The `edge` command line |
 | `tools/make_defaults.py` | Asks the reference for its default of every setting and writes the table `edge-config` carries; run again when the pin moves |
-| `tools/make_fixture.py` | Writes small test 3MFs (parts that need supports or a brim, a plain cube, two blocks in two filaments, a comb with thin teeth on the bed, three tiers with a top surface on each, bars over a base for small bridges over infill, a slab with round holes for the hole options, and three round ones for arc fitting: a post, a post with a hole, a slab with a wide curve and tight ones) to compare with the reference on |
+| `tools/make_fixture.py` | Writes small test 3MFs (parts that need supports or a brim, a plain cube, two blocks in two filaments, a comb with thin teeth on the bed, three tiers with a top surface on each, bars over a base for small bridges over infill, a slab with round holes for the hole options, a slab with pockets underneath, three round ones for arc fitting: a post, a post with a hole, a slab with a wide curve and tight ones, and a post that widens as it rises for scarf seams) to compare with the reference on |
 | `tools/make_project.py` | Writes one of those parts as a project whose settings are named presets, with as many filaments as are named: how the test prints for a printer are made |
 | `reference/EdgeSlicer` | Pinned submodule of the C++ slicer: profiles, test models, behaviour to match. Read-only here |
 | `apps/desktop` | The desktop app (Tauri): several projects open at once, each prepared, sliced, looked through layer by layer and exported, in the C++ application's tabs. A workspace of its own |
@@ -212,6 +212,68 @@ Working:
   first layer's outer wall lies within 0.011 mm of the C++ slicer's
   everywhere; it was up to 0.17 mm off while wide parts were shrunk by
   the whole amount and narrow ones not at all.
+- A precise height (`precise_z_height`): layers are laid from the bed
+  up for as long as the middle of one is still inside the part, so the
+  last ends up to half a layer above or below the part's top; with this
+  on, the last five layers share that difference out between them, each
+  made a little thinner or thicker within what the nozzles in use allow
+  (`min_layer_height`, `max_layer_height`), and are cut through their
+  middles as they then lie. A port of the reference's
+  `adjust_layer_series_to_align_object_height` (Slicing.cpp). Walls,
+  fill, skirt, prime tower and supports on those layers are laid at the
+  layer's own height. Not as the reference, marked in the code: a layer
+  that has reached the least or greatest height takes no further share
+  (the reference gives it one, and overshoots; it shows only where the
+  five layers differ in height, which they do not here). On a 20 mm
+  cube at 0.2 mm on a 0.25 mm first layer both slicers end at 20.05 mm
+  without it and with it lay the last five layers at 0.19 mm, to
+  19.24, 19.43, 19.62, 19.81 and 20.00 mm; on one 20.14 mm tall, at
+  0.218 mm, to 20.14 mm. All 100 layers are at the C++ slicer's heights
+  in both, walls and layer extents the same to 0.000 mm and plastic per
+  millimetre the same on the changed layers, supports included. A shell
+  is measured in the layers as tuned: five of 0.19 mm come to 0.95 mm,
+  under the 1 mm of the U1's `top_shell_thickness`, so a sixth layer is
+  made solid under the cube's top, as in the reference (5.56 m of
+  internal solid fill there and 5.57 m here). Noted
+  and not done: a part of fewer than six layers, or a difference the
+  five cannot take up, is left as it was; and everything on a plate is
+  cut at the same heights, so only the tallest object comes out exact
+  (the reference tunes each object).
+- Overhangs made printable (`make_overhang_printable`, with
+  `make_overhang_printable_angle` and
+  `make_overhang_printable_hole_size`): from the top layer down, each
+  layer is made to hold the layer above less what a layer may reach out
+  past the one beneath at the angle set (measured from upright: 90
+  changes nothing, 0 lets nothing overhang), so a slope grows under
+  every overhang down to where it meets the part or the bed. The roof
+  of a hole in the underside is not sloped but filled, hole and all,
+  unless the hole is smaller than the size set. A port of the
+  reference's `apply_conical_overhang` (PrintObjectSlice.cpp), done
+  where the reference does it: on the layers as cut, before paint, size
+  compensation and the elephant's foot; a brim goes round what the
+  slope puts on the bed. On a layer in several filaments what is added
+  goes to the filament above it. Not as the reference, marked in the
+  code: the reach is `tan(angle)` times the height of the layer that
+  overhangs, where the reference takes the `layer_height` setting for
+  every layer (with a precise height on as well, a slope under the
+  changed layers lies up to 0.043 mm from the C++ slicer's); and
+  everything on the plate is grown as one stack, which differs only
+  where a part floats over nothing. Against the C++ slicer, same layers
+  throughout: on the mushroom at the default 55° the wall length of a
+  layer differs by 0.01% on average and 0.1% at most, layer extents by
+  0.001 mm and 0.004 mm; at 30° by 0.02% and 0.005 mm at most; on the
+  shelf by 0.00% and 0.002 mm; on the 3DBenchy, with a precise height
+  as well, by 0.07% on average (as without either) and 0.013 mm at
+  most. On a slab with two pockets underneath (`tools/make_fixture.py`,
+  `pocket`) both are filled by default and the bridge over them
+  (0.43 m in the C++ slicer's file, 0.46 m here) goes in both; with a
+  hole size of 50 mm² the 16 mm² pocket is kept and the 100 mm² one
+  filled, walls and extents the same to 0.000 mm. A part whose slope reaches the bed gets the same
+  1.12 m of brim in both. Growing the layers is done one after another
+  and takes about 0.2 s on the 3DBenchy's 240 layers. Noted and not
+  done: on a part with colour painted on it, what is added is printed
+  in the filament the part is made of. Not read: the option set for one
+  part or modifier, as with every setting.
 - Every preset the reference ships resolves. `slice` takes layer heights and
   the closing radius from the command line, a process preset, or the 3MF's
   own settings, in that order.
@@ -293,11 +355,11 @@ Working:
   walls' own, the first layer's speed, the hot end's flow and a small
   loop's lower speed still holding them, and they are not slowed to
   give a layer time to cool; a loop any of which is laid as an overhang
-  wall is a wall like any other. Not done: the scarf seam such walls
-  are to be joined with (`apply_scarf_seam_on_circles`, on unless turned
-  off; a note says so), and the reference's "; Slow Down Start" and
-  "; Slow Down End" comments round them, which only its own cooling
-  stage reads.
+  wall is a wall like any other. They are joined with a scarf seam
+  (`apply_scarf_seam_on_circles`, on unless turned off; scarf seams,
+  below), whatever `seam_slope_type` says. Not written: the
+  reference's "; Slow Down Start" and "; Slow Down End" comments round
+  them, which only its own cooling stage reads.
 - With either of the two on, the layers are cut without the points
   where the cutting plane crosses an edge inside a flat face, as the
   reference cuts them (TriangleMeshSlicer.cpp `coplanar_edges`): they
@@ -391,7 +453,27 @@ Known gaps: painted supports and seams, per-object setting overrides, typed sett
   shell of it is made solid too, so a leaning wall stays as thick
   measured straight up as it is sideways; walls between two filaments
   inside a part do not count (`discover_vertical_shells`). Any other
-  value of that setting is noted and not followed. Fill over air takes `bridge_flow`
+  value of that setting is noted and not followed.
+  A shell is as many layers as `top_shell_layers` or
+  `bottom_shell_layers` says, and as many more as it takes to measure
+  `top_shell_thickness` or `bottom_shell_thickness`: a layer is shell
+  under a top face while the layers from its top to the face's come to
+  less than the thickness set, and over a bottom face or a bridge while
+  those from its bottom to the face's do, each layer at the height it
+  has. That is the reference's rule in both the places it makes shells
+  (PrintObject.cpp `discover_vertical_shells` and
+  `discover_horizontal_shells`). Zero leaves it to the count, and with
+  no layers asked for there is no shell whatever the thickness. While
+  only the count was followed, a 20 mm cube with the Snapmaker U1's
+  0.16 mm process (six layers, 1 mm) got 6.34 m of internal solid fill
+  where the C++ slicer lays 7.22 m; it gets 7.22 m now, on the same
+  layers (more under Comparing with the reference). Where the count
+  already makes the thickness, as five layers of 0.2 mm do with the
+  U1's 0.2 mm process, the file is byte for byte what it was. Noted
+  and not done: paint on a top or bottom face is carried as deep as
+  the thickness takes in layers of the layer height, which is not the
+  shell's depth where the first layer or the last five are of another
+  height. Fill over air takes `bridge_flow`
   and `bridge_density`, and runs along the edges it has nothing beside,
   so its lines go from one support to the other. Bridges, bottoms and
   tops reach a wall's spacing into the fill beside them, to have
@@ -466,6 +548,48 @@ Known gaps: painted supports and seams, per-object setting overrides, typed sett
     `staggered_inner_seams` each inner wall starts on round from the
     wall outside it by its depth, so the seams do not lie one behind
     another.
+  - Scarf seams (`seam_slope_type`): a loop joined this way is laid
+    whole, with no gap at its seam. Its first 20 mm
+    (`seam_slope_min_length`, or all of it with
+    `seam_slope_entire_loop`) climb from the top of the layer beneath,
+    or from `seam_slope_start_height` above it, to the layer's own
+    height, in moves no longer than a tenth of that length
+    (`seam_slope_steps`), each laying as much of the line as the height
+    it ends at; and when the loop comes round to its start it goes on
+    over that stretch, level, laying what is left of the line, to two
+    seam gaps short of where the slope ends. The joint is laid at
+    `scarf_joint_speed` where that is slower than the wall, with
+    `scarf_joint_flow_ratio` of the plastic. `external` joins the loops
+    round the part so and `all` those round holes too: outer walls,
+    and with `seam_slope_inner_walls` inner ones, whose way up starts
+    two fifths of the slope on, so the joints do not lie side by side;
+    never on the first layer, nor a loop that starts over air. With
+    `seam_slope_conditional` only loops with no corner sharper than
+    `scarf_angle_threshold` whose seam is short of the layer beneath by
+    less than `scarf_overhang_threshold` of the wall's width. The walls
+    of a circle the auto circle compensation resized are joined so
+    whatever those say (`apply_scarf_seam_on_circles`). A slope that
+    crosses a stretch over air climbs on through it as an overhang
+    wall. With arc fitting the slope is straight moves through the
+    points its arcs were drawn by and the rest of the loop keeps its
+    arcs, as in the reference; a wall of changing width has its slope
+    run on from one width into the next. The nozzle comes down to the
+    foot of the slope where it would come down to the layer, never
+    lower than the layer's bottom, and is wiped on round the loop from
+    where the slope came up. Five things are not as in the reference,
+    each a mistake there: a slope of no length is a plain seam with
+    its gap, where the reference closes the loop with neither; an
+    inner wall's way up starts two fifths on whatever the seam gap,
+    where the reference clips nothing with the gap at 0;
+    `scarf_joint_speed` holds the joint on a small loop too, where the
+    reference lets it go at `small_perimeter_speed`; a joint speed of 0
+    is the wall's own speed, and said, where the reference then goes
+    as fast as the hot end melts; and how far a seam may hang out is a
+    share of the wall's own width, where the reference takes the width
+    as set, which is 0 when it is left to follow the nozzle. One thing
+    is different without being wrong there: the nozzle goes down to
+    the foot of the slope as a move of its own after the travel, where
+    the reference makes an unretracted travel's last leg the way down.
   - Order of fill and supports: the fill of an island comes in parts,
     one for each area filled, of whatever kind. The parts are chained by
     their closest ends from where the nozzle is, the shortest hop
@@ -778,7 +902,7 @@ noted), narrow solid areas are filled with the same lines
 as wide ones where the reference lays loops along them
 (`detect_narrow_internal_solid_infill`, noted), narrow parts of top and
 bottom surfaces get no gap fill
-(`gap_fill_target`), shell thickness in mm is ignored, and eight of the
+(`gap_fill_target`), and eight of the
 reference's sparse patterns are not laid (below). Gap closing runs across objects, so two separate objects closer than twice
 the radius merge; the reference closes within one object only.
 
@@ -1081,9 +1205,10 @@ and 3 fifths of a side on five layers running; the nearly round hole,
 the eight-sided one and the hole from front to back are as drawn in
 both. (The circle compensation rows are with
 `apply_scarf_seam_on_circles` off. With it on, as it is unless turned
-off, the reference's outer walls come to 20.97 m and its inner walls to
-19.78 m: its scarf seams lay the start of each such loop twice. The
-loops themselves are the same.) With eight sides at most the 0.06 m is
+off, the outer walls come to 20.97 m in both and the inner walls to
+19.78 m in the reference's file and 19.79 m here: the scarf seams lay
+the start of each such loop twice. The loops themselves are the same.)
+With eight sides at most the 0.06 m is
 overhang: the corners of a 12 mm hole in eight sides stand out over the
 layer beneath as it turns, and the two slicers cut a wall into overhang
 and wall differently.
@@ -1116,6 +1241,110 @@ were followed: on this part, the cube, frame, steps, mushroom and fins,
 two blocks in two filaments, 3DBenchy and both plates of
 `mcbrim_test.3mf`. With both on, the parts made of boxes are line for
 line what they are with both off.
+
+Scarf seams, 2026-11-11, on parts from `tools/make_fixture.py` with the
+U1's presets (classic walls, a seam gap of 0.06 mm) but where the
+Centauri Carbon's are named, which have arc fitting on and a seam gap
+of 0.04 mm. `funnel` is new for this: a round post that widens as it
+rises, each 0.2 mm layer lying 0.06, 0.12, 0.18 and at the top 0.24 mm
+outside the one beneath. Lengths are the C++ slicer's and this
+engine's; a way up or down is a run of moves that say a height as they
+lay (two to a joint), counted over the whole file and paired by kind
+and length, and the last column is the most any pair differs by.
+
+| Options, part | Outer wall, m | Inner wall, m | Ways up and down | Furthest apart: length, height |
+|---|---|---|---|---|
+| `external`, cylinder | 4.04 / 4.04 | 2.89 / 2.89 | 98 / 98 | 0.001 mm, 0.004 mm |
+| `external`, tube | 5.29 / 5.29 | 4.41 / 4.41 | 78 / 78 | 0.002 mm, 0.004 mm |
+| `all`, tube | 6.06 / 6.06 | 4.41 / 4.41 | 156 / 156 | 0.001 mm, 0.004 mm |
+| `all` and inner walls, tube | 6.06 / 6.06 | 5.31 / 5.31 | 308 / 308 | 0.001 mm, 0.004 mm |
+| and outer wall first | 6.06 / 6.06 | 5.31 / 5.31 | 308 / 308 | 0.001 mm, 0.004 mm |
+| and walls clockwise | 6.06 / 6.06 | 5.31 / 5.31 | 308 / 308 | 0.001 mm, 0.005 mm |
+| and seams at the nearest point | 6.06 / 6.06 | 5.31 / 5.31 | 308 / 308 | 0.002 mm, 0.002 mm |
+| and `arachne` | 6.06 / 6.06 | 5.31 / 5.31 | 308 / 308 | 0.001 mm, 0.006 mm |
+| and the whole loop | 8.91 / 8.91 | 8.69 / 8.69 | 308 / 308 | |
+| `external`, cube | 9.79 / 9.79 | 7.44 / 7.44 | 198 / 198 | none, none |
+| and `arachne` | 9.79 / 9.79 | 7.44 / 7.44 | 198 / 198 | none, none |
+| and 40 steps | 9.79 / 9.79 | 7.44 / 7.44 | 198 / 198 | none, none |
+| and conditional | 7.82 / 7.82 | 7.44 / 7.44 | 0 / 0 | |
+| `external` and conditional, cylinder | 4.04 / 4.04 | 2.89 / 2.89 | 98 / 98 | 0.001 mm, 0.004 mm |
+| `external` and the whole loop, cylinder | 6.07 / 6.08 | 2.89 / 2.89 | 98 / 98 | |
+| started at 50%, or at 0.1 mm, cylinder | 4.04 / 4.04 | 2.89 / 2.89 | 98 / 98 | 0.001 mm, 0.002 mm |
+| 10 mm in 3 steps, cylinder | 3.55 / 3.55 | 2.89 / 2.89 | 98 / 98 | 0.001 mm, 0.010 mm |
+| at 20 mm/s with 0.9 of the flow, cylinder | 4.04 / 4.04 | 2.89 / 2.89 | 98 / 98 | 0.001 mm, 0.004 mm |
+| at 50% and inner walls, cylinder | 4.04 / 4.04 | 3.46 / 3.46 | 194 / 194 | 0.001 mm, 0.004 mm |
+| `seam_position` `random`, cylinder | 4.04 / 4.04 | 2.89 / 2.89 | 98 / 98 | 0.001 mm, 0.007 mm |
+| `all`, steps | 6.53 / 6.53 | 5.00 / 5.00 | 126 / 126 | none, 0.007 mm |
+| `external`, mushroom | 5.51 / 5.51 | 3.83 / 3.83 | 136 / 136 | none, none |
+| and conditional | 4.16 / 4.16 | 3.83 / 3.83 | 0 / 0 | |
+| `external`, funnel | 3.36 / 3.36 | 2.19 / 2.19 | 98 / 98 | 0.001 mm, 0.005 mm |
+| and conditional | 3.16 / 3.16 | 2.19 / 2.19 | 78 / 78 | 0.001 mm, 0.005 mm |
+| with a threshold of 20% | 2.96 / 2.96 | 2.19 / 2.19 | 58 / 58 | 0.001 mm, 0.005 mm |
+| with a threshold of 0 | 3.36 / 3.36 | 2.19 / 2.19 | 98 / 98 | 0.001 mm, 0.005 mm |
+| and inner walls | 3.16 / 3.16 | 2.66 / 2.66 | 156 / 156 | 0.002 mm, 0.012 mm |
+| `all`, seams at the back, holes | 23.06 / 23.07 | 16.22 / 16.23 | 792 / 792 | |
+| `enable_circle_compensation`, holes | 20.97 / 20.97 | 19.78 / 19.79 | 1034 / 1034 | |
+| and no scarf on circles | 16.59 / 16.59 | 16.44 / 16.44 | 0 / 0 | |
+| arcs: `all`, curve | 3.66 / 3.66 | 2.90 / 2.91 | 58 / 58 | 0.001 mm, 0.002 mm |
+| arcs: `all` and inner walls, tube | 6.07 / 6.07 | 5.32 / 5.33 | 308 / 308 | 0.002 mm, 0.012 mm |
+| arcs: `external` and the whole loop, cylinder | 6.08 / 6.08 | 2.89 / 2.89 | 98 / 98 | |
+| arcs: `all`, inner walls, `arachne`, curve | 3.65 / 3.65 | 3.24 / 3.24 | 114 / 114 | 0.001 mm, 0.005 mm |
+| arcs: `enable_circle_compensation`, holes | 20.99 / 20.99 | 19.80 / 19.81 | 1034 / 1034 | |
+
+Where the last column is empty the pairs cannot be told apart by
+length: a slope the length of its loop, or a layer of many loops whose
+seams the two slicers put in different places. The same loops are
+joined in every row, and on the cube, whose loops are the same points
+in both files, the joint is the reference's move for move: on the layer
+at 5.05 mm the way up is 17 moves, 16 of 1.224 mm and a last of
+0.42 mm, from Z 4.861 to 5.05, feeding 0.00188, 0.00440, 0.00672 mm
+and so on to 0.03681, and the way down 17 moves feeding from 0.03529 mm
+to 0.00003, the same figures in both to the last place. On the round parts the reference's walls have
+half as many corners (its sides are 0.96 mm, this engine's 0.48), so a
+way up has 21 moves there and 42 here, and since each move is laid at
+the flow its far end is to have, the way up comes to 0.3200 mm of
+filament there and 0.3127 here and the way down to 0.2918 and 0.2990:
+0.6118 for the joint in both. Height along the slope agrees to the
+0.01 mm of a move's difference in length. The joint's feed rate is the
+wall's in both, with what a layer is slowed by to cool (which the two
+reckon a few percent apart, as with no scarf); at a `scarf_joint_speed`
+of 20 mm/s every way up and down is at F1200 in both files, and at 50%
+the wipe after an outer wall is at F6000 in both. On the funnel a
+conditional scarf stops where the wall leans out 0.24 mm a layer at the
+default threshold and where it leans 0.18 mm at 20%, on the same layers
+in both, and on the mushroom the cap's first layer, which starts over
+air, has none in either. Where a slope crosses a stretch over air
+(`holes`, seams at the back, over the hole that runs from front to
+back) both files climb through it as an overhang wall at the bridge's
+speed, 20 such moves in each.
+
+The reference's own file, timed here as the reference plans it, comes
+to within a second of the reference's own time on all 50 files (a move that
+climbs as it lays was already read as the move it is: its length is
+the slope's, and the Z axis's limits hold it). With `seam_slope_type` at
+`none` and no compensated circles the G-code is byte for byte what it
+was before any of this, on these parts and on 16 projects besides (the
+two these take their settings from and 14 of the reference's test
+data), and a file is the same on one thread as on all of them. Every extruding move in the 50 files is at its
+layer's height or, on a scarf, between the layer's bottom and its top.
+
+Three rows are left out of the table because they differ on purpose
+(Status, above). With `seam_slope_min_length` at 0, which the Centauri
+Carbon's presets have, the reference closes each loop of the cylinder
+with no gap at all, and here it stops a seam gap short as with no
+scarf. With `seam_gap` at 0 the reference starts an inner wall's way up
+at the seam, 5.89 m of inner wall on the tube, where here it starts two
+fifths of the slope on as it does at any other gap, 5.28 m (5.31 m in
+both at 0.06 mm). And with `small_perimeter_threshold` at 3 mm,
+`small_perimeter_speed` at 60 mm/s and `scarf_joint_speed` at 20, the
+reference lays the joints of the `holes` part's small loops at 60 mm/s
+and this engine at 20: its file comes to 37m 33s and this engine's to
+43m 9s (23m 32s and 24m 59s with no scarf). An inner wall's joint is a
+fifth short of plastic in both: its way up, cut to three fifths, still
+climbs from nothing, and the way down over it thins out over the whole
+slope (on the tube with arcs, 0.203 and 0.311 mm of filament against
+0.643 for 20 mm of line); that is how the reference has it, and it is
+not changed here.
 
 Fuzzy skin differs from the reference in three ways, on purpose:
 
@@ -1615,6 +1844,51 @@ the writer. Plate 1 of `mcbrim_test.3mf`, the largest of these, slices
 in 2.44 s with it on against 2.13 s off on 18 threads (4.04 against
 3.65 on four), and the Benchy in 0.67 s against 0.43 s (2.80 against
 2.04 on one thread), each the best of five taken turn about.
+
+Shells as thick as asked (`top_shell_thickness`,
+`bottom_shell_thickness`), against the C++ slicer on
+`tools/make_fixture.py`'s parts: metres of internal solid fill (C++
+slicer / this engine), what this engine laid while it followed the
+count alone, and the layers with solid fill inside them, counted from
+0, which are the same in both slicers in every row. The first eight
+rows are whole stock processes; the rest are the U1's 0.2 mm process
+(five top layers and 1 mm, three bottom layers and no thickness, a
+first layer of 0.25 mm) with what is named changed. Top and bottom
+surfaces are the same length in both to 0.01 m in every row, and each
+file is the same made on one thread and on many.
+
+| Part and settings | Solid fill, m | By count | Layers solid inside |
+| --- | --- | --- | --- |
+| `cube`, U1 0.08 mm (9 layers, 0.8 mm) | 11.93 / 11.95 | 11.10 | 1-6, 238-247 of 249 |
+| `cube`, U1 0.10 mm Color Mixing (5, 0.6 mm) | 6.96 / 6.97 | 6.12 | 1-4, 193-198 of 200 |
+| `cube`, U1 0.12 mm (5, 0.6 mm) | 6.18 / 6.19 | same file | 1-4, 160-164 of 166 |
+| `cube`, U1 0.16 mm (6, 1 mm) | 7.22 / 7.22 | 6.34 | 1-3, 117-123 of 125 |
+| `cube`, U1 0.20 mm (5, 1 mm) | 4.68 / 4.68 | same file | 1-2, 94-98 of 100 |
+| `cube`, U1 0.24 mm (4, 1 mm) | 4.80 / 4.80 | 3.87 | 1-2, 78-82 of 84 |
+| `cube`, U1 0.28 mm (4, 1 mm) | 3.96 / 3.96 | same file | 1-2, 67-70 of 72 |
+| `cube`, Centauri Carbon 0.16 mm (5, 1 mm; bottom 3, 0.6 mm) | 7.22 / 7.22 | 4.57 | 1-3, 117-123 of 125 |
+| `cube`, `layer_height` 0.16, 0.12, 0.08 | 6.33 / 6.34, 7.91 / 7.92, 11.09 / 11.10 | 4.57, 4.46, 4.36 | 1-2 and 116-122, 156-164, 234-246 |
+| `cube`, 0.16, `top_shell_thickness=0` | 4.56 / 4.57 | same file | 1-2, 118-122 |
+| `cube`, 0.16, `top_shell_layers=0` | 1.77 / 1.77 | same file | 1-2; no top surface in either |
+| `cube`, `bottom_shell_thickness=1` | 6.49 / 6.50 | 4.68 | 1-4, 94-98 |
+| `cube`, 0.12, `bottom_shell_thickness=0.8` | 10.50 / 10.51 | 4.46 | 1-5, 156-164 |
+| the same with `bottom_shell_layers=0` | 6.18 / 6.19 | 2.73 | 156-164; no bottom surface in either |
+| `steps`, 0.16 | 18.74 / 18.76 | 13.53 | 1-2, 10-16, 29-35, 54-60 |
+| `steps`, 0.12, `bottom_shell_thickness=0.8` | 31.04 / 31.08 | 13.22 | 1-5, 14-22, 39-47, 72-80 |
+| `mushroom`, 0.16 | 14.88 / 14.88 | 10.68 | 1-2, 63-64, 79-85 |
+| `mushroom`, 0.12, `bottom_shell_thickness=0.8` | 26.68 / 26.70 | 10.43 | 1-5, 83-88, 106-114 |
+| `cube`, `precise_z_height=1` | 5.56 / 5.57 | 4.66 | 1-2, 93-98 |
+| `cube`, 0.16, `ensure_vertical_shell_thickness=none` | 6.33 / 6.34 | 4.57 | 1-2, 116-122 |
+
+The lowest layer of each run under a top is the band of sparse fill
+made solid under the edge of a bridge over infill, not shell. The
+shell over the underside of the mushroom's cap, a bridge, is made up
+to the thickness as the one over the bed is. One
+part differs, and did before: `steps` with the U1's own 0.16 mm
+process has the top of its lowest tier, at 3 mm, exactly where layer
+18 is cut; the reference takes that layer for part of the tier and
+this engine does not, so the tier's top and the shell under it lie a
+layer lower here (10-16 against 11-17), each as deep as the other's.
 
 ## Licence
 

@@ -101,6 +101,11 @@ impl Below {
         (((y - self.min.1) / self.reach).max(0.0) as usize).min(self.rows - 1)
     }
 
+    /// As far as [`Self::signed_distance`] tells distances apart, in mm.
+    pub(crate) fn reach(&self) -> f64 {
+        self.reach
+    }
+
     /// Distance in mm from a point to the outline: negative over the layer
     /// beneath, positive over air, and no further than the reach either way.
     pub(crate) fn signed_distance(&self, x: f64, y: f64) -> f64 {

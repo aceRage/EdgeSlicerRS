@@ -13,6 +13,10 @@ any changes given on the command line.
         mushroom enable_support=1 "support_type=normal(auto)"
     target/release/edge-parity /tmp/mushroom.3mf
 
+pocket is for make_overhang_printable: a slab 8 mm tall with two square
+pockets 3 mm up into it from underneath, 100 mm2 and 16 mm2, so a hole size
+between the two fills one and keeps the other.
+
 Shapes: mushroom and shelf need supports; tower and bar get an automatic
 brim; bridge is a deck across two posts; cube is a plain 20 mm cube;
 twotone is two blocks side by side, the first in filament 1 and 6 mm tall,
@@ -26,6 +30,11 @@ slab with one long side bowed out on a 80 mm radius, one end a half circle and
 the other end's corners rounded to 1.5 mm, for arc fitting (use a source with
 enable_arc_fitting=1, or give it as a change). The reference loads the filament preset named in the settings again,
 so a change to a filament's own settings, such as filament_type, is undone.
+
+funnel is for what goes by how far a round wall hangs out (a conditional scarf
+seam's scarf_overhang_threshold): a round post that widens as it rises, straight
+for 2 mm and then each 2 mm more steeply, every 0.2 mm layer's outline lying
+0.06, 0.12, 0.18 and at the top 0.24 mm outside the one beneath.
 
 holes is for the hole options (hole_to_polyhole, enable_circle_compensation):
 a slab 6 mm tall of ten 16 mm cells in two rows. The near row has round
@@ -81,6 +90,25 @@ def prism(outline, z0, dz, hole=None):
             t.extend([(n + i, n + j, 3 * n + j), (n + i, 3 * n + j, 3 * n + i)])
     return v, t
 
+def frustum(cx, cy, r0, r1, n, z0, dz):
+    """A round post in n sides whose radius goes from r0 at z0 to r1 at z0 + dz."""
+    v = [(x, y, z0) for x, y in circle(cx, cy, r0, n)] + [(x, y, z0 + dz) for x, y in circle(cx, cy, r1, n)]
+    v += [(cx, cy, z0), (cx, cy, z0 + dz)]
+    t = []
+    for i in range(n):
+        j = (i + 1) % n
+        t += [(i, j, n + j), (i, n + j, n + i), (2 * n, j, i), (2 * n + 1, n + i, n + j)]
+    return v, t
+
+def funnel():
+    """Five round sections one on another, each 2 mm tall: the first straight,
+    the rest wider at the top by 0.6, 1.2, 1.8 and 2.4 mm of radius."""
+    solids, r, z = [], 6.0, 0.0
+    for grow in (0.0, 0.6, 1.2, 1.8, 2.4):
+        solids.append(frustum(135.5, 136, r, r + grow, 128, z, 2))
+        r, z = r + grow, z + 2
+    return solids
+
 def curve_outline():
     """A slab about 40 x 16 mm: its far side bows out on a 80 mm radius, its
     right end is a half circle and its left corners are rounded to 1.5 mm."""
@@ -100,6 +128,7 @@ MESHES = {
     # a round post 24 mm across with a 12 mm hole through it
     "tube": [prism(circle(135.5, 136, 12, 128), 0, 8, circle(135.5, 136, 6, 128))],
     "curve": [prism(curve_outline(), 0, 6)],
+    "funnel": funnel(),
 }
 
 SHAPES = {
@@ -116,6 +145,11 @@ SHAPES = {
     "cube": [(125.5, 126, 0, 20, 20, 20)],
     # a long low bar
     "bar": [(35.5, 131, 0, 200, 10, 30)],
+    # a slab 40 x 20 x 8 mm with two pockets 3 mm up into it from underneath,
+    # 10 mm square and 4 mm square: walls round the pockets and a lid on them
+    "pocket": [(115.5, 126, 0, 40, 5, 3), (115.5, 141, 0, 40, 5, 3), (115.5, 131, 0, 5, 10, 3),
+               (130.5, 131, 0, 10, 10, 3), (140.5, 131, 0, 4, 3, 3), (140.5, 138, 0, 4, 3, 3),
+               (144.5, 131, 0, 11, 10, 3), (115.5, 126, 3, 40, 20, 5)],
     # a square frame 5 mm wide round a 30 mm hole, for walls round a hole
     "frame": [(115.5, 116, 0, 40, 5, 6), (115.5, 151, 0, 40, 5, 6), (115.5, 116, 0, 5, 40, 6), (150.5, 116, 0, 5, 40, 6)],
     # a plate with three fins on it, 0.5, 0.8 and 1.1 mm thick, for thin walls
