@@ -1,128 +1,122 @@
-/* The sidebar's printer list and "Select/Remove printers" (printers.js).
-   Colours are the page's own (style.css). */
+/* The sidebar's printer card and "Select/Remove printers" (printers.js).
+   Tokens and the controls are the page's own (style.css, STYLE.md). */
 
-/* ---- the printer block ---- */
-
-h2.with-tools { display: flex; align-items: center; }
-h2.with-tools .fold-title { flex: 1; }
-#printer-settings { flex: none; width: 24px; height: 24px; color: var(--quiet); border-radius: 4px; }
-#printer-settings:hover { color: var(--text); background: var(--bg); }
-#printer-settings svg { width: 16px; height: 16px; fill: none; stroke: currentColor; stroke-width: 1.3; stroke-linecap: round; }
-
-#printer-row {
-  display: grid;
-  grid-template-columns: 48px minmax(0, 1fr);
-  align-items: center;
-  gap: 8px;
-  padding: 6px;
-  border: 1px solid var(--line);
-  border-radius: 8px;
-  background: var(--field);
-}
-#printer-row:hover, #printer-row:focus-within { border-color: var(--accent); }
-#printer-row select { border: 0; background: transparent; font-weight: 600; padding-left: 2px; }
-#printer-row select:focus-visible { outline: none; }
-
-/* A model's picture; a grey box where it has none, as the reference's placeholder. */
-#printer-cover, .pt-cover {
+/* A model's picture, on a light plate: the pictures are drawn for a light
+   page. A plate alone where a model has none. */
+.cover {
   display: block;
-  border-radius: 4px;
-  background: rgba(128, 128, 128, 0.16);
+  flex: none;
+  border-radius: var(--radius-s);
+  background: var(--cover-plate);
   overflow: hidden;
 }
-#printer-cover { width: 48px; height: 48px; }
-#printer-cover img, .pt-cover img { display: block; width: 100%; height: 100%; object-fit: contain; background: #ffffff; }
+.cover:empty { background: var(--fill-active); }
+.cover img { display: block; width: 100%; height: 100%; object-fit: contain; }
 
-#nozzles { display: flex; flex-direction: column; gap: 6px; }
-#nozzles h3 { margin-top: 2px; }
-#nozzle-tiles { display: flex; flex-wrap: wrap; gap: 6px; }
+/* ---- the printer card ---- */
+
+/* The printer itself: its picture, its name, its build volume. All of it
+   opens the list of printers. */
+.printer-pick {
+  display: grid;
+  grid-template-columns: 52px minmax(0, 1fr) 20px;
+  align-items: center;
+  gap: 10px;
+  padding: var(--space-2);
+  border-radius: var(--radius-l) var(--radius-l) 0 0;
+  background: var(--mark-chevron) no-repeat right 12px center / 9px 6px;
+  cursor: pointer;
+  user-select: none;
+  -webkit-user-select: none;
+  transition: background-color var(--time-fast) var(--ease);
+}
+.printer-pick:hover, .printer-pick[aria-expanded="true"] { background-color: var(--fill-hover); }
+.printer-pick:focus-visible { outline-offset: -2px; }
+.printer-pick[aria-disabled="true"] { cursor: default; }
+#printer-cover { width: 52px; height: 52px; }
+.printer-pick-text { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+.printer-pick .lb-value { font-weight: 650; }
+#printer-info { font-size: var(--size-label); font-variant-numeric: tabular-nums; color: var(--text-2); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+#printer-info:empty { display: none; }
+
+/* In the list: each printer with its picture. */
+.lb-option .cover { width: 28px; height: 28px; }
+
+/* The nozzles are one block of the card: their title, a cell for each where there are several, in a strip
+   the width of the card, and the diameter. */
+.nozzle-row { flex-wrap: wrap; row-gap: 0; min-height: 0; padding-top: 9px; }
+#nozzle-tiles { flex: 1 1 100%; display: grid; grid-template-columns: repeat(auto-fit, minmax(54px, 1fr)); gap: var(--space-1); padding: 6px 7px 2px 0; }
 .nozzle-tile {
   display: flex;
-  flex-direction: column;
-  align-items: center;
-  min-width: 44px;
-  padding: 3px 6px;
-  border: 1px solid var(--line);
-  border-radius: 5px;
-  background: var(--field);
-  line-height: 1.25;
+  align-items: baseline;
+  justify-content: center;
+  gap: 6px;
+  height: var(--control-s);
+  border: 1px solid var(--line-2);
+  border-radius: var(--radius-s);
+  background: var(--surface-well);
+  line-height: 20px;
 }
-.nozzle-tile small { color: var(--quiet); font-size: 10px; }
-.nozzle-tile b { font-weight: 600; }
+.nozzle-tile small { color: var(--text-3); font-size: var(--size-caps); font-weight: 600; letter-spacing: 0.04em; }
+.nozzle-tile b { font: 600 var(--size-label) var(--font-mono); font-variant-numeric: tabular-nums; }
 
 /* ---- Printer Selection ---- */
 
 #printers-dialog {
-  width: min(1000px, 90vw);
-  height: min(720px, 90vh);
+  width: min(1120px, calc(100vw - 48px));
+  height: min(780px, calc(100vh - 48px));
   max-width: none;
   max-height: none;
-  padding: 16px;
+  padding: 0;
+  overflow: hidden;
 }
-#printers-dialog[open] { display: flex; flex-direction: column; gap: 10px; }
-#printers-dialog h2 { font-size: 16px; }
+#printers-dialog[open] { display: flex; flex-direction: column; }
+#printers-dialog h2 { padding: 14px var(--space-4) 0; }
 
-#pt-toolbar { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
-#pt-search { flex: 1 1 220px; max-width: 320px; padding: 6px 8px; border: 1px solid var(--line); border-radius: 5px; background: var(--field); color: var(--text); font: inherit; }
-#pt-count { margin-left: auto; white-space: nowrap; }
-#pt-scope { white-space: nowrap; }
-#pt-toolbar button { min-width: 84px; }
+#pt-toolbar { display: flex; align-items: center; gap: var(--space-2) var(--space-3); flex-wrap: wrap; padding: var(--space-3) var(--space-4); }
+#pt-search { flex: 1 1 220px; max-width: 320px; }
+#pt-count { margin-left: auto; color: var(--text-1); white-space: nowrap; font-variant-numeric: tabular-nums; }
+#pt-scope { color: var(--text-3); font-size: var(--size-label); white-space: nowrap; }
+#pt-toolbar .joined button { min-width: 76px; }
 
-#pt-chips { display: flex; align-items: center; flex-wrap: wrap; gap: 6px 10px; }
-.pt-chip { padding: 2px 8px; border: 1px solid var(--line); border-radius: 12px; background: var(--bg); font-size: 12px; }
-.pt-chip button { color: var(--quiet); }
+#pt-chips { display: flex; align-items: center; flex-wrap: wrap; gap: 6px var(--space-2); padding: 0 var(--space-4) var(--space-3); }
+#pt-chips .link { margin-left: var(--space-1); font-size: var(--size-label); }
 
-#pt-scroll { flex: 1; min-height: 0; overflow: auto; border: 1px solid var(--line); border-radius: 6px; background: var(--field); }
-#pt-table { width: 100%; border-collapse: collapse; table-layout: fixed; }
-#pt-table th {
-  position: sticky;
-  top: 0;
-  z-index: 1;
-  padding: 0 4px 0 8px;
-  background: var(--panel);
-  border-bottom: 1px solid var(--line);
-  text-align: left;
-  white-space: nowrap;
-  font-weight: 600;
-}
-#pt-table th.check { width: 104px; }
-#pt-table th.icon { width: 48px; }
-#pt-table th.num { width: 96px; text-align: right; }
-#pt-table th:nth-child(3) { width: 19%; }
-#pt-table th:last-child { width: 118px; }
-.pt-sort { padding: 7px 0; border: 0; background: none; font-weight: 600; }
-.pt-way { color: var(--accent); }
-.pt-funnel { padding: 3px; margin-left: 2px; border: 0; background: none; color: var(--quiet); vertical-align: middle; opacity: 0.55; }
-.pt-funnel:hover, .pt-funnel.on { opacity: 1; }
-.pt-funnel.on { color: var(--accent); }
-.pt-funnel svg { display: block; width: 12px; height: 12px; fill: none; stroke: currentColor; stroke-width: 1.2; stroke-linejoin: round; }
-.pt-funnel.on svg { fill: currentColor; }
-
-#pt-table td { padding: 4px 8px; border-bottom: 1px solid var(--line); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-#pt-table td.check { text-align: center; }
-#pt-table td.icon { padding: 3px 4px; }
-#pt-table td.num { text-align: right; font-variant-numeric: tabular-nums; }
-#pt-table td.na { color: var(--quiet); }
-#pt-table tbody tr { cursor: pointer; }
-#pt-table tbody tr:hover { background: var(--bg); }
+/* The table runs from edge to edge of the dialog, sunk between two hairlines. */
+#pt-scroll { flex: 1; min-height: 0; overflow: auto; border-top: 1px solid var(--line-2); border-bottom: 1px solid var(--line-2); background: var(--surface-well); }
+#pt-table { min-width: 600px; }
+#pt-table th.check { width: 104px; padding-left: var(--space-4); }
+#pt-table th.icon { width: 44px; padding: 0; }
+#pt-table th.num { width: 92px; }
+#pt-table th:nth-child(3) { width: 20%; }
+#pt-table th:last-child { width: 128px; padding-right: var(--space-3); }
+#pt-table td.icon { padding: 0 var(--space-1); }
+#pt-table td:nth-child(3) { color: var(--text-2); }
+#pt-table td:last-child { padding-right: 34px; }
 #pt-table tbody tr.on td:nth-child(4) { font-weight: 600; }
-.pt-cover { width: 32px; height: 32px; margin: 0 auto; }
-#pt-none { padding: 24px; text-align: center; }
+#pt-table .cover { width: 32px; height: 32px; margin: 0 auto; }
+#pt-none { padding: var(--space-6) var(--space-4); text-align: center; color: var(--text-3); }
 
-#pt-pop {
-  position: absolute;
-  z-index: 3;
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
-  width: 240px;
-  padding: 10px;
-  border: 1px solid var(--line);
-  border-radius: 6px;
-  background: var(--panel);
-  box-shadow: 0 6px 24px rgba(0, 0, 0, 0.3);
+#pt-unread { padding: var(--space-2) var(--space-4) 0; font-size: var(--size-label); }
+#printers-dialog .dialog-foot { padding: var(--space-3) var(--space-4); }
+#pt-error { width: fit-content; max-width: 100%; padding: 4px 10px; border-radius: var(--radius-m); background: var(--danger-soft); box-shadow: inset 2px 0 0 var(--danger); }
+
+#pt-pop { width: 248px; }
+#pt-pop .row.end button { min-width: 72px; }
+
+@media (max-width: 760px) {
+  #printers-dialog { width: calc(100vw - 16px); height: calc(100vh - 16px); }
+  /* The search on a line of its own; the count on the left of the next, the two buttons on its right. */
+  #pt-search { flex-basis: 100%; max-width: none; }
+  #pt-count { margin-left: 0; }
+  #pt-toolbar .joined { margin-left: auto; }
+  /* The columns close up to leave the model's name what room there is. */
+  #pt-table th { padding: 0 2px 0 var(--space-2); }
+  #pt-table td { padding: 0 var(--space-2); }
+  #pt-table th.check { width: 84px; padding-left: var(--space-3); }
+  #pt-table th.icon { width: 40px; }
+  #pt-table th.num { width: 72px; }
+  #pt-table th:nth-child(3) { width: 92px; }
+  #pt-table th:last-child { width: 104px; }
+  #pt-table td:last-child { padding-right: 26px; }
 }
-#pt-pop h3 { margin: 0; }
-#pt-pop input[type="search"], #pt-pop input[type="text"] { padding: 5px 6px; border: 1px solid var(--line); border-radius: 5px; background: var(--field); color: var(--text); font: inherit; }
-.pt-values { display: flex; flex-direction: column; gap: 2px; max-height: 240px; overflow-y: auto; }
-.pt-values label { flex-direction: row; align-items: center; gap: 6px; color: var(--text); font-size: 13px; }
