@@ -532,7 +532,10 @@ pub fn ironing_areas(
             }
             if !hollow {
                 // "Iron everything. This is likely only good for solid
-                // transparent objects."
+                // transparent objects." Everything is everything: a
+                // bridge on such a layer is ironed with the rest, as in
+                // the reference, though on any other layer it is left
+                // alone.
                 areas.extend(layer.slices.iter().cloned());
             } else {
                 if ironing.top_shell_layers > 0 {

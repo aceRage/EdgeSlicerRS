@@ -2489,4 +2489,19 @@ mod tests {
         assert_eq!(name_from_path("/prints/.hidden"), ".hidden");
         assert_eq!(name_from_path("bare"), "bare");
     }
+
+    #[test]
+    fn every_feature_in_the_legend_has_a_colour_on_the_page() {
+        // Ironing stands where the reference's legend has it, after the
+        // top surface, in the reference's colour for it (libvgcode
+        // `DEFAULT_EXTRUSION_ROLES_COLORS`: 255, 140, 105).
+        let at = |role: Role| LEGEND.iter().position(|known| *known == role).unwrap();
+        assert_eq!(at(Role::Ironing), at(Role::TopSolidInfill) + 1);
+        let page = include_str!("../ui/app.js");
+        assert!(page.contains("'Ironing': '#ff8c69'"));
+        for role in LEGEND {
+            let named = format!("'{}': '#", role_name(role));
+            assert!(page.contains(&named), "no colour for {}", role_name(role));
+        }
+    }
 }
