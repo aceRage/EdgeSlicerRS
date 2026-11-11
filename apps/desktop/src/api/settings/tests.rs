@@ -399,7 +399,7 @@ fn what_the_engine_does_with_an_option_is_its_own_answer() {
     for key in ["hollow_interior", "interlocking_beam", "print_sequence"] {
         assert!(listed(&plain, "unread", key), "{key} is read");
     }
-    assert_eq!(plain["notes"].get("zaa_enabled"), None);
+    assert_eq!(plain["notes"].get("unsupported_wall_last"), None);
     let hollow = ask(
         &session,
         "process_set",
@@ -408,15 +408,15 @@ fn what_the_engine_does_with_an_option_is_its_own_answer() {
     assert_eq!(hollow["set"]["hollow_interior"], "1");
     assert!(listed(&hollow, "unread", "hollow_interior"));
     // Read, and not done as asked: followed with the engine's own note.
-    let contoured = ask(
+    let last = ask(
         &session,
         "process_set",
-        json!({ "key": "zaa_enabled", "value": true }),
+        json!({ "key": "unsupported_wall_last", "value": true }),
     );
-    assert!(!listed(&contoured, "unread", "zaa_enabled"));
+    assert!(!listed(&last, "unread", "unsupported_wall_last"));
     assert_eq!(
-        contoured["notes"]["zaa_enabled"],
-        json!(["zaa_enabled \"1\": top surfaces are laid flat, not contoured in height"])
+        last["notes"]["unsupported_wall_last"],
+        json!(["unsupported_wall_last \"1\": a wall loop with nothing under it keeps its place among the walls"])
     );
     let vase = ask(
         &session,
@@ -441,7 +441,9 @@ fn what_the_engine_does_with_an_option_is_its_own_answer() {
         .map(|gap| gap.as_str().unwrap())
         .collect();
     assert!(
-        gaps.contains(&"zaa_enabled \"1\": top surfaces are laid flat, not contoured in height"),
+        gaps.contains(
+            &"unsupported_wall_last \"1\": a wall loop with nothing under it keeps its place among the walls"
+        ),
         "{gaps:?}"
     );
     assert!(

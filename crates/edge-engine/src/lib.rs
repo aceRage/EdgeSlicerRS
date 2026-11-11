@@ -12,6 +12,7 @@
 //! work has got and may stop it.
 
 mod clock;
+mod contour;
 mod followed;
 mod holes;
 mod job;

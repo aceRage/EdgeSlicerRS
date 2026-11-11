@@ -267,6 +267,53 @@ def counterbore():
 
 MESHES["counterbore"] = counterbore()
 
+def slanted(outline, z0, top, hole=None):
+    """prism, with the top at height top(x, y) where prism's is flat: top is
+    linear in x and y, so every cap triangle lies on the one sloped plane."""
+    v, t = prism(outline, z0, 1, hole)
+    n = len(outline)
+    tops = set(range(n, 2 * n))
+    if hole is None:
+        tops.add(2 * n + 1)
+    else:
+        tops |= set(range(3 * n, 4 * n))
+    return [(x, y, top(x, y) if i in tops else z) for i, (x, y, z) in enumerate(v)], t
+
+def dome(cx, cy, r, base, cap, rings=48, n=128):
+    """A round post r mm in radius and base mm tall under a spherical cap
+    cap mm high: rings of latitude from the cap's rim up to its top."""
+    sphere = (r * r + cap * cap) / (2 * cap)
+    rim = math.asin(r / sphere)
+    v = [(x, y, 0) for x, y in circle(cx, cy, r, n)]
+    for k in range(rings):
+        a = rim * (1 - k / rings)
+        v += [(x, y, base + sphere * math.cos(a) - (sphere - cap)) for x, y in circle(cx, cy, sphere * math.sin(a), n)]
+    v += [(cx, cy, 0), (cx, cy, base + cap)]
+    bottom, apex = len(v) - 2, len(v) - 1
+    t = []
+    for k in range(rings):
+        for i in range(n):
+            j = (i + 1) % n
+            a, b, c, d = k * n + i, k * n + j, (k + 1) * n + j, (k + 1) * n + i
+            t += [(a, b, c), (a, c, d)]
+    for i in range(n):
+        j = (i + 1) % n
+        t += [(bottom, j, i), (apex, rings * n + i, rings * n + j)]
+    return v, t
+
+# Shallow slopes and curved tops, for Z contouring (zaa_enabled). wedge is
+# a block 30 x 20 mm whose top rises 4 degrees along x, from 3 mm to 5.1;
+# dome a round post 24 mm across and 2 mm tall under a cap 3 mm high, which
+# meets it at 28 degrees; ramp a block 35 x 20 mm whose top climbs from
+# 2 mm to 4 over its first 15 mm (7.6 degrees) and is flat at 4 mm beyond;
+# and holed the wedge with a round hole 8 mm across down through it.
+WEDGE = lambda x, y: 3 + (x - 120.5) * math.tan(math.radians(4))
+MESHES["wedge"] = [slanted([(120.5, 126), (150.5, 126), (150.5, 146), (120.5, 146)], 0, WEDGE)]
+MESHES["dome"] = [dome(135.5, 136, 12, 2, 3)]
+MESHES["ramp"] = [lying(prism([(118, 0), (153, 0), (153, 4), (133, 4), (118, 2)], 0, 20), 126)]
+MESHES["holed"] = [slanted(around(135.5, 136, 15, [2 * math.pi * i / 64 for i in range(64)]), 0, WEDGE,
+                           [(135.5 + 4 * math.cos(2 * math.pi * i / 64), 136 + 4 * math.sin(2 * math.pi * i / 64)) for i in range(64)])]
+
 # Two parts of one object, for seams moved to where parts meet
 # (seam_prefer_part_joints): halves is a round post 20 mm across and 10 mm
 # tall cut down the middle into two half posts, in one filament; inset is a

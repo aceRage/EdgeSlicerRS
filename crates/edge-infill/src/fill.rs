@@ -38,6 +38,10 @@ pub struct FillParams {
     pub sparse_angle: f64,
     /// Direction of solid lines on even layers; odd layers are turned 90°.
     pub solid_angle: f64,
+    /// Whether lines laid in the fill's own direction turn a quarter on
+    /// odd layers, as they do unless Z contouring keeps them steady
+    /// ([`crate::InfillSettings::steady_direction`]).
+    pub alternate: bool,
     /// Longest stretch of outline, in mm, that two sparse lines may be
     /// joined along; zero leaves sparse lines separate.
     pub sparse_link_max: f64,
@@ -208,7 +212,7 @@ impl FillParams {
         self.sparse_angle
             + match self.pattern {
                 Pattern::Lines | Pattern::ZigZag | Pattern::CrossZag => {
-                    if layer_index % 2 == 1 {
+                    if self.alternate && layer_index % 2 == 1 {
                         FRAC_PI_2
                     } else {
                         0.0
@@ -377,7 +381,11 @@ pub fn fill_within(
     frame_of: &dyn Fn(&Surface) -> Frame,
     no_overlap: &[ExPolygon],
 ) -> Result<Vec<ExtrusionPath>, FillError> {
-    let turned = if layer_index % 2 == 1 { FRAC_PI_2 } else { 0.0 };
+    let turned = if params.alternate && layer_index % 2 == 1 {
+        FRAC_PI_2
+    } else {
+        0.0
+    };
     let mut paths = Vec::new();
     // The solid fill told apart: its wide parts stand where the first
     // of the solid areas stood, and the narrow parts are filled last.
@@ -1175,6 +1183,7 @@ mod tests {
             pattern,
             sparse_angle: 45f64.to_radians(),
             solid_angle: 45f64.to_radians(),
+            alternate: true,
             sparse_link_max: 0.0,
             sparse_anchor: 0.0,
             origin: Point2::from_mm(0.0, 0.0),

@@ -6,18 +6,11 @@ use edge_config::Settings;
 
 /// A setting, the value that turns it off, and what is done whatever it
 /// is set to.
-const UNREAD: [(&str, &str, &str); 2] = [
-    (
-        "zaa_enabled",
-        "0",
-        "top surfaces are laid flat, not contoured in height",
-    ),
-    (
-        "unsupported_wall_last",
-        "0",
-        "a wall loop with nothing under it keeps its place among the walls",
-    ),
-];
+const UNREAD: [(&str, &str, &str); 1] = [(
+    "unsupported_wall_last",
+    "0",
+    "a wall loop with nothing under it keeps its place among the walls",
+)];
 
 /// What `settings` ask for that nothing follows.
 pub(crate) fn notes(settings: &Settings) -> Vec<String> {
@@ -69,11 +62,9 @@ mod tests {
         // thinning of short solid lines; nothing is said of them here,
         // nor of a wipe in over the inner walls, nor of travel that
         // goes round the walls.
+        // Nor of Z contouring, which is followed (`crate::contour`).
         let said = notes(&on);
-        assert_eq!(said.len(), 1, "{said:?}");
-        assert!(said.contains(
-            &"zaa_enabled \"1\": top surfaces are laid flat, not contoured in height".to_owned()
-        ));
+        assert!(said.is_empty(), "{said:?}");
         // Ironing is followed, and nothing is said of it here; nor of a
         // second layer of bridge.
         let ironed = Settings::from_json(

@@ -94,6 +94,9 @@ pub struct IroningSettings {
     /// then starts from instead and keeps on every layer
     /// (`top_layer_direction`; unset when negative).
     pub top_layer_direction: Option<f64>,
+    /// Whether the lines keep one direction on every layer, as Z
+    /// contouring may ask ([`crate::InfillSettings::steady_direction`]).
+    pub steady_direction: bool,
     pub top_shell_layers: usize,
     pub bottom_shell_layers: usize,
     /// Sparse fill density in percent.
@@ -124,6 +127,7 @@ impl Default for IroningSettings {
             angle_fixed: false,
             solid_infill_direction: 45.0,
             top_layer_direction: None,
+            steady_direction: false,
             top_shell_layers: 4,
             bottom_shell_layers: 3,
             sparse_density: 20.0,
@@ -290,6 +294,7 @@ impl IroningSettings {
             top_layer_direction: settings
                 .float("top_layer_direction")?
                 .filter(|direction| *direction >= 0.0),
+            steady_direction: crate::steady_direction(settings)?,
             top_shell_layers: count("top_shell_layers", defaults.top_shell_layers)?,
             bottom_shell_layers: count("bottom_shell_layers", defaults.bottom_shell_layers)?,
             sparse_density: match settings.float_or_percent("sparse_infill_density")? {
@@ -375,7 +380,7 @@ impl IroningSettings {
             edge: if inset == 0.0 { 0.5 * nozzle } else { inset },
             flow,
             angle: (base + self.angle).to_radians(),
-            alternate: !(self.angle_fixed || top_set),
+            alternate: !(self.angle_fixed || top_set || self.steady_direction),
             top_shell_layers: self.top_shell_layers,
             bottom_shell_layers: self.bottom_shell_layers,
             sparse_density: self.sparse_density,
