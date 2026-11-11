@@ -120,6 +120,101 @@ fn frame_of(
         })
 }
 
+/// A layer's outlines moved out by `contour` and its holes made larger
+/// by `hole`, in scaled units, either of which may be negative
+/// (PrintObjectSlice.cpp `_shrink_contour_holes`). A hole is grown by
+/// itself, as a solid piece, and taken out of the outline grown.
+fn shrink_contour_holes(
+    contour: i64,
+    hole: i64,
+    regions: &[ExPolygon],
+) -> Result<Vec<ExPolygon>, edge_clip::ClipError> {
+    use edge_clip::Join;
+    let mut made = Vec::new();
+    for region in regions {
+        let mut holes = Vec::new();
+        for ring in &region.holes {
+            let mut solid = ring.clone();
+            solid.points.reverse();
+            let solid = ExPolygon {
+                contour: solid,
+                holes: Vec::new(),
+            };
+            if hole != 0 {
+                holes.extend(edge_clip::offset(&[solid], hole, Join::MITER)?);
+            } else {
+                holes.push(solid);
+            }
+        }
+        let outline = ExPolygon {
+            contour: region.contour.clone(),
+            holes: Vec::new(),
+        };
+        let contours = if contour != 0 {
+            let grown = edge_clip::offset(&[outline], contour, Join::MITER)?;
+            if grown.is_empty() {
+                continue;
+            }
+            grown
+        } else {
+            vec![outline]
+        };
+        made.extend(edge_clip::difference(
+            &edge_clip::union_ex(&contours)?,
+            &edge_clip::union_ex(&holes)?,
+        )?);
+    }
+    edge_clip::union_ex(&made)
+}
+
+/// Applies the XY size compensation to one layer: its regions, and each
+/// filament's share of them.
+fn compensate_size(
+    layer: &mut edge_slice::LayerRegions,
+    contour: i64,
+    hole: i64,
+) -> Result<(), edge_clip::ClipError> {
+    use edge_clip::Join;
+    let (grow, shrink) = (contour.max(hole), contour.min(hole));
+    if layer.by_filament.len() <= 1 {
+        if grow > 0 {
+            layer.regions = shrink_contour_holes(contour.max(0), hole.max(0), &layer.regions)?;
+        }
+        if shrink < 0 {
+            layer.regions = shrink_contour_holes(contour.min(0), hole.min(0), &layer.regions)?;
+        }
+        if let Some((_, own)) = layer.by_filament.first_mut() {
+            own.clone_from(&layer.regions);
+        }
+        return Ok(());
+    }
+    if grow > 0 {
+        layer.regions = shrink_contour_holes(contour.max(0), hole.max(0), &layer.regions)?;
+        let mut taken: Vec<ExPolygon> = Vec::new();
+        let last = layer.by_filament.len() - 1;
+        for (at, (_, own)) in layer.by_filament.iter_mut().enumerate() {
+            let mut reached = edge_clip::intersection(
+                &edge_clip::offset(own, grow, Join::MITER)?,
+                &layer.regions,
+            )?;
+            if at > 0 {
+                reached = edge_clip::difference(&reached, &taken)?;
+            }
+            if at < last {
+                taken.extend(reached.iter().cloned());
+            }
+            *own = reached;
+        }
+    }
+    if shrink < 0 {
+        layer.regions = shrink_contour_holes(contour.min(0), hole.min(0), &layer.regions)?;
+        for (_, own) in &mut layer.by_filament {
+            *own = edge_clip::intersection(own, &layer.regions)?;
+        }
+    }
+    Ok(())
+}
+
 /// What each of `regions` has inside `within`, region by region, so that
 /// they stay in their order.
 fn kept_inside(
@@ -264,6 +359,38 @@ pub fn slice(job: Job, watch: &dyn Watcher) -> Result<Sliced, Failure> {
                     .collect();
                 crate::paint::apply(layer, &painted, base)
             })?;
+    }
+
+    // Outlines and holes are made larger or smaller by what the profile
+    // sets, to make up for a printer that prints them off size
+    // (`xy_contour_compensation`, `xy_hole_compensation`;
+    // PrintObjectSlice.cpp, the "make_slices in parallel" part of
+    // `PrintObject::slice_volumes`). Growing is done first and shrinking
+    // after. On a layer in several filaments the layer is grown as a
+    // whole and each filament takes what its own share grown reaches of
+    // it, the first to come keeping what two would both reach; shrinking
+    // trims every share to the layer shrunk.
+    //
+    // As the reference has it, none of it is done where colour is
+    // painted on: the two cannot be combined. Not as the reference: it
+    // leaves out the painted object only, and here everything on the
+    // plate is sliced together, so one painted object leaves the whole
+    // plate as modelled. A note says so.
+    let xy_contour = settings.float("xy_contour_compensation")?.unwrap_or(0.0);
+    let xy_hole = settings.float("xy_hole_compensation")?.unwrap_or(0.0);
+    let mut size_notes = Vec::new();
+    if xy_contour != 0.0 || xy_hole != 0.0 {
+        if painted.is_empty() {
+            let (contour, hole) = (scaled(xy_contour), scaled(xy_hole));
+            layers.par_iter_mut().try_for_each(|layer| {
+                compensate_size(layer, contour, hole).map_err(|e| e.to_string())
+            })?;
+        } else {
+            size_notes.push(
+                "xy_contour_compensation, xy_hole_compensation: not used on a plate with colour painted on it"
+                    .to_owned(),
+            );
+        }
     }
 
     // The first layers are printed slightly smaller than modelled, tapering
@@ -683,6 +810,8 @@ pub fn slice(job: Job, watch: &dyn Watcher) -> Result<Sliced, Failure> {
     // What the profile asks of the order and is not followed.
     // What the walls were asked for and do not do goes with these.
     let mut order_notes = walls.notes(&settings);
+    order_notes.extend(size_notes);
+    order_notes.extend(crate::unfollowed::notes(&settings, bodies.len()));
     if used.len() > 1 {
         if let Some(kind) = settings.text("toolchange_ordering")
             && kind != "default"
@@ -1087,5 +1216,89 @@ impl Sliced {
         let mut text = Vec::new();
         let summary = edge_gcode::write_tools(&mut text, &plan, &prints)?;
         Ok(Gcode { text, summary })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use edge_geom::Polygon;
+
+    use super::*;
+
+    fn rect(x0: f64, y0: f64, x1: f64, y1: f64) -> Polygon {
+        Polygon {
+            points: [(x0, y0), (x1, y0), (x1, y1), (x0, y1)]
+                .map(|(x, y)| Point2::from_mm(x, y))
+                .to_vec(),
+        }
+    }
+
+    /// A 20 mm square with a 10 mm square hole in it.
+    fn frame() -> ExPolygon {
+        let mut hole = rect(5.0, 5.0, 15.0, 15.0);
+        hole.points.reverse();
+        ExPolygon {
+            contour: rect(0.0, 0.0, 20.0, 20.0),
+            holes: vec![hole],
+        }
+    }
+
+    fn area(regions: &[ExPolygon]) -> f64 {
+        regions.iter().map(ExPolygon::area_mm2).sum()
+    }
+
+    #[test]
+    fn outlines_and_holes_are_resized_each_by_its_own_amount() {
+        let sized = |contour: f64, hole: f64| {
+            area(&shrink_contour_holes(scaled(contour), scaled(hole), &[frame()]).unwrap())
+        };
+        assert!((sized(0.0, 0.0) - 300.0).abs() < 1e-6);
+        // The outline out by 0.1 mm a side; the hole larger by 0.2 mm a side.
+        assert!((sized(0.1, 0.0) - (20.2 * 20.2 - 100.0)).abs() < 1e-3);
+        assert!((sized(0.0, 0.2) - (400.0 - 10.4 * 10.4)).abs() < 1e-3);
+        // And smaller, both.
+        assert!((sized(-0.1, -0.2) - (19.8 * 19.8 - 9.6 * 9.6)).abs() < 1e-3);
+        // An outline shrunk to nothing takes its region with it.
+        let speck = ExPolygon {
+            contour: rect(0.0, 0.0, 0.1, 0.1),
+            holes: Vec::new(),
+        };
+        assert!(
+            shrink_contour_holes(scaled(-0.1), 0, &[speck])
+                .unwrap()
+                .is_empty()
+        );
+    }
+
+    #[test]
+    fn a_layer_in_two_filaments_is_resized_as_a_whole() {
+        // Two halves of a 20 mm square, one in each filament.
+        let half = |x0: f64, x1: f64| ExPolygon {
+            contour: rect(x0, 0.0, x1, 20.0),
+            holes: Vec::new(),
+        };
+        let layer = || edge_slice::LayerRegions {
+            z: 0.1,
+            regions: vec![half(0.0, 20.0)],
+            by_filament: vec![(1, vec![half(0.0, 10.0)]), (2, vec![half(10.0, 20.0)])],
+            cut_by_filament: Vec::new(),
+            open_chains: 0,
+        };
+        // Grown: the whole is out by 0.1 mm, the shares still tile it,
+        // and the seam between them has not moved in the first one's
+        // favour by more than it reached.
+        let mut grown = layer();
+        compensate_size(&mut grown, scaled(0.1), 0).unwrap();
+        assert!((area(&grown.regions) - 20.2 * 20.2).abs() < 1e-3);
+        let shares: f64 = grown.by_filament.iter().map(|(_, own)| area(own)).sum();
+        assert!((shares - area(&grown.regions)).abs() < 1e-3);
+        assert!(area(&grown.by_filament[0].1) > area(&grown.by_filament[1].1));
+        // Shrunk: every share is trimmed to the layer shrunk.
+        let mut shrunk = layer();
+        compensate_size(&mut shrunk, scaled(-0.1), 0).unwrap();
+        assert!((area(&shrunk.regions) - 19.8 * 19.8).abs() < 1e-3);
+        for (_, own) in &shrunk.by_filament {
+            assert!((area(own) - 9.9 * 19.8).abs() < 1e-3);
+        }
     }
 }
