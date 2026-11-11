@@ -12,8 +12,9 @@
 //! the copies of an object are only where they stand (`scene`). Moves are
 //! asked for a stretch at a time (`toolpath_moves`), so the first layers
 //! are on screen before the last have been sent. Nothing is sent twice:
-//! `scene` gives a `key` and `toolpath` a `run` that change only when
-//! what they describe does.
+//! `scene` gives each object's mesh a number (`mesh`) and `toolpath` a
+//! `run` that change only when what they describe does, so an edit that
+//! moves, adds or takes away copies sends no mesh again.
 
 use std::{
     collections::{BTreeSet, HashMap},
@@ -22,7 +23,7 @@ use std::{
 };
 
 use edge_config::Settings;
-use edge_engine::{Feature, Mark, MoveKind, Scene, SceneObject, Toolpath};
+use edge_engine::{Bed, Feature, Mark, MoveKind, SceneObject, Shape, Toolpath};
 use serde_json::{Value, json};
 
 use super::{Done, File, Session, bed_of, lock};
@@ -38,7 +39,7 @@ pub(super) const BYTES: [&str; 4] = ["scene_mesh", "bed_model", "bed_texture", "
 /// does.
 #[derive(Default)]
 pub(super) struct Cache {
-    scenes: Kept<File, Read>,
+    meshes: Kept<Shape, SceneObject>,
     paths: Kept<Done, Paths>,
     /// The printers every vendor's profiles describe, for the folder they
     /// were read from.
@@ -48,46 +49,6 @@ pub(super) struct Cache {
 /// What was made from something, by where that something is in memory,
 /// for as long as it is still there.
 type Kept<From, Made> = Mutex<HashMap<usize, (Weak<From>, Arc<Made>)>>;
-
-/// A file read as a scene.
-#[derive(Default)]
-struct Read {
-    scene: Scene,
-    /// For each copy, the least and greatest corners of its printed
-    /// material where it stands on its plate; none for a copy that has
-    /// none.
-    reach: Vec<Option<[[f64; 3]; 2]>>,
-}
-
-/// The corners of each copy's printed material, from every vertex of it:
-/// a copy that is turned takes less room than its object's own box would.
-fn reach_of(scene: &Scene) -> Vec<Option<[[f64; 3]; 2]>> {
-    scene
-        .placings
-        .iter()
-        .map(|placing| {
-            let object = &scene.objects[placing.object];
-            let mut reach: Option<[[f64; 3]; 2]> = None;
-            let printed = object
-                .triangles
-                .iter()
-                .zip(&object.marks)
-                .filter(|(_, mark)| matches!(mark, Mark::Filament(_)))
-                .flat_map(|(triangle, _)| triangle);
-            for corner in printed {
-                let point = placing
-                    .transform
-                    .apply(object.vertices[*corner as usize].map(f64::from));
-                let [low, high] = reach.get_or_insert([point, point]);
-                for axis in 0..3 {
-                    low[axis] = low[axis].min(point[axis]);
-                    high[axis] = high[axis].max(point[axis]);
-                }
-            }
-            reach
-        })
-        .collect()
-}
 
 /// Printer model name to (vendor, the model's own file under the vendor's folder).
 type Models = HashMap<String, (String, String)>;
@@ -384,25 +345,20 @@ struct BedFiles {
 }
 
 impl Session {
-    /// A project's file as a scene, read once.
-    fn scene_of(&self, file: &Arc<File>) -> Result<Arc<Read>, String> {
-        let key = Arc::as_ptr(file) as usize;
-        if let Some((held, scene)) = lock(&self.scene.scenes).get(&key)
-            && held.upgrade().is_some_and(|held| Arc::ptr_eq(&held, file))
+    /// An object's shape as one mesh to look at, made once for as long
+    /// as any model holds the shape.
+    fn mesh_of(&self, shape: &Arc<Shape>) -> Arc<SceneObject> {
+        let key = Arc::as_ptr(shape) as usize;
+        if let Some((held, mesh)) = lock(&self.scene.meshes).get(&key)
+            && held.upgrade().is_some_and(|held| Arc::ptr_eq(&held, shape))
         {
-            return Ok(scene.clone());
+            return mesh.clone();
         }
-        let scene = edge_engine::open(&file.path, None)
-            .map_err(|e| e.to_string())?
-            .scene();
-        let scene = Arc::new(Read {
-            reach: reach_of(&scene),
-            scene,
-        });
-        let mut scenes = lock(&self.scene.scenes);
-        scenes.retain(|_, (held, _)| held.strong_count() > 0);
-        scenes.insert(key, (Arc::downgrade(file), scene.clone()));
-        Ok(scene)
+        let mesh = Arc::new(shape.mesh(""));
+        let mut meshes = lock(&self.scene.meshes);
+        meshes.retain(|_, (held, _)| held.strong_count() > 0);
+        meshes.insert(key, (Arc::downgrade(shape), mesh.clone()));
+        mesh
     }
 
     /// A sliced plate as moves, worked out once.
@@ -470,7 +426,7 @@ impl Session {
     }
 
     /// The printer a project would be sliced with, and its file.
-    fn stage_of(&self, args: &Value) -> Result<Stage, String> {
+    pub(super) fn stage_of(&self, args: &Value) -> Result<Stage, String> {
         let (id, choices, file, plate) = {
             let state = lock(&self.state);
             let project = &state.projects[state.target(args)?];
@@ -496,34 +452,39 @@ impl Session {
     /// plates where they stand, each object once and each copy's place.
     fn scene(&self, args: &Value) -> Result<Value, String> {
         let stage = self.stage_of(args)?;
+        Ok(self.scene_for(&stage))
+    }
+
+    /// The scene of a project as it stands.
+    pub(super) fn scene_for(&self, stage: &Stage) -> Value {
         let printer = stage.printer.as_deref();
         let bed = printer.and_then(bed_of);
         let files = printer
             .map(|printer| self.bed_files(printer))
             .unwrap_or_default();
-        let read = match &stage.file {
-            Some(file) => self.scene_of(file)?,
-            None => Arc::new(Read::default()),
-        };
-        let scene = &read.scene;
+        let model = stage.file.as_ref().map(|file| &file.model);
+        let plates = model.map(|model| model.plates()).unwrap_or_default();
+        let objects = model.map(|model| model.objects()).unwrap_or_default();
         // The plates in their grid, as the reference lays them out: a
         // fifth of a bed apart, the bed taken in whole millimetres.
-        let (width, depth) = bed.map_or((0.0, 0.0), |[x0, y0, x1, y1]| {
-            ((x1 - x0).trunc(), (y1 - y0).trunc())
-        });
-        let origin = |index: usize| match bed {
-            Some(_) => edge_engine::plate_position(index, scene.plates.len(), width, depth),
+        let grid = bed.map(Bed::of);
+        let origin = |index: usize| match &grid {
+            Some(grid) => grid.origin(index, plates.len()),
             None => (0.0, 0.0),
         };
         let mm = |value: f64| (value * 1e3).round() / 1e3;
+        let meshes: Vec<Arc<SceneObject>> = objects
+            .iter()
+            .map(|object| self.mesh_of(object.shape()))
+            .collect();
 
         // A bare model has no place of its own: the middle of the bed,
         // standing on it, which is where slicing puts it.
-        let lone = scene
-            .objects
+        let bare = model.is_some_and(|model| model.bare());
+        let lone = meshes
             .first()
             .and_then(|object| object.bounds)
-            .filter(|_| scene.bare);
+            .filter(|_| bare);
         let settle = match (lone, bed) {
             (Some((low, high)), Some([x0, y0, x1, y1])) => [
                 (x0 + x1) / 2.0 - f64::from(low[0] + high[0]) / 2.0,
@@ -534,25 +495,29 @@ impl Session {
             _ => [0.0; 3],
         };
 
-        let placings: Vec<Value> = scene
-            .placings
-            .iter()
-            .zip(&read.reach)
-            .map(|(placing, reach)| {
-                let (x, y) = placing.plate.map_or((0.0, 0.0), origin);
-                let rows = placing.transform.rows;
-                let moved = [x + settle[0], y + settle[1], settle[2]];
-                let at: [f64; 3] = std::array::from_fn(|axis| rows[3][axis] + moved[axis]);
+        let mut placings: Vec<Value> = Vec::new();
+        for (index, object) in objects.iter().enumerate() {
+            for copy in object.copies() {
+                let Some((transform, reach)) =
+                    model.and_then(|model| model.in_scene(grid.as_ref(), copy.id()))
+                else {
+                    continue;
+                };
+                let plate = model.and_then(|model| model.plate_of(copy.id()));
+                let rows = transform.rows;
+                let at: [f64; 3] = std::array::from_fn(|axis| rows[3][axis] + settle[axis]);
                 // Its corners where it stands in the scene.
                 let reach = reach.map(|corners| {
                     corners.map(|corner| {
-                        std::array::from_fn::<_, 3, _>(|axis| mm(corner[axis] + moved[axis]))
+                        std::array::from_fn::<_, 3, _>(|axis| mm(corner[axis] + settle[axis]))
                     })
                 });
-                json!({
-                    "object": placing.object,
-                    "plate": placing.plate.map(|index| scene.plates[index].id),
-                    "printable": placing.printable,
+                placings.push(json!({
+                    // A number that stays the copy's through every edit.
+                    "id": copy.id(),
+                    "object": index,
+                    "plate": plate.map(|index| plates[index].id()),
+                    "printable": copy.printable(),
                     // Column by column, as the graphics card takes a
                     // matrix: the object's coordinates to the scene's.
                     "matrix": [
@@ -562,14 +527,17 @@ impl Session {
                         at[0], at[1], at[2], 1.0,
                     ],
                     "box": reach,
-                })
-            })
-            .collect();
-        let objects: Vec<Value> = scene
-            .objects
+                    // Reaching over the edge of its plate, which cannot be
+                    // printed until it is wholly on the plate or off it.
+                    "over": model.is_some_and(|model| model.overhangs(grid.as_ref(), copy.id())),
+                }));
+            }
+        }
+        let listed: Vec<Value> = objects
             .iter()
-            .map(|object| {
-                let filaments: BTreeSet<u8> = object
+            .zip(&meshes)
+            .map(|(object, mesh)| {
+                let filaments: BTreeSet<u8> = mesh
                     .marks
                     .iter()
                     .filter_map(|mark| match mark {
@@ -577,42 +545,41 @@ impl Session {
                         _ => None,
                     })
                     .collect();
+                // The filament the object itself is set to, when its parts agree.
+                let own = object.shape().filaments();
                 json!({
-                    "name": object.name,
-                    "vertices": object.vertices.len(),
-                    "triangles": object.triangles.len(),
-                    "bytes": mesh_size(object),
+                    "id": object.id(),
+                    "name": object.name(),
+                    // The number of its mesh: the same for as long as the
+                    // mesh is, whatever is done to its copies.
+                    "mesh": object.shape().stamp(),
+                    "vertices": mesh.vertices.len(),
+                    "triangles": mesh.triangles.len(),
+                    "bytes": mesh_size(mesh),
                     "filaments": filaments,
+                    "filament": if own.len() == 1 { Some(own[0]) } else { None },
+                    "parts": object.parts(),
                 })
             })
             .collect();
-        let plates: Vec<Value> = scene
-            .plates
+        let plates: Vec<Value> = plates
             .iter()
             .enumerate()
             .map(|(index, plate)| {
                 let (x, y) = origin(index);
-                json!({ "id": plate.id, "name": plate.name, "origin": [mm(x), mm(y)] })
+                json!({ "id": plate.id(), "name": plate.name(), "origin": [mm(x), mm(y)] })
             })
             .collect();
         let named = |path: &Option<PathBuf>| {
             path.as_ref()
                 .and_then(|path| Some(path.file_name()?.to_string_lossy().into_owned()))
         };
-        let key = format!(
-            "{}:{:x}",
-            stage.id,
-            stage
-                .file
-                .as_ref()
-                .map_or(0, |file| Arc::as_ptr(file) as usize)
-        );
-        Ok(json!({
+        json!({
             "project": stage.id,
-            // Changes when the file does: an object's mesh is the same
-            // for as long as this is.
-            "key": key,
-            "bare": scene.bare,
+            // The project's own: an object's mesh is kept by the page under
+            // this and the mesh's number.
+            "key": format!("{}:m", stage.id),
+            "bare": bare,
             "bed": {
                 "box": bed,
                 "shape": printer.map(bed_shape).unwrap_or_default(),
@@ -627,9 +594,9 @@ impl Session {
                 .as_ref()
                 .and_then(|file| file.settings.as_ref())
                 .and_then(|settings| settings.texts("filament_colour")),
-            "objects": objects,
+            "objects": listed,
             "placings": placings,
-        }))
+        })
     }
 
     /// What `toolpath_moves` will give for a sliced plate.
@@ -660,16 +627,22 @@ impl Session {
                 let file = stage
                     .file
                     .ok_or("the project is empty: it has no objects")?;
-                let read = self.scene_of(&file)?;
-                let scene = &read.scene;
-                let index = super::whole(args, "object")? as usize;
-                let object = scene.objects.get(index).ok_or_else(|| {
-                    format!(
-                        "there is no object {index}; there are {}",
-                        scene.objects.len()
-                    )
-                })?;
-                Ok(mesh_bytes(object))
+                let objects = file.model.objects();
+                // By the mesh's own number, as `scene` gives it, or by the
+                // object's place in the list.
+                let object = match args.get("mesh").and_then(Value::as_u64) {
+                    Some(mesh) => objects
+                        .iter()
+                        .find(|object| object.shape().stamp() == mesh)
+                        .ok_or_else(|| format!("no object has the mesh {mesh} any more"))?,
+                    None => {
+                        let index = super::whole(args, "object")? as usize;
+                        objects.get(index).ok_or_else(|| {
+                            format!("there is no object {index}; there are {}", objects.len())
+                        })?
+                    }
+                };
+                Ok(mesh_bytes(&self.mesh_of(object.shape())))
             }
             "bed_model" => {
                 let stage = self.stage_of(args)?;
@@ -734,11 +707,18 @@ fn moves_bytes(records: &[u8], from: usize, count: usize) -> Vec<u8> {
 }
 
 /// A project as the 3D views need it.
-struct Stage {
-    id: u32,
-    file: Option<Arc<File>>,
-    plate: Option<u32>,
-    printer: Option<Arc<Settings>>,
+pub(super) struct Stage {
+    pub(super) id: u32,
+    pub(super) file: Option<Arc<File>>,
+    pub(super) plate: Option<u32>,
+    pub(super) printer: Option<Arc<Settings>>,
+}
+
+impl Stage {
+    /// The bed its plates are laid out for; none with no printer chosen.
+    pub(super) fn bed(&self) -> Option<Bed> {
+        self.printer.as_deref().and_then(bed_of).map(Bed::of)
+    }
 }
 
 #[cfg(test)]

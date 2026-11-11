@@ -229,9 +229,25 @@
       return this.plates.find((plate) => plate.id === id) || this.plates[0] || null;
     }
 
-    meshKey(object) { return `${this.data.key}:${object}`; }
+    // An object's mesh is kept under the scene's key and the mesh's own
+    // number (`scene`'s `objects[].mesh`), which stays the same whatever is
+    // done to the object's copies: an edit sends no mesh again.
+    meshKey(object) { return `${this.data.key}:${this.data.objects[object].mesh}`; }
     meshOf(object) { return this.data ? this.meshes.get(this.meshKey(object)) : null; }
     addMesh(key, mesh) { this.meshes.set(key, mesh); }
+
+    // Lets go of the meshes of this scene that none of its objects has
+    // any more: an object that was deleted, or given another filament.
+    prune() {
+      if (!this.data) return;
+      const held = new Set(this.data.objects.map((object, index) => this.meshKey(index)));
+      for (const [key, mesh] of this.meshes) {
+        if (key.startsWith(`${this.data.key}:`) && !held.has(key)) {
+          this.renderer.drop(mesh);
+          this.meshes.delete(key);
+        }
+      }
+    }
 
     // Lets go of the meshes of scenes that are no longer open.
     keep(keys) {
@@ -388,19 +404,19 @@
       r.blend(false);
     }
 
-    // What is selected: an outline, a faint grey, and the corners of the
-    // box round it (Selection.cpp `render_bounding_box`: a fifth of each
-    // edge at each corner).
+    // What is selected (a set of copies, by their `id`): an outline, a
+    // faint grey, and the corners of the box round it (Selection.cpp
+    // `render_bounding_box`: a fifth of each edge at each corner).
     drawSelection(frame, selection) {
       if (!this.data || !selection.size) return;
       const r = this.renderer;
       const matrix = M.multiply(frame.projection, frame.view);
-      const chosen = this.data.placings.filter((placing, index) => selection.has(index) && this.meshOf(placing.object));
+      const chosen = this.data.placings.filter((placing) => selection.has(placing.id) && this.meshOf(placing.object));
       if (!chosen.length) return;
       r.outline(() => {
         for (const placing of chosen) r.drawFlat(this.meshOf(placing.object), M.multiply(matrix, placing.matrix), [1, 1, 1, 1]);
       }, SELECTED);
-      const box = this.boxOf((placing, index) => selection.has(index));
+      const box = this.boxOf((placing) => selection.has(placing.id));
       if (!box) return;
       const key = JSON.stringify(box);
       if (key !== this.cornersOf) {

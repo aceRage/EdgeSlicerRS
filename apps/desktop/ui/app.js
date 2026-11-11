@@ -619,7 +619,7 @@ async function showSidebar() {
   if (project.id !== activeId()) return;
   state.settled = settled;
   state.printers = printers;
-  const { printer, process } = state.settled;
+  const { printer } = state.settled;
 
   // Printer: the list, the picture and the nozzles (printers.js).
   showPrinterBlock();
@@ -682,14 +682,8 @@ async function showSidebar() {
     const processes = choices.machine ? (await presetsOf(choices.vendor, choices.machine)).processes : [];
     fill($('process'), processes, choices.process);
   }
-  for (const input of document.querySelectorAll('[data-over]')) {
-    const key = input.dataset.over;
-    input.value = choices[key] === null ? '' : choices[key];
-    const usual = process ? process[key] : null;
-    input.placeholder = usual === null || usual === undefined ? '' : String(usual);
-    // Marked where it is set over the preset.
-    input.closest('.unit').classList.toggle('set', choices[key] !== null);
-  }
+  // The pages of process settings, and what is set over the preset (process.js).
+  await showProcess();
   showDevice();
 }
 
@@ -710,19 +704,6 @@ listbox($('process'));
 listbox($('bed'), { bare: true });
 $('process').addEventListener('change', () => attempt(() => setProject({ process: $('process').value })));
 $('bed').addEventListener('change', () => attempt(() => setProject({ bed_type: $('bed').value })));
-for (const input of document.querySelectorAll('[data-over]')) {
-  input.addEventListener('change', () => attempt(async () => {
-    const value = input.value.trim() === '' ? null : Number(input.value);
-    try {
-      await setProject({ [input.dataset.over]: value });
-      say('');
-    } catch (error) {
-      // What cannot be set is said, and the field goes back to what holds.
-      await showSidebar();
-      throw error;
-    }
-  }));
-}
 for (const title of document.querySelectorAll('.fold-title')) {
   title.addEventListener('click', () => {
     const folded = title.closest('.fold').classList.toggle('folded');
@@ -1061,13 +1042,13 @@ function drawThumb(canvas, tile) {
 async function refreshThumbs() {
   for (const tile of state.listing.projects) {
     const mine = kept(tile.id);
-    const key = `${tile.plate}|${tile.empty}|${tile.id === activeId() && state.settled && state.settled.printer ? state.settled.printer.name : mine.thumbPrinter || ''}`;
+    const key = `${tile.plate}|${tile.empty}|${tile.revision}|${tile.id === activeId() && state.settled && state.settled.printer ? state.settled.printer.name : mine.thumbPrinter || ''}`;
     if (mine.thumbKey === key || mine.thumbBusy) continue;
     mine.thumbBusy = true;
     try {
       mine.thumb = await call('plate_view', { project: tile.id });
       mine.thumbKey = key;
-      mine.thumbPrinter = key.split('|')[2];
+      mine.thumbPrinter = key.split('|')[3];
     } catch {
       mine.thumbKey = key;
     }
@@ -1439,7 +1420,7 @@ async function plateView() {
   const project = state.project;
   const mine = here();
   const printer = state.settled && state.settled.printer ? state.settled.printer.name : '';
-  const key = `${plateKey()}|${project.empty}|${printer}`;
+  const key = `${plateKey()}|${project.empty}|${project.edit.revision}|${printer}`;
   if (!mine.plateViews.has(key)) {
     try {
       mine.plateViews.set(key, await call('plate_view', { project: project.id }));
@@ -1772,6 +1753,51 @@ stage3d.init({
   legend: () => { if (state.tab === 'preview' && state.project && here().summary) showLegend(); },
   noted: () => noteView(),
   filamentColour: (summary, filament) => filamentColour(summary, filament),
+});
+
+// The tools that change what stands on the plates (scene-edit.js) and
+// the object list (objects.js). An edit answers with the project as it
+// then is, which `editApplied` puts on the rest of the page.
+function editApplied(project) {
+  if (project.id !== activeId()) return;
+  const before = state.project;
+  state.project = project;
+  const mine = here();
+  // What was fetched for the model as it was is of no use any more.
+  mine.plateViews.clear();
+  Object.assign(mine, { summary: null, shown: null });
+  showPlates();
+  showButtons();
+  $('empty').textContent = emptyText(project, state.tab === 'preview');
+  // More or fewer filaments, or a project that is no longer empty: the
+  // sidebar lists them.
+  const listed = (shown) => (shown ? `${shown.empty}|${shown.filament_count}|${shown.used}` : '');
+  if (listed(before) !== listed(project)) attempt(showSidebar);
+  // In Preview the plate is shown as it now is: not sliced.
+  if (state.tab === 'preview') attempt(() => showStage());
+  attempt(refreshStrip);
+}
+window.EdgeGL.editor.init({
+  stage: stage3d,
+  stageNode: $('stage'),
+  call,
+  say,
+  pick,
+  menu: showMenu,
+  el,
+  listbox,
+  remembered,
+  project: () => state.project,
+  tab: () => state.tab,
+  settled: () => state.settled,
+  applied: editApplied,
+  plate: (id) => attempt(() => selectPlate(id)),
+});
+window.EdgeGL.objectList.init({
+  el,
+  listbox,
+  project: () => state.project,
+  plate: (id) => attempt(() => selectPlate(id)),
 });
 
 // Where the tab's view of the plate is; until it has been fitted, a

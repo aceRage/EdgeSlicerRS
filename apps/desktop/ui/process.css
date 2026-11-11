@@ -1,0 +1,180 @@
+/* The sidebar's process pages (process.js). Tokens and the controls are
+   the page's own (style.css, STYLE.md); here are the two components the
+   pages brought (a switch, a box of text) and what is theirs alone. */
+
+/* The sidebar takes the room a page of settings wants where the window
+   has it to give: 300 px in a narrow window, up to 380 px in a wide one.
+   Under 761 px the page is one column (style.css), which this leaves be. */
+@media (min-width: 761px) {
+  #plater { grid-template-columns: clamp(300px, 24vw, 380px) minmax(0, 1fr); }
+}
+
+/* ---- components ---- */
+
+/* -- a switch: <label class="switch">Advance <input type="checkbox" role="switch"></label>.
+      A tick box drawn as a track with a knob; on, it is the accent. -- */
+.switch {
+  flex: none;
+  flex-direction: row;
+  align-items: center;
+  gap: 6px;
+  height: var(--control-s);
+  padding: 0 var(--space-1);
+  color: var(--text-3);
+  font-size: var(--size-small);
+  cursor: pointer;
+  user-select: none;
+  -webkit-user-select: none;
+}
+.switch:hover { color: var(--text-1); }
+.switch input[type="checkbox"] {
+  width: 24px;
+  border-radius: var(--control-s);
+  background: var(--surface-well) radial-gradient(circle at 6px 50%, var(--text-3) 0 4px, transparent 4.6px);
+}
+.switch input[type="checkbox"]:checked {
+  background: var(--accent) radial-gradient(circle at 16px 50%, var(--on-accent) 0 4px, transparent 4.6px);
+}
+
+/* -- a box of text: several lines, in the well; .code in the fixed-width face -- */
+textarea {
+  display: block;
+  width: 100%;
+  min-height: calc(2 * var(--control-m));
+  padding: 5px var(--space-2);
+  border: 1px solid var(--line-2);
+  border-radius: var(--radius-m);
+  background: var(--surface-well);
+  color: var(--text-1);
+  font: inherit;
+  resize: vertical;
+  transition: border-color var(--time-fast) var(--ease);
+}
+textarea:hover:not(:disabled) { border-color: var(--line-3); }
+textarea:focus-visible { outline: 2px solid var(--focus); outline-offset: -1px; }
+textarea:disabled { color: var(--text-off); }
+textarea.code { font: var(--size-small)/1.5 var(--font-mono); white-space: pre; overflow-x: auto; }
+
+/* ---- the Process section ---- */
+
+/* The pages' tabs: as many to a line as fit, each with the number of its
+   settings set by hand. The one open carries the accent. */
+#process-tabs { display: flex; flex-wrap: wrap; gap: 0 2px; margin-top: var(--space-1); border-bottom: 1px solid var(--line-1); }
+.process-tab {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  height: 26px;
+  margin-bottom: -1px;
+  padding: 0 7px;
+  border: 0;
+  border-bottom: 2px solid transparent;
+  border-radius: var(--radius-m) var(--radius-m) 0 0;
+  background: none;
+  color: var(--text-2);
+  font-size: var(--size-label);
+}
+.process-tab:hover:not(:disabled) { color: var(--text-1); }
+.process-tab[aria-selected="true"] { color: var(--text-1); font-weight: 600; border-bottom-color: var(--accent); }
+.process-count { color: var(--accent); font: 600 var(--size-caps) var(--font-mono); }
+
+#process-page { display: flex; flex-direction: column; gap: var(--space-2); min-width: 0; }
+.process-page { display: flex; flex-direction: column; gap: 6px; min-width: 0; }
+/* A group's label, as in any section: small capitals running on into a hairline. */
+.process-page > h3 { display: flex; align-items: center; gap: var(--space-2); margin-top: var(--space-2); }
+.process-page > h3::after { content: ""; flex: 1; height: 1px; background: var(--line-1); }
+.process-page > h3:first-child { margin-top: var(--space-1); }
+.opt-group { display: flex; flex-direction: column; gap: 3px; min-width: 0; }
+
+/* One option: its label with what the engine does with it, its control,
+   and the way back to the preset's value. The controls stand in one
+   column, wider where the sidebar is. */
+.opt {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) clamp(112px, 42%, 150px) 16px;
+  align-items: center;
+  gap: 0 var(--space-1);
+  min-height: var(--control-m);
+  border-radius: var(--radius-m);
+}
+.opt-head { display: flex; align-items: center; gap: 5px; min-width: 0; }
+.opt-label {
+  display: block;
+  min-width: 0;
+  padding: 2px 0;
+  color: var(--text-1);
+  font-size: var(--size-body);
+  line-height: 1.25;
+  overflow-wrap: anywhere;
+}
+.opt-field { display: flex; align-items: center; justify-content: flex-end; min-width: 0; }
+.opt-field > .lb, .opt-field > .unit, .opt-field > input[type="text"] { flex: 1; min-width: 0; }
+/* A tick box stands at the head of its column, where the fields begin. */
+.opt-field > input[type="checkbox"] { margin-right: auto; }
+.opt-field .number { font-family: var(--font-mono); font-size: var(--size-label); font-variant-numeric: tabular-nums; }
+.opt-unit { flex: none; white-space: nowrap; }
+.opt-unit:empty { display: none; }
+/* The values a field can also be picked from: a chevron at its end. */
+button.opt-more {
+  flex: none;
+  width: 14px;
+  height: 100%;
+  margin-right: calc(-1 * var(--space-1));
+  background: var(--mark-chevron) center / 9px 6px no-repeat;
+}
+button.opt-more:hover:not(:disabled) { background-color: var(--fill-hover); }
+
+/* A box of text takes the row under its label. */
+.opt.wide { grid-template-columns: minmax(0, 1fr) 16px; row-gap: 3px; }
+.opt.wide .opt-field { grid-column: 1 / -1; grid-row: 2; }
+.opt.wide .opt-reset { grid-column: 2; grid-row: 1; }
+
+/* Set by hand: the accent at the head of the control, and the way back. */
+.opt.set .unit, .opt.set .lb-trigger, .opt.set .opt-field > input[type="text"], .opt.set textarea { box-shadow: inset 2px 0 0 var(--accent); }
+.opt.set .opt-field > input[type="checkbox"] { box-shadow: -4px 0 0 -1px var(--surface-panel), -5px 0 0 -1px var(--accent); }
+.opt.set .opt-label { font-weight: 600; }
+button.opt-reset { display: grid; place-items: center; width: 16px; height: 18px; border-radius: var(--radius-s); color: var(--accent); }
+button.opt-reset:hover:not(:disabled) { color: var(--accent-hover); background: var(--fill-hover); }
+button.opt-reset svg { width: 13px; height: 13px; fill: none; stroke: currentColor; stroke-width: 1.4; stroke-linecap: round; stroke-linejoin: round; }
+
+/* Greyed out by another setting. */
+.opt.off .opt-label { color: var(--text-off); }
+.opt.off .unit { color: var(--text-off); }
+.opt.off .unit:hover { border-color: var(--line-2); }
+
+/* What the engine does with it: a ring where it is not followed yet, a
+   dot where it is followed with a note. Quiet, and said in its tooltip. */
+.opt-follow { flex: none; width: 7px; height: 7px; border-radius: 50%; }
+.opt.unread .opt-follow { border: 1px solid var(--text-3); }
+.opt.noted .opt-follow { background: var(--warn); }
+.opt.unread .opt-label { color: var(--text-2); }
+
+/* Several options under one label. */
+.opt-line { display: flex; flex-direction: column; gap: 3px; min-width: 0; }
+.opt-line-label { padding-top: 2px; color: var(--text-2); font-size: var(--size-label); }
+.opt-line > .opt { padding-left: var(--space-3); }
+
+/* Gone to from the search: marked for a moment. */
+.opt.found { animation: opt-found 1.6s var(--ease); }
+@keyframes opt-found { 0%, 60% { background: var(--accent-soft); } }
+@media (prefers-reduced-motion: reduce) {
+  .opt.found { animation: none; background: var(--accent-soft); }
+}
+
+/* ---- the search ---- */
+
+#process-found { display: flex; flex-direction: column; gap: 1px; max-height: 60vh; overflow-y: auto; }
+.found-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: 1px;
+  padding: 5px var(--space-2);
+  border: 0;
+  background: none;
+  text-align: left;
+}
+.found-row[aria-selected="true"] { background: var(--fill-active); }
+.found-label { overflow-wrap: anywhere; }
+.found-where { color: var(--text-2); font-size: var(--size-small); }
+.found-key { color: var(--text-3); font: var(--size-small) var(--font-mono); overflow-wrap: anywhere; }
+.found-row.away .found-label { color: var(--text-off); }

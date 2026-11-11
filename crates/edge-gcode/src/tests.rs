@@ -2676,3 +2676,222 @@ fn widths_follow_a_wall_opened_at_its_seam_and_cut_short() {
     assert_eq!(cut.len(), shorter.len());
     assert_eq!(cut[..3], opened[..3]);
 }
+
+/// The moves of a layer's text that lay plastic: where each ends, in mm,
+/// its speed in mm/s and what it is laid as.
+fn laid_moves(text: &str) -> Vec<((f64, f64), f64, &str)> {
+    // The layer before ended with an outer wall, so a layer that
+    // starts with one does not name it again.
+    let (mut kind, mut speed) = ("Outer wall", 0.0);
+    let mut moves = Vec::new();
+    for line in text.lines() {
+        if let Some(name) = line.strip_prefix(";TYPE:") {
+            kind = name;
+        }
+        if !line.starts_with("G1 ") {
+            continue;
+        }
+        speed = word(line, 'F').unwrap_or(speed);
+        if let (Some(feed), Some(x), Some(y)) = (word(line, 'E'), word(line, 'X'), word(line, 'Y'))
+            && feed > 0.0
+        {
+            moves.push(((x, y), speed / 60.0, kind));
+        }
+    }
+    moves
+}
+
+#[test]
+fn a_wall_is_cut_and_slowed_where_the_reference_does_it() {
+    // The wall of 0.45 mm leaves the plate at x = 10 going out and comes
+    // back over it at y = 10. Worked by hand from ExtrusionProcessor.hpp:
+    //
+    // - It hangs clear from 0.2 mm (half the nozzle) past the plate's
+    //   edge, and is an overhang wall from there.
+    // - The stretch before that has four points: its start, a cut 0.9 mm
+    //   short of the edge (the edge's point is 0.225 mm short of full
+    //   support, and a line and a half is 0.675 mm more), the edge, and
+    //   its end 0.2 mm out, which is 0.425 mm short: between the 10 mm/s
+    //   of 87% and the bridge's 25 mm/s, 19 mm/s.
+    // - Each line goes at the slower of its ends: 200, 50 and 19 mm/s.
+    // - The overhang wall is a bridge 0.369 mm wide, none of it
+    //   supported anywhere, at the bridge's speed along its own points.
+    // - The fan is on over a line that is half supported or less at
+    //   one end and followed by another such: going out that is from
+    //   the cut on, coming back only to the plate's edge.
+    let text = wall_over_a_smaller_plate(&overhanging(), true);
+    let moves = laid_moves(&text);
+    let wanted = [
+        ((9.1, 0.225), 200.0, "Outer wall"),
+        ((10.0, 0.225), 50.0, "Outer wall"),
+        ((10.2, 0.225), 19.0, "Outer wall"),
+        ((19.775, 0.225), 25.0, "Overhang wall"),
+        ((19.775, 19.775), 25.0, "Overhang wall"),
+        ((0.225, 19.775), 25.0, "Overhang wall"),
+        ((0.225, 10.2), 25.0, "Overhang wall"),
+        ((0.225, 10.0), 19.0, "Outer wall"),
+        ((0.225, 9.1), 50.0, "Outer wall"),
+        ((0.225, 0.225), 200.0, "Outer wall"),
+    ];
+    assert_eq!(moves, wanted);
+    let at = |needle: &str| text.find(needle).unwrap();
+    assert!(at("G1 X9.100 Y0.225") < at("M106 S255"));
+    assert!(at("M106 S255") < at("G1 X10.000 Y0.225"));
+    assert!(at("G1 X0.225 Y10.000") < at("M106 S51"));
+    assert!(at("M106 S51") < at("G1 X0.225 Y9.100"));
+}
+
+/// A wall of short lines round a part 40 mm across, each layer's reaching
+/// `out` mm further than the plate beneath on every side.
+fn round_wall_over_a_round_plate(settings: &PrintSettings, out: f64) -> (usize, Vec<f64>) {
+    let ring = |radius: f64| -> Vec<Point2> {
+        (0..180)
+            .map(|step| {
+                let turn = (step as f64 * 2.0).to_radians();
+                Point2::from_mm(50.0 + radius * turn.cos(), 50.0 + radius * turn.sin())
+            })
+            .collect()
+    };
+    let mut above = wall(0.0, 0.0, 1.0, 0);
+    above.polygon.points = ring(20.0 - 0.225 + out);
+    let mut plate = wall(0.0, 0.0, 1.0, 0);
+    plate.polygon.points = ring(20.0 - 0.225);
+    let beneath = [ExPolygon {
+        contour: Polygon { points: ring(20.0) },
+        holes: Vec::new(),
+    }];
+    let (plate, above) = ([plate], [above]);
+    let layer = |z: f64, loops, below| Layer {
+        z,
+        height: 0.2,
+        filament: 0,
+        ram: None,
+        enter: &[],
+        tower: &[],
+        around: &[],
+        support: &[],
+        loops,
+        islands: &[0..1],
+        paths: &[],
+        shelter: &[],
+        below,
+    };
+    let layers = [
+        layer(0.2, &plate[..], &[][..]),
+        layer(0.4, &above[..], &beneath[..]),
+    ];
+    let (text, _) = print(&layers, settings);
+    let layer = text.split(";Z:0.400").nth(1).unwrap();
+    let moves = laid_moves(layer);
+    let mut speeds: Vec<f64> = moves.iter().map(|(_, speed, _)| *speed).collect();
+    speeds.dedup();
+    (moves.len(), speeds)
+}
+
+#[test]
+fn a_wall_of_short_lines_is_written_move_for_move_however_it_overhangs() {
+    // The gap this closed: a hull that leans out a little all the way
+    // round was measured every quarter of a millimetre and written in
+    // those pieces, four moves for every line of a Benchy's hull. The
+    // reference measures a wall at its own points, and adds one only
+    // where it crosses the outline beneath, inside a line of 2 mm or
+    // more, or beside the end of one. These lines are 0.7 mm.
+    let settings = PrintSettings {
+        overhang_fan: None,
+        ..overhanging()
+    };
+    for out in [0.0, 0.06, 0.12, 0.18, 0.3] {
+        let (moves, speeds) = round_wall_over_a_round_plate(&settings, out);
+        assert_eq!(moves, 180, "{out} mm out");
+        // All of it overhangs alike, so it goes at one speed.
+        assert_eq!(speeds.len(), 1, "{out} mm out: {speeds:?}");
+    }
+    // Speeds as ExtrusionProcessor.hpp `calculate_speed` gives them for
+    // a line of 0.45 mm: full to a quarter of the width out (0.1125
+    // mm), 50 mm/s at half and 30 mm/s at three quarters.
+    assert_eq!(round_wall_over_a_round_plate(&settings, 0.06).1, [200.0]);
+    assert_eq!(round_wall_over_a_round_plate(&settings, 0.225).1, [50.0]);
+    let between = round_wall_over_a_round_plate(&settings, 0.17).1[0];
+    assert!(between > 110.0 && between < 135.0, "{between}");
+}
+
+#[test]
+fn a_speed_within_one_mm_a_second_of_the_last_is_not_written() {
+    // GCode.cpp `_extrude`: "Ignore small speed variations - emit speed
+    // change if the delta between current and new is greater than
+    // 60mm/min". A wall whose overhang grows by a hair from line to line
+    // is not given a new speed for every one of them.
+    let mut above = wall(0.0, 0.0, 1.0, 0);
+    // Along the plate's edge at x = 10, from 0.1 mm inside it at the
+    // start to 0.1 mm outside it 20 mm on, in lines of 0.5 mm, on a
+    // curve so that no point of it is thinned away.
+    let mut points: Vec<Point2> = (0..=40)
+        .map(|step| {
+            let along = step as f64 / 40.0;
+            Point2::from_mm(9.9 + 0.2 * along * along, 5.0 + 0.5 * step as f64)
+        })
+        .collect();
+    points.extend([Point2::from_mm(5.0, 25.0), Point2::from_mm(5.0, 5.0)]);
+    above.polygon.points = points;
+    let plate = [wall(0.0, 0.0, 30.0, 0)];
+    let beneath = [ExPolygon {
+        contour: Polygon {
+            points: [(0.0, 0.0), (10.0, 0.0), (10.0, 30.0), (0.0, 30.0)]
+                .map(|(x, y)| Point2::from_mm(x, y))
+                .to_vec(),
+        },
+        holes: Vec::new(),
+    }];
+    let above = [above];
+    let layer = |z: f64, loops, below| Layer {
+        z,
+        height: 0.2,
+        filament: 0,
+        ram: None,
+        enter: &[],
+        tower: &[],
+        around: &[],
+        support: &[],
+        loops,
+        islands: &[0..1],
+        paths: &[],
+        shelter: &[],
+        below,
+    };
+    let layers = [
+        layer(0.2, &plate[..], &[][..]),
+        layer(0.4, &above[..], &beneath[..]),
+    ];
+    let settings = PrintSettings {
+        overhang_fan: None,
+        detect_overhang_wall: false,
+        resolution: 0.0,
+        ..overhanging()
+    };
+    let (text, _) = print(&layers, &settings);
+    let layer = text.split(";Z:0.400").nth(1).unwrap();
+    // The moves along the edge: the wall's own 40 lines, one of them
+    // in two where it crosses the plate's edge.
+    let moves: Vec<_> = laid_moves(layer)
+        .into_iter()
+        .filter(|((x, y), _, _)| *x > 9.85 && *y > 5.0)
+        .collect();
+    assert_eq!(moves.len(), 41);
+    let on_the_edge = moves.iter().filter(|((x, _), _, _)| *x == 10.0).count();
+    assert_eq!(on_the_edge, 1);
+    // No two speeds written one after the other are within 1 mm/s,
+    // though the wall's speed falls by less than that along some lines.
+    let mut speeds: Vec<f64> = moves.iter().map(|(_, speed, _)| *speed).collect();
+    speeds.dedup();
+    assert!(speeds.len() > 6, "{speeds:?}");
+    assert!(
+        speeds
+            .windows(2)
+            .all(|pair| (pair[0] - pair[1]).abs() > 1.0),
+        "{speeds:?}"
+    );
+    // It ends 0.1 mm past the edge, 0.325 mm short of full support:
+    // between the 50 mm/s of half and the 30 mm/s of three quarters.
+    let slowest = speeds.iter().copied().fold(f64::INFINITY, f64::min);
+    assert!((30.0..36.0).contains(&slowest), "{slowest}");
+}

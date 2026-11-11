@@ -23,6 +23,8 @@ const SCRIPT: &str = include_str!("../ui/app.js");
 const STYLE: &str = include_str!("../ui/style.css");
 const PRINTERS_SCRIPT: &str = include_str!("../ui/printers.js");
 const PRINTERS_STYLE: &str = include_str!("../ui/printers.css");
+const PROCESS_SCRIPT: &str = include_str!("../ui/process.js");
+const PROCESS_STYLE: &str = include_str!("../ui/process.css");
 /// The 3D views' scripts, under `ui/gl`.
 const GL: [(&str, &str); 9] = [
     ("math.js", include_str!("../ui/gl/math.js")),
@@ -34,6 +36,12 @@ const GL: [(&str, &str); 9] = [
     ("controls.js", include_str!("../ui/gl/controls.js")),
     ("stage.js", include_str!("../ui/gl/stage.js")),
     ("gl.css", include_str!("../ui/gl/gl.css")),
+];
+/// The files of the tools that change what stands on the plates.
+const EDIT: [(&str, &str); 3] = [
+    ("scene-edit.js", include_str!("../ui/scene-edit.js")),
+    ("objects.js", include_str!("../ui/objects.js")),
+    ("edit.css", include_str!("../ui/edit.css")),
 ];
 /// A file of the page. A debug build reads it from the source folder each
 /// time, so a change to the page shows on reload; any other build serves
@@ -142,6 +150,22 @@ fn handle(mut request: Request, session: &Arc<Session>, token: &str, port: u16) 
                 asset("printers.js", PRINTERS_SCRIPT),
             );
         }
+        (Method::Get, "/process.js") => {
+            respond(
+                request,
+                200,
+                "text/javascript; charset=utf-8",
+                asset("process.js", PROCESS_SCRIPT),
+            );
+        }
+        (Method::Get, "/process.css") => {
+            respond(
+                request,
+                200,
+                "text/css; charset=utf-8",
+                asset("process.css", PROCESS_STYLE),
+            );
+        }
         (Method::Get, "/printers.css") => {
             respond(
                 request,
@@ -149,6 +173,18 @@ fn handle(mut request: Request, session: &Arc<Session>, token: &str, port: u16) 
                 "text/css; charset=utf-8",
                 asset("printers.css", PRINTERS_STYLE),
             );
+        }
+        (Method::Get, path) if EDIT.iter().any(|(known, _)| path[1..] == **known) => {
+            let (name, built_in) = EDIT
+                .iter()
+                .find(|(known, _)| path[1..] == **known)
+                .expect("one of them is it");
+            let kind = if name.ends_with(".css") {
+                "text/css; charset=utf-8"
+            } else {
+                "text/javascript; charset=utf-8"
+            };
+            respond(request, 200, kind, asset(name, built_in));
         }
         (Method::Get, path) if path.starts_with("/gl/") => {
             let name = &path["/gl/".len()..];

@@ -2,17 +2,22 @@
 //! command line, the desktop app, a test.
 //!
 //! [`open`] reads a model, [`prepare`] settles what it is sliced with,
-//! [`slice`] does the work and [`Sliced::gcode`] writes the result. For
+//! [`slice`] does the work and [`Sliced::gcode`] writes the result. A
+//! [`Model`] is a file held in memory to be changed first: what stands on
+//! its plates moved, added, taken away. For
 //! looking at, [`Opened::scene`] gives the file's objects as meshes and
-//! [`read_toolpath`] the moves of a finished G-code file. Nothing
+//! [`read_toolpath`] the moves of a finished G-code file. [`followed`]
+//! says, for a set of settings, which of them the engine reads. Nothing
 //! here prints or touches a window; a [`Watcher`] is told how far the
 //! work has got and may stop it.
 
 mod clock;
+mod followed;
 mod holes;
 mod job;
 mod layer_heights;
 mod load;
+mod model;
 mod order;
 mod paint;
 mod pipeline;
@@ -26,8 +31,13 @@ mod unfollowed;
 use std::{error::Error, fmt};
 
 pub use clock::timestamp;
-pub use job::{BedType, Chosen, Job, Overrides, Sourced, prepare};
+pub use edge_mesh::Transform;
+pub use followed::{Followed, followed, settled};
+pub use job::{BedType, Chosen, Job, Overrides, Sourced, prepare, prepare_noted};
 pub use load::{Loaded, Opened, PlateInfo, open};
+pub use model::{
+    Bed, MAX_PLATES, Model, ModelCopy, ModelObject, ModelPlate, PlateStamp, Reach, Shape,
+};
 pub use pipeline::{Gcode, Sliced, Timings, slice};
 pub use presets::{Library, ModelPreset, PrinterModel, Shelf};
 pub use preview::Stroke;

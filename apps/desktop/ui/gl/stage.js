@@ -165,6 +165,7 @@
       const project = model.project;
       if (!project || model.tab === 'device') return;
       const mine = this.mine();
+      if (GL.edit) GL.edit.shown(model);
       // Each project keeps its own camera; the two tabs share it.
       if (this.shown !== project.id) {
         if (before && before.project && before.kept.gl && this.shown === before.project.id) before.kept.gl.camera = this.camera.save();
@@ -215,36 +216,62 @@
       return plate ? plate.origin : null;
     },
 
+    // What tells one scene from another: the project, its file, its
+    // printer, and how often its model was edited.
+    keyOf(project, settled) {
+      const printer = settled && settled.printer ? `${settled.printer.name}|${JSON.stringify(settled.printer.bed)}` : '';
+      const revision = project.edit ? project.edit.revision : 0;
+      return `${project.id}|${project.path || ''}|${project.empty}|${revision}|${printer}`;
+    },
+
     // Asks for the project's scene when it is not the one held: another
-    // project, another file, another printer.
+    // project, another file, another printer, an edit made elsewhere.
     wantScene() {
       const { project, settled } = this.model;
-      const printer = settled && settled.printer ? `${settled.printer.name}|${JSON.stringify(settled.printer.bed)}` : '';
-      const key = `${project.id}|${project.path || ''}|${project.empty}|${printer}`;
+      const key = this.keyOf(project, settled);
       if (key === this.sceneKey) {
         if (this.scene.data) this.scene.data.plate = this.plateId();
         return;
       }
       this.sceneKey = key;
       const turn = ++this.sceneTurn;
+      this.call('scene', { project: project.id }).then((data) => {
+        if (turn === this.sceneTurn) this.takeScene(data, turn);
+      }).catch((error) => { if (turn === this.sceneTurn) this.host.say(error.message, true); });
+    },
+
+    // Shows a scene as the session gave it, and asks for the meshes and
+    // the bed it has not got.
+    async takeScene(data, turn) {
       const since = performance.now();
       const sent = this.stats.bytes;
-      this.call('scene', { project: project.id }).then(async (data) => {
-        if (turn !== this.sceneTurn) return;
-        const mine = this.mine();
-        this.scene.set(data);
-        this.scene.keep(this.openKeys(data));
-        // A bed that is new to the project, or of another size, is
-        // looked at afresh, as the reference's window starts.
-        const bed = JSON.stringify([data.bed.box, data.plates.length]);
-        if (mine.fitted !== bed) {
-          mine.fitted = bed;
-          this.view('default');
-        }
-        mine.selection = new Set([...mine.selection].filter((index) => index < data.placings.length));
-        this.frame();
-        await Promise.all([this.wantBed(data, turn), this.wantMeshes(data, turn, since, sent)]);
-      }).catch((error) => { if (turn === this.sceneTurn) this.host.say(error.message, true); });
+      const mine = this.mine();
+      this.scene.set(data);
+      this.scene.keep(this.openKeys(data));
+      this.scene.prune();
+      // A bed that is new to the project, or of another size, is
+      // looked at afresh, as the reference's window starts.
+      const bed = JSON.stringify(data.bed.box);
+      if (mine.fitted !== bed) {
+        mine.fitted = bed;
+        this.view('default');
+      }
+      // What is selected is still selected while it is still there.
+      const there = new Set(data.placings.map((placing) => placing.id));
+      mine.selection = new Set([...mine.selection].filter((id) => there.has(id)));
+      if (GL.edit) GL.edit.sceneChanged();
+      this.frame();
+      await Promise.all([this.wantBed(data, turn), this.wantMeshes(data, turn, since, sent)]);
+    },
+
+    // The scene an edit answered with (scene-edit.js): shown at once,
+    // with nothing asked for but the meshes that are new.
+    adopt(project, data) {
+      if (!this.model || !this.model.project || this.model.project.id !== project.id) return;
+      this.model.project = project;
+      this.sceneKey = this.keyOf(project, this.model.settled);
+      const turn = ++this.sceneTurn;
+      this.takeScene(data, turn).catch((error) => { if (turn === this.sceneTurn) this.host.say(error.message, true); });
     },
 
     // The keys of this scene and of those of the other projects still
@@ -263,15 +290,18 @@
     // The meshes the scene has not got yet, one object after another,
     // those of the plate shown first.
     async wantMeshes(data, turn, since, sent) {
-      const order = [...data.objects.keys()].filter((object) => !this.scene.meshes.has(`${data.key}:${object}`));
+      const order = [...data.objects.keys()].filter((object) => !this.scene.meshes.has(`${data.key}:${data.objects[object].mesh}`));
       const onPlate = new Set(data.placings.filter((placing) => placing.plate === data.plate).map((placing) => placing.object));
       order.sort((a, b) => Number(onPlate.has(b)) - Number(onPlate.has(a)));
       let first = true;
       for (const object of order) {
         this.say(`Loading ${data.objects[object].name || 'the model'}…`);
-        const bytes = await this.bytes('scene_mesh', { project: data.project, object });
+        // Two objects of one shape (a clone) have one mesh.
+        const key = `${data.key}:${data.objects[object].mesh}`;
+        if (this.scene.meshes.has(key)) continue;
+        const bytes = await this.bytes('scene_mesh', { project: data.project, mesh: data.objects[object].mesh });
         if (turn !== this.sceneTurn) return;
-        this.scene.addMesh(`${data.key}:${object}`, this.renderer.meshFromBytes(bytes));
+        this.scene.addMesh(key, this.renderer.meshFromBytes(bytes));
         this.draw();
         if (first) this.note('scene: first object drawn', since, { bytes: this.stats.bytes - sent });
         first = false;
@@ -572,7 +602,7 @@
       if (this.model.tab !== 'preview') {
         const mine = this.mine();
         const id = this.plateId();
-        const box = this.scene.boxOf((placing, index) => mine.selection.has(index))
+        const box = this.scene.boxOf((placing) => mine.selection.has(placing.id))
           || this.scene.boxOf((placing) => placing.plate === id || this.scene.plates.length === 1);
         if (box) return M.centre(box);
       }
@@ -618,7 +648,7 @@
       this.sized();
       camera.selectView('plate', this.prefs.autoPerspective);
       const mine = this.mine();
-      const selected = this.model.tab !== 'preview' ? this.scene.boxOf((placing, index) => mine.selection.has(index)) : null;
+      const selected = this.model.tab !== 'preview' ? this.scene.boxOf((placing) => mine.selection.has(placing.id)) : null;
       const plate = this.plateBox();
       if (selected) camera.zoomToBox(selected, MARGIN.box);
       else if (plate) camera.zoomToBox(plate, MARGIN.bed);
@@ -642,8 +672,12 @@
         canvas.focus({ preventScroll: true });
         canvas.setPointerCapture(event.pointerId);
         const [x, y] = at(event);
-        press = { id: event.pointerId, button: event.button, x, y, from: [x, y], moved: false, pivot: null };
-        if (event.button === 0) {
+        press = { id: event.pointerId, button: event.button, x, y, from: [x, y], moved: false, pivot: null, grab: null };
+        // In Prepare the left button takes hold of a tool's handle, or of
+        // the object under it, which a drag then moves (GLCanvas3D.cpp
+        // `on_mouse`); anywhere else it turns the view.
+        if (event.button === 0 && this.model.tab === 'prepare' && GL.edit) press.grab = GL.edit.grab(x, y, event);
+        if (event.button === 0 && !press.grab) {
           // With Ctrl or Cmd, about the point of the bed in the middle
           // of the view.
           const centre = event.ctrlKey || event.metaKey ? this.camera.onGround(this.camera.viewport[0] / 2, this.camera.viewport[1] / 2) : null;
@@ -659,7 +693,9 @@
         press.moved = true;
         press.x = x;
         press.y = y;
-        if (press.button === 0) {
+        if (press.grab) {
+          GL.edit.drag(press.grab, x, y, event);
+        } else if (press.button === 0) {
           // The left button turns the view.
           this.camera.rotateOnSphere(dx * ORBIT, dy * ORBIT, true, press.pivot);
           if (this.prefs.autoPerspective) this.camera.perspective = true;
@@ -674,8 +710,15 @@
         const done = press;
         press = null;
         canvas.classList.remove('dragging');
-        if (!done.moved && event.type === 'pointerup') this.click(done, event);
+        if (done.grab && done.moved) GL.edit.drop(done.grab, event.type === 'pointerup');
+        else if (!done.moved && event.type === 'pointerup') this.click(done, event);
       };
+      // The handle under the pointer is shown as taken up.
+      canvas.addEventListener('pointermove', (event) => {
+        if (press || !this.model || this.model.tab !== 'prepare' || !GL.edit) return;
+        const [x, y] = at(event);
+        if (GL.edit.hover(x, y)) this.frame();
+      });
       canvas.addEventListener('pointerup', release);
       canvas.addEventListener('pointercancel', release);
       canvas.addEventListener('wheel', (event) => {
@@ -707,19 +750,41 @@
       const frame = this.matrices();
       const hit = this.scene.pick(this.camera, frame, press.x, press.y, { plates: true });
       if (hit && hit.placing !== undefined) {
-        if (press.button === 0 && (event.ctrlKey || event.metaKey)) {
-          // Ctrl adds an object to those selected, or takes it away.
-          if (mine.selection.has(hit.placing)) mine.selection.delete(hit.placing); else mine.selection.add(hit.placing);
+        const id = this.scene.data.placings[hit.placing].id;
+        if (press.button === 0 && (event.ctrlKey || event.metaKey || event.shiftKey)) {
+          // Ctrl or Shift adds an object to those selected, or takes it away.
+          const chosen = new Set(mine.selection);
+          if (chosen.has(id)) chosen.delete(id); else chosen.add(id);
+          this.select(chosen);
         } else if (press.button === 0 || press.button === 2) {
-          mine.selection = new Set([hit.placing]);
+          // The right button selects too, and opens the object's menu.
+          if (press.button === 0 || !mine.selection.has(id)) this.select([id]);
+          if (press.button === 2 && GL.edit) GL.edit.menu(event.clientX, event.clientY);
         }
       } else if (hit && hit.plate && press.button === 0) {
         // A click on a plate selects the plate and lets go of the objects.
-        mine.selection = new Set();
+        this.select([]);
         if (hit.plate.id !== null && hit.plate.id !== this.plateId()) this.host.plate(hit.plate.id);
+      } else if (hit && hit.plate && press.button === 2 && hit.plate.id !== null && GL.edit) {
+        // The right button on a plate opens the plate's menu.
+        GL.edit.plateMenu(event.clientX, event.clientY, hit.plate.id);
       } else if (!event.shiftKey) {
-        mine.selection = new Set();
+        this.select([]);
       }
+      this.frame();
+    },
+
+    // What is selected: copies of objects, by their `id` in the scene.
+    selection() {
+      return this.model && this.model.project ? this.mine().selection : new Set();
+    },
+
+    // Selects these copies and no others, and tells whoever shows the
+    // selection elsewhere (the object list, the tools).
+    select(ids) {
+      if (!this.model || !this.model.project) return;
+      this.mine().selection = new Set(ids);
+      if (GL.edit) GL.edit.selectionChanged();
       this.frame();
     },
 
@@ -737,7 +802,7 @@
         if (key === 'a' && this.model.tab === 'prepare' && this.scene.data) {
           // Select all objects: those on the plate shown.
           const id = this.plateId();
-          this.mine().selection = new Set(this.scene.data.placings.flatMap((placing, index) => (placing.plate === id || this.scene.plates.length === 1 ? [index] : [])));
+          this.select(this.scene.data.placings.filter((placing) => placing.plate === id || this.scene.plates.length === 1).map((placing) => placing.id));
           done();
           return;
         }
@@ -746,7 +811,8 @@
       }
       if (command) return;
       if (key === 'i' || key === 'o') { this.camera.updateZoom(key === 'i' ? 1 : -1); done(); return; }
-      if (key === 'Escape' && this.model.tab === 'prepare' && this.mine().selection.size) { this.mine().selection = new Set(); done(); return; }
+      if (key === 'Escape' && this.model.tab === 'prepare' && GL.edit && GL.edit.escape()) { done(); return; }
+      if (key === 'Escape' && this.model.tab === 'prepare' && this.mine().selection.size) { this.select([]); done(); return; }
       if (this.model.tab !== 'preview' || !this.path()) return;
       const fast = event.shiftKey ? 5 : 1;
       if (key === 'l' && !event.shiftKey) { this.layerSlider.setOne(!this.layerSlider.one); done(); return; }
@@ -805,6 +871,7 @@
         this.scene.drawBed(frame, { current: plate, all: true, below });
         this.scene.drawObjects(frame, 1);
         this.scene.drawSelection(frame, mine.selection);
+        if (GL.edit) GL.edit.draw(frame);
       } else {
         this.scene.drawBed(frame, { current: plate, all: false, below });
         const path = this.path();
@@ -854,12 +921,12 @@
       const plate = this.plateId();
       const mine = this.mine();
       const shown = [];
-      data.placings.forEach((placing, index) => {
+      data.placings.forEach((placing) => {
         const name = data.objects[placing.object].name;
         if (!name || !placing.box || (placing.plate !== plate && this.scene.plates.length > 1)) return;
         const top = [(placing.box[0][0] + placing.box[1][0]) / 2, (placing.box[0][1] + placing.box[1][1]) / 2, placing.box[1][2]];
         const at = M.point(matrix, top);
-        shown.push({ name, x: (at[0] * 0.5 + 0.5) * width, y: (1 - (at[1] * 0.5 + 0.5)) * height, selected: mine.selection.has(index) });
+        shown.push({ name, x: (at[0] * 0.5 + 0.5) * width, y: (1 - (at[1] * 0.5 + 0.5)) * height, selected: mine.selection.has(placing.id) });
       });
       while (this.labels.children.length > shown.length) this.labels.lastChild.remove();
       while (this.labels.children.length < shown.length) this.labels.append(el('span'));

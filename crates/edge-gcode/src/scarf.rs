@@ -775,30 +775,17 @@ impl Writer<'_> {
             || (wall.role == Role::Perimeter && scarf.inner_walls);
         // The reference goes by the kind of the loop's first path, and
         // a wall that starts over air starts with an overhang wall.
-        kind && role && !self.state.first_layer && !self.over_air(first, second, wall.flow.width)
+        kind && role && !self.state.first_layer && !self.over_air(first, second)
     }
 
     /// Whether the line from `first` to `second` starts clear of the
     /// layer beneath, as the walls are judged when they are laid.
-    fn over_air(&self, first: Point2, second: Point2, width: f64) -> bool {
-        let s = self.settings;
-        let (Some(below), false, true) = (
-            self.below.as_ref(),
-            self.state.first_layer,
-            s.detect_overhang_wall,
-        ) else {
-            return false;
-        };
-        overhang::Judge {
-            below,
-            width,
-            clear_beyond: Some(0.5 * s.nozzle_diameter),
-            speed: &|_| 0.0,
-            fan_at: None,
-        }
-        .pieces(&[first, second])
-        .first()
-        .is_some_and(|piece| piece.clear)
+    fn over_air(&self, first: Point2, second: Point2) -> bool {
+        self.clear_of().is_some_and(|(below, by)| {
+            overhang::stretches(below, by, &[first, second])
+                .first()
+                .is_some_and(|stretch| stretch.clear)
+        })
     }
 
     /// Whether a seam rests on the layer beneath well enough for a
