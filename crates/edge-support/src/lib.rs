@@ -713,6 +713,7 @@ pub(crate) fn fill(
                     role,
                     flow: *flow,
                     in_turn: false,
+                    part: 0,
                 });
             }
             continue;
@@ -722,6 +723,7 @@ pub(crate) fn fill(
             role,
             flow: *flow,
             in_turn: false,
+            part: 0,
         }));
     }
     Ok(())

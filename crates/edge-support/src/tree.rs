@@ -1034,6 +1034,7 @@ fn loops(
                     role: Role::Support,
                     flow: *flow,
                     in_turn: false,
+                    part: 0,
                 });
                 continue;
             }
@@ -1107,6 +1108,7 @@ fn loops(
                 role: Role::Support,
                 flow: *flow,
                 in_turn: false,
+                part: 0,
             });
         }
     }

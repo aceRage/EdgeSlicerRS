@@ -48,6 +48,7 @@ fn path(points: Vec<Point2>, width: f64, role: Role, flow: &Flow) -> Option<Extr
         role,
         flow,
         in_turn: false,
+        part: 0,
     })
 }
 

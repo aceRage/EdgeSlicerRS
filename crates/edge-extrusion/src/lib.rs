@@ -223,6 +223,12 @@ pub struct ExtrusionPath {
     /// of the pattern, as in a surface swept from one side to the other.
     /// A path without this may be taken in any order and from either end.
     pub in_turn: bool,
+    /// Which area of its layer the path helps to fill, from 1; 0 for a
+    /// path that stands by itself. Paths with the same number, next to
+    /// each other in a list, are laid together: the nozzle finishes one
+    /// area before it goes to another (the reference's collection of
+    /// extrusions for a surface).
+    pub part: u32,
 }
 
 impl ExtrusionPath {
@@ -333,6 +339,7 @@ mod tests {
             role: Role::SolidInfill,
             flow,
             in_turn: false,
+            part: 0,
         };
         assert_eq!(path.length_mm(), 11.0);
         assert!((path.volume_mm3() - 11.0 * flow.mm3_per_mm()).abs() < 1e-12);
