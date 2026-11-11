@@ -497,9 +497,9 @@ pub struct Anchoring {
 /// Grows each layer's bridges, bottoms and tops into the fill beside
 /// them, and gives every bridge the direction that carries it from
 /// support to support (`LayerRegion::process_external_surfaces`). The
-/// reference grows in waves that cannot leave the area they start in;
-/// here a surface is grown by the same distance and cut to the fill it
-/// may grow into.
+/// reference grows in waves that cannot leave the area they start in, and
+/// so are tops and bottoms here; a bridge with no extra reach set is grown
+/// by the same distance at once and cut to the fill it may grow into.
 pub fn anchor(
     surfaces: &[Vec<Surface>],
     anchoring: &Anchoring,
@@ -526,8 +526,14 @@ pub fn anchor(
 
             // A surface with what it gains from each kind of fill beside
             // it, closed up and kept to what it started from and gained.
+            // In `waves` it grows as the reference grows it
+            // (`expand_merge_surfaces`, LayerRegion.cpp, by
+            // `propagate_waves`, Algorithm/RegionExpansion.cpp): a step at
+            // a time within each piece of fill it touches, so that it
+            // never jumps the walls between it and fill it does not touch.
             let grown = |surface: &[ExPolygon],
-                         into: &[(&[ExPolygon], Coord)]|
+                         into: &[(&[ExPolygon], Coord)],
+                         waves: bool|
              -> Result<Vec<ExPolygon>, ClipError> {
                 let mut all = surface.to_vec();
                 let mut allowed = surface.to_vec();
@@ -535,10 +541,19 @@ pub fn anchor(
                     if zone.is_empty() || *reach <= 0 {
                         continue;
                     }
-                    all.extend(edge_clip::intersection(
-                        &edge_clip::offset(surface, *reach, join)?,
-                        zone,
-                    )?);
+                    if waves {
+                        let steps = crate::bridges::Waves::of(*reach);
+                        for source in surface {
+                            for piece in *zone {
+                                all.extend(crate::bridges::wave(source, piece, &steps)?);
+                            }
+                        }
+                    } else {
+                        all.extend(edge_clip::intersection(
+                            &edge_clip::offset(surface, *reach, join)?,
+                            zone,
+                        )?);
+                    }
                     allowed.extend(zone.iter().cloned());
                 }
                 if all.len() == surface.len() {
@@ -629,6 +644,7 @@ pub fn anchor(
                             (&sparse, anchoring.into_sparse),
                             (&top, anchoring.into_solid),
                         ],
+                        false,
                     )?;
                     if !taken.is_empty() {
                         area = edge_clip::difference(&area, &taken)?;
@@ -659,6 +675,7 @@ pub fn anchor(
                         (solid, anchoring.into_solid),
                         (sparse, anchoring.into_sparse),
                     ],
+                    true,
                 )?;
                 *solid = edge_clip::difference(solid, &area)?;
                 *sparse = edge_clip::difference(sparse, &area)?;
@@ -1584,6 +1601,32 @@ mod tests {
             area > 8.0 * 14.0 + 15.0 && area < 8.0 * 14.0 + 20.0,
             "{area} mm²"
         );
+    }
+
+    #[test]
+    fn a_top_does_not_reach_across_a_wall_into_fill_it_does_not_touch() {
+        // A strip of top fill, then a wall 0.5 mm wide with nothing to
+        // fill under it, then solid fill: the strip's walls go round the
+        // fill and not the top, as `only_one_wall_top` leaves them.
+        let layer = vec![
+            Surface::new(Top, block(0.0, 0.0, 3.0, 10.0).remove(0)),
+            Surface::new(InternalSolid, block(3.5, 0.0, 13.5, 10.0).remove(0)),
+        ];
+        let found = anchor(std::slice::from_ref(&layer), &anchoring())
+            .unwrap()
+            .remove(0);
+        assert!((area_of(&found, Top) - 30.0).abs() < 1e-6);
+        assert!((area_of(&found, InternalSolid) - 100.0).abs() < 1e-6);
+        // Touching the fill, it reaches 1.4 mm into it.
+        let layer = vec![
+            Surface::new(Top, block(0.0, 0.0, 3.0, 10.0).remove(0)),
+            Surface::new(InternalSolid, block(3.0, 0.0, 13.0, 10.0).remove(0)),
+        ];
+        let found = anchor(std::slice::from_ref(&layer), &anchoring())
+            .unwrap()
+            .remove(0);
+        assert!((area_of(&found, Top) - 44.0).abs() < 0.05);
+        assert!((area_of(&found, InternalSolid) - 86.0).abs() < 0.05);
     }
 
     #[test]
