@@ -300,7 +300,12 @@ Known gaps: painted supports and seams, per-object setting overrides, typed sett
   weight and time. Following the reference:
   - Seams: each outer wall starts at its best corner by the reference's
     angle score and stays in line with the layer below; inner walls start
-    alongside. Walls stop `seam_gap` short of their start.
+    alongside. Walls stop `seam_gap` short of their start. With
+    `seam_position` at `random` the outer wall starts somewhere else on
+    its loop on every layer, the same on every run; with
+    `staggered_inner_seams` each inner wall starts on round from the
+    wall outside it by its depth, so the seams do not lie one behind
+    another.
   - Order of fill and supports: the fill of an island comes in parts,
     one for each area filled, of whatever kind. The parts are chained by
     their closest ends from where the nozzle is, the shortest hop
