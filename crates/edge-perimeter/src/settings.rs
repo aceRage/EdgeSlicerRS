@@ -67,6 +67,10 @@ pub struct WallSettings {
     pub alternate_extra_wall: bool,
     /// Parts too thin for two walls get one line (`detect_thin_wall`).
     pub detect_thin_wall: bool,
+    /// On every other layer walls over a steep overhang are laid the
+    /// other way round (`overhang_reverse`), where the way round is not
+    /// set outright (`wall_direction` at `auto`): none otherwise.
+    pub overhang_reverse: Option<crate::OverhangReverse>,
 }
 
 /// Fuzzy skin as the settings ask for it (`fuzzy_skin` and the settings
@@ -201,6 +205,7 @@ impl Default for WallSettings {
             fuzzy: FuzzySettings::default(),
             alternate_extra_wall: false,
             detect_thin_wall: false,
+            overhang_reverse: None,
         }
     }
 }
@@ -380,6 +385,14 @@ impl WallSettings {
             arachne,
             fuzzy,
             detect_thin_wall: flag("detect_thin_wall", false)?,
+            overhang_reverse: (flag("overhang_reverse", false)?
+                && matches!(settings.text("wall_direction"), None | Some("auto")))
+            .then_some(crate::OverhangReverse {
+                threshold: settings
+                    .float_or_percent("overhang_reverse_threshold")?
+                    .unwrap_or(FloatOrPercent::Percent(50.0)),
+                internal_only: flag("overhang_reverse_internal_only", false)?,
+            }),
             alternate_extra_wall: flag("alternate_extra_wall", false)?
                 // Cut to a whole number, as the reference reads it.
                 && percent("sparse_infill_density", 20.0)? as i64 > 0,
@@ -511,6 +524,12 @@ impl WallSettings {
         if let Some(arachne) = &mut params.arachne {
             arachne.is_top_or_bottom_layer = index == 0 || index + 1 == layer_count;
         }
+        // PerimeterGenerator.cpp `traverse_loops`: "only calculate
+        // overhang degree on even (from GUI POV) layers", where walls
+        // are checked against the layer below at all.
+        if index % 2 == 1 && self.detect_overhang_wall {
+            params.overhang_reverse = self.overhang_reverse;
+        }
         // A fuzzy skin on this layer's walls, where any is asked for.
         let config = self.fuzzy.config(index);
         let layer = index as i32;
@@ -594,6 +613,7 @@ impl WallSettings {
             precise_outer_wall: self.precise_outer_wall,
             over_air: None,
             fuzzy: None,
+            overhang_reverse: None,
             thin_walls: self.detect_thin_wall && self.arachne.is_none(),
             arachne: self.arachne.map(|arachne| {
                 // Of the nozzle's diameter, and kept in single precision,
@@ -1002,6 +1022,48 @@ mod tests {
         // Nothing to tie to where there is no sparse fill.
         let solid = read(r#"{"alternate_extra_wall": "1", "sparse_infill_density": "0%"}"#);
         assert_eq!(solid.params_at(0.2, 1, 10).unwrap().wall_loops, 2);
+    }
+
+    #[test]
+    fn walls_over_steep_overhangs_can_turn_about_on_every_other_layer() {
+        let read =
+            |json: &str| WallSettings::from_settings(&Settings::from_json(json).unwrap()).unwrap();
+        let set = read(
+            r#"{"overhang_reverse": "1", "overhang_reverse_threshold": "0.3",
+                "overhang_reverse_internal_only": "1"}"#,
+        );
+        let at = |settings: &WallSettings, index| {
+            settings.params_at(0.2, index, 10).unwrap().overhang_reverse
+        };
+        assert_eq!((at(&set, 0), at(&set, 2)), (None, None));
+        let asked = at(&set, 3).unwrap();
+        assert_eq!(
+            (asked.threshold, asked.internal_only),
+            (FloatOrPercent::Value(0.3), true)
+        );
+        // Half a line's width unless set.
+        assert_eq!(
+            at(&read(r#"{"overhang_reverse": "1"}"#), 1)
+                .unwrap()
+                .threshold,
+            FloatOrPercent::Percent(50.0)
+        );
+        // Not with the way round set outright, nor with walls unchecked.
+        assert_eq!(
+            at(
+                &read(r#"{"overhang_reverse": "1", "wall_direction": "ccw"}"#),
+                1
+            ),
+            None
+        );
+        assert_eq!(
+            at(
+                &read(r#"{"overhang_reverse": "1", "detect_overhang_wall": "0"}"#),
+                1
+            ),
+            None
+        );
+        assert_eq!(at(&read("{}"), 1), None);
     }
 
     #[test]

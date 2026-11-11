@@ -20,6 +20,7 @@ fn wall(x: f64, y: f64, side: f64, depth: usize) -> ExtrusionLoop {
     };
     ExtrusionLoop {
         widths: Vec::new(),
+        clockwise: false,
         polygon: Polygon {
             points: points.to_vec(),
         },
@@ -335,6 +336,15 @@ fn every_wall_is_laid_the_same_way_round() {
     };
     let (text, _) = print(&one_layer(&loops, &[0..2], &[]), &clockwise);
     assert_eq!(runs_counter_clockwise(&text), [false, false]);
+
+    // A wall marked to turn about over an overhang does, unless the way
+    // round is set outright. The wall round the hole is laid first.
+    let mut marked = loops.clone();
+    marked[1].clockwise = true;
+    let (text, _) = print(&one_layer(&marked, &[0..2], &[]), &basic());
+    assert_eq!(runs_counter_clockwise(&text), [false, true]);
+    let (text, _) = print(&one_layer(&marked, &[0..2], &[]), &same);
+    assert_eq!(runs_counter_clockwise(&text), [true, true]);
 }
 
 #[test]

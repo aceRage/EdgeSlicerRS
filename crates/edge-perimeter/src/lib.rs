@@ -76,10 +76,25 @@ pub struct Params {
     pub over_air: Option<OverAir>,
     /// Set where walls on this layer get a fuzzy skin (`fuzzy_skin`).
     pub fuzzy: Option<Fuzzy>,
+    /// Set on the layers where walls over a steep overhang are laid the
+    /// other way round (`overhang_reverse`).
+    pub overhang_reverse: Option<OverhangReverse>,
     /// A part too thin for a wall down each side gets one line down its
     /// middle, as wide as the part (`detect_thin_wall`). Classic walls
     /// only: walls of changing width do as much by themselves.
     pub thin_walls: bool,
+}
+
+/// What `overhang_reverse` goes by.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct OverhangReverse {
+    /// A wall is over a steep overhang where it lies further than this
+    /// outside the layer below, in mm or as a share of its width; at
+    /// nothing, every wall is (`overhang_reverse_threshold`).
+    pub threshold: edge_config::FloatOrPercent,
+    /// The outer wall keeps its way round
+    /// (`overhang_reverse_internal_only`).
+    pub internal_only: bool,
 }
 
 /// What a fuzzy skin needs on one layer.
@@ -506,6 +521,12 @@ pub fn classic_between(
                 )?;
             }
         }
+        turn_over_overhangs(
+            &mut result.loops[first_loop..],
+            params,
+            around.as_ref(),
+            fuzzed.as_ref(),
+        )?;
         if result.loops.len() > first_loop {
             result.islands.push(first_loop..result.loops.len());
         }
@@ -892,6 +913,7 @@ pub fn arachne(
                         depth: wall.inset_idx,
                         flow: flow_of(flow, average)?,
                         widths,
+                        clockwise: false,
                     };
                     if is_hole {
                         holes.push(made);
@@ -914,6 +936,12 @@ pub fn arachne(
             }
             result.loops.extend(holes);
         }
+        turn_over_overhangs(
+            &mut result.loops[first_loop..],
+            params,
+            around.as_ref(),
+            fuzzed.as_ref(),
+        )?;
         if result.loops.len() > first_loop {
             result.islands.push(first_loop..result.loops.len());
         }
@@ -963,6 +991,63 @@ pub fn arachne(
         result.infill.extend(infill);
     }
     Ok(result)
+}
+
+/// Marks an island's walls to be laid clockwise where
+/// [`Params::overhang_reverse`] is set and one of them is over a steep
+/// overhang: the walls round the part if any of those is, and the walls
+/// round holes if any of those is (`detect_steep_overhang` and
+/// `reorient_perimeters`, PerimeterGenerator.cpp). With a fuzzy skin they
+/// always are, as in the reference.
+fn turn_over_overhangs(
+    loops: &mut [ExtrusionLoop],
+    params: &Params,
+    around: Option<&Around<'_>>,
+    fuzzed: Option<&Fuzzed>,
+) -> Result<(), Error> {
+    let Some((reverse, lower)) = params
+        .overhang_reverse
+        .zip(around.and_then(|around| around.lower))
+    else {
+        return Ok(());
+    };
+    // Round the part, and round holes.
+    let mut steep = [false, false];
+    if let Some(fuzzed) = fuzzed {
+        let config = &fuzzed.fuzzy.config;
+        // Only where the walls round the part are fuzzy; and round
+        // holes, where those are fuzzy as well.
+        let fuzzy = |is_contour| edge_fuzzy::should_fuzzify(config, config.layer_id, 0, is_contour);
+        let has = |is_hole: bool| loops.iter().any(|wall| wall.is_hole == is_hole);
+        steep = [
+            fuzzy(true) && has(false),
+            fuzzy(true) && fuzzy(false) && has(true),
+        ];
+    }
+    for wall in loops.iter() {
+        let found = &mut steep[usize::from(wall.is_hole)];
+        if *found {
+            continue;
+        }
+        let width = wall.flow.width;
+        let threshold = reverse.threshold.resolve(width);
+        // "Special case: reverse on every even (from GUI POV) layer".
+        if threshold < 1e-4 {
+            *found = true;
+            continue;
+        }
+        let limit = edge_clip::offset(lower, scaled(threshold - 0.5 * width), Join::MITER)?;
+        let mut outline = wall.polygon.points.clone();
+        outline.extend(outline.first().copied());
+        *found = !edge_clip::lines_outside(&[outline], &limit)?.is_empty();
+    }
+    for wall in loops.iter_mut() {
+        let outer = wall.role == Role::ExternalPerimeter;
+        if steep[usize::from(wall.is_hole)] && !(reverse.internal_only && outer) {
+            wall.clockwise = true;
+        }
+    }
+    Ok(())
 }
 
 /// Where [`Params::over_air`] is set and there is a layer below, walls
@@ -1253,6 +1338,7 @@ fn push_loops(loops: &mut Vec<ExtrusionLoop>, shells: &[ExPolygon], depth: usize
     for (polygon, is_hole) in contours.chain(holes) {
         loops.push(ExtrusionLoop {
             widths: Vec::new(),
+            clockwise: false,
             polygon: polygon.clone(),
             role,
             is_hole,
@@ -1300,6 +1386,7 @@ mod tests {
             precise_outer_wall: false,
             over_air: None,
             fuzzy: None,
+            overhang_reverse: None,
             thin_walls: false,
         }
     }
@@ -2087,5 +2174,51 @@ mod tests {
                 .enumerate()
                 .all(|(group, walls)| { walls.iter().all(|wall| wall.inset_idx == group + 1) })
         );
+    }
+
+    #[test]
+    fn walls_over_a_steep_overhang_are_marked_to_turn_about() {
+        // The layer below reaches to x = 18 of this layer's 20: its
+        // right-hand walls hang 2 mm over air.
+        let part = [block(0.0, 0.0, 20.0, 20.0)];
+        let lower = [block(0.0, 0.0, 18.0, 20.0)];
+        let around = |lower: &'static [ExPolygon]| {
+            Some(Around {
+                upper: &[],
+                lower: Some(lower),
+            })
+        };
+        let lower: &'static [ExPolygon] = Box::leak(Box::new(lower));
+        let whole: &'static [ExPolygon] = Box::leak(Box::new([block(0.0, 0.0, 20.0, 20.0)]));
+        let reverse = |threshold, internal_only| OverhangReverse {
+            threshold,
+            internal_only,
+        };
+        let half = edge_config::FloatOrPercent::Percent(50.0);
+        for base in [params(2), varying(2)] {
+            let turned = |reverse: OverhangReverse, lower: &'static [ExPolygon]| -> Vec<bool> {
+                let asked = Params {
+                    overhang_reverse: Some(reverse),
+                    ..base
+                };
+                classic_between(&part, &asked, around(lower))
+                    .unwrap()
+                    .loops
+                    .iter()
+                    .map(|wall| wall.clockwise)
+                    .collect()
+            };
+            // Both walls of the island, once one of them is over it.
+            assert_eq!(turned(reverse(half, false), lower), [true, true]);
+            // The outer wall can be left as it is.
+            assert_eq!(turned(reverse(half, true), lower), [false, true]);
+            // Nothing over air, nothing turned; unless every wall is to be.
+            assert_eq!(turned(reverse(half, false), whole), [false, false]);
+            let always = edge_config::FloatOrPercent::Value(0.0);
+            assert_eq!(turned(reverse(always, false), whole), [true, true]);
+            // Not asked, not marked.
+            let plain = classic_between(&part, &base, around(lower)).unwrap();
+            assert!(plain.loops.iter().all(|wall| !wall.clockwise));
+        }
     }
 }

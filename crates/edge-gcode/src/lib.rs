@@ -1327,7 +1327,12 @@ impl Writer<'_> {
             // A loop is held counter-clockwise round material and
             // clockwise round a hole; every wall is laid the same way
             // round, which turns one or the other about.
-            let turned = wall.is_hole != (s.wall_direction == WallDirection::Clockwise);
+            let clockwise = match s.wall_direction {
+                WallDirection::Auto => wall.clockwise,
+                WallDirection::CounterClockwise => false,
+                WallDirection::Clockwise => true,
+            };
+            let turned = wall.is_hole != clockwise;
             if turned {
                 path.reverse();
             }

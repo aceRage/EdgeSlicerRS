@@ -478,11 +478,6 @@ impl PrintSettings {
                 "0",
                 "walls are not slowed over edges that have curled up",
             ),
-            (
-                "overhang_reverse",
-                "0",
-                "walls over overhangs keep their direction",
-            ),
         ] {
             if let Some(value) = first_text(key)
                 && value != off
