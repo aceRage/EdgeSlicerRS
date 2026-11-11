@@ -617,22 +617,24 @@ pub fn slice(job: Job, watch: &dyn Watcher) -> Result<Sliced, Failure> {
     step(watch, Stage::Supports)?;
     let started = Instant::now();
     let support = SupportSettings::from_settings(&settings)?;
-    // Laid out from the middle of what is being printed.
-    let middle = bodies
-        .iter()
-        .filter_map(|body| body.solid.bounds())
-        .reduce(|(lo, hi), (min, max)| {
-            (
-                std::array::from_fn(|i| lo[i].min(min[i])),
-                std::array::from_fn(|i| hi[i].max(max[i])),
-            )
-        })
-        .map_or(Point2::from_mm(0.0, 0.0), |(lo, hi)| {
-            Point2::from_mm(
-                f64::from(lo[0] + hi[0]) / 2.0,
-                f64::from(lo[1] + hi[1]) / 2.0,
-            )
-        });
+    // Laid out from the middle of what is being printed, where it stands
+    // now (a bare model has been moved to the middle of the bed).
+    let extent =
+        bodies
+            .iter()
+            .filter_map(|body| body.solid.bounds())
+            .reduce(|(lo, hi), (min, max)| {
+                (
+                    std::array::from_fn(|i| lo[i].min(min[i])),
+                    std::array::from_fn(|i| hi[i].max(max[i])),
+                )
+            });
+    let middle = extent.map_or(Point2::from_mm(0.0, 0.0), |(lo, hi)| {
+        Point2::from_mm(
+            f64::from(lo[0] + hi[0]) / 2.0,
+            f64::from(lo[1] + hi[1]) / 2.0,
+        )
+    });
     // Each object's bounds across the bed and its middle, for laying its
     // sparse pattern. A bare model is one object, with the one middle.
     let middles: Vec<(Point2, Point2, Point2)> = objects
@@ -653,9 +655,10 @@ pub fn slice(job: Job, watch: &dyn Watcher) -> Result<Sliced, Failure> {
     // reckons from the middle of each object's bounds; a bare model is
     // one object.
     let seam_frames: Vec<(Point2, Point2, Point2)> = if middles.is_empty() {
+        let (lo, hi) = extent.unwrap_or((min, max));
         vec![(
-            Point2::from_mm(min[0].into(), min[1].into()),
-            Point2::from_mm(max[0].into(), max[1].into()),
+            Point2::from_mm(lo[0].into(), lo[1].into()),
+            Point2::from_mm(hi[0].into(), hi[1].into()),
             middle,
         )]
     } else {
