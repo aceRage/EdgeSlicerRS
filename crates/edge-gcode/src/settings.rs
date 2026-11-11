@@ -137,6 +137,20 @@ pub struct PrintSettings {
     pub retract_after_wipe: f64,
     /// Absent to wipe at the speed of the line just printed.
     pub wipe_speed: Option<f64>,
+    /// A wall loop ends with a small move in toward the part before the
+    /// nozzle leaves it (`wipe_on_loops`, `wipe.rs`).
+    pub wipe_on_loops: bool,
+    /// An outer wall is come at from a little way inside the part, and
+    /// the filament fed forward again there
+    /// (`wipe_before_external_loop`).
+    pub wipe_before_external_loop: bool,
+    /// The nozzle is wiped after an outer wall over the walls behind it,
+    /// this far in from the wall, in mm or as a percentage of the wall's
+    /// width (`wipe_inward`, `wipe_inward_distance`); none where it is
+    /// wiped along the wall.
+    pub wipe_inward: Option<FloatOrPercent>,
+    /// How many walls a part is set to have (`wall_loops`).
+    pub wall_loops: usize,
 
     pub nozzle_diameter: f64,
     pub seam: Seam,
@@ -321,6 +335,10 @@ impl Default for PrintSettings {
             retract_before_wipe: 1.0,
             retract_after_wipe: 0.0,
             wipe_speed: None,
+            wipe_on_loops: false,
+            wipe_before_external_loop: false,
+            wipe_inward: None,
+            wall_loops: 2,
             nozzle_diameter: 0.4,
             seam: Seam::Aligned,
             staggered_inner_seams: false,
@@ -497,12 +515,6 @@ impl PrintSettings {
                 "retract_lift_enforce",
                 "All Surfaces",
                 "the nozzle lifts over every surface",
-            ),
-            ("wipe_on_loops", "0", "walls end without the inward move"),
-            (
-                "wipe_before_external_loop",
-                "0",
-                "outer walls start without the inward move",
             ),
             (
                 "exclude_object",
@@ -745,6 +757,24 @@ impl PrintSettings {
                         .max(10.0),
                 )
             },
+            wipe_on_loops: flag("wipe_on_loops", defaults.wipe_on_loops)?,
+            wipe_before_external_loop: flag(
+                "wipe_before_external_loop",
+                defaults.wipe_before_external_loop,
+            )?,
+            // PrintConfig.cpp: half the outer wall's width unless set.
+            wipe_inward: if flag("wipe_inward", false)? {
+                Some(
+                    settings
+                        .float_or_percent("wipe_inward_distance")?
+                        .unwrap_or(FloatOrPercent::Percent(50.0)),
+                )
+            } else {
+                None
+            },
+            wall_loops: settings
+                .integer("wall_loops")?
+                .map_or(defaults.wall_loops, |count| count.max(0) as usize),
             nozzle_diameter,
             seam,
             staggered_inner_seams: flag("staggered_inner_seams", false)?,

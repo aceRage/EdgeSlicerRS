@@ -962,6 +962,9 @@ impl Writer<'_> {
         let Some(first) = first else {
             return Ok(false);
         };
+        // The wall's seam is where it is come at from inside
+        // (`wipe.rs`); an outer wall's slope starts two seam gaps on.
+        self.wipe_before_wall(own, wall, turned, &round, wall.flow.width)?;
         self.travel(first, false)?;
         for stretch in &made.starts {
             self.lay_stretch(stretch, layer.height, wall.role)?;

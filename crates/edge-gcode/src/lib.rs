@@ -20,6 +20,7 @@ mod overhang;
 mod scarf;
 mod seam;
 mod settings;
+mod wipe;
 
 use std::{
     collections::HashMap,
@@ -1478,6 +1479,8 @@ impl Writer<'_> {
             Vec::new()
         };
 
+        // The walls laid so far, for a wipe over them (`wipe.rs`).
+        let mut printed = wipe::Printed::default();
         for wall in walls {
             let points = &wall.polygon.points;
             if points.len() < 3 {
@@ -1553,12 +1556,16 @@ impl Writer<'_> {
             // Joined with a scarf, the loop is laid whole and its start
             // on a slope (`scarf.rs`); otherwise it stops short of it.
             if self.scarf_wall(layer, own, wall, turned, &path, (edge, start), &planned)? {
+                self.wipe_after_wall(wall, turned, wall.flow.width, &mut printed)?;
                 continue;
             }
             let whole = (!wall.widths.is_empty()).then(|| path.clone());
             seam::clip_end(&mut path, s.seam_gap);
             let Some(whole) = whole else {
-                match self.fit_loop(wall, turned, path[0]) {
+                let fitted = self.fit_loop(wall, turned, path[0]);
+                let laid = fitted.as_ref().map_or(&path, |fitted| &fitted.points);
+                self.wipe_before_wall(own, wall, turned, laid, wall.flow.width)?;
+                match fitted {
                     Some(fitted) => self.path_parts(
                         &fitted.points,
                         Some(&fitted.parts),
@@ -1569,6 +1576,7 @@ impl Writer<'_> {
                     )?,
                     None => self.path(&path, wall.role, &wall.flow, false, true)?,
                 }
+                self.wipe_after_wall(wall, turned, wall.flow.width, &mut printed)?;
                 continue;
             };
             // A wall whose width changes is laid from its seam as pieces
@@ -1591,11 +1599,17 @@ impl Writer<'_> {
                 points: path,
                 open_ends: (true, true),
             };
-            for piece in edge_medial::varying_width(&line, wall.role, &wall.flow) {
+            let pieces = edge_medial::varying_width(&line, wall.role, &wall.flow);
+            let width = pieces
+                .first()
+                .map_or(wall.flow.width, |piece| piece.flow.width);
+            self.wipe_before_wall(own, wall, turned, &line.points, width)?;
+            for piece in pieces {
                 self.curved(&piece.points, wall.role, &piece.flow, false, true)?;
             }
             // The nozzle is wiped along the whole wall, not its last piece.
             self.state.wipe_path = line.points;
+            self.wipe_after_wall(wall, turned, width, &mut printed)?;
         }
         self.state.small_wall = None;
         self.state.circle_wall = None;
