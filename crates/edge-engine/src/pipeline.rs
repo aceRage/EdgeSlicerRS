@@ -90,6 +90,8 @@ pub struct Sliced {
     pub tower: Tower,
     /// What the profile asks of the order of tools that is not followed.
     pub(crate) order_notes: Vec<String>,
+    /// What the profile asks of painted colours that is not followed.
+    pub(crate) paint_notes: Vec<String>,
     /// (layer, index into `used`, what that tool prints on the tower when
     /// its turn comes), in the order printed.
     pub(crate) entries: Vec<Entry>,
@@ -128,6 +130,7 @@ pub fn slice(job: Job, watch: &dyn Watcher) -> Result<Sliced, Failure> {
         remarks,
     } = job;
     let (mut bodies, objects, plate) = (loaded.bodies, loaded.objects, loaded.plate);
+    let painted = loaded.painted;
     let first_layer_sequence = loaded.first_layer_sequence;
     let (min, max) = loaded.bounds;
 
@@ -163,6 +166,54 @@ pub fn slice(job: Job, watch: &dyn Watcher) -> Result<Sliced, Failure> {
         })
         .collect();
     let mut layers = edge_slice::slice_regions(&borrowed, &planes, scaled(closing_radius))?;
+
+    // Colours painted onto a part move what they cover from the filament
+    // the part is made of to the one painted. Each painted object is
+    // shared out by itself, from its own outline.
+    let mut paint_notes = Vec::new();
+    if !painted.is_empty() {
+        let outer = walls.params(layer_height, false)?.outer;
+        let (paint, notes) = crate::paint::settings(&settings, &outer, layer_height)?;
+        paint_notes = notes;
+        let base = bodies.first().map_or(1, |body| body.filament);
+        // Worked out side by side, then applied in the order given.
+        let shares = painted
+            .par_iter()
+            .map(|object| {
+                let own = edge_slice::slice_regions(
+                    &[edge_slice::Body {
+                        solid: &object.solid,
+                        negative: object.negative.as_ref(),
+                        filament: base,
+                    }],
+                    &planes,
+                    scaled(closing_radius),
+                )
+                .map_err(|e| e.to_string())?;
+                let outlines: Vec<&[ExPolygon]> =
+                    own.iter().map(|layer| layer.regions.as_slice()).collect();
+                let facets: Vec<edge_paint::Facet> = object
+                    .facets
+                    .iter()
+                    .map(|facet| edge_paint::Facet {
+                        corners: facet.corners,
+                        filament: facet.filament,
+                    })
+                    .collect();
+                edge_paint::segment(&outlines, &planes, &facets, &paint).map_err(|e| e.to_string())
+            })
+            .collect::<Result<Vec<_>, String>>()?;
+        layers
+            .par_iter_mut()
+            .enumerate()
+            .try_for_each(|(index, layer)| {
+                let painted: Vec<&[edge_paint::Share]> = shares
+                    .iter()
+                    .map(|object| object[index].as_slice())
+                    .collect();
+                crate::paint::apply(layer, &painted, base)
+            })?;
+    }
 
     // The first layers are printed slightly smaller than modelled, tapering
     // to nothing over `elefant_foot_compensation_layers`. The modelled
@@ -697,6 +748,7 @@ pub fn slice(job: Job, watch: &dyn Watcher) -> Result<Sliced, Failure> {
         changes,
         tower,
         order_notes,
+        paint_notes,
         entries,
         remarks,
         timings: Timings {
@@ -786,6 +838,7 @@ impl Sliced {
             .chain(&self.support.unsupported)
             .chain(&self.infill.unsupported)
             .chain(&self.order_notes)
+            .chain(&self.paint_notes)
             // What the tower does not do matters only where there is one.
             .chain(
                 self.tower_settings

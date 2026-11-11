@@ -12,12 +12,13 @@ replaces it until output matches on the printers we care about.
 | `crates/edge-geom` | Fixed-point 2D geometry (nanometre `i64`, same scale as libslic3r): points, polygons, regions, convex hull |
 | `crates/edge-mesh` | Indexed triangle mesh, transforms, STL read/write |
 | `crates/edge-config` | Vendor presets resolved through `inherits`, `include` and `renamed_from`; the reference's defaults for every setting, and the text form it writes settings in |
-| `crates/edge-3mf` | 3MF projects: objects, parts and their roles, instances, plates, project settings |
+| `crates/edge-3mf` | 3MF projects: objects, parts and their roles, instances, plates, project settings, and colours painted onto triangles |
+| `crates/edge-paint` | Which filament prints what where colours are painted on: each layer shared out from its painted outline, and paint on top and bottom faces carried through the shell |
 | `crates/edge-clip` | Polygon union, difference, intersection, offset and gap closing (wraps clipper2-rs) |
 | `crates/edge-extrusion` | Extruded line cross-section (flow) and extrusion loops |
 | `crates/edge-parity` | `edge-parity`: runs the reference slicer and this engine on one project and compares time and G-code |
 | `crates/edge-perimeter` | Walls, the lines that fill the gaps between them, and the infill area inside (classic constant-width generator) |
-| `crates/edge-medial` | The centre line of a narrow region and how wide it is along it (wraps boostvoronoi), and lines of changing width as extrusions |
+| `crates/edge-medial` | The centre line of a narrow region and how wide it is along it (wraps boostvoronoi), what part of the plane lies nearest each of a set of edges, and lines of changing width as extrusions |
 | `crates/edge-adhesion` | Skirt and brim, with the automatic brim width |
 | `crates/edge-support` | Supports under overhangs, normal (grid) and tree, with dense tops and feet |
 | `crates/edge-gcode` | Print order, seams, travel, retraction, wipe and lift, cooling, overhangs, and extrusion, written as G-code |
@@ -115,7 +116,7 @@ Working:
   reference finds it (the medial axis of the gap). On whenever
   `gap_infill_speed` is above zero.
 
-Known gaps: painted triangles, per-object setting overrides, typed settings
+Known gaps: painted supports and seams, per-object setting overrides, typed settings
 (values are text until a stage needs them), and modifier parts.
 - Infill: each layer's inside is split into top, bottom, bridge, solid
   shell and sparse areas (`top_shell_layers`, `bottom_shell_layers`,
@@ -341,7 +342,27 @@ changed for a ram (`enable_change_pressure_when_wiping`); each is noted
 when the profile asks for it. The tower is not turned end for end on
 alternate layers. A filament with no tool of its own (the fifth on a
 four-tool printer) is written as the reference writes it, with a warning.
-Painted colours and filaments mixed from others are not read.
+Filaments mixed from others are not read.
+
+Painted colours are a first working version. A project's `paint_color`
+is read, triangles cut up as the paint cuts them (a port of
+`TriangleSelector::deserialize`), and each painted object is shared out
+between filaments as the reference's `segmentation_by_painting` shares
+it with `paint_depth_mode` at `unlimited`, its default: every point of a
+layer takes the colour of the nearest stretch of the layer's outline
+(the Voronoi diagram of the outline's edges, each coloured by the
+painted triangles that cut the layer there), and what is painted on a
+top or bottom face is carried through the shell layers behind it, in by
+a wall and a space, where it wins over what the sides say. Not a port
+line for line: a triangle's cut colours an edge of the outline when it
+lies within 0.15 mm of it, where the reference walks a grid and tests
+angles; runs of colour under 0.2 mm go to their neighbour; islands of
+paint too small for a classic wall are not dropped. What a filament is
+painted is united with what it had, where the reference keeps regions
+apart in places and walls them separately. The bounded depths
+(`paint_depth_mode` at `walls` or `millimeters`), interlocking and
+`top_color_penetration_layers` are noted and not followed. Painted
+supports, seams and fuzzy skin are not read.
 
 Not done in G-code: supports only where painted (none are
 generated, and a note says so), the older tree styles (`tree_slim`,
@@ -419,7 +440,7 @@ moved layer by layer, where the reference follows every place a branch
 could be and picks afterwards; and branches are not smoothed, so they
 stand in more regular rows than the reference's.
 
-Next: thumbnails and painted colours.
+Next: thumbnails.
 
 ## Comparing with the reference
 
@@ -527,9 +548,24 @@ under in all, the reference filling out each block where it starts
 tool changes at different places. Top surface is within 1.3%, bridges
 over infill 9% over (they were 78% under, when a colour that starts
 part of the way up was not bridged over the colour beneath), solid fill
-3% over and sparse fill 4% under. The parts on plate 1 are painted in
-their colours, which this engine does not read yet, so its regions
-there are not the reference's and the plate is no measure of either.
+3% over and sparse fill 4% under.
+
+The parts on plate 1 are painted as well as made of parts in different
+filaments, and the paint is now read. The plate has the reference's 28
+tool changes and its four filaments (it had both before, from the
+parts alone), filament over the whole plate is 0.5% under (it was 0.8%
+over) and the prime tower is the same to the centimetre. Layer by
+layer and tool by tool, what each tool feeds is 9.2% away from the
+reference's in all, where it was 11.3% before the paint was read: on
+the middle layers the border between two colours has moved in from the
+rim to where the reference has it, and the tool that prints the rim
+feeds 1186 mm there against the reference's 1398 mm (it fed 1027 mm).
+What is left: for three layers under each inlay the reference walls
+off a small box of the surrounding colour that is not here (why it
+does was not found), and it fills narrow parts of the top surface with
+gap fill (405 mm against 310 mm for the inlays' tool on their top
+layer). The plate takes 0.9 s to slice, most of it the painting:
+eight objects of 85,000 triangles each.
 
 Top and bottom surfaces now come to the reference's length within 0.1%,
 at the same pitch and width, on the cube, the deck, the tower and the

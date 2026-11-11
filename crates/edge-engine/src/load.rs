@@ -1,6 +1,6 @@
 use std::path::{Path, PathBuf};
 
-use edge_3mf::{Body, Project};
+use edge_3mf::{Body, Painted, Project};
 use edge_config::Settings;
 use edge_gcode::PrintSettings;
 use edge_mesh::Mesh;
@@ -25,6 +25,8 @@ enum Held {
 pub struct Loaded {
     /// What to slice.
     pub bodies: Vec<Body>,
+    /// The objects with colours painted on them, each by itself.
+    pub painted: Vec<Painted>,
     /// For a project, the settings it was saved with.
     pub settings: Option<Settings>,
     /// For a project, each object on the plate by itself, for what depends
@@ -119,6 +121,14 @@ impl Opened {
                 .bodies(*plate)
                 .iter()
                 .map(|body| body.filament)
+                .chain(
+                    project
+                        .painted(*plate)
+                        .iter()
+                        .flat_map(|object| &object.facets)
+                        .map(|facet| usize::from(facet.filament))
+                        .filter(|filament| *filament > 0),
+                )
                 .collect(),
         };
         used.sort_unstable();
@@ -144,19 +154,21 @@ impl Opened {
             } => project.plates[*index].first_layer_sequence.clone(),
             _ => Vec::new(),
         };
-        let (mut bodies, settings, mut objects, plate) = match self.held {
+        let (mut bodies, mut painted, settings, mut objects, plate) = match self.held {
             Held::Model(solid) => (
                 vec![Body {
                     solid,
                     negative: None,
                     filament: 1,
                 }],
+                Vec::new(),
                 None,
                 Vec::new(),
                 None,
             ),
             Held::Project { project, plate } => (
                 project.bodies(plate),
+                project.painted(plate),
                 project.settings.clone(),
                 project.instance_meshes(plate),
                 plate.map(|index| (index, project.plates[index].id, project.plates.len())),
@@ -171,6 +183,21 @@ impl Opened {
             })?;
             shift(&mut bodies, -x, -y);
             shift_meshes(objects.iter_mut(), -x, -y);
+            for object in &mut painted {
+                shift_meshes(
+                    std::iter::once(&mut object.solid).chain(object.negative.as_mut()),
+                    -x,
+                    -y,
+                );
+                for corner in object
+                    .facets
+                    .iter_mut()
+                    .flat_map(|facet| &mut facet.corners)
+                {
+                    corner[0] = (f64::from(corner[0]) - x) as f32;
+                    corner[1] = (f64::from(corner[1]) - y) as f32;
+                }
+            }
         }
         let bounds =
             bodies
@@ -187,6 +214,7 @@ impl Opened {
         };
         Ok(Loaded {
             bodies,
+            painted,
             settings,
             objects,
             plate: plate.map_or(0, |(index, ..)| index),

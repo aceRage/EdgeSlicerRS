@@ -15,6 +15,7 @@ edge-gcode.workspace = true
 edge-geom.workspace = true
 edge-infill.workspace = true
 edge-mesh.workspace = true
+edge-paint.workspace = true
 edge-perimeter.workspace = true
 edge-slice.workspace = true
 edge-support.workspace = true

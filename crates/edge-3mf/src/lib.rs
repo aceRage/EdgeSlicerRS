@@ -2,12 +2,15 @@
 //! reference slicer writes (parts split across model files, part roles,
 //! plates, and the project's settings).
 //!
-//! Not read yet: per-triangle painting, per-object setting overrides, and
-//! everything about a plate except which instances are on it.
+//! Colours painted onto triangles are read ([`Project::painted`]).
+//!
+//! Not read yet: painted supports and seams, per-object setting overrides,
+//! and everything about a plate except which instances are on it.
 
 mod model;
 mod model_settings;
 mod package;
+mod paint;
 mod xml;
 
 use std::{
@@ -25,6 +28,7 @@ use rayon::prelude::*;
 use model::{ModelFile, RawObject, Shape};
 use model_settings::{ModelSettings, ObjectSettings};
 use package::Package;
+pub use paint::Facet;
 use xml::malformed;
 
 const DEFAULT_MODEL_PART: &str = "3D/3dmodel.model";
@@ -72,6 +76,9 @@ pub struct Part {
     pub filament: usize,
     /// Shared between parts and objects that reuse the same geometry.
     pub mesh: Arc<Mesh>,
+    /// The mesh's triangles as painted for filaments, cut up where the
+    /// paint cuts them, when any of them is painted.
+    pub paint: Option<Arc<Vec<Facet>>>,
     /// Places the mesh in its object's coordinates.
     pub transform: Transform,
 }
@@ -281,6 +288,60 @@ impl Project {
         bodies
     }
 
+    /// The printable instances on a plate (or in the whole project for
+    /// `None`) that have colours painted on them.
+    pub fn painted(&self, plate: Option<usize>) -> Vec<Painted> {
+        self.printable(plate)
+            .filter(|(object, _)| {
+                object
+                    .parts
+                    .iter()
+                    .any(|part| part.kind == PartKind::Normal && part.paint.is_some())
+            })
+            .map(|(object, instance)| {
+                let mut solid = Mesh::default();
+                append_parts(&mut solid, object, instance, PartKind::Normal, None);
+                let mut negative = Mesh::default();
+                append_parts(&mut negative, object, instance, PartKind::Negative, None);
+                let mut facets = Vec::new();
+                for part in object
+                    .parts
+                    .iter()
+                    .filter(|part| part.kind == PartKind::Normal)
+                {
+                    let placed = part.transform.then(&instance.transform);
+                    let mirrored = placed.is_mirrored();
+                    let mut place = |corners: edge_mesh::Triangle, filament: u8| {
+                        let [a, b, c] = corners
+                            .map(|corner| placed.apply(corner.map(f64::from)).map(|c| c as f32));
+                        facets.push(Facet {
+                            // Mirrored, a triangle faces the other way round.
+                            corners: if mirrored { [a, c, b] } else { [a, b, c] },
+                            filament,
+                        });
+                    };
+                    match &part.paint {
+                        Some(paint) => {
+                            for facet in paint.iter() {
+                                place(facet.corners, facet.filament);
+                            }
+                        }
+                        None => {
+                            for index in 0..part.mesh.triangles.len() {
+                                place(part.mesh.triangle(index), 0);
+                            }
+                        }
+                    }
+                }
+                Painted {
+                    solid,
+                    negative: (!negative.triangles.is_empty()).then_some(negative),
+                    facets,
+                }
+            })
+            .collect()
+    }
+
     /// Each printable instance on a plate (or in the whole project for
     /// `None`) as a mesh of its own, in world coordinates and in the order
     /// the plate lists them. Negative parts are left out. For what depends
@@ -319,6 +380,18 @@ impl Project {
             })
             .filter(|(_, instance)| instance.printable)
     }
+}
+
+/// One instance of an object with paint on it, in world coordinates.
+#[derive(Clone, Debug)]
+pub struct Painted {
+    /// All of its printed material, whatever the filament.
+    pub solid: Mesh,
+    /// What its negative parts take away, when it has any.
+    pub negative: Option<Mesh>,
+    /// Every triangle of its printed parts with the filament it is
+    /// painted for, 0 where it is not painted.
+    pub facets: Vec<Facet>,
 }
 
 /// Printed material and, for objects that have negative parts, the volume
@@ -463,12 +536,13 @@ fn parts(
     let object_filament =
         chosen(settings.and_then(|settings| settings.extruder)).unwrap_or(1) as usize;
     let components = match &object.body {
-        Shape::Mesh(mesh) => {
+        Shape::Mesh(mesh, paint) => {
             return Ok(vec![Part {
                 name: object.name.clone(),
                 kind: PartKind::Normal,
                 filament: object_filament,
                 mesh: mesh.clone(),
+                paint: paint.clone(),
                 transform: Transform::IDENTITY,
             }]);
         }
@@ -488,13 +562,14 @@ fn parts(
             1,
             &mut leaves,
         )?;
-        for (name, mesh, transform) in leaves {
+        for (name, mesh, paint, transform) in leaves {
             parts.push(Part {
                 name: part_settings.and_then(|s| s.name.clone()).or(name),
                 kind: part_settings.map_or(PartKind::Normal, |s| s.kind),
                 filament: chosen(part_settings.and_then(|s| s.extruder))
                     .map_or(object_filament, |extruder| extruder as usize),
                 mesh,
+                paint,
                 transform,
             });
         }
@@ -502,13 +577,22 @@ fn parts(
     Ok(parts)
 }
 
+/// A mesh found under a component: its name, itself, its paint and where
+/// it is placed.
+type Leaf = (
+    Option<String>,
+    Arc<Mesh>,
+    Option<Arc<Vec<Facet>>>,
+    Transform,
+);
+
 fn flatten(
     files: &HashMap<String, ModelFile>,
     file: &str,
     id: u32,
     transform: Transform,
     depth: usize,
-    leaves: &mut Vec<(Option<String>, Arc<Mesh>, Transform)>,
+    leaves: &mut Vec<Leaf>,
 ) -> Result<(), Error> {
     if depth > MAX_COMPONENT_DEPTH {
         return Err(malformed(
@@ -518,7 +602,9 @@ fn flatten(
     }
     let object = find(files, file, id)?;
     match &object.body {
-        Shape::Mesh(mesh) => leaves.push((object.name.clone(), mesh.clone(), transform)),
+        Shape::Mesh(mesh, paint) => {
+            leaves.push((object.name.clone(), mesh.clone(), paint.clone(), transform));
+        }
         Shape::Components(components) => {
             for component in components {
                 let child_file = component.path.as_deref().map_or(file, part_key);

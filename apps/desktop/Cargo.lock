@@ -857,6 +857,7 @@ dependencies = [
  "edge-geom",
  "edge-infill",
  "edge-mesh",
+ "edge-paint",
  "edge-perimeter",
  "edge-slice",
  "edge-support",
@@ -915,6 +916,18 @@ dependencies = [
 name = "edge-mesh"
 version = "0.0.0"
 dependencies = [
+ "rustc-hash",
+ "thiserror 2.0.21",
+]
+
+[[package]]
+name = "edge-paint"
+version = "0.0.0"
+dependencies = [
+ "edge-clip",
+ "edge-geom",
+ "edge-medial",
+ "rayon",
  "rustc-hash",
  "thiserror 2.0.21",
 ]

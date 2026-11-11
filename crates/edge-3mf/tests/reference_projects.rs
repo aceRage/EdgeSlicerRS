@@ -195,3 +195,40 @@ fn parts_keep_their_filaments() {
     let all: usize = bodies.iter().map(|body| body.solid.triangles.len()).sum();
     assert_eq!(all, project.mesh(plate).triangles.len());
 }
+
+#[test]
+fn painted_colours_are_read_with_the_objects_they_are_on() {
+    let project = Project::open(reference().join("tests/mcbrim_test.3mf")).unwrap();
+    // The first plate's eight objects are painted; the others' are not.
+    let painted = project.painted(project.plate_index(1));
+    assert_eq!(painted.len(), 8);
+    assert!(project.painted(project.plate_index(2)).is_empty());
+    assert!(project.painted(project.plate_index(3)).is_empty());
+    for object in &painted {
+        // Every triangle of the object is given, painted or not, and
+        // the paint is for the filaments the file says.
+        assert_eq!(object.facets.len(), object.solid.triangles.len());
+        let mut filaments: Vec<u8> = object.facets.iter().map(|facet| facet.filament).collect();
+        filaments.sort_unstable();
+        filaments.dedup();
+        assert!(
+            filaments
+                .iter()
+                .all(|filament| [0, 2, 3, 4, 7].contains(filament))
+        );
+        assert!(filaments.iter().any(|filament| *filament > 0));
+        // In world coordinates, like the mesh.
+        let (low, high) = object.solid.bounds().unwrap();
+        assert!(
+            object
+                .facets
+                .iter()
+                .flat_map(|facet| &facet.corners)
+                .all(|corner| {
+                    (0..3).all(|axis| {
+                        corner[axis] >= low[axis] - 1e-3 && corner[axis] <= high[axis] + 1e-3
+                    })
+                })
+        );
+    }
+}

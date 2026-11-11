@@ -7,11 +7,13 @@
 //! Boost.Polygon's and this crate a Rust port of it, and it is the only
 //! crate that knows which.
 
+mod cells;
 mod thick;
 
 use boostvoronoi::prelude::{Builder, BvError, Diagram, EdgeIndex, SourceCategory};
 use edge_geom::{ExPolygon, Point2};
 
+pub use cells::cells;
 pub use thick::variable_width;
 
 /// The reference's `SCALED_EPSILON`: lengths below it count as nothing.

@@ -3,6 +3,8 @@
 use std::sync::Arc;
 
 use edge_mesh::{Mesh, Transform};
+
+use crate::paint::{self, Facet};
 use quick_xml::{
     Reader,
     events::{BytesStart, Event},
@@ -26,7 +28,8 @@ pub(crate) struct RawObject {
 }
 
 pub(crate) enum Shape {
-    Mesh(Arc<Mesh>),
+    /// A mesh, and its triangles as painted when any of them is.
+    Mesh(Arc<Mesh>, Option<Arc<Vec<Facet>>>),
     Components(Vec<Reference>),
 }
 
@@ -44,7 +47,7 @@ impl ModelFile {
     pub fn referenced_parts(&self) -> impl Iterator<Item = &str> {
         let components = self.objects.iter().flat_map(|object| match &object.body {
             Shape::Components(components) => components.as_slice(),
-            Shape::Mesh(_) => &[],
+            Shape::Mesh(..) => &[],
         });
         components
             .chain(&self.items)
@@ -59,6 +62,8 @@ struct OpenObject {
     has_mesh: bool,
     vertices: Vec<[f32; 3]>,
     triangles: Vec<[u32; 3]>,
+    /// Each triangle's `paint_color`, where it has one.
+    paint: Vec<Option<Box<str>>>,
     components: Vec<Reference>,
 }
 
@@ -116,17 +121,23 @@ pub(crate) fn parse(text: &str, part: &str) -> Result<ModelFile, Error> {
             "triangle" => {
                 let Some(object) = &mut open else { continue };
                 let mut corners = [u32::MAX; 3];
+                let mut paint = None;
                 attributes(&element, part, |key, value| {
                     let corner = match key {
                         "v1" => 0,
                         "v2" => 1,
                         "v3" => 2,
+                        "paint_color" => {
+                            paint = (!value.is_empty()).then(|| Box::from(value));
+                            return Ok(());
+                        }
                         _ => return Ok(()),
                     };
                     corners[corner] = number(part, key, value)?;
                     Ok(())
                 })?;
                 object.triangles.push(corners);
+                object.paint.push(paint);
             }
             "object" => {
                 let mut object = OpenObject::default();
@@ -196,12 +207,37 @@ fn close(object: OpenObject, part: &str) -> Result<RawObject, Error> {
             };
             return Err(malformed(part, reason));
         }
+        let sound = |[a, b, c]: &[u32; 3]| a != b && b != c && c != a;
+        // Painted, every triangle is given with its filament, the
+        // unpainted ones with none.
+        let paint = object.paint.iter().any(Option::is_some).then(|| {
+            let mut facets = Vec::with_capacity(object.triangles.len());
+            for (triangle, code) in object.triangles.iter().zip(&object.paint) {
+                if !sound(triangle) {
+                    continue;
+                }
+                let corners = triangle.map(|corner| object.vertices[corner as usize]);
+                let read = code
+                    .as_deref()
+                    .is_some_and(|code| paint::decode(code, corners, &mut facets));
+                if !read {
+                    facets.push(Facet {
+                        corners,
+                        filament: 0,
+                    });
+                }
+            }
+            Arc::new(facets)
+        });
         let mut triangles = object.triangles;
-        triangles.retain(|[a, b, c]| a != b && b != c && c != a);
-        Shape::Mesh(Arc::new(Mesh {
-            vertices: object.vertices,
-            triangles,
-        }))
+        triangles.retain(sound);
+        Shape::Mesh(
+            Arc::new(Mesh {
+                vertices: object.vertices,
+                triangles,
+            }),
+            paint,
+        )
     } else {
         Shape::Components(object.components)
     };
