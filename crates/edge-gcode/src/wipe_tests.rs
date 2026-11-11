@@ -592,3 +592,53 @@ fn a_move_that_would_leave_the_bed_is_not_made() {
         }
     }
 }
+
+#[test]
+fn a_square_holes_wall_is_come_at_from_past_its_corner() {
+    // The wall round a square hole, and the wall behind it, which is the
+    // larger. On the side the part is on a hole's corner is 270
+    // degrees, so the point the wall is come at from is a third of that
+    // round from its last edge: straight on past the corner, exactly as
+    // far from it as the nozzle is wide. The wall behind is beside that
+    // point, and the wall is come at from it. (In the reference this
+    // turns on a rounding: it wants the hole's own wall nearer the point
+    // than the nozzle's width, which is just what it is not.)
+    let hole = |x: f64, y: f64, side: f64, depth: usize| {
+        let mut wall = wall(x, y, side, depth);
+        wall.is_hole = true;
+        wall.polygon.points.reverse();
+        wall
+    };
+    let loops = [hole(10.0, 10.0, 20.0, 0), hole(9.565, 9.565, 20.87, 1)];
+    let asked = PrintSettings {
+        wipe_before_external_loop: true,
+        wall_order: WallOrder::OuterInner,
+        initial_layer_speed: 50.0,
+        ..basic()
+    };
+    let (text, _) = print(&loops, &[0..2], &asked);
+    let lines = body(&text);
+    let first = lines
+        .iter()
+        .position(|line| line.starts_with("G1 X") && word(line, 'E').is_some())
+        .unwrap();
+    // The move that lays nothing ends where the wall starts, 0.4 mm
+    // from where the travel before it ended, and in line with the
+    // wall's first edge.
+    let before: Vec<&str> = text
+        .lines()
+        .filter(|line| line.starts_with("G1 X"))
+        .take(3)
+        .collect();
+    let at = |line: &str| (word(line, 'X').unwrap(), word(line, 'Y').unwrap());
+    let (from, start, next) = (at(before[0]), at(before[1]), at(before[2]));
+    assert!(
+        word(before[1], 'E').is_none() && word(before[2], 'E').is_some(),
+        "{before:?}"
+    );
+    assert_eq!(before[2], lines[first]);
+    let reach = (start.0 - from.0).hypot(start.1 - from.1);
+    assert!((reach - 0.4).abs() < 1e-3, "{before:?}");
+    let cross = (start.0 - from.0) * (next.1 - start.1) - (start.1 - from.1) * (next.0 - start.0);
+    assert!(cross.abs() < 1e-6, "{before:?}");
+}

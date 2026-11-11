@@ -30,6 +30,15 @@
 //! - Whether a wall starts, or an inner wall lies, over air is asked of
 //!   the wall where it starts, or not at all: the reference goes by the
 //!   kinds of the stretches the wall was cut into when it was made.
+//! - An outer wall is taken to lie beside the point it is come at from
+//!   (see [`Writer::wipe_before_wall`]); the reference measures, and
+//!   at some corners its answer turns on a rounding.
+//! - The inward wipe goes by the `wipe` of the filament in use. The
+//!   reference makes it wherever any filament of the print has `wipe`
+//!   on (GCode.cpp `set_extruders`, `m_wipe.enable`; `extrude_loop`
+//!   then calls `m_wipe.wipe` without asking the extruder in use, as
+//!   `GCode::retract` does ask), so a filament set not to wipe is
+//!   wiped inward after its outer walls all the same.
 
 mod inward;
 
@@ -268,23 +277,27 @@ impl Writer<'_> {
         // "If an internal perimeter exists, we should find 2 perimeters
         // touching the de-retraction point 1 - the currently printed
         // external perimeter and 2 - the neighbouring internal
-        // perimeter."
+        // perimeter." The wall itself is taken as found: the point is
+        // made no further from where it starts than the nozzle is wide.
+        // The reference looks for it like any other, strictly nearer
+        // than that width, and where the part's side of the seam is a
+        // corner of 270 degrees or more (any corner of a square hole)
+        // the point is exactly that far off, so that whether the wall
+        // is found there turns on how the point's coordinates were
+        // rounded.
         let radius = s.nozzle_diameter * UNITS_PER_MM;
-        let touching = own
-            .iter()
-            .filter(|other| {
-                let points = &other.polygon.points;
-                (0..points.len()).any(|at| {
+        let beside = own.iter().any(|other| {
+            let points = &other.polygon.points;
+            !std::ptr::eq(other, wall)
+                && (0..points.len()).any(|at| {
                     let line = Line {
                         a: points[at],
                         b: points[(at + 1) % points.len()],
                     };
                     line.nearest(point).0 < radius * radius
                 })
-            })
-            .take(2)
-            .count();
-        if touching < 2 || !self.over_bed(point) {
+        });
+        if !beside || !self.over_bed(point) {
             return Ok(());
         }
         self.travel(point, false)?;
@@ -387,6 +400,9 @@ impl Writer<'_> {
         // The wall as it was laid, from its seam to where the nozzle is.
         let mut path = self.state.wipe_path.clone();
         path.dedup();
+        let Some(at) = self.state.position else {
+            return Ok(());
+        };
         let is_ccw = wall.polygon.is_ccw() != turned;
         let nozzle = s.nozzle_diameter * UNITS_PER_MM;
 
@@ -455,12 +471,10 @@ impl Writer<'_> {
             printed.add(wall);
         }
 
-        if let Some(to) = destination
-            && let Some(from) = self.state.position
-        {
+        if let Some(to) = destination {
             // At whatever speed the wall ended at (GCodeWriter.cpp
             // `extrude_to_xy`, which says none).
-            let length = distance(from, to);
+            let length = distance(at, to);
             let speed = self.state.feedrate.abs() / 60.0;
             if length > 0.0 && speed > 0.0 {
                 writeln!(self.out, "G1 X{:.3} Y{:.3}", unscaled(to.x), unscaled(to.y))?;
