@@ -62,6 +62,16 @@ pub(crate) fn notes(settings: &Settings, parts: usize) -> Vec<String> {
                 .to_owned(),
         );
     }
+    // Vase mode is not here yet. It is said apart from the list, and
+    // plainly: the part comes out a different print, with its walls,
+    // fill and top as an ordinary one has them.
+    if matches!(settings.text("spiral_mode"), Some("1" | "true")) {
+        notes.push(
+            "spiral_mode \"1\": vase mode is not followed; the part is printed as an ordinary \
+             print, with every wall, its fill and its top layers"
+                .to_owned(),
+        );
+    }
     notes
 }
 
@@ -114,5 +124,13 @@ mod tests {
         assert_eq!(notes(&Settings::default(), 2).len(), 1);
         let hidden_off = Settings::from_json(r#"{"seam_prefer_part_joints": "0"}"#).unwrap();
         assert!(notes(&hidden_off, 2).is_empty());
+
+        // Vase mode is said when it is on, and only then.
+        let vase = Settings::from_json(r#"{"spiral_mode": "1"}"#).unwrap();
+        let said = notes(&vase, 1);
+        assert_eq!(said.len(), 1, "{said:?}");
+        assert!(said[0].starts_with("spiral_mode \"1\": vase mode is not followed"));
+        let plain = Settings::from_json(r#"{"spiral_mode": "0"}"#).unwrap();
+        assert!(notes(&plain, 1).is_empty());
     }
 }
