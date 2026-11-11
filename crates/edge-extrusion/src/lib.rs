@@ -273,6 +273,11 @@ pub struct ExtrusionLoop {
     /// (`overhang_reverse`). Which way round `polygon` is held does not
     /// change.
     pub clockwise: bool,
+    /// The wall goes round a circle that the auto circle compensation
+    /// resized, one small enough to be printed at the speed the
+    /// compensation was measured at (the reference's
+    /// `ExtrusionLoop::circle_compensation`).
+    pub circle_compensation: bool,
 }
 
 impl ExtrusionLoop {
@@ -372,6 +377,7 @@ mod tests {
         let wall = ExtrusionLoop {
             widths: Vec::new(),
             clockwise: false,
+            circle_compensation: false,
             polygon: square,
             role: Role::ExternalPerimeter,
             is_hole: false,

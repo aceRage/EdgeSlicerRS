@@ -6,16 +6,11 @@ use edge_config::Settings;
 
 /// A setting, the value that turns it off, and what is done whatever it
 /// is set to.
-const UNREAD: [(&str, &str, &str); 10] = [
+const UNREAD: [(&str, &str, &str); 9] = [
     (
         "wipe_inward",
         "0",
         "the nozzle is wiped along the wall, not in toward the inner walls",
-    ),
-    (
-        "enable_circle_compensation",
-        "0",
-        "round holes and bosses are printed at the size they are drawn",
     ),
     (
         "elefant_foot_layers_density",

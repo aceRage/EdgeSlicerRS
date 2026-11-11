@@ -189,6 +189,11 @@ pub struct PrintSettings {
     pub slow_down_for_layer_cooling: bool,
     pub slow_down_min_speed: f64,
     pub dont_slow_down_outer_wall: bool,
+    /// The speed of the walls round a circle the auto circle
+    /// compensation resized, in mm/s: the filament's
+    /// `circle_compensation_speed`, the speed its compensation was
+    /// measured at. Zero leaves them at the walls' own speeds.
+    pub circle_compensation_speed: f64,
     /// Whether the printer has a second, auxiliary fan, and its speed in
     /// percent once the first layers are down.
     pub auxiliary_fan: bool,
@@ -336,6 +341,7 @@ impl Default for PrintSettings {
             slow_down_for_layer_cooling: true,
             slow_down_min_speed: 10.0,
             dont_slow_down_outer_wall: false,
+            circle_compensation_speed: 200.0,
             auxiliary_fan: false,
             additional_cooling_fan_speed: 0.0,
             skirt_speed: 50.0,
@@ -506,6 +512,20 @@ impl PrintSettings {
             {
                 unsupported.push(format!("{key} \"{value}\": {instead}"));
             }
+        }
+        // A compensated circle's walls are to be joined with a scarf seam
+        // (GCode.cpp `extrude_loop`), and there are none here.
+        if settings
+            .flag("enable_circle_compensation")?
+            .unwrap_or(false)
+            && settings
+                .flag("apply_scarf_seam_on_circles")?
+                .unwrap_or(true)
+        {
+            unsupported.push(
+                "apply_scarf_seam_on_circles \"1\": the walls of compensated circles are joined with a plain butt seam"
+                    .into(),
+            );
         }
         if first("internal_bridge_fan_speed")?.is_some_and(|speed| speed >= 0.0) {
             unsupported.push(
@@ -789,6 +809,11 @@ impl PrintSettings {
             )?,
             slow_down_min_speed: number("slow_down_min_speed", defaults.slow_down_min_speed)?,
             dont_slow_down_outer_wall: flag("dont_slow_down_outer_wall", false)?,
+            circle_compensation_speed: number(
+                "circle_compensation_speed",
+                defaults.circle_compensation_speed,
+            )?
+            .max(0.0),
             auxiliary_fan: flag("auxiliary_fan", false)?,
             additional_cooling_fan_speed: number("additional_cooling_fan_speed", 0.0)?,
             skirt_speed: number("skirt_speed", defaults.skirt_speed)?,

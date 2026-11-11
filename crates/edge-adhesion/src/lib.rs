@@ -465,6 +465,7 @@ pub fn brim(
             |(polygon, is_hole, depth)| ExtrusionLoop {
                 widths: Vec::new(),
                 clockwise: false,
+                circle_compensation: false,
                 polygon,
                 role: Role::Brim,
                 is_hole,
@@ -529,6 +530,7 @@ pub fn skirt(
         loops.push(ExtrusionLoop {
             widths: Vec::new(),
             clockwise: false,
+            circle_compensation: false,
             polygon,
             role: Role::Skirt,
             is_hole: false,
