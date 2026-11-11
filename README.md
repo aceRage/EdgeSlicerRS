@@ -16,7 +16,7 @@ replaces it until output matches on the printers we care about.
 | `crates/edge-fuzzy` | Fuzzy skin: walls roughened by moving their points or changing their width, with the noise it is drawn from (a port of the reference's FuzzySkin and of the libnoise modules it uses) |
 | `crates/edge-arachne` | Walls of changing width: a region's skeleton, how many lines fit along it and where that number changes, and the lines themselves (a port of the reference's Arachne) |
 | `crates/edge-paint` | Which filament prints what where colours are painted on: each layer shared out from its painted outline, and paint on top and bottom faces carried through the shell |
-| `crates/edge-clip` | Polygon union, difference, intersection, offset and gap closing (wraps clipper2-rs) |
+| `crates/edge-clip` | Polygon union, difference, intersection, offset, an inner offset with a distance of its own for every vertex, and gap closing (wraps clipper2-rs) |
 | `crates/edge-extrusion` | Extruded line cross-section (flow) and extrusion loops |
 | `crates/edge-parity` | `edge-parity`: runs the reference slicer and this engine on one project and compares time and G-code |
 | `crates/edge-perimeter` | Walls, the lines that fill the gaps between them, and the infill area inside (classic constant-width generator) |
@@ -28,11 +28,11 @@ replaces it until output matches on the printers we care about.
 | `crates/edge-template` | The placeholder language of custom G-code: `{expression}`, `{if}`, `[variable]`, and scripts |
 | `crates/edge-time` | How long a G-code file takes, with acceleration: the file is read as a printer reads it and planned as the reference's estimator plans, or as Klipper does |
 | `crates/edge-tower` | The prime tower a nozzle is primed on after a tool change |
-| `crates/edge-slice` | Mesh to per-layer contours, then to regions with holes; parallel across layers |
+| `crates/edge-slice` | Mesh to per-layer contours, then to regions with holes; parallel across layers. Elephant foot compensation of the first layers |
 | `crates/edge-engine` | The whole pipeline behind one call, for whatever drives it: open a model and list its plates, settle its settings, slice with progress and cancel, G-code, a layer's lines for drawing, and a vendor's presets by printer |
 | `crates/edge-cli` | The `edge` command line |
 | `tools/make_defaults.py` | Asks the reference for its default of every setting and writes the table `edge-config` carries; run again when the pin moves |
-| `tools/make_fixture.py` | Writes small test 3MFs (parts that need supports or a brim, a plain cube, two blocks in two filaments) to compare with the reference on |
+| `tools/make_fixture.py` | Writes small test 3MFs (parts that need supports or a brim, a plain cube, two blocks in two filaments, a comb with thin teeth on the bed) to compare with the reference on |
 | `tools/make_project.py` | Writes one of those parts as a project whose settings are named presets, with as many filaments as are named: how the test prints for a printer are made |
 | `reference/EdgeSlicer` | Pinned submodule of the C++ slicer: profiles, test models, behaviour to match. Read-only here |
 | `apps/desktop` | The desktop app (Tauri): several projects open at once, each prepared, sliced, looked through layer by layer and exported, in the C++ application's tabs. A workspace of its own |
@@ -126,6 +126,39 @@ Working:
   subtracted from their own object, and cracks between flush parts closed by
   `slice_closing_radius` as the reference does. Deterministic across thread
   counts. Every 3MF in the reference repository slices with no open contours.
+- Elephant foot compensation (`elefant_foot_compensation`, over
+  `elefant_foot_compensation_layers`, the amount falling off evenly
+  layer by layer): the first layers are printed smaller than modelled
+  by an amount that follows how wide the part is at each point of its
+  outline. Where the part is wider than an external wall and its
+  spacing plus twice the compensation, the outline comes in by the
+  whole of it; where it is no wider than the wall and its spacing, not
+  at all; between the two by half of what the part has to spare, so a
+  thin stroke is left exactly a wall wide, and the amount is evened out
+  along the outline so there is no step where one case meets the next.
+  A region too small to spare anything is left alone, and so is one
+  the shrinking would part in two. A port of the reference's
+  `elephant_foot_compensation` (ElephantFootCompensation.cpp: the
+  outline resampled every 0.5 mm, the width measured across the part at
+  each point, the smoothing, and an offset with a distance for every
+  vertex), called as the reference calls it (PrintObjectSlice.cpp): a
+  layer in one material is shrunk as it is; a layer in several is first
+  closed by one and a half closing radii, so the seams between
+  materials are not taken for outline, and each material keeps what it
+  has inside the result. What a layer was before shrinking is kept as
+  its modelled outline, which supports, brim, skirt and the layers
+  above go by. Not as the reference, each marked in the code: a layer
+  counts as being in several materials when more than one filament has
+  a share of it, where the reference counts each object's regions; the
+  two lengths arrive in whole nanometres, where the reference carries
+  fractions of one; an outline edge of no length does not spoil the
+  lengths measured along a ring (the reference divides by zero there),
+  and a region that simplifying parts in two is shrunk piece by piece
+  (the reference keeps the first piece and drops the rest). On a comb
+  with teeth 0.5 to 2 mm wide (`tools/make_fixture.py`, `comb`) the
+  first layer's outer wall lies within 0.011 mm of the C++ slicer's
+  everywhere; it was up to 0.17 mm off while wide parts were shrunk by
+  the whole amount and narrow ones not at all.
 - Every preset the reference ships resolves. `slice` takes layer heights and
   the closing radius from the command line, a process preset, or the 3MF's
   own settings, in that order.
@@ -193,9 +226,9 @@ Working:
   classic walls, layer by layer: a layer with a top surface has 294 mm
   of gap fill in both (287 mm here before), another 357 mm against
   368 mm (319 mm before); the first layer has 52 mm in the C++
-  slicer's file and 151 mm here, of which 106 mm was there before, so
-  the first layer's gaps between walls were already over and this adds
-  to it. Not as the reference: the gap lines of a surface swept from
+  slicer's file and 55 mm here (151 mm before the first layer was
+  shrunk as the reference shrinks it: most of that was gaps between
+  walls that should not have been there). Not as the reference: the gap lines of a surface swept from
   side to side follow that surface's lines as a group, where the
   reference slips each in among them wherever that saves travel
   (`insert_gap_fill`).
@@ -911,6 +944,30 @@ vertical shells, the solid band under a bridge's edge, and the prime
 tower's ribs, stepped brim, ramming and the gap in its wall, the
 order tools are taken in, the order within a layer with where a
 move may go unretracted, and the monotonic order of surface lines.
+
+The first layer of the lettered plates, in millimetres of path (C++
+slicer, this engine while it shrank wide parts by the whole
+compensation and narrow ones not at all, this engine now), plate 2
+with plate 3 in brackets where it differs:
+
+| First layer | C++ slicer | before | now |
+|---|---|---|---|
+| Outer wall | 1371.0 | 1391.4 (1391.7) | 1372.6 (1372.4) |
+| Inner wall | 1313.5 | 1323.2 (1324.5) | 1313.6 |
+| Gap infill | 52.3 | 151.1 (131.8) | 55.4 (55.1) |
+| Bottom surface | 4388.7 | 4458.4 (4456.9) | 4416.5 (4416.8) |
+| Brim | 7489.0 | 7718.2 (7730.7) | 7718.2 (7730.7) |
+| Support | 219.2 | 416.1 (418.2) | 415.1 (418.6) |
+
+The outer wall now lies as far from the reference's on the first layer
+as on the second, which is not shrunk (0.024 mm on average on both,
+0.057 mm on the first before). The brim does not go by the shrunk
+outline in either slicer (`brim_use_efc_outline` is off; turned on, it
+is not followed here yet) and has not moved: all of its 229 mm over is
+in the four notches at the ends of the two blades, where a support
+stands on the bed and the reference lays no brim under it, and away
+from those it is within 0.2%. That and the support's own length are
+the first layer's supports, not its outline.
 
 Retractions on the lettered plates were 41% over the reference's and
 are now within 2% (plate 2: 854 against 848, from 1199; plate 3: 856
