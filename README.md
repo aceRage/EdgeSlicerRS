@@ -683,12 +683,19 @@ Known gaps: painted supports and seams, per-object setting overrides, typed sett
     with its fastest lines slowed, down to `slow_down_min_speed`; the part
     fan follows layer time and the auxiliary fan is driven.
   - Overhangs: every wall is measured against the outline of the layer
-    beneath. A stretch that hangs clear of it is an overhang wall, printed
-    as a bridge (`detect_overhang_wall`); one partly supported slows
-    between the four overhang speeds by how much of its width has
-    something under it (`enable_overhang_speed`); and bridges, overhang
-    walls and stretches past `overhang_fan_threshold` get
-    `overhang_fan_speed` where that is more than the layer's fan.
+    beneath, as the reference measures it (ExtrusionProcessor.hpp). A
+    stretch whose middle is further out than that outline grown by half
+    a nozzle hangs clear of it and is an overhang wall, printed as a
+    bridge (`detect_overhang_wall`), and is cut out of the wall where
+    the reference cuts it. One partly supported slows between the four
+    overhang speeds by how much of its width has something under it
+    (`enable_overhang_speed`). It is measured at its own points, where
+    it crosses the outline beneath, at probes inside a line of 2 mm or
+    more and at up to two cuts beside the ends of such a line, and
+    nowhere else; a line goes at the slower of its two ends, and a
+    speed within 1 mm/s of the last one written is not written.
+    Bridges, overhang walls and stretches past `overhang_fan_threshold`
+    get `overhang_fan_speed` where that is more than the layer's fan.
   - Arcs (`enable_arc_fitting`): the stretches of a path that lie on a
     circle are written as one `G2` or `G3` each, with the reference's
     fitter (ArcFitter.cpp, Circle.cpp): walls, fill of every kind and
@@ -939,8 +946,11 @@ A top surface below the last layer
 keeps only its outer wall, as the reference's `only_one_wall_top` does with
 `top_surface_expansion` at zero (PerimeterGenerator.cpp
 `split_top_surfaces`); the other way of doing it, with an expansion set, is
-not ported. Overhangs are measured as the reference measures them but probed
-at fixed steps, so a wall's speed changes at slightly different places.
+not ported. Overhangs are measured as the reference measures them, at the
+same places (see "Walls over overhangs" below), but only walls are: the
+reference measures the lines of a bridge too, and slows a wall over lines
+of the layer beneath that it expects to curl
+(`slowdown_for_curled_perimeters`), which is not estimated here.
 Infill is not all a port yet: solid lines are joined along
 the walls in sweep order, each to its neighbour on the next row
 whatever the distance, as the reference's rectilinear fill joins them
@@ -2164,7 +2174,8 @@ Benchy.) What is left between the two engines is upstream of this. On the Benchy
 moves against 28799 because a wall measured against the layer beneath
 is laid in the pieces it was measured in, also where neighbouring
 pieces run on at one speed; with `enable_overhang_speed` off it is
-27304 against 27686. On plate 1 the engines lay different lengths of
+27304 against 27686. (Since closed: 28525 against 28799, under "Walls
+over overhangs" below.) On plate 1 the engines lay different lengths of
 wall on ten layers of sixteen, which is where its 859 mm comes from;
 on the other six the walls are 16055 moves against 16074 (16334).
 And a sliced ring here keeps a point that is no corner, as under
@@ -2185,6 +2196,161 @@ running on the machine: thinning takes about what writing fewer moves
 saves. Plate 1 of `mcbrim_test.3mf`, best of 7: 3.63 s before and
 3.60 s after on all cores, 15.32 s and 15.40 s of processor time on
 one thread; the Benchy 2.94 s and 2.91 s on one thread.
+
+Walls over overhangs, 2026-11-11, with the U1's presets (arcs off) on
+a Benchy, plate 1 of `tests/mcbrim_test.3mf`, parts from
+`tools/make_fixture.py` and five larger ones made for this, whose
+layers are long enough that neither slicer slows them to cool: `lean`
+(a square post 80 mm across whose sides lean out 0.06 to 0.30 mm a
+layer), `twist` (square plates each turned 1.5 degrees on the last),
+`overstep` (plates each reaching 0.05 to 0.8 mm further out on one
+side), `notch` (a plate over a block with notches in its side) and a
+funnel 60 mm across. Until now a wall was probed against the layer
+beneath every 2 mm and halved down to 0.25 mm wherever its two ends
+printed differently, and written in those pieces. Where a hull leans
+out a little all the way round every line of it printed differently
+at its two ends, so it was written in quarter-millimetre moves: four
+for each line of a Benchy's hull. The reference measures a wall at its
+own points and adds a point only where the wall crosses the outline
+beneath, where a probe inside a line of 2 mm or more prints
+differently from what is either side of it, and beside the end of
+such a line that hangs out (ExtrusionProcessor.hpp
+`estimate_points_properties`); each line then goes at the slower of
+its two ends, and the writer leaves a speed alone that is within
+1 mm/s of the last (GCode.cpp `_extrude`). That is ported, in the
+reference's single precision, with the cut between wall and overhang
+wall made where the reference makes it (PerimeterGenerator.cpp: at
+the layer beneath grown by half a nozzle with mitred corners, where
+this engine went by the distance, which rounds them; the places are
+found from the lines that grown outline is made of, without growing
+it) and each stretch measured as a path of its own: an overhang wall
+by the bridge's width and against the inner walls' speed, a wall by
+its own.
+
+| part | outer wall moves: reference / before / after | inner wall moves | overhang wall moves | overhang wall, mm |
+|---|---|---|---|---|
+| Benchy | 28799 / 39659 / 28525 | 20866 / 21279 / 21110 | 317 / 269 / 348 | 193.3 / 174.1 / 192.5 |
+| Benchy, Arachne walls | 26706 / 38140 / 26517 | 30771 / 30760 / 30586 | 301 / 241 / 321 | 191.8 / 173.0 / 191.4 |
+| Benchy, scarf seams | 51126 / 65281 / 50336 | 20866 / 21279 / 21110 | 407 / 328 / 433 | 232.0 / 205.0 / 227.2 |
+| Benchy, arcs fitted | 20867 / 31626 / 20891 | 9486 / 9840 / 9744 | 210 / 192 / 220 | 193.9 / 173.7 / 192.5 |
+| Benchy, `enable_overhang_speed` off | 28705 / 27585 / 28420 | 20862 / 21065 / 21106 | 317 / 259 / 348 | 193.3 / 173.4 / 192.5 |
+| `mcbrim_test.3mf` plate 1 | 47638 / 44149 / 44155 | 37343 / 35772 / 35742 | 56 / 39 / 46 | 101.0 / 70.5 / 75.8 |
+| `holes` | 14527 / 14450 / 14456 | 14266 / 14154 / 14154 | 10 / 6 / 9 | 36.4 / 34.9 / 36.3 |
+| `shelf` | 303 / 301 / 303 | 299 / 299 / 299 | 6 / 8 / 6 | 96.0 / 95.7 / 96.0 |
+| `twist` | 385 / 1504 / 384 | 493 / 1493 / 492 | 112 / 224 / 112 | 915.1 / 895.8 / 914.3 |
+| `lean` | 409 / 390 / 373 | 258 / 236 / 236 | 0 / 0 / 0 | |
+| `overstep` | 238 / 233 / 237 | 222 / 221 / 221 | 6 / 4 / 6 | 120.1 / 119.6 / 120.0 |
+| `notch` | 419 / 420 / 417 | 415 / 431 / 428 | 10 / 13 / 10 | 34.0 / 31.7 / 34.0 |
+
+With the overhang speeds off the reference still cuts a wall where
+the overhang fan comes on and goes off, which is why that row moves
+too. `cube`, `steps`, `frame`, `cylinder`, `tube` and `curve`, which
+overhang nowhere, are the files they were to the byte, also with
+Arachne walls, scarf seams and arcs; so is `mushroom`, whose cap
+hangs clear all the way round. The small `funnel`, every layer of
+which is slowed to cool to one speed in both files, is 3723 outer
+wall moves against 3767 (3753).
+
+Where the speed changes, and to what. A run is a stretch of a wall
+loop written at one feed rate under one name; loops are paired by
+layer and place, and a run's end counts as the same in both files
+when it is within 0.3 mm with feed rates within 3% either side. The
+last two columns walk every paired loop in steps of 0.2 mm and
+compare the feed rates there, whatever points each file has, over the
+length that goes slower than the wall's own speed in either file.
+
+| part | runs: reference / before / after | run ends at the same place with the same speeds: before / after | same place, other speeds | only in the reference | only here | overhanging length within 3% of the reference's feed rate: before / after | laid under another name, mm |
+|---|---|---|---|---|---|---|---|
+| Benchy | 4136 / 7356 / 4003 | 735 / 1461 | 1402 / 664 | 542 / 554 | 3765 / 424 | 40.3% / 81.0% | 18.2 / 0.6 |
+| `twist` | 683 / 3005 / 695 | 0 / 588 | 513 / 16 | 91 / 0 | 2413 / 12 | 61.2% / 99.1% | 20.3 / 0.0 |
+| `lean`, seam at the back | 252 / 269 / 252 | 0 / 133 | 0 / 0 | 133 / 0 | 150 / 0 | 93.1% / 100.0% | 0.0 / 0.0 |
+| `overstep`, seam at the back | 139 / 134 / 139 | 1 / 30 | 10 / 0 | 19 / 0 | 14 / 0 | 97.4% / 100.0% | 0.6 / 0.0 |
+| `notch` | 93 / 102 / 93 | 2 / 44 | 22 / 0 | 20 / 0 | 29 / 0 | 56.7% / 100.0% | 2.3 / 0.0 |
+| `shelf` | 161 / 161 / 161 | 0 / 12 | 8 / 0 | 4 / 0 | 4 / 0 | 95.3% / 100.0% | 0.4 / 0.0 |
+| `holes` | 828 / 825 / 826 | 2 / 12 | 17 / 18 | 13 / 2 | 10 / 0 | 91.0% / 94.4% | 1.5 / 0.0 |
+
+On the parts made of boxes, where both slicers have the same walls to
+measure, the files now agree move for move along every overhang, to
+the micron and the feed rate: `shelf`, `notch`, and `lean` and
+`overstep` with `seam_position` at `back`, which puts both slicers'
+seams at one corner. On layer 52 of `lean`, for one: 91.296 mm of
+three sides at F1980, the side that ends at the seam at F1920, and
+0.967 mm either side of each corner, where the wall is further from
+the layer beneath, at F1260, in both. What is left on the others
+comes from outside this:
+
+- The wall's own speed. The reference holds a wall to what the hot
+  end can melt by the plastic it lays, flow ratios counted (GCode.cpp
+  `_extrude`, `_mm3_per_mm`); this engine leaves the ratios out, and
+  writes the speed of a wall that is measured as a whole number of
+  mm/s. So where nothing overhangs the outer wall is F9540 here
+  against F9741.893 there, the speeds between that and the first
+  overhang speed are up to 2% lower, and a part with no overhang was
+  already so. Left as it was, so that such a part is the file it was.
+- Cooling. 218 of the Benchy's 240 layers are slowed to cool in the
+  reference's file and 220 in this engine's (layers 27 and 69 only
+  here), and a slowed layer's top speed is a few per cent off between
+  the two, so a move held by cooling in one file and by an overhang
+  in the other differs by that. On the 20 layers neither slows, 88.7%
+  of the overhanging length is within 3% (42.1% before).
+- The points a loop has. A round outline is thinned from another
+  corner here (above), and the reference thins each stretch of a wall
+  between the cuts by itself where this engine thins the loop whole,
+  so a hull's lines begin and end in other places: each still goes at
+  the slower of its ends, by the same rule, but the ends are not the
+  same points, which is most of the Benchy's "other speeds". Where a
+  wall runs alongside the outline beneath at about half a nozzle out,
+  as the Benchy's stern does on layer 45, ten microns either way move
+  the cut between wall and overhang wall by half a millimetre.
+- The seam. A loop's last move stops short of the seam by the seam's
+  gap, and the reference may start a loop where a wall turns into an
+  overhang wall, which is a point of the loop there and not here. The
+  line that ends at the seam is measured to where it stops, so its
+  speed goes by where the seam is.
+- Arachne walls with `thick_bridges` off. The reference lays an
+  overhang wall of an Arachne loop at the wall's own width and flow
+  (VariableWidth.cpp `thick_polyline_to_multi_path` keeps the bridge's
+  line only when it is a round thread), where its classic walls get
+  the bridge's 0.369 mm at `bridge_flow`; and since a wall is measured
+  by its width, the first and last move of such a stretch go at
+  43 mm/s where the bridge speed is 50. Here an overhang wall is the
+  bridge's line whichever way the walls were made, so `twist` with
+  Arachne walls is 94.1% within 3% where it is 99.1% with classic.
+- Arcs. With arcs fitted the files agree as without (`twist` 99.5%,
+  `notch` 100% with the Centauri Carbon's presets), but for the wall
+  beside the seam on a part that overhangs all round: the reference
+  moves the point either side of the seam 7 µm out onto the arc it
+  cut there, and on a funnel 60 mm across that is 74 mm/s against 82
+  for 2 mm each side.
+
+Two things the reference does are not copied. After an overhang its
+first move back at full speed is written at the whole number of mm/s
+its measuring rounds to (F9720) and only the next at the wall's speed
+(F9741.893), or none if the path ends there, because it asks whether
+the speed has changed by more than 1 mm/s before it asks whether the
+wall is back at its own; here it is back at its own speed at once.
+And where it compares a crossing with the point before it, it reads
+that point through a reference into a list it is adding to
+(ExtrusionProcessor.hpp `prev_point`), which is freed memory once the
+list has grown; here it is the point.
+
+Print time does not move by more than seconds: the speeds along an
+overhang were near enough before, in pieces. The Benchy is 41 m 13 s
+as the reference plans it and 42 m 33 s as Klipper does, before and
+after, against the reference's 38 m 43 s (its file timed here: 38 m
+43 s and 39 m 51 s); `twist` 35 m 00 s before and 35 m 08 s after
+against 32 m 53 s, `lean` 53 m 04 s and 53 m 06 s against 48 m 29 s,
+plate 1 62 m 37 s both against 65 m 01 s. Those gaps are not in the
+walls over overhangs, which agree on `lean` to the move.
+
+Writing is no slower, to what can be measured with other work running
+on the machine: measuring a wall at its own points asks less of the
+layer beneath than probing it did, and telling where it hangs clear
+asks a little more. On one thread, best of 8, the Benchy's G-code is
+written in 131 ms before and 137 ms after, of 1.92 s of processor
+time for the whole of it both times; `holes` in 36 ms and 42 ms;
+plate 1 of `mcbrim_test.3mf` in 554 ms and 550 ms. The files are the
+same at 1, 4 and 18 threads.
 
 ## Licence
 
