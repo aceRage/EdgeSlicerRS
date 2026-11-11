@@ -11,10 +11,10 @@
 //! "; Slow Down Start" and "; Slow Down End", which its cooling stage
 //! leaves at the speed written.
 //!
-//! Not done: the reference joins such a wall with a scarf seam where
-//! `apply_scarf_seam_on_circles` is on; there are no scarf seams here
-//! yet, and the settings say so. The two comments are not written:
-//! nothing but the reference's own cooling stage reads them.
+//! Where `apply_scarf_seam_on_circles` is on such a wall is also joined
+//! with a scarf seam, whatever `seam_slope_type` says (`scarf.rs`). The
+//! two comments are not written: nothing but the reference's own cooling
+//! stage reads them.
 
 use edge_extrusion::{ExtrusionLoop, Role};
 
@@ -29,7 +29,7 @@ impl Writer<'_> {
         let speed = self.settings.circle_compensation_speed;
         // "unless the loop overhangs": not where a stretch of it is laid
         // as an overhang wall.
-        if !wall.circle_compensation || speed <= 0.0 || self.hangs_clear(wall) {
+        if speed <= 0.0 || !self.circle_wall_whole(wall) {
             return None;
         }
         // "a caller's small perimeter speed still caps it"
@@ -38,6 +38,13 @@ impl Writer<'_> {
                 .small_wall
                 .map_or(speed, |small| small.min(speed)),
         )
+    }
+
+    /// Whether the loop is the wall of a compensated circle with none of
+    /// it over air: what is printed at the compensation speed and joined
+    /// with a scarf (GCode.cpp `extrude_loop`, `circle_compensation`).
+    pub(crate) fn circle_wall_whole(&self, wall: &ExtrusionLoop) -> bool {
+        wall.circle_compensation && !self.hangs_clear(wall)
     }
 
     /// Whether any of the loop is over air, as the walls are judged when
@@ -67,12 +74,14 @@ impl Writer<'_> {
     }
 
     /// A wall's speed: the compensated circle's, the small loop's, or
-    /// `usual`.
+    /// `usual`; on a scarf, no more than the scarf's.
     pub(crate) fn wall_speed(&self, usual: f64) -> f64 {
-        self.state
-            .circle_wall
-            .or(self.state.small_wall)
-            .unwrap_or(usual)
+        self.scarf_speed(
+            self.state
+                .circle_wall
+                .or(self.state.small_wall)
+                .unwrap_or(usual),
+        )
     }
 
     /// Whether a line in this role is part of a compensated circle's
@@ -114,9 +123,14 @@ mod tests {
     }
 
     /// Walls at 30 mm/s, compensated circles' at 70, and nothing else
-    /// that would change a wall's speed.
+    /// that would change a wall's speed; nor the scarf seam such
+    /// circles' walls are otherwise joined with (`scarf_tests.rs`).
     fn settings() -> PrintSettings {
         PrintSettings {
+            scarf: crate::Scarf {
+                on_circles: false,
+                ..crate::Scarf::default()
+            },
             seam: Seam::Nearest,
             seam_gap: 0.0,
             lift: Lift::Normal,
@@ -225,7 +239,7 @@ mod tests {
     }
 
     #[test]
-    fn the_speed_is_the_filaments_and_the_seam_not_made_is_said() {
+    fn the_speed_is_the_filaments() {
         let read = |json: &str, filament: usize| {
             PrintSettings::for_filament(&edge_config::Settings::from_json(json).unwrap(), filament)
                 .unwrap()
@@ -235,27 +249,21 @@ mod tests {
         let two = r#"{"circle_compensation_speed": ["120", "80"]}"#;
         assert_eq!(read(two, 0).circle_compensation_speed, 120.0);
         assert_eq!(read(two, 1).circle_compensation_speed, 80.0);
-        // A scarf seam on compensated circles is asked for unless turned
-        // off, and only means anything with the compensation on.
-        let said = |json: &str| {
-            read(json, 0)
-                .unsupported
-                .iter()
-                .filter(|note| note.contains("circle"))
-                .cloned()
-                .collect::<Vec<_>>()
-        };
-        assert!(said("{}").is_empty());
-        assert!(said(r#"{"apply_scarf_seam_on_circles": "1"}"#).is_empty());
-        assert_eq!(
-            said(r#"{"enable_circle_compensation": "1"}"#),
-            [
-                "apply_scarf_seam_on_circles \"1\": the walls of compensated circles are joined with a plain butt seam"
-            ]
-        );
+        // The scarf seam on compensated circles, asked for unless turned
+        // off, is made: there is nothing to say of it.
+        for json in [
+            "{}",
+            r#"{"enable_circle_compensation": "1"}"#,
+            r#"{"enable_circle_compensation": "1", "apply_scarf_seam_on_circles": "0"}"#,
+        ] {
+            let said = read(json, 0).unsupported;
+            assert!(said.iter().all(|note| !note.contains("circle")), "{said:?}");
+        }
+        assert!(read("{}", 0).scarf.on_circles);
         assert!(
-            said(r#"{"enable_circle_compensation": "1", "apply_scarf_seam_on_circles": "0"}"#)
-                .is_empty()
+            !read(r#"{"apply_scarf_seam_on_circles": "0"}"#, 0)
+                .scarf
+                .on_circles
         );
     }
 

@@ -11,12 +11,14 @@
 mod clock;
 mod holes;
 mod job;
+mod layer_heights;
 mod load;
 mod order;
 mod paint;
 mod pipeline;
 mod presets;
 mod preview;
+mod printable;
 mod scene;
 mod toolpath;
 mod unfollowed;

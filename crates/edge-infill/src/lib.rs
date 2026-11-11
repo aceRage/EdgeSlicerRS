@@ -31,5 +31,5 @@ pub use ironing::{
 pub use settings::{ExtraBridgeLayer, InfillSettings, Pattern};
 pub use surfaces::{
     Anchoring, Beneath, Shells, Surface, SurfaceKind, WallsAround, anchor, bridge_edges,
-    bridge_over_infill, carry_bridge_edges, classify, inside_walls, internal,
+    bridge_over_infill, carry_bridge_edges, classify, inside_walls, internal, shell_depths,
 };

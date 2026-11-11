@@ -435,6 +435,8 @@ pub fn exposed(
         &Shells {
             top_layers: 1,
             bottom_layers: 1,
+            top_thickness: 0.0,
+            bottom_thickness: 0.0,
             sparse_density: 0.0,
             minimum_sparse_area: 0.0,
             opening,

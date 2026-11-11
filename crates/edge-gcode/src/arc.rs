@@ -810,7 +810,7 @@ impl Fitted {
     }
 
     /// A path laid straight throughout.
-    fn straight(points: Vec<Point2>) -> Self {
+    pub(crate) fn straight(points: Vec<Point2>) -> Self {
         let parts = if points.len() < 2 {
             Vec::new()
         } else {
@@ -898,7 +898,7 @@ impl Fitted {
     /// `Polyline::split_at_index`: the path up to the point at `index`
     /// and the path from it on. An arc the cut falls within is ended, and
     /// begun again, abreast of that point.
-    fn split_at_index(&self, index: usize) -> (Self, Self) {
+    pub(crate) fn split_at_index(&self, index: usize) -> (Self, Self) {
         let last = self.points.len() - 1;
         if index == 0 {
             return (Self::straight(vec![self.points[0]]), self.clone());
@@ -979,7 +979,7 @@ impl Fitted {
     }
 
     /// `Polyline::append_before`: a straight move from a new first point.
-    fn push_front(&mut self, p: Point2) {
+    pub(crate) fn push_front(&mut self, p: Point2) {
         if self.points.first() == Some(&p) {
             return;
         }
@@ -1037,6 +1037,52 @@ impl Fitted {
         let (_, mut tail) = self.split_at_index(line_idx + 1);
         tail.push_front(p);
         (head, tail)
+    }
+
+    /// `Polyline::split_at_length`: the path up to `length` coordinate
+    /// units along its points and the path from there on. The segment
+    /// the cut falls on becomes two straight moves, even where an arc
+    /// ran through it. None for a length the path does not have.
+    pub(crate) fn split_at_length(&self, length: f64) -> Option<(Self, Self)> {
+        let (first, last) = (*self.points.first()?, *self.points.last()?);
+        let whole: f64 = self
+            .points
+            .windows(2)
+            .map(|pair| span(pair[0], pair[1]))
+            .sum();
+        if length < 0.0 || length > whole {
+            return None;
+        }
+        if length < SCALED_EPSILON {
+            return Some((Self::straight(vec![first]), self.clone()));
+        }
+        if (length - whole).abs() < SCALED_EPSILON {
+            return Some((self.clone(), Self::straight(vec![last])));
+        }
+        let (mut line_idx, mut done, mut p) = (0, 0.0, first);
+        for pair in self.points.windows(2) {
+            p = pair[1];
+            let current = span(pair[0], pair[1]);
+            if done + current >= length {
+                // Point.hpp `lerp`, which drops the fraction of a unit.
+                let t = (length - done) / current;
+                p = point(
+                    ((1.0 - t) * pair[0].x as f64 + t * pair[1].x as f64) as i64,
+                    ((1.0 - t) * pair[0].y as f64 + t * pair[1].y as f64) as i64,
+                );
+                break;
+            }
+            done += current;
+            line_idx += 1;
+        }
+        if let Some(index) = self.points.iter().position(|q| *q == p) {
+            return Some(self.split_at_index(index));
+        }
+        let (mut head, _) = self.split_at_index(line_idx);
+        head.push(p);
+        let (_, mut tail) = self.split_at_index(line_idx + 1);
+        tail.push_front(p);
+        Some((head, tail))
     }
 
     /// `ExtrusionLoop::split_at` for a loop of one path: the closed path

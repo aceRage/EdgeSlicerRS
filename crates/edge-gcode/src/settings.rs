@@ -1,8 +1,9 @@
+use edge_avoid::Detour;
 use edge_config::{ConfigError, FloatOrPercent, Settings, Value as Setting};
 use edge_extrusion::Flow;
 use edge_template::{Value, Variables};
 
-use crate::seam::Seam;
+use crate::{scarf::Scarf, seam::Seam};
 
 /// How the nozzle rises before a travel (`z_hop_types`).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -146,6 +147,8 @@ pub struct PrintSettings {
     pub staggered_inner_seams: bool,
     /// How far short of its start a wall loop stops, in mm.
     pub seam_gap: f64,
+    /// Which wall loops are joined on a slope instead, and how.
+    pub scarf: Scarf,
     /// Curves are cut into segments that stray no further than this, in mm.
     pub resolution: f64,
     /// Whether stretches of a path that lie on a circle are written as
@@ -179,6 +182,12 @@ pub struct PrintSettings {
     pub infill_first: bool,
     /// Skip retraction on moves between fill lines that stay inside the walls.
     pub reduce_infill_retraction: bool,
+    /// Travel goes round the inside of the walls where a straight move
+    /// would cross them (`reduce_crossing_wall`), unless the way round is
+    /// longer than the straight move by more than `max_travel_detour`
+    /// (`max_travel_detour_distance`; none for any length).
+    pub reduce_crossing_wall: bool,
+    pub max_travel_detour: Option<Detour>,
     /// Part cooling fan, as percentages: the speed on layers that take
     /// `fan_cooling_layer_time` seconds or longer, and the speed on layers
     /// as short as `slow_down_layer_time`. Between the two it is scaled.
@@ -323,6 +332,7 @@ impl Default for PrintSettings {
             seam: Seam::Aligned,
             staggered_inner_seams: false,
             seam_gap: 0.04,
+            scarf: Scarf::default(),
             resolution: 0.01,
             arc_fitting: false,
             bed: None,
@@ -342,6 +352,8 @@ impl Default for PrintSettings {
             wall_direction: WallDirection::Auto,
             infill_first: false,
             reduce_infill_retraction: false,
+            reduce_crossing_wall: false,
+            max_travel_detour: None,
             fan_min_speed: 20.0,
             fan_max_speed: 100.0,
             fan_cooling_layer_time: 60.0,
@@ -495,7 +507,6 @@ impl PrintSettings {
                 "All Surfaces",
                 "the nozzle lifts over every surface",
             ),
-            ("seam_slope_type", "none", "seams are plain butt joints"),
             ("wipe_on_loops", "0", "walls end without the inward move"),
             (
                 "wipe_before_external_loop",
@@ -519,20 +530,7 @@ impl PrintSettings {
                 unsupported.push(format!("{key} \"{value}\": {instead}"));
             }
         }
-        // A compensated circle's walls are to be joined with a scarf seam
-        // (GCode.cpp `extrude_loop`), and there are none here.
-        if settings
-            .flag("enable_circle_compensation")?
-            .unwrap_or(false)
-            && settings
-                .flag("apply_scarf_seam_on_circles")?
-                .unwrap_or(true)
-        {
-            unsupported.push(
-                "apply_scarf_seam_on_circles \"1\": the walls of compensated circles are joined with a plain butt seam"
-                    .into(),
-            );
-        }
+        let scarf = Scarf::read(settings, &mut unsupported)?;
         if first("internal_bridge_fan_speed")?.is_some_and(|speed| speed >= 0.0) {
             unsupported.push(
                 "internal_bridge_fan_speed: bridges over infill get the overhang fan speed".into(),
@@ -764,6 +762,7 @@ impl PrintSettings {
                 .unwrap_or(FloatOrPercent::Percent(10.0))
                 .resolve(nozzle_diameter)
                 .max(0.0),
+            scarf,
             resolution: number("resolution", defaults.resolution)?,
             arc_fitting: flag("enable_arc_fitting", defaults.arc_fitting)?
                 && !flag("spiral_mode", false)?,
@@ -795,6 +794,15 @@ impl PrintSettings {
                 && settings
                     .float_or_percent("sparse_infill_density")?
                     .is_none_or(|density| density.resolve(100.0) > 0.0),
+            reduce_crossing_wall: settings
+                .flag("reduce_crossing_wall")?
+                .unwrap_or(defaults.reduce_crossing_wall),
+            // Nought, as a length or a share, is no limit.
+            max_travel_detour: match settings.float_or_percent("max_travel_detour_distance")? {
+                Some(FloatOrPercent::Value(mm)) if mm > 0.0 => Some(Detour::Length(mm)),
+                Some(FloatOrPercent::Percent(share)) if share > 0.0 => Some(Detour::Percent(share)),
+                _ => defaults.max_travel_detour,
+            },
             fan_min_speed: number("fan_min_speed", defaults.fan_min_speed)?,
             fan_max_speed: number("fan_max_speed", defaults.fan_max_speed)?,
             fan_cooling_layer_time: number(

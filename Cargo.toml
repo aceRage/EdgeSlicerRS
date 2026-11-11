@@ -16,6 +16,7 @@ publish = false
 edge-adhesion = { path = "crates/edge-adhesion" }
 edge-3mf = { path = "crates/edge-3mf" }
 edge-arachne = { path = "crates/edge-arachne" }
+edge-avoid = { path = "crates/edge-avoid" }
 edge-clip = { path = "crates/edge-clip" }
 edge-config = { path = "crates/edge-config" }
 edge-engine = { path = "crates/edge-engine" }
