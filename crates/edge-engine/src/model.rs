@@ -931,6 +931,62 @@ impl Model {
         Ok(())
     }
 
+    /// Mirrors copies along an axis of the scene (0 for X, 1 for Y, 2 for
+    /// Z), about the middle of the box round them all, and stands them on
+    /// the bed again (Selection.cpp `mirror`, GLCanvas3D.cpp `do_mirror`).
+    ///
+    /// The mirror is kept as the reference keeps it: in the copy's
+    /// transform, which then turns the object's coordinates inside out.
+    /// The mesh is left as it is; whatever places it by such a transform
+    /// winds its triangles the other way round so that it stays a solid
+    /// (`Mesh::append`), which is how a mirrored copy is sliced.
+    pub fn mirror(
+        &mut self,
+        bed: Option<&Bed>,
+        copies: &[u64],
+        axis: usize,
+    ) -> Result<(), Failure> {
+        if axis > 2 {
+            return Err(refused("an axis is X, Y or Z"));
+        }
+        for copy in copies {
+            self.copy_at(*copy)?;
+        }
+        if copies.is_empty() {
+            return Err(refused("nothing to mirror"));
+        }
+        self.settle(bed);
+        let placed: Vec<(u64, Transform, Option<Reach>)> = copies
+            .iter()
+            .filter_map(|copy| {
+                let (transform, reach) = self.in_scene(bed, *copy)?;
+                Some((*copy, transform, reach))
+            })
+            .collect();
+        let mut low = [f64::INFINITY; 3];
+        let mut high = [f64::NEG_INFINITY; 3];
+        for [from, to] in placed.iter().filter_map(|(_, _, reach)| *reach) {
+            for at in 0..3 {
+                low[at] = low[at].min(from[at]);
+                high[at] = high[at].max(to[at]);
+            }
+        }
+        let middle: [f64; 3] = if low[0].is_finite() {
+            std::array::from_fn(|at| (low[at] + high[at]) / 2.0)
+        } else {
+            [0.0; 3]
+        };
+        let mut flip = Transform::IDENTITY;
+        flip.rows[axis][axis] = -1.0;
+        let about = Transform::translation(middle.map(|value| -value))
+            .then(&flip)
+            .then(&Transform::translation(middle));
+        for (copy, scene, _) in placed {
+            self.stand_in_scene(bed, copy, scene.then(&about));
+        }
+        Ok(())
+    }
+
     // ---- plates ----
 
     /// Puts each copy that is on no plate onto the first plate it reaches

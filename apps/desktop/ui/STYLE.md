@@ -498,7 +498,11 @@ none.
 
 - `.popover`: a small form beside what opened it (a column's filter), inside
   its dialog. `.check-list` inside it is a list of values to tick.
-- `#menu` (`showMenu(x, y, items)`): a menu at a point.
+- `#menu` (`showMenu(x, y, items)`): a menu at a point. An entry with
+  `items` opens a menu of its own beside it (`#submenu`, the same look as
+  `.menu`), marked with a chevron at its end; it opens by the pointer, a
+  click or Right, and Left or Escape closes it. An entry's `title` is its
+  tooltip (the C++ help text).
 - Tooltips: write a `title`. The page shows it in its own look, after a
   moment under the pointer and beside what the keys are on, and puts the
   attribute aside while it does (it is back when the tooltip goes). Nothing

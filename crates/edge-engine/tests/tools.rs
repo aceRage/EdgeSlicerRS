@@ -132,3 +132,43 @@ fn faces_follow_the_size_a_copy_is_printed_at() {
     let height = 200.0 / (20f64.powi(2) + 10f64.powi(2)).sqrt();
     assert!((after[1][2] - height).abs() < 1e-6, "{after:?}");
 }
+
+#[test]
+fn a_mirror_is_kept_in_the_copy_and_what_is_sliced_stays_a_solid() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = boxes(
+        dir.path(),
+        "ell.stl",
+        &[
+            ([0.0; 3], [6.0, 10.0, 16.0]),
+            ([6.0, 0.0, 0.0], [24.0, 10.0, 4.0]),
+        ],
+    );
+    let mut model = Model::open(&path).unwrap();
+    let copy = first_copy(&model);
+    let object = model.objects()[0].id();
+    model.rename(Some(&BED), object, "ell").unwrap();
+    let before = reach(&model, copy);
+    let solid = model.place(Some(1)).unwrap().bodies[0]
+        .solid
+        .signed_volume();
+
+    for axis in [0, 1, 2] {
+        model.mirror(Some(&BED), &[copy], axis).unwrap();
+        let transform = model.objects()[0].copies()[0].transform();
+        assert!(transform.is_mirrored());
+        // The mesh is the file's; the copy turns it inside out, and what is
+        // sliced is wound back to a solid of the same volume.
+        let placed = model.place(Some(1)).unwrap();
+        let volume = placed.bodies[0].solid.signed_volume();
+        assert!((volume - solid).abs() < 1e-3, "{volume} {solid}");
+        // Where it stood, on the bed.
+        assert_eq!(size(&reach(&model, copy)), size(&before));
+        assert_eq!(middle(&reach(&model, copy)), middle(&before));
+        assert!(reach(&model, copy)[0][2].abs() < 1e-9);
+        model.mirror(Some(&BED), &[copy], axis).unwrap();
+        assert!(!model.objects()[0].copies()[0].transform().is_mirrored());
+    }
+    assert!(model.mirror(Some(&BED), &[copy], 3).is_err());
+    assert!(model.mirror(Some(&BED), &[], 0).is_err());
+}

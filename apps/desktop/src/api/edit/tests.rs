@@ -652,3 +652,154 @@ fn a_box_is_laid_on_a_face_and_slices_as_it_then_lies() {
         .contains("normal is not three numbers")
     );
 }
+
+/// Every layer of the plate shown: its top, and each closed outer wall as
+/// its points, flat.
+fn walls(session: &Arc<Session>) -> Vec<(f64, Vec<Vec<f64>>)> {
+    let mut out = Vec::new();
+    for index in 0.. {
+        let Ok(layer) = session.call("layer", &json!({ "index": index })) else {
+            break;
+        };
+        let loops = layer["strokes"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|stroke| stroke["r"] == "Outer wall")
+            .map(|stroke| numbers(&stroke["p"]))
+            .collect();
+        out.push((layer["z"].as_f64().unwrap(), loops));
+    }
+    out
+}
+
+/// The box round points given flat, x and y in turn, and the area they
+/// close in (positive anticlockwise).
+fn measure(points: &[f64]) -> ([f64; 4], f64) {
+    let mut reach = [
+        f64::INFINITY,
+        f64::INFINITY,
+        f64::NEG_INFINITY,
+        f64::NEG_INFINITY,
+    ];
+    let mut area = 0.0;
+    let count = points.len() / 2;
+    for at in 0..count {
+        let (x, y) = (points[2 * at], points[2 * at + 1]);
+        let next = (at + 1) % count;
+        area += x * points[2 * next + 1] - points[2 * next] * y;
+        reach = [
+            reach[0].min(x),
+            reach[1].min(y),
+            reach[2].max(x),
+            reach[3].max(y),
+        ];
+    }
+    (reach, area / 2.0)
+}
+
+#[test]
+fn a_mirrored_object_slices_to_the_mirror_image_of_the_original() {
+    let dir = tempfile::tempdir().unwrap();
+    // An L: a tower at one end of a low bar, which a mirror along X puts
+    // at the other end.
+    let path = boxes(
+        &dir.path().join("ell.stl"),
+        &[
+            ([0.0; 3], [6.0, 10.0, 16.0]),
+            ([6.0, 0.0, 0.0], [24.0, 10.0, 4.0]),
+        ],
+    );
+    let session = Arc::new(Session::new(None));
+    let project = stl_project(&session, &path);
+    // Given its place on the bed by a first edit, so both slices are of
+    // the same place.
+    let scene = ask(&session, "scene", json!({}));
+    let placing = scene["placings"][0].clone();
+    edit(
+        &session,
+        json!({ "op": "transform", "copies": [moved(&placing, [0.0, 0.0, 0.0])] }),
+    );
+    sliced(&session, project, None);
+    let before = walls(&session);
+    let reach = ask(&session, "scene", json!({}))["placings"][0]["box"].clone();
+    let middle = (numbers(&reach[0])[0] + numbers(&reach[1])[0]) / 2.0;
+
+    assert!(
+        refused(
+            &session,
+            "scene_edit",
+            json!({ "op": "mirror", "copies": [placing["id"]], "axis": "w" })
+        )
+        .contains("axis cannot be w")
+    );
+    let mirrored = edit(
+        &session,
+        json!({ "op": "mirror", "copies": [placing["id"]], "axis": "x" }),
+    );
+    assert_eq!(mirrored["done"], "Mirror Object");
+    assert_eq!(mirrored["project"]["sliced"], false);
+    let matrix = numbers(&mirrored["scene"]["placings"][0]["matrix"]);
+    assert!(matrix[0] < 0.0, "kept in the copy's transform: {matrix:?}");
+    // It stands where it stood.
+    assert_eq!(mirrored["scene"]["placings"][0]["box"], reach);
+
+    sliced(&session, project, None);
+    let after = walls(&session);
+    assert_eq!(after.len(), before.len());
+    assert!(before.len() > 70);
+    for ((z, was), (z_now, now)) in before.iter().zip(&after) {
+        // The first layer where it was, every layer at its height.
+        assert_eq!(z, z_now);
+        assert_eq!(was.len(), now.len(), "at {z}");
+        let mut was: Vec<([f64; 4], f64)> = was.iter().map(|p| measure(p)).collect();
+        let mut now: Vec<([f64; 4], f64)> = now.iter().map(|p| measure(p)).collect();
+        // Mirrored: x goes to the other side of the middle, the winding
+        // stays (an outer wall goes anticlockwise either way).
+        for (reach, _) in &mut was {
+            *reach = [
+                2.0 * middle - reach[2],
+                reach[1],
+                2.0 * middle - reach[0],
+                reach[3],
+            ];
+        }
+        let key = |item: &([f64; 4], f64)| (item.0[0] * 100.0).round() as i64;
+        was.sort_by_key(key);
+        now.sort_by_key(key);
+        for ((a, area_a), (b, area_b)) in was.iter().zip(&now) {
+            for side in 0..4 {
+                assert!((a[side] - b[side]).abs() < 0.002, "at {z}: {a:?} {b:?}");
+            }
+            assert!((area_a - area_b).abs() < 0.01, "at {z}: {area_a} {area_b}");
+            assert!(*area_b > 0.0);
+        }
+    }
+    // High up, only the tower: before at the low end of x, after at the high.
+    let (top_was, top_now) = (
+        measure(&before.last().unwrap().1[0]).0,
+        measure(&after.last().unwrap().1[0]).0,
+    );
+    assert!(
+        top_was[0] < middle && top_now[2] > middle,
+        "{top_was:?} {top_now:?}"
+    );
+
+    // Along Z it is upside down, standing on the bed: the bar on top.
+    let flipped = edit(
+        &session,
+        json!({ "op": "mirror", "copies": [placing["id"]], "axis": "z" }),
+    );
+    let reach = &flipped["scene"]["placings"][0]["box"];
+    assert_eq!(numbers(&reach[0])[2], 0.0);
+    sliced(&session, project, None);
+    let flipped = walls(&session);
+    assert_eq!(flipped.len(), before.len());
+    // Its first layer is the tower's foot alone, the bar's whole length
+    // now its top.
+    let first = measure(&flipped[0].1[0]).0;
+    assert!(first[2] - first[0] < 7.0, "{first:?}");
+    let last = measure(&flipped.last().unwrap().1[0]).0;
+    assert!(last[2] - last[0] > 29.0, "{last:?}");
+    assert_eq!(ask(&session, "undo", json!({}))["done"], "Mirror Object");
+}

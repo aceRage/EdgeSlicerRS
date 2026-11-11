@@ -79,10 +79,14 @@
 
   // The turn of a matrix without its sizes, as three rows, and the sizes:
   // how long each of the object's own axes has become.
+  // A mirrored object (its matrix turns it inside out) is taken as
+  // mirrored along its own X and then turned, as the reference splits an
+  // instance's transform into turn, size and mirror (`flip`).
   function turnOf(matrix) {
     const sizes = [0, 1, 2].map((c) => M.length(col(matrix, c)) || 1);
-    const cols = [0, 1, 2].map((c) => M.scale(col(matrix, c), 1 / sizes[c]));
-    return { sizes, rows: [0, 1, 2].map((r) => [cols[0][r], cols[1][r], cols[2][r]]) };
+    const flip = M.determinant3(matrix) < 0;
+    const cols = [0, 1, 2].map((c) => M.scale(col(matrix, c), (c === 0 && flip ? -1 : 1) / sizes[c]));
+    return { sizes, flip, rows: [0, 1, 2].map((r) => [cols[0][r], cols[1][r], cols[2][r]]) };
   }
 
   // The angles about X, Y and Z, in that order of turning, that make a
@@ -323,7 +327,19 @@
       if (!data || !selection.size) return;
       const copies = data.placings.filter((placing) => selection.has(placing.id));
       const printable = copies.every((copy) => copy.printable);
+      // Plater.cpp `can_mirror`: what is selected is of one instance.
+      const one = copies.length === 1 ? copies[0] : null;
+      const mirror = (axis) => () => this.commit({ op: 'mirror', copies: [one.id], axis });
       const items = [
+        ['Mirror', null, {
+          disabled: !one,
+          title: 'Mirror object',
+          items: [
+            ['Along X axis', mirror('x'), { title: 'Mirror along the X axis' }],
+            ['Along Y axis', mirror('y'), { title: 'Mirror along the Y axis' }],
+            ['Along Z axis', mirror('z'), { title: 'Mirror along the Z axis' }],
+          ],
+        }],
         ['Delete Del', () => this.remove()],
         ['Clone Ctrl+K', () => this.clone([...selection])],
         ['Printable', () => this.commit({ op: 'printable', copies: [...selection], value: !printable }), { checked: printable }],
@@ -1021,9 +1037,9 @@
         if (!m.one || (key === 'absolute' && !Number.isFinite(value))) { this.showFields(); return; }
         const angles = key === 'absolute' ? m.angles.map((angle, a) => radians(a === axis ? value : angle)) : [0, 0, 0];
         const rows = turnFrom(angles);
-        const { sizes } = turnOf(m.one.matrix);
+        const { sizes, flip } = turnOf(m.one.matrix);
         const matrix = m.one.matrix.slice();
-        for (let c = 0; c < 3; c += 1) for (let r = 0; r < 3; r += 1) matrix[4 * c + r] = rows[r][c] * sizes[c];
+        for (let c = 0; c < 3; c += 1) for (let r = 0; r < 3; r += 1) matrix[4 * c + r] = rows[r][c] * sizes[c] * (c === 0 && flip ? -1 : 1);
         // About the middle of what is selected, which stays where it is.
         const local = m.local || [[0, 0, 0], [0, 0, 0]];
         const [was, now] = [M.point(m.one.matrix, M.centre(local)), M.point(matrix, M.centre(local))];

@@ -808,6 +808,7 @@ undo history.
 | `add_plate` | — | a plate after the last, which is then the one shown | "add partplate" |
 | `delete_plate` | `plate?` | takes a plate away, not the last one | "delete partplate" |
 | `arrange` | `plate?`, or `all: true` | lays out one plate, or every plate | "Arrange" |
+| `mirror` | `copies`, `axis` (`x`, `y`, `z`) | mirrors the copies along that axis of the scene, about the middle of the box round them, and stands them on the bed; the mirror is kept in each copy's transform | "Mirror Object" |
 | `lay_on_face` | `copy`, `normal` (three numbers, a face's from `scene_faces`) | turns the copy so that face points straight down, about the middle of its box, and stands it on the bed | "Gizmo-Place on Face" |
 
 ### Undo and redo
@@ -828,7 +829,7 @@ undo history.
 | A click selects an instance; Ctrl adds or takes away; a click on nothing or Esc lets go; Ctrl+A selects all | GLCanvas3D.cpp l.6423–6551 | **had** (section 9); now by the copies' `id`, so what is selected survives every edit that leaves it there. Shift adds as Ctrl does |
 | Del or Backspace deletes what is selected | `Plater::remove_selected` l.25120, GUI_ObjectList.cpp l.4586 | **added** |
 | The list and the canvas show one selection | `ObjectList::update_selections`, `update_selections_on_canvas` | **added**, both ways |
-| The right button: the object's menu ("Delete", "Clone", "Printable", "Rename", "Fill bed with copies", "Set as an individual object", "Mirror", "Split", the settings…) | `GUI_Factories.cpp` l.649–1181 | **added**: "Delete" [Del], "Clone" [Ctrl+K], "Printable", "Rename". **not yet**: the rest (see "Left for later") |
+| The right button: the object's menu ("Delete", "Clone", "Printable", "Rename", "Fill bed with copies", "Set as an individual object", "Mirror", "Split", the settings…) | `GUI_Factories.cpp` l.649–1181 | **added**: "Delete" [Del], "Clone" [Ctrl+K], "Printable", "Rename", and the "Mirror" sub-menu (below). **not yet**: the rest (see "Left for later") |
 | Ctrl+C / Ctrl+V copy and paste objects; Ctrl+K "Clone" asks how many | `Plater::copy_selection_to_clipboard` l.29941, `paste_from_clipboard`, `clone_selection` l.29965 | **added**: Ctrl+C notes what is selected, Ctrl+V puts a copy of each on the plate shown, Ctrl+K one beside each. **differs**: Ctrl+K makes one clone at a press and asks nothing; the clipboard is the page's, not the system's. **not yet**: Ctrl+X |
 | A clone or a paste is put on a free place found by the arranger | `Plater::find_new_position` l.16128, `Selection::paste_objects_from_clipboard` l.3384 | **differs**: the free place nearest what it was made of, by the boxes round the copies, 6 mm apart; beside the plates when the plate has no room |
 
@@ -877,6 +878,21 @@ as the reference's is.
 | Scale: "World" / "Object", "Scale" in percent with its reset, "Size" in mm, "uniform scale" | `do_render_scale_input_window` l.1721 | **added**. An object that is turned is sized as a whole in the world's coordinates, as in the C++ |
 | Inches for millimetres ("in") | `m_imperial_units` | **not yet**: no preferences |
 | What is typed is a step of its own: "Set Position", "Set Orientation", "Set Scale" | `change_position_value` l.286 and on | **added** |
+
+### Mirror
+
+Read from `GUI_Factories.cpp` (`append_menu_items_mirror` l.2028),
+`Plater.cpp` (`mirror` l.16123, `can_mirror` l.20500), `GLCanvas3D.cpp`
+(`mirror_selection` l.4375, `do_mirror` l.7414) and `Selection.cpp`
+(`mirror` l.1797, `scale_and_translate` l.1715).
+
+| C++ | Where | Here |
+| --- | --- | --- |
+| The object's menu: "Mirror" ("Mirror object"), a sub-menu of "Along X axis", "Along Y axis", "Along Z axis" ("Mirror along the X axis" and the rest), after "Split" and before "Delete"; on while what is selected is of one instance (`can_mirror`: `is_from_single_instance`, and no cut object) | `GUI_Factories.cpp` l.2028, l.2421 | **added**, the same words and tooltips, before "Delete"; off unless one copy is selected. The page's menus take a sub-menu now (`showMenu` in `app.js`): it opens beside its entry by the pointer, a click or Right, and closes with Left or Escape. There is no toolbar button for it, as there is none in the C++ |
+| A mirror is a scale of -1 along the axis, in the world's coordinates, about the middle of what is selected, kept in the instance's transform (a "mirror" of its `Transformation`); the mesh is not changed. `do_mirror("Mirror Object")` takes one snapshot and stands each instance on the bed again, one that was sunk staying sunk | `Selection::mirror`, `do_mirror` | **added** (`scene_edit` `mirror`, `Model::mirror`): the mirror is the copy's transform, the mesh is the file's, one undo step, stood on the bed as a turn is |
+| Slicing a mirrored instance: the mesh is transformed and, the transform being left-handed, its triangles are turned round (`TriangleMesh::transform` with `is_left_handed`), so it is still a solid | `libslic3r/TriangleMesh.cpp` | **had**: `Mesh::append` reverses the winding under a mirroring transform; painted triangles are turned the same way (`Project::painted`). Tested: an L mirrored along X slices, layer by layer, to the mirror image of its walls, each wall still anticlockwise, its first layer where it was; along Z it is upside down and stands on the bed |
+| The number fields of a mirrored object: its scale is positive, its mirror apart | `Geometry::Transformation` | **added**: the fields take a mirrored object as mirrored along its own X and then turned, so its scale reads 100% and its angles are those of the turn |
+| The other instances of the object are mirrored too | `synchronize_unselected_instances` | **differs**: only the copy selected, as Rotate and Scale here |
 
 ### Lay on face
 
@@ -951,7 +967,8 @@ reference's on fixtures; the comparison needs the reference run with
 | "Lay on face": its second mode, "Face under cursor" (any flat face under the pointer, recessed ones too, and Alt to use it for a moment), and laying one part of an object on a face | the first needs the page to grow a flat face from the triangle under the pointer (`grow_flat_face`) and to warn of a recessed one; the second, parts that can be selected (see below) |
 | "Fill bed with copies" (`GUI_Factories.cpp` l.1146, `FillBedJob.cpp`) | the reference's arrangement: it asks the arranger how many more fit |
 | Sinking an object under the bed; the arrow along Z; "Drop" | the engine cutting what is under the bed away (it slices from an object's lowest point) |
-| "Mirror", "Auto orient", "Split to objects" / "Split to parts", "Cut", "Mesh Boolean", "Simplify" | mesh operations the engine does not have |
+| "Auto orient", "Split to objects" / "Split to parts", "Cut", "Mesh Boolean", "Simplify" | mesh operations the engine does not have |
+| Mirroring one part of an object (the part's menu), and the other instances of the object taking the mirror too | parts that can be selected; instances kept alike, which no tool here does yet |
 | Parts in the list, a filament for one part, modifiers and their settings, "Set as an individual object" | per-object and per-part settings, which the engine does not read (section 12) |
 | Saving the project with its edits | writing 3MF |
 | The glow round what is selected, the red background while something is over the edge, the ticks of the rotate ring | nothing; they are looks, left for a pass on the stage's own drawing |

@@ -331,6 +331,18 @@ impl Session {
                 }
                 outcome.name = "Arrange".into();
             }
+            "mirror" => {
+                let axis = match needed(args, "axis")? {
+                    "x" => 0,
+                    "y" => 1,
+                    "z" => 2,
+                    other => return Err(format!("axis cannot be {other}")),
+                };
+                model
+                    .mirror(bed, &ids(args, "copies")?, axis)
+                    .map_err(failed)?;
+                outcome.name = "Mirror Object".into();
+            }
             "lay_on_face" => {
                 let normal = numbers(args, "normal")?;
                 model
