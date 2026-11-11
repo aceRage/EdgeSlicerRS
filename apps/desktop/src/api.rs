@@ -15,6 +15,7 @@
 //! [`Session::call_bytes`], which is `call` in every other way.
 
 mod edit;
+mod save;
 mod scene;
 
 use std::{
@@ -1029,6 +1030,8 @@ impl Session {
                 Ok(state.listing())
             }
             "project_close" => self.project_close(args),
+            "project_save" => self.project_save(args),
+            "unsaved" => Ok(self.unsaved()),
             "project_set" => self.project_set(args),
 
             "process_pages" => Ok(Self::settings_pages(settings::Book::Process)),

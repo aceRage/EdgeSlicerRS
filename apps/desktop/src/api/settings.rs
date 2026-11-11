@@ -635,11 +635,7 @@ pub(super) fn overrides(choices: &Choices, basis: &Basis) -> Overrides {
 }
 
 /// What is set by hand for one book (and filament, from 0).
-fn over_of(
-    choices: &Choices,
-    book: Book,
-    filament: usize,
-) -> Option<&BTreeMap<String, String>> {
+fn over_of(choices: &Choices, book: Book, filament: usize) -> Option<&BTreeMap<String, String>> {
     match book {
         Book::Process => Some(&choices.over),
         Book::Printer => Some(&choices.printer_over),

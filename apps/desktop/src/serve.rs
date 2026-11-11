@@ -43,6 +43,9 @@ const EDIT: [(&str, &str); 3] = [
     ("objects.js", include_str!("../ui/objects.js")),
     ("edit.css", include_str!("../ui/edit.css")),
 ];
+/// Saving a project, and what is asked before a project or the window
+/// closes.
+const SAVE_SCRIPT: &str = include_str!("../ui/save.js");
 /// A file of the page. A debug build reads it from the source folder each
 /// time, so a change to the page shows on reload; any other build serves
 /// what it was built with.
@@ -172,6 +175,14 @@ fn handle(mut request: Request, session: &Arc<Session>, token: &str, port: u16) 
                 200,
                 "text/css; charset=utf-8",
                 asset("printers.css", PRINTERS_STYLE),
+            );
+        }
+        (Method::Get, "/save.js") => {
+            respond(
+                request,
+                200,
+                "text/javascript; charset=utf-8",
+                asset("save.js", SAVE_SCRIPT),
             );
         }
         (Method::Get, path) if EDIT.iter().any(|(known, _)| path[1..] == **known) => {

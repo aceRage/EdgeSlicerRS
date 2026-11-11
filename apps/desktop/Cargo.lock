@@ -794,6 +794,7 @@ dependencies = [
  "edge-mesh",
  "quick-xml",
  "rayon",
+ "serde_json",
  "thiserror 2.0.21",
  "zip",
 ]
