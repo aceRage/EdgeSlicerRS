@@ -2,7 +2,7 @@ use edge_config::{ConfigError, FloatOrPercent, Settings};
 use edge_extrusion::{Flow, FlowError, LineWidths};
 use edge_geom::scaled;
 
-use crate::{Anchoring, FillParams, Shells, WallsAround};
+use crate::{Anchoring, FillParams, InternalBridgeFilter, OverInfill, Shells, WallsAround};
 
 /// Sparse fill patterns this engine can lay.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -121,6 +121,9 @@ pub struct InfillSettings {
     /// applied to the plastic when the G-code is written.
     pub thick_internal_bridges: bool,
     pub internal_bridge_density: f64,
+    /// How small bridges over infill are sorted out
+    /// (`dont_filter_internal_bridges`).
+    pub internal_bridge_filter: InternalBridgeFilter,
     /// Whether top surface, bottom surface and internal solid lines are
     /// joined end to end (`top_surface_pattern`, `bottom_surface_pattern`,
     /// `internal_solid_infill_pattern`): `monotonicline` leaves them
@@ -182,6 +185,7 @@ impl Default for InfillSettings {
             bridge_line_width: None,
             thick_internal_bridges: true,
             internal_bridge_density: 1.0,
+            internal_bridge_filter: InternalBridgeFilter::Filter,
             top_ordered: true,
             bottom_ordered: true,
             solid_ordered: true,
@@ -445,6 +449,19 @@ impl InfillSettings {
                 "internal_bridge_density",
                 defaults.internal_bridge_density,
             )?,
+            internal_bridge_filter: match settings.text("dont_filter_internal_bridges") {
+                None => defaults.internal_bridge_filter,
+                Some("disabled") => InternalBridgeFilter::Filter,
+                Some("limited") => InternalBridgeFilter::Limited,
+                Some("nofilter") => InternalBridgeFilter::NoFilter,
+                Some(other) => {
+                    return Err(ConfigError::BadValue {
+                        key: "dont_filter_internal_bridges".into(),
+                        found: other.to_owned(),
+                        expected: "disabled, limited or nofilter",
+                    });
+                }
+            },
             top_ordered,
             bottom_ordered,
             solid_ordered,
@@ -559,6 +576,33 @@ impl InfillSettings {
             bridge_extra: scaled(self.bridge_expansion_extra),
             closing: scaled(0.55 * 0.65 * 1.05 * solid.spacing),
             minimum_sparse_area: self.minimum_sparse_infill_area,
+        })
+    }
+
+    /// What picking out the bridges over infill needs on layers of this
+    /// height (`PrintObject::bridge_over_infill`).
+    pub fn over_infill(&self, layer_height: f64) -> Result<OverInfill, FlowError> {
+        let params = self.params(layer_height, false)?;
+        // The round thread of a thick bridge, whether or not bridges
+        // over infill are laid thick (`bridging_flow(frSolidInfill, true)`).
+        let thread = params
+            .solid
+            .bridging_sized(self.bridge_flow, true, self.bridge_line_width)?;
+        // libslic3r's `EPSILON`.
+        const EPSILON: f64 = 1e-4;
+        // A thread sinks nine tenths of its height
+        // (`target_flow_height_factor`). The reference takes the nine
+        // tenths twice over where it looks for sparse fill beneath
+        // (`gather_areas_w_depth` is handed a height that already has
+        // them and takes them again), and once where it looks for a
+        // bridge beneath; both are as it has them.
+        let sunk = 0.9 * thread.height;
+        Ok(OverInfill {
+            spacing: params.solid.scaled_spacing(),
+            filter: self.internal_bridge_filter,
+            thread_spacing: thread.scaled_spacing(),
+            sparse_depth: (((0.9 * sunk + EPSILON) / layer_height) as usize).max(1),
+            bridged_depth: ((sunk + EPSILON) / layer_height) as usize,
         })
     }
 
@@ -923,6 +967,51 @@ mod tests {
         )
         .unwrap();
         assert!((threads.params(0.2, false).unwrap().bridge.width - 0.15).abs() < 1e-12);
+    }
+
+    #[test]
+    fn how_small_bridges_over_infill_are_sorted_out_is_read() {
+        let read = |json: &str| InfillSettings::from_settings(&Settings::from_json(json).unwrap());
+        // Filtered unless asked otherwise, as in the reference.
+        assert_eq!(
+            read("{}").unwrap().internal_bridge_filter,
+            InternalBridgeFilter::Filter
+        );
+        for (value, filter) in [
+            ("disabled", InternalBridgeFilter::Filter),
+            ("limited", InternalBridgeFilter::Limited),
+            ("nofilter", InternalBridgeFilter::NoFilter),
+        ] {
+            let found = read(&format!(r#"{{"dont_filter_internal_bridges": "{value}"}}"#)).unwrap();
+            assert_eq!(found.internal_bridge_filter, filter);
+            assert!(found.unsupported.is_empty());
+            assert_eq!(found.over_infill(0.2).unwrap().filter, filter);
+        }
+        assert!(read(r#"{"dont_filter_internal_bridges": "1"}"#).is_err());
+        // Solid lines 0.45 mm wide; a thick bridge's thread is the
+        // nozzle's 0.4 mm across and sinks 0.36 mm: one 0.2 mm layer deep
+        // either way, three 0.1 mm layers, and at 0.4 mm still one layer
+        // of sparse fill but no bridge beneath to mind.
+        let unset = read("{}").unwrap();
+        let over = unset.over_infill(0.2).unwrap();
+        assert_eq!(
+            (over.spacing, over.thread_spacing),
+            (
+                unset.params(0.2, false).unwrap().solid.scaled_spacing(),
+                450_000
+            )
+        );
+        assert_eq!((over.sparse_depth, over.bridged_depth), (1, 1));
+        let fine = unset.over_infill(0.1).unwrap();
+        assert_eq!((fine.sparse_depth, fine.bridged_depth), (3, 3));
+        let coarse = unset.over_infill(0.4).unwrap();
+        assert_eq!((coarse.sparse_depth, coarse.bridged_depth), (1, 0));
+        // A thread thinned by `bridge_flow` or `bridge_line_width` sinks
+        // less: 0.3 mm across, 0.27 mm deep, 0.243 mm for sparse fill.
+        let thin = read(r#"{"bridge_line_width": "0.3", "thick_bridges": "1"}"#).unwrap();
+        let over = thin.over_infill(0.1).unwrap();
+        assert_eq!((over.sparse_depth, over.bridged_depth), (2, 2));
+        assert_eq!(over.thread_spacing, 350_000);
     }
 
     #[test]

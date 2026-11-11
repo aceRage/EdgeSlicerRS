@@ -71,14 +71,6 @@ pub(crate) fn notes(settings: &Settings, parts: usize) -> Vec<String> {
                 .then(|| format!("{key} \"{value}\": {instead}"))
         })
         .collect();
-    // How small internal bridges are filtered is not a choice here.
-    if let Some(value) = settings.text("dont_filter_internal_bridges")
-        && value != "disabled"
-    {
-        notes.push(format!(
-            "dont_filter_internal_bridges \"{value}\": internal bridges are kept or dropped as they are with \"disabled\""
-        ));
-    }
     if parts > 1
         && !matches!(
             settings.text("seam_prefer_part_joints"),
@@ -115,8 +107,10 @@ mod tests {
                 "dont_filter_internal_bridges": "nofilter"}"#,
         )
         .unwrap();
+        // How small bridges over infill are sorted out is followed, and
+        // nothing is said of it here.
         let said = notes(&on, 1);
-        assert_eq!(said.len(), 6, "{said:?}");
+        assert_eq!(said.len(), 5, "{said:?}");
         assert!(said.contains(
             &"wipe_inward \"1\": the nozzle is wiped along the wall, not in toward the inner walls"
                 .to_owned()

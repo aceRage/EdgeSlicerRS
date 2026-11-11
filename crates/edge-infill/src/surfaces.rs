@@ -31,7 +31,7 @@ pub struct Surface {
 }
 
 impl Surface {
-    fn new(kind: SurfaceKind, area: ExPolygon) -> Self {
+    pub(crate) fn new(kind: SurfaceKind, area: ExPolygon) -> Self {
         Self {
             kind,
             area,

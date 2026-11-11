@@ -14,12 +14,14 @@
 mod bridges;
 mod curves;
 mod fill;
+mod internal_bridges;
 mod ironing;
 pub mod lines;
 mod settings;
 mod surfaces;
 
 pub use fill::{FillParams, Frame, GapFillTarget, fill, fill_from, fill_within};
+pub use internal_bridges::{InternalBridgeFilter, OverInfill, bridge_over_infill_by};
 pub use ironing::{
     IronedLayer, Ironing, IroningPattern, IroningSettings, IroningType, exposed, iron,
     ironing_areas,

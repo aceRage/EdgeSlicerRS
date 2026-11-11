@@ -670,10 +670,12 @@ pub fn slice(job: Job, watch: &dyn Watcher) -> Result<Sliced, Failure> {
     let classifying = Instant::now();
     let solid_spacing = infill.params(layer_height, false)?.solid.scaled_spacing();
     // Solid over sparse fill is laid as a bridge across it.
-    let bridged_by = anchored_by
-        .iter()
-        .map(|surfaces| edge_infill::bridge_over_infill(surfaces, &beneath, solid_spacing))
-        .collect::<Result<Vec<_>, _>>()?;
+    // Which is worth bridging is `dont_filter_internal_bridges`' to say.
+    let bridged_by = edge_infill::bridge_over_infill_by(
+        &anchored_by,
+        &beneath,
+        &infill.over_infill(layer_height)?,
+    )?;
     // And the sparse fill under a bridge's edge, where that edge runs
     // along the walls, is made solid to carry it.
     let edges = edge_infill::bridge_edges(&bridged_by, solid_spacing)?;
