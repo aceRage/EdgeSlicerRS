@@ -350,7 +350,99 @@ impl PlateKept {
     pub fn has_pictures(&self) -> bool {
         !self.pictures.is_empty()
     }
+
+    /// What a plate the file did not have holds: what the writer writes
+    /// for one (`locked`, its first layer's order when it sets one, the
+    /// filament map), so that keeping it changes nothing in the file. `id`
+    /// is the plate's number.
+    pub fn fresh(id: u32, first_layer_sequence: &[u32]) -> Self {
+        let meta = |key: &str, value: String| Entry::Meta {
+            key: key.to_owned(),
+            value,
+        };
+        let mut entries = vec![meta("locked", "false".into())];
+        if !first_layer_sequence.is_empty() {
+            let order: Vec<String> = first_layer_sequence.iter().map(u32::to_string).collect();
+            entries.push(meta("first_layer_print_sequence", order.join(" ")));
+        }
+        entries.push(meta("filament_map_mode", "Auto For Flush".into()));
+        entries.push(meta("filament_maps", "1".into()));
+        Self {
+            id,
+            entries,
+            ..Self::default()
+        }
+    }
+
+    /// One of the plate's own settings or metadata as the file has it
+    /// (`locked`, `bed_type`, `print_sequence`, `spiral_mode`, …).
+    pub fn value(&self, key: &str) -> Option<&str> {
+        Entry::value_of(&self.entries, key)
+    }
+
+    /// The same plate with `key` set to `value`, or taken out for none. An
+    /// entry it has already is changed where it stands; a new one goes
+    /// where the reference writes it among the others
+    /// (bbs_3mf.cpp `_add_model_config_file_to_archive`), so that the file
+    /// reads as the reference's own.
+    pub fn with(&self, key: &str, value: Option<&str>) -> Self {
+        let mut entries = self.entries.clone();
+        let at = entries.iter().position(|entry| entry.key() == Some(key));
+        match (at, value) {
+            (Some(at), Some(value)) => {
+                entries[at] = Entry::Meta {
+                    key: key.to_owned(),
+                    value: value.to_owned(),
+                }
+            }
+            (Some(at), None) => {
+                entries.remove(at);
+            }
+            (None, Some(value)) => {
+                let rank = |key: &str| PLATE_ORDER.iter().position(|known| *known == key);
+                let mine = rank(key).unwrap_or(PLATE_ORDER.len());
+                // After the last entry the reference writes before it.
+                let place = entries
+                    .iter()
+                    .rposition(|entry| {
+                        entry
+                            .key()
+                            .and_then(rank)
+                            .is_some_and(|theirs| theirs < mine)
+                    })
+                    .map_or(0, |at| at + 1);
+                entries.insert(
+                    place,
+                    Entry::Meta {
+                        key: key.to_owned(),
+                        value: value.to_owned(),
+                    },
+                );
+            }
+            (None, None) => {}
+        }
+        Self {
+            entries,
+            ..self.clone()
+        }
+    }
 }
+
+/// The order the reference writes a plate's own metadata in, after its
+/// number and name (bbs_3mf.cpp `_add_model_config_file_to_archive`).
+const PLATE_ORDER: [&str; 11] = [
+    "locked",
+    "bed_type",
+    "print_sequence",
+    "first_layer_print_sequence",
+    "other_layers_print_sequence",
+    "other_layers_print_sequence_nums",
+    "spiral_mode",
+    "filament_map_mode",
+    "filament_maps",
+    "dual_nozzle_confirm",
+    "print_history",
+];
 
 /// What kind of entry of the package a file is, for writing it back.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

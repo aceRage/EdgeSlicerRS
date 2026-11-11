@@ -95,6 +95,7 @@ mod tests {
             parts: Vec::new(),
             plate: 0,
             first_layer_sequence: Vec::new(),
+            plate_settings: Default::default(),
             bounds: (min, [12.0, 12.0, 2.0 + rise]),
             placed: false,
         };
