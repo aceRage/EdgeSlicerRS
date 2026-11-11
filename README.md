@@ -35,7 +35,7 @@ replaces it until output matches on the printers we care about.
 | `crates/edge-cli` | The `edge` command line |
 | `tools/make_defaults.py` | Asks the reference for its default of every setting and writes the table `edge-config` carries; run again when the pin moves |
 | `tools/make_settings_pages.py` | Reads the reference's process, filament and printer pages and option definitions from its source and writes the data the desktop app draws its settings pages from; run again when the pin moves, after `make_defaults.py` |
-| `tools/make_fixture.py` | Writes small test 3MFs (parts that need supports or a brim, a plain cube, two blocks in two filaments, a comb with thin teeth on the bed, three tiers with a top surface on each, bars over a base for small bridges over infill, a slab with round holes for the hole options, a slab with holes that narrow on the way up for bridging them, a slab with pockets underneath, three round ones for arc fitting: a post, a post with a hole, a slab with a wide curve and tight ones, a post that widens as it rises for scarf seams, two of two parts for seams where parts meet: a round post cut in two, and a block with a post pushed half into it, and two with seams painted on: a post with a strip painted to have them, and a cube with two sides painted to keep them off) to compare with the reference on |
+| `tools/make_fixture.py` | Writes small test 3MFs (parts that need supports or a brim, a plain cube, two blocks in two filaments, a comb with thin teeth on the bed, three tiers with a top surface on each, bars over a base for small bridges over infill, a slab with round holes for the hole options, a slab with holes that narrow on the way up for bridging them, a slab with pockets underneath, three round ones for arc fitting: a post, a post with a hole, a slab with a wide curve and tight ones, a post that widens as it rises for scarf seams, two of two parts for seams where parts meet: a round post cut in two, and a block with a post pushed half into it, and two with seams painted on: a post with a strip painted to have them, and a cube with two sides painted to keep them off, and a plate on a frame with walls wholly over air) to compare with the reference on |
 | `tools/make_app.sh` | Builds the desktop app and wraps it in a macOS `.app` that opens with a double click (macOS only) |
 | `tools/make_project.py` | Writes one of those parts as a project whose settings are named presets, with as many filaments as are named, each list holding the value each filament reads at standard flow: how the test prints for a printer are made |
 | `reference/EdgeSlicer` | Pinned submodule of the C++ slicer: profiles, test models, behaviour to match. Read-only here |
@@ -428,7 +428,17 @@ Working:
   overhang turned about on every other layer (`overhang_reverse`, with
   its threshold and `overhang_reverse_internal_only`). A wall loop no
   longer than a circle of `small_perimeter_threshold` goes at
-  `small_perimeter_speed`.
+  `small_perimeter_speed`. With `unsupported_wall_last` a loop wholly
+  over air goes after the island's other walls, innermost first, and
+  one that comes within a wall spacing and a half of none of the
+  anchored walls waits until the island's fill is down, as the
+  reference has it (PerimeterGenerator.cpp `defer_unsupported_loops`);
+  here the loop is told by the same cut against the layer beneath that
+  makes its overhang walls, as it is laid. On the parts compared
+  (`ledge`, `mushroom`, `shelf`, `bridge`, each wall order, classic and
+  Arachne walls) the layers that change are the same in both files and
+  their walls go down in the same order; with it off the files are what
+  they were, to the byte.
 - Gap fill: a gap between walls too narrow for another wall gets a line
   down its middle, as wide as the gap is at each point, found as the
   reference finds it (the medial axis of the gap). On whenever
@@ -3143,20 +3153,17 @@ three sides at F1980, the side that ends at the seam at F1920, and
 the layer beneath, at F1260, in both. What is left on the others
 comes from outside this:
 
-- The wall's own speed. The reference holds a wall to what the hot
-  end can melt by the plastic it lays, flow ratios counted (GCode.cpp
-  `_extrude`, `_mm3_per_mm`); this engine leaves the ratios out, and
-  writes the speed of a wall that is measured as a whole number of
-  mm/s. So where nothing overhangs the outer wall is F9540 here
-  against F9741.893 there, the speeds between that and the first
-  overhang speed are up to 2% lower, and a part with no overhang was
-  already so. Left as it was, so that such a part is the file it was.
+- The wall's own speed. This engine used to leave the flow ratios out
+  of what the hot end can melt and to write a measured wall's speed as
+  a whole number of mm/s (F9540 against F9741.893). Both now follow
+  the reference (below, under "Print time against the reference").
 - Cooling. 218 of the Benchy's 240 layers are slowed to cool in the
-  reference's file and 220 in this engine's (layers 27 and 69 only
-  here), and a slowed layer's top speed is a few per cent off between
-  the two, so a move held by cooling in one file and by an overhang
-  in the other differs by that. On the 20 layers neither slows, 88.7%
-  of the overhanging length is within 3% (42.1% before).
+  reference's file and 223 in this engine's, and a slowed layer's top
+  speed is a few per cent lower here, because the reference counts a
+  slowed layer as longer than it is (below), so a move held by cooling
+  in one file and by an overhang in the other differs by that. On the
+  20 layers neither slows, 88.7% of the overhanging length is within
+  3% (42.1% before).
 - The points a loop has. A round outline is thinned from another
   corner here (above), and the reference thins each stretch of a wall
   between the cuts by itself where this engine thins the loop whole,
@@ -3205,7 +3212,8 @@ after, against the reference's 38 m 43 s (its file timed here: 38 m
 43 s and 39 m 51 s); `twist` 35 m 00 s before and 35 m 08 s after
 against 32 m 53 s, `lean` 53 m 04 s and 53 m 06 s against 48 m 29 s,
 plate 1 62 m 37 s both against 65 m 01 s. Those gaps are not in the
-walls over overhangs, which agree on `lean` to the move.
+walls over overhangs, which agree on `lean` to the move. Where they are is below, under "Print time against the
+reference".
 
 Writing is no slower, to what can be measured with other work running
 on the machine: measuring a wall at its own points asks less of the
@@ -3215,6 +3223,77 @@ written in 131 ms before and 137 ms after, of 1.92 s of processor
 time for the whole of it both times; `holes` in 36 ms and 42 ms;
 plate 1 of `mcbrim_test.3mf` in 554 ms and 550 ms. The files are the
 same at 1, 4 and 18 threads.
+
+## Print time against the reference
+
+2026-11-11, U1 presets unless said. Each file is timed here by
+`edge-time` the way the reference's estimator plans (the reference's
+own file comes to its own time that way), and the difference is put
+down to where it is spent: `cargo run --release -p edge-time --example
+lines -- file.gcode` gives the seconds of every line, which are then
+summed by layer and by kind (extruding by feature, travel, wipe,
+retraction, the step down after a lift, tool changes). Seconds,
+reference / before / after, and retractions in brackets:
+
+| Part | Reference | Before | After |
+| --- | --- | --- | --- |
+| Benchy | 2322.8 (1519) | 2432.6, +4.73% (1709) | 2381.2, +2.51% (1524) |
+| cube | 899.5 (199) | 908.8, +1.03% | 907.7, +0.90% |
+| cube, Centauri Carbon | 591.3 (200) | 591.8, +0.09% | 593.6, +0.39% |
+| `lean` | 2909.4 (120) | 2945.4, +1.24% | 2903.0, -0.22% |
+| `twist` | 1973.8 (106) | 2012.6, +1.97% (102) | 1974.5, +0.04% (102) |
+| `tower` (6 mm square, 80 mm tall) | 1478.4 (800) | 1487.5, +0.62% | 1485.4, +0.47% |
+| `mcbrim_test.3mf` plate 1 | 3901.4 (2188) | 3689.6, -5.43% (1976) | 3615.4, -7.33% (1843) |
+
+What moved it, largest first:
+
+- Gap fill between walls was laid as a stage of its own before the
+  fill, the nozzle going from one gap to the next across the part. In
+  the reference each line of it is a fill area of its own, chained
+  with the others (Fill.cpp `make_fills`, `thin_fills`): the Benchy's
+  retractions 1709 to 1524 against 1520, 28 s.
+- Travel acceleration. The reference sets it for every travel, short
+  hops too, and before the retraction, so the wipe goes at it; only a
+  short travel into an outer or overhang wall keeps that wall's
+  (GCode.cpp `travel_to`). Here short hops kept whatever was set: the
+  Benchy's hops between top surface lines went at 2000 mm/s², 31 s of
+  them. 22 s on the Benchy, 14 s on `twist`.
+- What the hot end can melt is worked out with the flow ratios
+  (GCode.cpp `_extrude`, `_mm3_per_mm`), and a measured wall's own
+  speed is written as it is, not to the whole mm/s: the outer wall at
+  F9742 against F9540, and on `lean` every feature's feed rate the
+  reference's. 38 s on `lean`, 24 s on `twist`, little on the Benchy
+  and the cube, most of whose layers are slowed to cool.
+- A layer slowed to cool leaves the prime tower at its speed, as the
+  reference does (none of the parts above slows a layer with a tower).
+
+What is left:
+
+- Cooling. The reference counts a slowed layer as longer than it is.
+  CoolingBuffer.cpp `parse_layer_gcode` copies the last position,
+  extruder included, before it zeroes the extruder for relative E, so
+  a line that sets only the feed rate (the `G1 F` that starts every
+  path) is read as the previous line's extrusion again: after a
+  deretraction, a 1.5 mm move at the path's speed. The layers it
+  slows come out short of `slow_down_layer_time`, the cube's 7.91 s of
+  8 (its counting, done over in a script, gives 8.009 with the extra
+  moves, 7.912 without), the Benchy's upper layers about 7.4 s. Not
+  copied: here a slowed layer takes `slow_down_layer_time`. On the
+  Benchy that is 51 s of the reference's layer time at the speeds
+  written, which is most of what is left on it (its walls, gap fill
+  and sparse fill are 42 s longer here), and all of the cube's 8 s.
+- The Benchy's surfaces: 3867 mm of top surface against 3453, and more
+  internal bridge and bridge, mostly on layer 41 and from layer 184 to
+  198 (21 s); and on layer 212 a run of short open inner walls laid
+  end to end in the reference and back and forth here (3 s).
+- The parts of `mcbrim_test.3mf` are lettering whose walls are not the
+  reference's, so its time is no measure of this.
+- The time written in this engine's file for a Klipper printer is
+  Klipper's plan of it (above, under Print time), which is longer than
+  the reference's estimate of the same file: the Benchy is 39 m 41 s
+  as the reference plans it and 40 m 50 s as Klipper does (the
+  reference's file 38 m 43 s and 39 m 51 s), so its file says 40 m 50 s
+  where the reference's says 38 m 43 s.
 
 ## Licence
 
