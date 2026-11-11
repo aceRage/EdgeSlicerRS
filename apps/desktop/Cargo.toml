@@ -38,6 +38,18 @@ unsafe_code = "deny"
 [profile.dev.package."*"]
 opt-level = 2
 
+# As in the engine's workspace, where the reasons are: the Voronoi
+# library's debug checks stop it on a broken diagram before the walls can
+# mend it, and a debug build of the app should slice what the shipped
+# one does. The optimisation level is the `"*"` table's.
+[profile.dev.package.boostvoronoi]
+debug-assertions = false
+
+# As in the engine's workspace: the skip list under the Voronoi library
+# with levels that do not depend on the run (`vendor/cpp_map`).
+[patch.crates-io]
+cpp_map = { path = "../../vendor/cpp_map" }
+
 [profile.release]
 lto = "thin"
 codegen-units = 1

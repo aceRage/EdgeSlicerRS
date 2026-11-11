@@ -39,7 +39,8 @@
 //!   Where the loop goes on flat past its slope the wall's own kind is
 //!   asked, not that of the flat part's first stretch, which the
 //!   reference takes for no inner wall where it hangs over air.)
-//! - `scarf_joint_speed` holds the slope's speed on a small loop too.
+//! - `scarf_joint_speed` holds the slope's speed on a small loop too,
+//!   a percentage being of the wall's own speed there as anywhere.
 //!   The reference only looks at it where no speed was handed down
 //!   (GCode.cpp `_extrude`, `if (speed == -1)`), and a small loop's is.
 //! - The share of the wall's width a seam may hang out by before it
@@ -721,11 +722,30 @@ impl Writer<'_> {
     }
 
     /// A wall's speed on a scarf: no more than `scarf_joint_speed`, a
-    /// percentage being of that speed (GCode.cpp `_extrude`). Elsewhere
-    /// the speed as given.
-    pub(crate) fn scarf_speed(&self, speed: f64) -> f64 {
+    /// percentage being of the wall's own speed, `own` (its kind's, or
+    /// the compensation speed for a compensated circle's wall), as the
+    /// option's own words have it, and not of the speed handed down,
+    /// which on a small loop is `small_perimeter_speed` already: at
+    /// 50%, a wall of 100 mm/s that is a small loop at 60 has its joint
+    /// at 50, not at 30. A joint speed of nothing or less is no speed
+    /// of its own. Elsewhere the speed as given.
+    ///
+    /// This is the rule the reference is being mended to
+    /// (aceRage/EdgeSlicer#958, GCode.cpp `_extrude`,
+    /// `cap_scarf_joint_speed`). The pinned reference only looks at the
+    /// joint's speed where no speed was handed down (`if (speed ==
+    /// -1)`), so there a small loop's joint goes at the small loop's
+    /// speed whatever was asked.
+    pub(crate) fn scarf_speed(&self, speed: f64, own: f64) -> f64 {
         match self.state.slope {
-            Some(_) => speed.min(self.settings.scarf.joint_speed.resolve(speed)),
+            Some(_) => {
+                let joint = self.settings.scarf.joint_speed.resolve(own);
+                if joint > 0.0 && joint < speed {
+                    joint
+                } else {
+                    speed
+                }
+            }
             None => speed,
         }
     }
@@ -966,6 +986,9 @@ impl Writer<'_> {
         let Some(first) = first else {
             return Ok(false);
         };
+        // The wall's seam is where it is come at from inside
+        // (`wipe.rs`); an outer wall's slope starts two seam gaps on.
+        self.wipe_before_wall(own, wall, turned, &round, wall.flow.width)?;
         self.travel(first, false)?;
         for stretch in &made.starts {
             self.lay_stretch(stretch, layer.height, wall.role)?;
