@@ -906,6 +906,7 @@ dependencies = [
  "edge-medial",
  "edge-template",
  "edge-time",
+ "rayon",
  "thiserror 2.0.21",
 ]
 

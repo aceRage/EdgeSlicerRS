@@ -13,12 +13,18 @@ pub struct Stat {
     pub length_mm: f64,
     /// Filament fed over that distance, in mm.
     pub filament_mm: f64,
+    /// How many of its extruding moves are arcs (`G2`, `G3`), and how
+    /// much of the distance they cover, in mm.
+    pub arcs: usize,
+    pub arc_mm: f64,
 }
 
 impl Stat {
     fn add(&mut self, other: Stat) {
         self.length_mm += other.length_mm;
         self.filament_mm += other.filament_mm;
+        self.arcs += other.arcs;
+        self.arc_mm += other.arc_mm;
     }
 }
 
@@ -66,7 +72,8 @@ impl How {
     }
 }
 
-/// A straight extruding move, for drawing.
+/// A straight extruding move, for drawing. An arc is drawn as the
+/// chords it is cut into.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Segment {
     pub from: [f64; 2],
@@ -224,19 +231,22 @@ pub fn parse(text: &str, keep_segments: Option<usize>) -> Print {
                     }
                     None => 0.0,
                 };
-                let length = match command {
-                    "G2" | "G3" => arc_length(
-                        position,
-                        target,
+                let turn = matches!(command, "G2" | "G3").then(|| {
+                    (
                         [word('I').unwrap_or(0.0), word('J').unwrap_or(0.0)],
                         command == "G2",
-                    ),
-                    _ => (target[0] - position[0]).hypot(target[1] - position[1]),
+                    )
+                });
+                let length = match turn {
+                    Some((offset, clockwise)) => arc_length(position, target, offset, clockwise),
+                    None => (target[0] - position[0]).hypot(target[1] - position[1]),
                 };
                 if length > 0.0 && fed > 0.0 {
                     let stat = Stat {
                         length_mm: length,
                         filament_mm: fed,
+                        arcs: usize::from(turn.is_some()),
+                        arc_mm: if turn.is_some() { length } else { 0.0 },
                     };
                     let index = print.layers.len();
                     if index > 0 && feedrate > 0.0 {
@@ -270,7 +280,17 @@ pub fn parse(text: &str, keep_segments: Option<usize>) -> Print {
                                 f64::MIN,
                                 f64::MIN,
                             ]);
-                            for point in [position, target] {
+                            // Where the move goes: straight there, or by
+                            // way of the points along an arc, so that the
+                            // box counts its bulge.
+                            let way = match turn {
+                                Some((offset, clockwise)) => {
+                                    arc_points(position, target, offset, clockwise)
+                                }
+                                None => vec![target],
+                            };
+                            let mut from = position;
+                            for point in std::iter::once(position).chain(way.iter().copied()) {
                                 *b = [
                                     b[0].min(point[0]),
                                     b[1].min(point[1]),
@@ -279,11 +299,14 @@ pub fn parse(text: &str, keep_segments: Option<usize>) -> Print {
                                 ];
                             }
                             if keep_segments == Some(index - 1) {
-                                layer.segments.push(Segment {
-                                    from: position,
-                                    to: target,
-                                    feature: feature.clone(),
-                                });
+                                for to in way {
+                                    layer.segments.push(Segment {
+                                        from,
+                                        to,
+                                        feature: feature.clone(),
+                                    });
+                                    from = to;
+                                }
                             }
                         }
                     }
@@ -303,10 +326,10 @@ pub fn parse(text: &str, keep_segments: Option<usize>) -> Print {
     print
 }
 
-/// Length of a circular move from `from` to `to` around `from + offset`.
-fn arc_length(from: [f64; 2], to: [f64; 2], offset: [f64; 2], clockwise: bool) -> f64 {
+/// The angle a circular move from `from` to `to` around `from + offset`
+/// turns through, in radians.
+fn arc_sweep(from: [f64; 2], to: [f64; 2], offset: [f64; 2], clockwise: bool) -> f64 {
     let centre = [from[0] + offset[0], from[1] + offset[1]];
-    let radius = offset[0].hypot(offset[1]);
     let angle = |p: [f64; 2]| (p[1] - centre[1]).atan2(p[0] - centre[0]);
     let mut sweep = angle(to) - angle(from);
     if clockwise {
@@ -316,7 +339,38 @@ fn arc_length(from: [f64; 2], to: [f64; 2], offset: [f64; 2], clockwise: bool) -
     if sweep <= 1e-12 {
         sweep += std::f64::consts::TAU;
     }
-    radius * sweep
+    sweep
+}
+
+/// Length of that move.
+fn arc_length(from: [f64; 2], to: [f64; 2], offset: [f64; 2], clockwise: bool) -> f64 {
+    offset[0].hypot(offset[1]) * arc_sweep(from, to, offset, clockwise)
+}
+
+/// Points along that move, no more than 5 degrees apart, the last of
+/// them `to`.
+fn arc_points(from: [f64; 2], to: [f64; 2], offset: [f64; 2], clockwise: bool) -> Vec<[f64; 2]> {
+    let centre = [from[0] + offset[0], from[1] + offset[1]];
+    let radius = offset[0].hypot(offset[1]);
+    let sweep = arc_sweep(from, to, offset, clockwise);
+    let start = (from[1] - centre[1]).atan2(from[0] - centre[0]);
+    let steps = (sweep / 5f64.to_radians()).ceil().max(1.0) as usize;
+    let mut points: Vec<[f64; 2]> = (1..steps)
+        .map(|step| {
+            let turned = sweep * step as f64 / steps as f64;
+            let angle = if clockwise {
+                start - turned
+            } else {
+                start + turned
+            };
+            [
+                centre[0] + radius * angle.cos(),
+                centre[1] + radius * angle.sin(),
+            ]
+        })
+        .collect();
+    points.push(to);
+    points
 }
 
 #[cfg(test)]
@@ -351,7 +405,8 @@ G1 X10 Y0 E0.5
             print.before_layers,
             Stat {
                 length_mm: 20.0,
-                filament_mm: 1.0
+                filament_mm: 1.0,
+                ..Stat::default()
             }
         );
         assert_eq!(print.layers.len(), 2);
@@ -360,14 +415,16 @@ G1 X10 Y0 E0.5
             print.layers[0].features["Outer wall"],
             Stat {
                 length_mm: 20.0,
-                filament_mm: 1.0
+                filament_mm: 1.0,
+                ..Stat::default()
             }
         );
         assert_eq!(
             print.layers[0].features["Sparse infill"],
             Stat {
                 length_mm: 10.0,
-                filament_mm: 0.25
+                filament_mm: 0.25,
+                ..Stat::default()
             }
         );
         assert_eq!(print.layers[0].bounds, Some([0.0, 0.0, 10.0, 10.0]));
@@ -376,14 +433,16 @@ G1 X10 Y0 E0.5
             print.features()["Outer wall"],
             Stat {
                 length_mm: 30.0,
-                filament_mm: 1.5
+                filament_mm: 1.5,
+                ..Stat::default()
             }
         );
         assert_eq!(
             print.total(),
             Stat {
                 length_mm: 40.0,
-                filament_mm: 1.75
+                filament_mm: 1.75,
+                ..Stat::default()
             }
         );
         // Only the layer asked for keeps its moves.
@@ -412,7 +471,8 @@ G1 X10 Y0 E0.5
             print.layers[0].features["Inner wall"],
             Stat {
                 length_mm: 30.0,
-                filament_mm: 1.75
+                filament_mm: 1.75,
+                ..Stat::default()
             }
         );
         assert_eq!(print.travel_mm, 10.0);
@@ -424,7 +484,36 @@ G1 X10 Y0 E0.5
         let text = ";LAYER_CHANGE\nM83\nG1 X10 Y0\nG3 X0 Y10 I-10 J0 E1\nG2 X0 Y10 I0 J-10 E1\n";
         let print = parse(text, None);
         let expected = std::f64::consts::PI * 5.0 + std::f64::consts::TAU * 10.0;
-        assert!((print.layers[0].features["Unknown"].length_mm - expected).abs() < 1e-9);
+        let stat = print.layers[0].features["Unknown"];
+        assert!((stat.length_mm - expected).abs() < 1e-9);
+        assert_eq!(stat.arcs, 2);
+        assert!((stat.arc_mm - expected).abs() < 1e-9);
+    }
+
+    #[test]
+    fn an_arcs_bulge_is_in_the_layers_box_and_its_drawing() {
+        // Half a circle of radius 10 over the top, from (10, 0) to
+        // (-10, 0): its ends are level, its top 10 mm above them.
+        let text = ";LAYER_CHANGE\nM83\nG1 X10 Y0\n;TYPE:Outer wall\nG3 X-10 Y0 I-10 J0 E1\nG1 X-10 Y-5 E0.5\n";
+        let print = parse(text, Some(0));
+        let bounds = print.layers[0].bounds.unwrap();
+        assert!((bounds[0] + 10.0).abs() < 1e-9 && (bounds[2] - 10.0).abs() < 1e-9);
+        assert!((bounds[1] + 5.0).abs() < 1e-9 && (bounds[3] - 10.0).abs() < 1e-9);
+        // Drawn as chords that stay on the circle, then the straight move.
+        let segments = &print.layers[0].segments;
+        assert_eq!(segments.len(), 36 + 1);
+        assert!(
+            segments[..36]
+                .iter()
+                .all(|segment| (segment.to[0].hypot(segment.to[1]) - 10.0).abs() < 1e-9)
+        );
+        assert_eq!(segments[35].to, [-10.0, 0.0]);
+        assert_eq!(
+            (segments[36].from, segments[36].to),
+            ([-10.0, 0.0], [-10.0, -5.0])
+        );
+        let wall = print.layers[0].features["Outer wall"];
+        assert_eq!((wall.arcs, wall.filament_mm), (1, 1.5));
     }
 
     #[test]

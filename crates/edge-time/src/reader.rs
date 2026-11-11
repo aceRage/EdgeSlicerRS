@@ -1,7 +1,7 @@
 //! Reads G-code as a printer does, far enough to know every move and
 //! everything that changes how moves are planned.
 
-use crate::{Elegoo, Limits, Model, Planner};
+use crate::{Elegoo, Flavor, Limits, Model, Planner};
 
 /// A setting a planner keeps, as a file changes it.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -38,8 +38,245 @@ const QUIET: [&str; 6] = [
     "EXCLUDE_OBJECT",
 ];
 
-/// How finely an arc is cut into straight moves, in mm.
-const ARC_STEP: f64 = 0.5;
+/// How long the straight moves are that Klipper cuts an arc into, in mm:
+/// the `resolution` of its `[gcode_arcs]` section, at its default. A
+/// printer's own configuration may say otherwise, which no file tells.
+const KLIPPER_ARC_SEGMENT: f64 = 1.0;
+
+/// The straight moves the reference's estimator cuts an arc into
+/// (GCodeProcessor.cpp `process_G2_G3`): where each ends, the last of
+/// them at `to`. `from` and `to` are x, y, z and e; `feed` is the feed
+/// rate in force, in mm/s. None for a line it does not run: one with no
+/// centre (neither `R` nor `I` or `J`), a radius of nothing, or an arc
+/// under a micron long.
+///
+/// It cuts as the firmware it takes the file to be for would: Marlin 2
+/// by length, so many moves a second at least (Marlin's `plan_arc`), the
+/// rest by how far a chord may stray from the arc, 0.0125 mm (Prusa's
+/// `mc_arc`). Like both it turns the radius a step at a time, by a short
+/// series for the sine and cosine, and sets it right every 25 steps.
+/// Single precision is kept where the reference has it, since it decides
+/// how many moves there are.
+fn reference_arc(
+    words: &[&str],
+    marlin: bool,
+    from: [f64; 4],
+    to: [f64; 4],
+    clockwise: bool,
+    feed: f64,
+) -> Option<Vec<[f64; 4]>> {
+    use std::f64::consts::PI;
+    let offset: [f32; 2] = if let Some(radius) = word(words, 'R') {
+        let radius = radius as f32;
+        let (start, end) = (
+            [from[0] as f32, from[1] as f32],
+            [to[0] as f32, to[1] as f32],
+        );
+        let v = [end[0] - start[0], end[1] - start[1]];
+        let q2 = v[0] * v[0] + v[1] * v[1];
+        if radius == 0.0 || q2 == 0.0 {
+            return None;
+        }
+        // ArcWelder.hpp `arc_center`: the centre is to one side of the
+        // line between the ends, which side by the turn and the sign of
+        // the radius; ends too far apart for the radius get the point
+        // midway between them.
+        let t2 = radius * radius / q2 - 0.25;
+        let t = if t2 > 0.0 { t2.sqrt() } else { 0.0 };
+        let mid = [0.5 * (start[0] + end[0]), 0.5 * (start[1] + end[1])];
+        let side = [-v[1] * t, v[0] * t];
+        let centre = if (radius > 0.0) != clockwise {
+            [mid[0] + side[0], mid[1] + side[1]]
+        } else {
+            [mid[0] - side[0], mid[1] - side[1]]
+        };
+        [
+            (centre[0] as f64 - from[0]) as f32,
+            (centre[1] as f64 - from[1]) as f32,
+        ]
+    } else {
+        let (i, j) = (word(words, 'I'), word(words, 'J'));
+        if i.is_none() && j.is_none() {
+            return None;
+        }
+        [i.unwrap_or(0.0) as f32, j.unwrap_or(0.0) as f32]
+    };
+    let centre = [from[0] + offset[0] as f64, from[1] + offset[1] as f64];
+    let rel_start = [from[0] - centre[0], from[1] - centre[1]];
+    let rel_end = [to[0] - centre[0], to[1] - centre[1]];
+    // A move that ends where it starts is a whole turn.
+    let full = (to[0] - from[0]).abs() < 1e-4 && (to[1] - from[1]).abs() < 1e-4;
+    let angle = if full {
+        2.0 * PI
+    } else {
+        let mut angle = (rel_start[0] * rel_end[1] - rel_start[1] * rel_end[0])
+            .atan2(rel_start[0] * rel_end[0] + rel_start[1] * rel_end[1]);
+        if angle < 0.0 {
+            angle += 2.0 * PI;
+        }
+        if clockwise {
+            angle -= 2.0 * PI;
+        }
+        angle
+    };
+    let radius = (rel_start[0] * rel_start[0] + rel_start[1] * rel_start[1]).sqrt();
+    let rise = to[2] - from[2];
+    let length = ((angle * radius).powi(2) + rise * rise).sqrt();
+    if length < 0.001 {
+        return None;
+    }
+    let fed = to[3] - from[3];
+    let mut ends = Vec::new();
+    if marlin {
+        let radius_mm = (offset[0] * offset[0] + offset[1] * offset[1]).sqrt();
+        // A chord no further than 0.02 mm from the arc, at least 50
+        // moves a second, and between 0.1 and 2 mm long.
+        let segment_mm = (8.0 * radius_mm * 0.02)
+            .sqrt()
+            .min(feed as f32 * (1.0 / 50.0))
+            .clamp(0.1, 2.0);
+        let flat_mm = (radius_mm as f64 * angle.abs()) as f32;
+        let segments = ((flat_mm / segment_mm + 0.8) as usize).max(1);
+        if segments > 1 {
+            let inv_segments = 1.0 / segments as f32;
+            let theta = angle as f32 * inv_segments;
+            let (cos_t, sin_t) = (theta.cos(), theta.sin());
+            let z_step = (rise * inv_segments as f64) as f32;
+            let e_step = fed as f32 * inv_segments;
+            let mut recalc = 25usize;
+            let mut arm = [-offset[0], -offset[1]];
+            let (mut z, mut e) = (from[2], from[3]);
+            for i in 1..segments {
+                recalc -= 1;
+                if recalc != 0 {
+                    let y = arm[0] * sin_t + arm[1] * cos_t;
+                    arm[0] = arm[0] * cos_t - arm[1] * sin_t;
+                    arm[1] = y;
+                } else {
+                    recalc = 25;
+                    let turned = i as f32 * theta;
+                    let (cos_ti, sin_ti) = (turned.cos(), turned.sin());
+                    arm[0] = -offset[0] * cos_ti + offset[1] * sin_ti;
+                    arm[1] = -offset[0] * sin_ti - offset[1] * cos_ti;
+                }
+                z += z_step as f64;
+                e += e_step as f64;
+                ends.push([centre[0] + arm[0] as f64, centre[1] + arm[1] as f64, z, e]);
+            }
+        }
+    } else {
+        let segments = arc_discretization_steps(radius, angle.abs(), 0.0125).max(1);
+        let inv_segment = 1.0 / segments as f64;
+        let theta = angle * inv_segment;
+        let (z_step, e_step) = (rise * inv_segment, fed * inv_segment);
+        let sq_theta = theta * theta;
+        let cos_t = 1.0 - 0.5 * sq_theta;
+        let sin_t = theta - sq_theta * theta / 6.0;
+        let mut arm = rel_start;
+        let mut count = 25usize;
+        let (mut z, mut e) = (from[2], from[3]);
+        for i in 1..segments {
+            if count == 0 {
+                let turned = i as f64 * theta;
+                let (cos_ti, sin_ti) = (turned.cos(), turned.sin());
+                arm[0] = -(offset[0] as f64) * cos_ti + offset[1] as f64 * sin_ti;
+                arm[1] = -(offset[0] as f64) * sin_ti - offset[1] as f64 * cos_ti;
+                count = 25;
+            } else {
+                count -= 1;
+                // Kept in single precision, as the reference keeps it.
+                let y = (arm[0] * sin_t + arm[1] * cos_t) as f32;
+                arm[0] = arm[0] * cos_t - arm[1] * sin_t;
+                arm[1] = y as f64;
+            }
+            z += z_step;
+            e += e_step;
+            ends.push([centre[0] + arm[0], centre[1] + arm[1], z, e]);
+        }
+    }
+    // The last move arrives where the line says.
+    ends.push(to);
+    Some(ends)
+}
+
+/// ArcWelder.hpp `arc_discretization_steps`: how many chords it takes
+/// to stay within `deviation` of an arc of `radius` through `angle`.
+fn arc_discretization_steps(radius: f64, angle: f64, deviation: f64) -> usize {
+    use std::f64::consts::PI;
+    let d = radius - deviation;
+    if d < 1e-4 {
+        // A radius no larger than the deviation: one chord, or two for
+        // an arc so far round that its middle is out of reach of one.
+        if angle < PI || radius * (1.0 + (PI - 0.5 * angle).cos()) < deviation {
+            1
+        } else {
+            2
+        }
+    } else {
+        (angle / (2.0 * (d / radius).acos())).ceil() as usize
+    }
+}
+
+/// The straight moves Klipper cuts an arc into (klippy/extras/gcode_arcs.py
+/// `planArc`): each [`KLIPPER_ARC_SEGMENT`] long, as near as a whole
+/// number of them comes to the arc's length, the last ending at `to`.
+/// None for a line Klipper refuses: one given as a radius, one with
+/// neither `I` nor `J`, or any arc while moves are relative.
+fn klipper_arc(
+    words: &[&str],
+    absolute: bool,
+    from: [f64; 4],
+    to: [f64; 4],
+    clockwise: bool,
+) -> Option<Vec<[f64; 4]>> {
+    use std::f64::consts::TAU;
+    if !absolute || word(words, 'R').is_some() {
+        return None;
+    }
+    let offset = [
+        word(words, 'I').unwrap_or(0.0),
+        word(words, 'J').unwrap_or(0.0),
+    ];
+    if offset == [0.0, 0.0] {
+        return None;
+    }
+    let arm = [-offset[0], -offset[1]];
+    let centre = [from[0] - arm[0], from[1] - arm[1]];
+    let reach = [to[0] - centre[0], to[1] - centre[1]];
+    let mut turn =
+        (arm[0] * reach[1] - arm[1] * reach[0]).atan2(arm[0] * reach[0] + arm[1] * reach[1]);
+    if turn < 0.0 {
+        turn += TAU;
+    }
+    if clockwise {
+        turn -= TAU;
+    }
+    // A whole turn when it ends where it starts.
+    if turn == 0.0 && from[0] == to[0] && from[1] == to[1] {
+        turn = TAU;
+    }
+    let rise = to[2] - from[2];
+    let flat = arm[0].hypot(arm[1]) * turn;
+    let length = if rise != 0.0 {
+        flat.hypot(rise)
+    } else {
+        flat.abs()
+    };
+    let segments = (length / KLIPPER_ARC_SEGMENT).floor().max(1.0) as usize;
+    let mut ends = Vec::with_capacity(segments);
+    for i in 1..segments {
+        let share = i as f64 / segments as f64;
+        let (sin, cos) = (share * turn).sin_cos();
+        ends.push([
+            centre[0] - offset[0] * cos + offset[1] * sin,
+            centre[1] - offset[0] * sin - offset[1] * cos,
+            from[2] + rise * share,
+            from[3] + (to[3] - from[3]) * share,
+        ]);
+    }
+    ends.push(to);
+    Some(ends)
+}
 
 /// Seconds an Elegoo printer takes over `M6211`, which swaps to a filament
 /// and purges `length` mm of it, from where the nozzle is. The timings are
@@ -180,53 +417,38 @@ pub(crate) fn read<P: Planner>(
                     planner.go(line, delta, speed);
                 }
             }
+            // An arc is planned as the straight moves it is run as: the
+            // reference's estimator and Klipper each cut it their own way.
+            // A line neither would run moves nothing, and what it says of
+            // the feed rate goes unheard.
             turn @ ("G2" | "G3" | "G02" | "G03") => {
-                if let Some(rate) = word(&words, 'F') {
-                    feed = rate / 60.0;
-                }
-                let to = target(&position);
-                let speed = if klipper { feed * speed_factor } else { feed };
-                let centre = [
-                    position[0] + word(&words, 'I').unwrap_or(0.0),
-                    position[1] + word(&words, 'J').unwrap_or(0.0),
-                ];
-                let radius = (position[0] - centre[0]).hypot(position[1] - centre[1]);
-                let from = (position[1] - centre[1]).atan2(position[0] - centre[0]);
-                let until = (to[1] - centre[1]).atan2(to[0] - centre[0]);
                 let clockwise = turn.ends_with('2');
-                let mut sweep = if clockwise {
-                    from - until
+                let given = word(&words, 'F').map(|rate| rate / 60.0);
+                let to = target(&position);
+                let ends = if klipper {
+                    klipper_arc(&words, absolute, position, to, clockwise)
                 } else {
-                    until - from
+                    reference_arc(
+                        &words,
+                        limits.flavor == Flavor::Marlin2,
+                        position,
+                        to,
+                        clockwise,
+                        given.unwrap_or(feed),
+                    )
                 };
-                if sweep <= 1e-9 {
-                    sweep += std::f64::consts::TAU;
-                }
-                let steps = ((radius * sweep / ARC_STEP).ceil() as usize).max(1);
-                if speed > 0.0 && radius > 0.0 {
-                    let mut at = position;
-                    for step in 1..=steps {
-                        let share = step as f64 / steps as f64;
-                        let angle = if clockwise {
-                            from - sweep * share
-                        } else {
-                            from + sweep * share
-                        };
-                        let next = if step == steps {
-                            to
-                        } else {
-                            [
-                                centre[0] + radius * angle.cos(),
-                                centre[1] + radius * angle.sin(),
-                                position[2] + (to[2] - position[2]) * share,
-                                position[3] + (to[3] - position[3]) * share,
-                            ]
-                        };
-                        planner.go(line, std::array::from_fn(|a| next[a] - at[a]), speed);
-                        at = next;
+                if let Some(ends) = ends {
+                    feed = given.unwrap_or(feed);
+                    let speed = if klipper { feed * speed_factor } else { feed };
+                    for end in ends {
+                        let delta: [f64; 4] =
+                            std::array::from_fn(|axis| end[axis] - position[axis]);
+                        position = end;
+                        if delta.iter().any(|d| *d != 0.0) && speed > 0.0 {
+                            planner.go(line, delta, speed);
+                        }
                     }
                 }
-                position = to;
             }
             "G4" | "G04" => {
                 // Seconds win over milliseconds, as in Marlin.
