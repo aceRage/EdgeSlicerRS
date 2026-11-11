@@ -311,19 +311,8 @@ pub fn slice(job: Job, watch: &dyn Watcher) -> Result<Sliced, Failure> {
             filament: body.filament,
         })
         .collect();
-    // The hole options need a round hole cut round: see
-    // `edge_slice::slice_regions_without_flat_crossings`. Without them
-    // the layers are cut as they always were.
     let holes = crate::holes::HoleSettings::from_settings(&settings)?;
-    let mut layers = if holes.any() {
-        edge_slice::slice_regions_without_flat_crossings(
-            &borrowed,
-            &planes,
-            scaled(closing_radius),
-        )?
-    } else {
-        edge_slice::slice_regions(&borrowed, &planes, scaled(closing_radius))?
-    };
+    let mut layers = edge_slice::slice_regions(&borrowed, &planes, scaled(closing_radius))?;
 
     // Colours painted onto a part move what they cover from the filament
     // the part is made of to the one painted. Each painted object is

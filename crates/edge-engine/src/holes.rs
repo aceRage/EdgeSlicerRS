@@ -206,11 +206,6 @@ impl HoleSettings {
         })
     }
 
-    /// Whether either option is on.
-    pub(crate) fn any(&self) -> bool {
-        self.polyholes.is_some() || self.circles.is_some()
-    }
-
     /// The nozzle a filament is printed through, in mm: its own
     /// extruder's, or the first where there are fewer extruders
     /// (ToolSlots.cpp `nozzle_diameter_for_filament`, for a printer
@@ -437,7 +432,6 @@ mod tests {
     #[test]
     fn both_options_are_off_unless_asked_for() {
         let plain = read("{}").unwrap();
-        assert!(!plain.any());
         assert_eq!((plain.polyholes, plain.circles), (None, None));
         // What goes with an option turns nothing on by itself.
         let off = read(
@@ -445,10 +439,10 @@ mod tests {
                 "enable_circle_compensation": "0", "circle_compensation_manual_offset": "0.2"}"#,
         )
         .unwrap();
-        assert!(!off.any());
+        assert_eq!((off.polyholes, off.circles), (None, None));
         // The reference's own defaults leave both off.
         let defaults = HoleSettings::from_settings(edge_config::reference_defaults()).unwrap();
-        assert!(!defaults.any());
+        assert_eq!((defaults.polyholes, defaults.circles), (None, None));
     }
 
     #[test]
@@ -462,7 +456,7 @@ mod tests {
                 max_edges: 50,
             })
         );
-        assert!(on.any() && on.circles.is_none());
+        assert!(on.circles.is_none());
         let set = read(
             r#"{"hole_to_polyhole": "1", "hole_to_polyhole_threshold": "5%",
                 "hole_to_polyhole_twisted": "0", "hole_to_polyhole_max_edges": "12"}"#,
