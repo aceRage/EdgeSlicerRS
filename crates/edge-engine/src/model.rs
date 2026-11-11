@@ -1140,6 +1140,10 @@ impl Model {
                 name,
                 shape,
                 copies,
+                // What the file held of the object goes with each piece,
+                // as it goes with a clone: the reference gives each new
+                // object the old one's settings (`ModelObject::split`).
+                kept: held.kept.clone(),
             });
         }
         let count = objects.len();
