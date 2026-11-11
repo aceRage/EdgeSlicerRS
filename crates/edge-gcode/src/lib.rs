@@ -1374,6 +1374,11 @@ impl Writer<'_> {
                 .filter(|wall| wall.depth == 0 && wall.polygon.points.len() >= 3)
                 .map(|wall| {
                     let points = &wall.polygon.points;
+                    if s.seam == Seam::Random {
+                        // By the height the layer was sliced at.
+                        let z = layer.z - layer.height / 2.0;
+                        return (wall.is_hole, seam::random_point(points, z));
+                    }
                     let corner =
                         seam::choose(points, s.seam, s.nozzle_diameter, None, &self.state.seams);
                     (wall.is_hole, points[corner])
@@ -1383,14 +1388,76 @@ impl Writer<'_> {
         self.state
             .next_seams
             .extend(planned.iter().map(|(_, seam)| *seam));
+        // How far each of those walls turns at its seam, for the walls
+        // behind that are to start further round: nothing where the seam
+        // is not at a corner.
+        let seam_turns: Vec<(Point2, f64)> = if s.staggered_inner_seams && s.seam != Seam::Random {
+            walls
+                .iter()
+                .filter(|wall| wall.depth == 0 && wall.polygon.points.len() >= 3)
+                .zip(&planned)
+                .map(|(wall, (_, seam))| {
+                    let points = &wall.polygon.points;
+                    let turn = points
+                        .iter()
+                        .position(|point| point == seam)
+                        .map_or(0.0, |corner| {
+                            seam::turn_at(points, corner, s.nozzle_diameter)
+                        });
+                    // Round a hole the walls turn the other way.
+                    (*seam, if wall.is_hole { -turn } else { turn })
+                })
+                .collect()
+        } else {
+            Vec::new()
+        };
 
         for wall in walls {
             let points = &wall.polygon.points;
             if points.len() < 3 {
                 continue;
             }
+            // A loop is held counter-clockwise round material and
+            // clockwise round a hole; every wall is laid the same way
+            // round, which turns one or the other about.
+            let clockwise = match s.wall_direction {
+                WallDirection::Auto => wall.clockwise,
+                WallDirection::CounterClockwise => false,
+                WallDirection::Clockwise => true,
+            };
+            let turned = wall.is_hole != clockwise;
             let (edge, start) = match alongside(points, wall.is_hole, &planned) {
-                Some(target) => seam::project(points, target),
+                Some(target) => {
+                    let (edge, start) = seam::project(points, target);
+                    if s.staggered_inner_seams && wall.depth > 0 {
+                        // On round the wall, the way it is laid, by how
+                        // deep it lies behind the seam it starts beside
+                        // and no less than its own width (SeamPlacer.cpp
+                        // `place_seam`, "do the staggering"). At a
+                        // corner the distance to that seam is more than
+                        // the depth, and is brought back by the corner's
+                        // angle; in an inside corner it is less. The
+                        // reference also starts an inside corner's walls
+                        // nearer the corner before it moves them on,
+                        // which is not done here.
+                        let behind =
+                            unscaled(target.x - start.x).hypot(unscaled(target.y - start.y));
+                        let turn = seam_turns
+                            .iter()
+                            .find(|(seam, _)| *seam == target)
+                            .map_or(0.0, |(_, turn)| *turn);
+                        let beta = (turn / 2.0).cos();
+                        let depth = if turn < -1e-4 && beta > 1e-6 {
+                            std::f64::consts::SQRT_2 * behind / beta
+                        } else {
+                            behind * beta / std::f64::consts::SQRT_2
+                        };
+                        let depth = wall.flow.width.max(depth);
+                        seam::advance(points, edge, start, scaled(depth) as f64, turned)
+                    } else {
+                        (edge, start)
+                    }
+                }
                 None => {
                     let corner = seam::choose(
                         points,
@@ -1413,15 +1480,6 @@ impl Writer<'_> {
                 }
             });
             let mut path = seam::open_at(points, edge, start);
-            // A loop is held counter-clockwise round material and
-            // clockwise round a hole; every wall is laid the same way
-            // round, which turns one or the other about.
-            let clockwise = match s.wall_direction {
-                WallDirection::Auto => wall.clockwise,
-                WallDirection::CounterClockwise => false,
-                WallDirection::Clockwise => true,
-            };
-            let turned = wall.is_hole != clockwise;
             if turned {
                 path.reverse();
             }

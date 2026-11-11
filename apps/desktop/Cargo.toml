@@ -26,6 +26,10 @@ tauri-plugin-dialog = "2"
 # and for checking it where no window can be opened.
 tiny_http = "0.12"
 
+[dev-dependencies]
+# A folder of its own for each test's settings and profiles.
+tempfile = "3"
+
 [lints.rust]
 unsafe_code = "deny"
 

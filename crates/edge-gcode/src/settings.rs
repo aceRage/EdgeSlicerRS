@@ -136,6 +136,10 @@ pub struct PrintSettings {
 
     pub nozzle_diameter: f64,
     pub seam: Seam,
+    /// Each inner wall starts a little further round than the wall
+    /// outside it, so the seams do not lie one behind another
+    /// (`staggered_inner_seams`).
+    pub staggered_inner_seams: bool,
     /// How far short of its start a wall loop stops, in mm.
     pub seam_gap: f64,
     /// Curves are cut into segments that stray no further than this, in mm.
@@ -302,6 +306,7 @@ impl Default for PrintSettings {
             wipe_speed: None,
             nozzle_diameter: 0.4,
             seam: Seam::Aligned,
+            staggered_inner_seams: false,
             seam_gap: 0.04,
             resolution: 0.01,
             bed: None,
@@ -460,6 +465,7 @@ impl PrintSettings {
             Some("back") => Seam::Back,
             Some("left") => Seam::Left,
             Some("right") => Seam::Right,
+            Some("random") => Seam::Random,
             Some(other) => {
                 unsupported.push(format!("seam_position \"{other}\": aligned seams are used"));
                 Seam::Aligned
@@ -725,6 +731,7 @@ impl PrintSettings {
             },
             nozzle_diameter,
             seam,
+            staggered_inner_seams: flag("staggered_inner_seams", false)?,
             seam_gap: settings
                 .float_or_percent("seam_gap")?
                 .unwrap_or(FloatOrPercent::Percent(10.0))
@@ -1305,13 +1312,19 @@ mod tests {
         let read =
             |json: &str| PrintSettings::from_settings(&Settings::from_json(json).unwrap()).unwrap();
         let settings = read(
-            r#"{"wall_sequence": "outer wall last", "seam_position": "random", "curr_bed_type": "Glass"}"#,
+            r#"{"wall_sequence": "outer wall last", "seam_position": "hidden", "curr_bed_type": "Glass"}"#,
         );
         assert_eq!(settings.wall_order, WallOrder::InnerOuter);
         assert_eq!(
             read(r#"{"wall_sequence": "inner-outer-inner wall"}"#).wall_order,
             WallOrder::InnerOuterInner
         );
+        let seams = read(r#"{"seam_position": "random", "staggered_inner_seams": "1"}"#);
+        assert_eq!(
+            (seams.seam, seams.staggered_inner_seams),
+            (Seam::Random, true)
+        );
+        assert!(seams.unsupported.is_empty());
         assert_eq!(settings.bed_temperature, None);
         assert_eq!(settings.unsupported.len(), 3);
         assert!(

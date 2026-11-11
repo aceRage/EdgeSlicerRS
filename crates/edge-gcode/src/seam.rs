@@ -24,6 +24,8 @@ pub enum Seam {
     Back,
     Left,
     Right,
+    /// Anywhere along the loop, a different place on every layer.
+    Random,
 }
 
 /// Corners whose scores are this close count as equally good.
@@ -130,6 +132,101 @@ pub fn choose(
                 .fold(f64::INFINITY, f64::min)
         }),
     }
+}
+
+/// How far the loop turns at one of its corners, in radians, positive to
+/// the left: as [`choose`] measures it.
+pub fn turn_at(points: &[Point2], corner: usize, nozzle_diameter: f64) -> f64 {
+    turns(points, nozzle_diameter)
+        .get(corner)
+        .copied()
+        .unwrap_or(0.0)
+}
+
+/// A point somewhere along a closed loop, by a figure made from the
+/// loop's first point and the height `z` of the layer, in mm: the same
+/// for the same loop, and scattered from layer to layer (SeamPlacer.cpp
+/// `pick_random_seam_point`, in single precision as it is there).
+///
+/// Not as the reference in one thing: it picks among the points it
+/// counts as equally good, which leaves out those over a steep overhang
+/// or painted against; here any point of the loop may be picked.
+pub fn random_point(points: &[Point2], z: f64) -> Point2 {
+    let Some(&first) = points.first() else {
+        return Point2 { x: 0, y: 0 };
+    };
+    let at = |point: Point2| (unscaled(point.x) as f32, unscaled(point.y) as f32);
+    let (x, y) = at(first);
+    let mut rand = ((x * 12.9898 + y * 78.233 + z as f32 * 133.3333).sin() * 43_758.547).abs();
+    rand -= rand.trunc();
+    let count = points.len();
+    let edges: Vec<(f32, f32, f32)> = (0..count)
+        .map(|index| {
+            let (ax, ay) = at(points[index]);
+            let (bx, by) = at(points[(index + 1) % count]);
+            let (dx, dy) = (bx - ax, by - ay);
+            (dx, dy, dx.hypot(dy))
+        })
+        .collect();
+    let mut picked = edges.iter().map(|edge| edge.2).sum::<f32>() * rand;
+    let mut index = 0;
+    while index + 1 < count && picked - edges[index].2 > 0.0 {
+        picked -= edges[index].2;
+        index += 1;
+    }
+    let (dx, dy, length) = edges[index];
+    if length <= 0.0 {
+        return points[index];
+    }
+    let (ax, ay) = at(points[index]);
+    Point2::from_mm(
+        f64::from(ax + dx / length * picked),
+        f64::from(ay + dy / length * picked),
+    )
+}
+
+/// The place `distance` scaled units further round a closed loop from
+/// `start`, which lies on the edge leaving corner `edge`: forward in the
+/// order of `points`, or `backward`. The answer is given as [`project`]
+/// gives one, a point and the corner its edge leaves from.
+pub fn advance(
+    points: &[Point2],
+    edge: usize,
+    start: Point2,
+    distance: f64,
+    backward: bool,
+) -> (usize, Point2) {
+    let count = points.len();
+    let apart = |a: Point2, b: Point2| ((b.x - a.x) as f64).hypot((b.y - a.y) as f64);
+    let (mut edge, mut at, mut left) = (edge, start, distance);
+    // No further than once round.
+    for _ in 0..=count {
+        if left <= 0.0 {
+            break;
+        }
+        let next = if backward {
+            points[edge]
+        } else {
+            points[(edge + 1) % count]
+        };
+        let step = apart(at, next);
+        if step > left {
+            let share = left / step;
+            at = Point2 {
+                x: at.x + ((next.x - at.x) as f64 * share).round() as i64,
+                y: at.y + ((next.y - at.y) as f64 * share).round() as i64,
+            };
+            break;
+        }
+        left -= step;
+        at = next;
+        edge = if backward {
+            (edge + count - 1) % count
+        } else {
+            (edge + 1) % count
+        };
+    }
+    (edge, at)
 }
 
 /// The point of a closed loop nearest `target`, and the index of the corner
@@ -387,5 +484,69 @@ mod tests {
             points(&[(0.0, 0.0), (1.0, 0.0), (1.0, 1.0)])
         );
         assert_eq!(head(&path, 50.0), path);
+    }
+
+    #[test]
+    fn a_random_seam_is_on_the_loop_and_moves_from_layer_to_layer() {
+        let square: Vec<Point2> = [(0.0, 0.0), (20.0, 0.0), (20.0, 20.0), (0.0, 20.0)]
+            .map(|(x, y)| Point2::from_mm(x, y))
+            .to_vec();
+        let on_loop = |point: Point2| {
+            let (x, y) = (unscaled(point.x), unscaled(point.y));
+            let edge = |v: f64| v.abs() < 1e-3 || (v - 20.0).abs() < 1e-3;
+            (edge(x) && (-1e-3..=20.001).contains(&y)) || (edge(y) && (-1e-3..=20.001).contains(&x))
+        };
+        let picked: Vec<Point2> = (0..40)
+            .map(|layer| random_point(&square, 0.1 + 0.2 * f64::from(layer)))
+            .collect();
+        assert!(picked.iter().all(|&point| on_loop(point)));
+        // The same for the same loop and height; not all in one place.
+        assert_eq!(random_point(&square, 0.5), random_point(&square, 0.5));
+        let mut distinct = picked.clone();
+        distinct.sort_by_key(|point| (point.x, point.y));
+        distinct.dedup();
+        assert!(distinct.len() > 30, "{}", distinct.len());
+        // Spread over all four sides.
+        for side in [
+            |p: &Point2| p.y < 1_000,
+            |p: &Point2| p.x > 19_999_000,
+            |p: &Point2| p.y > 19_999_000,
+            |p: &Point2| p.x < 1_000,
+        ] {
+            assert!(picked.iter().any(side));
+        }
+    }
+
+    #[test]
+    fn a_start_can_be_moved_on_round_the_loop_either_way() {
+        let square: Vec<Point2> = [(0.0, 0.0), (10.0, 0.0), (10.0, 10.0), (0.0, 10.0)]
+            .map(|(x, y)| Point2::from_mm(x, y))
+            .to_vec();
+        let from = Point2::from_mm(8.0, 0.0);
+        // Along the edge it is on.
+        assert_eq!(
+            advance(&square, 0, from, 1e6, false),
+            (0, Point2::from_mm(9.0, 0.0))
+        );
+        assert_eq!(
+            advance(&square, 0, from, 1e6, true),
+            (0, Point2::from_mm(7.0, 0.0))
+        );
+        // Round a corner, forward and back.
+        assert_eq!(
+            advance(&square, 0, from, 5e6, false),
+            (1, Point2::from_mm(10.0, 3.0))
+        );
+        assert_eq!(
+            advance(&square, 0, from, 11e6, true),
+            (3, Point2::from_mm(0.0, 3.0))
+        );
+        // Nowhere, for no distance.
+        assert_eq!(advance(&square, 0, from, 0.0, false), (0, from));
+        // The loop opened there starts and ends at the place found.
+        let (edge, start) = advance(&square, 0, from, 5e6, false);
+        let path = open_at(&square, edge, start);
+        assert_eq!((path[0], path[path.len() - 1]), (start, start));
+        assert_eq!(path.len(), 6);
     }
 }
