@@ -32,7 +32,7 @@ replaces it until output matches on the printers we care about.
 | `crates/edge-engine` | The whole pipeline behind one call, for whatever drives it: open a model and list its plates, settle its settings, slice with progress and cancel, G-code, a layer's lines for drawing, a vendor's presets by printer, and its printer models with the presets, picture and sizes of each |
 | `crates/edge-cli` | The `edge` command line |
 | `tools/make_defaults.py` | Asks the reference for its default of every setting and writes the table `edge-config` carries; run again when the pin moves |
-| `tools/make_fixture.py` | Writes small test 3MFs (parts that need supports or a brim, a plain cube, two blocks in two filaments, a comb with thin teeth on the bed, three tiers with a top surface on each) to compare with the reference on |
+| `tools/make_fixture.py` | Writes small test 3MFs (parts that need supports or a brim, a plain cube, two blocks in two filaments, a comb with thin teeth on the bed, three tiers with a top surface on each, bars over a base for small bridges over infill) to compare with the reference on |
 | `tools/make_project.py` | Writes one of those parts as a project whose settings are named presets, with as many filaments as are named: how the test prints for a printer are made |
 | `reference/EdgeSlicer` | Pinned submodule of the C++ slicer: profiles, test models, behaviour to match. Read-only here |
 | `apps/desktop` | The desktop app (Tauri): several projects open at once, each prepared, sliced, looked through layer by layer and exported, in the C++ application's tabs. A workspace of its own |
@@ -341,6 +341,30 @@ Known gaps: painted supports and seams, per-object setting overrides, typed sett
   so its lines go from one support to the other. Bridges, bottoms and
   tops reach a wall's spacing into the fill beside them, to have
   something to hold on to.
+  The bridging options of the reference's Quality tab are followed, all
+  but one. `bridge_line_width` gives bridges, bridges over infill and
+  walls over air a width of their own: a round thread is that thick in
+  place of the nozzle's bore, a flattened line that wide before
+  `bridge_flow` thins it; wider than the nozzle, or no wider than the
+  layer is tall while either kind of bridge is flat, is an error, as in
+  the reference (`LayerRegion::bridging_flow`, `Print::validate`).
+  `bridge_expansion_extra` carries a bridge that many millimetres
+  further onto solid fill and onto a top or bottom surface beside it,
+  grown in the reference's waves so that it follows the area and does
+  not jump a gap, and bridges that grow into one another become one
+  (`expand_bridges_detect_orientations`, Algorithm/RegionExpansion.cpp);
+  sparse fill beside a bridge is reached no further, in the reference
+  either. `dont_filter_internal_bridges` at `limited` and `nofilter`
+  lets smaller patches of solid fill over sparse fill be bridged (the
+  first sorting-out of `bridge_over_infill` with one spacing where the
+  default has three, and with no filter every patch found, four
+  spacings round it), kept as the reference keeps them to where a
+  thick bridge's thread has sparse fill to sink into and no bridge just
+  beneath. `enable_extra_bridge_layer` lays a second layer of bridge
+  over bridges over air (the same way as the first, and the bottom
+  shell then starts from the second), over bridges over infill (square
+  to the first), or both. Each is off by default and changes nothing
+  then. `counterbore_hole_bridging` is noted and not followed.
 
 - Ironing (`ironing_type`): a finished surface gone over again with
   lines close together and next to no plastic, the nozzle smoothing
@@ -644,7 +668,13 @@ the outline between them, here they are when they overlap. A bridge reaches 0.4 
 reaches 0.8 mm, internal bridges are not run out to the
 sparse lines that carry them nor turned as the reference turns them
 (they come within 6% of the reference's on plain parts and 9% over on
-the lettered plate), narrow solid areas are filled with the same lines
+the lettered plate; small ones, which gain most from being run out,
+come out a quarter to a third short, and that is what
+`dont_filter_internal_bridges` at `nofilter` makes more of: below),
+bridges that reach into one another are made one only with
+`bridge_expansion_extra` set, a hole that narrows on the way up gets
+no bridge of its own under the narrow part (`counterbore_hole_bridging`,
+noted), narrow solid areas are filled with the same lines
 as wide ones where the reference lays loops along them
 (`detect_narrow_internal_solid_infill`, noted), narrow parts of top and
 bottom surfaces get no gap fill
@@ -1179,6 +1209,79 @@ and 2188) and 0.3 m of travel off plates 2 and 3, whose retractions
 moved by two at most. The mushroom with tree supports has 14 more
 retractions (1722 against the reference's 1741) and 0.1 m less travel.
 The plain parts are what they were.
+
+The bridging options, each turned on against the C++ slicer with the
+same option on, in metres of path (C++ slicer / this engine). The parts
+are `tools/make_fixture.py`'s with the Snapmaker U1's presets
+(`bridge_flow` 0.8, flat bridges, thick bridges over infill, 15% grid,
+two walls); `gaps` is a base with five bars across it 1, 2, 3 and 5 mm
+apart, so that the solid layers under the strips of top between them
+are small bridges over infill of different sizes. With every option
+off bridges are 2 to 6% over the reference's and bridges over infill
+within 5% of them, as above, but 26% under on `gaps`, whose bridges
+are small; that is the difference each row starts from. Besides the
+features shown only the solid and sparse fill a bridge takes the place
+of moves, in either slicer, and with the options off the file is byte
+for byte what it was.
+
+| Option | Part | Feature | Off | On |
+| --- | --- | --- | --- | --- |
+| `bridge_line_width` 0.3 | `bridge` | Bridge | 0.67 / 0.70 | 1.05 / 1.05 |
+| | | Bridge over infill | 1.01 / 1.06 | 1.30 / 1.35 |
+| | `shelf` | Bridge | 0.42 / 0.45 | 0.66 / 0.67 |
+| `bridge_expansion_extra` 2, 6, 50 | `bridge`, all solid (`top_shell_layers=16`) | Bridge | 0.69 / 0.73 | 0.77 / 0.82, 0.94 / 0.99, 1.02 / 1.07 |
+| `bridge_expansion_extra` 3 | `mushroom`, all solid | Bridge | 2.02 / 2.06 | 2.14 / 2.19 |
+| `dont_filter_internal_bridges` `limited` | `gaps` | Bridge over infill | 2.58 / 1.91 | 2.58 / 2.04 |
+| `dont_filter_internal_bridges` `nofilter` | `gaps` | Bridge over infill | 2.58 / 1.91 | 2.88 / 2.62 |
+| | a wedge, top at 14° | Bridge over infill | 0.00 / 0.09 | 5.61 / 3.88 |
+| `enable_extra_bridge_layer` `external_bridge_only` | `bridge` | Bridge | 0.67 / 0.70 | 1.33 / 1.41 |
+| | `mushroom` | Bridge | 1.97 / 2.02 | 3.94 / 4.03 |
+| `enable_extra_bridge_layer` `internal_bridge_only` | `cube` | Bridge over infill | 0.84 / 0.87 | 1.68 / 1.74 |
+| | `gaps` | Bridge over infill | 2.58 / 1.91 | 5.14 / 3.82 |
+
+With `bridge_line_width` the width and the plastic per millimetre are
+the reference's for all three features (a 0.3 mm width with these
+presets: bridges and walls over air 0.25 mm wide and 0.040 mm³/mm,
+bridges over infill a 0.27 mm thread at 0.055). With
+`bridge_expansion_extra` the solid fill gives up what the bridge gains
+in both (on the deck's first layer, with 0, 6 and 50 mm set, 351, 68
+and 0 mm of solid lines in the reference and 353, 83 and 0 here), and
+on the plain `bridge`, where
+sparse fill is what lies beside the bridge, neither slicer's toolpaths
+change at all. A second layer over a bridge over air is the first
+layer's length again in both, on the next layer, laid the same way,
+with the bottom shell one layer higher; over infill it is laid square
+to the first in both. There the reference drops from the layer
+whatever of a surface it cuts is narrower than two lines and prints
+nothing in its place (an error in it, not copied: going by the lengths
+of line laid, 7 to 21 mm² less is filled on each such layer of a
+sloping part than with the option off); here everything that is not
+second bridge stays what it was.
+
+What is still off is `dont_filter_internal_bridges`. With no filter
+the bridges appear on the same layers as the reference's (every second
+layer under a sloping top: a bridge is not laid over one just beneath
+it), but each is about 70% of the reference's length, 170 mm a layer
+against 240 mm on the wedge, because the reference then runs each
+patch out to the sparse lines that carry it and this engine does not,
+for any bridge over infill. For the same reason `limited` adds a
+little here where it adds nothing in the reference: on `gaps` the
+reference's bridges on the first solid layer, run out, already cover
+what `limited` would find on the next, and here they do not (138 mm
+more on one layer). On the plain parts (cube, deck, mushroom) neither
+value changes anything in either slicer.
+
+`counterbore_hole_bridging` is not followed: the note stays. In the
+reference it is done where walls are made (PerimeterGenerator.cpp
+`process_no_bridge`): on the first layer of the narrow part of a hole
+the area with nothing under it is taken out of what gets walls and
+handed to the fill as it is, so it is bridged, either the part of it a
+bridge detector says can be spanned from the wide hole's edge
+(`partiallybridge`) or all of it, the narrow hole covered over as well
+(`sacrificiallayer`). It needs the reference's `BridgeDetector` (the
+direction with most anchored lines and the strips it can span), which
+is not here: this engine turns a bridge by the edges it has nothing
+beside.
 
 ## Licence
 
