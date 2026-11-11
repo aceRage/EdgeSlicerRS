@@ -14,12 +14,16 @@
 //! its own, and they are gathered in the samples' order.
 
 mod bvh;
+mod joints;
+mod painted;
 mod random;
 mod sample;
 
 use rayon::prelude::*;
 
 pub use bvh::{Bvh, Hit};
+pub use joints::{JointBody, Joints, part_joints};
+pub use painted::Painted;
 pub use sample::{Samples, sample_uniform};
 use sample::{cross, dot, norm, normalized, sub};
 

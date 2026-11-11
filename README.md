@@ -25,7 +25,7 @@ replaces it until output matches on the printers we care about.
 | `crates/edge-adhesion` | Skirt and brim, with the automatic brim width |
 | `crates/edge-support` | Supports under overhangs, normal (grid) and tree, with dense tops and feet |
 | `crates/edge-gcode` | Print order, seams, travel, retraction, wipe and lift, cooling, overhangs, and extrusion, written as G-code |
-| `crates/edge-visibility` | How much of a part's outside can be seen from each place on its surface, which is where a seam shows least: points scattered over the mesh, rays cast from each, and the measure at any place taken from the points round it (a port of the visibility measure of the reference's SeamPlacer) |
+| `crates/edge-visibility` | How much of a part's outside can be seen from each place on its surface, which is where a seam shows least: points scattered over the mesh, rays cast from each, and the measure at any place taken from the points round it (a port of the visibility measure of the reference's SeamPlacer); and where the parts of an object meet, points on each part's surface that touch another part, which seams are moved to (its `gather_part_joints`) |
 | `crates/edge-infill` | Top, bottom, bridge, solid, bridged-over-infill and sparse surfaces, and the lines that fill them, with loops for the narrow parts of solid fill; and ironing: which areas are gone over again, and the lines that do it |
 | `crates/edge-template` | The placeholder language of custom G-code: `{expression}`, `{if}`, `[variable]`, and scripts |
 | `crates/edge-time` | How long a G-code file takes, with acceleration: the file is read as a printer reads it and planned as the reference's estimator plans, or as Klipper does |
@@ -35,7 +35,7 @@ replaces it until output matches on the printers we care about.
 | `crates/edge-cli` | The `edge` command line |
 | `tools/make_defaults.py` | Asks the reference for its default of every setting and writes the table `edge-config` carries; run again when the pin moves |
 | `tools/make_process_pages.py` | Reads the reference's process pages and option definitions from its source and writes the data the desktop app draws its settings pages from; run again when the pin moves, after `make_defaults.py` |
-| `tools/make_fixture.py` | Writes small test 3MFs (parts that need supports or a brim, a plain cube, two blocks in two filaments, a comb with thin teeth on the bed, three tiers with a top surface on each, bars over a base for small bridges over infill, a slab with round holes for the hole options, a slab with holes that narrow on the way up for bridging them, a slab with pockets underneath, three round ones for arc fitting: a post, a post with a hole, a slab with a wide curve and tight ones, and a post that widens as it rises for scarf seams) to compare with the reference on |
+| `tools/make_fixture.py` | Writes small test 3MFs (parts that need supports or a brim, a plain cube, two blocks in two filaments, a comb with thin teeth on the bed, three tiers with a top surface on each, bars over a base for small bridges over infill, a slab with round holes for the hole options, a slab with holes that narrow on the way up for bridging them, a slab with pockets underneath, three round ones for arc fitting: a post, a post with a hole, a slab with a wide curve and tight ones, a post that widens as it rises for scarf seams, two of two parts for seams where parts meet: a round post cut in two, and a block with a post pushed half into it, and two with seams painted on: a post with a strip painted to have them, and a cube with two sides painted to keep them off) to compare with the reference on |
 | `tools/make_project.py` | Writes one of those parts as a project whose settings are named presets, with as many filaments as are named: how the test prints for a printer are made |
 | `reference/EdgeSlicer` | Pinned submodule of the C++ slicer: profiles, test models, behaviour to match. Read-only here |
 | `vendor/cpp_map` | A copy of the `cpp_map` crate (MIT or Apache-2.0), the skip list under the Voronoi library, changed so that a list is the same shape on every run; patched in for the published crate by both workspaces. Its README says what was changed. Not a member of the workspace, and kept in its own formatting |
@@ -853,6 +853,63 @@ Known gaps: painted supports and seams, per-object setting overrides, typed sett
     its short edges, for speed, so that on such a part the points
     scattered are not the reference's own and the measure differs by
     what the thinning loses.
+  - Seams where parts meet (`seam_prefer_part_joints`, on unless turned
+    off), at the aligned positions (`aligned`, `aligned_back`,
+    `aligned_front`, `left`, `right`; not `back`, `nearest` or
+    `random`): an object of several parts (two bodies, a multi-colour
+    model built of parts) has lines on its outside where one part meets
+    another, and a seam hides in such a line. Each part's mesh is taken
+    by itself (embossed text and pictures are left out), and every
+    triangle of it that does not face up or down and comes within
+    0.5 mm of another part is cut into pieces no wider than a spacing
+    (0.15 mm, widened to keep to 300000 pieces); the middle of a piece
+    is a point of the joint where it lies within 0.2 mm of the other
+    part's surface, facing it, or just inside it. An object that is the
+    only copy of its object on the plate, and that is not the same as
+    another object, counts other objects stood against it as parts too.
+    A point of an outer wall within a line's width and half the spacing
+    of a joint point is on the joint, and an edge of the wall near one
+    is given a place every 0.2 mm along it, since a joint crosses a long
+    edge far from its corners. The middle of each run of joint points
+    round a wall (a point hidden inside the print where the run has
+    any, as where two materials meet, else a sharp inward corner, else
+    the middle by length; a point that hangs out splits a run, and a
+    wall on a joint all the way round has none) beats any other point,
+    is followed from layer to layer when seams are lined up, counts
+    three more in the curve fitted through a line of seams, and is
+    moved to that curve by half a line's width at most. Points are
+    found triangle by triangle and kept in order, so the joints are
+    the same at any thread count; the search for them runs beside the
+    visibility measure. A port of SeamPlacer.cpp `gather_part_joints`,
+    `mark_part_joint_centers` and their place in the comparators and in
+    `align_seam_points`. Not as the reference: of two triangles of the
+    other part equally near a point (its nearest place is on their
+    shared edge), the one of the lower number is taken, where the
+    reference takes whichever its tree reaches first, so near the edges
+    of a part the points differ (on plate 2 of `mcbrim_test.3mf`
+    159500 points an object here, 148500 there); and it also leaves
+    other objects out when it prints object by object, which this
+    engine does not do, and asks that two objects it takes for the same
+    have the same settings, which are not read here.
+  - Seams painted on or off (`paint_seam` on a project's triangles,
+    read as colour paint is read, from any part of the object): at every
+    position, a point of an outer wall with a triangle painted to keep
+    seams off within a line's width of it is blocked, else one with a
+    triangle painted to have them within that is wanted; an edge of the
+    wall with a wanted triangle within its own length of its first point
+    is given a place every 0.2 mm; and of each wall's longest stretch of
+    wanted points the middle one, or the middle of its sharp corners,
+    is marked. That point beats every other at the aligned positions; at
+    every position a wanted point beats one not painted, which beats a
+    blocked one, before anything else is weighed (joints, overhangs and
+    the score), so a seam goes where it is painted on even at the back
+    or anywhere at random. When seams are lined up the marked point is
+    followed from layer to layer, and a wanted point counts three more
+    in the fitted curve and is moved to it by at most three fifths of
+    the way. A port of SeamPlacer.cpp `gather_enforcers_blockers`,
+    `is_enforced`, `is_blocked`, the end of
+    `process_perimeter_polygon`, and the paint's place in the
+    comparators and in `align_seam_points`.
   - Scarf seams (`seam_slope_type`): a loop joined this way is laid
     whole, with no gap at its seam. Its first 20 mm
     (`seam_slope_min_length`, or all of it with
@@ -1210,15 +1267,15 @@ does not, so where paint makes both sides of a crack one filament it
 lays walls round the crack, a slit of two loops in the middle of a
 solid area. That is not copied. The bounded depths
 (`paint_depth_mode` at `walls` or `millimeters`), interlocking and
-`top_color_penetration_layers` are noted and not followed. Painted
-supports, seams and fuzzy skin are not read; a project that has any of
-them painted on says so when it is sliced.
+`top_color_penetration_layers` are noted and not followed. Seams
+painted on or off are followed (G-code, Seams, below). Painted supports
+and fuzzy skin are not read; a project that has either painted on says
+so when it is sliced.
 
 Not done in G-code: supports only where painted (none are
 generated, and a note says so), the older tree styles (`tree_slim`,
 `tree_strong`, `tree_hybrid`: organic-style trees are built, with a note),
-rafts, brims inside holes, draft shields, seams moved to where parts meet
-(`seam_prefer_part_joints`), painted on or off, or put by Precise Seam
+rafts, brims inside holes, draft shields, seams put by Precise Seam
 parts (read as helpers, not printed, with a note), a fan speed of its own for bridges over infill, walls
 slowed over curled edges, preview pictures in the file
 (thumbnails), and object labels for cancelling (`EXCLUDE_OBJECT`). Bridge fill keeps its own speed along its whole
@@ -1846,7 +1903,8 @@ sit on a point of its wall or be drawn between such points, so the
 reference's outline has one there). The two blocks of `twotone` are
 two parts of one object, and there the reference puts both seams in
 the middle of the side where the parts meet, which is
-`seam_prefer_part_joints`, on unless turned off and not done here; the
+`seam_prefer_part_joints`, on unless turned off and not done then (it
+is now: see below); the
 plates of `mcbrim_test.3mf`, objects of several parts, are the same
 case, and it is why they hardly agree (4.7%, 1.5% and 1.5% of their
 loops within 0.05 mm).
@@ -1928,6 +1986,91 @@ any layer, where main is off by 0.21% on average and 16.8% on the layer at
 10.45 mm. Time, best of 5: the Benchy 0.49 s on main and 0.67 s with
 the seams, plate 1 of `mcbrim_test.3mf` 2.54 s and 3.05 s, nearly all
 of it the visibility measure.
+
+Seams where parts meet, 2026-11-11, on the same parts with two more of
+two parts each (`halves`, a round post cut in two, and `inset`, a block
+with a post pushed half into its side) at every position: the parts of
+`tools/make_fixture.py` but the round ones are boxes put together, and
+so are objects of parts too. Main against main with the joints:
+
+| | loops | main | with the joints |
+| --- | --- | --- | --- |
+| the three plates of `mcbrim_test.3mf` | 412 | 2.4%, 5.1% | 9.7%, 31.8% |
+| `twotone`, every position | 250 | 43.2%, 44.4% | 76.8%, 78.0% |
+| `halves` and `inset`, every position | 550 | 39.5%, 40.2% | 64.9%, 65.6% |
+| parts of boxes and parts, the aligned positions | 2610 | 25.1%, 47.2% | 45.2%, 66.9% |
+| every loop | 8914 | 46.6%, 57.5% | 52.8%, 64.5% |
+
+At `aligned` and `aligned_back` the two blocks of `twotone` go from 16%
+of their seams within 0.05 mm to all of them, the seams now in the
+middle of the side where the blocks meet; `halves` from none to all,
+`inset` from 67% to all, the comb from 60% and 33% to all, the frame
+from 48% to 98% (all within 1 mm), the steps from 54% and 52% to 77%
+and 99%, and the `holes` slab at its five aligned positions by 8 to 12
+points each (25.1% from 16.4% at `aligned`). What is left on the steps
+is a square hole whose four corners are as good as each other, and on
+the `holes` slab what was left before. At `back`, `nearest` and
+`random`, which the reference does not move to joints, and on every
+part of one part (the Benchy, the cube, the round parts, the fins, the
+mushroom) the file is byte for byte what it was on main.
+
+The plates of `mcbrim_test.3mf` (objects of three parts, an arm and a
+blade and an inlay, in three filaments) go from 4.1%, 1.5% and 1.5% of
+their loops within 0.05 mm to 14.2%, 7.6% and 6.8%, and within 1 mm
+from 8.8%, 3.0% and 3.0% to 45.3%, 24.2% and 24.2%. The rest is the
+reference's cracks between parts (Status, above). On these plates the
+blade's wall runs along the arm for most of its length, a joint run of
+some 450 points whose middle is taken among the points hidden inside
+the print; this engine closes the cracks, so all of them are hidden and
+the middle is the run's, the same on every layer, where in the
+reference's layers a crack here and there leaves stretches of the run
+not hidden, and its middle is that of what is left, which wanders from
+layer to layer (on plate 2, layer 1, 16 mm along the blade from this
+engine's; on layer 3 at the blade's tip). The reference's 535 loops
+against this engine's 262 on plate 1 are the walls it lays round those
+cracks. Travel and retractions: plate 1 61.31 m and 2185 in the
+reference's file, 56.78 m and 1972 on main, 58.95 m and 1978 with the
+joints; plate 2 35.31 m and 843, 31.50 m and 945, 35.57 m and 991;
+plate 3 37.89 m and 841, 34.64 m and 946, 38.76 m and 991; `twotone` at
+`aligned` 8.54 m and 164, 7.58 m and 153, 7.59 m and 154; the `holes`
+slab at `aligned` 17.35 m and 747, 17.54 m and 763, 17.54 m and 727.
+Time, best of 5: the Benchy as it was (0.63 s to 0.67 s on either), plate 1 of
+`mcbrim_test.3mf` 2.93 s and 3.07 s on main, 2.96 s and 2.97 s with the
+joints (the 0.13 s search for its 24 parts' joints runs beside the
+0.6 s visibility measure, and 0.05 s more goes on the walls' extra
+places), the `holes` slab 0.12 s and 0.14 s (32 parts, 0.04 s of
+joints, more than the visibility measure there).
+
+Seams painted on or off, 2026-11-11: no project the reference carries
+or tests with has seams painted, so `tools/make_fixture.py` paints two
+(`enforced`: the round post with a strip of its side 20 degrees wide
+painted to have the seam, toward the front left; `blocked`: the cube
+with its right and back sides painted to keep it off), and the reference
+follows the paint in both (its seams in the strip, and at the cube's
+front left corner). At each of the five positions, main against the
+joints alone against the paint:
+
+| | loops | main | joints | paint |
+| --- | --- | --- | --- | --- |
+| `enforced`, `blocked` at `aligned`, `aligned_back`, `back` | 450 | none | none | all, to the micron |
+| `enforced` at `nearest` | 50 | 0%, 2% | 0%, 2% | 14%, 14% (all within 2.9 mm) |
+| `enforced` at `random` | 50 | 0%, 2% | 0%, 2% | 0%, 56% (all within 3.7 mm) |
+| `blocked` at `nearest` | 100 | 1%, 1% | 1%, 1% | all |
+| `blocked` at `random` | 100 | 0%, 2% | 0%, 2% | 48%, 54% |
+| every loop, with these | 9664 | 43.0%, 53.1% | 48.7%, 59.5% | 55.0%, 66.1% |
+
+At `nearest` on the post this engine's seams are at the strip's other
+edge, 2.9 mm round, where the nozzle comes from elsewhere (its travel
+1.39 m in the reference's file and 1.99 m here, 89 retractions and
+112); at `random` they scatter within the strip as the reference's do,
+but by a figure that differs in the last digit (Comparators, above).
+Nothing else moves: on every other part the file is byte for byte what
+it was with the joints. Travel and retractions at `aligned`: the post
+1.46 m and 109 in the reference's file, 1.80 m and 113 on main, 2.08 m
+and 111 with the paint; the cube 3.19 m and 201, 3.93 m and 200, 5.13 m
+and 201; the travel here is not looked into. Time: none that shows (the Benchy 0.62 s and
+0.65 s with the joints, 0.64 s and 0.66 s with the paint; plate 1 of
+`mcbrim_test.3mf` 2.91 s and 3.01 s, 3.04 s and 3.09 s).
 
 Moves at the seam (`wipe_on_loops`, `wipe_before_external_loop`,
 `wipe_inward`), 2026-11-11, on parts from `tools/make_fixture.py` with

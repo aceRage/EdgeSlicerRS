@@ -44,7 +44,7 @@ use rayon::prelude::*;
 pub use edge_avoid::{Detour, Slices};
 pub use scarf::{Scarf, ScarfSeam};
 pub use seam::Seam;
-pub use seam_plan::{SeamMesh, SeamObject, SeamScene};
+pub use seam_plan::{SeamMesh, SeamObject, SeamPart, SeamScene};
 pub use settings::{Lift, OverhangFan, PrintSettings, WallDirection, WallOrder};
 
 #[derive(Debug, thiserror::Error)]

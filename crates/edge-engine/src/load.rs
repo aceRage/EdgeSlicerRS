@@ -1,6 +1,6 @@
 use std::path::{Path, PathBuf};
 
-use edge_3mf::{Body, Painted, Project};
+use edge_3mf::{Body, InstanceParts, Painted, Project};
 use edge_config::Settings;
 use edge_gcode::PrintSettings;
 use edge_mesh::Mesh;
@@ -40,6 +40,9 @@ pub struct Loaded {
     /// What is cut out of each of those objects (its negative parts): an
     /// empty mesh for an object with none.
     pub negatives: Vec<Mesh>,
+    /// The printed parts of each of those objects, each by itself, for
+    /// where they meet; empty for a bare model, which is one part.
+    pub parts: Vec<InstanceParts>,
     /// Which of the project's plates this is, counting from 0.
     pub plate: usize,
     /// The order the plate sets for filaments on the first layer, as
@@ -253,6 +256,7 @@ pub(crate) fn lone(path: &Path, solid: Mesh) -> Result<Loaded, Failure> {
         precise_seams: false,
         objects: Vec::new(),
         negatives: Vec::new(),
+        parts: Vec::new(),
         plate: 0,
         first_layer_sequence: Vec::new(),
         bounds,
@@ -277,10 +281,16 @@ pub(crate) fn placed(
     let mut painted = project.painted(plate);
     let mut objects = project.instance_meshes(plate);
     let mut negatives = project.instance_negatives(plate);
+    let mut parts = project.instance_parts(plate);
     if let Some((x, y)) = origin {
         shift(&mut bodies, -x, -y);
         shift_meshes(objects.iter_mut(), -x, -y);
         shift_meshes(negatives.iter_mut(), -x, -y);
+        shift_meshes(
+            parts.iter_mut().flat_map(|object| &mut object.parts),
+            -x,
+            -y,
+        );
         for object in &mut painted {
             shift_meshes(
                 std::iter::once(&mut object.solid).chain(object.negative.as_mut()),
@@ -306,6 +316,7 @@ pub(crate) fn placed(
         precise_seams: project.has_precise_seams(plate),
         objects,
         negatives,
+        parts,
         plate: plate.unwrap_or(0),
         first_layer_sequence,
         bounds,
@@ -402,7 +413,9 @@ mod tests {
             filament: 1,
             mesh,
             paint: None,
+            seam: None,
             transform: Transform::IDENTITY,
+            decoration: false,
         };
         let at = |x, y| Instance {
             transform: Transform::translation([x, y, 0.0]),
