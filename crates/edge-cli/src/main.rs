@@ -30,6 +30,40 @@ enum Command {
     },
     /// Print a preset with everything it inherits, as JSON.
     Preset(PresetArgs),
+    /// Save a model or a project as a project file (3MF) the reference
+    /// opens as its own.
+    Save(Box<SaveArgs>),
+}
+
+#[derive(Args)]
+struct SaveArgs {
+    /// STL (binary or ASCII) or 3MF file.
+    model: PathBuf,
+    /// The project file to write.
+    #[arg(long)]
+    out: PathBuf,
+    /// Vendor whose presets the project is saved with; without it a 3MF
+    /// keeps its own settings and an STL is saved without settings.
+    #[arg(long)]
+    vendor: Option<String>,
+    /// Machine preset name within --vendor.
+    #[arg(long, requires = "vendor")]
+    machine: Option<String>,
+    /// Process preset name within --vendor.
+    #[arg(long, requires = "vendor")]
+    process: Option<String>,
+    /// Filament preset name within --vendor, once for each filament.
+    #[arg(long, requires = "vendor")]
+    filament: Vec<String>,
+    /// Which build plate is on the printer, e.g. "Textured PEI Plate".
+    #[arg(long, requires = "vendor")]
+    bed_type: Option<String>,
+    #[command(flatten)]
+    profiles: ProfilesArgs,
+    /// Save even when something the file holds would not be kept; it is
+    /// listed either way.
+    #[arg(long)]
+    accept_losses: bool,
 }
 
 #[derive(Args)]
@@ -117,6 +151,7 @@ fn main() -> ExitCode {
         Command::Slice(args) => slice(*args),
         Command::Inspect { project } => inspect(project),
         Command::Preset(args) => preset(args),
+        Command::Save(args) => save(*args),
     };
     match result {
         Ok(()) => ExitCode::SUCCESS,
@@ -214,6 +249,83 @@ fn inspect(path: PathBuf) -> Result<(), Failure> {
         }
     }
     Ok(())
+}
+
+/// Saves a model or a project as a project file.
+fn save(args: SaveArgs) -> Result<(), Failure> {
+    let model = edge_engine::Model::open(&args.model)?;
+    let saving = match &args.vendor {
+        None if model.settings().is_some() => edge_engine::Saving::Own,
+        None => edge_engine::Saving::None,
+        Some(vendor) => {
+            let chosen = chosen(
+                &args.profiles,
+                vendor,
+                &args.machine,
+                &args.process,
+                &args.filament,
+            )?;
+            let overrides = Overrides {
+                bed_type: args.bed_type.clone(),
+                ..Overrides::default()
+            };
+            let settings =
+                edge_engine::settled(&chosen, &overrides, model.settings().map(|s| &**s))?;
+            edge_engine::Saving::Settings {
+                settings: edge_engine::project_settings(
+                    &settings,
+                    &edge_engine::Changed::default(),
+                ),
+                presets: false,
+            }
+        }
+    };
+    let losses = model.save_losses(&saving);
+    for loss in &losses {
+        eprintln!("not kept: {loss}");
+    }
+    if !losses.is_empty() && !args.accept_losses {
+        return Err(
+            "the file would not keep all the project held; nothing was written (--accept-losses writes it all the same)"
+                .into(),
+        );
+    }
+    let saved = model.save(&args.out, &saving, None)?;
+    println!(
+        "{}: {} bytes, {} entries",
+        args.out.display(),
+        saved.bytes,
+        saved.entries.len()
+    );
+    Ok(())
+}
+
+/// Presets named on the command line, resolved.
+fn chosen(
+    profiles: &ProfilesArgs,
+    vendor: &str,
+    machine: &Option<String>,
+    process: &Option<String>,
+    filaments: &[String],
+) -> Result<Chosen, Failure> {
+    let vendor = profiles.vendor(vendor)?;
+    let resolve = |kind, name: &Option<String>| {
+        name.as_ref()
+            .map(|name| {
+                vendor
+                    .resolve(kind, name)
+                    .map(|settings| (name.clone(), settings))
+            })
+            .transpose()
+    };
+    Ok(Chosen {
+        machine: resolve(Kind::Machine, machine)?,
+        process: resolve(Kind::Process, process)?,
+        filaments: filaments
+            .iter()
+            .map(|name| Ok((name.clone(), vendor.resolve(Kind::Filament, name)?)))
+            .collect::<Result<_, Failure>>()?,
+    })
 }
 
 /// The presets named on the command line, resolved.

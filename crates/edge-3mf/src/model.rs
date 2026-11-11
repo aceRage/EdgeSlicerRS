@@ -33,11 +33,13 @@ pub(crate) struct RawObject {
 
 pub(crate) enum Shape {
     /// A mesh, its triangles as painted for filaments when any of them
-    /// is, and the pieces of them painted for seams when any are.
+    /// is, the pieces of them painted for seams when any are, and what
+    /// each triangle carries besides its corners, as the file has it.
     Mesh(
         Arc<Mesh>,
         Option<Arc<Vec<Facet>>>,
         Option<Arc<Vec<SeamFacet>>>,
+        Option<Arc<crate::Extras>>,
     ),
     Components(Vec<Reference>),
 }
@@ -75,6 +77,9 @@ struct OpenObject {
     paint: Vec<Option<Box<str>>>,
     /// Each triangle's `paint_seam`, where it has one.
     seam: Vec<Option<Box<str>>>,
+    /// Each triangle's attributes other than its corners, as they are
+    /// written, where it has any: what is painted on it, of every kind.
+    extras: Vec<Option<Box<str>>>,
     components: Vec<Reference>,
 }
 
@@ -134,6 +139,20 @@ pub(crate) fn parse(text: &str, part: &str) -> Result<ModelFile, Error> {
                 let mut corners = [u32::MAX; 3];
                 let (mut paint, mut seam) = (None, None);
                 let unread = &mut file.unread_paint;
+                // Everything but the corners, kept as written so that it
+                // can be written back unchanged.
+                let mut extra = String::new();
+                for attribute in element.attributes().with_checks(false) {
+                    let attribute = attribute.map_err(|e| malformed(part, e.to_string()))?;
+                    let key: &str = attribute.key.as_ref();
+                    if !matches!(key, "v1" | "v2" | "v3") && !attribute.value.is_empty() {
+                        extra.push(' ');
+                        extra.push_str(key);
+                        extra.push_str("=\"");
+                        extra.push_str(&attribute.value);
+                        extra.push('"');
+                    }
+                }
                 attributes(&element, part, |key, value| {
                     // bbs_3mf.cpp: the other things a triangle may be
                     // painted with.
@@ -168,6 +187,9 @@ pub(crate) fn parse(text: &str, part: &str) -> Result<ModelFile, Error> {
                 object.triangles.push(corners);
                 object.paint.push(paint);
                 object.seam.push(seam);
+                object
+                    .extras
+                    .push((!extra.is_empty()).then(|| extra.into_boxed_str()));
             }
             "object" => {
                 let mut object = OpenObject::default();
@@ -270,6 +292,16 @@ fn close(object: OpenObject, part: &str) -> Result<RawObject, Error> {
             }
             Arc::new(facets)
         });
+        // What each triangle kept carries, numbered as the triangles
+        // kept are.
+        let extras: crate::Extras = object
+            .triangles
+            .iter()
+            .zip(object.extras)
+            .filter(|(triangle, _)| sound(triangle))
+            .enumerate()
+            .filter_map(|(at, (_, extra))| Some((at as u32, extra?)))
+            .collect();
         let mut triangles = object.triangles;
         triangles.retain(sound);
         Shape::Mesh(
@@ -279,6 +311,7 @@ fn close(object: OpenObject, part: &str) -> Result<RawObject, Error> {
             }),
             paint,
             seam,
+            (!extras.is_empty()).then(|| Arc::new(extras)),
         )
     } else {
         Shape::Components(object.components)
@@ -381,7 +414,7 @@ mod tests {
         let seams = |triangle: &str| -> Vec<(SeamPaint, f32)> {
             let file = parse(&model(triangle), "3D/3dmodel.model").unwrap();
             match &file.objects[0].body {
-                Shape::Mesh(_, _, Some(seam)) => (seam.iter())
+                Shape::Mesh(_, _, Some(seam), _) => (seam.iter())
                     .map(|facet| (facet.kind, facet.corners[0][0]))
                     .collect(),
                 _ => Vec::new(),

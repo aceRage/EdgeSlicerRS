@@ -12,7 +12,7 @@ replaces it until output matches on the printers we care about.
 | `crates/edge-geom` | Fixed-point 2D geometry (nanometre `i64`, same scale as libslic3r): points, polygons, regions, convex hull |
 | `crates/edge-mesh` | Indexed triangle mesh, transforms, STL read/write |
 | `crates/edge-config` | Vendor presets resolved through `inherits`, `include` and `renamed_from`; the reference's defaults for every setting, and the text form it writes settings in |
-| `crates/edge-3mf` | 3MF projects: objects, parts and their roles, instances, plates, project settings, and colours painted onto triangles |
+| `crates/edge-3mf` | 3MF projects: objects, parts and their roles, instances, plates, project settings, and colours painted onto triangles; and writing a project back in the reference's own layout (`write`), keeping what was read and not changed (every kind of paint, per-object and per-part settings, layer ranges and heights, cut information, custom G-code, a plate's settings and pictures, every other entry) and leaving out print-host addresses and keys |
 | `crates/edge-fuzzy` | Fuzzy skin: walls roughened by moving their points or changing their width, with the noise it is drawn from (a port of the reference's FuzzySkin and of the libnoise modules it uses) |
 | `crates/edge-avoid` | Travel routed round the inside of a part's walls where a straight move would cross them: what a layer's moves are routed by, and the way round for each (a port of the reference's AvoidCrossingPerimeters) |
 | `crates/edge-arachne` | Walls of changing width: a region's skeleton, how many lines fit along it and where that number changes, and the lines themselves (a port of the reference's Arachne) |
@@ -54,6 +54,11 @@ cargo run --release -p edge-cli -- slice reference/EdgeSlicer/resources/handy_mo
 cargo run --release -p edge-cli -- slice model.stl --vendor Snapmaker --machine "Snapmaker U1 (0.4 nozzle)" \
   --process "0.20mm Standard @Snapmaker U1 (0.4 nozzle)" --filament "Snapmaker PLA @U1" --bed-type "Textured PEI Plate" --gcode model.gcode
 cargo run --release -p edge-cli -- preset Snapmaker process "0.20mm Standard @Snapmaker U1 (0.4 nozzle)"
+# A model or project saved as a project file the reference opens as its own: a 3MF keeps its own
+# settings, an STL is saved without any; --vendor/--machine/--process/--filament save it with presets.
+# What the file holds that would not be kept is listed and nothing is written, unless --accept-losses.
+cargo run --release -p edge-cli -- save model.stl --out model.3mf --vendor Snapmaker --machine "Snapmaker U1 (0.4 nozzle)" \
+  --process "0.20mm Standard @Snapmaker U1 (0.4 nozzle)" --filament "Snapmaker PLA @U1"
 ```
 
 ## The desktop app

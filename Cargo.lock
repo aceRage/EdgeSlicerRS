@@ -220,6 +220,8 @@ dependencies = [
  "edge-slice",
  "quick-xml",
  "rayon",
+ "serde_json",
+ "tempfile",
  "thiserror",
  "zip",
 ]
@@ -314,6 +316,7 @@ dependencies = [
  "edge-tower",
  "rayon",
  "tempfile",
+ "zip",
 ]
 
 [[package]]

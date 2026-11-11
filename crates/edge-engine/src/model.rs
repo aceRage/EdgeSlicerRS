@@ -28,9 +28,15 @@ use std::{
     },
 };
 
-use edge_3mf::{Instance, InstanceRef, Object, Part, PartKind, Plate, Project};
+use edge_3mf::{
+    Instance, InstanceRef, Kept, Object, ObjectKept, Part, PartKind, Plate, PlateKept, Project,
+};
 use edge_config::Settings;
 use edge_mesh::{Transform, hull::Hull};
+
+#[path = "save.rs"]
+mod save;
+pub use save::{Changed, Saved, Saving, own_settings, project_settings};
 
 use crate::{
     Failure, Loaded, PlateInfo,
@@ -208,6 +214,7 @@ impl Shape {
             name: Some(name.to_owned()),
             parts: self.parts.clone(),
             instances: Vec::new(),
+            kept: None,
         })
     }
 
@@ -251,6 +258,8 @@ pub struct ModelObject {
     name: String,
     shape: Arc<Shape>,
     copies: Vec<ModelCopy>,
+    /// What its file held of it beyond this, to be saved with it.
+    kept: Option<Arc<ObjectKept>>,
 }
 
 impl ModelObject {
@@ -329,6 +338,11 @@ pub struct ModelPlate {
     origin: Option<(f64, f64)>,
     /// The copies on it, in the order the plate lists them.
     order: Vec<u64>,
+    /// What its file held of it beyond this, to be saved with it.
+    kept: Option<Arc<PlateKept>>,
+    /// What its slice depended on when it was read: while that is so, its
+    /// pictures in the file still show it.
+    read: Option<PlateStamp>,
 }
 
 impl ModelPlate {
@@ -380,6 +394,8 @@ pub struct Model {
     bare: bool,
     /// Whether anything in it was put where it stands by hand.
     placed: bool,
+    /// What its file held beyond this, to be saved with it.
+    kept: Option<Arc<Kept>>,
 }
 
 impl Default for Model {
@@ -399,6 +415,7 @@ impl Model {
             unread_paint: Vec::new(),
             bare: false,
             placed: true,
+            kept: None,
         }
     }
 
@@ -587,6 +604,7 @@ impl Model {
                             printable: copy.printable,
                         })
                         .collect(),
+                    kept: object.kept.clone(),
                 })
                 .collect(),
             plates: self
@@ -602,10 +620,12 @@ impl Model {
                         .filter_map(|copy| self.find(*copy))
                         .map(|(object, instance)| InstanceRef { object, instance })
                         .collect(),
+                    kept: plate.kept.clone(),
                 })
                 .collect(),
             settings: None,
             unread_paint: self.unread_paint.clone(),
+            kept: self.kept.clone(),
         }
     }
 
@@ -737,6 +757,8 @@ impl Model {
                 name: String::new(),
                 first_layer_sequence: Vec::new(),
                 origin: Some((0.0, 0.0)),
+                kept: None,
+                read: None,
                 order: self
                     .objects
                     .iter()
@@ -1118,6 +1140,10 @@ impl Model {
                 name,
                 shape,
                 copies,
+                // What the file held of the object goes with each piece,
+                // as it goes with a clone: the reference gives each new
+                // object the old one's settings (`ModelObject::split`).
+                kept: held.kept.clone(),
             });
         }
         let count = objects.len();
@@ -1244,6 +1270,8 @@ impl Model {
             first_layer_sequence: Vec::new(),
             origin: Some((0.0, 0.0)),
             order: Vec::new(),
+            kept: None,
+            read: None,
         });
         self.gather(bed);
         Ok(id)
@@ -1411,6 +1439,7 @@ impl Model {
                 },
                 shape: object.shape.clone(),
                 copies,
+                kept: object.kept.clone(),
             });
         }
         self.unread_paint = {
@@ -1448,9 +1477,10 @@ impl Model {
         let mut added = Vec::new();
         for copy in copies {
             let (object, at) = self.copy_at(*copy)?;
-            let (name, shape) = (
+            let (name, shape, kept) = (
                 self.objects[object].name.clone(),
                 self.objects[object].shape.clone(),
+                self.objects[object].kept.clone(),
             );
             let held = self.objects[object].copies[at].clone();
             let own = self.plate_of(*copy);
@@ -1474,6 +1504,7 @@ impl Model {
                 name,
                 shape,
                 copies: vec![seated],
+                kept: kept.clone(),
             });
         }
         Ok(added)
@@ -1682,6 +1713,7 @@ impl From<Opened> for Model {
                     seam: None,
                     transform: Transform::IDENTITY,
                     decoration: false,
+                    kept: None,
                 }]);
                 let reach = shape.reach(&Transform::IDENTITY);
                 Self {
@@ -1697,12 +1729,14 @@ impl From<Opened> for Model {
                             reach,
                             printable: true,
                         }],
+                        kept: None,
                     }],
                     plates: Vec::new(),
                     settings: None,
                     unread_paint: Vec::new(),
                     bare: true,
                     placed: false,
+                    kept: None,
                 }
             }
             Held::Project { project, .. } => {
@@ -1753,6 +1787,7 @@ impl From<Opened> for Model {
                             name: object.name.clone().unwrap_or_default(),
                             shape,
                             copies,
+                            kept: object.kept.clone(),
                         }
                     })
                     .collect();
@@ -1770,9 +1805,11 @@ impl From<Opened> for Model {
                             .iter()
                             .map(|at| objects[at.object].copies[at.instance].id)
                             .collect(),
+                        kept: plate.kept.clone(),
+                        read: None,
                     })
                     .collect();
-                Self {
+                let mut model = Self {
                     path,
                     objects,
                     plates,
@@ -1780,7 +1817,15 @@ impl From<Opened> for Model {
                     unread_paint: project.unread_paint,
                     bare: false,
                     placed: false,
+                    kept: project.kept,
+                };
+                // What each plate's slice depends on as read, for its
+                // pictures.
+                for at in 0..model.plates.len() {
+                    let id = model.plates[at].id;
+                    model.plates[at].read = Some(model.stamp(Some(id)));
                 }
+                model
             }
         }
     }
