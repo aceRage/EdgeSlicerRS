@@ -23,17 +23,18 @@
 use std::{
     path::{Path, PathBuf},
     sync::{
-        Arc,
+        Arc, OnceLock,
         atomic::{AtomicU64, Ordering},
     },
 };
 
 use edge_3mf::{Instance, InstanceRef, Object, Part, PartKind, Plate, Project};
 use edge_config::Settings;
-use edge_mesh::Transform;
+use edge_mesh::{Transform, hull::Hull};
 
 use crate::{
     Failure, Loaded, PlateInfo,
+    lay_on_face::{self, Face, Filter},
     load::{self, Held, Opened, plate_origin},
     scene::{SceneObject, object_of},
 };
@@ -132,6 +133,11 @@ fn within(reach: &Reach, bed: [f64; 4]) -> bool {
 pub struct Shape {
     stamp: u64,
     parts: Vec<Part>,
+    /// The convex hull of its printed parts, worked out when first asked.
+    hull: OnceLock<Option<Hull>>,
+    /// Whether its one part is of several pieces, worked out when first
+    /// asked; false for a shape of several parts.
+    pieces: OnceLock<bool>,
 }
 
 impl Shape {
@@ -139,7 +145,52 @@ impl Shape {
         Arc::new(Self {
             stamp: fresh(),
             parts,
+            hull: OnceLock::new(),
+            pieces: OnceLock::new(),
         })
+    }
+
+    /// Whether "Split to objects" can be done to it (GUI_ObjectList.cpp
+    /// `is_splittable(true)`): it has several parts, of whatever kind, or
+    /// its one part is of several pieces.
+    pub fn splits_to_objects(&self) -> bool {
+        self.parts.len() > 1 || self.splits_to_parts()
+    }
+
+    /// Whether "Split to parts" can be done to it (`is_splittable(false)`
+    /// with the object selected): it has one part, of several pieces.
+    pub fn splits_to_parts(&self) -> bool {
+        self.parts.len() == 1
+            && *self
+                .pieces
+                .get_or_init(|| edge_mesh::split::is_splittable(&self.parts[0].mesh))
+    }
+
+    /// Its parts, in order.
+    pub fn parts(&self) -> &[Part] {
+        &self.parts
+    }
+
+    /// The convex hull of its printed parts in the object's own
+    /// coordinates: what it can rest on. None when they do not enclose
+    /// anything (flat, or nothing at all). The reference merges the hulls
+    /// of the parts and takes the hull of that (LayOnFace.cpp
+    /// `lay_on_face_planes`), which is the same solid.
+    pub fn hull(&self) -> Option<&Hull> {
+        self.hull
+            .get_or_init(|| {
+                let points: Vec<[f64; 3]> = self
+                    .printed()
+                    .flat_map(|part| {
+                        part.mesh
+                            .vertices
+                            .iter()
+                            .map(|vertex| part.transform.apply(vertex.map(f64::from)))
+                    })
+                    .collect();
+                edge_mesh::hull::convex_hull(&points)
+            })
+            .as_ref()
     }
 
     /// A number that is this shape's alone: another shape, or this one
@@ -836,6 +887,309 @@ impl Model {
             }
         }
         self.objects[at].shape = Shape::new(parts);
+        Ok(())
+    }
+
+    /// The faces a copy can be laid on, largest first, as the reference's
+    /// "Lay on face" offers them for its turn and size (LayOnFace.cpp
+    /// `lay_on_face_planes` with the gizmo's filter).
+    pub fn faces(&self, copy: u64) -> Result<Vec<Face>, Failure> {
+        let (object, at) = self.copy_at(copy)?;
+        let shape = &self.objects[object].shape;
+        let mut linear = self.objects[object].copies[at].local;
+        linear.rows[3] = [0.0; 3];
+        let size = shape.reach(&linear).map_or(0.0, |[low, high]| {
+            (0..3)
+                .map(|axis| (high[axis] - low[axis]).powi(2))
+                .sum::<f64>()
+                .sqrt()
+        });
+        let Some(hull) = shape.hull() else {
+            return Ok(Vec::new());
+        };
+        Ok(lay_on_face::faces(
+            hull,
+            &lay_on_face::linear_of(&linear),
+            &Filter::for_gizmo(size),
+            size,
+        ))
+    }
+
+    /// Lays a copy on the face whose outward `normal` (in the object's own
+    /// coordinates) is given: turned so that face points straight down
+    /// (Selection.cpp `flattening_rotate`), then stood on the bed as any
+    /// turn is (GLCanvas3D.cpp `do_rotate`).
+    ///
+    /// The turn is about the middle of the box round the copy. The
+    /// reference turns an instance about its own origin, which it keeps in
+    /// the middle of the object's geometry; a model read here is not moved
+    /// to stand about its origin, so its origin may be anywhere.
+    pub fn lay_on_face(
+        &mut self,
+        bed: Option<&Bed>,
+        copy: u64,
+        normal: [f64; 3],
+    ) -> Result<(), Failure> {
+        self.copy_at(copy)?;
+        if !normal.iter().all(|value| value.is_finite()) || normal == [0.0; 3] {
+            return Err(refused("that is no direction to lay the object on"));
+        }
+        self.settle(bed);
+        let (scene, reach) = self
+            .in_scene(bed, copy)
+            .ok_or_else(|| refused(format!("there is no copy {copy}")))?;
+        let turn = lay_on_face::turn_down(&lay_on_face::linear_of(&scene), normal)
+            .ok_or_else(|| refused("that would squash the object to nothing"))?;
+        let middle = reach.map_or([0.0; 3], |[low, high]| {
+            std::array::from_fn(|axis| (low[axis] + high[axis]) / 2.0)
+        });
+        let turned = scene
+            .then(&Transform::translation(middle.map(|value| -value)))
+            .then(&lay_on_face::transform_of(&turn))
+            .then(&Transform::translation(middle));
+        self.stand_in_scene(bed, copy, turned);
+        Ok(())
+    }
+
+    /// Mirrors copies along an axis of the scene (0 for X, 1 for Y, 2 for
+    /// Z), about the middle of the box round them all, and stands them on
+    /// the bed again (Selection.cpp `mirror`, GLCanvas3D.cpp `do_mirror`).
+    ///
+    /// The mirror is kept as the reference keeps it: in the copy's
+    /// transform, which then turns the object's coordinates inside out.
+    /// The mesh is left as it is; whatever places it by such a transform
+    /// winds its triangles the other way round so that it stays a solid
+    /// (`Mesh::append`), which is how a mirrored copy is sliced.
+    pub fn mirror(
+        &mut self,
+        bed: Option<&Bed>,
+        copies: &[u64],
+        axis: usize,
+    ) -> Result<(), Failure> {
+        if axis > 2 {
+            return Err(refused("an axis is X, Y or Z"));
+        }
+        for copy in copies {
+            self.copy_at(*copy)?;
+        }
+        if copies.is_empty() {
+            return Err(refused("nothing to mirror"));
+        }
+        self.settle(bed);
+        let placed: Vec<(u64, Transform, Option<Reach>)> = copies
+            .iter()
+            .filter_map(|copy| {
+                let (transform, reach) = self.in_scene(bed, *copy)?;
+                Some((*copy, transform, reach))
+            })
+            .collect();
+        let mut low = [f64::INFINITY; 3];
+        let mut high = [f64::NEG_INFINITY; 3];
+        for [from, to] in placed.iter().filter_map(|(_, _, reach)| *reach) {
+            for at in 0..3 {
+                low[at] = low[at].min(from[at]);
+                high[at] = high[at].max(to[at]);
+            }
+        }
+        let middle: [f64; 3] = if low[0].is_finite() {
+            std::array::from_fn(|at| (low[at] + high[at]) / 2.0)
+        } else {
+            [0.0; 3]
+        };
+        let mut flip = Transform::IDENTITY;
+        flip.rows[axis][axis] = -1.0;
+        let about = Transform::translation(middle.map(|value| -value))
+            .then(&flip)
+            .then(&Transform::translation(middle));
+        for (copy, scene, _) in placed {
+            self.stand_in_scene(bed, copy, scene.then(&about));
+        }
+        Ok(())
+    }
+
+    /// The name an object goes by: its own, else its file's (an STL's
+    /// object has none of its own, and the reference names it after the
+    /// file).
+    fn name_of(&self, at: usize) -> String {
+        let own = &self.objects[at].name;
+        if !own.is_empty() {
+            return own.clone();
+        }
+        self.path
+            .as_deref()
+            .and_then(Path::file_name)
+            .map(|name| name.to_string_lossy().into_owned())
+            .unwrap_or_else(|| "Object".into())
+    }
+
+    /// Splits an object into objects (the reference's "Split to objects":
+    /// Plater.cpp `split_object`, Model.cpp `ModelObject::split`). An
+    /// object of one part becomes an object for each piece of its mesh
+    /// (each a shell sharing no edge with the others, with at least three
+    /// triangles), named after the object with `_1`, `_2`, …; an object of
+    /// several parts becomes an object for each printed part, named after
+    /// the part, its other parts (modifiers, negative parts) being left
+    /// out as the reference leaves them out. Each new object has a copy
+    /// wherever the object had one, on the same plates, and stands where
+    /// its piece stood, brought down onto the bed when it was left in the
+    /// air (the reference's `ensure_on_bed` as it loads them). Answers the
+    /// new copies and whether parts were left out.
+    pub fn split_to_objects(
+        &mut self,
+        bed: Option<&Bed>,
+        object: u64,
+    ) -> Result<(Vec<u64>, bool), Failure> {
+        let at = self.object_at(object)?;
+        let held = self.objects[at].clone();
+        let parts = &held.shape.parts;
+        let base = self.name_of(at);
+        let own_name = |part: &Part| {
+            part.name
+                .clone()
+                .filter(|name| !name.is_empty())
+                .unwrap_or_else(|| base.clone())
+        };
+        let mut made: Vec<(String, Part)> = Vec::new();
+        if parts.len() == 1 {
+            let part = &parts[0];
+            if part.kind == PartKind::Normal {
+                let pieces: Vec<edge_mesh::Mesh> = edge_mesh::split::split(&part.mesh)
+                    .into_iter()
+                    .filter(|piece| piece.triangles.len() >= 3)
+                    .collect();
+                let count = pieces.len();
+                for (number, piece) in pieces.into_iter().enumerate() {
+                    let name = if count == 1 {
+                        own_name(part)
+                    } else {
+                        format!("{base}_{}", number + 1)
+                    };
+                    // The paint was put on the whole mesh's triangles; the
+                    // reference starts each piece without it.
+                    made.push((
+                        name,
+                        Part {
+                            mesh: Arc::new(piece),
+                            paint: None,
+                            seam: None,
+                            ..part.clone()
+                        },
+                    ));
+                }
+            }
+        } else {
+            for part in parts.iter().filter(|part| part.kind == PartKind::Normal) {
+                if part.mesh.triangles.len() >= 3 {
+                    made.push((own_name(part), part.clone()));
+                }
+            }
+        }
+        if made.len() < 2 {
+            return Err(refused("The selected object couldn't be split."));
+        }
+        let dropped = parts.iter().any(|part| part.kind != PartKind::Normal);
+        self.settle(bed);
+        let held = self.objects.remove(at);
+        let mut objects: Vec<ModelObject> = Vec::new();
+        // For each copy of the old object, the copies made in its place.
+        let mut instead: Vec<(u64, Vec<u64>)> = held
+            .copies
+            .iter()
+            .map(|copy| (copy.id, Vec::new()))
+            .collect();
+        for (name, part) in made {
+            let shape = Shape::new(vec![part]);
+            let copies = held
+                .copies
+                .iter()
+                .zip(&mut instead)
+                .map(|(copy, (_, made))| {
+                    let id = fresh();
+                    made.push(id);
+                    ModelCopy {
+                        id,
+                        reach: shape.reach(&copy.local),
+                        ..copy.clone()
+                    }
+                })
+                .collect();
+            objects.push(ModelObject {
+                id: fresh(),
+                name,
+                shape,
+                copies,
+            });
+        }
+        let count = objects.len();
+        self.objects.splice(at..at, objects);
+        for plate in &mut self.plates {
+            plate.order = plate
+                .order
+                .iter()
+                .flat_map(|copy| match instead.iter().find(|(was, _)| was == copy) {
+                    Some((_, made)) => made.clone(),
+                    None => vec![*copy],
+                })
+                .collect();
+        }
+        // Each piece on the bed: stood again where it is.
+        let new: Vec<u64> = self.objects[at..at + count]
+            .iter()
+            .flat_map(|object| object.copies.iter().map(|copy| copy.id))
+            .collect();
+        for copy in &new {
+            if let Some((scene, _)) = self.in_scene(bed, *copy) {
+                self.stand_in_scene(bed, *copy, scene);
+            }
+        }
+        Ok((new, dropped))
+    }
+
+    /// Splits an object of one part into parts, one for each piece of its
+    /// mesh (the reference's "Split to parts": GUI_ObjectList.cpp
+    /// `ObjectList::split`, Model.cpp `ModelVolume::split`): each in the
+    /// part's filament, named after it with `_1`, `_2`, …, the paint on it
+    /// let go; a piece that encloses nothing (whose convex hull is flat)
+    /// is dropped. The object stays where it stands.
+    pub fn split_to_parts(&mut self, bed: Option<&Bed>, object: u64) -> Result<(), Failure> {
+        let at = self.object_at(object)?;
+        let shape = self.objects[at].shape.clone();
+        if !shape.splits_to_parts() {
+            return Err(refused(
+                "The target object contains only one part and can not be split.",
+            ));
+        }
+        let part = &shape.parts[0];
+        let name = part
+            .name
+            .clone()
+            .filter(|name| !name.is_empty())
+            .unwrap_or_else(|| self.name_of(at));
+        let parts: Vec<Part> = edge_mesh::split::split(&part.mesh)
+            .into_iter()
+            .filter(|piece| !piece.triangles.is_empty())
+            .enumerate()
+            .filter(|(_, piece)| {
+                let points: Vec<[f64; 3]> =
+                    piece.vertices.iter().map(|v| v.map(f64::from)).collect();
+                edge_mesh::hull::convex_hull(&points).is_some()
+            })
+            .map(|(number, piece)| Part {
+                name: Some(format!("{name}_{}", number + 1)),
+                mesh: Arc::new(piece),
+                paint: None,
+                seam: None,
+                ..part.clone()
+            })
+            .collect();
+        self.settle(bed);
+        let shape = Shape::new(parts);
+        let object = &mut self.objects[at];
+        object.shape = shape;
+        let shape = object.shape.clone();
+        for copy in &mut object.copies {
+            copy.reach = shape.reach(&copy.local);
+        }
         Ok(())
     }
 

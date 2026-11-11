@@ -33,6 +33,8 @@
 .edit-grid .unit input { width: 100%; min-width: 0; font-size: var(--size-small); }
 .edit-grid .unit:has(input:disabled) { color: var(--text-off); background: transparent; }
 .edit-label { color: var(--text-2); }
+/* What a tool without number fields says to do (Lay on face). */
+.edit-hint { margin: 0; max-width: 36ch; color: var(--text-2); font-size: var(--size-label); }
 .edit-check { display: flex; flex-direction: row; align-items: center; gap: var(--space-2); color: var(--text-2); }
 /* The axes' own colours, as the reference letters them (ColorRGB::X, Y, Z). */
 .edit-panel .gl-x { color: rgb(255, 60, 91); }
@@ -81,6 +83,10 @@
 .obj-row.child .obj-name { padding-left: 22px; color: var(--text-2); }
 .obj-row[aria-selected="true"] { background: var(--accent-soft); box-shadow: inset 2px 0 0 var(--accent); }
 .obj-row.off .obj-name { color: var(--text-off); }
+/* A part of an object (read only): its filament as a number; a part that is
+   not printed (a modifier, a negative part) in the quiet colour. */
+.obj-row.part.helper .obj-name { color: var(--text-3); font-style: italic; }
+.obj-fila-number { padding-left: var(--space-1); font: var(--size-small) var(--font-mono); color: var(--text-2); }
 .obj-name { min-width: 0; padding: 4px var(--space-2); border: 0; background: none; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; text-align: left; }
 .obj-name:hover:not(:disabled), .obj-plate-name:hover:not(:disabled) { background: var(--fill-hover); }
 .obj-name:focus-visible, .obj-plate-name:focus-visible { outline: 2px solid var(--focus); outline-offset: -2px; }

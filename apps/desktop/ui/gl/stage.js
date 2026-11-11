@@ -713,7 +713,8 @@
         press = null;
         canvas.classList.remove('dragging');
         if (done.grab && done.moved) GL.edit.drop(done.grab, event.type === 'pointerup');
-        else if (!done.moved && event.type === 'pointerup') this.click(done, event);
+        // A face laid on the bed was the press itself (scene-edit.js).
+        else if (!done.moved && event.type === 'pointerup' && !(done.grab && done.grab.kind === 'face')) this.click(done, event);
       };
       // The handle under the pointer is shown as taken up.
       canvas.addEventListener('pointermove', (event) => {
