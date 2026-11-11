@@ -400,6 +400,33 @@ fn a_plates_own_settings_reach_the_slice() {
     model.rename_plate(2, "named").unwrap();
     model.lock_plate(2, true).unwrap();
     assert_eq!(model.stamp(Some(2)), stamp);
+
+    // Saved and read back, plate 2 on a cool plate printed by layer with
+    // its later layers' order set: the slice reads them from the file.
+    let dir = tempfile::tempdir().unwrap();
+    let mut cool = mcbrim();
+    let order = cool.plates()[1].settings().first_layer_sequence;
+    cool.set_plate_settings(
+        2,
+        &PlateSettings {
+            bed_type: Some("Cool Plate".into()),
+            print_sequence: Some("by layer".into()),
+            spiral_mode: Some(false),
+            first_layer_sequence: order,
+            other_layers_sequence: vec![LayerSequence {
+                begin: 2,
+                end: LAST_LAYER,
+                order: vec![7, 6, 5, 4, 3, 2, 1],
+            }],
+        },
+    )
+    .unwrap();
+    let (again, _) = round_trip(&cool, dir.path(), "cool_plate_2.3mf");
+    let read = settled(&again, 2);
+    assert_eq!(read.text("curr_bed_type"), Some("Cool Plate"));
+    assert_eq!(read.text("print_sequence"), Some("by layer"));
+    assert_eq!(read.text("spiral_mode"), Some("0"));
+    assert_eq!(read.text("other_layers_print_sequence_nums"), Some("1"));
 }
 
 #[test]
