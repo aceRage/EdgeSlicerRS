@@ -26,6 +26,17 @@ pub enum WallOrder {
     OuterInner,
 }
 
+/// Which way round walls are laid (`wall_direction`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum WallDirection {
+    /// Counter-clockwise, round holes as round the part
+    /// (PerimeterGenerator.cpp: "all walls are counter-clockwise
+    /// initially").
+    Auto,
+    CounterClockwise,
+    Clockwise,
+}
+
 /// The fan for whatever is laid over air.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct OverhangFan {
@@ -135,6 +146,7 @@ pub struct PrintSettings {
     pub bed_temperature_initial_layer: Option<f64>,
 
     pub wall_order: WallOrder,
+    pub wall_direction: WallDirection,
     pub infill_first: bool,
     /// Skip retraction on moves between fill lines that stay inside the walls.
     pub reduce_infill_retraction: bool,
@@ -286,6 +298,7 @@ impl Default for PrintSettings {
             bed_temperature: None,
             bed_temperature_initial_layer: None,
             wall_order: WallOrder::InnerOuter,
+            wall_direction: WallDirection::Auto,
             infill_first: false,
             reduce_infill_retraction: false,
             fan_min_speed: 20.0,
@@ -393,6 +406,18 @@ impl PrintSettings {
                     "wall_sequence \"{other}\": inner wall first is used"
                 ));
                 WallOrder::InnerOuter
+            }
+        };
+        let wall_direction = match settings.text("wall_direction") {
+            None | Some("auto") => WallDirection::Auto,
+            Some("ccw") => WallDirection::CounterClockwise,
+            Some("cw") => WallDirection::Clockwise,
+            Some(other) => {
+                return Err(ConfigError::BadValue {
+                    key: "wall_direction".into(),
+                    found: other.to_owned(),
+                    expected: "auto, ccw or cw",
+                });
             }
         };
         let first_text = |key: &str| settings.texts(key).and_then(|v| v.get(index).or(v.last()));
@@ -686,6 +711,7 @@ impl PrintSettings {
             bed_temperature,
             bed_temperature_initial_layer,
             wall_order,
+            wall_direction,
             infill_first: settings
                 .flag("is_infill_first")?
                 .unwrap_or(defaults.infill_first),

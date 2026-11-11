@@ -31,7 +31,7 @@ use edge_geom::{ExPolygon, Point2, scaled, unscaled};
 use edge_template::{TemplateError, Value, Variables};
 
 pub use seam::Seam;
-pub use settings::{Lift, OverhangFan, PrintSettings, WallOrder};
+pub use settings::{Lift, OverhangFan, PrintSettings, WallDirection, WallOrder};
 
 #[derive(Debug, thiserror::Error)]
 pub enum GcodeError {
@@ -1316,6 +1316,13 @@ impl Writer<'_> {
                 }
             };
             let mut path = seam::open_at(points, edge, start);
+            // A loop is held counter-clockwise round material and
+            // clockwise round a hole; every wall is laid the same way
+            // round, which turns one or the other about.
+            let turned = wall.is_hole != (s.wall_direction == WallDirection::Clockwise);
+            if turned {
+                path.reverse();
+            }
             let whole = (!wall.widths.is_empty()).then(|| path.clone());
             seam::clip_end(&mut path, s.seam_gap);
             let Some(whole) = whole else {
@@ -1326,11 +1333,11 @@ impl Writer<'_> {
             // end to end, each of one width (the reference's
             // `thick_polyline_to_multi_path`).
             let widths: Vec<f64> = wall.widths.iter().map(|&width| width as f64).collect();
-            let widths = seam::clip_widths(
-                &whole,
-                &seam::open_widths_at(points, &widths, edge, start),
-                &path,
-            );
+            let mut widths = seam::open_widths_at(points, &widths, edge, start);
+            if turned {
+                widths.reverse();
+            }
+            let widths = seam::clip_widths(&whole, &widths, &path);
             if path.len() < 2 {
                 continue;
             }

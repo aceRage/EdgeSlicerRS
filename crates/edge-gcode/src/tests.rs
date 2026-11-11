@@ -218,6 +218,64 @@ fn walls_follow_the_configured_order_island_by_island() {
     );
 }
 
+/// For each stretch of extrusion in `text`, whether it runs
+/// counter-clockwise: the sign of the area its moves enclose.
+fn runs_counter_clockwise(text: &str) -> Vec<bool> {
+    let (mut at, mut run, mut found) = ((0.0, 0.0), Vec::new(), Vec::new());
+    let mut close = |run: &mut Vec<(f64, f64)>| {
+        if run.len() >= 3 {
+            let area: f64 = (0..run.len())
+                .map(|i| {
+                    let (a, b) = (run[i], run[(i + 1) % run.len()]);
+                    a.0 * b.1 - b.0 * a.1
+                })
+                .sum();
+            found.push(area > 0.0);
+        }
+        run.clear();
+    };
+    for line in text.lines().filter(|line| line.starts_with("G1 ")) {
+        let to = (
+            word(line, 'X').unwrap_or(at.0),
+            word(line, 'Y').unwrap_or(at.1),
+        );
+        if word(line, 'E').is_some_and(|e| e > 0.0) && to != at {
+            if run.is_empty() {
+                run.push(at);
+            }
+            run.push(to);
+        } else if to != at {
+            close(&mut run);
+        }
+        at = to;
+    }
+    close(&mut run);
+    found
+}
+
+#[test]
+fn every_wall_is_laid_the_same_way_round() {
+    // A part with a hole in it: the wall round the hole is held
+    // clockwise, and laid counter-clockwise like the wall round the part.
+    let mut hole = wall(3.0, 3.0, 4.0, 0);
+    hole.polygon.points.reverse();
+    hole.is_hole = true;
+    let loops = [wall(0.0, 0.0, 10.0, 0), hole];
+    let (text, _) = print(&one_layer(&loops, &[0..2], &[]), &basic());
+    assert_eq!(runs_counter_clockwise(&text), [true, true]);
+    let same = PrintSettings {
+        wall_direction: WallDirection::CounterClockwise,
+        ..basic()
+    };
+    assert_eq!(print(&one_layer(&loops, &[0..2], &[]), &same).0, text);
+    let clockwise = PrintSettings {
+        wall_direction: WallDirection::Clockwise,
+        ..basic()
+    };
+    let (text, _) = print(&one_layer(&loops, &[0..2], &[]), &clockwise);
+    assert_eq!(runs_counter_clockwise(&text), [false, false]);
+}
+
 #[test]
 fn walls_over_air_are_laid_ahead_of_their_islands_loops() {
     let loops = [
