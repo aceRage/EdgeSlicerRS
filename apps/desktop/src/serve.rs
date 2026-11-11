@@ -21,6 +21,8 @@ use crate::api::Session;
 const PAGE: &str = include_str!("../ui/index.html");
 const SCRIPT: &str = include_str!("../ui/app.js");
 const STYLE: &str = include_str!("../ui/style.css");
+const PRINTERS_SCRIPT: &str = include_str!("../ui/printers.js");
+const PRINTERS_STYLE: &str = include_str!("../ui/printers.css");
 /// A file of the page. A debug build reads it from the source folder each
 /// time, so a change to the page shows on reload; any other build serves
 /// what it was built with.
@@ -97,6 +99,22 @@ fn handle(mut request: Request, session: &Arc<Session>, token: &str, port: u16) 
                 200,
                 "text/css; charset=utf-8",
                 asset("style.css", STYLE),
+            );
+        }
+        (Method::Get, "/printers.js") => {
+            respond(
+                request,
+                200,
+                "text/javascript; charset=utf-8",
+                asset("printers.js", PRINTERS_SCRIPT),
+            );
+        }
+        (Method::Get, "/printers.css") => {
+            respond(
+                request,
+                200,
+                "text/css; charset=utf-8",
+                asset("printers.css", PRINTERS_STYLE),
             );
         }
         (Method::Post, path) if path.starts_with("/api/") => {
