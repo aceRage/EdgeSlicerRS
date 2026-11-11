@@ -21,6 +21,7 @@ mod overhang;
 mod scarf;
 mod seam;
 mod settings;
+mod simplify;
 mod wipe;
 
 use std::{
@@ -342,6 +343,10 @@ pub fn write_routed(
     // Tool changes: where in the file, the tool taken up, its temperature.
     let mut changes: Vec<(usize, usize, f64)> = Vec::new();
     let mut second_layer = None;
+    // The stretch of layers in hand with their paths thinned, and the
+    // entry it starts at.
+    let mut thinned = simplify::Thinned::default();
+    let mut thinned_from = 0;
     for (index, group) in groups.iter().enumerate() {
         writer.out.clear();
         reached.push((whole.len(), writer.state.summary.seconds));
@@ -349,15 +354,21 @@ pub fn write_routed(
             second_layer = Some(whole.len());
         }
         // Arcs are fitted a stretch of layers at a time, ahead of
-        // laying them.
+        // laying them; without arcs the paths are thinned to
+        // `resolution` instead, as the reference does one or the other
+        // before it writes anything (PrintObject.cpp
+        // `simplify_extrusion_path`).
         if index % FITTED_AHEAD == 0 {
             let ahead = &groups[index..(index + FITTED_AHEAD).min(groups.len())];
             let until = groups[(index + FITTED_AHEAD).min(groups.len()) - 1].end;
             writer.prefit(&layers[group.start..until]);
+            thinned = simplify::Thinned::new(&layers[group.start..until], settings);
+            thinned_from = group.start;
             // And so are the layers made ready to route travel on.
             writer.preroute(layers, ahead, index)?;
         }
-        writer.layer(index, &layers[group.clone()], group.start)?;
+        let parts = thinned.layers(&layers[group.clone()], group.start - thinned_from);
+        writer.layer(index, &parts, group.start)?;
         // Whole or not at all, and never off the bed: an arc counts by
         // its bulge, which the points it was fitted to do not show.
         if let (Some(reach), Some(bed)) = (writer.off_bed, writer.settings.bed) {
@@ -1901,7 +1912,13 @@ impl Writer<'_> {
                 sheltered,
                 closed,
             ),
-            None => self.path(points, role, flow, sheltered, closed),
+            // With no arcs a piece is thinned by itself, as the
+            // reference thins each path of a loop (LayerRegion.cpp
+            // `simplify_loop`).
+            None => {
+                let points = simplify::piece(self.settings, points);
+                self.path(&points, role, flow, sheltered, closed)
+            }
         }
     }
 

@@ -134,11 +134,20 @@ impl Fan {
         if layer < self.off_layers {
             return 0.0;
         }
-        let mut speed = if seconds < self.slow_down_layer_time {
+        // The three times are single precision in the reference, and
+        // the share is worked in it before it is widened. That is what
+        // keeps the sum whole: a share of 24 bits times a speed is
+        // exact in double precision, so equal speeds give that speed
+        // back, where a share of 53 bits could leave the sum a hair
+        // under and the floor a whole percent down (M106 S252 for a
+        // layer between two at S255).
+        let seconds = seconds as f32;
+        let slow_down = self.slow_down_layer_time as f32;
+        let cooling = self.cooling_layer_time as f32;
+        let mut speed = if seconds < slow_down {
             self.max_speed
-        } else if seconds < self.cooling_layer_time {
-            let share = (seconds - self.slow_down_layer_time)
-                / (self.cooling_layer_time - self.slow_down_layer_time);
+        } else if seconds < cooling {
+            let share = f64::from((seconds - slow_down) / (cooling - slow_down));
             (share * self.min_speed + (1.0 - share) * self.max_speed).floor()
         } else if self.keep_running {
             self.min_speed
@@ -289,6 +298,17 @@ mod tests {
             ..fan
         };
         assert_eq!(stopping.percent(1, 200.0), 0.0);
+
+        // With the two speeds the same, every layer time between the
+        // two times gives that speed, never a percent under it.
+        let level = Fan {
+            min_speed: 100.0,
+            ..fan
+        };
+        for step in 0..9200 {
+            let seconds = 8.0 + f64::from(step) * 0.01 + 1e-7;
+            assert_eq!(level.percent(1, seconds), 100.0, "at {seconds} s");
+        }
 
         // Ramping up to full speed on the fifth layer.
         let ramp = Fan {

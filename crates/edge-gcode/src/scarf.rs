@@ -873,7 +873,11 @@ impl Writer<'_> {
             .map(|piece| Run {
                 line: match crate::fit(s, &piece.points, wall.role) {
                     Some(fitted) => fitted,
-                    None => arc::Fitted::straight(piece.points),
+                    // Thinned by itself when no arcs are fitted
+                    // (`simplify.rs`).
+                    None => {
+                        arc::Fitted::straight(crate::simplify::piece(s, &piece.points).into_owned())
+                    }
                 },
                 flow: piece.flow,
             })
