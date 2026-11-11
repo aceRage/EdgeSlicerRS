@@ -295,7 +295,7 @@ impl Writer<'_> {
         if !beside || !self.over_bed(point) {
             return Ok(());
         }
-        self.travel(point, false)?;
+        self.travel(point, false, Some(wall.role))?;
         self.dry(path[0], wall.role, &wall.flow)
     }
 

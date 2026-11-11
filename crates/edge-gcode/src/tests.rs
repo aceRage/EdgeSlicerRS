@@ -630,6 +630,17 @@ fn speeds_follow_role_layer_and_the_melt_limit() {
     let expected = (4.0 / flow().mm3_per_mm() * 60.0).round();
     assert_eq!(feed_of(&text, 1, "Sparse infill"), expected);
     assert_eq!(feed_of(&text, 0, "Outer wall"), 1800.0);
+
+    // The limit goes by what the line lays with its flow ratios, as the
+    // reference holds it (GCode.cpp `_extrude`, `_mm3_per_mm`).
+    let ratioed = PrintSettings {
+        filament_flow_ratio: 0.98,
+        print_flow_ratio: 0.9,
+        ..limited
+    };
+    let (text, _) = print(&layers, &ratioed);
+    let expected = (4.0 / (flow().mm3_per_mm() * 0.98 * 0.9) * 60.0).round();
+    assert_eq!(feed_of(&text, 1, "Sparse infill"), expected);
 }
 
 #[test]
@@ -940,12 +951,31 @@ fn fill_is_laid_area_by_area_whatever_its_kind() {
         ["Top surface", "Internal solid infill", "Top surface"]
     );
 
-    // Lines that are no part of an area keep to their kind: gap fill
-    // first, as it is given, then the fill.
-    let mut with_gaps = vec![line((22.0, 5.0), (24.0, 5.0), Role::GapFill)];
-    with_gaps.extend(fill);
+    // A line of gap fill between walls is an area of its own, chained
+    // with the rest, though it is given after them: it goes between the
+    // solid area and the top on the right, where it lies (changed from
+    // after all the fill, as given, when it was ordered apart from it).
+    let gap = line((16.0, 2.0), (18.0, 2.0), Role::GapFill);
+    let mut with_gaps = fill.clone();
+    with_gaps.push(gap.clone());
     let (text, _) = print(&one_layer(&[], &[], &with_gaps), &basic());
-    assert_eq!(features(&text)[0], "Gap infill");
+    assert_eq!(
+        features(&text),
+        [
+            "Top surface",
+            "Internal solid infill",
+            "Gap infill",
+            "Top surface"
+        ]
+    );
+    // Other lines that are no part of an area keep to their kind.
+    let mut with_bridge = fill;
+    with_bridge.push(ExtrusionPath {
+        role: Role::BridgeInfill,
+        ..gap
+    });
+    let (text, _) = print(&one_layer(&[], &[], &with_bridge), &basic());
+    assert_eq!(features(&text)[3], "Bridge");
 }
 
 #[test]
@@ -1260,9 +1290,26 @@ fn acceleration_follows_the_feature_and_the_first_layer() {
         [
             // The whole first layer, travel included, is gentle.
             "SET_VELOCITY_LIMIT ACCEL=500 ACCEL_TO_DECEL=250 MINIMUM_CRUISE_RATIO=0.5",
-            // Second layer: travel, the outer wall, then fill at the default.
-            "SET_VELOCITY_LIMIT ACCEL=10000 ACCEL_TO_DECEL=5000 MINIMUM_CRUISE_RATIO=0.5",
+            // Second layer: the outer wall, then fill at the default. With
+            // no travel acceleration set, travel keeps whatever is set
+            // (GCode.cpp `travel_to`; it went at the default before).
             "SET_VELOCITY_LIMIT ACCEL=5000 ACCEL_TO_DECEL=2500 MINIMUM_CRUISE_RATIO=0.5",
+            "SET_VELOCITY_LIMIT ACCEL=10000 ACCEL_TO_DECEL=5000 MINIMUM_CRUISE_RATIO=0.5",
+        ]
+    );
+    // With one, every travel is at it, short hops too, and from before
+    // the retraction: up to the second layer, to the fill after the
+    // wall, and from the fill to the next layer.
+    let travelling = PrintSettings {
+        travel_acceleration: 12000.0,
+        ..klipper.clone()
+    };
+    assert_eq!(
+        limits(&travelling)[1..],
+        [
+            "SET_VELOCITY_LIMIT ACCEL=12000 ACCEL_TO_DECEL=6000 MINIMUM_CRUISE_RATIO=0.5",
+            "SET_VELOCITY_LIMIT ACCEL=5000 ACCEL_TO_DECEL=2500 MINIMUM_CRUISE_RATIO=0.5",
+            "SET_VELOCITY_LIMIT ACCEL=12000 ACCEL_TO_DECEL=6000 MINIMUM_CRUISE_RATIO=0.5",
             "SET_VELOCITY_LIMIT ACCEL=10000 ACCEL_TO_DECEL=5000 MINIMUM_CRUISE_RATIO=0.5",
         ]
     );
@@ -1271,7 +1318,7 @@ fn acceleration_follows_the_feature_and_the_first_layer() {
         accel_to_decel_factor: None,
         ..klipper.clone()
     };
-    assert_eq!(limits(&marlin)[..2], ["M204 S500", "M204 S10000"]);
+    assert_eq!(limits(&marlin)[..2], ["M204 S500", "M204 S5000"]);
     // With no accelerations set, the printer's own are left alone.
     assert!(limits(&basic()).is_empty());
 }
@@ -2894,4 +2941,118 @@ fn a_speed_within_one_mm_a_second_of_the_last_is_not_written() {
     // between the 50 mm/s of half and the 30 mm/s of three quarters.
     let slowest = speeds.iter().copied().fold(f64::INFINITY, f64::min);
     assert!((30.0..36.0).contains(&slowest), "{slowest}");
+}
+
+#[test]
+fn loops_over_air_go_last_and_those_out_of_reach_after_the_fill() {
+    // A block beneath; above it an inner wall on the block, a wall over
+    // air just beside that one, and an outer wall over air far out.
+    let block = [ExPolygon {
+        contour: wall(0.0, 0.0, 10.0, 0).polygon,
+        holes: Vec::new(),
+    }];
+    let base = [wall(0.0, 0.0, 10.0, 0)];
+    let loops = [
+        wall(-5.0, -5.0, 20.0, 0),
+        wall(-0.3, -0.3, 10.6, 1),
+        wall(0.1, 0.1, 9.8, 2),
+    ];
+    let fill = [line((2.0, 5.0), (8.0, 5.0), Role::SparseInfill)];
+    let first = one_layer(&base, &[0..1], &[])[0];
+    let second = Layer {
+        z: 0.4,
+        below: &block,
+        ..one_layer(&loops, &[0..3], &fill)[0]
+    };
+    let laid = |unsupported_wall_last: bool, infill_first: bool| {
+        let settings = PrintSettings {
+            wall_order: WallOrder::OuterInner,
+            unsupported_wall_last,
+            infill_first,
+            ..basic()
+        };
+        let text = print(&[first, second], &settings).0;
+        let second = &text[text.find(";Z:0.4").unwrap()..];
+        features(second).join(", ")
+    };
+    // Outer wall first, as asked.
+    let off = laid(false, false);
+    assert_eq!(off, "Overhang wall, Inner wall, Sparse infill");
+    // The wall resting on the block first, the one beside it next, and
+    // the outer one, which nothing anchored is near, after the fill.
+    let on = laid(true, false);
+    assert_eq!(
+        on,
+        "Inner wall, Overhang wall, Sparse infill, Overhang wall"
+    );
+    // With the fill first nothing is held back, but the walls over air
+    // still come last, innermost first.
+    let first_fill = laid(true, true);
+    assert_eq!(first_fill, "Sparse infill, Inner wall, Overhang wall");
+}
+
+#[test]
+fn a_measured_wall_goes_at_its_own_speed_unrounded() {
+    // A wall resting on the layer beneath, measured for overhangs, at a
+    // speed the melt limit leaves at no whole number of mm/s: written as
+    // it is, to the mm/min (GCode.cpp `_extrude`, `F = speed * 60`; it was
+    // a whole number of mm/s here).
+    let loops = [wall(0.0, 0.0, 10.0, 0)];
+    let beneath = [ExPolygon {
+        contour: wall(-1.0, -1.0, 12.0, 0).polygon,
+        holes: Vec::new(),
+    }];
+    let first = one_layer(&loops, &[0..1], &[])[0];
+    let second = Layer {
+        z: 0.4,
+        below: &beneath,
+        ..first
+    };
+    let settings = PrintSettings {
+        filament_max_volumetric_speed: 4.0,
+        ..basic()
+    };
+    let speed = 4.0 / flow().mm3_per_mm();
+    assert!((speed - speed.round()).abs() > 0.1, "{speed}");
+    let text = print(&[first, second], &settings).0;
+    let second = &text[text.find(";Z:0.4").unwrap()..];
+    let feed = moves(second)
+        .find(|line| word(line, 'E').is_some_and(|e| e > 0.0) && word(line, 'F').is_some())
+        .and_then(|line| word(line, 'F'));
+    assert_eq!(feed, Some((speed * 60.0).round()));
+}
+
+#[test]
+fn a_layer_slowed_to_cool_leaves_the_prime_tower_at_its_speed() {
+    // A short layer, slowed to take 20 s: the wall gives way, the
+    // tower's line keeps its 90 mm/s, its time counted all the same
+    // (CoolingBuffer.cpp slows only lines `_extrude` marks).
+    let part = [wall(0.0, 0.0, 10.0, 0)];
+    let tower = [line((60.0, 40.6), (40.0, 40.6), Role::PrimeTower)];
+    let layers: Vec<Layer<'_>> = [0.2, 0.4]
+        .into_iter()
+        .map(|z| Layer {
+            z,
+            tower: &tower,
+            ..one_layer(&part, &[0..1], &[])[0]
+        })
+        .collect();
+    let settings = PrintSettings {
+        slow_down_for_layer_cooling: true,
+        slow_down_layer_time: 20.0,
+        slow_down_min_speed: 1.0,
+        ..basic()
+    };
+    let (text, summary) = print(&layers, &settings);
+    assert_eq!(summary.slowed_layers, 2);
+    let second = text.split(";LAYER_CHANGE").nth(2).unwrap();
+    let feed = |kind: &str| {
+        let from = second.find(&format!(";TYPE:{kind}")).unwrap();
+        moves(&second[from..])
+            .find(|line| word(line, 'E').is_some_and(|e| e > 0.0))
+            .and_then(|line| word(line, 'F'))
+            .unwrap()
+    };
+    assert_eq!(feed("Prime tower"), 5400.0);
+    assert!(feed("Outer wall") < 300.0, "{}", feed("Outer wall"));
 }

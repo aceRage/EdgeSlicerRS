@@ -74,6 +74,10 @@ pub struct PrintSettings {
     /// Whether a stretch of wall with nothing under it is printed as a
     /// bridge, in its own kind of line.
     pub detect_overhang_wall: bool,
+    /// Whether a wall loop wholly over air is laid after the island's
+    /// other walls, innermost first, and one that touches none of them
+    /// after the island's fill (`unsupported_wall_last`).
+    pub unsupported_wall_last: bool,
     /// Whether walls slow down as less of them is supported, and the
     /// speeds where a quarter, a half, three quarters and nearly all of
     /// the line hangs over; zero for the wall's own speed.
@@ -311,6 +315,7 @@ impl Default for PrintSettings {
             bridge_speed: 25.0,
             gap_infill_speed: 30.0,
             detect_overhang_wall: true,
+            unsupported_wall_last: false,
             enable_overhang_speed: true,
             overhang_speeds: [FloatOrPercent::Value(0.0); 4],
             slowdown_for_curled_perimeters: false,
@@ -667,6 +672,7 @@ impl PrintSettings {
             bridge_speed: number("bridge_speed", defaults.bridge_speed)?,
             gap_infill_speed: number("gap_infill_speed", defaults.gap_infill_speed)?,
             detect_overhang_wall: flag("detect_overhang_wall", defaults.detect_overhang_wall)?,
+            unsupported_wall_last: flag("unsupported_wall_last", defaults.unsupported_wall_last)?,
             enable_overhang_speed: flag("enable_overhang_speed", defaults.enable_overhang_speed)?,
             overhang_speeds: [
                 listed_share("overhang_1_4_speed", defaults.overhang_speeds[0])?,

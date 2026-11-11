@@ -6,18 +6,11 @@ use edge_config::Settings;
 
 /// A setting, the value that turns it off, and what is done whatever it
 /// is set to.
-const UNREAD: [(&str, &str, &str); 2] = [
-    (
-        "zaa_enabled",
-        "0",
-        "top surfaces are laid flat, not contoured in height",
-    ),
-    (
-        "unsupported_wall_last",
-        "0",
-        "a wall loop with nothing under it keeps its place among the walls",
-    ),
-];
+const UNREAD: [(&str, &str, &str); 1] = [(
+    "zaa_enabled",
+    "0",
+    "top surfaces are laid flat, not contoured in height",
+)];
 
 /// What `settings` ask for that nothing follows.
 pub(crate) fn notes(settings: &Settings) -> Vec<String> {
