@@ -2973,3 +2973,34 @@ fn loops_over_air_go_last_and_those_out_of_reach_after_the_fill() {
     let first_fill = laid(true, true);
     assert_eq!(first_fill, "Sparse infill, Inner wall, Overhang wall");
 }
+
+#[test]
+fn a_measured_wall_goes_at_its_own_speed_unrounded() {
+    // A wall resting on the layer beneath, measured for overhangs, at a
+    // speed the melt limit leaves at no whole number of mm/s: written as
+    // it is, to the mm/min (GCode.cpp `_extrude`, `F = speed * 60`; it was
+    // a whole number of mm/s here).
+    let loops = [wall(0.0, 0.0, 10.0, 0)];
+    let beneath = [ExPolygon {
+        contour: wall(-1.0, -1.0, 12.0, 0).polygon,
+        holes: Vec::new(),
+    }];
+    let first = one_layer(&loops, &[0..1], &[])[0];
+    let second = Layer {
+        z: 0.4,
+        below: &beneath,
+        ..first
+    };
+    let settings = PrintSettings {
+        filament_max_volumetric_speed: 4.0,
+        ..basic()
+    };
+    let speed = 4.0 / flow().mm3_per_mm();
+    assert!((speed - speed.round()).abs() > 0.1, "{speed}");
+    let text = print(&[first, second], &settings).0;
+    let second = &text[text.find(";Z:0.4").unwrap()..];
+    let feed = moves(second)
+        .find(|line| word(line, 'E').is_some_and(|e| e > 0.0) && word(line, 'F').is_some())
+        .and_then(|line| word(line, 'F'));
+    assert_eq!(feed, Some((speed * 60.0).round()));
+}

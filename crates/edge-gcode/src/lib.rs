@@ -705,8 +705,6 @@ struct Laid<'a> {
     /// The fan comes on where no more than this share of the wall's
     /// width is supported; none when it does not go by that.
     fan_at: Option<f32>,
-    /// The wall's speed as it is written where it is supported.
-    written: f64,
 }
 
 impl<'a> Laid<'a> {
@@ -2074,17 +2072,6 @@ impl Writer<'_> {
                 cooled,
                 fan: fan.is_some(),
                 fan_at: fan.and_then(|fan| fan.at).map(|at| at as f32),
-                // Not as the reference, which writes a wall's own speed
-                // as it is (GCode.cpp `_extrude`, `F = speed * 60`):
-                // here it is a whole number of mm/s wherever overhangs
-                // slow walls down, as this engine has always written it.
-                // Kept so that a part with no overhang is the file it
-                // was; the reference's way is `motion.speed` alone.
-                written: if s.enable_overhang_speed {
-                    motion.speed.round().min(motion.speed)
-                } else {
-                    motion.speed
-                },
             };
             let runs = match known {
                 Some(runs) => runs,
@@ -2267,14 +2254,6 @@ impl Writer<'_> {
             } else {
                 laid.cooled || run.cooled
             })?;
-            let motion = Motion {
-                speed: if run.clear {
-                    motion.speed
-                } else {
-                    laid.written
-                },
-                ..motion
-            };
             // Part of a wall keeps the arcs of that stretch by itself:
             // the reference makes separate paths of the stretches
             // before it fits arcs to any.
@@ -2348,11 +2327,9 @@ impl Writer<'_> {
             } else if (set - wanted).abs() > 60.0 {
                 set = wanted;
             }
-            let speed = match (set == own, run.clear) {
-                (true, false) => laid.written,
-                (true, true) => motion.speed,
-                (false, _) => set / 60.0,
-            };
+            // A wall's own speed as it is (GCode.cpp `_extrude`,
+            // `F = speed * 60`).
+            let speed = if set == own { motion.speed } else { set / 60.0 };
             self.fan_over_air(fan)?;
             self.extrude(to, role, flow, Motion { speed, ..motion })?;
         }
