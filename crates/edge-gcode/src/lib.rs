@@ -1909,11 +1909,12 @@ impl Writer<'_> {
                     if self.settings.reduce_infill_retraction
                         && let Some(at) = self.state.position
                     {
+                        // A straight move as a way round: the areas
+                        // sorted into cells answer as the plain test
+                        // does, without going over every edge of the
+                        // layer for each line.
                         let way = self.way(points[0]);
-                        sheltered = match way[..] {
-                            [to] => inside::stays_inside(shelter, at, to),
-                            _ => self.way_sheltered(shelter, at, &way),
-                        };
+                        sheltered = self.way_sheltered(shelter, at, &way);
                     }
                     // A short move of solid fill gets less plastic
                     // (`small_area_infill_flow_compensation`).
