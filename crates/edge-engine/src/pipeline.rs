@@ -273,7 +273,7 @@ pub fn slice(job: Job, watch: &dyn Watcher) -> Result<Sliced, Failure> {
     // As the reference does it (PrintObjectSlice.cpp, the "make_slices in
     // parallel" part of `PrintObject::slice_volumes`): the external wall of
     // the layer in hand sets how narrow a part may be left; a layer in one
-    // material is shrunk and united again; a layer in several is closed
+    // material is shrunk as it is; a layer in several is closed
     // first by one and a half times the closing radius, so that the seams
     // between its materials are not taken for outline, that is shrunk, and
     // each material keeps what it has inside the result. What was shrunk,
