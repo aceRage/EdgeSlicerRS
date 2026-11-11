@@ -59,6 +59,7 @@ fn block(project: Option<&Settings>) -> Loaded {
         plate: 0,
         first_layer_sequence: Vec::new(),
         bounds: (min, max),
+        placed: false,
     }
 }
 

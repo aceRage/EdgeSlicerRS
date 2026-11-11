@@ -270,6 +270,7 @@ pub fn slice(job: Job, watch: &dyn Watcher) -> Result<Sliced, Failure> {
     let Job {
         loaded,
         is_project,
+        placed,
         settings,
         layer_height: (layer_height, _),
         first_layer_height: (first_layer_height, _),
@@ -285,9 +286,10 @@ pub fn slice(job: Job, watch: &dyn Watcher) -> Result<Sliced, Failure> {
 
     let print = PrintSettings::from_settings(&settings)?;
     // A bare model has no place on the bed of its own: it goes in the
-    // middle, as the reference's arranger leaves a single part.
+    // middle, as the reference's arranger leaves a single part. One that
+    // was put somewhere by hand stays there.
     let mut centred = None;
-    if let (false, Some([min_x, min_y, max_x, max_y])) = (is_project, print.bed) {
+    if let (false, Some([min_x, min_y, max_x, max_y])) = (is_project || placed, print.bed) {
         let x = (min_x + max_x) / 2.0 - f64::from(min[0] + max[0]) / 2.0;
         let y = (min_y + max_y) / 2.0 - f64::from(min[1] + max[1]) / 2.0;
         shift(&mut bodies, x, y);

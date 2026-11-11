@@ -3,8 +3,11 @@
    pages brought (a switch, a box of text) and what is theirs alone. */
 
 /* The sidebar takes the room a page of settings wants where the window
-   has it to give: 300 px in a narrow window, up to 380 px in a wide one. */
-#plater { grid-template-columns: clamp(300px, 24vw, 380px) minmax(0, 1fr); }
+   has it to give: 300 px in a narrow window, up to 380 px in a wide one.
+   Under 761 px the page is one column (style.css), which this leaves be. */
+@media (min-width: 761px) {
+  #plater { grid-template-columns: clamp(300px, 24vw, 380px) minmax(0, 1fr); }
+}
 
 /* ---- components ---- */
 

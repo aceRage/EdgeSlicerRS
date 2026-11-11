@@ -23,6 +23,7 @@ fixed-width face for values.
 | `printers.css` | The printer card and Printer Selection: only what is theirs alone |
 | `process.css` | The process pages (`process.js`): the switch and the box of text, which came with them, the option row, the pages' tabs, the search's list; and the sidebar's width |
 | `gl/gl.css` | What lies over the 3D views |
+| `edit.css` | Prepare as an editor: the toolbar and the number fields over the stage, the object list |
 | `app.js`, "controls" | `listbox` (the page's own list for a `<select>`) and the tooltips |
 
 The theme follows the system (`prefers-color-scheme`); there is no switch in
@@ -30,8 +31,8 @@ the page. A switch, when there is one, sets the light block's values under a
 selector of its own beside the media query; nothing else has to change,
 because no rule outside part 1 names a colour.
 
-The strip, the tab bar, the stage's overlays and Device are not on the
-tokens yet. They use the older names at the foot of part 1 (`--bg`,
+The strip, the tab bar, the stage's older overlays (the plates, the legend,
+the sliders, the notes) and Device are not on the tokens yet. They use the older names at the foot of part 1 (`--bg`,
 `--panel`, `--line`, `--strip…`, `--bar…`, `--stage…`), which stay until
 those parts are restyled. New rules do not use them.
 
@@ -300,6 +301,40 @@ and lays itself out in parts, ending in
 Open with `showModal()` so the keys stay inside it. Escape closes the
 innermost thing first.
 
+### Toolbars
+
+```html
+<div class="toolbar" role="toolbar" aria-label="Prepare">
+  <button type="button" class="icon tool" title="Add [Ctrl+I]" aria-label="Add"><svg …/></button>
+  <span class="toolbar-gap"></span>
+  <button type="button" class="icon tool" aria-pressed="true" title="Move [M]" aria-label="Move"><svg …/></button>
+</div>
+```
+
+Icon tools in a row on a floating surface: over the 3D stage, where a row
+of the page would not be at home. A tool is 28 px square with a 16 px icon;
+`.toolbar-gap` is the hairline between groups. A tool that stays on while
+it is in use (Move, Rotate, Scale) carries `aria-pressed`, and the one that
+is on is the accent on its tint. That is the toolbar's one use of the
+accent: what was done (undo) and what can be added are plain. The keys of a
+tool are in its tooltip, in the reference's own wording ("Move [M]"); a
+tool that cannot be used now is `disabled`, never hidden. A panel that
+belongs to the tool that is on (`.edit-panel`: the number fields) stands
+under the toolbar on the same surface, and is the only thing that does.
+
+### Trees: `.tree`
+
+The object list: one frame (`.tree`) with a head row of column titles in
+small capitals, group rows (`.obj-plate`: a plate, with what can be done to
+it at the right), and item rows on a grid of name, a 22 px tool and a
+54 px value. A row that is selected has the accent's tint and a bar of the
+accent at its head (`aria-selected="true"`, as `tr.on` in a table); a row
+that is off (not to be printed) is `--text-off`. A child row is its
+parent's row indented by 22 px. A name too long is cut with an ellipsis and
+given whole in its `title`. The value's list is a `bare` listbox, as in a
+card's row. A name is renamed in place: the name becomes a field of the
+same height, Enter takes it, Escape leaves it.
+
 ### What floats
 
 - `.popover`: a small form beside what opened it (a column's filter), inside
@@ -337,6 +372,10 @@ innermost thing first.
 - No control shown that does nothing.
 - No library for what a few lines of the page's own code do (a preference,
   not a rule: say why when one is taken).
+- No colour of the page's on what is drawn in the 3D scene itself. The
+  handles of the tools there (arrows, rings, grips) are in the axes' own
+  colours, which are the reference's (`ColorRGB::X`, `Y`, `Z`), like the
+  bed and the objects.
 - No motion longer than `--time`, and none that `prefers-reduced-motion`
   does not switch off.
 
