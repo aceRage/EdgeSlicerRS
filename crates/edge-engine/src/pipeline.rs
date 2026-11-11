@@ -238,6 +238,19 @@ pub fn slice(job: Job, watch: &dyn Watcher) -> Result<Sliced, Failure> {
     // The first layers are printed slightly smaller than modelled, tapering
     // to nothing over `elefant_foot_compensation_layers`. The modelled
     // outlines are kept: neighbouring layers are still compared with them.
+    //
+    // As the reference does it (PrintObjectSlice.cpp, the "make_slices in
+    // parallel" part of `PrintObject::slice_volumes`): the external wall of
+    // the layer in hand sets how narrow a part may be left; a layer in one
+    // material is shrunk and united again; a layer in several is closed
+    // first by one and a half times the closing radius, so that the seams
+    // between its materials are not taken for outline, that is shrunk, and
+    // each material keeps what it has inside the result. What was shrunk,
+    // closed or not, is what the layer counts as modelled.
+    //
+    // The reference decides between the two for each object by its count
+    // of regions; here a layer on which more than one filament has a share
+    // is treated as the second kind, whichever object the shares are in.
     let elephant_foot = settings.float("elefant_foot_compensation")?.unwrap_or(0.0);
     let elephant_layers = if elephant_foot > 0.0 {
         usize::try_from(
@@ -259,12 +272,27 @@ pub fn slice(job: Job, watch: &dyn Watcher) -> Result<Sliced, Failure> {
         };
         let outer = walls.params(height, index == 0)?.outer;
         let amount = elephant_foot * (1.0 - index as f64 / elephant_layers as f64);
-        let shrunk = edge_slice::compensate_elephant_foot(
-            &layer.regions,
-            scaled(outer.width + outer.spacing),
-            scaled(amount),
-        )?;
-        modelled.push(std::mem::replace(&mut layer.regions, shrunk));
+        let compensate = |regions: &[ExPolygon]| {
+            edge_slice::compensate_elephant_foot(
+                regions,
+                scaled(outer.width + outer.spacing),
+                scaled(amount),
+            )
+        };
+        let (whole, shrunk) = if layer.by_filament.len() > 1 {
+            let whole = edge_clip::closing(
+                &layer.regions,
+                scaled(closing_radius * 1.5),
+                edge_clip::Join::MITER,
+            )?;
+            let shrunk = edge_clip::intersection(&layer.regions, &compensate(&whole)?)?;
+            (whole, shrunk)
+        } else {
+            let shrunk = edge_clip::union_ex(&compensate(&layer.regions)?)?;
+            (std::mem::take(&mut layer.regions), shrunk)
+        };
+        layer.regions = shrunk;
+        modelled.push(whole);
     }
     let slice_time = started.elapsed();
 
