@@ -107,6 +107,10 @@ pub struct InfillSettings {
     pub bridge_flow: f64,
     pub thick_bridges: bool,
     pub bridge_density: f64,
+    /// How much further a bridge reaches into solid fill and into a top
+    /// or bottom surface beside it than a surface otherwise does, in mm
+    /// (`bridge_expansion_extra`).
+    pub bridge_expansion_extra: f64,
     /// The width set for bridges and bridges over infill, in mm
     /// (`bridge_line_width`); none leaves a round thread as thick as the
     /// nozzle's bore and a flattened line as wide as solid fill.
@@ -174,6 +178,7 @@ impl Default for InfillSettings {
             bridge_flow: 1.0,
             thick_bridges: false,
             bridge_density: 1.0,
+            bridge_expansion_extra: 0.0,
             bridge_line_width: None,
             thick_internal_bridges: true,
             internal_bridge_density: 1.0,
@@ -260,10 +265,6 @@ impl InfillSettings {
             (
                 "internal_bridge_angle",
                 "bridges over infill run across the lines beneath them",
-            ),
-            (
-                "bridge_expansion_extra",
-                "bridges reach the usual distance onto what is beside them",
             ),
         ] {
             if let Some(FloatOrPercent::Value(value) | FloatOrPercent::Percent(value)) =
@@ -424,6 +425,17 @@ impl InfillSettings {
             bridge_flow: number("bridge_flow", defaults.bridge_flow)?,
             thick_bridges: flag("thick_bridges", defaults.thick_bridges)?,
             bridge_density: share("bridge_density", defaults.bridge_density)?,
+            // From nothing to 999 mm, as the reference allows.
+            bridge_expansion_extra: match settings.float("bridge_expansion_extra")? {
+                Some(extra) if !(0.0..=999.0).contains(&extra) => {
+                    return Err(ConfigError::BadValue {
+                        key: "bridge_expansion_extra".into(),
+                        found: extra.to_string(),
+                        expected: "from 0 to 999",
+                    });
+                }
+                found => found.unwrap_or(defaults.bridge_expansion_extra),
+            },
             bridge_line_width: edge_extrusion::bridge_line_width(settings)?,
             thick_internal_bridges: flag(
                 "thick_internal_bridges",
@@ -544,6 +556,7 @@ impl InfillSettings {
         Ok(Anchoring {
             into_sparse: scaled(least),
             into_solid: scaled(shell * std::f64::consts::SQRT_2),
+            bridge_extra: scaled(self.bridge_expansion_extra),
             closing: scaled(0.55 * 0.65 * 1.05 * solid.spacing),
             minimum_sparse_area: self.minimum_sparse_infill_area,
         })
@@ -856,7 +869,7 @@ mod tests {
             .unsupported
             .is_empty()
         );
-        let set = read(r#"{"bridge_angle": "30", "bridge_expansion_extra": "0.5"}"#).unwrap();
+        let set = read(r#"{"bridge_angle": "30", "internal_bridge_angle": "45"}"#).unwrap();
         assert_eq!(set.unsupported.len(), 2);
         assert!(set.unsupported[0].starts_with("bridge_angle \"30\""));
     }
@@ -910,6 +923,32 @@ mod tests {
         )
         .unwrap();
         assert!((threads.params(0.2, false).unwrap().bridge.width - 0.15).abs() < 1e-12);
+    }
+
+    #[test]
+    fn a_bridge_s_extra_reach_is_read() {
+        let read = |json: &str| InfillSettings::from_settings(&Settings::from_json(json).unwrap());
+        // None unless asked for, and then nothing changes.
+        let unset = read("{}").unwrap();
+        assert_eq!(unset.bridge_expansion_extra, 0.0);
+        assert_eq!(unset.anchoring(0.2).unwrap().bridge_extra, 0);
+        let zero = read(r#"{"bridge_expansion_extra": "0"}"#).unwrap();
+        assert_eq!(zero.anchoring(0.2), unset.anchoring(0.2));
+        // Set, it is added to a bridge's reach and to nothing else.
+        let set = read(r#"{"bridge_expansion_extra": "2.5"}"#).unwrap();
+        assert!(set.unsupported.is_empty());
+        assert_eq!(
+            set.anchoring(0.2).unwrap(),
+            Anchoring {
+                bridge_extra: 2_500_000,
+                ..unset.anchoring(0.2).unwrap()
+            }
+        );
+        // Outside what the reference allows, or not a number.
+        assert!(read(r#"{"bridge_expansion_extra": "-1"}"#).is_err());
+        assert!(read(r#"{"bridge_expansion_extra": "1000"}"#).is_err());
+        assert!(read(r#"{"bridge_expansion_extra": "far"}"#).is_err());
+        assert!(read(r#"{"bridge_expansion_extra": "999"}"#).is_ok());
     }
 
     /// The first layer's parameters with no bridge width set.

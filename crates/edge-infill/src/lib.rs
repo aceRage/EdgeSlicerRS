@@ -11,6 +11,7 @@
 //! gap fill inside solid fill, and every sparse
 //! pattern but lines and grid.
 
+mod bridges;
 mod curves;
 mod fill;
 mod ironing;
