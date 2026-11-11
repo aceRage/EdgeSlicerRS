@@ -36,6 +36,19 @@ async function send(name, args) {
   return answer.ok;
 }
 
+// What is answered in bytes (a mesh, a stretch of a print's moves) comes
+// as an ArrayBuffer, by the same two ways.
+async function sendBytes(name, args = {}) {
+  if (tauri) return tauri.core.invoke('call_bytes', { name, args });
+  const response = await fetch(`/bytes/${name}`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', 'X-Edge-Token': token },
+    body: JSON.stringify(args),
+  });
+  if (!response.ok) throw new Error(await response.text());
+  return response.arrayBuffer();
+}
+
 function el(tag, props = {}, ...children) {
   const node = Object.assign(document.createElement(tag), props);
   node.append(...children);
@@ -227,6 +240,7 @@ async function showProject() {
     if (typeof view.type === 'string') mine.viewType = view.type;
     if (view.layers && typeof view.layers === 'object') mine.layerAt = { ...view.layers };
     if (Array.isArray(view.hidden)) mine.hidden = new Set(view.hidden);
+    if (Array.isArray(view.shown)) mine.options = new Set(view.shown);
     mine.restored = true;
   }
   // On Prepare or Preview: the tab the project was on. On Device: stay.
@@ -258,6 +272,7 @@ function noteView() {
   const mine = kept(id);
   noteTimer = setTimeout(() => {
     const view = { type: mine.viewType, layers: mine.layerAt, hidden: [...mine.hidden] };
+    if (mine.options) view.shown = [...mine.options];
     call('project_set', { project: id, view }).catch(() => {});
   }, 400);
 }
@@ -1047,7 +1062,8 @@ async function showStage({ entering = false } = {}) {
     showNotes(summary);
     showButtons();
     const last = summary.layers - 1;
-    await showLayer(Math.min(mine.layerAt[plateKey()] ?? 0, last), turn);
+    // In 3D every layer is shown, up to the one the slider is on.
+    if (!stage3d.active) await showLayer(Math.min(mine.layerAt[plateKey()] ?? 0, last), turn);
   } else {
     mine.shown = null;
   }
@@ -1065,7 +1081,7 @@ async function showStage({ entering = false } = {}) {
     if (layers !== mine.fittedLayers) mine.camera.preview = null;
     mine.fittedLayers = layers;
   }
-  if (!mine.camera[state.tab]) fit(preview && summary ? 'part' : 'bed');
+  if (!stage3d.active && !mine.camera[state.tab]) fit(preview && summary ? 'part' : 'bed');
   draw();
 
   if (preview && entering && !project.sliced && !slicingNow() && !project.failed
@@ -1146,7 +1162,9 @@ function tidyNotes() {
 function showLegend() {
   const mine = here();
   const summary = mine.summary;
-  const types = Object.keys(viewTypes);
+  // In 3D the legend's rows are the 3D view's own (gl/stage.js).
+  const own = stage3d.active ? stage3d.legend(mine, summary, filamentColour) : null;
+  const types = own ? own.types : Object.keys(viewTypes);
   if (!types.includes(mine.viewType)) mine.viewType = 'Line Type';
   fill($('view-type'), types, mine.viewType);
   const rows = $('legend-rows');
@@ -1168,7 +1186,9 @@ function showLegend() {
     return row;
   };
   const type = viewTypes[mine.viewType];
-  if (mine.viewType === 'Line Type') {
+  if (own) {
+    rows.replaceChildren(...own.rows(() => { showLegend(); draw(); noteView(); }));
+  } else if (mine.viewType === 'Line Type') {
     rows.replaceChildren(head('Line Type', 'Display'),
       ...summary.roles.map((role) => toggle(role, role, featureColours[role] || '#ffffff')));
   } else if (mine.viewType === 'Filament') {
@@ -1218,6 +1238,7 @@ async function showLayer(index, turn = staging) {
   const mine = here();
   const summary = mine.summary;
   if (!summary) return;
+  if (stage3d.active) { stage3d.setLayer(index); return; }
   const project = state.project;
   const plate = plateKey();
   index = Math.max(0, Math.min(summary.layers - 1, Math.round(index)));
@@ -1276,6 +1297,7 @@ function placeThumb(index, summary, layer = null) {
 function stepLayer(by) {
   const mine = here();
   if (!mine.summary) return;
+  if (stage3d.active) { stage3d.stepLayer(by); return; }
   showLayer((mine.layerAt[plateKey()] ?? 0) + by);
   noteView();
 }
@@ -1395,6 +1417,27 @@ async function showStats() {
 
 // ---- drawing ----
 
+// The stage in 3D (gl/): Prepare's scene and Preview's print. Where the
+// browser has no WebGL2 it stays off, and the view from above below is
+// what the stage shows.
+const stage3d = window.EdgeGL.stage;
+stage3d.init({
+  canvas: $('view3d'),
+  stage: $('stage'),
+  note: $('gl-note'),
+  call,
+  bytes: sendBytes,
+  menu: showMenu,
+  say,
+  remembered,
+  open: () => state.listing.projects.map((project) => project.id),
+  plate: (id) => attempt(() => selectPlate(id)),
+  jump: () => attempt(jumpToLayer),
+  legend: () => { if (state.tab === 'preview' && state.project && here().summary) showLegend(); },
+  noted: () => noteView(),
+  filamentColour: (summary, filament) => filamentColour(summary, filament),
+});
+
 // Where the tab's view of the plate is; until it has been fitted, a
 // stand-in that is not kept.
 function camera() {
@@ -1411,6 +1454,7 @@ function ownCamera() {
 }
 
 function fit(what) {
+  if (stage3d.active) { stage3d.fit(what); return; }
   const mine = here();
   const preview = state.tab === 'preview';
   const bed = (mine.summary && preview && mine.summary.bed) || (mine.plate && mine.plate.bed);
@@ -1464,6 +1508,12 @@ function drawBed(bed, hair, scale) {
 }
 
 function draw() {
+  if (stage3d.active) {
+    // The stage in 3D shows the same things from what it is told here.
+    const project = state.project;
+    stage3d.update({ project, settled: state.settled, tab: state.tab, kept: project ? here() : null, summary: project && state.tab === 'preview' ? here().summary : null });
+    return;
+  }
   const { width, height } = canvas.getBoundingClientRect();
   const ratio = window.devicePixelRatio || 1;
   if (canvas.width !== Math.round(width * ratio) || canvas.height !== Math.round(height * ratio)) {
@@ -1592,6 +1642,7 @@ for (const end of ['pointerup', 'pointercancel']) {
   });
 }
 new ResizeObserver(() => {
+  if (stage3d.active) return;
   const view = state.project && state.tab !== 'device' ? here().camera[state.tab] : undefined;
   if (view === null) fit(state.tab === 'preview' && here().summary ? 'part' : 'bed');
   else if (view && view.fitted) fit(view.fitted);
@@ -1723,7 +1774,7 @@ document.addEventListener('keydown', (event) => {
   if (typing || command || event.altKey || state.tab === 'device') return;
   // Tab goes between Prepare and Preview while the plate has the keys
   // (it was clicked), as in the reference; anywhere else it moves on.
-  if (key === 'Tab' && !event.shiftKey && event.target === canvas) {
+  if (key === 'Tab' && !event.shiftKey && (event.target === canvas || event.target === $('view3d'))) {
     event.preventDefault();
     attempt(() => selectTab(state.tab === 'prepare' ? 'preview' : 'prepare'));
     return;

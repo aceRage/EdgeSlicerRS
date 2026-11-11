@@ -10,10 +10,10 @@ use crate::Failure;
 /// A model file read, before anything is placed on a bed.
 pub struct Opened {
     path: PathBuf,
-    held: Held,
+    pub(crate) held: Held,
 }
 
-enum Held {
+pub(crate) enum Held {
     Model(Mesh),
     Project {
         project: Box<Project>,
@@ -301,15 +301,17 @@ fn shift_meshes<'a>(meshes: impl Iterator<Item = &'a mut Mesh>, x: f64, y: f64) 
 /// plate, which is what the printer needs, is measured from here. The bed
 /// size is the project's own `printable_area`, whole millimetres as the
 /// reference takes it.
-fn plate_origin(index: usize, count: usize, settings: Option<&Settings>) -> Option<(f64, f64)> {
+pub(crate) fn plate_origin(
+    index: usize,
+    count: usize,
+    settings: Option<&Settings>,
+) -> Option<(f64, f64)> {
     if index == 0 {
         return Some((0.0, 0.0));
     }
     let [min_x, min_y, max_x, max_y] = PrintSettings::from_settings(settings?).ok()?.bed?;
     let (width, depth) = ((max_x - min_x).trunc(), (max_y - min_y).trunc());
-    let columns = (count as f64).sqrt().ceil() as usize;
-    let (row, column) = (index / columns, index % columns);
-    Some((column as f64 * width * 1.2, -(row as f64) * depth * 1.2))
+    Some(crate::scene::plate_position(index, count, width, depth))
 }
 
 #[cfg(test)]

@@ -2,7 +2,9 @@
 //! command line, the desktop app, a test.
 //!
 //! [`open`] reads a model, [`prepare`] settles what it is sliced with,
-//! [`slice`] does the work and [`Sliced::gcode`] writes the result. Nothing
+//! [`slice`] does the work and [`Sliced::gcode`] writes the result. For
+//! looking at, [`Opened::scene`] gives the file's objects as meshes and
+//! [`read_toolpath`] the moves of a finished G-code file. Nothing
 //! here prints or touches a window; a [`Watcher`] is told how far the
 //! work has got and may stop it.
 
@@ -14,6 +16,8 @@ mod paint;
 mod pipeline;
 mod presets;
 mod preview;
+mod scene;
+mod toolpath;
 mod unfollowed;
 
 use std::{error::Error, fmt};
@@ -24,6 +28,8 @@ pub use load::{Loaded, Opened, PlateInfo, open};
 pub use pipeline::{Gcode, Sliced, Timings, slice};
 pub use presets::{Library, ModelPreset, PrinterModel, Shelf};
 pub use preview::Stroke;
+pub use scene::{Mark, Placing, Scene, SceneObject, ScenePlate, plate_position};
+pub use toolpath::{Feature, Move, MoveKind, Toolpath, ToolpathLayer, read_toolpath};
 
 /// Anything that stops the work, said in words fit to show a person.
 pub type Failure = Box<dyn Error + Send + Sync>;

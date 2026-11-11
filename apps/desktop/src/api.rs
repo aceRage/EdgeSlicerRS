@@ -9,6 +9,12 @@
 //! that names no project means that one. A slice runs on a thread of its
 //! own for its project, so another project can be looked at, or sliced,
 //! meanwhile.
+//!
+//! What the 3D views ask for is in [`scene`]. Its meshes and moves are too
+//! large for JSON and are answered as bytes, through
+//! [`Session::call_bytes`], which is `call` in every other way.
+
+mod scene;
 
 use std::{
     collections::{BTreeMap, HashMap},
@@ -45,6 +51,8 @@ pub struct Session {
     startup: Option<PathBuf>,
     /// Whether each call is noted on standard error (`EDGE_DESKTOP_TRACE`).
     traced: bool,
+    /// What the 3D views' calls keep between them.
+    scene: scene::Cache,
 }
 
 struct State {
@@ -838,6 +846,7 @@ impl Session {
             }),
             startup,
             traced: std::env::var_os("EDGE_DESKTOP_TRACE").is_some(),
+            scene: scene::Cache::default(),
         }
     }
 
@@ -847,6 +856,25 @@ impl Session {
         if self.traced && !matches!(name, "status" | "projects") {
             match &answer {
                 Ok(_) => eprintln!("call {name}: ok"),
+                Err(error) => eprintln!("call {name}: {error}"),
+            }
+        }
+        answer
+    }
+
+    /// Answers the page with bytes: a mesh, or a stretch of a print's
+    /// moves, in the layouts [`scene`] writes out. An error is a sentence
+    /// to show as it is.
+    pub fn call_bytes(self: &Arc<Self>, name: &str, args: &Value) -> Result<Vec<u8>, String> {
+        let answer = match name {
+            name if scene::BYTES.contains(&name) => self.scene_bytes(name, args),
+            other => Err(format!(
+                "there is no call named {other} that answers in bytes"
+            )),
+        };
+        if self.traced {
+            match &answer {
+                Ok(bytes) => eprintln!("call {name}: {} bytes", bytes.len()),
                 Err(error) => eprintln!("call {name}: {error}"),
             }
         }
@@ -970,6 +998,10 @@ impl Session {
                 std::fs::write(path, &gcode.text)
                     .map_err(|e| format!("{}: {e}", path.display()))?;
                 Ok(json!({ "path": shown(path), "bytes": gcode.text.len() }))
+            }
+            name if scene::JSON.contains(&name) => self.scene_json(name, args),
+            name if scene::BYTES.contains(&name) => {
+                Err(format!("{name} answers in bytes, not in JSON"))
             }
             other => Err(format!("there is no call named {other}")),
         }
