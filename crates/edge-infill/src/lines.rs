@@ -349,7 +349,9 @@ pub fn paths_anchored(
 /// everything in `outer` at `angle`: a line runs from edge to edge of
 /// `outer`, and where it is joined to its neighbour it turns short of the
 /// edge, on the outline of `inner`, which lies inside `outer`. A line that
-/// does not reach into `inner` at all is left out, as there. A `max_link`
+/// does not reach into `inner` at all is left out, as there. A line that
+/// a hole parts in two is joined round the side of the hole where
+/// [`joins_round`] finds the way. A `max_link`
 /// of zero joins nothing, and every line then runs edge to edge. `order`
 /// is [`Order::Sweep`], [`Order::Consistent`] or [`Order::Monotonic`];
 /// with the last the paths come in the order they are to be laid, each
@@ -767,15 +769,27 @@ fn join(
     }
     // Where the paths start, in the order they come out.
     let mut starts: Option<Vec<usize>> = None;
+    let round = if joining.order == Order::Nearest {
+        Vec::new()
+    } else {
+        joins_round(&crossings, segments, by_row, ring_lengths, joining.max_link)
+    };
     if joining.order == Order::Monotonic {
         candidates.clear();
-        let turns = monotonic(&crossings, segments);
+        let turns = monotonic(&crossings, segments, &round);
         // A line is joined to the one laid next when that is on the next
         // row and its end is the next along the outline.
         for pair in turns.windows(2) {
             let ((segment, entry), (_, to)) = (pair[0], pair[1]);
             let [a, b] = segments[segment];
             let far = if a == entry { b } else { a };
+            // On to the next stretch of the same row, round the
+            // outline between the two.
+            if let Some((_, forward)) = round[far].filter(|&(other, _)| other == to) {
+                crossings[far].link = Some((to, forward));
+                crossings[to].link = Some((far, !forward));
+                continue;
+            }
             let Some(own) = free[far] else { continue };
             let (here, there) = (&crossings[far], &crossings[to]);
             if there.direction != here.direction || (there.row - here.row).abs() != 1 {
@@ -839,8 +853,22 @@ fn join(
                         && there.link.is_none()
                         && there.segment.is_some_and(|segment| !passed[segment])
                 })
-                .min_by(|a, b| a.0.total_cmp(&b.0));
-                let Some((_, to, forward)) = next else { break };
+                .min_by(|a, b| a.0.total_cmp(&b.0))
+                .map(|(_, to, forward)| (to, forward))
+                // With no line beside it to go on to, round the outline
+                // to the next stretch of its own row, where that is
+                // still to be laid (`traverse_graph_generate_polylines`,
+                // "Try to connect to a previous or next point on the
+                // same vertical line").
+                .or_else(|| {
+                    round[far].filter(|&(to, _)| {
+                        crossings[to].link.is_none()
+                            && crossings[to]
+                                .segment
+                                .is_some_and(|segment| !passed[segment])
+                    })
+                });
+                let Some((to, forward)) = next else { break };
                 crossings[far].link = Some((to, forward));
                 crossings[to].link = Some((far, !forward));
                 at = to;
@@ -982,6 +1010,116 @@ fn join(
     paths
 }
 
+/// For each end of a stretch, the end it can be joined to round the
+/// outline without leaving its row: the near end of the next stretch of
+/// the same row, and whether that lies forwards along the ring
+/// (FillRectilinear.cpp `connect_segment_intersections_by_contours`, "Find
+/// possible connection points on the same vertical line").
+///
+/// A row that meets a hole, or a bay in the outline, is two stretches
+/// with the hole between them. On the first row to meet it and on the
+/// last, the outline goes from one stretch round the side of the hole to
+/// the other without crossing a row on the way, and the reference lays
+/// the two as one line that way round instead of stopping at the hole
+/// and starting again beyond it. So here: two ends are joined when they
+/// follow one another along a ring, counting every place a row meets
+/// it, and no other stretch of their row lies between them. An outline
+/// that meets no row but theirs (a hole one row wide) is not followed,
+/// as there.
+fn joins_round(
+    crossings: &[Crossing],
+    segments: &[[usize; 2]],
+    by_row: &[usize],
+    ring_lengths: &[f64],
+    max_link: Coord,
+) -> Vec<Option<(usize, bool)>> {
+    let mut round = vec![None; crossings.len()];
+    if max_link <= 0 {
+        return round;
+    }
+    // Every place a row meets each ring, in order along it, and where
+    // each lies in that order.
+    let mut along: Vec<Vec<usize>> = vec![Vec::new(); ring_lengths.len()];
+    for (index, crossing) in crossings.iter().enumerate() {
+        if let Some(ring) = along.get_mut(crossing.ring) {
+            ring.push(index);
+        }
+    }
+    let mut place = vec![0usize; crossings.len()];
+    for ring in &mut along {
+        ring.sort_by(|&a, &b| crossings[a].at.total_cmp(&crossings[b].at));
+        for (at, &index) in ring.iter().enumerate() {
+            place[index] = at;
+        }
+    }
+    let row_of = |index: usize| (crossings[index].direction, crossings[index].row);
+    // The end that follows `from` along its ring, forwards or back, when
+    // it is on the same row: the outline comes back to the row before
+    // it reaches the one beside it.
+    let beside = |from: usize, forward: bool| -> Option<usize> {
+        let ring = along.get(crossings[from].ring)?;
+        let count = ring.len();
+        let other = ring[(place[from] + if forward { 1 } else { count - 1 }) % count];
+        (other != from && row_of(other) == row_of(from)).then_some(other)
+    };
+    // Which way round `from` is joined to `to`, when the outline allows
+    // it from that end. Where it comes back to the row on the same side
+    // of the end both ways, it meets no other row and is not followed.
+    let way = |from: usize, to: usize| -> Option<bool> {
+        let (ahead, behind) = (beside(from, true), beside(from, false));
+        if let (Some(a), Some(b)) = (ahead, behind) {
+            let above = |other: usize| crossings[other].u > crossings[from].u;
+            if above(a) == above(b) {
+                return None;
+            }
+        }
+        if ahead == Some(to) {
+            Some(true)
+        } else if behind == Some(to) {
+            Some(false)
+        } else {
+            None
+        }
+    };
+    // The stretches of each row in order along it.
+    let mut rows: BTreeMap<(usize, i64), Vec<usize>> = BTreeMap::new();
+    let mut order = vec![0usize; crossings.len()];
+    for (at, &index) in by_row.iter().enumerate() {
+        order[index] = at;
+    }
+    for (segment, ends) in segments.iter().enumerate() {
+        rows.entry(row_of(ends[0])).or_default().push(segment);
+    }
+    for members in rows.values_mut() {
+        members.sort_by_key(|&segment| order[segments[segment][0]]);
+        for pair in members.windows(2) {
+            let (top, bottom) = (segments[pair[0]][1], segments[pair[1]][0]);
+            if crossings[top].ring != crossings[bottom].ring {
+                continue;
+            }
+            // Both ends have to allow it (the reference makes a join one
+            // end rules out invalid at the other too).
+            let (Some(forward), Some(back)) = (way(top, bottom), way(bottom, top)) else {
+                continue;
+            };
+            if forward == back {
+                continue;
+            }
+            let length = ring_lengths[crossings[top].ring];
+            let span = if forward {
+                (crossings[bottom].at - crossings[top].at).rem_euclid(length)
+            } else {
+                (crossings[top].at - crossings[bottom].at).rem_euclid(length)
+            };
+            if span <= max_link as f64 {
+                round[top] = Some((bottom, forward));
+                round[bottom] = Some((top, back));
+            }
+        }
+    }
+    round
+}
+
 /// A line with `clip` cut off each end; `None` when nothing is left.
 fn shorten(line: &[(f64, f64)], clip: f64) -> Option<Vec<(f64, f64)>> {
     let length = |a: (f64, f64), b: (f64, f64)| (b.0 - a.0).hypot(b.1 - a.1);
@@ -1035,6 +1173,9 @@ fn shorten(line: &[(f64, f64)], clip: f64) -> Option<Vec<(f64, f64)>> {
 /// the best of the nearest-next orders from every possible start is
 /// kept. So the order can differ from the reference's, never the rule.
 ///
+/// Stretches of one row that are joined round the outline between them
+/// ([`joins_round`]) count as one, as the reference's "vertical runs" do.
+///
 /// Two stretches on neighbouring rows are beside each other when they
 /// overlap along the rows. The reference follows the outline between
 /// them, which differs only where a gap narrower than a row slants
@@ -1043,7 +1184,11 @@ fn shorten(line: &[(f64, f64)], clip: f64) -> Option<Vec<(f64, f64)>> {
 /// orders grows past a few megabytes.
 const EXACT_REGIONS: usize = 12;
 
-fn monotonic(crossings: &[Crossing], segments: &[[usize; 2]]) -> Vec<(usize, usize)> {
+fn monotonic(
+    crossings: &[Crossing],
+    segments: &[[usize; 2]],
+    round: &[Option<(usize, bool)>],
+) -> Vec<(usize, usize)> {
     let line_of = |segment: usize| {
         let end = &crossings[segments[segment][0]];
         (end.direction, end.row)
@@ -1056,27 +1201,49 @@ fn monotonic(crossings: &[Crossing], segments: &[[usize; 2]]) -> Vec<(usize, usi
     for segment in 0..segments.len() {
         lines.entry(line_of(segment)).or_default().push(segment);
     }
-    for members in lines.values_mut() {
+    // The stretches of a row that are joined round the outline between
+    // them are laid as one, and are one here: a run, from its lowest
+    // stretch to its highest.
+    let mut runs: Vec<Vec<usize>> = Vec::new();
+    let mut rows: BTreeMap<(usize, i64), Vec<usize>> = BTreeMap::new();
+    for (&line, members) in &mut lines {
         members.sort_by(|&a, &b| span(a).0.total_cmp(&span(b).0));
+        for (index, &segment) in members.iter().enumerate() {
+            let joined = index > 0
+                && round[segments[members[index - 1]][1]]
+                    .is_some_and(|(to, _)| to == segments[segment][0]);
+            if !joined {
+                rows.entry(line).or_default().push(runs.len());
+                runs.push(Vec::new());
+            }
+            let run = runs.len() - 1;
+            runs[run].push(segment);
+        }
     }
-    let beside = |segment: usize, line: (usize, i64)| -> Vec<usize> {
-        let (low, high) = span(segment);
-        lines.get(&line).map_or_else(Vec::new, |members| {
-            members
+    let line_of = |run: usize| line_of(runs[run][0]);
+    // The runs of a row that have a stretch beside one of this run's.
+    let beside = |run: usize, line: (usize, i64)| -> Vec<usize> {
+        rows.get(&line).map_or_else(Vec::new, |others| {
+            others
                 .iter()
                 .copied()
                 .filter(|&other| {
-                    let (from, to) = span(other);
-                    from < high && to > low
+                    runs[run].iter().any(|&own| {
+                        let (low, high) = span(own);
+                        runs[other].iter().any(|&theirs| {
+                            let (from, to) = span(theirs);
+                            from < high && to > low
+                        })
+                    })
                 })
                 .collect()
         })
     };
 
     const NONE: usize = usize::MAX;
-    let mut region_of = vec![NONE; segments.len()];
+    let mut region_of = vec![NONE; runs.len()];
     let mut regions: Vec<Vec<usize>> = Vec::new();
-    for (&line, members) in &lines {
+    for (&line, members) in &rows {
         for &seed in members {
             if region_of[seed] != NONE {
                 continue;
@@ -1102,8 +1269,8 @@ fn monotonic(crossings: &[Crossing], segments: &[[usize; 2]]) -> Vec<(usize, usi
     let mut after: Vec<Vec<usize>> = vec![Vec::new(); regions.len()];
     for (region, run) in regions.iter().enumerate() {
         let line = line_of(run[0]);
-        for segment in beside(run[0], (line.0, line.1 - 1)) {
-            let other = region_of[segment];
+        for earlier in beside(run[0], (line.0, line.1 - 1)) {
+            let other = region_of[earlier];
             if other != region && !before[region].contains(&other) {
                 before[region].push(other);
                 after[other].push(region);
@@ -1113,11 +1280,19 @@ fn monotonic(crossings: &[Crossing], segments: &[[usize; 2]]) -> Vec<(usize, usi
 
     // A region entered at the low end of its first row leaves by the
     // high end of its last when it has an odd number of rows.
-    let entry = |region: usize, flipped: bool| segments[regions[region][0]][usize::from(flipped)];
+    let end = |run: usize, high: bool| {
+        let members = &runs[run];
+        if high {
+            segments[members[members.len() - 1]][1]
+        } else {
+            segments[members[0]][0]
+        }
+    };
+    let entry = |region: usize, flipped: bool| end(regions[region][0], flipped);
     let exit = |region: usize, flipped: bool| {
         let run = &regions[region];
         let high = (run.len() % 2 == 1) != flipped;
-        segments[run[run.len() - 1]][usize::from(high)]
+        end(run[run.len() - 1], high)
     };
     let apart = |a: usize, b: usize| {
         let (a, b) = (crossings[a].point, crossings[b].point);
@@ -1228,8 +1403,18 @@ fn monotonic(crossings: &[Crossing], segments: &[[usize; 2]]) -> Vec<(usize, usi
     let mut turns = Vec::with_capacity(segments.len());
     for (region, flipped) in order {
         let mut high = flipped;
-        for &segment in &regions[region] {
-            turns.push((segment, segments[segment][usize::from(high)]));
+        for &run in &regions[region] {
+            // A run entered at its high end is laid from its highest
+            // stretch down.
+            let members = &runs[run];
+            for index in 0..members.len() {
+                let segment = members[if high {
+                    members.len() - 1 - index
+                } else {
+                    index
+                }];
+                turns.push((segment, segments[segment][usize::from(high)]));
+            }
             high = !high;
         }
     }
@@ -1458,6 +1643,77 @@ mod tests {
             Order::Monotonic,
         );
         assert!((1..=4).contains(&joined.len()), "{} paths", joined.len());
+    }
+
+    #[test]
+    fn a_row_parted_by_a_hole_is_joined_round_its_side() {
+        // A square with a hole that rows along x at y = 8.5, 9.5 and 10.5
+        // meet; drawn in by 0.2 mm the hole's outline is from 7.8 to
+        // 12.2 across and from `low` to `high` up.
+        let holed = |low: f64, high: f64| {
+            let mut hole = rect(8.0, low + 0.2, 12.0, high - 0.2);
+            hole.points.reverse();
+            ExPolygon {
+                contour: rect(0.0, 0.0, 20.0, 20.0),
+                holes: vec![hole],
+            }
+        };
+        let laid = |area: &ExPolygon, max_link: Coord, order: Order| {
+            let (outer, inner) = drawn_in(area, 0.2);
+            paths_turned(&outer, &inner, 1e6, 0.5e6, 0.0, max_link, order)
+        };
+        // Whether a path runs along the side of the hole at this height,
+        // from one of its corners to the other.
+        let along_side = |paths: &[Vec<Point2>], y: f64| {
+            let (left, right) = (Point2::from_mm(7.8, y), Point2::from_mm(12.2, y));
+            paths.iter().flat_map(|path| path.windows(2)).any(|pair| {
+                [pair[0], pair[1]] == [left, right] || [pair[1], pair[0]] == [left, right]
+            })
+        };
+        let far = Coord::MAX / 4;
+        let area = holed(8.2, 10.8);
+        // Swept in order, the first row to meet the hole goes round
+        // under it and the last round over it, each as one line: the
+        // outline gets from one stretch to the other there without
+        // crossing another row.
+        let swept = laid(&area, far, Order::Monotonic);
+        assert!(along_side(&swept, 8.2) && along_side(&swept, 10.8));
+        // Every stretch is still laid once: twenty rows, three of them
+        // in two parts.
+        let stretches = |paths: &[Vec<Point2>]| {
+            paths
+                .iter()
+                .flat_map(|path| path.windows(2))
+                .filter(|pair| {
+                    pair[0].y == pair[1].y && (pair[0].y - scaled(0.5)) % scaled(1.0) == 0
+                })
+                .count()
+        };
+        assert_eq!(stretches(&swept), 23);
+        let apart = laid(&area, 0, Order::Monotonic);
+        assert_eq!(apart.len(), 23);
+        assert!(!along_side(&apart, 8.2) && !along_side(&apart, 10.8));
+        // Round the hole is 5.8 mm: not with joins held shorter.
+        let short = laid(&area, scaled(3.0), Order::Monotonic);
+        assert!(!along_side(&short, 8.2) && !along_side(&short, 10.8));
+        assert_eq!(stretches(&short), 23);
+
+        // Laid in any order, a line goes on to the row beside it while
+        // there is one, and round the hole only when there is not: up
+        // the left of the hole from the first row, and round over it
+        // from the last, whose other part is still to lay.
+        let any = laid(&area, far, Order::Sweep);
+        assert!(!along_side(&any, 8.2) && along_side(&any, 10.8));
+        assert_eq!(stretches(&any), 23);
+
+        // A hole only one row meets is not gone round: its outline
+        // leads to no other row.
+        let small = holed(9.2, 9.8);
+        for order in [Order::Monotonic, Order::Sweep] {
+            let rows = laid(&small, far, order);
+            assert!(!along_side(&rows, 9.2) && !along_side(&rows, 9.8));
+            assert_eq!(stretches(&rows), 21);
+        }
     }
 
     #[test]
