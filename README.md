@@ -196,6 +196,13 @@ Working:
   layer unless `fuzzy_skin_first_layer`; kept off walls with nothing
   near beneath them, and off every wall over air with
   `fuzzy_skin_skip_overhangs`.
+- XY size compensation (`xy_contour_compensation`, `xy_hole_compensation`):
+  outlines are moved out and holes made larger by what is set, or in
+  and smaller, growing first and shrinking after, as the reference does
+  it (`_shrink_contour_holes`). On a layer in several filaments the layer
+  is resized as a whole and each filament keeps its share of it. Not
+  used on a plate with colour painted on it, and a note says so: the
+  reference leaves out the painted object only.
 - Thin walls (`detect_thin_wall`, classic walls): a part too thin for a
   wall down each side gets one line down its middle, as wide as the
   part, laid as an outer wall; a fuzzy skin on the outer wall is on it
@@ -804,6 +811,9 @@ Wall options, with the U1's presets, C++ slicer against this engine:
 | `fuzzy_skin` `allwalls`, `extrusion`, cube, `arachne` | Outer wall | 7.88 m | 7.87 m |
 | `fuzzy_skin` `external`, `ripple`, cube, `arachne` | Outer wall | 7.94 m | 7.96 m |
 | `detect_thin_wall`, fins 0.5 to 1.1 mm thick | Outer wall | 1.85 m (2.08 m off) | 1.85 m |
+| XY compensation, frame: hole +0.1, outline +0.08 | Outer / inner wall | 8.44 m / 8.16 m | 8.44 m / 8.16 m |
+| XY compensation, frame: hole -0.1, outline -0.08 | Outer / inner wall | 8.35 m / 8.07 m | 8.35 m / 8.07 m |
+| XY compensation, frame: hole +0.15, outline -0.1 | Outer / inner wall | 8.41 m / 8.13 m | 8.41 m / 8.13 m |
 | `alternate_extra_wall`, cube, either generator | Inner wall | 10.96 m | 10.96 m |
 
 And by what is laid which way and when: on a frame (a part with a
