@@ -17,7 +17,8 @@ The last column reads:
   block, "Sidebar: Printer" in section 2, and section 8; third pass: the 3D
   views, sections 9 to 11; fourth pass: the process pages, "Sidebar:
   Process" in section 2 and section 12; fifth pass: Prepare as an editor,
-  section 13).
+  section 13; sixth pass: the filament's and the printer's pages, section
+  14).
 - **differs** — built, but on purpose not as the C++ does it; the cell says how.
 - **not yet** — not built, with what it waits for. Nothing in this column is
   shown in the page as a control that does nothing.
@@ -28,8 +29,13 @@ light kept working, in a modern web style that is streamlined and spare,
 nearer the newer PrusaSlicer look than Bambu Studio's. A row's "Here"
 column says what is offered, never that it is styled as the C++ styles it.
 How it is styled (the tokens, the controls, the dos and don'ts) is in
-`ui/STYLE.md`; the sidebar and Printer Selection follow it, the strip, the
-tab bar, the stage's overlays and Device do not yet.
+`ui/STYLE.md`, and the whole page follows it: the project strip, the tab
+bar, the sidebar, Printer Selection, the stage and what lies over it in
+Prepare and Preview, Device and the dialogs. The restyle changed no
+control, wording, call or key; the sidebar's sections now stand in the
+order Printer, Filament Management, Objects, Process (the object list was
+after the process pages), with each section's title, and the Process
+section's head, kept in sight as the sidebar scrolls.
 
 Everything the page asks for goes through `Session::call` (`src/api.rs`), or
 through its twin `Session::call_bytes` for what is answered in bytes. The
@@ -76,7 +82,7 @@ runs, is section 8.
 | Two vendors with a model of the same name are one row (the group is keyed by name) | l.1636–1641 | **differs**: a row each, the vendor in the row's tooltip. One row that picks whichever preset comes first is not what a list of printers is for |
 | Picking a model: the preset of that model for the nozzle the project is on, else for 0.4, else the first by name; when the model changes, the nozzles last used on its rack | `Plater::priv::on_select_preset` l.18536–18648, `PresetBundle::get_similar_printer_preset` l.3141, `printer_preset_for_remembered_nozzles` l.4047 | **added** (`printer_select`). **not yet**: the rack's remembered nozzles (the engine has no rack) |
 | At the foot of the list: "Select/Remove printers (system presets)" opens Printer Selection; "Create printer" opens "Create Printer/Nozzle". Picked, they leave the list on the printer it was on | l.1751–1762, `OnSelect` l.1188–1222, Plater.cpp l.18547 | **added**: "Select/Remove printers (system presets)". **not yet**: "Create printer" (section 8); it is not listed |
-| In the list's own row: the edit icon (opens the printer's settings), "Connect to printer" (opens "Devices"), "The machine has been connected and is currently in working mode" | Plater.cpp l.2659–2686, PresetComboBoxes.cpp l.1907–1985 | **not yet**: needs a settings editor, and a printer connection (section 4) |
+| In the list's own row: the edit icon (opens the printer's settings), "Connect to printer" (opens "Devices"), "The machine has been connected and is currently in working mode" | Plater.cpp l.2659–2686, PresetComboBoxes.cpp l.1907–1985 | **added**: the edit icon at the right of the printer card's head, "Click to edit preset", opens the printer's pages (section 14). **not yet**: "Connect to printer" and the working-mode mark, which need a printer connection (section 4) |
 | Leaving a printer or filament preset with unsaved changes asks first ("Unsaved Changes") | `Tab::select_preset` Tab.cpp l.9037–9105 | not needed: presets are not edited |
 | **Another printer, the process**: the one last used with that printer ("Remember printer configuration", on unless turned off); else the one of the same name (alias: the name up to "@") cut for it; else the printer's `default_print_profile`; else the first that fits | `PresetBundle::update_selections` l.2432, `update_compatible` l.7171 (`PreferedPrintProfileMatch` l.7213), Tab.cpp l.9196–9306 | **added** (`printer_select`), in that order, a process that still fits staying before the search by name. **not yet**: the profile remembered for each layer height, the preference itself |
 | **Another printer, the process settings changed by hand** are carried over: "Kept %1% process settings from \"%2%\" (revertable)."; each carried value stays marked as changed and can be reverted | `capture_print_settings_carry`, `apply_print_settings_carry` Tab.cpp l.9096, l.9314 | **added**: every process setting set over the preset stays set, with the same sentence in the status line (one setting: "Kept 1 process setting from …"), and each is given back with its own reset or all with the reset in the Process title bar. **differs**: said for a change of process preset too, where the C++ asks ("Unsaved Changes": transfer, discard, save); line widths and layer heights are kept across nozzle sizes, where the C++ lets them "follow the new nozzle size" |
@@ -99,7 +105,7 @@ runs, is section 8.
 | C++ | Where | Here |
 | --- | --- | --- |
 | Section "Filament Management" ("Pellet Configuration" for pellet printers), sub-title "Filaments" | l.2882, l.3515, l.4450 | **added** |
-| One row for each filament of the project: a numbered colour swatch ("Click to select filament color"), the filament preset list, the tool badge, the row menu ("Edit", "Delete", "Merge with", "Print on nozzle", "Rack slot"…) | `init_filament_combo` l.4135, `GUI_Factories.cpp::create_filament_action_menu` l.2600 | **added**: a row for filament 1 up to the highest the file prints in, with its number on the project's colour and a preset list each (before: one list for each filament the plate shown used, no colours). With the project's own settings the saved names are shown. **not yet**: changing a colour, the tool badge, the row menu |
+| One row for each filament of the project: a numbered colour swatch ("Click to select filament color"), the filament preset list, the tool badge, the row menu ("Edit", "Delete", "Merge with", "Print on nozzle", "Rack slot"…) | `init_filament_combo` l.4135, `GUI_Factories.cpp::create_filament_action_menu` l.2600 | **added**: a row for filament 1 up to the highest the file prints in, with its number on the project's colour and a preset list each (before: one list for each filament the plate shown used, no colours). With the project's own settings the saved names are shown. **added** (sixth pass): the row's edit icon ("Click to edit preset", the row menu's "Edit"), which opens that filament's pages (section 14). **not yet**: changing a colour (the colour picker), the tool badge, the rest of the row menu |
 | "Add one filament", "Remove last filament" | l.3508–3600 | **not yet**: the engine prints the filaments the file assigns |
 | "Apply All" (one preset for every filament) | l.3624 | **not yet** |
 | "Flushing volumes", "Color Mixing Match", "Synchronize filament list from AMS", "Sync Filament Information", "Spool Manager", "Manage filament presets" | l.2903, l.2936, l.3404, l.3508 | **not yet** |
@@ -107,12 +113,13 @@ runs, is section 8.
 
 ### Sidebar: Process
 
-The pages are drawn from data, not written: `src/api/process_pages.json`,
-made from the pinned source by `tools/make_process_pages.py` (Tab.cpp
+The pages are drawn from data, not written: `src/api/settings_pages.json`
+(its `process` part), made from the pinned source by
+`tools/make_settings_pages.py` (Tab.cpp
 `TabPrint::build` for the pages, groups and lines; `libslic3r/PrintConfig.cpp`
 for each option; the defaults table of `tools/make_defaults.py`). After a pin
 bump: `tools/make_defaults.py <EdgeSlicer executable>`, then
-`tools/make_process_pages.py`. Section 12 has the numbers and what the engine
+`tools/make_settings_pages.py`. Section 12 has the numbers and what the engine
 does with each option.
 
 | C++ | Where | Here |
@@ -136,7 +143,7 @@ does with each option.
 | The support sets row ("Support set": apply, save, delete) | Tab.cpp l.3776, `support_set_create_widget` | **not yet**: it writes files of user presets |
 | "Global" / "Objects" switch, per-object, per-part and per-layer settings, "View all object's settings"; the tool selector at the top of the tab ([Plate] [T1 0.4] …) | `ParamsPanel::create_layout` l.364, `TabPrintModel` l.5035, `create_tool_selector` | **not yet**: the engine reads one set of settings for a plate |
 | "Compare presets", save ("Save current …") and delete preset, favourites, "Manage process presets" | ParamsPanel.cpp l.238, Tab.cpp l.300–420 | **not yet**: there are no user presets (`edge-config` reads vendor profiles only); what is changed is kept with the project while it is open |
-| The filament's and the printer's own pages of settings | `TabFilament::build`, `TabPrinter::build` | **not yet**: their own passes; the tool and the calls here are made to take them (a page list for each, the same options source) |
+| The filament's and the printer's own pages of settings | `TabFilament::build`, `TabPrinter::build` | **added**: section 14, from the same tool, drawn by the same code |
 
 ### The bed
 
@@ -338,7 +345,7 @@ the project is on.
 | `machines { vendor }` | | `{ machines }` |
 | `presets { vendor, machine }` | | `{ processes, filaments, usual_process, usual_filament }` |
 | `projects` | — | the strip: `{ active, max_open, projects: [{ id, name, path, dirty, empty, plate, tab, revision, slicing, plates_with_objects, plates_sliced }] }`. `revision` counts the edits to the project's model |
-| `project` | `project?` | a strip entry and `file`, `plates: [{ id, name, filaments, objects, sliced, failed }]`, `sliced`, `failed`, `has_settings`, `used`, `filament_count`, `colours`, `saved { printer, process, filaments }`, `choices { source, vendor, machine, process, filaments, bed_type, over { key: value }, layer_height, first_layer_height, wall_loops, closing_radius }` (`over` is every process setting set over the preset; the four after it are four of them under their older names), `view`, `edit { revision, undo, redo }` (what there is to take back and to make again, by name, or null), `status`. All of it is of the model as it stands, edits included |
+| `project` | `project?` | a strip entry and `file`, `plates: [{ id, name, filaments, objects, sliced, failed }]`, `sliced`, `failed`, `has_settings`, `used`, `filament_count`, `colours`, `saved { printer, process, filaments }`, `choices { source, vendor, machine, process, filaments, bed_type, over { key: value }, filament_over [{ key: value }], printer_over { key or key#n: value }, layer_height, first_layer_height, wall_loops, closing_radius }` (`over` is every process setting set over the preset, `filament_over` each filament's own from filament 1, `printer_over` the printer's; the four after them are four process settings under their older names), `view`, `edit { revision, undo, redo }` (what there is to take back and to make again, by name, or null), `status`. All of it is of the model as it stands, edits included |
 | `project_new` | — | the strip and `id`; or the strip and `full: true` |
 | `project_open` | `path` | the strip and `id` (`already: true` when it was open); or `full: true` |
 | `project_select` | `id` | the strip |
@@ -349,6 +356,9 @@ the project is on.
 | `process_pages` | — | the process pages as the reference has them: `{ pages: [{ title, groups: [{ title, lines: [{ keys, label?, tooltip? }] }] }], options: { key: { label, tooltip, type (bool, int, float, percent, float_or_percent, enum, string, strings), unit?, min?, max?, max_literal?, values?, labels?, open?, mode (simple, advanced, developer), list?, multiline?, code?, full_width?, height?, default } } }`. The same for every project; asked for once |
 | `process` | `project?` | `{ project, source, name, values { key: value } (by the preset, or the project's own settings, or the default), set { key: value } (what is set over them), counts { page: number set }, changed, hidden: [key], off: [key] (the reference's rules), unread: [key] (what a slice with these settings does not read), notes { key: [sentence] } (the engine's notes), refused (why the engine would stop, or null) }` |
 | `process_set` | `project?` and `key` with `value` (null gives it back to the preset), or `reset: true` (gives all back) | as `process`. An error, with nothing changed, for a value the option does not take or the engine would stop at. A change drops the project's slices |
+| `settings_pages` | `kind` (`process`, `filament`, `printer`) | as `process_pages`, for that kind. A printer's page with `per: "extruder"` ("Extruder %d") stands for one page for each extruder; a page with `flavors` is shown for those G-code flavors only. An option may also have `vector` (a value for each filament or extruder), `modes` (a value for the normal mode, then the silent), `override` (`printer` or `process`) with `of` (a filament's own value of that option, "nil" while off), `widget` (set in a dialog of the reference's own), `own` (the tab's own, `extruders_count`); a line may have `full` (the row is named with the option's `full_label`) and `labels` (a name for an option on that line) |
+| `settings` | `project?`, `kind`, `filament` (from 1; for `filament`) | as `process`, and for a filament or the printer: `filament`, `filaments`, `extruders`, `pages` (the titles as they stand, "Extruder 1" …), `away` (pages not shown for this G-code flavor), `labels` (a line's name by the rules, by its first option), `fallback` (what an override that is off stands for), `fixed` (why an option is not set here), `gcode_flavor`. An extruder's own option is named `key#n`, n from 0, in every list |
+| `settings_set` | `project?`, `kind`, `filament?`, and `key` (or `key#n`) with `value`, or `reset: true` (that kind's, and that filament's, all back) | as `settings`. Refused with the reason, nothing changed: a value the option does not take; "nil" for what is not an override; an extruder or a filament the project has not got; an option set in a dialog of the reference's own, or that is the preset's and not a filament's; a value the engine would stop at with the block printed in that filament |
 | `settled` | `project?` | `{ printer: { source, name, vendor, model, variant, nozzle_diameter, bed, height, gcode_flavor, host_type, print_host, print_host_webui, has_api_key, bed_types { enabled, in_force, choices } }, process: { name, layer_height, first_layer_height, wall_loops, closing_radius } }`, either null when nothing is chosen |
 | `plate_view` | `project?`, `plate?` | `{ project, plate, bed, height, objects: [{ name, outline, box, height }] }` |
 | `slice` | `project?`, `plate?` or `all: true` | `{ project, run }`; `status` says how it goes. The model is sliced as it stands, not the file. A plate with an object over its edge is refused in the reference's words |
@@ -663,7 +673,8 @@ build of the app with the engine optimised:
 
 ### Where the pages come from
 
-`tools/make_process_pages.py` reads three things and runs nothing:
+`tools/make_settings_pages.py` reads three things and runs nothing (the
+process's pages here; the filament's and the printer's in section 14):
 
 - `TabPrint::build` (Tab.cpp l.3441–4032) for the pages, the groups and the
   lines in order: `add_options_page`, `new_optgroup`,
@@ -681,7 +692,7 @@ build of the app with the engine optimised:
   the reference's own account of them.
 
 `--check` fails when the file is not what the source gives. The session
-includes the file (`src/api/process.rs`), hands it to the page
+includes the file (`src/api/settings.rs`), hands it to the page
 (`process_pages`) and checks values against it (`process_set`), so the page
 and the session cannot disagree about a limit or a list.
 
@@ -824,7 +835,8 @@ undo history.
 In the sidebar, under "Objects" (`ui/objects.js`). In the C++ the list is
 what the Process section shows when its switch is on "Objects"; here it has a
 section of its own, the per-object settings that go with that switch not
-being built.
+being built. It stands before the Process section, where the C++ shows it
+too (at the head of Process).
 
 | C++ | Where | Here |
 | --- | --- | --- |
@@ -970,3 +982,184 @@ plate 2 at its row (its object then under "Outside"); a bare STL dragged
   l.2535. It runs for every instance each time anything moves.
 - `GizmoObjectManipulation.cpp` l.1010: the tooltip reads "Holded down Ctrl
   key continuously and click by left mouse button…" (wording only).
+
+## 14. The filament's and the printer's pages
+
+Read from `TabFilament::build` and `add_filament_overrides_page`
+(Tab.cpp l.5668–6358), `TabFilament::toggle_options` and
+`update_filament_overrides_page` (l.6756, l.5820), `TabPrinter::build_fff`,
+`build_kinematics_page` and `build_unregular_pages` (l.7028–8003),
+`TabPrinter::toggle_options` (l.8382), and `PrintConfigDef`.
+
+### Where the pages come from
+
+`tools/make_settings_pages.py` (it was `make_process_pages.py`) writes all
+three kinds into `src/api/settings_pages.json`; the process's part is what
+it was, byte for byte. Beside what section 12 says it reads, it follows an
+`Option` or a `Line` of any name, the label an option is given on its line
+("Target", "Minimal"), a line whose tooltip is an option's, a line with a
+widget of the reference's own in an option's place (`create_line_with_widget`),
+the `for` over a list of keys the overrides page hands its helpers to, the
+printer's `append_option_line` in its loops over the axes, the extruder
+count the tab defines for itself, the field heights a function names, and,
+in `PrintConfigDef`, the machine limits made in a loop over the axes and the
+filament's retraction overrides made from the printer's. The printer's pages
+are put in the order `build_unregular_pages` leaves them in for a Marlin,
+Klipper, RepRapFirmware or Repetier printer, the flavors its
+`is_marlin_flavor` names.
+
+| Kind | Page | Groups | Options | Simple | Advanced | Developer |
+| --- | --- | --- | --- | --- | --- | --- |
+| Filament | Filament | Basic information, Flow ratio and Pressure Advance, Print chamber temperature, Print temperature, Bed temperature, Volumetric speed limitation | 47 | 27 | 17 | 3 |
+| | Cooling | Cooling for specific layer, Part cooling fan, Auxiliary part cooling fan, Exhaust fan | 23 | 15 | 8 | 0 |
+| | Setting Overrides | Retraction, Ironing | 23 | 4 | 19 | 0 |
+| | Advanced | Filament start G-code, Change extrusion role G-code, Filament end G-code | 3 | 0 | 3 | 0 |
+| | Multimaterial | Wipe tower parameters, Tool change parameters with single extruder MM printers, Tool change parameters with multi extruder MM printers | 23 | 0 | 23 | 0 |
+| | Dependencies | Compatible printers, Compatible process profiles | 4 | 0 | 4 | 0 |
+| | Notes | Notes | 1 | 0 | 1 | 0 |
+| | All | | 124 | 46 | 75 | 3 |
+| Printer | Basic information | Printable space, Advanced, Cooling Fan, Extruder Clearance, Adaptive bed mesh, Accessory, End of print | 36 | 4 | 28 | 4 |
+| | Machine G-code | File header, Machine start, Machine end, Printing by object, Before layer change, Layer change, Timelapse, Change filament, Change extrusion role, Pause, Template Custom G-code | 11 | 0 | 11 | 0 |
+| | Multimaterial | Single extruder multi-material setup, Wipe tower, Per-nozzle settings (experimental), Single extruder multi-material parameters, Advanced | 23 | 0 | 23 | 0 |
+| | Extruder n (one for each) | Size, Layer height limits, Position, Retraction, Z-Hop, Retraction when switching material | 25 | 2 | 21 | 2 |
+| | Motion ability | Advanced, Resonance Compensation, Speed limitation, Acceleration limitation, Jerk limitation | 26 | 14 | 12 | 0 |
+| | Notes | Notes | 1 | 0 | 1 | 0 |
+| | All | | 122 | 20 | 96 | 6 |
+
+Groups that hold only a widget of the reference's own have no options and
+are left out: "Values per nozzle (experimental)" on the filament's first
+page, "Nozzle rack (experimental)" on an extruder's, and the
+"Nozzles in this project" line ("Extruder settings…") of an extruder's
+"Size"; so are the price, machine-rate and makeup notes.
+
+### Where they are in the page
+
+| C++ | Where | Here |
+| --- | --- | --- |
+| The filament's and the printer's settings are tabs of their own beside the process's (`ParamsPanel`, or the parameters dialog), opened from a filament row's edit icon or "Edit" in its menu, and the printer row's edit icon ("Click to edit preset") | Plater.cpp l.4167, l.2659, GUI_Factories.cpp l.2606 | **differs**: a panel that takes the sidebar's place, with "Back to the sidebar" (and Escape), opened by the edit icon of a filament's row or of the printer card. The sidebar is wider while it is open (`clamp(340px, 30vw, 520px)`: 340 px at 900, 520 at 1920), the plate staying in sight to be sliced and looked at; under 761 px it is the one column the sidebar is. Chosen over a dialog: a dialog would cover the plate the change is for, and the process's pages already live in the sidebar, so the three kinds are one renderer in one column |
+| A filament's tab shows the one filament preset being edited, picked in its own list | `Tab::create_preset_tab` | **differs**: the project's filament n, shown over its preset; the filaments' numbered swatches at the panel's head go from one's pages to another's |
+| The pages' tree with the changed ones marked; "Advance"; search | Tab.cpp | **added**, as for the process (section 2): tabs with a count, search over the kind's options (an extruder's under each "Extruder n"), the one "Advance" switch for all pages, as the reference has one mode |
+
+### What is set, and how it reaches the slice
+
+| C++ | Here |
+| --- | --- |
+| Editing changes the edited preset, saved or discarded ("Unsaved Changes") | **differs**: as for the process, a change is the project's own over the preset (`Choices::filament_over`, one map for each filament; `Choices::printer_over`), kept with the project, through a change of preset and of printer (the status line says "Kept n filament n settings from …"), reset per option or all of a kind (and filament) at once. It drops the slices and marks the project changed |
+| A filament preset holds one filament's values | **added**: a filament's value is that filament's alone: the engine's `Overrides::filaments[n]` sets entry n of a list with a value for each filament, every other entry as it was (`crates/edge-engine/src/job.rs` `set_entry`) |
+| An extruder's page shows that extruder's entry of the printer's lists (`append_single_option_line(key, "", extruder_idx)`), or its variant slot on a per-variant printer (`extruder_field_index`) | **added**: options named `key#n`; `Overrides::extruders[n]` sets entry n. **differs**: no variant slots; entry n is extruder n, which is how the engine reads the lists (`PrintSettings::for_filament`). A printer preset with per-variant lists (`printer_extruder_variant`) is not read so by the engine either |
+| A value for each nozzle flow (Standard, High Flow), picked by the variant switch over the pages (`register_flow_variant_view`) | **differs**, as on the process pages: the field shows the value the engine reads for the filament (its entry, or the list's last), and sets that entry. **not yet**: a value for each flow; the engine reads none apart |
+| The machine limits: a column for the normal mode and, with `silent_mode`, one for the silent (`append_option_line`) | **differs**: the normal mode's alone (entry 0), the silent's kept; the row is named in full ("Maximum speed X"). **not yet**: the silent column |
+| The overrides page: each option's tick box; off, the field shows the printer's value (the process's for ironing) and the option is "nil" | **added**: the tick box before the label, the field greyed with the value in force while off ("Off: the printer's value for this filament's extruder is used."); on, it starts from that value. The rules for which can be ticked are the reference's |
+| G-code boxes; "Edit Custom G-code" (the placeholders dialog) | **added**: a box of text in the fixed-width face, shown unescaped and held escaped, as profiles hold G-code. **not yet**: the placeholders dialog, and the check of the G-code as it is typed (`validate_custom_gcode`) |
+| Set in a dialog of its own: "Printable area" (Bed Shape), the ramming ("Set…", RammingDialog), "Compatible printers" / "Compatible process profiles" (a checklist) | **differs**: shown, greyed, with the reason in the tooltip; not offered |
+| "Extruders" (`extruders_count`), which adds or removes extruder pages | **differs**: shown, not offered: the number of extruders is the printer preset's; another printer is picked in the Printer section |
+| A filament's "Compatible printers condition", "Compatible process profiles condition" | **differs**: shown, not offered: they decide which presets are offered with which, which matters to a saved preset only |
+| What a value may be (Field.cpp) | **added**, as for the process: refused in the page and by the session, with the reason; a point is "XxY" |
+| What the engine would stop at | **added**: refused with the engine's reason, asked with the block printed in the filament being set |
+| A setting set by hand that nothing read | **added**: with the print's notes, named with whose it is: `fan_max_speed (filament 1) "60": not read by the engine; it changes nothing in this print` |
+
+### The rules
+
+`src/api/settings/filament_rules.rs` ports `TabFilament::toggle_options`
+and `update_filament_overrides_page`; `printer_rules.rs` ports
+`TabPrinter::toggle_options`, each extruder's rules once for each extruder,
+and the "Wipe tower" group's own rule ("Enable pressure change when
+wiping"). The U1's plates are named its way ("Cool Steel Plate", "Smooth
+PEI Plate") and only its plates are shown, as the rules have it.
+**not yet**: what the reference changes by itself while it toggles
+(`initial_layer_fan_speed` to -1, `manual_filament_change` off, the
+question that turns wiping off under firmware retraction), the input
+shaper's list cut to the flavor, the checks run as a value is typed
+(`check_nozzle_temperature_range`, `check_chamber_minimal_temperature`,
+`check_adaptive_pressure_advance_model`: questions); "Motion ability" for
+another flavor than those named is hidden, and the pages keep their order.
+
+### What the engine does with them
+
+As in section 12, from the engine's own answer (`edge_engine::followed_in`,
+the block printed in the filament asked about). For `mcbrim_test.3mf` on
+the Snapmaker U1 (0.4 nozzle) with "Panchroma PLA Matte @U1", filament 1
+and extruder 1:
+
+| Kind | Page | Options | Read | Read, with a note | Not read | Not read and in sight | Not set here |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| Filament | Filament | 47 | 43 | 0 | 4 | 4 | 0 |
+| | Cooling | 23 | 21 | 0 | 2 | 0 | 0 |
+| | Setting Overrides | 23 | 22 | 0 | 1 | 1 | 0 |
+| | Advanced | 3 | 2 | 0 | 1 | 1 | 0 |
+| | Multimaterial | 23 | 14 | 0 | 8 | 7 | 1 |
+| | Dependencies | 4 | 0 | 0 | 0 | 0 | 4 |
+| | Notes | 1 | 1 | 0 | 0 | 0 | 0 |
+| | All | 124 | 103 | 0 | 16 | 13 | 5 |
+| Printer | Basic information | 36 | 3 | 0 | 32 | 30 | 1 |
+| | Machine G-code | 11 | 5 | 0 | 6 | 6 | 0 |
+| | Multimaterial | 23 | 6 | 0 | 16 | 14 | 1 |
+| | Extruder 1 | 25 | 17 | 0 | 8 | 6 | 0 |
+| | Motion ability | 26 | 16 | 0 | 10 | 4 | 0 |
+| | Notes | 1 | 0 | 0 | 1 | 1 | 0 |
+| | All (one extruder) | 122 | 47 | 0 | 73 | 62 | 2 |
+
+### How it was checked
+
+In the engine: `job.rs` (filament 2's and extruder 1's own entries, a list
+made long enough). In the session: `src/api/settings/preset_tests.rs` (the
+pages as the reference has them; filament 2's temperature in the G-code's
+moves and filament 1's untouched; extruder 2's retraction, a start G-code
+and a Z speed limit in the G-code; refusals; an override on and off; the
+rules and the engine's answer) and the rules' own tests.
+
+In the served page (1280, 900, 700 and 1920 wide, dark and light), with
+`mcbrim_test.3mf` (seven filaments, the model in filaments 2 to 7) on the
+U1: filament 2's "Other layers" typed to 245 (marked, counted, its reset
+arrow); then, by the calls the page makes, filament 1's flow ratio 0.9 and
+fan 70, filament 3's retraction override 2.2, the printer's start G-code
+with a marker line, extruder 1's retraction 1.9 and the Z speed limit 14.
+Sliced and exported: `M104 T1 S245` / `M109 T1 S245`, eleven
+`G1 E-2.20000` retractions (none before), every Z move at `F840` (14 mm/s;
+`F1200` before), the marker line, and in the settings' list
+`nozzle_temperature = 220,245,220,…`, `filament_flow_ratio = 0.9,0.98,…`,
+`fan_max_speed = 70,100,…`, `retraction_length = 1.9,1.5,1.5,1.5`,
+`machine_max_speed_z = 14,12`. Reset, sliced again: every one of them back
+to the preset's (`nozzle_temperature = 220,220,…`, no `S245`). The
+screenshots are under `target/ui-shots/presets/`.
+
+### Not yet
+
+| C++ | Waits for |
+| --- | --- |
+| Saving, renaming, deleting user presets; "Save current …"; detaching from the system preset | user presets, which `edge-config` does not read or write |
+| "Compare presets" | the same |
+| Preset bundles, import and export | the same |
+| The filament colour picker ("Click to select filament color"), "Add one filament", "Remove last filament" | the engine printing filaments the file does not assign |
+| AMS sync, "Sync Filament Information" | a printer connection (section 4) |
+| The physical printer and print host dialog | a list of printers of this app's own (section 4) |
+| The dialogs above (bed shape, ramming, compatible presets, Extruder settings, the G-code placeholders) | each its own piece of work |
+| A value for each flow variant; the silent mode's limits | the engine reading them apart |
+
+### Errors found in the C++
+
+- `Tab.cpp` l.6908: `toggle_line("chamber_temperatures", …)` names an option
+  that does not exist (it is `chamber_temperature`), so the chamber's line
+  is never hidden for a printer without chamber control; the same name at
+  l.6144 never matches, so `check_chamber_temperature` never runs.
+- `Tab.cpp` l.8471 and l.8493: `toggle_option("retract_length", …)` names an
+  option that does not exist (`retraction_length`), so the length is never
+  greyed under firmware retraction, which is what the comment above it says
+  it is for.
+- `Tab.cpp` l.8545: `toggle_line("retraction_distances_when_cut#0", …)` is
+  extruder 1's line on every extruder's page.
+- `Tab.cpp` l.6860–6862: with several bed types, `cool_plate_temp` is shown
+  twice and `supertack_plate_temp` not at all, so its half of the line keeps
+  whatever the last printer left it as.
+- `TabPrinter::build_unregular_pages` (l.7663): "Multimaterial" goes in two
+  from the end, which with "Motion ability" left out (a flavor not in
+  `is_marlin_flavor`) puts it, and the extruder pages after it, before
+  "Machine G-code".
+- The engine, not the C++: `edge_engine::prepare` (`for_filaments`, job.rs)
+  merges per filament only the lists a filament preset has one entry of; a
+  preset with a value for each flow variant (two entries: most of the U1's,
+  `nozzle_temperature ["220", "220"]`) keeps the first preset's list, so
+  filament 2 reads filament 1's High Flow value and filament 3 on read
+  filament 1's last, whatever their own presets say. Left as it is in this
+  pass (it changes what an untouched project slices to); the pages show and
+  set what the engine reads.

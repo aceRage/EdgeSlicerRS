@@ -31,6 +31,15 @@ pub struct Overrides {
     /// in: these replace what the presets and the project say. A height
     /// or a radius given above comes before one given here.
     pub settings: Settings,
+    /// What is set for one filament alone: `filaments[n]` holds filament
+    /// n + 1's own values, each the one entry of a setting that has a
+    /// value for every filament (`nozzle_temperature`, `fan_max_speed`).
+    /// Only that entry changes; every other filament keeps what it had.
+    pub filaments: Vec<Settings>,
+    /// What is set for one extruder alone, likewise: `extruders[n]` holds
+    /// extruder n + 1's own entry of the printer's lists with a value for
+    /// each extruder (`retraction_length`, `nozzle_diameter`).
+    pub extruders: Vec<Settings>,
 }
 
 /// A slicing setting's value and where it came from.
@@ -79,6 +88,36 @@ fn flows(overrides: &Overrides, project: Option<&Settings>) -> Result<Vec<Flow>,
         Some(texts) => Flow::list(texts)?,
         None => Vec::new(),
     })
+}
+
+/// Sets entry `index` of a setting with a value for each filament or
+/// extruder. A list too short to have that entry is first made long
+/// enough with its last value, which is what a filament past its end reads
+/// ([`edge_gcode::PrintSettings::for_filament`]), so no other entry reads
+/// anything new. Nothing here is noted as read: the list is not asked for,
+/// only set.
+fn set_entry(settings: &mut Settings, key: &str, index: usize, value: &Value) {
+    let own = match value {
+        Value::One(text) => text.clone(),
+        Value::Many(texts) => texts.first().cloned().unwrap_or_default(),
+    };
+    let mut list = match settings.remove(key) {
+        Some(Value::Many(list)) => list,
+        Some(Value::One(text)) => vec![text],
+        None => match edge_config::reference_defaults().texts(key) {
+            Some(list) => list.to_vec(),
+            None => Vec::new(),
+        },
+    };
+    if list.is_empty() {
+        list.push(own.clone());
+    }
+    while list.len() <= index {
+        let last = list.last().cloned().unwrap_or_default();
+        list.push(last);
+    }
+    list[index] = own;
+    settings.insert(key, Value::Many(list));
 }
 
 /// Layer height, first layer height and closing radius, each from the first
@@ -263,6 +302,15 @@ pub fn prepare(mut loaded: Loaded, chosen: &Chosen, overrides: &Overrides) -> Re
         complete.overlay(&settings);
         settings = complete;
     }
+    // One filament's or one extruder's own value, over whatever the list
+    // came to.
+    for own in [&overrides.extruders, &overrides.filaments] {
+        for (index, values) in own.iter().enumerate() {
+            for (key, value) in values.iter() {
+                set_entry(&mut settings, key, index, value);
+            }
+        }
+    }
     Ok(Job {
         loaded,
         is_project,
@@ -423,5 +471,53 @@ mod tests {
         };
         // A flow that is not one is refused, not read as standard.
         assert!(two_filaments_on_the_u1(&wrong).is_err());
+    }
+
+    #[test]
+    fn a_filament_or_an_extruder_set_alone_changes_its_own_entry_only() {
+        let cube =
+            edge_mesh::Mesh::from_triangle_soup(edge_mesh::primitives::cuboid([0.0; 3], [10.0; 3]));
+        let loaded = crate::load::lone(std::path::Path::new("cube.3mf"), cube).unwrap();
+        let settings = |json: &str| Settings::from_json(json).unwrap();
+        let chosen = Chosen {
+            machine: Some((
+                "printer".into(),
+                settings(
+                    r#"{"retraction_length": ["0.8", "0.9"], "nozzle_diameter": ["0.4", "0.4"]}"#,
+                ),
+            )),
+            process: None,
+            filaments: vec![
+                (
+                    "one".into(),
+                    settings(r#"{"nozzle_temperature": ["210"], "fan_max_speed": ["100"]}"#),
+                ),
+                (
+                    "two".into(),
+                    settings(r#"{"nozzle_temperature": ["230"], "fan_max_speed": ["90"]}"#),
+                ),
+            ],
+        };
+        let overrides = Overrides {
+            filaments: vec![
+                Settings::default(),
+                settings(r#"{"nozzle_temperature": "245"}"#),
+            ],
+            extruders: vec![settings(r#"{"retraction_length": "1.5"}"#)],
+            ..Overrides::default()
+        };
+        let job = prepare(loaded, &chosen, &overrides).unwrap();
+        let texts = |key: &str| job.settings.texts(key).unwrap().to_vec();
+        assert_eq!(texts("nozzle_temperature"), ["210", "245"]);
+        assert_eq!(texts("fan_max_speed"), ["100", "90"]);
+        assert_eq!(texts("retraction_length"), ["1.5", "0.9"]);
+        // A list shorter than the entry set is made long enough with what
+        // the filaments past its end read already.
+        let mut short = settings(r#"{"fan_min_speed": ["20", "30"]}"#);
+        set_entry(&mut short, "fan_min_speed", 3, &Value::One("50".into()));
+        assert_eq!(
+            short.texts("fan_min_speed").unwrap(),
+            ["20", "30", "30", "50"]
+        );
     }
 }

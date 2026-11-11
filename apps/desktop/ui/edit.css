@@ -4,59 +4,25 @@
    colour and size is a token of its part 1. STYLE.md has the toolbar and
    the tree as components. */
 
-/* ---- a toolbar: icon tools in a row on something that floats ---- */
-
-.toolbar {
-  display: flex;
-  align-items: center;
-  gap: 2px;
-  padding: 3px;
-  border: 1px solid var(--line-2);
-  border-radius: var(--radius-l);
-  background: var(--surface-float);
-  box-shadow: var(--shadow-float);
-  color: var(--text-1);
-}
-.toolbar button.icon.tool { width: var(--control-m); height: var(--control-m); border-radius: var(--radius-m); color: var(--text-2); }
-.toolbar button.icon.tool svg { width: 16px; height: 16px; }
-.toolbar button.icon.tool:focus-visible { outline: 2px solid var(--focus); outline-offset: -2px; }
-/* The tool that is open. */
-.toolbar button.icon.tool[aria-pressed="true"] { color: var(--accent); background: var(--accent-soft); }
-.toolbar-gap { align-self: stretch; width: 1px; margin: 3px 3px; background: var(--line-2); }
-
 /* In the middle of the stage's width that the column of plates at its
    left leaves free. */
-#edit-bar { position: absolute; top: var(--space-3); left: 84px; right: var(--space-3); width: max-content; max-width: calc(100% - 96px); margin-inline: auto; flex-wrap: wrap; z-index: var(--z-overlay); }
-
-/* The stage's older overlays give every button and list on it the stage's
-   own dark look (style.css, "#stage button"); what is laid over it here is
-   on the tokens, in light as in dark. */
-#stage .toolbar button.icon.tool, #stage .edit-panel button.icon.tool { border: 0; background: none; color: var(--text-2); }
-#stage .toolbar button.icon.tool:hover:not(:disabled), #stage .edit-panel button.icon.tool:hover:not(:disabled) { color: var(--text-1); background: var(--fill-hover); }
-#stage .toolbar button.icon.tool[aria-pressed="true"] { color: var(--accent); background: var(--accent-soft); }
-#stage .edit-panel select { border-color: var(--line-2); background-color: var(--surface-well); color: var(--text-1); }
-#stage .edit-panel .quiet { color: var(--text-3); }
+#edit-bar { position: absolute; top: var(--stage-inset); left: var(--stage-left); right: var(--stage-inset); width: max-content; max-width: calc(100% - var(--stage-left) - var(--stage-inset)); margin-inline: auto; flex-wrap: wrap; z-index: var(--z-overlay); }
 
 /* ---- the number fields of the tool that is open ---- */
 
 .edit-panel {
   position: absolute;
-  top: 56px;
-  left: 84px;
-  right: var(--space-3);
+  top: calc(var(--stage-inset) + var(--control-m) + 8px + var(--space-2));
+  left: var(--stage-left);
+  right: var(--stage-inset);
   width: max-content;
-  max-width: calc(100% - 96px);
+  max-width: calc(100% - var(--stage-left) - var(--stage-inset));
   margin-inline: auto;
   z-index: var(--z-overlay);
   display: flex;
   flex-direction: column;
   gap: var(--space-2);
   padding: var(--space-2) var(--space-3) var(--space-3);
-  border: 1px solid var(--line-2);
-  border-radius: var(--radius-l);
-  background: var(--surface-float);
-  box-shadow: var(--shadow-float);
-  color: var(--text-1);
   font-size: var(--size-label);
 }
 .edit-panel h3 { margin: 0; }
@@ -80,14 +46,10 @@
   bottom: 52px;
   transform: translateX(-50%);
   z-index: var(--z-overlay);
-  max-width: min(560px, calc(100% - 24px));
+  max-width: min(560px, calc(100% - 2 * var(--stage-inset)));
   margin: 0;
   padding: var(--space-2) var(--space-3);
-  border: 1px solid var(--danger);
-  border-radius: var(--radius-l);
-  background: var(--surface-float);
-  box-shadow: var(--shadow-float);
-  color: var(--text-1);
+  border-color: var(--danger);
   font-size: var(--size-label);
   white-space: pre-line;
 }
@@ -128,7 +90,7 @@ input.obj-rename { height: var(--control-s); min-width: 0; margin: 0 2px; }
 .obj-fila { display: flex; align-items: center; min-width: 0; }
 .obj-fila .lb { flex: 1; }
 .obj-fila .lb-trigger { height: var(--control-s); padding-left: var(--space-1); font: var(--size-small) var(--font-mono); }
-.obj-fila .swatch, .lb-option .swatch { flex: none; width: 10px; height: 10px; margin-right: 5px; border-radius: var(--radius-s); box-shadow: inset 0 0 0 1px rgba(128, 128, 128, 0.45); }
+.obj-fila .swatch, .lb-option .swatch { margin-right: 5px; }
 
 /* One column: the stage is low, so the fields stand at its foot, clear
    of what they are about. */

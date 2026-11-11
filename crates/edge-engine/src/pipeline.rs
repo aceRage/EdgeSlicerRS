@@ -78,6 +78,8 @@ pub struct Sliced {
     /// print stands on.
     seam_frames: Vec<(Point2, Point2, Point2)>,
     seam_meshes: Vec<(Mesh, usize)>,
+    /// Each object's printed parts by themselves, for where they meet.
+    seam_parts: Vec<edge_3mf::InstanceParts>,
     floor: f64,
     /// The filaments in use, by number from 1.
     pub used: Vec<usize>,
@@ -289,6 +291,7 @@ pub fn slice(job: Job, watch: &dyn Watcher) -> Result<Sliced, Failure> {
     } = job;
     let (mut bodies, objects, plate) = (loaded.bodies, loaded.objects, loaded.plate);
     let negatives = loaded.negatives;
+    let seam_parts = loaded.parts;
     let painted = loaded.painted;
     let first_layer_sequence = loaded.first_layer_sequence;
     let (min, max) = loaded.bounds;
@@ -769,21 +772,59 @@ pub fn slice(job: Job, watch: &dyn Watcher) -> Result<Sliced, Failure> {
         .collect();
     classify_time += classifying.elapsed();
     let classifying = Instant::now();
-    let solid_spacing = infill.params(layer_height, false)?.solid.scaled_spacing();
-    // Solid over sparse fill is laid as a bridge across it.
-    // Which is worth bridging is `dont_filter_internal_bridges`' to say.
+    // What laying a layer's fill needs. A sparse pattern is laid
+    // through the middle of the object it fills, as in the reference.
+    let params_of = |index: usize| -> Result<edge_infill::FillParams, Failure> {
+        let mut params = infill.params(heights.height_of(index), index == 0)?;
+        params.origin = middle;
+        params.z = heights.top_of(index);
+        Ok(params)
+    };
+    let frame = |surface: &edge_infill::Surface| {
+        frame_of(&middles, surface.area.contour.points.first().copied()).unwrap_or(
+            edge_infill::Frame {
+                origin: middle,
+                bounds: None,
+            },
+        )
+    };
+    // Solid over sparse fill is laid as a bridge across it, run out to
+    // the sparse lines beneath that carry it: those lines are laid for
+    // this as they will be laid, from each layer's sparse surfaces as
+    // they stand. Which is worth bridging is
+    // `dont_filter_internal_bridges`' to say; and the sparse fill under
+    // a bridge's edge, where that edge runs along the walls, is made
+    // solid to carry it.
+    let tops: Vec<f64> = (0..layers.len())
+        .map(|index| heights.top_of(index))
+        .collect();
+    let sparse_lines = |index: usize| -> Result<Vec<Vec<Point2>>, Failure> {
+        let params = params_of(index)?;
+        let mut lines = Vec::new();
+        for surfaces in &anchored_by {
+            let sparse: Vec<edge_infill::Surface> = surfaces[index]
+                .iter()
+                .filter(|s| s.kind == edge_infill::SurfaceKind::Sparse)
+                .cloned()
+                .collect();
+            if sparse.is_empty() {
+                continue;
+            }
+            lines.extend(
+                edge_infill::fill_within(&sparse, index, &params, &frame, &[])?
+                    .into_iter()
+                    .map(|path| path.points),
+            );
+        }
+        Ok(lines)
+    };
     let bridged_by = edge_infill::bridge_over_infill_by(
         &anchored_by,
         &beneath,
+        &tops,
         &infill.over_infill(layer_height)?,
+        &sparse_lines,
     )?;
-    // And the sparse fill under a bridge's edge, where that edge runs
-    // along the walls, is made solid to carry it.
-    let edges = edge_infill::bridge_edges(&bridged_by, solid_spacing)?;
-    let bridged_by = bridged_by
-        .iter()
-        .map(|surfaces| edge_infill::carry_bridge_edges(surfaces, &edges, solid_spacing))
-        .collect::<Result<Vec<_>, _>>()?;
     // A second layer of bridge over those, where the profile asks
     // (`enable_extra_bridge_layer`); over a bridge over air it is made
     // when surfaces are told apart.
@@ -798,26 +839,12 @@ pub fn slice(job: Job, watch: &dyn Watcher) -> Result<Sliced, Failure> {
             .par_iter()
             .enumerate()
             .map(|(index, surfaces)| {
-                let height = heights.height_of(index);
-                let mut params = infill
-                    .params(height, index == 0)
-                    .map_err(|e| e.to_string())?;
-                // A sparse pattern is laid through the middle of the
-                // object it fills, as in the reference.
-                params.origin = middle;
-                params.z = heights.top_of(index);
+                let params = params_of(index).map_err(|e| e.to_string())?;
                 edge_infill::fill_within(
                     surfaces,
                     index,
                     &params,
-                    &|surface| {
-                        frame_of(&middles, surface.area.contour.points.first().copied()).unwrap_or(
-                            edge_infill::Frame {
-                                origin: middle,
-                                bounds: None,
-                            },
-                        )
-                    },
+                    &frame,
                     // What is inside this filament's walls on the layer,
                     // for the fill's own gap fill.
                     &perimeters[index].infill_no_overlap,
@@ -1006,7 +1033,7 @@ pub fn slice(job: Job, watch: &dyn Watcher) -> Result<Sliced, Failure> {
     order_notes.extend(size_notes);
     order_notes.extend(quality_notes);
     order_notes.extend(ironing_notes);
-    order_notes.extend(crate::unfollowed::notes(&settings, bodies.len()));
+    order_notes.extend(crate::unfollowed::notes(&settings));
     // Everything on the plate is sliced as one, so travel that goes
     // round the walls takes a move from one object to another as it
     // takes one between two pieces of an object: along the inside of
@@ -1210,6 +1237,7 @@ pub fn slice(job: Job, watch: &dyn Watcher) -> Result<Sliced, Failure> {
         modelled,
         seam_frames,
         seam_meshes,
+        seam_parts,
         floor: min[2].into(),
         used,
         shares,
@@ -1484,6 +1512,18 @@ impl Sliced {
                     .map(|mesh| (mesh, mesh.triangles.len())),
             }
         };
+        // Each object's parts, for where they meet.
+        let parts: Vec<Vec<edge_gcode::SeamPart<'_>>> = (0..self.seam_frames.len())
+            .map(|object| {
+                (self.seam_parts.get(object).into_iter())
+                    .flat_map(|object| &object.parts)
+                    .map(|mesh| edge_gcode::SeamPart {
+                        vertices: &mesh.vertices,
+                        triangles: &mesh.triangles,
+                    })
+                    .collect()
+            })
+            .collect();
         let seam_objects: Vec<edge_gcode::SeamObject<'_>> = (self.seam_frames.iter().enumerate())
             .map(|(object, &(min, max, centre))| edge_gcode::SeamObject {
                 min,
@@ -1494,12 +1534,20 @@ impl Sliced {
                     triangles: &mesh.triangles,
                     negative_from,
                 }),
+                parts: &parts[object],
+                alone: self
+                    .seam_parts
+                    .get(object)
+                    .is_some_and(|object| object.alone),
+                enforcers: (self.seam_parts.get(object)).map_or(&[], |object| &object.enforcers),
+                blockers: (self.seam_parts.get(object)).map_or(&[], |object| &object.blockers),
             })
             .collect();
         let scene = edge_gcode::SeamScene {
             outlines: &printed,
             objects: &seam_objects,
             floor: self.floor,
+            part_joints: (self.settings.flag("seam_prefer_part_joints")?).unwrap_or(true),
         };
         let summary = edge_gcode::write_placed(&mut text, &plan, &slices, &scene, &prints)?;
         Ok(Gcode { text, summary })

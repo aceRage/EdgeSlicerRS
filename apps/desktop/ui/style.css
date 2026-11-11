@@ -76,6 +76,7 @@
   --control-s: 22px;
   --control-m: 28px;
   --control-l: 32px;
+  --bar-height: 40px;          /* the tab bar, and the strip's head beside it */
 
   --time-fast: 90ms;
   --time: 140ms;
@@ -92,31 +93,20 @@
   --mark-search: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 12 12' fill='none' stroke='%238b939f' stroke-width='1.4' stroke-linecap='round'%3E%3Ccircle cx='5' cy='5' r='3.6'/%3E%3Cpath d='M7.8 7.8l3 3'/%3E%3C/svg%3E");
   --mark-check: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 10 10' fill='none' stroke='%23170b03' stroke-width='1.8' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M2 5.3l2.1 2.1L8 3'/%3E%3C/svg%3E");
 
-  /* Older names, still used by the strip, the tab bar, the stage and
-     Device, which have not been brought to the tokens above yet. New
-     rules do not use them. */
-  --bg: var(--surface-app);
-  --panel: var(--surface-raised);
-  --line: var(--line-2);
-  --text: var(--text-1);
-  --quiet: var(--text-2);
-  --accent-text: var(--on-accent);
-  --field: var(--surface-well);
-  --error: var(--danger);
-  --stage: #14171c;
-  --stage-text: #c9ced6;
-  --stage-panel: rgba(20, 23, 28, 0.88);
-  --stage-line: #2c313a;
-  --strip: #2b2b30;
-  --strip-hover: #383840;
-  --strip-frame: #36363c;
-  --strip-line: #4a4a50;
-  --strip-muted: #909098;
-  --strip-dim: #b8b8be;
-  --unsaved: #f59e0b;
-  --bar: #15181c;
-  --bar-text: #ffffff;
-  --bar-dim: #b4bdc0;
+  /* The 3D stage. Its colour is the reference's scene background
+     (GLCanvas3D.cpp DEFAULT_BG_LIGHT_COLOR_DARK, gl/scene.js), shown
+     until the scene is drawn over it. What lies over the stage is on
+     --surface-overlay: the float surface, a little see-through, the scene
+     blurred behind it. */
+  --surface-stage: #54545a;
+  --surface-overlay: rgba(29, 34, 40, 0.96);
+  --overlay-blur: blur(12px) saturate(1.2);
+  /* The edge of a swatch of colour, which has to show on any colour. */
+  --line-swatch: rgba(128, 128, 128, 0.5);
+
+  /* A scrollbar: a thumb on nothing. */
+  --scroll-thumb: #3a424c;
+  --scroll-thumb-hover: #56606c;
 }
 
 /* The page follows the system: light where the system is light. */
@@ -161,19 +151,24 @@
     --mark-search: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 12 12' fill='none' stroke='%23626a75' stroke-width='1.4' stroke-linecap='round'%3E%3Ccircle cx='5' cy='5' r='3.6'/%3E%3Cpath d='M7.8 7.8l3 3'/%3E%3C/svg%3E");
     --mark-check: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 10 10' fill='none' stroke='%23ffffff' stroke-width='1.8' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M2 5.3l2.1 2.1L8 3'/%3E%3C/svg%3E");
 
-    --strip: #f0f0f0;
-    --strip-hover: #e6e8ec;
-    --strip-frame: #ffffff;
-    --strip-line: #d8d8d8;
-    --strip-muted: #8a8a8a;
-    --strip-dim: #50585a;
-    --bar: #262e30;
+    --surface-stage: #e7e7e7;
+    --surface-overlay: rgba(255, 255, 255, 0.95);
+    --line-swatch: rgba(90, 90, 90, 0.45);
+    --scroll-thumb: #c3c8cf;
+    --scroll-thumb-hover: #9aa1ab;
   }
 }
 
 /* ---- 2. base ---- */
 
-* { box-sizing: border-box; scrollbar-width: thin; scrollbar-color: var(--line-3) transparent; }
+/* Scrollbars: a thin thumb on nothing, the same in every engine. Chromium
+   and Firefox take the two standard properties; WebKit (the window on a
+   Mac) takes only its own pseudo-elements, which Chromium then ignores. */
+* { box-sizing: border-box; scrollbar-width: thin; scrollbar-color: var(--scroll-thumb) transparent; }
+::-webkit-scrollbar { width: 10px; height: 10px; background: transparent; }
+::-webkit-scrollbar-thumb { border: 3px solid transparent; border-radius: 5px; background: var(--scroll-thumb) padding-box; }
+::-webkit-scrollbar-thumb:hover { background-color: var(--scroll-thumb-hover); }
+::-webkit-scrollbar-corner, ::-webkit-scrollbar-track { background: transparent; }
 
 html, body { height: 100%; margin: 0; }
 
@@ -237,6 +232,8 @@ button:disabled { opacity: 0.45; cursor: default; }
 button.primary { background: var(--accent); border-color: var(--accent); color: var(--on-accent); font-weight: 600; }
 button.primary:hover:not(:disabled) { background: var(--accent-hover); border-color: var(--accent-hover); }
 button.primary:active:not(:disabled) { background: var(--accent-active); border-color: var(--accent-active); }
+/* A primary button that cannot be used is not primary: no accent. */
+button.primary:disabled { background: var(--fill-active); border-color: transparent; color: var(--text-2); opacity: 1; }
 button.quiet { border-color: transparent; color: var(--text-2); }
 button.quiet:hover:not(:disabled) { border-color: transparent; color: var(--text-1); }
 button.link { padding: 0; border: 0; background: none; color: var(--accent); text-align: left; }
@@ -261,6 +258,101 @@ button.icon.tool svg { width: 14px; height: 14px; fill: none; stroke: currentCol
 .joined > button:first-child { border-radius: var(--radius-m) 0 0 var(--radius-m); }
 .joined > button:last-child { border-radius: 0 var(--radius-m) var(--radius-m) 0; }
 .joined > button:hover, .joined > button:focus-visible { position: relative; }
+/* Two primary buttons joined (a button and its menu): a hairline of the
+   text's colour between them. */
+.joined > button.primary + button.primary { margin-left: 0; border-left-color: color-mix(in srgb, var(--on-accent) 30%, transparent); }
+/* Its menu beside a primary button that cannot be used is plain too. */
+.joined > button.primary:disabled + button.primary:not(:hover) { background: var(--fill-active); border-color: transparent; border-left-color: var(--line-2); color: var(--text-2); }
+/* The chevron of a button that opens a menu. */
+button svg.chevron { display: block; width: 9px; height: 6px; fill: none; stroke: currentColor; stroke-width: 1.5; stroke-linecap: round; stroke-linejoin: round; }
+
+/* -- tabs: <div class="tabs" role="tablist"> of <button role="tab">: text
+      (with an icon, if it has one) on a hairline, the open one with the
+      accent under it. .tabs.scrolls keeps them on one line, scrolled
+      sideways (the wheel too) where they do not fit -- */
+
+.tabs { display: flex; min-width: 0; border-bottom: 1px solid var(--line-1); }
+.tabs > [role="tab"] {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  margin-bottom: -1px;
+  padding: 0 var(--space-3);
+  border: 0;
+  border-bottom: 2px solid transparent;
+  border-radius: 0;
+  background: none;
+  color: var(--text-2);
+  white-space: nowrap;
+}
+.tabs > [role="tab"]:hover:not(:disabled) { color: var(--text-1); background: var(--fill-hover); }
+.tabs > [role="tab"][aria-selected="true"] { color: var(--text-1); font-weight: 600; border-bottom-color: var(--accent); }
+.tabs > [role="tab"]:focus-visible { outline-offset: -2px; }
+.tabs > [role="tab"] svg { flex: none; width: 18px; height: 18px; fill: none; stroke: currentColor; stroke-width: 1.2; stroke-linecap: round; stroke-linejoin: round; }
+.tabs.scrolls { overflow-x: auto; overflow-y: hidden; overscroll-behavior-x: contain; scrollbar-width: none; }
+.tabs.scrolls::-webkit-scrollbar { display: none; }
+
+/* -- what lies over the 3D stage: .overlay is the surface (a toolbar is
+      on it too); the scene shows faintly through it -- */
+
+.overlay, .toolbar {
+  border: 1px solid var(--line-2);
+  border-radius: var(--radius-l);
+  background: var(--surface-overlay);
+  -webkit-backdrop-filter: var(--overlay-blur);
+  backdrop-filter: var(--overlay-blur);
+  box-shadow: var(--shadow-float);
+  color: var(--text-1);
+}
+/* A label of a value over the stage: a small one, fixed-width figures. */
+.overlay.chip-label {
+  padding: 1px 6px;
+  border-radius: var(--radius-m);
+  box-shadow: none;
+  font: var(--size-small)/1.3 var(--font-mono);
+  font-variant-numeric: tabular-nums;
+  white-space: pre;
+  pointer-events: none;
+}
+
+/* -- a toolbar: icon tools in a row (or a column, .vertical) on the
+      overlay surface -- */
+
+.toolbar { display: flex; align-items: center; gap: 2px; padding: 3px; }
+.toolbar.vertical { flex-direction: column; align-items: stretch; }
+.toolbar button.icon.tool { width: var(--control-m); height: var(--control-m); border-radius: var(--radius-m); color: var(--text-2); }
+.toolbar button.icon.tool svg { width: 16px; height: 16px; }
+.toolbar button.icon.tool:focus-visible, .toolbar button.quiet:focus-visible { outline: 2px solid var(--focus); outline-offset: -2px; }
+.toolbar button.quiet { display: flex; align-items: center; gap: 6px; height: var(--control-m); padding: 0 var(--space-2); color: var(--text-2); }
+.toolbar button.quiet:hover:not(:disabled) { background: var(--fill-hover); }
+/* The tool that is on. */
+.toolbar button[aria-pressed="true"] { color: var(--accent); background: var(--accent-soft); }
+.toolbar-gap { align-self: stretch; width: 1px; margin: 3px; background: var(--line-2); }
+.toolbar.vertical .toolbar-gap { width: auto; height: 1px; }
+
+/* -- a swatch: a small square of a colour that means something -- */
+
+.swatch { display: inline-block; flex: none; width: 10px; height: 10px; border-radius: var(--radius-s); box-shadow: inset 0 0 0 1px var(--line-swatch); }
+
+/* -- what can be opened and closed in place: <details><summary>, with the
+      chevron of a section that folds -- */
+
+details > summary { display: flex; align-items: center; gap: var(--space-2); list-style: none; cursor: pointer; }
+details > summary::-webkit-details-marker { display: none; }
+details > summary::before {
+  content: "";
+  flex: none;
+  width: 5px;
+  height: 5px;
+  margin: -3px 2px 0 1px;
+  border-right: 1.5px solid var(--text-3);
+  border-bottom: 1.5px solid var(--text-3);
+  transform: rotate(-45deg);
+  transition: transform var(--time) var(--ease);
+}
+details[open] > summary::before { margin-top: -3px; transform: rotate(45deg); }
+details > summary:focus-visible { outline-offset: 1px; border-radius: var(--radius-s); }
 
 /* -- fields: text, numbers, search, and the closed face of a list -- */
 
@@ -439,7 +531,7 @@ input[type="radio"]:checked { border-color: var(--accent); background: var(--acc
       (h2.with-tools holds icon buttons after the title) -- */
 
 .fold + .fold { border-top: 1px solid var(--line-1); }
-.fold > h2 { display: flex; align-items: center; gap: var(--space-1); height: 36px; padding: 0 var(--space-2) 0 var(--space-1); }
+.fold > h2, .fold-pin > h2 { display: flex; align-items: center; gap: var(--space-1); height: 36px; padding: 0 var(--space-2) 0 var(--space-1); }
 .fold-title {
   flex: 1;
   min-width: 0;
@@ -677,6 +769,9 @@ dialog .row button { min-width: 84px; }
 
 /* ---- the project strip ---- */
 
+/* One step below the sidebar, a hairline at its edge. A tile is the
+   plate's picture and the project's name; the open one is framed in the
+   accent. */
 #strip {
   --strip-width: 88px;
   position: relative;
@@ -684,31 +779,30 @@ dialog .row button { min-width: 84px; }
   width: var(--strip-width);
   display: flex;
   flex-direction: column;
-  background: var(--strip);
-  border-right: 1px solid var(--strip-line);
+  background: var(--surface-app);
+  border-right: 1px solid var(--line-1);
   user-select: none;
+  -webkit-user-select: none;
 }
-#strip.dragging { border-right: 2px solid var(--accent); }
+#strip.dragging { box-shadow: inset -2px 0 0 var(--accent); }
 
 #strip-head {
   flex: none;
   display: flex;
   align-items: center;
-  gap: 4px;
-  height: 30px;
-  padding: 0 9px 0 6px;
-  border-bottom: 1px solid var(--strip-line);
-  color: var(--strip-muted);
+  gap: 2px;
+  height: var(--bar-height);
+  padding: 0 var(--space-1);
+  border-bottom: 1px solid var(--line-1);
 }
-#strip-head button { width: 20px; height: 20px; display: grid; place-items: center; border-radius: 4px; }
-#strip-head button:hover { color: var(--accent); }
-#strip-head svg { width: 16px; height: 16px; fill: none; stroke: currentColor; stroke-linecap: round; stroke-linejoin: round; }
-#strip-fold { font-size: 15px; margin-right: auto; }
+#strip-fold { margin-right: auto; }
+#strip-fold svg { transition: transform var(--time) var(--ease); }
+#strip.collapsed #strip-fold svg { transform: scaleX(-1); }
 
 #projects {
   flex: 1;
   margin: 0;
-  padding: 0 5px 0 0;
+  padding: var(--space-1) 0;
   list-style: none;
   overflow-y: auto;
   scrollbar-width: none;
@@ -720,153 +814,144 @@ dialog .row button { min-width: 84px; }
   display: flex;
   flex-direction: column;
   align-items: center;
-  gap: 4px;
-  margin: 1px 2px;
-  padding: 5px 6px 6px;
-  border-radius: 4px;
-  color: var(--strip-dim);
+  gap: var(--space-1);
+  margin: 0 3px 2px;
+  padding: 4px 4px 6px;
+  border-radius: var(--radius-l);
+  color: var(--text-2);
   cursor: pointer;
+  transition: background-color var(--time-fast) var(--ease);
 }
-.tile:hover { background: var(--strip-hover); }
-.tile.active { color: var(--text); }
+.tile:hover { background: var(--fill-hover); }
+.tile.active { color: var(--text-1); }
 .tile .thumb {
   display: block;
   width: 100%;
   aspect-ratio: 1;
-  border: 1px solid var(--strip-line);
-  border-radius: 4px;
-  background: var(--strip-frame);
+  border: 1px solid var(--line-2);
+  border-radius: var(--radius-m);
+  background: var(--surface-raised);
 }
-.tile.active .thumb { border: 2px solid var(--accent); }
+.tile.active .thumb { border-color: var(--accent); box-shadow: 0 0 0 1px var(--accent); }
 .tile .name {
-  max-width: 100%;
-  font-size: 11px;
-  line-height: 1.25;
-  text-align: center;
   display: flex;
   flex-direction: column;
-  min-width: 0;
   width: 100%;
+  min-width: 0;
+  font-size: var(--size-small);
+  line-height: 1.25;
+  text-align: center;
 }
+.tile.active .name { font-weight: 600; }
 /* Each line is cut short with an ellipsis where it does not fit. */
 .tile .name span { overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
+/* Unsaved changes: a dot of the warning's colour in the picture's corner. */
 .tile .dot {
   position: absolute;
   top: 9px;
-  left: 10px;
-  width: 9px;
-  height: 9px;
+  left: 9px;
+  width: 7px;
+  height: 7px;
   border-radius: 50%;
-  background: var(--unsaved);
-  border: 1px solid var(--strip-frame);
+  background: var(--warn);
+  box-shadow: 0 0 0 2px var(--surface-raised);
 }
+/* Sliced (a tick, in the colour of what is done) or slicing (a spinner). */
 .tile .badge {
   position: absolute;
-  right: 10px;
+  right: 9px;
   width: 14px;
   height: 14px;
-  border-radius: 50%;
-  background: var(--strip-frame);
   display: grid;
   place-items: center;
+  border-radius: 50%;
+  background: var(--surface-raised);
 }
-.tile .badge.sliced { background: var(--accent); color: var(--accent-text); font-size: 10px; font-weight: 700; }
-.tile .badge.slicing { border: 2px dotted var(--strip-muted); border-top-color: var(--accent); animation: spin 0.9s linear infinite; }
+.tile .badge.sliced { border: 1px solid var(--ok); color: var(--ok); font-size: 9px; font-weight: 700; line-height: 1; }
+.tile .badge.slicing { border: 2px solid var(--line-2); border-top-color: var(--accent); animation: spin 0.9s linear infinite; }
 @keyframes spin { to { transform: rotate(360deg); } }
 @media (prefers-reduced-motion: reduce) { .tile .badge.slicing { animation: none; } }
 .tile .close {
   position: absolute;
   top: 7px;
-  right: 8px;
-  width: 15px;
-  height: 15px;
-  padding: 0;
-  border: 0;
-  border-radius: 50%;
-  background: var(--strip-muted);
-  color: #fff;
-  font-size: 11px;
-  line-height: 15px;
+  right: 7px;
+  width: 16px;
+  height: 16px;
   display: none;
+  place-items: center;
+  padding: 0;
+  border: 1px solid var(--line-2);
+  border-radius: var(--radius-s);
+  background: var(--surface-float);
+  color: var(--text-2);
+  font-size: 12px;
+  line-height: 1;
 }
-.tile:hover .close, .tile .close:focus-visible { display: block; }
-.tile .close:hover { background: #e04b4b; }
-#projects .drop { height: 0; margin: 0 4px; border-top: 3px solid var(--accent); }
+.tile:hover .close, .tile .close:focus-visible { display: grid; }
+.tile .close:hover:not(:disabled) { border-color: var(--line-3); background: var(--surface-float); color: var(--text-1); }
+#projects .drop { height: 0; margin: 0 var(--space-1); border-top: 2px solid var(--accent); }
 
 /* Names only. */
-#strip.text .tile { flex-direction: row; margin: 3px 4px; padding: 7px 24px 7px 8px; border: 1px solid var(--strip-line); background: var(--strip-frame); }
-#strip.text .tile.active { border: 2px solid var(--accent); }
+#strip.text .tile { flex-direction: row; align-items: center; gap: 6px; padding: 7px 24px 7px var(--space-2); }
+#strip.text .tile.active { background: var(--fill-active); box-shadow: inset 2px 0 0 var(--accent); }
 #strip.text .tile .thumb { display: none; }
 #strip.text .tile .name { text-align: left; }
-#strip.text .tile { gap: 6px; align-items: center; }
-#strip.text .tile .dot { position: static; flex: none; border: 0; order: -1; }
+#strip.text .tile .dot { position: static; flex: none; order: -1; box-shadow: none; }
 #strip.text .tile .badge { top: 50%; right: 6px; transform: translateY(-50%); }
 #strip.text .tile .badge.slicing { transform: none; top: calc(50% - 7px); }
-#strip.text .tile .close { top: 50%; right: 6px; transform: translateY(-50%); }
+#strip.text .tile .close { top: 50%; right: 5px; transform: translateY(-50%); }
 #strip.text .tile:hover .badge { display: none; }
 
 /* The rail: one mark for each project. */
 #strip.collapsed #strip-head { flex-direction: column; height: 72px; padding: 2px 0; gap: 2px; justify-content: space-around; }
 #strip.collapsed #strip-fold { margin: 0; }
-#strip.collapsed #projects { padding: 0; }
+#strip.collapsed #projects { padding: var(--space-1) 0; }
 #strip.collapsed .tile { height: 22px; margin: 0; padding: 0; border-radius: 0; justify-content: center; }
 #strip.collapsed .tile .thumb, #strip.collapsed .tile .name, #strip.collapsed .tile .close, #strip.collapsed .tile .badge { display: none; }
-#strip.collapsed .tile::before { content: ""; width: 8px; height: 8px; border-radius: 50%; background: var(--strip-muted); }
+#strip.collapsed .tile::before { content: ""; width: 8px; height: 8px; border-radius: 50%; background: var(--text-3); }
 #strip.collapsed .tile.active::before { background: var(--accent); }
-#strip.collapsed .tile.is-sliced::before { outline: 2px solid var(--accent); outline-offset: 1px; }
-#strip.collapsed .tile .dot { top: 3px; left: 14px; width: 5px; height: 5px; border: 0; }
+#strip.collapsed .tile.is-sliced::before { outline: 2px solid var(--ok); outline-offset: 1px; }
+#strip.collapsed .tile .dot { top: 3px; left: 13px; width: 5px; height: 5px; box-shadow: none; }
 #strip.collapsed #strip-grip { display: none; }
 
-#strip-grip { position: absolute; top: 0; right: -3px; bottom: 0; width: 7px; cursor: ew-resize; z-index: 3; }
-#strip-grip:hover { background: linear-gradient(to right, transparent 2px, var(--accent) 2px, var(--accent) 4px, transparent 4px); }
+/* Dragged to widen the strip: a line of the accent where it is held. */
+#strip-grip { position: absolute; top: 0; right: -3px; bottom: 0; width: 7px; z-index: var(--z-raised); cursor: ew-resize; }
+#strip-grip::after { content: ""; position: absolute; top: 0; bottom: 0; left: 2px; width: 2px; background: var(--accent); opacity: 0; transition: opacity var(--time-fast) var(--ease); }
+#strip-grip:hover::after { opacity: 1; }
 
 /* ---- the tab bar ---- */
 
 #frame { flex: 1; min-width: 0; display: flex; flex-direction: column; }
 
+/* The main tabs at the left, slicing and export at the right, on the
+   app's own surface with a hairline under it. */
 #tabbar {
   flex: none;
   display: flex;
   align-items: stretch;
   justify-content: space-between;
-  gap: 12px;
-  height: 40px;
-  padding: 0 10px 0 4px;
-  background: var(--bar);
-  color: var(--bar-text);
+  gap: var(--space-3);
+  height: var(--bar-height);
+  padding: 0 var(--space-2) 0 0;
+  background: var(--surface-app);
+  border-bottom: 1px solid var(--line-1);
 }
-#tabs { display: flex; }
-#tabs button {
-  display: flex;
-  align-items: center;
-  gap: 7px;
-  padding: 0 14px;
-  border: 0;
-  border-radius: 0;
-  border-bottom: 3px solid transparent;
-  border-top: 3px solid transparent;
-  background: none;
-  color: var(--bar-dim);
-  font-size: 13px;
-}
-#tabs button:hover { color: var(--bar-text); }
-#tabs button[aria-selected="true"] { color: var(--bar-text); border-bottom-color: var(--accent); background: rgba(255, 255, 255, 0.07); font-weight: 600; }
-#tabs svg { width: 18px; height: 18px; fill: none; stroke: currentColor; stroke-linecap: round; stroke-linejoin: round; }
+#tabs { border-bottom: 0; }
+#tabs > [role="tab"] { margin-bottom: 0; padding: 0 var(--space-4); }
 
-#side-tools { display: flex; align-items: center; gap: 8px; }
-#side-tools button { padding: 5px 12px; }
-#side-tools > button { background: transparent; border-color: #586266; color: var(--bar-text); }
-#side-tools > button:hover:not(:disabled) { border-color: var(--bar-text); }
-.split { display: flex; }
-.split button:first-child { border-radius: 5px 0 0 5px; min-width: 96px; }
-.split button:last-child { border-radius: 0 5px 5px 0; padding: 5px 7px; border-left-color: rgba(0, 0, 0, 0.25); }
+#side-tools { display: flex; align-items: center; gap: var(--space-2); }
+#side-tools button { height: var(--control-m); }
+#slice { min-width: 96px; }
+#slice-more { display: grid; place-items: center; width: 26px; padding: 0; }
 
 /* ---- Prepare and Preview ---- */
 
 #plater { flex: 1; min-height: 0; display: grid; grid-template-columns: 300px minmax(0, 1fr); }
 
-/* The sidebar: its sections scroll; the status line and the profiles
-   folder stay at its foot. */
+/* The sidebar: one scroll for its sections, in which each section's title
+   bar stays in sight while its section is, and the Process section's head
+   (title, preset, search, the pages' tabs) while its options scroll under
+   it. The status line and the profiles folder stay at its foot. */
 #side {
   display: flex;
   flex-direction: column;
@@ -875,6 +960,22 @@ dialog .row button { min-width: 84px; }
   border-right: 1px solid var(--line-1);
 }
 #side-scroll { flex: 1; min-height: 0; overflow-y: auto; scrollbar-gutter: stable; }
+#side-scroll .fold > h2, #side-scroll .fold-pin, #preset-scroll > .fold-pin {
+  position: sticky;
+  top: 0;
+  z-index: var(--z-raised);
+  background: var(--surface-panel);
+}
+#side-scroll .fold-pin > h2 { position: static; }
+.fold-pin > .fold-body { padding-bottom: 0; }
+.fold-pin + .fold-body { padding-top: var(--space-2); }
+/* What is gone to, or given the keys, under a pinned head (the Process
+   section's, the panel's in settings.css) is not left behind it (app.js
+   keeps --pinned at the head's height on what holds it). */
+.fold-pin ~ .fold-body * { scroll-margin-top: calc(var(--pinned, 0px) + var(--space-2)); }
+/* While something is searched for, the list under the head has the room
+   for the head to come to the top of the scroll above it (app.js). */
+.fold-pin + .fold-body:has(> [role="listbox"]:not([hidden])) { min-height: calc(var(--room, 0px) - var(--pinned, 0px)); }
 
 /* Filaments: a numbered swatch, the preset, and room after it for what a
    filament will be able to do. */
@@ -884,11 +985,9 @@ dialog .row button { min-width: 84px; }
 .filament .swatch {
   width: 22px;
   height: 22px;
-  border-radius: var(--radius-s);
-  background: var(--surface-well);
-  box-shadow: inset 0 0 0 1px rgba(128, 128, 128, 0.45);
   display: grid;
   place-items: center;
+  background: var(--surface-well);
   font: 700 11px var(--font-mono);
 }
 .filament .value { padding: 0 var(--space-2); overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
@@ -918,160 +1017,227 @@ dialog .row button { min-width: 84px; }
 .path { flex: 1; min-width: 0; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; direction: rtl; text-align: left; color: var(--text-2); font-family: var(--font-mono); }
 .path > * { direction: ltr; unicode-bidi: isolate; }
 
-#stage { position: relative; min-width: 0; background: var(--stage); color: var(--stage-text); overflow: hidden; }
+/* ---- the stage: the plate in 3D, and what lies over it ---- */
+
+/* Where the overlays stand: a margin of --stage-inset all round; the
+   column of plates at the top left, and what stands at the top beside it
+   (the Prepare toolbar, "Object operations") starts at --stage-left; the
+   layers slider keeps --stage-right free at the right. */
+#stage {
+  --stage-inset: var(--space-3);
+  --stage-left: 84px;
+  --stage-right: 104px;
+  --legend-width: 280px;
+  position: relative;
+  min-width: 0;
+  container-type: size;
+  container-name: stage;
+  background: var(--surface-stage);
+  color: var(--text-1);
+  overflow: hidden;
+}
 #view { position: absolute; inset: 0; width: 100%; height: 100%; touch-action: none; cursor: grab; }
 #view.dragging { cursor: grabbing; }
-#empty { position: absolute; inset: 0; display: grid; place-items: center; margin: 0; padding: 24px; text-align: center; color: #7e8794; pointer-events: none; }
+
+/* What there is to say where there is nothing to show: a note in the middle. */
+#empty {
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  transform: translate(-50%, -50%);
+  max-width: min(420px, calc(100% - 2 * var(--stage-left)));
+  margin: 0;
+  padding: var(--space-3) var(--space-4);
+  color: var(--text-2);
+  text-align: center;
+  pointer-events: none;
+}
 #empty:empty { display: none; }
 
-#stage button { background: #22262d; border-color: #353a44; color: var(--stage-text); }
-#stage select { background-color: #22262d; border-color: #353a44; color: var(--stage-text); }
-#stage .quiet { color: #8b94a1; }
-#stage .error { color: #ff8a80; }
-
+/* The plates: a column of tools, "Slice all" (or the statistics) at its
+   head over a hairline, each plate's number, the one shown on the accent. */
 #plates {
   position: absolute;
-  top: 12px;
-  left: 12px;
-  display: flex;
-  flex-direction: column;
-  gap: 6px;
-  max-height: calc(100% - 24px);
+  top: var(--stage-inset);
+  left: var(--stage-inset);
+  z-index: var(--z-overlay);
+  max-height: calc(100% - 2 * var(--stage-inset));
   overflow-y: auto;
   scrollbar-width: none;
 }
+#plates::-webkit-scrollbar { display: none; }
 #plates button {
   position: relative;
-  width: 58px;
-  min-height: 44px;
-  padding: 4px;
+  flex: none;
+  width: 52px;
+  min-height: 40px;
+  padding: 3px 2px;
   display: flex;
   flex-direction: column;
   align-items: center;
   justify-content: center;
-  line-height: 1.2;
-  font-variant-numeric: tabular-nums;
+  border: 0;
+  border-radius: var(--radius-m);
+  color: var(--text-2);
+  line-height: 1.15;
 }
-#plates button.current { border-color: var(--accent); box-shadow: inset 0 0 0 1px var(--accent); }
-#plates button.unsliced .number { opacity: 0.55; }
-#plates button .number { font-size: 15px; font-weight: 650; }
-#plates button small { font-size: 10px; color: #8b94a1; }
-#plates button .mark { position: absolute; top: 2px; right: 4px; font-size: 10px; font-weight: 700; }
-#plates button.sliced .mark { color: #3ddc5a; }
-#plates button.failed .mark { color: #ff8a80; }
+#plates button:hover:not(:disabled) { color: var(--text-1); }
+#plates button:focus-visible { outline-offset: -2px; }
+#plates button[aria-pressed="true"] { color: var(--accent); }
+#plates button .number { font: 600 var(--size-title) var(--font-mono); }
+#plates button.unsliced:not([aria-pressed="true"]) .number { color: var(--text-3); }
+#plates button small { color: var(--text-3); font-size: var(--size-caps); }
+#plates button .mark { position: absolute; top: 2px; right: 4px; font-size: var(--size-caps); font-weight: 700; }
+#plates button.sliced .mark { color: var(--ok); }
+#plates button.failed .mark { color: var(--danger); }
+#plates button.all { font-size: var(--size-small); font-weight: 600; color: var(--text-1); }
+#plates button.all small { font-weight: 400; font-family: var(--font-mono); }
+#plates button.all::after { content: ""; position: absolute; left: 4px; right: 4px; bottom: -3px; height: 1px; background: var(--line-2); }
+#plates button.all + button { margin-top: 4px; }
 
-#fit { position: absolute; left: 12px; bottom: 12px; display: flex; gap: 6px; }
-#fit button { padding: 4px 8px; font-size: 12px; }
+/* Fit part, fit bed: the view from above, where there is no 3D. */
+#fit { position: absolute; left: var(--stage-inset); bottom: var(--stage-inset); z-index: var(--z-overlay); }
 
+/* The legend: what the colours stand for, each to show or hide, and what
+   the print comes to. The colours are the reference's (they are data). */
 #legend {
   position: absolute;
-  top: 12px;
-  right: 84px;
-  max-width: 300px;
-  max-height: calc(100% - 24px);
+  top: var(--stage-inset);
+  right: var(--stage-right);
+  z-index: var(--z-overlay);
+  width: var(--legend-width);
+  max-width: calc(100% - var(--stage-left) - var(--stage-right));
+  max-height: calc(100% - 2 * var(--stage-inset));
   overflow-y: auto;
-  padding: 8px 10px;
-  border-radius: 6px;
-  background: var(--stage-panel);
-  border: 1px solid var(--stage-line);
+  padding: var(--space-2) var(--space-3) var(--space-3) var(--space-2);
+  font-size: var(--size-label);
 }
-#legend-head { display: flex; align-items: center; gap: 8px; }
-#legend-head .icon { width: 18px; color: var(--stage-text); background: none; }
-#legend-body { margin-top: 8px; }
+#legend-head { display: flex; align-items: center; gap: var(--space-1); }
+#legend-head select { height: var(--control-s); font-size: var(--size-label); }
+#legend-fold svg { transition: transform var(--time) var(--ease); }
+#legend-fold[aria-expanded="false"] svg { transform: rotate(-90deg); }
+#legend-body { margin-top: var(--space-2); padding-left: var(--space-1); }
 #legend.folded #legend-body { display: none; }
-#legend-rows { border-collapse: collapse; width: 100%; }
-#legend-rows th { padding: 0 0 4px; font-size: 11px; font-weight: 600; color: #8b94a1; text-align: left; }
+#legend-rows { width: 100%; border-collapse: collapse; }
+#legend-rows th {
+  padding: var(--space-2) 0 var(--space-1);
+  color: var(--text-3);
+  font-size: var(--size-caps);
+  font-weight: 600;
+  letter-spacing: var(--caps-spacing);
+  text-transform: uppercase;
+  text-align: left;
+}
+#legend-rows tr:first-child th { padding-top: 0; }
 #legend-rows th:last-child:not(:first-child), #legend-rows td:last-child:not(:first-child) { text-align: right; }
-#legend-rows td { padding: 1px 0; white-space: nowrap; }
-#legend-rows td:first-child, #legend-rows th:first-child { width: 100%; padding-right: 16px; }
+#legend-rows td { height: 22px; padding: 0; white-space: nowrap; }
+#legend-rows td:first-child, #legend-rows th:first-child { width: 100%; padding-right: var(--space-4); }
+#legend-rows td .swatch { margin-right: var(--space-2); vertical-align: -1px; }
 #legend-rows tr.row { cursor: pointer; }
-#legend-rows tr.row:hover td { color: #fff; }
-#legend-rows tr.off td:first-child { opacity: 0.45; }
-#legend-rows .swatch { display: inline-block; width: 12px; height: 12px; margin-right: 7px; border-radius: 3px; border: 1px solid rgba(255, 255, 255, 0.25); vertical-align: -2px; }
-#legend-rows .eye { width: 22px; padding: 0; border: 0; background: none; color: var(--stage-text); font-size: 12px; }
-#estimate { margin-top: 10px; padding-top: 8px; border-top: 1px solid var(--stage-line); }
-#estimate h3 { margin: 0 0 4px; color: #8b94a1; }
-dl { display: grid; grid-template-columns: auto 1fr; gap: 2px 12px; margin: 0; }
-dt { color: #8b94a1; }
-dd { margin: 0; font-variant-numeric: tabular-nums; }
-#timed { margin-top: 4px; font-size: 11px; }
+#legend-rows tr.row:hover td { background: var(--fill-hover); }
+#legend-rows tr.off td:first-child { color: var(--text-off); }
+#legend-rows tr.off .swatch { opacity: 0.4; }
+/* Shown or hidden: a dot, or a ring. The character the code writes is
+   for the reader of the page's text; the picture is drawn here. */
+.eye { display: inline-grid; place-items: center; width: var(--control-s); height: 20px; padding: 0; border: 0; background: none; font-size: 0; vertical-align: middle; }
+.eye::before { content: ""; width: 8px; height: 8px; border: 1.5px solid var(--text-3); border-radius: 50%; }
+.eye[aria-pressed="true"]::before { border-color: var(--text-1); background: var(--text-1); }
+.eye:hover:not(:disabled) { background: none; }
+#estimate { margin-top: var(--space-2); padding-top: var(--space-2); border-top: 1px solid var(--line-1); }
+#estimate h3 { margin: 0 0 var(--space-1); }
+#figures { display: grid; grid-template-columns: auto 1fr; gap: 2px var(--space-3); margin: 0; }
+#figures dt { color: var(--text-2); }
+#figures dd { margin: 0; text-align: right; font-family: var(--font-mono); font-variant-numeric: tabular-nums; }
+#timed { margin-top: var(--space-1); color: var(--text-3); font-size: var(--size-small); }
 
-#vslider {
-  position: absolute;
-  top: 10%;
-  right: 10px;
-  bottom: 10%;
-  width: 52px;
-}
-#vtrack { position: absolute; top: 0; bottom: 0; right: 12px; width: 6px; border-radius: 3px; background: #2c313a; cursor: pointer; touch-action: none; }
-#vfill { position: absolute; left: 0; right: 0; bottom: 0; border-radius: 3px; background: var(--accent); opacity: 0.55; }
-#vthumb { position: absolute; left: -6px; width: 18px; height: 18px; margin-bottom: -9px; border-radius: 50%; background: var(--accent); border: 2px solid #14171c; cursor: grab; }
-#layer-label {
-  position: absolute;
-  right: 34px;
-  transform: translateY(50%);
-  padding: 2px 6px;
-  border-radius: 4px;
-  background: var(--stage-panel);
-  border: 1px solid var(--stage-line);
-  font-size: 11px;
-  line-height: 1.25;
-  text-align: right;
-  white-space: pre;
-  font-variant-numeric: tabular-nums;
-  pointer-events: none;
-}
+/* The layers slider of the view from above (the 3D one is gl/gl.css's;
+   both are drawn alike). */
+#vslider { position: absolute; top: 10%; right: 10px; bottom: 10%; z-index: var(--z-overlay); width: 52px; }
+#vtrack { position: absolute; top: 0; bottom: 0; right: 13px; width: 6px; border: 1px solid var(--line-2); border-radius: 3px; background: var(--surface-overlay); cursor: pointer; touch-action: none; }
+#vtrack:focus-visible { outline-offset: 4px; }
+#vfill { position: absolute; left: 0; right: 0; bottom: 0; border-radius: 3px; background: var(--accent); }
+#vthumb { position: absolute; left: -7px; width: 18px; height: 18px; margin-bottom: -9px; border: 2px solid var(--surface-float); border-radius: 50%; background: var(--accent); box-shadow: 0 0 0 1px var(--line-2); cursor: grab; }
+#layer-label { position: absolute; right: 34px; transform: translateY(50%); text-align: right; }
 
+/* About this print: what went wrong, what was settled, what the engine
+   does not follow yet. Kept clear of the legend where the two would meet. */
 #notes {
   position: absolute;
-  left: 82px;
-  bottom: 44px;
-  max-width: min(420px, 45%);
+  left: var(--stage-left);
+  bottom: 48px;
+  z-index: var(--z-overlay);
+  max-width: min(420px, max(240px, calc(100% - 112px - var(--legend-width) - var(--stage-right) - var(--space-3))));
   max-height: 40%;
   overflow-y: auto;
-  padding: 6px 10px;
-  border-radius: 6px;
-  background: var(--stage-panel);
-  border: 1px solid var(--stage-line);
-  font-size: 12px;
+  padding: var(--space-2) var(--space-3);
+  font-size: var(--size-label);
 }
-#notes > summary { cursor: pointer; font-weight: 600; }
-#notes > :not(summary) { margin-top: 6px; }
-#notes ul.plain { color: #a9b1bd; }
-#notes details summary { cursor: pointer; color: #a9b1bd; }
-#notes details ul { margin: 6px 0 0; padding-left: 18px; color: #a9b1bd; }
-#notes details p { margin: 6px 0 0; }
+#notes > summary { font-weight: 600; }
+#notes > :not(summary) { margin-top: var(--space-2); }
+#notes ul.plain { color: var(--text-2); }
+#notes details > summary { color: var(--text-2); }
+#notes details ul { margin: var(--space-1) 0 0; padding-left: 18px; color: var(--text-2); }
+#notes details p { margin: var(--space-1) 0 0; color: var(--text-3); }
 #notes #exported:empty { display: none; }
+/* Where the stage is too narrow for the legend and the notes side by side,
+   the legend leaves the foot of the stage to the notes. */
+@container stage (max-width: 728px) {
+  #stage:has(#notes:not([hidden])[open]) #legend { max-height: calc(60% - 2 * var(--stage-inset) - 48px); }
+  #stage:has(#notes:not([hidden]):not([open])) #legend { max-height: calc(100% - 2 * var(--stage-inset) - 96px); }
+}
 
+/* Slicing: what is being done, how far, and the way to stop it. */
 #progress {
   position: absolute;
-  right: 70px;
-  bottom: 14px;
-  width: 300px;
+  right: var(--stage-right);
+  bottom: var(--stage-inset);
+  z-index: var(--z-overlay);
+  width: min(300px, calc(100% - 2 * var(--stage-left)));
   display: grid;
-  grid-template-columns: 1fr auto;
+  grid-template-columns: minmax(0, 1fr) auto;
   align-items: center;
-  gap: 6px 10px;
-  padding: 10px 12px;
-  border-radius: 6px;
-  background: var(--stage-panel);
-  border: 1px solid var(--stage-line);
+  gap: 6px var(--space-3);
+  padding: var(--space-2) var(--space-3);
+  font-size: var(--size-label);
 }
 #progress-label { margin: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-#progress-track { grid-column: 1; height: 4px; border-radius: 2px; background: #2c313a; overflow: hidden; }
-#bar { height: 100%; width: 0; background: var(--accent); transition: width 0.15s; }
-#cancel { grid-column: 2; grid-row: 1 / span 2; padding: 4px 10px; }
+#progress-track { grid-column: 1; height: 4px; border-radius: 2px; background: var(--fill-active); overflow: hidden; }
+#bar { height: 100%; width: 0; background: var(--accent); transition: width var(--time) var(--ease); }
+#cancel { grid-column: 2; grid-row: 1 / span 2; }
 #progress.settled #progress-track, #progress.settled #cancel { display: none; }
 
 /* ---- Device ---- */
 
-#device { flex: 1; min-height: 0; overflow-y: auto; }
-#device-page { max-width: 640px; margin: 0 auto; padding: 28px 24px; display: flex; flex-direction: column; gap: 10px; }
-#device-page h2 { margin-top: 16px; font-size: 14px; }
-#device-facts { gap: 5px 20px; padding: 14px 16px; border: 1px solid var(--line); border-radius: 6px; background: var(--panel); }
-#device-facts dt { color: var(--quiet); }
-#device-facts dd { user-select: text; overflow-wrap: anywhere; }
+#device { flex: 1; min-height: 0; overflow-y: auto; background: var(--surface-app); }
+#device-page { max-width: 640px; margin: 0 auto; padding: var(--space-6) var(--space-5); display: flex; flex-direction: column; gap: var(--space-2); }
+#device-source { margin-bottom: var(--space-2); }
+/* What is known of the printer: a card of rows, the name on the left. */
+#device-facts {
+  display: grid;
+  grid-template-columns: max-content minmax(0, 1fr);
+  margin: 0;
+  border: 1px solid var(--line-2);
+  border-radius: var(--radius-l);
+  background: var(--surface-raised);
+}
 #device-facts:empty { display: none; }
+#device-facts dt, #device-facts dd { margin: 0; padding: 7px var(--space-3); border-top: 1px solid var(--line-1); }
+#device-facts dt:first-of-type, #device-facts dt:first-of-type + dd { border-top: 0; }
+#device-facts dt { color: var(--text-2); font-size: var(--size-label); }
+#device-facts dd { user-select: text; -webkit-user-select: text; overflow-wrap: anywhere; }
+/* A part of the page: a group's label running on into a hairline. */
+#device-page h2 {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  margin-top: var(--space-5);
+  color: var(--text-2);
+  font-size: var(--size-caps);
+  font-weight: 600;
+  letter-spacing: var(--caps-spacing);
+  text-transform: uppercase;
+}
+#device-page h2::after { content: ""; flex: 1; height: 1px; background: var(--line-1); }
 #device-connection { margin: 0; }
 
 /* ---- the small dialogs ---- */
@@ -1079,6 +1245,7 @@ dd { margin: 0; font-variant-numeric: tabular-nums; }
 #stats-table { border-collapse: collapse; width: 100%; font-variant-numeric: tabular-nums; }
 #stats-table th, #stats-table td { padding: 5px var(--space-2); text-align: right; border-bottom: 1px solid var(--line-1); }
 #stats-table th { color: var(--text-2); font-size: var(--size-small); font-weight: 600; }
+#stats-table td:not(:first-child) { font-family: var(--font-mono); font-size: var(--size-label); }
 #stats-table th:first-child, #stats-table td:first-child { text-align: left; }
 #stats-table tfoot td { font-weight: 650; border-bottom: 0; }
 
@@ -1086,5 +1253,6 @@ dd { margin: 0; font-variant-numeric: tabular-nums; }
   #plater { grid-template-columns: 1fr; grid-template-rows: auto minmax(360px, 1fr); overflow-y: auto; }
   #side { min-height: auto; border-right: 0; border-bottom: 1px solid var(--line-1); }
   #side-scroll { flex: none; overflow: visible; }
-  #side-tools { gap: 4px; }
+  #side-tools { gap: var(--space-1); }
+  #tabs > [role="tab"] { padding: 0 var(--space-3); }
 }

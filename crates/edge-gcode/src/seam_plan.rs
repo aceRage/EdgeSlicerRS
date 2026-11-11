@@ -8,7 +8,9 @@
 //! each point of each outer wall, with the angle the wall turns through
 //! there), `calculate_overhangs_and_layer_embedding` (how far each hangs
 //! out over the layer beneath, and how deep it lies inside the layer's
-//! own outline where two materials meet), `pick_seam_point` and
+//! own outline where two materials meet), with `gather_part_joints` and
+//! `mark_part_joint_centers` (where the parts of an object meet) and
+//! `gather_enforcers_blockers` (seams painted on or off), `pick_seam_point` and
 //! `pick_random_seam_point` by its `SeamComparator`; and as each loop is
 //! laid, `place_seam`.
 //!
@@ -40,6 +42,15 @@
 //!   the bed, which the reference leans by adding to that measure, are
 //!   then leant by the way the wall itself faces.
 //!
+//! - Of the places where the parts of an object meet
+//!   (`seam_prefer_part_joints`, see [`SeamObject::parts`]), an object
+//!   is measured against another object stood against it where it is the
+//!   only copy of its object on the plate and no other object is the same
+//!   as it, as the reference measures it; but the reference also leaves
+//!   other objects out when it prints object by object, which this
+//!   engine does not do, and it asks of two objects that are the same
+//!   that their settings be the same too, which is not read here.
+//!
 //! Seams are lined up from layer to layer in `seam_align.rs`.
 
 use std::{
@@ -49,7 +60,7 @@ use std::{
 
 use edge_extrusion::ExtrusionLoop;
 use edge_geom::{ExPolygon, Point2};
-use edge_visibility::{Triangles, Visibility};
+use edge_visibility::{JointBody, Joints, Painted, Triangles, Visibility, part_joints};
 use rayon::prelude::*;
 
 use crate::{Layer, PrintSettings, Seam, address, overhang::Below, seam, seam_align};
@@ -66,6 +77,10 @@ pub struct SeamScene<'a> {
     pub objects: &'a [SeamObject<'a>],
     /// The height of the bed in the meshes' coordinates, in mm.
     pub floor: f64,
+    /// Whether seams are moved to where the parts of an object meet, for
+    /// the positions that line seams up by their score
+    /// (`seam_prefer_part_joints`).
+    pub part_joints: bool,
 }
 
 /// One object on the plate.
@@ -80,6 +95,26 @@ pub struct SeamObject<'a> {
     /// Its surface, for how visible each place on it is; without one,
     /// nothing is known of that.
     pub mesh: Option<SeamMesh<'a>>,
+    /// Its printed parts each by itself, but for embossed text and
+    /// pictures, for where they meet; empty where that is not known.
+    pub parts: &'a [SeamPart<'a>],
+    /// Whether where other objects stand against it counts as where its
+    /// parts meet: it is the only copy of its object on the plate and no
+    /// other object is the same as it.
+    pub alone: bool,
+    /// What of its surface is painted to have seams, and to keep them
+    /// off, by the corners of each triangle, where it stands on the bed
+    /// (seam enforcers and blockers).
+    pub enforcers: &'a [[[f32; 3]; 3]],
+    pub blockers: &'a [[[f32; 3]; 3]],
+}
+
+/// One part of an object, where it stands on the bed.
+#[derive(Clone, Copy, Debug)]
+pub struct SeamPart<'a> {
+    /// In mm.
+    pub vertices: &'a [[f32; 3]],
+    pub triangles: &'a [[u32; 3]],
 }
 
 /// An object's surface: its parts' triangles, where it stands on the bed.
@@ -127,6 +162,29 @@ pub(crate) struct Candidate {
     /// the line's width, where the layer is printed in more than one
     /// material; negative inside (`embedded_distance`).
     pub(crate) embedded: f32,
+    /// Whether it lies where two parts of the object meet, or where it
+    /// meets another object stood against it (`part_joint`).
+    pub(crate) part_joint: bool,
+    /// Whether it is the middle of a run of such points along its wall,
+    /// which beats any point but a painted one (`central_part_joint`).
+    pub(crate) central_part_joint: bool,
+    /// Whether the surface near it is painted to have the seam or to keep
+    /// it off (`EnforcedBlockedSeamPoint`).
+    pub(crate) paint: Paint,
+    /// Whether it is the chosen point of the longest painted stretch of
+    /// its wall, which the aligned positions take before anything
+    /// (`central_enforcer`).
+    pub(crate) central_enforcer: bool,
+}
+
+/// Whether a place is painted for a seam, in the order of how much it is
+/// wanted (SeamPlacer.hpp `EnforcedBlockedSeamPoint`).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, PartialOrd, Ord)]
+pub(crate) enum Paint {
+    Blocked,
+    #[default]
+    Neutral,
+    Enforced,
 }
 
 /// One outer wall's candidates (SeamPlacer.hpp `Perimeter`): they are
@@ -209,8 +267,6 @@ pub(crate) fn angle_penalty(angle: f32) -> f32 {
 }
 
 /// How two candidates are told apart (SeamPlacer.cpp `SeamComparator`).
-/// Paint and the places where parts meet, which the reference weighs
-/// first, are not looked at.
 #[derive(Clone, Copy, Debug)]
 pub(crate) struct Comparator {
     setup: Seam,
@@ -226,6 +282,12 @@ impl Comparator {
             setup,
             angle_importance: if setup == Seam::Nearest { 1.0 } else { 0.6 },
         }
+    }
+
+    /// Whether the setup is one of those that go by a score and line
+    /// their seams up (`is_aligned_setup`).
+    fn aligned(&self) -> bool {
+        aligned(self.setup)
     }
 
     /// Whether the seam is pulled one way by a rule and not by a score:
@@ -246,6 +308,19 @@ impl Comparator {
         b: &Candidate,
         preferred: [f32; 2],
     ) -> bool {
+        // The middle of the stretch painted to have the seam first, at the
+        // aligned positions; then painted over not painted over blocked.
+        if self.aligned() && a.central_enforcer != b.central_enforcer {
+            return a.central_enforcer;
+        }
+        if a.paint != b.paint {
+            return a.paint > b.paint;
+        }
+        // The middle of a joint beats any other point; it is never one
+        // that hangs out.
+        if a.central_part_joint != b.central_part_joint {
+            return a.central_part_joint;
+        }
         // Avoid overhangs.
         if a.overhang > 0.0 || b.overhang > 0.0 {
             return a.overhang < b.overhang;
@@ -285,6 +360,24 @@ impl Comparator {
         b: &Candidate,
         flow_width: f32,
     ) -> bool {
+        // Paint first: a painted point is never much worse, a blocked one
+        // always is.
+        if self.aligned() && a.central_enforcer != b.central_enforcer {
+            return a.central_enforcer;
+        }
+        match a.paint {
+            Paint::Enforced => return true,
+            Paint::Blocked => return false,
+            Paint::Neutral => {}
+        }
+        if a.paint != b.paint {
+            return a.paint > b.paint;
+        }
+        // Lining seams up must not trade the middle of a joint for an
+        // ordinary point.
+        if a.central_part_joint != b.central_part_joint {
+            return a.central_part_joint;
+        }
         if (a.overhang > 0.0 || b.overhang > 0.0)
             && (a.overhang - b.overhang).abs() > 0.1 * flow_width
         {
@@ -305,6 +398,16 @@ impl Comparator {
         let (penalty_a, penalty_b) = (self.penalty(a), self.penalty(b));
         penalty_a <= penalty_b || penalty_a - penalty_b < ALIGN_TOLERANCE
     }
+}
+
+/// The setups that go by a score and line their seams up: the aligned
+/// ones, with those leant to one side of the bed, not the back
+/// (`is_aligned_setup`). Only these move seams to where parts meet.
+fn aligned(setup: Seam) -> bool {
+    matches!(
+        setup,
+        Seam::Aligned | Seam::AlignedBack | Seam::AlignedFront | Seam::Left | Seam::Right
+    )
 }
 
 /// The setups whose seams the reference lines up from layer to layer:
@@ -547,15 +650,54 @@ impl Plan {
         };
         // How visible each object's surface is, for the setups that go
         // by it: the reference measures it for the aligned ones and for
-        // the nearest corner (`init_object`).
-        let seen: Vec<Option<Visibility>> = (0..frames.len())
+        // the nearest corner (`init_object`); and where each object's
+        // parts meet, only with `seam_prefer_part_joints` and an aligned
+        // setup. The two are worked out side by side.
+        // What of each object is painted to have seams or to keep them
+        // off, at every position (`gather_enforcers_blockers`).
+        let painted: Vec<[Option<Painted>; 2]> = (0..frames.len())
             .map(|object| {
-                let mesh = scene.objects.get(object)?.mesh?;
-                matches!(setup, Seam::Back | Seam::Random)
-                    .not()
-                    .then(|| visibility(&mesh, frames[object].centre, scene.floor, setup))
+                let Some(own) = scene.objects.get(object) else {
+                    return [None, None];
+                };
+                let middle = [
+                    frames[object].centre.x as f64 * 1e-6,
+                    frames[object].centre.y as f64 * 1e-6,
+                    scene.floor,
+                ];
+                [own.enforcers, own.blockers].map(|triangles| {
+                    Painted::new(triangles.iter().map(|corners| {
+                        corners.map(|corner| {
+                            std::array::from_fn(|axis| {
+                                (f64::from(corner[axis]) - middle[axis]) as f32
+                            })
+                        })
+                    }))
+                })
             })
             .collect();
+        let (seen, joints): (Vec<Option<Visibility>>, Vec<Option<Joints>>) = rayon::join(
+            || {
+                (0..frames.len())
+                    .map(|object| {
+                        let mesh = scene.objects.get(object)?.mesh?;
+                        matches!(setup, Seam::Back | Seam::Random)
+                            .not()
+                            .then(|| visibility(&mesh, frames[object].centre, scene.floor, setup))
+                    })
+                    .collect()
+            },
+            || {
+                if scene.part_joints && aligned(setup) {
+                    (0..frames.len())
+                        .into_par_iter()
+                        .map(|object| part_joints_of(scene, object, frames[object].centre))
+                        .collect()
+                } else {
+                    vec![None; frames.len()]
+                }
+            },
+        );
         let objects = &frames;
         // By layer, then by object.
         let gathered: Vec<Vec<(LayerSeams, Vec<usize>)>> = groups
@@ -569,7 +711,11 @@ impl Plan {
                     objects,
                     outlines.get(index).copied(),
                     setup,
-                    &seen,
+                    &Known {
+                        seen: &seen,
+                        joints: &joints,
+                        painted: &painted,
+                    },
                 )
             })
             .collect();
@@ -945,6 +1091,14 @@ pub(crate) fn find_next_seam_in_layer(
     }
     let perimeter = &layer.perimeters[layer.points[nearest].perimeter as usize];
     let own = &layer.points[perimeter.seam];
+    // Painted seams, then joints, are followed from layer to layer: the
+    // seam of the wall, where it is the middle of a painted stretch or of
+    // a joint near enough.
+    if (own.central_enforcer || own.central_part_joint)
+        && squared_distance(own.position, projected) < (3.0 * reach) * (3.0 * reach)
+    {
+        return Some(perimeter.seam);
+    }
     // First the nearest, then the best nearby.
     if comparator.is_first_not_much_worse(&layer.points[nearest], own, perimeter.flow_width) {
         return Some(nearest);
@@ -953,6 +1107,53 @@ pub(crate) fn find_next_seam_in_layer(
     comparator
         .is_first_not_much_worse(&layer.points[best], own, width)
         .then_some(best)
+}
+
+/// Where the parts of object `object` meet each other, or meet another
+/// object stood against it, in the object's own coordinates (from
+/// `centre`, and the bed): `gather_part_joints`. None where nothing meets.
+fn part_joints_of(scene: &SeamScene<'_>, object: usize, centre: Point2) -> Option<Joints> {
+    let own = scene.objects.get(object)?;
+    if own.parts.is_empty() {
+        return None;
+    }
+    let middle = [centre.x as f64 * 1e-6, centre.y as f64 * 1e-6, scene.floor];
+    let body = |part: &SeamPart<'_>, own: bool| JointBody {
+        mesh: Triangles {
+            vertices: (part.vertices.iter())
+                .map(|vertex| {
+                    std::array::from_fn(|axis| (f64::from(vertex[axis]) - middle[axis]) as f32)
+                })
+                .collect(),
+            indices: part.triangles.to_vec(),
+        },
+        own,
+    };
+    let mut parts: Vec<(&SeamPart<'_>, bool)> = own.parts.iter().map(|part| (part, true)).collect();
+    if own.alone {
+        // Other objects whose bounds come near this one's; the finder
+        // looks closer.
+        let near = |other: &SeamObject<'_>| {
+            let margin = 1_000_000;
+            other.min.x <= own.max.x + margin
+                && own.min.x <= other.max.x + margin
+                && other.min.y <= own.max.y + margin
+                && own.min.y <= other.max.y + margin
+        };
+        for (_, other) in
+            (scene.objects.iter().enumerate()).filter(|(at, other)| *at != object && near(other))
+        {
+            parts.extend(other.parts.iter().map(|part| (part, false)));
+        }
+    }
+    // A part alone meets nothing.
+    if parts.len() < 2 {
+        return None;
+    }
+    let bodies: Vec<JointBody> = (parts.par_iter())
+        .map(|&(part, own)| body(part, own))
+        .collect();
+    part_joints(&bodies)
 }
 
 /// How visible an object's surface is: its mesh brought to the object's
@@ -973,6 +1174,160 @@ fn visibility(mesh: &SeamMesh<'_>, centre: Point2, floor: f64, setup: Seam) -> V
     Visibility::new(&triangles, negative_from, toward)
 }
 
+/// How far apart the places put along an edge near a joint are, in mm
+/// (`enforcer_oversampling_distance`).
+const OVERSAMPLING: f32 = 0.2;
+/// A corner this sharp is a corner a seam keeps to, in radians
+/// (`sharp_angle_snapping_threshold`).
+const SHARP: f32 = 55.0 * std::f32::consts::PI / 180.0;
+
+fn add3(a: [f32; 3], b: [f32; 3]) -> [f32; 3] {
+    [a[0] + b[0], a[1] + b[1], a[2] + b[2]]
+}
+
+fn sub3(a: [f32; 3], b: [f32; 3]) -> [f32; 3] {
+    [a[0] - b[0], a[1] - b[1], a[2] - b[2]]
+}
+
+fn scale3(a: [f32; 3], by: f32) -> [f32; 3] {
+    [a[0] * by, a[1] * by, a[2] * by]
+}
+
+fn length3(a: [f32; 3]) -> f32 {
+    (a[0] * a[0] + a[1] * a[1] + a[2] * a[2]).sqrt()
+}
+
+/// Marks the point of a wall's longest stretch painted to have its seam
+/// that the seam is to go to: of its sharp corners the middle one, else
+/// its middle point; nothing where the whole wall is painted or none of
+/// it is. A port of the end of `process_perimeter_polygon`.
+fn mark_central_enforcer(points: &mut [Candidate]) {
+    let count = points.len();
+    let enforced = |at: usize| points[at].paint == Paint::Enforced;
+    if count == 0 || !(0..count).any(enforced) {
+        return;
+    }
+    let next = |at: usize| (at + 1) % count;
+    // Where each stretch starts and where it ends (the point after it).
+    let mut bounds = Vec::new();
+    for at in 0..count {
+        if enforced(at) != enforced(next(at)) {
+            bounds.push(next(at));
+        }
+    }
+    if bounds.is_empty() {
+        return;
+    }
+    // The first bound an end: it is put last, and the pairs taken from
+    // the second.
+    let from = if enforced(bounds[0]) {
+        0
+    } else {
+        bounds.push(bounds[0]);
+        1
+    };
+    let length = |(first, second): (usize, usize)| {
+        if second < first {
+            count - (first - second)
+        } else {
+            second - first
+        }
+    };
+    let mut longest = (0, 0);
+    for &[first, second] in bounds[from..].as_chunks::<2>().0 {
+        if length(longest) < length((first, second)) {
+            longest = (first, second);
+        }
+    }
+    let (mut viable, mut sharp) = (Vec::new(), Vec::new());
+    let mut at = longest.0;
+    while at != longest.1 {
+        viable.push(at);
+        if points[at].angle.abs() > SHARP {
+            sharp.push(at);
+        }
+        at = next(at);
+    }
+    let centre = if sharp.is_empty() {
+        viable[viable.len() / 2]
+    } else {
+        sharp[sharp.len() / 2]
+    };
+    points[centre].central_enforcer = true;
+}
+
+/// Marks the middle of every run of joint points round one wall: a point
+/// hidden inside the print if the run has any (a joint between two
+/// materials), else a sharp corner that folds inward (where parts that
+/// pass into each other meet), else the middle by length. A point that
+/// hangs out is not on a run, and splits one. A wall on a joint all the
+/// way round (a part standing on another, cut through by the layer) has
+/// no run and gets nothing. A port of `mark_part_joint_centers`.
+fn mark_part_joint_centres(points: &mut [Candidate]) {
+    let count = points.len();
+    if count < 3 {
+        return;
+    }
+    let eligible = |point: &Candidate| {
+        point.part_joint && point.paint != Paint::Blocked && point.overhang <= 0.0
+    };
+    // Set out where a run starts, so that no run wraps round the end.
+    let Some(first) = (0..count)
+        .find(|&at| eligible(&points[at]) && !eligible(&points[(at + count - 1) % count]))
+    else {
+        return;
+    };
+    let centre = |run: &[usize]| {
+        let mut preferred: Vec<usize> = (run.iter().copied())
+            .filter(|&at| points[at].embedded < -0.5)
+            .collect();
+        if preferred.is_empty() {
+            preferred = (run.iter().copied())
+                .filter(|&at| points[at].angle < -SHARP)
+                .collect();
+        }
+        if !preferred.is_empty() {
+            return preferred[preferred.len() / 2];
+        }
+        let step =
+            |pair: &[usize]| length3(sub3(points[pair[1]].position, points[pair[0]].position));
+        let total: f32 = run.windows(2).map(step).sum();
+        let mut walked = 0.0;
+        for pair in run.windows(2) {
+            walked += step(pair);
+            if walked >= 0.5 * total {
+                return pair[1];
+            }
+        }
+        run[0]
+    };
+    let mut run: Vec<usize> = Vec::new();
+    let mut middles = Vec::new();
+    for step in 0..=count {
+        let at = (first + step) % count;
+        if step < count && eligible(&points[at]) {
+            run.push(at);
+        } else if !run.is_empty() {
+            middles.push(centre(&run));
+            run.clear();
+        }
+    }
+    for middle in middles {
+        points[middle].central_part_joint = true;
+    }
+}
+
+/// What is known of each object's surface: how visible each place on it
+/// is, and where its parts meet.
+#[derive(Clone, Copy)]
+struct Known<'a> {
+    seen: &'a [Option<Visibility>],
+    joints: &'a [Option<Joints>],
+    /// The triangles painted to have seams, then those painted to keep
+    /// them off.
+    painted: &'a [[Option<Painted>; 2]],
+}
+
 /// The candidates of one physical layer, object by object, each with
 /// the addresses of the walls its perimeters are.
 fn gather(
@@ -982,8 +1337,13 @@ fn gather(
     objects: &[Frame],
     outline: Option<&[ExPolygon]>,
     setup: Seam,
-    seen: &[Option<Visibility>],
+    known: &Known<'_>,
 ) -> Vec<(LayerSeams, Vec<usize>)> {
+    let Known {
+        seen,
+        joints,
+        painted,
+    } = *known;
     let mut found: Vec<(LayerSeams, Vec<usize>)> = objects
         .iter()
         .map(|_| (LayerSeams::default(), Vec::new()))
@@ -1051,8 +1411,57 @@ fn gather(
                 .get(part.filament)
                 .map_or(0.5, |settings| settings.nozzle_diameter as f32);
             let angles = polygon_angles(&ring, &lengths, arm);
-            for (at, &corner) in order.iter().enumerate() {
-                let [x, y] = centred(points[corner], centre);
+            // Where the object's parts meet, a point is on the joint
+            // within a line's width and half the joints' spacing of it
+            // (`part_joint_radius`).
+            let joints = joints[object].as_ref();
+            let [enforcers, blockers] = &painted[object];
+            let joint_radius =
+                joints.map_or(0.0, |joints| flow_width.max(0.4) + 0.5 * joints.spacing());
+            // The places, each with the point of the wall it is on or
+            // after, and the angle there: every point of the wall, and
+            // along an edge near a joint, which usually crosses a long
+            // edge far from its ends, a place every fifth of a mm
+            // (`process_perimeter_polygon`, which oversamples such an
+            // edge as it does one near painted seams).
+            let corners: Vec<[f32; 3]> = (order.iter())
+                .map(|&corner| {
+                    let [x, y] = centred(points[corner], centre);
+                    [x, y, z]
+                })
+                .collect();
+            let mut places: Vec<([f32; 3], usize, f32)> = Vec::with_capacity(count);
+            for (at, &position) in corners.iter().enumerate() {
+                // A hole was turned about to be measured.
+                let angle = if wall.is_hole {
+                    -angles[at]
+                } else {
+                    angles[at]
+                };
+                places.push((position, at, angle));
+                if joints.is_some() || enforcers.is_some() {
+                    let next = corners[(at + 1) % count];
+                    let to_next = sub3(next, position);
+                    let distance = length3(to_next);
+                    let middle = scale3(add3(position, next), 0.5);
+                    // Near paint that wants the seam, or a joint.
+                    let near_paint = enforcers
+                        .as_ref()
+                        .is_some_and(|paint| paint.within(position, distance));
+                    let near_joint = joints
+                        .is_some_and(|joints| joints.near(middle, 0.5 * distance + joint_radius));
+                    if near_paint || near_joint {
+                        let unit = to_next.map(|c| c / distance);
+                        let mut step = OVERSAMPLING;
+                        while step < distance {
+                            places.push((add3(position, scale3(unit, step)), at, 0.0));
+                            step += OVERSAMPLING;
+                        }
+                    }
+                }
+            }
+            for &(position, at, angle) in &places {
+                let [x, y, _] = position;
                 let on_bed = (
                     f64::from(x) + centre.x as f64 * 1e-6,
                     f64::from(y) + centre.y as f64 * 1e-6,
@@ -1100,20 +1509,37 @@ fn gather(
                         ((facing + 1.2) * 0.5).clamp(0.0, 1.0)
                     }),
                 };
+                // Painted for the seam within a line's width; a blocker
+                // there outweighs an enforcer.
+                let near = |paint: &Option<Painted>| {
+                    paint
+                        .as_ref()
+                        .is_some_and(|paint| paint.within(position, flow_width))
+                };
+                let paint = if near(blockers) {
+                    Paint::Blocked
+                } else if near(enforcers) {
+                    Paint::Enforced
+                } else {
+                    Paint::Neutral
+                };
                 seams.points.push(Candidate {
-                    position: [x, y, z],
+                    position,
                     perimeter: seams.perimeters.len() as u32,
-                    // A hole was turned about to be measured.
-                    angle: if wall.is_hole {
-                        -angles[at]
-                    } else {
-                        angles[at]
-                    },
+                    angle,
                     visibility,
                     overhang,
                     unsupported,
                     embedded,
+                    part_joint: joints.is_some_and(|joints| joints.near(position, joint_radius)),
+                    central_part_joint: false,
+                    paint,
+                    central_enforcer: false,
                 });
+            }
+            mark_central_enforcer(&mut seams.points[start..]);
+            if joints.is_some() {
+                mark_part_joint_centres(&mut seams.points[start..]);
             }
             seams.perimeters.push(Perimeter {
                 start,

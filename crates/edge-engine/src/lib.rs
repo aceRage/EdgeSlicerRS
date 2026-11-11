@@ -32,7 +32,7 @@ use std::{error::Error, fmt};
 
 pub use clock::timestamp;
 pub use edge_mesh::Transform;
-pub use followed::{Followed, followed, settled};
+pub use followed::{Followed, followed, followed_in, settled};
 pub use job::{BedType, Chosen, Job, Overrides, Sourced, prepare, prepare_noted};
 pub use load::{Loaded, Opened, PlateInfo, open};
 pub use model::{

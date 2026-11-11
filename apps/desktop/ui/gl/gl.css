@@ -1,6 +1,7 @@
 /* What is laid over the 3D views: the navigator, the sliders of Preview,
-   the readout. The stage's own colours are the reference's and are in
-   gl/scene.js; these are the page's. */
+   the readout. The scene's own colours are the reference's and are in
+   gl/scene.js; what lies over it is the page's, on the overlay surface
+   and the tokens of style.css (STYLE.md, "What lies over the stage"). */
 
 #view3d { position: absolute; inset: 0; width: 100%; height: 100%; touch-action: none; cursor: grab; outline: none; }
 #view3d.dragging { cursor: grabbing; }
@@ -11,22 +12,20 @@
 #gl-note {
   position: absolute;
   left: 50%;
-  top: 12px;
+  top: var(--stage-inset);
+  z-index: var(--z-overlay);
   transform: translateX(-50%);
   max-width: 70%;
   margin: 0;
   padding: 6px 10px;
-  border-radius: 6px;
-  background: var(--stage-panel);
-  border: 1px solid var(--stage-line);
-  font-size: 12px;
+  font-size: var(--size-label);
 }
 
 /* The 3D navigator: the face colours are the reference's
    (GLCanvas3D.cpp `_render_3d_navigator`): 0.77 light, 0.23 dark. */
-.gl-navigator { position: absolute; left: 16px; bottom: 50px; width: 84px; height: 84px; perspective: 420px; pointer-events: none; }
+.gl-navigator { position: absolute; left: 16px; bottom: 54px; width: 84px; height: 84px; perspective: 420px; pointer-events: none; }
 .gl-cube { position: absolute; inset: 0; transform-style: preserve-3d; }
-#stage .gl-face {
+.gl-face {
   position: absolute;
   left: 50%;
   top: 50%;
@@ -35,109 +34,99 @@
   margin: -26px 0 0 -26px;
   padding: 0;
   border: 1px solid rgba(0, 0, 0, 0.35);
-  border-radius: 3px;
+  border-radius: var(--radius-m);
   background: rgb(196, 196, 196);
   color: rgb(51, 51, 51);
-  font-size: 10px;
+  font-size: var(--size-caps);
   font-weight: 600;
   backface-visibility: hidden;
+  -webkit-backface-visibility: hidden;
   pointer-events: auto;
   cursor: pointer;
 }
-#stage .gl-face:hover { background: var(--accent); color: var(--accent-text); }
+.gl-face:hover:not(:disabled) { border-color: var(--accent); background: var(--accent); color: var(--on-accent); }
 @media (prefers-color-scheme: dark) {
-  #stage .gl-face { background: rgb(59, 59, 59); color: rgb(224, 224, 224); border-color: rgba(255, 255, 255, 0.3); }
+  .gl-face { background: rgb(59, 59, 59); color: rgb(224, 224, 224); border-color: rgba(255, 255, 255, 0.3); }
 }
 
-.gl-tools { position: absolute; left: 12px; bottom: 12px; display: flex; gap: 6px; }
-.gl-tools button { padding: 4px 8px; font-size: 12px; }
-#stage .gl-fit { width: 30px; padding: 4px 0; font-size: 14px; line-height: 1; border-radius: 50%; }
+/* Fit, and the View menu: a toolbar at the foot of the stage. */
+.gl-tools { position: absolute; left: var(--stage-inset); bottom: var(--stage-inset); z-index: var(--z-overlay); }
 
 .gl-loading {
   position: absolute;
-  left: 84px;
-  top: 12px;
+  left: var(--stage-left);
+  top: var(--stage-inset);
+  z-index: var(--z-overlay);
   padding: 3px 10px;
-  border-radius: 12px;
-  background: var(--stage-panel);
-  border: 1px solid var(--stage-line);
-  font-size: 12px;
+  font-size: var(--size-label);
   pointer-events: none;
 }
 
+/* The names over the objects. Their frames are the reference's (white,
+   and the selection's orange). */
 .gl-labels { position: absolute; inset: 0; overflow: hidden; pointer-events: none; }
 .gl-labels span {
   position: absolute;
   transform: translate(-50%, -130%);
   padding: 1px 6px;
-  border-radius: 4px;
-  background: var(--stage-panel);
   border: 1.5px solid rgb(191, 191, 191);
-  font-size: 11px;
+  border-radius: var(--radius-m);
+  background: var(--surface-overlay);
+  color: var(--text-1);
+  font-size: var(--size-small);
   white-space: nowrap;
 }
-/* The reference's border for the label of what is selected. */
 .gl-labels span.selected { border: 3px solid rgb(193, 103, 55); }
 
+/* The sliders: a track on the overlay surface, the part shown filled
+   with the accent, a thumb of the accent ringed in the float surface;
+   their values in small labels beside the thumbs. */
+.gl-track { position: absolute; border: 1px solid var(--line-2); border-radius: 4px; background: var(--surface-overlay); cursor: pointer; touch-action: none; outline: none; }
+.gl-fill { position: absolute; border-radius: 3px; background: var(--accent); }
+.gl-thumb { position: absolute; width: 18px; height: 18px; border: 2px solid var(--surface-float); border-radius: 50%; background: var(--accent); box-shadow: 0 0 0 1px var(--line-2); cursor: grab; }
+.gl-track:focus-visible .gl-thumb.active, .gl-moves .gl-track:focus-visible .gl-thumb { box-shadow: 0 0 0 2px var(--surface-float), 0 0 0 4px var(--focus); }
+
 /* The layers slider. */
-.gl-layers { position: absolute; top: 10%; right: 10px; bottom: 92px; width: 56px; }
-.gl-layers .gl-track { position: absolute; top: 0; bottom: 34px; right: 14px; width: 8px; border-radius: 4px; background: #2c313a; box-shadow: 0 0 0 1px rgba(255, 255, 255, 0.18); cursor: pointer; touch-action: none; outline: none; }
-.gl-layers .gl-fill { position: absolute; left: 0; right: 0; border-radius: 4px; background: var(--accent); opacity: 0.75; }
-.gl-layers .gl-thumb { position: absolute; left: -6px; width: 20px; height: 20px; margin-bottom: -10px; border-radius: 50%; background: var(--accent); border: 2px solid #14171c; cursor: grab; }
-.gl-layers .gl-thumb.active { box-shadow: 0 0 0 2px #14171c, 0 0 0 4px var(--accent); }
-.gl-layers .gl-track:focus-visible .gl-thumb.active { box-shadow: 0 0 0 2px #14171c, 0 0 0 5px #fff; }
+.gl-layers { position: absolute; top: max(10%, 72px); right: 10px; bottom: 92px; z-index: var(--z-overlay); width: 56px; }
+.gl-layers .gl-track { top: 0; bottom: 34px; right: 15px; width: 8px; }
+.gl-layers .gl-fill { left: 0; right: 0; }
+.gl-layers .gl-thumb { left: -6px; margin-bottom: -9px; }
+/* The thumb the keys move. */
+.gl-layers .gl-thumb.active { box-shadow: 0 0 0 1px var(--accent); }
 .gl-layers.one .gl-thumb.low, .gl-layers.one .gl-layer-label.low { display: none; }
-.gl-layer-label {
-  position: absolute;
-  right: 42px;
-  margin-bottom: 34px;
-  padding: 2px 6px;
-  border-radius: 4px;
-  background: var(--stage-panel);
-  border: 1px solid var(--stage-line);
-  color: var(--stage-text);
-  font-size: 11px;
-  line-height: 1.25;
-  text-align: right;
-  white-space: pre;
-  font-variant-numeric: tabular-nums;
-  pointer-events: none;
-}
+.gl-layer-label { position: absolute; right: 42px; margin-bottom: 34px; text-align: right; }
 /* The upper thumb's label sits over its middle, the lower one's under. */
 .gl-layer-label.high { transform: translateY(6px); }
 .gl-layer-label.low { transform: translateY(calc(100% - 6px)); }
-#stage .gl-one { position: absolute; right: 4px; bottom: 0; width: 28px; height: 26px; padding: 0; font-weight: 700; }
-#stage .gl-one[aria-pressed="true"] { background: var(--accent); border-color: var(--accent); color: var(--accent-text); }
+/* One layer mode: a tool that stays on. */
+.gl-one {
+  position: absolute;
+  right: 4px;
+  bottom: 0;
+  width: var(--control-m);
+  height: 26px;
+  padding: 0;
+  color: var(--text-2);
+  font: 700 var(--size-label) var(--font-mono);
+}
+.gl-one:hover:not(:disabled) { border-color: var(--line-3); color: var(--text-1); background-color: var(--surface-overlay); }
+.gl-one[aria-pressed="true"], .gl-one[aria-pressed="true"]:hover:not(:disabled) { border-color: var(--accent); color: var(--accent); background-color: var(--surface-overlay); box-shadow: var(--shadow-float), inset 0 0 0 99px var(--accent-soft); }
 
 /* The moves slider. */
-.gl-moves { position: absolute; left: max(128px, 22%); right: max(128px, 22%); bottom: 18px; height: 22px; }
-.gl-moves .gl-track { position: absolute; left: 0; right: 0; top: 7px; height: 8px; border-radius: 4px; background: #2c313a; box-shadow: 0 0 0 1px rgba(255, 255, 255, 0.18); cursor: pointer; touch-action: none; outline: none; }
-.gl-moves .gl-fill { position: absolute; left: 0; top: 0; bottom: 0; border-radius: 4px; background: var(--accent); opacity: 0.75; }
-.gl-moves .gl-thumb { position: absolute; top: -6px; width: 20px; height: 20px; margin-left: -10px; border-radius: 50%; background: var(--accent); border: 2px solid #14171c; cursor: grab; }
-.gl-moves .gl-track:focus-visible .gl-thumb { box-shadow: 0 0 0 2px #14171c, 0 0 0 5px #fff; }
-.gl-move-label {
-  position: absolute;
-  bottom: 18px;
-  transform: translateX(-50%);
-  padding: 1px 6px;
-  border-radius: 4px;
-  background: var(--stage-panel);
-  border: 1px solid var(--stage-line);
-  color: var(--stage-text);
-  font-size: 11px;
-  font-variant-numeric: tabular-nums;
-  pointer-events: none;
-}
+.gl-moves { position: absolute; left: max(128px, 22%); right: max(128px, 22%); bottom: 18px; z-index: var(--z-overlay); height: 22px; }
+.gl-moves .gl-track { left: 0; right: 0; top: 7px; height: 8px; }
+.gl-moves .gl-fill { left: 0; top: 0; bottom: 0; }
+.gl-moves .gl-thumb { top: -6px; margin-left: -9px; }
+.gl-move-label { position: absolute; bottom: 18px; transform: translateX(-50%); }
 
+/* The position window: where the move the slider is on goes, and how. */
 .gl-readout {
   position: absolute;
   right: max(128px, 22%);
   bottom: 60px;
+  z-index: var(--z-overlay);
   padding: 6px 10px;
-  border-radius: 8px;
-  background: var(--stage-panel);
-  border: 1px solid var(--stage-line);
-  font-size: 12px;
+  font: var(--size-small)/1.5 var(--font-mono);
   font-variant-numeric: tabular-nums;
   white-space: pre;
   pointer-events: none;

@@ -151,15 +151,28 @@ struct Choices {
     filaments: Vec<String>,
     bed_type: Option<String>,
     /// The process settings set over the preset, each by the reference's
-    /// name for it and as the pages show its value ([`process`]).
+    /// name for it and as the pages show its value ([`settings`]).
     over: BTreeMap<String, String>,
+    /// Each filament's own settings set over its preset, filament 1's
+    /// first; nothing after the last filament with any.
+    filament_over: Vec<BTreeMap<String, String>>,
+    /// The printer settings set over its preset; an extruder's own as
+    /// `key#n`, n from 0.
+    printer_over: BTreeMap<String, String>,
 }
 
 impl Choices {
     /// Whether two sets of choices slice alike. Presets that are picked
     /// but not in use (the project's own settings are) do not count.
     fn settle_as(&self, other: &Choices) -> bool {
-        let over = |choices: &Choices| (choices.bed_type.clone(), choices.over.clone());
+        let over = |choices: &Choices| {
+            (
+                choices.bed_type.clone(),
+                choices.over.clone(),
+                choices.filament_over.clone(),
+                choices.printer_over.clone(),
+            )
+        };
         match (self.from_presets, other.from_presets) {
             (false, false) => over(self) == over(other),
             _ => self == other,
@@ -186,6 +199,8 @@ impl Choices {
             "wall_loops": number("wall_loops"),
             "closing_radius": number("slice_closing_radius"),
             "over": self.over,
+            "filament_over": self.filament_over,
+            "printer_over": self.printer_over,
         })
     }
 }
@@ -333,7 +348,7 @@ fn bed_of(settings: &Settings) -> Option<[f64; 4]> {
 }
 
 mod printers;
-mod process;
+mod settings;
 mod store;
 
 /// The build plates the engine knows the bed temperature of, each with the
@@ -814,12 +829,26 @@ fn slice_plate(
         .gcode(&edge_engine::timestamp())
         .map_err(|e| e.to_string());
     let read = reads.keys();
-    let unread = overrides
+    let mut unread: Vec<(String, String)> = overrides
         .settings
         .iter()
         .filter(|(key, _)| !read.contains(*key))
         .map(|(key, value)| (key.to_owned(), edge_config::serialized(key, value)))
         .collect();
+    // A filament's or an extruder's own, named with whose it is.
+    for (whose, own) in [
+        ("filament", &overrides.filaments),
+        ("extruder", &overrides.extruders),
+    ] {
+        for (index, settings) in own.iter().enumerate() {
+            for (key, value) in settings.iter().filter(|(key, _)| !read.contains(*key)) {
+                unread.push((
+                    format!("{key} ({whose} {})", index + 1),
+                    edge_config::serialized(key, value),
+                ));
+            }
+        }
+    }
     Ok(Done {
         sliced,
         gcode,
@@ -1002,9 +1031,12 @@ impl Session {
             "project_close" => self.project_close(args),
             "project_set" => self.project_set(args),
 
-            "process_pages" => Ok(Self::process_pages()),
-            "process" => self.process(args),
-            "process_set" => self.process_set(args),
+            "process_pages" => Ok(Self::settings_pages(settings::Book::Process)),
+            "process" => self.settings(args, settings::Book::Process),
+            "process_set" => self.settings_set(args, settings::Book::Process),
+            "settings_pages" => Ok(Self::settings_pages(settings::Book::of(args)?)),
+            "settings" => self.settings(args, settings::Book::of(args)?),
+            "settings_set" => self.settings_set(args, settings::Book::of(args)?),
             "settled" => self.settled(args),
             "plate_view" => self.plate_view(args),
             "slice" => self.slice(args),
@@ -1554,7 +1586,7 @@ impl Session {
         // The presets are found before anything starts, so a name that
         // is not there is said at once.
         let basis = self.basis(&choices, Some(&file))?;
-        let overrides = process::overrides(&choices, &basis);
+        let overrides = settings::overrides(&choices, &basis);
         let chosen = basis.chosen;
 
         let (work, run) = {
