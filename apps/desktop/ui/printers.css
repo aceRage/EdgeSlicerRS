@@ -1,56 +1,70 @@
-/* The sidebar's printer list and "Select/Remove printers" (printers.js).
-   Colours are the page's own (style.css). */
+/* The sidebar's printer card and "Select/Remove printers" (printers.js).
+   Tokens and the controls are the page's own (style.css, STYLE.md). */
 
-/* ---- the printer block ---- */
-
-h2.with-tools { display: flex; align-items: center; }
-h2.with-tools .fold-title { flex: 1; }
-#printer-settings { flex: none; width: 24px; height: 24px; color: var(--quiet); border-radius: 4px; }
-#printer-settings:hover { color: var(--text); background: var(--bg); }
-#printer-settings svg { width: 16px; height: 16px; fill: none; stroke: currentColor; stroke-width: 1.3; stroke-linecap: round; }
-
-#printer-row {
-  display: grid;
-  grid-template-columns: 48px minmax(0, 1fr);
-  align-items: center;
-  gap: 8px;
-  padding: 6px;
-  border: 1px solid var(--line);
-  border-radius: 8px;
-  background: var(--field);
-}
-#printer-row:hover, #printer-row:focus-within { border-color: var(--accent); }
-#printer-row select { border: 0; background: transparent; font-weight: 600; padding-left: 2px; }
-#printer-row select:focus-visible { outline: none; }
-
-/* A model's picture; a grey box where it has none, as the reference's placeholder. */
-#printer-cover, .pt-cover {
+/* A model's picture, on a light plate: the pictures are drawn for a light
+   page. A plate alone where a model has none. */
+.cover {
   display: block;
-  border-radius: 4px;
-  background: rgba(128, 128, 128, 0.16);
+  flex: none;
+  border-radius: var(--radius-s);
+  background: var(--cover-plate);
   overflow: hidden;
 }
-#printer-cover { width: 48px; height: 48px; }
-#printer-cover img, .pt-cover img { display: block; width: 100%; height: 100%; object-fit: contain; background: #ffffff; }
+.cover:empty { background: var(--fill-active); }
+.cover img { display: block; width: 100%; height: 100%; object-fit: contain; }
 
-#nozzles { display: flex; flex-direction: column; gap: 6px; }
-#nozzles h3 { margin-top: 2px; }
-#nozzle-tiles { display: flex; flex-wrap: wrap; gap: 6px; }
+/* ---- the printer card ---- */
+
+/* The printer itself: its picture, its name, its build volume. All of it
+   opens the list of printers. */
+.printer-pick {
+  display: grid;
+  grid-template-columns: 52px minmax(0, 1fr) 20px;
+  align-items: center;
+  gap: 10px;
+  padding: var(--space-2);
+  border-radius: var(--radius-l) var(--radius-l) 0 0;
+  background: var(--mark-chevron) no-repeat right 12px center / 9px 6px;
+  cursor: pointer;
+  user-select: none;
+  -webkit-user-select: none;
+  transition: background-color var(--time-fast) var(--ease);
+}
+.printer-pick:hover, .printer-pick[aria-expanded="true"] { background-color: var(--fill-hover); }
+.printer-pick:focus-visible { outline-offset: -2px; }
+.printer-pick[aria-disabled="true"] { cursor: default; }
+#printer-cover { width: 52px; height: 52px; }
+.printer-pick-text { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+.printer-pick .lb-value { font-weight: 650; }
+#printer-info { font-size: var(--size-label); font-variant-numeric: tabular-nums; color: var(--text-2); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+#printer-info:empty { display: none; }
+
+/* In the list: each printer with its picture. */
+.lb-option .cover { width: 28px; height: 28px; }
+
+/* The nozzles are one block of the card: their title, a cell for each where there are several, in a strip
+   the width of the card, and the diameter. */
+.nozzle-row { flex-wrap: wrap; row-gap: 0; min-height: 0; padding-top: 9px; }
+#nozzle-tiles { flex: 1 1 100%; display: grid; grid-template-columns: repeat(auto-fit, minmax(54px, 1fr)); gap: var(--space-1); padding: 6px 7px 2px 0; }
 .nozzle-tile {
   display: flex;
-  flex-direction: column;
-  align-items: center;
-  min-width: 44px;
-  padding: 3px 6px;
-  border: 1px solid var(--line);
-  border-radius: 5px;
-  background: var(--field);
-  line-height: 1.25;
+  align-items: baseline;
+  justify-content: center;
+  gap: 6px;
+  height: var(--control-s);
+  border: 1px solid var(--line-2);
+  border-radius: var(--radius-s);
+  background: var(--surface-well);
+  line-height: 20px;
 }
-.nozzle-tile small { color: var(--quiet); font-size: 10px; }
-.nozzle-tile b { font-weight: 600; }
+.nozzle-tile small { color: var(--text-3); font-size: var(--size-caps); font-weight: 600; letter-spacing: 0.04em; }
+.nozzle-tile b { font: 600 var(--size-label) var(--font-mono); font-variant-numeric: tabular-nums; }
 
 /* ---- Printer Selection ---- */
+
+/* The table's pictures, as they were. */
+.pt-cover { display: block; border-radius: 4px; background: rgba(128, 128, 128, 0.16); overflow: hidden; }
+.pt-cover img { display: block; width: 100%; height: 100%; object-fit: contain; background: #ffffff; }
 
 #printers-dialog {
   width: min(1000px, 90vw);

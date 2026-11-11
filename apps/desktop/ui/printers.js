@@ -50,13 +50,19 @@ function showPrinterBlock() {
   };
   const groups = [];
   let value = '';
+  // What a row's picture is of, for the list (listbox) to show.
+  const pictured = (option, model) => {
+    if (model && model.vendor && model.model) Object.assign(option.dataset, { vendor: model.vendor, model: model.model });
+    return option;
+  };
   if (project.has_settings) {
-    groups.push(group('Project-inside presets', [new Option(listing.project_printer || 'The project names no printer', 'project')]));
-    if (selected && selected.source === 'project') value = 'project';
+    const own = selected && selected.source === 'project';
+    groups.push(group('Project-inside presets', [pictured(new Option(listing.project_printer || 'The project names no printer', 'project'), own ? selected : null)]));
+    if (own) value = 'project';
   }
   const onPreset = selected && selected.source === 'preset';
   const rows = listing.installed.map((model, index) => {
-    const option = new Option(model.model, `m${index}`);
+    const option = pictured(new Option(model.model, `m${index}`), model);
     if (model.brand !== model.vendor || !model.model.startsWith(model.brand)) option.title = model.brand;
     if (onPreset && selected.vendor === model.vendor && selected.model === model.model) value = option.value;
     return option;
@@ -64,7 +70,7 @@ function showPrinterBlock() {
   // A printer the project is on that is not among those added is still
   // the one in force: it is listed while it is.
   if (onPreset && !selected.added) {
-    rows.push(new Option(selected.model || selected.machine, 'current'));
+    rows.push(pictured(new Option(selected.model || selected.machine, 'current'), selected));
     value = 'current';
   }
   if (rows.length) groups.push(group('System presets', rows));
@@ -486,6 +492,22 @@ async function firstRun() {
 }
 
 function initPrinters() {
+  // The printer's list: the whole head of its card opens it; each printer has its picture, and the entry
+  // that opens the printer selection its gear.
+  listbox($('printer'), {
+    trigger: $('printer-row'),
+    decorate(row, option) {
+      if (option.value === 'wizard') {
+        row.classList.add('lb-action');
+        row.insertAdjacentHTML('afterbegin', '<svg viewBox="0 0 16 16" aria-hidden="true"><circle cx="8" cy="8" r="2.2"/><path d="M8,1.5v2M8,12.5v2M1.5,8h2M12.5,8h2M3.4,3.4l1.4,1.4M11.2,11.2l1.4,1.4M3.4,12.6l1.4-1.4M11.2,4.8l1.4-1.4"/></svg>');
+        return;
+      }
+      const picture = el('span', { className: 'cover' });
+      showCover(picture, option.dataset.vendor || '', option.dataset.model || '');
+      row.prepend(picture);
+    },
+  });
+  listbox($('nozzle-diameter'), { bare: true });
   $('printer').addEventListener('change', () => attempt(printerPicked));
   $('nozzle-diameter').addEventListener('change', () => attempt(() => selectPrinter({ variant: $('nozzle-diameter').value })));
   $('printer-settings').addEventListener('click', () => attempt(openPrinterSelection));
