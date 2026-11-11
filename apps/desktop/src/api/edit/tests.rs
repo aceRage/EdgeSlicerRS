@@ -539,3 +539,347 @@ fn geometry_is_added_to_the_project_shown_cloned_and_arranged() {
     assert_eq!(detail["dirty"], false);
     assert_eq!(detail["edit"]["redo"], "Import Object");
 }
+
+/// Boxes, each `(corner, size)`, as one mesh in a binary STL file: the
+/// separate shells a model of several pieces is made of.
+fn boxes(path: &Path, boxes: &[([f32; 3], [f32; 3])]) -> String {
+    let mut triangles: Vec<[[f32; 3]; 3]> = Vec::new();
+    for (at, size) in boxes {
+        let corner = |i: usize| -> [f32; 3] {
+            std::array::from_fn(|axis| at[axis] + if i >> axis & 1 == 1 { size[axis] } else { 0.0 })
+        };
+        for face in [
+            [0, 2, 3],
+            [0, 3, 1],
+            [4, 5, 7],
+            [4, 7, 6],
+            [0, 1, 5],
+            [0, 5, 4],
+            [2, 6, 7],
+            [2, 7, 3],
+            [0, 4, 6],
+            [0, 6, 2],
+            [1, 3, 7],
+            [1, 7, 5],
+        ] {
+            triangles.push(face.map(corner));
+        }
+    }
+    let mut bytes = vec![0u8; 80];
+    bytes.extend_from_slice(&(triangles.len() as u32).to_le_bytes());
+    for t in &triangles {
+        bytes.extend_from_slice(&[0u8; 12]);
+        for corner in t {
+            for value in corner {
+                bytes.extend_from_slice(&value.to_le_bytes());
+            }
+        }
+        bytes.extend_from_slice(&[0u8; 2]);
+    }
+    std::fs::write(path, bytes).unwrap();
+    path.to_string_lossy().into_owned()
+}
+
+/// A project of one STL on the U1, its presets chosen.
+fn stl_project(session: &Arc<Session>, path: &str) -> u64 {
+    let project = ask(session, "project_open", json!({ "path": path }))["id"]
+        .as_u64()
+        .unwrap();
+    choose_presets(session, project);
+    project
+}
+
+#[test]
+fn a_box_is_laid_on_a_face_and_slices_as_it_then_lies() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = boxes(
+        &dir.path().join("box.stl"),
+        &[([0.0; 3], [30.0, 20.0, 10.0])],
+    );
+    let session = Arc::new(Session::new(None));
+    let project = stl_project(&session, &path);
+    let scene = ask(&session, "scene", json!({}));
+    let copy = scene["placings"][0]["id"].clone();
+    sliced(&session, project, None);
+    let before = numbers(&ask(&session, "toolpath", json!({}))["box"][1]);
+    assert!((before[2] - 10.0).abs() < 0.1, "{before:?}");
+
+    let faces = ask(&session, "scene_faces", json!({ "copy": copy }));
+    assert_eq!(faces["copy"], copy);
+    let list = faces["faces"].as_array().unwrap();
+    assert_eq!(list.len(), 6);
+    assert_eq!(list[0]["area"], 600.0);
+    // Each is drawn as the reference draws it: twenty points a corner.
+    assert_eq!(list[0]["drawn"].as_array().unwrap().len(), 80);
+    let side = list
+        .iter()
+        .find(|face| numbers(&face["normal"]) == [1.0, 0.0, 0.0])
+        .unwrap();
+
+    let laid = edit(
+        &session,
+        json!({ "op": "lay_on_face", "copy": copy, "normal": side["normal"] }),
+    );
+    assert_eq!(laid["done"], "Gizmo-Place on Face");
+    assert_eq!(laid["project"]["sliced"], false);
+    let reach = &laid["scene"]["placings"][0]["box"];
+    let (low, high) = (numbers(&reach[0]), numbers(&reach[1]));
+    assert_eq!(low[2], 0.0);
+    assert!((high[2] - low[2] - 30.0).abs() < 1e-3, "{reach}");
+    assert!((high[0] - low[0] - 10.0).abs() < 1e-3, "{reach}");
+
+    // Sliced as it now lies: 30 mm tall, where it stands.
+    sliced(&session, project, None);
+    let path_box = ask(&session, "toolpath", json!({}))["box"].clone();
+    let (from, to) = (numbers(&path_box[0]), numbers(&path_box[1]));
+    assert!((to[2] - 30.0).abs() < 0.1, "{path_box}");
+    assert!((to[0] - from[0] - 10.0).abs() < 0.5, "{path_box}");
+    assert!(
+        from[0] >= low[0] - 0.01 && to[0] <= high[0] + 0.01,
+        "{path_box} {reach}"
+    );
+
+    // One step to take back.
+    let undone = ask(&session, "undo", json!({}));
+    assert_eq!(undone["done"], "Gizmo-Place on Face");
+    assert_eq!(undone["project"]["edit"]["undo"], Value::Null);
+    assert!(
+        refused(
+            &session,
+            "scene_edit",
+            json!({ "op": "lay_on_face", "copy": copy, "normal": [0, 0] })
+        )
+        .contains("normal is not three numbers")
+    );
+}
+
+/// Every layer of the plate shown: its top, and each closed outer wall as
+/// its points, flat.
+fn walls(session: &Arc<Session>) -> Vec<(f64, Vec<Vec<f64>>)> {
+    let mut out = Vec::new();
+    for index in 0.. {
+        let Ok(layer) = session.call("layer", &json!({ "index": index })) else {
+            break;
+        };
+        let loops = layer["strokes"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|stroke| stroke["r"] == "Outer wall")
+            .map(|stroke| numbers(&stroke["p"]))
+            .collect();
+        out.push((layer["z"].as_f64().unwrap(), loops));
+    }
+    out
+}
+
+/// The box round points given flat, x and y in turn, and the area they
+/// close in (positive anticlockwise).
+fn measure(points: &[f64]) -> ([f64; 4], f64) {
+    let mut reach = [
+        f64::INFINITY,
+        f64::INFINITY,
+        f64::NEG_INFINITY,
+        f64::NEG_INFINITY,
+    ];
+    let mut area = 0.0;
+    let count = points.len() / 2;
+    for at in 0..count {
+        let (x, y) = (points[2 * at], points[2 * at + 1]);
+        let next = (at + 1) % count;
+        area += x * points[2 * next + 1] - points[2 * next] * y;
+        reach = [
+            reach[0].min(x),
+            reach[1].min(y),
+            reach[2].max(x),
+            reach[3].max(y),
+        ];
+    }
+    (reach, area / 2.0)
+}
+
+#[test]
+fn a_mirrored_object_slices_to_the_mirror_image_of_the_original() {
+    let dir = tempfile::tempdir().unwrap();
+    // An L: a tower at one end of a low bar, which a mirror along X puts
+    // at the other end.
+    let path = boxes(
+        &dir.path().join("ell.stl"),
+        &[
+            ([0.0; 3], [6.0, 10.0, 16.0]),
+            ([6.0, 0.0, 0.0], [24.0, 10.0, 4.0]),
+        ],
+    );
+    let session = Arc::new(Session::new(None));
+    let project = stl_project(&session, &path);
+    // Given its place on the bed by a first edit, so both slices are of
+    // the same place.
+    let scene = ask(&session, "scene", json!({}));
+    let placing = scene["placings"][0].clone();
+    edit(
+        &session,
+        json!({ "op": "transform", "copies": [moved(&placing, [0.0, 0.0, 0.0])] }),
+    );
+    sliced(&session, project, None);
+    let before = walls(&session);
+    let reach = ask(&session, "scene", json!({}))["placings"][0]["box"].clone();
+    let middle = (numbers(&reach[0])[0] + numbers(&reach[1])[0]) / 2.0;
+
+    assert!(
+        refused(
+            &session,
+            "scene_edit",
+            json!({ "op": "mirror", "copies": [placing["id"]], "axis": "w" })
+        )
+        .contains("axis cannot be w")
+    );
+    let mirrored = edit(
+        &session,
+        json!({ "op": "mirror", "copies": [placing["id"]], "axis": "x" }),
+    );
+    assert_eq!(mirrored["done"], "Mirror Object");
+    assert_eq!(mirrored["project"]["sliced"], false);
+    let matrix = numbers(&mirrored["scene"]["placings"][0]["matrix"]);
+    assert!(matrix[0] < 0.0, "kept in the copy's transform: {matrix:?}");
+    // It stands where it stood.
+    assert_eq!(mirrored["scene"]["placings"][0]["box"], reach);
+
+    sliced(&session, project, None);
+    let after = walls(&session);
+    assert_eq!(after.len(), before.len());
+    assert!(before.len() > 70);
+    for ((z, was), (z_now, now)) in before.iter().zip(&after) {
+        // The first layer where it was, every layer at its height.
+        assert_eq!(z, z_now);
+        assert_eq!(was.len(), now.len(), "at {z}");
+        let mut was: Vec<([f64; 4], f64)> = was.iter().map(|p| measure(p)).collect();
+        let mut now: Vec<([f64; 4], f64)> = now.iter().map(|p| measure(p)).collect();
+        // Mirrored: x goes to the other side of the middle, the winding
+        // stays (an outer wall goes anticlockwise either way).
+        for (reach, _) in &mut was {
+            *reach = [
+                2.0 * middle - reach[2],
+                reach[1],
+                2.0 * middle - reach[0],
+                reach[3],
+            ];
+        }
+        let key = |item: &([f64; 4], f64)| (item.0[0] * 100.0).round() as i64;
+        was.sort_by_key(key);
+        now.sort_by_key(key);
+        for ((a, area_a), (b, area_b)) in was.iter().zip(&now) {
+            for side in 0..4 {
+                assert!((a[side] - b[side]).abs() < 0.002, "at {z}: {a:?} {b:?}");
+            }
+            assert!((area_a - area_b).abs() < 0.01, "at {z}: {area_a} {area_b}");
+            assert!(*area_b > 0.0);
+        }
+    }
+    // High up, only the tower: before at the low end of x, after at the high.
+    let (top_was, top_now) = (
+        measure(&before.last().unwrap().1[0]).0,
+        measure(&after.last().unwrap().1[0]).0,
+    );
+    assert!(
+        top_was[0] < middle && top_now[2] > middle,
+        "{top_was:?} {top_now:?}"
+    );
+
+    // Along Z it is upside down, standing on the bed: the bar on top.
+    let flipped = edit(
+        &session,
+        json!({ "op": "mirror", "copies": [placing["id"]], "axis": "z" }),
+    );
+    let reach = &flipped["scene"]["placings"][0]["box"];
+    assert_eq!(numbers(&reach[0])[2], 0.0);
+    sliced(&session, project, None);
+    let flipped = walls(&session);
+    assert_eq!(flipped.len(), before.len());
+    // Its first layer is the tower's foot alone, the bar's whole length
+    // now its top.
+    let first = measure(&flipped[0].1[0]).0;
+    assert!(first[2] - first[0] < 7.0, "{first:?}");
+    let last = measure(&flipped.last().unwrap().1[0]).0;
+    assert!(last[2] - last[0] > 29.0, "{last:?}");
+    assert_eq!(ask(&session, "undo", json!({}))["done"], "Mirror Object");
+}
+
+#[test]
+fn shells_are_split_to_parts_and_to_objects_and_slice_where_they_stood() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = boxes(
+        &dir.path().join("pair.stl"),
+        &[
+            ([0.0; 3], [20.0, 20.0, 10.0]),
+            ([30.0, 0.0, 0.0], [10.0, 10.0, 25.0]),
+        ],
+    );
+    let session = Arc::new(Session::new(None));
+    let project = stl_project(&session, &path);
+    let scene = ask(&session, "scene", json!({}));
+    let object = scene["objects"][0]["id"].clone();
+    assert_eq!(
+        scene["objects"][0]["split"],
+        json!({ "objects": true, "parts": true })
+    );
+    assert_eq!(
+        scene["objects"][0]["part_list"].as_array().unwrap().len(),
+        1
+    );
+    // Given its place first, so the slices compared are of one place.
+    edit(
+        &session,
+        json!({ "op": "transform", "copies": [moved(&scene["placings"][0], [0.0; 3])] }),
+    );
+    sliced(&session, project, None);
+    let whole = ask(&session, "toolpath", json!({}))["box"].clone();
+
+    let parts = edit(&session, json!({ "op": "split_parts", "object": object }));
+    assert_eq!(parts["done"], "Split to parts");
+    assert_eq!(parts["project"]["sliced"], false);
+    let listed = &parts["scene"]["objects"][0];
+    assert_eq!(listed["parts"], 2);
+    assert_eq!(
+        listed["part_list"][0],
+        json!({ "name": "pair.stl_1", "kind": "part", "filament": 1 })
+    );
+    assert_eq!(listed["part_list"][1]["name"], "pair.stl_2");
+    assert_eq!(listed["split"], json!({ "objects": true, "parts": false }));
+    assert_eq!(
+        refused(
+            &session,
+            "scene_edit",
+            json!({ "op": "split_parts", "object": object })
+        ),
+        "The target object contains only one part and can not be split."
+    );
+
+    let objects = edit(&session, json!({ "op": "split_objects", "object": object }));
+    assert_eq!(objects["done"], "Split to Objects");
+    assert_eq!(objects["note"], Value::Null);
+    let made = objects["made"].as_array().unwrap();
+    assert_eq!(made.len(), 2);
+    let names: Vec<&Value> = objects["scene"]["objects"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|o| &o["name"])
+        .collect();
+    assert_eq!(names, [&json!("pair.stl_1"), &json!("pair.stl_2")]);
+    assert_eq!(
+        objects["project"]["plates"][0]["objects"],
+        json!(["pair.stl_1", "pair.stl_2"])
+    );
+    for listed in objects["scene"]["objects"].as_array().unwrap() {
+        assert_eq!(listed["split"], json!({ "objects": false, "parts": false }));
+    }
+
+    // Two objects, sliced where the one stood.
+    sliced(&session, project, None);
+    assert_eq!(ask(&session, "toolpath", json!({}))["box"], whole);
+    // Two steps to take back, the last first.
+    assert_eq!(ask(&session, "undo", json!({}))["done"], "Split to Objects");
+    let back = ask(&session, "undo", json!({}));
+    assert_eq!(back["done"], "Split to parts");
+    assert_eq!(back["scene"]["objects"][0]["parts"], 1);
+}

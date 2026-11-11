@@ -130,17 +130,41 @@ async function confirmBox(title, text, ok, cancel, options = null) {
 }
 
 // A menu at a point: items are [label, action, { checked, disabled }] or null for a line.
-function showMenu(x, y, items) {
-  const menu = $('menu');
-  menu.replaceChildren(...items.map((item) => {
+// An item is [label, action, more] or null for a line. `more` may have
+// `disabled`, `checked` (a mark that it is on), `title` (its tooltip) and
+// `items`: a menu of its own that opens beside it (a sub-menu, as the
+// reference's "Mirror" and "Split" are), by the pointer, a click or Right,
+// and closes with Left or Escape.
+function menuButtons(items, sub) {
+  return items.map((item) => {
     if (!item) return el('hr');
     const [label, action, more = {}] = item;
     const button = el('button', { type: 'button', textContent: label, disabled: Boolean(more.disabled) });
+    if (more.title) button.title = more.title;
     button.setAttribute('role', 'checked' in more ? 'menuitemradio' : 'menuitem');
     if ('checked' in more) button.setAttribute('aria-checked', String(more.checked));
+    if (more.items) {
+      button.classList.add('has-sub');
+      button.setAttribute('aria-haspopup', 'menu');
+      button.setAttribute('aria-expanded', 'false');
+      const mark = el('span', { className: 'sub-mark' });
+      mark.setAttribute('aria-hidden', 'true');
+      button.append(mark);
+      const open = (focus) => showSubmenu(button, more.items, focus);
+      button.addEventListener('click', () => open(true));
+      button.addEventListener('pointerenter', () => { if (!button.disabled) open(false); });
+      button.addEventListener('keydown', (event) => { if (event.key === 'ArrowRight') { event.preventDefault(); open(true); } });
+      return button;
+    }
+    if (!sub) button.addEventListener('pointerenter', hideSubmenu);
     button.addEventListener('click', () => { hideMenu(); action(); });
     return button;
-  }));
+  });
+}
+function showMenu(x, y, items) {
+  const menu = $('menu');
+  hideSubmenu();
+  menu.replaceChildren(...menuButtons(items, false));
   menu.hidden = false;
   const box = menu.getBoundingClientRect();
   menu.style.left = `${Math.max(4, Math.min(x, window.innerWidth - box.width - 4))}px`;
@@ -148,9 +172,53 @@ function showMenu(x, y, items) {
   const first = menu.querySelector('button:not(:disabled)');
   if (first) first.focus();
 }
-function hideMenu() { $('menu').hidden = true; }
+function submenu() {
+  let node = $('submenu');
+  if (!node) {
+    node = el('div', { id: 'submenu', className: 'menu', hidden: true });
+    node.setAttribute('role', 'menu');
+    node.addEventListener('keydown', (event) => {
+      if (event.key === 'ArrowLeft' || event.key === 'Escape') {
+        event.preventDefault();
+        event.stopPropagation();
+        const from = node.from;
+        hideSubmenu();
+        if (from) from.focus();
+      }
+    });
+    document.body.append(node);
+  }
+  return node;
+}
+function showSubmenu(button, items, focus) {
+  const node = submenu();
+  if (node.from === button && !node.hidden) {
+    if (focus) { const first = node.querySelector('button:not(:disabled)'); if (first) first.focus(); }
+    return;
+  }
+  hideSubmenu();
+  node.from = button;
+  node.replaceChildren(...menuButtons(items, true));
+  node.hidden = false;
+  button.setAttribute('aria-expanded', 'true');
+  const at = button.getBoundingClientRect();
+  const box = node.getBoundingClientRect();
+  const right = at.right + box.width + 4 <= window.innerWidth;
+  node.style.left = `${right ? at.right + 2 : Math.max(4, at.left - box.width - 2)}px`;
+  node.style.top = `${Math.max(4, Math.min(at.top - 4, window.innerHeight - box.height - 4))}px`;
+  if (focus) { const first = node.querySelector('button:not(:disabled)'); if (first) first.focus(); }
+}
+function hideSubmenu() {
+  const node = $('submenu');
+  if (!node || node.hidden) return;
+  node.hidden = true;
+  if (node.from) node.from.setAttribute('aria-expanded', 'false');
+  node.from = null;
+}
+function hideMenu() { hideSubmenu(); $('menu').hidden = true; }
 document.addEventListener('pointerdown', (event) => {
-  if (!$('menu').hidden && !$('menu').contains(event.target)) hideMenu();
+  const inside = $('menu').contains(event.target) || ($('submenu') && $('submenu').contains(event.target));
+  if (!$('menu').hidden && !inside) hideMenu();
 });
 
 // ---- controls ----

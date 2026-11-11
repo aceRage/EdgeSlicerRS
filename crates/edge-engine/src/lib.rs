@@ -15,6 +15,7 @@ mod clock;
 mod followed;
 mod holes;
 mod job;
+pub mod lay_on_face;
 mod layer_heights;
 mod load;
 mod model;
@@ -31,6 +32,7 @@ mod unfollowed;
 use std::{error::Error, fmt};
 
 pub use clock::timestamp;
+pub use edge_3mf::PartKind;
 pub use edge_mesh::Transform;
 pub use followed::{Followed, followed, followed_in, settled};
 pub use job::{BedType, Chosen, Job, Overrides, Sourced, prepare, prepare_noted};

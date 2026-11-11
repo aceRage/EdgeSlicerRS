@@ -35,16 +35,23 @@
   const RING_OFFSET = 5;
   // GLGizmoMove.hpp, GLGizmoScale.cpp `m_snap_step`: with Shift held.
   const [MOVE_STEP, SCALE_STEP] = [1, 0.05];
+  // GLGizmoBase.cpp FLATTEN_COLOR, FLATTEN_HOVER_COLOR: the faces to lay
+  // an object on, and the one under the pointer.
+  const [FACE, FACE_HOT] = [[0.96, 0.93, 0.93, 0.5], [1, 1, 1, 0.75]];
 
   const TOOLS = {
     move: { name: 'Move', key: 'm', icon: 'M8,1.5v13M1.5,8h13M8,1.5l-2,2M8,1.5l2,2M8,14.5l-2-2M8,14.5l2-2M1.5,8l2-2M1.5,8l2,2M14.5,8l-2-2M14.5,8l-2,2' },
     rotate: { name: 'Rotate', key: 'r', icon: 'M13.5,8a5.5,5.5,0,1,1-1.6-3.9M13.5,1.5v3h-3' },
     scale: { name: 'Scale', key: 's', icon: 'M1.5,14.5h6v-6h-6ZM9.5,6.5l5-5M14.5,1.5h-4M14.5,1.5v4' },
+    // GLGizmoFlatten.cpp: for one object at a time (`is_selection_supported`).
+    flatten: { name: 'Lay on face', key: 'f', one: true, icon: 'M1.5,14.5h13M4.5,11.5l2-8l7,3l-3,5Z' },
   };
   const ICONS = {
     add: 'M1.5,12.5v-9a1,1,0,0,1,1-1h3l1.5,2h6.5a1,1,0,0,1,1,1v7a1,1,0,0,1-1,1h-11A1,1,0,0,1,1.5,12.5ZM8,7v4M6,9h4',
     addPlate: 'M1.5,11.5l6.5,3l6.5-3l-6.5-3ZM8,1.5v5M5.5,4h5',
     arrange: 'M1.5,1.5h5v5h-5ZM9.5,1.5h5v5h-5ZM1.5,9.5h5v5h-5ZM9.5,9.5h5v5h-5Z',
+    splitObjects: 'M1.5,4.5h5v8h-5ZM9.5,2.5h5v5h-5ZM9.5,10.5h5v3h-5ZM8,1v14',
+    splitParts: 'M1.5,3.5h13v9h-13ZM6.5,3.5v9M10.5,3.5v9',
     undo: 'M5,3.5l-3,3l3,3M2,6.5h7.5a4,4,0,0,1,0,8h-3.5',
     redo: 'M11,3.5l3,3l-3,3M14,6.5h-7.5a4,4,0,0,0,0,8h3.5',
   };
@@ -74,10 +81,14 @@
 
   // The turn of a matrix without its sizes, as three rows, and the sizes:
   // how long each of the object's own axes has become.
+  // A mirrored object (its matrix turns it inside out) is taken as
+  // mirrored along its own X and then turned, as the reference splits an
+  // instance's transform into turn, size and mirror (`flip`).
   function turnOf(matrix) {
     const sizes = [0, 1, 2].map((c) => M.length(col(matrix, c)) || 1);
-    const cols = [0, 1, 2].map((c) => M.scale(col(matrix, c), 1 / sizes[c]));
-    return { sizes, rows: [0, 1, 2].map((r) => [cols[0][r], cols[1][r], cols[2][r]]) };
+    const flip = M.determinant3(matrix) < 0;
+    const cols = [0, 1, 2].map((c) => M.scale(col(matrix, c), (c === 0 && flip ? -1 : 1) / sizes[c]));
+    return { sizes, flip, rows: [0, 1, 2].map((r) => [cols[0][r], cols[1][r], cols[2][r]]) };
   }
 
   // The angles about X, Y and Z, in that order of turning, that make a
@@ -147,6 +158,8 @@
         add: button('add', 'Add', 'Add [Ctrl+I]', ICONS.add, () => this.add()),
         addPlate: button('add-plate', 'Add plate', 'Add plate', ICONS.addPlate, () => this.commit({ op: 'add_plate' })),
         arrange: button('arrange', 'Arrange all objects', 'Arrange all objects [A]\nArrange objects on selected plates [Shift+A]', ICONS.arrange, () => this.arrange(true)),
+        splitObjects: button('split-objects', 'Split to objects', 'Split to objects', ICONS.splitObjects, () => this.split(true)),
+        splitParts: button('split-parts', 'Split to parts', 'Split to parts', ICONS.splitParts, () => this.split(false)),
         undo: button('undo', 'Undo', 'Undo [Ctrl+Z]', ICONS.undo, () => this.step('undo')),
         redo: button('redo', 'Redo', 'Redo [Ctrl+Y]', ICONS.redo, () => this.step('redo')),
       };
@@ -156,7 +169,7 @@
       }
       const b = this.buttons;
       this.bar = el('div', { className: 'toolbar', id: 'edit-bar' },
-        b.add, b.addPlate, gap(), b.arrange, gap(), b.move, b.rotate, b.scale, gap(), b.undo, b.redo);
+        b.add, b.addPlate, gap(), b.arrange, gap(), b.splitObjects, b.splitParts, gap(), b.move, b.rotate, b.scale, b.flatten, gap(), b.undo, b.redo);
       this.bar.setAttribute('role', 'toolbar');
       this.bar.setAttribute('aria-label', 'Prepare');
       this.panel = el('div', { className: 'edit-panel overlay', id: 'edit-panel', hidden: true });
@@ -259,6 +272,24 @@
       if (await this.commit({ op: 'add', path }, { select: true })) this.host.remembered.set('model', path);
     },
 
+    // The one object what is selected is of, or null (Plater.cpp
+    // `get_selected_object_idx`: splitting is for one object).
+    splitTarget() {
+      const chosen = this.chosen();
+      const data = this.data();
+      if (!chosen || !data) return null;
+      const objects = new Set(chosen.copies.map((copy) => copy.object));
+      return objects.size === 1 ? data.objects[[...objects][0]] : null;
+    },
+
+    // "Split to objects" or "Split to parts" (Plater.cpp `split_object`,
+    // `split_volume`); what is split to objects is selected after.
+    split(toObjects) {
+      const target = this.splitTarget();
+      if (!target || !(toObjects ? target.split.objects : target.split.parts)) return;
+      this.commit({ op: toObjects ? 'split_objects' : 'split_parts', object: target.id }, { select: toObjects });
+    },
+
     arrange(all) {
       if (!this.editing() || !this.data() || !this.data().placings.length) return;
       this.commit(all ? { op: 'arrange', all: true } : { op: 'arrange' });
@@ -281,8 +312,13 @@
       this.commit({ op: 'clone', copies, ...args }, { select: true });
     },
 
+    // Whether a tool can be opened for what is selected.
+    usable(tool, chosen = this.chosen()) {
+      return Boolean(chosen) && (!TOOLS[tool].one || chosen.copies.length === 1);
+    },
+
     setTool(tool) {
-      if (tool && !this.chosen()) return;
+      if (tool && !this.usable(tool)) return;
       this.tool = tool;
       this.hot = null;
       this.fields.of = '';
@@ -313,7 +349,28 @@
       if (!data || !selection.size) return;
       const copies = data.placings.filter((placing) => selection.has(placing.id));
       const printable = copies.every((copy) => copy.printable);
+      // Plater.cpp `can_mirror`: what is selected is of one instance.
+      const one = copies.length === 1 ? copies[0] : null;
+      const mirror = (axis) => () => this.commit({ op: 'mirror', copies: [one.id], axis });
+      const target = this.splitTarget();
       const items = [
+        ['Split', null, {
+          disabled: !target || !target.split.objects,
+          title: 'Split the selected object',
+          items: [
+            ['To objects', () => this.split(true), { disabled: !target || !target.split.objects, title: 'Split the selected object into multiple objects' }],
+            ['To parts', () => this.split(false), { disabled: !target || !target.split.parts, title: 'Split the selected object into multiple parts' }],
+          ],
+        }],
+        ['Mirror', null, {
+          disabled: !one,
+          title: 'Mirror object',
+          items: [
+            ['Along X axis', mirror('x'), { title: 'Mirror along the X axis' }],
+            ['Along Y axis', mirror('y'), { title: 'Mirror along the Y axis' }],
+            ['Along Z axis', mirror('z'), { title: 'Mirror along the Z axis' }],
+          ],
+        }],
         ['Delete Del', () => this.remove()],
         ['Clone Ctrl+K', () => this.clone([...selection])],
         ['Printable', () => this.commit({ op: 'printable', copies: [...selection], value: !printable }), { checked: printable }],
@@ -388,13 +445,13 @@
     },
 
     sceneChanged() {
-      if (this.tool && !this.chosen()) this.tool = null;
+      if (this.tool && !this.usable(this.tool)) this.tool = null;
       this.refresh();
       if (GL.objects) GL.objects.render();
     },
 
     selectionChanged() {
-      if (this.tool && !this.chosen()) this.tool = null;
+      if (this.tool && !this.usable(this.tool)) this.tool = null;
       this.fields.of = '';
       this.refresh();
       if (GL.objects) GL.objects.mark();
@@ -419,14 +476,18 @@
       b.add.disabled = this.busy;
       b.addPlate.disabled = this.busy || project.empty || !printer;
       b.arrange.disabled = this.busy || !data || !data.placings.length || !printer;
+      const target = this.splitTarget();
+      b.splitObjects.disabled = this.busy || !target || !target.split.objects;
+      b.splitParts.disabled = this.busy || !target || !target.split.parts;
       b.undo.disabled = this.busy || !history.undo;
       b.redo.disabled = this.busy || !history.redo;
       b.undo.title = `Undo [Ctrl+Z]${history.undo ? `\n${history.undo}` : ''}`;
       b.redo.title = `Redo [Ctrl+Y]${history.redo ? `\n${history.redo}` : ''}`;
       for (const tool of Object.keys(TOOLS)) {
-        b[tool].disabled = !chosen;
+        b[tool].disabled = !this.usable(tool, chosen);
         b[tool].setAttribute('aria-pressed', String(this.tool === tool));
       }
+      if (this.tool === 'flatten' && chosen && chosen.copies.length === 1) this.wantFaces(chosen.copies[0]);
       // A plate with an object over its edge cannot be printed
       // (Plater.cpp `validate_current_plate`).
       const over = data && data.placings.some((placing) => placing.over && placing.plate === project.plate);
@@ -498,6 +559,7 @@
 
     // The handle at a pixel of the view, or null.
     handleAt(x, y, chosen) {
+      if (this.tool === 'flatten') return this.faceAt(x, y, chosen);
       const frame = this.stage.matrices();
       let [best, least] = [null, GRIP];
       const near = (a, b) => {
@@ -547,6 +609,12 @@
       if (this.busy || !this.data()) return null;
       const chosen = this.tool ? this.chosen() : null;
       const handle = chosen ? this.handleAt(x, y, chosen) : null;
+      if (handle && handle.kind === 'face') {
+        // A face is laid on the bed as the button goes down, as the
+        // reference does (GLGizmoFlatten.cpp `on_mouse`); nothing is dragged.
+        this.layOn(chosen.copies[0], handle.face);
+        return { kind: 'face', cancelled: true, x, y };
+      }
       if (handle) return { kind: handle.kind, handle, x, y };
       // With Ctrl or Shift a click adds to what is selected; it is no drag.
       if (event.ctrlKey || event.metaKey || event.shiftKey) return null;
@@ -753,6 +821,7 @@
       if (!chosen) return;
       const r = this.stage.renderer;
       const gl = r.gl;
+      if (this.tool === 'flatten') { this.drawFaces(frame, chosen); return; }
       const parts = this.parts();
       const matrix = M.multiply(frame.projection, frame.view);
       const mm = this.scale();
@@ -777,6 +846,78 @@
       }
       r.blend(false);
       gl.enable(gl.DEPTH_TEST);
+    },
+
+    // ---- Lay on face ----
+
+    // The faces of the copy selected, asked for once for each place and
+    // shape it has (`scene_faces`), and made ready to draw.
+    async wantFaces(copy) {
+      const data = this.data();
+      if (!data) return;
+      const key = `${data.project}|${copy.id}|${data.objects[copy.object].mesh}|${copy.matrix.join(',')}`;
+      if (this.faces && this.faces.key === key) return;
+      this.dropFaces();
+      const held = { key, list: null, meshes: [] };
+      this.faces = held;
+      try {
+        const answer = await this.host.call('scene_faces', { project: data.project, copy: copy.id });
+        if (this.faces !== held) return;
+        const r = this.stage.renderer;
+        held.list = answer.faces;
+        // Each outline is convex, so a fan of triangles fills it.
+        held.meshes = answer.faces.map((face) => {
+          const fan = [];
+          for (let at = 1; at + 1 < face.drawn.length; at += 1) fan.push(...face.drawn[0], ...face.drawn[at], ...face.drawn[at + 1]);
+          return r.triangles(fan);
+        });
+      } catch (error) {
+        if (this.faces !== held) return;
+        held.list = [];
+        this.host.say(error.message, true);
+      }
+      this.showFields();
+      this.stage.frame();
+    },
+
+    dropFaces() {
+      if (this.faces) for (const mesh of this.faces.meshes) this.stage.renderer.drop(mesh);
+      this.faces = null;
+    },
+
+    // The face under a pixel, as a handle; null where there is none.
+    faceAt(x, y, chosen) {
+      const faces = this.faces;
+      if (!faces || !faces.meshes.length) return null;
+      const r = this.stage.renderer;
+      const frame = this.stage.matrices();
+      const matrix = chosen.copies[0].matrix;
+      // Drawn alone and over everything, as the reference's gizmo picks its
+      // faces in front of the object (`set_raycaster_gizmos_on_top`).
+      const hit = r.pick(x, y, frame.projection, (projection) => {
+        const m = M.multiply(M.multiply(projection, frame.view), matrix);
+        faces.meshes.forEach((mesh, at) => r.drawFlat(mesh, m, GL.Renderer.pickColour(at + 1)));
+      });
+      if (!hit || hit > faces.list.length) return null;
+      return { kind: 'face', id: `face-${hit - 1}`, face: faces.list[hit - 1] };
+    },
+
+    drawFaces(frame, chosen) {
+      const faces = this.faces;
+      if (!faces || !faces.meshes.length) return;
+      const r = this.stage.renderer;
+      const gl = r.gl;
+      const m = M.multiply(M.multiply(frame.projection, frame.view), chosen.copies[0].matrix);
+      // Over the object, each face hiding those behind it.
+      gl.clear(gl.DEPTH_BUFFER_BIT);
+      r.blend(true);
+      faces.meshes.forEach((mesh, at) => r.drawFlat(mesh, m, this.hot === `face-${at}` ? FACE_HOT : FACE));
+      r.blend(false);
+    },
+
+    layOn(copy, face) {
+      this.hot = null;
+      this.commit({ op: 'lay_on_face', copy: copy.id, normal: face.normal });
     },
 
     // ---- the number fields ----
@@ -811,6 +952,13 @@
         this.fields.of = of;
         this.fields.relative = [0, 0, 0];
         live = false;
+      }
+      if (this.tool === 'flatten') {
+        // GLGizmoFlatten.cpp `on_render_input_window`, its convex hull mode.
+        const faces = this.faces && this.faces.list;
+        const hint = !faces ? '…' : faces.length ? 'Click a highlighted face to lay the object on it.' : 'No resting faces found on the convex hull.';
+        this.panel.replaceChildren(el('h3', { textContent: 'Lay on face' }), el('p', { className: 'edit-hint', textContent: hint }));
+        return;
       }
       const m = this.measured(chosen);
       const row = (label, values, { unit, key, off = [], digits = 2, min = null }) => {
@@ -923,9 +1071,9 @@
         if (!m.one || (key === 'absolute' && !Number.isFinite(value))) { this.showFields(); return; }
         const angles = key === 'absolute' ? m.angles.map((angle, a) => radians(a === axis ? value : angle)) : [0, 0, 0];
         const rows = turnFrom(angles);
-        const { sizes } = turnOf(m.one.matrix);
+        const { sizes, flip } = turnOf(m.one.matrix);
         const matrix = m.one.matrix.slice();
-        for (let c = 0; c < 3; c += 1) for (let r = 0; r < 3; r += 1) matrix[4 * c + r] = rows[r][c] * sizes[c];
+        for (let c = 0; c < 3; c += 1) for (let r = 0; r < 3; r += 1) matrix[4 * c + r] = rows[r][c] * sizes[c] * (c === 0 && flip ? -1 : 1);
         // About the middle of what is selected, which stays where it is.
         const local = m.local || [[0, 0, 0], [0, 0, 0]];
         const [was, now] = [M.point(m.one.matrix, M.centre(local)), M.point(matrix, M.centre(local))];

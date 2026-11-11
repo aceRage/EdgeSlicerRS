@@ -431,13 +431,17 @@ Icon tools in a row on the overlay surface: over the 3D stage, where a row
 of the page would not be at home. `.toolbar.vertical` is a column (the
 plates); a text tool in one is a `button.quiet` ("View", "Fit part"). A tool is 28 px square with a 16 px icon;
 `.toolbar-gap` is the hairline between groups. A tool that stays on while
-it is in use (Move, Rotate, Scale) carries `aria-pressed`, and the one that
+it is in use (Move, Rotate, Scale, Lay on face) carries `aria-pressed`, and the one that
 is on is the accent on its tint. That is the toolbar's one use of the
 accent: what was done (undo) and what can be added are plain. The keys of a
 tool are in its tooltip, in the reference's own wording ("Move [M]"); a
 tool that cannot be used now is `disabled`, never hidden. A panel that
 belongs to the tool that is on (`.edit-panel`: the number fields) stands
 under the toolbar on the same surface, and is the only thing that does.
+A tool with nothing to type ("Lay on face") has the same panel with its
+title and one line of what to do (`p.edit-hint`, `--text-2`). What a tool
+draws in the scene over an object (the faces of "Lay on face") keeps the
+reference's own colours, as the handles do; it is not the page's accent.
 
 ### Trees: `.tree`
 
@@ -450,7 +454,12 @@ that is off (not to be printed) is `--text-off`. A child row is its
 parent's row indented by 22 px. A name too long is cut with an ellipsis and
 given whole in its `title`. The value's list is a `bare` listbox, as in a
 card's row. A name is renamed in place: the name becomes a field of the
-same height, Enter takes it, Escape leaves it.
+same height, Enter takes it, Escape leaves it. A part of an object (`.obj-row.child.part`)
+is a child row with no tool and its filament as a swatch and a number
+(`.obj-fila-number`, fixed-width, `--text-2`), not a list: it is read
+only. A part that is not printed (`.helper`: a modifier, a negative
+part) has its name in `--text-3`, slanted; what it is is in the name's
+tooltip.
 
 ### What lies over the stage
 
@@ -494,7 +503,11 @@ none.
 
 - `.popover`: a small form beside what opened it (a column's filter), inside
   its dialog. `.check-list` inside it is a list of values to tick.
-- `#menu` (`showMenu(x, y, items)`): a menu at a point.
+- `#menu` (`showMenu(x, y, items)`): a menu at a point. An entry with
+  `items` opens a menu of its own beside it (`#submenu`, the same look as
+  `.menu`), marked with a chevron at its end; it opens by the pointer, a
+  click or Right, and Left or Escape closes it. An entry's `title` is its
+  tooltip (the C++ help text).
 - Tooltips: write a `title`. The page shows it in its own look, after a
   moment under the pointer and beside what the keys are on, and puts the
   attribute aside while it does (it is back when the tooltip goes). Nothing

@@ -559,6 +559,19 @@ impl Session {
                     "filaments": filaments,
                     "filament": if own.len() == 1 { Some(own[0]) } else { None },
                     "parts": object.parts(),
+                    // Each part with its name, what it is and its filament,
+                    // for the list (an object of several parts lists them).
+                    "part_list": object.shape().parts().iter().map(|part| json!({
+                        "name": part.name,
+                        "kind": part_kind(part.kind),
+                        "filament": part.filament,
+                    })).collect::<Vec<_>>(),
+                    // What "Split to objects" and "Split to parts" can be
+                    // done to (GUI_ObjectList.cpp `is_splittable`).
+                    "split": {
+                        "objects": object.shape().splits_to_objects(),
+                        "parts": object.shape().splits_to_parts(),
+                    },
                 })
             })
             .collect();
@@ -704,6 +717,20 @@ fn moves_bytes(records: &[u8], from: usize, count: usize) -> Vec<u8> {
     out.extend_from_slice(&(MOVE_SIZE as u32).to_le_bytes());
     out.extend_from_slice(&records[from * MOVE_SIZE..(from + count) * MOVE_SIZE]);
     out
+}
+
+/// What a part is, as the list names it (the reference's
+/// `ModelVolumeType`).
+fn part_kind(kind: edge_engine::PartKind) -> &'static str {
+    use edge_engine::PartKind;
+    match kind {
+        PartKind::Normal => "part",
+        PartKind::Negative => "negative",
+        PartKind::Modifier => "modifier",
+        PartKind::SupportBlocker => "support_blocker",
+        PartKind::SupportEnforcer => "support_enforcer",
+        PartKind::PreciseSeam => "precise_seam",
+    }
 }
 
 /// A project as the 3D views need it.
