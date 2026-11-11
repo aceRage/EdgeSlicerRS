@@ -532,6 +532,100 @@ fn a_sliced_plate_is_given_as_moves_a_stretch_at_a_time() {
     assert_ne!(again["moves"], index["moves"]);
 }
 
+/// The G-code window: each move's line of the file, a stretch of moves
+/// at a time, and the file's lines as the window shows them, a stretch
+/// at a time; the line of a move is the line that made it.
+#[test]
+fn the_gcode_window_is_given_each_moves_line_and_the_lines_around_it() {
+    let session = Arc::new(Session::new(None));
+    let id = open(&session, SMALL);
+    sliced(&session, id);
+    let index = ask(&session, "toolpath", Value::Null);
+    let total = index["moves"].as_u64().unwrap() as usize;
+    let lines = index["gcode_lines"].as_u64().unwrap() as usize;
+    let all = bytes(
+        &session,
+        "toolpath_lines",
+        json!({ "from": 0, "count": total }),
+    );
+    assert_eq!(&all[0..4], b"EDGL");
+    assert_eq!(
+        [4, 8, 12, 16, 20].map(|at| u32_at(&all, at) as usize),
+        [1, 0, total, total, 4]
+    );
+    let line_of = |at: usize| u32_at(&all, MOVES_HEADER + 4 * at) as usize;
+    // In order, and within the file.
+    assert!((1..total).all(|at| line_of(at - 1) <= line_of(at)));
+    assert!(line_of(total - 1) <= lines);
+    // A stretch is the same as the whole.
+    let some = bytes(
+        &session,
+        "toolpath_lines",
+        json!({ "from": 100, "count": 50 }),
+    );
+    assert_eq!(
+        &some[MOVES_HEADER..],
+        &all[MOVES_HEADER + 400..MOVES_HEADER + 600]
+    );
+
+    // The lines: a line laid is a G1 to where the move ends.
+    let moves = bytes(
+        &session,
+        "toolpath_moves",
+        json!({ "from": 0, "count": total }),
+    );
+    let at = (0..total)
+        .find(|at| moves[MOVES_HEADER + at * MOVE_SIZE + 28] == 2 && *at > 500)
+        .unwrap();
+    let line = line_of(at);
+    let window = ask(
+        &session,
+        "gcode_lines",
+        json!({ "from": line - 2, "count": 5 }),
+    );
+    assert_eq!(window["total"].as_u64().unwrap() as usize, lines);
+    assert_eq!(window["from"].as_u64().unwrap() as usize, line - 2);
+    let text = window["lines"][2].as_str().unwrap();
+    let x = f32_at(&moves, MOVES_HEADER + at * MOVE_SIZE);
+    assert!(
+        text.starts_with("G1 X") && text.contains(&format!("X{x:.3}")),
+        "{text}, x {x}"
+    );
+    // The first line is the file's own first, a long one cut as the window cuts it.
+    let head = ask(&session, "gcode_lines", json!({ "from": 1, "count": 3000 }));
+    let shown = head["lines"].as_array().unwrap();
+    assert_eq!(shown.len(), GCODE_LINES_AT_ONCE);
+    assert!(
+        shown[0]
+            .as_str()
+            .unwrap()
+            .starts_with("; HEADER_BLOCK_START")
+            || shown[0].as_str().unwrap().starts_with(";")
+    );
+    assert!(
+        shown
+            .iter()
+            .all(|line| line.as_str().unwrap().chars().count() <= 55)
+    );
+    assert!(
+        shown
+            .iter()
+            .any(|line| line.as_str().unwrap().ends_with("..."))
+    );
+    // The end, and past it.
+    let end = ask(
+        &session,
+        "gcode_lines",
+        json!({ "from": lines, "count": 10 }),
+    );
+    assert_eq!(end["lines"].as_array().unwrap().len(), 1);
+    assert!(
+        session
+            .call("gcode_lines", &json!({ "from": lines + 2, "count": 1 }))
+            .is_err()
+    );
+}
+
 #[test]
 fn without_gcode_the_lines_are_still_shown() {
     let session = Arc::new(Session::new(None));

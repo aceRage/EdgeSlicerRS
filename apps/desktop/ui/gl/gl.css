@@ -136,6 +136,42 @@
 .gl-readout .gl-y { color: rgb(100, 200, 24); }
 .gl-readout .gl-z { color: rgb(47, 136, 233); }
 
+/* The G-code window: under the legend, right-aligned with it, down to the
+   moves slider (its top and right are set as the legend stands). A line
+   in the fixed-width face, its number, command, words and comment told
+   apart; the line of the move the slider is on in the accent's tint with
+   a bar of the accent at its head, as a row that is selected. */
+.gl-gcode {
+  position: absolute;
+  bottom: 64px;
+  z-index: var(--z-overlay);
+  display: flex;
+  min-height: 60px;
+  /* As wide as a line is ever shown (55 characters and its number), so
+     the window keeps its width as the slider moves. */
+  width: calc(63ch + var(--space-2) + var(--space-3));
+  max-width: 46%;
+  padding: var(--space-1) 0;
+  font: var(--size-small)/17px var(--font-mono);
+  overflow: hidden;
+}
+.gl-gcode-lines { flex: 1; min-height: 0; overflow: hidden; }
+.gl-gcode-line {
+  height: 17px;
+  padding: 0 var(--space-3) 0 var(--space-2);
+  border-left: 2px solid transparent;
+  font: var(--size-small)/17px var(--font-mono);
+  white-space: pre;
+  overflow: hidden;
+  text-overflow: clip;
+}
+.gl-gcode-line.current { border-left-color: var(--accent); background: var(--accent-soft); }
+.gl-gcode-number { color: var(--text-3); }
+.gl-gcode-command { color: var(--code-command); }
+.gl-gcode-words { color: var(--text-1); }
+.gl-gcode-comment { color: var(--text-3); }
+#legend-gcode[aria-pressed="true"] { color: var(--accent); background-color: var(--accent-soft); }
+
 @media (max-width: 760px) {
   .gl-moves { left: 112px; right: 76px; }
   .gl-readout { right: 76px; }

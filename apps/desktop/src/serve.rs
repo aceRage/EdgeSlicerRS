@@ -26,7 +26,7 @@ const PRINTERS_STYLE: &str = include_str!("../ui/printers.css");
 const SETTINGS_SCRIPT: &str = include_str!("../ui/settings.js");
 const SETTINGS_STYLE: &str = include_str!("../ui/settings.css");
 /// The 3D views' scripts, under `ui/gl`.
-const GL: [(&str, &str); 9] = [
+const GL: [(&str, &str); 10] = [
     ("math.js", include_str!("../ui/gl/math.js")),
     ("camera.js", include_str!("../ui/gl/camera.js")),
     ("shaders.js", include_str!("../ui/gl/shaders.js")),
@@ -34,6 +34,7 @@ const GL: [(&str, &str); 9] = [
     ("scene.js", include_str!("../ui/gl/scene.js")),
     ("toolpath.js", include_str!("../ui/gl/toolpath.js")),
     ("controls.js", include_str!("../ui/gl/controls.js")),
+    ("gcode.js", include_str!("../ui/gl/gcode.js")),
     ("stage.js", include_str!("../ui/gl/stage.js")),
     ("gl.css", include_str!("../ui/gl/gl.css")),
 ];

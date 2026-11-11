@@ -47,6 +47,11 @@
   --warn: #f2b84b;
   --ok: #45d483;
 
+  /* G-code as the G-code window shows it: a line's command (its words
+     are --text-1, its comment and number --text-3). 9.6 : 1 on the
+     overlay. */
+  --code-command: #e2c66c;
+
   --focus: #ff7d38;
   --shadow-float: 0 10px 28px rgba(0, 0, 0, 0.55);
   --backdrop: rgba(3, 4, 6, 0.66);
@@ -141,6 +146,8 @@
     --danger-soft: rgba(179, 38, 30, 0.08);
     --warn: #8a5a00;
     --ok: #1a7f45;
+
+    --code-command: #775400;     /* 6.6 : 1 on white */
 
     --focus: #c2410c;
     --shadow-float: 0 8px 24px rgba(20, 26, 36, 0.18);
