@@ -6,12 +6,7 @@ use edge_config::Settings;
 
 /// A setting, the value that turns it off, and what is done whatever it
 /// is set to.
-const UNREAD: [(&str, &str, &str); 5] = [
-    (
-        "wipe_inward",
-        "0",
-        "the nozzle is wiped along the wall, not in toward the inner walls",
-    ),
+const UNREAD: [(&str, &str, &str); 4] = [
     (
         "elefant_foot_layers_density",
         "100%",
@@ -79,7 +74,7 @@ mod tests {
         // Left alone or turned off, nothing to say.
         assert!(notes(&Settings::default(), 1).is_empty());
         let off = Settings::from_json(
-            r#"{"wipe_inward": "0", "zaa_enabled": "0", "reduce_crossing_wall": "0",
+            r#"{"zaa_enabled": "0", "reduce_crossing_wall": "0",
                 "elefant_foot_layers_density": "100%", "enable_extra_bridge_layer": "disabled",
                 "dont_filter_internal_bridges": "disabled", "seam_prefer_part_joints": "1"}"#,
         )
@@ -93,13 +88,13 @@ mod tests {
         )
         .unwrap();
         // How small bridges over infill are sorted out is followed, and
-        // nothing is said of it here; nor of travel that goes round the
+        // nothing is said of it here; nor of a wipe in over the inner
+        // walls, nor of travel that goes round the
         // walls.
         let said = notes(&on, 1);
-        assert_eq!(said.len(), 4, "{said:?}");
+        assert_eq!(said.len(), 3, "{said:?}");
         assert!(said.contains(
-            &"wipe_inward \"1\": the nozzle is wiped along the wall, not in toward the inner walls"
-                .to_owned()
+            &"zaa_enabled \"1\": top surfaces are laid flat, not contoured in height".to_owned()
         ));
         // Ironing is followed, and nothing is said of it here; nor of a
         // second layer of bridge.
