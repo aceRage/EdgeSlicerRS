@@ -120,42 +120,30 @@ struct Choices {
     /// A preset for filament 1, filament 2 and so on.
     filaments: Vec<String>,
     bed_type: Option<String>,
-    layer_height: Option<f64>,
-    first_layer_height: Option<f64>,
-    wall_loops: Option<usize>,
-    closing_radius: Option<f64>,
+    /// The process settings set over the preset, each by the reference's
+    /// name for it and as the pages show its value ([`process`]).
+    over: BTreeMap<String, String>,
 }
 
 impl Choices {
     /// Whether two sets of choices slice alike. Presets that are picked
     /// but not in use (the project's own settings are) do not count.
     fn settle_as(&self, other: &Choices) -> bool {
-        let over = |choices: &Choices| {
-            (
-                choices.bed_type.clone(),
-                choices.layer_height,
-                choices.first_layer_height,
-                choices.wall_loops,
-                choices.closing_radius,
-            )
-        };
+        let over = |choices: &Choices| (choices.bed_type.clone(), choices.over.clone());
         match (self.from_presets, other.from_presets) {
             (false, false) => over(self) == over(other),
             _ => self == other,
         }
     }
 
-    fn overrides(&self) -> Overrides {
-        Overrides {
-            layer_height: self.layer_height,
-            first_layer_height: self.first_layer_height,
-            closing_radius: self.closing_radius,
-            wall_loops: self.wall_loops,
-            bed_type: self.bed_type.clone(),
-        }
-    }
-
     fn json(&self) -> Value {
+        // The four settings the page set before it had the process
+        // pages, still told apart for what asks for them by these names.
+        let number = |key: &str| {
+            let value = self.over.get(key)?;
+            let whole = value.parse::<u64>().ok().map(Value::from);
+            whole.or_else(|| value.parse::<f64>().ok().map(Value::from))
+        };
         json!({
             "source": if self.from_presets { "presets" } else { "project" },
             "vendor": self.vendor,
@@ -163,10 +151,11 @@ impl Choices {
             "process": self.process,
             "filaments": self.filaments,
             "bed_type": self.bed_type,
-            "layer_height": self.layer_height,
-            "first_layer_height": self.first_layer_height,
-            "wall_loops": self.wall_loops,
-            "closing_radius": self.closing_radius,
+            "layer_height": number("layer_height"),
+            "first_layer_height": number("initial_layer_print_height"),
+            "wall_loops": number("wall_loops"),
+            "closing_radius": number("slice_closing_radius"),
+            "over": self.over,
         })
     }
 }
@@ -178,6 +167,9 @@ struct Done {
     model: PathBuf,
     /// How the bed surface was settled when none was chosen.
     bed_type: BedType,
+    /// The settings set by hand that nothing in this slice read, each
+    /// with its value: they changed nothing in the print.
+    unread: Vec<(String, String)>,
 }
 
 /// One object on a plate seen from above: its outline in mm where the
@@ -311,6 +303,7 @@ fn bed_of(settings: &Settings) -> Option<[f64; 4]> {
 }
 
 mod printers;
+mod process;
 mod store;
 
 /// The build plates the engine knows the bed temperature of, each with the
@@ -777,7 +770,10 @@ fn slice_plate(
     work: &Work,
 ) -> Result<Done, edge_engine::Failure> {
     let loaded = edge_engine::open(path, plate)?.place()?;
-    let job = edge_engine::prepare(loaded, chosen, overrides)?;
+    // What the slice asks for by name is noted, so that a setting set by
+    // hand that nothing read can be said with the print.
+    let reads = edge_config::Reads::default();
+    let job = edge_engine::prepare_noted(loaded, chosen, overrides, &reads)?;
     let bed_type = job.bed_type.clone();
     let sliced = edge_engine::slice(job, &Watch(work))?;
     {
@@ -788,11 +784,19 @@ fn slice_plate(
     let gcode = sliced
         .gcode(&edge_engine::timestamp())
         .map_err(|e| e.to_string());
+    let read = reads.keys();
+    let unread = overrides
+        .settings
+        .iter()
+        .filter(|(key, _)| !read.contains(*key))
+        .map(|(key, value)| (key.to_owned(), edge_config::serialized(key, value)))
+        .collect();
     Ok(Done {
         sliced,
         gcode,
         model: path.to_owned(),
         bed_type,
+        unread,
     })
 }
 
@@ -969,6 +973,9 @@ impl Session {
             "project_close" => self.project_close(args),
             "project_set" => self.project_set(args),
 
+            "process_pages" => Ok(Self::process_pages()),
+            "process" => self.process(args),
+            "process_set" => self.process_set(args),
             "settled" => self.settled(args),
             "plate_view" => self.plate_view(args),
             "slice" => self.slice(args),
@@ -1186,20 +1193,30 @@ impl Session {
                 .collect::<Option<_>>()
                 .ok_or("filaments is not a list of names")?;
         }
-        if let Some(height) = over(args, "layer_height", f64::MIN_POSITIVE)? {
-            choices.layer_height = height;
-        }
-        if let Some(height) = over(args, "first_layer_height", f64::MIN_POSITIVE)? {
-            choices.first_layer_height = height;
-        }
-        if let Some(radius) = over(args, "closing_radius", 0.0)? {
-            choices.closing_radius = radius;
-        }
-        if let Some(loops) = over(args, "wall_loops", 0.0)? {
-            if loops.is_some_and(|loops| loops.fract() != 0.0) {
-                return Err("wall_loops is not a whole number".into());
+        // Four process settings by the names they had before the process
+        // pages; every one of them is set with `process_set`.
+        for (name, key, least) in [
+            ("layer_height", "layer_height", f64::MIN_POSITIVE),
+            (
+                "first_layer_height",
+                "initial_layer_print_height",
+                f64::MIN_POSITIVE,
+            ),
+            ("closing_radius", "slice_closing_radius", 0.0),
+            ("wall_loops", "wall_loops", 0.0),
+        ] {
+            match over(args, name, least)? {
+                None => {}
+                Some(None) => {
+                    choices.over.remove(key);
+                }
+                Some(Some(value)) => {
+                    if name == "wall_loops" && value.fract() != 0.0 {
+                        return Err("wall_loops is not a whole number".into());
+                    }
+                    choices.over.insert(key.to_owned(), format!("{value}"));
+                }
             }
-            choices.wall_loops = loops.map(|loops| loops as usize);
         }
         let plate = match args.get("plate").filter(|plate| !plate.is_null()) {
             None => None,
@@ -1489,20 +1506,9 @@ impl Session {
         };
         // The presets are found before anything starts, so a name that
         // is not there is said at once.
-        let chosen = match (choices.from_presets, &choices.vendor) {
-            (true, Some(vendor)) => {
-                let filaments: Vec<&str> = choices.filaments.iter().map(String::as_str).collect();
-                self.shelf(vendor)?
-                    .choose(
-                        choices.machine.as_deref(),
-                        choices.process.as_deref(),
-                        &filaments,
-                    )
-                    .map_err(|e| e.to_string())?
-            }
-            _ => Chosen::default(),
-        };
-        let overrides = choices.overrides();
+        let basis = self.basis(&choices, Some(&file))?;
+        let overrides = process::overrides(&choices, &basis);
+        let chosen = basis.chosen;
 
         let (work, run) = {
             let mut state = lock(&self.state);
@@ -1741,6 +1747,11 @@ fn summary(done: &Done, plate: Option<u32>) -> Value {
         ));
     }
     gaps.extend(sliced.notes().cloned());
+    // Set by hand, and asked for by nothing: said in the form of the
+    // engine's own notes, after them.
+    gaps.extend(done.unread.iter().map(|(key, value)| {
+        format!("{key} \"{value}\": not read by the engine; it changes nothing in this print")
+    }));
 
     let gcode = match &done.gcode {
         Err(error) => json!({ "error": error }),
@@ -1950,13 +1961,10 @@ mod tests {
         assert_eq!(summary["layers"], 60);
         assert!(summary["gcode"]["filament_m"].as_f64().unwrap() > 0.5);
         // Nothing is wrong with it; what the profile asks for and is not
-        // done is listed apart.
+        // done is listed apart, and may be nothing: this project's one
+        // such setting, loops in narrow solid areas, is followed now.
         assert_eq!(summary["problems"], json!([]));
-        assert!(
-            summary["gaps"]
-                .as_array()
-                .is_some_and(|gaps| !gaps.is_empty())
-        );
+        assert!(summary["gaps"].is_array());
         let roles = summary["roles"].as_array().unwrap();
         assert!(roles.contains(&json!("Outer wall")) && roles.contains(&json!("Bridge")));
         // In the reference's order: the inner wall is listed first.

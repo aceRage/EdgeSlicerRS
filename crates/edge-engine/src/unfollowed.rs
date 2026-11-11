@@ -6,21 +6,11 @@ use edge_config::Settings;
 
 /// A setting, the value that turns it off, and what is done whatever it
 /// is set to.
-const UNREAD: [(&str, &str, &str); 4] = [
-    (
-        "elefant_foot_layers_density",
-        "100%",
-        "solid fill on the first layers is laid at its full density",
-    ),
+const UNREAD: [(&str, &str, &str); 2] = [
     (
         "zaa_enabled",
         "0",
         "top surfaces are laid flat, not contoured in height",
-    ),
-    (
-        "small_area_infill_flow_compensation",
-        "0",
-        "small solid areas are laid at the usual flow",
     ),
     (
         "unsupported_wall_last",
@@ -88,11 +78,12 @@ mod tests {
         )
         .unwrap();
         // How small bridges over infill are sorted out is followed, and
-        // nothing is said of it here; nor of a wipe in over the inner
-        // walls, nor of travel that goes round the
-        // walls.
+        // so are the density of solid fill over the first layer and the
+        // thinning of short solid lines; nothing is said of them here,
+        // nor of a wipe in over the inner walls, nor of travel that
+        // goes round the walls.
         let said = notes(&on, 1);
-        assert_eq!(said.len(), 3, "{said:?}");
+        assert_eq!(said.len(), 1, "{said:?}");
         assert!(said.contains(
             &"zaa_enabled \"1\": top surfaces are laid flat, not contoured in height".to_owned()
         ));

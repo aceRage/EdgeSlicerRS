@@ -21,19 +21,20 @@ replaces it until output matches on the printers we care about.
 | `crates/edge-extrusion` | Extruded line cross-section (flow) and extrusion loops |
 | `crates/edge-parity` | `edge-parity`: runs the reference slicer and this engine on one project and compares time and G-code |
 | `crates/edge-perimeter` | Walls, the lines that fill the gaps between them, and the infill area inside (classic constant-width generator) |
-| `crates/edge-medial` | The centre line of a narrow region and how wide it is along it (wraps boostvoronoi), what part of the plane lies nearest each of a set of edges, the whole Voronoi diagram of a set of edges as plain data, and lines of changing width as extrusions. The same edges give the same diagram on every run and thread: the library's skip list has its levels from a generator each list owns, not from the thread's random numbers (`vendor/cpp_map`) |
+| `crates/edge-medial` | The centre line of a narrow region and how wide it is along it (wraps boostvoronoi), what part of the plane lies nearest each of a set of edges, the whole Voronoi diagram of a set of edges as plain data, and lines of changing width as extrusions. The same edges give the same diagram on every run and thread: the library's skip list has its levels from a generator each list owns, not from the thread's random numbers (`vendor/cpp_map`). And wherever they lie: all three are swept in coordinates of the edges' own, the whole diagram about the middle of the box round them, which is handed back with it |
 | `crates/edge-adhesion` | Skirt and brim, with the automatic brim width |
 | `crates/edge-support` | Supports under overhangs, normal (grid) and tree, with dense tops and feet |
 | `crates/edge-gcode` | Print order, seams, travel, retraction, wipe and lift, cooling, overhangs, and extrusion, written as G-code |
-| `crates/edge-infill` | Top, bottom, bridge, solid, bridged-over-infill and sparse surfaces, and the lines that fill them; and ironing: which areas are gone over again, and the lines that do it |
+| `crates/edge-infill` | Top, bottom, bridge, solid, bridged-over-infill and sparse surfaces, and the lines that fill them, with loops for the narrow parts of solid fill; and ironing: which areas are gone over again, and the lines that do it |
 | `crates/edge-template` | The placeholder language of custom G-code: `{expression}`, `{if}`, `[variable]`, and scripts |
 | `crates/edge-time` | How long a G-code file takes, with acceleration: the file is read as a printer reads it and planned as the reference's estimator plans, or as Klipper does |
 | `crates/edge-tower` | The prime tower a nozzle is primed on after a tool change |
 | `crates/edge-slice` | Mesh to per-layer contours, with the model's corners and not its triangles', then to regions with holes; parallel across layers. Elephant foot compensation of the first layers; round holes made polygons of few sides, and round outlines and holes resized by what the filament prints them off by; the last layers' heights tuned so a part comes out its exact height, and layers grown downward under overhangs so they can be printed |
-| `crates/edge-engine` | The whole pipeline behind one call, for whatever drives it: open a model and list its plates, settle its settings, slice with progress and cancel, G-code, a layer's lines for drawing, a vendor's presets by printer, and its printer models with the presets, picture and sizes of each |
+| `crates/edge-engine` | The whole pipeline behind one call, for whatever drives it: open a model and list its plates, settle its settings, slice with progress and cancel, G-code, a layer's lines for drawing, a vendor's presets by printer, and its printer models with the presets, picture and sizes of each; and, for a set of settings, which of them a slice reads and what it notes (`followed`) |
 | `crates/edge-cli` | The `edge` command line |
 | `tools/make_defaults.py` | Asks the reference for its default of every setting and writes the table `edge-config` carries; run again when the pin moves |
-| `tools/make_fixture.py` | Writes small test 3MFs (parts that need supports or a brim, a plain cube, two blocks in two filaments, a comb with thin teeth on the bed, three tiers with a top surface on each, bars over a base for small bridges over infill, a slab with round holes for the hole options, a slab with pockets underneath, three round ones for arc fitting: a post, a post with a hole, a slab with a wide curve and tight ones, and a post that widens as it rises for scarf seams) to compare with the reference on |
+| `tools/make_process_pages.py` | Reads the reference's process pages and option definitions from its source and writes the data the desktop app draws its settings pages from; run again when the pin moves, after `make_defaults.py` |
+| `tools/make_fixture.py` | Writes small test 3MFs (parts that need supports or a brim, a plain cube, two blocks in two filaments, a comb with thin teeth on the bed, three tiers with a top surface on each, bars over a base for small bridges over infill, a slab with round holes for the hole options, a slab with holes that narrow on the way up for bridging them, a slab with pockets underneath, three round ones for arc fitting: a post, a post with a hole, a slab with a wide curve and tight ones, and a post that widens as it rises for scarf seams) to compare with the reference on |
 | `tools/make_project.py` | Writes one of those parts as a project whose settings are named presets, with as many filaments as are named: how the test prints for a printer are made |
 | `reference/EdgeSlicer` | Pinned submodule of the C++ slicer: profiles, test models, behaviour to match. Read-only here |
 | `vendor/cpp_map` | A copy of the `cpp_map` crate (MIT or Apache-2.0), the skip list under the Voronoi library, changed so that a list is the same shape on every run; patched in for the published crate by both workspaces. Its README says what was changed. Not a member of the workspace, and kept in its own formatting |
@@ -81,9 +82,11 @@ the controls it is built from are described in `apps/desktop/ui/STYLE.md`.
   or the project's own; a filament preset for each filament the file
   prints in and the process, which follow a change of printer as the
   C++ application's do; the bed type the printer takes, remembered for
-  each printer; layer height,
-  initial layer height, wall loops and the gap closing radius set over
-  the preset; the scene in 3D: the printer's bed (the vendor's model
+  each printer; the C++ application's six pages of process settings
+  ("Quality" to "Others", 433 options, drawn from data made from its
+  source), any of which is set over the preset for the project, with a
+  mark on each option the engine does not read and the engine's note on
+  each it follows in part; the scene in 3D: the printer's bed (the vendor's model
   and picture of it where its profile has them), every plate of the
   project where the C++ application stands it, each object in its
   filaments' colours, painted colours included; a click selects an
@@ -121,8 +124,9 @@ above instead. Meshes and moves come from the session as bytes, each
 object once and a print a stretch at a time (`src/api/scene.rs` has the
 layouts).
 
-It has no arranging or editing of the model, no settings
-editor beyond those four, no saving of projects and no installer. The
+It has no arranging or editing of the model, no editing or saving of
+presets (a setting changed is the open project's), no filament or
+printer settings pages, no saving of projects and no installer. The
 vendor profiles are found in `reference/EdgeSlicer` beside the source, or
 wherever `EDGE_PROFILES` points; the folder can be changed in the window,
 and is then kept.
@@ -213,6 +217,35 @@ Working:
   first layer's outer wall lies within 0.011 mm of the C++ slicer's
   everywhere; it was up to 0.17 mm off while wide parts were shrunk by
   the whole amount and narrow ones not at all.
+- Thinner solid fill over the first layer (`elefant_foot_layers_density`,
+  from 50% to 100%; 100% is the default and leaves everything as it
+  was): what the first layer is squeezed out by has somewhere to go when
+  the layers resting on it hold less plastic. The second layer's solid
+  fill inside the part is laid at the density set, and each layer after
+  it nearer to full by an even step, over as many layers as
+  `elefant_foot_compensation_layers` says (one, where it says less): at
+  70% over three layers, 70%, 80% and 90%, and full from the fifth
+  layer. The lines keep their width and lie that much further apart, on
+  the grid through the middle of the object that sparse lines are laid
+  on, not spread from the area's own edge; they are joined and ordered
+  as solid lines are, and get none of the fill's own gap fill. Top and
+  bottom surfaces, bridges and bridges over infill are left alone. A
+  port of the reference's few lines in `Layer::make_fills` (Fill.cpp)
+  and of what its line fill does with a density under one
+  (FillRectilinear.cpp `fill_surface_by_lines`). A value outside 50% to
+  100% is an error, as the reference refuses to slice with one. On a
+  20 mm cube on the U1 and on the Centauri Carbon the lines are the
+  reference's distance apart on every layer at 70% and at 50%, over one
+  layer and over three (at 70% over three: 0.539, 0.471 and 0.419 mm
+  where full fill is 0.377 mm), and on the U1 in the same places to
+  the micron; the length laid is the reference's to 0.1 mm on every
+  thinned layer (at 70% over three layers 632.7, 723.5 and 818.5 mm
+  against 632.6, 723.5 and 818.5, and 907.1 against 907.0 at full; at
+  50% over one layer 472.5 against 472.5), and on the three plates of
+  `mcbrim_test.3mf` at 70% the solid fill is 2.92 m, 1.45 m and 1.45 m
+  shorter than at 100% in the reference's files and 2.90 m, 1.46 m and
+  1.45 m here. Not as the reference: it does none of this for a part
+  on a raft, and no raft is printed here, so every part is on the bed.
 - A precise height (`precise_z_height`): layers are laid from the bed
   up for as long as the middle of one is still inside the part, so the
   last ends up to half a layer above or below the part's top; with this
@@ -408,6 +441,149 @@ Working:
   side to side follow that surface's lines as a group, where the
   reference slips each in among them wherever that saves travel
   (`insert_gap_fill`).
+- Narrow solid areas (`detect_narrow_internal_solid_infill`, on by
+  default and in the stock presets): the parts of the solid fill inside
+  a part that straight lines would cross in strokes too short to be
+  worth laying are told from the rest and filled with loops along their
+  outline instead, of whatever width fits. A layer's solid fill is
+  taken together, areas that touch as one. Where its lines would go is
+  worked out much as the fill lays them (the area less what is under
+  four spacings wide, half a spacing in from its edge, crossed by a
+  line every spacing), and of those strokes the ones under 4 mm go
+  where they follow one another: from the sixth of a run of them, and
+  a run that neither began beside a long stroke nor leads into one.
+  What the strokes left cover is the wide part, which is filled with
+  lines as before; the rest is narrow, save a piece too thin for a
+  line of its own that touches the wide part and goes with it, and a
+  patch under three spacings across both ways and four spacings
+  squared in area, which is left out. A narrow area is filled inside
+  the walls, without the fill's overlap into them, by walls of
+  changing width: as many loops as fit and a line down the middle
+  where an odd number does, each loop stopped `seam_gap` short of
+  where it began and cut where its width changes; they are solid fill
+  in name, speed and cooling, a part of their own, laid in the order
+  made. Turned off, narrow areas are filled with the same lines as
+  wide ones, as before. A port of the reference's `split_solid_surface`
+  and `filter_vibrating_extrusions`, of where `group_fills` uses them
+  (Fill/Fill.cpp) and of Fill/FillConcentricInternal.cpp. So a 20 mm
+  cube gets a triangle of loops in one corner of every solid layer,
+  the corner its slanting lines end in, and loops for the whole of the
+  layer of strips that carries the edges of the bridge over its sparse
+  fill: where the reference's file has them. The triangle is one
+  stroke larger here, two loops, the outer 1.9 mm on a side, where
+  the reference has one loop 1.3 mm on a side and a dot 0.16 mm long
+  in the middle of it: where a run of short strokes began is asked of
+  the stroke itself here (below), and of the short strokes running
+  out into a corner the first stays a line, where the reference keeps
+  two. Of the 64 lines of a solid layer of the cube 62 are the
+  reference's, at the same places and of the same lengths to three
+  microns, the last before the triangle is loops here and the one
+  before it 0.24 mm longer; so with 24 of the 26 of a `mushroom`'s
+  solid layer and 255 of the 257 of a `frame`'s. (Asked the
+  reference's way the triangle's box was the reference's to the
+  hundredth of a millimetre and the cube's lines its own, all 64.)
+  On the U1's presets, reference against this engine, loops in metres
+  by areas on layers: cube 0.164 against 0.182 (6 on 6 in both),
+  `frame` 0.582 against 0.601 (6 on 6), `steps` 0.844 against 0.911
+  (22 on 14), `comb` 0.191 against 0.210 (6 on 6), `fins` 0.017
+  against 0.029 (3 on 3), `mushroom` 0.261 against 0.289 (8 on 8),
+  `holes` 2.869 against 2.930 (126 areas against 124, on 47 layers);
+  with the Centauri Carbon's the same to 0.001 m but for `steps`
+  (0.848 against 0.904) and `holes` (2.895 against 2.904, 116 areas
+  against 114). Pieces of solid fill under a millimetre long, dots:
+  none here on the first six of those parts, where the reference lays
+  3 to 14, one in each triangle, and 44 against 60 on `holes`. All
+  the solid fill inside the part on those eight parts is within 0.2%
+  of the reference's length on the U1 but for the `tube`, 0.6% under
+  (before narrow areas were told apart it was 0.0% to 0.2% over, and
+  1.0% under on the `tube`); with arcs fitted its solid fill had 140
+  arcs against the reference's 137 on the cylinder (179 before), 337
+  against 339 on the `tube` (476) and 7 against 7 on the `mushroom`
+  (none), counted while a run's start was asked the reference's way;
+  the `mushroom`'s seven were its dots, and are gone with them. On
+  the three plates of `mcbrim_test.3mf` the reference lays 13.6 m, 5.3 m and 5.3 m of its
+  solid fill as loops and this engine 12.3 m, 5.3 m and 5.3 m, where
+  it laid none; solid fill in all is 49.57 m against 50.51 m on plate
+  1 (1.9% under, from 1.0% over) and 24.59 m against 24.29 m on the
+  other two (1.2% over, from 3.5%). Plate 1 is under because on four
+  of its layers this engine has less solid area to fill, whatever it
+  is filled with (with the option off in both, those layers are 2%,
+  4%, 6% and 54% short: bridges over infill and sparse fill are
+  sorted out differently there, as above), and the joins of short
+  lines no longer make up for it; layer by layer the two files differ
+  by 1.28 m in all where they differed by 2.00 m. Not as the reference, each marked in the
+  code: there every loop starts at its point nearest the object's own
+  origin, the place the last one ended at never being noted, and here
+  where the one before it ended; a line that is no loop is not
+  shortened by the seam gap at its end; the loops of an area are laid
+  each after the one that starts nearest, not in the reference's chain
+  of nearest pairs; and three mistakes in `filter_vibrating_extrusions`
+  and in the tracing of the wide part are not carried over (a stroke
+  reached by two runs of short strokes counts the first comer's run
+  there, not the deeper; a run of strokes that finds the stroke beside
+  it taken goes on into that one all the same; and whether a stroke's
+  run began beside a long stroke is read there off the strokes before
+  it, whatever they were last told, where the function that reads it
+  is described as answering for the stroke itself and what it
+  replaced in PrusaSlicer asked every stroke of a run where that run
+  began: so the stroke a run begins with is never asked, a lone short
+  stroke after a long one is taken out, the one the note is made to
+  keep, and of a run into a corner the first two stay). Round a
+  `tube` that is seen as one line: the last stroke against the round
+  wall is a short one after a long one, the reference takes it out and
+  lays a line of 4.3 mm there by itself as a narrow area on each solid
+  layer, and here it stays with the lines, which have none to lay
+  there (strokes are counted half a spacing from where the fill puts
+  its lines), as they have none in the same place on the other side
+  of the tube in either.
+  Not done: a solid area with nothing narrow in it has its lines
+  spread to fill its width in the reference, as top and bottom
+  surfaces have, and not here (a round boss 8 mm across: lines 0.429 mm
+  wide there, 0.42 here), nor are they with the option off.
+- Small area flow compensation (`small_area_infill_flow_compensation`,
+  off by default, with its curve
+  `small_area_infill_flow_compensation_model`): a small area fills with
+  lines too short for the nozzle to get up to speed on and comes out
+  overfilled, so a short move of solid fill is laid with a share of its
+  plastic that falls with its length. The curve is given as points, a
+  length in mm and a share (the reference's own: nothing at 0 mm, 44%
+  at 0.2 mm, 76% at 0.8 mm, 92% at 3 mm, all of it from 10 mm), and
+  drawn through them so that it never overshoots between two. Each
+  move of a top surface, a bottom surface or solid fill inside the
+  part is thinned by its own length, where that kind of fill is set to
+  a pattern of straight lines (`rectilinear`, `alignedrectilinear`,
+  `monotonic`, `monotonicline`); nothing else is touched. A port of
+  the reference's GCode/SmallAreaInfillFlowCompensator.cpp and
+  GCode/PchipInterpolatorHelper.cpp and of where its writer applies
+  them (GCode.cpp `_needSAFC`, `_extrude`); a model it refuses (lengths
+  that do not start at 0 and rise, shares that do not rise to 1, fewer
+  than two points) is an error here too. On a 20 mm cube, a frame and
+  the three tiers of `steps`, on the U1 and the Centauri Carbon, the
+  filament fed per mm of move is the reference's for every length of
+  move on top surfaces, to the last figure its file gives (on the U1's
+  cube: 0.02517 mm a mm on moves of 0.8 to 1.5 mm, 0.02924 on 3 to 5 mm,
+  0.03104 on those over 10 mm), on bottom surfaces wherever the two lay
+  the same moves, and for the lines and joins of solid fill inside the
+  part (a join between two lines, 0.53 mm long: 0.02089 in both where
+  it was 0.03073; lines of 3 to 5 mm 0.02887 against 0.02887; over
+  10 mm 0.03064 against 0.03064). Turning it on takes 3.3 mm of
+  filament off the U1's cube in the reference and 3.1 mm here, 22.2 mm
+  and 21.9 mm off the `frame`, 11.2 mm and 9.8 mm off `steps`. Not as
+  the reference, each where it goes against what it is for: it thins
+  the loops a narrow solid area is filled with as if every stretch of
+  a loop were a line (round a 20 mm tube, cut into chords of half a
+  millimetre, such loops are laid at 68% to 74% of their plastic from
+  end to end; on plate 1 of `mcbrim_test.3mf`, a quarter of whose
+  solid fill is loops, it takes 160.6 mm of filament off where this
+  engine takes 68.1 mm), and here a loop keeps its flow; and it takes
+  a bottom surface for whatever is on the first layer, so one resting
+  on supports is never compensated there, where here each kind of fill
+  goes by its own pattern on every layer (which changes nothing yet:
+  this engine lays a bottom surface only on the bed). A join that
+  follows a curved wall is cut into more moves here than in the
+  reference, each thinned by its own length: on a round tube the joins
+  of a solid layer keep 57% of their plastic where the reference's
+  keep 66% (0.84 mm of filament of 1.47 mm, against 1.06 mm of 1.59).
 
 Known gaps: painted supports and seams, per-object setting overrides, typed settings
 (values are text until a stage needs them), and modifier parts.
@@ -480,8 +656,8 @@ Known gaps: painted supports and seams, per-object setting overrides, typed sett
   so its lines go from one support to the other. Bridges, bottoms and
   tops reach a wall's spacing into the fill beside them, to have
   something to hold on to.
-  The bridging options of the reference's Quality tab are followed, all
-  but one. `bridge_line_width` gives bridges, bridges over infill and
+  The bridging options of the reference's Quality tab are followed.
+  `bridge_line_width` gives bridges, bridges over infill and
   walls over air a width of their own: a round thread is that thick in
   place of the nozzle's bore, a flattened line that wide before
   `bridge_flow` thins it; wider than the nozzle, or no wider than the
@@ -502,8 +678,24 @@ Known gaps: painted supports and seams, per-object setting overrides, typed sett
   beneath. `enable_extra_bridge_layer` lays a second layer of bridge
   over bridges over air (the same way as the first, and the bottom
   shell then starts from the second), over bridges over infill (square
-  to the first), or both. Each is off by default and changes nothing
-  then. `counterbore_hole_bridging` is noted and not followed.
+  to the first), or both. `counterbore_hole_bridging` is for a hole
+  that narrows on the way up, a counterbore printed wide end down,
+  whose narrow part would start with walls laid in the air. On the
+  first layer of the narrow part, what has nothing under it and has
+  the narrow hole on its edge is taken out of what gets walls and laid
+  as a bridge, resting a wall's width on the wide hole's edge, and the
+  layer's walls go round the wide hole (PerimeterGenerator.cpp
+  `process_no_bridge`, with a port of `BridgeDetector`, classic walls
+  or Arachne). `partiallybridge` bridges only what lines can span from
+  one side of the wide hole to the other, the way that spans most: a
+  slot as wide as the narrow hole stays open right across, the rest of
+  that layer over the wide hole is not printed, and the layer above
+  closes the slot down to the hole. `sacrificiallayer` bridges all of
+  it, the narrow hole covered over as well, to be drilled out, where
+  the wide hole's outline is convex. With `bridge_angle` set every
+  such bridge is laid that way, or turned by it from the direction
+  found (`relative_bridge_angle`). Each is off by default and changes
+  nothing then.
 
 - Ironing (`ironing_type`): a finished surface gone over again with
   lines close together and next to no plastic, the nozzle smoothing
@@ -969,11 +1161,8 @@ the lettered plate; small ones, which gain most from being run out,
 come out a quarter to a third short, and that is what
 `dont_filter_internal_bridges` at `nofilter` makes more of: below),
 bridges that reach into one another are made one only with
-`bridge_expansion_extra` set, a hole that narrows on the way up gets
-no bridge of its own under the narrow part (`counterbore_hole_bridging`,
-noted), narrow solid areas are filled with the same lines
-as wide ones where the reference lays loops along them
-(`detect_narrow_internal_solid_infill`, noted), narrow parts of top and
+`bridge_expansion_extra` set, a solid area with nothing narrow in it does not have its lines
+spread to fill its width, narrow parts of top and
 bottom surfaces get no gap fill
 (`gap_fill_target`), and eight of the
 reference's sparse patterns are not laid (below). Gap closing runs across objects, so two separate objects closer than twice
@@ -1173,8 +1362,28 @@ skeleton (`SkeletalTrapezoidation`), the number of lines that fit is
 decided along the skeleton by the reference's beading strategies, each
 change in that number is given a stretch of skeleton to happen over,
 and the lines are laid across each trapezoid, joined end to end and
-simplified. A diagram that comes out broken is built again for the
-outline turned by a few odd angles, as the reference does. With the
+simplified. A diagram that comes out broken, or does not come out, is
+built again for the outline turned by a few odd angles, as the
+reference does. The reference's outlines are in their object's own
+coordinates, measured from the middle of the object's box, and its
+diagrams are made there; this engine's outlines are in the plate's, so
+the diagram is made of the outline measured from the middle of its own
+box, its vertices rounded to the grid there and then moved back, and
+an outline is turned about that middle. Where on the plate an object
+stands then makes no difference to a diagram. It did: the Voron design
+cube's notched layers, 49 to 79 mm from the origin with two edges a
+nanometre out of line, gave a broken first diagram (in Boost.Polygon's
+library as well, fed the same numbers) and were built turned. Over the
+reference projects and the parts compared here that was 27 outlines in
+36 325, all but two of them that cube's; about their own middle all
+36 325 come out sound the first time. On the cube the walls moved
+nearer the C++ slicer's (with the U1's presets, over the layers that
+changed, the walls' lengths are 0.50 mm from the reference's in all,
+where they were 0.83 mm); elsewhere a wall here and there moved by a
+few hundredths of a millimetre, as near the reference's after as
+before. The rest of the skeleton is still worked out in the plate's
+coordinates, and a node of it can lie a nanometre or two from where
+the reference's arithmetic would put it. With the
 U1's presets and `wall_generator` set to `arachne`, C++ slicer against
 this engine, walls in metres:
 
@@ -1794,9 +2003,11 @@ Tree supports are arcs for 94% of their length
 against 90% (1825 against 2719 on the `shelf`, whose supports are 30%
 shorter here, as above). On the box-shaped parts nothing changed but
 the spiral lifts, and four arcs on the `mushroom` where a support's
-outline turns a corner; the reference has five to eight arcs there that
-this engine has not, each a dot of narrow solid fill it lays as a loop
-(`detect_narrow_internal_solid_infill`, not done).
+outline turns a corner; the reference has five to eight arcs there,
+each a dot of narrow solid fill it lays as a loop, which this engine
+does not lay: its triangle of loops there is a stroke larger and has
+a second loop where the reference's has the dot (Narrow solid areas,
+above).
 
 The reference still does more in that time (time planning, ironing out
 its fill order), so the speed gap will narrow as stages are added;
@@ -1930,17 +2141,110 @@ what `limited` would find on the next, and here they do not (138 mm
 more on one layer). On the plain parts (cube, deck, mushroom) neither
 value changes anything in either slicer.
 
-`counterbore_hole_bridging` is not followed: the note stays. In the
-reference it is done where walls are made (PerimeterGenerator.cpp
-`process_no_bridge`): on the first layer of the narrow part of a hole
-the area with nothing under it is taken out of what gets walls and
-handed to the fill as it is, so it is bridged, either the part of it a
-bridge detector says can be spanned from the wide hole's edge
-(`partiallybridge`) or all of it, the narrow hole covered over as well
-(`sacrificiallayer`). It needs the reference's `BridgeDetector` (the
-direction with most anchored lines and the strips it can span), which
-is not here: this engine turns a bridge by the edges it has nothing
-beside.
+`counterbore_hole_bridging`, against the C++ slicer with the same
+settings (C++ slicer / this engine). The part is `tools/make_fixture.py`'s
+`counterbore` with the Snapmaker U1's presets: a slab of eight cells,
+each with a hole that is wide for the first 3 mm and narrow above
+(round in round 3 in 6, 4 in 8 and 5 in 12 mm, 4 in 12 off the middle,
+round over hexagonal, square over round, hexagonal over square) and one
+plain hole straight through. The layers are the first of the narrow
+part and the one above it, cut at 3.15 mm where nothing else is said
+(the first layer is 0.25 mm, so 0.2 mm layers do not divide the 3 mm),
+at 3.10 mm with a 0.2 mm first layer, which does, and at 3.19 mm with
+0.28 mm layers. Lengths are of line laid over all eight cells; the
+last column is in how many of the seven holes that narrow the bridges
+run the same way in both, within a degree.
+
+| | walls on that layer, mm | bridge on it, mm | solid fill on the layer above, mm | bridges the same way |
+| --- | --- | --- | --- | --- |
+| off | 753 / 753 | 1540 / 1625 | 1464 / 1473 | |
+| `partiallybridge` | 1060 / 1060 | 838 / 943 | 1717 / 1715 | 7 |
+| `sacrificiallayer` | 1035 / 1035 | 1771 / 1838 | 1765 / 1769 | 3 |
+| `partiallybridge`, Arachne | 1039 / 1039 | 838 / 949 | 1680 / 1686 | 6 |
+| `sacrificiallayer`, Arachne | 1033 / 1033 | 1771 / 1838 | 1755 / 1762 | 3 |
+| `partiallybridge`, `hole_to_polyhole` | 1062 / 1060 | 854 / 949 | 1711 / 1710 | 4 |
+| `sacrificiallayer`, `hole_to_polyhole` | 1040 / 1040 | 1783 / 1846 | 1764 / 1764 | 1 |
+| `partiallybridge`, 0.2 mm first layer | 1060 / 1060 | 838 / 943 | 1717 / 1715 | 7 |
+| `sacrificiallayer`, 0.2 mm first layer | 1035 / 1035 | 1771 / 1838 | 1765 / 1769 | 3 |
+| `partiallybridge`, 0.28 mm layers | 1056 / 1060 | 882 / 974 | 1783 / 1788 | 5 |
+| `sacrificiallayer`, 0.28 mm layers | 1033 / 1033 | 1840 / 1908 | 1825 / 1822 | 3 |
+
+The walls of that layer are the reference's: they go round the wide
+hole, stepping in a wall's width where a bridge rests on its edge.
+With a sacrificial layer they come to the same length in every cell of
+every row, to 0.05 mm; partly bridged to within 0.5 mm, but for the
+six-sided wide hole with 0.28 mm layers, where a bridge reaches a
+corner of the hexagon here and stops a detector's strip short of it
+there (82.3 mm against 78.9), and two polyholes whose slot runs
+another way (1.1 mm). Over the whole file no layer's walls are off by more than 0.4%,
+and the walls over air that the option is there to be rid of (243 mm
+on that layer with it off) are gone in both. The plain hole is
+untouched. The layers next to that one change in both slicers the same
+way, their fill now lying under or over its walls round the wide hole
+and being made solid: a ring round the wide hole on the four layers
+under it (224 mm a layer in the reference and 256 here, partly
+bridged) and more solid fill on the two above (253 and 742 mm more
+than with the option off in the reference, 243 and 735 here). Further
+up only where the seams fall on the narrow holes' walls changes, and
+further down nothing does. With `enable_extra_bridge_layer` on as well
+both lay the second bridge on the layer above in the six cells whose
+roof is wide enough for one, the same way in five of them (2.50 m of
+bridge in the file against 2.69 m partly bridged, 3.49 against 3.64
+with a sacrificial layer). On 3DBenchy with the same presets one layer
+changes in both, at 34.25 mm, the same in either mode: 43.9 mm more
+bridge and 39.3 mm less wall over air in the reference, 44.5 and 38.4
+here.
+
+The bridges come out longer here, by 12% partly bridged and 4% with a
+sacrificial layer, where they are 5.5% longer with the option off.
+The areas bridged are the same, the walls round them being the same;
+the lines in them are not. The reference leaves out a bridge line that
+does not come half a spacing inside the area and turns its lines short
+of the area's edge where it joins them (FillRectilinear.cpp); this
+engine lays every bridge line that is inside the area at all, from
+edge to edge, so a narrow bridge has a line more: eight where the
+reference has seven in each of the two beside the hexagonal hole in
+the square one. That is how this engine lays any bridge, and is not
+changed here.
+
+Partly bridged, the bridges run along the slot in both slicers, and
+the slot runs the same way in all seven cells with the presets as they
+are and with a 0.2 mm first layer, and in four to six of the seven in
+the other rows. Where it does not, the two ways span the same: a round
+hole in a round one is spanned as well any way round, wherever in it
+the hole is, and a square or six-sided one as well along any of its
+sides. The choice between equals is made by the last nanometre of the
+outline, in the reference as here, and the two clippers do not share
+that. With a sacrificial layer the cover is held all round and is laid
+the short way across, and a round, square or six-sided cover has none,
+so there the last column says little; a wide hole 14 by 6 mm, tried
+apart, is covered across the 6 mm in both, and partly bridged across
+the 6 mm in both.
+
+Different from the reference on purpose, both marked in the code. The
+reference does this to every part of a region with nothing under it
+that can be spanned, so long as the region has a hole anywhere
+(`!surface->expolygon.holes.empty()`); here the hole has to be on the
+edge of that part, which is what makes it a hole that narrows. A deck
+across two posts with a small hole drilled into one post loses the
+walls of its first layer in the reference (118 mm of wall over air
+with the option off, none with it on, in either mode) and keeps them
+here; a table top on four legs with such a hole has, partly bridged,
+only the strips from leg to leg printed in its first layer in the
+reference (1179 mm of bridge where 3472 mm is laid with the option
+off, or with it on and no hole), the layer after going down on air
+between them, and is left as it was here. And a sacrificial layer is
+made only where the wide hole's outline is convex, which the reference
+tells by whether any corner of the outline, simplified, turns the
+wrong way at all: simplifying keeps the outline's first point, and
+where that is in the middle of a straight side rounding leaves it a
+nanometre off, to either side. The hexagonal hole's first point lies a
+nanometre inside here; a corner counts as turning the wrong way only
+from a tenth of a micron.
+
+Noted and not done: with `bridge_angle` set and
+`align_infill_direction_to_model` on, the reference turns that
+direction with the model, whose turn on the bed is not known here.
 
 Travel round the walls (`reduce_crossing_wall`), against the C++
 slicer with the same settings (C++ slicer / this engine). The parts are

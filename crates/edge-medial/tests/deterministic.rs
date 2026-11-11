@@ -1,5 +1,5 @@
 //! The same outline gives the same Voronoi diagram on every run and on
-//! every thread.
+//! every thread, and wherever it lies.
 //!
 //! The Voronoi library keeps its beach line in a skip list. While the
 //! sweep is sound, the shape of that list only decides which comparisons a
@@ -7,8 +7,12 @@
 //! longer one order, and what a search finds depends on the shape: with
 //! the list's levels taken from the thread's random numbers, as the
 //! published `cpp_map` takes them, the outline below gave eight different
-//! diagrams in 65 builds. The copy in `vendor/cpp_map` starts every list's
-//! levels the same way.
+//! diagrams in 65 builds where it lay. The copy in `vendor/cpp_map` starts
+//! every list's levels the same way.
+//!
+//! Where the sweep goes wrong depends on where the outline lies, and
+//! `diagram` now sweeps every outline about the middle of its own box,
+//! where this one is swept soundly.
 
 use std::thread;
 
@@ -19,9 +23,9 @@ use edge_medial::{Source, VoronoiDiagram, cells, diagram};
 /// one the library's debug check used to stop on in one test run of three.
 /// Two of its edges are a nanometre out of line with each other
 /// (`76173144` and `76173145`) and it lies 49 to 79 mm from the origin;
-/// the sweep goes wrong on it, in Boost.Polygon's own diagram as well,
-/// and the walls then build it again turned (`sound_diagram` in
-/// `edge-arachne`). Moved to the origin it is swept soundly.
+/// swept there the sweep goes wrong, in Boost.Polygon's own diagram as
+/// well, and the walls had to build it again turned (`sound_diagram` in
+/// `edge-arachne`). Swept about its own middle it is sound, in both.
 const OUTLINE: [[i64; 4]; 100] = [
     [60186098, 55673323, 63132079, 55673322],
     [63132079, 55673322, 63132079, 49021460],
@@ -152,6 +156,7 @@ fn numbers(diagram: &VoronoiDiagram) -> Vec<u64> {
     for vertex in &diagram.vertices {
         all.extend([vertex[0].to_bits(), vertex[1].to_bits()]);
     }
+    all.extend(diagram.origin.map(|c| c as u64));
     all
 }
 
@@ -165,40 +170,113 @@ fn digest(numbers: &[u64]) -> u64 {
         })
 }
 
-/// The outline with its lowest corner at the origin.
-fn moved() -> Vec<[i64; 4]> {
-    let least = |which: usize| {
-        OUTLINE
-            .iter()
-            .map(|edge| edge[which].min(edge[which + 2]))
-            .min()
-            .unwrap_or(0)
-    };
-    let (x, y) = (least(0), least(1));
+/// The outline moved by `(x, y)`.
+fn moved(x: i64, y: i64) -> Vec<[i64; 4]> {
     OUTLINE
         .iter()
-        .map(|edge| [edge[0] - x, edge[1] - y, edge[2] - x, edge[3] - y])
+        .map(|edge| [edge[0] + x, edge[1] + y, edge[2] + x, edge[3] + y])
         .collect()
+}
+
+/// The outline and the same outline through the origin. The middle of
+/// the box round the two is the origin, so they are swept where they
+/// lie, which is where the sweep of the outline goes wrong.
+fn doubled() -> Vec<[i64; 4]> {
+    OUTLINE
+        .iter()
+        .copied()
+        .chain(OUTLINE.iter().map(|edge| edge.map(|c| -c)))
+        .collect()
+}
+
+/// The furthest any vertex is from being where it should: as near to
+/// the edge or end of an edge of each cell that meets at it as to the
+/// nearest edge of all.
+fn worst(edges: &[[i64; 4]], diagram: &VoronoiDiagram) -> f64 {
+    let [ox, oy] = diagram.origin.map(|c| c as f64);
+    let to_point = |(x, y): (f64, f64), (px, py): (f64, f64)| (x - px).hypot(y - py);
+    let to_edge = |(x, y): (f64, f64), edge: &[i64; 4]| {
+        let [ax, ay, bx, by] = edge.map(|c| c as f64);
+        let (dx, dy) = (bx - ax, by - ay);
+        let along = (((x - ax) * dx + (y - ay) * dy) / (dx * dx + dy * dy)).clamp(0.0, 1.0);
+        to_point((x, y), (ax + along * dx, ay + along * dy))
+    };
+    let mut worst = 0.0f64;
+    for edge in &diagram.edges {
+        let Some(vertex) = edge.vertex0 else { continue };
+        let [x, y] = diagram.vertices[vertex];
+        let at = (x + ox, y + oy);
+        let nearest = edges
+            .iter()
+            .map(|edge| to_edge(at, edge))
+            .fold(f64::INFINITY, f64::min);
+        let cell = &diagram.cells[edge.cell];
+        let [ax, ay, bx, by] = edges[cell.segment].map(|c| c as f64);
+        let own = match cell.source {
+            Source::Segment => to_edge(at, &edges[cell.segment]),
+            Source::SegmentStart => to_point(at, (ax, ay)),
+            Source::SegmentEnd => to_point(at, (bx, by)),
+        };
+        worst = worst.max((own - nearest).abs());
+    }
+    worst
 }
 
 #[test]
 fn an_outline_gives_the_same_diagram_on_every_thread_and_every_time() {
-    let moved = moved();
-    // Where the sweep goes wrong, and where it is sound.
-    let as_given = numbers(&diagram(&OUTLINE).unwrap());
-    let sound = numbers(&diagram(&moved).unwrap());
+    let doubled = doubled();
+    // Where the sweep is sound, and where it goes wrong.
+    let sound = numbers(&diagram(&OUTLINE).unwrap());
+    let wrong = numbers(&diagram(&doubled).unwrap());
     let shares = cells(&OUTLINE).unwrap();
     thread::scope(|scope| {
         for _ in 0..8 {
             scope.spawn(|| {
                 for _ in 0..8 {
-                    assert_eq!(numbers(&diagram(&OUTLINE).unwrap()), as_given);
-                    assert_eq!(numbers(&diagram(&moved).unwrap()), sound);
+                    assert_eq!(numbers(&diagram(&OUTLINE).unwrap()), sound);
+                    assert_eq!(numbers(&diagram(&doubled).unwrap()), wrong);
                     assert_eq!(cells(&OUTLINE).unwrap(), shares);
                 }
             });
         }
     });
+}
+
+/// What the two tests above and below stand on: the outline is swept
+/// soundly now, every vertex within a nanometre of where it should be,
+/// and the sweep still goes wrong where the outline lay, by millimetres.
+#[test]
+fn the_outline_is_swept_soundly_about_its_middle_and_not_where_it_lay() {
+    let found = diagram(&OUTLINE).unwrap();
+    assert_eq!(found.origin, [64_000_000, 64_000_000]);
+    assert!(worst(&OUTLINE, &found) < 1.5);
+    let doubled = doubled();
+    let found = diagram(&doubled).unwrap();
+    assert_eq!(found.origin, [0, 0]);
+    assert!(worst(&doubled, &found) > 1e6);
+}
+
+/// Where the outline lies makes no difference: the diagram is the same
+/// to the last bit, measured from a point moved as the outline was.
+#[test]
+fn an_outline_gives_the_same_diagram_wherever_it_lies() {
+    let here = diagram(&OUTLINE).unwrap();
+    for (x, y) in [
+        // Its lowest corner at the origin, and its middle.
+        (-49_021_460, -49_021_460),
+        (-64_000_000, -64_000_000),
+        (1, 0),
+        (71_500_000, 72_000_000),
+        (-250_000_000, 123_456_789),
+        // Three metres off, where no coordinate fits the library.
+        (3_000_000_000, -3_000_000_000),
+    ] {
+        let there = diagram(&moved(x, y)).unwrap();
+        assert_eq!(there.origin, [here.origin[0] + x, here.origin[1] + y]);
+        let mut back = there;
+        back.origin = here.origin;
+        assert_eq!(numbers(&back), numbers(&here), "moved by ({x}, {y})");
+    }
 }
 
 /// One process agreeing with itself does not show that the next one will.
@@ -208,7 +286,7 @@ fn an_outline_gives_the_same_diagram_on_every_thread_and_every_time() {
 /// that is not one is told apart by bits that differ between processors.)
 #[test]
 fn a_sound_diagram_is_the_same_in_every_process() {
-    let found = diagram(&moved()).unwrap();
+    let found = diagram(&OUTLINE).unwrap();
     assert_eq!(
         (found.cells.len(), found.edges.len(), found.vertices.len()),
         (CELLS, EDGES, VERTICES)
@@ -219,4 +297,4 @@ fn a_sound_diagram_is_the_same_in_every_process() {
 const CELLS: usize = 200;
 const EDGES: usize = 1112;
 const VERTICES: usize = 357;
-const DIGEST: u64 = 0x2306_ec61_8d0c_b796;
+const DIGEST: u64 = 0x14ab_0e87_ffae_7b16;
