@@ -43,6 +43,10 @@ SHAPES = {
     "cube": [(125.5, 126, 0, 20, 20, 20)],
     # a long low bar
     "bar": [(35.5, 131, 0, 200, 10, 30)],
+    # a square frame 5 mm wide round a 30 mm hole, for walls round a hole
+    "frame": [(115.5, 116, 0, 40, 5, 6), (115.5, 151, 0, 40, 5, 6), (115.5, 116, 0, 5, 40, 6), (150.5, 116, 0, 5, 40, 6)],
+    # a plate with three fins on it, 0.5, 0.8 and 1.1 mm thick, for thin walls
+    "fins": [(115.5, 126, 0, 40, 20, 1), (120.5, 131, 1, 0.5, 10, 5), (130.5, 131, 1, 0.8, 10, 5), (140.5, 131, 1, 1.1, 10, 5)],
     # two blocks that touch, one in each of two filaments
     "twotone": [(115.5, 126, 0, 20, 20, 6), (135.5, 126, 0, 20, 20, 4)],
 }

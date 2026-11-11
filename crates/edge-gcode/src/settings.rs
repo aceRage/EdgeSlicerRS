@@ -24,6 +24,21 @@ pub enum Lift {
 pub enum WallOrder {
     InnerOuter,
     OuterInner,
+    /// The outer wall between the inner ones: those behind the first
+    /// inner wall, then the outer wall, then the first inner wall. Above
+    /// the first layer, which goes inner wall first.
+    InnerOuterInner,
+}
+
+/// Which way round walls are laid (`wall_direction`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum WallDirection {
+    /// Counter-clockwise, round holes as round the part
+    /// (PerimeterGenerator.cpp: "all walls are counter-clockwise
+    /// initially").
+    Auto,
+    CounterClockwise,
+    Clockwise,
 }
 
 /// The fan for whatever is laid over air.
@@ -72,6 +87,12 @@ pub struct PrintSettings {
     pub bridge_acceleration: FloatOrPercent,
     /// Solid fill laid over sparse fill; a percentage is of the bridge's speed.
     pub internal_bridge_speed: FloatOrPercent,
+    /// A wall loop no longer than a circle of this radius, in mm, is laid
+    /// at `small_perimeter_speed`, which as a percentage is of the outer
+    /// wall's speed; at nothing, at half that speed. A threshold of zero
+    /// leaves every wall at its own speed.
+    pub small_perimeter_threshold: f64,
+    pub small_perimeter_speed: FloatOrPercent,
     /// Walls on the first layer.
     pub initial_layer_speed: f64,
     /// All fill on the first layer.
@@ -135,6 +156,7 @@ pub struct PrintSettings {
     pub bed_temperature_initial_layer: Option<f64>,
 
     pub wall_order: WallOrder,
+    pub wall_direction: WallDirection,
     pub infill_first: bool,
     /// Skip retraction on moves between fill lines that stay inside the walls.
     pub reduce_infill_retraction: bool,
@@ -248,6 +270,8 @@ impl Default for PrintSettings {
             thick_bridges: false,
             bridge_acceleration: FloatOrPercent::Percent(50.0),
             internal_bridge_speed: FloatOrPercent::Percent(150.0),
+            small_perimeter_threshold: 0.0,
+            small_perimeter_speed: FloatOrPercent::Percent(50.0),
             initial_layer_speed: 30.0,
             initial_layer_infill_speed: 60.0,
             travel_speed: 120.0,
@@ -286,6 +310,7 @@ impl Default for PrintSettings {
             bed_temperature: None,
             bed_temperature_initial_layer: None,
             wall_order: WallOrder::InnerOuter,
+            wall_direction: WallDirection::Auto,
             infill_first: false,
             reduce_infill_retraction: false,
             fan_min_speed: 20.0,
@@ -388,11 +413,24 @@ impl PrintSettings {
         {
             None | Some("inner wall/outer wall") => WallOrder::InnerOuter,
             Some("outer wall/inner wall") => WallOrder::OuterInner,
+            Some("inner-outer-inner wall") => WallOrder::InnerOuterInner,
             Some(other) => {
                 unsupported.push(format!(
                     "wall_sequence \"{other}\": inner wall first is used"
                 ));
                 WallOrder::InnerOuter
+            }
+        };
+        let wall_direction = match settings.text("wall_direction") {
+            None | Some("auto") => WallDirection::Auto,
+            Some("ccw") => WallDirection::CounterClockwise,
+            Some("cw") => WallDirection::Clockwise,
+            Some(other) => {
+                return Err(ConfigError::BadValue {
+                    key: "wall_direction".into(),
+                    found: other.to_owned(),
+                    expected: "auto, ccw or cw",
+                });
             }
         };
         let first_text = |key: &str| settings.texts(key).and_then(|v| v.get(index).or(v.last()));
@@ -447,11 +485,6 @@ impl PrintSettings {
                 "slowdown_for_curled_perimeters",
                 "0",
                 "walls are not slowed over edges that have curled up",
-            ),
-            (
-                "overhang_reverse",
-                "0",
-                "walls over overhangs keep their direction",
             ),
         ] {
             if let Some(value) = first_text(key)
@@ -607,6 +640,14 @@ impl PrintSettings {
                 "internal_bridge_speed",
                 defaults.internal_bridge_speed,
             )?,
+            small_perimeter_threshold: number(
+                "small_perimeter_threshold",
+                defaults.small_perimeter_threshold,
+            )?,
+            small_perimeter_speed: listed_share(
+                "small_perimeter_speed",
+                defaults.small_perimeter_speed,
+            )?,
             initial_layer_speed: number("initial_layer_speed", defaults.initial_layer_speed)?,
             initial_layer_infill_speed: number(
                 "initial_layer_infill_speed",
@@ -686,6 +727,7 @@ impl PrintSettings {
             bed_temperature,
             bed_temperature_initial_layer,
             wall_order,
+            wall_direction,
             infill_first: settings
                 .flag("is_infill_first")?
                 .unwrap_or(defaults.infill_first),
@@ -1242,9 +1284,13 @@ mod tests {
         let read =
             |json: &str| PrintSettings::from_settings(&Settings::from_json(json).unwrap()).unwrap();
         let settings = read(
-            r#"{"wall_sequence": "inner-outer-inner wall", "seam_position": "random", "curr_bed_type": "Glass"}"#,
+            r#"{"wall_sequence": "outer wall last", "seam_position": "random", "curr_bed_type": "Glass"}"#,
         );
         assert_eq!(settings.wall_order, WallOrder::InnerOuter);
+        assert_eq!(
+            read(r#"{"wall_sequence": "inner-outer-inner wall"}"#).wall_order,
+            WallOrder::InnerOuterInner
+        );
         assert_eq!(settings.bed_temperature, None);
         assert_eq!(settings.unsupported.len(), 3);
         assert!(

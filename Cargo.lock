@@ -359,6 +359,7 @@ dependencies = [
  "edge-config",
  "edge-extrusion",
  "edge-geom",
+ "edge-medial",
  "edge-perimeter",
  "edge-slice",
  "rayon",

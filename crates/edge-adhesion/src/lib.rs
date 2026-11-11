@@ -464,6 +464,7 @@ pub fn brim(
         loops.extend(from_outside.into_iter().chain(from_parts).map(
             |(polygon, is_hole, depth)| ExtrusionLoop {
                 widths: Vec::new(),
+                clockwise: false,
                 polygon,
                 role: Role::Brim,
                 is_hole,
@@ -527,6 +528,7 @@ pub fn skirt(
         }
         loops.push(ExtrusionLoop {
             widths: Vec::new(),
+            clockwise: false,
             polygon,
             role: Role::Skirt,
             is_hole: false,

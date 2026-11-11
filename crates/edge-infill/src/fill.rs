@@ -2,7 +2,7 @@ use std::f64::consts::FRAC_PI_2;
 
 use edge_clip::{ClipError, Join};
 use edge_extrusion::{ExtrusionPath, Flow, Role};
-use edge_geom::{Point2, scaled};
+use edge_geom::{ExPolygon, Point2, scaled};
 
 use crate::{Pattern, Surface, SurfaceKind, curves, lines};
 
@@ -58,6 +58,22 @@ pub struct FillParams {
     pub top_ordered: bool,
     pub bottom_ordered: bool,
     pub solid_ordered: bool,
+    /// Which solid fill has what its lines leave bare filled, and the
+    /// shortest line worth laying there, in mm.
+    pub gap_fill: GapFillTarget,
+    pub gap_shortest: f64,
+}
+
+/// Where the fill's own gap fill goes (`gap_fill_target`): solid fill
+/// leaves slivers its lines cannot reach, at the ends of lines against a
+/// slanting wall and in corners.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum GapFillTarget {
+    /// Top and bottom surfaces and solid fill inside the part.
+    Everywhere,
+    /// Top and bottom surfaces only.
+    TopBottom,
+    Nowhere,
 }
 
 impl FillParams {
@@ -249,6 +265,21 @@ pub fn fill_from(
     params: &FillParams,
     frame_of: &dyn Fn(&Surface) -> Frame,
 ) -> Result<Vec<ExtrusionPath>, ClipError> {
+    fill_within(surfaces, layer_index, params, frame_of, &[])
+}
+
+/// As [`fill_from`], knowing the layer's fill area without its overlap
+/// into the walls (`no_overlap`): what a solid surface's lines leave bare
+/// of it is then filled with lines of whatever width fits, where
+/// [`FillParams::gap_fill`] asks (FillBase.cpp `_create_gap_fill`). With
+/// no such area there is no such fill.
+pub fn fill_within(
+    surfaces: &[Surface],
+    layer_index: usize,
+    params: &FillParams,
+    frame_of: &dyn Fn(&Surface) -> Frame,
+    no_overlap: &[ExPolygon],
+) -> Result<Vec<ExtrusionPath>, ClipError> {
     let turned = if layer_index % 2 == 1 { FRAC_PI_2 } else { 0.0 };
     let mut paths = Vec::new();
     // How sparse lines' ends are joined along the outline they are cut
@@ -275,6 +306,7 @@ pub fn fill_from(
     for (number, surface) in surfaces.iter().enumerate() {
         // Each surface's lines are one part, laid together.
         let part = number as u32 + 1;
+        let first_path = paths.len();
         let frame = frame_of(surface);
         let origin = frame.origin;
         // (flow, role, line spacing in mm, how the lines end, directions)
@@ -754,8 +786,100 @@ pub fn fill_from(
                 }
             }
         }
+        let wanted = match (params.gap_fill, surface.kind) {
+            (GapFillTarget::Nowhere, _) => false,
+            (_, SurfaceKind::Top | SurfaceKind::Bottom) => true,
+            (GapFillTarget::Everywhere, SurfaceKind::InternalSolid) => true,
+            _ => false,
+        };
+        if wanted && !no_overlap.is_empty() {
+            let gaps = gap_fill(
+                surface,
+                &paths[first_path..],
+                &flow,
+                params,
+                no_overlap,
+                part,
+            )?;
+            paths.extend(gaps);
+        }
     }
     Ok(paths)
+}
+
+/// Added to an offset so that edges meant to coincide overlap instead
+/// (ClipperUtils.hpp `ClipperSafetyOffset`).
+const SAFETY_OFFSET: edge_geom::Coord = 10;
+/// How much of its spacing a line may lose where it is squeezed
+/// (libslic3r.h `INSET_OVERLAP_TOLERANCE`).
+const INSET_OVERLAP_TOLERANCE: f64 = 0.4;
+
+/// Lines down the middle of what `laid`, a solid surface's own lines,
+/// leave bare of the surface's share of `no_overlap`, each as wide as the
+/// gap it fills (FillBase.cpp `_create_gap_fill`).
+///
+/// Different from the reference in where they come in the order: there,
+/// the gap lines of a surface swept from side to side are slipped in
+/// among its lines wherever that saves travel (`insert_gap_fill`); here
+/// they follow the surface's lines as a group of their own.
+fn gap_fill(
+    surface: &Surface,
+    laid: &[ExtrusionPath],
+    flow: &Flow,
+    params: &FillParams,
+    no_overlap: &[ExPolygon],
+    part: u32,
+) -> Result<Vec<ExtrusionPath>, ClipError> {
+    // What the lines cover, each by its spacing and a little over.
+    let mut covered = Vec::new();
+    for path in laid {
+        covered.extend(edge_clip::thicken(
+            [path.points.as_slice()],
+            path.flow.scaled_spacing() / 2 + SAFETY_OFFSET,
+        )?);
+    }
+    let own = edge_clip::intersection(
+        no_overlap,
+        &edge_clip::offset(
+            std::slice::from_ref(&surface.area),
+            SAFETY_OFFSET,
+            Join::MITER,
+        )?,
+    )?;
+    let bare = edge_clip::difference(&own, &edge_clip::union_ex(&covered)?)?;
+    if bare.is_empty() {
+        return Ok(Vec::new());
+    }
+    let spacing = flow.scaled_spacing() as f64;
+    let thinnest = 0.2 * spacing * (1.0 - INSET_OVERLAP_TOLERANCE);
+    let widest = 2.0 * spacing;
+    // Without the slivers too thin to print and whatever a line of the
+    // fill itself could have had.
+    let gaps = edge_clip::difference(
+        &edge_clip::opening(&bare, (thinnest / 2.0) as edge_geom::Coord, Join::MITER)?,
+        &edge_clip::offset2(
+            &bare,
+            -((widest / 2.0) as edge_geom::Coord),
+            (widest / 2.0) as edge_geom::Coord + SAFETY_OFFSET,
+            Join::MITER,
+        )?,
+    )?;
+    let mut lines = Vec::new();
+    for gap in &gaps {
+        // A tenth of the reference's `SCALED_RESOLUTION`.
+        for gap in edge_clip::simplify(std::slice::from_ref(gap), 1_250)? {
+            // A gap whose middle cannot be found is left bare.
+            if let Ok(found) = edge_medial::medial_axis(&gap, thinnest, widest) {
+                lines.extend(found);
+            }
+        }
+    }
+    lines.retain(|line| line.length() >= scaled(params.gap_shortest) as f64);
+    let mut made = edge_medial::variable_width(&lines, Role::GapFill, flow);
+    for path in &mut made {
+        path.part = part;
+    }
+    Ok(made)
 }
 
 #[cfg(test)]
@@ -806,6 +930,8 @@ mod tests {
             top_ordered: true,
             bottom_ordered: true,
             solid_ordered: true,
+            gap_fill: GapFillTarget::Nowhere,
+            gap_shortest: 0.0,
         }
     }
 
@@ -1315,5 +1441,84 @@ mod tests {
                 .iter()
                 .all(|x| (x - reach).abs() < 1e-5 || (x - (10.0 - reach)).abs() < 1e-5)
         );
+    }
+
+    #[test]
+    fn what_solid_lines_leave_bare_is_gap_filled_where_asked() {
+        // A long thin wedge: lines across it stop short of its point,
+        // where it is too narrow for a line of the fill's own width.
+        let wedge = |kind| Surface {
+            kind,
+            area: ExPolygon {
+                contour: Polygon {
+                    points: [(0.0, 0.0), (30.0, 0.0), (0.0, 4.0)]
+                        .map(|(x, y)| Point2::from_mm(x, y))
+                        .to_vec(),
+                },
+                holes: Vec::new(),
+            },
+            angle: None,
+        };
+        let frame = |_: &Surface| Frame {
+            origin: Point2::from_mm(0.0, 0.0),
+            bounds: None,
+        };
+        let gaps = |kind, target, inside: bool| -> Vec<ExtrusionPath> {
+            let surface = wedge(kind);
+            let asked = FillParams {
+                gap_fill: target,
+                ..params(Pattern::Lines, 0.2)
+            };
+            let inside = if inside {
+                vec![surface.area.clone()]
+            } else {
+                Vec::new()
+            };
+            fill_within(&[surface], 0, &asked, &frame, &inside)
+                .unwrap()
+                .into_iter()
+                .filter(|path| path.role == Role::GapFill)
+                .collect()
+        };
+        let found = gaps(SurfaceKind::Top, GapFillTarget::TopBottom, true);
+        assert!(!found.is_empty());
+        // In the wedge, thinner than the fill's own lines, and laid with
+        // the surface they belong to.
+        for line in &found {
+            assert_eq!(line.part, 1);
+            assert!(line.flow.width < 0.4, "{}", line.flow.width);
+            assert!(line.points.iter().all(|point| {
+                point.x >= 0
+                    && point.y >= 0
+                    && point.y as f64 <= 4e6 - point.x as f64 * 4.0 / 30.0 + 1e3
+            }));
+        }
+        // The plain fill is what it is without.
+        let plain = |target| {
+            let asked = FillParams {
+                gap_fill: target,
+                ..params(Pattern::Lines, 0.2)
+            };
+            let surface = wedge(SurfaceKind::Top);
+            let inside = [surface.area.clone()];
+            fill_within(&[surface], 0, &asked, &frame, &inside)
+                .unwrap()
+                .into_iter()
+                .filter(|path| path.role != Role::GapFill)
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(
+            plain(GapFillTarget::TopBottom),
+            plain(GapFillTarget::Nowhere)
+        );
+
+        // Nowhere, when that is asked; not without knowing what is
+        // inside the walls; and inside the part only for `everywhere`.
+        assert!(gaps(SurfaceKind::Top, GapFillTarget::Nowhere, true).is_empty());
+        assert!(gaps(SurfaceKind::Top, GapFillTarget::TopBottom, false).is_empty());
+        assert!(!gaps(SurfaceKind::Bottom, GapFillTarget::TopBottom, true).is_empty());
+        assert!(gaps(SurfaceKind::InternalSolid, GapFillTarget::TopBottom, true).is_empty());
+        assert!(!gaps(SurfaceKind::InternalSolid, GapFillTarget::Everywhere, true).is_empty());
+        assert!(gaps(SurfaceKind::Sparse, GapFillTarget::Everywhere, true).is_empty());
     }
 }

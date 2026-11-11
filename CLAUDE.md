@@ -44,6 +44,15 @@ to a stage and say in the PR what moved.
   table of the reference's defaults in `edge-config`.
 - The reference slicer defines correct output. Where this engine differs on
   purpose, say so in the code and in the PR.
+- That does not extend to the reference's own mistakes. A workaround it
+  carries for an obvious flaw or bug is not ported, unless the workaround
+  is the only way the feature can be done at all; and an obvious bug is
+  not copied to match it. Do what the code is plainly for, and say in the
+  code and in the PR what was left out and what the reference does there.
+- An error in the reference that porting turns up is also fixed where it
+  is: open a fix PR on the C++ slicer (aceRage/EdgeSlicer) with the fix,
+  a test and the check made, and name it in this repo's PR. Opening it
+  needs no asking; merging it does.
 - Output must be deterministic: same input gives byte-identical results at
   any thread count. Parity testing depends on it.
   The G-code's first line carries the time it was made; set

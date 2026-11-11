@@ -76,6 +76,25 @@ pub struct Params {
     pub over_air: Option<OverAir>,
     /// Set where walls on this layer get a fuzzy skin (`fuzzy_skin`).
     pub fuzzy: Option<Fuzzy>,
+    /// Set on the layers where walls over a steep overhang are laid the
+    /// other way round (`overhang_reverse`).
+    pub overhang_reverse: Option<OverhangReverse>,
+    /// A part too thin for a wall down each side gets one line down its
+    /// middle, as wide as the part (`detect_thin_wall`). Classic walls
+    /// only: walls of changing width do as much by themselves.
+    pub thin_walls: bool,
+}
+
+/// What `overhang_reverse` goes by.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct OverhangReverse {
+    /// A wall is over a steep overhang where it lies further than this
+    /// outside the layer below, in mm or as a share of its width; at
+    /// nothing, every wall is (`overhang_reverse_threshold`).
+    pub threshold: edge_config::FloatOrPercent,
+    /// The outer wall keeps its way round
+    /// (`overhang_reverse_internal_only`).
+    pub internal_only: bool,
 }
 
 /// What a fuzzy skin needs on one layer.
@@ -318,6 +337,10 @@ pub struct Perimeters {
     pub islands: Vec<Range<usize>>,
     /// Where infill goes, already overlapping the innermost wall.
     pub infill: Vec<ExPolygon>,
+    /// The same without the overlap: what is inside the walls. The fill
+    /// stage goes by it to find what its solid lines leave bare
+    /// (`fill_no_overlap`).
+    pub infill_no_overlap: Vec<ExPolygon>,
     /// Lines down the middle of the gaps between walls, each as wide as
     /// its gap. With walls of changing width there are no gaps, and what
     /// is here are the walls that are not loops: lines down the middle of
@@ -382,10 +405,45 @@ pub fn classic_between(
         // wall it may come.
         let (mut top_fills, mut fill_clip): (Vec<ExPolygon>, Vec<ExPolygon>) = Default::default();
         let mut depth: isize = 0;
+        let mut thin: Vec<edge_medial::ThickPolyline> = Vec::new();
         while loop_number >= 0 {
             let mut offsets = Vec::new();
             let mut narrow = Vec::new();
-            if depth == 0 {
+            if depth == 0 && params.thin_walls {
+                // The outer wall goes only where there is room for it
+                // down both sides: "the minimum thickness of a single
+                // loop is ext_width/2 + ext_spacing/2 + spacing/2 +
+                // width/2".
+                let ext_min_spacing =
+                    (ext_spacing as f64 * (1.0 - INSET_OVERLAP_TOLERANCE)) as Coord;
+                offsets = edge_clip::offset2(
+                    &last,
+                    -((ext_width as f64 / 2.0 + ext_min_spacing as f64 / 2.0 - 1.0) as Coord),
+                    (ext_min_spacing as f64 / 2.0 - 1.0) as Coord,
+                    Join::MITER,
+                )?;
+                // What that wall does not cover, less what is too thin
+                // to print at all, gets a line down its middle.
+                let min_width = scaled(params.outer.nozzle_diameter / 3.0);
+                let uncovered = edge_clip::opening(
+                    &edge_clip::difference(
+                        &last,
+                        &edge_clip::offset(&offsets, ext_width / 2 + SAFETY_OFFSET, Join::MITER)?,
+                    )?,
+                    min_width / 2,
+                    Join::MITER,
+                )?;
+                for piece in &uncovered {
+                    match edge_medial::medial_axis(
+                        piece,
+                        min_width as f64,
+                        (ext_width + ext_spacing2) as f64,
+                    ) {
+                        Ok(found) => thin.extend(found),
+                        Err(_) => result.gaps_skipped += 1,
+                    }
+                }
+            } else if depth == 0 {
                 for piece in &last {
                     let piece = std::slice::from_ref(piece);
                     let fits = edge_clip::offset2(
@@ -467,9 +525,58 @@ pub fn classic_between(
                 )?;
             }
         }
+        turn_over_overhangs(
+            &mut result.loops[first_loop..],
+            params,
+            around.as_ref(),
+            fuzzed.as_ref(),
+        )?;
         if result.loops.len() > first_loop {
             result.islands.push(first_loop..result.loops.len());
         }
+        // Thin walls are outer walls that are not loops; a fuzzy skin on
+        // the outer wall is on them too (`traverse_loops`).
+        if let Some(fuzzed) = &fuzzed
+            && edge_fuzzy::should_fuzzify(
+                &fuzzed.fuzzy.config,
+                fuzzed.fuzzy.config.layer_id,
+                0,
+                true,
+            )
+        {
+            let context = fuzzed.context();
+            for line in &mut thin {
+                if line.points.len() < 2 || line.widths.len() != 2 * (line.points.len() - 1) {
+                    continue;
+                }
+                // A junction takes the width its segment ends with, the
+                // first one the width the first segment starts with.
+                let mut wall = edge_arachne::ExtrusionLine::new(0, true);
+                wall.junctions = line
+                    .points
+                    .iter()
+                    .enumerate()
+                    .map(|(at, &p)| edge_arachne::Junction {
+                        p,
+                        w: line.widths[if at == 0 { 0 } else { 2 * at - 1 }] as Coord,
+                        perimeter_index: 0,
+                    })
+                    .collect();
+                let closed = line.is_closed();
+                edge_fuzzy::apply_to_line(&mut wall, &context, true, closed)?;
+                line.points = wall.junctions.iter().map(|junction| junction.p).collect();
+                line.widths = wall
+                    .junctions
+                    .windows(2)
+                    .flat_map(|pair| [pair[0].w as f64, pair[1].w as f64])
+                    .collect();
+            }
+        }
+        result.gap_fill.extend(edge_medial::variable_width(
+            &thin,
+            Role::ExternalPerimeter,
+            &params.outer,
+        ));
 
         if let Some(fill) = &params.gap_fill
             && !gaps.is_empty()
@@ -496,22 +603,36 @@ pub fn classic_between(
             0 => ext_spacing / 2,
             _ => spacing / 2,
         };
-        let mut top_overlap = 0;
+        let (mut top_overlap, mut overlap) = (0, 0);
         if inset > 0 {
             let reach = unscaled(inset + params.solid_infill_spacing / 2);
             if let Some(top) = &params.one_wall_top {
                 top_overlap = scaled(reach * top.overlap_percent / 100.0);
             }
-            inset -= scaled(reach * params.infill_overlap_percent / 100.0);
+            overlap = scaled(reach * params.infill_overlap_percent / 100.0);
+            inset -= overlap;
         }
         let min_infill_spacing =
             (params.solid_infill_spacing as f64 * (1.0 - INSET_OVERLAP_TOLERANCE)) as Coord;
+        let not_filled = edge_clip::simplify(&last, params.resolution)?;
         let mut infill = edge_clip::offset2(
-            &edge_clip::simplify(&last, params.resolution)?,
+            &not_filled,
             -inset - min_infill_spacing / 2,
             min_infill_spacing / 2,
             Join::MITER,
         )?;
+        // The same area without the overlap ("get the no-overlap infill
+        // expolygons").
+        let mut no_overlap = if min_infill_spacing / 2 > overlap {
+            edge_clip::offset2(
+                &not_filled,
+                -inset - min_infill_spacing / 2,
+                min_infill_spacing / 2 - overlap,
+                Join::MITER,
+            )?
+        } else {
+            edge_clip::offset(&not_filled, -inset - overlap, Join::MITER)?
+        };
         // The top fill reaches from its side to the outer wall, half a
         // line nearer than where the inner walls would have started.
         if !top_fills.is_empty() {
@@ -521,7 +642,10 @@ pub fn classic_between(
             )?;
             infill.extend(edge_clip::offset(&reached, top_overlap, Join::MITER)?);
             infill = edge_clip::union_ex(&infill)?;
+            no_overlap.extend(reached);
+            no_overlap = edge_clip::union_ex(&no_overlap)?;
         }
+        result.infill_no_overlap.extend(no_overlap);
         if result.loops.len() > first_loop {
             wall_over_air(
                 &mut infill,
@@ -552,9 +676,7 @@ const LOOP_WIDTH_TOLERANCE: Coord = 50_000;
 /// (lines down the middle of thin parts) are laid with the fill. Where
 /// [`Params::one_wall_top`] is set and the layers next to this one are
 /// known, a top surface keeps only its outer wall, as the reference has
-/// it with `top_surface_expansion` at zero; the inner walls are then
-/// numbered by the pass that made them, where the reference numbers
-/// them again by which wall each touches.
+/// it with `top_surface_expansion` at zero.
 pub fn arachne(
     regions: &[ExPolygon],
     params: &Params,
@@ -721,6 +843,17 @@ pub fn arachne(
                         line.inset_idx += 1;
                     }
                 }
+                // The inner walls start at the top surface's edge as
+                // well as behind the outer wall, and are numbered from
+                // there: numbered again by which wall each touches.
+                if perimeters.len() == 1 {
+                    let outer_touch = if params.precise_outer_wall {
+                        ext_spacing + spacing / 2
+                    } else {
+                        (ext_spacing + spacing) / 2
+                    };
+                    renumber_inner_walls(&perimeters[0], &mut inner_paths, outer_touch, spacing);
+                }
                 perimeters.extend(inner_paths);
                 let mut both = tops.clone();
                 both.extend(inner.inner_contour);
@@ -801,6 +934,7 @@ pub fn arachne(
                         depth: wall.inset_idx,
                         flow: flow_of(flow, average)?,
                         widths,
+                        clockwise: false,
                     };
                     if is_hole {
                         holes.push(made);
@@ -823,6 +957,12 @@ pub fn arachne(
             }
             result.loops.extend(holes);
         }
+        turn_over_overhangs(
+            &mut result.loops[first_loop..],
+            params,
+            around.as_ref(),
+            fuzzed.as_ref(),
+        )?;
         if result.loops.len() > first_loop {
             result.islands.push(first_loop..result.loops.len());
         }
@@ -847,10 +987,18 @@ pub fn arachne(
         let inset = scaled(unscaled(reach) * params.infill_overlap_percent / 100.0);
         let min_infill_spacing =
             (params.solid_infill_spacing as f64 * (1.0 - INSET_OVERLAP_TOLERANCE)) as Coord;
+        let not_filled = edge_clip::simplify(&infill_contour, params.resolution)?;
         let mut infill = edge_clip::offset2(
-            &edge_clip::simplify(&infill_contour, params.resolution)?,
+            &not_filled,
             -min_infill_spacing / 2,
             inset + min_infill_spacing / 2,
+            Join::MITER,
+        )?;
+        // The same area without the overlap.
+        let mut no_overlap = edge_clip::offset2(
+            &not_filled,
+            -min_infill_spacing / 2,
+            min_infill_spacing / 2,
             Join::MITER,
         )?;
         // The top fill overlaps the wall beside it by the amount set for
@@ -859,7 +1007,10 @@ pub fn arachne(
             let top_inset = scaled(unscaled(reach) * top.overlap_percent / 100.0);
             infill.extend(edge_clip::offset(&top_fills, top_inset, Join::MITER)?);
             infill = edge_clip::union_ex(&infill)?;
+            no_overlap.extend(top_fills.iter().cloned());
+            no_overlap = edge_clip::union_ex(&no_overlap)?;
         }
+        result.infill_no_overlap.extend(no_overlap);
         if result.loops.len() > first_loop {
             wall_over_air(
                 &mut infill,
@@ -872,6 +1023,63 @@ pub fn arachne(
         result.infill.extend(infill);
     }
     Ok(result)
+}
+
+/// Marks an island's walls to be laid clockwise where
+/// [`Params::overhang_reverse`] is set and one of them is over a steep
+/// overhang: the walls round the part if any of those is, and the walls
+/// round holes if any of those is (`detect_steep_overhang` and
+/// `reorient_perimeters`, PerimeterGenerator.cpp). With a fuzzy skin they
+/// always are, as in the reference.
+fn turn_over_overhangs(
+    loops: &mut [ExtrusionLoop],
+    params: &Params,
+    around: Option<&Around<'_>>,
+    fuzzed: Option<&Fuzzed>,
+) -> Result<(), Error> {
+    let Some((reverse, lower)) = params
+        .overhang_reverse
+        .zip(around.and_then(|around| around.lower))
+    else {
+        return Ok(());
+    };
+    // Round the part, and round holes.
+    let mut steep = [false, false];
+    if let Some(fuzzed) = fuzzed {
+        let config = &fuzzed.fuzzy.config;
+        // Only where the walls round the part are fuzzy; and round
+        // holes, where those are fuzzy as well.
+        let fuzzy = |is_contour| edge_fuzzy::should_fuzzify(config, config.layer_id, 0, is_contour);
+        let has = |is_hole: bool| loops.iter().any(|wall| wall.is_hole == is_hole);
+        steep = [
+            fuzzy(true) && has(false),
+            fuzzy(true) && fuzzy(false) && has(true),
+        ];
+    }
+    for wall in loops.iter() {
+        let found = &mut steep[usize::from(wall.is_hole)];
+        if *found {
+            continue;
+        }
+        let width = wall.flow.width;
+        let threshold = reverse.threshold.resolve(width);
+        // "Special case: reverse on every even (from GUI POV) layer".
+        if threshold < 1e-4 {
+            *found = true;
+            continue;
+        }
+        let limit = edge_clip::offset(lower, scaled(threshold - 0.5 * width), Join::MITER)?;
+        let mut outline = wall.polygon.points.clone();
+        outline.extend(outline.first().copied());
+        *found = !edge_clip::lines_outside(&[outline], &limit)?.is_empty();
+    }
+    for wall in loops.iter_mut() {
+        let outer = wall.role == Role::ExternalPerimeter;
+        if steep[usize::from(wall.is_hole)] && !(reverse.internal_only && outer) {
+            wall.clockwise = true;
+        }
+    }
+    Ok(())
 }
 
 /// Where [`Params::over_air`] is set and there is a layer below, walls
@@ -907,6 +1115,158 @@ fn wall_over_air(
     walls.extend(extra.into_iter().flatten());
     *infill = edge_clip::difference(infill, &filled)?;
     Ok(())
+}
+
+/// Whether two walls run alongside each other: some point of one within
+/// half their two widths of the other, or within `min_threshold` if that
+/// is more (`arachne_lines_touch`).
+fn lines_touch(
+    a: &edge_arachne::ExtrusionLine,
+    b: &edge_arachne::ExtrusionLine,
+    min_threshold: f64,
+) -> bool {
+    let one_way = |from: &edge_arachne::ExtrusionLine, to: &edge_arachne::ExtrusionLine| {
+        from.junctions.iter().any(|junction| {
+            let (px, py) = (junction.p.x as f64, junction.p.y as f64);
+            to.junctions.windows(2).any(|pair| {
+                let (sx, sy) = (pair[0].p.x as f64, pair[0].p.y as f64);
+                let (dx, dy) = (pair[1].p.x as f64 - sx, pair[1].p.y as f64 - sy);
+                let length2 = dx * dx + dy * dy;
+                let along = if length2 > 0.0 {
+                    (((px - sx) * dx + (py - sy) * dy) / length2).clamp(0.0, 1.0)
+                } else {
+                    0.0
+                };
+                // The width of `to` at its nearest point.
+                let width = pair[0].w as f64 + along * (pair[1].w - pair[0].w) as f64;
+                let touching = min_threshold.max(0.5 * (junction.w as f64 + width));
+                (sx + along * dx - px).hypot(sy + along * dy - py) <= touching
+            })
+        })
+    };
+    one_way(a, b) || one_way(b, a)
+}
+
+/// Numbers the inner walls made in a second pass by how far each is
+/// from the outer walls: one touching an outer wall is 1, one touching
+/// a wall numbered k that was itself made as k + 1 is k + 1, and any
+/// other takes one more than the deepest wall it touches. A wall that
+/// touches none keeps the number it was made with
+/// (`renumber_inner_walls_by_depth`). The walls come back grouped by
+/// number, group g holding those numbered g + 1.
+fn renumber_inner_walls(
+    outer_walls: &[edge_arachne::ExtrusionLine],
+    inner_walls: &mut Vec<edge_arachne::VariableWidthLines>,
+    outer_touch: Coord,
+    inner_touch: Coord,
+) {
+    let mut lines: Vec<edge_arachne::ExtrusionLine> = std::mem::take(inner_walls)
+        .into_iter()
+        .flatten()
+        .filter(|line| !line.junctions.is_empty())
+        .collect();
+    if lines.is_empty() {
+        return;
+    }
+    // Walls whose bounds, grown by their widest point, do not overlap
+    // cannot touch.
+    let bounds_of = |line: &edge_arachne::ExtrusionLine| -> [Coord; 4] {
+        let mut bounds = [Coord::MAX, Coord::MAX, Coord::MIN, Coord::MIN];
+        let mut widest = 0;
+        for junction in &line.junctions {
+            bounds[0] = bounds[0].min(junction.p.x);
+            bounds[1] = bounds[1].min(junction.p.y);
+            bounds[2] = bounds[2].max(junction.p.x);
+            bounds[3] = bounds[3].max(junction.p.y);
+            widest = widest.max(junction.w);
+        }
+        [
+            bounds[0] - widest,
+            bounds[1] - widest,
+            bounds[2] + widest,
+            bounds[3] + widest,
+        ]
+    };
+    let overlap = |a: &[Coord; 4], b: &[Coord; 4]| {
+        a[0] <= b[2] && b[0] <= a[2] && a[1] <= b[3] && b[1] <= a[3]
+    };
+    let bounds: Vec<[Coord; 4]> = lines.iter().map(bounds_of).collect();
+    // Whole units put walls made exactly the touching distance apart a
+    // few of them further.
+    let rounding = 1_000.0;
+    let (outer_threshold, inner_threshold) =
+        (outer_touch as f64 + rounding, inner_touch as f64 + rounding);
+    let touch = |a: usize, b: usize| {
+        overlap(&bounds[a], &bounds[b]) && lines_touch(&lines[a], &lines[b], inner_threshold)
+    };
+
+    // The walls numbered from the outer walls.
+    let mut depth = vec![0usize; lines.len()];
+    let mut frontier = Vec::new();
+    for outer in outer_walls {
+        let outer_bounds = bounds_of(outer);
+        for at in 0..lines.len() {
+            if depth[at] == 0
+                && lines[at].inset_idx == 1
+                && overlap(&outer_bounds, &bounds[at])
+                && lines_touch(outer, &lines[at], outer_threshold)
+            {
+                depth[at] = 1;
+                frontier.push(at);
+            }
+        }
+    }
+    let mut numbered = frontier.clone();
+    let mut level = 1;
+    while !frontier.is_empty() {
+        let mut next = Vec::new();
+        for at in 0..lines.len() {
+            if depth[at] == 0
+                && lines[at].inset_idx == level + 1
+                && frontier.iter().any(|&from| touch(from, at))
+            {
+                depth[at] = level + 1;
+                next.push(at);
+            }
+        }
+        numbered.extend(&next);
+        frontier = next;
+        level += 1;
+    }
+    // The others, working away from those.
+    frontier = numbered;
+    while !frontier.is_empty() {
+        let mut next = Vec::new();
+        for at in 0..lines.len() {
+            if depth[at] != 0 {
+                continue;
+            }
+            let deepest = frontier
+                .iter()
+                .filter(|&&from| touch(from, at))
+                .map(|&from| depth[from])
+                .max()
+                .unwrap_or(0);
+            if deepest > 0 {
+                depth[at] = deepest + 1;
+                next.push(at);
+            }
+        }
+        frontier = next;
+    }
+
+    let numbers: Vec<usize> = lines
+        .iter()
+        .zip(&depth)
+        .map(|(line, &depth)| if depth > 0 { depth } else { line.inset_idx })
+        .collect();
+    for (mut line, number) in lines.drain(..).zip(numbers) {
+        line.inset_idx = number;
+        if inner_walls.len() < number {
+            inner_walls.resize(number, Vec::new());
+        }
+        inner_walls[number - 1].push(line);
+    }
 }
 
 /// The points of each wall with a length to it.
@@ -1010,6 +1370,7 @@ fn push_loops(loops: &mut Vec<ExtrusionLoop>, shells: &[ExPolygon], depth: usize
     for (polygon, is_hole) in contours.chain(holes) {
         loops.push(ExtrusionLoop {
             widths: Vec::new(),
+            clockwise: false,
             polygon: polygon.clone(),
             role,
             is_hole,
@@ -1057,6 +1418,8 @@ mod tests {
             precise_outer_wall: false,
             over_air: None,
             fuzzy: None,
+            overhang_reverse: None,
+            thin_walls: false,
         }
     }
 
@@ -1738,6 +2101,156 @@ mod tests {
                     .filter(|point| point.x > scaled(11.0))
                     .all(|point| on_smooth(point))
             );
+        }
+    }
+
+    #[test]
+    fn a_part_too_thin_for_two_walls_gets_one_line_down_its_middle() {
+        // Half a millimetre across: no room for a wall down each side.
+        let fin = [block(0.0, 0.0, 10.0, 0.5)];
+        let thin = Params {
+            thin_walls: true,
+            ..params(2)
+        };
+        let walls = classic(&fin, &thin).unwrap();
+        assert!(walls.loops.is_empty() && walls.islands.is_empty());
+        assert_eq!(walls.gap_fill.len(), 1);
+        let line = &walls.gap_fill[0];
+        // An outer wall down its middle and most of its length, spaced
+        // to fill the fin: wider than it by what a line's rounded edges
+        // leave empty, as the reference lays it.
+        assert_eq!(line.role, Role::ExternalPerimeter);
+        let wide = 0.5 + 0.2 * (1.0 - std::f64::consts::FRAC_PI_4);
+        assert!((line.flow.width - wide).abs() < 0.02, "{}", line.flow.width);
+        assert!(
+            line.points
+                .iter()
+                .all(|point| (point.y - scaled(0.25)).abs() < 2_000)
+        );
+        assert!(
+            line.length_mm() > 9.0 && line.length_mm() < 10.01,
+            "{}",
+            line.length_mm()
+        );
+        assert!(walls.infill.is_empty());
+
+        // A part with room for its walls is walled as it is without,
+        // though a loop may begin at another of its corners.
+        let part = [block(0.0, 0.0, 20.0, 20.0)];
+        let (with, without) = (
+            classic(&part, &thin).unwrap(),
+            classic(&part, &params(2)).unwrap(),
+        );
+        assert_eq!(with.infill, without.infill);
+        assert!(with.gap_fill.is_empty());
+        let sides = |walls: &Perimeters| walls.loops.iter().map(side).collect::<Vec<f64>>();
+        assert_eq!(sides(&with), sides(&without));
+
+        // A fuzzy skin on the outer wall is on the thin wall too.
+        let rough = Params {
+            fuzzy: Some(fuzzy(edge_fuzzy::FuzzyType::External)),
+            ..thin
+        };
+        let fuzzed = classic(&fin, &rough).unwrap();
+        let points: usize = fuzzed.gap_fill.iter().map(|line| line.points.len()).sum();
+        assert!(points > 20, "{points}");
+    }
+
+    #[test]
+    fn inner_walls_are_numbered_by_how_far_they_are_from_the_outer_wall() {
+        // Lines 0.4 mm wide and 0.4 mm apart, the outer wall along y = 0.
+        let line = |y: f64, inset_idx: usize| edge_arachne::ExtrusionLine {
+            inset_idx,
+            is_odd: false,
+            is_closed: false,
+            junctions: [0.0, 10.0]
+                .map(|x| edge_arachne::Junction {
+                    p: Point2::from_mm(x, y),
+                    w: scaled(0.4),
+                    perimeter_index: inset_idx,
+                })
+                .to_vec(),
+        };
+        let outer = [line(0.0, 0)];
+        // Made behind the outer wall as 1 and 2; and from the far edge
+        // (a top surface's) as 1, with one behind that as 2; and one off
+        // by itself.
+        let mut inner = vec![
+            vec![line(0.4, 1), line(1.6, 1), line(9.0, 1)],
+            vec![line(0.8, 2), line(1.2, 2)],
+        ];
+        renumber_inner_walls(&outer, &mut inner, scaled(0.4), scaled(0.4));
+        let found: Vec<Vec<i64>> = inner
+            .iter()
+            .map(|group| {
+                let mut ys: Vec<i64> = group.iter().map(|wall| wall.junctions[0].p.y).collect();
+                ys.sort();
+                ys
+            })
+            .collect();
+        // 0.4 touches the outer wall; 0.8 was made as 2 and touches it;
+        // 1.2 touches 0.8 and is 3, 1.6 touches 1.2 and is 4; the one
+        // that touches nothing keeps its 1.
+        assert_eq!(
+            found,
+            [
+                vec![scaled(0.4), scaled(9.0)],
+                vec![scaled(0.8)],
+                vec![scaled(1.2)],
+                vec![scaled(1.6)]
+            ]
+        );
+        assert!(
+            inner
+                .iter()
+                .enumerate()
+                .all(|(group, walls)| { walls.iter().all(|wall| wall.inset_idx == group + 1) })
+        );
+    }
+
+    #[test]
+    fn walls_over_a_steep_overhang_are_marked_to_turn_about() {
+        // The layer below reaches to x = 18 of this layer's 20: its
+        // right-hand walls hang 2 mm over air.
+        let part = [block(0.0, 0.0, 20.0, 20.0)];
+        let lower = [block(0.0, 0.0, 18.0, 20.0)];
+        let around = |lower: &'static [ExPolygon]| {
+            Some(Around {
+                upper: &[],
+                lower: Some(lower),
+            })
+        };
+        let lower: &'static [ExPolygon] = Box::leak(Box::new(lower));
+        let whole: &'static [ExPolygon] = Box::leak(Box::new([block(0.0, 0.0, 20.0, 20.0)]));
+        let reverse = |threshold, internal_only| OverhangReverse {
+            threshold,
+            internal_only,
+        };
+        let half = edge_config::FloatOrPercent::Percent(50.0);
+        for base in [params(2), varying(2)] {
+            let turned = |reverse: OverhangReverse, lower: &'static [ExPolygon]| -> Vec<bool> {
+                let asked = Params {
+                    overhang_reverse: Some(reverse),
+                    ..base
+                };
+                classic_between(&part, &asked, around(lower))
+                    .unwrap()
+                    .loops
+                    .iter()
+                    .map(|wall| wall.clockwise)
+                    .collect()
+            };
+            // Both walls of the island, once one of them is over it.
+            assert_eq!(turned(reverse(half, false), lower), [true, true]);
+            // The outer wall can be left as it is.
+            assert_eq!(turned(reverse(half, true), lower), [false, true]);
+            // Nothing over air, nothing turned; unless every wall is to be.
+            assert_eq!(turned(reverse(half, false), whole), [false, false]);
+            let always = edge_config::FloatOrPercent::Value(0.0);
+            assert_eq!(turned(reverse(always, false), whole), [true, true]);
+            // Not asked, not marked.
+            let plain = classic_between(&part, &base, around(lower)).unwrap();
+            assert!(plain.loops.iter().all(|wall| !wall.clockwise));
         }
     }
 }
