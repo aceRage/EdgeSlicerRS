@@ -277,6 +277,16 @@
   </form>
 </dialog>
 
+<!-- Saving a project, and closing one with unsaved changes: up to three answers. -->
+<dialog id="save-ask" aria-labelledby="save-ask-title">
+  <form method="dialog">
+    <h2 id="save-ask-title"></h2>
+    <p id="save-ask-text"></p>
+    <ul id="save-ask-list" class="pick"></ul>
+    <div class="row end" id="save-ask-buttons"></div>
+  </form>
+</dialog>
+
 <dialog id="stats">
   <form method="dialog">
     <h2>Statistics of All Plates</h2>
@@ -329,5 +339,6 @@
 <script src="printers.js"></script>
 <script src="settings.js"></script>
 <script src="app.js"></script>
+<script src="save.js"></script>
 </body>
 </html>

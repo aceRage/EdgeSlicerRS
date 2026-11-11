@@ -19,6 +19,8 @@ between the two fills one and keeps the other.
 
 Shapes: mushroom and shelf need supports; tower and bar get an automatic
 brim; bridge is a deck across two posts; cube is a plain 20 mm cube;
+ledge is a plate on a frame, overhanging all round and with a hole over the
+frame's, for walls wholly over air (unsupported_wall_last);
 enforced is the round post with a
 strip of its side painted to have the seam (paint_seam), and blocked the
 cube with two of its sides painted to keep the seam off them. halves is a round post cut in two
@@ -194,6 +196,14 @@ SHAPES = {
     # two partly covered by what stands on them
     "steps": [(115.5, 121, 0, 4, 30, 3), (127.5, 121, 0, 28, 30, 3), (119.5, 121, 0, 8, 11, 3), (119.5, 140, 0, 8, 11, 3),
               (133.5, 121, 3, 22, 30, 3), (145.5, 126, 6, 10, 20, 4)],
+    # a frame 20 mm square and 4 mm tall round a 10 mm hole, and on it a plate
+    # 3 mm tall reaching 0.7 mm further out all round, with a 4 mm hole over
+    # the middle of the frame's: on the plate's first layer its outer wall
+    # hangs clear beside an inner wall that rests on the frame, and the walls
+    # round its hole hang clear with nothing near them, the bridge under the
+    # plate their only anchor (unsupported_wall_last)
+    "ledge": [(125.5, 126, 0, 20, 5, 4), (125.5, 141, 0, 20, 5, 4), (125.5, 131, 0, 5, 10, 4), (140.5, 131, 0, 5, 10, 4),
+              (124.8, 125.3, 4, 21.4, 8.7, 3), (124.8, 138, 4, 21.4, 8.7, 3), (124.8, 134, 4, 8.7, 4, 3), (137.5, 134, 4, 8.7, 4, 3)],
 }
 # the comb again, its teeth in a second filament
 SHAPES["twocomb"] = SHAPES["comb"]

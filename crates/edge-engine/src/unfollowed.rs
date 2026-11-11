@@ -6,11 +6,7 @@ use edge_config::Settings;
 
 /// A setting, the value that turns it off, and what is done whatever it
 /// is set to.
-const UNREAD: [(&str, &str, &str); 1] = [(
-    "unsupported_wall_last",
-    "0",
-    "a wall loop with nothing under it keeps its place among the walls",
-)];
+const UNREAD: [(&str, &str, &str); 0] = [];
 
 /// What `settings` ask for that nothing follows.
 pub(crate) fn notes(settings: &Settings) -> Vec<String> {

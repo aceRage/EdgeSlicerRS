@@ -7,6 +7,8 @@
 // scene, both ways. It is drawn from the scene the stage holds, and every
 // change goes through scene-edit.js as one `scene_edit` call.
 (function (GL) {
+  // What a part is, in the reference's words (ModelVolumeType).
+  const PART_KINDS = { part: 'Part', negative: 'Negative Part', modifier: 'Modifier', support_blocker: 'Support Blocker', support_enforcer: 'Support Enforcer', precise_seam: 'Precise Seam' };
   const css = (colour) => `rgb(${colour.map((part) => Math.round(part * 255)).join(',')})`;
 
   const objects = {
@@ -37,6 +39,10 @@
           const here = all.filter(wanted);
           if (!here.length) return;
           out.push({ object, index, copies: here, child: false });
+          // An object of several parts lists each under it (the reference's
+          // volumes), before its instances.
+          const parts = object.part_list || [];
+          if (parts.length > 1) parts.forEach((part, at) => out.push({ object, index, copies: here, child: true, part, number: at + 1 }));
           // An object with several copies lists each under it.
           if (all.length > 1) here.forEach((copy) => out.push({ object, index, copies: [copy], child: true, number: all.indexOf(copy) + 1 }));
         });
@@ -96,6 +102,7 @@
     row(row, { project, filaments, swatch }) {
       const { el, listbox } = this.host;
       const ids = row.copies.map((copy) => copy.id);
+      if (row.part) return this.partRow(row, ids, swatch);
       const label = row.child ? `Instance ${row.number}` : (row.object.name || project.file || 'Object');
       const printable = row.copies.every((copy) => copy.printable);
       const eye = el('button', { type: 'button', className: 'icon tool obj-print', title: 'Printable', textContent: printable ? '●' : '○' });
@@ -133,6 +140,26 @@
       } else {
         node.append(el('span'));
       }
+      return node;
+    },
+
+    // A part of an object, read only: its name, what it is, its
+    // filament. A click selects the object; a part of its own cannot be
+    // selected, moved or set yet.
+    partRow(row, ids, swatch) {
+      const { el } = this.host;
+      const { part } = row;
+      const kind = PART_KINDS[part.kind] || 'Part';
+      const label = part.name || `${kind} ${row.number}`;
+      const name = el('button', { type: 'button', className: 'obj-name', textContent: label, title: `${label}\n${kind}` });
+      const node = el('div', { className: `obj-row child part${part.kind === 'part' ? '' : ' helper'}` }, name, el('span'));
+      name.addEventListener('click', (event) => this.pick(node, event));
+      node.setAttribute('role', 'treeitem');
+      node.dataset.copies = ids.join(',');
+      node.dataset.object = String(row.object.id);
+      const cell = el('span', { className: 'obj-fila' });
+      if (part.kind === 'part') cell.append(swatch(part.filament), el('span', { className: 'obj-fila-number', textContent: String(part.filament) }));
+      node.append(cell);
       return node;
     },
 

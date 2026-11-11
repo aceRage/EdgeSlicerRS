@@ -18,7 +18,10 @@ The last column reads:
   views, sections 9 to 11; fourth pass: the process pages, "Sidebar:
   Process" in section 2 and section 12; fifth pass: Prepare as an editor,
   section 13; sixth pass: the filament's and the printer's pages, section
-  14).
+  14; seventh pass: "Lay on face", "Mirror", "Split to objects" and
+  "Split to parts", in section 13; eighth pass: saving projects, the
+  "Files" rows of section 2, the strip's saving in section 5, and
+  section 15).
 - **differs** — built, but on purpose not as the C++ does it; the cell says how.
 - **not yet** — not built, with what it waits for. Nothing in this column is
   shown in the page as a control that does nothing.
@@ -150,8 +153,8 @@ does with each option.
 | C++ | Where | Here |
 | --- | --- | --- |
 | A 3D view of every plate with the objects on it, orbit / pan / zoom, selection | `View3D`, `GLCanvas3D` | **added**, in 3D: section 9. Where the browser has no WebGL2, the view from above the first pass built is kept: the bed of the printer chosen with its grid and each object's outline (its convex hull), name and size, drag to move, wheel to zoom, "Fit part" [Z] and "Fit bed" |
-| Main toolbar: "Add" [Ctrl+I], "Add plate", "Auto orient all/selected objects" [Q], "Arrange all objects" [A] with its options, "Split to objects", "Split to parts", "Variable layer height", "Assembly View" | `GLCanvas3D::_init_main_toolbar` l.9274 | **added**: "Add", "Add plate" and "Arrange all objects" (section 13; the arrangement is a plain one, not the reference's). **not yet**: auto orient, splitting (the engine does neither), variable layer height, the assembly view, the arrangement's options |
-| Gizmos: "Move" [M], "Rotate" [R], "Scale" [S], "Lay on face" [F], "Cut" [C], "Mesh Boolean" [B], "Support Painting" [L], "Seam painting" [P], "Paint-on fuzzy skin" [H], "Color Painting" [N], "Texture displacement", "Emboss" [T], "SVG", "Measure" [U], "Assemble" [Y], "Simplify", "Brim Ears" [E], "Sculpt", "Edit", "Fillet / chamfer (CAD)" | `Gizmos/GLGizmosManager.cpp::init` l.224 | **added**: "Move", "Rotate" and "Scale" with their number fields (section 13). **not yet**: the rest; "Lay on face" waits for the convex hull of a mesh in three dimensions, which nothing here works out |
+| Main toolbar: "Add" [Ctrl+I], "Add plate", "Auto orient all/selected objects" [Q], "Arrange all objects" [A] with its options, "Split to objects", "Split to parts", "Variable layer height", "Assembly View" | `GLCanvas3D::_init_main_toolbar` l.9274 | **added**: "Add", "Add plate", "Arrange all objects" (section 13; the arrangement is a plain one, not the reference's), "Split to objects" and "Split to parts". **not yet**: auto orient (the engine does not do it), variable layer height, the assembly view, the arrangement's options |
+| Gizmos: "Move" [M], "Rotate" [R], "Scale" [S], "Lay on face" [F], "Cut" [C], "Mesh Boolean" [B], "Support Painting" [L], "Seam painting" [P], "Paint-on fuzzy skin" [H], "Color Painting" [N], "Texture displacement", "Emboss" [T], "SVG", "Measure" [U], "Assemble" [Y], "Simplify", "Brim Ears" [E], "Sculpt", "Edit", "Fillet / chamfer (CAD)" | `Gizmos/GLGizmosManager.cpp::init` l.224 | **added**: "Move", "Rotate" and "Scale" with their number fields, and "Lay on face" [F] (section 13). **not yet**: the rest |
 | Object list: plates, objects, parts, instances, layer ranges; columns "Name", printable, "Fila.", paint marks; the object, part and plate menus | `GUI_ObjectList.cpp`, `GUI_Factories.cpp` | **added**: plates, objects and instances with "Name", printable and "Fila.", and the object's and the plate's menus (section 13). **not yet**: parts, layer ranges, the paint marks, settings of an object |
 | View options: "Realistic View", "X-Ray", "Center of Mass", "Show 3D Navigator", Ctrl+0..6 views | `GLCanvas3D.cpp` l.8297, View menu | **added**: the navigator and the views (section 9). **not yet**: the three view options |
 
@@ -179,9 +182,9 @@ does with each option.
 | C++ | Where | Here |
 | --- | --- | --- |
 | "New Project" [Ctrl+N], "Open Project..." [Ctrl+O], "Recent projects" | `MainFrame::init_menubar_as_editor` l.3385 | **added** through the strip (section 5). **not yet**: a menu bar, recent projects |
-| "Save Project" [Ctrl+S], "Save Project as..." [Ctrl+Shift+S] | the same | **not yet**: the engine does not write projects |
+| "Save Project" [Ctrl+S] ("Save current project to file"), "Save Project as..." [Ctrl+Shift+S] ("Save current project as"): to the project file it was opened from, else (an STL, a new project, a project opened from a ZIP) through the save dialog, "Save file as:", "3MF files", "Untitled.3mf"; written as `SplitModel \| ShareMesh \| FullPathSources`; the project is then that file and saved; "Failed to save the project.\nPlease check whether the folder exists online or if other programs open the project file." | MainFrame.cpp l.3444–3458, Plater.cpp `save_project` l.21961, `get_export_file` l.15728 | **added** (`project_save`, `ui/save.js`): the keys and a project tile's "Save" / "Save as..." (below, section 5), the same rules and words; the file is the reference's project file (section 15). An STL opened as a project is saved as a 3MF beside it, its name offered. **differs**: no menu bar was added: the keys and the tile's menu are where the C++ has them too, and a File menu of two entries would be a bar for little; in `--serve` the dialog is the page's own (a path is typed). What the file held that the save would not keep is listed and asked about first (this app's own question, the reference keeping all it reads) |
 | "Import 3MF/STL/STEP/SVG/OBJ/AMF/GLB..." [Ctrl+I] adds geometry to the project shown; dropping files on the window; "Open as project" / "Import geometry only" | l.3385, `PlaterDropTarget::OnDropFiles` l.13122 | **added**: "Add" [Ctrl+I] puts an STL's or a 3MF's geometry in the project shown, a 3MF always as "Import geometry only" (section 13). The strip's Open still opens a file as a project of its own, an STL as much as a 3MF (**had**). **not yet**: the other formats, dropping files, the question which of the two is meant |
-| Export: STL, STEP, generic and Bambu 3MF, preset bundles | the same | **not yet** |
+| Export: STL, STEP, generic and Bambu 3MF, preset bundles | the same | **not yet**. `edge save` (the command line) writes the same project file as "Save Project" |
 
 ## 3. Preview
 
@@ -293,20 +296,20 @@ Read from `ProjectStrip.cpp/.hpp`, `ProjectSessions.hpp` and their uses in
 | Tiles: a thumbnail of the plate the project is on, rendered again a moment after it changes; an empty bed for an empty plate; a page with a folded corner until there is a picture | `render_active_thumbnail`, `on_paint`, `classify_tile_render` | **added**: the plate from above (bed and outlines), drawn again when the plate or the printer changes; the empty bed and the page likewise |
 | The name under the thumbnail on at most two lines, broken only after a space, `_`, `-` or `.`, cut short with an ellipsis; the name is the file's without folder and extension | `wrap_name_two_lines`, `name_from_path` | **added**, the rule ported |
 | The active project has an accent frame | `on_paint` | **added** (this app's accent, orange, not the C++ green) |
-| An orange dot (top left) marks unsaved changes | `on_poll` (`is_project_dirty`), `on_paint` | **added**: the dot marks a project whose model is not the one it was opened with (an edit taken back by undo is no change), or whose choices (presets in use, bed type, the process settings set here) are no longer those it was opened with. Nothing saves a project yet |
+| An orange dot (top left) marks unsaved changes | `on_poll` (`is_project_dirty`), `on_paint` | **added**: the dot marks a project whose model is not the one it was opened or last saved with (an edit taken back by undo is no change), or whose choices (presets in use, bed type, the settings set here) are no longer those it was opened or saved with. Saving clears it |
 | A badge (bottom right): going round while the project slices, a tick once every plate that holds objects is sliced; also for projects out of sight | `slice_badge`, `on_poll` (every 500 ms) | **added**, from `projects`, asked for twice a second (more often while something slices) |
 | Tooltip: the name, the file, "Unsaved changes", "Slicing" | `tooltip_for` | **added** |
 | A cross (top right, on hover) and the middle mouse button close a project ("Close project") | `hit_test`, `on_left_down`, `on_middle_down` | **added** |
-| Closing asks first: with unsaved changes, "\"%s\" has unsaved changes. Save them before closing it?" (Yes / No / Cancel); while slicing, "\"%s\" is slicing. Stop slicing and close it?" | `close_project` | **added** (`project_close`, which answers `ask` until told `discard` / `stop`). **differs**: the first offers "Don't save" and "Cancel" and says a project cannot be saved yet |
+| Closing asks first: with unsaved changes, "\"%s\" has unsaved changes. Save them before closing it?" (Yes / No / Cancel); while slicing, "\"%s\" is slicing. Stop slicing and close it?" | `close_project` | **added** (`project_close`, which answers `ask` until told `discard` / `stop`), the three answers: Yes saves (asking where for a project with no project file; a save called off keeps it open) |
 | Closing the project shown shows the next one, else the one before; closing one out of sight changes nothing on screen; closing the last one leaves a new empty "Untitled", so the strip always has one | `successor_on_close`, `close_project` | **added** |
 | A tile dragged up or down moves to where the line shows | `on_motion`, `drop_index_at`, `ProjectSessions::move` | **added** (`project_move`) |
 | More tiles than fit: the wheel scrolls the strip | `on_wheel` | **added** |
-| Tile menu: "Save", "Save as...", "Send...", "Close", "Close others", "Reveal in Finder" / "Show in Explorer", "Open in new window" | `show_item_menu` | **added**: "Close", "Close others". **not yet**: saving, sending, showing the file, a second window |
+| Tile menu: "Save", "Save as...", "Send...", "Close", "Close others", "Reveal in Finder" / "Show in Explorer", "Open in new window" | `show_item_menu` | **added**: "Save", "Save as...", "Close", "Close others". **not yet**: sending, showing the file, a second window |
 | Strip menu: "Show thumbnails" / "Show names only", "Default width", "Collapse the project strip" / "Show the project strip" | `show_strip_menu` | **added** |
 | The right edge is dragged to widen the strip: 88 to 200, names alone at least 120; remembered | `StripLayout`, `on_motion`, `project_strip_width` | **added**, remembered by the page |
 | The chevron folds the strip to a 24 wide rail: New and Open stacked, a mark for each project (filled for the active one, a ring when sliced, the unsaved dot); remembered | `set_collapsed`, `on_paint` | **added** |
-| Closing the window with several projects open: one dialog, "Unsaved projects", lists every unsaved one to save, not save, or cancel | `confirm_close_all`, MainFrame.cpp l.604 | **not yet**: the window closes at once. What is lost is what the dot marks |
-| "Reopen the open projects at the next start" (off unless asked for): the projects written out at exit and read back | `save_session_for_restart`, `restore_session`, `SessionManifest` | **not yet**: needs writing projects. Reloading the page (`--serve`) does find every project as it was, the session being the server's |
+| Closing the window with several projects open: one dialog, "Unsaved projects", "These projects have unsaved changes. Save the ticked ones before closing?", every unsaved one ticked, "Save" / "Don't save" / "Cancel"; with one project, "EdgeSlicer - Save": "The current project has unsaved changes, save it before continue?" (Yes / No / Cancel) | `confirm_close_all`, MainFrame.cpp l.604, Plater.cpp `close_with_confirm` l.25050 | **added** in the window: it is held open while a project is unsaved (`unsaved`), the page asks in these words ("EdgeSlicerRS - Save"), saves what is ticked and then closes it. **not yet**: "Remember my choice."; in a browser (`--serve`) nothing is asked, the session outliving the page |
+| "Reopen the open projects at the next start" (off unless asked for): the projects written out at exit and read back | `save_session_for_restart`, `restore_session`, `SessionManifest` | **not yet**: projects can be written now (section 15); the preference and the manifest are not built. Reloading the page (`--serve`) does find every project as it was, the session being the server's |
 | Project files opened from Explorer / Finder go into the strip ("Open project files from Explorer / Finder in": "New project tab" / "The current project") | `open_files_from_shell`, GUI_App.cpp l.9202 | **added** for a file named when the app is started (`startup`, **had**). **not yet**: a file handed to an app that is already running |
 
 ## 6. Shortcuts
@@ -320,9 +323,10 @@ Read from `ProjectStrip.cpp/.hpp`, `ProjectSessions.hpp` and their uses in
 | Up / Down: the layer slider; Shift or Ctrl with them: five at a time | **added** (Up / Down by one **had**) |
 | Shift+G: "Jump to Layer" | **added** |
 | Z: zoom to the objects | **added**: "Fit in all view" in 3D (section 9); "Fit part" from above |
-| Ctrl+S, Ctrl+Shift+S, Ctrl+I, Ctrl+G, Ctrl+Shift+G, Ctrl+P (Preferences), "?" (the list of shortcuts) | **not yet** |
+| Ctrl+S "Save Project", Ctrl+Shift+S "Save Project as..." | **added** (and Cmd on a Mac), anywhere in the page but in a dialog; in a browser they are taken from the browser's own |
+| Ctrl+G, Ctrl+Shift+G, Ctrl+P (Preferences), "?" (the list of shortcuts) | **not yet** (Ctrl+I is "Add", section 13) |
 | Left / Right, Home / End (the move slider), L (one layer mode), C (G-code window) | **added** in 3D: all but C (no G-code window) |
-| A, Shift+A, Q, Shift+Q, the gizmo keys, Ctrl+0..6, Ctrl+A / D / Z / Y / C / V / X, Del, 1–9, arrows to move objects | **added** in 3D: Ctrl+0..7 (the views), Ctrl+A, Esc, I and O, Ctrl+E (section 9); A, Shift+A, M, R, S, Ctrl+Z, Ctrl+Y, Ctrl+C, Ctrl+V, Ctrl+K, Ctrl+I, Del and the arrows (section 13). **not yet**: Q and Shift+Q, the other gizmos' keys, Ctrl+D, Ctrl+X, 1–9 (the filament of what is selected) |
+| A, Shift+A, Q, Shift+Q, the gizmo keys, Ctrl+0..6, Ctrl+A / D / Z / Y / C / V / X, Del, 1–9, arrows to move objects | **added** in 3D: Ctrl+0..7 (the views), Ctrl+A, Esc, I and O, Ctrl+E (section 9); A, Shift+A, M, R, S, F, Ctrl+Z, Ctrl+Y, Ctrl+C, Ctrl+V, Ctrl+K, Ctrl+I, Del and the arrows (section 13). **not yet**: Q and Shift+Q, the other gizmos' keys, Ctrl+D, Ctrl+X, 1–9 (the filament of what is selected) |
 
 ## 7. What the page asks for
 
@@ -352,6 +356,8 @@ the project is on.
 | `project_cycle` | `step` (1 or -1) | the strip |
 | `project_move` | `id`, `index` | the strip |
 | `project_close` | `id`, `discard?`, `stop?` | the strip and `closed: true`; or `closed: false`, `ask: "unsaved" \| "slicing"`, `name` |
+| `project_save` | `project?`, `path?`, `accept?`, `suggest?` | saves the project as a project file (section 15): to `path`, else to the 3MF it was opened from (`.3mf` is added to a path without it). The strip and `saved: true`, `path`; the project then goes by that file and is saved. Or the strip and `saved: false` with `ask: "path"`, `name`, `suggested` (it has no project file: ask where, offering that path), or with `ask: "losses"`, `name`, `losses` (sentences: what its file held that would not be kept; nothing was written; `accept: true` writes it all the same). With `suggest: true` only `{ suggested }`, for "Save as..." |
+| `unsaved` | — | `{ unsaved: [{ id, name, path }], projects }`: the projects with unsaved changes, for the question asked before the window closes |
 | `project_set` (what is set for `bed_type`, `process` or `filaments` is kept with the printer the project is on) | `project?` and any of `plate`, `tab` (`prepare` / `preview`), `view` (a small object), `source` (`project` / `presets`), `vendor`, `machine`, `process`, `filaments`, `bed_type`, `layer_height`, `first_layer_height`, `wall_loops`, `closing_radius` (null to clear), `initial` (these are what it starts with) | as `project`. A change to what it is sliced with drops its slices and stops one that is running |
 | `process_pages` | — | the process pages as the reference has them: `{ pages: [{ title, groups: [{ title, lines: [{ keys, label?, tooltip? }] }] }], options: { key: { label, tooltip, type (bool, int, float, percent, float_or_percent, enum, string, strings), unit?, min?, max?, max_literal?, values?, labels?, open?, mode (simple, advanced, developer), list?, multiline?, code?, full_width?, height?, default } } }`. The same for every project; asked for once |
 | `process` | `project?` | `{ project, source, name, values { key: value } (by the preset, or the project's own settings, or the default), set { key: value } (what is set over them), counts { page: number set }, changed, hidden: [key], off: [key] (the reference's rules), unread: [key] (what a slice with these settings does not read), notes { key: [sentence] } (the engine's notes), refused (why the engine would stop, or null) }` |
@@ -367,9 +373,10 @@ the project is on.
 | `summary` | `project?`, `plate?` | as before, and `plate`, `widths`, `heights`. `gaps` ends with each setting set by hand that the slice did not read |
 | `layer` | `project?`, `plate?`, `index` | as before |
 | `export` | `project?`, `plate?`, `path` | `{ path, bytes }` |
-| `scene` | `project?` | the project for Prepare in 3D: `{ project, key, bare, bed { box, shape, height, model, texture }, plates: [{ id, name, origin }], plate, colours, objects: [{ id, name, mesh, vertices, triangles, bytes, filaments, filament, parts }], placings: [{ id, object, plate, printable, matrix (16 numbers, column by column), box, over }] }`. An object's `id` and a copy's (a placing's) `id` stay theirs through every edit; `mesh` is the number of the object's mesh, the same for as long as the mesh is; `filament` is the object's own when its parts agree; `over` says a copy reaches over the edge of its plate |
+| `scene` | `project?` | the project for Prepare in 3D: `{ project, key, bare, bed { box, shape, height, model, texture }, plates: [{ id, name, origin }], plate, colours, objects: [{ id, name, mesh, vertices, triangles, bytes, filaments, filament, parts }], placings: [{ id, object, plate, printable, matrix (16 numbers, column by column), box, over }] }`. An object also has `part_list: [{ name, kind (part, negative, modifier, support_blocker, support_enforcer, precise_seam), filament }]` and `split: { objects, parts }` (whether "Split to objects" and "Split to parts" can be done to it). An object's `id` and a copy's (a placing's) `id` stay theirs through every edit; `mesh` is the number of the object's mesh, the same for as long as the mesh is; `filament` is the object's own when its parts agree; `over` says a copy reaches over the edge of its plate |
 | `scene_edit` | `project?`, `op` and what it takes (section 13) | `{ project, scene, done, made, note }`: the project and its scene as they then are, the edit's name in the history, the copies it made, and something to tell the person or null |
 | `undo`, `redo` | `project?` | `{ project, scene, done }`; an error when there is nothing to take back or to make again |
+| `scene_faces` | `project?`, `copy` | the faces "Lay on face" offers for a copy, largest first: `{ project, copy, faces: [{ normal, area, drawn }] }`, `normal` outward in the object's own coordinates (what `lay_on_face` takes), `area` in mm² at the printed size, `drawn` the outline to draw over the face (rounded and lifted as the reference draws it), in the object's own coordinates |
 | `toolpath` | `project?`, `plate?` | a sliced plate's moves, before they are asked for: `{ source: "gcode" \| "lines", moves, move_size, at_once, layers { first, z, height }, features, filaments, counts { travel, line, wipe, retract, unretract, seam, tool_change }, box, plate, run }` |
 | `scene_mesh` (bytes) | `project?`, `mesh` (its number in `scene`) or `object` (its place in the list) | an object's mesh, `EDGM`: 24 bytes of header, vertices (`f32` × 3), triangles (`u32` × 3), a mark byte for each triangle when they differ |
 | `bed_model` (bytes) | `project?` | the vendor's model of the printer's bed, as `scene_mesh` |
@@ -808,6 +815,10 @@ undo history.
 | `add_plate` | — | a plate after the last, which is then the one shown | "add partplate" |
 | `delete_plate` | `plate?` | takes a plate away, not the last one | "delete partplate" |
 | `arrange` | `plate?`, or `all: true` | lays out one plate, or every plate | "Arrange" |
+| `mirror` | `copies`, `axis` (`x`, `y`, `z`) | mirrors the copies along that axis of the scene, about the middle of the box round them, and stands them on the bed; the mirror is kept in each copy's transform | "Mirror Object" |
+| `split_objects` | `object` | "Split to objects": an object for each piece of the object's one mesh, or for each of its printed parts; each has a copy wherever the object had one, on the same plates, standing where its piece stood (brought down to the bed when it was in the air); `made` is the new copies. `note` says when modifiers or negative parts were left out. Refused, nothing changed: "The selected object couldn't be split." | "Split to Objects" |
+| `split_parts` | `object` | "Split to parts": the object's one part becomes a part for each piece of its mesh. Refused: "The target object contains only one part and can not be split." | "Split to parts" |
+| `lay_on_face` | `copy`, `normal` (three numbers, a face's from `scene_faces`) | turns the copy so that face points straight down, about the middle of its box, and stands it on the bed | "Gizmo-Place on Face" |
 
 ### Undo and redo
 
@@ -827,7 +838,7 @@ undo history.
 | A click selects an instance; Ctrl adds or takes away; a click on nothing or Esc lets go; Ctrl+A selects all | GLCanvas3D.cpp l.6423–6551 | **had** (section 9); now by the copies' `id`, so what is selected survives every edit that leaves it there. Shift adds as Ctrl does |
 | Del or Backspace deletes what is selected | `Plater::remove_selected` l.25120, GUI_ObjectList.cpp l.4586 | **added** |
 | The list and the canvas show one selection | `ObjectList::update_selections`, `update_selections_on_canvas` | **added**, both ways |
-| The right button: the object's menu ("Delete", "Clone", "Printable", "Rename", "Fill bed with copies", "Set as an individual object", "Mirror", "Split", the settings…) | `GUI_Factories.cpp` l.649–1181 | **added**: "Delete" [Del], "Clone" [Ctrl+K], "Printable", "Rename". **not yet**: the rest (see "Left for later") |
+| The right button: the object's menu ("Delete", "Clone", "Printable", "Rename", "Fill bed with copies", "Set as an individual object", "Mirror", "Split", the settings…) | `GUI_Factories.cpp` l.649–1181 | **added**: "Delete" [Del], "Clone" [Ctrl+K], "Printable", "Rename", and the "Split" and "Mirror" sub-menus (below). **not yet**: the rest (see "Left for later") |
 | Ctrl+C / Ctrl+V copy and paste objects; Ctrl+K "Clone" asks how many | `Plater::copy_selection_to_clipboard` l.29941, `paste_from_clipboard`, `clone_selection` l.29965 | **added**: Ctrl+C notes what is selected, Ctrl+V puts a copy of each on the plate shown, Ctrl+K one beside each. **differs**: Ctrl+K makes one clone at a press and asks nothing; the clipboard is the page's, not the system's. **not yet**: Ctrl+X |
 | A clone or a paste is put on a free place found by the arranger | `Plater::find_new_position` l.16128, `Selection::paste_objects_from_clipboard` l.3384 | **differs**: the free place nearest what it was made of, by the boxes round the copies, 6 mm apart; beside the plates when the plate has no room |
 
@@ -841,7 +852,7 @@ too (at the head of Process).
 
 | C++ | Where | Here |
 | --- | --- | --- |
-| A tree: each plate ("Plate 1", with its name), under it the objects on it, under an object its parts, its instances when it has several, its layer ranges; what is on no plate under "Outside" | `ObjectDataViewModel.cpp` l.523, l.563 | **added**: plates, objects, instances ("Instance 1"), "Outside". A file without plates lists its objects alone. **not yet**: parts, layer ranges |
+| A tree: each plate ("Plate 1", with its name), under it the objects on it, under an object its parts, its instances when it has several, its layer ranges; what is on no plate under "Outside" | `ObjectDataViewModel.cpp` l.523, l.563 | **added**: plates, objects, instances ("Instance 1"), "Outside"; an object of several parts lists each part under it, before its instances, with its name, what it is in the tooltip ("Part", "Negative Part", "Modifier", "Support Blocker", "Support Enforcer"; a part that is not printed is quiet and slanted) and a printed part's filament. A file without plates lists its objects alone. **not yet**: selecting a part (a click on one selects its object), a part's own filament from the list, its menu, layer ranges |
 | Columns "Name", printable (a mark to click), visibility, "Fila." (a list of the project's filaments, each with its colour), the marks for support paint, colour paint, sinking, settings | GUI_ObjectList.cpp l.445–510 | **added**: "Name", printable, "Fila.". An object whose parts print in several filaments shows "…" until one is chosen for all of it. **not yet**: hiding an object, the marks |
 | A click selects; Ctrl and Shift select several | `ObjectList::selection_changed` | **added** |
 | A double click on the name, or F2, renames in place; an empty name leaves the name as it was; `<>:/\|?*"` are not allowed | `ObjectList::rename_item` l.6307, `update_name_in_model` l.1233 | **added**: Enter takes the name, Escape or an empty name leaves it. **not yet**: the characters that are not allowed (nothing is written under an object's name yet) |
@@ -877,6 +888,62 @@ as the reference's is.
 | Inches for millimetres ("in") | `m_imperial_units` | **not yet**: no preferences |
 | What is typed is a step of its own: "Set Position", "Set Orientation", "Set Scale" | `change_position_value` l.286 and on | **added** |
 
+### Split to objects, Split to parts
+
+Read from `GLCanvas3D.cpp` (`_init_main_toolbar` l.9376), `GUI_Factories.cpp`
+(the "Split" sub-menu l.2404), `Plater.cpp` (`split_object` l.16161,
+`split_volume`, `can_split` l.20456), `GUI_ObjectList.cpp` (`split` l.2933,
+`is_splittable` l.3488, `get_volume_by_item` l.3467), `libslic3r/Model.cpp`
+(`ModelObject::split` l.2419, `ModelVolume::split` l.3186),
+`libslic3r/TriangleMesh.cpp` (`TriangleMesh::split`) and
+`libslic3r/MeshSplitImpl.hpp`. The engine has the pieces of a mesh
+(`edge_mesh::split`) and the edits (`Model::split_to_objects`,
+`Model::split_to_parts`).
+
+| C++ | Where | Here |
+| --- | --- | --- |
+| The main toolbar's "Split to objects" and "Split to parts", after "Arrange" | `_init_main_toolbar` l.9376–9395 | **added**, with the same tooltips, after "Arrange" |
+| The object's menu: "Split" ("Split the selected object"), a sub-menu of "To objects" ("Split the selected object into multiple objects"), "To parts" ("Split the selected object into multiple parts"), "By painted colour"; before "Mirror" | `GUI_Factories.cpp` l.2404–2418 | **added**: "Split" with "To objects" and "To parts", the same words. **not yet**: "By painted colour" (it is not shown) |
+| On for one object selected (one row of the list): "Split to objects" when the object has more than one part (of any kind), or its one part's mesh is of several pieces; "Split to parts" when it has one part and that is of several pieces | `can_split`, `ObjectList::is_splittable` | **added**, the same rules (`split` in `scene`), the selection being copies of one object. The answer for a mesh is worked out once and kept with its shape, as the C++ caches `m_is_splittable` |
+| The pieces of a mesh: triangles joined across shared edges run the other way round (`create_face_neighbors_index`: an edge pairs with the first later triangle that runs it back and has it free); the pieces in the order of their first triangle, each walked from it as the reference walks it; a piece enclosing a negative volume turned the right way out | `MeshSplitImpl.hpp` `its_split`, `TriangleMesh::split` | **added** (`edge_mesh::split`), the same rule and order. **differs**: the pairs are worked out in one pass in order, where the C++ works them out on several threads at once (see "Errors found in the C++") |
+| Split to objects: an object of one part becomes an object for each piece of three triangles or more, named after the object with `_1`, `_2`…; an object of several parts an object for each printed part, named after the part, with its colour paint; modifiers and negative parts are dropped. Each new object takes every instance of the old one; the old one is removed; they are added at once, "kept where they stand", and dropped onto the bed (`ensure_on_bed`, "auto_drop_on_import" being on unless turned off); the new objects are selected; "The selected object couldn't be split." when one object would come of it | `ModelObject::split`, `split_object`, `load_model_objects` l.15569 | **added**, in that order in the list where the old object was, each copy on the plate its old copy was on. **differs**: a whole part keeps its seam paint as well as its colour paint, the geometry being the same (the C++ copies the colour only); dropping the modifiers says "All non-solid parts (modifiers) were deleted", the notice the C++ has commented out, rather than nothing |
+| Split to parts: the part becomes a part for each piece, named after it with `_1`, `_2`…, in its filament, its paint let go; a piece whose convex hull is flat is dropped; "The target object contains only one part and can not be split." | `ObjectList::split`, `ModelVolume::split` | **added**; the object stays where it is |
+| One snapshot: "Split to Objects", "Split to parts"; the slices of the plates the object is on let go | `split_object`, `ObjectList::split` | **added** |
+| The object list shows the parts after "Split to parts" | `ObjectList::split` | **added**: the parts under the object, read only (see "The object list") |
+
+### Mirror
+
+Read from `GUI_Factories.cpp` (`append_menu_items_mirror` l.2028),
+`Plater.cpp` (`mirror` l.16123, `can_mirror` l.20500), `GLCanvas3D.cpp`
+(`mirror_selection` l.4375, `do_mirror` l.7414) and `Selection.cpp`
+(`mirror` l.1797, `scale_and_translate` l.1715).
+
+| C++ | Where | Here |
+| --- | --- | --- |
+| The object's menu: "Mirror" ("Mirror object"), a sub-menu of "Along X axis", "Along Y axis", "Along Z axis" ("Mirror along the X axis" and the rest), after "Split" and before "Delete"; on while what is selected is of one instance (`can_mirror`: `is_from_single_instance`, and no cut object) | `GUI_Factories.cpp` l.2028, l.2421 | **added**, the same words and tooltips, before "Delete"; off unless one copy is selected. The page's menus take a sub-menu now (`showMenu` in `app.js`): it opens beside its entry by the pointer, a click or Right, and closes with Left or Escape. There is no toolbar button for it, as there is none in the C++ |
+| A mirror is a scale of -1 along the axis, in the world's coordinates, about the middle of what is selected, kept in the instance's transform (a "mirror" of its `Transformation`); the mesh is not changed. `do_mirror("Mirror Object")` takes one snapshot and stands each instance on the bed again, one that was sunk staying sunk | `Selection::mirror`, `do_mirror` | **added** (`scene_edit` `mirror`, `Model::mirror`): the mirror is the copy's transform, the mesh is the file's, one undo step, stood on the bed as a turn is |
+| Slicing a mirrored instance: the mesh is transformed and, the transform being left-handed, its triangles are turned round (`TriangleMesh::transform` with `is_left_handed`), so it is still a solid | `libslic3r/TriangleMesh.cpp` | **had**: `Mesh::append` reverses the winding under a mirroring transform; painted triangles are turned the same way (`Project::painted`). Tested: an L mirrored along X slices, layer by layer, to the mirror image of its walls, each wall still anticlockwise, its first layer where it was; along Z it is upside down and stands on the bed |
+| The number fields of a mirrored object: its scale is positive, its mirror apart | `Geometry::Transformation` | **added**: the fields take a mirrored object as mirrored along its own X and then turned, so its scale reads 100% and its angles are those of the turn |
+| The other instances of the object are mirrored too | `synchronize_unselected_instances` | **differs**: only the copy selected, as Rotate and Scale here |
+
+### Lay on face
+
+Read from `Gizmos/GLGizmoFlatten.cpp`, `libslic3r/LayOnFace.cpp`,
+`Selection.cpp` (`flattening_rotate`) and `GLCanvas3D.cpp` (`do_rotate`).
+The engine has the convex hull of a mesh (`edge_mesh::hull`, an
+incremental hull of its own where the reference has qhull) and the faces
+and the turn (`edge_engine::lay_on_face`); the page draws and picks the
+faces (`ui/scene-edit.js`).
+
+| C++ | Where | Here |
+| --- | --- | --- |
+| "Lay on face" [F] in the gizmos' column, on for one whole instance (`is_selection_supported`) | `GLGizmosManager.cpp` l.227, `GLGizmoFlatten.cpp` l.166 | **added**: the tool in Prepare's toolbar beside Scale, "Lay on face [F]", off unless one copy is selected; F and its button open and close it, Esc closes it |
+| The faces: the convex hull of the object's model parts, its triangles grouped by normal (to a thousandth) across shared edges, each group's outline taken round in the plane; dropped: a single triangle with a side under the least side, an outline under the least area or with an inner angle under 1°. The gizmo's limits go by the printed size: every face of 5 mm² or more, else the 12 largest down to max(0.01 mm², 1e-4 × diagonal²), the least side min(1 mm, 5% of the diagonal) | `LayOnFace.cpp` `hull_planes` l.18, `LayOnFaceFilter::for_gizmo` l.167 | **added** (`scene_faces`), the same grouping and limits at the copy's size and turn. The hull is cached with the object's shape (an affine map keeps a hull a hull) |
+| Each face drawn over the object, a tenth of the way in towards its middle, its corners rounded (ten passes), lifted min(0.1 mm, 1% of the diagonal), in front of the object and hiding one another; the one under the pointer lighter (`FLATTEN_COLOR`, `FLATTEN_HOVER_COLOR`) | `update_planes` l.477, `on_render` l.327 | **added**: the same outline from the engine, the same colours |
+| A click on a face turns the object so the face points down, then `do_rotate("Gizmo-Place on Face")` stands it on the bed: one undo step | `on_mouse` l.90, `lay_on` l.107 | **added**, as the button goes down, as in the C++. **differs**: the turn is about the middle of the copy's box; the reference's is about the instance's origin, which it keeps in the middle of the object's geometry, where a model read here may have its origin anywhere |
+| The panel: "Convex hull" / "Face under cursor", "Click a highlighted face to lay the object on it.", "Hold Alt to pick any face under the pointer." | `on_render_input_window` l.386 | **added**: the panel titled "Lay on face" with the first hint, and "No resting faces found on the convex hull." when there are none. **not yet**: "Face under cursor" and Alt (section 13, "Left for later"); the hint about Alt is not shown, Alt doing nothing here |
+| The other instances of the object take the same turn | `Selection::synchronize_unselected_instances` | **differs**: as with Rotate here, only the copy selected turns |
+
 ### The main toolbar
 
 Over the stage, in the middle (`.toolbar`, STYLE.md). A tool that cannot be
@@ -888,7 +955,8 @@ used now is off, not hidden.
 | "Add plate" | l.9321, `PartPlateList::create_plate` l.4378 | **added**: at most 36 (PartPlate.hpp `MAX_PLATE_COUNT`); the new plate is the one shown, and what stood beside the plates where it comes to stand is on it |
 | Removing a plate: its objects are not deleted, they are left beside the plates that remain; the last plate stays | `PartPlateList::delete_plate` l.4531, `compute_origin_for_unprintable` l.3900 | **added**, the same place beside the plates. Which plate is shown afterwards is the reference's rule |
 | "Arrange all objects" [A], "Arrange objects on selected plates" [Shift+A], with a popup of options ("Spacing", "Auto rotate for arrangement", "Allow multiple materials on same plate", "Avoid extrusion calibration region", "Align to Y axis") | l.9352, `ArrangeJob.cpp` | **differs**: both keys and the button (every plate), but **this is not the reference's arrangement**: see below. **not yet**: the options |
-| "Auto orient", "Split to objects", "Split to parts", "Variable layer height", "Assembly View" | l.9331–9400 | **not yet** |
+| "Split to objects", "Split to parts" | l.9376–9395 | **added** (below) |
+| "Auto orient", "Variable layer height", "Assembly View" | l.9331–9400 | **not yet** |
 
 ### Arrange: what the reference does, and what a port would take
 
@@ -929,12 +997,15 @@ reference's on fixtures; the comparison needs the reference run with
 
 | C++ | Waits for |
 | --- | --- |
-| "Lay on face" [F] (`GLGizmoFlatten.cpp`: the faces of the object's convex hull, a click lays one on the bed) | the convex hull of a mesh in three dimensions, in the engine; the page has only the mesh |
+| "Lay on face": its second mode, "Face under cursor" (any flat face under the pointer, recessed ones too, and Alt to use it for a moment), and laying one part of an object on a face | the first needs the page to grow a flat face from the triangle under the pointer (`grow_flat_face`) and to warn of a recessed one; the second, parts that can be selected (see below) |
 | "Fill bed with copies" (`GUI_Factories.cpp` l.1146, `FillBedJob.cpp`) | the reference's arrangement: it asks the arranger how many more fit |
 | Sinking an object under the bed; the arrow along Z; "Drop" | the engine cutting what is under the bed away (it slices from an object's lowest point) |
-| "Mirror", "Auto orient", "Split to objects" / "Split to parts", "Cut", "Mesh Boolean", "Simplify" | mesh operations the engine does not have |
+| "Auto orient", "Cut", "Mesh Boolean", "Simplify" | mesh operations the engine does not have |
+| "Split" > "By painted colour" ("Convert the part's colour painting into separate parts, one per filament") | cutting a mesh along its painted borders, which the engine does only layer by layer while slicing |
+| Selecting a part in the list or the scene, and what is done to one part: "Split" of one part of several, its own filament, moving, turning, mirroring or laying it on a face, deleting it, its menu | parts that can be selected: the list shows them, read only, and a click on one selects its object |
+| Mirroring one part of an object (the part's menu), and the other instances of the object taking the mirror too | parts that can be selected; instances kept alike, which no tool here does yet |
 | Parts in the list, a filament for one part, modifiers and their settings, "Set as an individual object" | per-object and per-part settings, which the engine does not read (section 12) |
-| Saving the project with its edits | writing 3MF |
+| Saving the project with its edits | **added**: section 15 |
 | The glow round what is selected, the red background while something is over the edge, the ticks of the rotate ring | nothing; they are looks, left for a pass on the stage's own drawing |
 | Rectangle selection (Shift with a drag), dragging rows of the list | nothing; not built in this pass |
 | A printer with another bed moving every object to keep its place | deciding the rule: here a copy keeps its place on its own plate, and what was on no plate stays where it stood beside the first |
@@ -970,6 +1041,42 @@ plate 2 at its row (its object then under "Outside"); a bare STL dragged
 79.60 to 94.00) less half a line. The screenshots are under
 `target/ui-shots/edit/`.
 
+The seventh pass ("Lay on face", "Mirror", "Split"): in the engine,
+`crates/edge-mesh/src/hull.rs` (the hull of a cube, of points inside and on
+its faces, an octahedron, a tetrahedron, 200 points on a sphere, a cloud of
+2000 points checked face by face and twice for the same answer, flat and
+straight sets refused), `split.rs` (one piece, two that touch at a corner,
+one inside out, edges wound alike), `crates/edge-engine/src/lay_on_face.rs`
+(a box's six faces in order of area, the printed size, the filter past the
+twelve largest, the turn down, the drawn outline) and
+`crates/edge-engine/tests/tools.rs` (a box laid on a side and on its top, a
+wedge on its slanted face; mirrored along each axis the copy is mirrored and
+what is sliced stays a solid of the same volume, where it stood; two shells
+to parts and to objects, named and placed as the reference names and places
+them; a piece in the air brought down). In the session
+(`src/api/edit/tests.rs`): a box laid on its side slices 30 mm tall where it
+stands, one undo step; an L mirrored along X slices, layer by layer, to the
+mirror image of its outer walls, each still anticlockwise, the first layer
+where it was, and along Z upside down on the bed; two shells split to parts
+and to objects slice to the same box of toolpaths as the one object did, two
+undo steps.
+
+In the served page (the app's browser pane, 1280 × 800, dark and light), by
+the mouse and the keys: a Benchy selected, F, the 52 faces of its hull drawn
+over it, the one under the pointer lit, a click on its roof's face laid it
+on it ("Gizmo-Place on Face" to undo), sliced: 173 layers, 34.65 mm, on the
+roof, and Cmd+Z put it back; an L selected in the list, the object's menu,
+"Mirror" > "Along X axis" (the sub-menu by the pointer, the tooltips the
+C++ help text), the tower at the other end, sliced and looked at in
+Preview; two shells in one STL: "Split to parts" from the toolbar (the list
+then shows "twoshell.stl_1" and "twoshell.stl_2" under the object, "Split to
+parts" off), the menu's "Split" > "To objects" ("To parts" off), two objects
+selected, sliced, both printed where they stood; one of them laid on its
+side in light. The browser pane's right click did not open the page's menus,
+on the stage or in the list (it does not seem to send the page a second
+button), so the object's menu was opened by a `contextmenu` event on the
+list's row, or by `GL.edit.menu`, and then gone through with the mouse. The screenshots are under `target/ui-shots/tools/`.
+
 ### Errors found in the C++
 
 - `3DScene.cpp` l.351: `#ifdef ENABBLE_OUTSIDE_COLOR` (misspelt) opens a
@@ -983,6 +1090,24 @@ plate 2 at its row (its object then under "Outside"); a bare STL dragged
   l.2535. It runs for every instance each time anything moves.
 - `GizmoObjectManipulation.cpp` l.1010: the tooltip reads "Holded down Ctrl
   key continuously and click by left mouse button…" (wording only).
+- `libslic3r/MeshSplitImpl.hpp` l.239–262: `create_face_neighbors_index`
+  pairs triangles in `execution::for_each` on several threads, and each
+  iteration writes the entry of the *other* triangle
+  (`neighbors[other_face][vertex_index] = face_idx`) while another thread
+  may be reading or writing that same entry for its own triangle: a data
+  race. On a closed, manifold mesh every edge has one partner, so the
+  answer comes out the same; where three or more triangles share an edge,
+  which of them are paired (and so how "Split to objects" and "Split to
+  parts" divide the mesh) can change from one run to the next. Here the
+  pairs are worked out in one pass, in order.
+- `libslic3r/Model.cpp` l.3014: `ModelVolume::center_geometry_after_creation`
+  moves the part by the shift of its mesh as it is (`translate(shift)`),
+  not by that shift turned and sized by the part's own transform. Called
+  by `ModelVolume::split` (l.3186) after it sets the offset to zero and
+  before it adds the old offset back, it puts each piece of a part that
+  has a turn or a size of its own in the wrong place; a part as loaded
+  (no turn of its own) is not affected. Here a part's pieces keep the
+  part's transform and their own coordinates, so they stay where they were.
 
 ## 14. The filament's and the printer's pages
 
@@ -1164,3 +1289,152 @@ screenshots are under `target/ui-shots/presets/`.
   filament 1's last, whatever their own presets say. Left as it is in this
   pass (it changes what an untouched project slices to); the pages show and
   set what the engine reads.
+
+## 15. What a saved project holds
+
+Read from `libslic3r/Format/bbs_3mf.cpp` (`_BBS_3MF_Exporter`, and
+`_BBS_3MF_Importer` for what the reference reads back),
+`libslic3r/PresetBundle.cpp` (`full_fff_config`, `full_config_secure`,
+`load_config_file_config`), `libslic3r/Preset.cpp` (`load_external_preset`)
+and `libslic3r/Config.cpp` (`save_to_json`). The writer is
+`crates/edge-3mf/src/write.rs`, what is kept from a file
+`crates/edge-3mf/src/kept.rs`, the model's side
+`crates/edge-engine/src/save.rs`, the session's `src/api/save.rs`, the
+page's `ui/save.js`; `edge save` on the command line writes the same file.
+
+### The package
+
+The reference's "Save Project" layout (`SplitModel | ShareMesh`), entry by
+entry, in a fixed order:
+
+| Entry | Here |
+| --- | --- |
+| `[Content_Types].xml`, `_rels/.rels` | written afresh, as the reference writes them; `_rels/.rels` names the cover (`Auxiliaries/.thumbnails/…` when the file had one, else the first plate's picture while that is written) |
+| `3D/3dmodel.model`: the header, an object of components for each object, the build (each copy: transform, printable) | written afresh. The header keeps every `<metadata>` the file had (title, designer, licence, description…), with `Application` "EdgeSlicer-2.4.9.0" (the pinned reference's version, `edge_3mf::REFERENCE_VERSION`, checked against the submodule by a test), `BambuStudio:3mfVersion` 1, the dates and the designer's id empty as the reference writes them. The reference reads a file as a whole project (plates, settings, presets) only when its `Application` names EdgeSlicer, Snapmaker Orca or Bambu Studio, so the reference's own name is the one written. Transforms are written as the shortest text that reads back to the same number (the reference writes 9 digits) |
+| `3D/Objects/<name>_<n>.model`, `3D/_rels/3dmodel.model.rels` | written afresh: a file for each object, each mesh of it that no earlier part has (the same mesh painted alike is written once and named from every part that has it, as `ShareMesh` does); vertices as the shortest text that reads back to the same `f32`; each triangle with every attribute it carried as the file had it (`paint_color`, `paint_seam`, `paint_supports`, `paint_fuzzy_skin`, texture layers, `face_property`). A `/` or another character a path cannot hold in an object's name is written `_` in the file's name (the reference writes the name as it is) |
+| `Metadata/model_settings.config` | written afresh from the model: each object's name and filament and each part's (`extruder`: the object's when its printed parts agree, each part's own only where it differs), each part's `subtype`. Kept as the file had them: every other metadata and setting of each object and part (per-object and per-part settings, modifiers' settings, `matrix`, `source_*`, Precise Seam's type, embossed text and SVG descriptions, `mesh_stat`), each plate's own (`locked`, `bed_type`, `print_sequence`, `first_layer_print_sequence`, `spiral_mode`, `filament_map_mode`, `filament_maps` with one entry for each filament, `print_history`…), each copy's place in the assembly view while its object has all its copies, and each copy's `identify_id` (the number the reference labels it with in G-code) while it has. Plates are numbered as they stand, each with its name and its copies |
+| `Metadata/project_settings.config` | the settings, below |
+| `Metadata/slice_info.config` | written afresh: the header alone, as the reference writes a project saved unsliced |
+| `Metadata/layer_heights_profile.txt` (variable layer height), `layer_config_ranges.xml` (height ranges and their settings), `brim_ear_points.txt`, `cut_information.xml` (cut connectors) | kept, each object's line or block written under its place in the list as it stands, so they follow an object when one before it is deleted; a clone carries its original's, as the reference's clone does |
+| `Metadata/custom_gcode_per_layer.xml` (pauses, colour changes, custom G-code at layers) | kept, each plate's under its number as it stands |
+| `Metadata/plate_<n>.png`, `_small`, `plate_no_light_<n>`, `top_<n>`, `pick_<n>` | kept for each plate while it is as it was read (`PlateStamp`: what is on it and where, its filaments and first-layer order), under its number now; a plate that has changed is saved without pictures, which would show it as it was. **not yet**: drawing new ones |
+| `Metadata/process_settings_<n>.config`, `filament_settings_<n>.config`, `machine_settings_<n>.config` (presets the file carries) | kept while the project is saved with its file's own settings; with presets chosen here they are not, and that is asked about first |
+| `Metadata/cut_recipe.xml` and its meshes, `edgeslicer_height_patterns.json`, `Metadata/showcase/` | not read here and kept by each object's place in the list: kept as they were while every object of the file is at its place; once one is deleted they are not kept, and that is asked about first |
+| Every other entry (`Auxiliaries/`, embossing SVGs, CAD bodies, airbrush fields, texture layers, image fill…) | kept byte for byte |
+| `Metadata/plate_<n>.gcode` and `.md5`, `plate_<n>.json`, `filament_sequence.json`, `_rels/model_settings.config.rels` | not written: a slice saved with the project. A saved project is unsliced, as the reference's "Save Project" writes it |
+| An entry whose name reaches outside the package (`../`, a drive, a leading `/`) | not written, and said before saving |
+
+The same project gives the same bytes: the order is fixed and every entry
+carries one time, `SOURCE_DATE_EPOCH` when it is set, else 1980-01-01. A
+file is written to `<path>.tmp` and moved into place once whole, so what was
+at `path` is left as it was when writing fails.
+
+### The settings
+
+| Project | Written |
+| --- | --- |
+| On its file's own settings, nothing set over them | the file's `project_settings.config` as it was, and the presets it carries |
+| On its file's own settings, with process, filament or printer settings or the bed type set here | the file's own, each setting set here taking the value the engine settles it to (`edge_engine::own_settings`), everything else as the file has it; what was set is added to the file's `different_settings_to_system`; the file's presets go with it |
+| On presets chosen here | what a slice reads (`edge_engine::settled`: the presets with everything they inherit, the file's own settings under them, what was set over them, the reference's defaults for the rest), only the reference's own options and the names (`printer_settings_id`, `print_settings_id`, `filament_settings_id`), a value from the defaults' table in the text a project holds (its escapes taken out); `different_settings_to_system` lists, for the process, each filament and the printer, the settings set here (`edge_engine::project_settings`) |
+| No printer chosen (an STL, an empty project) | none: the reference opens it on the presets it is on |
+
+`different_settings_to_system` is written truthfully, as the reference
+reads it (Preset.cpp `load_external_preset`): when it opens the file it
+takes every setting of a preset that is not listed from the preset the file
+names, so a setting listed is one set here and a value the engine settled
+otherwise for an unlisted one is the preset's again. Written as JSON with
+keys in order and four spaces to a level (`save_to_json`), with `name`
+"project_settings", `from` "project", `version`. `print_host`,
+`print_host_webui`, `printhost_apikey`, `printhost_cafile`,
+`printhost_user`, `printhost_password` and `printhost_port` are never
+written (`full_config_secure`), whichever way the settings come (tested).
+
+### Asked before saving
+
+What the file held that a save would not keep is listed, and nothing is
+written until the person says to: the presets it carries when presets are
+chosen here; what goes by objects' places (above) once an object of the
+file is deleted; the assembly view of an object some of whose copies were
+deleted; an entry whose name reaches outside the file. The reference never
+asks this, keeping everything it reads; the words are this app's. `edge
+save` lists the same and writes only with `--accept-losses`.
+
+### How it was checked
+
+- `crates/edge-3mf/tests/round_trip.rs`: every 3MF the reference ships or
+  tests with (36), read, written and read again, is the same project:
+  objects, names, parts, kinds, filaments, meshes to the bit, colour and
+  seam paint, what every triangle carries, copies, plates, settings (but
+  what reaches a printer); written again from what was read back, the same
+  bytes. A plain file's layout, the paint kept on its triangle, a plate's
+  own settings, the assembly view, a slice and a name reaching outside
+  left out; a printer's address left out; the version claimed is the
+  pinned reference's.
+- `crates/edge-engine/tests/save.rs`: every reference project saved and
+  opened again places to the bit on every plate; `mcbrim_test.3mf` and
+  `twopart_groups.3mf` slice to the same bytes; `mcbrim_test.3mf` with a
+  copy moved, one deleted, an object given filament 5 and renamed slices
+  from the saved file as it did in memory, plate by plate, keeps the
+  pictures of no plate it changed and all of those it did not; cut
+  information follows its objects when the first is deleted; a variable
+  layer height is kept; settings settled here name what was set by hand;
+  a bare STL is saved standing in the middle of the bed.
+- `src/api/save/tests.rs`: saving over the file opened, the unsaved mark
+  cleared and back with undo; an STL asked where, saved as a 3MF with the
+  presets and a process setting; the losses asked about first; an empty
+  project saved.
+- Both slicers on every reference project and five fixtures
+  (`tools/make_fixture.py`: cube, enforced, blocked, halves, twotone),
+  each plate of the original and of the file `edge save` wrote
+  (`SOURCE_DATE_EPOCH=1`): this engine's G-code is the same to the byte for
+  every one (those it refuses, it refuses alike); the C++ slicer's is the
+  same to the byte for `mcbrim_test.3mf` (three plates), `pa_pattern`,
+  `auto_pa_line_dual`, `auto_pa_line_single`, `cylinder_drawcut`,
+  `stabilizer_v1`, `onepart_group` and the four `twopart_groups*`. For the
+  five fixtures, which are not the reference's own projects (no
+  `Application`), every move is the same and only the settings listed in
+  the G-code's comments differ: the reference reads a project of its own
+  through its presets, which lays a U1's lists out per nozzle
+  (`accel_to_decel_enable = 1,1`). The rest it slices in neither form
+  headless (no printer in the file, or files it refuses).
+- In the served page (1280 × 820, dark and light), `mcbrim_test.3mf`
+  (a copy) with a copy moved, one deleted, an object given filament 5 and
+  `wall_loops` set to 5: saved by the tile's "Save" and by Cmd+S, the dot
+  gone and the path said; "Save as..." with the page's dialog to a path
+  typed without `.3mf`, the tile renamed; closing it unsaved asked "Save
+  them before closing it?" with Yes / No / Cancel. The C++ slicer, given
+  the saved file, prints the moved copy where it was moved (its first
+  layer's lines there, none left where it stood), plate 2 without the
+  deleted copy (its filament 6 no longer used), plate 3's object in
+  filament 5 (4.71 g where it was 2.26 g), and `wall_loops = 5`. A move
+  that put the copy into its neighbour was refused by the C++ slicer for
+  conflicting paths, as it should be; this engine does not check that.
+- Not checked: the window's own close question (the window was not
+  opened in this pass; the page's side and the session's are as above).
+
+### Not yet
+
+- Drawing a plate's pictures, and the project's cover.
+- "Export plate sliced file", "Export all sliced file" (a project with its
+  G-code), and "Export Bambu 3MF".
+- Reading back, or keeping, what a project is saved with beyond the file:
+  "Reopen the open projects at the next start", recent projects, crash
+  backups.
+
+### Errors found in the C++
+
+- `bbs_3mf.cpp` l.7954: the small thumbnail is checked with
+  `if (png_data != nullptr)`, the large one's pointer (freed at l.7912),
+  where `small_png_data` is meant; a small picture that failed to encode is
+  then written from a null pointer.
+- `bbs_3mf.cpp` l.7945: the small thumbnail's pixel index is
+  `i / sw * W + j / sh` with `i` stepping by `sh` and `j` by `sw`: rows and
+  columns swapped. Harmless while the picture is square (512 to 128), wrong
+  for any other.
+- `bbs_3mf.cpp` l.8302: an object's file is named `3D/Objects/<name>_<id>.model`
+  from its name as it is, so a `/` in a name makes a folder of it (and `..`
+  climbs one).
+- `bbs_3mf.cpp` l.9274–9276: `_add_project_embedded_presets_to_archive`
+  builds a header line into `out` that is never used.
+- `bbs_3mf.cpp` l.8039: the cover's `rel-5` line is written without the
+  space the others have (wording only).

@@ -20,6 +20,44 @@ impl<R: Read + Seek> Package<R> {
             .map_err(|e| Error::Archive(e.to_string()))
     }
 
+    /// The names of every entry, in the order the package holds them.
+    pub fn names(&self) -> Vec<String> {
+        (0..self.archive.len())
+            .filter_map(|index| self.archive.name_for_index(index).and_then(Result::ok))
+            .map(|name| name.into_owned())
+            .collect()
+    }
+
+    /// An entry's bytes as they are, by its exact name; none for a
+    /// directory or a name the package does not hold.
+    pub fn bytes(&mut self, name: &str) -> Result<Option<Vec<u8>>, Error> {
+        let Some(index) = self.archive.index_for_name(name) else {
+            return Ok(None);
+        };
+        let malformed = |reason: String| Error::Malformed {
+            part: name.to_owned(),
+            reason,
+        };
+        let file = self
+            .archive
+            .by_index(index)
+            .map_err(|e| malformed(e.to_string()))?;
+        if file.is_dir() {
+            return Ok(None);
+        }
+        let mut bytes = Vec::with_capacity(file.size().min(MAX_PART_BYTES) as usize);
+        file.take(MAX_PART_BYTES + 1)
+            .read_to_end(&mut bytes)
+            .map_err(|e| malformed(e.to_string()))?;
+        if bytes.len() as u64 > MAX_PART_BYTES {
+            return Err(malformed(format!(
+                "larger than {} MiB once decompressed",
+                MAX_PART_BYTES >> 20
+            )));
+        }
+        Ok(Some(bytes))
+    }
+
     /// The text of a part, or `None` when the package has no such part.
     /// Part names are compared without regard to case, as the packaging
     /// convention requires, and a leading slash is optional.

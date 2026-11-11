@@ -25,6 +25,7 @@ mod seam_plan;
 mod settings;
 mod simplify;
 mod small_area;
+mod unsupported;
 mod wipe;
 
 use std::{
@@ -739,8 +740,6 @@ struct Laid<'a> {
     /// The fan comes on where no more than this share of the wall's
     /// width is supported; none when it does not go by that.
     fan_at: Option<f32>,
-    /// The wall's speed as it is written where it is supported.
-    written: f64,
 }
 
 impl<'a> Laid<'a> {
@@ -1176,7 +1175,7 @@ impl Writer<'_> {
                         speed: ram.speed,
                         ..self.motion(line.role, &line.flow, self.state.first_layer)
                     };
-                    self.travel(line.points[0], false)?;
+                    self.travel(line.points[0], false, None)?;
                     for point in &line.points[1..] {
                         self.extrude(*point, line.role, &line.flow, motion)?;
                     }
@@ -1186,7 +1185,7 @@ impl Writer<'_> {
             }
             None => {
                 if let Some(over) = over.filter(|_| self.state.primed) {
-                    self.travel(over, false)?;
+                    self.travel(over, false, None)?;
                 }
             }
         }
@@ -1401,7 +1400,7 @@ impl Writer<'_> {
                 )?;
                 // The new tool comes in through the gap in the tower's wall.
                 for point in layer.enter {
-                    self.travel(*point, false)?;
+                    self.travel(*point, false, None)?;
                 }
             }
             self.inner_wall = layer
@@ -1547,14 +1546,23 @@ impl Writer<'_> {
                     _ => rest.push(path),
                 }
             }
+            // Loops wholly over air, with `unsupported_wall_last`.
+            let held = self.held(&layer.loops[layer.islands[island].clone()], &with_walls);
             if self.settings.infill_first {
                 self.lines(&rest, layer.shelter)?;
             }
             self.lines(&over_air, layer.shelter)?;
-            self.walls(layer, &layer.islands[island])?;
+            self.walls(layer, &layer.islands[island], held.as_ref(), false)?;
             self.lines(&with_walls, layer.shelter)?;
             if !self.settings.infill_first {
                 self.lines(&rest, layer.shelter)?;
+                // Then the loops left hanging in mid air, now that the
+                // fill can anchor them (GCode.cpp `process_layer`, the
+                // second `extrude_perimeters`). With the fill laid first
+                // nothing is held back: the fill is down already.
+                if let Some(held) = held.as_ref().filter(|held| held.any_after_fill()) {
+                    self.walls(layer, &layer.islands[island], Some(held), true)?;
+                }
             }
             self.ironing(&ironing, layer.shelter, ironing_fan)?;
         }
@@ -1623,22 +1631,70 @@ impl Writer<'_> {
         }
     }
 
-    /// One island's walls in the configured order.
-    fn walls(&mut self, layer: &Layer<'_>, island: &Range<usize>) -> io::Result<()> {
+    /// Which of an island's loops are over air and which of those wait
+    /// for its fill, where `unsupported_wall_last` asks and overhangs are
+    /// told apart on this layer; none otherwise, or where no loop is over
+    /// air. `thin` are the island's walls that are no loops.
+    fn held(&self, own: &[ExtrusionLoop], thin: &[&ExtrusionPath]) -> Option<unsupported::Held> {
+        if !self.settings.unsupported_wall_last {
+            return None;
+        }
+        let (below, by) = self.clear_of()?;
+        let over_air: Vec<bool> = (own.iter())
+            .map(|wall| unsupported::over_air(below, by, wall))
+            .collect();
+        if !over_air.contains(&true) {
+            return None;
+        }
+        Some(unsupported::held(
+            own,
+            over_air,
+            thin,
+            unsupported::reach(own),
+        ))
+    }
+
+    /// One island's walls in the configured order. With `held`, the loops
+    /// over air go after the rest, innermost first, and those that wait
+    /// for the fill are left out, or with `after_fill` are all that is laid.
+    fn walls(
+        &mut self,
+        layer: &Layer<'_>,
+        island: &Range<usize>,
+        held: Option<&unsupported::Held>,
+        after_fill: bool,
+    ) -> io::Result<()> {
         let s = self.settings;
         let own = &layer.loops[island.clone()];
-        let mut walls: Vec<&ExtrusionLoop> = nested(own).into_iter().map(|at| &own[at]).collect();
+        let mut order = nested(own);
         match s.wall_order {
             WallOrder::InnerOuter => {}
-            WallOrder::OuterInner => walls.reverse(),
+            WallOrder::OuterInner => order.reverse(),
             // "Sandwich mode. Apply after 1st layer."
             WallOrder::InnerOuterInner => {
                 if !self.state.first_layer {
-                    walls.reverse();
-                    walls = sandwich(walls);
+                    order.reverse();
+                    let walls: Vec<&ExtrusionLoop> = order.iter().map(|&at| &own[at]).collect();
+                    let sandwiched = sandwich(walls);
+                    order = sandwiched
+                        .into_iter()
+                        .map(|wall| {
+                            own.iter()
+                                .position(|other| std::ptr::eq(other, wall))
+                                .expect("a wall of the island")
+                        })
+                        .collect();
                 }
             }
         }
+        // Loops over air last (PerimeterGenerator.cpp
+        // `defer_unsupported_loops`, after the wall order is settled).
+        if let Some(held) = held {
+            order = unsupported::reorder(own, order, held);
+            let hold = !s.infill_first;
+            order.retain(|&at| !hold || held.after_fill[at] == after_fill);
+        }
+        let walls: Vec<&ExtrusionLoop> = order.into_iter().map(|at| &own[at]).collect();
         // The walls laid so far, for a wipe over them (`wipe.rs`).
         let mut printed = wipe::Printed::default();
         for wall in walls {
@@ -1764,8 +1820,13 @@ impl Writer<'_> {
     /// retraction.
     fn lines(&mut self, paths: &[&ExtrusionPath], shelter: &[ExPolygon]) -> io::Result<()> {
         // Fill of every kind is ordered together; other lines by kind.
-        for stage in paths
-            .chunk_by(|a, b| (a.part != 0 && b.part != 0) || a.role == b.role && a.part == b.part)
+        // A line of gap fill between walls is a filled area of its own
+        // there, chained with the rest (Fill.cpp `make_fills` gives each
+        // of a region's `thin_fills` a collection of its own among its
+        // `fills`, which `extrude_infill` chains together).
+        let fill = |path: &ExtrusionPath| path.part != 0 || path.role == Role::GapFill;
+        for stage in
+            paths.chunk_by(|a, b| (fill(a) && fill(b)) || a.role == b.role && a.part == b.part)
         {
             let mut parts: Vec<Part<'_>> = stage
                 .chunk_by(|a, b| a.role == b.role && a.part == b.part && (a.part != 0 || b.in_turn))
@@ -1998,7 +2059,7 @@ impl Writer<'_> {
         sheltered: bool,
         closed: bool,
     ) -> io::Result<()> {
-        self.travel(points[0], sheltered)?;
+        self.travel(points[0], sheltered, Some(role))?;
         self.lay_path(points, parts, role, flow, closed)
     }
 
@@ -2068,17 +2129,6 @@ impl Writer<'_> {
                 cooled,
                 fan: fan.is_some(),
                 fan_at: fan.and_then(|fan| fan.at).map(|at| at as f32),
-                // Not as the reference, which writes a wall's own speed
-                // as it is (GCode.cpp `_extrude`, `F = speed * 60`):
-                // here it is a whole number of mm/s wherever overhangs
-                // slow walls down, as this engine has always written it.
-                // Kept so that a part with no overhang is the file it
-                // was; the reference's way is `motion.speed` alone.
-                written: if s.enable_overhang_speed {
-                    motion.speed.round().min(motion.speed)
-                } else {
-                    motion.speed
-                },
             };
             let runs = match known {
                 Some(runs) => runs,
@@ -2162,8 +2212,7 @@ impl Writer<'_> {
                 } else {
                     s.inner_wall_speed
                 };
-                let melts =
-                    s.filament_max_volumetric_speed / (flow.mm3_per_mm() * self.scarf_flow());
+                let melts = s.filament_max_volumetric_speed / self.melted(role, flow);
                 let reference = if s.filament_max_volumetric_speed <= 0.0 {
                     own
                 } else if own == 0.0 {
@@ -2263,14 +2312,6 @@ impl Writer<'_> {
             } else {
                 laid.cooled || run.cooled
             })?;
-            let motion = Motion {
-                speed: if run.clear {
-                    motion.speed
-                } else {
-                    laid.written
-                },
-                ..motion
-            };
             // Part of a wall keeps the arcs of that stretch by itself:
             // the reference makes separate paths of the stretches
             // before it fits arcs to any.
@@ -2344,11 +2385,9 @@ impl Writer<'_> {
             } else if (set - wanted).abs() > 60.0 {
                 set = wanted;
             }
-            let speed = match (set == own, run.clear) {
-                (true, false) => laid.written,
-                (true, true) => motion.speed,
-                (false, _) => set / 60.0,
-            };
+            // A wall's own speed as it is (GCode.cpp `_extrude`,
+            // `F = speed * 60`).
+            let speed = if set == own { motion.speed } else { set / 60.0 };
             self.fan_over_air(fan)?;
             self.extrude(to, role, flow, Motion { speed, ..motion })?;
         }
@@ -2458,7 +2497,7 @@ impl Writer<'_> {
             Role::SupportInterface => s.support_interface_speed,
         };
         let speed = if s.filament_max_volumetric_speed > 0.0 {
-            wanted.min(s.filament_max_volumetric_speed / (flow.mm3_per_mm() * self.scarf_flow()))
+            wanted.min(s.filament_max_volumetric_speed / self.melted(role, flow))
         } else {
             wanted
         };
@@ -2497,6 +2536,25 @@ impl Writer<'_> {
         }
     }
 
+    /// What a line lays per mm where the hot end's limit is worked out,
+    /// in mm³: its own cross-section with the flow ratios it is laid
+    /// with, the filament's, the print's and its kind's (GCode.cpp
+    /// `_extrude`, `_mm3_per_mm`, which the speed is capped by), or on a
+    /// scarf the scarf's. The prime tower's lines are not laid by
+    /// `_extrude` in the reference, and keep their cross-section alone.
+    fn melted(&self, role: Role, flow: &Flow) -> f64 {
+        let s = self.settings;
+        let share = match role {
+            Role::PrimeTower | Role::PrimeLine => return flow.mm3_per_mm() * self.scarf_flow(),
+            Role::TopSolidInfill => s.top_solid_infill_flow_ratio,
+            Role::BottomSurface => s.bottom_solid_infill_flow_ratio,
+            Role::InternalBridge => s.internal_bridge_flow,
+            Role::Brim => s.brim_flow_ratio,
+            _ => self.scarf_flow(),
+        };
+        flow.mm3_per_mm() * s.filament_flow_ratio * s.print_flow_ratio * share
+    }
+
     /// Tells the printer a new acceleration limit, if it is a change.
     fn accelerate(&mut self, acceleration: f64) -> io::Result<()> {
         if acceleration <= 0.0 || acceleration == self.state.acceleration {
@@ -2524,8 +2582,9 @@ impl Writer<'_> {
     }
 
     /// `sheltered` says the move may go unretracted however long it is,
-    /// unless it leaves an outer wall, which always retracts.
-    fn travel(&mut self, to: Point2, sheltered: bool) -> io::Result<()> {
+    /// unless it leaves an outer wall, which always retracts. `role` is
+    /// what the move is to, where it goes to a line.
+    fn travel(&mut self, to: Point2, sheltered: bool, role: Option<Role>) -> io::Result<()> {
         let s = self.settings;
         let from = self.state.position;
         // Round the inside of the walls where the move would cross
@@ -2544,6 +2603,26 @@ impl Writer<'_> {
         if length == 0.0 && self.state.height == Some(arrival) {
             self.state.routing.passed();
             return Ok(());
+        }
+        // Every travel goes at the travel acceleration, set before the
+        // retraction and so the wipe too, but for a short one into an
+        // outer wall or an overhang wall, which keeps that wall's, so
+        // the nozzle does not slow down just before the wall it is about
+        // to lay (GCode.cpp `travel_to`). On the first layer, the first
+        // layer's. Short is shorter than `retraction_minimum_travel` in a
+        // straight line.
+        let straight = from.map_or(f64::INFINITY, |from| distance(from, to));
+        let short = straight < s.retraction_minimum_travel;
+        if self.state.first_layer && s.initial_layer_acceleration > 0.0 {
+            self.accelerate(s.initial_layer_acceleration)?;
+        } else if s.default_acceleration > 0.0 {
+            let bridge = s.bridge_acceleration.resolve(s.outer_wall_acceleration);
+            let wanted = match role {
+                Some(Role::OverhangPerimeter) if short => bridge,
+                Some(Role::ExternalPerimeter) if short => s.outer_wall_acceleration,
+                _ => s.travel_acceleration,
+            };
+            self.accelerate(wanted)?;
         }
         let exposed = !sheltered
             || matches!(
@@ -2573,20 +2652,6 @@ impl Writer<'_> {
         // A wipe moves the nozzle, so the travel is measured from where it ends.
         let from = self.state.position;
         let length = from.map_or(f64::INFINITY, |from| distance(from, to));
-        // The first layer is gentle throughout. Above it, long moves get the
-        // travel acceleration; short hops between neighbouring lines keep
-        // whatever is set, rather than switching twice for a millimetre.
-        if self.state.first_layer && s.initial_layer_acceleration > 0.0 {
-            self.accelerate(s.initial_layer_acceleration)?;
-        } else if long {
-            let travel = if s.travel_acceleration > 0.0 {
-                s.travel_acceleration
-            } else {
-                s.default_acceleration
-            };
-            self.accelerate(travel)?;
-        }
-
         let lift = self.state.pending_lift.take();
         let z = self.state.z;
         let top = match (lift, self.state.height) {
@@ -2861,7 +2926,15 @@ impl Writer<'_> {
             .as_ref()
             .and_then(|contoured| contoured.speed)
             .unwrap_or(motion.speed);
+        // What a layer slowed to cool leaves at its speed, its time
+        // counted: the outer wall where asked, a compensated circle's
+        // wall, and the prime tower, whose lines the reference writes
+        // without the marks that make a line adjustable (WipeTower2.cpp
+        // writes them itself, not GCode.cpp `_extrude`, and
+        // CoolingBuffer.cpp slows only what is marked
+        // `;_EXTRUDE_SET_SPEED`).
         let held = role == Role::ExternalPerimeter && s.dont_slow_down_outer_wall
+            || matches!(role, Role::PrimeTower | Role::PrimeLine)
             || self.circle_wall_held(role);
         let speed = if held {
             self.timing.fixed += moved / own;

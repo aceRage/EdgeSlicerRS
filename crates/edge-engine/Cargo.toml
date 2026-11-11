@@ -26,6 +26,7 @@ rayon.workspace = true
 [dev-dependencies]
 edge-extrusion.workspace = true
 tempfile.workspace = true
+zip.workspace = true
 
 [lints]
 workspace = true
