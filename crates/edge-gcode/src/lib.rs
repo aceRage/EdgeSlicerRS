@@ -1714,10 +1714,12 @@ impl Writer<'_> {
             Some(pieces) => {
                 // A wall over air is a bridge of the inner walls' width,
                 // whichever wall it is (`PerimeterGenerator` `overhang_flow`).
+                // At `bridge_line_width` where that is set.
                 let bridge = self
                     .inner_wall
                     .unwrap_or(*flow)
-                    .bridging(s.bridge_flow, s.thick_bridges);
+                    .bridging_sized(s.bridge_flow, s.thick_bridges, s.bridge_line_width)
+                    .map_err(|e| io::Error::other(e.to_string()))?;
                 let over_air = self.motion(Role::OverhangPerimeter, &bridge, false);
                 for piece in pieces {
                     if piece.clear {

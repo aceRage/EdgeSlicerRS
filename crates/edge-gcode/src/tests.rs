@@ -2453,6 +2453,31 @@ fn a_wall_over_air_is_as_wide_as_an_inner_wall() {
             .any(|width| (width - narrow.bridging(0.8, false).width).abs() < 1e-3),
         "{widths:?}"
     );
+    // With a width set for bridges (`bridge_line_width`) it is that
+    // width the bridge's flow thins.
+    let sized = PrintSettings {
+        bridge_line_width: Some(0.3),
+        ..overhanging()
+    };
+    let (text, _) = print(&layers, &sized);
+    let second = text.split(";Z:0.400").nth(1).unwrap();
+    let set = flow().with_width(0.3).unwrap().bridging(0.8, false).width;
+    let mut kind = "";
+    let mut widths = Vec::new();
+    for line in second.lines() {
+        if let Some(name) = line.strip_prefix(";TYPE:") {
+            kind = name;
+        }
+        if let Some(width) = line.strip_prefix(";WIDTH:")
+            && kind == "Overhang wall"
+        {
+            widths.push(width.parse::<f64>().unwrap());
+        }
+    }
+    assert!(
+        !widths.is_empty() && widths.iter().all(|width| (width - set).abs() < 1e-3),
+        "{widths:?} against {set}"
+    );
 }
 
 #[test]

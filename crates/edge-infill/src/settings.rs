@@ -107,6 +107,10 @@ pub struct InfillSettings {
     pub bridge_flow: f64,
     pub thick_bridges: bool,
     pub bridge_density: f64,
+    /// The width set for bridges and bridges over infill, in mm
+    /// (`bridge_line_width`); none leaves a round thread as thick as the
+    /// nozzle's bore and a flattened line as wide as solid fill.
+    pub bridge_line_width: Option<f64>,
     /// Solid fill laid over sparse fill: whether it is a round thread,
     /// and how closely its lines are laid. Its thread is sized by
     /// `bridge_flow`, as the reference sizes it; `internal_bridge_flow` is
@@ -170,6 +174,7 @@ impl Default for InfillSettings {
             bridge_flow: 1.0,
             thick_bridges: false,
             bridge_density: 1.0,
+            bridge_line_width: None,
             thick_internal_bridges: true,
             internal_bridge_density: 1.0,
             top_ordered: true,
@@ -260,7 +265,6 @@ impl InfillSettings {
                 "bridge_expansion_extra",
                 "bridges reach the usual distance onto what is beside them",
             ),
-            ("bridge_line_width", "bridges are as wide as the solid fill"),
         ] {
             if let Some(FloatOrPercent::Value(value) | FloatOrPercent::Percent(value)) =
                 settings.float_or_percent(key)?
@@ -420,6 +424,7 @@ impl InfillSettings {
             bridge_flow: number("bridge_flow", defaults.bridge_flow)?,
             thick_bridges: flag("thick_bridges", defaults.thick_bridges)?,
             bridge_density: share("bridge_density", defaults.bridge_density)?,
+            bridge_line_width: edge_extrusion::bridge_line_width(settings)?,
             thick_internal_bridges: flag(
                 "thick_internal_bridges",
                 defaults.thick_internal_bridges,
@@ -554,8 +559,25 @@ impl InfillSettings {
             self.internal_solid_infill_line_width,
             Flow::auto_width(nozzle),
         )?;
-        let bridge = solid.bridging(self.bridge_flow, self.thick_bridges);
-        let internal_bridge = solid.bridging(self.bridge_flow, self.thick_internal_bridges);
+        // `LayerRegion::bridging_flow`, with `bridge_line_width` where it
+        // is set. Nothing bridges on the bed, and the first layer may be
+        // too tall for a line of that width: there the width is left out
+        // (Print.cpp `Print::validate` checks it against the print's
+        // layer height alone).
+        let width = if first_layer {
+            None
+        } else {
+            edge_extrusion::check_bridge_line_width(
+                self.bridge_line_width,
+                layer_height,
+                self.thick_bridges,
+                self.thick_internal_bridges,
+            )?;
+            self.bridge_line_width
+        };
+        let bridge = solid.bridging_sized(self.bridge_flow, self.thick_bridges, width)?;
+        let internal_bridge =
+            solid.bridging_sized(self.bridge_flow, self.thick_internal_bridges, width)?;
         Ok(FillParams {
             solid,
             bridge,
@@ -834,8 +856,68 @@ mod tests {
             .unsupported
             .is_empty()
         );
-        let set = read(r#"{"bridge_angle": "30", "bridge_line_width": "0.5"}"#).unwrap();
+        let set = read(r#"{"bridge_angle": "30", "bridge_expansion_extra": "0.5"}"#).unwrap();
         assert_eq!(set.unsupported.len(), 2);
         assert!(set.unsupported[0].starts_with("bridge_angle \"30\""));
+    }
+
+    #[test]
+    fn bridges_take_the_width_set_for_them() {
+        let read = |json: &str| InfillSettings::from_settings(&Settings::from_json(json).unwrap());
+        // Left at zero, as it is by default, nothing changes and nothing is said.
+        let unset = read(r#"{"bridge_flow": "0.8", "thick_bridges": "0"}"#).unwrap();
+        let zero =
+            read(r#"{"bridge_flow": "0.8", "thick_bridges": "0", "bridge_line_width": "0"}"#)
+                .unwrap();
+        assert_eq!(unset.bridge_line_width, None);
+        assert_eq!(zero.params(0.2, false), unset.params(0.2, false));
+        assert!(zero.unsupported.is_empty());
+        // Set, a flattened bridge is that wide before `bridge_flow` thins
+        // it, and a round thread over infill that thick.
+        let set = read(
+            r#"{"bridge_flow": "0.8", "thick_bridges": "0", "bridge_line_width": "0.3",
+                "bridge_density": "80%"}"#,
+        )
+        .unwrap();
+        assert!(set.unsupported.is_empty());
+        let params = set.params(0.2, false).unwrap();
+        let flat = Flow::new(0.3, 0.2, 0.4).unwrap().bridging(0.8, false);
+        assert_eq!(params.bridge, flat);
+        assert!((params.bridge_spacing - flat.spacing / 0.8).abs() < 1e-12);
+        let thread = 0.3 * 0.8f64.sqrt();
+        assert!((params.internal_bridge.width - thread).abs() < 1e-12);
+        assert!((params.internal_bridge.height - thread).abs() < 1e-12);
+        assert!((params.internal_bridge_spacing - (thread + 0.05)).abs() < 1e-12);
+        // Nothing else is touched.
+        let plain = unset.params(0.2, false).unwrap();
+        assert_eq!(
+            (params.solid, params.top, params.sparse),
+            (plain.solid, plain.top, plain.sparse)
+        );
+        // A percentage is of the nozzle.
+        let share = read(r#"{"bridge_line_width": "75%", "thick_bridges": "1"}"#).unwrap();
+        assert!((share.params(0.2, false).unwrap().bridge.width - 0.3).abs() < 1e-12);
+        // Wider than the nozzle is refused when read; no wider than the
+        // layer is tall when layers are made, unless every bridge is a
+        // round thread. The first layer, where nothing bridges, is not
+        // judged and is left as it was.
+        assert!(read(r#"{"bridge_line_width": "0.45"}"#).is_err());
+        let thin = read(r#"{"bridge_line_width": "0.2", "thick_bridges": "0"}"#).unwrap();
+        assert!(thin.params(0.2, false).is_err());
+        assert_eq!(thin.params(0.25, true), unset_first(&thin));
+        let threads = read(
+            r#"{"bridge_line_width": "0.15", "thick_bridges": "1", "thick_internal_bridges": "1"}"#,
+        )
+        .unwrap();
+        assert!((threads.params(0.2, false).unwrap().bridge.width - 0.15).abs() < 1e-12);
+    }
+
+    /// The first layer's parameters with no bridge width set.
+    fn unset_first(settings: &InfillSettings) -> Result<FillParams, FlowError> {
+        InfillSettings {
+            bridge_line_width: None,
+            ..settings.clone()
+        }
+        .params(0.25, true)
     }
 }
