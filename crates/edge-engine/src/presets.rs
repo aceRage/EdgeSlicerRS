@@ -45,6 +45,9 @@ pub struct PrinterModel {
     pub default_materials: Vec<String>,
     pub bed_model: Option<String>,
     pub bed_texture: Option<String>,
+    /// The bed type the model's own file names as its usual one
+    /// (`default_bed_type`), where it names one.
+    pub default_bed_type: Option<String>,
     /// Its picture, `<model>_cover.png` in the vendor's folder, when the
     /// file is there.
     pub cover: Option<PathBuf>,
@@ -249,6 +252,7 @@ impl Library {
                 default_materials: listed(file.text("default_materials")),
                 bed_model: text("bed_model"),
                 bed_texture: text("bed_texture"),
+                default_bed_type: text("default_bed_type"),
                 cover: cover.is_file().then_some(cover),
                 bed: usual.and_then(|preset| preset.bed),
                 height: usual.and_then(|preset| preset.height),

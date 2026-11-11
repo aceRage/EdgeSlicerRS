@@ -358,6 +358,14 @@ fn a_vendors_printer_models_are_listed_with_their_presets() {
         u1.default_materials
             .contains(&"Generic PLA @U1 0.4 nozzle".to_owned())
     );
+    assert_eq!(u1.default_bed_type, None);
+    let a1 = library
+        .models("BBL")
+        .unwrap()
+        .into_iter()
+        .find(|model| model.model == "Bambu Lab A1 mini")
+        .unwrap();
+    assert_eq!(a1.default_bed_type.as_deref(), Some("Textured PEI Plate"));
     let cover = u1.cover.as_ref().expect("the U1 has a picture");
     assert!(cover.is_file());
     assert_eq!(
