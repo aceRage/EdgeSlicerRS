@@ -19,7 +19,10 @@ between the two fills one and keeps the other.
 
 Shapes: mushroom and shelf need supports; tower and bar get an automatic
 brim; bridge is a deck across two posts; cube is a plain 20 mm cube;
-twotone is two blocks side by side, the first in filament 1 and 6 mm tall,
+halves is a round post cut in two
+down the middle, and inset a block with a round post pushed half into its
+side, each two parts of one object in one filament, for seams moved to where
+parts meet; twotone is two blocks side by side, the first in filament 1 and 6 mm tall,
 the second in filament 2 and 4 mm tall, so there is a tool change on every
 layer up to 4 mm and none above; comb is a spine with teeth 0.5 to 2 mm
 wide standing on the bed, and twocomb the same with the teeth in filament 2,
@@ -261,6 +264,17 @@ def counterbore():
     return solids
 
 MESHES["counterbore"] = counterbore()
+
+# Two parts of one object, for seams moved to where parts meet
+# (seam_prefer_part_joints): halves is a round post 20 mm across and 10 mm
+# tall cut down the middle into two half posts, in one filament; inset is a
+# block 20 mm square and 8 mm tall with a round post 10 mm across and
+# 12 mm tall pushed half into its right side, the two passing into each other.
+MESHES["halves"] = [
+    prism(circle(135.5, 136, 10, 64, math.pi / 2, math.pi, closed=False), 0, 10),
+    prism(circle(135.5, 136, 10, 64, -math.pi / 2, math.pi, closed=False), 0, 10),
+]
+MESHES["inset"] = [box(120.5, 126, 0, 20, 20, 8), prism(circle(140.5, 136, 5, 64), 0, 12)]
 
 out, source, shape = sys.argv[1:4]
 changes = dict(arg.split("=", 1) for arg in sys.argv[4:])

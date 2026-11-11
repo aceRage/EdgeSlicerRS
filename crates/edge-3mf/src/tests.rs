@@ -396,3 +396,83 @@ fn precise_seam_parts_are_read_as_helpers_not_printed_and_said_to_be_there() {
     assert!(!project.has_precise_seams(Some(1)));
     assert!(project.has_precise_seams(None));
 }
+
+#[test]
+fn each_instances_parts_are_given_one_by_one_for_where_they_meet() {
+    // One object of a box, a box beside it and an embossed text, twice on
+    // the first plate; another object alone on the second.
+    let root = model(
+        "millimeter",
+        &format!(
+            r#"<object id="1" type="model">{}</object><object id="2" type="model">{}</object>
+               <object id="3" type="model">{}</object><object id="4" type="model">{}</object>
+               <object id="5" type="model"><components>
+                 <component objectid="1"/>
+                 <component objectid="2" transform="1 0 0 0 1 0 0 0 1 2 0 0"/>
+                 <component objectid="3"/>
+               </components></object>
+               <object id="6" type="model"><components><component objectid="4"/></components></object>"#,
+            box_mesh([2.0; 3]),
+            box_mesh([2.0; 3]),
+            box_mesh([1.0; 3]),
+            box_mesh([3.0; 3]),
+        ),
+        r#"<item objectid="5" transform="1 0 0 0 1 0 0 0 1 10 10 0"/>
+           <item objectid="5" transform="1 0 0 0 1 0 0 0 1 30 10 0"/>
+           <item objectid="6" transform="1 0 0 0 1 0 0 0 1 50 10 0"/>"#,
+    );
+    let model_settings = r#"<?xml version="1.0" encoding="UTF-8"?>
+<config>
+  <object id="5">
+    <part id="1" subtype="normal_part"/>
+    <part id="2" subtype="normal_part"/>
+    <part id="3" subtype="normal_part"><metadata key="name" value="Label"/>
+      <slic3rpe:text text="Hi" style_name="Plain"/></part>
+  </object>
+  <object id="6"><part id="4" subtype="normal_part"/></object>
+  <plate>
+    <metadata key="plater_id" value="1"/>
+    <model_instance><metadata key="object_id" value="5"/><metadata key="instance_id" value="0"/></model_instance>
+    <model_instance><metadata key="object_id" value="5"/><metadata key="instance_id" value="1"/></model_instance>
+  </plate>
+  <plate>
+    <metadata key="plater_id" value="2"/>
+    <model_instance><metadata key="object_id" value="6"/><metadata key="instance_id" value="0"/></model_instance>
+  </plate>
+</config>"#;
+    let project = Project::read(package(&[
+        ("3D/3dmodel.model", &root),
+        (MODEL_SETTINGS_PART, model_settings),
+    ]))
+    .unwrap();
+    let decorations: Vec<bool> = (project.objects[0].parts.iter())
+        .map(|part| part.decoration)
+        .collect();
+    assert_eq!(decorations, [false, false, true]);
+
+    // Two copies on the first plate: each has its two boxes, the text
+    // left out, where the copy stands; neither is alone.
+    let first = project.instance_parts(Some(0));
+    assert_eq!(first.len(), 2);
+    for (copy, x) in first.iter().zip([10.0, 30.0]) {
+        assert!(!copy.alone);
+        let bounds: Vec<_> = copy.parts.iter().filter_map(Mesh::bounds).collect();
+        assert_eq!(
+            bounds,
+            [
+                ([x, 10.0, 0.0], [x + 2.0, 12.0, 2.0]),
+                ([x + 2.0, 10.0, 0.0], [x + 4.0, 12.0, 2.0])
+            ]
+        );
+    }
+    let second = project.instance_parts(Some(1));
+    assert_eq!(second.len(), 1);
+    assert!(second[0].alone);
+    assert_eq!(second[0].parts.len(), 1);
+    // The whole project: the first object has two copies.
+    let all = project.instance_parts(None);
+    assert_eq!(
+        all.iter().map(|copy| copy.alone).collect::<Vec<_>>(),
+        [false, false, true]
+    );
+}

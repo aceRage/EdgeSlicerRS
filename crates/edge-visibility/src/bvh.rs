@@ -98,6 +98,62 @@ fn intersect(origin: [f64; 3], direction: [f64; 3], corners: [[f64; 3]; 3]) -> O
     Some(dot(edge2, qvec) * (1.0 / det))
 }
 
+/// The place on a triangle nearest a point (after Ericson, Real-Time
+/// Collision Detection, 5.1.5).
+pub(crate) fn closest_on_triangle(p: [f64; 3], [a, b, c]: [[f64; 3]; 3]) -> [f64; 3] {
+    let along = |from: [f64; 3], by: [f64; 3], t: f64| {
+        [
+            from[0] + by[0] * t,
+            from[1] + by[1] * t,
+            from[2] + by[2] * t,
+        ]
+    };
+    let (ab, ac, ap) = (sub(b, a), sub(c, a), sub(p, a));
+    let (d1, d2) = (dot(ab, ap), dot(ac, ap));
+    if d1 <= 0.0 && d2 <= 0.0 {
+        return a;
+    }
+    let bp = sub(p, b);
+    let (d3, d4) = (dot(ab, bp), dot(ac, bp));
+    if d3 >= 0.0 && d4 <= d3 {
+        return b;
+    }
+    let vc = d1 * d4 - d3 * d2;
+    if vc <= 0.0 && d1 >= 0.0 && d3 <= 0.0 {
+        return along(a, ab, d1 / (d1 - d3));
+    }
+    let cp = sub(p, c);
+    let (d5, d6) = (dot(ab, cp), dot(ac, cp));
+    if d6 >= 0.0 && d5 <= d6 {
+        return c;
+    }
+    let vb = d5 * d2 - d1 * d6;
+    if vb <= 0.0 && d2 >= 0.0 && d6 <= 0.0 {
+        return along(a, ac, d2 / (d2 - d6));
+    }
+    let va = d3 * d6 - d5 * d4;
+    if va <= 0.0 && (d4 - d3) >= 0.0 && (d5 - d6) >= 0.0 {
+        return along(b, sub(c, b), (d4 - d3) / ((d4 - d3) + (d5 - d6)));
+    }
+    let denominator = va + vb + vc;
+    if denominator == 0.0 {
+        // No area: the nearest of its corners.
+        return [a, b, c]
+            .into_iter()
+            .min_by(|x, y| {
+                let (dx, dy) = (sub(*x, p), sub(*y, p));
+                dot(dx, dx).total_cmp(&dot(dy, dy))
+            })
+            .unwrap_or(a);
+    }
+    let (v, w) = (vb / denominator, vc / denominator);
+    [
+        a[0] + ab[0] * v + ac[0] * w,
+        a[1] + ab[1] * v + ac[1] * w,
+        a[2] + ab[2] * v + ac[2] * w,
+    ]
+}
+
 impl Bvh {
     pub fn new(mesh: &Triangles) -> Self {
         let count = mesh.indices.len();
@@ -264,6 +320,75 @@ impl Bvh {
             // box as far is, for the tie.
             best.map_or(f64::INFINITY, |kept| f64::from(kept.t).next_up())
         });
+        best
+    }
+
+    /// The triangle nearest a point, if one is within `reach` of it,
+    /// with the nearest place on it and the square of the distance; of
+    /// two as near, the one of the lower number (AABBTreeIndirect.hpp
+    /// `squared_distance_to_indexed_primitives_recursive`).
+    pub fn closest_within(
+        &self,
+        mesh: &Triangles,
+        point: [f64; 3],
+        reach: f64,
+    ) -> Option<(u32, [f64; 3], f64)> {
+        if self.nodes.is_empty() {
+            return None;
+        }
+        let box_distance = |node: &Node| {
+            (0..3)
+                .map(|axis| {
+                    let away = (node.min[axis] - point[axis])
+                        .max(point[axis] - node.max[axis])
+                        .max(0.0);
+                    away * away
+                })
+                .sum::<f64>()
+        };
+        let mut nearest = reach * reach;
+        let mut best: Option<(u32, [f64; 3], f64)> = None;
+        let mut stack = [0usize; 64];
+        let mut held = 1;
+        while held > 0 {
+            held -= 1;
+            let at = stack[held];
+            let node = &self.nodes[at];
+            if box_distance(node) > nearest {
+                continue;
+            }
+            if node.count == 0 {
+                // The nearer child is looked in first.
+                let (first, second) = (at + 1, node.at as usize);
+                let (near, far) =
+                    if box_distance(&self.nodes[first]) <= box_distance(&self.nodes[second]) {
+                        (first, second)
+                    } else {
+                        (second, first)
+                    };
+                stack[held] = far;
+                stack[held + 1] = near;
+                held += 2;
+                continue;
+            }
+            let from = node.at as usize;
+            for &triangle in &self.order[from..from + node.count as usize] {
+                let corners = [0, 1, 2].map(|which| corner(mesh, triangle, which));
+                let on = closest_on_triangle(point, corners);
+                let away = sub(on, point);
+                let distance = dot(away, away);
+                let better = match best {
+                    None => distance <= nearest,
+                    Some((kept, _, kept_distance)) => {
+                        distance < kept_distance || (distance == kept_distance && triangle < kept)
+                    }
+                };
+                if better {
+                    best = Some((triangle, on, distance));
+                    nearest = distance;
+                }
+            }
+        }
         best
     }
 

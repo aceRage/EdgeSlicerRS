@@ -58,6 +58,7 @@ fn block(project: Option<&Settings>) -> Loaded {
         precise_seams: false,
         objects: Vec::new(),
         negatives: Vec::new(),
+        parts: Vec::new(),
         plate: 0,
         first_layer_sequence: Vec::new(),
         bounds: (min, max),

@@ -258,6 +258,7 @@ mod tests {
             mesh,
             paint: None,
             transform: Transform::IDENTITY,
+            decoration: false,
         }
     }
 

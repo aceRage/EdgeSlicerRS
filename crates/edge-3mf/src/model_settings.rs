@@ -34,6 +34,10 @@ pub(crate) struct PartSettings {
     /// Whether the part names one of Precise Seam's types
     /// (`precise_seam_type`), which a modifier part then is.
     pub precise_seam: bool,
+    /// Whether the part is embossed text or an embossed picture: it
+    /// carries a text or shape description (bbs_3mf.cpp `TEXT_TAG`,
+    /// `SHAPE_TAG`; Model.hpp `ModelVolume::is_text`, `is_svg`).
+    pub decoration: bool,
 }
 
 impl PartSettings {
@@ -134,6 +138,13 @@ pub(crate) fn parse(text: &str, part: &str) -> Result<ModelSettings, Error> {
                 }
                 None => Scope::Other,
             },
+            // Embossed text or an embossed picture, described on the
+            // part it is (`slic3rpe:text`, `slic3rpe:shape`).
+            ("text" | "shape", Some(Scope::Part(object, id))) => {
+                let object = settings.objects.entry(*object).or_default();
+                object.parts.entry(*id).or_default().decoration = true;
+                Scope::Other
+            }
             ("plate", _) => {
                 settings.plates.push(RawPlate::default());
                 Scope::Plate

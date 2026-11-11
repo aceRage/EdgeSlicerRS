@@ -1326,6 +1326,7 @@ impl From<Opened> for Model {
                     mesh: Arc::new(mesh),
                     paint: None,
                     transform: Transform::IDENTITY,
+                    decoration: false,
                 }]);
                 let reach = shape.reach(&Transform::IDENTITY);
                 Self {

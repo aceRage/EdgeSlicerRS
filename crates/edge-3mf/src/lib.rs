@@ -84,6 +84,9 @@ pub struct Part {
     pub paint: Option<Arc<Vec<Facet>>>,
     /// Places the mesh in its object's coordinates.
     pub transform: Transform,
+    /// Whether the part is embossed text or an embossed picture, which
+    /// decorates a surface rather than being a piece of the object.
+    pub decoration: bool,
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -402,6 +405,51 @@ impl Project {
             .collect()
     }
 
+    /// The printed parts of each of those instances, each part a mesh of
+    /// its own, in the same order and coordinates: for where parts meet,
+    /// which seams are moved to. With each, whether its seams may also be
+    /// moved to where other objects stand against it.
+    pub fn instance_parts(&self, plate: Option<usize>) -> Vec<InstanceParts> {
+        let printable: Vec<(&Object, &Instance)> = self.printable(plate).collect();
+        printable
+            .iter()
+            // As `instance_meshes` leaves them out: those with nothing
+            // printed.
+            .filter(|(object, _)| {
+                (object.parts.iter())
+                    .any(|part| part.kind == PartKind::Normal && !part.mesh.triangles.is_empty())
+            })
+            .map(|&(object, instance)| {
+                let parts = (object.parts.iter())
+                    .filter(|part| part.kind == PartKind::Normal && !part.decoration)
+                    .filter(|part| !part.mesh.triangles.is_empty())
+                    .map(|part| {
+                        let mut mesh = Mesh::default();
+                        mesh.append(&part.mesh, &part.transform.then(&instance.transform));
+                        mesh
+                    })
+                    .collect();
+                // The reference's seams are an object's, shared by all
+                // its copies, so other objects count only for an object
+                // with one copy on the plate; and only for one whose
+                // layers are its own, not those of an object the same in
+                // every respect, which the reference slices once and
+                // lays twice (Print.cpp `is_print_object_the_same`,
+                // SeamPlacer.cpp `gather_part_joints`).
+                let copies = (printable.iter())
+                    .filter(|(other, _)| std::ptr::eq(*other, object))
+                    .count();
+                let twin = (printable.iter()).any(|(other, copy)| {
+                    !std::ptr::eq(*other, object) && same(object, instance, other, copy)
+                });
+                InstanceParts {
+                    parts,
+                    alone: copies == 1 && !twin,
+                }
+            })
+            .collect()
+    }
+
     /// Whether anything on a plate (or in the whole project for `None`)
     /// has a Precise Seam part, which is not followed.
     pub fn has_precise_seams(&self, plate: Option<usize>) -> bool {
@@ -444,6 +492,41 @@ pub struct Painted {
     /// Every triangle of its printed parts with the filament it is
     /// painted for, 0 where it is not painted.
     pub facets: Vec<Facet>,
+}
+
+/// One instance's printed parts, each by itself.
+#[derive(Clone, Debug)]
+pub struct InstanceParts {
+    /// Each normal part but embossed text and pictures, in world
+    /// coordinates.
+    pub parts: Vec<Mesh>,
+    /// Whether the instance is the only copy of its object on the plate
+    /// and no other object is the same as it.
+    pub alone: bool,
+}
+
+/// Whether two objects are the same in all the reference asks before it
+/// slices one for both (Print.cpp `is_print_object_the_same`): placed
+/// alike but for where they stand across the bed, the same parts, each
+/// the same mesh, placed alike, in the same filament and painted alike.
+/// The settings of each, which it also asks, are not read here.
+fn same(a: &Object, a_copy: &Instance, b: &Object, b_copy: &Instance) -> bool {
+    let (ma, mb) = (&a_copy.transform.rows, &b_copy.transform.rows);
+    // All but the move across the bed.
+    let alike = ma[..3] == mb[..3] && ma[3][2] == mb[3][2];
+    alike
+        && a.parts.len() == b.parts.len()
+        && a.parts.iter().zip(&b.parts).all(|(a, b)| {
+            a.kind == b.kind
+                && Arc::ptr_eq(&a.mesh, &b.mesh)
+                && a.transform == b.transform
+                && a.filament == b.filament
+                && match (&a.paint, &b.paint) {
+                    (None, None) => true,
+                    (Some(a), Some(b)) => Arc::ptr_eq(a, b),
+                    _ => false,
+                }
+        })
 }
 
 /// Printed material and, for objects that have negative parts, the volume
@@ -596,6 +679,7 @@ fn parts(
                 mesh: mesh.clone(),
                 paint: paint.clone(),
                 transform: Transform::IDENTITY,
+                decoration: false,
             }]);
         }
         Shape::Components(components) => components,
@@ -623,6 +707,7 @@ fn parts(
                 mesh,
                 paint,
                 transform,
+                decoration: part_settings.is_some_and(|s| s.decoration),
             });
         }
     }

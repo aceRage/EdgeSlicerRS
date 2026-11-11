@@ -295,8 +295,12 @@ pub(crate) fn align(layers: &mut [LayerSeams], comparator: &Comparator) {
             .map(|place| [place.position[0], place.position[1]])
             .collect();
         let heights: Vec<f32> = places.iter().map(|place| place.position[2]).collect();
+        // The middle of a joint counts for more again.
         let weights: Vec<f32> = (places.iter())
-            .map(|place| 1.0 / (0.1 + angle_penalty(place.angle)))
+            .map(|place| {
+                1.0 / (0.1 + angle_penalty(place.angle))
+                    + if place.central_part_joint { 3.0 } else { 0.0 }
+            })
             .collect();
         // How long the line is, which says how many stretches the curve
         // has: a seam where the line bends more than its wall does
@@ -311,7 +315,9 @@ pub(crate) fn align(layers: &mut [LayerSeams], comparator: &Comparator) {
                     sub(places[at + 1].position, place.position),
                 );
             }
-            let curling = if f64::from(bend) > 2.0 * f64::from(place.angle.abs()) {
+            let curling = if f64::from(bend) > 2.0 * f64::from(place.angle.abs())
+                && !place.central_part_joint
+            {
                 -0.8
             } else {
                 1.0
@@ -329,13 +335,28 @@ pub(crate) fn align(layers: &mut [LayerSeams], comparator: &Comparator) {
         for (&at, place) in string.iter().zip(&places) {
             let keep = (place.angle.abs() / SHARP).powf(3.0).min(1.0);
             let fitted = curve.at(place.position[2]);
-            let settled = [
+            let mut settled = [
                 keep * place.position[0] + (1.0 - keep) * fitted[0],
                 keep * place.position[1] + (1.0 - keep) * fitted[1],
                 place.position[2],
             ];
             let layer = &mut layers[at.0];
             let perimeter = &mut layer.perimeters[layer.points[at.1].perimeter as usize];
+            if place.central_part_joint {
+                // Along the joint, but never off it: no further than half
+                // a line's width from the joint's point.
+                let shift = [
+                    settled[0] - place.position[0],
+                    settled[1] - place.position[1],
+                    settled[2] - place.position[2],
+                ];
+                let (moved, most) = (length(shift), 0.5 * perimeter.flow_width);
+                if moved > most {
+                    settled = std::array::from_fn(|axis| {
+                        place.position[axis] + shift[axis] * (most / moved)
+                    });
+                }
+            }
             perimeter.seam = at.1;
             perimeter.finalized = Some(settled);
         }
