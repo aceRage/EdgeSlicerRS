@@ -8,6 +8,7 @@
 //! and one-wall-on-top perimeters, fuzzy skin, spiral vase, and the
 //! nesting order loops are printed in.
 
+mod extra;
 mod settings;
 
 use std::ops::Range;
@@ -62,6 +63,25 @@ pub struct Params {
     /// Set where walls are of changing width; the layer is then walled
     /// by [`arachne`].
     pub arachne: Option<ArachneParams>,
+    /// The outer wall stands clear of the wall behind it by their widths
+    /// and not their spacings, so that the wall behind does not push it
+    /// outward (`precise_outer_wall`).
+    pub precise_outer_wall: bool,
+    /// Set where fill that hangs over air gets walls of its own
+    /// (`extra_perimeters_on_overhangs`).
+    pub over_air: Option<OverAir>,
+}
+
+/// What `extra_perimeters_on_overhangs` needs on a layer with one below.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct OverAir {
+    /// What a wall over air is laid with.
+    pub flow: Flow,
+    /// The layer below counts as holding up this much beyond its
+    /// outline: half the nozzle's bore.
+    pub grow_lower: Coord,
+    /// The number of walls asked for.
+    pub wall_loops: usize,
 }
 
 /// What walls of changing width are made to on one layer: see
@@ -102,6 +122,7 @@ pub struct OneWallTop {
 /// The part's outlines on the layers next to the one being walled.
 #[derive(Clone, Copy, Debug)]
 pub struct Around<'a> {
+    /// Empty on the part's last layer.
     pub upper: &'a [ExPolygon],
     pub lower: Option<&'a [ExPolygon]>,
 }
@@ -208,6 +229,10 @@ pub struct Perimeters {
     pub gap_fill: Vec<ExtrusionPath>,
     /// Gaps left empty because their centre line could not be worked out.
     pub gaps_skipped: usize,
+    /// Walls over fill that hangs over air and cannot be bridged, in
+    /// the overhang wall's role and in the order they are to be laid:
+    /// ahead of the loops of the island they are in.
+    pub over_air: Vec<ExtrusionPath>,
 }
 
 /// Concentric constant-width walls for one layer's regions.
@@ -229,8 +254,13 @@ pub fn classic_between(
     let ext_width = params.outer.scaled_width();
     let ext_spacing = params.outer.scaled_spacing();
     let spacing = params.inner.scaled_spacing();
-    // Centre-line distance between the external wall and the one behind it.
-    let ext_spacing2 = scaled(0.5 * (params.outer.spacing + params.inner.spacing));
+    // Centre-line distance between the external wall and the one behind
+    // it: by their widths where the outer wall is to be precise.
+    let ext_spacing2 = if params.precise_outer_wall {
+        scaled(0.5 * (params.outer.width + params.inner.width))
+    } else {
+        scaled(0.5 * (params.outer.spacing + params.inner.spacing))
+    };
     // Loops keep their full spacing; this smaller figure only decides when
     // an area is too narrow to take another loop at all.
     let min_spacing = (spacing as f64 * (1.0 - INSET_OVERLAP_TOLERANCE)) as Coord;
@@ -382,6 +412,9 @@ pub fn classic_between(
             infill.extend(edge_clip::offset(&reached, top_overlap, Join::MITER)?);
             infill = edge_clip::union_ex(&infill)?;
         }
+        if result.loops.len() > first_loop {
+            wall_over_air(&mut infill, &mut result.over_air, params, around.as_ref())?;
+        }
         result.infill.extend(infill);
     }
     Ok(result)
@@ -423,28 +456,36 @@ pub fn arachne(
     let flow_of = |flow: &Flow, width: Coord| {
         flow.with_width(unscaled(width) + height * (1.0 - 0.25 * std::f64::consts::PI))
     };
-    let walled = |outline: &[ExPolygon], bead_width_0: Coord, inset_count: usize| {
-        edge_arachne::generate(
-            outline,
-            &edge_arachne::Params {
-                bead_width_0,
-                bead_width_x: spacing,
-                inset_count,
-                wall_0_inset: 0,
-                layer_height: height,
-                min_bead_width: tuning.min_bead_width,
-                min_feature_size: tuning.min_feature_size,
-                min_length_factor: tuning.min_length_factor,
-                wall_transition_length: tuning.wall_transition_length,
-                wall_transition_angle: tuning.wall_transition_angle,
-                wall_transition_filter_deviation: tuning.wall_transition_filter_deviation,
-                wall_distribution_count: tuning.wall_distribution_count,
-                is_top_or_bottom_layer: tuning.is_top_or_bottom_layer,
-                wall_maximum_resolution: tuning.wall_maximum_resolution,
-                wall_maximum_deviation: tuning.wall_maximum_deviation,
-            },
-        )
+    // A precise outer wall is made half its overlap further in and set
+    // back out by as much, which leaves the overlap to the wall behind.
+    let wall_0_inset = if params.precise_outer_wall {
+        -(ext_width / 2 - ext_spacing / 2)
+    } else {
+        0
     };
+    let walled =
+        |outline: &[ExPolygon], bead_width_0: Coord, inset_count: usize, wall_0_inset: Coord| {
+            edge_arachne::generate(
+                outline,
+                &edge_arachne::Params {
+                    bead_width_0,
+                    bead_width_x: spacing,
+                    inset_count,
+                    wall_0_inset,
+                    layer_height: height,
+                    min_bead_width: tuning.min_bead_width,
+                    min_feature_size: tuning.min_feature_size,
+                    min_length_factor: tuning.min_length_factor,
+                    wall_transition_length: tuning.wall_transition_length,
+                    wall_transition_angle: tuning.wall_transition_angle,
+                    wall_transition_filter_deviation: tuning.wall_transition_filter_deviation,
+                    wall_distribution_count: tuning.wall_distribution_count,
+                    is_top_or_bottom_layer: tuning.is_top_or_bottom_layer,
+                    wall_maximum_resolution: tuning.wall_maximum_resolution,
+                    wall_maximum_deviation: tuning.wall_maximum_deviation,
+                },
+            )
+        };
     // One wall over top surfaces needs a wall to give up and the layers
     // next to this one to tell a top surface by.
     let one_wall_top = params
@@ -461,7 +502,11 @@ pub fn arachne(
         // its outer edge lies on the outline.
         let last = edge_clip::offset(
             &simplified,
-            -((ext_width as f64 / 2.0 - ext_spacing as f64 / 2.0) as Coord),
+            if params.precise_outer_wall {
+                -(ext_width - ext_spacing)
+            } else {
+                -((ext_width as f64 / 2.0 - ext_spacing as f64 / 2.0) as Coord)
+            },
             Join::MITER,
         )?;
         let first_pass = walled(
@@ -472,6 +517,7 @@ pub fn arachne(
             } else {
                 params.wall_loops
             },
+            wall_0_inset,
         )?;
         let (mut perimeters, mut infill_contour) = (first_pass.toolpaths, first_pass.inner_contour);
         let mut top_fills: Vec<ExPolygon> = Vec::new();
@@ -512,7 +558,7 @@ pub fn arachne(
             let mut full: Option<edge_arachne::Walls> = None;
             let mut full_pass = || -> Result<edge_arachne::Walls, Error> {
                 if full.is_none() {
-                    full = Some(walled(&last, ext_spacing, inner_walls + 1)?);
+                    full = Some(walled(&last, ext_spacing, inner_walls + 1, wall_0_inset)?);
                 }
                 Ok(full.clone().unwrap_or_default())
             };
@@ -552,7 +598,7 @@ pub fn arachne(
             if uncovered {
                 // The inner walls go round what is not a top surface.
                 let inner_region = edge_clip::difference(&infill_contour, &tops)?;
-                let inner = walled(&inner_region, spacing, inner_walls)?;
+                let inner = walled(&inner_region, spacing, inner_walls, 0)?;
                 let mut inner_paths = inner.toolpaths;
                 if !perimeters.is_empty() {
                     for line in inner_paths.iter_mut().flatten() {
@@ -685,9 +731,51 @@ pub fn arachne(
             infill.extend(edge_clip::offset(&top_fills, top_inset, Join::MITER)?);
             infill = edge_clip::union_ex(&infill)?;
         }
+        if result.loops.len() > first_loop {
+            wall_over_air(&mut infill, &mut result.over_air, params, around.as_ref())?;
+        }
         result.infill.extend(infill);
     }
     Ok(result)
+}
+
+/// Where [`Params::over_air`] is set and there is a layer below, walls
+/// what of an island's fill hangs over air and cannot be bridged, and
+/// takes what those walls cover out of the fill
+/// (`PerimeterGenerator::apply_extra_perimeters`).
+fn wall_over_air(
+    infill: &mut Vec<ExPolygon>,
+    walls: &mut Vec<ExtrusionPath>,
+    params: &Params,
+    around: Option<&Around<'_>>,
+) -> Result<(), Error> {
+    let Some((over_air, lower)) = params
+        .over_air
+        .as_ref()
+        .zip(around.and_then(|around| around.lower))
+    else {
+        return Ok(());
+    };
+    // What holds a line up: the layer below and half a nozzle beyond it.
+    let lower = edge_clip::offset(lower, over_air.grow_lower, Join::MITER)?;
+    let (extra, filled) = over_overhangs(infill, &lower, over_air.wall_loops, &over_air.flow)?;
+    if extra.is_empty() {
+        return Ok(());
+    }
+    walls.extend(extra.into_iter().flatten());
+    *infill = edge_clip::difference(infill, &filled)?;
+    Ok(())
+}
+
+// SHIM: stands in until `extra::over_overhangs` lands.
+#[allow(clippy::type_complexity)]
+fn over_overhangs(
+    _infill: &[ExPolygon],
+    _lower: &[ExPolygon],
+    _wall_loops: usize,
+    _flow: &Flow,
+) -> Result<(Vec<Vec<ExtrusionPath>>, Vec<ExPolygon>), Error> {
+    Ok((Vec::new(), Vec::new()))
 }
 
 /// The points of each wall with a length to it.
@@ -835,6 +923,8 @@ mod tests {
             resolution: scaled(0.01),
             gap_fill: None,
             arachne: None,
+            precise_outer_wall: false,
+            over_air: None,
         }
     }
 
@@ -1385,5 +1475,41 @@ mod tests {
             .map(|wall| (wall.depth, wall.is_hole))
             .collect();
         assert_eq!(order, [(0, false), (0, true), (1, false), (1, true)]);
+    }
+
+    /// The width in mm of an axis-aligned loop round a block at the origin.
+    fn across(wall: &ExtrusionLoop) -> f64 {
+        let xs = wall.polygon.points.iter().map(|point| point.x);
+        unscaled(xs.clone().max().unwrap() - xs.min().unwrap())
+    }
+
+    #[test]
+    fn a_precise_outer_wall_stays_put_and_the_wall_behind_gives_way() {
+        // Walls 0.45 mm wide lie 0.407 mm apart: the inner wall overlaps
+        // the outer by what their rounded edges leave. Made precise, the
+        // outer wall is where it was and the inner one further in.
+        for base in [params(2), varying(2)] {
+            let precise = Params {
+                precise_outer_wall: true,
+                ..base
+            };
+            let plain = classic(&[block(0.0, 0.0, 20.0, 20.0)], &base).unwrap();
+            let walls = classic(&[block(0.0, 0.0, 20.0, 20.0)], &precise).unwrap();
+            assert_eq!((plain.loops.len(), walls.loops.len()), (2, 2));
+            assert!((across(&walls.loops[0]) - across(&plain.loops[0])).abs() < 1e-3);
+            assert!((across(&walls.loops[0]) - 19.55).abs() < 1e-3);
+            let (width, spacing) = (base.outer.width, base.outer.spacing);
+            let apart =
+                |walls: &Perimeters| (across(&walls.loops[0]) - across(&walls.loops[1])) / 2.0;
+            assert!((apart(&plain) - spacing).abs() < 2e-3);
+            // Walls of changing width give up half of what the classic
+            // ones do, as in the reference.
+            let expected = if base.arachne.is_some() {
+                0.5 * (width + spacing)
+            } else {
+                width
+            };
+            assert!((apart(&walls) - expected).abs() < 2e-3, "{}", apart(&walls));
+        }
     }
 }

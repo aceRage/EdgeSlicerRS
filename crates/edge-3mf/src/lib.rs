@@ -56,6 +56,9 @@ pub struct Project {
     pub plates: Vec<Plate>,
     /// The full settings the project was saved with, when it carries them.
     pub settings: Option<Settings>,
+    /// What is painted on the project's models other than colour (fuzzy
+    /// skin, seams, supports), in order of name. None of it is read.
+    pub unread_paint: Vec<&'static str>,
 }
 
 #[derive(Clone, Debug)]
@@ -205,10 +208,15 @@ impl Project {
             })
             .collect();
 
+        let unread_paint: std::collections::BTreeSet<&'static str> = files
+            .values()
+            .flat_map(|file| file.unread_paint.iter().copied())
+            .collect();
         Ok(Self {
             objects,
             plates,
             settings,
+            unread_paint: unread_paint.into_iter().collect(),
         })
     }
 

@@ -46,6 +46,19 @@ pub struct WallSettings {
     /// Set where walls are of changing width (`wall_generator` at
     /// `arachne`, which is the reference's default); none for `classic`.
     pub arachne: Option<ArachneSettings>,
+    /// The outer wall keeps its full width clear of the wall behind it
+    /// (`precise_outer_wall`). Only with inner walls laid first, as in
+    /// the reference; false otherwise, whatever was asked.
+    pub precise_outer_wall: bool,
+    /// Walls are checked against the layer below (`detect_overhang_wall`).
+    pub detect_overhang_wall: bool,
+    /// Fill that hangs over air and cannot be bridged gets walls of its
+    /// own (`extra_perimeters_on_overhangs`).
+    pub extra_perimeters_on_overhangs: bool,
+    /// How much plastic a line over air gets, and whether as a round
+    /// thread: what the walls over overhangs are laid with.
+    pub bridge_flow: f64,
+    pub thick_bridges: bool,
 }
 
 /// What `wall_generator = arachne` is tuned by. The percentages are of
@@ -107,6 +120,11 @@ impl Default for WallSettings {
             gap_infill_speed: 30.0,
             filter_out_gap_fill: 0.0,
             arachne: Some(ArachneSettings::default()),
+            precise_outer_wall: false,
+            detect_overhang_wall: true,
+            extra_perimeters_on_overhangs: false,
+            bridge_flow: 1.0,
+            thick_bridges: false,
         }
     }
 }
@@ -200,8 +218,25 @@ impl WallSettings {
                 });
             }
         };
+        let flag = |key: &str, default: bool| -> Result<bool, ConfigError> {
+            Ok(settings.flag(key)?.unwrap_or(default))
+        };
+        // PerimeterGenerator.cpp: "ignore precise_outer_wall if
+        // wall_sequence is not InnerOuter".
+        let inner_first = matches!(
+            settings.text("wall_sequence"),
+            None | Some("inner wall/outer wall")
+        );
         Ok(Self {
             arachne,
+            precise_outer_wall: inner_first && flag("precise_outer_wall", false)?,
+            detect_overhang_wall: flag("detect_overhang_wall", defaults.detect_overhang_wall)?,
+            extra_perimeters_on_overhangs: flag(
+                "extra_perimeters_on_overhangs",
+                defaults.extra_perimeters_on_overhangs,
+            )?,
+            bridge_flow: number("bridge_flow", defaults.bridge_flow)?,
+            thick_bridges: flag("thick_bridges", defaults.thick_bridges)?,
             wall_loops: count("wall_loops", defaults.wall_loops)?,
             outer_wall_line_width: width("outer_wall_line_width", defaults.outer_wall_line_width)?,
             inner_wall_line_width: width("inner_wall_line_width", defaults.inner_wall_line_width)?,
@@ -284,6 +319,21 @@ impl WallSettings {
         if let Some(arachne) = &mut params.arachne {
             arachne.is_top_or_bottom_layer = index == 0 || index + 1 == layer_count;
         }
+        // Fill over air gets walls of its own where walls are checked
+        // against the layer below at all, there are walls, and there is
+        // a layer below (`PerimeterGenerator::apply_extra_perimeters`).
+        if index > 0
+            && self.detect_overhang_wall
+            && self.extra_perimeters_on_overhangs
+            && self.wall_loops > 0
+        {
+            params.over_air = Some(crate::OverAir {
+                // `LayerRegion::bridging_flow` of the inner wall's.
+                flow: params.inner.bridging(self.bridge_flow, self.thick_bridges),
+                grow_lower: scaled(self.nozzle_diameter / 2.0),
+                wall_loops: self.wall_loops,
+            });
+        }
         // Below the last layer a top surface keeps only its outer wall,
         // where there is a top shell to make one of it.
         if self.only_one_wall_top && self.top_shell_layers > 0 && index + 1 < layer_count {
@@ -329,6 +379,8 @@ impl WallSettings {
                 shortest: scaled(self.filter_out_gap_fill),
             }),
             one_wall_top: None,
+            precise_outer_wall: self.precise_outer_wall,
+            over_air: None,
             arachne: self.arachne.map(|arachne| {
                 // Of the nozzle's diameter, and kept in single precision,
                 // as the reference keeps them (`make_paths_params`).
@@ -577,6 +629,62 @@ mod tests {
         let asked = read(r#"{"only_one_wall_top": "1"}"#).unwrap();
         assert!(asked.notes().is_empty());
         assert!(asked.params_at(0.2, 4, 10).unwrap().one_wall_top.is_some());
+    }
+
+    #[test]
+    fn a_precise_outer_wall_needs_inner_walls_first() {
+        let read = |json: &str| {
+            WallSettings::from_settings(&Settings::from_json(json).unwrap())
+                .unwrap()
+                .params(0.2, false)
+                .unwrap()
+                .precise_outer_wall
+        };
+        assert!(!read("{}"));
+        assert!(read(r#"{"precise_outer_wall": "1"}"#));
+        assert!(read(
+            r#"{"precise_outer_wall": "1", "wall_sequence": "inner wall/outer wall"}"#
+        ));
+        assert!(!read(
+            r#"{"precise_outer_wall": "1", "wall_sequence": "outer wall/inner wall"}"#
+        ));
+        assert!(!read(
+            r#"{"precise_outer_wall": "1", "wall_sequence": "inner-outer-inner wall"}"#
+        ));
+    }
+
+    #[test]
+    fn walls_over_air_are_asked_for_above_the_first_layer() {
+        let settings = WallSettings::from_settings(
+            &Settings::from_json(
+                r#"{"extra_perimeters_on_overhangs": "1", "bridge_flow": "0.8", "wall_loops": "3",
+                    "nozzle_diameter": ["0.4"]}"#,
+            )
+            .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(settings.params_at(0.2, 0, 10).unwrap().over_air, None);
+        let asked = settings.params_at(0.2, 3, 10).unwrap();
+        let over_air = asked.over_air.unwrap();
+        assert_eq!((over_air.grow_lower, over_air.wall_loops), (200_000, 3));
+        assert_eq!(over_air.flow, asked.inner.bridging(0.8, false));
+        // Not without the check against the layer below, nor with no walls.
+        for off in [
+            WallSettings {
+                detect_overhang_wall: false,
+                ..settings
+            },
+            WallSettings {
+                wall_loops: 0,
+                ..settings
+            },
+            WallSettings {
+                extra_perimeters_on_overhangs: false,
+                ..settings
+            },
+        ] {
+            assert_eq!(off.params_at(0.2, 3, 10).unwrap().over_air, None);
+        }
     }
 
     #[test]

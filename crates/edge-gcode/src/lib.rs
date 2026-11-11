@@ -88,6 +88,10 @@ pub struct Layer<'a> {
     pub loops: &'a [ExtrusionLoop],
     /// Which of `loops` make up each island.
     pub islands: &'a [Range<usize>],
+    /// Fill, each line laid with the island it lies in. A line in the
+    /// overhang wall's role is a wall over fill that hangs over air, and
+    /// is laid ahead of its island's loops; one in a wall's role goes
+    /// with the walls, after the loops.
     pub paths: &'a [ExtrusionPath],
     /// Where a move to a fill line may skip retraction if it stays
     /// within one piece: the part of the layer that is neither a top
@@ -1238,12 +1242,28 @@ impl Writer<'_> {
                     .copied()
             }));
             let island = remaining.remove(nearest);
+            // Walls laid over fill that hangs over air come ahead of the
+            // island's loops (`PerimeterGenerator::apply_extra_perimeters`
+            // puts them first among its walls).
+            // The walls of thin parts that are not loops follow the
+            // loops. Gap fill stays with the fill, as in the reference
+            // (Fill.cpp, where `thin_fills` join the fills).
+            let (mut over_air, mut with_walls, mut rest) = (Vec::new(), Vec::new(), Vec::new());
+            for path in fill(island) {
+                match path.role {
+                    Role::OverhangPerimeter => over_air.push(path),
+                    Role::ExternalPerimeter | Role::Perimeter => with_walls.push(path),
+                    _ => rest.push(path),
+                }
+            }
             if self.settings.infill_first {
-                self.lines(&fill(island), layer.shelter)?;
-                self.walls(layer, &layer.islands[island])?;
-            } else {
-                self.walls(layer, &layer.islands[island])?;
-                self.lines(&fill(island), layer.shelter)?;
+                self.lines(&rest, layer.shelter)?;
+            }
+            self.lines(&over_air, layer.shelter)?;
+            self.walls(layer, &layer.islands[island])?;
+            self.lines(&with_walls, layer.shelter)?;
+            if !self.settings.infill_first {
+                self.lines(&rest, layer.shelter)?;
             }
         }
         self.lines(&fill(layer.islands.len()), layer.shelter)
@@ -1429,8 +1449,10 @@ impl Writer<'_> {
         // so does every outer wall (GCode.cpp `overhang_fan_on_for_role`).
         let fan = s.overhang_fan.filter(|_| !self.state.first_layer);
         let cooled = fan.is_some_and(|fan| {
-            matches!(role, Role::BridgeInfill | Role::InternalBridge)
-                || (fan.at.is_none() && role == Role::ExternalPerimeter)
+            matches!(
+                role,
+                Role::BridgeInfill | Role::InternalBridge | Role::OverhangPerimeter
+            ) || (fan.at.is_none() && role == Role::ExternalPerimeter)
         });
         let is_wall = matches!(role, Role::ExternalPerimeter | Role::Perimeter);
         let key: Measured = (

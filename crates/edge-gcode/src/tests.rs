@@ -219,6 +219,62 @@ fn walls_follow_the_configured_order_island_by_island() {
 }
 
 #[test]
+fn walls_over_air_are_laid_ahead_of_their_islands_loops() {
+    let loops = [
+        wall(0.0, 0.0, 10.0, 0),
+        wall(0.5, 0.5, 9.0, 1),
+        wall(30.0, 0.0, 10.0, 0),
+    ];
+    let islands = [0..2, 2..3];
+    // Given after the fill, and in the second island's case with it.
+    let mut over_air = [
+        line((2.0, 3.0), (8.0, 3.0), Role::OverhangPerimeter),
+        line((8.0, 3.5), (2.0, 3.5), Role::OverhangPerimeter),
+    ];
+    over_air[1].in_turn = true;
+    let fill = [
+        line((2.0, 2.0), (8.0, 2.0), Role::SolidInfill),
+        over_air[0].clone(),
+        over_air[1].clone(),
+        line((32.0, 2.0), (38.0, 2.0), Role::SolidInfill),
+    ];
+    let (text, _) = print(&one_layer(&loops, &islands, &fill), &basic());
+    assert_eq!(
+        features(&text),
+        [
+            "Overhang wall",
+            "Inner wall",
+            "Outer wall",
+            "Internal solid infill",
+            "Outer wall",
+            "Internal solid infill"
+        ]
+    );
+    // In the order given, from the first one's first point.
+    let laid: Vec<(f64, f64)> = starts(&text)
+        .into_iter()
+        .filter(|(feature, _, _)| *feature == "Overhang wall")
+        .map(|(_, x, y)| (x, y))
+        .collect();
+    assert_eq!(laid, [(2.0, 3.0)]);
+
+    let infill_first = PrintSettings {
+        infill_first: true,
+        ..basic()
+    };
+    let (text, _) = print(&one_layer(&loops[..2], &[0..2], &fill[..3]), &infill_first);
+    assert_eq!(
+        features(&text),
+        [
+            "Internal solid infill",
+            "Overhang wall",
+            "Inner wall",
+            "Outer wall"
+        ]
+    );
+}
+
+#[test]
 fn speeds_follow_role_layer_and_the_melt_limit() {
     let loops = [wall(0.0, 0.0, 10.0, 0)];
     let fill = [line((2.0, 2.0), (8.0, 2.0), Role::SparseInfill)];
@@ -487,6 +543,41 @@ fn an_island_is_finished_before_the_next_is_begun() {
         .map(|(_, x, _)| x > 20.0)
         .collect();
     assert_eq!(sides, [false, false, false, true, true, true]);
+
+    // A thin part's wall that is not a loop goes with the walls, after
+    // the loops, whichever of walls and fill comes first.
+    let with_thin = [
+        line((2.0, 7.0), (8.0, 7.0), Role::ExternalPerimeter),
+        fill[0].clone(),
+        fill[2].clone(),
+    ];
+    for (settings, expected) in [
+        (
+            basic(),
+            [
+                "Outer wall",
+                "Outer wall",
+                "Gap infill",
+                "Internal solid infill",
+            ],
+        ),
+        (
+            first,
+            [
+                "Gap infill",
+                "Internal solid infill",
+                "Outer wall",
+                "Outer wall",
+            ],
+        ),
+    ] {
+        let (text, _) = print(&one_layer(&loops[..1], &[0..1], &with_thin), &settings);
+        let kinds: Vec<&str> = starts(&text).into_iter().map(|(kind, ..)| kind).collect();
+        // The loop and the line share a heading where one follows the other.
+        let mut wanted = expected.to_vec();
+        wanted.dedup();
+        assert_eq!(kinds, wanted);
+    }
 }
 
 #[test]

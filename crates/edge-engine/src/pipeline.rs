@@ -338,8 +338,8 @@ pub fn slice(job: Job, watch: &dyn Watcher) -> Result<Sliced, Failure> {
                         .map_err(|e| e.to_string())?;
                     // A top surface is told from the part as a whole, on
                     // the layer above and the one below.
-                    let around = outlines.get(index + 1).map(|upper| edge_perimeter::Around {
-                        upper,
+                    let around = Some(edge_perimeter::Around {
+                        upper: outlines.get(index + 1).copied().unwrap_or(&[]),
                         lower: index.checked_sub(1).map(|below| outlines[below]),
                     });
                     edge_perimeter::classic_between(share(filament, index), &params, around)
@@ -517,6 +517,9 @@ pub fn slice(job: Job, watch: &dyn Watcher) -> Result<Sliced, Failure> {
         let mut fills = fills;
         for (layer, walls) in fills.iter_mut().zip(perimeters) {
             layer.splice(0..0, walls.gap_fill.iter().cloned());
+            // So do walls over fill that hangs over air; the writer
+            // takes those ahead of the loops.
+            layer.splice(0..0, walls.over_air.iter().cloned());
         }
         surfaces_by.push(surfaces);
         fills_by.push(fills);

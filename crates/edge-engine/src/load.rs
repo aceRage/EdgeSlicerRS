@@ -29,6 +29,8 @@ pub struct Loaded {
     pub painted: Vec<Painted>,
     /// For a project, the settings it was saved with.
     pub settings: Option<Settings>,
+    /// For a project, what is painted on its models that is not read.
+    pub unread_paint: Vec<&'static str>,
     /// For a project, each object on the plate by itself, for what depends
     /// on which object is which. Empty for a bare model, which is one object.
     pub objects: Vec<Mesh>,
@@ -154,6 +156,10 @@ impl Opened {
             } => project.plates[*index].first_layer_sequence.clone(),
             _ => Vec::new(),
         };
+        let unread_paint = match &self.held {
+            Held::Project { project, .. } => project.unread_paint.clone(),
+            Held::Model(_) => Vec::new(),
+        };
         let (mut bodies, mut painted, settings, mut objects, plate) = match self.held {
             Held::Model(solid) => (
                 vec![Body {
@@ -216,6 +222,7 @@ impl Opened {
             bodies,
             painted,
             settings,
+            unread_paint,
             objects,
             plate: plate.map_or(0, |(index, ..)| index),
             first_layer_sequence,
