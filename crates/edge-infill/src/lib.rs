@@ -13,11 +13,16 @@
 
 mod curves;
 mod fill;
+mod ironing;
 pub mod lines;
 mod settings;
 mod surfaces;
 
 pub use fill::{FillParams, Frame, GapFillTarget, fill, fill_from, fill_within};
+pub use ironing::{
+    IronedLayer, Ironing, IroningPattern, IroningSettings, IroningType, exposed, iron,
+    ironing_areas,
+};
 pub use settings::{InfillSettings, Pattern};
 pub use surfaces::{
     Anchoring, Beneath, Shells, Surface, SurfaceKind, WallsAround, anchor, bridge_edges,

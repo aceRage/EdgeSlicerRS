@@ -61,6 +61,12 @@ pub struct PrintSettings {
     pub sparse_infill_speed: f64,
     pub internal_solid_infill_speed: f64,
     pub top_surface_speed: f64,
+    /// Ironing lines: the process's speed, or the filament's own where
+    /// it sets one (`ironing_speed`, `filament_ironing_speed`).
+    pub ironing_speed: f64,
+    /// The part fan while ironing, in percent; none when ironing gets
+    /// the layer's (`ironing_fan_speed` below zero).
+    pub ironing_fan_speed: Option<f64>,
     pub bridge_speed: f64,
     /// Lines that fill the gaps between walls.
     pub gap_infill_speed: f64,
@@ -256,6 +262,8 @@ impl Default for PrintSettings {
             sparse_infill_speed: 100.0,
             internal_solid_infill_speed: 100.0,
             top_surface_speed: 100.0,
+            ironing_speed: 20.0,
+            ironing_fan_speed: None,
             bridge_speed: 25.0,
             gap_infill_speed: 30.0,
             detect_overhang_wall: true,
@@ -597,6 +605,19 @@ impl PrintSettings {
                 defaults.internal_solid_infill_speed,
             )?,
             top_surface_speed: number("top_surface_speed", defaults.top_surface_speed)?,
+            // "The active filament's ironing speed override wins when
+            // set" (GCode.cpp `_extrude`); a filament the list has no
+            // entry for keeps the process's speed, and does not borrow
+            // another's (PrintConfig.hpp `ironing_filament_override`).
+            ironing_speed: match settings
+                .floats("filament_ironing_speed")?
+                .and_then(|speeds| speeds.get(index).copied().flatten())
+                .filter(|speed| *speed > 0.0)
+            {
+                Some(own) => own,
+                None => number("ironing_speed", defaults.ironing_speed)?,
+            },
+            ironing_fan_speed: first("ironing_fan_speed")?.filter(|speed| *speed >= 0.0),
             bridge_speed: number("bridge_speed", defaults.bridge_speed)?,
             gap_infill_speed: number("gap_infill_speed", defaults.gap_infill_speed)?,
             detect_overhang_wall: flag("detect_overhang_wall", defaults.detect_overhang_wall)?,

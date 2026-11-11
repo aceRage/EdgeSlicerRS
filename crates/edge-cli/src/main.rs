@@ -365,7 +365,13 @@ fn slice(args: SliceArgs) -> Result<(), Failure> {
             .sum::<f64>()
             / 100.0
     };
-    let paths = || fills.iter().flatten();
+    // Ironing is counted by itself, further down.
+    let paths = || {
+        fills
+            .iter()
+            .flatten()
+            .filter(|line| line.role != Role::Ironing)
+    };
     println!(
         "infill at {}% {:?}: {:.1} cm² top, {:.1} bottom, {:.1} bridge, {:.1} solid, {:.1} bridged \
          over infill, {:.1} sparse; {} lines, {:.2} m, {:.2} cm³",
@@ -420,6 +426,22 @@ fn slice(args: SliceArgs) -> Result<(), Failure> {
             "gaps between walls filled with {} line(s), {:.2} m",
             gap_lines().count(),
             gap_lines().map(ExtrusionPath::length_mm).sum::<f64>() / 1e3,
+        );
+    }
+    let ironed = |layer: &&Vec<ExtrusionPath>| layer.iter().any(|line| line.role == Role::Ironing);
+    let ironing = || {
+        fills
+            .iter()
+            .flatten()
+            .filter(|line| line.role == Role::Ironing)
+    };
+    if ironing().next().is_some() {
+        println!(
+            "ironing on {} layer(s): {} line(s), {:.2} m, {:.3} cm³",
+            fills.iter().filter(ironed).count(),
+            ironing().count(),
+            ironing().map(ExtrusionPath::length_mm).sum::<f64>() / 1e3,
+            ironing().map(ExtrusionPath::volume_mm3).sum::<f64>() / 1e3,
         );
     }
     let gaps_skipped: usize = sliced
@@ -598,6 +620,8 @@ fn svg(layer: &LayerRegions, perimeters: &Perimeters, fills: &[ExtrusionPath]) -
             Role::InternalBridge => "#e76f51",
             Role::SolidInfill => "#b5651d",
             Role::GapFill => "#f4f1de",
+            // The reference's own colour for it.
+            Role::Ironing => "#ff8c69",
             _ => "#e09f3e",
         };
         write!(

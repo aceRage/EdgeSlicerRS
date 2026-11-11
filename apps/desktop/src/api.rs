@@ -1492,13 +1492,14 @@ impl Session {
 
 /// The features in the order the reference's legend lists them: that of
 /// its roles (libvgcode `EGCodeExtrusionRole`).
-const LEGEND: [Role; 15] = [
+const LEGEND: [Role; 16] = [
     Role::Perimeter,
     Role::ExternalPerimeter,
     Role::OverhangPerimeter,
     Role::SparseInfill,
     Role::SolidInfill,
     Role::TopSolidInfill,
+    Role::Ironing,
     Role::BridgeInfill,
     Role::GapFill,
     Role::Skirt,

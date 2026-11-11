@@ -1002,6 +1002,7 @@ const featureColours = {
   'Sparse infill': '#b03029',
   'Internal solid infill': '#9654cc',
   'Top surface': '#f04040',
+  'Ironing': '#ff8c69',
   'Bridge': '#4d80ba',
   'Gap infill': '#ffffff',
   'Skirt': '#00876e',
