@@ -47,6 +47,13 @@ pub struct Shells {
     pub top_layers: usize,
     /// Solid layers at a bottom surface, counting the surface itself.
     pub bottom_layers: usize,
+    /// The least a shell under a top surface is to measure, in mm, the
+    /// surface's own layer included (`top_shell_thickness`): where
+    /// `top_layers` of them come to less, further layers are made solid
+    /// until it is reached. Zero leaves the count to say.
+    pub top_thickness: f64,
+    /// The same over a bottom surface (`bottom_shell_thickness`).
+    pub bottom_thickness: f64,
     /// Sparse fill density from 0 to 1. At 1 everything inside is solid.
     pub sparse_density: f64,
     /// Sparse areas smaller than this many mm² are filled solid instead.
@@ -192,6 +199,8 @@ pub fn internal(
 /// modelled, `infill[i]` the part of the slice left inside the walls, and
 /// `inside[i]` the layer's area inside the walls over every filament
 /// (`inside_walls`), which is read only when `shells.ensure` is set.
+/// `heights[i]` is how thick layer `i` is, in mm: a shell is as many
+/// layers as its count, and as many more as its thickness takes.
 /// The two cross-sections differ only where a layer was shrunk for the
 /// elephant's foot: a layer is compared with its neighbours as modelled, so
 /// the shrinking does not make the layer above look like an overhang. A layer's surfaces do not overlap and together cover its
@@ -201,9 +210,11 @@ pub fn classify(
     outlines: &[&[ExPolygon]],
     infill: &[&[ExPolygon]],
     inside: &[Vec<ExPolygon>],
+    heights: &[f64],
     shells: &Shells,
 ) -> Result<Vec<Vec<Surface>>, ClipError> {
     assert_eq!(slices.len(), infill.len(), "one infill area per layer");
+    assert_eq!(slices.len(), heights.len(), "one height per layer");
     if shells.ensure.is_some() {
         assert_eq!(slices.len(), inside.len(), "one area inside per layer");
     }
@@ -211,6 +222,11 @@ pub fn classify(
     let count = slices.len();
 
     let faces = faces(slices, outlines, shells)?;
+    let reach = Reach::new(
+        heights,
+        (shells.top_layers, shells.bottom_layers),
+        (shells.top_thickness, shells.bottom_thickness),
+    );
 
     (0..count)
         .into_par_iter()
@@ -249,9 +265,9 @@ pub fn classify(
 
             // The shell: what lies under a top face within the next
             // `top_layers - 1` layers up, or over a bottom face within the
-            // next `bottom_layers - 1` layers down.
-            let above = layer + 1..count.min(layer + shells.top_layers);
-            let below = layer.saturating_sub(shells.bottom_layers.saturating_sub(1))..layer;
+            // next `bottom_layers - 1` layers down, and in as many more
+            // as the thickness asked of a shell takes.
+            let (above, below) = (reach.above(layer), reach.below(layer));
             let shell: Vec<ExPolygon> = above
                 .clone()
                 .flat_map(|other| &faces[other].0)
@@ -316,6 +332,103 @@ pub fn classify(
             Ok(surfaces)
         })
         .collect()
+}
+
+/// `EPSILON` (libslic3r.h), which the reference compares heights by.
+const SAME: f64 = 1e-4;
+
+/// Which layers' faces each layer is shell to: those within the count of
+/// layers a shell has, and those near enough that the layers between
+/// come to less than the thickness asked of it. So the reference walks
+/// from a layer in `PrintObject::discover_vertical_shells`, and from a
+/// face, by the same test, in `discover_horizontal_shells`
+/// (PrintObject.cpp): layers are added until the shell is at least as
+/// thick as asked, each at the height it has, and with no layers of a
+/// kind asked for there is no shell of that kind whatever its thickness.
+struct Reach {
+    /// For a top shell and a bottom shell: how many layers, and how
+    /// many mm at the least.
+    layers: (usize, usize),
+    thickness: (f64, f64),
+    /// The bottom of each layer and the top of the last, in mm.
+    levels: Vec<f64>,
+}
+
+impl Reach {
+    fn new(heights: &[f64], layers: (usize, usize), thickness: (f64, f64)) -> Self {
+        let mut levels = Vec::with_capacity(heights.len() + 1);
+        let mut level = 0.0;
+        levels.push(level);
+        for height in heights {
+            level += height;
+            levels.push(level);
+        }
+        Self {
+            layers,
+            thickness,
+            levels,
+        }
+    }
+
+    fn count(&self) -> usize {
+        self.levels.len() - 1
+    }
+
+    /// The layers over `layer` whose top faces it is shell under: the
+    /// next `top_layers - 1`, and every one after whose top is less than
+    /// the thickness above this layer's.
+    fn above(&self, layer: usize) -> std::ops::Range<usize> {
+        let (count, layers, thickness) = (self.count(), self.layers.0, self.thickness.0);
+        let mut end = count.min(layer + layers);
+        if layers > 0 {
+            let top = |index: usize| self.levels[index + 1];
+            while end < count && top(end) - top(layer) < thickness - SAME {
+                end += 1;
+            }
+        }
+        (layer + 1).min(end)..end
+    }
+
+    /// The layers under `layer` whose bottom faces it is shell over: the
+    /// next `bottom_layers - 1` down, and every one before whose bottom
+    /// is less than the thickness below this layer's.
+    fn below(&self, layer: usize) -> std::ops::Range<usize> {
+        let (layers, thickness) = (self.layers.1, self.thickness.1);
+        let mut start = layer.saturating_sub(layers.saturating_sub(1));
+        if layers > 0 {
+            let bottom = |index: usize| self.levels[index];
+            while start > 0 && bottom(layer) - bottom(start - 1) < thickness - SAME {
+                start -= 1;
+            }
+        }
+        start..layer
+    }
+}
+
+/// How many layers the shell behind a face is, the face's own among
+/// them: for a top face on each layer, and for a bottom face on each.
+/// `heights[i]` is how thick layer `i` is, `layers` the count asked of a
+/// top shell and of a bottom shell, and `thickness` the least each is to
+/// measure in mm. A shell stops where the print does, and with no layers
+/// asked for there is none. It is the shell [`classify`] makes solid.
+pub fn shell_depths(
+    heights: &[f64],
+    layers: (usize, usize),
+    thickness: (f64, f64),
+) -> (Vec<usize>, Vec<usize>) {
+    let reach = Reach::new(heights, layers, thickness);
+    let count = heights.len();
+    let mut top = vec![usize::from(layers.0 > 0); count];
+    let mut bottom = vec![usize::from(layers.1 > 0); count];
+    for layer in 0..count {
+        for face in reach.above(layer) {
+            top[face] = top[face].max(face - layer + 1);
+        }
+        for face in reach.below(layer) {
+            bottom[face] = bottom[face].max(layer - face + 1);
+        }
+    }
+    (top, bottom)
 }
 
 /// A shell made fit to fill with lines `spacing` apart, as the reference
@@ -951,10 +1064,17 @@ mod tests {
         }]
     }
 
+    /// Layers of 0.2 mm, as many as asked.
+    fn flat(count: usize) -> Vec<f64> {
+        vec![0.2; count]
+    }
+
     fn shells(top_layers: usize, bottom_layers: usize) -> Shells {
         Shells {
             top_layers,
             bottom_layers,
+            top_thickness: 0.0,
+            bottom_thickness: 0.0,
             sparse_density: 0.2,
             minimum_sparse_area: 15.0,
             opening: scaled(0.045),
@@ -967,7 +1087,7 @@ mod tests {
     /// reports each layer as `(kind, area in mm²)` sorted by kind order.
     fn kinds(layers: &[Vec<ExPolygon>], shells: &Shells) -> Vec<Vec<(SurfaceKind, f64)>> {
         let slices: Vec<&[ExPolygon]> = layers.iter().map(Vec::as_slice).collect();
-        classify(&slices, &slices, &slices, &[], shells)
+        classify(&slices, &slices, &slices, &[], &flat(slices.len()), shells)
             .unwrap()
             .into_iter()
             .map(|surfaces| {
@@ -1121,6 +1241,7 @@ mod tests {
                 &refs(outlines),
                 &refs(&printed),
                 &[],
+                &flat(printed.len()),
                 &shells(1, 1),
             )
             .unwrap();
@@ -1153,7 +1274,15 @@ mod tests {
         let fills: Vec<&[ExPolygon]> = fills.iter().map(Vec::as_slice).collect();
         let inside = inside_walls(std::slice::from_ref(&fills), &slices, None).unwrap();
         let solid_on = |shells: &Shells, layer: usize| {
-            classify(&slices, &slices, &fills, &inside, shells).unwrap()[layer]
+            classify(
+                &slices,
+                &slices,
+                &fills,
+                &inside,
+                &flat(slices.len()),
+                shells,
+            )
+            .unwrap()[layer]
                 .iter()
                 .filter(|s| s.kind == SurfaceKind::InternalSolid)
                 .map(|s| s.area.area_mm2())
@@ -1196,7 +1325,15 @@ mod tests {
             ensure: Some(scaled(0.4)),
             ..shells(5, 3)
         };
-        let found = classify(&slices, &slices, &fills, &inside, &ensuring).unwrap();
+        let found = classify(
+            &slices,
+            &slices,
+            &fills,
+            &inside,
+            &flat(slices.len()),
+            &ensuring,
+        )
+        .unwrap();
         assert!(found[4].iter().all(|s| s.kind == SurfaceKind::Sparse));
     }
 
@@ -1300,6 +1437,217 @@ mod tests {
         assert_eq!(found, [vec![(Bottom, 100.0)]]);
     }
 
+    /// `kinds` for layers of the heights given.
+    fn kinds_at(
+        layers: &[Vec<ExPolygon>],
+        heights: &[f64],
+        shells: &Shells,
+    ) -> Vec<Vec<(SurfaceKind, f64)>> {
+        let slices: Vec<&[ExPolygon]> = layers.iter().map(Vec::as_slice).collect();
+        classify(&slices, &slices, &slices, &[], heights, shells)
+            .unwrap()
+            .into_iter()
+            .map(|surfaces| {
+                surfaces
+                    .into_iter()
+                    .map(|s| (s.kind, s.area.area_mm2().round()))
+                    .collect()
+            })
+            .collect()
+    }
+
+    /// Shells of the counts given that are to measure `top` and `bottom`
+    /// mm at the least.
+    fn thick(top_layers: usize, bottom_layers: usize, top: f64, bottom: f64) -> Shells {
+        Shells {
+            top_thickness: top,
+            bottom_thickness: bottom,
+            ..shells(top_layers, bottom_layers)
+        }
+    }
+
+    /// The layers with solid shell of `area` mm² on them.
+    fn solid(found: &[Vec<(SurfaceKind, f64)>], area: f64) -> Vec<usize> {
+        (0..found.len())
+            .filter(|layer| found[*layer].contains(&(InternalSolid, area)))
+            .collect()
+    }
+
+    #[test]
+    fn layers_are_added_until_a_top_shell_is_as_thick_as_asked() {
+        // Thirty layers of 0.16 mm: the top is layer 29.
+        let layers = vec![block(0.0, 0.0, 10.0, 10.0); 30];
+        let heights = vec![0.16; 30];
+        // Six layers, the top among them, and one over the bed.
+        let counted = kinds_at(&layers, &heights, &shells(6, 1));
+        assert_eq!(solid(&counted, 100.0), [24, 25, 26, 27, 28]);
+        assert_eq!(counted[29], [(Top, 100.0)]);
+        // Six make 0.96 mm, short of 1 mm: a seventh is made solid.
+        let asked = kinds_at(&layers, &heights, &thick(6, 1, 1.0, 0.0));
+        assert_eq!(solid(&asked, 100.0), [23, 24, 25, 26, 27, 28]);
+        assert_eq!(asked[22], [(Sparse, 100.0)]);
+        assert_eq!(asked[29], [(Top, 100.0)]);
+        // And as many as it takes: thirteen of 0.16 mm for 2 mm.
+        let deep = kinds_at(&layers, &heights, &thick(6, 1, 2.0, 0.0));
+        assert_eq!(solid(&deep, 100.0), (17..29).collect::<Vec<_>>());
+        // A bottom shell's thickness is nothing to a top shell.
+        let other = kinds_at(&layers, &heights, &thick(6, 1, 0.0, 0.1));
+        assert_eq!(other, counted);
+    }
+
+    #[test]
+    fn a_shell_already_as_thick_as_asked_is_as_counted() {
+        let layers = vec![block(0.0, 0.0, 10.0, 10.0); 30];
+        let counted = kinds_at(&layers, &[0.2; 30], &shells(5, 3));
+        // Five layers of 0.2 mm are the 1 mm asked, to the last digit or
+        // not: heights are compared as the reference compares them.
+        for (top, bottom) in [(1.0, 0.6), (1.0, 0.0), (0.3, 0.3), (0.0, 0.0)] {
+            let asked = kinds_at(&layers, &[0.2; 30], &thick(5, 3, top, bottom));
+            assert_eq!(asked, counted, "{top} and {bottom} mm");
+        }
+        // 0.96 mm of six layers of 0.16 mm likewise.
+        assert_eq!(
+            kinds_at(&layers, &[0.16; 30], &thick(6, 1, 0.96, 0.0)),
+            kinds_at(&layers, &[0.16; 30], &shells(6, 1))
+        );
+    }
+
+    #[test]
+    fn layers_are_added_until_a_bottom_shell_is_as_thick_as_asked() {
+        // A first layer of 0.25 mm and the rest of 0.12 mm.
+        let layers = vec![block(0.0, 0.0, 10.0, 10.0); 30];
+        let mut heights = vec![0.12; 30];
+        heights[0] = 0.25;
+        let counted = kinds_at(&layers, &heights, &shells(1, 3));
+        assert_eq!(solid(&counted, 100.0), [1, 2]);
+        // Layer 5 starts at 0.73 mm, under the 0.8 mm asked, and layer 6
+        // at 0.85 mm.
+        let asked = kinds_at(&layers, &heights, &thick(1, 3, 0.0, 0.8));
+        assert_eq!(solid(&asked, 100.0), [1, 2, 3, 4, 5]);
+        assert_eq!(asked[0], [(Bottom, 100.0)]);
+        assert_eq!(asked[6], [(Sparse, 100.0)]);
+    }
+
+    #[test]
+    fn a_shell_is_measured_in_the_layers_as_they_lie() {
+        // Twenty layers of 0.2 mm, the last five made 0.19 mm.
+        let layers = vec![block(0.0, 0.0, 10.0, 10.0); 20];
+        let mut heights = vec![0.2; 20];
+        let asked = thick(5, 1, 1.0, 0.0);
+        assert_eq!(
+            solid(&kinds_at(&layers, &heights, &asked), 100.0),
+            [15, 16, 17, 18]
+        );
+        heights[15..].fill(0.19);
+        // The five now make 0.95 mm: a sixth is made solid under them.
+        assert_eq!(
+            solid(&kinds_at(&layers, &heights, &asked), 100.0),
+            [14, 15, 16, 17, 18]
+        );
+        // Made thicker, they need no more than they were.
+        heights[15..].fill(0.21);
+        assert_eq!(
+            solid(&kinds_at(&layers, &heights, &asked), 100.0),
+            [15, 16, 17, 18]
+        );
+    }
+
+    #[test]
+    fn no_shell_layers_is_no_shell_whatever_its_thickness() {
+        let layers = vec![block(0.0, 0.0, 10.0, 10.0); 12];
+        let heights = [0.16; 12];
+        let none = kinds_at(&layers, &heights, &shells(0, 0));
+        assert_eq!(kinds_at(&layers, &heights, &thick(0, 0, 1.0, 1.0)), none);
+        assert!(solid(&none, 100.0).is_empty());
+        // One kind without the other.
+        let bottom_only = kinds_at(&layers, &heights, &thick(0, 2, 1.0, 0.0));
+        assert_eq!(bottom_only, kinds_at(&layers, &heights, &shells(0, 2)));
+        assert_eq!(solid(&bottom_only, 100.0), [1]);
+    }
+
+    #[test]
+    fn a_ledge_and_an_overhang_get_shells_as_thick_as_asked() {
+        // A 20 mm base ten layers tall carrying a 10 mm tower, in layers
+        // of 0.16 mm: the ledge is the top of layer 9.
+        let mut layers = vec![block(0.0, 0.0, 20.0, 20.0); 10];
+        layers.extend(vec![block(0.0, 0.0, 10.0, 10.0); 10]);
+        let found = kinds_at(&layers, &[0.16; 20], &thick(3, 1, 1.0, 0.0));
+        // Three layers by the count; six under the ledge make 0.96 mm.
+        assert_eq!(solid(&found, 300.0), [3, 4, 5, 6, 7, 8]);
+        assert!(found[9].contains(&(Top, 300.0)));
+        assert_eq!(found[2], [(Sparse, 400.0)]);
+
+        // A 10 mm post that widens to 30 mm at layer 4, in layers of
+        // 0.12 mm: over the bridge, the layers that start within 0.8 mm
+        // of where it does. The shell over the bed is as deep, and ends
+        // two layers into the wide part.
+        let mut layers = vec![block(0.0, 0.0, 10.0, 10.0); 4];
+        layers.extend(vec![block(0.0, 0.0, 30.0, 10.0); 12]);
+        let over_bridge = |found: &[Vec<(SurfaceKind, f64)>]| -> Vec<usize> {
+            (0..found.len())
+                .filter(|layer| {
+                    let solid: f64 = found[*layer]
+                        .iter()
+                        .filter(|(kind, _)| *kind == InternalSolid)
+                        .map(|(_, area)| area)
+                        .sum();
+                    solid >= 200.0
+                })
+                .collect()
+        };
+        let found = kinds_at(&layers, &[0.12; 16], &thick(1, 3, 0.0, 0.8));
+        assert!(found[4].contains(&(Bridge, 200.0)));
+        assert_eq!(over_bridge(&found), [5, 6, 7, 8, 9, 10]);
+        // Beside the bridge and below it, the shell over the bed alone.
+        assert_eq!(solid(&found, 100.0), [1, 2, 3, 4]);
+        let counted = kinds_at(&layers, &[0.12; 16], &shells(1, 3));
+        assert_eq!(over_bridge(&counted), [5, 6]);
+    }
+
+    #[test]
+    fn walls_kept_thick_go_by_the_same_shell() {
+        // With `ensure` the fill of every layer within a shell is looked
+        // at, and that is as many layers as the thickness takes too.
+        let layers = vec![block(0.0, 0.0, 10.0, 10.0); 30];
+        let slices: Vec<&[ExPolygon]> = layers.iter().map(Vec::as_slice).collect();
+        let solid_layers = |shells: &Shells| -> Vec<usize> {
+            let ensuring = Shells {
+                ensure: Some(scaled(0.4)),
+                ..*shells
+            };
+            let found = classify(&slices, &slices, &slices, &layers, &[0.16; 30], &ensuring);
+            (0..30)
+                .filter(|layer| {
+                    found.as_ref().unwrap()[*layer]
+                        .iter()
+                        .any(|s| s.kind == InternalSolid)
+                })
+                .collect()
+        };
+        assert_eq!(solid_layers(&shells(6, 1)), [24, 25, 26, 27, 28]);
+        assert_eq!(
+            solid_layers(&thick(6, 1, 1.0, 0.0)),
+            [23, 24, 25, 26, 27, 28]
+        );
+    }
+
+    #[test]
+    fn the_depth_of_a_shell_behind_a_face() {
+        let heights = [0.16; 30];
+        let (top, bottom) = shell_depths(&heights, (6, 4), (1.0, 0.0));
+        // Seven layers under a top, as far as there are that many.
+        assert_eq!(top[29], 7);
+        assert_eq!(top[10], 7);
+        assert_eq!(top[3], 4);
+        assert_eq!(top[0], 1);
+        // Four over a bottom, by the count alone.
+        assert_eq!(bottom[0], 4);
+        assert_eq!(bottom[28], 2);
+        let (top, bottom) = shell_depths(&heights, (6, 0), (0.0, 1.0));
+        assert_eq!(top[29], 6);
+        assert!(bottom.iter().all(|depth| *depth == 0));
+    }
+
     /// What each layer gives the next when one filament prints them all.
     fn beneath(surfaces: &[Vec<Surface>], infill: &[&[ExPolygon]]) -> Vec<Beneath> {
         surfaces
@@ -1313,7 +1661,8 @@ mod tests {
     /// with solid lines 0.4 mm apart.
     fn bridged(layers: &[Vec<ExPolygon>], shells: &Shells) -> Vec<Vec<(SurfaceKind, f64)>> {
         let slices: Vec<&[ExPolygon]> = layers.iter().map(Vec::as_slice).collect();
-        let surfaces = classify(&slices, &slices, &slices, &[], shells).unwrap();
+        let surfaces =
+            classify(&slices, &slices, &slices, &[], &flat(slices.len()), shells).unwrap();
         bridge_over_infill(&surfaces, &beneath(&surfaces, &slices), scaled(0.4))
             .unwrap()
             .into_iter()
@@ -1369,6 +1718,7 @@ mod tests {
             &layers_alone,
             &layers_alone,
             &[],
+            &flat(layers_alone.len()),
             &shells(3, 1),
         )
         .unwrap();
@@ -1421,7 +1771,8 @@ mod tests {
     /// Classifies a stack of layers and anchors what faces outward.
     fn anchored(layers: &[Vec<ExPolygon>], shells: &Shells) -> Vec<Vec<Surface>> {
         let slices: Vec<&[ExPolygon]> = layers.iter().map(Vec::as_slice).collect();
-        let surfaces = classify(&slices, &slices, &slices, &[], shells).unwrap();
+        let surfaces =
+            classify(&slices, &slices, &slices, &[], &flat(slices.len()), shells).unwrap();
         anchor(&surfaces, &anchoring()).unwrap()
     }
 
@@ -1482,7 +1833,15 @@ mod tests {
         let mut layers = vec![posts; 3];
         layers.extend(vec![block(0.0, 0.0, 40.0, 10.0); 3]);
         let slices: Vec<&[ExPolygon]> = layers.iter().map(Vec::as_slice).collect();
-        let surfaces = classify(&slices, &slices, &slices, &[], &shells(4, 1)).unwrap();
+        let surfaces = classify(
+            &slices,
+            &slices,
+            &slices,
+            &[],
+            &flat(slices.len()),
+            &shells(4, 1),
+        )
+        .unwrap();
         assert_eq!(area_of(&surfaces[3], InternalSolid).round(), 200.0);
         let grown = |extra: f64| {
             let anchoring = Anchoring {
@@ -1521,7 +1880,15 @@ mod tests {
         assert_eq!(area_of(&all, InternalSolid), 0.0);
         // Sparse fill beside a bridge is reached no further: the same
         // deck with no shell over the posts.
-        let surfaces = classify(&slices, &slices, &slices, &[], &shells(1, 1)).unwrap();
+        let surfaces = classify(
+            &slices,
+            &slices,
+            &slices,
+            &[],
+            &flat(slices.len()),
+            &shells(1, 1),
+        )
+        .unwrap();
         let onto_sparse = |extra: f64| {
             let anchoring = Anchoring {
                 bridge_extra: scaled(extra),
@@ -1599,7 +1966,15 @@ mod tests {
         assert!((area_of(&found[3], Sparse) - (100.0 - 4.0 * 10.0 * 0.4 + 4.0 * 0.16)).abs() < 0.5);
         // A layer with nothing facing outward is left as it was.
         let slices: Vec<&[ExPolygon]> = layers.iter().map(Vec::as_slice).collect();
-        let before = classify(&slices, &slices, &slices, &[], &shells(2, 1)).unwrap();
+        let before = classify(
+            &slices,
+            &slices,
+            &slices,
+            &[],
+            &flat(slices.len()),
+            &shells(2, 1),
+        )
+        .unwrap();
         assert_eq!(found[1], before[1]);
         // A sparse area left too small to be worth a pattern goes solid.
         let mut layers = vec![block(0.0, 0.0, 20.0, 20.0); 4];

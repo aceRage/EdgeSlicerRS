@@ -97,8 +97,15 @@ fn every_solid_layer_is_ironed_inside_its_outline() {
         let inside_all =
             edge_infill::inside_walls(std::slice::from_ref(&inside), &slices, None).unwrap();
         let shells = infill.shells(0.2).unwrap();
-        let surfaces =
-            edge_infill::classify(&slices, &slices, &inside, &inside_all, &shells).unwrap();
+        let surfaces = edge_infill::classify(
+            &slices,
+            &slices,
+            &inside,
+            &inside_all,
+            &vec![0.2; slices.len()],
+            &shells,
+        )
+        .unwrap();
         let faces = edge_infill::exposed(&slices, &slices, shells.opening).unwrap();
         ironed_projects += 1;
 
