@@ -172,3 +172,89 @@ fn a_mirror_is_kept_in_the_copy_and_what_is_sliced_stays_a_solid() {
     assert!(model.mirror(Some(&BED), &[copy], 3).is_err());
     assert!(model.mirror(Some(&BED), &[], 0).is_err());
 }
+
+#[test]
+fn a_mesh_of_two_shells_splits_to_parts_and_to_objects() {
+    let dir = tempfile::tempdir().unwrap();
+    // A 20 mm block and a tower 10 mm away from it.
+    let path = boxes(
+        dir.path(),
+        "pair.stl",
+        &[
+            ([0.0; 3], [20.0, 20.0, 10.0]),
+            ([30.0, 0.0, 0.0], [10.0, 10.0, 25.0]),
+        ],
+    );
+    let mut model = Model::open(&path).unwrap();
+    let object = model.objects()[0].id();
+    let shape = model.objects()[0].shape().clone();
+    assert!(shape.splits_to_parts() && shape.splits_to_objects());
+    model.rename(Some(&BED), object, "pair").unwrap();
+    let before = reach(&model, first_copy(&model));
+    let solid = model.place(Some(1)).unwrap().bounds;
+
+    // To parts: one object of two parts, where it stood, sliced alike.
+    model.split_to_parts(Some(&BED), object).unwrap();
+    assert_eq!(model.objects().len(), 1);
+    let parts = model.objects()[0].shape().parts();
+    let names: Vec<_> = parts
+        .iter()
+        .map(|part| part.name.clone().unwrap())
+        .collect();
+    assert_eq!(names, ["pair_1", "pair_2"]);
+    assert_eq!(parts[0].mesh.triangles.len(), 12);
+    assert_eq!(reach(&model, first_copy(&model)), before);
+    assert_eq!(model.place(Some(1)).unwrap().bounds, solid);
+    // Now several parts: not to parts again, but to objects.
+    let shape = model.objects()[0].shape().clone();
+    assert!(!shape.splits_to_parts() && shape.splits_to_objects());
+    assert!(model.split_to_parts(Some(&BED), object).is_err());
+
+    // To objects: two objects named after the parts, each on the plate,
+    // where its piece stood.
+    let (made, dropped) = model.split_to_objects(Some(&BED), object).unwrap();
+    assert!(!dropped);
+    assert_eq!(made.len(), 2);
+    let names: Vec<&str> = model.objects().iter().map(|object| object.name()).collect();
+    assert_eq!(names, ["pair_1", "pair_2"]);
+    assert_eq!(model.plates()[0].copies(), made.as_slice());
+    let block = reach(&model, made[0]);
+    let tower = reach(&model, made[1]);
+    assert_eq!(size(&block), [20.0, 20.0, 10.0]);
+    assert_eq!(size(&tower), [10.0, 10.0, 25.0]);
+    assert!((tower[0][0] - block[0][0] - 30.0).abs() < 1e-6);
+    assert_eq!(model.place(Some(1)).unwrap().bounds, solid);
+    // A single shell cannot be split.
+    let one = model.objects()[0].id();
+    assert!(!model.objects()[0].shape().splits_to_objects());
+    assert_eq!(
+        model
+            .split_to_objects(Some(&BED), one)
+            .err()
+            .unwrap()
+            .to_string(),
+        "The selected object couldn't be split."
+    );
+}
+
+#[test]
+fn split_pieces_left_in_the_air_come_down_to_the_bed() {
+    // A block, and a slab beside it floating 5 mm over the bed.
+    let dir = tempfile::tempdir().unwrap();
+    let path = boxes(
+        dir.path(),
+        "float.stl",
+        &[
+            ([0.0; 3], [10.0, 10.0, 10.0]),
+            ([20.0, 0.0, 5.0], [10.0, 10.0, 4.0]),
+        ],
+    );
+    let mut model = Model::open(&path).unwrap();
+    let object = model.objects()[0].id();
+    let (made, _) = model.split_to_objects(Some(&BED), object).unwrap();
+    let names: Vec<&str> = model.objects().iter().map(|object| object.name()).collect();
+    assert_eq!(names, ["float.stl_1", "float.stl_2"]);
+    let floating = reach(&model, made[1]);
+    assert!(floating[0][2].abs() < 1e-9, "{floating:?}");
+    assert_eq!(size(&floating), [10.0, 10.0, 4.0]);
+}

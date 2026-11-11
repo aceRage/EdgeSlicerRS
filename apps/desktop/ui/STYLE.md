@@ -454,7 +454,12 @@ that is off (not to be printed) is `--text-off`. A child row is its
 parent's row indented by 22 px. A name too long is cut with an ellipsis and
 given whole in its `title`. The value's list is a `bare` listbox, as in a
 card's row. A name is renamed in place: the name becomes a field of the
-same height, Enter takes it, Escape leaves it.
+same height, Enter takes it, Escape leaves it. A part of an object (`.obj-row.child.part`)
+is a child row with no tool and its filament as a swatch and a number
+(`.obj-fila-number`, fixed-width, `--text-2`), not a list: it is read
+only. A part that is not printed (`.helper`: a modifier, a negative
+part) has its name in `--text-3`, slanted; what it is is in the name's
+tooltip.
 
 ### What lies over the stage
 

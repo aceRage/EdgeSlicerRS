@@ -803,3 +803,83 @@ fn a_mirrored_object_slices_to_the_mirror_image_of_the_original() {
     assert!(last[2] - last[0] > 29.0, "{last:?}");
     assert_eq!(ask(&session, "undo", json!({}))["done"], "Mirror Object");
 }
+
+#[test]
+fn shells_are_split_to_parts_and_to_objects_and_slice_where_they_stood() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = boxes(
+        &dir.path().join("pair.stl"),
+        &[
+            ([0.0; 3], [20.0, 20.0, 10.0]),
+            ([30.0, 0.0, 0.0], [10.0, 10.0, 25.0]),
+        ],
+    );
+    let session = Arc::new(Session::new(None));
+    let project = stl_project(&session, &path);
+    let scene = ask(&session, "scene", json!({}));
+    let object = scene["objects"][0]["id"].clone();
+    assert_eq!(
+        scene["objects"][0]["split"],
+        json!({ "objects": true, "parts": true })
+    );
+    assert_eq!(
+        scene["objects"][0]["part_list"].as_array().unwrap().len(),
+        1
+    );
+    // Given its place first, so the slices compared are of one place.
+    edit(
+        &session,
+        json!({ "op": "transform", "copies": [moved(&scene["placings"][0], [0.0; 3])] }),
+    );
+    sliced(&session, project, None);
+    let whole = ask(&session, "toolpath", json!({}))["box"].clone();
+
+    let parts = edit(&session, json!({ "op": "split_parts", "object": object }));
+    assert_eq!(parts["done"], "Split to parts");
+    assert_eq!(parts["project"]["sliced"], false);
+    let listed = &parts["scene"]["objects"][0];
+    assert_eq!(listed["parts"], 2);
+    assert_eq!(
+        listed["part_list"][0],
+        json!({ "name": "pair.stl_1", "kind": "part", "filament": 1 })
+    );
+    assert_eq!(listed["part_list"][1]["name"], "pair.stl_2");
+    assert_eq!(listed["split"], json!({ "objects": true, "parts": false }));
+    assert_eq!(
+        refused(
+            &session,
+            "scene_edit",
+            json!({ "op": "split_parts", "object": object })
+        ),
+        "The target object contains only one part and can not be split."
+    );
+
+    let objects = edit(&session, json!({ "op": "split_objects", "object": object }));
+    assert_eq!(objects["done"], "Split to Objects");
+    assert_eq!(objects["note"], Value::Null);
+    let made = objects["made"].as_array().unwrap();
+    assert_eq!(made.len(), 2);
+    let names: Vec<&Value> = objects["scene"]["objects"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|o| &o["name"])
+        .collect();
+    assert_eq!(names, [&json!("pair.stl_1"), &json!("pair.stl_2")]);
+    assert_eq!(
+        objects["project"]["plates"][0]["objects"],
+        json!(["pair.stl_1", "pair.stl_2"])
+    );
+    for listed in objects["scene"]["objects"].as_array().unwrap() {
+        assert_eq!(listed["split"], json!({ "objects": false, "parts": false }));
+    }
+
+    // Two objects, sliced where the one stood.
+    sliced(&session, project, None);
+    assert_eq!(ask(&session, "toolpath", json!({}))["box"], whole);
+    // Two steps to take back, the last first.
+    assert_eq!(ask(&session, "undo", json!({}))["done"], "Split to Objects");
+    let back = ask(&session, "undo", json!({}));
+    assert_eq!(back["done"], "Split to parts");
+    assert_eq!(back["scene"]["objects"][0]["parts"], 1);
+}

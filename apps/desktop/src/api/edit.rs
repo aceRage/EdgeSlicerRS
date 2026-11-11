@@ -343,6 +343,26 @@ impl Session {
                     .map_err(failed)?;
                 outcome.name = "Mirror Object".into();
             }
+            "split_objects" => {
+                let (made, dropped) = model
+                    .split_to_objects(bed, whole(args, "object")?)
+                    .map_err(failed)?;
+                outcome.made = made;
+                // The reference leaves its modifiers and negative parts
+                // out without a word (the notice is commented out in
+                // Plater.cpp `split_object`); this says so, in the words
+                // that notice had.
+                if dropped {
+                    outcome.note = Some("All non-solid parts (modifiers) were deleted".into());
+                }
+                outcome.name = "Split to Objects".into();
+            }
+            "split_parts" => {
+                model
+                    .split_to_parts(bed, whole(args, "object")?)
+                    .map_err(failed)?;
+                outcome.name = "Split to parts".into();
+            }
             "lay_on_face" => {
                 let normal = numbers(args, "normal")?;
                 model

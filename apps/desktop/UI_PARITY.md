@@ -150,7 +150,7 @@ does with each option.
 | C++ | Where | Here |
 | --- | --- | --- |
 | A 3D view of every plate with the objects on it, orbit / pan / zoom, selection | `View3D`, `GLCanvas3D` | **added**, in 3D: section 9. Where the browser has no WebGL2, the view from above the first pass built is kept: the bed of the printer chosen with its grid and each object's outline (its convex hull), name and size, drag to move, wheel to zoom, "Fit part" [Z] and "Fit bed" |
-| Main toolbar: "Add" [Ctrl+I], "Add plate", "Auto orient all/selected objects" [Q], "Arrange all objects" [A] with its options, "Split to objects", "Split to parts", "Variable layer height", "Assembly View" | `GLCanvas3D::_init_main_toolbar` l.9274 | **added**: "Add", "Add plate" and "Arrange all objects" (section 13; the arrangement is a plain one, not the reference's). **not yet**: auto orient, splitting (the engine does neither), variable layer height, the assembly view, the arrangement's options |
+| Main toolbar: "Add" [Ctrl+I], "Add plate", "Auto orient all/selected objects" [Q], "Arrange all objects" [A] with its options, "Split to objects", "Split to parts", "Variable layer height", "Assembly View" | `GLCanvas3D::_init_main_toolbar` l.9274 | **added**: "Add", "Add plate", "Arrange all objects" (section 13; the arrangement is a plain one, not the reference's), "Split to objects" and "Split to parts". **not yet**: auto orient (the engine does not do it), variable layer height, the assembly view, the arrangement's options |
 | Gizmos: "Move" [M], "Rotate" [R], "Scale" [S], "Lay on face" [F], "Cut" [C], "Mesh Boolean" [B], "Support Painting" [L], "Seam painting" [P], "Paint-on fuzzy skin" [H], "Color Painting" [N], "Texture displacement", "Emboss" [T], "SVG", "Measure" [U], "Assemble" [Y], "Simplify", "Brim Ears" [E], "Sculpt", "Edit", "Fillet / chamfer (CAD)" | `Gizmos/GLGizmosManager.cpp::init` l.224 | **added**: "Move", "Rotate" and "Scale" with their number fields, and "Lay on face" [F] (section 13). **not yet**: the rest |
 | Object list: plates, objects, parts, instances, layer ranges; columns "Name", printable, "Fila.", paint marks; the object, part and plate menus | `GUI_ObjectList.cpp`, `GUI_Factories.cpp` | **added**: plates, objects and instances with "Name", printable and "Fila.", and the object's and the plate's menus (section 13). **not yet**: parts, layer ranges, the paint marks, settings of an object |
 | View options: "Realistic View", "X-Ray", "Center of Mass", "Show 3D Navigator", Ctrl+0..6 views | `GLCanvas3D.cpp` l.8297, View menu | **added**: the navigator and the views (section 9). **not yet**: the three view options |
@@ -367,7 +367,7 @@ the project is on.
 | `summary` | `project?`, `plate?` | as before, and `plate`, `widths`, `heights`. `gaps` ends with each setting set by hand that the slice did not read |
 | `layer` | `project?`, `plate?`, `index` | as before |
 | `export` | `project?`, `plate?`, `path` | `{ path, bytes }` |
-| `scene` | `project?` | the project for Prepare in 3D: `{ project, key, bare, bed { box, shape, height, model, texture }, plates: [{ id, name, origin }], plate, colours, objects: [{ id, name, mesh, vertices, triangles, bytes, filaments, filament, parts }], placings: [{ id, object, plate, printable, matrix (16 numbers, column by column), box, over }] }`. An object's `id` and a copy's (a placing's) `id` stay theirs through every edit; `mesh` is the number of the object's mesh, the same for as long as the mesh is; `filament` is the object's own when its parts agree; `over` says a copy reaches over the edge of its plate |
+| `scene` | `project?` | the project for Prepare in 3D: `{ project, key, bare, bed { box, shape, height, model, texture }, plates: [{ id, name, origin }], plate, colours, objects: [{ id, name, mesh, vertices, triangles, bytes, filaments, filament, parts }], placings: [{ id, object, plate, printable, matrix (16 numbers, column by column), box, over }] }`. An object also has `part_list: [{ name, kind (part, negative, modifier, support_blocker, support_enforcer, precise_seam), filament }]` and `split: { objects, parts }` (whether "Split to objects" and "Split to parts" can be done to it). An object's `id` and a copy's (a placing's) `id` stay theirs through every edit; `mesh` is the number of the object's mesh, the same for as long as the mesh is; `filament` is the object's own when its parts agree; `over` says a copy reaches over the edge of its plate |
 | `scene_edit` | `project?`, `op` and what it takes (section 13) | `{ project, scene, done, made, note }`: the project and its scene as they then are, the edit's name in the history, the copies it made, and something to tell the person or null |
 | `undo`, `redo` | `project?` | `{ project, scene, done }`; an error when there is nothing to take back or to make again |
 | `scene_faces` | `project?`, `copy` | the faces "Lay on face" offers for a copy, largest first: `{ project, copy, faces: [{ normal, area, drawn }] }`, `normal` outward in the object's own coordinates (what `lay_on_face` takes), `area` in mm² at the printed size, `drawn` the outline to draw over the face (rounded and lifted as the reference draws it), in the object's own coordinates |
@@ -809,6 +809,8 @@ undo history.
 | `delete_plate` | `plate?` | takes a plate away, not the last one | "delete partplate" |
 | `arrange` | `plate?`, or `all: true` | lays out one plate, or every plate | "Arrange" |
 | `mirror` | `copies`, `axis` (`x`, `y`, `z`) | mirrors the copies along that axis of the scene, about the middle of the box round them, and stands them on the bed; the mirror is kept in each copy's transform | "Mirror Object" |
+| `split_objects` | `object` | "Split to objects": an object for each piece of the object's one mesh, or for each of its printed parts; each has a copy wherever the object had one, on the same plates, standing where its piece stood (brought down to the bed when it was in the air); `made` is the new copies. `note` says when modifiers or negative parts were left out. Refused, nothing changed: "The selected object couldn't be split." | "Split to Objects" |
+| `split_parts` | `object` | "Split to parts": the object's one part becomes a part for each piece of its mesh. Refused: "The target object contains only one part and can not be split." | "Split to parts" |
 | `lay_on_face` | `copy`, `normal` (three numbers, a face's from `scene_faces`) | turns the copy so that face points straight down, about the middle of its box, and stands it on the bed | "Gizmo-Place on Face" |
 
 ### Undo and redo
@@ -829,7 +831,7 @@ undo history.
 | A click selects an instance; Ctrl adds or takes away; a click on nothing or Esc lets go; Ctrl+A selects all | GLCanvas3D.cpp l.6423–6551 | **had** (section 9); now by the copies' `id`, so what is selected survives every edit that leaves it there. Shift adds as Ctrl does |
 | Del or Backspace deletes what is selected | `Plater::remove_selected` l.25120, GUI_ObjectList.cpp l.4586 | **added** |
 | The list and the canvas show one selection | `ObjectList::update_selections`, `update_selections_on_canvas` | **added**, both ways |
-| The right button: the object's menu ("Delete", "Clone", "Printable", "Rename", "Fill bed with copies", "Set as an individual object", "Mirror", "Split", the settings…) | `GUI_Factories.cpp` l.649–1181 | **added**: "Delete" [Del], "Clone" [Ctrl+K], "Printable", "Rename", and the "Mirror" sub-menu (below). **not yet**: the rest (see "Left for later") |
+| The right button: the object's menu ("Delete", "Clone", "Printable", "Rename", "Fill bed with copies", "Set as an individual object", "Mirror", "Split", the settings…) | `GUI_Factories.cpp` l.649–1181 | **added**: "Delete" [Del], "Clone" [Ctrl+K], "Printable", "Rename", and the "Split" and "Mirror" sub-menus (below). **not yet**: the rest (see "Left for later") |
 | Ctrl+C / Ctrl+V copy and paste objects; Ctrl+K "Clone" asks how many | `Plater::copy_selection_to_clipboard` l.29941, `paste_from_clipboard`, `clone_selection` l.29965 | **added**: Ctrl+C notes what is selected, Ctrl+V puts a copy of each on the plate shown, Ctrl+K one beside each. **differs**: Ctrl+K makes one clone at a press and asks nothing; the clipboard is the page's, not the system's. **not yet**: Ctrl+X |
 | A clone or a paste is put on a free place found by the arranger | `Plater::find_new_position` l.16128, `Selection::paste_objects_from_clipboard` l.3384 | **differs**: the free place nearest what it was made of, by the boxes round the copies, 6 mm apart; beside the plates when the plate has no room |
 
@@ -843,7 +845,7 @@ too (at the head of Process).
 
 | C++ | Where | Here |
 | --- | --- | --- |
-| A tree: each plate ("Plate 1", with its name), under it the objects on it, under an object its parts, its instances when it has several, its layer ranges; what is on no plate under "Outside" | `ObjectDataViewModel.cpp` l.523, l.563 | **added**: plates, objects, instances ("Instance 1"), "Outside". A file without plates lists its objects alone. **not yet**: parts, layer ranges |
+| A tree: each plate ("Plate 1", with its name), under it the objects on it, under an object its parts, its instances when it has several, its layer ranges; what is on no plate under "Outside" | `ObjectDataViewModel.cpp` l.523, l.563 | **added**: plates, objects, instances ("Instance 1"), "Outside"; an object of several parts lists each part under it, before its instances, with its name, what it is in the tooltip ("Part", "Negative Part", "Modifier", "Support Blocker", "Support Enforcer"; a part that is not printed is quiet and slanted) and a printed part's filament. A file without plates lists its objects alone. **not yet**: selecting a part (a click on one selects its object), a part's own filament from the list, its menu, layer ranges |
 | Columns "Name", printable (a mark to click), visibility, "Fila." (a list of the project's filaments, each with its colour), the marks for support paint, colour paint, sinking, settings | GUI_ObjectList.cpp l.445–510 | **added**: "Name", printable, "Fila.". An object whose parts print in several filaments shows "…" until one is chosen for all of it. **not yet**: hiding an object, the marks |
 | A click selects; Ctrl and Shift select several | `ObjectList::selection_changed` | **added** |
 | A double click on the name, or F2, renames in place; an empty name leaves the name as it was; `<>:/\|?*"` are not allowed | `ObjectList::rename_item` l.6307, `update_name_in_model` l.1233 | **added**: Enter takes the name, Escape or an empty name leaves it. **not yet**: the characters that are not allowed (nothing is written under an object's name yet) |
@@ -878,6 +880,29 @@ as the reference's is.
 | Scale: "World" / "Object", "Scale" in percent with its reset, "Size" in mm, "uniform scale" | `do_render_scale_input_window` l.1721 | **added**. An object that is turned is sized as a whole in the world's coordinates, as in the C++ |
 | Inches for millimetres ("in") | `m_imperial_units` | **not yet**: no preferences |
 | What is typed is a step of its own: "Set Position", "Set Orientation", "Set Scale" | `change_position_value` l.286 and on | **added** |
+
+### Split to objects, Split to parts
+
+Read from `GLCanvas3D.cpp` (`_init_main_toolbar` l.9376), `GUI_Factories.cpp`
+(the "Split" sub-menu l.2404), `Plater.cpp` (`split_object` l.16161,
+`split_volume`, `can_split` l.20456), `GUI_ObjectList.cpp` (`split` l.2933,
+`is_splittable` l.3488, `get_volume_by_item` l.3467), `libslic3r/Model.cpp`
+(`ModelObject::split` l.2419, `ModelVolume::split` l.3186),
+`libslic3r/TriangleMesh.cpp` (`TriangleMesh::split`) and
+`libslic3r/MeshSplitImpl.hpp`. The engine has the pieces of a mesh
+(`edge_mesh::split`) and the edits (`Model::split_to_objects`,
+`Model::split_to_parts`).
+
+| C++ | Where | Here |
+| --- | --- | --- |
+| The main toolbar's "Split to objects" and "Split to parts", after "Arrange" | `_init_main_toolbar` l.9376–9395 | **added**, with the same tooltips, after "Arrange" |
+| The object's menu: "Split" ("Split the selected object"), a sub-menu of "To objects" ("Split the selected object into multiple objects"), "To parts" ("Split the selected object into multiple parts"), "By painted colour"; before "Mirror" | `GUI_Factories.cpp` l.2404–2418 | **added**: "Split" with "To objects" and "To parts", the same words. **not yet**: "By painted colour" (it is not shown) |
+| On for one object selected (one row of the list): "Split to objects" when the object has more than one part (of any kind), or its one part's mesh is of several pieces; "Split to parts" when it has one part and that is of several pieces | `can_split`, `ObjectList::is_splittable` | **added**, the same rules (`split` in `scene`), the selection being copies of one object. The answer for a mesh is worked out once and kept with its shape, as the C++ caches `m_is_splittable` |
+| The pieces of a mesh: triangles joined across shared edges run the other way round (`create_face_neighbors_index`: an edge pairs with the first later triangle that runs it back and has it free); the pieces in the order of their first triangle, each walked from it as the reference walks it; a piece enclosing a negative volume turned the right way out | `MeshSplitImpl.hpp` `its_split`, `TriangleMesh::split` | **added** (`edge_mesh::split`), the same rule and order. **differs**: the pairs are worked out in one pass in order, where the C++ works them out on several threads at once (see "Errors found in the C++") |
+| Split to objects: an object of one part becomes an object for each piece of three triangles or more, named after the object with `_1`, `_2`…; an object of several parts an object for each printed part, named after the part, with its colour paint; modifiers and negative parts are dropped. Each new object takes every instance of the old one; the old one is removed; they are added at once, "kept where they stand", and dropped onto the bed (`ensure_on_bed`, "auto_drop_on_import" being on unless turned off); the new objects are selected; "The selected object couldn't be split." when one object would come of it | `ModelObject::split`, `split_object`, `load_model_objects` l.15569 | **added**, in that order in the list where the old object was, each copy on the plate its old copy was on. **differs**: a whole part keeps its seam paint as well as its colour paint, the geometry being the same (the C++ copies the colour only); dropping the modifiers says "All non-solid parts (modifiers) were deleted", the notice the C++ has commented out, rather than nothing |
+| Split to parts: the part becomes a part for each piece, named after it with `_1`, `_2`…, in its filament, its paint let go; a piece whose convex hull is flat is dropped; "The target object contains only one part and can not be split." | `ObjectList::split`, `ModelVolume::split` | **added**; the object stays where it is |
+| One snapshot: "Split to Objects", "Split to parts"; the slices of the plates the object is on let go | `split_object`, `ObjectList::split` | **added** |
+| The object list shows the parts after "Split to parts" | `ObjectList::split` | **added**: the parts under the object, read only (see "The object list") |
 
 ### Mirror
 
@@ -923,7 +948,8 @@ used now is off, not hidden.
 | "Add plate" | l.9321, `PartPlateList::create_plate` l.4378 | **added**: at most 36 (PartPlate.hpp `MAX_PLATE_COUNT`); the new plate is the one shown, and what stood beside the plates where it comes to stand is on it |
 | Removing a plate: its objects are not deleted, they are left beside the plates that remain; the last plate stays | `PartPlateList::delete_plate` l.4531, `compute_origin_for_unprintable` l.3900 | **added**, the same place beside the plates. Which plate is shown afterwards is the reference's rule |
 | "Arrange all objects" [A], "Arrange objects on selected plates" [Shift+A], with a popup of options ("Spacing", "Auto rotate for arrangement", "Allow multiple materials on same plate", "Avoid extrusion calibration region", "Align to Y axis") | l.9352, `ArrangeJob.cpp` | **differs**: both keys and the button (every plate), but **this is not the reference's arrangement**: see below. **not yet**: the options |
-| "Auto orient", "Split to objects", "Split to parts", "Variable layer height", "Assembly View" | l.9331–9400 | **not yet** |
+| "Split to objects", "Split to parts" | l.9376–9395 | **added** (below) |
+| "Auto orient", "Variable layer height", "Assembly View" | l.9331–9400 | **not yet** |
 
 ### Arrange: what the reference does, and what a port would take
 
@@ -967,7 +993,9 @@ reference's on fixtures; the comparison needs the reference run with
 | "Lay on face": its second mode, "Face under cursor" (any flat face under the pointer, recessed ones too, and Alt to use it for a moment), and laying one part of an object on a face | the first needs the page to grow a flat face from the triangle under the pointer (`grow_flat_face`) and to warn of a recessed one; the second, parts that can be selected (see below) |
 | "Fill bed with copies" (`GUI_Factories.cpp` l.1146, `FillBedJob.cpp`) | the reference's arrangement: it asks the arranger how many more fit |
 | Sinking an object under the bed; the arrow along Z; "Drop" | the engine cutting what is under the bed away (it slices from an object's lowest point) |
-| "Auto orient", "Split to objects" / "Split to parts", "Cut", "Mesh Boolean", "Simplify" | mesh operations the engine does not have |
+| "Auto orient", "Cut", "Mesh Boolean", "Simplify" | mesh operations the engine does not have |
+| "Split" > "By painted colour" ("Convert the part's colour painting into separate parts, one per filament") | cutting a mesh along its painted borders, which the engine does only layer by layer while slicing |
+| Selecting a part in the list or the scene, and what is done to one part: "Split" of one part of several, its own filament, moving, turning, mirroring or laying it on a face, deleting it, its menu | parts that can be selected: the list shows them, read only, and a click on one selects its object |
 | Mirroring one part of an object (the part's menu), and the other instances of the object taking the mirror too | parts that can be selected; instances kept alike, which no tool here does yet |
 | Parts in the list, a filament for one part, modifiers and their settings, "Set as an individual object" | per-object and per-part settings, which the engine does not read (section 12) |
 | Saving the project with its edits | writing 3MF |
@@ -1019,6 +1047,24 @@ plate 2 at its row (its object then under "Outside"); a bare STL dragged
   l.2535. It runs for every instance each time anything moves.
 - `GizmoObjectManipulation.cpp` l.1010: the tooltip reads "Holded down Ctrl
   key continuously and click by left mouse button…" (wording only).
+- `libslic3r/MeshSplitImpl.hpp` l.239–262: `create_face_neighbors_index`
+  pairs triangles in `execution::for_each` on several threads, and each
+  iteration writes the entry of the *other* triangle
+  (`neighbors[other_face][vertex_index] = face_idx`) while another thread
+  may be reading or writing that same entry for its own triangle: a data
+  race. On a closed, manifold mesh every edge has one partner, so the
+  answer comes out the same; where three or more triangles share an edge,
+  which of them are paired (and so how "Split to objects" and "Split to
+  parts" divide the mesh) can change from one run to the next. Here the
+  pairs are worked out in one pass, in order.
+- `libslic3r/Model.cpp` l.3014: `ModelVolume::center_geometry_after_creation`
+  moves the part by the shift of its mesh as it is (`translate(shift)`),
+  not by that shift turned and sized by the part's own transform. Called
+  by `ModelVolume::split` (l.3186) after it sets the offset to zero and
+  before it adds the old offset back, it puts each piece of a part that
+  has a turn or a size of its own in the wrong place; a part as loaded
+  (no turn of its own) is not affected. Here a part's pieces keep the
+  part's transform and their own coordinates, so they stay where they were.
 
 ## 14. The filament's and the printer's pages
 

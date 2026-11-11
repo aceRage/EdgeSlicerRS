@@ -50,6 +50,8 @@
     add: 'M1.5,12.5v-9a1,1,0,0,1,1-1h3l1.5,2h6.5a1,1,0,0,1,1,1v7a1,1,0,0,1-1,1h-11A1,1,0,0,1,1.5,12.5ZM8,7v4M6,9h4',
     addPlate: 'M1.5,11.5l6.5,3l6.5-3l-6.5-3ZM8,1.5v5M5.5,4h5',
     arrange: 'M1.5,1.5h5v5h-5ZM9.5,1.5h5v5h-5ZM1.5,9.5h5v5h-5ZM9.5,9.5h5v5h-5Z',
+    splitObjects: 'M1.5,4.5h5v8h-5ZM9.5,2.5h5v5h-5ZM9.5,10.5h5v3h-5ZM8,1v14',
+    splitParts: 'M1.5,3.5h13v9h-13ZM6.5,3.5v9M10.5,3.5v9',
     undo: 'M5,3.5l-3,3l3,3M2,6.5h7.5a4,4,0,0,1,0,8h-3.5',
     redo: 'M11,3.5l3,3l-3,3M14,6.5h-7.5a4,4,0,0,0,0,8h3.5',
   };
@@ -156,6 +158,8 @@
         add: button('add', 'Add', 'Add [Ctrl+I]', ICONS.add, () => this.add()),
         addPlate: button('add-plate', 'Add plate', 'Add plate', ICONS.addPlate, () => this.commit({ op: 'add_plate' })),
         arrange: button('arrange', 'Arrange all objects', 'Arrange all objects [A]\nArrange objects on selected plates [Shift+A]', ICONS.arrange, () => this.arrange(true)),
+        splitObjects: button('split-objects', 'Split to objects', 'Split to objects', ICONS.splitObjects, () => this.split(true)),
+        splitParts: button('split-parts', 'Split to parts', 'Split to parts', ICONS.splitParts, () => this.split(false)),
         undo: button('undo', 'Undo', 'Undo [Ctrl+Z]', ICONS.undo, () => this.step('undo')),
         redo: button('redo', 'Redo', 'Redo [Ctrl+Y]', ICONS.redo, () => this.step('redo')),
       };
@@ -165,7 +169,7 @@
       }
       const b = this.buttons;
       this.bar = el('div', { className: 'toolbar', id: 'edit-bar' },
-        b.add, b.addPlate, gap(), b.arrange, gap(), b.move, b.rotate, b.scale, b.flatten, gap(), b.undo, b.redo);
+        b.add, b.addPlate, gap(), b.arrange, gap(), b.splitObjects, b.splitParts, gap(), b.move, b.rotate, b.scale, b.flatten, gap(), b.undo, b.redo);
       this.bar.setAttribute('role', 'toolbar');
       this.bar.setAttribute('aria-label', 'Prepare');
       this.panel = el('div', { className: 'edit-panel overlay', id: 'edit-panel', hidden: true });
@@ -268,6 +272,24 @@
       if (await this.commit({ op: 'add', path }, { select: true })) this.host.remembered.set('model', path);
     },
 
+    // The one object what is selected is of, or null (Plater.cpp
+    // `get_selected_object_idx`: splitting is for one object).
+    splitTarget() {
+      const chosen = this.chosen();
+      const data = this.data();
+      if (!chosen || !data) return null;
+      const objects = new Set(chosen.copies.map((copy) => copy.object));
+      return objects.size === 1 ? data.objects[[...objects][0]] : null;
+    },
+
+    // "Split to objects" or "Split to parts" (Plater.cpp `split_object`,
+    // `split_volume`); what is split to objects is selected after.
+    split(toObjects) {
+      const target = this.splitTarget();
+      if (!target || !(toObjects ? target.split.objects : target.split.parts)) return;
+      this.commit({ op: toObjects ? 'split_objects' : 'split_parts', object: target.id }, { select: toObjects });
+    },
+
     arrange(all) {
       if (!this.editing() || !this.data() || !this.data().placings.length) return;
       this.commit(all ? { op: 'arrange', all: true } : { op: 'arrange' });
@@ -330,7 +352,16 @@
       // Plater.cpp `can_mirror`: what is selected is of one instance.
       const one = copies.length === 1 ? copies[0] : null;
       const mirror = (axis) => () => this.commit({ op: 'mirror', copies: [one.id], axis });
+      const target = this.splitTarget();
       const items = [
+        ['Split', null, {
+          disabled: !target || !target.split.objects,
+          title: 'Split the selected object',
+          items: [
+            ['To objects', () => this.split(true), { disabled: !target || !target.split.objects, title: 'Split the selected object into multiple objects' }],
+            ['To parts', () => this.split(false), { disabled: !target || !target.split.parts, title: 'Split the selected object into multiple parts' }],
+          ],
+        }],
         ['Mirror', null, {
           disabled: !one,
           title: 'Mirror object',
@@ -445,6 +476,9 @@
       b.add.disabled = this.busy;
       b.addPlate.disabled = this.busy || project.empty || !printer;
       b.arrange.disabled = this.busy || !data || !data.placings.length || !printer;
+      const target = this.splitTarget();
+      b.splitObjects.disabled = this.busy || !target || !target.split.objects;
+      b.splitParts.disabled = this.busy || !target || !target.split.parts;
       b.undo.disabled = this.busy || !history.undo;
       b.redo.disabled = this.busy || !history.redo;
       b.undo.title = `Undo [Ctrl+Z]${history.undo ? `\n${history.undo}` : ''}`;
