@@ -20,6 +20,12 @@ The last column reads:
 - **not yet** — not built, with what it waits for. Nothing in this column is
   shown in the page as a control that does nothing.
 
+Parity here is of function: what can be done, with which options, and in
+which words. It is not of looks. The app is designed dark mode first, with
+light kept working, in a modern web style that is streamlined and spare,
+nearer the newer PrusaSlicer look than Bambu Studio's. A row's "Here"
+column says what is offered, never that it is styled as the C++ styles it.
+
 Everything the page asks for goes through `Session::call` (`src/api.rs`), or
 through its twin `Session::call_bytes` for what is answered in bytes. The
 calls are listed in section 7.
