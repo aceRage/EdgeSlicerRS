@@ -1780,8 +1780,13 @@ impl Writer<'_> {
     /// retraction.
     fn lines(&mut self, paths: &[&ExtrusionPath], shelter: &[ExPolygon]) -> io::Result<()> {
         // Fill of every kind is ordered together; other lines by kind.
-        for stage in paths
-            .chunk_by(|a, b| (a.part != 0 && b.part != 0) || a.role == b.role && a.part == b.part)
+        // A line of gap fill between walls is a filled area of its own
+        // there, chained with the rest (Fill.cpp `make_fills` gives each
+        // of a region's `thin_fills` a collection of its own among its
+        // `fills`, which `extrude_infill` chains together).
+        let fill = |path: &ExtrusionPath| path.part != 0 || path.role == Role::GapFill;
+        for stage in
+            paths.chunk_by(|a, b| (fill(a) && fill(b)) || a.role == b.role && a.part == b.part)
         {
             let mut parts: Vec<Part<'_>> = stage
                 .chunk_by(|a, b| a.role == b.role && a.part == b.part && (a.part != 0 || b.in_turn))

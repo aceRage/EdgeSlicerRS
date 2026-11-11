@@ -940,12 +940,31 @@ fn fill_is_laid_area_by_area_whatever_its_kind() {
         ["Top surface", "Internal solid infill", "Top surface"]
     );
 
-    // Lines that are no part of an area keep to their kind: gap fill
-    // first, as it is given, then the fill.
-    let mut with_gaps = vec![line((22.0, 5.0), (24.0, 5.0), Role::GapFill)];
-    with_gaps.extend(fill);
+    // A line of gap fill between walls is an area of its own, chained
+    // with the rest, though it is given after them: it goes between the
+    // solid area and the top on the right, where it lies (changed from
+    // after all the fill, as given, when it was ordered apart from it).
+    let gap = line((16.0, 2.0), (18.0, 2.0), Role::GapFill);
+    let mut with_gaps = fill.clone();
+    with_gaps.push(gap.clone());
     let (text, _) = print(&one_layer(&[], &[], &with_gaps), &basic());
-    assert_eq!(features(&text)[0], "Gap infill");
+    assert_eq!(
+        features(&text),
+        [
+            "Top surface",
+            "Internal solid infill",
+            "Gap infill",
+            "Top surface"
+        ]
+    );
+    // Other lines that are no part of an area keep to their kind.
+    let mut with_bridge = fill;
+    with_bridge.push(ExtrusionPath {
+        role: Role::BridgeInfill,
+        ..gap
+    });
+    let (text, _) = print(&one_layer(&[], &[], &with_bridge), &basic());
+    assert_eq!(features(&text)[3], "Bridge");
 }
 
 #[test]
