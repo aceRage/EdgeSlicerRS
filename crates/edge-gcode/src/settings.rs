@@ -87,6 +87,12 @@ pub struct PrintSettings {
     pub bridge_acceleration: FloatOrPercent,
     /// Solid fill laid over sparse fill; a percentage is of the bridge's speed.
     pub internal_bridge_speed: FloatOrPercent,
+    /// A wall loop no longer than a circle of this radius, in mm, is laid
+    /// at `small_perimeter_speed`, which as a percentage is of the outer
+    /// wall's speed; at nothing, at half that speed. A threshold of zero
+    /// leaves every wall at its own speed.
+    pub small_perimeter_threshold: f64,
+    pub small_perimeter_speed: FloatOrPercent,
     /// Walls on the first layer.
     pub initial_layer_speed: f64,
     /// All fill on the first layer.
@@ -264,6 +270,8 @@ impl Default for PrintSettings {
             thick_bridges: false,
             bridge_acceleration: FloatOrPercent::Percent(50.0),
             internal_bridge_speed: FloatOrPercent::Percent(150.0),
+            small_perimeter_threshold: 0.0,
+            small_perimeter_speed: FloatOrPercent::Percent(50.0),
             initial_layer_speed: 30.0,
             initial_layer_infill_speed: 60.0,
             travel_speed: 120.0,
@@ -631,6 +639,14 @@ impl PrintSettings {
             internal_bridge_speed: listed_share(
                 "internal_bridge_speed",
                 defaults.internal_bridge_speed,
+            )?,
+            small_perimeter_threshold: number(
+                "small_perimeter_threshold",
+                defaults.small_perimeter_threshold,
+            )?,
+            small_perimeter_speed: listed_share(
+                "small_perimeter_speed",
+                defaults.small_perimeter_speed,
             )?,
             initial_layer_speed: number("initial_layer_speed", defaults.initial_layer_speed)?,
             initial_layer_infill_speed: number(

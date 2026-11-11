@@ -552,6 +552,9 @@ struct State {
     /// How high the nozzle actually is, once a move has said.
     height: Option<f64>,
     first_layer: bool,
+    /// The speed of the wall loop being laid, where it is small enough
+    /// to have one of its own (`small_perimeter_speed`).
+    small_wall: Option<f64>,
     /// The tool in use, and what was left retracted in each tool put away.
     tool: usize,
     parked: Vec<(bool, f64)>,
@@ -1323,6 +1326,16 @@ impl Writer<'_> {
                     (corner, points[corner])
                 }
             };
+            // A small loop goes at its own speed (GCode.cpp `extrude_loop`,
+            // "check loop length for small perimeter").
+            let small = wall.length_mm() <= s.small_perimeter_threshold * std::f64::consts::TAU;
+            self.state.small_wall = small.then(|| {
+                if s.small_perimeter_speed == FloatOrPercent::Value(0.0) {
+                    0.5 * s.outer_wall_speed
+                } else {
+                    s.small_perimeter_speed.resolve(s.outer_wall_speed)
+                }
+            });
             let mut path = seam::open_at(points, edge, start);
             // A loop is held counter-clockwise round material and
             // clockwise round a hole; every wall is laid the same way
@@ -1368,6 +1381,7 @@ impl Writer<'_> {
             // The nozzle is wiped along the whole wall, not its last piece.
             self.state.wipe_path = line.points;
         }
+        self.state.small_wall = None;
         Ok(())
     }
 
@@ -1498,11 +1512,14 @@ impl Writer<'_> {
                 // The wall's speed where it is fully supported, and where a
                 // quarter, a half, three quarters and nearly all of it hangs
                 // over; a bridge's where nothing is under it (GCode.cpp `_extrude`).
-                let mut usual = if role == Role::ExternalPerimeter {
-                    s.outer_wall_speed
-                } else {
-                    s.inner_wall_speed
-                };
+                let mut usual =
+                    self.state
+                        .small_wall
+                        .unwrap_or(if role == Role::ExternalPerimeter {
+                            s.outer_wall_speed
+                        } else {
+                            s.inner_wall_speed
+                        });
                 if s.filament_max_volumetric_speed > 0.0 {
                     usual = usual.min(s.filament_max_volumetric_speed / flow.mm3_per_mm());
                 }
@@ -1648,8 +1665,8 @@ impl Writer<'_> {
                 s.initial_layer_speed
             }
             _ if first_layer => s.initial_layer_infill_speed,
-            Role::ExternalPerimeter => s.outer_wall_speed,
-            Role::Perimeter => s.inner_wall_speed,
+            Role::ExternalPerimeter => self.state.small_wall.unwrap_or(s.outer_wall_speed),
+            Role::Perimeter => self.state.small_wall.unwrap_or(s.inner_wall_speed),
             Role::SparseInfill => s.sparse_infill_speed,
             Role::SolidInfill | Role::BottomSurface => s.internal_solid_infill_speed,
             Role::TopSolidInfill => s.top_surface_speed,
