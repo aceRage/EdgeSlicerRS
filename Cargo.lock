@@ -249,6 +249,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "edge-avoid"
+version = "0.0.0"
+dependencies = [
+ "edge-clip",
+ "edge-geom",
+]
+
+[[package]]
 name = "edge-cli"
 version = "0.0.0"
 dependencies = [
