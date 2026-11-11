@@ -25,7 +25,7 @@ replaces it until output matches on the printers we care about.
 | `crates/edge-adhesion` | Skirt and brim, with the automatic brim width |
 | `crates/edge-support` | Supports under overhangs, normal (grid) and tree, with dense tops and feet |
 | `crates/edge-gcode` | Print order, seams, travel, retraction, wipe and lift, cooling, overhangs, and extrusion, written as G-code |
-| `crates/edge-infill` | Top, bottom, bridge, solid, bridged-over-infill and sparse surfaces, and the lines that fill them; and ironing: which areas are gone over again, and the lines that do it |
+| `crates/edge-infill` | Top, bottom, bridge, solid, bridged-over-infill and sparse surfaces, and the lines that fill them, with loops for the narrow parts of solid fill; and ironing: which areas are gone over again, and the lines that do it |
 | `crates/edge-template` | The placeholder language of custom G-code: `{expression}`, `{if}`, `[variable]`, and scripts |
 | `crates/edge-time` | How long a G-code file takes, with acceleration: the file is read as a printer reads it and planned as the reference's estimator plans, or as Klipper does |
 | `crates/edge-tower` | The prime tower a nozzle is primed on after a tool change |
@@ -213,6 +213,35 @@ Working:
   first layer's outer wall lies within 0.011 mm of the C++ slicer's
   everywhere; it was up to 0.17 mm off while wide parts were shrunk by
   the whole amount and narrow ones not at all.
+- Thinner solid fill over the first layer (`elefant_foot_layers_density`,
+  from 50% to 100%; 100% is the default and leaves everything as it
+  was): what the first layer is squeezed out by has somewhere to go when
+  the layers resting on it hold less plastic. The second layer's solid
+  fill inside the part is laid at the density set, and each layer after
+  it nearer to full by an even step, over as many layers as
+  `elefant_foot_compensation_layers` says (one, where it says less): at
+  70% over three layers, 70%, 80% and 90%, and full from the fifth
+  layer. The lines keep their width and lie that much further apart, on
+  the grid through the middle of the object that sparse lines are laid
+  on, not spread from the area's own edge; they are joined and ordered
+  as solid lines are, and get none of the fill's own gap fill. Top and
+  bottom surfaces, bridges and bridges over infill are left alone. A
+  port of the reference's few lines in `Layer::make_fills` (Fill.cpp)
+  and of what its line fill does with a density under one
+  (FillRectilinear.cpp `fill_surface_by_lines`). A value outside 50% to
+  100% is an error, as the reference refuses to slice with one. On a
+  20 mm cube on the U1 and on the Centauri Carbon the lines are the
+  reference's distance apart on every layer at 70% and at 50%, over one
+  layer and over three (at 70% over three: 0.539, 0.471 and 0.419 mm
+  where full fill is 0.377 mm), and on the U1 in the same places to
+  the micron; the length laid is the reference's to 0.1 mm on every
+  thinned layer (at 70% over three layers 632.7, 723.5 and 818.5 mm
+  against 632.6, 723.5 and 818.5, and 907.1 against 907.0 at full; at
+  50% over one layer 472.5 against 472.5), and on the three plates of
+  `mcbrim_test.3mf` at 70% the solid fill is 2.92 m, 1.45 m and 1.45 m
+  shorter than at 100% in the reference's files and 2.90 m, 1.46 m and
+  1.45 m here. Not as the reference: it does none of this for a part
+  on a raft, and no raft is printed here, so every part is on the bed.
 - A precise height (`precise_z_height`): layers are laid from the bed
   up for as long as the middle of one is still inside the part, so the
   last ends up to half a layer above or below the part's top; with this
@@ -408,6 +437,127 @@ Working:
   side to side follow that surface's lines as a group, where the
   reference slips each in among them wherever that saves travel
   (`insert_gap_fill`).
+- Narrow solid areas (`detect_narrow_internal_solid_infill`, on by
+  default and in the stock presets): the parts of the solid fill inside
+  a part that straight lines would cross in strokes too short to be
+  worth laying are told from the rest and filled with loops along their
+  outline instead, of whatever width fits. A layer's solid fill is
+  taken together, areas that touch as one. Where its lines would go is
+  worked out much as the fill lays them (the area less what is under
+  four spacings wide, half a spacing in from its edge, crossed by a
+  line every spacing), and of those strokes the ones under 4 mm go
+  where they follow one another: from the sixth of a run of them, and
+  a run that neither began beside a long stroke nor leads into one.
+  What the strokes left cover is the wide part, which is filled with
+  lines as before; the rest is narrow, save a piece too thin for a
+  line of its own that touches the wide part and goes with it, and a
+  patch under three spacings across both ways and four spacings
+  squared in area, which is left out. A narrow area is filled inside
+  the walls, without the fill's overlap into them, by walls of
+  changing width: as many loops as fit and a line down the middle
+  where an odd number does, each loop stopped `seam_gap` short of
+  where it began and cut where its width changes; they are solid fill
+  in name, speed and cooling, a part of their own, laid in the order
+  made. Turned off, narrow areas are filled with the same lines as
+  wide ones, as before. A port of the reference's `split_solid_surface`
+  and `filter_vibrating_extrusions`, of where `group_fills` uses them
+  (Fill/Fill.cpp) and of Fill/FillConcentricInternal.cpp. So a 20 mm
+  cube gets a triangle of loops 1.3 mm on a side in one corner of
+  every solid layer, the corner its slanting lines end in, and loops
+  for the whole of the layer of strips that carries the edges of the
+  bridge over its sparse fill: in the reference's file and now here in
+  the same places (the triangle's box is the same to the hundredth of
+  a millimetre, and each solid layer's lines are the reference's line
+  for line, 64 of them at the same places and of the same lengths to
+  two microns; so are the 27 of a `mushroom`'s solid layer, and all
+  but two of the 258 of a `frame`'s).
+  On the U1's presets, reference against this engine, loops in metres
+  by areas on layers: cube 0.164 against 0.164 (6 on 6 in both),
+  `frame` 0.582 against 0.583 (6 on 6), `steps` 0.844 against 0.828
+  (22 on 14), `comb` 0.191 against 0.191 (6 on 6), `fins` 0.017
+  against 0.017 (3 on 3), `mushroom` 0.261 against 0.261 (8 on 8),
+  `holes` 2.869 against 2.860 (126 areas against 127, on 47 layers);
+  with the Centauri Carbon's the same to 0.001 m but for `steps`
+  (0.848 against 0.834) and `holes` (2.895 against 2.769, 116 areas
+  against 124). All the solid fill inside the part on those eight
+  parts is now within 0.1% of the reference's length on the U1 (it
+  was 0.0% to 0.2% over, and 1.0% under on the `tube`); with arcs
+  fitted its solid fill has 140 arcs against the reference's 137 on
+  the cylinder (179 before), 337 against 339 on the `tube` (476) and
+  7 against 7 on the `mushroom` (none). On the three plates of
+  `mcbrim_test.3mf` the reference lays 13.6 m, 5.3 m and 5.3 m of its
+  solid fill as loops and this engine 12.1 m, 5.2 m and 5.2 m, where
+  it laid none; solid fill in all is 49.56 m against 50.51 m on plate
+  1 (1.9% under, from 1.0% over) and 24.53 m against 24.29 m on the
+  other two (1.0% over, from 3.5%). Plate 1 is under because on four
+  of its layers this engine has less solid area to fill, whatever it
+  is filled with (with the option off in both, those layers are 2%,
+  4%, 6% and 54% short: bridges over infill and sparse fill are
+  sorted out differently there, as above), and the joins of short
+  lines no longer make up for it; layer by layer the two files differ
+  by 1.25 m in all where they differed by 2.00 m. Not as the reference, each marked in the
+  code: there every loop starts at its point nearest the object's own
+  origin, the place the last one ended at never being noted, and here
+  where the one before it ended; a line that is no loop is not
+  shortened by the seam gap at its end; the loops of an area are laid
+  each after the one that starts nearest, not in the reference's chain
+  of nearest pairs; and two mistakes in `filter_vibrating_extrusions`
+  and in the tracing of the wide part are not carried over (a stroke
+  reached by two runs of short strokes counts the first comer's run
+  there, not the deeper; a run of strokes that finds the stroke beside
+  it taken goes on into that one all the same). Round a `tube` on the
+  U1 this engine lays a loop of 4 mm on each solid layer that the
+  reference does not: the slanting lines run out against the round
+  wall a few hundredths of a millimetre differently in the two, and
+  what is left there is just too thick here to go with the wide part.
+  Not done: a solid area with nothing narrow in it has its lines
+  spread to fill its width in the reference, as top and bottom
+  surfaces have, and not here (a round boss 8 mm across: lines 0.429 mm
+  wide there, 0.42 here), nor are they with the option off.
+- Small area flow compensation (`small_area_infill_flow_compensation`,
+  off by default, with its curve
+  `small_area_infill_flow_compensation_model`): a small area fills with
+  lines too short for the nozzle to get up to speed on and comes out
+  overfilled, so a short move of solid fill is laid with a share of its
+  plastic that falls with its length. The curve is given as points, a
+  length in mm and a share (the reference's own: nothing at 0 mm, 44%
+  at 0.2 mm, 76% at 0.8 mm, 92% at 3 mm, all of it from 10 mm), and
+  drawn through them so that it never overshoots between two. Each
+  move of a top surface, a bottom surface or solid fill inside the
+  part is thinned by its own length, where that kind of fill is set to
+  a pattern of straight lines (`rectilinear`, `alignedrectilinear`,
+  `monotonic`, `monotonicline`); nothing else is touched. A port of
+  the reference's GCode/SmallAreaInfillFlowCompensator.cpp and
+  GCode/PchipInterpolatorHelper.cpp and of where its writer applies
+  them (GCode.cpp `_needSAFC`, `_extrude`); a model it refuses (lengths
+  that do not start at 0 and rise, shares that do not rise to 1, fewer
+  than two points) is an error here too. On a 20 mm cube, a frame and
+  the three tiers of `steps`, on the U1 and the Centauri Carbon, the
+  filament fed per mm of move is the reference's for every length of
+  move on top surfaces, to the last figure its file gives (on the U1's
+  cube: 0.02517 mm a mm on moves of 0.8 to 1.5 mm, 0.02924 on 3 to 5 mm,
+  0.03104 on those over 10 mm), on bottom surfaces wherever the two lay
+  the same moves, and for the lines and joins of solid fill inside the
+  part (a join between two lines, 0.53 mm long: 0.02089 in both where
+  it was 0.03073; lines of 3 to 5 mm 0.02887 against 0.02887; over
+  10 mm 0.03064 against 0.03064). Turning it on takes 3.3 mm of
+  filament off the U1's cube in the reference and 3.1 mm here, 22.2 mm
+  and 22.0 mm off the `frame`, 11.2 mm and 10.0 mm off `steps`. Not as
+  the reference, each where it goes against what it is for: it thins
+  the loops a narrow solid area is filled with as if every stretch of
+  a loop were a line (round a 20 mm tube, cut into chords of half a
+  millimetre, such loops are laid at 68% to 74% of their plastic from
+  end to end; on plate 1 of `mcbrim_test.3mf`, a quarter of whose
+  solid fill is loops, it takes 160.6 mm of filament off where this
+  engine takes 68.1 mm), and here a loop keeps its flow; and it takes
+  a bottom surface for whatever is on the first layer, so one resting
+  on supports is never compensated there, where here each kind of fill
+  goes by its own pattern on every layer (which changes nothing yet:
+  this engine lays a bottom surface only on the bed). A join that
+  follows a curved wall is cut into more moves here than in the
+  reference, each thinned by its own length: on a round tube the joins
+  of a solid layer keep 57% of their plastic where the reference's
+  keep 66% (0.84 mm of filament of 1.47 mm, against 1.06 mm of 1.59).
 
 Known gaps: painted supports and seams, per-object setting overrides, typed settings
 (values are text until a stage needs them), and modifier parts.
@@ -961,9 +1111,8 @@ come out a quarter to a third short, and that is what
 bridges that reach into one another are made one only with
 `bridge_expansion_extra` set, a hole that narrows on the way up gets
 no bridge of its own under the narrow part (`counterbore_hole_bridging`,
-noted), narrow solid areas are filled with the same lines
-as wide ones where the reference lays loops along them
-(`detect_narrow_internal_solid_infill`, noted), narrow parts of top and
+noted), a solid area with nothing narrow in it does not have its lines
+spread to fill its width, narrow parts of top and
 bottom surfaces get no gap fill
 (`gap_fill_target`), and eight of the
 reference's sparse patterns are not laid (below). Gap closing runs across objects, so two separate objects closer than twice
@@ -1784,9 +1933,10 @@ Tree supports are arcs for 94% of their length
 against 90% (1825 against 2719 on the `shelf`, whose supports are 30%
 shorter here, as above). On the box-shaped parts nothing changed but
 the spiral lifts, and four arcs on the `mushroom` where a support's
-outline turns a corner; the reference has five to eight arcs there that
-this engine has not, each a dot of narrow solid fill it lays as a loop
-(`detect_narrow_internal_solid_infill`, not done).
+outline turns a corner; the reference has five to eight arcs there,
+each a dot of narrow solid fill it lays as a loop, and since
+`detect_narrow_internal_solid_infill` is followed this engine has them
+too (seven against seven with the Centauri Carbon's presets).
 
 The reference still does more in that time (time planning, ironing out
 its fill order), so the speed gap will narrow as stages are added;

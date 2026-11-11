@@ -3,7 +3,7 @@ use edge_config::{ConfigError, FloatOrPercent, Settings, Value as Setting};
 use edge_extrusion::Flow;
 use edge_template::{Value, Variables};
 
-use crate::{scarf::Scarf, seam::Seam};
+use crate::{scarf::Scarf, seam::Seam, small_area::SmallArea};
 
 /// How the nozzle rises before a travel (`z_hop_types`).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -182,6 +182,9 @@ pub struct PrintSettings {
     pub bottom_solid_infill_flow_ratio: f64,
     pub internal_bridge_flow: f64,
     pub brim_flow_ratio: f64,
+    /// The curve short lines of solid fill are thinned by, where the
+    /// profile asks (`small_area_infill_flow_compensation`).
+    pub small_area: Option<SmallArea>,
     /// In g/cm³, when the filament profile gives one.
     pub filament_density: Option<f64>,
 
@@ -361,6 +364,7 @@ impl Default for PrintSettings {
             bottom_solid_infill_flow_ratio: 1.0,
             internal_bridge_flow: 1.0,
             brim_flow_ratio: 1.0,
+            small_area: None,
             filament_density: None,
             nozzle_temperature: 200.0,
             nozzle_temperature_initial_layer: 200.0,
@@ -804,6 +808,7 @@ impl PrintSettings {
             bottom_solid_infill_flow_ratio: number("bottom_solid_infill_flow_ratio", 1.0)?,
             internal_bridge_flow: number("internal_bridge_flow", 1.0)?,
             brim_flow_ratio: number("brim_flow_ratio", 1.0)?,
+            small_area: SmallArea::read(settings)?,
             filament_density: first("filament_density")?.filter(|density| *density > 0.0),
             nozzle_temperature: number("nozzle_temperature", defaults.nozzle_temperature)?,
             nozzle_temperature_initial_layer: number(

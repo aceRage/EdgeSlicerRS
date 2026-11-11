@@ -1950,13 +1950,10 @@ mod tests {
         assert_eq!(summary["layers"], 60);
         assert!(summary["gcode"]["filament_m"].as_f64().unwrap() > 0.5);
         // Nothing is wrong with it; what the profile asks for and is not
-        // done is listed apart.
+        // done is listed apart, and may be nothing: this project's one
+        // such setting, loops in narrow solid areas, is followed now.
         assert_eq!(summary["problems"], json!([]));
-        assert!(
-            summary["gaps"]
-                .as_array()
-                .is_some_and(|gaps| !gaps.is_empty())
-        );
+        assert!(summary["gaps"].is_array());
         let roles = summary["roles"].as_array().unwrap();
         assert!(roles.contains(&json!("Outer wall")) && roles.contains(&json!("Bridge")));
         // In the reference's order: the inner wall is listed first.

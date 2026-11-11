@@ -125,8 +125,12 @@ fn surfaces_partition_the_infill_area_and_every_one_is_filled() {
             let params = infill.params(0.2, index == 0).unwrap();
             let fill = edge_infill::fill(surfaces, index, &params).unwrap();
             lines += fill.len();
+            // A loop of a narrow solid area is cut wherever its width
+            // changes, and a piece of one may be any length.
             if fill.iter().any(|line| {
-                line.points.len() < 2 || line.length_mm() < line.flow.width / 2.0 - 1e-6
+                line.points.len() < 2
+                    || line.length_mm() <= 0.0
+                    || (!line.looped() && line.length_mm() < line.flow.width / 2.0 - 1e-6)
             }) {
                 problems.push(format!("layer {index}: a fill line is degenerate"));
             }
