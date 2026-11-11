@@ -142,13 +142,44 @@ Working:
   layer unless `fuzzy_skin_first_layer`; kept off walls with nothing
   near beneath them, and off every wall over air with
   `fuzzy_skin_skip_overhangs`.
+- Thin walls (`detect_thin_wall`, classic walls): a part too thin for a
+  wall down each side gets one line down its middle, as wide as the
+  part, laid as an outer wall; a fuzzy skin on the outer wall is on it
+  too.
+- Which way round and in what order walls go: every wall
+  counter-clockwise, round a hole as round the part, or all clockwise
+  with `wall_direction` at `cw`; inner wall first, outer wall first, or
+  the outer wall between the inner ones (`wall_sequence` at
+  `inner-outer-inner wall`, above the first layer); one wall more on
+  every other layer (`alternate_extra_wall`); and walls over a steep
+  overhang turned about on every other layer (`overhang_reverse`, with
+  its threshold and `overhang_reverse_internal_only`).
 - Gap fill: a gap between walls too narrow for another wall gets a line
   down its middle, as wide as the gap is at each point, found as the
   reference finds it (the medial axis of the gap). On whenever
   `gap_infill_speed` is above zero.
+- The fill's own gap fill (`gap_fill_target` at `topbottom` or
+  `everywhere`; `nowhere` is the reference's default and the U1's
+  presets set `topbottom`): what the lines of a top or bottom surface
+  leave bare inside the walls, at the points of corners and against
+  slanting walls, gets lines of whatever width fits, found as the gaps
+  between walls are; with `everywhere`, solid fill inside the part
+  does too. A port of the reference's `_create_gap_fill` (FillBase.cpp).
+  On the lettered plate with walls of changing width the C++ slicer
+  lays 0.09 m of it and this engine 0.10 m, where it laid none. With
+  classic walls, layer by layer: a layer with a top surface has 294 mm
+  of gap fill in both (287 mm here before), another 357 mm against
+  368 mm (319 mm before); the first layer has 52 mm in the C++
+  slicer's file and 151 mm here, of which 106 mm was there before, so
+  the first layer's gaps between walls were already over and this adds
+  to it. Not as the reference: the gap lines of a surface swept from
+  side to side follow that surface's lines as a group, where the
+  reference slips each in among them wherever that saves travel
+  (`insert_gap_fill`).
 
 Known gaps: painted supports and seams, per-object setting overrides, typed settings
 (values are text until a stage needs them), and modifier parts.
+
 - Infill: each layer's inside is split into top, bottom, bridge, solid
   shell and sparse areas (`top_shell_layers`, `bottom_shell_layers`,
   `sparse_infill_density`, `minimum_sparse_infill_area`) and filled with
@@ -444,7 +475,6 @@ provided stops the export with the variable's name.
   and `MINIMUM_CRUISE_RATIO`, as the reference writes them: current
   Klipper reads only the second.
 
-Walls do not yet have thin-wall detection (the U1 profiles leave it off).
 A top surface below the last layer
 keeps only its outer wall, as the reference's `only_one_wall_top` does with
 `top_surface_expansion` at zero (PerimeterGenerator.cpp
@@ -694,12 +724,13 @@ being split differently, not these walls. Not a port of the whole of
   are laid after the island's loops, whichever of walls and fill goes
   first, and begun where they happen to begin. The reference orders
   them among the loops (`getRegionOrder`).
-- With one wall over top surfaces the inner walls keep the numbers of
-  the pass that made them; the reference numbers them again by which
-  wall each touches (`renumber_inner_walls_by_depth`), which decides
-  their order with `inner-outer-inner`. With `top_surface_expansion`
-  set, the reference cuts the inner walls where they run over the top
-  surface instead; that is not ported, for these walls or the classic.
+- With `top_surface_expansion` set, the reference cuts the inner walls
+  where they run over the top surface; that is not ported, for these
+  walls or the classic, and a note says so.
+- With `inner-outer-inner` the reference first orders these walls by
+  which lies against which (`reorderPerimetersByProximity`); here they
+  are ordered by nesting, as the classic walls are, and then put in
+  the same inner-outer-inner order.
 - The check of a diagram that needs exact arithmetic
   (`is_voronoi_diagram_planar_angle`) is not here.
 
@@ -716,6 +747,18 @@ Wall options, with the U1's presets, C++ slicer against this engine:
 | `fuzzy_skin` `all`, `perlin`, cube | Outer wall | 8.06 m | 8.05 m |
 | `fuzzy_skin` `allwalls`, `extrusion`, cube, `arachne` | Outer wall | 7.88 m | 7.87 m |
 | `fuzzy_skin` `external`, `ripple`, cube, `arachne` | Outer wall | 7.94 m | 7.96 m |
+| `detect_thin_wall`, fins 0.5 to 1.1 mm thick | Outer wall | 1.85 m (2.08 m off) | 1.85 m |
+| `alternate_extra_wall`, cube, either generator | Inner wall | 10.96 m | 10.96 m |
+
+And by what is laid which way and when: on a frame (a part with a
+hole) all 60 outer and 58 inner loops are counter-clockwise in both
+slicers' files, and all clockwise with `wall_direction` at `cw`, where
+this engine used to lay the walls round a hole clockwise; on a cube
+with four walls and `inner-outer-inner wall` the first layer and the
+sixth lay their walls in the same order in both, with either
+generator; on the mushroom with `overhang_reverse`, a threshold of 0
+and the outer wall left alone, the inner wall of every odd layer is
+clockwise in both, and at the default threshold no wall is, in both.
 
 Fuzzy skin differs from the reference in three ways, on purpose:
 
@@ -738,9 +781,7 @@ Fuzzy skin differs from the reference in three ways, on purpose:
   through the clipping library the reference uses for it.
 
 Fuzzy skin painted on a model, or set for one part by a modifier, is
-not read: the settings fuzz every part alike. Thin walls (classic) are
-not made, so there are none to fuzz. `overhang_reverse` is not
-followed, with or without fuzzy skin, and a note says so.
+not read: the settings fuzz every part alike.
 
 Classic walls are untouched: every file that sets `classic` is byte for
 byte what it was.

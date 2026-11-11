@@ -506,14 +506,22 @@ pub fn slice(job: Job, watch: &dyn Watcher) -> Result<Sliced, Failure> {
                 // object it fills, as in the reference.
                 params.origin = middle;
                 params.z = first_layer_height + index as f64 * layer_height;
-                edge_infill::fill_from(surfaces, index, &params, &|surface| {
-                    frame_of(&middles, surface.area.contour.points.first().copied()).unwrap_or(
-                        edge_infill::Frame {
-                            origin: middle,
-                            bounds: None,
-                        },
-                    )
-                })
+                edge_infill::fill_within(
+                    surfaces,
+                    index,
+                    &params,
+                    &|surface| {
+                        frame_of(&middles, surface.area.contour.points.first().copied()).unwrap_or(
+                            edge_infill::Frame {
+                                origin: middle,
+                                bounds: None,
+                            },
+                        )
+                    },
+                    // What is inside this filament's walls on the layer,
+                    // for the fill's own gap fill.
+                    &perimeters[index].infill_no_overlap,
+                )
                 .map_err(|e| e.to_string())
             })
             .collect::<Result<Vec<Vec<ExtrusionPath>>, String>>()?;
@@ -873,6 +881,8 @@ impl Sliced {
                         );
                         all.loops.extend(own.loops.iter().cloned());
                         all.infill.extend(own.infill.iter().cloned());
+                        all.infill_no_overlap
+                            .extend(own.infill_no_overlap.iter().cloned());
                         fill.extend(self.fills_by[filament][index].iter().cloned());
                     }
                     (all, fill)

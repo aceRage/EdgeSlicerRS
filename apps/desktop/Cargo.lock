@@ -919,6 +919,7 @@ dependencies = [
  "edge-config",
  "edge-extrusion",
  "edge-geom",
+ "edge-medial",
  "rayon",
  "thiserror 2.0.21",
 ]

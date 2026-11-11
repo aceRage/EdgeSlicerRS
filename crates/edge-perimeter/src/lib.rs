@@ -337,6 +337,10 @@ pub struct Perimeters {
     pub islands: Vec<Range<usize>>,
     /// Where infill goes, already overlapping the innermost wall.
     pub infill: Vec<ExPolygon>,
+    /// The same without the overlap: what is inside the walls. The fill
+    /// stage goes by it to find what its solid lines leave bare
+    /// (`fill_no_overlap`).
+    pub infill_no_overlap: Vec<ExPolygon>,
     /// Lines down the middle of the gaps between walls, each as wide as
     /// its gap. With walls of changing width there are no gaps, and what
     /// is here are the walls that are not loops: lines down the middle of
@@ -599,22 +603,36 @@ pub fn classic_between(
             0 => ext_spacing / 2,
             _ => spacing / 2,
         };
-        let mut top_overlap = 0;
+        let (mut top_overlap, mut overlap) = (0, 0);
         if inset > 0 {
             let reach = unscaled(inset + params.solid_infill_spacing / 2);
             if let Some(top) = &params.one_wall_top {
                 top_overlap = scaled(reach * top.overlap_percent / 100.0);
             }
-            inset -= scaled(reach * params.infill_overlap_percent / 100.0);
+            overlap = scaled(reach * params.infill_overlap_percent / 100.0);
+            inset -= overlap;
         }
         let min_infill_spacing =
             (params.solid_infill_spacing as f64 * (1.0 - INSET_OVERLAP_TOLERANCE)) as Coord;
+        let not_filled = edge_clip::simplify(&last, params.resolution)?;
         let mut infill = edge_clip::offset2(
-            &edge_clip::simplify(&last, params.resolution)?,
+            &not_filled,
             -inset - min_infill_spacing / 2,
             min_infill_spacing / 2,
             Join::MITER,
         )?;
+        // The same area without the overlap ("get the no-overlap infill
+        // expolygons").
+        let mut no_overlap = if min_infill_spacing / 2 > overlap {
+            edge_clip::offset2(
+                &not_filled,
+                -inset - min_infill_spacing / 2,
+                min_infill_spacing / 2 - overlap,
+                Join::MITER,
+            )?
+        } else {
+            edge_clip::offset(&not_filled, -inset - overlap, Join::MITER)?
+        };
         // The top fill reaches from its side to the outer wall, half a
         // line nearer than where the inner walls would have started.
         if !top_fills.is_empty() {
@@ -624,7 +642,10 @@ pub fn classic_between(
             )?;
             infill.extend(edge_clip::offset(&reached, top_overlap, Join::MITER)?);
             infill = edge_clip::union_ex(&infill)?;
+            no_overlap.extend(reached);
+            no_overlap = edge_clip::union_ex(&no_overlap)?;
         }
+        result.infill_no_overlap.extend(no_overlap);
         if result.loops.len() > first_loop {
             wall_over_air(
                 &mut infill,
@@ -966,10 +987,18 @@ pub fn arachne(
         let inset = scaled(unscaled(reach) * params.infill_overlap_percent / 100.0);
         let min_infill_spacing =
             (params.solid_infill_spacing as f64 * (1.0 - INSET_OVERLAP_TOLERANCE)) as Coord;
+        let not_filled = edge_clip::simplify(&infill_contour, params.resolution)?;
         let mut infill = edge_clip::offset2(
-            &edge_clip::simplify(&infill_contour, params.resolution)?,
+            &not_filled,
             -min_infill_spacing / 2,
             inset + min_infill_spacing / 2,
+            Join::MITER,
+        )?;
+        // The same area without the overlap.
+        let mut no_overlap = edge_clip::offset2(
+            &not_filled,
+            -min_infill_spacing / 2,
+            min_infill_spacing / 2,
             Join::MITER,
         )?;
         // The top fill overlaps the wall beside it by the amount set for
@@ -978,7 +1007,10 @@ pub fn arachne(
             let top_inset = scaled(unscaled(reach) * top.overlap_percent / 100.0);
             infill.extend(edge_clip::offset(&top_fills, top_inset, Join::MITER)?);
             infill = edge_clip::union_ex(&infill)?;
+            no_overlap.extend(top_fills.iter().cloned());
+            no_overlap = edge_clip::union_ex(&no_overlap)?;
         }
+        result.infill_no_overlap.extend(no_overlap);
         if result.loops.len() > first_loop {
             wall_over_air(
                 &mut infill,
