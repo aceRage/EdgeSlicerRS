@@ -151,7 +151,10 @@ fn outside(segments: &[Segment], point: Point2) -> i32 {
     0
 }
 
-/// The segment nearest a point; the first of equals.
+/// The segment nearest a point; the first of equals. (The reference's
+/// search tree settles equals its own way; where a part is laid out
+/// symmetrically about the pattern's origin a point on its middle line
+/// is as near two lines, to the micrometre, and either may be taken.)
 fn nearest(segments: &[Segment], point: (f64, f64)) -> Option<&Segment> {
     let mut best: Option<(&Segment, f64)> = None;
     for segment in segments {
@@ -536,6 +539,11 @@ pub(crate) fn anchored(
             }
         }
     }
+    // What is still open at the end of the scan is closed where its last
+    // stretch stands, as the reference closes it, with no half step after
+    // it: the last scan line lies within half a step of the area's far
+    // edge, and a half step after it would as often reach past the edge
+    // as up to it.
     outlines.extend(current.into_iter().map(Traced::close));
     let united = edge_clip::union(&outlines)?;
     // And turned back.
@@ -625,9 +633,9 @@ mod tests {
             .fold((f64::MAX, f64::MIN), |(l, h), y| (l.min(*y), h.max(*y)));
         assert!((low - 4.6).abs() < 1e-3, "{low}");
         assert!((high - 10.4).abs() < 1e-3, "{high}");
-        // From half a step before the first scan line to the last: the
-        // reference closes an outline still open at the end of the scan
-        // where it stands, with no half step after it.
+        // From half a step before the first scan line to the last: an
+        // outline still open at the end of the scan is closed where it
+        // stands.
         let area = found[0].area_mm2();
         assert!((area - 3.8 * 5.8).abs() < 1e-3, "{area}");
     }

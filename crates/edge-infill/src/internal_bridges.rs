@@ -491,12 +491,14 @@ fn bridges_on(
     let spacing = over.thread_spacing;
     let at = |share: f64| (share * spacing as f64) as Coord;
     // Sparse fill deep enough for a thread to sink into: sparse on every
-    // layer it reaches, nothing else on any of them. The reference takes
-    // the share a thread sinks twice over here (the height it hands
-    // `gather_areas_w_depth` has it already); so it is here, the layer
-    // beneath always counted.
+    // layer it reaches, nothing else on any of them, the layer beneath
+    // always counted. Not as the reference has it: it takes the share a
+    // thread sinks twice over here (the height it hands
+    // `gather_areas_w_depth` has the share in it already, and the lambda
+    // takes it again), so it looks 0.81 of a thread deep where everywhere
+    // else in the function it looks 0.9; here it is 0.9 throughout.
     let sunk = SINKS * over.thread_height;
-    let bottom = tops[layer] - SINKS * sunk - EPSILON;
+    let bottom = tops[layer] - sunk - EPSILON;
     let (mut sparse, mut dense) = (Vec::new(), Vec::new());
     for under in (0..layer).rev() {
         if tops[under] < bottom && under + 1 < layer {
