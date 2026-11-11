@@ -515,12 +515,17 @@ pub fn anchor(
                     .collect()
             };
             let (bridges, mut bottoms) = (of(SurfaceKind::Bridge), of(SurfaceKind::Bottom));
-            let mut top = of(SurfaceKind::Top);
+            let top = of(SurfaceKind::Top);
             if bridges.is_empty() && bottoms.is_empty() && top.is_empty() {
                 return Ok(layer.clone());
             }
-            let mut solid = of(SurfaceKind::InternalSolid);
-            let mut sparse = of(SurfaceKind::Sparse);
+            // Each kind of fill grown into is taken whole, its touching
+            // pieces made one, as the reference takes it (`union_ex` of
+            // each zone in `process_external_surfaces`): a wave crosses
+            // from one piece into the next only so.
+            let mut top = edge_clip::union_ex(&top)?;
+            let mut solid = edge_clip::union_ex(&of(SurfaceKind::InternalSolid))?;
+            let mut sparse = edge_clip::union_ex(&of(SurfaceKind::Sparse))?;
             let mut out = Vec::with_capacity(layer.len());
 
             // A surface with what it gains from each kind of fill beside
@@ -570,6 +575,9 @@ pub fn anchor(
             // grown bridge stay inside the fill.
             if !bridges.is_empty() {
                 let extra = anchoring.bridge_extra > 0;
+                if extra {
+                    bottoms = edge_clip::union_ex(&bottoms)?;
+                }
                 let mut beside: Vec<ExPolygon> =
                     solid.iter().chain(&sparse).chain(&top).cloned().collect();
                 if extra {
@@ -1586,6 +1594,16 @@ mod tests {
             .remove(0);
         assert!((area_of(&found, Top) - 44.0).abs() < 0.05);
         assert!((area_of(&found, InternalSolid) - 86.0).abs() < 0.05);
+        // The same fill in two pieces that touch is one to grow into.
+        let layer = vec![
+            Surface::new(Top, block(0.0, 0.0, 3.0, 10.0).remove(0)),
+            Surface::new(InternalSolid, block(3.0, 0.0, 3.5, 10.0).remove(0)),
+            Surface::new(InternalSolid, block(3.5, 0.0, 13.0, 10.0).remove(0)),
+        ];
+        let found = anchor(std::slice::from_ref(&layer), &anchoring())
+            .unwrap()
+            .remove(0);
+        assert!((area_of(&found, Top) - 44.0).abs() < 0.05);
     }
 
     #[test]
