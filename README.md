@@ -104,7 +104,13 @@ the controls it is built from are described in `apps/desktop/ui/STYLE.md`.
   and picture of it where its profile has them), every plate of the
   project where the C++ application stands it, each object in its
   filaments' colours, painted colours included; a click selects an
-  object or a plate. An STL or a 3MF opens as a project.
+  object, one of its parts, or a plate. Objects and their parts are
+  edited there as in the C++ application (moved, turned, scaled,
+  mirrored, split, deleted, renamed, given filaments; parts changed in
+  kind and added; section 13 of `UI_PARITY.md`). An STL or a 3MF opens
+  as a project; "Save Project" and "Save Project as..." write it as a
+  3MF the C++ application opens as its own, asking first about anything
+  its file held that would not be kept (section 15).
 - **Preview**: going there slices the plate. The print in 3D, read back
   from its G-code as the C++ application's is: every line as wide and
   as high as it is laid, by line type, filament, speed, layer height,
@@ -138,9 +144,8 @@ above instead. Meshes and moves come from the session as bytes, each
 object once and a print a stretch at a time (`src/api/scene.rs` has the
 layouts).
 
-It has no arranging or editing of the model, no editing or saving of
-presets (a setting changed is the open project's), no filament or
-printer settings pages, no saving of projects and no installer. The
+It has no editing or saving of presets (a setting changed is the open
+project's) and no installer. The
 vendor profiles are found in `reference/EdgeSlicer` beside the source, or
 wherever `EDGE_PROFILES` points; the folder can be changed in the window,
 and is then kept.

@@ -1406,10 +1406,10 @@ entry, in a fixed order:
 | `[Content_Types].xml`, `_rels/.rels` | written afresh, as the reference writes them; `_rels/.rels` names the cover (`Auxiliaries/.thumbnails/…` when the file had one, else the first plate's picture while that is written) |
 | `3D/3dmodel.model`: the header, an object of components for each object, the build (each copy: transform, printable) | written afresh. The header keeps every `<metadata>` the file had (title, designer, licence, description…), with `Application` "EdgeSlicer-2.4.9.0" (the pinned reference's version, `edge_3mf::REFERENCE_VERSION`, checked against the submodule by a test), `BambuStudio:3mfVersion` 1, the dates and the designer's id empty as the reference writes them. The reference reads a file as a whole project (plates, settings, presets) only when its `Application` names EdgeSlicer, Snapmaker Orca or Bambu Studio, so the reference's own name is the one written. Transforms are written as the shortest text that reads back to the same number (the reference writes 9 digits) |
 | `3D/Objects/<name>_<n>.model`, `3D/_rels/3dmodel.model.rels` | written afresh: a file for each object, each mesh of it that no earlier part has (the same mesh painted alike is written once and named from every part that has it, as `ShareMesh` does); vertices as the shortest text that reads back to the same `f32`; each triangle with every attribute it carried as the file had it (`paint_color`, `paint_seam`, `paint_supports`, `paint_fuzzy_skin`, texture layers, `face_property`). A `/` or another character a path cannot hold in an object's name is written `_` in the file's name (the reference writes the name as it is) |
-| `Metadata/model_settings.config` | written afresh from the model: each object's name and filament and each part's (`extruder`: the object's when its printed parts agree, each part's own only where it differs), each part's `subtype`. Kept as the file had them: every other metadata and setting of each object and part (per-object and per-part settings, modifiers' settings, `matrix`, `source_*`, Precise Seam's type, embossed text and SVG descriptions, `mesh_stat`), each plate's own (`locked`, `bed_type`, `print_sequence`, `first_layer_print_sequence`, `spiral_mode`, `filament_map_mode`, `filament_maps` with one entry for each filament, `print_history`…), each copy's place in the assembly view while its object has all its copies, and each copy's `identify_id` (the number the reference labels it with in G-code) while it has. Plates are numbered as they stand, each with its name and its copies |
+| `Metadata/model_settings.config` | written afresh from the model: each object's name and filament (`extruder`), each part's name, `subtype`, own filament (`extruder`, none for "default") and, once it has moved, `matrix` (see "Parts" below). Kept as the file had them, where the part is still what it was read as: every other metadata and setting of each object and part (per-object and per-part settings, modifiers' settings, `matrix`, `source_*`, Precise Seam's type, embossed text and SVG descriptions, `mesh_stat`), each plate's own (`locked`, `bed_type`, `print_sequence`, `first_layer_print_sequence`, `spiral_mode`, `filament_map_mode`, `filament_maps` with one entry for each filament, `print_history`…), each copy's place in the assembly view while its object has all its copies, and each copy's `identify_id` (the number the reference labels it with in G-code) while it has. Plates are numbered as they stand, each with its name and its copies |
 | `Metadata/project_settings.config` | the settings, below |
 | `Metadata/slice_info.config` | written afresh: the header alone, as the reference writes a project saved unsliced |
-| `Metadata/layer_heights_profile.txt` (variable layer height), `layer_config_ranges.xml` (height ranges and their settings), `brim_ear_points.txt`, `cut_information.xml` (cut connectors) | kept, each object's line or block written under its place in the list as it stands, so they follow an object when one before it is deleted; a clone carries its original's, as the reference's clone does |
+| `Metadata/layer_heights_profile.txt` (variable layer height), `layer_config_ranges.xml` (height ranges and their settings), `brim_ear_points.txt`, `cut_information.xml` (cut connectors) | kept, each object's line or block written under its place in the list as it stands, so they follow an object when one before it is deleted; a clone carries its original's, as the reference's clone does. A cut connector names its part by the part's place among the object's parts, which is written as it now stands (a part before it deleted, one added after it); once the connector's part itself is deleted or split, the object's cut information is not written, and that is asked about first |
 | `Metadata/custom_gcode_per_layer.xml` (pauses, colour changes, custom G-code at layers) | kept, each plate's under its number as it stands |
 | `Metadata/plate_<n>.png`, `_small`, `plate_no_light_<n>`, `top_<n>`, `pick_<n>` | kept for each plate while it is as it was read (`PlateStamp`: what is on it and where, its filaments and first-layer order), under its number now; a plate that has changed is saved without pictures, which would show it as it was. **not yet**: drawing new ones |
 | `Metadata/process_settings_<n>.config`, `filament_settings_<n>.config`, `machine_settings_<n>.config` (presets the file carries) | kept while the project is saved with its file's own settings; with presets chosen here they are not, and that is asked about first |
@@ -1422,6 +1422,31 @@ The same project gives the same bytes: the order is fixed and every entry
 carries one time, `SOURCE_DATE_EPOCH` when it is set, else 1980-01-01. A
 file is written to `<path>.tmp` and moved into place once whole, so what was
 at `path` is left as it was when writing fails.
+
+### Parts
+
+A part keeps what its file held of it in one place, `edge_3mf::PartKept`
+(its `<part>` entries in order, its `subtype` as written, what its mesh's
+triangles carry, and what it was read as); `Part::settings()` lists its own
+settings from there. What a part was read as (its name, kind, own
+filament, place in its object, mesh, place among the parts) tells the
+writer what has been edited since: an entry the edit did not touch is
+written as the file had it, so an unedited project is written as before.
+
+| Edit | What the saved project holds | Read back by the reference as |
+| --- | --- | --- |
+| A part given a filament of its own; put back to "Default" | its `extruder`, set in place or added after its metadata; for "Default" none (`ModelVolume::extruder_id` then takes the object's) | the part's volume in that filament; "Default" prints in the object's |
+| An object given a filament | the object's `extruder`; its parts' own taken away, as the C++ clears them | every part in the object's filament |
+| A part renamed | its `name`, in its place among the entries | the volume's name |
+| A part deleted | its `<part>`, mesh and entries gone with it; the others' places close up (they are written in order). The last part of an object left alone gives its own settings to the object, and its filament, as the C++ applies the last volume's config to the object (GUI_ObjectList.cpp `del_subobject_from_object`) | the object without it |
+| A part moved, turned, scaled, mirrored | its component's `transform` (what places it) and its `matrix` (the C++ reads it only for "Reload from disk", `source.transform`) | the volume where it stands, mirrored where it is |
+| A part split | each piece a part of the part's kind with its settings and its filament as its own, named `_1`, `_2`…, without its `source_*`, embossed text, `matrix` or `mesh_stat` of the whole, and without the paint, as Model.cpp `ModelVolume::split` makes each piece a copy of the part with the source and facets reset | the pieces, each with the part's settings |
+| A part's kind changed | its `subtype`; made a Precise Seam part, `modifier_part` with `precise_seam_type` "precise_seam_center" (the type the C++ gives one) and its settings kept under `precise_seam_config:`; made something else, those undone | the volume of that kind |
+| A part added (a file's, or a cube) | a `<part>` with its name, kind, `matrix`, filament when it has its own, and `mesh_stat` | the added volume |
+
+What each triangle carries (paint) is written only with the mesh it was
+read with: a split part's pieces are new meshes and carry none, as in the
+C++.
 
 ### The settings
 
@@ -1449,7 +1474,10 @@ What the file held that a save would not keep is listed, and nothing is
 written until the person says to: the presets it carries when presets are
 chosen here; what goes by objects' places (above) once an object of the
 file is deleted; the assembly view of an object some of whose copies were
-deleted; an entry whose name reaches outside the file. The reference never
+deleted; the cut information of an object whose connector part was deleted
+or split; an entry whose name reaches outside the file. A part's own edits
+lose nothing else: what a deleted part held goes with it, and a split
+part's settings go with each piece. The reference never
 asks this, keeping everything it reads; the words are this app's. `edge
 save` lists the same and writes only with `--accept-losses`.
 
@@ -1505,6 +1533,39 @@ save` lists the same and writes only with `--accept-losses`.
   conflicting paths, as it should be; this engine does not check that.
 - Not checked: the window's own close question (the window was not
   opened in this pass; the page's side and the session's are as above).
+- Parts (ninth pass). `crates/edge-engine/tests/save.rs`: on
+  `twopart_groups.3mf` (a part with settings of its own), a two-part
+  project built in the test (a painted part of two pieces with settings,
+  a part with a filament of its own) and `mcbrim_test.3mf` (painted
+  parts): a part's own filament and "Default", an object's filament, a
+  rename, deleting one part and all but one, moving, turning, scaling and
+  mirroring, splitting, each kind and Precise Seam and back, a cube and a
+  file added; each saved, opened again, is the edited model (names, kinds,
+  filaments, transforms to the bit, meshes, paint, settings), slices to the
+  same G-code, and saves twice to the same bytes, with nothing asked.
+  `crates/edge-3mf/tests/round_trip.rs`: a cut connector follows its part
+  and one deleted is asked about. `src/api/save/tests.rs`: parts edited
+  through `scene_edit`, saved as, are as left when the file is opened in
+  another session; undo after the save marks the project unsaved. The
+  same edits on the fixtures `twotone`, `halves`, `inset` and on
+  `mcbrim_test.3mf`, through the engine (17 edits each, every one the same
+  model and the same G-code after saving), and the CLI's G-code of the
+  lettered plates, `twopart_groups`, the fixtures and a Benchy byte for
+  byte what main's binary writes.
+- The C++ slicer (headless, `edge-parity`) on each saved file, with a
+  project of seven filaments: a part given filament 2 is printed in it
+  (twotone, a twopart part: filament 2 used for that part's volume), put
+  back to "Default" and an object's filament print in the object's; a
+  part moved, turned or scaled has its toolpaths where it now is (5 mm
+  further in X for a move); a part deleted is gone (its filament no
+  longer used); a negative part, a modifier, a blocker and an enforcer
+  are not printed; a Precise Seam part is read as one and, made a part
+  again, printed as before; a split part's pieces print in its filament
+  with its settings (the same material as before the split); a cube
+  modifier adds nothing printed and a part added from a file is printed;
+  on `mcbrim_test.3mf` plate 1 a part deleted, moved or made negative
+  changes the filament used as it does here. A file added at a place
+  partly off the bed is refused by both slicers alike.
 
 ### Not yet
 
@@ -1528,6 +1589,13 @@ save` lists the same and writes only with `--accept-losses`.
 - `bbs_3mf.cpp` l.8302: an object's file is named `3D/Objects/<name>_<id>.model`
   from its name as it is, so a `/` in a name makes a folder of it (and `..`
   climbs one).
+- `bbs_3mf.cpp` l.9463 with l.6048–6052 and l.6151–6152: a part's
+  `matrix` is written as `volume->get_matrix() * source.transform`, and
+  read back into `source.transform` while the component's transform
+  places the volume; so every save and open multiplies the part's
+  placement into its `matrix` once more (a part at Z 11 is written at 22
+  the next time). Only "Reload from disk" reads it. Found by reading; here
+  a moved part's `matrix` is where it stands.
 - `bbs_3mf.cpp` l.9274–9276: `_add_project_embedded_presets_to_archive`
   builds a header line into `out` that is never used.
 - `bbs_3mf.cpp` l.8039: the cover's `rel-5` line is written without the
