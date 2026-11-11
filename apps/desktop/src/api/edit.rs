@@ -33,6 +33,29 @@ pub(super) const JSON: [&str; 3] = ["scene_edit", "undo", "redo"];
 /// serves.
 const DEPTH: usize = 200;
 
+/// What is said of a plate that cannot be sliced for an object reaching
+/// over its edge: the reference's own words (Plater.cpp
+/// `validate_current_plate`).
+pub(super) const OVER_THE_EDGE: &str = "An object is laid over the boundary of plate or exceeds the height limit.\nPlease solve the problem by moving it totally on or off the plate, and confirming that the height is within the build volume.";
+
+/// Whether something that is to be printed on a plate reaches over the
+/// plate's edge.
+pub(super) fn over_the_edge(file: &File, bed: Option<&Bed>, plate: Option<u32>) -> bool {
+    let Some(plate) = plate else { return false };
+    let model = &file.model;
+    let on = model
+        .plates()
+        .iter()
+        .find(|held| held.id() == plate)
+        .map(|held| held.copies())
+        .unwrap_or_default();
+    model
+        .objects()
+        .iter()
+        .flat_map(|object| object.copies())
+        .any(|copy| copy.printable() && on.contains(&copy.id()) && model.overhangs(bed, copy.id()))
+}
+
 /// One step of the history: what was done, and the model on its far side.
 struct Step {
     name: String,

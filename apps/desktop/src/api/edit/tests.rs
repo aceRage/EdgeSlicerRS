@@ -379,6 +379,10 @@ fn plates_are_added_and_taken_away_and_an_object_goes_with_the_plate_it_is_moved
     );
     assert_eq!(over["scene"]["placings"][0]["plate"], 2);
     assert_eq!(over["scene"]["placings"][0]["over"], true);
+    assert!(
+        refused(&session, "slice", json!({ "plate": 2 }))
+            .starts_with("An object is laid over the boundary of plate")
+    );
     let off = edit(
         &session,
         json!({ "op": "transform", "copies": [moved(&over["scene"]["placings"][0], [0.0, 200.0, 0.0])] }),

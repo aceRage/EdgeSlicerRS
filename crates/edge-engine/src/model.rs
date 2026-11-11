@@ -700,15 +700,23 @@ impl Model {
     /// reference does when an instance has moved (PartPlate.cpp
     /// `notify_instance_update`): it stays on its plate while it reaches
     /// over any of it, else it goes to the first plate it reaches over,
-    /// else to none. A copy left in the air is stood on the bed; one that
-    /// reaches under the bed is left as it is (GLCanvas3D.cpp `do_move`).
+    /// else to none.
+    ///
+    /// It is then stood on the bed, as the reference stands what was
+    /// turned or sized (GLCanvas3D.cpp `do_rotate`, `do_scale`): a copy
+    /// that stood on the bed before stands on it after, and one left in
+    /// the air is brought down. Only a copy that reached under the bed
+    /// before and still does is left sunk, as it was read.
     fn stand_in_scene(&mut self, bed: Option<&Bed>, copy: u64, scene: Transform) {
         let Some(at) = self.find(copy) else { return };
         let shape = self.objects[at.0].shape.clone();
+        let stood = self.objects[at.0].copies[at.1]
+            .reach
+            .is_none_or(|[low, _]| low[2] >= SINKING);
         let mut scene = scene;
         let mut reach = shape.reach(&scene);
         if let Some([low, _]) = reach
-            && low[2] > SINKING
+            && (stood || low[2] > SINKING)
             && low[2] != 0.0
         {
             scene = scene.then(&Transform::translation([0.0, 0.0, -low[2]]));

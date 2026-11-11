@@ -238,6 +238,19 @@ fn a_copy_goes_to_the_plate_it_is_moved_onto_and_off_every_plate_is_not_sliced()
     onto(&mut model, 50.0, 50.0, 25.0);
     assert_eq!(standing(&model, copy), ([60.0, 60.0], Some(1)));
     assert_eq!(model.place(Some(1)).unwrap().bounds.0[2], 0.0);
+    // Tipped over, it stands on the bed still: a corner is not left under it.
+    let tipped = Transform {
+        rows: [
+            [1.0, 0.0, 0.0],
+            [0.0, 0.8, 0.6],
+            [0.0, -0.6, 0.8],
+            [50.0, 50.0, 0.0],
+        ],
+    };
+    model.set_transforms(Some(&BED), &[(copy, tipped)]).unwrap();
+    let low = model.place(Some(1)).unwrap().bounds.0[2];
+    assert!(low.abs() < 1e-5, "{low}");
+    onto(&mut model, 50.0, 50.0, 0.0);
     // A transform that would flatten it is refused, and nothing changes.
     let mut flat = Transform::translation([150.0, 50.0, 0.0]);
     flat.rows[2][2] = 0.0;

@@ -1520,6 +1520,20 @@ impl Session {
             }
             (project.id, file, project.choices.clone(), plates)
         };
+        // A plate with an object reaching over its edge is not sliced
+        // until the object is wholly on it or off it (Plater.cpp
+        // `validate_current_plate`, whose words these are).
+        let bed = self
+            .printer_of(&choices, Some(&file))?
+            .and_then(|(_, printer)| bed_of(&printer))
+            .map(edge_engine::Bed::of);
+        let plates: Vec<Option<u32>> = plates
+            .into_iter()
+            .filter(|plate| !edit::over_the_edge(&file, bed.as_ref(), *plate))
+            .collect();
+        if plates.is_empty() {
+            return Err(edit::OVER_THE_EDGE.into());
+        }
         // The presets are found before anything starts, so a name that
         // is not there is said at once.
         let chosen = match (choices.from_presets, &choices.vendor) {
