@@ -122,6 +122,10 @@ fn candidate(x: f32, y: f32) -> Candidate {
         overhang: 0.0,
         unsupported: 0.0,
         embedded: 0.0,
+        part_joint: false,
+        central_part_joint: false,
+        paint: Paint::Neutral,
+        central_enforcer: false,
     }
 }
 
@@ -263,6 +267,10 @@ fn places_are_measured_from_the_middle_of_the_object_they_are_of() {
         max: Point2::from_mm(x + side, 100.0 + side),
         centre: Point2::from_mm(x + side / 2.0, 100.0 + side / 2.0),
         mesh: None,
+        parts: &[],
+        alone: false,
+        enforcers: &[],
+        blockers: &[],
     };
     let objects = [object(100.0, 20.0), object(150.0, 10.0)];
     let layers = [layer(0.2, &loops, &[])];
@@ -855,6 +863,10 @@ fn a_seam_goes_where_the_parts_surface_is_least_seen() {
             max: Point2::from_mm(24.0, 10.0),
             centre: Point2::from_mm(12.0, 5.0),
             mesh,
+            parts: &[],
+            alone: false,
+            enforcers: &[],
+            blockers: &[],
         }]
     }
     let mesh = SeamMesh {
@@ -922,4 +934,260 @@ fn a_seam_goes_where_the_parts_surface_is_least_seen() {
         seen(2.21),
         seen(11.79)
     );
+}
+
+#[test]
+fn a_seam_goes_where_two_parts_meet() {
+    // Two blocks of one object side by side, touching at x = 10, and the
+    // one outer wall round both.
+    let (mut vertices, mut triangles) = (Vec::new(), Vec::new());
+    block(
+        [0.0, 0.0, 0.0],
+        [10.0, 10.0, 10.0],
+        &mut vertices,
+        &mut triangles,
+    );
+    let (mut second, mut second_triangles) = (Vec::new(), Vec::new());
+    block(
+        [10.0, 0.0, 0.0],
+        [20.0, 10.0, 10.0],
+        &mut second,
+        &mut second_triangles,
+    );
+    let parts = [
+        SeamPart {
+            vertices: &vertices,
+            triangles: &triangles,
+        },
+        SeamPart {
+            vertices: &second,
+            triangles: &second_triangles,
+        },
+    ];
+    let loops = [wall(
+        ring(&[(0.21, 0.21), (19.79, 0.21), (19.79, 9.79), (0.21, 9.79)]),
+        0,
+        false,
+    )];
+    let layers: Vec<Layer<'_>> = (0..8)
+        .map(|at| layer(0.2 + 0.2 * at as f64, &loops, &[]))
+        .collect();
+    fn placed(
+        layers: &[Layer<'_>],
+        seam: Seam,
+        joints: bool,
+        parts: &[SeamPart<'_>],
+    ) -> (Plan, Vec<(f64, f64)>) {
+        let objects = [SeamObject {
+            min: Point2::from_mm(0.0, 0.0),
+            max: Point2::from_mm(20.0, 10.0),
+            centre: Point2::from_mm(10.0, 5.0),
+            mesh: None,
+            parts,
+            alone: true,
+            enforcers: &[],
+            blockers: &[],
+        }];
+        let scene = SeamScene {
+            objects: &objects,
+            part_joints: joints,
+            ..SeamScene::default()
+        };
+        let groups: Vec<Range<usize>> = (0..layers.len()).map(|at| at..at + 1).collect();
+        let plan = Plan::new(layers, &groups, &settings(seam), &scene);
+        let starts: Vec<(f64, f64)> = (0..layers.len())
+            .map(|at| start(&plan, at, layers[at].loops.first().unwrap()))
+            .collect();
+        (plan, starts)
+    }
+    // At every aligned position the seam is on the joint, in the middle
+    // of a run of points along one long side, which the edge across the
+    // joint was given every fifth of a mm.
+    for seam in [Seam::Aligned, Seam::AlignedBack, Seam::Left] {
+        let (plan, starts) = placed(&layers, seam, true, &parts);
+        for (x, y) in &starts {
+            assert!((x - 10.0).abs() < 0.25, "{seam:?} {x} {y}");
+            assert!(
+                (y - 0.21).abs() < 1e-6 || (y - 9.79).abs() < 1e-6,
+                "{seam:?} {y}"
+            );
+        }
+        let layer = seams(&plan, 3);
+        assert!(layer.points.len() > 4 + 2 * 90);
+        let joint: Vec<&Candidate> = layer.points.iter().filter(|p| p.part_joint).collect();
+        assert!(joint.iter().all(|p| p.position[0].abs() < 0.8), "{joint:?}");
+        // One middle on each long side.
+        let middles: Vec<&Candidate> = (layer.points.iter())
+            .filter(|p| p.central_part_joint)
+            .collect();
+        assert_eq!(middles.len(), 2, "{middles:?}");
+    }
+    // Turned off, or at a position that does not go by a score, it is
+    // not: the first corner as before, or the back.
+    let corner = |start: &(f64, f64)| (start.0 - 10.0).abs() > 9.5;
+    let (_, starts) = placed(&layers, Seam::Aligned, false, &parts);
+    assert!(starts.iter().all(corner), "{starts:?}");
+    let (plan, starts) = placed(&layers, Seam::Back, true, &parts);
+    assert!(
+        starts
+            .iter()
+            .all(|start| (start.1 - 9.79).abs() < 1e-6 && corner(start))
+    );
+    assert!(seams(&plan, 3).points.iter().all(|p| !p.part_joint));
+    // With one part there is no joint.
+    let (_, starts) = placed(&layers, Seam::Aligned, true, &parts[..1]);
+    assert!(starts.iter().all(corner), "{starts:?}");
+}
+
+#[test]
+fn the_middle_of_a_joint_is_a_hidden_point_or_an_inward_corner_or_the_middle() {
+    let run = |marks: &[(bool, f32, f32, f32)]| -> Vec<usize> {
+        let mut points: Vec<Candidate> = (marks.iter().enumerate())
+            .map(|(at, &(joint, embedded, angle, overhang))| Candidate {
+                position: [at as f32, 0.0, 0.1],
+                part_joint: joint,
+                embedded,
+                angle,
+                overhang,
+                ..candidate(0.0, 0.0)
+            })
+            .collect();
+        mark_part_joint_centres(&mut points);
+        (0..points.len())
+            .filter(|&at| points[at].central_part_joint)
+            .collect()
+    };
+    let plain = (true, 0.0, 0.0, 0.0);
+    let off = (false, 0.0, 0.0, 0.0);
+    // The middle by length.
+    assert_eq!(run(&[off, plain, plain, plain, plain, plain, off]), vec![3]);
+    // A run round the end of the wall is one run.
+    assert_eq!(run(&[plain, plain, off, off, off, plain, plain]), vec![0]);
+    // A point that hangs out splits a run in two.
+    let over = (true, 0.0, 0.0, 0.3);
+    assert_eq!(
+        run(&[off, plain, plain, over, plain, plain, off]),
+        vec![2, 5]
+    );
+    // A hidden point is preferred, and then a sharp inward corner.
+    let hidden = (true, -1.0, 0.0, 0.0);
+    let corner = (true, 0.0, -1.2, 0.0);
+    assert_eq!(
+        run(&[off, plain, hidden, plain, plain, plain, off]),
+        vec![2]
+    );
+    assert_eq!(
+        run(&[off, corner, plain, plain, plain, plain, off]),
+        vec![1]
+    );
+    // A wall on a joint all the way round has none, nor one with none.
+    assert!(run(&[plain; 6]).is_empty());
+    assert!(run(&[off; 6]).is_empty());
+}
+
+#[test]
+fn the_middle_of_the_longest_painted_stretch_takes_the_seam() {
+    let marked = |marks: &[(Paint, f32)]| -> Vec<usize> {
+        let mut points: Vec<Candidate> = (marks.iter().enumerate())
+            .map(|(at, &(paint, angle))| Candidate {
+                position: [at as f32, 0.0, 0.1],
+                paint,
+                angle,
+                ..candidate(0.0, 0.0)
+            })
+            .collect();
+        mark_central_enforcer(&mut points);
+        (0..points.len())
+            .filter(|&at| points[at].central_enforcer)
+            .collect()
+    };
+    let (on, off, blocked) = (
+        (Paint::Enforced, 0.0),
+        (Paint::Neutral, 0.0),
+        (Paint::Blocked, 0.0),
+    );
+    // The middle of the longer of two stretches.
+    assert_eq!(marked(&[off, on, off, on, on, on, off]), vec![4]);
+    // A stretch round the end of the wall is one stretch.
+    assert_eq!(marked(&[on, on, off, off, off, on, on]), vec![0]);
+    // Its sharp corner, if it has any.
+    let corner = (Paint::Enforced, 1.2);
+    assert_eq!(marked(&[off, corner, on, on, on, off, off]), vec![1]);
+    // A wall painted all round, or nowhere, has none.
+    assert!(marked(&[on; 5]).is_empty());
+    assert!(marked(&[off, blocked, off]).is_empty());
+}
+
+#[test]
+fn seams_go_where_they_are_painted_on_and_not_where_painted_off() {
+    // A 20 mm square wall; the surface outside it painted.
+    let loops = [wall(square(0.21, 0.21, 19.58), 0, false)];
+    let layers: Vec<Layer<'_>> = (0..8)
+        .map(|at| layer(0.2 + 0.2 * at as f64, &loops, &[]))
+        .collect();
+    fn placed(
+        layers: &[Layer<'_>],
+        seam: Seam,
+        enforcers: &[[[f32; 3]; 3]],
+        blockers: &[[[f32; 3]; 3]],
+    ) -> Vec<(f64, f64)> {
+        let objects = [SeamObject {
+            min: Point2::from_mm(0.0, 0.0),
+            max: Point2::from_mm(20.0, 20.0),
+            centre: Point2::from_mm(10.0, 10.0),
+            mesh: None,
+            parts: &[],
+            alone: true,
+            enforcers,
+            blockers,
+        }];
+        let scene = SeamScene {
+            objects: &objects,
+            ..SeamScene::default()
+        };
+        let groups: Vec<Range<usize>> = (0..layers.len()).map(|at| at..at + 1).collect();
+        let plan = Plan::new(layers, &groups, &settings(seam), &scene);
+        (0..layers.len())
+            .map(|at| {
+                let wall = layers[at].loops.first().unwrap();
+                at_point(plan.place(at, wall, false, Some(Point2::from_mm(0.0, 0.0)), false))
+            })
+            .collect()
+    }
+    fn at_point(placed: Option<Placed>) -> (f64, f64) {
+        at(placed.unwrap().start)
+    }
+    // A strip of the front face, from 12 to 14 mm across, painted on.
+    let strip = [
+        [[12.0, 0.0, 0.0], [14.0, 0.0, 0.0], [14.0, 0.0, 10.0]],
+        [[12.0, 0.0, 0.0], [14.0, 0.0, 10.0], [12.0, 0.0, 10.0]],
+    ];
+    for seam in [
+        Seam::Aligned,
+        Seam::AlignedBack,
+        Seam::Back,
+        Seam::Nearest,
+        Seam::Random,
+    ] {
+        for (x, y) in placed(&layers, seam, &strip, &[]) {
+            // On the front, within a line's width of the strip.
+            assert!((y - 0.21).abs() < 1e-6, "{seam:?} {x} {y}");
+            assert!(x > 12.0 - 0.43 && x < 14.0 + 0.43, "{seam:?} {x} {y}");
+        }
+    }
+    // Unpainted, the back takes a back corner; painted off there, and
+    // round the right side, the seam keeps away: to the back left.
+    assert!(
+        placed(&layers, Seam::Back, &[], &[])
+            .iter()
+            .all(|start| (start.1 - 19.79).abs() < 1e-6)
+    );
+    let blocked = [
+        [[20.0, 20.0, 0.0], [10.0, 20.0, 0.0], [10.0, 20.0, 10.0]],
+        [[20.0, 0.0, 0.0], [20.0, 20.0, 0.0], [20.0, 20.0, 10.0]],
+        [[20.0, 0.0, 0.0], [20.0, 20.0, 10.0], [20.0, 0.0, 10.0]],
+    ];
+    for (x, y) in placed(&layers, Seam::Back, &[], &blocked) {
+        assert!(x < 10.0 - 0.42 && (y - 19.79).abs() < 1e-6, "{x} {y}");
+    }
 }

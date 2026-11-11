@@ -78,6 +78,8 @@ pub struct Sliced {
     /// print stands on.
     seam_frames: Vec<(Point2, Point2, Point2)>,
     seam_meshes: Vec<(Mesh, usize)>,
+    /// Each object's printed parts by themselves, for where they meet.
+    seam_parts: Vec<edge_3mf::InstanceParts>,
     floor: f64,
     /// The filaments in use, by number from 1.
     pub used: Vec<usize>,
@@ -289,6 +291,7 @@ pub fn slice(job: Job, watch: &dyn Watcher) -> Result<Sliced, Failure> {
     } = job;
     let (mut bodies, objects, plate) = (loaded.bodies, loaded.objects, loaded.plate);
     let negatives = loaded.negatives;
+    let seam_parts = loaded.parts;
     let painted = loaded.painted;
     let first_layer_sequence = loaded.first_layer_sequence;
     let (min, max) = loaded.bounds;
@@ -1006,7 +1009,7 @@ pub fn slice(job: Job, watch: &dyn Watcher) -> Result<Sliced, Failure> {
     order_notes.extend(size_notes);
     order_notes.extend(quality_notes);
     order_notes.extend(ironing_notes);
-    order_notes.extend(crate::unfollowed::notes(&settings, bodies.len()));
+    order_notes.extend(crate::unfollowed::notes(&settings));
     // Everything on the plate is sliced as one, so travel that goes
     // round the walls takes a move from one object to another as it
     // takes one between two pieces of an object: along the inside of
@@ -1210,6 +1213,7 @@ pub fn slice(job: Job, watch: &dyn Watcher) -> Result<Sliced, Failure> {
         modelled,
         seam_frames,
         seam_meshes,
+        seam_parts,
         floor: min[2].into(),
         used,
         shares,
@@ -1484,6 +1488,18 @@ impl Sliced {
                     .map(|mesh| (mesh, mesh.triangles.len())),
             }
         };
+        // Each object's parts, for where they meet.
+        let parts: Vec<Vec<edge_gcode::SeamPart<'_>>> = (0..self.seam_frames.len())
+            .map(|object| {
+                (self.seam_parts.get(object).into_iter())
+                    .flat_map(|object| &object.parts)
+                    .map(|mesh| edge_gcode::SeamPart {
+                        vertices: &mesh.vertices,
+                        triangles: &mesh.triangles,
+                    })
+                    .collect()
+            })
+            .collect();
         let seam_objects: Vec<edge_gcode::SeamObject<'_>> = (self.seam_frames.iter().enumerate())
             .map(|(object, &(min, max, centre))| edge_gcode::SeamObject {
                 min,
@@ -1494,12 +1510,20 @@ impl Sliced {
                     triangles: &mesh.triangles,
                     negative_from,
                 }),
+                parts: &parts[object],
+                alone: self
+                    .seam_parts
+                    .get(object)
+                    .is_some_and(|object| object.alone),
+                enforcers: (self.seam_parts.get(object)).map_or(&[], |object| &object.enforcers),
+                blockers: (self.seam_parts.get(object)).map_or(&[], |object| &object.blockers),
             })
             .collect();
         let scene = edge_gcode::SeamScene {
             outlines: &printed,
             objects: &seam_objects,
             floor: self.floor,
+            part_joints: (self.settings.flag("seam_prefer_part_joints")?).unwrap_or(true),
         };
         let summary = edge_gcode::write_placed(&mut text, &plan, &slices, &scene, &prints)?;
         Ok(Gcode { text, summary })
