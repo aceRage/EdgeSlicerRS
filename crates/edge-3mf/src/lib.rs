@@ -7,10 +7,12 @@
 //! Not read yet: painted supports and seams, per-object setting overrides,
 //! and everything about a plate except which instances are on it.
 
+mod kept;
 mod model;
 mod model_settings;
 mod package;
 mod paint;
+mod write;
 mod xml;
 
 use std::{
@@ -25,10 +27,15 @@ use edge_config::Settings;
 use edge_mesh::{Mesh, Transform};
 use rayon::prelude::*;
 
+pub use kept::{Entry, Extras, Kept, Left, ObjectKept, PartKept, PlateKept};
 use model::{ModelFile, RawObject, Shape};
 use model_settings::{ModelSettings, ObjectSettings};
 use package::Package;
 pub use paint::{Facet, SeamFacet, SeamPaint};
+pub use write::{
+    REFERENCE_VERSION, SECRETS, Save, Written, losses, own_settings_text, settings_text, write,
+    write_to,
+};
 use xml::malformed;
 
 const DEFAULT_MODEL_PART: &str = "3D/3dmodel.model";
@@ -60,6 +67,9 @@ pub struct Project {
     /// seams (fuzzy skin, supports), in order of name. None of it is
     /// read.
     pub unread_paint: Vec<&'static str>,
+    /// What the file holds beyond all this, kept to be written back; none
+    /// for a project that was not read from a file.
+    pub kept: Option<Arc<Kept>>,
 }
 
 #[derive(Clone, Debug)]
@@ -69,6 +79,8 @@ pub struct Object {
     pub name: Option<String>,
     pub parts: Vec<Part>,
     pub instances: Vec<Instance>,
+    /// What the file holds of it beyond this, kept to be written back.
+    pub kept: Option<Arc<ObjectKept>>,
 }
 
 #[derive(Clone, Debug)]
@@ -91,6 +103,9 @@ pub struct Part {
     /// Whether the part is embossed text or an embossed picture, which
     /// decorates a surface rather than being a piece of the object.
     pub decoration: bool,
+    /// What the file holds of it beyond this (its settings, what its
+    /// triangles carry), kept to be written back.
+    pub kept: Option<Arc<PartKept>>,
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -157,6 +172,8 @@ pub struct Plate {
     /// it sets none.
     pub first_layer_sequence: Vec<u32>,
     pub instances: Vec<InstanceRef>,
+    /// What the file holds of it beyond this, kept to be written back.
+    pub kept: Option<Arc<PlateKept>>,
 }
 
 /// Indices into `Project::objects` and that object's `instances`.
@@ -175,17 +192,25 @@ impl Project {
         let mut package = Package::open(reader)?;
         let root = root_model_part(&mut package)?;
         let files = load_models(&mut package, &root)?;
-        let model_settings = match package.read(MODEL_SETTINGS_PART)? {
-            Some(text) => model_settings::parse(&text, MODEL_SETTINGS_PART)?,
-            None => ModelSettings::default(),
+        let settings_text = package.read(MODEL_SETTINGS_PART)?;
+        let (model_settings, mut kept_settings) = match &settings_text {
+            Some(text) => (
+                model_settings::parse(text, MODEL_SETTINGS_PART)?,
+                kept::read_settings(text, MODEL_SETTINGS_PART)?,
+            ),
+            None => (ModelSettings::default(), kept::KeptSettings::default()),
         };
-        let settings = package
-            .read(PROJECT_SETTINGS_PART)?
+        let project_text = package.read(PROJECT_SETTINGS_PART)?;
+        let settings = project_text
+            .as_deref()
             .map(|text| {
-                Settings::from_json(&text)
-                    .map_err(|reason| malformed(PROJECT_SETTINGS_PART, reason))
+                Settings::from_json(text).map_err(|reason| malformed(PROJECT_SETTINGS_PART, reason))
             })
             .transpose()?;
+        let header = match package.read(&root)? {
+            Some(text) => kept::read_header(&text, &root)?,
+            None => Vec::new(),
+        };
 
         // Build items that place the same object are that object's instances.
         let mut objects: Vec<Object> = Vec::new();
@@ -197,13 +222,22 @@ impl Project {
                 None => {
                     let raw = find(&files, file, item.object)?;
                     let object_settings = model_settings.objects.get(&item.object);
+                    let (entries, kept_parts) = kept_settings
+                        .objects
+                        .remove(&item.object)
+                        .unwrap_or_default();
                     objects.push(Object {
                         id: item.object,
                         name: object_settings
                             .and_then(|s| s.name.clone())
                             .or_else(|| raw.name.clone()),
-                        parts: parts(&files, file, raw, object_settings)?,
+                        parts: parts(&files, file, raw, object_settings, &kept_parts)?,
                         instances: Vec::new(),
+                        kept: Some(Arc::new(ObjectKept {
+                            index: objects.len() + 1,
+                            entries,
+                            ..ObjectKept::default()
+                        })),
                     });
                     slots.insert((file, item.object), objects.len() - 1);
                     objects.len() - 1
@@ -215,10 +249,98 @@ impl Project {
             });
         }
 
+        // The rest of the package: what goes by an object's place or a
+        // plate's number, the pictures, and every other entry.
+        let models: Vec<String> = files.keys().cloned().collect();
+        let mut by_place = kept::ByPlace::default();
+        let mut pictures: HashMap<u32, kept::Pictures> = HashMap::new();
+        let mut kept_files = Vec::new();
+        let mut left = Vec::new();
+        let mut custom_gcode = None;
+        for name in package.names() {
+            if name.ends_with('/') {
+                continue;
+            }
+            match kept::role(&name, &models) {
+                kept::Role::Written => {
+                    let lower = name.to_ascii_lowercase();
+                    let canonical = [
+                        kept::LAYER_HEIGHTS,
+                        kept::LAYER_RANGES,
+                        kept::BRIM_POINTS,
+                        kept::CUT_INFORMATION,
+                        kept::CUSTOM_GCODE,
+                    ]
+                    .into_iter()
+                    .find(|known| known.eq_ignore_ascii_case(&lower));
+                    if let Some(known) = canonical
+                        && let Some(text) = package.read(&name)?
+                    {
+                        if known == kept::CUSTOM_GCODE {
+                            custom_gcode = Some(text);
+                        } else {
+                            kept::ByPlace::read(known, &text, &mut by_place)?;
+                        }
+                    }
+                }
+                kept::Role::Picture(picture, plate) => {
+                    if let Some(bytes) = package.bytes(&name)? {
+                        pictures
+                            .entry(plate)
+                            .or_default()
+                            .push((picture, Arc::new(bytes)));
+                    }
+                }
+                kept::Role::Carried(carry) => {
+                    if let Some(bytes) = package.bytes(&name)? {
+                        kept_files.push(kept::KeptFile {
+                            name,
+                            bytes: Arc::new(bytes),
+                            carry,
+                        });
+                    }
+                }
+                kept::Role::Left(why) => left.push((name, why)),
+            }
+        }
+        let gcode_by_plate = match &custom_gcode {
+            Some(text) => kept::custom_gcode_by_plate(text, kept::CUSTOM_GCODE)?,
+            None => None,
+        };
+        for (at, object) in objects.iter_mut().enumerate() {
+            let index = at + 1;
+            let mut assembly = vec![None; object.instances.len()];
+            for (id, copy, transform, offset) in &kept_settings.assembly {
+                if *id == object.id && *copy < assembly.len() {
+                    assembly[*copy] = Some((transform.clone(), offset.clone()));
+                }
+            }
+            if let Some(kept) = &mut object.kept {
+                let kept = Arc::make_mut(kept);
+                kept.copies = object.instances.len();
+                kept.assembly = assembly;
+                kept.layer_heights = by_place.layer_heights.remove(&index);
+                kept.layer_ranges = by_place.layer_ranges.remove(&index);
+                kept.brim_points = by_place.brim_points.remove(&index);
+                kept.cut = by_place.cut.remove(&index);
+            }
+        }
+        let mut kept_plates = std::mem::take(&mut kept_settings.plates).into_iter();
+
         let plates = model_settings
             .plates
             .into_iter()
             .map(|plate| Plate {
+                kept: kept_plates.next().map(|mut kept| {
+                    kept.id = plate.id;
+                    let mut own = pictures.remove(&plate.id).unwrap_or_default();
+                    own.sort_by_key(|(picture, _)| *picture);
+                    kept.pictures = own;
+                    kept.custom_gcode = gcode_by_plate
+                        .as_ref()
+                        .and_then(|plates| plates.get(&plate.id).cloned());
+                    Arc::new(kept)
+                }),
                 id: plate.id,
                 name: plate.name,
                 first_layer_sequence: plate.first_layer_sequence,
@@ -240,11 +362,23 @@ impl Project {
             .values()
             .flat_map(|file| file.unread_paint.iter().copied())
             .collect();
+        let kept = Kept {
+            header,
+            objects: objects.len(),
+            settings: project_text,
+            brim_version: by_place.brim_version,
+            // A file of custom G-code not laid out by plate is kept whole.
+            custom_gcode: custom_gcode.filter(|_| gcode_by_plate.is_none()),
+            settings_extra: kept_settings.extra,
+            files: kept_files,
+            left,
+        };
         Ok(Self {
             objects,
             plates,
             settings,
             unread_paint: unread_paint.into_iter().collect(),
+            kept: Some(Arc::new(kept)),
         })
     }
 
@@ -696,13 +830,14 @@ fn parts(
     file: &str,
     object: &RawObject,
     settings: Option<&ObjectSettings>,
+    kept: &HashMap<u32, PartKept>,
 ) -> Result<Vec<Part>, Error> {
     // Zero stands for "not chosen" at either level.
     let chosen = |extruder: Option<u32>| extruder.filter(|extruder| *extruder > 0);
     let object_filament =
         chosen(settings.and_then(|settings| settings.extruder)).unwrap_or(1) as usize;
     let components = match &object.body {
-        Shape::Mesh(mesh, paint, seam) => {
+        Shape::Mesh(mesh, paint, seam, extras) => {
             return Ok(vec![Part {
                 name: object.name.clone(),
                 kind: PartKind::Normal,
@@ -712,6 +847,10 @@ fn parts(
                 seam: seam.clone(),
                 transform: Transform::IDENTITY,
                 decoration: false,
+                kept: Some(Arc::new(PartKept {
+                    extras: extras.clone(),
+                    ..PartKept::default()
+                })),
             }]);
         }
         Shape::Components(components) => components,
@@ -730,8 +869,11 @@ fn parts(
             1,
             &mut leaves,
         )?;
-        for (name, mesh, paint, seam, transform) in leaves {
+        for (name, mesh, paint, seam, extras, transform) in leaves {
+            let mut part_kept = kept.get(&component.object).cloned().unwrap_or_default();
+            part_kept.extras = extras;
             parts.push(Part {
+                kept: Some(Arc::new(part_kept)),
                 name: part_settings.and_then(|s| s.name.clone()).or(name),
                 kind: part_settings.map_or(PartKind::Normal, |s| s.kind()),
                 filament: chosen(part_settings.and_then(|s| s.extruder))
@@ -754,6 +896,7 @@ type Leaf = (
     Arc<Mesh>,
     Option<Arc<Vec<Facet>>>,
     Option<Arc<Vec<SeamFacet>>>,
+    Option<Arc<Extras>>,
     Transform,
 );
 
@@ -773,12 +916,13 @@ fn flatten(
     }
     let object = find(files, file, id)?;
     match &object.body {
-        Shape::Mesh(mesh, paint, seam) => {
+        Shape::Mesh(mesh, paint, seam, extras) => {
             leaves.push((
                 object.name.clone(),
                 mesh.clone(),
                 paint.clone(),
                 seam.clone(),
+                extras.clone(),
                 transform,
             ));
         }
