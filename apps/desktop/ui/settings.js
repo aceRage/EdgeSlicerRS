@@ -610,8 +610,10 @@ async function openPresetPanel(kind, filament = 1) {
   const book = kind === 'filament' ? filamentPages : printerPages;
   if (book !== presetPanel.book) $('preset-search').value = '';
   book.filament = filament;
+  // What opened the panel, not a swatch in it that moved to another
+  // filament: the keys go back there when it is closed.
+  if (!presetPanel.book) presetPanel.opener = document.activeElement;
   presetPanel.book = book;
-  presetPanel.opener = document.activeElement;
   $('side').classList.add('presets-open');
   $('plater').classList.add('presets-open');
   $('preset-panel').hidden = false;
