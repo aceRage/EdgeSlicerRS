@@ -251,9 +251,6 @@ impl FillParams {
 /// How a surface's lines meet the edge of its area.
 #[derive(Clone, Copy)]
 enum Lay {
-    /// Cut to the area drawn in by this share of the line spacing, and
-    /// joined along that outline.
-    Cut(f64),
     /// Sparse lines in one direction, as FillRectilinear.cpp
     /// `fill_surface_by_lines` lays them when they are not solid: through
     /// [`FillParams::origin`], every line joined to the next however far
@@ -268,19 +265,40 @@ enum Lay {
     /// cut to it half a spacing in, and joined and anchored along that
     /// outline like the crossing lines.
     Curved,
-    /// Solid lines as `FillRectilinear.cpp` lays them: run to within
-    /// `LINES_INSET` of the edge, and turned half a spacing inside it
-    /// where they are joined. `fitted` spreads them to fill the width.
-    /// `ordered` lays them in one sweep across the area, where no line
-    /// goes down between two already laid. A `density` under 1 lays them
-    /// that much further apart, as sparse lines are placed: through
-    /// [`FillParams::origin`], not from the area's own edge.
+    /// Solid lines and bridges as `FillRectilinear.cpp` lays them: run
+    /// to within `LINES_INSET` of the edge, and turned half a spacing
+    /// inside it where they are joined; a line that does not come half
+    /// a spacing inside the area is not laid. `ordered` lays them in
+    /// one sweep across the area, where no line goes down between two
+    /// already laid. A `density` under 1 lays them that much further
+    /// apart.
     Turned {
         joined: bool,
-        fitted: bool,
+        placed: Placed,
         ordered: bool,
         density: f64,
     },
+}
+
+/// Where the lines of an area lie across it (FillRectilinear.cpp
+/// `fill_surface_by_lines`, "define flow spacing according to requested
+/// density").
+#[derive(Clone, Copy, PartialEq)]
+enum Placed {
+    /// Spread to fill the area's own width, the first line half a pitch
+    /// in from its edge (`_adjust_solid_spacing`): fill at full density
+    /// that the reference does not tell to keep its spacing, which is
+    /// top and bottom surfaces and solid fill inside the part.
+    Fitted,
+    /// At the pitch set, on the lines every pitch from
+    /// [`FillParams::origin`], the middle of the object
+    /// (`align_to_grid` about `_infill_direction`'s point): what the
+    /// reference does with fill that is not at full density, and with
+    /// bridges, which it tells not to adjust (Fill.cpp
+    /// `Layer::make_fills`, `params.dont_adjust = true`). At full
+    /// density the lines lie half a pitch off those, as there (`x0 +=
+    /// (line_spacing + SCALED_EPSILON) / 2`).
+    Grid,
 }
 
 /// How far a line's centre stops short of the area's edge, as a share of
@@ -290,10 +308,6 @@ pub(crate) const LINES_INSET: f64 = 0.05;
 /// How much further in joined solid lines turn: to half a spacing from the
 /// area's edge, so the turn itself lies inside the area and not on it.
 pub(crate) const TURN_INSET: f64 = 0.45;
-/// Solid lines are joined along the outline when it runs no further than
-/// this many line spacings between them (Fill.cpp, `link_max_length`).
-const SOLID_LINK_SPACINGS: f64 = 3.0;
-
 /// Fill lines for one layer's surfaces, surface by surface.
 pub fn fill(
     surfaces: &[Surface],
@@ -462,43 +476,49 @@ pub fn fill_within(
                 Lay::Turned {
                     joined: params.top_joined,
                     ordered: params.top_ordered,
-                    fitted: true,
+                    placed: Placed::Fitted,
                     density: 1.0,
                 },
                 &[params.solid_angle + turned],
             ),
-            // From support to support where that is known.
+            // From support to support where that is known. A bridge is
+            // laid as solid lines are (Fill.cpp `group_fills`: the
+            // pattern of a solid surface that is neither a top or
+            // bottom face nor solid fill inside the part is `ipMonotonic`
+            // where the top surface's is `monotonic` or `monotonicline`,
+            // `ipRectilinear` otherwise, and both join their lines), at
+            // its own spacing over `bridge_density`, and is not fitted
+            // to its area (`Layer::make_fills`, `params.dont_adjust`).
             SurfaceKind::Bridge => (
                 params.bridge,
                 Role::BridgeInfill,
-                params.bridge_spacing,
-                Lay::Cut(LINES_INSET),
+                params.bridge.spacing,
+                Lay::Turned {
+                    joined: true,
+                    ordered: params.top_ordered,
+                    placed: Placed::Grid,
+                    density: params.bridge.spacing / params.bridge_spacing,
+                },
                 &[surface.angle.unwrap_or(params.solid_angle + turned)],
             ),
             // Across the sparse lines beneath, unless the surface has a
             // direction of its own: a second layer of bridge is laid
-            // across the first.
+            // across the first. Laid as a bridge over air is, over
+            // `internal_bridge_density`.
             SurfaceKind::InternalBridge => (
                 params.internal_bridge,
                 Role::InternalBridge,
-                params.internal_bridge_spacing,
-                Lay::Cut(LINES_INSET),
+                params.internal_bridge.spacing,
+                Lay::Turned {
+                    joined: true,
+                    ordered: params.top_ordered,
+                    placed: Placed::Grid,
+                    density: params.internal_bridge.spacing / params.internal_bridge_spacing,
+                },
                 &[surface
                     .angle
                     .unwrap_or_else(|| params.internal_bridge_angle(layer_index))],
             ),
-            // The reference's output has top and bottom lines spread to
-            // fit and solid lines inside the part at their own pitch,
-            // on every part compared. Its source spreads them all; the
-            // solid lines keep their pitch because the area they fill
-            // has been told apart from its narrow parts first, which
-            // cuts it along its own lines to a whole number of
-            // spacings, where there is nothing to spread. A solid area
-            // with no narrow part is not cut, and there the reference
-            // does spread its lines (a round boss 8 mm across: lines
-            // 0.429 mm wide where these are 0.42), as it does all of
-            // them with `detect_narrow_internal_solid_infill` off. That
-            // is not done here yet.
             SurfaceKind::Bottom => (
                 params.solid,
                 Role::BottomSurface,
@@ -506,11 +526,25 @@ pub fn fill_within(
                 Lay::Turned {
                     joined: params.bottom_joined,
                     ordered: params.bottom_ordered,
-                    fitted: true,
+                    placed: Placed::Fitted,
                     density: 1.0,
                 },
                 &[params.solid_angle + turned],
             ),
+            // Solid fill inside the part is fitted to its area as top
+            // and bottom surfaces are: FillRectilinear.cpp
+            // `fill_surface_by_lines` fits whatever is at full density
+            // and not told to keep its spacing, and only bridges are
+            // told. Where narrow parts have been told from the rest
+            // ([`told_apart`]) what is fitted is the wide part, as
+            // there. That part is cut along its own lines, a whole
+            // number of spacings across from the area's edge, unless
+            // the last of them reaches past the far edge and the wide
+            // part is the area's whole width: so its lines mostly keep
+            // the pitch set (a whole number of them fits already), and
+            // an area with nothing narrow in it, or any area with
+            // `detect_narrow_internal_solid_infill` off, has them
+            // spread.
             SurfaceKind::InternalSolid => (
                 params.solid,
                 Role::SolidInfill,
@@ -518,7 +552,7 @@ pub fn fill_within(
                 Lay::Turned {
                     joined: params.solid_joined,
                     ordered: params.solid_ordered,
-                    fitted: false,
+                    placed: Placed::Fitted,
                     density: params.solid_density(layer_index),
                 },
                 &[params.solid_angle + turned],
@@ -526,35 +560,6 @@ pub fn fill_within(
         };
 
         match lay {
-            Lay::Cut(inset) => {
-                let inside = edge_clip::offset(
-                    std::slice::from_ref(&surface.area),
-                    -scaled(inset * flow.spacing),
-                    Join::MITER,
-                )?;
-                let max_link = match role {
-                    Role::SparseInfill => params.sparse_link_max,
-                    _ => SOLID_LINK_SPACINGS * flow.spacing,
-                };
-                // A stub shorter than half its own width is a blob, not a line.
-                let min_length = flow.scaled_width() / 2;
-                // All of a surface's directions are joined together, so a
-                // line can link to a crossing one as readily as to its
-                // own neighbour.
-                for area in &inside {
-                    let spacing = scaled(spacing);
-                    for points in lines::paths(area, spacing, angles, min_length, scaled(max_link))
-                    {
-                        paths.push(ExtrusionPath {
-                            points,
-                            role,
-                            flow,
-                            in_turn: false,
-                            part,
-                        });
-                    }
-                }
-            }
             Lay::Zigzag => {
                 let outer = edge_clip::offset(
                     std::slice::from_ref(&surface.area),
@@ -830,7 +835,7 @@ pub fn fill_within(
             }
             Lay::Turned {
                 joined,
-                fitted,
+                placed,
                 ordered,
                 density,
             } => {
@@ -844,15 +849,28 @@ pub fn fill_within(
                 )?;
                 let inner =
                     edge_clip::offset(&outer, -scaled(TURN_INSET * flow.spacing), Join::MITER)?;
-                // No join is too long. Fill.cpp means to stop at three
-                // spacings above 80% density, but works that out from the
-                // filler's spacing before it is set, while it is still
-                // zero, and zero is no limit.
-                let max_link = if joined { edge_geom::Coord::MAX / 4 } else { 0 };
-                // Fitted lines are spread, by up to a fifth, so that a
-                // whole number of them fills the area's width with none
-                // left over, and each is made as wide as its share
-                // (FillBase.cpp `_adjust_solid_spacing`).
+                // A join is no longer than three spacings above 80%
+                // density, and as long as it likes below that and for a
+                // bridge (Fill.cpp `link_max_length`). The reference
+                // means the same and does not do it: it works the limit
+                // out from the filler's spacing before that is set,
+                // while it is still zero, and zero is no limit, so a
+                // row parted by a hole is joined round the hole's side
+                // however long that is and a whole extra line is laid
+                // beside a fill line along a square hole. Not copied;
+                // fixed there in aceRage/EdgeSlicer#968.
+                let unlimited = edge_geom::Coord::MAX / 4;
+                let bridging = matches!(
+                    surface.kind,
+                    SurfaceKind::Bridge | SurfaceKind::InternalBridge
+                );
+                let max_link = if !joined {
+                    0
+                } else if !bridging && density > 0.8 {
+                    scaled(3.0 * flow.spacing)
+                } else {
+                    unlimited
+                };
                 let (mut pitch, mut flow) = (scaled(spacing) as f64, flow);
                 // Lines laid thinner than solid keep their width and
                 // are that much further apart, the distance cut to a
@@ -860,39 +878,51 @@ pub fn fill_within(
                 // `fill_surface_by_lines` cuts it. They are turned and
                 // joined where solid lines are: the outlines they run
                 // to are drawn in by the line's own spacing there too.
-                let thinned = density < 1.0;
-                if thinned {
+                if density < 1.0 {
                     pitch = (spacing * edge_geom::UNITS_PER_MM / density).trunc();
                 }
-                let intervals = ((high - low - 1.0) / pitch).floor();
-                if fitted && !thinned && intervals >= 1.0 {
-                    let spread = ((high - low) / intervals).min((1.2 * pitch + 0.5).floor());
-                    // A pitch no line can be made for leaves the fill as it was.
-                    if let Ok(wider) = flow.with_spacing(spread / edge_geom::UNITS_PER_MM) {
+                // The reference's `FillParams::full_infill`. Fill that
+                // is not full is never fitted, and lies on the grid.
+                let full = density > 0.9999;
+                let placed = if full { placed } else { Placed::Grid };
+                // The area's reach across its lines, in whole units as
+                // the reference has it (it turns the area first, which
+                // rounds every corner).
+                let (low, high) = (low.round(), high.round());
+                if placed == Placed::Fitted {
+                    let spread = fitted_pitch(high - low, pitch);
+                    // Each line is made as wide as its share. A pitch no
+                    // line can be made for leaves the fill as it was.
+                    if spread != pitch
+                        && let Ok(wider) = flow.with_spacing(spread / edge_geom::UNITS_PER_MM)
+                    {
                         (pitch, flow) = (spread, wider);
                     }
                 }
-                // The first line lies half a pitch in from the area's own
-                // edge, not on a grid shared with other areas. Thinned
-                // lines are on the grid through the middle of the object,
-                // which is where the reference puts any fill that is not
-                // solid (`align_to_grid` about `_infill_direction`'s point).
-                let first = if thinned {
-                    let (sin, cos) = angles[0].sin_cos();
-                    origin.y as f64 * cos - origin.x as f64 * sin
-                } else if told.is_some() && surface.kind == SurfaceKind::InternalSolid {
-                    // The wide part of solid fill told apart from its
-                    // narrow part is cut along its own lines, a whole
-                    // number of spacings across: its first line and its
-                    // last would lie exactly where joined lines turn,
-                    // which is neither inside that outline nor out of
-                    // it. The reference lays its lines a hair past the
-                    // half spacing (FillRectilinear.cpp, `x0 +=
-                    // (line_spacing + SCALED_EPSILON) / 2`), which keeps
-                    // the first and drops the last; so here.
-                    low + (pitch + SCALED_EPSILON) / 2.0
-                } else {
-                    low + pitch / 2.0
+                // Half a pitch and a hair (FillRectilinear.cpp, `x0 +=
+                // (line_spacing + SCALED_EPSILON) / 2`) from where the
+                // lines are counted: the area's own edge when they are
+                // fitted to it, and otherwise the grid through the
+                // middle of the object, which is where the reference
+                // puts any fill it does not fit (`align_to_grid` about
+                // `_infill_direction`'s point, turned with the area and
+                // rounded to whole units as there). Fill that is not
+                // full lies on that grid itself.
+                //
+                // The hair matters where an area is a whole number of
+                // pitches across, as the wide part of solid fill told
+                // from its narrow part is: its first line and its last
+                // would lie exactly where joined lines turn, which is
+                // neither inside that outline nor out of it, and the
+                // hair keeps the first and drops the last.
+                let half = ((pitch + SCALED_EPSILON) / 2.0).floor();
+                let first = match placed {
+                    Placed::Fitted => low + half,
+                    Placed::Grid => {
+                        let (sin, cos) = angles[0].sin_cos();
+                        let through = (origin.y as f64 * cos - origin.x as f64 * sin).round();
+                        if full { through + half } else { through }
+                    }
                 };
                 // Swept lines are one run: each after the one before.
                 let lines = lines::paths_turned(
@@ -1011,6 +1041,27 @@ fn told_apart(
     Ok(Some((told, split.narrow)))
 }
 
+/// The pitch that fits a whole number of lines across `width`, both in
+/// scaled units: the pitch set or a little more, by a fifth at most, so
+/// that the first line and the last lie half a pitch inside the edges
+/// with none left over (FillBase.cpp `Fill::_adjust_solid_spacing`,
+/// with its rounding down to whole units).
+fn fitted_pitch(width: f64, pitch: f64) -> f64 {
+    // libslic3r's `EPSILON`, taken off the width as the reference takes
+    // it: a width of exactly so many pitches counts one interval fewer.
+    const EPSILON: f64 = 1e-4;
+    let intervals = ((width - EPSILON) / pitch).trunc();
+    if intervals < 1.0 {
+        return pitch;
+    }
+    let spread = ((width - EPSILON) / intervals).trunc();
+    if spread / pitch > 1.2 {
+        (1.2 * pitch + 0.5).floor()
+    } else {
+        spread
+    }
+}
+
 /// Added to an offset so that edges meant to coincide overlap instead
 /// (ClipperUtils.hpp `ClipperSafetyOffset`).
 const SAFETY_OFFSET: edge_geom::Coord = 10;
@@ -1090,7 +1141,7 @@ fn gap_fill(
 
 #[cfg(test)]
 mod tests {
-    use edge_geom::{ExPolygon, Point2, Polygon};
+    use edge_geom::{Coord, ExPolygon, Point2, Polygon};
 
     use super::*;
     use crate::NarrowFill;
@@ -1533,6 +1584,153 @@ mod tests {
     }
 
     #[test]
+    fn a_solid_join_round_a_hole_is_no_longer_than_three_spacings() {
+        // A 30 mm square with a round hole 12 mm across. A row the
+        // hole parts is joined round the hole's side only if that is
+        // no further than three spacings. The reference joins it
+        // however far, by a slip (Fill.cpp works the limit out from a
+        // spacing not yet set), and so lays plastic along the hole's
+        // edge beside the fill lines that end there.
+        let base = params(Pattern::Grid, 0.2);
+        let mut holed = surface(SurfaceKind::Bottom, 30.0);
+        holed.area.holes.push(Polygon {
+            points: (0..64)
+                .map(|step| {
+                    let turn = -(step as f64) * std::f64::consts::TAU / 64.0;
+                    Point2::from_mm(15.0 + 6.0 * turn.cos(), 15.0 + 6.0 * turn.sin())
+                })
+                .collect(),
+        });
+        let lines = fill(&[holed], 0, &base).unwrap();
+        let spacing = lines[0].flow.spacing;
+        let length = |a: &Point2, b: &Point2| ((b.x - a.x) as f64).hypot((b.y - a.y) as f64) / 1e6;
+        // The way the lines run, from the longest stretch of all.
+        let (from, to) = lines
+            .iter()
+            .flat_map(|line| line.points.windows(2))
+            .map(|pair| (pair[0], pair[1]))
+            .max_by(|a, b| length(&a.0, &a.1).total_cmp(&length(&b.0, &b.1)))
+            .unwrap();
+        let along = (
+            (to.x - from.x) as f64 / 1e6 / length(&from, &to),
+            (to.y - from.y) as f64 / 1e6 / length(&from, &to),
+        );
+        // The longest way any path goes without running that way: a
+        // join, round the square's edge or round the hole's.
+        let mut longest = 0.0_f64;
+        for line in &lines {
+            let mut run = 0.0;
+            for pair in line.points.windows(2) {
+                let across = ((pair[1].x - pair[0].x) as f64 * along.1
+                    - (pair[1].y - pair[0].y) as f64 * along.0)
+                    / 1e6;
+                if across.abs() > 1e-3 * length(&pair[0], &pair[1]) {
+                    run += length(&pair[0], &pair[1]);
+                    longest = longest.max(run);
+                } else {
+                    run = 0.0;
+                }
+            }
+        }
+        assert!(longest > 0.0);
+        assert!(
+            longest <= 3.0 * spacing + 1e-3,
+            "{longest} mm, of {spacing}"
+        );
+    }
+
+    #[test]
+    fn a_bridge_is_laid_on_the_objects_own_lines_and_turns_inside_its_area() {
+        // A bridge 20 mm by 3.15 mm, its lines along x, in an object
+        // whose middle is the origin.
+        let base = params(Pattern::Grid, 0.2);
+        let spacing = base.bridge.spacing;
+        let bridge = |kind| Surface {
+            angle: Some(0.0),
+            ..strip(kind, 0.0, 0.0, 20.0, 3.15)
+        };
+        let rows_of = |lines: &[ExtrusionPath]| {
+            let mut rows: Vec<f64> = lines
+                .iter()
+                .flat_map(|line| line.points.windows(2))
+                .filter(|pair| pair[0].y == pair[1].y && pair[0].x != pair[1].x)
+                .map(|pair| pair[0].y as f64 / 1e6)
+                .collect();
+            rows.sort_by(f64::total_cmp);
+            rows.dedup();
+            rows
+        };
+        // At four fifths the density the lines are that much further
+        // apart and lie on the lines through the object's middle. The
+        // sixth is inside the area but not half a spacing inside it,
+        // and is not laid (laid edge to edge, as bridges were, it was).
+        let thin = FillParams {
+            bridge_spacing: spacing / 0.8,
+            ..base
+        };
+        let lines = fill(&[bridge(SurfaceKind::Bridge)], 0, &thin).unwrap();
+        let pitch = (spacing * 1e6 / 0.8).trunc() / 1e6;
+        let rows = rows_of(&lines);
+        assert_eq!(rows.len(), 5);
+        assert!(6.0 * pitch < 3.15 - 0.05 * spacing && 6.0 * pitch > 3.15 - 0.5 * spacing);
+        for (index, row) in rows.iter().enumerate() {
+            assert!((row - (index + 1) as f64 * pitch).abs() < 2e-6, "{row}");
+        }
+        // The width set, one path, and joined: it turns half a spacing
+        // inside the area and its two ends reach to a twentieth of one.
+        assert!(lines.iter().all(|line| line.flow == base.bridge));
+        assert_eq!(lines.len(), 1);
+        let points = &lines[0].points;
+        let (turn, reach) = (0.5 * spacing, 0.05 * spacing);
+        let at = |x: Coord, inset: f64| {
+            let x = x as f64 / 1e6;
+            (x - inset).abs() < 2e-6 || (x - (20.0 - inset)).abs() < 2e-6
+        };
+        assert!(points[1..points.len() - 1].iter().all(|p| at(p.x, turn)));
+        assert!(at(points[0].x, reach) && at(points[points.len() - 1].x, reach));
+        // With the object's middle elsewhere the lines move with it.
+        let moved = FillParams {
+            origin: Point2::from_mm(3.0, 0.1),
+            ..thin
+        };
+        let elsewhere = rows_of(&fill(&[bridge(SurfaceKind::Bridge)], 0, &moved).unwrap());
+        assert!(
+            (elsewhere[0] - (0.1 + pitch)).abs() < 2e-6,
+            "{}",
+            elsewhere[0]
+        );
+
+        // At full density the lines lie half a pitch and a hair off
+        // those through the middle: the first is the one exactly half
+        // a spacing in, which the hair keeps, and seven fit.
+        for kind in [SurfaceKind::Bridge, SurfaceKind::InternalBridge] {
+            let lines = fill(&[bridge(kind)], 0, &base).unwrap();
+            let spacing = lines[0].flow.spacing;
+            let rows = rows_of(&lines);
+            assert_eq!(
+                rows.len(),
+                ((3.15 - spacing) / spacing).floor() as usize + 1
+            );
+            for (index, row) in rows.iter().enumerate() {
+                let expected = (index as f64 + 0.5) * spacing + 0.5e-4;
+                // To within the whole units the pitch is counted in.
+                assert!((row - expected).abs() < 1e-5, "{kind:?} {row} {expected}");
+            }
+        }
+
+        // Not swept in order where the top surface is not (the
+        // reference lays a bridge in the top surface's kind of lines),
+        // and joined all the same.
+        let loose = FillParams {
+            top_ordered: false,
+            ..thin
+        };
+        let lines = fill(&[bridge(SurfaceKind::Bridge)], 0, &loose).unwrap();
+        assert_eq!(lines.len(), 1);
+        assert_eq!(rows_of(&lines).len(), 5);
+    }
+
+    #[test]
     fn solid_lines_are_spread_to_fill_the_width_exactly() {
         // Lines along x across a 10 mm square, 0.407 mm apart as set.
         let base = FillParams {
@@ -1568,9 +1766,14 @@ mod tests {
         );
         assert!(pitch > base.solid.spacing && pitch < 1.2 * base.solid.spacing);
         // The first and last lines lie half a pitch inside the area, so
-        // nothing is left unfilled along either edge.
-        assert!((rows[0] - (low + pitch / 2.0)).abs() < 1e-5);
-        assert!((rows[rows.len() - 1] - (high - pitch / 2.0)).abs() < 1e-5);
+        // nothing is left unfilled along either edge: to within the
+        // hair every fitted area's lines are now moved by, as the
+        // reference's are (a twentieth of a micron; it was only the
+        // wide part of solid fill told apart that had it), and the
+        // whole units the pitch is now cut to, as there.
+        let hair = 0.5e-4;
+        assert!((rows[0] - (low + pitch / 2.0 + hair)).abs() < 1e-5);
+        assert!((rows[rows.len() - 1] - (high - pitch / 2.0)).abs() < 1e-4);
         assert!(
             rows.windows(2)
                 .all(|pair| (pair[1] - pair[0] - pitch).abs() < 1e-5)
@@ -1592,16 +1795,60 @@ mod tests {
         let lines = fill(&[sliver], 0, &base).unwrap();
         assert!((lines[0].flow.spacing / base.solid.spacing - 1.2).abs() < 1e-3);
 
-        // Solid fill inside the part keeps the pitch set, starting half
-        // of it in from the area's edge.
-        let lines = fill(&[surface(SurfaceKind::InternalSolid, 10.0)], 0, &base).unwrap();
-        assert!(lines.iter().all(|line| line.flow == base.solid));
-        let rows = rows_of(&lines);
-        assert!((rows[0] - base.solid.spacing / 2.0).abs() < 1e-5);
-        assert!(
-            rows.windows(2)
-                .all(|pair| (pair[1] - pair[0] - base.solid.spacing).abs() < 1e-5)
-        );
+        // Solid fill inside the part is fitted the same way (it kept
+        // the pitch set, which the reference's does only where the
+        // area is a whole number of pitches across already).
+        let inside = fill(&[surface(SurfaceKind::InternalSolid, 10.0)], 0, &base).unwrap();
+        assert!(inside.iter().all(|line| line.flow == flow));
+        assert_eq!(rows_of(&inside), rows);
+        // An area a whole number of pitches and a little across, as the
+        // wide part of solid fill told from its narrow part is, keeps
+        // its pitch: there is nothing to spread.
+        let whole = |extra: f64| Surface {
+            area: ExPolygon {
+                contour: Polygon {
+                    points: {
+                        let high = 20.0 * base.solid.spacing + extra;
+                        [(0.0, 0.0), (10.0, 0.0), (10.0, high), (0.0, high)]
+                            .map(|(x, y)| Point2::from_mm(x, y))
+                            .to_vec()
+                    },
+                },
+                holes: Vec::new(),
+            },
+            ..surface(SurfaceKind::InternalSolid, 1.0)
+        };
+        let lines = fill(&[whole(1e-5)], 0, &base).unwrap();
+        assert_eq!(lines[0].flow, base.solid);
+        // The hair keeps the first line, half a pitch in, and drops
+        // the one that would lie half a pitch from the far edge, where
+        // joined lines turn.
+        let kept = rows_of(&lines);
+        assert_eq!(kept.len(), 19);
+        assert!((kept[0] - 0.5 * base.solid.spacing).abs() < 1e-4);
+        // Short of a whole number by as little, the nineteen are
+        // spread over the width, each that much wider.
+        let lines = fill(&[whole(-1e-5)], 0, &base).unwrap();
+        assert_eq!(rows_of(&lines).len(), 19);
+        assert!((lines[0].flow.spacing / base.solid.spacing - 20.0 / 19.0).abs() < 1e-4);
+    }
+
+    #[test]
+    fn the_fitted_pitch_is_the_references() {
+        // FillBase.cpp `_adjust_solid_spacing`, in scaled units.
+        // 24.56 pitches across: 24 intervals, each a little wider.
+        assert_eq!(fitted_pitch(10_000_000.0, 407_124.0), 416_666.0);
+        // Exactly 20 across counts 19 intervals, and one unit over 20.
+        assert_eq!(fitted_pitch(8_000_000.0, 400_000.0), 421_052.0);
+        assert_eq!(fitted_pitch(8_000_001.0, 400_000.0), 400_000.0);
+        // A few units over a whole number, as the wide part of solid
+        // fill told apart is, changes nothing unless the lines are few.
+        assert_eq!(fitted_pitch(8_000_020.0, 400_000.0), 400_000.0);
+        assert_eq!(fitted_pitch(2_000_020.0, 400_000.0), 400_003.0);
+        // By a fifth at most; and too narrow for two lines, as it was.
+        assert_eq!(fitted_pitch(700_000.0, 400_000.0), 480_000.0);
+        assert_eq!(fitted_pitch(390_000.0, 400_000.0), 400_000.0);
+        assert_eq!(fitted_pitch(0.0, 400_000.0), 400_000.0);
     }
 
     #[test]
@@ -1818,10 +2065,13 @@ mod tests {
         let thinned = fill(&solid, 1, &thin).unwrap();
         let (usual_pitch, usual_count) = pitch_of(&usual, angle);
         let (pitch, count) = pitch_of(&thinned, angle);
-        assert!(
-            (usual_pitch - full.solid.spacing).abs() < 1e-3,
-            "{usual_pitch}"
-        );
+        // At full density the lines are fitted to the square's 28.28 mm
+        // across them, 69 where 69.5 of the pitch set would go (they
+        // kept the pitch set before solid fill inside the part was
+        // fitted); thinned they are not.
+        let across = 20.0 * 2f64.sqrt();
+        let fitted = across / (across / full.solid.spacing).floor();
+        assert!((usual_pitch - fitted).abs() < 1e-3, "{usual_pitch}");
         assert!((pitch - full.solid.spacing / 0.7).abs() < 1e-3, "{pitch}");
         assert!(count < usual_count);
         // The same line, so seven tenths of the plastic to within the

@@ -494,7 +494,7 @@ Working:
   none here on the first six of those parts, where the reference lays
   3 to 14, one in each triangle, and 44 against 60 on `holes`. All
   the solid fill inside the part on those eight parts is within 0.2%
-  of the reference's length on the U1 but for the `tube`, 0.6% under
+  of the reference's length on the U1 but for the `tube`, 0.5% under
   (before narrow areas were told apart it was 0.0% to 0.2% over, and
   1.0% under on the `tube`); with arcs fitted its solid fill had 140
   arcs against the reference's 137 on the cylinder (179 before), 337
@@ -503,8 +503,8 @@ Working:
   the `mushroom`'s seven were its dots, and are gone with them. On
   the three plates of `mcbrim_test.3mf` the reference lays 13.6 m, 5.3 m and 5.3 m of its
   solid fill as loops and this engine 12.3 m, 5.3 m and 5.3 m, where
-  it laid none; solid fill in all is 49.57 m against 50.51 m on plate
-  1 (1.9% under, from 1.0% over) and 24.59 m against 24.29 m on the
+  it laid none; solid fill in all is 49.53 m against 50.51 m on plate
+  1 (1.9% under, from 1.0% over) and 24.58 m against 24.29 m on the
   other two (1.2% over, from 3.5%). Plate 1 is under because on four
   of its layers this engine has less solid area to fill, whatever it
   is filled with (with the option off in both, those layers are 2%,
@@ -536,10 +536,31 @@ Working:
   there (strokes are counted half a spacing from where the fill puts
   its lines), as they have none in the same place on the other side
   of the tube in either.
-  Not done: a solid area with nothing narrow in it has its lines
-  spread to fill its width in the reference, as top and bottom
-  surfaces have, and not here (a round boss 8 mm across: lines 0.429 mm
-  wide there, 0.42 here), nor are they with the option off.
+  Solid fill inside the part is fitted to its area as top and bottom
+  surfaces are, as in the reference (FillRectilinear.cpp
+  `fill_surface_by_lines` fits all fill at full density but bridges,
+  FillBase.cpp `_adjust_solid_spacing`). With the option off that is
+  every area: a full layer of the cube is 67 lines 0.3795 mm apart and
+  0.422 mm wide, 902.55 mm, each where the reference's is to the
+  micrometre (68 lines at 0.377 and 907.87 mm before); 669.39 mm in
+  both on the `tube`, 2136.36 on the `mushroom`, and the round boss of
+  `holes` has the reference's 22 lines 0.429 mm wide. Over the whole
+  part solid fill is then within 0.05% on the cube, the deck, the
+  `frame`, the `mushroom`, the `tube` and `counterbore`, 0.1% under on
+  `steps` and 0.2% under on `holes` (it was up to 0.9% over, and 0.4%
+  under on the `tube`). With
+  the option on what is fitted is the wide part, as there. That part
+  is cut along its own lines a whole number of spacings from the
+  area's edge, where there is nothing to spread, unless its last line
+  reaches the far edge and it is the area's whole width: so a cube's
+  solid layer keeps its pitch in both slicers, and a round one with
+  nothing narrow in it is spread (`cylinder_drawcut.3mf`: 202 lines
+  and 12112.63 mm a layer in both, from 201 and 12126.80). Still
+  different: the boss of `holes`. Its lines end in two short strokes
+  after a long one; the reference keeps both (as above), so the wide
+  part is the whole boss and its lines are spread, 22 of them 0.429 mm
+  wide, and here the second is loops, the wide part stops there and
+  its 21 lines keep their 0.42 mm.
 - Small area flow compensation (`small_area_infill_flow_compensation`,
   off by default, with its curve
   `small_area_infill_flow_compensation_model`): a small area fills with
@@ -593,7 +614,24 @@ Known gaps: painted supports and seams, per-object setting overrides, typed sett
   `sparse_infill_density`, `minimum_sparse_infill_area`) and filled with
   lines, or for sparse areas one of nineteen patterns (below). Solid lines run to the edge of their
   area and, where one is joined to the next, turn half a line spacing
-  inside it, as the reference's do. `top_surface_pattern`,
+  inside it, as the reference's do. A row that a hole parts in two is
+  laid as one line, round the side of the hole, where the outline
+  leads from one part to the other without crossing another row: on
+  the first row to meet the hole and on the last, always when the
+  lines are swept in order, and otherwise when there is no row beside
+  it left to go on to (FillRectilinear.cpp, the joins along the outline
+  on one line). For solid fill such a join is no longer than three
+  line spacings, and for a bridge as long as the side is. The reference
+  means that limit and does not keep it (Fill.cpp works it out from a
+  spacing not yet set, which leaves it at nothing, and nothing is no
+  limit; fixed there in aceRage/EdgeSlicer#968), so until its fix a
+  bottom surface with round holes in it is a little shorter here:
+  4.30 m against 4.32 on `holes` and 0.51 against 0.52 on the `tube`,
+  which were the reference's length to the tenth of a millimetre with
+  no limit kept (4315.5 mm and 519.8 mm in both, from 18.6 and 7.2 mm
+  short before rows were joined round holes at all). Sparse lines round the
+  holes of `holes` and `counterbore` are within 0.1% (`rectilinear`;
+  1.4 and 1.7% short before). `top_surface_pattern`,
   `bottom_surface_pattern` and `internal_solid_infill_pattern` say whether
   lines are joined (`monotonic`, `rectilinear`) or left separate
   (`monotonicline`); any other pattern is laid as joined lines, with a
@@ -603,7 +641,7 @@ Known gaps: painted supports and seams, per-object setting overrides, typed sett
   zigzagged in one go, and a region waits for everything beside its
   first row on the side already swept (FillRectilinear.cpp
   `generate_montonous_regions`). The writer lays such lines in the
-  order given and never turns one round. Top and bottom surfaces are fitted to their area: the lines are
+  order given and never turns one round. Top and bottom surfaces and solid fill inside the part are fitted to their area: the lines are
   spread, by up to a fifth, so that a whole number of them fills the
   width, and each is made as wide as its share. They overlap their walls
   by `top_bottom_infill_wall_overlap` on the first layer and the last.
@@ -653,7 +691,21 @@ Known gaps: painted supports and seams, per-object setting overrides, typed sett
   shell's depth where the first layer or the last five are of another
   height. Fill over air takes `bridge_flow`
   and `bridge_density`, and runs along the edges it has nothing beside,
-  so its lines go from one support to the other. Bridges, bottoms and
+  so its lines go from one support to the other. A bridge's lines,
+  over air or over infill, are laid as the reference lays them
+  (Fill.cpp `group_fills` and `Layer::make_fills`, FillRectilinear.cpp
+  `fill_surface_by_lines`): as solid lines are, running to the edge
+  and turning half a spacing inside it, with no line that does not
+  come half a spacing inside the area; at their own spacing over the
+  density, never spread to fit the area; on the lines every pitch from
+  the middle of the object, half a pitch off those at full density;
+  joined, and swept in order where the top surface is
+  (`top_surface_pattern` `monotonic` or `monotonicline`). On the
+  `bridge` fixture with the U1's presets the deck's 21 bridge lines lie
+  where the reference's do and end where they do, to the micrometre,
+  666.2 mm in both; laid from edge to edge, as they were, there were
+  22, each 0.14 mm longer at either end and 0.13 mm to one side, and
+  703.6 mm. Bridges, bottoms and
   tops reach a wall's spacing into the fill beside them, to have
   something to hold on to.
   The bridging options of the reference's Quality tab are followed.
@@ -1156,13 +1208,13 @@ Where the reference tells two rows are beside each other by following
 the outline between them, here they are when they overlap. A bridge reaches 0.4 mm onto each support where the reference's
 reaches 0.8 mm, internal bridges are not run out to the
 sparse lines that carry them nor turned as the reference turns them
-(they come within 6% of the reference's on plain parts and 9% over on
-the lettered plate; small ones, which gain most from being run out,
-come out a quarter to a third short, and that is what
+(on plain parts, where there is nothing to run out, they are the
+reference's length to 0.1%, and 2% over on plate 2 of
+`mcbrim_test.3mf`; small ones, which gain most from being run out,
+come out a third short, and that is what
 `dont_filter_internal_bridges` at `nofilter` makes more of: below),
 bridges that reach into one another are made one only with
-`bridge_expansion_extra` set, a solid area with nothing narrow in it does not have its lines
-spread to fill its width, narrow parts of top and
+`bridge_expansion_extra` set, narrow parts of top and
 bottom surfaces get no gap fill
 (`gap_fill_target`), and eight of the
 reference's sparse patterns are not laid (below). Gap closing runs across objects, so two separate objects closer than twice
@@ -1253,10 +1305,10 @@ By feature, in metres of extruded path, reference against this engine:
 
 | Project | Overhang wall | Internal bridge | Internal solid fill | Gap fill |
 | --- | --- | --- | --- | --- |
-| `cylinder_drawcut.3mf` | none | 11.22 / 11.30 | 61.04 / 61.08 | 0.02 / 0.00 |
-| `twopart_groups.3mf` | 0.16 / 0.16 | 1.16 / 1.20 | 6.38 / 6.38 | none |
-| `mushroom` fixture | 0.23 / 0.23 | 1.99 / 2.04 | 10.93 / 10.93 | none |
-| `mcbrim_test.3mf` plate 2 | | 2.60 / 2.83 | 24.29 / 25.05 | |
+| `cylinder_drawcut.3mf` | none | 11.22 / 11.22 | 61.04 / 61.04 | 0.02 / 0.02 |
+| `twopart_groups.3mf` | 0.16 / 0.16 | 1.16 / 1.16 | 6.38 / 6.38 | none |
+| `mushroom` fixture | 0.23 / 0.23 | 1.99 / 1.99 | 10.93 / 10.93 | none |
+| `mcbrim_test.3mf` plate 2 | | 2.60 / 2.66 | 24.29 / 24.58 | |
 | `mcbrim_test.3mf` plate 1 | 0.10 / 0.06 | | | 8.28 / 9.98 |
 | `mcbrim_test.3mf` plate 2 | 0.03 / 0.03 | | | 4.95 / 5.03 |
 
@@ -2087,27 +2139,34 @@ are `tools/make_fixture.py`'s with the Snapmaker U1's presets
 two walls); `gaps` is a base with five bars across it 1, 2, 3 and 5 mm
 apart, so that the solid layers under the strips of top between them
 are small bridges over infill of different sizes. With every option
-off bridges are 2 to 6% over the reference's and bridges over infill
-within 5% of them, as above, but 26% under on `gaps`, whose bridges
-are small; that is the difference each row starts from. Besides the
+off bridges and bridges over infill are the reference's length to
+0.1% (laid from edge to edge, as they were, bridges were 2 to 6% over
+and bridges over infill up to 5%), but for `gaps`, 33% under, whose
+bridges are small and are run out in the reference; that is the
+difference each row starts from. Besides the
 features shown only the solid and sparse fill a bridge takes the place
 of moves, in either slicer, and with the options off the file is byte
 for byte what it was.
 
 | Option | Part | Feature | Off | On |
 | --- | --- | --- | --- | --- |
-| `bridge_line_width` 0.3 | `bridge` | Bridge | 0.67 / 0.70 | 1.05 / 1.05 |
-| | | Bridge over infill | 1.01 / 1.06 | 1.30 / 1.35 |
-| | `shelf` | Bridge | 0.42 / 0.45 | 0.66 / 0.67 |
-| `bridge_expansion_extra` 2, 6, 50 | `bridge`, all solid (`top_shell_layers=16`) | Bridge | 0.69 / 0.73 | 0.77 / 0.82, 0.94 / 0.99, 1.02 / 1.07 |
-| `bridge_expansion_extra` 3 | `mushroom`, all solid | Bridge | 2.02 / 2.06 | 2.14 / 2.19 |
-| `dont_filter_internal_bridges` `limited` | `gaps` | Bridge over infill | 2.58 / 1.91 | 2.58 / 2.04 |
-| `dont_filter_internal_bridges` `nofilter` | `gaps` | Bridge over infill | 2.58 / 1.91 | 2.88 / 2.62 |
-| | a wedge, top at 14° | Bridge over infill | 0.00 / 0.09 | 5.61 / 3.88 |
-| `enable_extra_bridge_layer` `external_bridge_only` | `bridge` | Bridge | 0.67 / 0.70 | 1.33 / 1.41 |
-| | `mushroom` | Bridge | 1.97 / 2.02 | 3.94 / 4.03 |
-| `enable_extra_bridge_layer` `internal_bridge_only` | `cube` | Bridge over infill | 0.84 / 0.87 | 1.68 / 1.74 |
-| | `gaps` | Bridge over infill | 2.58 / 1.91 | 5.14 / 3.82 |
+| `bridge_line_width` 0.3 | `bridge` | Bridge | 0.67 / 0.67 | 1.05 / 1.05 |
+| | | Bridge over infill | 1.01 / 1.01 | 1.30 / 1.30 |
+| | `shelf` | Bridge | 0.42 / 0.42 | 0.66 / 0.66 |
+| `bridge_expansion_extra` 2, 6, 50 | `bridge`, all solid (`top_shell_layers=16`) | Bridge | 0.69 / 0.69 | 0.77 / 0.77, 0.94 / 0.94, 1.02 / 1.02 |
+| `bridge_expansion_extra` 3 | `mushroom`, all solid | Bridge | 2.02 / 2.02 | 2.14 / 2.14 |
+| `dont_filter_internal_bridges` `limited` | `gaps` | Bridge over infill | 2.58 / 1.73 | 2.58 / 1.85 |
+| `dont_filter_internal_bridges` `nofilter` | `gaps` | Bridge over infill | 2.58 / 1.73 | 2.88 / 2.42 |
+| | a wedge, top at 14° | Bridge over infill | 0.00 / 0.07 | 5.61 / 3.43 |
+| `enable_extra_bridge_layer` `external_bridge_only` | `bridge` | Bridge | 0.67 / 0.67 | 1.33 / 1.33 |
+| | `mushroom` | Bridge | 1.97 / 1.97 | 3.94 / 3.94 |
+| `enable_extra_bridge_layer` `internal_bridge_only` | `cube` | Bridge over infill | 0.84 / 0.84 | 1.68 / 1.68 |
+| | `gaps` | Bridge over infill | 2.58 / 1.73 | 5.14 / 3.46 |
+
+Where the two columns agree they agree to a tenth of a millimetre or
+two in a metre (the deck's bridge 666.2 mm in both, doubled 1332.3;
+the mushroom's 1969.9 and 3939.9; the cube's bridge over infill 838.8
+and 1677.7).
 
 With `bridge_line_width` the width and the plastic per millimetre are
 the reference's for all three features (a 0.3 mm width with these
@@ -2131,13 +2190,13 @@ second bridge stays what it was.
 What is still off is `dont_filter_internal_bridges`. With no filter
 the bridges appear on the same layers as the reference's (every second
 layer under a sloping top: a bridge is not laid over one just beneath
-it), but each is about 70% of the reference's length, 170 mm a layer
+it), but each is about 60% of the reference's length, 150 mm a layer
 against 240 mm on the wedge, because the reference then runs each
 patch out to the sparse lines that carry it and this engine does not,
 for any bridge over infill. For the same reason `limited` adds a
 little here where it adds nothing in the reference: on `gaps` the
 reference's bridges on the first solid layer, run out, already cover
-what `limited` would find on the next, and here they do not (138 mm
+what `limited` would find on the next, and here they do not (120 mm
 more on one layer). On the plain parts (cube, deck, mushroom) neither
 value changes anything in either slicer.
 
@@ -2157,17 +2216,29 @@ run the same way in both, within a degree.
 
 | | walls on that layer, mm | bridge on it, mm | solid fill on the layer above, mm | bridges the same way |
 | --- | --- | --- | --- | --- |
-| off | 753 / 753 | 1540 / 1625 | 1464 / 1473 | |
-| `partiallybridge` | 1060 / 1060 | 838 / 943 | 1717 / 1715 | 7 |
-| `sacrificiallayer` | 1035 / 1035 | 1771 / 1838 | 1765 / 1769 | 3 |
-| `partiallybridge`, Arachne | 1039 / 1039 | 838 / 949 | 1680 / 1686 | 6 |
-| `sacrificiallayer`, Arachne | 1033 / 1033 | 1771 / 1838 | 1755 / 1762 | 3 |
-| `partiallybridge`, `hole_to_polyhole` | 1062 / 1060 | 854 / 949 | 1711 / 1710 | 4 |
-| `sacrificiallayer`, `hole_to_polyhole` | 1040 / 1040 | 1783 / 1846 | 1764 / 1764 | 1 |
-| `partiallybridge`, 0.2 mm first layer | 1060 / 1060 | 838 / 943 | 1717 / 1715 | 7 |
-| `sacrificiallayer`, 0.2 mm first layer | 1035 / 1035 | 1771 / 1838 | 1765 / 1769 | 3 |
-| `partiallybridge`, 0.28 mm layers | 1056 / 1060 | 882 / 974 | 1783 / 1788 | 5 |
-| `sacrificiallayer`, 0.28 mm layers | 1033 / 1033 | 1840 / 1908 | 1825 / 1822 | 3 |
+| off | 753 / 753 | 1540 / 1535 | 1464 / 1467 | |
+| `partiallybridge` | 1060 / 1060 | 838 / 847 | 1717 / 1719 | 7 |
+| `sacrificiallayer` | 1035 / 1035 | 1771 / 1771 | 1765 / 1790 | 3 |
+| `partiallybridge`, Arachne | 1039 / 1039 | 838 / 841 | 1680 / 1689 | 6 |
+| `sacrificiallayer`, Arachne | 1033 / 1033 | 1771 / 1771 | 1755 / 1774 | 3 |
+| `partiallybridge`, `hole_to_polyhole` | 1062 / 1060 | 854 / 871 | 1711 / 1711 | 4 |
+| `sacrificiallayer`, `hole_to_polyhole` | 1040 / 1040 | 1783 / 1778 | 1764 / 1775 | 1 |
+| `partiallybridge`, 0.2 mm first layer | 1060 / 1060 | 838 / 847 | 1717 / 1719 | 7 |
+| `sacrificiallayer`, 0.2 mm first layer | 1035 / 1035 | 1771 / 1771 | 1765 / 1790 | 3 |
+| `partiallybridge`, 0.28 mm layers | 1056 / 1060 | 882 / 879 | 1783 / 1757 | 5 |
+| `sacrificiallayer`, 0.28 mm layers | 1033 / 1033 | 1840 / 1840 | 1825 / 1827 | 3 |
+
+The solid fill on the layer above is the roofs over the wide holes,
+each an area of its own, and with a sacrificial layer round ones with
+nothing narrow in them: their lines are fitted as the reference's are
+(on that layer 343, 131 and 77 mm of line 0.424, 0.430 and 0.450 mm
+wide in the reference and 349, 131 and 87 mm of 0.424, 0.430 and 0.43
+to 0.47 here, all of it 0.42 before), each line where the reference's
+is. The lines themselves come to 1270 mm against the reference's 1280;
+the 1.4% the layer is over is in the joins along the roofs' edges and
+round the narrow holes, which the two go about in different orders,
+and in the loops of the narrow parts: 520 mm against 485 (515 before
+the lines were fitted).
 
 The walls of that layer are the reference's: they go round the wide
 hole, stepping in a wall's width where a bridge rests on its edge.
@@ -2189,23 +2260,30 @@ up only where the seams fall on the narrow holes' walls changes, and
 further down nothing does. With `enable_extra_bridge_layer` on as well
 both lay the second bridge on the layer above in the six cells whose
 roof is wide enough for one, the same way in five of them (2.50 m of
-bridge in the file against 2.69 m partly bridged, 3.49 against 3.64
+bridge in the file against 2.52 m partly bridged, 3.49 against 3.49
 with a sacrificial layer). On 3DBenchy with the same presets one layer
 changes in both, at 34.25 mm, the same in either mode: 43.9 mm more
-bridge and 39.3 mm less wall over air in the reference, 44.5 and 38.4
+bridge and 39.3 mm less wall over air in the reference, 43.9 and 38.4
 here.
 
-The bridges come out longer here, by 12% partly bridged and 4% with a
-sacrificial layer, where they are 5.5% longer with the option off.
-The areas bridged are the same, the walls round them being the same;
-the lines in them are not. The reference leaves out a bridge line that
-does not come half a spacing inside the area and turns its lines short
-of the area's edge where it joins them (FillRectilinear.cpp); this
-engine lays every bridge line that is inside the area at all, from
-edge to edge, so a narrow bridge has a line more: eight where the
-reference has seven in each of the two beside the hexagonal hole in
-the square one. That is how this engine lays any bridge, and is not
-changed here.
+The bridges are laid as the reference lays them, and where they run
+the same way they come to its length: with a sacrificial layer 1771.3 mm
+in both (the roof is covered whole, whichever way), and with the option
+off 1535.4 mm against 1540.4, cell by cell within 0.15 mm in six
+(231.4, 131.2, 182.0, 304.0, 273.4 and 332.8 mm in the reference) and
+4.7 mm short in the seventh, the 3 mm hole in the 6 mm one, which the
+two span different ways (22.5° here, 112.5° there). A row that the
+narrow hole parts is laid round the side of the hole on the first row
+to meet it and the last, as there. Partly bridged they are 1.1% over
+(847.4 mm against 838.2): five cells are within 0.8 mm, and in two (the
+round hole over the hexagonal one and the square one over the round)
+one of the two strips beside the slot runs a degree off the
+reference's and the lines in it fall differently (106.7 mm against
+100.7, 103.1 against 99.1). They were 12% over partly bridged, 4% with
+a sacrificial layer and 5.5% with the option off, when every bridge
+line that was inside the area at all was laid, from edge to edge:
+eight lines where the reference has seven in each of the two beside
+the hexagonal hole in the square one.
 
 Partly bridged, the bridges run along the slot in both slicers, and
 the slot runs the same way in all seven cells with the presets as they
