@@ -6,7 +6,7 @@ use edge_config::Settings;
 
 /// A setting, the value that turns it off, and what is done whatever it
 /// is set to.
-const UNREAD: [(&str, &str, &str); 5] = [
+const UNREAD: [(&str, &str, &str); 4] = [
     (
         "elefant_foot_layers_density",
         "100%",
@@ -16,11 +16,6 @@ const UNREAD: [(&str, &str, &str); 5] = [
         "zaa_enabled",
         "0",
         "top surfaces are laid flat, not contoured in height",
-    ),
-    (
-        "reduce_crossing_wall",
-        "0",
-        "travel moves go straight, across walls where those are in the way",
     ),
     (
         "small_area_infill_flow_compensation",
@@ -94,9 +89,10 @@ mod tests {
         .unwrap();
         // How small bridges over infill are sorted out is followed, and
         // nothing is said of it here; nor of a wipe in over the inner
+        // walls, nor of travel that goes round the
         // walls.
         let said = notes(&on, 1);
-        assert_eq!(said.len(), 4, "{said:?}");
+        assert_eq!(said.len(), 3, "{said:?}");
         assert!(said.contains(
             &"zaa_enabled \"1\": top surfaces are laid flat, not contoured in height".to_owned()
         ));

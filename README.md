@@ -14,6 +14,7 @@ replaces it until output matches on the printers we care about.
 | `crates/edge-config` | Vendor presets resolved through `inherits`, `include` and `renamed_from`; the reference's defaults for every setting, and the text form it writes settings in |
 | `crates/edge-3mf` | 3MF projects: objects, parts and their roles, instances, plates, project settings, and colours painted onto triangles |
 | `crates/edge-fuzzy` | Fuzzy skin: walls roughened by moving their points or changing their width, with the noise it is drawn from (a port of the reference's FuzzySkin and of the libnoise modules it uses) |
+| `crates/edge-avoid` | Travel routed round the inside of a part's walls where a straight move would cross them: what a layer's moves are routed by, and the way round for each (a port of the reference's AvoidCrossingPerimeters) |
 | `crates/edge-arachne` | Walls of changing width: a region's skeleton, how many lines fit along it and where that number changes, and the lines themselves (a port of the reference's Arachne) |
 | `crates/edge-paint` | Which filament prints what where colours are painted on: each layer shared out from its painted outline, and paint on top and bottom faces carried through the shell |
 | `crates/edge-clip` | Polygon union, difference, intersection, offset, an inner offset with a distance of its own for every vertex, and gap closing (wraps clipper2-rs) |
@@ -651,6 +652,31 @@ Known gaps: painted supports and seams, per-object setting overrides, typed sett
     face nor a bottom one, walls included
     (RetractWhenCrossingPerimeters.cpp), unless it leaves an outer or
     an overhanging wall.
+  - Travel round the walls (`reduce_crossing_wall`): every travel whose
+    start is known is routed as the reference routes it
+    (AvoidCrossingPerimeters.cpp, GCode.cpp `travel_to`). A move in the
+    part that does not stay within one piece of the layer, clear of its
+    outer wall, follows the layer's outline drawn in by one and a half
+    wall spacings (by less where the part is too narrow for that, so
+    that no piece is lost or parted), from where it first meets it to
+    where it last leaves it, the shorter way about, and is then
+    straightened as far as that outline lets it be. Top surfaces are
+    gone round. Moves between supports are routed by the part's
+    outline as well, and moves to, round and from a skirt, a brim or
+    the prime tower go round holes only, in the hole's own wall. The
+    first move of the print, the one from the first layer's skirt and
+    the one from a brim go straight. A way round longer than
+    `max_travel_detour_distance` allows, a length or a share of the
+    straight move, is not taken. A move is as long as its way round
+    when it is asked whether it retracts; with
+    `reduce_infill_retraction` a way round that stays inside the part
+    goes unretracted; and the lift is made over the first stretch of
+    the way. Everything on a plate is sliced as one, so a move from one
+    object to another is routed as one between two pieces of an object,
+    where the reference takes it round holes only; a note says so.
+    Layers are made ready to route on in parallel, a stretch of them at
+    a time, ahead of being written, and a routed travel that would
+    leave the bed is not made.
   - Cooling: a layer shorter than `slow_down_layer_time` is laid out again
     with its fastest lines slowed, down to `slow_down_min_speed`; the part
     fan follows layer time and the auxiliary fan is driven.
@@ -1859,6 +1885,122 @@ bridge detector says can be spanned from the wide hole's edge
 direction with most anchored lines and the strips it can span), which
 is not here: this engine turns a bridge by the edges it has nothing
 beside.
+
+Travel round the walls (`reduce_crossing_wall`), against the C++
+slicer with the same settings (C++ slicer / this engine). The parts are
+`tools/make_fixture.py`'s with the Snapmaker U1's presets (0.4 mm z-hop,
+wipe, `reduce_infill_retraction` on): `frame` and the same with two
+skirt loops and a brim, `holes`, `tube`, `steps` and `comb`; then
+3DBenchy with those presets and the three plates of `mcbrim_test.3mf`
+(plate 1 painted, plates 2 and 3 four objects each in three filaments,
+with supports and a prime tower). Each is sliced with the option off,
+on, on with `max_travel_detour_distance` 10 mm, and on with it at 50%.
+A travel is counted as crossing an outer wall when it goes right
+through one on its own layer: within 1.5 mm of travel either side of
+the crossing it gets a quarter of a millimetre or more from the wall's
+centre line, on opposite sides. Setting off from a wall just laid,
+arriving on the one about to be laid, running along a wall and the
+spiral of a lift are not crossings.
+
+| Part | | Travel, m | Retractions | Travels across an outer wall |
+| --- | --- | --- | --- | --- |
+| `frame` | off | 4.27 / 4.07 | 100 / 94 | 62 / 59 |
+| | on | 5.62 / 5.21 | 121 / 122 | 3 / 4 |
+| | 10 mm | 4.43 / 4.21 | 127 / 123 | 60 / 59 |
+| | 50% | 5.47 / 5.07 | 95 / 93 | 3 / 4 |
+| `frame`, skirt and brim | off | 4.32 / 4.08 | 102 / 96 | 61 / 58 |
+| | on | 5.69 / 5.22 | 123 / 124 | 3 / 3 |
+| | 10 mm | 4.47 / 4.22 | 129 / 125 | 60 / 58 |
+| | 50% | 5.53 / 5.08 | 97 / 95 | 3 / 3 |
+| `holes` | off | 18.72 / 17.81 | 747 / 737 | 394 / 393 |
+| | on | 19.46 / 18.46 | 643 / 643 | 102 / 85 |
+| | 10 mm | 19.24 / 18.35 | 648 / 647 | 105 / 89 |
+| | 50% | 19.24 / 18.19 | 648 / 671 | 104 / 116 |
+| `tube` | off | 2.97 / 2.33 | 156 / 166 | 84 / 26 |
+| | on | 3.25 / 2.39 | 152 / 160 | 4 / 3 |
+| | 10 mm | 3.25 / 2.39 | 152 / 160 | 4 / 3 |
+| | 50% | 3.14 / 2.39 | 152 / 160 | 20 / 3 |
+| `steps` | off | 3.01 / 3.31 | 126 / 123 | 33 / 28 |
+| | on | 3.17 / 3.55 | 138 / 138 | 7 / 6 |
+| | 10 mm | 3.14 / 3.54 | 138 / 138 | 10 / 6 |
+| | 50% | 3.10 / 3.48 | 125 / 124 | 10 / 6 |
+| `comb` | off | 1.37 / 1.51 | 69 / 54 | 47 / 36 |
+| | on | 1.79 / 1.89 | 37 / 23 | 12 / 5 |
+| | 10 mm | 1.43 / 1.54 | 63 / 49 | 39 / 31 |
+| | 50% | 1.43 / 1.53 | 62 / 49 | 38 / 31 |
+| 3DBenchy | off | 29.55 / 30.11 | 1520 / 1734 | 992 / 985 |
+| | on | 33.41 / 34.66 | 1555 / 1717 | 475 / 391 |
+| | 10 mm | 32.20 / 33.51 | 1572 / 1746 | 537 / 437 |
+| | 50% | 31.27 / 32.38 | 1464 / 1529 | 622 / 526 |
+| `mcbrim_test.3mf` plate 1 | off | 64.44 / 58.02 | 2185 / 1921 | 1493 / 1105 |
+| | on | 67.00 / 60.46 | 2126 / 1877 | 1372 / 948 |
+| | 10 mm | 65.77 / 60.07 | 2145 / 1905 | 1390 / 968 |
+| | 50% | 66.36 / 60.27 | 2126 / 1848 | 1372 / 977 |
+| plate 2 | off | 36.33 / 31.54 | 843 / 915 | 434 / 431 |
+| | on | 37.61 / 32.32 | 803 / 922 | 365 / 404 |
+| | 10 mm | 36.84 / 32.16 | 812 / 922 | 373 / 408 |
+| | 50% | 37.33 / 32.24 | 795 / 903 | 365 / 404 |
+| plate 3 | off | 38.91 / 34.85 | 841 / 917 | 434 / 441 |
+| | on | 40.21 / 35.66 | 801 / 922 | 365 / 410 |
+| | 10 mm | 39.43 / 35.49 | 810 / 922 | 373 / 414 |
+| | 50% | 39.99 / 35.56 | 793 / 901 | 365 / 410 |
+
+On the single parts the crossings fall as the reference's do, travel
+grows by about as much (1.35 m and 1.14 m on `frame`, 0.74 and 0.65 on
+`holes`, 3.9 and 4.6 on the Benchy) and retractions move the same way:
+up where short hops to an outer wall become longer than
+`retraction_minimum_travel` by going along it, down where a way round
+stays inside the part (`holes`, `comb`). The ways themselves are the
+reference's: on `frame` both run at the same 0.61 mm inside the
+outline, to the micrometre. What is left crossing with the option on
+is the same in both: the print's first move, the top layer, which is
+all top surface and so has nothing to go along, and thin parts whose
+drawn-in outline is the outline itself. A cube, two blocks in two
+filaments (`twotone`), a part on supports (`mushroom`) and thin fins
+are hardly changed by the option in either slicer: travel within
+0.06 m, retractions within one, and the same travels crossing.
+
+On the plates of several objects it does less here than there
+(plate 2: 69 fewer travels cross in the reference, 27 fewer here, and
+its retractions fall by 40 where here they rise by 7). Two things make
+that, neither of them the routing. The reference's aligned seams on
+those parts lie on the walls between two filaments, inside the part,
+where the hop from the wall behind stays clear of the outline and goes
+straight; here the seams are on the outside, at an inside corner of
+the part, and the same hop is taken along the drawn-in outline and
+round its corner: 0.40 mm straight and 1.27 mm that way, which is over
+`retraction_minimum_travel` (19 of 72 such hops on plate 2). And fill
+that belongs to no island is laid last, with long moves from object to
+object that the reference, printing object by object, does not make.
+
+Not as the reference, on purpose, where it is in error. It picks the
+shorter way round a ring from lengths it has corrected twice over, so
+some moves go the longer way about, by up to the length of the two
+edges they meet the ring on; here the shorter way is taken. It makes
+the outline moves are routed by on a layer's first such move and keeps
+it, and a move between supports leaves the top surfaces in: supports
+come first, so on a layer that has them moves in the part cross top
+surfaces that they go round on other layers; here each kind of move has
+its own. A move that was to go straight (from a brim, say) is routed
+after all once a wipe has moved the nozzle; here it stays straight. And
+two that change nothing a print would show: a point met at the start
+of an edge is left on the ring instead of stepped a tenth of a
+micrometre off it, and the width of a part is misjudged across from the
+edge that closes a ring. With `max_travel_detour_distance` at 50% the
+two differ more than without it (`tube` 20 travels crossing against 3,
+`holes` 104 against 116): whether a way round is within the limit goes
+by where the move starts, and the seams are not in the same places.
+
+The reference's own file, timed here as the reference plans, comes to
+the reference's own time with the option on as with it off (Benchy 40m
+00s, plate 1 65m 44s, `holes` 23m 46s, each to the second). With the
+option off the file is byte for byte what it was, and with it on it is
+the same at any number of threads. What it costs: making the layers
+ready is most of it and is done in parallel, the routing itself is in
+the writer. Plate 1 of `mcbrim_test.3mf`, the largest of these, slices
+in 2.44 s with it on against 2.13 s off on 18 threads (4.04 against
+3.65 on four), and the Benchy in 0.67 s against 0.43 s (2.80 against
+2.04 on one thread), each the best of five taken turn about.
 
 Shells as thick as asked (`top_shell_thickness`,
 `bottom_shell_thickness`), against the C++ slicer on
