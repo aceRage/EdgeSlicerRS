@@ -3,8 +3,8 @@
 //! option on them, what a project sets over its process preset, and what
 //! the engine does with each.
 //!
-//! - The pages and the options are data, `process_pages.json`, made from
-//!   the reference's own source by `tools/make_process_pages.py`
+//! - The pages and the options are data, `settings_pages.json`, made from
+//!   the reference's own source by `tools/make_settings_pages.py`
 //!   (Tab.cpp `TabPrint::build`, PrintConfig.cpp `PrintConfigDef`). Nothing
 //!   here names an option but [`rules`] and the four the page set before
 //!   there were pages.
@@ -34,8 +34,8 @@ use serde_json::{Value, json};
 
 use super::{Choices, File, Session, lock, text};
 
-/// The pages, as `tools/make_process_pages.py` writes them.
-const PAGES: &str = include_str!("process_pages.json");
+/// The pages, as `tools/make_settings_pages.py` writes them.
+const PAGES: &str = include_str!("settings_pages.json");
 
 /// What kind of value an option takes (PrintConfig.cpp `coFloat` and the
 /// rest, a list of them counting as what it is a list of).
@@ -78,7 +78,8 @@ struct Pages {
 fn pages() -> &'static Pages {
     static PAGES_READ: OnceLock<Pages> = OnceLock::new();
     PAGES_READ.get_or_init(|| {
-        let json: Value = serde_json::from_str(PAGES).expect("process_pages.json is JSON");
+        let all: Value = serde_json::from_str(PAGES).expect("settings_pages.json is JSON");
+        let json = all["process"].clone();
         let options = json["options"]
             .as_object()
             .expect("options")
