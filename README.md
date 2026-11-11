@@ -32,7 +32,7 @@ replaces it until output matches on the printers we care about.
 | `crates/edge-engine` | The whole pipeline behind one call, for whatever drives it: open a model and list its plates, settle its settings, slice with progress and cancel, G-code, a layer's lines for drawing, and a vendor's presets by printer |
 | `crates/edge-cli` | The `edge` command line |
 | `tools/make_defaults.py` | Asks the reference for its default of every setting and writes the table `edge-config` carries; run again when the pin moves |
-| `tools/make_fixture.py` | Writes small test 3MFs (parts that need supports or a brim, a plain cube, two blocks in two filaments, a comb with thin teeth on the bed) to compare with the reference on |
+| `tools/make_fixture.py` | Writes small test 3MFs (parts that need supports or a brim, a plain cube, two blocks in two filaments, a comb with thin teeth on the bed, and three round ones for arc fitting: a post, a post with a hole, a slab with a wide curve and tight ones) to compare with the reference on |
 | `tools/make_project.py` | Writes one of those parts as a project whose settings are named presets, with as many filaments as are named: how the test prints for a printer are made |
 | `reference/EdgeSlicer` | Pinned submodule of the C++ slicer: profiles, test models, behaviour to match. Read-only here |
 | `apps/desktop` | The desktop app (Tauri): several projects open at once, each prepared, sliced, looked through layer by layer and exported, in the C++ application's tabs. A workspace of its own |
@@ -331,6 +331,26 @@ Known gaps: painted supports and seams, per-object setting overrides, typed sett
     something under it (`enable_overhang_speed`); and bridges, overhang
     walls and stretches past `overhang_fan_threshold` get
     `overhang_fan_speed` where that is more than the layer's fan.
+  - Arcs (`enable_arc_fitting`): the stretches of a path that lie on a
+    circle are written as one `G2` or `G3` each, with the reference's
+    fitter (ArcFitter.cpp, Circle.cpp): walls, fill of every kind and
+    gap fill within `resolution` of the path, sparse infill within
+    0.04 mm and supports within 0.0375 mm. A wall loop is fitted whole
+    and then opened at its seam, which cuts the arc there in two; a
+    line is fitted as it was made and turned about with its arcs if it
+    is laid from its far end. A stretch of wall whose speed or fan
+    changes on the way over an overhang is straight moves, as there.
+    Skirt and brim are never arcs, nor wipes and travel, but for the
+    spiral lift, which is then one `G17` and `G3` in place of its many
+    short moves. The prime tower's rounded ribs stay straight moves
+    (the reference fits them within 0.1 mm). An arc counts by its
+    bulge when the print is checked against the bed. Three things are
+    not as in the reference, each a mistake there: it leaves a path's
+    middle point out when it looks for the circle a path strays from
+    least, it keeps the wrong angle with an arc it had to turn about,
+    and it takes a counter-clockwise arc whose middle point is exactly
+    due east of its centre for no arc at all, which cuts the arc of a
+    round wall drawn square to the axes in two on every layer.
 - Skirt and brim: skirt loops around everything, and a brim round the
   outside of each part, either of the width asked for or, with
   `brim_type` `auto_brim` (the default), as wide as the reference's rule of
@@ -512,7 +532,7 @@ generated, and a note says so), the older tree styles (`tree_slim`,
 `tree_strong`, `tree_hybrid`: organic-style trees are built, with a note),
 rafts, brims inside holes, draft shields, seams placed by visibility or kept
 off overhangs, a fan speed of its own for bridges over infill, walls
-slowed over curled edges, arc fitting, preview pictures in the file
+slowed over curled edges, preview pictures in the file
 (thumbnails), and object labels for cancelling (`EXCLUDE_OBJECT`). Bridge fill keeps its own speed along its whole
 length, where the reference also slows it near its anchors. A setting that asks for one of these is listed as a
 note when the file is written. A template that needs a variable not
@@ -604,8 +624,16 @@ file planned the reference's way should come to the reference's own
 figure: that is the standing check on the port. On 2026-11-10 it did, to
 the second, on every file sliced with the U1's presets (13m 17s, 14m 59s
 against 15m 00s, 19m 42s, 24m 38s, 42m 32s), and within 1% on the
-Centauri Carbon's, whose files have arcs that are cut up a little
-differently here. This engine's own files, planned the same way, came to
+Centauri Carbon's, whose files have arcs that were then cut up a little
+differently here. An arc is now cut into the straight moves the
+reference's estimator cuts it into (GCodeProcessor.cpp `process_G2_G3`:
+chords within 0.0125 mm of the arc, or for Marlin 2 as its `plan_arc`
+does), and on 2026-11-11 the Centauri Carbon's files came to the
+reference's figure to the second as well, eight of them, box-shaped and
+round (5m 15s to 23m 39s; the bridge was 7m 15s against 7m 14s before,
+the shelf 10m 48s against 10m 42s). Planned as Klipper plans, an arc is
+cut as Klipper cuts it, into moves a millimetre long (the default
+`resolution` of its `[gcode_arcs]`). This engine's own files, planned the same way, came to
 15m 02s against 15m 00s on the cube with the U1's presets, 7m 15s
 against 7m 15s on the bridge with the Centauri Carbon's and 93m 51s
 against 94m 14s on `cylinder_drawcut.3mf`. Planned as Klipper plans,
@@ -940,10 +968,52 @@ may here. With the Centauri Carbon's presets (`tree(auto)`, arcs on)
 the `shelf` fixture is still 30% under (3.08 m against 4.37 m; it was
 2.26 m).
 
-The reference still does more in that time (arc fitting, time planning,
-ironing out its fill order), so the speed gap will narrow as stages are
-added; measuring overhangs took this engine from seven times faster to
-five on the cylinder.
+Arcs, 2026-11-11, on three round parts from `tools/make_fixture.py`
+(`cylinder`, `tube`, `curve`) with the Centauri Carbon's presets, which
+have arc fitting on. The length of every feature is what it was as
+straight moves, to the rounding of the table, and the spiral lifts are
+as many (49, 39 and 29). Fill agrees arc for arc where the two engines
+fill alike: sparse infill 252 arcs against the reference's 252 on the
+cylinder and 380 against 382 on the tube, the bottom surface 22 against
+22 and 64 against 63, and each of the cylinder's layers of solid fill 27
+against 27. That took one correction besides the
+arcs: with arc fitting on, what is left for infill was outlined at a
+fifth of `resolution` like the walls, where the reference outlines it at
+`resolution` itself, so the fill's turns along a round wall had twice
+the corners and every one of them became an arc. Walls are arcs for the
+same share of their length (98 to 100% on the round parts, 56% on the
+`curve`) but in more pieces on the round parts: 277 against 198 on the
+cylinder, 404 against 278 on the tube, 303 against 325 on the `curve`.
+On the `curve` the arcs are the reference's own, centre for centre (the
+80 mm bow, the half-round end, the 1.5 mm corners), bar one: on every
+layer the reference has the outer wall's half-round end in two arcs,
+the first stopping two corners short of the end, which is where its
+mistake with a middle point due east stops an arc. On the cylinder and the tube two things
+upstream of the fitter make the difference. A sliced ring here keeps one
+point that is no corner, where its outline starts, between two corners
+of the mesh, and loses the corner next to it; an arc cannot be carried
+round past it, so a ring is two arcs, or three, before its seam cuts
+one of them. (With that point taken out, in a trial, the cylinder's
+walls came to 117 arcs.) And the seam of a round wall is put at the
+ring's start here and a third of the way round it in the reference, so
+it cuts a different arc. Tree supports are arcs for 94% of their length
+against 90% (1825 against 2719 on the `shelf`, whose supports are 30%
+shorter here, as above). On the box-shaped parts nothing changed but
+the spiral lifts, and four arcs on the `mushroom` where a support's
+outline turns a corner; the reference has five to eight arcs there that
+this engine has not, each a dot of narrow solid fill it lays as a loop
+(`detect_narrow_internal_solid_infill`, not done).
+
+The reference still does more in that time (time planning, ironing out
+its fill order), so the speed gap will narrow as stages are added;
+measuring overhangs took this engine from seven times faster to five on
+the cylinder. Arcs are fitted a stretch of layers at a time on every
+thread, ahead of the writer. On the `tube` fixture with the Centauri
+Carbon's presets, whose round walls are the fitter's worst case (128
+sides, each just too far from the circle for its first guess to hold),
+the G-code is written in 14 ms where it took 19 ms as straight moves,
+and in 77 ms on one thread; the `curve` and `shelf` fixtures take 5 and
+9 ms on any number (9 and 12 ms before).
 Closed since the first run: elephant-foot compensation, one wall on the
 last layer, fill lines joined along the walls, seam gaps, wipe, ramped and
 spiral lifts, and plate placement (outer walls land where the reference
