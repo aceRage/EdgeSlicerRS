@@ -209,6 +209,68 @@ Working:
   first layer's outer wall lies within 0.011 mm of the C++ slicer's
   everywhere; it was up to 0.17 mm off while wide parts were shrunk by
   the whole amount and narrow ones not at all.
+- A precise height (`precise_z_height`): layers are laid from the bed
+  up for as long as the middle of one is still inside the part, so the
+  last ends up to half a layer above or below the part's top; with this
+  on, the last five layers share that difference out between them, each
+  made a little thinner or thicker within what the nozzles in use allow
+  (`min_layer_height`, `max_layer_height`), and are cut through their
+  middles as they then lie. A port of the reference's
+  `adjust_layer_series_to_align_object_height` (Slicing.cpp). Walls,
+  fill, skirt, prime tower and supports on those layers are laid at the
+  layer's own height. Not as the reference, marked in the code: a layer
+  that has reached the least or greatest height takes no further share
+  (the reference gives it one, and overshoots; it shows only where the
+  five layers differ in height, which they do not here). On a 20 mm
+  cube at 0.2 mm on a 0.25 mm first layer both slicers end at 20.05 mm
+  without it and with it lay the last five layers at 0.19 mm, to
+  19.24, 19.43, 19.62, 19.81 and 20.00 mm; on one 20.14 mm tall, at
+  0.218 mm, to 20.14 mm. All 100 layers are at the C++ slicer's heights
+  in both, walls and layer extents the same to 0.000 mm and plastic per
+  millimetre the same on the changed layers, supports included. Noted
+  and not done: a part of fewer than six layers, or a difference the
+  five cannot take up, is left as it was; everything on a plate is cut
+  at the same heights, so only the tallest object comes out exact (the
+  reference tunes each object); and the shells are counted in layers,
+  where the reference adds a layer when thinner ones leave a shell
+  under `top_shell_thickness` (five layers of 0.19 mm under 1 mm: it
+  lays a sixth solid layer under the cube's top, 5.56 m of solid fill
+  against 4.66 m here).
+- Overhangs made printable (`make_overhang_printable`, with
+  `make_overhang_printable_angle` and
+  `make_overhang_printable_hole_size`): from the top layer down, each
+  layer is made to hold the layer above less what a layer may reach out
+  past the one beneath at the angle set (measured from upright: 90
+  changes nothing, 0 lets nothing overhang), so a slope grows under
+  every overhang down to where it meets the part or the bed. The roof
+  of a hole in the underside is not sloped but filled, hole and all,
+  unless the hole is smaller than the size set. A port of the
+  reference's `apply_conical_overhang` (PrintObjectSlice.cpp), done
+  where the reference does it: on the layers as cut, before paint, size
+  compensation and the elephant's foot; a brim goes round what the
+  slope puts on the bed. On a layer in several filaments what is added
+  goes to the filament above it. Not as the reference, marked in the
+  code: the reach is `tan(angle)` times the height of the layer that
+  overhangs, where the reference takes the `layer_height` setting for
+  every layer (with a precise height on as well, a slope under the
+  changed layers lies up to 0.043 mm from the C++ slicer's); and
+  everything on the plate is grown as one stack, which differs only
+  where a part floats over nothing. Against the C++ slicer, same layers
+  throughout: on the mushroom at the default 55° the wall length of a
+  layer differs by 0.01% on average and 0.1% at most, layer extents by
+  0.001 mm and 0.004 mm; at 30° by 0.02% and 0.005 mm at most; on the
+  shelf by 0.00% and 0.002 mm; on the 3DBenchy, with a precise height
+  as well, by 0.07% on average (as without either) and 0.013 mm at
+  most. On a slab with two pockets underneath (`tools/make_fixture.py`,
+  `pocket`) both are filled by default and the bridge over them
+  (0.43 m in the C++ slicer's file, 0.46 m here) goes in both; with a
+  hole size of 50 mm² the 16 mm² pocket is kept and the 100 mm² one
+  filled, walls and extents the same to 0.000 mm. A part whose slope reaches the bed gets the same
+  1.12 m of brim in both. Growing the layers is done one after another
+  and takes about 0.2 s on the 3DBenchy's 240 layers. Noted and not
+  done: on a part with colour painted on it, what is added is printed
+  in the filament the part is made of. Not read: the option set for one
+  part or modifier, as with every setting.
 - Every preset the reference ships resolves. `slice` takes layer heights and
   the closing radius from the command line, a process preset, or the 3MF's
   own settings, in that order.

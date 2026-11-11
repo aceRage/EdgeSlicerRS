@@ -13,6 +13,10 @@ any changes given on the command line.
         mushroom enable_support=1 "support_type=normal(auto)"
     target/release/edge-parity /tmp/mushroom.3mf
 
+pocket is for make_overhang_printable: a slab 8 mm tall with two square
+pockets 3 mm up into it from underneath, 100 mm2 and 16 mm2, so a hole size
+between the two fills one and keeps the other.
+
 Shapes: mushroom and shelf need supports; tower and bar get an automatic
 brim; bridge is a deck across two posts; cube is a plain 20 mm cube;
 twotone is two blocks side by side, the first in filament 1 and 6 mm tall,
@@ -46,6 +50,11 @@ SHAPES = {
     "cube": [(125.5, 126, 0, 20, 20, 20)],
     # a long low bar
     "bar": [(35.5, 131, 0, 200, 10, 30)],
+    # a slab 40 x 20 x 8 mm with two pockets 3 mm up into it from underneath,
+    # 10 mm square and 4 mm square: walls round the pockets and a lid on them
+    "pocket": [(115.5, 126, 0, 40, 5, 3), (115.5, 141, 0, 40, 5, 3), (115.5, 131, 0, 5, 10, 3),
+               (130.5, 131, 0, 10, 10, 3), (140.5, 131, 0, 4, 3, 3), (140.5, 138, 0, 4, 3, 3),
+               (144.5, 131, 0, 11, 10, 3), (115.5, 126, 3, 40, 20, 5)],
     # a square frame 5 mm wide round a 30 mm hole, for walls round a hole
     "frame": [(115.5, 116, 0, 40, 5, 6), (115.5, 151, 0, 40, 5, 6), (115.5, 116, 0, 5, 40, 6), (150.5, 116, 0, 5, 40, 6)],
     # a plate with three fins on it, 0.5, 0.8 and 1.1 mm thick, for thin walls
