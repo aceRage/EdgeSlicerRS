@@ -649,3 +649,21 @@ fn a_roof_is_never_left_on_nothing() {
         }
     }
 }
+
+#[test]
+fn ironing_a_supports_top_is_said_not_to_be_done() {
+    let read =
+        |json: &str| SupportSettings::from_settings(&Settings::from_json(json).unwrap()).unwrap();
+    let ironed =
+        read(r#"{"enable_support": "1", "support_type": "normal(auto)", "support_ironing": "1"}"#);
+    assert_eq!(
+        ironed.unsupported,
+        ["support_ironing \"1\": the dense top of a support is not ironed"]
+    );
+    // Off, or with no supports to iron, there is nothing to say.
+    let plain =
+        read(r#"{"enable_support": "1", "support_type": "normal(auto)", "support_ironing": "0"}"#);
+    assert!(plain.unsupported.is_empty());
+    let none = read(r#"{"enable_support": "0", "support_ironing": "1"}"#);
+    assert!(none.unsupported.is_empty());
+}

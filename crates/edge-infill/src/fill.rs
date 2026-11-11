@@ -222,10 +222,10 @@ enum Lay {
 /// How far a line's centre stops short of the area's edge, as a share of
 /// the line spacing (FillRectilinear.cpp: 0.5 less `INFILL_OVERLAP_OVER_SPACING`
 /// for single-direction fill, a full half spacing for crossing lines).
-const LINES_INSET: f64 = 0.05;
+pub(crate) const LINES_INSET: f64 = 0.05;
 /// How much further in joined solid lines turn: to half a spacing from the
 /// area's edge, so the turn itself lies inside the area and not on it.
-const TURN_INSET: f64 = 0.45;
+pub(crate) const TURN_INSET: f64 = 0.45;
 /// Solid lines are joined along the outline when it runs no further than
 /// this many line spacings between them (Fill.cpp, `link_max_length`).
 const SOLID_LINK_SPACINGS: f64 = 3.0;

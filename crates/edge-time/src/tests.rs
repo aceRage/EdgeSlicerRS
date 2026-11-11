@@ -189,3 +189,30 @@ fn limits_are_read_from_a_printer_profile() {
         Model::Reference
     );
 }
+
+#[test]
+fn ironing_is_timed_as_the_moves_it_is() {
+    // Ironing is written as ordinary extruding moves under a name of
+    // its own, slow and with next to nothing fed: 100 mm at 30 mm/s
+    // with 1000 mm/s² is 0.45 mm and 0.03 s to speed up, the same to
+    // stop, and 99.1 mm at speed between.
+    let limits = klipper(1000.0, 500.0);
+    let ironing = ";TYPE:Ironing\n;WIDTH:0.402\nG1 X100 E0.12 F1800\n";
+    let expected = 0.06 + 99.1 / 30.0;
+    for model in [Model::Reference, Model::Klipper] {
+        let found = estimate(ironing, &limits, model).seconds;
+        assert!(close(found, expected), "{model:?}: {found}");
+        // The name changes nothing: the same move under another takes
+        // as long.
+        let top = ironing.replace("Ironing", "Top surface");
+        assert!(close(estimate(&top, &limits, model).seconds, found));
+    }
+    // A sweep of short lines and the turns between them is the sum of
+    // its moves, each begun and ended at the speed the corner allows.
+    let sweep = ";TYPE:Ironing\nG1 X10 E0.01 F1800\nG1 Y0.15 E0.0002\nG1 X0 E0.01\n";
+    for model in [Model::Reference, Model::Klipper] {
+        let found = estimate(sweep, &limits, model);
+        assert_eq!(found.by_line.len(), 4);
+        assert!(found.seconds > 20.15 / 30.0 && found.seconds < 20.15 / 30.0 + 0.2);
+    }
+}

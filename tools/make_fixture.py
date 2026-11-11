@@ -19,7 +19,8 @@ twotone is two blocks side by side, the first in filament 1 and 6 mm tall,
 the second in filament 2 and 4 mm tall, so there is a tool change on every
 layer up to 4 mm and none above; comb is a spine with teeth 0.5 to 2 mm
 wide standing on the bed, and twocomb the same with the teeth in filament 2,
-for the first layer's elephant foot compensation. The reference loads the filament preset named in the settings again,
+for the first layer's elephant foot compensation; steps is three tiers with a
+top surface on each, the lowest with a hole through it, for ironing. The reference loads the filament preset named in the settings again,
 so a change to a filament's own settings, such as filament_type, is undone.
 """
 import json, sys, zipfile
@@ -55,6 +56,12 @@ SHAPES = {
     # what the first layer's elephant foot compensation leaves of thin parts
     "comb": [(115.5, 129, 0, 40, 6, 3)] + [
         (117.5 + 5.5 * i, 135, 0, w, 8, 3) for i, w in enumerate((0.5, 0.7, 0.9, 1.0, 1.1, 1.3, 2.0))],
+    # three tiers, each with a top surface: a plate 3 mm tall with a square
+    # hole through it, a block on it to 6 mm and a smaller one to 10 mm, for
+    # ironing: top surfaces at three heights, one with a hole in it, and
+    # two partly covered by what stands on them
+    "steps": [(115.5, 121, 0, 4, 30, 3), (127.5, 121, 0, 28, 30, 3), (119.5, 121, 0, 8, 11, 3), (119.5, 140, 0, 8, 11, 3),
+              (133.5, 121, 3, 22, 30, 3), (145.5, 126, 6, 10, 20, 4)],
 }
 # the comb again, its teeth in a second filament
 SHAPES["twocomb"] = SHAPES["comb"]
