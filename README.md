@@ -79,12 +79,19 @@ not yet.
   C++ application's do; the bed type the printer takes, remembered for
   each printer; layer height,
   initial layer height, wall loops and the gap closing radius set over
-  the preset; the plate from above, with the outline of each object; the
-  project's plates to pick from. An STL or a 3MF opens as a project.
-- **Preview**: going there slices the plate. One layer at a time from
-  above, by line type, filament, layer height or line width, with the
-  legend to hide and show (wheel to zoom, drag to move, the slider or
-  the arrow keys for layers); what the print comes to; and, kept apart,
+  the preset; the scene in 3D: the printer's bed (the vendor's model
+  and picture of it where its profile has them), every plate of the
+  project where the C++ application stands it, each object in its
+  filaments' colours, painted colours included; a click selects an
+  object or a plate. An STL or a 3MF opens as a project.
+- **Preview**: going there slices the plate. The print in 3D, read back
+  from its G-code as the C++ application's is: every line as wide and
+  as high as it is laid, by line type, filament, speed, layer height,
+  line width, flow, fan speed or temperature, with the legend to hide
+  and show features, travels, wipes, retractions, seams and filament
+  changes; a slider with two thumbs for the layers shown and one along
+  the bottom for how far the print has got, with the nozzle and where
+  it is; what the print comes to; and, kept apart,
   what is wrong with this print, what was settled without being asked,
   and the settings the profile turns on that this engine does not follow
   yet. "Slice plate" or "Slice all", and "Export G-code file", which
@@ -100,7 +107,17 @@ not yet.
   added. Removing a printer moves the open projects that were on it to
   one that is still added, and says so.
 
-It has no 3D view, no arranging or editing of the model, no settings
+The two views share a camera, the C++ application's: the left button
+turns the view, the right or the middle one moves it, the wheel zooms at
+the pointer; Ctrl+0 to Ctrl+6 and the cube at the bottom left are its
+views, Z fits, and the "View" menu has perspective and orthographic.
+They are drawn on WebGL2 by the page's own code (`ui/gl`, no library);
+a browser without WebGL2 gets the plate and one layer at a time from
+above instead. Meshes and moves come from the session as bytes, each
+object once and a print a stretch at a time (`src/api/scene.rs` has the
+layouts).
+
+It has no arranging or editing of the model, no settings
 editor beyond those four, no saving of projects and no installer. The
 vendor profiles are found in `reference/EdgeSlicer` beside the source, or
 wherever `EDGE_PROFILES` points; the folder can be changed in the window,
@@ -118,7 +135,8 @@ written.
 `apps/desktop` is a Cargo workspace of its own, so `cargo test --workspace`
 at the top builds no web view. The page (`ui/`) is plain HTML, CSS and
 JavaScript with no build step, and asks the engine for everything through
-one function (`src/api.rs`), which does not know about Tauri and holds
+one function (`src/api.rs`; its twin there answers the 3D views' meshes
+and moves in bytes), which does not know about Tauri and holds
 every open project. `--serve`
 puts the same page and the same function behind a local web server, for
 working on the page in a browser and for checking it where a window
@@ -137,7 +155,13 @@ searched, filtered and sorted; printers of three vendors added and one
 removed while a project was on it; a three-plate project and a bare STL
 moved between printers and nozzles, and sliced on one; the bed type and
 the last printer found again after the page was loaded anew and after
-the server was started again. The tabbed window itself (Tauri) has not
+the server was started again. The 3D views, in the app's own browser
+pane (WebGL2 on the Mac's graphics card), light and dark, wide and
+narrow: the three-plate project, a Benchy and a 20 mm cube turned, moved
+and zoomed, the views and their keys, objects and plates selected by a
+click, each plate sliced and looked through in every view type with the
+two-thumbed slider, the moves slider and the legend's switches; the
+inventory has the sizes and times measured. The tabbed window itself (Tauri) has not
 been run since it got its tabs and strip; before that the owner ran it by hand, and its
 file dialogs, slicing and layer view worked, with G-code byte for byte
 the command line's but for the time in its first line. Not built on

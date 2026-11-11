@@ -55,9 +55,8 @@
 
 .gl-loading {
   position: absolute;
-  left: 50%;
+  left: 84px;
   top: 12px;
-  transform: translateX(-50%);
   padding: 3px 10px;
   border-radius: 12px;
   background: var(--stage-panel);
@@ -132,9 +131,8 @@
 
 .gl-readout {
   position: absolute;
-  left: 50%;
-  bottom: 72px;
-  transform: translateX(-50%);
+  right: max(128px, 22%);
+  bottom: 60px;
   padding: 6px 10px;
   border-radius: 8px;
   background: var(--stage-panel);
@@ -151,4 +149,5 @@
 
 @media (max-width: 760px) {
   .gl-moves { left: 112px; right: 76px; }
+  .gl-readout { right: 76px; }
 }

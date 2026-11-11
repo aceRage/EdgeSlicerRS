@@ -70,9 +70,11 @@ to a stage and say in the PR what moved.
   in the CLI: after changing it, check the CLI's output is still what it
   was.
 - In `apps/desktop`, everything the page can ask for goes through
-  `Session::call` in `src/api.rs`, which stays free of Tauri so the window
-  and `--serve` share it and it can be tested without either. The page has
-  no build step and loads nothing from the network.
+  `Session::call` in `src/api.rs` (or `Session::call_bytes` beside it, for
+  the meshes and moves that are answered in bytes), which stays free of
+  Tauri so the window and `--serve` share it and it can be tested without
+  either. The page has no build step, uses no library and loads nothing
+  from the network.
 - The time in a file comes from `edge-time`, which reads the finished
   G-code back. Anything new the writer emits that takes time or changes
   how moves are planned (a wait, a limit, a macro) has to be read there

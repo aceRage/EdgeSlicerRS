@@ -26,7 +26,7 @@
       const gl = canvas.getContext('webgl2', {
         antialias: true, alpha: false, depth: true, stencil: false, powerPreference: 'high-performance',
       });
-      if (!gl) throw new Error('WebGL2 is not available');
+      if (!gl) throw Object.assign(new Error('WebGL2 is not available'), { missing: true });
       this.gl = gl;
       this.programs = {};
       for (const [name, sources] of Object.entries(GL.shaders)) this.programs[name] = this.link(sources);

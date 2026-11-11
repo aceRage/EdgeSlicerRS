@@ -14,13 +14,15 @@ The last column reads:
 - **had** — the app did this before the pass.
 - **added** — built in the pass that wrote the row (first pass: Prepare,
   Preview, Device, the project strip; second pass: the sidebar's printer
-  block, "Sidebar: Printer" in section 2, and section 8).
+  block, "Sidebar: Printer" in section 2, and section 8; third pass: the 3D
+  views, sections 9 to 11).
 - **differs** — built, but on purpose not as the C++ does it; the cell says how.
 - **not yet** — not built, with what it waits for. Nothing in this column is
   shown in the page as a control that does nothing.
 
-Everything the page asks for goes through `Session::call` (`src/api.rs`). The
-calls are listed at the end.
+Everything the page asks for goes through `Session::call` (`src/api.rs`), or
+through its twin `Session::call_bytes` for what is answered in bytes. The
+calls are listed in section 7.
 
 ## 1. The tab bar
 
@@ -105,17 +107,17 @@ runs, is section 8.
 
 | C++ | Where | Here |
 | --- | --- | --- |
-| A 3D view of every plate with the objects on it, orbit / pan / zoom, selection | `View3D`, `GLCanvas3D` | **added**, from above only: the bed of the printer chosen with its grid and each object's outline (its convex hull), name and size, drag to move, wheel to zoom, "Fit part" [Z] and "Fit bed". A bare model is shown in the middle, where slicing puts it. Before: nothing was shown until a model was sliced. **not yet**: the third dimension, selection, the other plates in the same view |
+| A 3D view of every plate with the objects on it, orbit / pan / zoom, selection | `View3D`, `GLCanvas3D` | **added**, in 3D: section 9. Where the browser has no WebGL2, the view from above the first pass built is kept: the bed of the printer chosen with its grid and each object's outline (its convex hull), name and size, drag to move, wheel to zoom, "Fit part" [Z] and "Fit bed" |
 | Main toolbar: "Add" [Ctrl+I], "Add plate", "Auto orient all/selected objects" [Q], "Arrange all objects" [A] with its options, "Split to objects", "Split to parts", "Variable layer height", "Assembly View" | `GLCanvas3D::_init_main_toolbar` l.9274 | **not yet**: the engine does not move, add or split anything; a file is sliced as it was saved |
 | Gizmos: "Move" [M], "Rotate" [R], "Scale" [S], "Lay on face" [F], "Cut" [C], "Mesh Boolean" [B], "Support Painting" [L], "Seam painting" [P], "Paint-on fuzzy skin" [H], "Color Painting" [N], "Texture displacement", "Emboss" [T], "SVG", "Measure" [U], "Assemble" [Y], "Simplify", "Brim Ears" [E], "Sculpt", "Edit", "Fillet / chamfer (CAD)" | `Gizmos/GLGizmosManager.cpp::init` l.224 | **not yet** |
 | Object list: plates, objects, parts, instances, layer ranges; columns "Name", printable, "Fila.", paint marks; the object, part and plate menus | `GUI_ObjectList.cpp`, `GUI_Factories.cpp` | **not yet** as a list. The names of the objects on the plate are on the bed and in `project` (`plates[].objects`) |
-| View options: "Realistic View", "X-Ray", "Center of Mass", "Show 3D Navigator", Ctrl+0..6 views | `GLCanvas3D.cpp` l.8297, View menu | **not yet** |
+| View options: "Realistic View", "X-Ray", "Center of Mass", "Show 3D Navigator", Ctrl+0..6 views | `GLCanvas3D.cpp` l.8297, View menu | **added**: the navigator and the views (section 9). **not yet**: the three view options |
 
 ### Plates
 
 | C++ | Where | Here |
 | --- | --- | --- |
-| Every plate shown on the canvas; a click selects it | `PartPlateList`, `Plater::select_plate_by_hover_id` l.30481 | **added**: a column of plate numbers (two plates or more) that selects the plate, in Prepare and in Preview. Before: a "Plate" list in the sidebar |
+| Every plate shown on the canvas; a click selects it | `PartPlateList`, `Plater::select_plate_by_hover_id` l.30481 | **added**: in the 3D scene, every plate where it stands, a click selecting it (section 9); and the column of plate numbers of the first pass (two plates or more), in Prepare and in Preview |
 | Per plate: delete, orient, arrange, lock, "Customize current plate" (bed type, print sequence, spiral vase, filament sequences), name, "Move plate to the front", "Print history" | `PartPlate::render_icons` l.1173, `PlateSettingsDialog.cpp` | **not yet**. A plate's name is shown in its tooltip; its first-layer filament order is followed by the engine |
 | "Add plate", "Duplicate Current Plate", the plate menu ("Select All", "Delete All", "Arrange", "Reload All", "Auto Rotate", "Delete Plate") | toolbar, `create_plate_menu` l.2831 | **not yet** |
 
@@ -143,21 +145,21 @@ runs, is section 8.
 
 | C++ | Where | Here |
 | --- | --- | --- |
-| The sliced toolpaths in 3D over transparent shells of the objects | `Preview::load_print_as_fff` (GUI_Preview.cpp l.659), `GCodeViewer` | **had**, in 2D: one layer from above, drawn from the engine's own lines (`layer`). Until a plate is sliced its outlines are shown faintly. **not yet**: 3D, shells |
-| View type list, in this order: "Line Type", "Filament", "Speed", "Actual Speed", "Acceleration", "Jerk", "Layer Height", "Line Width", "Flow", "Actual Flow", "Layer Time", "Layer Time (log)", "Fan Speed", "Temperature", "Pressure Advance" | `GCodeViewer::update_by_mode` l.1272, `get_view_type_string` l.106 | **added**: a list of the four the engine has the data for — "Line Type" and "Filament" (**had**, as "Colour by feature / filament"), "Layer Height" and "Line Width" (new), the last two coloured over the C++ range colours (`libvgcode/include/ColorRange.hpp`). **not yet**: the views that need the speed, flow, fan, temperature or time of each move, which the engine does not hand out |
+| The sliced toolpaths in 3D over transparent shells of the objects | `Preview::load_print_as_fff` (GUI_Preview.cpp l.659), `GCodeViewer` | **added**, in 3D: section 10, from the moves of the G-code (`toolpath`, `toolpath_moves`). Without WebGL2: one layer from above, drawn from the engine's own lines (`layer`), as before |
+| View type list, in this order: "Line Type", "Filament", "Speed", "Actual Speed", "Acceleration", "Jerk", "Layer Height", "Line Width", "Flow", "Actual Flow", "Layer Time", "Layer Time (log)", "Fan Speed", "Temperature", "Pressure Advance" | `GCodeViewer::update_by_mode` l.1272, `get_view_type_string` l.106 | **added**: "Line Type", "Filament", "Layer Height", "Line Width" (first pass), and in 3D "Speed", "Flow", "Fan Speed", "Temperature" where the print was read back from its G-code (section 10). **not yet**: the views that need each move's time or planned speed ("Actual Speed", "Acceleration", "Jerk", "Actual Flow", the layer times, "Pressure Advance") |
 | The view type a print opens in: "Automatic" (Filament with several filaments, else Line Type) or "Last used" ("Default preview view type") | `apply_default_view_type` l.1248, Preferences.cpp l.2038 | **differs**: the last one used in that project, kept with it in the session (`view`); a new project starts in "Line Type". **not yet**: the preference |
 | Legend, top right: fold button, G-code window button, the list | `render_legend` l.4120 | **added**: fold button and list. **not yet**: the G-code window |
 | "Line Type" rows in the order of the roles, only those in the print, each with the C++ colour; columns "Line Type", "Time", "%", "Usage", "Display"; a click on a row hides or shows it | l.4300–4645, `libvgcode/src/ViewerImpl.cpp` l.302 | **added**: the C++ order and colours (before: this app's own), a "Display" mark on each row, a click on the row toggles it (**had** as checkboxes). **not yet**: "Time", "%" and "Usage" for each feature; the roles the engine never makes ("Ironing", "Custom", "Support transition", "Wall over support", "Bottom surface over support") |
 | "Supported overhangs" / "Unsupported overhangs" overlays | l.4600 | **not yet** |
-| Option rows: "Travel", "Wipe", "Retract", "Unretract", "Seams", "Filament changes" | l.4624, `append_option_item` l.4497 | **not yet**: the lines the engine hands out for drawing leave out moves, retractions and seams |
+| Option rows: "Travel", "Wipe", "Retract", "Unretract", "Seams", "Filament changes" | l.4624, `append_option_item` l.4497 | **added** in 3D (section 10) |
 | "Filament" view: a row for each filament used with "Model", "Support", "Flushed", "Tower", "Total"; "Filament change times" | l.4417–4864 | **added**: a row for each filament with its colour, to hide or show (**had**), and "Filament change times:". **not yet**: the split of each filament's use |
 | "Total estimation": "Total Filament:", "Model Filament:", "Cost:", "Prepare time:", "Model printing time:", "Total time:", "Show stealth mode" | l.5277–5390 | **added** in the legend: "Total Filament:" (m and g) and "Total time:", with how the time was worked out (**had** in the sidebar, as "Filament", "Time", "Travel"). **not yet**: model filament apart from support and tower, cost, prepare time, stealth mode |
-| Vertical layer slider at the right: two thumbs (a range of layers), the layer's number over its height beside the thumb, hover shows a layer's time | `IMSlider.cpp` l.890–1230, `get_label` l.1723 | **differs**: a vertical slider with one thumb and the same label; it is always the C++ "one layer mode" [L], a view from above showing one layer. Before: a horizontal slider. **not yet**: the lower thumb, layer times |
+| Vertical layer slider at the right: two thumbs (a range of layers), the layer's number over its height beside the thumb, hover shows a layer's time | `IMSlider.cpp` l.890–1230, `get_label` l.1723 | **added** in 3D: two thumbs, the same labels, one layer mode [L] (section 10). Without WebGL2, the first pass's slider: one thumb, always one layer. **not yet**: layer times |
 | Up / Down move a layer; five with Shift or Ctrl; the mouse wheel over the slider likewise | `GLCanvas3D` l.5866, `IMSlider.cpp` l.1636 | **added** (before: arrows by one, PageUp / PageDown by ten; those two keys now go round the projects with Ctrl, as in the C++) |
 | "Jump to Layer" (the slider's menu; Shift+G): "Please enter the layer number (min - max):" | `IMSlider::render_add_menu` l.1512 | **added**: the slider's menu and Shift+G |
 | The slider's other menu entries: "Add Pause", "Add Custom G-code", "Add Custom Template", "Change Filament"; ticks with their delete and edit | l.1512, `render_edit_menu` l.1569 | **not yet**: the engine has no per-layer custom G-code |
 | "Compare slices (A/B)" | IMSlider.cpp l.1300 | **not yet** |
-| Horizontal move slider, the tool marker, the position window with its properties | `update_moves_slider` l.2331, GCodeViewer.cpp l.393–760 | **not yet**: needs the order of moves within a layer |
+| Horizontal move slider, the tool marker, the position window with its properties | `update_moves_slider` l.2331, GCodeViewer.cpp l.393–760 | **added** in 3D: the slider, the marker (an arrow) and the window's two lines (section 10). **not yet**: the table of a move's properties, a vendor's hotend model |
 | G-code window [C] | `GCodeWindow::render` l.877 | **not yet** |
 | "Select Plate" bar at the top left: a tile for each plate with its state (not sliced, slicing, sliced, failed); a click selects the plate and slices it if it is not sliced | `GLCanvas3D::_render_imgui_select_plate_toolbar` l.11656 | **added**: the same column of plates as in Prepare, with a tick for sliced, "…" for slicing and "!" for failed; a click selects and, in Preview, slices |
 | Its first tile: "Slice all" with sliced/total while some are not sliced, then "All Plates" / "Stats", which opens "Statistics of All Plates" (each filament's use, "Total time:", "Total cost") | l.11656–11730, `render_all_plates_stats` l.3295 | **added**: the tile in both states; the statistics list each plate's filament and time and their totals. **not yet**: by filament, cost |
@@ -275,17 +277,18 @@ Read from `ProjectStrip.cpp/.hpp`, `ProjectSessions.hpp` and their uses in
 | Tab: "Switch between Prepare/Preview" | **added** (on the stage) |
 | Up / Down: the layer slider; Shift or Ctrl with them: five at a time | **added** (Up / Down by one **had**) |
 | Shift+G: "Jump to Layer" | **added** |
-| Z: zoom to the objects | **added** ("Fit part") |
+| Z: zoom to the objects | **added**: "Fit in all view" in 3D (section 9); "Fit part" from above |
 | Ctrl+S, Ctrl+Shift+S, Ctrl+I, Ctrl+G, Ctrl+Shift+G, Ctrl+P (Preferences), "?" (the list of shortcuts) | **not yet** |
-| Left / Right, Home / End (the move slider), L (one layer mode), C (G-code window) | **not yet**; the view is always one layer |
-| A, Shift+A, Q, Shift+Q, the gizmo keys, Ctrl+0..6, Ctrl+A / D / Z / Y / C / V / X, Del, 1–9, arrows to move objects | **not yet**: Prepare does not edit |
+| Left / Right, Home / End (the move slider), L (one layer mode), C (G-code window) | **added** in 3D: all but C (no G-code window) |
+| A, Shift+A, Q, Shift+Q, the gizmo keys, Ctrl+0..6, Ctrl+A / D / Z / Y / C / V / X, Del, 1–9, arrows to move objects | **added** in 3D: Ctrl+0..7 (the views), Ctrl+A, Esc, I and O, Ctrl+E (section 9). **not yet**: the rest, Prepare does not edit |
 
 ## 7. What the page asks for
 
-Every call takes JSON and answers JSON; an error is a sentence to show. A call
-about a project takes `project` (its id) and means the one shown when it is
-left out; one about a plate takes `plate` and means the plate the project is
-on.
+Every call takes JSON and answers JSON, but the four at the end of the table,
+which answer bytes (`Session::call_bytes`; section 11); an error is a sentence
+to show. A call about a project takes `project` (its id) and means the one
+shown when it is left out; one about a plate takes `plate` and means the plate
+the project is on.
 
 | Call | Takes | Answers |
 | --- | --- | --- |
@@ -316,6 +319,12 @@ on.
 | `summary` | `project?`, `plate?` | as before, and `plate`, `widths`, `heights` |
 | `layer` | `project?`, `plate?`, `index` | as before |
 | `export` | `project?`, `plate?`, `path` | `{ path, bytes }` |
+| `scene` | `project?` | the project for Prepare in 3D: `{ project, key, bare, bed { box, shape, height, model, texture }, plates: [{ id, name, origin }], plate, colours, objects: [{ name, vertices, triangles, bytes, filaments }], placings: [{ object, plate, printable, matrix (16 numbers, column by column), box }] }`. `key` changes only when the file does |
+| `toolpath` | `project?`, `plate?` | a sliced plate's moves, before they are asked for: `{ source: "gcode" \| "lines", moves, move_size, at_once, layers { first, z, height }, features, filaments, counts { travel, line, wipe, retract, unretract, seam, tool_change }, box, plate, run }` |
+| `scene_mesh` (bytes) | `project?`, `object` | an object's mesh, `EDGM`: 24 bytes of header, vertices (`f32` × 3), triangles (`u32` × 3), a mark byte for each triangle when they differ |
+| `bed_model` (bytes) | `project?` | the vendor's model of the printer's bed, as `scene_mesh` |
+| `bed_texture` (bytes) | `project?` | the vendor's picture of the bed: the SVG or PNG file as it is |
+| `toolpath_moves` (bytes) | `project?`, `plate?`, `from`, `count` | a stretch of moves, `EDGT`: 24 bytes of header, then 32 bytes a move (where it ends, speed, height, width, turn, temperature, layer, what it is, feature, filament, fan) |
 
 Replaced by these: `open` (now `project_open` and `project`), and the model,
 plate and presets that `slice` used to take with each call (now the project's,
@@ -390,3 +399,218 @@ Read from `WebGuideDialog.cpp/.hpp` (`GuideFrame`), the pages under
 | "Create printer" opens "Create Printer/Nozzle": "Create Printer" or "Create Nozzle for Existing Printer"; vendor and model ("Select Vendor", "Select Model", "Input Custom Vendor", "Input Custom Model", "Can't find my printer model"), "Nozzle Diameter", "Bed Shape", "Printable Space", "Origin", "Hot Bed STL", "Hot Bed SVG", "Max Print Height"; then "Create from Template" or "Create Based on Current Printer" with the filament and process presets to make; "Printer Created Successfully" | `CreatePrinterPresetDialog`, CreatePresetsDialog.cpp l.1769–3490 | **not yet**: it writes user presets, which neither the engine (`edge-config` reads vendor profiles only) nor this app has |
 | Deleting a user printer preset (the delete button of the printer's settings, "Delete this preset"): never a system or default one; "Are you sure to delete the selected preset?"; "%d Filament Preset and %d Process Preset is attached to this printer. Those presets would be deleted if the printer is deleted."; "Presets inherited by other presets cannot be deleted!"; then the next preset by name is selected and the project goes to it | `Tab::delete_preset` Tab.cpp l.10030–10159, l.8978 | **not yet**: there are no user presets and no settings editor |
 
+
+## 9. Prepare: the 3D scene
+
+Read from `GLCanvas3D.cpp/.hpp`, `Camera.cpp/.hpp`, `3DBed.cpp`, `2DBed.cpp`,
+`PartPlate.cpp/.hpp`, `3DScene.cpp`, `Selection.cpp`, `KBShortcutsDialog.cpp`,
+`MainFrame.cpp` (the View menu), `Preferences.cpp`, `libslic3r/Color.hpp` and
+the shaders under `resources/shaders/140`. (`CameraPopup.cpp` is the printer's
+live camera, not this one. There is no `CoordAxes.cpp` in this fork: the axes
+are `Bed3D::Axes`.)
+
+The scene is drawn on WebGL2 by the page's own code, `ui/gl/` (no library):
+`math.js`, `camera.js`, `shaders.js`, `renderer.js`, `scene.js`, `stage.js`,
+`controls.js`. Where the browser has no WebGL2 the stage says so and keeps
+the view from above it had before ("The bed" in section 2). Colours are the
+reference's own numbers; each is named in `scene.js` with where it is from.
+
+### The camera
+
+| C++ | Where | Here |
+| --- | --- | --- |
+| Looks at a target from a distance (1000 mm to start with); the zoom is pixels to a millimetre at the target, in perspective as in orthographic view: the perspective frustum is sized from the zoom, not from an angle | `Camera::apply_projection` l.246, `DefaultDistance` | **added** (`camera.js` `matrices`) |
+| Near and far planes hug the scene: 10 mm of margin, at least 50 mm apart, the near plane no closer than 100 mm (the eye is moved back) | `calc_tight_frustrum_zs_around` l.474 | **added** |
+| Zoom kept between a fifth of what fits the scene and 250 | `set_zoom` l.101, Camera.hpp l.168 | **added** |
+| A step of zoom is a tenth: `zoom / (1 - step * 0.1)`, at most four steps at once | Camera.hpp l.86 `update_zoom` | **added** |
+| "Use Perspective View" / "Use Orthogonal View" (`use_perspective_camera`, on), "Auto Perspective" ("Automatically switch between orthographic and perspective when changing from top/bottom/side views.", off) | MainFrame.cpp l.3779–3878, `Camera::auto_type` l.66 | **added**: the three, in the stage's "View" menu, kept by the page |
+| Views: "iso" (from the front right, 45° up), "top" (up is +Y), "bottom" (up is -Y), "front", "rear", "left", "right" (up is +Z), "topfront" and "plate" (from the front, 45° up) | `Camera::select_view` l.112, `set_default_orientation` l.750 | **added** |
+| The window starts at "topfront" with the bed in sight | MainFrame.cpp l.1391 | **added**: when a project is first shown, and when its bed is another size |
+| Orbit keeps +Z up and stops straight above and straight below (zenit -90° to 90°) | `rotate_on_sphere_with_target` l.394 | **added** |
+| "Use free camera" (a trackball), a 3Dconnexion mouse | `rotate_local_around_target` l.452, `Mouse3DController` | **not yet**: no preferences dialog; no device support in a page |
+| Fit: a box fills the view with a margin of 1.25 (objects, a plate) or 2 (the bed) | `calc_zoom_to_bounding_box_factor` l.515, GLCanvas3D.cpp l.1780 | **added** |
+| One camera for Prepare and Preview; going from one to the other keeps the view | Plater.cpp l.18251 | **added**: one camera for each project, shared by its two tabs. Before: a view from above for each tab |
+
+### The mouse
+
+| C++ | Where | Here |
+| --- | --- | --- |
+| Left button dragged: "Rotate View", 0.8° a pixel, about the middle of what is selected, else of the objects on the plate shown, else of the plate; with Ctrl or Cmd about the point of the bed in the middle of the view | `on_mouse` l.6642–6716, `TRACKBALLSIZE` | **added**. **differs**: a drag that starts on an object turns the view too; in the C++ it moves the object, which nothing here can do yet |
+| Right or middle button dragged: "Pan View" | l.6718–6747 | **added**. **differs**: what is under the pointer on the plane through the target stays under it. The C++ measures the move on the near plane, so in perspective the scene lags the pointer (listed with the errors found) |
+| Mouse wheel: "Zoom View"; "Zoom to mouse position" (off), "Reverse mouse zoom" (off) | `on_mouse_wheel` l.6007 | **added**, both in the "View" menu. **differs**: zooming to the pointer starts on, as the view from above did |
+| "Orbit speed multiplier", "Swap pan and rotate mouse buttons", "Camera style": "Touchpad" (Alt to turn, Shift to move) | Preferences.cpp l.1998–2029 | **not yet**: no preferences |
+| Pinch to zoom, two fingers to move and to turn | l.6136–6169 | **added**: the pinch (a browser sends it as a wheel). **not yet**: the other two |
+| A click on an object selects it; Ctrl adds it to the selection or takes it away; a click on nothing lets go of everything (not with Shift held); a right click selects | l.6423–6551, l.6749–6858 | **added** |
+| A click on a plate selects the plate and lets go of the objects | Plater.cpp l.30481 | **added** |
+| Alt: "Select a part"; Shift: "Select objects by rectangle"; a double click opens the object's settings; the right button's menus | l.6423–6551, l.6871 | **not yet**: parts are not told apart, and there are no object settings or menus |
+| Dragging an object moves it on the bed | l.6553–6608 | **not yet**: the engine does not move objects |
+| Hovering changes no colour (the hover colours are commented out) | 3DScene.cpp l.362 | the same |
+| What is under the pointer is found by casting a ray at the meshes | `_picking_pass` l.9819, `SceneRaycaster` | **differs**: the one pixel under the pointer is drawn with every object and plate in a colour of its own, and read back (`renderer.js` `pick`) |
+
+### Keys
+
+| C++ | Here |
+| --- | --- |
+| Ctrl+0 "Camera view - Default" (the plate view with the bed in sight), Ctrl+1 "Top", Ctrl+2 "Bottom", Ctrl+3 "Front", Ctrl+4 "Behind", Ctrl+5 "Left side", Ctrl+6 "Right side", Ctrl+7 the plate from the front and above | **added** (and Cmd with them; a browser keeps Cmd+digit for its own tabs), and as "Default View", "Top", "Bottom", "Front", "Rear", "Left", "Right" in the "View" menu |
+| Z "Fit in all view": the plate view, with what is selected in sight, else the bed | **added** ("Fit part" [Z] before, in the view from above) |
+| I "Zoom in", O "Zoom out" | **added** |
+| Esc "Deselect all" | **added** |
+| Ctrl+A "Select all objects" | **added**: those on the plate shown |
+| Ctrl+E "Show Labels" | **added**: the names of the objects on the plate shown |
+| Tab "Switch between Prepare/Preview" | **had** |
+| Arrows, PgUp / PgDn, Del, Ctrl+C / V / X / Z / Y / D / K, 1–9, A, Q, the gizmo keys, "?" | **not yet**: Prepare does not edit |
+
+### The bed
+
+| C++ | Where | Here |
+| --- | --- | --- |
+| The vendor's model of the bed (an STL named by `bed_model` in the printer model's own file, beside the vendor's presets), its middle at the middle of the printable area, 0.45 mm under the ground, lit, in (0.3255, 0.337, 0.337), dark (0.255, 0.255, 0.283) | `Bed3D::render_model` l.650, `update_model_offset` l.615, `libslic3r/Preset.cpp` l.5017 | **added**: `scene` names it, `bed_model` gives the mesh |
+| Without a model: the bed's shape, flat, a shade darker (×0.8), 0.04 mm under the ground | `render_default` l.709 | **added** |
+| The vendor's picture of the bed (`bed_texture`, an SVG or a PNG) over the plate shown, at most 2048 pixels a side | `PartPlate::render_logo` l.738 | **added**: `bed_texture` gives the file as it is; the browser draws it |
+| For a Bambu printer: the bed type's own pictures and the calibration lines | l.800–850 | **not yet** |
+| A custom model or picture set in the printer's settings (`bed_custom_model`, `bed_custom_texture`) | Plater.cpp l.29302 | **not yet**: presets are not edited |
+| Axes from the origin: X (255, 60, 91), Y (100, 200, 24), Z (47, 136, 233), a tenth of the build volume's greatest side long, unlit | `Bed3D::Axes::render` l.208 | **added** |
+| From under the bed nothing of it is drawn but the grid, in (0.8, 0.8, 0.8, 0.4) | `render_internal` l.375, `render_grid` | **added** |
+
+### Plates
+
+| C++ | Where | Here |
+| --- | --- | --- |
+| The plates stand in a grid ⌈√n⌉ wide, a fifth of a bed apart, rows towards -Y | `compute_colum_count`, `compute_shape_position` l.3910, `LOGICAL_PART_PLATE_GAP` | **added**: `scene` gives each plate's origin for the bed of the printer chosen (`edge_engine::plate_position`); an object goes with its plate when the printer is another |
+| Every plate that is not the one shown is filled (0.82, dark (0.384, 0.384, 0.412)); the one shown is the bed itself | `render_background` l.656 | **added** |
+| A grid from the plate's origin: every 10 mm (20, 50 or 100 on a bed 600, 1200 or 6000 mm across), every fifth line bold, and the bed's outline; (0.89), dark (0.431, 0.431, 0.463); the plate shown (0.5294, 0.5451, 0.5333), dark (0.298, 0.298, 0.3333) | `calc_gridlines` l.476, `render_grid` l.995, 2DBed.cpp l.27 | **added**; the bold lines are two pixels wide, drawn as quads (WebGL has no wide lines) |
+| The plate's number, "01" to "36", at its bottom right, and its name ("Untitled" without one) at its top left, in (242, 117, 78) | `calc_vertex_for_number` l.545, `generate_plate_name_texture` l.2264 | **added** |
+| Icons beside each plate: "Remove current plate (if not last one)", "Auto orient objects on current plate", "Arrange objects on current plate", "Lock current plate", "Customize current plate", "Move plate to the front", "Print history", "Edit current plate name" | `render_icons` l.1154 | **not yet**: none of what they do can be done yet (section 2, "Plates") |
+| Height limits for printing by object, the areas a printer keeps clear, the stripes of a two-nozzle bed | l.858, l.968, `calc_height_limit` | **not yet** |
+
+### Objects
+
+| C++ | Where | Here |
+| --- | --- | --- |
+| An object is shaded triangle by triangle (each face its own normal) by two lights fixed to the camera: ambient 0.3, top light 0.48, front light 0.18, a little gloss | `resources/shaders/140/gouraud.vs`, `gouraud.fs` | **added** (`shaders.js` `mesh`) |
+| Its colour is its filament's (`filament_colour`); black is lifted to (0.2, 0.2, 0.2) so that it can be shaded | `update_colors_by_extruder` l.1442, `adjust_color_for_rendering` l.143 | **added**. A filament the project has no colour for takes one of the C++ object colours in turn (`GLVolume::MODEL_COLOR`) |
+| Colours painted on an object show on it | `GLVolume::simple_render` l.570 | **added**: `scene_mesh` gives the triangles as the paint cuts them, each with its filament |
+| Negative parts (0.3, 0.3, 0.3, 0.4), modifiers (1, 1, 0, 0.6), support blockers (1, 0.3, 0.3, 0.4) and enforcers (0.3, 0.3, 1, 0.4), seen through | 3DScene.cpp l.217–220 | **added** |
+| A copy that is not to be printed: (0, 0, 0, 0.5) | `UNPRINTABLE_COLOR` | **added** |
+| What reaches out of the plate's print volume is a third darker | gouraud.fs l.199 | **added** for a bed's box. **not yet**: a round bed's own outline |
+| The background turns (0.753, 0.192, 0.039) while an object is off its plate | GLCanvas3D.cpp l.10727 | **not yet** |
+| What is selected: an outline and a faint grey over it, and the corners of its box (a fifth of each edge, white); "glow" (the default) or "thin" (`selection_highlight_style`) | GLCanvas3D.cpp l.2060–2740, `resources/shaders/140/selection_composite.fs`, Selection.cpp l.2779 | **added**: the "thin" style and the corners. **not yet**: the glow, and the lighter colours of a painted object that is selected |
+| A mirrored copy is drawn inside out | 3DScene.cpp `is_left_handed` | **added** |
+| "Show Labels" (Ctrl+E): each object's name over it, a thicker border when selected | GLCanvas3D.cpp l.1120 | **added**, as the page's own text. **differs**: placed by the object's top as it is seen; the C++ places a label without dividing by depth, so it drifts (listed with the errors found). **not yet**: "Sequence#" |
+| "Show 3D Navigator": a cube that turns with the camera, "Front", "Back", "Top", "Bottom", "Left", "Right"; a click on a face goes to that view | `_render_3d_navigator` l.8189 (ImGuizmo) | **added**: a cube of the page's own with the six faces. **not yet**: its edges and corners, the axes' letters |
+| A round "Fit in all view" button beside it | l.8300 | **added** |
+| "View options": "X-Ray", "Realistic View", "Center of Mass"; wireframe; ambient occlusion and FXAA; shadows | l.8300–8445 | **not yet** |
+| Contours where an object sinks under the bed | `SinkingContours` | **not yet** |
+
+## 10. Preview: the 3D view
+
+Read from `GCodeViewer.cpp/.hpp`, `LibVGCode/LibVGCodeWrapper.cpp`,
+`libvgcode/` (all of it), `GUI_Preview.cpp`, `IMSlider.cpp`,
+`libslic3r/GCode/GCodeProcessor.cpp` and the preview parts of
+`GLCanvas3D.cpp`. Drawn by `ui/gl/toolpath.js` with the `segments` and
+`options` shaders of `shaders.js`.
+
+### Where the moves come from
+
+| C++ | Where | Here |
+| --- | --- | --- |
+| The preview is the G-code read back: the processor turns the file just written into moves, each with what it is, its feature, width, height, speed, fan, temperature, filament and layer | `GCodeProcessor::process_G1` l.2900–3300, `Preview::load_print_as_fff` | **added**: `edge_engine::read_toolpath` reads the same comments (`;TYPE:`, `;WIDTH:`, `;HEIGHT:`, `;LAYER_CHANGE`, `;Z:`, `;WIPE_START`, `;WIPE_END`) and tells moves apart the same way. Before: the sliced lines of one layer, with nothing between them |
+| A print that could not be written has no preview | — | **differs**: its sliced lines are shown all the same (`toolpath` says `source: "lines"`), without moves, marks, speeds or order; the reason there is no G-code is under "About this print" |
+| A layer is the moves from its first line to the next layer's first line | `libvgcode/src/Layers.cpp` | **added** |
+| A seam is where an outer wall's loop ends within 0.25 mm of where it began | GCodeProcessor.cpp l.3256 | **added**. Like the C++, a loop that starts as an overhang wall gets none |
+| Arcs (G2, G3) | `process_G2_G3` | **added**: cut into half-millimetre moves. The engine writes none; a printer's start G-code may |
+| Times, real speeds, acceleration and jerk of each move; pressure advance | the time estimator | **not yet**: `edge-time` plans the moves but does not hand a time for each back |
+
+### How a line is drawn
+
+| C++ | Where | Here |
+| --- | --- | --- |
+| Each move is a box with a rhombus for a cross-section, as wide and as high as the line laid; only the half facing the viewer is built (8 vertices, 8 triangles), one instance a move | `libvgcode/src/SegmentTemplate.cpp`, `Shaders.hpp` | **added**, the shader ported |
+| A line's middle is half its height under the nozzle | ViewerImpl.cpp l.1253 | **added** |
+| Each end has a tip: pointed where the path ends, turned to fill the outside of a bend where it goes on | Shaders.hpp `POINTY_CAPS` | **added**: the turn at each move is worked out by the engine and sent with it |
+| Lit vertex by vertex: ambient 0.2, emission 0.15, top light 0.48, front light 0.12, gloss 0.15 | Shaders.hpp l.15–26 | **added**. The C++ has other numbers for OpenGL ES (ShadersES.hpp); the desktop ones are used |
+| Moves kept in textures and looked up by number; a move's colour worked out on the processor and uploaded again when the view changes | ViewerImpl.cpp l.1246–1576 | **differs**: one buffer of 32 bytes a move, bound twice a move apart; the shader works the colour out, so changing the view, the range or what is shown uploads nothing |
+| Travels and wipes are thin boxes, 0.1 mm | `DEFAULT_TRAVELS_RADIUS_MM`, `DEFAULT_WIPES_RADIUS_MM` | **added** |
+| Marks (retractions, seams, tool changes) are two cones base to base, the line's width and height times 1.5 (0.75 on a Mac) | `OptionTemplate.cpp`, Shaders.hpp l.480 | **added**, the factor by platform as the C++ has it |
+| Looking down, the last moves are drawn first | ViewerImpl.cpp l.2398 `reverse_order` | **not yet**: a saving, not a look |
+
+### View types and colours
+
+| C++ | Where | Here |
+| --- | --- | --- |
+| "Line Type": each feature its colour (inner wall (255, 230, 77), outer wall (255, 125, 56) and so on) | ViewerImpl.cpp l.302 `DEFAULT_EXTRUSION_ROLES_COLORS` | **had** in 2D; **added** in 3D, with "Custom" (94, 209, 148) for the lines of the printer's own start G-code |
+| "Filament": each filament its colour | `ColorPrint` | **had** in 2D; **added** in 3D. A travel is its filament's colour, as in the C++ |
+| "Layer Height", "Line Width": over the eleven range colours, least (11, 44, 122) to most (148, 38, 22), mixed between two and cut to whole numbers | `include/ColorRange.hpp`, `ColorRange::get_color_at` | **had** in 2D; **added** in 3D, the mixing ported |
+| "Speed" ("Speed (mm/s)"), "Flow" ("Volumetric flow rate (mm³/s)"), "Fan Speed" ("Fan speed (%)"), "Temperature" ("Temperature (℃)") | GCodeViewer.cpp l.4362 | **added**, for a print read back from its G-code. Flow is the speed times what a line of that width and height takes |
+| A range runs over the lines whose feature is shown (not the printer's own lines for height and width), values rounded to two digits; hiding a feature narrows it | `update_color_ranges` l.2261, `round_to_bin` | **added**, worked out by the page from the moves it holds |
+| A range's legend: eleven values, greatest first (one or two when there are no more), to 2 decimals (0 for speed, fan and temperature) | `append_range` l.3948, `ColorRange::get_values` | **added**. Before: six values |
+| "Actual Speed", "Acceleration", "Jerk", "Actual Flow", "Layer Time", "Layer Time (log)", "Pressure Advance" | l.1280 | **not yet**: need each move's time and planned speed |
+| Travel (56, 72, 155), wipe (255, 255, 0), retraction (205, 34, 214), unretraction (73, 173, 207), seam (230, 230, 230), tool change (193, 190, 99) | ViewerImpl.cpp l.329 `DEFAULT_OPTIONS_COLORS` | **added** |
+| Lower layers greyed or dimmed ("Dim lower layers in the G-code preview") | `set_layer_colors` l.1609 | not built, as in the C++: nothing there turns it on (listed with the errors found) |
+
+### The legend
+
+| C++ | Where | Here |
+| --- | --- | --- |
+| "Line Type" rows for the features in the print, in the order of their numbers; a click hides or shows | l.4312 | **had**; now from the moves, so "Custom" and "Overhang wall" are there when the print has them |
+| Rows "Travel", "Wipe", "Retract", "Unretract", "Seams", "Filament changes" for what the print has, each to show or hide; only seams shown to start with | `append_option_item` l.4497, `libvgcode/src/Settings.hpp` | **added**, under "Options" in the Line Type and Filament views; "Travel" alone in the Speed view, as in the C++. What is shown is kept with the project (`view.shown`) |
+| "Time", "%", "Usage" for each row; "Supported overhangs", "Unsupported overhangs" | l.4578 | **not yet** (section 3) |
+| The "Filament" view lists each filament's use; it has no eyes | l.4741 | **differs**: each filament can be hidden or shown (**had**) |
+
+### The sliders and what they show
+
+| C++ | Where | Here |
+| --- | --- | --- |
+| The layers slider: upright at the right, two thumbs that bound the layers shown, so the layers below the upper thumb stay in sight; each thumb's layer number over its height beside it | IMSlider.cpp l.890–1230, `get_label` l.1756 | **added** (`controls.js` `LayerSlider`). Before: one thumb, one layer |
+| A click takes up the nearer thumb; Up / Down move the one taken up (the upper to start with), five with Shift or Ctrl; the wheel over the slider likewise | GLCanvas3D.cpp l.5865, IMSlider.cpp l.1636 | **added** |
+| "On/Off one layer mode of the vertical slider" [L], and its button | GUI_Preview.cpp l.538, IMSlider.cpp l.1286 | **added**. Leaving it shows every layer up to the thumb; the C++ goes back to the whole print |
+| "Jump to Layer" [Shift+G] | `render_add_menu` l.1512 | **had**; moves the thumb taken up |
+| The moves slider: along the bottom, how far through the layers shown the print has got; Left / Right step it (five with Shift or Ctrl), Home / End go to its ends; moving a layer thumb puts it back at the end | `update_moves_slider` l.2331, GLCanvas3D.cpp l.5865 | **added** (`MoveSlider`), one thumb, counted in moves. **not yet**: its lower thumb; one stop for each line of G-code (the C++ merges an arc's moves) |
+| At the ends, Left / Right go on into the next layer | GLCanvas3D.cpp l.5880 | **not yet** |
+| The nozzle while the print is stopped part of the way: the printer's own hotend model, else an arrow, white and half seen through, its tip half a millimetre over the move | GCodeViewer.cpp l.298–341 | **added**: the arrow. **not yet**: a vendor's hotend model |
+| The position window: "X", "Y", "Z" in the axes' colours, "Speed: " and what the view shows ("Height: ", "Width: ", "Flow: ", "Fan: ", "Temperature: ", "Tool: "); unfolded, a table of everything about the move | l.393–791 | **added**: the two lines. **not yet**: the table |
+| The objects under the print, seen through (0.2), in their filaments' colours | `load_shells` l.2752, `render_shells` l.3269 | **added**. Until a plate is sliced they are all that is shown of it |
+| Only the plate shown is drawn, where it stands among the others; the axes move to it | GLCanvas3D.cpp l.3854, 3DBed.cpp `set_axes_mode` | **added**. **differs**: the camera goes with the plate, so going to another plate in Preview shows it where the last one was |
+| The G-code window [C]; "Compare slices (A/B)"; ticks on the layers slider (pause, custom G-code, filament change) | l.877, IMSlider.cpp l.1300, l.1512 | **not yet** (section 3) |
+
+## 11. How meshes and moves reach the page
+
+They are too large for JSON. `Session::call_bytes` answers four calls in
+bytes, little-endian, in layouts written out byte for byte in
+`src/api/scene.rs`; the window carries them as a raw Tauri response
+(`call_bytes` in `main.rs`) and `--serve` under `/bytes/<name>`.
+
+- **An object's mesh is sent once**, in the object's own coordinates
+  (`scene_mesh`: vertices, triangles by index, a mark for each triangle when
+  they differ). Its copies are sixteen numbers each in `scene`. `scene.key`
+  stays the same until the file is another, so a printer change, a plate
+  change or coming back to a project sends no mesh again. The page gives each
+  triangle its own three vertices with the face's normal (16 bytes a vertex)
+  and hands them to the graphics card object by object, the plate shown first,
+  drawing as each arrives.
+- **Moves are sent a stretch at a time** (`toolpath_moves`, at most 262144
+  moves, 8 MB), 32 bytes a move, and go to the graphics card as they are: the
+  page reads none of them number by number. `toolpath.run` says which slice
+  they are of. The moves of the last three plates looked at stay on the card.
+- **Nothing is rebuilt to change what is seen**: the layers shown and the
+  moves slider are a range of moves; the view type, the colour range and what
+  is hidden are numbers given to the shader.
+- **Not built**: coarser meshes for far-away objects. The largest project
+  tried (1.36 million triangles) draws in about a millisecond.
+
+Measured on the Mac mini (Apple M5 Pro, the app's browser pane, WebGL2 on
+Metal through ANGLE, a 1062 × 860 stage, 60 Hz), through `--serve`, debug
+build of the app with the engine optimised:
+
+| | 20 mm cube (STL) | `3DBenchy.3mf` | `mcbrim_test.3mf`, three plates |
+| --- | --- | --- | --- |
+| Triangles, objects | 12, 1 | 225 154, 1 | 1 360 736, 16 |
+| `scene` (JSON) | 0.5 kB | 0.5 kB | 6.2 kB |
+| Meshes sent | 264 B | 4.06 MB | 46.3 MB |
+| First object on screen after the project is shown | 6 ms | 0.2 s | 0.1 s (0.6 s the first time, the file being read) |
+| All objects on screen | 7 ms | 0.2 s | 0.6 s (1.0 s the first time) |
+| Meshes sent on coming back to the project | none | none | none |
+| Moves of the plate sliced | 7 928 | 131 686 | 210 106 (plate 1) |
+| Moves sent | 0.25 MB | 4.21 MB | 6.72 MB |
+| On screen after `toolpath` is asked for | 10 ms | 0.09 s | 0.02–0.18 s |
+| Frame while turning, Prepare / Preview | 16.7 ms (the screen's own) | 16.7 ms | 16.7 ms; drawn 16 times a frame, 19.8 ms / 16.7 ms: about 1.2 ms a draw in Prepare, under 1 ms in Preview |

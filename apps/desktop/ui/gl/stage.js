@@ -34,7 +34,9 @@
       try {
         this.renderer = new GL.Renderer(host.canvas);
       } catch (error) {
-        host.note.textContent = `The 3D view is not available: ${error.message}. The plate is shown from above instead.`;
+        host.note.textContent = error.missing
+          ? 'The 3D view needs WebGL2, which this browser does not offer. The plate is shown from above instead.'
+          : `The 3D view could not be started (${error.message}). The plate is shown from above instead.`;
         host.note.hidden = false;
         host.canvas.hidden = true;
         return false;
@@ -171,21 +173,29 @@
       }
       this.wantScene();
       const preview = model.tab === 'preview';
+      const printed = this.print;
       if (preview && model.summary) this.wantPrint();
       else this.print = null;
-      // In Preview the plate shown is the only one: going to another
-      // takes the camera along, as far as the plates are apart.
-      const plate = this.plateOrigin();
-      if (preview && mine.plateAt && plate && this.shown === mine.plateOf) {
-        const moved = M.sub([...plate, 0], [...mine.plateAt, 0]);
-        if (M.length(moved) > 0) this.camera.target = M.add(this.camera.target, moved);
-      }
-      if (plate) {
-        mine.plateAt = plate;
-        mine.plateOf = project.id;
-      }
+      // A print that was held already has its legend to show at once.
+      if (this.print && this.print !== printed && this.print.path) this.host.legend();
+      if (preview) this.followPlate();
       this.syncControls();
       this.frame();
+    },
+
+    // In Preview the plate shown is the only one there is to see, and it
+    // stands where it stands among the others: the camera goes with it,
+    // as far as it is from the plate the camera was last turned to. (The
+    // reference leaves the camera where it was, which can be on a plate
+    // that is not drawn.)
+    followPlate() {
+      const mine = this.mine();
+      const plate = this.plateOrigin();
+      if (!plate) return;
+      if (mine.plateAt && (mine.plateAt[0] !== plate[0] || mine.plateAt[1] !== plate[1])) {
+        this.camera.target = M.add(this.camera.target, [plate[0] - mine.plateAt[0], plate[1] - mine.plateAt[1], 0]);
+      }
+      mine.plateAt = plate.slice();
     },
 
     // The page's own notes on the project shown, for the 3D views.
@@ -336,7 +346,7 @@
       const key = `${project.id}:${plate}:${project.status.run}`;
       let print = this.prints.get(key);
       if (!print) {
-        print = { key, path: null, failed: false };
+        print = { key, path: null };
         // An earlier slice of the plate is let go, and the oldest of more
         // than a few.
         const plateOf = (known) => known.slice(0, known.lastIndexOf(':'));
@@ -382,7 +392,12 @@
           this.frame();
         }
       } catch (error) {
-        print.failed = true;
+        // A slice that was let go while its moves were on their way is
+        // nothing to say; it is asked for again when it is there again.
+        if (print.path) print.path.dispose();
+        this.prints.delete(print.key);
+        if (this.print !== print) return;
+        this.print = null;
         this.say('');
         this.host.say(error.message, true);
       }
@@ -570,15 +585,18 @@
       const camera = this.camera;
       this.sized();
       const plate = this.plateBox();
+      const origin = this.plateOrigin();
       if (name === 'default') {
         camera.selectView('plate', this.prefs.autoPerspective);
         if (plate) camera.zoomToBox(plate, MARGIN.bed);
+        if (origin) this.mine().plateAt = origin.slice();
       } else if (name === 'this plate') {
         // PartPlateList::select_plate_view.
         if (plate) {
           const centre = M.centre(plate);
           camera.lookAt(M.add(centre, [0, 0, camera.distance]), centre, [0, 1, 0]);
         }
+        if (origin) this.mine().plateAt = origin.slice();
         camera.selectView('topfront', this.prefs.autoPerspective);
       } else {
         camera.selectView(name, this.prefs.autoPerspective);
@@ -604,6 +622,8 @@
       const plate = this.plateBox();
       if (selected) camera.zoomToBox(selected, MARGIN.box);
       else if (plate) camera.zoomToBox(plate, MARGIN.bed);
+      const origin = this.plateOrigin();
+      if (origin) this.mine().plateAt = origin.slice();
       this.frame();
     },
 
@@ -853,8 +873,10 @@
     },
 
     // Turns the view round for a number of frames and says how long the
-    // frames took: for measuring, not for looking at.
-    async measure(frames = 120) {
+    // frames took: for measuring, not for looking at. The browser shows
+    // a frame no sooner than the screen takes one, so `repeat` draws the
+    // scene that many times a frame, to find how much room there is.
+    async measure(frames = 120, repeat = 1) {
       const gl = this.renderer.gl;
       const pivot = this.pivot();
       const times = [];
@@ -867,7 +889,7 @@
         last = now;
         this.camera.rotateOnSphere((2 * Math.PI) / frames, 0, true, pivot);
         const start = performance.now();
-        this.draw();
+        for (let again = 0; again < repeat; again += 1) this.draw();
         gl.finish();
         times.push(performance.now() - start);
       }
@@ -875,6 +897,7 @@
       const round = (value) => Math.round(value * 100) / 100;
       return {
         frames,
+        repeat,
         draw_ms: round(mean(times)),
         draw_ms_worst: round(Math.max(...times)),
         between_frames_ms: round(mean(spans)),
