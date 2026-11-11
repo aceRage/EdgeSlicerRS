@@ -620,9 +620,16 @@ Known gaps: painted supports and seams, per-object setting overrides, typed sett
   the first row to meet the hole and on the last, always when the
   lines are swept in order, and otherwise when there is no row beside
   it left to go on to (FillRectilinear.cpp, the joins along the outline
-  on one line). With that a bottom surface with holes in it is the
-  reference's length (4315.5 mm in both on `holes`, 519.8 on the `tube`,
-  where they were 18.6 and 7.2 mm short), and sparse lines round the
+  on one line). For solid fill such a join is no longer than three
+  line spacings, and for a bridge as long as the side is. The reference
+  means that limit and does not keep it (Fill.cpp works it out from a
+  spacing not yet set, which leaves it at nothing, and nothing is no
+  limit; fixed there in aceRage/EdgeSlicer#968), so until its fix a
+  bottom surface with round holes in it is a little shorter here:
+  4.30 m against 4.32 on `holes` and 0.51 against 0.52 on the `tube`,
+  which were the reference's length to the tenth of a millimetre with
+  no limit kept (4315.5 mm and 519.8 mm in both, from 18.6 and 7.2 mm
+  short before rows were joined round holes at all). Sparse lines round the
   holes of `holes` and `counterbore` are within 0.1% (`rectilinear`;
   1.4 and 1.7% short before). `top_surface_pattern`,
   `bottom_surface_pattern` and `internal_solid_infill_pattern` say whether

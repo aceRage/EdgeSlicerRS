@@ -849,12 +849,28 @@ pub fn fill_within(
                 )?;
                 let inner =
                     edge_clip::offset(&outer, -scaled(TURN_INSET * flow.spacing), Join::MITER)?;
-                // No join is too long. Fill.cpp means to stop at three
-                // spacings above 80% density, but works that out from the
-                // filler's spacing before it is set, while it is still
-                // zero, and zero is no limit. For a bridge it sets no
-                // limit at all.
-                let max_link = if joined { edge_geom::Coord::MAX / 4 } else { 0 };
+                // A join is no longer than three spacings above 80%
+                // density, and as long as it likes below that and for a
+                // bridge (Fill.cpp `link_max_length`). The reference
+                // means the same and does not do it: it works the limit
+                // out from the filler's spacing before that is set,
+                // while it is still zero, and zero is no limit, so a
+                // row parted by a hole is joined round the hole's side
+                // however long that is and a whole extra line is laid
+                // beside a fill line along a square hole. Not copied;
+                // fixed there in aceRage/EdgeSlicer#968.
+                let unlimited = edge_geom::Coord::MAX / 4;
+                let bridging = matches!(
+                    surface.kind,
+                    SurfaceKind::Bridge | SurfaceKind::InternalBridge
+                );
+                let max_link = if !joined {
+                    0
+                } else if !bridging && density > 0.8 {
+                    scaled(3.0 * flow.spacing)
+                } else {
+                    unlimited
+                };
                 let (mut pitch, mut flow) = (scaled(spacing) as f64, flow);
                 // Lines laid thinner than solid keep their width and
                 // are that much further apart, the distance cut to a
@@ -1565,6 +1581,62 @@ mod tests {
             .max_by_key(|pair| (pair[1].x - pair[0].x).abs() + (pair[1].y - pair[0].y).abs())
             .unwrap();
         assert_eq!(longest[0].y, longest[1].y, "along x");
+    }
+
+    #[test]
+    fn a_solid_join_round_a_hole_is_no_longer_than_three_spacings() {
+        // A 30 mm square with a round hole 12 mm across. A row the
+        // hole parts is joined round the hole's side only if that is
+        // no further than three spacings. The reference joins it
+        // however far, by a slip (Fill.cpp works the limit out from a
+        // spacing not yet set), and so lays plastic along the hole's
+        // edge beside the fill lines that end there.
+        let base = params(Pattern::Grid, 0.2);
+        let mut holed = surface(SurfaceKind::Bottom, 30.0);
+        holed.area.holes.push(Polygon {
+            points: (0..64)
+                .map(|step| {
+                    let turn = -(step as f64) * std::f64::consts::TAU / 64.0;
+                    Point2::from_mm(15.0 + 6.0 * turn.cos(), 15.0 + 6.0 * turn.sin())
+                })
+                .collect(),
+        });
+        let lines = fill(&[holed], 0, &base).unwrap();
+        let spacing = lines[0].flow.spacing;
+        let length = |a: &Point2, b: &Point2| ((b.x - a.x) as f64).hypot((b.y - a.y) as f64) / 1e6;
+        // The way the lines run, from the longest stretch of all.
+        let (from, to) = lines
+            .iter()
+            .flat_map(|line| line.points.windows(2))
+            .map(|pair| (pair[0], pair[1]))
+            .max_by(|a, b| length(&a.0, &a.1).total_cmp(&length(&b.0, &b.1)))
+            .unwrap();
+        let along = (
+            (to.x - from.x) as f64 / 1e6 / length(&from, &to),
+            (to.y - from.y) as f64 / 1e6 / length(&from, &to),
+        );
+        // The longest way any path goes without running that way: a
+        // join, round the square's edge or round the hole's.
+        let mut longest = 0.0_f64;
+        for line in &lines {
+            let mut run = 0.0;
+            for pair in line.points.windows(2) {
+                let across = ((pair[1].x - pair[0].x) as f64 * along.1
+                    - (pair[1].y - pair[0].y) as f64 * along.0)
+                    / 1e6;
+                if across.abs() > 1e-3 * length(&pair[0], &pair[1]) {
+                    run += length(&pair[0], &pair[1]);
+                    longest = longest.max(run);
+                } else {
+                    run = 0.0;
+                }
+            }
+        }
+        assert!(longest > 0.0);
+        assert!(
+            longest <= 3.0 * spacing + 1e-3,
+            "{longest} mm, of {spacing}"
+        );
     }
 
     #[test]
