@@ -10,6 +10,12 @@ mod elephant_foot;
 
 pub use elephant_foot::compensate_elephant_foot;
 
+mod precise_z;
+mod printable;
+
+pub use precise_z::{ADJUSTED_LAYERS, Aligned, align_to_height};
+pub use printable::make_overhangs_printable;
+
 #[derive(Clone, Debug)]
 pub struct Layer {
     /// Height of the cutting plane in millimetres.

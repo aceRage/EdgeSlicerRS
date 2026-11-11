@@ -6,7 +6,7 @@ use edge_config::Settings;
 
 /// A setting, the value that turns it off, and what is done whatever it
 /// is set to.
-const UNREAD: [(&str, &str, &str); 10] = [
+const UNREAD: [(&str, &str, &str); 8] = [
     (
         "wipe_inward",
         "0",
@@ -21,11 +21,6 @@ const UNREAD: [(&str, &str, &str); 10] = [
         "elefant_foot_layers_density",
         "100%",
         "solid fill on the first layers is laid at its full density",
-    ),
-    (
-        "precise_z_height",
-        "0",
-        "layer heights are not adjusted to bring the part to its exact height",
     ),
     (
         "zaa_enabled",
@@ -51,11 +46,6 @@ const UNREAD: [(&str, &str, &str); 10] = [
         "unsupported_wall_last",
         "0",
         "a wall loop with nothing under it keeps its place among the walls",
-    ),
-    (
-        "make_overhang_printable",
-        "0",
-        "overhangs are printed as modelled",
     ),
 ];
 
@@ -111,7 +101,7 @@ mod tests {
 
         let on = Settings::from_json(
             r#"{"wipe_inward": "1", "zaa_enabled": "1", "reduce_crossing_wall": "1",
-                "elefant_foot_layers_density": "70%", "make_overhang_printable": "1",
+                "elefant_foot_layers_density": "70%", "small_area_infill_flow_compensation": "1",
                 "dont_filter_internal_bridges": "nofilter"}"#,
         )
         .unwrap();
@@ -124,6 +114,12 @@ mod tests {
         // Ironing is followed, and nothing is said of it here.
         let ironed = Settings::from_json(r#"{"ironing_type": "top"}"#).unwrap();
         assert!(notes(&ironed, 1).is_empty());
+        // Nor of a precise height or printable overhangs, which have
+        // their own notes for what they leave undone.
+        let shaped =
+            Settings::from_json(r#"{"precise_z_height": "1", "make_overhang_printable": "1"}"#)
+                .unwrap();
+        assert!(notes(&shaped, 1).is_empty());
 
         // Hiding seams where parts meet is on unless turned off, and
         // only means anything with more than one part.
