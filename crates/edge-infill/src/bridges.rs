@@ -1,9 +1,64 @@
 //! What the bridging options of the reference's Quality tab ask of the
 //! fill's surfaces: how far a bridge reaches onto what carries it
-//! (`bridge_expansion_extra`).
+//! (`bridge_expansion_extra`), and a second layer of bridge over a bridge
+//! (`enable_extra_bridge_layer`).
 
 use edge_clip::{ClipError, Join};
 use edge_geom::{Coord, ExPolygon, Point2, scaled};
+use rayon::prelude::*;
+
+use crate::surfaces::Faces;
+
+/// Gives each bridge a second layer: what of the layer above lies on a
+/// bridge, and is neither a top face nor a bottom face of its own, is
+/// made a bottom face too, so that it is laid as a bridge and the shell
+/// over a bridge starts from it (PrintObject.cpp
+/// `PrintObject::detect_surfaces_type`, "Create a SECOND bridge layer
+/// above the first bridge layer"). `faces[i]` is layer `i`'s top faces
+/// and bottom faces, of which the first layer's are on the bed and no
+/// bridge. Patches that do not survive shrinking by `narrow` get no
+/// second layer: bridges no wider than their walls, which the walls
+/// cover anyway. Nor does anything within `narrow` of a top face on the
+/// same layer, where a scrap of bridge would show in the surface.
+///
+/// Only a first bridge gets a second layer: what is added here does not
+/// get one in turn.
+///
+/// Different from the reference: its clipping grows what it cuts with by
+/// a hundredth of a micron (`ApplySafetyOffset::Yes`), which is not done.
+pub(crate) fn second_bridge_layers(
+    slices: &[&[ExPolygon]],
+    mut faces: Vec<Faces>,
+    narrow: Coord,
+) -> Result<Vec<Faces>, ClipError> {
+    let join = Join::MITER;
+    let added = (0..faces.len())
+        .into_par_iter()
+        .map(|layer| {
+            if layer < 2 || faces[layer - 1].1.is_empty() {
+                return Ok(Vec::new());
+            }
+            let bridges = &faces[layer - 1].1;
+            let (top, bottom) = &faces[layer];
+            let internal = if top.is_empty() && bottom.is_empty() {
+                slices[layer].to_vec()
+            } else {
+                let exposed: Vec<ExPolygon> = top.iter().chain(bottom).cloned().collect();
+                edge_clip::difference(slices[layer], &exposed)?
+            };
+            let mut over =
+                edge_clip::opening(&edge_clip::intersection(&internal, bridges)?, narrow, join)?;
+            if !top.is_empty() && !over.is_empty() {
+                over = edge_clip::difference(&over, &edge_clip::offset(top, narrow, join)?)?;
+            }
+            Ok(over)
+        })
+        .collect::<Result<Vec<Vec<ExPolygon>>, ClipError>>()?;
+    for (own, more) in faces.iter_mut().zip(added) {
+        own.1.extend(more);
+    }
+    Ok(faces)
+}
 
 /// How a region is grown into what lies beside it in waves, each cut to
 /// the area it grows in before the next sets out, so that growth follows
@@ -213,6 +268,58 @@ mod tests {
 
     fn area(regions: &[ExPolygon]) -> f64 {
         regions.iter().map(ExPolygon::area_mm2).sum()
+    }
+
+    #[test]
+    fn what_lies_on_a_bridge_becomes_a_second_layer_of_it() {
+        // Four layers 40 x 10 mm. The first is on the bed; the second
+        // has a bridge 20 mm long in its middle; the fourth is the top.
+        let whole = vec![block(0.0, 0.0, 40.0, 10.0)];
+        let slices: Vec<&[ExPolygon]> = vec![&whole; 4];
+        let gap = vec![block(10.0, 0.0, 30.0, 10.0)];
+        let faces: Vec<Faces> = vec![
+            (Vec::new(), whole.clone()),
+            (Vec::new(), gap.clone()),
+            (Vec::new(), Vec::new()),
+            (whole.clone(), Vec::new()),
+        ];
+        let found = second_bridge_layers(&slices, faces.clone(), scaled(0.87)).unwrap();
+        // The third layer gets the bridge's own area as a bottom face.
+        assert!((area(&found[2].1) - 200.0).abs() < 1e-6);
+        // The bed's layer gives the second nothing: it is no bridge. And
+        // the second layer of bridge gives the fourth nothing.
+        assert_eq!(found[1], faces[1]);
+        assert_eq!(found[3], faces[3]);
+        assert_eq!(found[0], faces[0]);
+
+        // A bridge no wider than twice the walls gets none.
+        let narrow: Vec<Faces> = vec![
+            (Vec::new(), whole.clone()),
+            (Vec::new(), vec![block(10.0, 0.0, 11.7, 10.0)]),
+            (Vec::new(), Vec::new()),
+            (whole.clone(), Vec::new()),
+        ];
+        let found = second_bridge_layers(&slices, narrow.clone(), scaled(0.87)).unwrap();
+        assert_eq!(found, narrow);
+
+        // What is a face of its own on the layer above stays that, and
+        // within the walls' width of a top face nothing is added: here
+        // the layer above is top from x = 25 on.
+        let top = vec![block(25.0, 0.0, 40.0, 10.0)];
+        let stepped: Vec<Faces> = vec![
+            (Vec::new(), whole.clone()),
+            (Vec::new(), gap),
+            (top.clone(), Vec::new()),
+            (whole.clone(), Vec::new()),
+        ];
+        let found = second_bridge_layers(&slices, stepped, scaled(0.87)).unwrap();
+        assert_eq!(found[2].0, top);
+        // From x = 10 to 25 less 0.87 mm.
+        assert!(
+            (area(&found[2].1) - 141.3).abs() < 1e-3,
+            "{}",
+            area(&found[2].1)
+        );
     }
 
     #[test]

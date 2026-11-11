@@ -1,6 +1,6 @@
 use edge_config::{ConfigError, FloatOrPercent, Settings};
 use edge_extrusion::{Flow, FlowError, LineWidths};
-use edge_geom::scaled;
+use edge_geom::{Coord, scaled};
 
 use crate::{Anchoring, FillParams, InternalBridgeFilter, OverInfill, Shells, WallsAround};
 
@@ -59,6 +59,32 @@ pub enum Pattern {
     /// Lines turned 90° each layer, each direction's moved a step
     /// sideways every second layer (`crosszag`).
     CrossZag,
+}
+
+/// Which bridges get a second layer of bridge laid over them
+/// (`enable_extra_bridge_layer`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ExtraBridgeLayer {
+    /// `disabled`, the default.
+    None,
+    /// `external_bridge_only`: bridges over air.
+    External,
+    /// `internal_bridge_only`: bridges over infill.
+    Internal,
+    /// `apply_to_all`.
+    All,
+}
+
+impl ExtraBridgeLayer {
+    /// Whether bridges over air get one.
+    pub fn external(self) -> bool {
+        matches!(self, Self::External | Self::All)
+    }
+
+    /// Whether bridges over infill get one.
+    pub fn internal(self) -> bool {
+        matches!(self, Self::Internal | Self::All)
+    }
 }
 
 /// The settings infill depends on, read once per print. Defaults are the
@@ -124,6 +150,8 @@ pub struct InfillSettings {
     /// How small bridges over infill are sorted out
     /// (`dont_filter_internal_bridges`).
     pub internal_bridge_filter: InternalBridgeFilter,
+    /// Which bridges get a second layer (`enable_extra_bridge_layer`).
+    pub extra_bridge_layer: ExtraBridgeLayer,
     /// Whether top surface, bottom surface and internal solid lines are
     /// joined end to end (`top_surface_pattern`, `bottom_surface_pattern`,
     /// `internal_solid_infill_pattern`): `monotonicline` leaves them
@@ -186,6 +214,7 @@ impl Default for InfillSettings {
             thick_internal_bridges: true,
             internal_bridge_density: 1.0,
             internal_bridge_filter: InternalBridgeFilter::Filter,
+            extra_bridge_layer: ExtraBridgeLayer::None,
             top_ordered: true,
             bottom_ordered: true,
             solid_ordered: true,
@@ -462,6 +491,20 @@ impl InfillSettings {
                     });
                 }
             },
+            extra_bridge_layer: match settings.text("enable_extra_bridge_layer") {
+                None => defaults.extra_bridge_layer,
+                Some("disabled") => ExtraBridgeLayer::None,
+                Some("external_bridge_only") => ExtraBridgeLayer::External,
+                Some("internal_bridge_only") => ExtraBridgeLayer::Internal,
+                Some("apply_to_all") => ExtraBridgeLayer::All,
+                Some(other) => {
+                    return Err(ConfigError::BadValue {
+                        key: "enable_extra_bridge_layer".into(),
+                        found: other.to_owned(),
+                        expected: "disabled, external_bridge_only, internal_bridge_only or apply_to_all",
+                    });
+                }
+            },
             top_ordered,
             bottom_ordered,
             solid_ordered,
@@ -511,6 +554,23 @@ impl InfillSettings {
             minimum_sparse_area: self.minimum_sparse_infill_area,
             opening: scaled(outer.width / 10.0),
             ensure: self.ensure_vertical_shells.then(|| scaled(solid.spacing)),
+            // The width of the walls: the outer one's and every inner
+            // one's (`offset_distance` in `detect_surfaces_type`).
+            second_bridge: if self.extra_bridge_layer.external() {
+                let inner = Flow::from_widths(
+                    &self.widths,
+                    self.inner_wall_line_width,
+                    Flow::auto_width(nozzle),
+                    layer_height,
+                    false,
+                )?;
+                Some(
+                    outer.scaled_width()
+                        + inner.scaled_width() * self.wall_loops.saturating_sub(1) as Coord,
+                )
+            } else {
+                None
+            },
         })
     }
 
@@ -1012,6 +1072,57 @@ mod tests {
         let over = thin.over_infill(0.1).unwrap();
         assert_eq!((over.sparse_depth, over.bridged_depth), (2, 2));
         assert_eq!(over.thread_spacing, 350_000);
+    }
+
+    #[test]
+    fn which_bridges_get_a_second_layer_is_read() {
+        let read = |json: &str| InfillSettings::from_settings(&Settings::from_json(json).unwrap());
+        // None unless asked for.
+        let unset = read("{}").unwrap();
+        assert_eq!(unset.extra_bridge_layer, ExtraBridgeLayer::None);
+        assert_eq!(unset.shells(0.2).unwrap().second_bridge, None);
+        for (value, which, external, internal) in [
+            ("disabled", ExtraBridgeLayer::None, false, false),
+            (
+                "external_bridge_only",
+                ExtraBridgeLayer::External,
+                true,
+                false,
+            ),
+            (
+                "internal_bridge_only",
+                ExtraBridgeLayer::Internal,
+                false,
+                true,
+            ),
+            ("apply_to_all", ExtraBridgeLayer::All, true, true),
+        ] {
+            let found = read(&format!(r#"{{"enable_extra_bridge_layer": "{value}"}}"#)).unwrap();
+            assert_eq!(found.extra_bridge_layer, which);
+            assert_eq!(
+                (which.external(), which.internal()),
+                (external, internal),
+                "{value}"
+            );
+            assert_eq!(found.shells(0.2).unwrap().second_bridge.is_some(), external);
+            assert!(found.unsupported.is_empty());
+        }
+        assert!(read(r#"{"enable_extra_bridge_layer": "1"}"#).is_err());
+        assert!(read(r#"{"enable_extra_bridge_layer": "both"}"#).is_err());
+        // A bridge worth a second layer is wider than its walls twice
+        // over: the outer wall's width and each inner wall's.
+        let walls = read(
+            r#"{"enable_extra_bridge_layer": "apply_to_all", "wall_loops": "3",
+                "outer_wall_line_width": "0.42", "inner_wall_line_width": "0.45"}"#,
+        )
+        .unwrap();
+        assert_eq!(walls.shells(0.2).unwrap().second_bridge, Some(1_320_000));
+        let none = read(
+            r#"{"enable_extra_bridge_layer": "apply_to_all", "wall_loops": "0",
+                "outer_wall_line_width": "0.42"}"#,
+        )
+        .unwrap();
+        assert_eq!(none.shells(0.2).unwrap().second_bridge, Some(420_000));
     }
 
     #[test]

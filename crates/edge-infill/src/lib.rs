@@ -21,12 +21,14 @@ mod settings;
 mod surfaces;
 
 pub use fill::{FillParams, Frame, GapFillTarget, fill, fill_from, fill_within};
-pub use internal_bridges::{InternalBridgeFilter, OverInfill, bridge_over_infill_by};
+pub use internal_bridges::{
+    InternalBridgeFilter, OverInfill, bridge_over_infill_by, second_internal_bridges,
+};
 pub use ironing::{
     IronedLayer, Ironing, IroningPattern, IroningSettings, IroningType, exposed, iron,
     ironing_areas,
 };
-pub use settings::{InfillSettings, Pattern};
+pub use settings::{ExtraBridgeLayer, InfillSettings, Pattern};
 pub use surfaces::{
     Anchoring, Beneath, Shells, Surface, SurfaceKind, WallsAround, anchor, bridge_edges,
     bridge_over_infill, carry_bridge_edges, classify, inside_walls, internal,

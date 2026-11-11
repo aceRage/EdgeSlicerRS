@@ -60,6 +60,11 @@ pub struct Shells {
     /// layer's fill is not over and under the fill of the layers within
     /// a shell of it is then made solid.
     pub ensure: Option<Coord>,
+    /// Set where a bridge gets a second layer of bridge over it
+    /// (`enable_extra_bridge_layer` for bridges over air): the least
+    /// half-width of bridge worth a second layer, which the reference
+    /// takes to be the width of the walls.
+    pub second_bridge: Option<Coord>,
 }
 
 /// The one set of walls a layer would have were it all in one filament.
@@ -129,7 +134,7 @@ pub(crate) fn faces(
         ),
         None => Ok(slices[layer].to_vec()),
     };
-    (0..count)
+    let found = (0..count)
         .into_par_iter()
         .map(|layer| {
             let bottom = if shells.bottom_layers == 0 {
@@ -148,7 +153,13 @@ pub(crate) fn faces(
             }
             Ok((top, bottom))
         })
-        .collect()
+        .collect::<Result<Vec<Faces>, ClipError>>()?;
+    // With a second layer asked for over bridges, what lies on a bridge
+    // is laid as a bridge too.
+    match shells.second_bridge {
+        Some(narrow) => crate::bridges::second_bridge_layers(slices, found, narrow),
+        None => Ok(found),
+    }
 }
 
 /// The part of each layer's cross-section that is neither a top face nor
@@ -948,6 +959,7 @@ mod tests {
             minimum_sparse_area: 15.0,
             opening: scaled(0.045),
             ensure: None,
+            second_bridge: None,
         }
     }
 
@@ -1036,6 +1048,38 @@ mod tests {
         assert_eq!(found[4], [(InternalSolid, 100.0), (Sparse, 100.0)]);
         assert_eq!(found[5], [(InternalSolid, 100.0), (Sparse, 100.0)]);
         assert_eq!(found[6], [(Sparse, 200.0)]);
+    }
+
+    #[test]
+    fn a_second_layer_of_bridge_moves_the_shell_over_it_up_a_layer() {
+        // A 10 mm post that widens to 20 mm at layer 3.
+        let mut layers = vec![block(0.0, 0.0, 10.0, 10.0); 3];
+        layers.extend(vec![block(0.0, 0.0, 20.0, 10.0); 6]);
+        let twice = Shells {
+            second_bridge: Some(scaled(0.87)),
+            ..shells(1, 3)
+        };
+        let found = kinds(&layers, &twice);
+        // The bridge, a bridge again over it, and the two further solid
+        // layers a bottom shell of three has, counted from the second.
+        assert_eq!(found[3], [(Bridge, 100.0), (Sparse, 100.0)]);
+        assert_eq!(found[4], [(Bridge, 100.0), (Sparse, 100.0)]);
+        assert_eq!(found[5], [(InternalSolid, 100.0), (Sparse, 100.0)]);
+        assert_eq!(found[6], [(InternalSolid, 100.0), (Sparse, 100.0)]);
+        assert_eq!(found[7], [(Sparse, 200.0)]);
+        // Without it, as it was: one layer of bridge and two of solid.
+        let once = kinds(&layers, &shells(1, 3));
+        assert_eq!(once[4], [(InternalSolid, 100.0), (Sparse, 100.0)]);
+        assert_eq!(once[6], [(Sparse, 200.0)]);
+        // What moves between fill lines without retracting sees the
+        // second layer as a face too.
+        let slices: Vec<&[ExPolygon]> = layers.iter().map(Vec::as_slice).collect();
+        let area = |layer: &[ExPolygon]| layer.iter().map(ExPolygon::area_mm2).sum::<f64>();
+        let inside = internal(&slices, &slices, &twice).unwrap();
+        assert!((area(&inside[4]) - 100.0).abs() < 1e-6);
+        assert!(
+            (area(&internal(&slices, &slices, &shells(1, 3)).unwrap()[4]) - 200.0).abs() < 1e-6
+        );
     }
 
     #[test]

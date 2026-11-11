@@ -1,11 +1,16 @@
 //! Bridges over infill as the reference's options shape them:
 //! `dont_filter_internal_bridges`, which says how small a patch of solid
-//! fill over sparse fill is still worth bridging
-//! (PrintObject.cpp `PrintObject::bridge_over_infill`).
+//! fill over sparse fill is still worth bridging, and
+//! `enable_extra_bridge_layer`, which lays a second layer of bridge
+//! across the first (PrintObject.cpp `PrintObject::bridge_over_infill`).
+
+use std::f64::consts::FRAC_PI_2;
 
 use edge_clip::{ClipError, Join};
 use edge_geom::{Coord, ExPolygon};
+use rayon::prelude::*;
 
+use crate::FillParams;
 use crate::surfaces::{Beneath, Surface, SurfaceKind, bridge_over_infill};
 
 /// How small bridges over infill are sorted out
@@ -274,6 +279,128 @@ pub fn bridge_over_infill_by(
     Ok(out)
 }
 
+/// Lays a second layer of bridge over every bridge over infill: what of
+/// the next layer's solid and sparse fill lies on a layer's bridges
+/// becomes a bridge too, laid square to the first (the last part of
+/// PrintObject.cpp `PrintObject::bridge_over_infill`, "Create a second
+/// internal bridge layer above the first bridge layer").
+/// `surfaces[f][i]` is filament `f`'s layer `i`, and a layer's bridges
+/// are taken over every filament. `params` are a layer's above the
+/// first: bridges, and patches of a second layer, narrower than twice
+/// the solid fill's line width are passed over.
+///
+/// As in the reference, only a first bridge gets a second layer, and
+/// where a layer's bridges are not all laid the same way the second
+/// layer is laid square to the last of them.
+///
+/// Not as the reference has it: there, of a surface that gets a patch
+/// of second bridge, whatever is not that patch is put through the same
+/// sieve, and what is narrower than two lines is dropped from the layer
+/// altogether and nothing is printed in its place. That is an error in
+/// the reference (it means to drop bridges too small to matter, not
+/// fill); here everything that is not the patch stays what it was.
+pub fn second_internal_bridges(
+    surfaces: &[Vec<Vec<Surface>>],
+    params: &FillParams,
+) -> Result<Vec<Vec<Vec<Surface>>>, ClipError> {
+    let join = Join::MITER;
+    let narrow = params.solid.scaled_width();
+    let count = surfaces.iter().map(Vec::len).max().unwrap_or(0);
+    // Layer by layer, each from the layer beneath as it was given: a
+    // second layer is never read as a first.
+    let layers = (0..count)
+        .into_par_iter()
+        .map(|layer| {
+            let unchanged = || -> Vec<Vec<Surface>> {
+                surfaces
+                    .iter()
+                    .map(|own| own.get(layer).cloned().unwrap_or_default())
+                    .collect()
+            };
+            if layer == 0 {
+                return Ok(unchanged());
+            }
+            let first: Vec<&Surface> = surfaces
+                .iter()
+                .flat_map(|own| own.get(layer - 1).into_iter().flatten())
+                .filter(|s| s.kind == SurfaceKind::InternalBridge)
+                .collect();
+            let Some(last) = first.last() else {
+                return Ok(unchanged());
+            };
+            let angle = last
+                .angle
+                .unwrap_or_else(|| params.internal_bridge_angle(layer - 1))
+                + FRAC_PI_2;
+            let bridged: Vec<ExPolygon> = first.iter().map(|s| s.area.clone()).collect();
+            let bridged = edge_clip::opening(&bridged, narrow, join)?;
+            if bridged.is_empty() {
+                return Ok(unchanged());
+            }
+            surfaces
+                .iter()
+                .map(|own| {
+                    let own = own.get(layer).map_or(&[][..], Vec::as_slice);
+                    // What is left alone comes first, then what was cut.
+                    let mut kept = Vec::with_capacity(own.len());
+                    let mut cut = Vec::new();
+                    for surface in own {
+                        if !matches!(
+                            surface.kind,
+                            SurfaceKind::Sparse | SurfaceKind::InternalSolid
+                        ) {
+                            kept.push(surface.clone());
+                        }
+                    }
+                    for surface in own {
+                        if !matches!(
+                            surface.kind,
+                            SurfaceKind::Sparse | SurfaceKind::InternalSolid
+                        ) {
+                            continue;
+                        }
+                        let whole = std::slice::from_ref(&surface.area);
+                        let over = edge_clip::opening(
+                            &edge_clip::intersection(whole, &bridged)?,
+                            narrow,
+                            join,
+                        )?;
+                        if over.is_empty() {
+                            kept.push(surface.clone());
+                            continue;
+                        }
+                        let rest = edge_clip::difference(whole, &over)?;
+                        cut.extend(over.into_iter().map(|area| Surface {
+                            kind: SurfaceKind::InternalBridge,
+                            area,
+                            angle: Some(angle),
+                        }));
+                        cut.extend(
+                            rest.into_iter()
+                                .map(|area| Surface::new(surface.kind, area)),
+                        );
+                    }
+                    kept.extend(cut);
+                    Ok(kept)
+                })
+                .collect::<Result<Vec<Vec<Surface>>, ClipError>>()
+        })
+        .collect::<Result<Vec<Vec<Vec<Surface>>>, ClipError>>()?;
+    // From layer by filament back to filament by layer.
+    let mut out: Vec<Vec<Vec<Surface>>> = surfaces
+        .iter()
+        .map(|own| Vec::with_capacity(own.len()))
+        .collect();
+    for layer in layers {
+        for ((own, given), changed) in layer.into_iter().zip(surfaces).zip(&mut out) {
+            if changed.len() < given.len() {
+                changed.push(own);
+            }
+        }
+    }
+    Ok(out)
+}
+
 #[cfg(test)]
 mod tests {
     use edge_geom::{Point2, Polygon, scaled};
@@ -336,6 +463,131 @@ mod tests {
 
     use InternalBridgeFilter::{Filter, Limited, NoFilter};
     use SurfaceKind::{InternalBridge, InternalSolid, Sparse};
+
+    /// What laying needs, with solid lines 0.45 mm wide and a grid of
+    /// sparse lines at 45°.
+    fn params() -> FillParams {
+        crate::InfillSettings {
+            pattern: crate::Pattern::Grid,
+            ..crate::InfillSettings::default()
+        }
+        .params(0.2, false)
+        .unwrap()
+    }
+
+    #[test]
+    fn a_bridge_over_infill_gets_a_second_layer_laid_across_it() {
+        let whole = block(0.0, 0.0, 20.0, 20.0);
+        let of = |kind| vec![Surface::new(kind, whole.clone())];
+        // Sparse, a bridge over it, two layers of solid, the top.
+        let stack = vec![
+            of(Sparse),
+            of(InternalBridge),
+            of(InternalSolid),
+            of(InternalSolid),
+            of(SurfaceKind::Top),
+        ];
+        let found = second_internal_bridges(std::slice::from_ref(&stack), &params())
+            .unwrap()
+            .remove(0);
+        // The layer over the bridge is bridge too, square to the first.
+        let [second] = found[2].as_slice() else {
+            panic!("expected one surface, got {}", found[2].len())
+        };
+        assert_eq!(second.kind, InternalBridge);
+        assert!((second.area.area_mm2() - 400.0).abs() < 1e-6);
+        let first = params().internal_bridge_angle(1);
+        assert!((second.angle.unwrap() - (first + FRAC_PI_2)).abs() < 1e-12);
+        // Nothing else changes: a second layer does not get a third.
+        for layer in [0, 1, 3, 4] {
+            assert_eq!(found[layer], stack[layer], "layer {layer}");
+        }
+    }
+
+    #[test]
+    fn only_what_lies_on_the_bridge_is_laid_again_and_the_rest_stays() {
+        // A bridge 10 mm wide under solid fill 10.6 mm wide, sparse fill
+        // beside both, and a top surface elsewhere on the upper layer.
+        let bridge = block(0.0, 0.0, 10.0, 20.0);
+        let lower = vec![
+            Surface::new(InternalBridge, bridge.clone()),
+            Surface::new(Sparse, block(10.0, 0.0, 30.0, 20.0)),
+        ];
+        let top = Surface::new(SurfaceKind::Top, block(30.0, 0.0, 40.0, 20.0));
+        let upper = vec![
+            Surface::new(InternalSolid, block(0.0, 0.0, 10.6, 20.0)),
+            top.clone(),
+            Surface::new(Sparse, block(10.6, 0.0, 30.0, 20.0)),
+        ];
+        let found = second_internal_bridges(&[vec![lower.clone(), upper]], &params())
+            .unwrap()
+            .remove(0);
+        assert_eq!(found[0], lower);
+        let layer = &found[1];
+        assert!((area(layer, InternalBridge) - 200.0).abs() < 1e-6);
+        // The 0.6 mm of solid beside the bridge, narrower than two lines,
+        // is still solid: the reference drops it and prints nothing there.
+        assert!((area(layer, InternalSolid) - 12.0).abs() < 1e-6);
+        assert!((area(layer, Sparse) - 388.0).abs() < 1e-6);
+        // What was left alone comes first, in its own order, then what
+        // was cut.
+        assert_eq!(layer[0], top);
+        assert_eq!(layer[1].kind, Sparse);
+        assert_eq!(
+            layer[2..].iter().map(|s| s.kind).collect::<Vec<_>>(),
+            [InternalBridge, InternalSolid]
+        );
+    }
+
+    #[test]
+    fn bridges_and_patches_narrower_than_two_lines_get_no_second_layer() {
+        // A bridge 0.8 mm wide: shrunk by a line's 0.45 mm it is gone.
+        let narrow = vec![
+            vec![Surface::new(InternalBridge, block(0.0, 0.0, 0.8, 20.0))],
+            vec![Surface::new(InternalSolid, block(0.0, 0.0, 20.0, 20.0))],
+        ];
+        let found = second_internal_bridges(std::slice::from_ref(&narrow), &params()).unwrap();
+        assert_eq!(found[0], narrow);
+        // A wide bridge under solid fill that covers 0.8 mm of it: the
+        // patch is too narrow, and the solid fill is left whole.
+        let grazed = vec![
+            vec![Surface::new(InternalBridge, block(0.0, 0.0, 10.0, 20.0))],
+            vec![Surface::new(InternalSolid, block(9.2, 0.0, 20.0, 20.0))],
+        ];
+        let found = second_internal_bridges(std::slice::from_ref(&grazed), &params()).unwrap();
+        assert_eq!(found[0], grazed);
+    }
+
+    #[test]
+    fn a_second_layer_lies_over_every_filament_s_bridges() {
+        // The first filament's bridge under the second filament's solid
+        // fill; the second filament prints nothing on the lower layer.
+        let whole = block(0.0, 0.0, 20.0, 20.0);
+        let first = vec![
+            vec![Surface::new(InternalBridge, whole.clone())],
+            Vec::new(),
+        ];
+        let second = vec![Vec::new(), vec![Surface::new(InternalSolid, whole.clone())]];
+        let found = second_internal_bridges(&[first.clone(), second], &params()).unwrap();
+        assert_eq!(found[0], first);
+        assert_eq!(found[1][0], Vec::new());
+        assert_eq!(found[1][1].len(), 1);
+        assert_eq!(found[1][1][0].kind, InternalBridge);
+        // Lines one way on even layers and the other on odd: square to
+        // the bridge on the odd layer beneath.
+        let lines = FillParams {
+            pattern: crate::Pattern::Lines,
+            ..params()
+        };
+        let stack = vec![
+            Vec::new(),
+            vec![Surface::new(InternalBridge, whole.clone())],
+            vec![Surface::new(InternalSolid, whole.clone())],
+        ];
+        let found = second_internal_bridges(std::slice::from_ref(&stack), &lines).unwrap();
+        let angle = found[0][2][0].angle.unwrap();
+        assert!((angle - (lines.sparse_angle + FRAC_PI_2 + FRAC_PI_2)).abs() < 1e-12);
+    }
 
     #[test]
     fn the_default_is_the_filter_as_it_was() {

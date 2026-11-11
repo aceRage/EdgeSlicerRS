@@ -6,7 +6,7 @@ use edge_config::Settings;
 
 /// A setting, the value that turns it off, and what is done whatever it
 /// is set to.
-const UNREAD: [(&str, &str, &str); 10] = [
+const UNREAD: [(&str, &str, &str); 9] = [
     (
         "wipe_inward",
         "0",
@@ -41,11 +41,6 @@ const UNREAD: [(&str, &str, &str); 10] = [
         "small_area_infill_flow_compensation",
         "0",
         "small solid areas are laid at the usual flow",
-    ),
-    (
-        "enable_extra_bridge_layer",
-        "disabled",
-        "a bridge is one layer of bridge lines",
     ),
     (
         "unsupported_wall_last",
@@ -115,8 +110,12 @@ mod tests {
             &"wipe_inward \"1\": the nozzle is wiped along the wall, not in toward the inner walls"
                 .to_owned()
         ));
-        // Ironing is followed, and nothing is said of it here.
-        let ironed = Settings::from_json(r#"{"ironing_type": "top"}"#).unwrap();
+        // Ironing is followed, and nothing is said of it here; nor of a
+        // second layer of bridge.
+        let ironed = Settings::from_json(
+            r#"{"ironing_type": "top", "enable_extra_bridge_layer": "apply_to_all"}"#,
+        )
+        .unwrap();
         assert!(notes(&ironed, 1).is_empty());
 
         // Hiding seams where parts meet is on unless turned off, and
