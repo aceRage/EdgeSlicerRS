@@ -334,19 +334,8 @@ pub fn slice(job: Job, watch: &dyn Watcher) -> Result<Sliced, Failure> {
             filament: body.filament,
         })
         .collect();
-    // The hole options need a round hole cut round: see
-    // `edge_slice::slice_regions_without_flat_crossings`. Without them
-    // the layers are cut as they always were.
     let holes = crate::holes::HoleSettings::from_settings(&settings)?;
-    let mut layers = if holes.any() {
-        edge_slice::slice_regions_without_flat_crossings(
-            &borrowed,
-            &planes,
-            scaled(closing_radius),
-        )?
-    } else {
-        edge_slice::slice_regions(&borrowed, &planes, scaled(closing_radius))?
-    };
+    let mut layers = edge_slice::slice_regions(&borrowed, &planes, scaled(closing_radius))?;
 
     // Overhangs are made printable by growing the layers under them
     // (`make_overhang_printable`), before anything else is done to the

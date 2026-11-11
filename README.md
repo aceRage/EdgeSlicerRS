@@ -21,7 +21,7 @@ replaces it until output matches on the printers we care about.
 | `crates/edge-extrusion` | Extruded line cross-section (flow) and extrusion loops |
 | `crates/edge-parity` | `edge-parity`: runs the reference slicer and this engine on one project and compares time and G-code |
 | `crates/edge-perimeter` | Walls, the lines that fill the gaps between them, and the infill area inside (classic constant-width generator) |
-| `crates/edge-medial` | The centre line of a narrow region and how wide it is along it (wraps boostvoronoi), what part of the plane lies nearest each of a set of edges, the whole Voronoi diagram of a set of edges as plain data, and lines of changing width as extrusions |
+| `crates/edge-medial` | The centre line of a narrow region and how wide it is along it (wraps boostvoronoi), what part of the plane lies nearest each of a set of edges, the whole Voronoi diagram of a set of edges as plain data, and lines of changing width as extrusions. The same edges give the same diagram on every run and thread: the library's skip list has its levels from a generator each list owns, not from the thread's random numbers (`vendor/cpp_map`) |
 | `crates/edge-adhesion` | Skirt and brim, with the automatic brim width |
 | `crates/edge-support` | Supports under overhangs, normal (grid) and tree, with dense tops and feet |
 | `crates/edge-gcode` | Print order, seams, travel, retraction, wipe and lift, cooling, overhangs, and extrusion, written as G-code |
@@ -29,13 +29,14 @@ replaces it until output matches on the printers we care about.
 | `crates/edge-template` | The placeholder language of custom G-code: `{expression}`, `{if}`, `[variable]`, and scripts |
 | `crates/edge-time` | How long a G-code file takes, with acceleration: the file is read as a printer reads it and planned as the reference's estimator plans, or as Klipper does |
 | `crates/edge-tower` | The prime tower a nozzle is primed on after a tool change |
-| `crates/edge-slice` | Mesh to per-layer contours, then to regions with holes; parallel across layers. Elephant foot compensation of the first layers; round holes made polygons of few sides, and round outlines and holes resized by what the filament prints them off by; the last layers' heights tuned so a part comes out its exact height, and layers grown downward under overhangs so they can be printed |
+| `crates/edge-slice` | Mesh to per-layer contours, with the model's corners and not its triangles', then to regions with holes; parallel across layers. Elephant foot compensation of the first layers; round holes made polygons of few sides, and round outlines and holes resized by what the filament prints them off by; the last layers' heights tuned so a part comes out its exact height, and layers grown downward under overhangs so they can be printed |
 | `crates/edge-engine` | The whole pipeline behind one call, for whatever drives it: open a model and list its plates, settle its settings, slice with progress and cancel, G-code, a layer's lines for drawing, a vendor's presets by printer, and its printer models with the presets, picture and sizes of each |
 | `crates/edge-cli` | The `edge` command line |
 | `tools/make_defaults.py` | Asks the reference for its default of every setting and writes the table `edge-config` carries; run again when the pin moves |
 | `tools/make_fixture.py` | Writes small test 3MFs (parts that need supports or a brim, a plain cube, two blocks in two filaments, a comb with thin teeth on the bed, three tiers with a top surface on each, bars over a base for small bridges over infill, a slab with round holes for the hole options, a slab with pockets underneath, three round ones for arc fitting: a post, a post with a hole, a slab with a wide curve and tight ones, and a post that widens as it rises for scarf seams) to compare with the reference on |
 | `tools/make_project.py` | Writes one of those parts as a project whose settings are named presets, with as many filaments as are named: how the test prints for a printer are made |
 | `reference/EdgeSlicer` | Pinned submodule of the C++ slicer: profiles, test models, behaviour to match. Read-only here |
+| `vendor/cpp_map` | A copy of the `cpp_map` crate (MIT or Apache-2.0), the skip list under the Voronoi library, changed so that a list is the same shape on every run; patched in for the published crate by both workspaces. Its README says what was changed. Not a member of the workspace, and kept in its own formatting |
 | `apps/desktop` | The desktop app (Tauri): several projects open at once, each prepared, sliced, looked through layer by layer and exported, in the C++ application's tabs. A workspace of its own |
 
 ## Build and run
@@ -360,16 +361,17 @@ Working:
   below), whatever `seam_slope_type` says. Not written: the
   reference's "; Slow Down Start" and "; Slow Down End" comments round
   them, which only its own cooling stage reads.
-- With either of the two on, the layers are cut without the points
-  where the cutting plane crosses an edge inside a flat face, as the
-  reference cuts them (TriangleMeshSlicer.cpp `coplanar_edges`): they
-  are corners of the mesh's triangles, not of the model. Cut the plain
-  way, a round hole is not round enough to be told for one: where such
-  a point lies a unit or two off its flat, closing the outline by
-  `slice_closing_radius` leaves a kink there, up to some hundredths of
-  a millimetre from where the corner beside it was. With both options
-  off the layers are cut as they always were, kinks and all; cutting
-  them this way always is the better outline and is still to do.
+- Every layer is cut without the points where the cutting plane
+  crosses an edge inside a flat face, as the reference cuts them
+  (TriangleMeshSlicer.cpp `coplanar_edges`): they are corners of the
+  mesh's triangles, not of the model. Left in, such a point lies a unit
+  or two off its flat, and closing the outline by `slice_closing_radius`
+  leaves a kink there, up to some hundredths of a millimetre from where
+  the corner beside it was; a round hole cut that way is not round
+  enough to be told for one. (Until 2026-11-11 this was done only with
+  one of the two hole options on.) Where the plane passes through a
+  corner of the mesh the corner is kept, whichever triangle the contour
+  starts on.
 - Thin walls (`detect_thin_wall`, classic walls): a part too thin for a
   wall down each side gets one line down its middle, as wide as the
   part, laid as an outer wall; a fuzzy skin on the outer wall is on it
@@ -1268,21 +1270,35 @@ walls of changing width the corners agree to 0.0005 mm under the circle
 compensation and to 0.013 mm as polyholes, the loops being cut into
 points differently, as they are with no option on.
 
-Two things do not match. At a margin of nothing
+One thing does not match. At a margin of nothing
 (`hole_to_polyhole_threshold = 0`, which both slicers take as a
 ten-thousandth of a millimetre) this engine converts the tube's hole
 below the tube and the reference does not: whether its points keep to
 one distance within 0.0002 mm is decided by rounding that the two do not
-share. And with both options off the same walls are up to 0.17 mm from
-the reference's at their corners, on 173 of the 300 loops: that is the
-kinks closing leaves in an outline cut with the crossings in it (Status,
-above), which the hole options are rid of and the plain cut is not.
+share.
 
-Both options off, the G-code is byte for byte what it was before they
-were followed: on this part, the cube, frame, steps, mushroom and fins,
-two blocks in two filaments, 3DBenchy and both plates of
-`mcbrim_test.3mf`. With both on, the parts made of boxes are line for
-line what they are with both off.
+With both options off the same 300 walls were up to 0.17 mm from the
+reference's: the kinks closing left in an outline cut with the
+crossings in it, which every layer is now cut without (Status, above).
+Measured again on 2026-11-11, each corner of a loop here against the
+nearest corner of the reference's loop: above the first layer the
+furthest is 0.0022 mm (the eight-sided hole; 290 of the 292 loops are
+within 0.0015 mm), where it was 1.2 mm on that hole, which had a ninth
+point part-way along one side, and over 0.01 mm on 274 of them. On the
+first layer the furthest is 0.03 mm, on the eight-sided hole again, as
+it was: the first layer alone is also shrunk for the elephant's foot,
+and the cut does not move that. The walls'
+length over the whole part is the reference's to the rounding of the
+table (16.36 m of outer wall and 16.22 m of inner in both; the inner
+was 16.23 m here), and every layer's is within 0.05% of the
+reference's, where the first was 0.6% over.
+
+With both options off the G-code of the parts made of boxes (the
+`shelf`, `mushroom`, `tower` and `bridge` fixtures, with the U1's
+presets and the Centauri Carbon's) is byte for byte what it was before
+every layer was cut this way; the round parts' and 3DBenchy's is not.
+With both on, the parts made of boxes are line for line what they are
+with both off.
 
 Scarf seams, 2026-11-11, on parts from `tools/make_fixture.py` with the
 U1's presets (classic walls, a seam gap of 0.06 mm) but where the
@@ -1712,29 +1728,40 @@ have arc fitting on. The length of every feature is what it was as
 straight moves, to the rounding of the table, and the spiral lifts are
 as many (49, 39 and 29). Fill agrees arc for arc where the two engines
 fill alike: sparse infill 252 arcs against the reference's 252 on the
-cylinder and 380 against 382 on the tube, the bottom surface 22 against
-22 and 64 against 63, and each of the cylinder's layers of solid fill 27
-against 27. That took one correction besides the
+cylinder and 382 against 382 on the tube, the bottom surface 22 against
+22 and 63 against 63, and each of the cylinder's layers of solid fill 27
+or 28 in both. That took one correction besides the
 arcs: with arc fitting on, what is left for infill was outlined at a
 fifth of `resolution` like the walls, where the reference outlines it at
 `resolution` itself, so the fill's turns along a round wall had twice
 the corners and every one of them became an arc. Walls are arcs for the
-same share of their length (98 to 100% on the round parts, 56% on the
-`curve`) but in more pieces on the round parts: 277 against 198 on the
-cylinder, 404 against 278 on the tube, 303 against 325 on the `curve`.
+same share of their length (98 to 99% on the round parts, 56% on the
+`curve`), and in as many pieces wherever the reference's fitter makes
+no mistake: 198 against 198 on the cylinder, 239 against 278 on the
+tube, 295 against 325 on the `curve`.
 On the `curve` the arcs are the reference's own, centre for centre (the
 80 mm bow, the half-round end, the 1.5 mm corners), bar one: on every
 layer the reference has the outer wall's half-round end in two arcs,
 the first stopping two corners short of the end, which is where its
-mistake with a middle point due east stops an arc. On the cylinder and the tube two things
-upstream of the fitter make the difference. A sliced ring here keeps one
-point that is no corner, where its outline starts, between two corners
-of the mesh, and loses the corner next to it; an arc cannot be carried
-round past it, so a ring is two arcs, or three, before its seam cuts
-one of them. (With that point taken out, in a trial, the cylinder's
-walls came to 117 arcs.) And the seam of a round wall is put at the
-ring's start here and a third of the way round it in the reference, so
-it cuts a different arc. Tree supports are arcs for 94% of their length
+mistake with a middle point due east stops an arc. The 39 it has more
+on the tube are the same mistake: the inner wall round the hole is cut
+in two due north of its middle on 39 of the 40 layers. On the
+cylinder and the tube the walls were in more pieces than the
+reference's (277 and 404) until every layer was cut without the
+crossings inside flat faces (Status, above; these figures are from
+after it). A sliced ring kept one point that was no corner, where its
+outline started, between two corners of the mesh, and lost the corner
+next to it; an arc cannot be carried round past such a point, so a ring
+was two arcs, or three, before its seam cut one of them. A ring is now
+its corners and nothing else and starts at the reference's corner: one
+arc and one straight side, the arc cut in two by the seam. The seam of
+a round wall is not where the reference puts it, which cuts the arc
+somewhere else but into as many pieces, unless it falls on the ring's
+start and cuts nothing: on the `holes` fixture that happens here on
+49 loops (the 12 mm hole on 29 layers, the tube on 20), and with the
+reference's mistake on 48 loops of the boss and the tube that part's
+outer walls are 581 arcs against 678.
+Tree supports are arcs for 94% of their length
 against 90% (1825 against 2719 on the `shelf`, whose supports are 30%
 shorter here, as above). On the box-shaped parts nothing changed but
 the spiral lifts, and four arcs on the `mushroom` where a support's
@@ -2050,3 +2077,5 @@ layer lower here (10-16 against 11-17), each as deep as the other's.
 ## Licence
 
 AGPL-3.0, the same as EdgeSlicer, so algorithms may be ported from it.
+`vendor/cpp_map` is another's work under MIT or Apache-2.0, which this
+licence can take in; both texts are kept beside it.

@@ -2,7 +2,9 @@
 resolver = "3"
 members = ["crates/*"]
 # The desktop app is a workspace of its own, so this one builds no web view.
-exclude = ["apps"]
+# `vendor` holds other people's crates, changed and patched in below; they
+# keep their own formatting and are not held to this workspace's lints.
+exclude = ["apps", "vendor"]
 
 [workspace.package]
 version = "0.0.0"
@@ -53,6 +55,34 @@ unsafe_code = "deny"
 # this workspace's own code harder to debug.
 [profile.dev.package."*"]
 opt-level = 2
+
+# The Voronoi library's debug checks are off, in a debug build as in the
+# one that ships. They stop it where a number it works with is not a
+# number, and one turns up only in a sweep that has already gone wrong:
+# the square root of a negative determinant in the quick form of a circle
+# event (`lazy_circle_formation::pss`), asked for three neighbours that no
+# circle touches. The quick form's error estimate does not see it, so the
+# exact form is not used for it either, here or in Boost. The sweep goes
+# wrong on outlines Boost.Polygon's own diagram is wrong on too (the
+# Voron cube's layer at 11.3 mm, 49 to 79 mm from the origin with two
+# edges a nanometre out of line), and what is done about it is the
+# reference's: the walls look the diagram over, numbers that are not
+# numbers among the rest, and build it again from the outline turned
+# (`sound_diagram` in `edge-arachne`). A check that stops the library
+# first would stop that. With the skip list's levels random it stopped
+# one test run in three on that layer; with them fixed (below) it would
+# stop every one. The optimisation level is the `"*"` table's.
+[profile.dev.package.boostvoronoi]
+debug-assertions = false
+
+# The Voronoi library keeps its beach line in `cpp_map`'s skip list, and
+# the crate as published takes the levels of the list's nodes from the
+# thread's random numbers, so the list was a different shape on every run.
+# The copy in `vendor/cpp_map` gives each list a generator of its own that
+# always starts the same (its README says what was changed). The same
+# entry is in `apps/desktop/Cargo.toml`: a patch is not inherited.
+[patch.crates-io]
+cpp_map = { path = "vendor/cpp_map" }
 
 # Light optimisation for this workspace's own code as well: the tests that
 # run whole projects spend their time in it.

@@ -5,8 +5,8 @@
 //! is no corner of the model. The reference leaves those points out
 //! (TriangleMeshSlicer.cpp `coplanar_edges` and
 //! `chain_lines_by_triangle_connectivity`: "Skip only junctions
-//! introduced by triangulating one planar face"); [`flat_edges`] is its
-//! test of an edge.
+//! introduced by triangulating one planar face"), and so does every
+//! cut made here; [`flat_edges`] is its test of an edge.
 
 use edge_mesh::Mesh;
 use rustc_hash::{FxHashMap, FxHashSet};
@@ -75,9 +75,48 @@ pub(crate) fn flat_edges(mesh: &Mesh) -> FxHashSet<u64> {
 
 #[cfg(test)]
 mod tests {
+    use edge_geom::{Point2, scaled};
+    use edge_mesh::Triangle;
     use edge_mesh::primitives::cuboid;
 
     use super::*;
+
+    /// A round post of so many sides standing on the bed, as a modeller
+    /// writes one: each side two triangles, each end a fan about its
+    /// middle. With it, its corners as the mesh has them.
+    fn post(sides: usize, radius: f64, height: f32) -> (Vec<Triangle>, Vec<[f32; 2]>) {
+        let (cx, cy) = (135.5, 136.0);
+        let corners: Vec<[f32; 2]> = (0..sides)
+            .map(|i| {
+                let turn = std::f64::consts::TAU * i as f64 / sides as f64;
+                [
+                    (cx + radius * turn.cos()) as f32,
+                    (cy + radius * turn.sin()) as f32,
+                ]
+            })
+            .collect();
+        let (middle, at) = ([cx as f32, cy as f32], |p: [f32; 2], z: f32| {
+            [p[0], p[1], z]
+        });
+        let mut soup = Vec::new();
+        for i in 0..sides {
+            let (a, b) = (corners[i], corners[(i + 1) % sides]);
+            soup.push([at(a, 0.0), at(b, 0.0), at(b, height)]);
+            soup.push([at(a, 0.0), at(b, height), at(a, height)]);
+            soup.push([at(middle, 0.0), at(b, 0.0), at(a, 0.0)]);
+            soup.push([at(middle, height), at(a, height), at(b, height)]);
+        }
+        (soup, corners)
+    }
+
+    /// The contour's points, turned to start at the one nearest `first`.
+    fn from_nearest(points: &[Point2], first: Point2) -> Vec<Point2> {
+        let far = |p: &Point2| (p.x - first.x).abs() + (p.y - first.y).abs();
+        let start = (0..points.len()).min_by_key(|&i| far(&points[i])).unwrap();
+        let mut turned = points.to_vec();
+        turned.rotate_left(start);
+        turned
+    }
 
     #[test]
     fn the_diagonals_of_a_boxes_faces_are_flat_and_its_edges_are_not() {
@@ -99,16 +138,87 @@ mod tests {
     fn a_box_is_cut_into_its_four_corners_without_the_crossings() {
         let mesh = Mesh::from_triangle_soup(cuboid([0.0; 3], [10.0, 20.0, 30.0]));
         let planes = [0.1, 7.3, 15.0, 29.9];
-        // The plain cut has a point on each face's diagonal as well.
+        // Each plane crosses the diagonal of all four upright faces,
+        // and none of those crossings is a point of the outline.
         for layer in crate::slice(&mesh, &planes) {
-            assert_eq!(layer.polygons.len(), 1);
-            assert_eq!(layer.polygons[0].points.len(), 8);
-        }
-        for layer in crate::slice_without_flat_crossings(&mesh, &planes) {
             assert_eq!(layer.polygons.len(), 1);
             assert_eq!(layer.polygons[0].points.len(), 4);
             assert!((layer.polygons[0].signed_area_mm2() - 200.0).abs() < 1e-9);
             assert_eq!(layer.open_chains, 0);
+        }
+    }
+
+    #[test]
+    fn a_round_post_is_cut_into_its_own_corners() {
+        let (soup, corners) = post(64, 10.0, 10.0);
+        let mesh = Mesh::from_triangle_soup(soup);
+        let expected: Vec<Point2> = corners
+            .iter()
+            .map(|c| Point2::from_mm(c[0].into(), c[1].into()))
+            .collect();
+        // The last plane passes through the corners at the top.
+        for layer in crate::slice(&mesh, &[0.1, 3.7, 9.9, 10.0]) {
+            assert_eq!(layer.open_chains, 0, "z = {}", layer.z);
+            assert_eq!(layer.polygons.len(), 1, "z = {}", layer.z);
+            let points = from_nearest(&layer.polygons[0].points, expected[0]);
+            assert_eq!(points, expected, "z = {}", layer.z);
+        }
+    }
+
+    #[test]
+    fn a_corner_the_plane_passes_through_is_kept_wherever_the_contour_starts() {
+        // A contour starts at the first triangle the plane crosses, so
+        // each triangle is put first in turn: among them the ones whose
+        // first crossing is on a face's diagonal, at the corner itself
+        // when the plane is level with the top.
+        let soup = cuboid([0.0; 3], [10.0, 20.0, 30.0]);
+        for first in 0..soup.len() {
+            let mut turned = soup.clone();
+            turned.rotate_left(first);
+            let mesh = Mesh::from_triangle_soup(turned);
+            for layer in crate::slice(&mesh, &[15.0, 30.0]) {
+                assert_eq!(layer.open_chains, 0);
+                assert_eq!(layer.polygons.len(), 1, "from triangle {first}");
+                let ring = &layer.polygons[0];
+                assert_eq!(ring.points.len(), 4, "from triangle {first}");
+                assert!((ring.signed_area_mm2() - 200.0).abs() < 1e-9);
+            }
+        }
+    }
+
+    #[test]
+    fn closing_a_round_outline_gives_its_corners_back() {
+        // Closed by the reference's default `slice_closing_radius`, the
+        // post's outline is still its 64 corners. With the crossings on
+        // the sides' diagonals left in, each a unit or two off its side,
+        // closing left kinks hundredths of a millimetre from them.
+        let (soup, corners) = post(64, 10.0, 10.0);
+        let mesh = Mesh::from_triangle_soup(soup);
+        let body = crate::Body {
+            solid: &mesh,
+            negative: None,
+            filament: 1,
+        };
+        let layers = crate::slice_regions(&[body], &[0.1, 3.7, 9.9], scaled(0.049)).unwrap();
+        for layer in layers {
+            assert_eq!(layer.regions.len(), 1, "z = {}", layer.z);
+            let points = &layer.regions[0].contour.points;
+            assert_eq!(points.len(), corners.len(), "z = {}", layer.z);
+            let furthest = corners
+                .iter()
+                .map(|corner| {
+                    let corner = Point2::from_mm(corner[0].into(), corner[1].into());
+                    points
+                        .iter()
+                        .map(|p| (p.x - corner.x).abs().max((p.y - corner.y).abs()))
+                        .min()
+                        .unwrap()
+                })
+                .max()
+                .unwrap();
+            // Within what growing and shrinking rounds a point by:
+            // a hundred-thousandth of a millimetre.
+            assert!(furthest <= 10, "z = {}: {furthest} units off", layer.z);
         }
     }
 
