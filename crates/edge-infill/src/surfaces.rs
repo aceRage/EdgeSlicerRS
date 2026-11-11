@@ -498,8 +498,7 @@ pub struct Anchoring {
 /// them, and gives every bridge the direction that carries it from
 /// support to support (`LayerRegion::process_external_surfaces`). The
 /// reference grows in waves that cannot leave the area they start in, and
-/// so are tops and bottoms here; a bridge with no extra reach set is grown
-/// by the same distance at once and cut to the fill it may grow into.
+/// so does this.
 pub fn anchor(
     surfaces: &[Vec<Surface>],
     anchoring: &Anchoring,
@@ -526,14 +525,13 @@ pub fn anchor(
 
             // A surface with what it gains from each kind of fill beside
             // it, closed up and kept to what it started from and gained.
-            // In `waves` it grows as the reference grows it
-            // (`expand_merge_surfaces`, LayerRegion.cpp, by
-            // `propagate_waves`, Algorithm/RegionExpansion.cpp): a step at
-            // a time within each piece of fill it touches, so that it
-            // never jumps the walls between it and fill it does not touch.
+            // It grows as the reference grows it (`expand_merge_surfaces`,
+            // LayerRegion.cpp, by `propagate_waves`,
+            // Algorithm/RegionExpansion.cpp): a step at a time within each
+            // piece of fill it touches, so that it never jumps the walls
+            // between it and fill it does not touch.
             let grown = |surface: &[ExPolygon],
-                         into: &[(&[ExPolygon], Coord)],
-                         waves: bool|
+                         into: &[(&[ExPolygon], Coord)]|
              -> Result<Vec<ExPolygon>, ClipError> {
                 let mut all = surface.to_vec();
                 let mut allowed = surface.to_vec();
@@ -541,18 +539,11 @@ pub fn anchor(
                     if zone.is_empty() || *reach <= 0 {
                         continue;
                     }
-                    if waves {
-                        let steps = crate::bridges::Waves::of(*reach);
-                        for source in surface {
-                            for piece in *zone {
-                                all.extend(crate::bridges::wave(source, piece, &steps)?);
-                            }
+                    let steps = crate::bridges::Waves::of(*reach);
+                    for source in surface {
+                        for piece in *zone {
+                            all.extend(crate::bridges::wave(source, piece, &steps)?);
                         }
-                    } else {
-                        all.extend(edge_clip::intersection(
-                            &edge_clip::offset(surface, *reach, join)?,
-                            zone,
-                        )?);
                     }
                     allowed.extend(zone.iter().cloned());
                 }
@@ -566,93 +557,62 @@ pub fn anchor(
             };
 
             // Bridges first, each with its own direction, judged by the
-            // edges it has no fill beside.
-            if !bridges.is_empty() && anchoring.bridge_extra > 0 {
-                // With extra reach set (`bridge_expansion_extra`) bridges
-                // are grown as the reference grows them
-                // (`expand_bridges_detect_orientations`): further by that
-                // much into solid fill and a top surface, into a bottom
-                // surface beside them as well, in waves that keep to the
-                // area they grow in, and those that grow into one another
-                // made one. Into sparse fill they reach as they did.
-                // Different from the reference: a bridge's direction is
-                // found as it is here with no extra reach, and the gaps
-                // closed in a grown bridge stay inside the fill.
-                let beside: Vec<ExPolygon> = solid
-                    .iter()
-                    .chain(&sparse)
-                    .chain(&top)
-                    .chain(&bottoms)
-                    .cloned()
-                    .collect();
+            // edges it has no fill beside, and grown as the reference grows
+            // them (`expand_bridges_detect_orientations`, LayerRegion.cpp):
+            // into solid fill, sparse fill and a top surface beside them,
+            // in waves that keep to the area they grow in, and those that
+            // grow into one another made one. With extra reach set
+            // (`bridge_expansion_extra`) they reach that much further into
+            // solid fill and a top surface, and into a bottom surface
+            // beside them as well. Different from the reference: a
+            // bridge's direction is found from the edges with no fill
+            // beside them (`bridge_direction`), and the gaps closed in a
+            // grown bridge stay inside the fill.
+            if !bridges.is_empty() {
+                let extra = anchoring.bridge_extra > 0;
+                let mut beside: Vec<ExPolygon> =
+                    solid.iter().chain(&sparse).chain(&top).cloned().collect();
+                if extra {
+                    beside.extend(bottoms.iter().cloned());
+                }
                 let beside = edge_clip::offset(&beside, BESIDE, join)?;
                 let angles: Vec<f64> = bridges
                     .iter()
                     .map(|bridge| bridge_direction(bridge, &beside))
                     .collect();
                 let reach = anchoring.into_solid + anchoring.bridge_extra;
-                let grown = crate::bridges::expand(
-                    &bridges,
-                    &angles,
-                    &[
-                        crate::bridges::Zone {
-                            area: &solid,
-                            reach,
-                            waves: true,
-                        },
-                        crate::bridges::Zone {
-                            area: &sparse,
-                            reach: anchoring.into_sparse,
-                            waves: false,
-                        },
-                        crate::bridges::Zone {
-                            area: &top,
-                            reach,
-                            waves: true,
-                        },
-                        crate::bridges::Zone {
-                            area: &bottoms,
-                            reach,
-                            waves: true,
-                        },
-                    ],
-                    anchoring.closing,
-                )?;
+                let mut zones = vec![
+                    crate::bridges::Zone {
+                        area: &solid,
+                        reach,
+                        waves: true,
+                    },
+                    crate::bridges::Zone {
+                        area: &sparse,
+                        reach: anchoring.into_sparse,
+                        waves: true,
+                    },
+                    crate::bridges::Zone {
+                        area: &top,
+                        reach,
+                        waves: true,
+                    },
+                ];
+                if extra {
+                    zones.push(crate::bridges::Zone {
+                        area: &bottoms,
+                        reach,
+                        waves: true,
+                    });
+                }
+                let grown = crate::bridges::expand(&bridges, &angles, &zones, anchoring.closing)?;
                 for (area, angle) in grown {
                     solid = edge_clip::difference(&solid, &area)?;
                     sparse = edge_clip::difference(&sparse, &area)?;
                     top = edge_clip::difference(&top, &area)?;
-                    bottoms = edge_clip::difference(&bottoms, &area)?;
-                    out.extend(area.into_iter().map(|area| Surface {
-                        kind: SurfaceKind::Bridge,
-                        area,
-                        angle: Some(angle),
-                    }));
-                }
-            } else if !bridges.is_empty() {
-                let beside: Vec<ExPolygon> =
-                    solid.iter().chain(&sparse).chain(&top).cloned().collect();
-                let beside = edge_clip::offset(&beside, BESIDE, join)?;
-                let mut taken: Vec<ExPolygon> = Vec::new();
-                for bridge in &bridges {
-                    let angle = bridge_direction(bridge, &beside);
-                    let own = std::slice::from_ref(bridge);
-                    let mut area = grown(
-                        own,
-                        &[
-                            (&solid, anchoring.into_solid),
-                            (&sparse, anchoring.into_sparse),
-                            (&top, anchoring.into_solid),
-                        ],
-                        false,
-                    )?;
-                    if !taken.is_empty() {
-                        area = edge_clip::difference(&area, &taken)?;
+                    if extra {
+                        bottoms = edge_clip::difference(&bottoms, &area)?;
                     }
-                    solid = edge_clip::difference(&solid, &area)?;
-                    sparse = edge_clip::difference(&sparse, &area)?;
-                    top = edge_clip::difference(&top, &area)?;
-                    taken.extend(area.iter().cloned());
                     out.extend(area.into_iter().map(|area| Surface {
                         kind: SurfaceKind::Bridge,
                         area,
@@ -675,7 +635,6 @@ pub fn anchor(
                         (solid, anchoring.into_solid),
                         (sparse, anchoring.into_sparse),
                     ],
-                    true,
                 )?;
                 *solid = edge_clip::difference(solid, &area)?;
                 *sparse = edge_clip::difference(sparse, &area)?;
@@ -1627,6 +1586,23 @@ mod tests {
             .remove(0);
         assert!((area_of(&found, Top) - 44.0).abs() < 0.05);
         assert!((area_of(&found, InternalSolid) - 86.0).abs() < 0.05);
+    }
+
+    #[test]
+    fn a_bridge_does_not_reach_across_a_wall_into_fill_it_does_not_touch() {
+        // A bridge with solid fill on its right, and more solid fill
+        // beyond a wall 0.5 mm wide on its left.
+        let layer = vec![
+            Surface::new(InternalSolid, block(-10.5, 0.0, -0.5, 10.0).remove(0)),
+            Surface::new(Bridge, block(0.0, 0.0, 10.0, 10.0).remove(0)),
+            Surface::new(InternalSolid, block(10.0, 0.0, 20.0, 10.0).remove(0)),
+        ];
+        let found = anchor(std::slice::from_ref(&layer), &anchoring())
+            .unwrap()
+            .remove(0);
+        // 1.4 mm onto the fill it touches, none onto the other.
+        assert!((area_of(&found, Bridge) - 114.0).abs() < 0.05);
+        assert!((area_of(&found, InternalSolid) - 186.0).abs() < 0.05);
     }
 
     #[test]
