@@ -100,6 +100,26 @@ pub struct Sliced {
     pub timings: Timings,
 }
 
+/// The object a point belongs to, for laying its sparse pattern: of the
+/// objects whose bounds hold the point, the one with the smallest bounds,
+/// so an object stood inside another's outline is told from it.
+fn frame_of(
+    objects: &[(Point2, Point2, Point2)],
+    point: Option<Point2>,
+) -> Option<edge_infill::Frame> {
+    let point = point?;
+    objects
+        .iter()
+        .filter(|(low, high, _)| {
+            point.x >= low.x && point.x <= high.x && point.y >= low.y && point.y <= high.y
+        })
+        .min_by_key(|(low, high, _)| i128::from(high.x - low.x) * i128::from(high.y - low.y))
+        .map(|&(low, high, middle)| edge_infill::Frame {
+            origin: middle,
+            bounds: Some((low, high)),
+        })
+}
+
 /// The G-code for a sliced model.
 pub struct Gcode {
     pub text: Vec<u8>,
@@ -349,6 +369,22 @@ pub fn slice(job: Job, watch: &dyn Watcher) -> Result<Sliced, Failure> {
                 f64::from(lo[1] + hi[1]) / 2.0,
             )
         });
+    // Each object's bounds across the bed and its middle, for laying its
+    // sparse pattern. A bare model is one object, with the one middle.
+    let middles: Vec<(Point2, Point2, Point2)> = objects
+        .iter()
+        .filter_map(Mesh::bounds)
+        .map(|(lo, hi)| {
+            (
+                Point2::from_mm(lo[0].into(), lo[1].into()),
+                Point2::from_mm(hi[0].into(), hi[1].into()),
+                Point2::from_mm(
+                    f64::from(lo[0] + hi[0]) / 2.0,
+                    f64::from(lo[1] + hi[1]) / 2.0,
+                ),
+            )
+        })
+        .collect();
     let supports = edge_support::generate(
         &outlines,
         middle,
@@ -461,11 +497,19 @@ pub fn slice(job: Job, watch: &dyn Watcher) -> Result<Sliced, Failure> {
                 let mut params = infill
                     .params(height, index == 0)
                     .map_err(|e| e.to_string())?;
-                // The sparse pattern is laid through the middle of what
-                // is printed. (The reference lays each object's through
-                // its own middle; here objects are not kept apart.)
+                // A sparse pattern is laid through the middle of the
+                // object it fills, as in the reference.
                 params.origin = middle;
-                edge_infill::fill(surfaces, index, &params).map_err(|e| e.to_string())
+                params.z = first_layer_height + index as f64 * layer_height;
+                edge_infill::fill_from(surfaces, index, &params, &|surface| {
+                    frame_of(&middles, surface.area.contour.points.first().copied()).unwrap_or(
+                        edge_infill::Frame {
+                            origin: middle,
+                            bounds: None,
+                        },
+                    )
+                })
+                .map_err(|e| e.to_string())
             })
             .collect::<Result<Vec<Vec<ExtrusionPath>>, String>>()?;
         // The lines that fill gaps between walls go with the fill, and

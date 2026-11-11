@@ -128,6 +128,36 @@ pub fn closing(
     offset2(regions, radius, -radius, join)
 }
 
+/// The parts of open lines that lie within `regions`, as open lines (the
+/// reference's `intersection_pl`). A piece keeps the points of the line
+/// it was cut from, but may come out the other way round.
+pub fn clip_lines(
+    lines: &[Vec<Point2>],
+    regions: &[ExPolygon],
+) -> Result<Vec<Vec<Point2>>, ClipError> {
+    let open: Paths64 = lines
+        .iter()
+        .filter(|line| line.len() >= 2)
+        .map(|line| line.iter().map(|p| Point64::new(p.x, p.y)).collect())
+        .collect();
+    if open.is_empty() || regions.is_empty() {
+        return Ok(Vec::new());
+    }
+    let mut clipper = Clipper64::new();
+    clipper.add_open_subject(&open);
+    clipper.add_clip(&paths(rings(regions)));
+    let (_closed, open) = clipper.execute_tree(ClipType::Intersection, FillRule::NonZero)?;
+    Ok(open
+        .into_iter()
+        .map(|line| {
+            line.iter()
+                .map(|p| Point2 { x: p.x, y: p.y })
+                .collect::<Vec<_>>()
+        })
+        .filter(|line| line.len() >= 2)
+        .collect())
+}
+
 /// The ground open lines cover when each is drawn `half_width` to either
 /// side, with corners squared and ends cut off flush: the reference's
 /// `offset` of a polyline, which is how it measures what an extrusion
@@ -588,5 +618,43 @@ mod tests {
             ],
         };
         assert!(matches!(union(&[far]), Err(ClipError::OutOfRange)));
+    }
+    #[test]
+    fn open_lines_are_cut_to_what_lies_inside() {
+        let square = vec![ExPolygon {
+            contour: Polygon {
+                points: [(0.0, 0.0), (10.0, 0.0), (10.0, 10.0), (0.0, 10.0)]
+                    .map(|(x, y)| Point2::from_mm(x, y))
+                    .to_vec(),
+            },
+            holes: vec![Polygon {
+                points: [(4.0, 4.0), (4.0, 6.0), (6.0, 6.0), (6.0, 4.0)]
+                    .map(|(x, y)| Point2::from_mm(x, y))
+                    .to_vec(),
+            }],
+        }];
+        // One line right across through the hole, one that misses it,
+        // and one wholly outside.
+        let lines = vec![
+            vec![Point2::from_mm(-5.0, 5.0), Point2::from_mm(15.0, 5.0)],
+            vec![Point2::from_mm(-5.0, 2.0), Point2::from_mm(15.0, 2.0)],
+            vec![Point2::from_mm(-5.0, 20.0), Point2::from_mm(15.0, 20.0)],
+        ];
+        let cut = clip_lines(&lines, &square).unwrap();
+        let mut lengths: Vec<f64> = cut
+            .iter()
+            .map(|line| {
+                line.windows(2)
+                    .map(|pair| {
+                        ((pair[1].x - pair[0].x) as f64).hypot((pair[1].y - pair[0].y) as f64)
+                    })
+                    .sum::<f64>()
+                    / 1e6
+            })
+            .collect();
+        lengths.sort_by(f64::total_cmp);
+        assert_eq!(lengths, [4.0, 4.0, 10.0]);
+        assert!(clip_lines(&lines, &[]).unwrap().is_empty());
+        assert!(clip_lines(&[], &square).unwrap().is_empty());
     }
 }
