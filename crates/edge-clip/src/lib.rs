@@ -6,7 +6,8 @@
 //! shape but not vertex for vertex.
 
 use clipper2_rs::{
-    ClipType, Clipper64, ClipperOffset, EndType, FillRule, JoinType, Paths64, Point64, PolyTree64,
+    ClipType, Clipper64, ClipperOffset, EndType, FillRule, JoinType, Path64, Paths64, Point64,
+    PolyTree64,
 };
 use edge_geom::{Coord, ExPolygon, Point2, Polygon};
 
@@ -202,6 +203,192 @@ pub fn lines_outside(
         .into_iter()
         .map(|line| line.iter().map(|p| Point2 { x: p.x, y: p.y }).collect())
         .collect())
+}
+
+/// Shrinks one region by a distance that differs from vertex to vertex:
+/// `deltas[0]` holds one value per point of the contour and `deltas[1 + i]`
+/// one per point of hole `i`, each zero or negative, in the units of the
+/// coordinates. The contour moves in and the holes grow. Corners pushed
+/// outward are mitred no further than `miter_limit` times the distance
+/// (2 at the least) and rounded off with one cut beyond that.
+///
+/// A port of the reference's `variable_offset_inner_ex` (ClipperUtils.cpp):
+/// each ring is moved by `mittered_offset_path_scaled`, the loops the move
+/// turned inside out are dropped by a union under the positive fill rule
+/// (the reference gets the same area from Clipper 6 by uniting the ring
+/// with a frame under the negative rule and discarding the frame), and
+/// the grown holes are cut out of what is left. More than one region comes
+/// back where the shrinking pinched the shape apart.
+pub fn variable_offset_inner(
+    region: &ExPolygon,
+    deltas: &[Vec<f32>],
+    miter_limit: f64,
+) -> Result<Vec<ExPolygon>, ClipError> {
+    let matched = deltas.len() == region.holes.len() + 1
+        && region
+            .rings()
+            .zip(deltas)
+            .all(|(ring, deltas)| ring.points.len() == deltas.len());
+    let inward = deltas
+        .iter()
+        .flatten()
+        .all(|delta| delta.is_finite() && *delta <= 0.0);
+    if !matched || !inward || !miter_limit.is_finite() {
+        return Err(ClipError::InvalidDelta);
+    }
+    // What a ring that may now cross itself encloses, counting only the
+    // turns made in the given direction.
+    let enclosed = |path: Path64, rule: FillRule| -> Result<Vec<ExPolygon>, ClipError> {
+        if path.is_empty() {
+            return Ok(Vec::new());
+        }
+        let mut clipper = Clipper64::new();
+        clipper.set_preserve_collinear(false);
+        clipper.add_subject(&vec![path]);
+        let (tree, _open) = clipper.execute_tree(ClipType::Union, rule)?;
+        Ok(regions_of(&tree))
+    };
+    let contours = enclosed(
+        mitred_offset_path(&region.contour.points, &deltas[0], miter_limit),
+        FillRule::Positive,
+    )?;
+    // Holes run clockwise, so what one encloses is wound negatively.
+    let mut holes = Vec::new();
+    for (hole, deltas) in region.holes.iter().zip(&deltas[1..]) {
+        holes.extend(enclosed(
+            mitred_offset_path(&hole.points, deltas, miter_limit),
+            FillRule::Negative,
+        )?);
+    }
+    if holes.is_empty() {
+        return Ok(contours);
+    }
+    difference(&contours, &holes)
+}
+
+/// Moves every vertex of a closed ring to the right of its direction of
+/// travel by its own delta (so a negative delta moves a counter-clockwise
+/// contour inward and a clockwise hole outward), joining the moved edges
+/// as Clipper 6 joins mitred ones. The result may cross itself.
+///
+/// A port of the reference's `mittered_offset_path_scaled`
+/// (ClipperUtils.cpp), statement for statement, including the edges it
+/// skips for being shorter than 0.005 of the largest delta and the
+/// rounding of each new point to the nearest unit, halves away from zero.
+fn mitred_offset_path(contour: &[Point2], deltas: &[f32], miter_limit: f64) -> Path64 {
+    /// `ClipperOffsetShortestEdgeFactor`.
+    const SHORTEST_EDGE_FACTOR: f64 = 0.005;
+    /// The reference's `sin_min_parallel`, "equal to Clipper": compared
+    /// with the sine of the turn times the delta, in coordinate units.
+    const SIN_MIN_PARALLEL: f64 = 1.0;
+    type V = (f64, f64);
+    let at = |index: usize| -> V { (contour[index].x as f64, contour[index].y as f64) };
+    let sub = |a: V, b: V| -> V { (a.0 - b.0, a.1 - b.1) };
+    let squared_norm = |v: V| v.0 * v.0 + v.1 * v.1;
+    let perp = |v: V| -> V { (v.1, -v.0) };
+    let normalized = |v: V| -> V {
+        let squared = squared_norm(v);
+        if squared > 0.0 {
+            let norm = squared.sqrt();
+            (v.0 / norm, v.1 / norm)
+        } else {
+            v
+        }
+    };
+
+    let mut out = Path64::new();
+    if deltas.len() <= 2 || contour.len() != deltas.len() {
+        return out;
+    }
+    out.reserve(contour.len() * 2);
+    let mut add = |point: V| {
+        let x = point.0 + if point.0 < 0.0 { -0.5 } else { 0.5 };
+        let y = point.1 + if point.1 < 0.0 { -0.5 } else { 0.5 };
+        out.push(Point64::new(x as i64, y as i64));
+    };
+    // The reference clamps the limit to 2 and keeps it as the least
+    // `1 + cos` of a turn that is still mitred.
+    let miter_limit = if miter_limit > 2.0 {
+        2.0 / (miter_limit * miter_limit)
+    } else {
+        0.5
+    };
+    let largest = deltas.iter().copied().fold(f32::NEG_INFINITY, f32::max);
+    let shortest = f64::from(largest) * SHORTEST_EDGE_FACTOR;
+    let shortest_sq = shortest * shortest;
+
+    // The last point further from the first than the shortest edge.
+    let mut pt = at(0);
+    let mut last = contour.len() - 1;
+    while last > 0 && squared_norm(sub(at(last), pt)) <= shortest_sq {
+        last -= 1;
+    }
+    if last == 0 {
+        return out;
+    }
+    let mut normal_prev = normalized(perp(sub(pt, at(last))));
+    let mut index = 0;
+    loop {
+        // The next point further from this one than the shortest edge.
+        let mut next = index + 1;
+        while next <= last && squared_norm(sub(at(next), pt)) <= shortest_sq {
+            next += 1;
+        }
+        let pt_next = if next > last {
+            // The last edge is too short: it is merged with the one before.
+            index = last;
+            at(0)
+        } else {
+            at(next)
+        };
+        let normal_next = normalized(perp(sub(pt_next, pt)));
+        let delta = f64::from(deltas[index]);
+        let sin_a =
+            (normal_prev.0 * normal_next.1 - normal_prev.1 * normal_next.0).clamp(-1.0, 1.0);
+        let convex = sin_a * delta;
+        if convex <= -SIN_MIN_PARALLEL {
+            // The moved edges cross: both ends and the corner itself, for
+            // the union to cut the loop off at.
+            add((pt.0 + normal_prev.0 * delta, pt.1 + normal_prev.1 * delta));
+            add(pt);
+            add((pt.0 + normal_next.0 * delta, pt.1 + normal_next.1 * delta));
+        } else {
+            let dot = normal_prev.0 * normal_next.0 + normal_prev.1 * normal_next.1;
+            if convex < SIN_MIN_PARALLEL && dot > 0.0 {
+                // Nearly straight on.
+                add((pt.0 + normal_prev.0 * delta, pt.1 + normal_prev.1 * delta));
+            } else {
+                let r = 1.0 + dot;
+                if r >= miter_limit {
+                    let scale = delta / r;
+                    add((
+                        pt.0 + (normal_prev.0 + normal_next.0) * scale,
+                        pt.1 + (normal_prev.1 + normal_next.1) * scale,
+                    ));
+                } else {
+                    // Too sharp to mitre: one cut across the corner, its
+                    // middle at the delta from the vertex.
+                    let dx = (sin_a.atan2(dot) / 4.0).tan();
+                    let (along_prev, along_next) = (perp(normal_prev), perp(normal_next));
+                    add((
+                        pt.0 + (normal_prev.0 - along_prev.0 * dx) * delta,
+                        pt.1 + (normal_prev.1 - along_prev.1 * dx) * delta,
+                    ));
+                    add((
+                        pt.0 + (normal_next.0 + along_next.0 * dx) * delta,
+                        pt.1 + (normal_next.1 + along_next.1 * dx) * delta,
+                    ));
+                }
+            }
+        }
+        if index == last {
+            break;
+        }
+        normal_prev = normal_next;
+        pt = pt_next;
+        index = next;
+    }
+    out
 }
 
 /// The ground open lines cover when each is drawn `half_width` to either
@@ -652,6 +839,171 @@ mod tests {
         // One micrometre square, far below anything printable, is still shape.
         assert!(!is_dust(&rect(0.0, 0.0, 0.001, 0.001)));
         assert!(!is_dust(&hole(0.0, 0.0, 0.001, 0.001)));
+    }
+
+    /// One delta per point of every ring of `region`, all the same.
+    fn even(region: &ExPolygon, delta: f32) -> Vec<Vec<f32>> {
+        region
+            .rings()
+            .map(|ring| vec![delta; ring.points.len()])
+            .collect()
+    }
+
+    /// Lowest and highest x and y of a region's contour, in mm.
+    fn bounds(region: &ExPolygon) -> (f64, f64, f64, f64) {
+        let points = &region.contour.points;
+        let low = |axis: fn(&Point2) -> Coord| points.iter().map(axis).min().unwrap() as f64 / 1e6;
+        let high = |axis: fn(&Point2) -> Coord| points.iter().map(axis).max().unwrap() as f64 / 1e6;
+        (low(|p| p.x), low(|p| p.y), high(|p| p.x), high(|p| p.y))
+    }
+
+    #[test]
+    fn variable_offset_with_even_deltas_is_a_mitred_offset() {
+        let ring = ExPolygon {
+            contour: rect(0.0, 0.0, 10.0, 10.0),
+            holes: vec![hole(4.0, 4.0, 6.0, 6.0)],
+        };
+        let shrunk = variable_offset_inner(&ring, &even(&ring, -1e6), 2.0).unwrap();
+        let plain = offset(
+            std::slice::from_ref(&ring),
+            scaled(-1.0),
+            Join::Miter { limit: 2.0 },
+        )
+        .unwrap();
+        assert_eq!(shrunk.len(), 1);
+        assert_eq!(area(&shrunk), area(&plain));
+        assert_eq!(area(&shrunk), 64.0 - 16.0);
+        assert_eq!(shrunk[0].contour.points.len(), 4);
+        assert_eq!(shrunk[0].holes[0].points.len(), 4);
+        assert_oriented(&shrunk);
+        // Nothing to move leaves the region as it was.
+        let same = variable_offset_inner(&ring, &even(&ring, 0.0), 2.0).unwrap();
+        assert_eq!(area(&same), 96.0);
+        assert_eq!(same[0].contour.points.len(), 4);
+    }
+
+    #[test]
+    fn variable_offset_moves_each_vertex_by_its_own_delta() {
+        // A 20 x 4 bar with a point every 5 mm along both long sides; the
+        // left end gives up 0.5 mm, the right end nothing, and the points
+        // between fall off evenly.
+        let xs = [0.0, 5.0, 10.0, 15.0, 20.0];
+        let bottom = xs.iter().map(|&x| (x, 0.0));
+        let top = xs.iter().rev().map(|&x| (x, 4.0));
+        let points: Vec<(f64, f64)> = bottom.chain(top).collect();
+        let deltas: Vec<f32> = points
+            .iter()
+            .map(|&(x, _)| (-0.5e6 * (1.0 - x / 20.0)) as f32)
+            .collect();
+        let bar = ExPolygon {
+            contour: Polygon {
+                points: points.iter().map(|&(x, y)| Point2::from_mm(x, y)).collect(),
+            },
+            holes: Vec::new(),
+        };
+        let shaped = variable_offset_inner(&bar, &[deltas], 2.0).unwrap();
+        assert_eq!(shaped.len(), 1);
+        assert_eq!(bounds(&shaped[0]), (0.5, 0.0, 20.0, 4.0));
+        // A straight taper: 3 + x / 20 wide from the left end at x = 0.5
+        // to the untouched right end.
+        let taper = 3.0 * 19.5 + (400.0 - 0.25) / 40.0;
+        assert!(
+            (area(&shaped) - taper).abs() < 1e-6,
+            "area {} vs {taper}",
+            area(&shaped)
+        );
+        // The width at each station is what its delta leaves.
+        for (x, width) in [(5.0, 3.25), (10.0, 3.5), (15.0, 3.75)] {
+            let cut = intersection(&shaped, &solid(x - 0.001, -1.0, x + 0.001, 5.0)).unwrap();
+            let (_, low, _, high) = bounds(&cut[0]);
+            assert!(
+                (high - low - width).abs() < 0.01,
+                "width {} at x = {x}",
+                high - low
+            );
+        }
+        assert_oriented(&shaped);
+    }
+
+    #[test]
+    fn variable_offset_grows_holes_and_reports_a_pinched_shape() {
+        // Only the hole is moved: it grows from 2 mm to 3 mm across.
+        let ring = ExPolygon {
+            contour: rect(0.0, 0.0, 10.0, 10.0),
+            holes: vec![hole(4.0, 4.0, 6.0, 6.0)],
+        };
+        let deltas = vec![vec![0.0; 4], vec![-0.5e6; 4]];
+        let grown = variable_offset_inner(&ring, &deltas, 2.0).unwrap();
+        assert_eq!((grown.len(), area(&grown)), (1, 100.0 - 9.0));
+        assert_oriented(&grown);
+
+        // Two 10 mm blocks joined by a neck 1 mm wide: shrinking by 0.6 mm
+        // all round parts them, and the caller is told so.
+        let dumbbell = union(&[
+            rect(0.0, 0.0, 10.0, 10.0),
+            rect(10.0, 4.5, 15.0, 5.5),
+            rect(15.0, 0.0, 25.0, 10.0),
+        ])
+        .unwrap();
+        let apart = variable_offset_inner(&dumbbell[0], &even(&dumbbell[0], -0.6e6), 2.0).unwrap();
+        assert_eq!(apart.len(), 2);
+        assert!((area(&apart) - 2.0 * 8.8 * 8.8).abs() < 1e-9);
+        // Shrinking by more than there is leaves nothing.
+        let gone = variable_offset_inner(&ring, &even(&ring, -6e6), 2.0).unwrap();
+        assert!(gone.is_empty());
+    }
+
+    #[test]
+    fn variable_offset_cuts_sharp_corners_square() {
+        // A block with a notch 0.4 mm wide at the mouth running 4 mm in to
+        // a point. Shrinking by 0.2 mm pushes the notch's point outward;
+        // mitred it would run on several millimetres, cut square it stops
+        // 0.2 mm beyond the point.
+        let notched = ExPolygon {
+            contour: Polygon {
+                points: [
+                    (0.0, 0.0),
+                    (4.8, 0.0),
+                    (5.0, 4.0),
+                    (5.2, 0.0),
+                    (10.0, 0.0),
+                    (10.0, 10.0),
+                    (0.0, 10.0),
+                ]
+                .map(|(x, y)| Point2::from_mm(x, y))
+                .to_vec(),
+            },
+            holes: Vec::new(),
+        };
+        let shrunk = variable_offset_inner(&notched, &even(&notched, -0.2e6), 2.0).unwrap();
+        assert_eq!(shrunk.len(), 1);
+        let reach = shrunk[0]
+            .contour
+            .points
+            .iter()
+            .filter(|p| (p.x - scaled(5.0)).abs() < scaled(1.0))
+            .map(|p| p.y)
+            .max()
+            .unwrap() as f64
+            / 1e6;
+        assert!((reach - 4.2).abs() < 0.001, "the notch reaches {reach}");
+    }
+
+    #[test]
+    fn variable_offset_wants_a_delta_for_every_point() {
+        let square = &solid(0.0, 0.0, 10.0, 10.0)[0];
+        for deltas in [
+            vec![],
+            vec![vec![-1.0; 3]],
+            vec![vec![-1.0; 4], vec![-1.0; 4]],
+            vec![vec![1.0; 4]],
+            vec![vec![f32::NAN; 4]],
+        ] {
+            assert!(matches!(
+                variable_offset_inner(square, &deltas, 2.0),
+                Err(ClipError::InvalidDelta)
+            ));
+        }
     }
 
     #[test]
