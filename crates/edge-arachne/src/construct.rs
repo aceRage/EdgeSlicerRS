@@ -487,7 +487,8 @@ fn checker<'a>(
     }
 }
 
-/// The diagram of `polys`' edges, repaired if it came out broken.
+/// The diagram of `polys`' edges, repaired if it came out broken or did
+/// not come out at all.
 fn sound_diagram(
     polys: &[Polygon],
     segments: &[(usize, usize)],
@@ -502,11 +503,22 @@ fn sound_diagram(
             })
             .collect()
     };
-    let first = checker(polys, segments, edge_medial::diagram(&ends_of(polys))?);
-    if !first.has_known_issue() {
-        return Ok(first.diagram);
-    }
-    let mut best = first.diagram;
+    // The reference's library hands back a diagram whatever happened, and
+    // a broken one is found by the checks. This one gives up on some of
+    // those with an error instead, so an error is one more way for the
+    // first attempt to have gone wrong, and the outline is turned for it
+    // as for a flaw that was found. The error comes back only when no
+    // attempt gave a diagram at all.
+    let mut best = match edge_medial::diagram(&ends_of(polys)) {
+        Ok(diagram) => {
+            let first = checker(polys, segments, diagram);
+            if !first.has_known_issue() {
+                return Ok(first.diagram);
+            }
+            Ok(first.diagram)
+        }
+        Err(error) => Err(error),
+    };
     for angle in FIX_ANGLES {
         let (sin, cos) = angle.sin_cos();
         let turned: Vec<Polygon> = polys
@@ -554,12 +566,12 @@ fn sound_diagram(
                 ],
             };
         }
-        best = diagram;
+        best = Ok(diagram);
         if !broken {
             break;
         }
     }
-    Ok(best)
+    best
 }
 
 /// VoronoiUtils.cpp `discretize_parabola`: the curve between `start` and
@@ -804,6 +816,77 @@ mod tests {
             .max()
             .unwrap();
         assert!((5_000_000..=8_500_000).contains(&deepest), "{deepest}");
+    }
+
+    /// Two edges of the Voron design cube's outline, in the plate's
+    /// coordinates: upright, 5.35 mm apart, one starting a nanometre
+    /// above the other. They are what is left when the outline the
+    /// sweep goes wrong on is cut down to the least that still does.
+    const JOG: [[i64; 4]; 2] = [
+        [65_788_257, 76_173_144, 65_788_257, 78_978_540],
+        [60_438_147, 76_173_145, 60_438_147, 78_978_540],
+    ];
+
+    #[test]
+    fn an_outline_the_library_gives_up_on_is_turned_like_a_broken_one() {
+        // The two edges and the same two through the origin, so that
+        // they lie where they lie wherever a diagram is measured from.
+        let lines: Vec<Polygon> = JOG
+            .iter()
+            .flat_map(|&[x0, y0, x1, y1]| [[x0, y0, x1, y1], [-x0, -y0, -x1, -y1]])
+            .map(|[x0, y0, x1, y1]| Polygon {
+                points: vec![Point2 { x: x0, y: y0 }, Point2 { x: x1, y: y1 }],
+            })
+            .collect();
+        let segments: Vec<(usize, usize)> = (0..lines.len()).map(|line| (line, 0)).collect();
+        let ends: Vec<[i64; 4]> = lines
+            .iter()
+            .map(|line| {
+                let (from, to) = (line.points[0], line.points[1]);
+                [from.x, from.y, to.x, to.y]
+            })
+            .collect();
+        // What this stands on: as they lie, the library has no diagram
+        // for them. Should it come to have one, this needs other edges.
+        assert!(matches!(
+            edge_medial::diagram(&ends),
+            Err(MedialError::Voronoi(_))
+        ));
+
+        let found = sound_diagram(&lines, &segments).expect("a diagram of the edges turned");
+        // A cell for each edge and for each end of one, every one with
+        // edges round it, and nothing left where it is not a number.
+        assert_eq!(found.cells.len(), 12);
+        assert!(found.cells.iter().all(|cell| cell.incident_edge.is_some()));
+        assert!(found.vertices.iter().flatten().all(|c| c.is_finite()));
+        // Turned back, the vertices lie between the edges again: the
+        // nearest of them to the first pair is midway between the two.
+        let midway = (JOG[0][0] + JOG[1][0]) as f64 / 2.0;
+        assert!(
+            found
+                .vertices
+                .iter()
+                .any(|v| (v[0] - midway).abs() < 2.0 && v[1] > 0.0)
+        );
+    }
+
+    #[test]
+    fn an_error_from_every_attempt_is_passed_up() {
+        // Too wide for the library however it is turned.
+        let wide = i64::from(i32::MAX) * 4;
+        let outline = [Polygon {
+            points: vec![
+                Point2 { x: 0, y: 0 },
+                Point2 { x: wide, y: 0 },
+                Point2 { x: wide, y: wide },
+                Point2 { x: 0, y: wide },
+            ],
+        }];
+        let segments: Vec<(usize, usize)> = (0..4).map(|at| (0, at)).collect();
+        assert!(matches!(
+            sound_diagram(&outline, &segments),
+            Err(MedialError::TooLarge)
+        ));
     }
 
     #[test]
