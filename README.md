@@ -186,7 +186,9 @@ Working:
   `inner-outer-inner wall`, above the first layer); one wall more on
   every other layer (`alternate_extra_wall`); and walls over a steep
   overhang turned about on every other layer (`overhang_reverse`, with
-  its threshold and `overhang_reverse_internal_only`).
+  its threshold and `overhang_reverse_internal_only`). A wall loop no
+  longer than a circle of `small_perimeter_threshold` goes at
+  `small_perimeter_speed`.
 - Gap fill: a gap between walls too narrow for another wall gets a line
   down its middle, as wide as the gap is at each point, found as the
   reference finds it (the medial axis of the gap). On whenever

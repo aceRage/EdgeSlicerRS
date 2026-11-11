@@ -219,6 +219,65 @@ fn walls_follow_the_configured_order_island_by_island() {
     );
 }
 
+#[test]
+fn a_small_wall_loop_goes_at_its_own_speed() {
+    // A wall 40 mm round and one 8 mm round, on the second layer.
+    let loops = [wall(0.0, 0.0, 10.0, 0), wall(30.0, 0.0, 2.0, 0)];
+    let islands = [0..1, 1..2];
+    let speeds = |settings: &PrintSettings| -> Vec<f64> {
+        let layer = one_layer(&loops, &islands, &[])[0];
+        let layers = [layer, Layer { z: 0.4, ..layer }];
+        let (text, _) = print(&layers, settings);
+        let second = text.split(";LAYER_CHANGE").last().unwrap().to_owned();
+        // The feed rate each wall's first extruding move is made at.
+        let mut feed = 0.0;
+        let mut found = Vec::new();
+        let mut fresh = false;
+        for line in second.lines() {
+            if line.starts_with(";TYPE:") {
+                fresh = true;
+            }
+            if !line.starts_with("G1 ") {
+                continue;
+            }
+            feed = word(line, 'F').unwrap_or(feed);
+            let extrudes = word(line, 'E').is_some_and(|e| e > 0.0) && word(line, 'X').is_some();
+            if extrudes && fresh {
+                found.push(feed / 60.0);
+                fresh = false;
+            } else if !extrudes && word(line, 'X').is_some() {
+                fresh = true;
+            }
+        }
+        // Whichever island is nearer goes first: slowest last here.
+        found.sort_by(|a, b| b.total_cmp(a));
+        found
+    };
+    let base = PrintSettings {
+        outer_wall_speed: 100.0,
+        ..basic()
+    };
+    assert_eq!(speeds(&base), [100.0, 100.0]);
+    // Loops up to a circle of 2 mm radius, 12.6 mm round: the small one.
+    let small = PrintSettings {
+        small_perimeter_threshold: 2.0,
+        small_perimeter_speed: FloatOrPercent::Percent(30.0),
+        ..base.clone()
+    };
+    assert_eq!(speeds(&small), [100.0, 30.0]);
+    let fixed = PrintSettings {
+        small_perimeter_speed: FloatOrPercent::Value(12.0),
+        ..small.clone()
+    };
+    assert_eq!(speeds(&fixed), [100.0, 12.0]);
+    // At nothing, half the outer wall's speed.
+    let unset = PrintSettings {
+        small_perimeter_speed: FloatOrPercent::Value(0.0),
+        ..small.clone()
+    };
+    assert_eq!(speeds(&unset), [100.0, 50.0]);
+}
+
 /// The x each wall in `text` starts at, less the island's own: 0 for the
 /// outermost of [`wall`]'s squares nested half a millimetre apart.
 fn wall_depths(text: &str) -> Vec<usize> {
