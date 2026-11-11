@@ -8932,6 +8932,7 @@
     "multiline": true,
     "code": true,
     "full_width": true,
+    "height": 15,
     "default": " "
    },
    "filament_change_extrusion_role_gcode": {
@@ -8943,6 +8944,7 @@
     "multiline": true,
     "code": true,
     "full_width": true,
+    "height": 15,
     "default": ""
    },
    "filament_end_gcode": {
@@ -8954,6 +8956,7 @@
     "multiline": true,
     "code": true,
     "full_width": true,
+    "height": 15,
     "default": " "
    },
    "filament_minimal_purge_on_wipe_tower": {
@@ -9239,6 +9242,7 @@
     "vector": true,
     "multiline": true,
     "full_width": true,
+    "height": 25,
     "default": ""
    }
   }
@@ -10435,6 +10439,7 @@
     "multiline": true,
     "code": true,
     "full_width": true,
+    "height": 15,
     "default": "G28 ; home all axes\nG1 Z5 F5000 ; lift nozzle\n"
    },
    "machine_end_gcode": {
@@ -10445,6 +10450,7 @@
     "multiline": true,
     "code": true,
     "full_width": true,
+    "height": 15,
     "default": "M104 S0 ; turn off temperature\nG28 X0  ; home X axis\nM84     ; disable motors\n"
    },
    "printing_by_object_gcode": {
@@ -10455,6 +10461,7 @@
     "multiline": true,
     "code": true,
     "full_width": true,
+    "height": 15,
     "default": ""
    },
    "before_layer_change_gcode": {
@@ -10465,6 +10472,7 @@
     "multiline": true,
     "code": true,
     "full_width": true,
+    "height": 15,
     "default": ""
    },
    "layer_change_gcode": {
@@ -10475,6 +10483,7 @@
     "multiline": true,
     "code": true,
     "full_width": true,
+    "height": 15,
     "default": ""
    },
    "time_lapse_gcode": {
@@ -10484,6 +10493,7 @@
     "multiline": true,
     "code": true,
     "full_width": true,
+    "height": 15,
     "default": ""
    },
    "change_filament_gcode": {
@@ -10494,6 +10504,7 @@
     "multiline": true,
     "code": true,
     "full_width": true,
+    "height": 15,
     "default": ""
    },
    "change_extrusion_role_gcode": {
@@ -10504,6 +10515,7 @@
     "multiline": true,
     "code": true,
     "full_width": true,
+    "height": 15,
     "default": ""
    },
    "machine_pause_gcode": {
@@ -10514,6 +10526,7 @@
     "multiline": true,
     "code": true,
     "full_width": true,
+    "height": 15,
     "default": ""
    },
    "template_custom_gcode": {
@@ -10524,6 +10537,7 @@
     "multiline": true,
     "code": true,
     "full_width": true,
+    "height": 15,
     "default": ""
    },
    "single_extruder_multi_material": {
@@ -11033,6 +11047,36 @@
     "label": "Input shaper type",
     "type": "enum",
     "tooltip": "Choose the input shaper algorithm.\nDefault uses the firmware default settings.\nDisable turns off input shaping in the firmware.",
+    "values": [
+     "Default",
+     "MZV",
+     "ZV",
+     "ZVD",
+     "ZVDD",
+     "ZVDDD",
+     "EI",
+     "EI2",
+     "2HUMP_EI",
+     "EI3",
+     "3HUMP_EI",
+     "DAA",
+     "Disable"
+    ],
+    "labels": [
+     "Default",
+     "MZV",
+     "ZV",
+     "ZVD",
+     "ZVDD",
+     "ZVDDD",
+     "EI",
+     "EI2",
+     "2HUMP_EI",
+     "EI3",
+     "3HUMP_EI",
+     "DAA",
+     "Disable"
+    ],
     "mode": "advanced",
     "default": "Default"
    },
@@ -11290,6 +11334,7 @@
     "mode": "advanced",
     "multiline": true,
     "full_width": true,
+    "height": 25,
     "default": ""
    }
   }

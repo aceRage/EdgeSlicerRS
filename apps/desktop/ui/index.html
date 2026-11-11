@@ -7,7 +7,7 @@
 <title>EdgeSlicerRS</title>
 <link rel="stylesheet" href="style.css">
 <link rel="stylesheet" href="printers.css">
-<link rel="stylesheet" href="process.css">
+<link rel="stylesheet" href="settings.css">
 <link rel="stylesheet" href="gl/gl.css">
 <link rel="stylesheet" href="edit.css">
 </head>
@@ -68,13 +68,19 @@
             <!-- One card for the printer: which it is (its picture, its name and its build volume, all of
                  which open the list of the printers added), its bed type, its nozzles. -->
             <div id="printer-card" class="card">
-              <div id="printer-row" class="printer-pick">
-                <span id="printer-cover" class="cover" aria-hidden="true"></span>
-                <span class="printer-pick-text">
-                  <span class="lb-value"></span>
-                  <span id="printer-info"></span>
-                </span>
-                <select id="printer" aria-label="Printer"></select>
+              <div class="printer-head">
+                <div id="printer-row" class="printer-pick">
+                  <span id="printer-cover" class="cover" aria-hidden="true"></span>
+                  <span class="printer-pick-text">
+                    <span class="lb-value"></span>
+                    <span id="printer-info"></span>
+                  </span>
+                  <select id="printer" aria-label="Printer"></select>
+                </div>
+                <!-- The printer's own pages of settings (settings.js), in the panel below. -->
+                <button type="button" id="printer-edit" class="icon tool" title="Click to edit preset" aria-label="Printer settings">
+                  <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M10.6,2.4l3,3l-8.1,8.1H2.5v-3ZM9,4l3,3"/></svg>
+                </button>
               </div>
               <label class="card-row">Bed type <select id="bed"></select></label>
               <div id="nozzles" hidden>
@@ -110,7 +116,7 @@
           <div class="fold-body">
             <p id="saved-process" class="value" hidden></p>
             <label id="process-row">Preset <select id="process"></select></label>
-            <!-- The reference's pages of process settings, drawn from data by process.js. -->
+            <!-- The reference's pages of process settings, drawn from data by settings.js. -->
             <input type="search" id="process-search" placeholder="Search in preset…" aria-label="Search in preset" role="combobox" aria-controls="process-found" aria-expanded="false" aria-autocomplete="list" autocomplete="off" spellcheck="false">
             <div id="process-found" role="listbox" aria-label="Settings found" hidden></div>
             <div id="process-tabs" role="tablist" aria-label="Process settings"></div>
@@ -129,6 +135,35 @@
           </div>
         </section>
       </div>
+
+      <!-- A filament's or the printer's pages of settings (settings.js): they take the place of the
+           sections above while they are open, the plate staying in sight. -->
+      <section id="preset-panel" aria-labelledby="preset-title" hidden>
+        <header id="preset-head">
+          <button type="button" id="preset-back" class="icon tool" title="Back to the sidebar [Esc]" aria-label="Back to the sidebar">
+            <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M10,3L5,8l5,5"/></svg>
+          </button>
+          <div id="preset-heading">
+            <h2 id="preset-title" tabindex="-1"></h2>
+            <p id="preset-name"></p>
+          </div>
+          <button type="button" id="preset-reset" class="icon tool" title="Click to reset all settings to the last saved preset." aria-label="Reset all of these settings to the preset" hidden>
+            <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M3.5,8a4.5,4.5 0 1 0 1.4,-3.3M3.2,2.6v2.5h2.5"/></svg>
+          </button>
+          <label class="switch" title="Shows the advanced settings with the simple ones">Advance <input type="checkbox" id="preset-advanced" role="switch"></label>
+        </header>
+        <div id="preset-filaments" role="group" aria-label="Filaments" hidden></div>
+        <div id="preset-tools">
+          <input type="search" id="preset-search" placeholder="Search in preset…" aria-label="Search in preset" role="combobox" aria-controls="preset-found" aria-expanded="false" aria-autocomplete="list" autocomplete="off" spellcheck="false">
+          <div id="preset-found" role="listbox" aria-label="Settings found" hidden></div>
+          <div id="preset-tabs" role="tablist" aria-label="Preset settings"></div>
+          <p id="preset-refused" class="error" hidden></p>
+        </div>
+        <div id="preset-scroll">
+          <p id="preset-none" class="quiet" hidden>Nothing on this page with the settings as they are.</p>
+          <div id="preset-page" role="tabpanel"></div>
+        </div>
+      </section>
 
       <p id="status" role="status" class="quiet"></p>
 
@@ -279,7 +314,7 @@
 <script src="scene-edit.js"></script>
 <script src="objects.js"></script>
 <script src="printers.js"></script>
-<script src="process.js"></script>
+<script src="settings.js"></script>
 <script src="app.js"></script>
 </body>
 </html>

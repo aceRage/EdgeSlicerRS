@@ -232,6 +232,9 @@ def described_field(option, name, value, axis=None):
         option[name] = value.strip() == "true"
     elif name == "gui_type":
         option["gui_type"] = value.strip().rsplit("::", 1)[-1]
+    elif name in ("enum_values", "enum_labels") and value.strip().startswith("{"):
+        # def->enum_values = { "Default", "MZV", ... }
+        option[name] = strings(value)
 
 
 def options(source):
@@ -335,6 +338,7 @@ class Reader:
         self.vectors = {}      # variable -> a list of texts
         self.loop = (None, [])
         self.made = {}         # an option the tab defines itself, by key
+        self.numbers = {}      # a whole number named in the function (`gcode_field_height`)
         self.definition = None
 
     def add(self, keys, label=None, tooltip=None, **more):
@@ -365,6 +369,10 @@ class Reader:
         return self
 
     def statement(self, statement):
+        counted = re.match(r"const\s+int\s+(\w+)\s*=\s*([0-9]+)$", statement)
+        if counted:
+            self.numbers[counted.group(1)] = int(counted.group(2))
+            return
         named = re.match(r"(?:const\s+)?wxString\s*&?\s*(\w+)\s*=\s*wxString::Format\(\s*_L\(", statement)
         if named:
             self.texts[named.group(1)] = strings(statement)[0]
@@ -453,7 +461,7 @@ class Reader:
             elif value in ("true", "false"):
                 value = value == "true"
             else:
-                value = number(value)
+                value = self.numbers.get(value.split(";")[0].strip(), number(value))
             self.shaped[shape.group(1)]["shape"][name] = value
             return
         appended = re.search(r"append_single_option_line\(\s*(\w+)\s*[,)]", statement)

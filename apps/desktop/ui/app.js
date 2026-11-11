@@ -671,7 +671,10 @@ async function showSidebar() {
       const saved = (project.saved.filaments || [])[index] || 'not named';
       name = el('span', { className: 'value', textContent: saved, title: saved });
     }
-    return el('div', { className: 'filament' }, swatch, name);
+    // Its own pages of settings ("Edit" in the reference's row menu).
+    const edit = el('button', { type: 'button', className: 'icon tool', title: 'Click to edit preset', ariaLabel: `Filament ${index + 1} settings` }, svg(EDIT_ICON));
+    edit.addEventListener('click', () => attempt(() => openPresetPanel('filament', index + 1)));
+    return el('div', { className: 'filament' }, swatch, name, edit);
   }));
 
   // Process.
@@ -682,7 +685,9 @@ async function showSidebar() {
     const processes = choices.machine ? (await presetsOf(choices.vendor, choices.machine)).processes : [];
     fill($('process'), processes, choices.process);
   }
-  // The pages of process settings, and what is set over the preset (process.js).
+  // The pages of process settings, and what is set over the preset; a
+  // filament's or the printer's when they are open (settings.js).
+  $('printer-edit').disabled = !printer;
   await showProcess();
   showDevice();
 }

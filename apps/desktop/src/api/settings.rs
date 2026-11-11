@@ -507,7 +507,7 @@ fn shown(option: &Described, value: &Setting) -> String {
                 .collect::<Vec<_>>()
                 .join("\n");
         }
-        Setting::Many(items) if option.kind == Kind::Points && !option.vector => {
+        Setting::Many(items) if option.kind == Kind::Points => {
             return items.join(",");
         }
         Setting::Many(items) => items.first().map_or("", String::as_str),
@@ -540,7 +540,7 @@ fn held(option: &Described, value: &str, under: Option<&Setting>) -> Setting {
             Setting::Many(lines)
         };
     }
-    if option.kind == Kind::Points && !option.vector {
+    if option.kind == Kind::Points {
         return Setting::Many(value.split(',').map(str::to_owned).collect());
     }
     match under {
