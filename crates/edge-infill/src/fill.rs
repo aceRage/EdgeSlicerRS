@@ -62,6 +62,12 @@ pub struct FillParams {
     /// shortest line worth laying there, in mm.
     pub gap_fill: GapFillTarget,
     pub gap_shortest: f64,
+    /// How closely solid fill inside the part is laid on the second
+    /// layer, from 0 to 1, and over how many layers from there it comes
+    /// back to full (`elefant_foot_layers_density`,
+    /// `elefant_foot_compensation_layers`): see [`Self::solid_density`].
+    pub elephant_foot_density: f64,
+    pub elephant_foot_layers: usize,
 }
 
 /// Where the fill's own gap fill goes (`gap_fill_target`): solid fill
@@ -197,6 +203,27 @@ impl FillParams {
             }
     }
 
+    /// How closely solid fill inside the part is laid on a layer, from 0
+    /// to 1 (Fill.cpp `Layer::make_fills`, "Elephant foot compensation
+    /// for solid layers above the bottommost one by infill density
+    /// manipulation"). The first layer is squeezed onto the bed and
+    /// comes out wider than modelled; with less plastic in the layers
+    /// resting on it, what is squeezed out has somewhere to go. The
+    /// second layer gets the density set and each layer after it more,
+    /// evenly, the last of `elephant_foot_layers` being the nearest to
+    /// full; the first layer has no such fill, it is all bottom surface.
+    ///
+    /// The reference does this only for a part that stands on the bed,
+    /// not on a raft. No raft is printed here, so every part does.
+    pub fn solid_density(&self, layer_index: usize) -> f64 {
+        let (density, layers) = (self.elephant_foot_density, self.elephant_foot_layers.max(1));
+        // libslic3r's `is_approx`: within `EPSILON` of full is full.
+        if (density - 1.0).abs() < 1e-4 || layer_index == 0 || layer_index > layers {
+            return 1.0;
+        }
+        1.0 - (1.0 - density) * (layers - (layer_index - 1)) as f64 / layers as f64
+    }
+
     /// The distance between a lateral honeycomb's lines where they run
     /// singly: its cells are two thirds single wall and a third double,
     /// so it is laid a third further apart than its density says.
@@ -229,11 +256,14 @@ enum Lay {
     /// `LINES_INSET` of the edge, and turned half a spacing inside it
     /// where they are joined. `fitted` spreads them to fill the width.
     /// `ordered` lays them in one sweep across the area, where no line
-    /// goes down between two already laid.
+    /// goes down between two already laid. A `density` under 1 lays them
+    /// that much further apart, as sparse lines are placed: through
+    /// [`FillParams::origin`], not from the area's own edge.
     Turned {
         joined: bool,
         fitted: bool,
         ordered: bool,
+        density: f64,
     },
 }
 
@@ -388,6 +418,7 @@ pub fn fill_within(
                     joined: params.top_joined,
                     ordered: params.top_ordered,
                     fitted: true,
+                    density: 1.0,
                 },
                 &[params.solid_angle + turned],
             ),
@@ -422,6 +453,7 @@ pub fn fill_within(
                     joined: params.bottom_joined,
                     ordered: params.bottom_ordered,
                     fitted: true,
+                    density: 1.0,
                 },
                 &[params.solid_angle + turned],
             ),
@@ -433,6 +465,7 @@ pub fn fill_within(
                     joined: params.solid_joined,
                     ordered: params.solid_ordered,
                     fitted: false,
+                    density: params.solid_density(layer_index),
                 },
                 &[params.solid_angle + turned],
             ),
@@ -745,6 +778,7 @@ pub fn fill_within(
                 joined,
                 fitted,
                 ordered,
+                density,
             } => {
                 let Some((low, high)) = lines::extent_across(&surface.area, angles[0]) else {
                     continue;
@@ -766,8 +800,18 @@ pub fn fill_within(
                 // left over, and each is made as wide as its share
                 // (FillBase.cpp `_adjust_solid_spacing`).
                 let (mut pitch, mut flow) = (scaled(spacing) as f64, flow);
+                // Lines laid thinner than solid keep their width and
+                // are that much further apart, the distance cut to a
+                // whole number of units as FillRectilinear.cpp
+                // `fill_surface_by_lines` cuts it. They are turned and
+                // joined where solid lines are: the outlines they run
+                // to are drawn in by the line's own spacing there too.
+                let thinned = density < 1.0;
+                if thinned {
+                    pitch = (spacing * edge_geom::UNITS_PER_MM / density).trunc();
+                }
                 let intervals = ((high - low - 1.0) / pitch).floor();
-                if fitted && intervals >= 1.0 {
+                if fitted && !thinned && intervals >= 1.0 {
                     let spread = ((high - low) / intervals).min((1.2 * pitch + 0.5).floor());
                     // A pitch no line can be made for leaves the fill as it was.
                     if let Ok(wider) = flow.with_spacing(spread / edge_geom::UNITS_PER_MM) {
@@ -775,8 +819,16 @@ pub fn fill_within(
                     }
                 }
                 // The first line lies half a pitch in from the area's own
-                // edge, not on a grid shared with other areas.
-                let first = low + pitch / 2.0;
+                // edge, not on a grid shared with other areas. Thinned
+                // lines are on the grid through the middle of the object,
+                // which is where the reference puts any fill that is not
+                // solid (`align_to_grid` about `_infill_direction`'s point).
+                let first = if thinned {
+                    let (sin, cos) = angles[0].sin_cos();
+                    origin.y as f64 * cos - origin.x as f64 * sin
+                } else {
+                    low + pitch / 2.0
+                };
                 // Swept lines are one run: each after the one before.
                 let lines = lines::paths_turned(
                     &outer,
@@ -804,6 +856,9 @@ pub fn fill_within(
         }
         let wanted = match (params.gap_fill, surface.kind) {
             (GapFillTarget::Nowhere, _) => false,
+            // Fill laid thinner than solid has no gaps filled
+            // (FillBase.cpp `_create_gap_fill`, `params.density >= 1`).
+            (_, SurfaceKind::InternalSolid) if params.solid_density(layer_index) < 1.0 => false,
             (_, SurfaceKind::Top | SurfaceKind::Bottom) => true,
             (GapFillTarget::Everywhere, SurfaceKind::InternalSolid) => true,
             _ => false,
@@ -948,6 +1003,8 @@ mod tests {
             solid_ordered: true,
             gap_fill: GapFillTarget::Nowhere,
             gap_shortest: 0.0,
+            elephant_foot_density: 1.0,
+            elephant_foot_layers: 1,
         }
     }
 
@@ -1558,5 +1615,165 @@ mod tests {
         assert!(gaps(SurfaceKind::InternalSolid, GapFillTarget::TopBottom, true).is_empty());
         assert!(!gaps(SurfaceKind::InternalSolid, GapFillTarget::Everywhere, true).is_empty());
         assert!(gaps(SurfaceKind::Sparse, GapFillTarget::Everywhere, true).is_empty());
+    }
+
+    #[test]
+    fn solid_fill_is_thinner_over_the_first_layer_and_fills_out_again() {
+        // The second layer at the density set, then evenly back to full
+        // over as many layers as are shrunk for the elephant's foot.
+        let one = FillParams {
+            elephant_foot_density: 0.7,
+            ..params(Pattern::Lines, 0.2)
+        };
+        let density = |params: &FillParams| -> Vec<f64> {
+            (0..6).map(|layer| params.solid_density(layer)).collect()
+        };
+        assert_eq!(density(&one), [1.0, 0.7, 1.0, 1.0, 1.0, 1.0]);
+        let three = FillParams {
+            elephant_foot_layers: 3,
+            ..one
+        };
+        let found = density(&three);
+        for (found, expected) in found.iter().zip([1.0, 0.7, 0.8, 0.9, 1.0, 1.0]) {
+            assert!((found - expected).abs() < 1e-12, "{found} for {expected}");
+        }
+        // At full density, and as near it as makes no difference, no
+        // layer is thinned.
+        let full = FillParams {
+            elephant_foot_density: 0.99995,
+            elephant_foot_layers: 3,
+            ..one
+        };
+        assert_eq!(density(&full), [1.0; 6]);
+        assert_eq!(density(&params(Pattern::Lines, 0.2)), [1.0; 6]);
+    }
+
+    /// How far apart the long lines of some fill are, in mm, and how
+    /// many of them there are.
+    fn pitch_of(paths: &[ExtrusionPath], angle: f64) -> (f64, usize) {
+        let (sin, cos) = angle.sin_cos();
+        let mut across: Vec<f64> = paths
+            .iter()
+            .flat_map(|path| path.points.windows(2))
+            .filter(|pair| {
+                ((pair[1].x - pair[0].x) as f64).hypot((pair[1].y - pair[0].y) as f64) > 2e6
+            })
+            .map(|pair| (pair[0].y as f64 * cos - pair[0].x as f64 * sin) / 1e6)
+            .collect();
+        across.sort_by(f64::total_cmp);
+        let mut gaps: Vec<f64> = across.windows(2).map(|pair| pair[1] - pair[0]).collect();
+        gaps.sort_by(f64::total_cmp);
+        (gaps[gaps.len() / 2], across.len())
+    }
+
+    #[test]
+    fn thinned_solid_lines_keep_their_width_and_lie_further_apart() {
+        let solid = [surface(SurfaceKind::InternalSolid, 20.0)];
+        let full = params(Pattern::Lines, 0.2);
+        let thin = FillParams {
+            elephant_foot_density: 0.7,
+            origin: Point2::from_mm(10.0, 10.0),
+            ..full
+        };
+        // Layer 1 runs at 135 degrees: 45 and a quarter turn.
+        let angle = 135f64.to_radians();
+        let usual = fill(&solid, 1, &full).unwrap();
+        let thinned = fill(&solid, 1, &thin).unwrap();
+        let (usual_pitch, usual_count) = pitch_of(&usual, angle);
+        let (pitch, count) = pitch_of(&thinned, angle);
+        assert!(
+            (usual_pitch - full.solid.spacing).abs() < 1e-3,
+            "{usual_pitch}"
+        );
+        assert!((pitch - full.solid.spacing / 0.7).abs() < 1e-3, "{pitch}");
+        assert!(count < usual_count);
+        // The same line, so seven tenths of the plastic to within the
+        // joins, and still solid fill in its own order.
+        assert!(thinned.iter().all(|line| line.flow == full.solid));
+        assert!(thinned.iter().all(|line| line.role == Role::SolidInfill));
+        let share = length(&thinned) / length(&usual);
+        assert!((share - 0.7).abs() < 0.03, "{share}");
+        // A line passes through the middle of the object, wherever the
+        // area's own edge is: the lines of a square moved half a pitch
+        // lie where the first one's do.
+        let across = |paths: &[ExtrusionPath]| -> f64 {
+            let point = paths[0].points[0];
+            let (sin, cos) = angle.sin_cos();
+            let from_middle = (point.y as f64 - 10e6) * cos - (point.x as f64 - 10e6) * sin;
+            (from_middle / (full.solid.spacing * 1e6 / 0.7)).rem_euclid(1.0)
+        };
+        let on_grid = |offset: f64| offset < 0.01 || offset > 0.99;
+        assert!(on_grid(across(&thinned)), "{}", across(&thinned));
+        let mut moved = solid.clone();
+        for point in &mut moved[0].area.contour.points {
+            point.x += 123_456;
+        }
+        let elsewhere = fill(&moved, 1, &thin).unwrap();
+        assert!(on_grid(across(&elsewhere)), "{}", across(&elsewhere));
+
+        // Only the layers named, and only solid fill inside the part.
+        assert_eq!(
+            fill(&solid, 0, &thin).unwrap(),
+            fill(&solid, 0, &full).unwrap()
+        );
+        assert_eq!(
+            fill(&solid, 2, &thin).unwrap(),
+            fill(&solid, 2, &full).unwrap()
+        );
+        for kind in [
+            SurfaceKind::Top,
+            SurfaceKind::Bottom,
+            SurfaceKind::Bridge,
+            SurfaceKind::InternalBridge,
+            SurfaceKind::Sparse,
+        ] {
+            let other = [surface(kind, 20.0)];
+            let with_origin = FillParams {
+                origin: thin.origin,
+                ..full
+            };
+            assert_eq!(
+                fill(&other, 1, &thin).unwrap(),
+                fill(&other, 1, &with_origin).unwrap(),
+                "{kind:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn thinned_solid_fill_has_no_gaps_filled() {
+        // A wedge, whose point no line of the fill reaches.
+        let wedge = Surface {
+            kind: SurfaceKind::InternalSolid,
+            area: ExPolygon {
+                contour: Polygon {
+                    points: [(0.0, 0.0), (30.0, 0.0), (0.0, 4.0)]
+                        .map(|(x, y)| Point2::from_mm(x, y))
+                        .to_vec(),
+                },
+                holes: Vec::new(),
+            },
+            angle: None,
+        };
+        let frame = |_: &Surface| Frame {
+            origin: Point2::from_mm(0.0, 0.0),
+            bounds: None,
+        };
+        let gaps = |density: f64, layer: usize| {
+            let asked = FillParams {
+                gap_fill: GapFillTarget::Everywhere,
+                elephant_foot_density: density,
+                ..params(Pattern::Lines, 0.2)
+            };
+            let inside = [wedge.area.clone()];
+            fill_within(std::slice::from_ref(&wedge), layer, &asked, &frame, &inside)
+                .unwrap()
+                .into_iter()
+                .filter(|path| path.role == Role::GapFill)
+                .count()
+        };
+        assert!(gaps(1.0, 1) > 0);
+        assert_eq!(gaps(0.7, 1), 0);
+        assert!(gaps(0.7, 2) > 0);
     }
 }

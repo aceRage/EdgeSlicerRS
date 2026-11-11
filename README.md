@@ -211,6 +211,32 @@ Working:
   first layer's outer wall lies within 0.011 mm of the C++ slicer's
   everywhere; it was up to 0.17 mm off while wide parts were shrunk by
   the whole amount and narrow ones not at all.
+- Thinner solid fill over the first layer (`elefant_foot_layers_density`,
+  from 50% to 100%; 100% is the default and leaves everything as it
+  was): what the first layer is squeezed out by has somewhere to go when
+  the layers resting on it hold less plastic. The second layer's solid
+  fill inside the part is laid at the density set, and each layer after
+  it nearer to full by an even step, over as many layers as
+  `elefant_foot_compensation_layers` says (one, where it says less): at
+  70% over three layers, 70%, 80% and 90%, and full from the fifth
+  layer. The lines keep their width and lie that much further apart, on
+  the grid through the middle of the object that sparse lines are laid
+  on, not spread from the area's own edge; they are joined and ordered
+  as solid lines are, and get none of the fill's own gap fill. Top and
+  bottom surfaces, bridges and bridges over infill are left alone. A
+  port of the reference's few lines in `Layer::make_fills` (Fill.cpp)
+  and of what its line fill does with a density under one
+  (FillRectilinear.cpp `fill_surface_by_lines`). A value outside 50% to
+  100% is an error, as the reference refuses to slice with one. On a
+  20 mm cube on the U1 and on the Centauri Carbon the lines are the
+  reference's distance apart on every layer at 70% and at 50%, over one
+  layer and over three (at 70% over three: 0.539, 0.471 and 0.419 mm
+  where full fill is 0.377 mm), and on the U1 in the same places to
+  the micron; the length laid is within 0.7% of the reference's on
+  every thinned layer (at 70% over one layer 645.9 mm against 646.1 mm,
+  where full fill is 907.9 against 907.0). Not as the reference: it
+  does none of this for a part on a raft, and no raft is printed here,
+  so every part is on the bed.
 - A precise height (`precise_z_height`): layers are laid from the bed
   up for as long as the middle of one is still inside the part, so the
   last ends up to half a layer above or below the part's top; with this

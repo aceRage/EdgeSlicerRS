@@ -6,16 +6,11 @@ use edge_config::Settings;
 
 /// A setting, the value that turns it off, and what is done whatever it
 /// is set to.
-const UNREAD: [(&str, &str, &str); 6] = [
+const UNREAD: [(&str, &str, &str); 5] = [
     (
         "wipe_inward",
         "0",
         "the nozzle is wiped along the wall, not in toward the inner walls",
-    ),
-    (
-        "elefant_foot_layers_density",
-        "100%",
-        "solid fill on the first layers is laid at its full density",
     ),
     (
         "zaa_enabled",
@@ -98,9 +93,10 @@ mod tests {
         )
         .unwrap();
         // How small bridges over infill are sorted out is followed, and
-        // nothing is said of it here.
+        // so is the density of solid fill over the first layer; nothing
+        // is said of either here.
         let said = notes(&on, 1);
-        assert_eq!(said.len(), 5, "{said:?}");
+        assert_eq!(said.len(), 4, "{said:?}");
         assert!(said.contains(
             &"wipe_inward \"1\": the nozzle is wiped along the wall, not in toward the inner walls"
                 .to_owned()
