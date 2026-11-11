@@ -45,6 +45,11 @@ opt-level = 2
 opt-level = 2
 debug-assertions = false
 
+# As in the engine's workspace: the skip list under the Voronoi library
+# with levels that do not depend on the run (`vendor/cpp_map`).
+[patch.crates-io]
+cpp_map = { path = "../../vendor/cpp_map" }
+
 [profile.release]
 lto = "thin"
 codegen-units = 1
