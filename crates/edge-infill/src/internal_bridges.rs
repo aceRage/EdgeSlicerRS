@@ -231,6 +231,18 @@ fn nearby<'a>(regions: &'a [ExPolygon], area: &[ExPolygon], reach: Coord) -> Vec
 /// - Two patches on a layer may be run out over the same ground. The
 ///   reference then lays both, one over the other, unless they run the
 ///   same way; here the first to be made keeps it.
+/// - It looks for sparse fill 0.81 of a thread deep where it means 0.9
+///   (see `bridges_on`).
+/// - Its vote on the direction takes the two ends of its range as one
+///   at the low end only (`anchored.rs`, `bridging_angle`).
+///
+/// And where it is followed but cannot be matched: the vote samples each
+/// outline from where it starts, which is taken as the reference's
+/// clipping library starts it, and a point as near two lines goes to
+/// whichever its search tree finds first, so a patch laid out
+/// symmetrically about the pattern's origin can be turned the other way.
+/// To save time each patch grows and cuts only the fill near it, which
+/// gives the same result as the whole layer's.
 pub fn bridge_over_infill_by<E>(
     surfaces: &[Vec<Vec<Surface>>],
     beneath: &[Beneath],
