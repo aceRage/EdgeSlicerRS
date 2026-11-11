@@ -57,25 +57,11 @@ textarea.code { font: var(--size-small)/1.5 var(--font-mono); white-space: pre; 
 
 /* ---- the Process section ---- */
 
-/* The pages' tabs: as many to a line as fit, each with the number of its
-   settings set by hand. The one open carries the accent. */
-#process-tabs { display: flex; flex-wrap: wrap; gap: 0 2px; margin-top: var(--space-1); border-bottom: 1px solid var(--line-1); }
-.process-tab {
-  display: flex;
-  align-items: center;
-  gap: 5px;
-  height: 26px;
-  margin-bottom: -1px;
-  padding: 0 7px;
-  border: 0;
-  border-bottom: 2px solid transparent;
-  border-radius: var(--radius-m) var(--radius-m) 0 0;
-  background: none;
-  color: var(--text-2);
-  font-size: var(--size-label);
-}
-.process-tab:hover:not(:disabled) { color: var(--text-1); }
-.process-tab[aria-selected="true"] { color: var(--text-1); font-weight: 600; border-bottom-color: var(--accent); }
+/* The pages' tabs: the page's tabs (.tabs.scrolls, style.css), smaller,
+   on one line that scrolls sideways where the sidebar is too narrow for
+   all of them; each with the number of its settings set by hand. */
+#process-tabs { margin-top: var(--space-1); }
+#process-tabs > .process-tab { gap: 5px; height: 28px; padding: 0 var(--space-2); font-size: var(--size-label); }
 .process-count { color: var(--accent); font: 600 var(--size-caps) var(--font-mono); }
 
 #process-page { display: flex; flex-direction: column; gap: var(--space-2); min-width: 0; }

@@ -22,8 +22,8 @@ fixed-width face for values.
 | `style.css`, part 4 | The page's parts, in the order they stand on it |
 | `printers.css` | The printer card and Printer Selection: only what is theirs alone |
 | `process.css` | The process pages (`process.js`): the switch and the box of text, which came with them, the option row, the pages' tabs, the search's list; and the sidebar's width |
-| `gl/gl.css` | What lies over the 3D views |
-| `edit.css` | Prepare as an editor: the toolbar and the number fields over the stage, the object list |
+| `gl/gl.css` | What lies over the 3D views that `gl/` draws: the navigator, the sliders, the position window, the labels |
+| `edit.css` | Prepare as an editor: where its toolbar and the number fields stand over the stage, the object list |
 | `app.js`, "controls" | `listbox` (the page's own list for a `<select>`) and the tooltips |
 
 The theme follows the system (`prefers-color-scheme`); there is no switch in
@@ -31,10 +31,9 @@ the page. A switch, when there is one, sets the light block's values under a
 selector of its own beside the media query; nothing else has to change,
 because no rule outside part 1 names a colour.
 
-The strip, the tab bar, the stage's older overlays (the plates, the legend,
-the sliders, the notes) and Device are not on the tokens yet. They use the older names at the foot of part 1 (`--bg`,
-`--panel`, `--line`, `--strip…`, `--bar…`, `--stage…`), which stay until
-those parts are restyled. New rules do not use them.
+Every part of the page is on the tokens: the project strip, the tab bar,
+the sidebar, the stage and what lies over it, Device and the dialogs. The
+older names (`--bg`, `--panel`, `--strip…`, `--bar…`, `--stage…`) are gone.
 
 ## Tokens
 
@@ -56,6 +55,21 @@ needed.
 
 A level is told from the next by its surface and one hairline. Shadows are
 for what floats only (`--shadow-float`).
+
+The strip and the tab bar stand on `--surface-app`, the sidebar on
+`--surface-panel`, Device on `--surface-app`.
+
+| Token | For | Dark | Light |
+| --- | --- | --- | --- |
+| `--surface-stage` | The 3D stage, until the scene is drawn over it: the reference's scene background (`gl/scene.js`) | `#54545a` | `#e7e7e7` |
+| `--surface-overlay` | What lies over the stage (`.overlay`, `.toolbar`): the float surface, a little see-through | 96 % | 95 % |
+| `--overlay-blur` | The scene blurred behind an overlay (`backdrop-filter`) | | |
+| `--line-swatch` | The edge of a swatch of colour, which has to show on any colour | | |
+| `--scroll-thumb`, `--scroll-thumb-hover` | A scrollbar's thumb | | |
+
+The overlay is opaque enough that `--text-3` keeps 4.5 : 1 on it over the
+brightest scene behind it (white behind dark, black behind light); make it
+no thinner.
 
 ### Text
 
@@ -96,6 +110,7 @@ primary: make it plain.
 | `--radius-s`, `-m`, `-l` | 2, 3, 5 px | Swatches, ticks, chips; controls; cards, dialogs, what floats |
 | `--space-1` … `--space-6` | 4, 8, 12, 16, 24, 32 px | Gaps and padding |
 | `--control-s`, `-m`, `-l` | 22, 28, 32 px | Heights: a chip or an icon button; a field or a button; a table's head |
+| `--bar-height` | 40 px | The tab bar, and the strip's head beside it, whose hairlines meet |
 | `--font-ui` | The system's | Everything |
 | `--font-mono` | The system's fixed-width | A value that is a number: a field's number, a size in a table, a nozzle, a path |
 | `--size-caps` | 10.5 px | Group labels, in capitals, spaced `--caps-spacing` |
@@ -124,10 +139,18 @@ behind a printer's picture, which is drawn for a light page.
 <div class="joined"><button>All</button><button>Clear all</button></div>
 ```
 
-`.icon` alone only takes a button's own look away (the strip and the stage
-size theirs themselves); `.icon.tool` is the square icon button of the
-controls. An icon button always has an `aria-label`, and a `title` for its
-tooltip. Icons are inline SVG, drawn in strokes of `currentColor`.
+`.icon` alone only takes a button's own look away; `.icon.tool` is the
+square icon button of the controls (22 px; 28 px in a toolbar). An icon
+button always has an `aria-label`, and a `title` for its tooltip. Icons
+are inline SVG, drawn in strokes of `currentColor`; no characters (« ▾ ⤢)
+for icons.
+
+A primary button that cannot be used loses the accent (a grey fill), and
+so does the menu joined to it while it is not pointed at: an accent on
+what cannot be pressed would be an accent on what is merely there.
+
+A button with its menu (the slice button) is two buttons in a `.joined`,
+the second holding `<svg class="chevron">`.
 
 ### Fields
 
@@ -191,12 +214,29 @@ One setting of many, in a page of them (`process.js` `processRow`):
 - Rows under a `.process-page > h3` group label; several options of one
   C++ line under an `.opt-line-label`, indented.
 
-### Tabs within a section
+### Tabs
 
-`#process-tabs` holds `button.process-tab[role="tab"]`: text buttons on a
-hairline, the open one with the accent under it, as many to a line as fit.
-A `span.process-count` in a tab is how many of its settings are set by
-hand. Left and Right, Home and End move between them.
+```html
+<div class="tabs [scrolls]" role="tablist" aria-label="…">
+  <button type="button" role="tab" aria-selected="true">[<svg …/>] Prepare</button>
+</div>
+```
+
+Text (with an icon, if it has one) on a hairline, the open one with 2 px
+of the accent under it and its text in bold. One look for the main tabs
+(`#tabs`, 40 px, with the C++ tab icons) and the process pages' tabs
+(`#process-tabs`, 28 px and smaller type; a `span.process-count` in a tab is
+how many of its settings are set by hand).
+
+`.scrolls` keeps the tabs on one line: where they do not fit they are
+scrolled sideways, by a trackpad, by the wheel (`app.js` turns it), by the
+keys (Left, Right, Home, End, which give the next tab the keys), and the
+open tab is always scrolled into sight. The tab cut at the edge is what
+says there are more. The process pages' tabs are this: six tabs do not fit
+the sidebar's 300 px, and two rows of tabs read as two rows of choices, the
+lower of which moves when the upper is picked. An overflow menu was the
+other way; it would hide pages behind a click and need its own keys, and
+the row is short enough that scrolling it is little to ask.
 
 ### Lists: `listbox(select, options)`
 
@@ -255,6 +295,35 @@ is cut with an ellipsis and given whole in its tooltip.
 application has them; the capitals are the style's (`text-transform`), not
 the text's.
 
+In the sidebar's scroll each section's title bar stays at the top while
+its section is in sight (`position: sticky`). A section whose head is more
+than its title (Process: the title, the preset, the search, the pages'
+tabs) puts the head in a `.fold-pin`, which stays in sight while the
+section's body scrolls under it:
+
+```html
+<section class="fold" id="s-process">
+  <div class="fold-pin">
+    <h2 class="with-tools">…</h2>
+    <div class="fold-body"><!-- what stays: the preset, the search, the tabs --></div>
+  </div>
+  <div class="fold-body"><!-- what scrolls under it --></div>
+</section>
+```
+
+`app.js` keeps the head's height as `--pinned` on the section, and
+whatever is gone to or given the keys in the body has a `scroll-margin` of
+it, so it is never left under the head; a page opened from the head's tabs
+starts under it. Folding hides both bodies. The sidebar's order is
+Printer, Filament Management, Objects, Process: the long one last, where
+it can have the whole height when scrolled to.
+
+### What opens in place
+
+`<details><summary>` (the stage's "About this print") carries the same
+chevron as a section that folds, drawn by the style; the system's triangle
+is hidden.
+
 ### Cards
 
 `.card` is one frame round what belongs together, with a hairline between
@@ -301,6 +370,14 @@ and lays itself out in parts, ending in
 Open with `showModal()` so the keys stay inside it. Escape closes the
 innermost thing first.
 
+### Swatches
+
+`span.swatch`: a small square of a colour that means something (a
+filament, a line type), 10 px, `--radius-s`, with a `--line-swatch` edge so
+that white and black both show. The colours in it are data (the
+reference's line-type colours, the project's filament colours): never a
+token.
+
 ### Toolbars
 
 ```html
@@ -311,8 +388,9 @@ innermost thing first.
 </div>
 ```
 
-Icon tools in a row on a floating surface: over the 3D stage, where a row
-of the page would not be at home. A tool is 28 px square with a 16 px icon;
+Icon tools in a row on the overlay surface: over the 3D stage, where a row
+of the page would not be at home. `.toolbar.vertical` is a column (the
+plates); a text tool in one is a `button.quiet` ("View", "Fit part"). A tool is 28 px square with a 16 px icon;
 `.toolbar-gap` is the hairline between groups. A tool that stays on while
 it is in use (Move, Rotate, Scale) carries `aria-pressed`, and the one that
 is on is the accent on its tint. That is the toolbar's one use of the
@@ -334,6 +412,44 @@ parent's row indented by 22 px. A name too long is cut with an ellipsis and
 given whole in its `title`. The value's list is a `bare` listbox, as in a
 card's row. A name is renamed in place: the name becomes a field of the
 same height, Enter takes it, Escape leaves it.
+
+### What lies over the stage
+
+Everything over the 3D stage is on one surface: `.overlay` (a panel: the
+legend, "About this print", the progress, a note) or `.toolbar` (tools),
+both `--surface-overlay` with `--line-2` round it, `--radius-l` and
+`--shadow-float`; `.overlay.chip-label` is a value's small label (a
+slider's layer and height, the move's number) in the fixed-width face. No
+button or list on the stage has a look of its own: they are the page's,
+on that surface, in light as in dark.
+
+Where each stands (`#stage` sets the margins, `--stage-inset` all round):
+
+| Where | What |
+| --- | --- |
+| Top left | The plates (`#plates`, a vertical toolbar): "Slice all" (or "All Plates", the statistics) over a hairline, then each plate's number; the one shown is the accent on its tint, ✓ in `--ok` for sliced, ! in `--danger` for failed |
+| Top, from `--stage-left` | Prepare's toolbar, centred; under it "Object Operations" (`.edit-panel`) |
+| Top right, `--stage-right` in | The legend (`--legend-width`); the layer slider's labels keep the band right of it |
+| Right | The layers slider and its one-layer button |
+| Bottom left | The navigator cube, and Fit / View (a toolbar) under it; "About this print" beside them |
+| Bottom | The moves slider; the position window over its right end; the progress at the right |
+| Middle | What there is to say where there is nothing to show (`#empty`) |
+
+Where the stage is too narrow for the legend and "About this print" side by
+side (a container query on `#stage`), the legend's height leaves the foot of
+the stage to the notes. Sliders: a track on the overlay surface, the part
+shown in the accent, thumbs of the accent ringed in `--surface-float`; the
+one the keys move is ringed in the accent, and the focus ring is a second
+ring of `--focus` outside it. The navigator's faces, the labels' frames
+over the objects and the axes' letters keep the reference's colours.
+
+### Scrollbars
+
+A thin thumb on nothing, `--scroll-thumb`, the same in Chromium (the
+standard `scrollbar-width` and `scrollbar-color`) and in WebKit (the
+window on a Mac, which reads only `::-webkit-scrollbar`). Rows that scroll
+sideways (`.tabs.scrolls`) and the strip's and the plates' columns show
+none.
 
 ### What floats
 
@@ -382,10 +498,20 @@ same height, Enter takes it, Escape leaves it.
 ## Checking a change
 
 `cargo run -- --serve <port>` (with `EDGE_DESKTOP_DATA` naming a scratch
-folder) and a browser: dark and light, a window of 700 px and a wide one, a
-very long preset name, the keys alone (Tab through it; the focus ring must
-always be in sight), and the contrast of any new pairing of text and
-surface.
+folder) and a browser: dark and light, the window's least size (900 × 560)
+and its first (1280 × 820) and a wide one, a very long preset name, the
+keys alone (Tab through it; the focus ring must always be in sight), and
+the contrast of any new pairing of text and surface.
+
+Then the window itself (`cargo build`, then `target/debug/edge-desktop`):
+it is WebKit, not Chromium, and the page is built into the binary, so
+build after every change to it. What differs there and has to be written
+for both: scrollbars (`::-webkit-scrollbar` as well as the standard
+properties), `backdrop-filter` (with its `-webkit-` twin),
+`backface-visibility` (with its `-webkit-` twin). The window follows the
+system's light or dark; started with `-NSRequiresAquaSystemAppearance YES`
+after its arguments it is light whatever the system is, which checks light
+without touching the system's setting.
 
 The sidebar is 300 px wide in a narrow window and up to 380 px in a wide one
 (`clamp(300px, 24vw, 380px)`, in `process.css`): look at a form in it at

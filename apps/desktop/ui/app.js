@@ -479,6 +479,51 @@ if ('popover' in HTMLElement.prototype) {
   document.addEventListener('scroll', hideTip, true);
 }
 
+// Tabs on one line that scrolls (`.tabs.scrolls`): the wheel scrolls them
+// sideways, and the open tab is kept in sight. Only the row scrolls, not
+// what it is in.
+function scrollingTabs(row) {
+  const reveal = () => {
+    const tab = row.querySelector('[aria-selected="true"]');
+    if (!tab || row.scrollWidth <= row.clientWidth) return;
+    const pad = 16;
+    if (tab.offsetLeft - pad < row.scrollLeft) row.scrollLeft = tab.offsetLeft - pad;
+    else if (tab.offsetLeft + tab.offsetWidth + pad > row.scrollLeft + row.clientWidth) row.scrollLeft = tab.offsetLeft + tab.offsetWidth + pad - row.clientWidth;
+  };
+  row.addEventListener('wheel', (event) => {
+    if (row.scrollWidth <= row.clientWidth || Math.abs(event.deltaX) >= Math.abs(event.deltaY)) return;
+    event.preventDefault();
+    row.scrollLeft += event.deltaY;
+  }, { passive: false });
+  new MutationObserver(() => requestAnimationFrame(reveal))
+    .observe(row, { childList: true, subtree: true, attributes: true, attributeFilter: ['aria-selected'] });
+  new ResizeObserver(reveal).observe(row);
+}
+for (const row of document.querySelectorAll('.tabs.scrolls')) scrollingTabs(row);
+
+// A section's head that stays in sight while its body scrolls under it
+// (`.fold-pin`): its height is kept as --pinned on the section, so that
+// what is gone to in the body is not left under it (style.css), and a
+// page opened from its tabs starts under it rather than where the last
+// one was scrolled to.
+for (const pin of document.querySelectorAll('.fold-pin')) {
+  const section = pin.closest('.fold');
+  const scroller = pin.closest('#side-scroll');
+  new ResizeObserver(() => section.style.setProperty('--pinned', `${pin.offsetHeight}px`)).observe(pin);
+  const tabs = pin.querySelector('[role="tablist"]');
+  if (!tabs || !scroller) continue;
+  const toPageTop = () => requestAnimationFrame(() => {
+    const body = pin.nextElementSibling;
+    if (!body || scroller.scrollHeight <= scroller.clientHeight) return;
+    const stuck = pin.getBoundingClientRect().top <= scroller.getBoundingClientRect().top + 1;
+    if (!stuck) return;
+    const under = body.getBoundingClientRect().top - pin.getBoundingClientRect().bottom;
+    if (under < 0) scroller.scrollTop += under;
+  });
+  tabs.addEventListener('click', (event) => { if (event.target.closest('[role="tab"]')) toPageTop(); });
+  tabs.addEventListener('keydown', (event) => { if (['ArrowLeft', 'ArrowRight', 'Home', 'End'].includes(event.key)) toPageTop(); });
+}
+
 // ---- state ----
 
 const state = {
@@ -897,7 +942,6 @@ function showStripShape() {
   const width = strip.collapsed ? 24 : Math.max(strip.width, strip.text ? 120 : 88);
   node.style.setProperty('--strip-width', `${width}px`);
   const fold = $('strip-fold');
-  fold.textContent = strip.collapsed ? '»' : '«';
   fold.title = strip.collapsed ? 'Show the project strip' : 'Collapse the project strip';
   fold.setAttribute('aria-label', fold.title);
 }
@@ -924,7 +968,9 @@ function tooltipFor(tile) {
 // short there with an ellipsis (ProjectSessions.hpp `wrap_name_two_lines`).
 const measuring = document.createElement('canvas').getContext('2d');
 function nameLines(name, width) {
-  measuring.font = '11px system-ui, -apple-system, "Segoe UI", sans-serif';
+  // In the tile's own face and size (style.css: --size-small, --font-ui).
+  const style = getComputedStyle(document.documentElement);
+  measuring.font = `${style.getPropertyValue('--size-small').trim()} ${style.getPropertyValue('--font-ui').trim()}`;
   const fits = (text) => measuring.measureText(text).width <= width;
   if (fits(name)) return [name];
   const tokens = name.split(/(?<=[ _\-.])/);
@@ -951,7 +997,8 @@ function renderStrip(force = false) {
     item.setAttribute('aria-current', String(active));
     const thumb = el('canvas', { className: 'thumb', width: 192, height: 192 });
     drawThumb(thumb, tile);
-    const wide = Math.max(strip.width, strip.text ? 120 : 88) - 21;
+    // The tile's margins and padding (style.css, ".tile") off the strip's width.
+    const wide = Math.max(strip.width, strip.text ? 120 : 88) - 14;
     const name = el('span', { className: 'name' },
       ...(strip.text ? [tile.name] : nameLines(tile.name, wide)).map((line) => el('span', { textContent: line })));
     item.append(thumb, name);
@@ -978,8 +1025,10 @@ function drawThumb(canvas, tile) {
   const context = canvas.getContext('2d');
   const side = canvas.width;
   const style = getComputedStyle(document.documentElement);
-  const muted = style.getPropertyValue('--strip-muted').trim();
-  const accent = style.getPropertyValue('--accent').trim();
+  // The bed in the hints' colour, what stands on it in the labels'; the
+  // accent is the open tile's frame, not every picture's.
+  const muted = style.getPropertyValue('--text-3').trim();
+  const drawn = style.getPropertyValue('--text-2').trim();
   context.clearRect(0, 0, side, side);
   const view = kept(tile.id).thumb;
   if (!view && !tile.empty) {
@@ -1020,8 +1069,8 @@ function drawThumb(canvas, tile) {
     context.globalAlpha = 1;
     context.strokeRect(x0, y0, x1 - x0, y1 - y0);
   }
-  context.fillStyle = accent;
-  context.strokeStyle = accent;
+  context.fillStyle = drawn;
+  context.strokeStyle = drawn;
   context.lineWidth = 2;
   context.lineJoin = 'round';
   for (const { outline } of objects) {
@@ -1547,7 +1596,6 @@ $('view-type').addEventListener('change', () => {
 });
 $('legend-fold').addEventListener('click', () => {
   const folded = $('legend').classList.toggle('folded');
-  $('legend-fold').textContent = folded ? '▸' : '▾';
   $('legend-fold').setAttribute('aria-expanded', String(!folded));
 });
 

@@ -28,8 +28,13 @@ light kept working, in a modern web style that is streamlined and spare,
 nearer the newer PrusaSlicer look than Bambu Studio's. A row's "Here"
 column says what is offered, never that it is styled as the C++ styles it.
 How it is styled (the tokens, the controls, the dos and don'ts) is in
-`ui/STYLE.md`; the sidebar and Printer Selection follow it, the strip, the
-tab bar, the stage's overlays and Device do not yet.
+`ui/STYLE.md`, and the whole page follows it: the project strip, the tab
+bar, the sidebar, Printer Selection, the stage and what lies over it in
+Prepare and Preview, Device and the dialogs. The restyle changed no
+control, wording, call or key; the sidebar's sections now stand in the
+order Printer, Filament Management, Objects, Process (the object list was
+after the process pages), with each section's title, and the Process
+section's head, kept in sight as the sidebar scrolls.
 
 Everything the page asks for goes through `Session::call` (`src/api.rs`), or
 through its twin `Session::call_bytes` for what is answered in bytes. The
@@ -824,7 +829,8 @@ undo history.
 In the sidebar, under "Objects" (`ui/objects.js`). In the C++ the list is
 what the Process section shows when its switch is on "Objects"; here it has a
 section of its own, the per-object settings that go with that switch not
-being built.
+being built. It stands before the Process section, where the C++ shows it
+too (at the head of Process).
 
 | C++ | Where | Here |
 | --- | --- | --- |

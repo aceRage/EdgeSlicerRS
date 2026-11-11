@@ -16,11 +16,13 @@
 <!-- The project strip: the open projects, at the far left of every tab. -->
 <nav id="strip" aria-label="Open projects">
   <div id="strip-head">
-    <button id="strip-fold" type="button" class="icon" title="Collapse the project strip" aria-label="Collapse the project strip">«</button>
-    <button id="project-new" type="button" class="icon" title="New project" aria-label="New project">
+    <button id="strip-fold" type="button" class="icon tool" title="Collapse the project strip" aria-label="Collapse the project strip">
+      <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M8.5,4.5L5,8l3.5,3.5M12.5,4.5L9,8l3.5,3.5"/></svg>
+    </button>
+    <button id="project-new" type="button" class="icon tool" title="New project" aria-label="New project">
       <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M.5,13.5V1.5a1,1,0,0,1,1-1h12a1,1,0,0,1,1,1v12a1,1,0,0,1-1,1H1.5A1,1,0,0,1,.5,13.5Zm3-6h3m2,0h3m-4-4v8"/></svg>
     </button>
-    <button id="project-open" type="button" class="icon" title="Open project" aria-label="Open project">
+    <button id="project-open" type="button" class="icon tool" title="Open project" aria-label="Open project">
       <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M.5,5.5H4.672a2,2,0,0,0,1.414-.586L7.914,3.086A2,2,0,0,1,9.328,2.5H14.5"/><rect x="0.5" y="0.5" width="14" height="14" rx="1"/></svg>
     </button>
   </div>
@@ -30,7 +32,7 @@
 
 <div id="frame">
   <header id="tabbar">
-    <div id="tabs" role="tablist" aria-label="Main tabs">
+    <div id="tabs" class="tabs" role="tablist" aria-label="Main tabs">
       <button type="button" role="tab" id="tab-prepare" data-tab="prepare" aria-controls="plater">
         <svg viewBox="0 0 20 20" aria-hidden="true"><path d="M1.5,6.5l7.776,3.888a.5.5,0,0,0,.448,0L17.5,6.5,9.724,2.612a.5.5,0,0,0-.448,0Z"/><path d="M1.5,6.5v8l7.776,3.888a.5.5,0,0,0,.448,0L17.5,14.5v-8"/></svg>
         Prepare
@@ -45,9 +47,9 @@
       </button>
     </div>
     <div id="side-tools">
-      <div class="split">
+      <div class="joined">
         <button id="slice" type="button" class="primary" disabled>Slice plate</button>
-        <button id="slice-more" type="button" class="primary" aria-haspopup="menu" aria-label="Slice plate or slice all">▾</button>
+        <button id="slice-more" type="button" class="primary" aria-haspopup="menu" aria-label="Slice plate or slice all"><svg class="chevron" viewBox="0 0 10 6" aria-hidden="true"><path d="M1 1l4 4 4-4"/></svg></button>
       </div>
       <button id="export" type="button" disabled>Export G-code file</button>
     </div>
@@ -99,27 +101,6 @@
           </div>
         </section>
 
-        <section class="fold" id="s-process">
-          <h2 class="with-tools">
-            <button type="button" class="fold-title" title="Click to collapse / expand" aria-expanded="true">Process</button>
-            <button type="button" id="process-reset" class="icon tool" title="Click to reset all settings to the last saved preset." aria-label="Reset all process settings to the preset" hidden>
-              <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M3.5,8a4.5,4.5 0 1 0 1.4,-3.3M3.2,2.6v2.5h2.5"/></svg>
-            </button>
-            <label class="switch" title="Shows the advanced settings with the simple ones">Advance <input type="checkbox" id="process-advanced" role="switch"></label>
-          </h2>
-          <div class="fold-body">
-            <p id="saved-process" class="value" hidden></p>
-            <label id="process-row">Preset <select id="process"></select></label>
-            <!-- The reference's pages of process settings, drawn from data by process.js. -->
-            <input type="search" id="process-search" placeholder="Search in preset…" aria-label="Search in preset" role="combobox" aria-controls="process-found" aria-expanded="false" aria-autocomplete="list" autocomplete="off" spellcheck="false">
-            <div id="process-found" role="listbox" aria-label="Settings found" hidden></div>
-            <div id="process-tabs" role="tablist" aria-label="Process settings"></div>
-            <p id="process-refused" class="error" hidden></p>
-            <p id="process-none" class="quiet" hidden>Nothing on this page with the settings as they are.</p>
-            <div id="process-page" role="tabpanel"></div>
-          </div>
-        </section>
-
         <!-- The object list: the plates and what stands on them (objects.js). -->
         <section class="fold" id="s-objects">
           <h2><button type="button" class="fold-title" title="Click to collapse / expand" aria-expanded="true">Objects</button></h2>
@@ -128,6 +109,33 @@
             <p id="objects-none" class="quiet">There are no objects in the project. "Add" [Ctrl+I] over the plate puts a model on it.</p>
           </div>
         </section>
+
+        <section class="fold" id="s-process">
+          <!-- The head of the section stays in sight while the options scroll under it. -->
+          <div class="fold-pin">
+            <h2 class="with-tools">
+              <button type="button" class="fold-title" title="Click to collapse / expand" aria-expanded="true">Process</button>
+              <button type="button" id="process-reset" class="icon tool" title="Click to reset all settings to the last saved preset." aria-label="Reset all process settings to the preset" hidden>
+                <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M3.5,8a4.5,4.5 0 1 0 1.4,-3.3M3.2,2.6v2.5h2.5"/></svg>
+              </button>
+              <label class="switch" title="Shows the advanced settings with the simple ones">Advance <input type="checkbox" id="process-advanced" role="switch"></label>
+            </h2>
+            <div class="fold-body">
+              <p id="saved-process" class="value" hidden></p>
+              <label id="process-row">Preset <select id="process"></select></label>
+              <!-- The reference's pages of process settings, drawn from data by process.js. -->
+              <input type="search" id="process-search" placeholder="Search in preset…" aria-label="Search in preset" role="combobox" aria-controls="process-found" aria-expanded="false" aria-autocomplete="list" autocomplete="off" spellcheck="false">
+              <div id="process-tabs" class="tabs scrolls" role="tablist" aria-label="Process settings"></div>
+            </div>
+          </div>
+          <div class="fold-body">
+            <div id="process-found" role="listbox" aria-label="Settings found" hidden></div>
+            <p id="process-refused" class="error" hidden></p>
+            <p id="process-none" class="quiet" hidden>Nothing on this page with the settings as they are.</p>
+            <div id="process-page" role="tabpanel"></div>
+          </div>
+        </section>
+
       </div>
 
       <p id="status" role="status" class="quiet"></p>
@@ -142,19 +150,19 @@
       <canvas id="view" tabindex="-1" aria-label="The plate"></canvas>
       <!-- The plate and the print in 3D (gl/); where the browser has no WebGL2 the canvas above is used. -->
       <canvas id="view3d" tabindex="-1" aria-label="The plate in 3D"></canvas>
-      <p id="gl-note" hidden></p>
-      <p id="empty"></p>
+      <p id="gl-note" class="overlay" hidden></p>
+      <p id="empty" class="overlay"></p>
 
-      <div id="plates" aria-label="Select Plate" hidden></div>
+      <div id="plates" class="toolbar vertical" aria-label="Select Plate" hidden></div>
 
-      <div id="fit">
-        <button type="button" data-fit="part" title="Zoom to the objects [Z]">Fit part</button>
-        <button type="button" data-fit="bed">Fit bed</button>
+      <div id="fit" class="toolbar">
+        <button type="button" class="quiet" data-fit="part" title="Zoom to the objects [Z]">Fit part</button>
+        <button type="button" class="quiet" data-fit="bed">Fit bed</button>
       </div>
 
-      <div id="legend" hidden>
+      <div id="legend" class="overlay" hidden>
         <div id="legend-head">
-          <button type="button" id="legend-fold" class="icon" aria-expanded="true" title="Fold or unfold the legend">▾</button>
+          <button type="button" id="legend-fold" class="icon tool" aria-expanded="true" title="Fold or unfold the legend" aria-label="Fold or unfold the legend"><svg viewBox="0 0 16 16" aria-hidden="true"><path d="M4.5,6.5L8,10l3.5-3.5"/></svg></button>
           <select id="view-type" aria-label="View type"></select>
         </div>
         <div id="legend-body">
@@ -168,11 +176,11 @@
       </div>
 
       <div id="vslider" hidden>
-        <output id="layer-label"></output>
+        <output id="layer-label" class="overlay chip-label"></output>
         <div id="vtrack" role="slider" tabindex="0" aria-orientation="vertical" aria-label="Layer"><div id="vfill"></div><div id="vthumb"></div></div>
       </div>
 
-      <details id="notes" open hidden>
+      <details id="notes" class="overlay" open hidden>
         <summary>About this print</summary>
         <p id="gcode-error" class="error" hidden></p>
         <ul id="problems" class="error"></ul>
@@ -185,7 +193,7 @@
         <p id="exported" class="quiet"></p>
       </details>
 
-      <div id="progress" hidden>
+      <div id="progress" class="overlay" hidden>
         <p id="progress-label"></p>
         <div id="progress-track"><div id="bar"></div></div>
         <button id="cancel" type="button">Cancel</button>

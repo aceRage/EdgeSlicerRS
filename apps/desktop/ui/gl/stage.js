@@ -75,22 +75,24 @@
 
     build(parent) {
       this.navigator = new GL.controls.Navigator(parent, (view) => this.view(view));
-      const fit = el('button', { type: 'button', className: 'gl-fit', title: 'Fit in all view [Z]', textContent: '⤢' });
+      const fit = el('button', { type: 'button', className: 'icon tool gl-fit', title: 'Fit in all view [Z]' });
+      fit.innerHTML = '<svg viewBox="0 0 16 16" aria-hidden="true"><path d="M2.5,6V2.5H6M10,2.5h3.5V6M13.5,10v3.5H10M6,13.5H2.5V10"/><rect x="5.5" y="5.5" width="5" height="5" rx="0.5"/></svg>';
       fit.setAttribute('aria-label', 'Fit in all view');
       fit.addEventListener('click', () => this.fit('part'));
-      const menu = el('button', { type: 'button', className: 'gl-view', textContent: 'View ▾' });
+      const menu = el('button', { type: 'button', className: 'quiet gl-view', textContent: 'View' });
+      menu.insertAdjacentHTML('beforeend', '<svg class="chevron" viewBox="0 0 10 6" aria-hidden="true"><path d="M1 5l4-4 4 4"/></svg>');
       menu.setAttribute('aria-haspopup', 'menu');
       menu.addEventListener('click', () => {
         const box = menu.getBoundingClientRect();
         this.host.menu(box.left, box.top - 8, this.viewMenu(), true);
       });
-      this.tools = el('div', { className: 'gl-tools' }, fit, menu);
+      this.tools = el('div', { className: 'gl-tools toolbar' }, fit, el('span', { className: 'toolbar-gap' }), menu);
       parent.append(this.tools);
       this.labels = el('div', { className: 'gl-labels' });
       parent.append(this.labels);
-      this.readout = el('div', { className: 'gl-readout', hidden: true });
+      this.readout = el('div', { className: 'gl-readout overlay', hidden: true });
       parent.append(this.readout);
-      this.loading = el('div', { className: 'gl-loading', hidden: true });
+      this.loading = el('div', { className: 'gl-loading overlay', hidden: true });
       parent.append(this.loading);
       this.layerSlider = new GL.controls.LayerSlider(parent, {
         onChange: (low, high, which) => this.layersChanged(low, high, which),
