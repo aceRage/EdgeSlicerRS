@@ -55,17 +55,23 @@ unsafe_code = "deny"
 [profile.dev.package."*"]
 opt-level = 2
 
-# The Voronoi library checks in a debug build that no number it works
-# with is a NaN, and stops if one is. One turns up now and then, as it
-# does in Boost's own: the square root of a determinant that rounding
-# has left a hair under nothing, in the quick form of a circle event
-# (`lazy_circle_formation::pss`). Which events are tried depends on the
-# library's skip list, whose levels are random, so the same outline
-# stopped a test on one run in three and not on the others (the Voron
-# cube's layer at 11.3 mm). A release build has no such check and gives
-# the same walls every run; tests are held to what ships.
+# The Voronoi library's debug checks are off, in a debug build as in the
+# one that ships. They stop it where a number it works with is not a
+# number, and one turns up only in a sweep that has already gone wrong:
+# the square root of a negative determinant in the quick form of a circle
+# event (`lazy_circle_formation::pss`), asked for three neighbours that no
+# circle touches. The quick form's error estimate does not see it, so the
+# exact form is not used for it either, here or in Boost. The sweep goes
+# wrong on outlines Boost.Polygon's own diagram is wrong on too (the
+# Voron cube's layer at 11.3 mm, 49 to 79 mm from the origin with two
+# edges a nanometre out of line), and what is done about it is the
+# reference's: the walls look the diagram over, numbers that are not
+# numbers among the rest, and build it again from the outline turned
+# (`sound_diagram` in `edge-arachne`). A check that stops the library
+# first would stop that. With the skip list's levels random it stopped
+# one test run in three on that layer; with them fixed (below) it would
+# stop every one. The optimisation level is the `"*"` table's.
 [profile.dev.package.boostvoronoi]
-opt-level = 2
 debug-assertions = false
 
 # The Voronoi library keeps its beach line in `cpp_map`'s skip list, and
