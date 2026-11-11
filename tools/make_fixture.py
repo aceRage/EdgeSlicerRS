@@ -50,6 +50,13 @@ across standing on a cell, a round tube standing on another with a 4 mm hole
 down through tube and cell, and a block 16 mm tall with a 5 mm hole through
 it from front to back, which no layer sees as a hole.
 
+wedge, dome, ramp and holed are for Z contouring (zaa_enabled): a block
+30 x 20 mm whose top rises 4 degrees along x, from 3 mm to 5.1; a round
+post 24 mm across and 2 mm tall under a spherical cap 3 mm high, which meets
+it at 28 degrees; a block 35 x 20 mm whose top climbs 7.6 degrees from 2 mm
+to 4 over its first 15 mm and is flat beyond; and a block 30 mm square with
+the wedge's top and a round hole 8 mm across down through it.
+
 counterbore is for counterbore_hole_bridging: a slab 8 mm tall of eight
 20 mm cells in two rows, each with a hole up through it that is wide for
 the first 3 mm and narrow above (a layer height that does not divide 3 mm

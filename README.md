@@ -23,6 +23,7 @@ replaces it until output matches on the printers we care about.
 | `crates/edge-perimeter` | Walls, the lines that fill the gaps between them, and the infill area inside (classic constant-width generator) |
 | `crates/edge-medial` | The centre line of a narrow region and how wide it is along it (wraps boostvoronoi), what part of the plane lies nearest each of a set of edges, the whole Voronoi diagram of a set of edges as plain data, and lines of changing width as extrusions. The same edges give the same diagram on every run and thread: the library's skip list has its levels from a generator each list owns, not from the thread's random numbers (`vendor/cpp_map`). And wherever they lie: all three are swept in coordinates of the edges' own, the whole diagram about the middle of the box round them, which is handed back with it |
 | `crates/edge-adhesion` | Skirt and brim, with the automatic brim width |
+| `crates/edge-contour` | Z contouring: a top surface, its ironing and the walls round it laid at the height of the model's surface under each point, within the layer (a port of the reference's ContourZ.cpp) |
 | `crates/edge-support` | Supports under overhangs, normal (grid) and tree, with dense tops and feet |
 | `crates/edge-gcode` | Print order, seams, travel, retraction, wipe and lift, cooling, overhangs, and extrusion, written as G-code |
 | `crates/edge-visibility` | How much of a part's outside can be seen from each place on its surface, which is where a seam shows least: points scattered over the mesh, rays cast from each, and the measure at any place taken from the points round it (a port of the visibility measure of the reference's SeamPlacer); and where the parts of an object meet, points on each part's surface that touch another part, which seams are moved to (its `gather_part_joints`) |
@@ -35,7 +36,7 @@ replaces it until output matches on the printers we care about.
 | `crates/edge-cli` | The `edge` command line |
 | `tools/make_defaults.py` | Asks the reference for its default of every setting and writes the table `edge-config` carries; run again when the pin moves |
 | `tools/make_settings_pages.py` | Reads the reference's process, filament and printer pages and option definitions from its source and writes the data the desktop app draws its settings pages from; run again when the pin moves, after `make_defaults.py` |
-| `tools/make_fixture.py` | Writes small test 3MFs (parts that need supports or a brim, a plain cube, two blocks in two filaments, a comb with thin teeth on the bed, three tiers with a top surface on each, bars over a base for small bridges over infill, a slab with round holes for the hole options, a slab with holes that narrow on the way up for bridging them, a slab with pockets underneath, three round ones for arc fitting: a post, a post with a hole, a slab with a wide curve and tight ones, a post that widens as it rises for scarf seams, two of two parts for seams where parts meet: a round post cut in two, and a block with a post pushed half into it, and two with seams painted on: a post with a strip painted to have them, and a cube with two sides painted to keep them off) to compare with the reference on |
+| `tools/make_fixture.py` | Writes small test 3MFs (parts that need supports or a brim, a plain cube, two blocks in two filaments, a comb with thin teeth on the bed, three tiers with a top surface on each, bars over a base for small bridges over infill, a slab with round holes for the hole options, a slab with holes that narrow on the way up for bridging them, a slab with pockets underneath, three round ones for arc fitting: a post, a post with a hole, a slab with a wide curve and tight ones, a post that widens as it rises for scarf seams, two of two parts for seams where parts meet: a round post cut in two, and a block with a post pushed half into it, and two with seams painted on: a post with a strip painted to have them, and a cube with two sides painted to keep them off; and for Z contouring a wedge of 4 degrees, a shallow dome, a ramp meeting a flat, and the wedge with a hole down through it) to compare with the reference on |
 | `tools/make_app.sh` | Builds the desktop app and wraps it in a macOS `.app` that opens with a double click (macOS only) |
 | `tools/make_project.py` | Writes one of those parts as a project whose settings are named presets, with as many filaments as are named, each list holding the value each filament reads at standard flow: how the test prints for a printer are made |
 | `reference/EdgeSlicer` | Pinned submodule of the C++ slicer: profiles, test models, behaviour to match. Read-only here |
@@ -803,6 +804,54 @@ Known gaps: painted supports and seams, per-object setting overrides, typed sett
   from, and with `ironing_fan_speed` set the fan runs at that for as
   long as the ironing lasts. With `ironing_type` at `no ironing` a
   file is byte for byte what it was.
+- Z contouring (`zaa_enabled`, "Z anti-aliasing"): top surfaces,
+  their ironing and the walls round them are laid not flat at their
+  layer's top but at the height of the model's own surface under each
+  point, within the layer, so a shallow slope or a curved top prints
+  without its stair steps. A port of the reference's ContourZ.cpp
+  (`edge-contour`). Every layer but the first is sliced `zaa_min_z`
+  above its bottom rather than through its middle (a `zaa_min_z` over
+  the layer height is refused, as the reference refuses it). Once the
+  fill and ironing are made, each top surface line, ironing line and
+  wall of every layer but the first is cut into points 0.1 mm apart
+  and a ray is cast straight up from each, from the slicing plane, to
+  the parts' surface, the triangles in a tree and the layers on as
+  many threads as there are. How far that is above or below the
+  layer's top is the point's height: a top surface down to the
+  slicing plane and up by `zaa_min_z`, fading to nothing over the
+  0.03 mm above that; ironing a layer either way; a wall never up,
+  and on a surface sloped more than `zaa_minimize_perimeter_height`
+  degrees let down the slope by half its width, faded in over the
+  20 degrees above. The heights are smoothed along the line (three
+  points either side), a line that moves less than 10 µm all along is
+  left flat, and points in line with the two before them in three
+  dimensions are dropped. The writer lays a contoured line point to
+  point with a height on every move and no arcs, leaves it unthinned,
+  lays each move as much as the line is tall there (the mean of its
+  two ends' heights; ironing keeps its flow) and, with
+  `zaa_speed_scaling`, that much slower, never faster than the line's
+  own speed nor slower than 10 mm/s, and held to the hot end's limit,
+  a new speed only where the height has moved 5 % from the one that
+  set the last. With `zaa_dont_alternate_fill_direction` fill and
+  ironing keep one direction on every layer. A wall of changing width
+  is contoured as a whole loop, where the reference contours each of
+  its pieces of one width by itself. As in the reference nothing is
+  contoured with `spiral_mode` or `dithering_local_z_mode` on, and
+  each says so. Four things are not as in the reference, each a
+  mistake there: a contoured wall is closed with the seam gap and no
+  scarf (the reference lays a scarf's way up and way down flat along
+  the contour at full flow, the joint twice); ironing keeps its speed
+  (the reference slows it for its height over the ironing line's own,
+  down to 10 mm/s); a wipe after a contoured line goes back along it
+  at the heights it was laid at (the reference wipes at the height
+  the line ended at, back up a slope through what it has just laid);
+  and a travel never goes down on the way, the nozzle coming down to
+  a line that starts lower once it is there (the reference travels
+  straight from one height to the other). One is noted: where a layer
+  is slowed to cool, a contoured move slowed for its height is held to
+  the layer's cap like any other line, where the reference slows such
+  moves in proportion. With `zaa_enabled` off a file is byte for byte
+  what it was.
 - G-code: `slice --gcode out.gcode` orders each layer (skirt and brim,
   each part's brim whole before the next, then island by island: an
   island's walls from the inside out, each beside the last, then the

@@ -230,6 +230,14 @@ pub fn contour_line(
     }
     // The points 0.1 mm apart at most, each stretch cut evenly, with
     // where it came from and whether it is one of the line's own.
+    // How far up a surface can be and still move a point: past the
+    // band and its fade, and for a wall half its width more, which the
+    // slope may take it back down by ([`sample::delta`]).
+    let band = match kind {
+        Kind::Ironing => at.height,
+        Kind::Wall | Kind::Top => zaa.min_z,
+    };
+    let reach = (at.print_z - at.slice_z) + band + sample::TOP_TOLERANCE + half_width + 0.01;
     let mut xy: Vec<[f64; 2]> = Vec::new();
     let mut heights: Vec<f64> = Vec::new();
     let mut own: Vec<bool> = Vec::new();
@@ -260,7 +268,7 @@ pub fn contour_line(
             }
             let sample = sample::Sample {
                 kind,
-                hit: surface.up(p[0], p[1], at.slice_z),
+                hit: surface.up(p[0], p[1], at.slice_z, reach),
                 print_z: at.print_z,
                 slice_z: at.slice_z,
                 height: at.height,

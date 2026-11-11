@@ -38,13 +38,16 @@ impl Surface {
     }
 
     /// Where a ray straight up from `(x, y, z)` first leaves or meets the
-    /// surface, all in mm (SLA/IndexedMesh.cpp `query_ray_hit`, cast
-    /// up only: casting both ways and taking the nearer could take the
-    /// bottom for the top, upstream #13510).
-    pub fn up(&self, x: f64, y: f64, z: f64) -> Option<Hit> {
+    /// surface, if it is within `reach` of it, all in mm
+    /// (SLA/IndexedMesh.cpp `query_ray_hit`, cast up only: casting both
+    /// ways and taking the nearer could take the bottom for the top,
+    /// upstream #13510). The reference casts each ray as far as it
+    /// goes; one further than a point can be moved by counts for
+    /// nothing, and here it is not looked for.
+    pub fn up(&self, x: f64, y: f64, z: f64, reach: f64) -> Option<Hit> {
         let hit = self
             .tree
-            .first_hit(&self.triangles, [x, y, z], [0.0, 0.0, 1.0])?;
+            .first_hit_within(&self.triangles, [x, y, z], [0.0, 0.0, 1.0], reach)?;
         let [a, b, c] = self.triangles.indices[hit.triangle as usize]
             .map(|corner| self.triangles.vertices[corner as usize].map(f64::from));
         let (u, v) = (
@@ -73,10 +76,11 @@ mod tests {
     fn a_ray_up_from_inside_a_block_leaves_by_its_top() {
         let block = Mesh::from_triangle_soup(primitives::cuboid([0.0; 3], [10.0, 10.0, 2.0]));
         let surface = Surface::new([&block]);
-        let hit = surface.up(5.0, 5.0, 1.2).unwrap();
+        let hit = surface.up(5.0, 5.0, 1.2, f64::INFINITY).unwrap();
         assert!((hit.distance - 0.8).abs() < 1e-6);
         assert!(hit.normal[2] > 0.0 && hit.normal[0] == 0.0 && hit.normal[1] == 0.0);
-        assert_eq!(surface.up(15.0, 5.0, 1.2), None);
-        assert_eq!(surface.up(5.0, 5.0, 2.5), None);
+        assert_eq!(surface.up(5.0, 5.0, 1.2, 0.7), None);
+        assert_eq!(surface.up(15.0, 5.0, 1.2, f64::INFINITY), None);
+        assert_eq!(surface.up(5.0, 5.0, 2.5, f64::INFINITY), None);
     }
 }
