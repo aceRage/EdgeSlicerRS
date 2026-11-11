@@ -18,7 +18,8 @@ The last column reads:
   views, sections 9 to 11; fourth pass: the process pages, "Sidebar:
   Process" in section 2 and section 12; fifth pass: Prepare as an editor,
   section 13; sixth pass: the filament's and the printer's pages, section
-  14).
+  14; seventh pass: "Lay on face", "Mirror", "Split to objects" and
+  "Split to parts", in section 13).
 - **differs** — built, but on purpose not as the C++ does it; the cell says how.
 - **not yet** — not built, with what it waits for. Nothing in this column is
   shown in the page as a control that does nothing.
@@ -1033,6 +1034,42 @@ plate 2 at its row (its object then under "Outside"); a bare STL dragged
 (190.44 to 247.96 by 79.81 to 93.79) is the object's (190.23 to 248.17 by
 79.60 to 94.00) less half a line. The screenshots are under
 `target/ui-shots/edit/`.
+
+The seventh pass ("Lay on face", "Mirror", "Split"): in the engine,
+`crates/edge-mesh/src/hull.rs` (the hull of a cube, of points inside and on
+its faces, an octahedron, a tetrahedron, 200 points on a sphere, a cloud of
+2000 points checked face by face and twice for the same answer, flat and
+straight sets refused), `split.rs` (one piece, two that touch at a corner,
+one inside out, edges wound alike), `crates/edge-engine/src/lay_on_face.rs`
+(a box's six faces in order of area, the printed size, the filter past the
+twelve largest, the turn down, the drawn outline) and
+`crates/edge-engine/tests/tools.rs` (a box laid on a side and on its top, a
+wedge on its slanted face; mirrored along each axis the copy is mirrored and
+what is sliced stays a solid of the same volume, where it stood; two shells
+to parts and to objects, named and placed as the reference names and places
+them; a piece in the air brought down). In the session
+(`src/api/edit/tests.rs`): a box laid on its side slices 30 mm tall where it
+stands, one undo step; an L mirrored along X slices, layer by layer, to the
+mirror image of its outer walls, each still anticlockwise, the first layer
+where it was, and along Z upside down on the bed; two shells split to parts
+and to objects slice to the same box of toolpaths as the one object did, two
+undo steps.
+
+In the served page (the app's browser pane, 1280 × 800, dark and light), by
+the mouse and the keys: a Benchy selected, F, the 52 faces of its hull drawn
+over it, the one under the pointer lit, a click on its roof's face laid it
+on it ("Gizmo-Place on Face" to undo), sliced: 173 layers, 34.65 mm, on the
+roof, and Cmd+Z put it back; an L selected in the list, the object's menu,
+"Mirror" > "Along X axis" (the sub-menu by the pointer, the tooltips the
+C++ help text), the tower at the other end, sliced and looked at in
+Preview; two shells in one STL: "Split to parts" from the toolbar (the list
+then shows "twoshell.stl_1" and "twoshell.stl_2" under the object, "Split to
+parts" off), the menu's "Split" > "To objects" ("To parts" off), two objects
+selected, sliced, both printed where they stood; one of them laid on its
+side in light. The browser pane's right click did not open the page's menus,
+on the stage or in the list (it does not seem to send the page a second
+button), so the object's menu was opened by a `contextmenu` event on the
+list's row, or by `GL.edit.menu`, and then gone through with the mouse. The screenshots are under `target/ui-shots/tools/`.
 
 ### Errors found in the C++
 
