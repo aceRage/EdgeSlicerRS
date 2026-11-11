@@ -75,6 +75,9 @@ pub struct ObjectKept {
     /// Each copy's place in the assembly view (`<assemble_item>`'s
     /// `transform` and `offset`, as written), by the copy's place.
     pub(crate) assembly: Vec<Option<(String, String)>>,
+    /// Each copy's `identify_id`, by the copy's place: the number the
+    /// reference labels it with in G-code (`; model label id`).
+    pub(crate) identify: Vec<Option<u32>>,
 }
 
 /// What a part of a file holds that [`crate::Part`] does not.
@@ -276,6 +279,8 @@ pub(crate) struct KeptSettings {
     pub plates: Vec<PlateKept>,
     /// `<assemble_item>`s: object id, copy, transform, offset.
     pub assembly: Vec<(u32, usize, String, String)>,
+    /// Each plate's copies' `identify_id`: object id, copy, number.
+    pub identify: Vec<(u32, usize, u32)>,
     pub extra: Vec<String>,
 }
 
@@ -440,9 +445,44 @@ pub(crate) fn read_settings(text: &str, part: &str) -> Result<KeptSettings, Erro
                     .push(entry);
             }
             (2, "model_instance") if in_plate => {
-                // Written afresh from the plate's copies.
+                // Written afresh from the plate's copies; its number is
+                // kept.
                 let name = element.name().as_ref().to_owned();
-                element_text(text, &mut reader, start, empty, &name, part)?;
+                let raw = element_text(text, &mut reader, start, empty, &name, part)?;
+                let (mut object, mut copy, mut number) = (None, None, None);
+                let mut inner = Reader::from_str(raw);
+                loop {
+                    match inner
+                        .read_event()
+                        .map_err(|e| malformed(part, e.to_string()))?
+                    {
+                        Event::Start(element) | Event::Empty(element)
+                            if element.local_name().as_ref() == "metadata" =>
+                        {
+                            let (mut key, mut value) = (String::new(), String::new());
+                            attributes(&element, part, |name, text| {
+                                match name {
+                                    "key" => key = text.to_owned(),
+                                    "value" => value = text.to_owned(),
+                                    _ => {}
+                                }
+                                Ok(())
+                            })?;
+                            let value = value.trim();
+                            match key.as_str() {
+                                "object_id" => object = value.parse::<u32>().ok(),
+                                "instance_id" => copy = value.parse::<usize>().ok(),
+                                "identify_id" => number = value.parse::<u32>().ok(),
+                                _ => {}
+                            }
+                        }
+                        Event::Eof => break,
+                        _ => {}
+                    }
+                }
+                if let (Some(object), Some(copy), Some(number)) = (object, copy, number) {
+                    kept.identify.push((object, copy, number));
+                }
             }
             (2, _) if in_plate => {
                 let entry = entry(text, &mut reader, &element, start, empty, part)?;

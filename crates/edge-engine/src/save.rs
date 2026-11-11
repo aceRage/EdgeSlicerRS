@@ -67,8 +67,37 @@ pub fn project_settings(settled: &Settings, changed: &Changed) -> Settings {
     let defaults = edge_config::reference_defaults();
     let mut settings = Settings::default();
     for (key, value) in settled.iter() {
-        if defaults.get(key).is_some() || NAMES.contains(&key) {
-            settings.insert(key, value.clone());
+        if !(edge_config::reference_knows(key) || NAMES.contains(&key)) {
+            continue;
+        }
+        // A value taken from the table of the reference's defaults is in
+        // the form its G-code lists it in, escapes and all; a project holds
+        // the text itself.
+        let value = if defaults.get(key) == Some(value) {
+            match value {
+                Value::One(text) => Value::One(unescaped(text)),
+                Value::Many(items) => {
+                    Value::Many(items.iter().map(|item| unescaped(item)).collect())
+                }
+            }
+        } else {
+            value.clone()
+        };
+        settings.insert(key, value);
+    }
+    // The lists the reference writes only when one of their entries says
+    // something (PresetBundle.cpp `add_if_some_non_empty`).
+    for key in [
+        "inherits_group",
+        "compatible_machine_expression_group",
+        "compatible_process_expression_group",
+        "print_compatible_printers",
+    ] {
+        if settings
+            .texts(key)
+            .is_some_and(|items| items.iter().all(String::is_empty))
+        {
+            settings.remove(key);
         }
     }
     let filaments = settings
@@ -96,6 +125,27 @@ pub fn project_settings(settled: &Settings, changed: &Changed) -> Settings {
         settings.insert("different_settings_to_system", Value::Many(groups));
     }
     settings
+}
+
+/// A text with its C-style escapes taken out (Config.cpp
+/// `unescape_string_cstyle`).
+fn unescaped(text: &str) -> String {
+    let mut out = String::with_capacity(text.len());
+    let mut chars = text.chars();
+    while let Some(c) = chars.next() {
+        if c != '\\' {
+            out.push(c);
+            continue;
+        }
+        match chars.next() {
+            Some('n') => out.push('\n'),
+            Some('r') => out.push('\r'),
+            Some('t') => out.push('\t'),
+            Some(other) => out.push(other),
+            None => out.push('\\'),
+        }
+    }
+    out
 }
 
 /// A file's own settings with what was set over them: each setting
@@ -176,7 +226,18 @@ impl Model {
             .enumerate()
             .map(|(at, object)| Object {
                 id: at as u32 + 1,
-                name: Some(object.name.clone()).filter(|name| !name.is_empty()),
+                // A model read alone (an STL) goes by its file's name, as
+                // the reference names what it loads and as `import` does.
+                name: Some(object.name.clone())
+                    .filter(|name| !name.is_empty())
+                    .or_else(|| {
+                        object.kept.is_none().then(|| {
+                            self.path
+                                .as_deref()
+                                .and_then(Path::file_name)
+                                .map(|name| name.to_string_lossy().into_owned())
+                        })?
+                    }),
                 parts: object.shape.parts.clone(),
                 instances: object
                     .copies
@@ -237,6 +298,12 @@ impl Model {
             unread_paint: model.unread_paint.clone(),
             kept: model.kept.clone(),
         }
+    }
+
+    /// Says that it is now the project saved at `path`, which is the file
+    /// it goes by from then on.
+    pub fn saved_as(&mut self, path: &Path) {
+        self.path = Some(path.to_owned());
     }
 
     /// What its file held that saving it as it stands would not keep, as

@@ -315,10 +315,17 @@ impl Project {
                     assembly[*copy] = Some((transform.clone(), offset.clone()));
                 }
             }
+            let mut identify = vec![None; object.instances.len()];
+            for (id, copy, number) in &kept_settings.identify {
+                if *id == object.id && *copy < identify.len() {
+                    identify[*copy] = Some(*number);
+                }
+            }
             if let Some(kept) = &mut object.kept {
                 let kept = Arc::make_mut(kept);
                 kept.copies = object.instances.len();
                 kept.assembly = assembly;
+                kept.identify = identify;
                 kept.layer_heights = by_place.layer_heights.remove(&index);
                 kept.layer_ranges = by_place.layer_ranges.remove(&index);
                 kept.brim_points = by_place.brim_points.remove(&index);

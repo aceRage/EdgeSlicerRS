@@ -616,7 +616,16 @@ pub fn write_to<W: Write + Seek>(save: &Save<'_>, out: W) -> Result<Written, Err
     let mut written: Vec<(Arc<Mesh>, Option<Arc<Extras>>, Placed)> = Vec::new();
     let mut objects_out: Vec<ObjectOut> = Vec::new();
     for (at, object) in project.objects.iter().enumerate() {
-        let name = object.name.clone().unwrap_or_default();
+        // An object a file names nowhere is named as the reference names
+        // it when it reads that file (bbs_3mf.cpp `_load_model_from_file`:
+        // "Object_" and its place).
+        let name = match (&object.name, &object.kept) {
+            (Some(name), _) => name.clone(),
+            (None, Some(own)) if Entry::value_of(&own.entries, "name").is_none() => {
+                format!("Object_{}", own.index)
+            }
+            (None, _) => String::new(),
+        };
         let path = format!("3D/Objects/{}_{}.model", path_name(&name), at + 1);
         let backup = at as u32 + 1;
         let mut components = Vec::new();
@@ -1062,13 +1071,30 @@ fn model_settings(
         }
         out.push_str("  </object>\n");
     }
-    // Each copy's number among all of them, as `identify_id`.
+    // Each copy's number (`identify_id`): the one it was read with while
+    // its object has all its copies, else one no other copy has.
     let mut identify = HashMap::new();
-    let mut next = 1u32;
+    let mut taken = std::collections::HashSet::new();
+    for (at, object) in project.objects.iter().enumerate() {
+        let Some(own) = &object.kept else { continue };
+        if own.copies != object.instances.len() {
+            continue;
+        }
+        for (copy, number) in own.identify.iter().enumerate() {
+            if let Some(number) = number
+                && taken.insert(*number)
+            {
+                identify.insert((at, copy), *number);
+            }
+        }
+    }
+    let mut next = taken.iter().max().map_or(1, |most| most + 1);
     for (at, object) in project.objects.iter().enumerate() {
         for copy in 0..object.instances.len() {
-            identify.insert((at, copy), next);
-            next += 1;
+            identify.entry((at, copy)).or_insert_with(|| {
+                next += 1;
+                next - 1
+            });
         }
     }
     for plate in &project.plates {

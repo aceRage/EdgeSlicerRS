@@ -67,7 +67,14 @@ pub fn differences(a: &Project, b: &Project) -> Vec<String> {
         return found;
     }
     for (at, (x, y)) in a.objects.iter().zip(&b.objects).enumerate() {
-        if x.name != y.name {
+        // An object the file names nowhere is named as the reference names it.
+        let named = |object: &edge_3mf::Object| {
+            object
+                .name
+                .clone()
+                .unwrap_or_else(|| format!("Object_{}", at + 1))
+        };
+        if named(x) != named(y) {
             differ(format!("object {at}: name {:?}, then {:?}", x.name, y.name));
         }
         if x.instances.len() != y.instances.len() {
