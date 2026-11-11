@@ -1274,8 +1274,16 @@ impl Writer<'_> {
         let s = self.settings;
         let own = &layer.loops[island.clone()];
         let mut walls: Vec<&ExtrusionLoop> = nested(own).into_iter().map(|at| &own[at]).collect();
-        if s.wall_order == WallOrder::OuterInner {
-            walls.reverse();
+        match s.wall_order {
+            WallOrder::InnerOuter => {}
+            WallOrder::OuterInner => walls.reverse(),
+            // "Sandwich mode. Apply after 1st layer."
+            WallOrder::InnerOuterInner => {
+                if !self.state.first_layer {
+                    walls.reverse();
+                    walls = sandwich(walls);
+                }
+            }
         }
         // The seams of the island's outermost walls are settled first,
         // so the walls behind them can start alongside.
@@ -2441,6 +2449,83 @@ fn homes(layer: &Layer<'_>) -> Vec<usize> {
             last
         })
         .collect()
+}
+
+/// Walls given outermost first, put in the order that lays the outer
+/// wall between the inner ones: for each outer wall with at least two
+/// walls behind it, those from the innermost out to the second inner
+/// wall, then the outer wall, then the first inner wall. Fewer walls
+/// stay outermost first (PerimeterGenerator.cpp `process_classic`,
+/// "sandwich mode", followed step by step).
+fn sandwich(walls: Vec<&ExtrusionLoop>) -> Vec<&ExtrusionLoop> {
+    if walls.len() <= 2 {
+        return walls;
+    }
+    // First the walls two or more deep are held back until the outer
+    // wall they are met after, so each first inner wall is ahead of them.
+    let mut reordered: Vec<&ExtrusionLoop> = Vec::with_capacity(walls.len());
+    let (mut skipped, mut found_second_internal) = (Vec::new(), false);
+    for &wall in &walls {
+        match wall.depth {
+            0 => {
+                if found_second_internal {
+                    reordered.append(&mut skipped);
+                }
+                reordered.push(wall);
+            }
+            1 => reordered.push(wall),
+            _ => {
+                skipped.push(wall);
+                found_second_internal = true;
+            }
+        }
+    }
+    reordered.append(&mut skipped);
+
+    let mut ordered = walls;
+    let mut position = 0;
+    while position < reordered.len() {
+        let (mut outer, mut first_internal, mut second_internal) = (None, None, None);
+        let mut max_internal = reordered.len() - 1;
+        let mut at = position;
+        while at < reordered.len() {
+            match reordered[at].depth {
+                0 => outer = outer.or(Some(at)),
+                1 if first_internal.is_none() && outer.is_some_and(|outer| at > outer) => {
+                    first_internal = Some(at);
+                }
+                2 if second_internal.is_none()
+                    && outer.is_some()
+                    && first_internal.is_none_or(|first| at > first) =>
+                {
+                    second_internal = Some(at);
+                }
+                _ => {}
+            }
+            // Another outer wall with all three found is another island.
+            if outer.is_some()
+                && first_internal.is_some()
+                && second_internal.is_some()
+                && reordered[at].depth == 0
+            {
+                at -= 1;
+                max_internal = at;
+                break;
+            }
+            at += 1;
+        }
+        let (Some(_), Some(_), Some(second_internal)) = (outer, first_internal, second_internal)
+        else {
+            break;
+        };
+        let inside_out = (second_internal..=max_internal).rev();
+        let outside_in = position..second_internal;
+        for (slot, from) in inside_out.chain(outside_in).enumerate() {
+            ordered[position + slot] = reordered[from];
+        }
+        position = at + 1;
+    }
+    ordered
 }
 
 /// The planned seam a wall should start next to: the nearest one, taking

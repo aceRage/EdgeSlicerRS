@@ -218,6 +218,67 @@ fn walls_follow_the_configured_order_island_by_island() {
     );
 }
 
+/// The x each wall in `text` starts at, less the island's own: 0 for the
+/// outermost of [`wall`]'s squares nested half a millimetre apart.
+fn wall_depths(text: &str) -> Vec<usize> {
+    let mut found = Vec::new();
+    let mut at = (0.0, 0.0);
+    let mut extruding = false;
+    for line in text.lines().filter(|line| line.starts_with("G1 ")) {
+        let to = (
+            word(line, 'X').unwrap_or(at.0),
+            word(line, 'Y').unwrap_or(at.1),
+        );
+        let extrudes = word(line, 'E').is_some_and(|e| e > 0.0) && to != at;
+        if extrudes && !extruding {
+            found.push((at.0.min(at.1) / 0.5).round() as usize);
+        }
+        // A wall also begins after a move, or a step up to the next layer.
+        if to != at || word(line, 'Z').is_some() {
+            extruding = extrudes;
+        }
+        at = to;
+    }
+    found
+}
+
+#[test]
+fn the_outer_wall_can_go_between_the_inner_ones() {
+    // Four walls nested half a millimetre apart, and three, and two.
+    let nest = |count: usize| -> Vec<ExtrusionLoop> {
+        (0..count)
+            .map(|depth| {
+                wall(
+                    depth as f64 * 0.5,
+                    depth as f64 * 0.5,
+                    10.0 - depth as f64,
+                    depth,
+                )
+            })
+            .collect()
+    };
+    let sandwich = PrintSettings {
+        wall_order: WallOrder::InnerOuterInner,
+        ..basic()
+    };
+    let second_layer = |loops: &[ExtrusionLoop]| {
+        let islands = [0..loops.len()];
+        let layer = one_layer(loops, &islands, &[])[0];
+        let layers = [layer, Layer { z: 0.4, ..layer }];
+        let (text, _) = print(&layers, &sandwich);
+        let depths = wall_depths(&text);
+        let (first, second) = depths.split_at(loops.len());
+        (first.to_vec(), second.to_vec())
+    };
+    // The first layer goes inner wall first; above it, the walls behind
+    // the first inner wall, innermost first, then the outer, then the
+    // first inner one.
+    assert_eq!(second_layer(&nest(4)), (vec![3, 2, 1, 0], vec![3, 2, 0, 1]));
+    assert_eq!(second_layer(&nest(3)), (vec![2, 1, 0], vec![2, 0, 1]));
+    // Two walls have no inner one to go first: outer, then inner.
+    assert_eq!(second_layer(&nest(2)), (vec![1, 0], vec![0, 1]));
+}
+
 /// For each stretch of extrusion in `text`, whether it runs
 /// counter-clockwise: the sign of the area its moves enclose.
 fn runs_counter_clockwise(text: &str) -> Vec<bool> {

@@ -24,6 +24,10 @@ pub enum Lift {
 pub enum WallOrder {
     InnerOuter,
     OuterInner,
+    /// The outer wall between the inner ones: those behind the first
+    /// inner wall, then the outer wall, then the first inner wall. Above
+    /// the first layer, which goes inner wall first.
+    InnerOuterInner,
 }
 
 /// Which way round walls are laid (`wall_direction`).
@@ -401,6 +405,7 @@ impl PrintSettings {
         {
             None | Some("inner wall/outer wall") => WallOrder::InnerOuter,
             Some("outer wall/inner wall") => WallOrder::OuterInner,
+            Some("inner-outer-inner wall") => WallOrder::InnerOuterInner,
             Some(other) => {
                 unsupported.push(format!(
                     "wall_sequence \"{other}\": inner wall first is used"
@@ -1268,9 +1273,13 @@ mod tests {
         let read =
             |json: &str| PrintSettings::from_settings(&Settings::from_json(json).unwrap()).unwrap();
         let settings = read(
-            r#"{"wall_sequence": "inner-outer-inner wall", "seam_position": "random", "curr_bed_type": "Glass"}"#,
+            r#"{"wall_sequence": "outer wall last", "seam_position": "random", "curr_bed_type": "Glass"}"#,
         );
         assert_eq!(settings.wall_order, WallOrder::InnerOuter);
+        assert_eq!(
+            read(r#"{"wall_sequence": "inner-outer-inner wall"}"#).wall_order,
+            WallOrder::InnerOuterInner
+        );
         assert_eq!(settings.bed_temperature, None);
         assert_eq!(settings.unsupported.len(), 3);
         assert!(
