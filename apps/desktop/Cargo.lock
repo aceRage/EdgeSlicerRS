@@ -823,6 +823,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "edge-avoid"
+version = "0.0.0"
+dependencies = [
+ "edge-clip",
+ "edge-geom",
+]
+
+[[package]]
 name = "edge-clip"
 version = "0.0.0"
 dependencies = [
@@ -900,6 +908,7 @@ dependencies = [
 name = "edge-gcode"
 version = "0.0.0"
 dependencies = [
+ "edge-avoid",
  "edge-config",
  "edge-extrusion",
  "edge-geom",
