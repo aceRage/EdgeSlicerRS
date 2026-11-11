@@ -781,8 +781,10 @@ struct State {
     /// The stretch of a scarf seam being laid, and how far along it the
     /// nozzle is (`scarf.rs`).
     slope: Option<scarf::Slope>,
-    /// The line contoured in height being laid (`contour.rs`).
+    /// The line contoured in height being laid (`contour.rs`), and the
+    /// heights of the one `wipe_path` is the end of, where it was.
     contour: Option<contour::Laying>,
+    wipe_heights: Option<std::sync::Arc<edge_contour::Profile>>,
     first_layer: bool,
     /// The speed of the wall loop being laid, where it is small enough
     /// to have one of its own (`small_perimeter_speed`).
@@ -2095,6 +2097,7 @@ impl Writer<'_> {
         if !closed {
             self.state.wipe_path.reverse();
         }
+        self.state.wipe_heights = self.contour_profile();
         Ok(())
     }
 
@@ -2984,6 +2987,9 @@ impl Writer<'_> {
             let feed_word = self.feed_word();
             writeln!(self.out, "G1 E-{before:.5}{feed_word}")?;
         }
+        // Over a line contoured in height the wipe keeps to the line's
+        // own height (`contour.rs`).
+        let heights = self.state.wipe_heights.take();
         if let Some(path) = wipe.filter(|_| reach > 0.0) {
             self.state.feedrate = (wipe_speed * 60.0).round();
             writeln!(self.out, ";WIPE_START\nG1 F{:.0}", self.state.feedrate)?;
@@ -2997,9 +3003,10 @@ impl Writer<'_> {
                 } else {
                     String::new()
                 };
+                let height = self.wipe_height(heights.as_deref(), pair[1]);
                 writeln!(
                     self.out,
-                    "G1 X{:.3} Y{:.3}{pulled}",
+                    "G1 X{:.3} Y{:.3}{height}{pulled}",
                     unscaled(pair[1].x),
                     unscaled(pair[1].y)
                 )?;
@@ -3619,6 +3626,8 @@ pub fn role_name(role: Role) -> &'static str {
 mod arc_tests;
 #[cfg(test)]
 mod avoid_tests;
+#[cfg(test)]
+mod contour_tests;
 #[cfg(test)]
 mod ironing_tests;
 #[cfg(test)]

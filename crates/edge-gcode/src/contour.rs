@@ -121,6 +121,43 @@ impl Writer<'_> {
         Some(self.state.z + laying.profile.at(point))
     }
 
+    /// The heights of the line being laid, where it is contoured: kept
+    /// with the path a wipe would go back along.
+    pub(crate) fn contour_profile(&self) -> Option<Arc<Profile>> {
+        self.state
+            .contour
+            .as_ref()
+            .map(|laying| laying.profile.clone())
+    }
+
+    /// The height word for a wipe move to `to` over a contoured line,
+    /// `heights` being the line's: its own height there, as it was laid.
+    /// Not as the reference, whose wipe keeps the height the line ended
+    /// at (GCode.cpp `Wipe::wipe`, X and Y alone): over a line that came
+    /// down to its end it goes back up the slope that much below it,
+    /// through what it has just laid. Nothing for a line laid flat.
+    pub(crate) fn wipe_height(&mut self, heights: Option<&Profile>, to: Point2) -> String {
+        let Some(heights) = heights else {
+            return String::new();
+        };
+        let z = self.state.z + heights.at(to);
+        self.state.height = Some(z);
+        format!(" Z{z:.3}")
+    }
+
+    /// The height word that takes the nozzle back up to the layer's top
+    /// where a contoured wall left it lower, for a move in over the walls
+    /// beside it, which are laid at that height or above it.
+    pub(crate) fn up_to_layer(&mut self) -> String {
+        match self.state.height {
+            Some(height) if self.contouring() && height < self.state.z => {
+                self.state.height = Some(self.state.z);
+                format!(" Z{:.3}", self.state.z)
+            }
+            _ => String::new(),
+        }
+    }
+
     /// The height a travel to `to` arrives at before it extrudes: the
     /// contoured line's own there where it starts one, else the layer's.
     pub(crate) fn arrival_height(&self, to: Point2) -> f64 {
@@ -155,7 +192,14 @@ impl Writer<'_> {
         let height = flow.height;
         let ratio = speed::flow_ratio(role == Role::Ironing, height, mean);
         let mut slowed = None;
-        if scaling {
+        // Not ironing, whose flow is not changed for its height. Not as
+        // the reference, which scales ironing's speed too (GCode.cpp
+        // `_extrude`, `zaa_speed_scaling` applies to every contoured
+        // path) by its height over the ironing line's own, a few
+        // thousandths of a mm (Fill.cpp `make_ironing`,
+        // `extrusion_height`): where the surface is a hair below the
+        // layer's top, ironing drops to 10 mm/s.
+        if scaling && role != Role::Ironing {
             // A new speed of the line's own throws out the one in force
             // ("the base feed rate just changed, so any scaled F in force
             // is stale").

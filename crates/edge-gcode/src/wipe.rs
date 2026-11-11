@@ -472,7 +472,13 @@ impl Writer<'_> {
             let length = distance(at, to);
             let speed = self.state.feedrate.abs() / 60.0;
             if length > 0.0 && speed > 0.0 {
-                writeln!(self.out, "G1 X{:.3} Y{:.3}", unscaled(to.x), unscaled(to.y))?;
+                let up = self.up_to_layer();
+                writeln!(
+                    self.out,
+                    "G1 X{:.3} Y{:.3}{up}",
+                    unscaled(to.x),
+                    unscaled(to.y)
+                )?;
                 self.state.summary.travel_mm += length;
                 self.spend(length / speed);
                 self.state.position = Some(to);
@@ -491,7 +497,13 @@ impl Writer<'_> {
                 if length == 0.0 {
                     continue;
                 }
-                writeln!(self.out, "G1 X{:.3} Y{:.3}", unscaled(to.x), unscaled(to.y))?;
+                let up = self.up_to_layer();
+                writeln!(
+                    self.out,
+                    "G1 X{:.3} Y{:.3}{up}",
+                    unscaled(to.x),
+                    unscaled(to.y)
+                )?;
                 self.state.summary.travel_mm += length;
                 self.spend(length / speed);
                 self.state.position = Some(to);

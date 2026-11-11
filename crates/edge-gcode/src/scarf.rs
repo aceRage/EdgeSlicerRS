@@ -985,6 +985,7 @@ impl Writer<'_> {
         // along the flat part and then the way down again ("Fix path
         // for wipe ... The start slope part is ignored as it overlaps
         // with the end part"), or with no way down, along the loop.
+        self.state.wipe_heights = None;
         self.state.wipe_path = if made.ends.is_empty() {
             round
         } else {
