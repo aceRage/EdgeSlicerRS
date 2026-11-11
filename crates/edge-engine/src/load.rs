@@ -41,6 +41,10 @@ pub struct Loaded {
     pub first_layer_sequence: Vec<u32>,
     /// The least and greatest corners of everything to slice, in mm.
     pub bounds: ([f32; 3], [f32; 3]),
+    /// Whether everything stands where it is to print because it was put
+    /// there by hand ([`crate::Model`]): a model without settings of its
+    /// own is then not moved to the middle of the bed.
+    pub placed: bool,
 }
 
 /// One plate of a project, as it is listed before anything is placed.
@@ -130,6 +134,11 @@ pub fn open(path: &Path, plate: Option<u32>) -> Result<Opened, Failure> {
 }
 
 impl Opened {
+    /// The file it was read from.
+    pub fn path(&self) -> &Path {
+        &self.path
+    }
+
     /// The number of the plate taken and how many the project has; none
     /// for a bare model or a project without plates.
     pub fn plate(&self) -> Option<(u32, usize)> {
@@ -196,86 +205,114 @@ impl Opened {
     /// Everything on the plate, moved to where it sits on the bed.
     pub fn place(self) -> Result<Loaded, Failure> {
         let path = self.path;
-        let first_layer_sequence = match &self.held {
-            Held::Project {
-                project,
-                plate: Some(index),
-            } => project.plates[*index].first_layer_sequence.clone(),
-            _ => Vec::new(),
-        };
-        let unread_paint = match &self.held {
-            Held::Project { project, .. } => project.unread_paint.clone(),
-            Held::Model(_) => Vec::new(),
-        };
-        let (mut bodies, mut painted, settings, mut objects, plate) = match self.held {
-            Held::Model(solid) => (
-                vec![Body {
-                    solid,
-                    negative: None,
-                    filament: 1,
-                }],
-                Vec::new(),
-                None,
-                Vec::new(),
-                None,
-            ),
-            Held::Project { project, plate } => (
-                project.bodies(plate),
-                project.painted(plate),
-                project.settings.clone(),
-                project.instance_meshes(plate),
-                plate.map(|index| (index, project.plates[index].id, project.plates.len())),
-            ),
-        };
-        if let Some((index, id, count)) = plate {
-            let (x, y) = plate_origin(index, count, settings.as_ref()).ok_or_else(|| {
-                format!(
-                    "{}: plate {id} cannot be placed: the project does not give the bed's size",
-                    path.display(),
-                )
-            })?;
-            shift(&mut bodies, -x, -y);
-            shift_meshes(objects.iter_mut(), -x, -y);
-            for object in &mut painted {
-                shift_meshes(
-                    std::iter::once(&mut object.solid).chain(object.negative.as_mut()),
-                    -x,
-                    -y,
-                );
-                for corner in object
-                    .facets
-                    .iter_mut()
-                    .flat_map(|facet| &mut facet.corners)
-                {
-                    corner[0] = (f64::from(corner[0]) - x) as f32;
-                    corner[1] = (f64::from(corner[1]) - y) as f32;
-                }
+        match self.held {
+            Held::Model(solid) => lone(&path, solid),
+            Held::Project { project, plate } => {
+                let origin = plate
+                    .map(|index| {
+                        plate_origin(index, project.plates.len(), project.settings.as_ref())
+                            .ok_or_else(|| unplaced(&path, project.plates[index].id))
+                    })
+                    .transpose()?;
+                let settings = project.settings.clone();
+                placed(&path, &project, plate, origin, settings)
             }
         }
-        let bounds =
-            bodies
-                .iter()
-                .filter_map(|body| body.solid.bounds())
-                .reduce(|(lo, hi), (min, max)| {
-                    (
-                        std::array::from_fn(|i| lo[i].min(min[i])),
-                        std::array::from_fn(|i| hi[i].max(max[i])),
-                    )
-                });
-        let Some(bounds) = bounds else {
-            return Err(format!("{}: nothing printable to slice", path.display()).into());
-        };
-        Ok(Loaded {
-            bodies,
-            painted,
-            settings,
-            unread_paint,
-            objects,
-            plate: plate.map_or(0, |(index, ..)| index),
-            first_layer_sequence,
-            bounds,
-        })
     }
+}
+
+/// What is said of a plate whose place among the others cannot be found.
+pub(crate) fn unplaced(path: &Path, id: u32) -> Failure {
+    format!(
+        "{}: plate {id} cannot be placed: the project does not give the bed's size",
+        path.display(),
+    )
+    .into()
+}
+
+/// A bare model as what to slice: one body, in the first filament, where
+/// the file has it. Slicing puts it in the middle of the bed.
+pub(crate) fn lone(path: &Path, solid: Mesh) -> Result<Loaded, Failure> {
+    let bodies = vec![Body {
+        solid,
+        negative: None,
+        filament: 1,
+    }];
+    let bounds = bounds_of(path, &bodies)?;
+    Ok(Loaded {
+        bodies,
+        painted: Vec::new(),
+        settings: None,
+        unread_paint: Vec::new(),
+        objects: Vec::new(),
+        plate: 0,
+        first_layer_sequence: Vec::new(),
+        bounds,
+        placed: false,
+    })
+}
+
+/// What stands on a project's plate (or all of the project for no plate)
+/// as what to slice, measured from `origin`, which is where the plate
+/// stands in the project's own coordinates.
+pub(crate) fn placed(
+    path: &Path,
+    project: &Project,
+    plate: Option<usize>,
+    origin: Option<(f64, f64)>,
+    settings: Option<Settings>,
+) -> Result<Loaded, Failure> {
+    let first_layer_sequence = plate
+        .map(|index| project.plates[index].first_layer_sequence.clone())
+        .unwrap_or_default();
+    let mut bodies = project.bodies(plate);
+    let mut painted = project.painted(plate);
+    let mut objects = project.instance_meshes(plate);
+    if let Some((x, y)) = origin {
+        shift(&mut bodies, -x, -y);
+        shift_meshes(objects.iter_mut(), -x, -y);
+        for object in &mut painted {
+            shift_meshes(
+                std::iter::once(&mut object.solid).chain(object.negative.as_mut()),
+                -x,
+                -y,
+            );
+            for corner in object
+                .facets
+                .iter_mut()
+                .flat_map(|facet| &mut facet.corners)
+            {
+                corner[0] = (f64::from(corner[0]) - x) as f32;
+                corner[1] = (f64::from(corner[1]) - y) as f32;
+            }
+        }
+    }
+    let bounds = bounds_of(path, &bodies)?;
+    Ok(Loaded {
+        bodies,
+        painted,
+        settings,
+        unread_paint: project.unread_paint.clone(),
+        objects,
+        plate: plate.unwrap_or(0),
+        first_layer_sequence,
+        bounds,
+        placed: false,
+    })
+}
+
+/// The least and greatest corners of everything to slice.
+fn bounds_of(path: &Path, bodies: &[Body]) -> Result<([f32; 3], [f32; 3]), Failure> {
+    bodies
+        .iter()
+        .filter_map(|body| body.solid.bounds())
+        .reduce(|(lo, hi), (min, max)| {
+            (
+                std::array::from_fn(|i| lo[i].min(min[i])),
+                std::array::from_fn(|i| hi[i].max(max[i])),
+            )
+        })
+        .ok_or_else(|| format!("{}: nothing printable to slice", path.display()).into())
 }
 
 /// Moves bodies across the bed by `(x, y)` mm.

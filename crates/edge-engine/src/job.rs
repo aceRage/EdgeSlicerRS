@@ -47,6 +47,8 @@ pub struct Job {
     pub loaded: Loaded,
     /// Whether the model came with settings of its own.
     pub is_project: bool,
+    /// Whether it stands where it was put by hand ([`Loaded::placed`]).
+    pub placed: bool,
     /// The project's settings under the presets', completed with the
     /// reference's defaults when there is a printer profile.
     pub settings: Settings,
@@ -131,6 +133,7 @@ fn slice_settings(
 pub fn prepare(mut loaded: Loaded, chosen: &Chosen, overrides: &Overrides) -> Result<Job, Failure> {
     let project_settings = loaded.settings.take();
     let is_project = project_settings.is_some();
+    let placed = loaded.placed;
     let [layer_height, first_layer_height, closing_radius] = slice_settings(
         overrides,
         chosen.process.as_ref().map(|(_, settings)| settings),
@@ -240,6 +243,7 @@ pub fn prepare(mut loaded: Loaded, chosen: &Chosen, overrides: &Overrides) -> Re
     Ok(Job {
         loaded,
         is_project,
+        placed,
         settings,
         layer_height,
         first_layer_height,

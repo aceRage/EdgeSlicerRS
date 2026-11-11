@@ -14,6 +14,7 @@
 //! large for JSON and are answered as bytes, through
 //! [`Session::call_bytes`], which is `call` in every other way.
 
+mod edit;
 mod scene;
 
 use std::{
@@ -27,7 +28,7 @@ use std::{
 
 use edge_config::Settings;
 use edge_engine::{
-    BedType, Chosen, Gcode, Library, Overrides, PlateInfo, Shelf, Sliced, Stage, Watcher,
+    BedType, Chosen, Gcode, Library, Model, Overrides, PlateInfo, Shelf, Sliced, Stage, Watcher,
 };
 use edge_extrusion::Role;
 use edge_gcode::role_name;
@@ -74,8 +75,12 @@ struct Project {
     id: u32,
     /// What the strip shows it as.
     name: String,
-    /// What it was opened from; none for one that is new and empty.
+    /// Its model as it stands; none for one that is new and empty.
     file: Option<Arc<File>>,
+    /// Its model as it was opened: it is unsaved once the two differ.
+    opened: Option<Arc<File>>,
+    /// The edits made to its model, to take back, and those taken back.
+    history: edit::History,
     /// The plate it is on, by number; none for a file without plates.
     plate: Option<u32>,
     choices: Choices,
@@ -97,9 +102,13 @@ struct Project {
     footprints: HashMap<u32, Arc<Vec<Footprint>>>,
 }
 
-/// A model file as it was found when it was opened.
+/// A project's model as it stands at one moment: as it was opened, or as
+/// an edit left it. An edit makes another; this one is never changed, so
+/// a slice that is running, and every step of the undo history, keeps the
+/// one it has.
 struct File {
-    path: PathBuf,
+    /// What it was opened from; none for one put together in the window.
+    path: Option<PathBuf>,
     /// Its plates; empty for a bare model or a project without plates,
     /// which is sliced whole.
     plates: Vec<PlateInfo>,
@@ -107,6 +116,27 @@ struct File {
     used: Vec<usize>,
     /// The settings a project was saved with.
     settings: Option<Arc<Settings>>,
+    /// The plates, the objects and where each copy stands.
+    model: Model,
+}
+
+impl File {
+    /// A model with what the page lists of it read off.
+    fn of(model: Model) -> Self {
+        Self {
+            path: model.path().map(Path::to_owned),
+            plates: model.plate_list(),
+            used: model.filaments(),
+            settings: model.settings().cloned(),
+            model,
+        }
+    }
+
+    /// What it goes by where a file is named: its own, else the name of a
+    /// project that has none.
+    fn named(&self) -> PathBuf {
+        self.path.clone().unwrap_or_else(|| UNTITLED.into())
+    }
 }
 
 /// What a project is sliced with, as chosen in its sidebar.
@@ -419,6 +449,8 @@ impl Project {
             id,
             name,
             file: None,
+            opened: None,
+            history: edit::History::default(),
             plate: None,
             choices: Choices {
                 from_presets: true,
@@ -438,9 +470,15 @@ impl Project {
         }
     }
 
-    /// Whether what was chosen for it since it was opened would be lost.
+    /// Whether what was chosen for it, or done to its model, since it was
+    /// opened would be lost.
     fn dirty(&self) -> bool {
-        !self.choices.settle_as(&self.baseline)
+        let edited = match (&self.file, &self.opened) {
+            (Some(now), Some(opened)) => !Arc::ptr_eq(now, opened),
+            (None, None) => false,
+            _ => true,
+        };
+        edited || !self.choices.settle_as(&self.baseline)
     }
 
     /// New, empty and untouched: opening a file takes its place.
@@ -470,7 +508,7 @@ impl Project {
 
     /// Puts a file in it, on the file's first plate and with nothing sliced.
     fn load(&mut self, file: Arc<File>) {
-        self.name = name_from_path(&shown(&file.path));
+        self.name = name_from_path(&shown(&file.named()));
         // Plate 1, as the engine takes when none is named; else the first.
         self.plate = file
             .plates
@@ -486,7 +524,9 @@ impl Project {
             self.choices.bed_type = None;
         }
         self.baseline = self.choices.clone();
+        self.opened = Some(file.clone());
         self.file = Some(file);
+        self.history = edit::History::default();
         self.tab = "prepare";
         self.view = json!({});
         self.footprints.clear();
@@ -516,11 +556,13 @@ impl Project {
         json!({
             "id": self.id,
             "name": self.name,
-            "path": self.file.as_ref().map(|file| shown(&file.path)),
+            "path": self.file.as_ref().and_then(|file| file.path.as_deref()).map(shown),
             "dirty": self.dirty(),
             "empty": self.file.is_none(),
             "plate": self.plate,
             "tab": self.tab,
+            // Counts the edits to its model, for what is drawn of it.
+            "revision": self.history.revision(),
             "slicing": self.slicing(),
             "plates_with_objects": sliceable.len(),
             "plates_sliced": sliceable
@@ -554,7 +596,10 @@ impl Project {
             .unwrap_or_default();
         let mut detail = self.tile();
         let more = json!({
-            "file": file.and_then(|file| file.path.file_name()).map(|name| name.to_string_lossy()),
+            "file": file
+                .and_then(|file| file.path.as_deref())
+                .and_then(Path::file_name)
+                .map(|name| name.to_string_lossy()),
             "plates": plates,
             // A file without plates is sliced whole, under plate 0.
             "sliced": self.results.contains_key(&slot(self.plate)),
@@ -572,6 +617,7 @@ impl Project {
             },
             "choices": self.choices.json(),
             "view": self.view,
+            "edit": self.history.marks(),
             "status": status_of(self),
         });
         if let (Some(detail), Value::Object(more)) = (detail.as_object_mut(), more) {
@@ -632,7 +678,8 @@ impl State {
                 project
                     .file
                     .as_ref()
-                    .is_some_and(|file| normalized(&shown(&file.path), cfg!(windows)) == key)
+                    .and_then(|file| file.path.as_deref())
+                    .is_some_and(|held| normalized(&shown(held), cfg!(windows)) == key)
             })
             .map(|project| project.id)
     }
@@ -706,30 +753,12 @@ impl State {
 /// Reads a model file for a project: its plates, what each holds and the
 /// settings it was saved with.
 fn read(path: &Path) -> Result<File, String> {
-    let opened = edge_engine::open(path, None).map_err(|e| e.to_string())?;
-    let plates = opened.plate_list();
-    let mut used: Vec<usize> = match plates.as_slice() {
-        [] => opened.filaments(),
-        plates => plates
-            .iter()
-            .flat_map(|plate| plate.filaments.iter().copied())
-            .collect(),
-    };
-    used.sort_unstable();
-    used.dedup();
-    Ok(File {
-        path: path.to_owned(),
-        plates,
-        used,
-        settings: opened.settings().cloned().map(Arc::new),
-    })
+    Ok(File::of(Model::open(path).map_err(|e| e.to_string())?))
 }
 
-/// What stands on a plate, seen from above, where the file puts it.
+/// What stands on a plate, seen from above, where the model has it.
 fn footprints(file: &File, plate: Option<u32>) -> Result<Vec<Footprint>, String> {
-    let loaded = edge_engine::open(&file.path, plate)
-        .and_then(edge_engine::Opened::place)
-        .map_err(|e| e.to_string())?;
+    let loaded = file.model.place(plate).map_err(|e| e.to_string())?;
     // A project's objects each by itself; a bare model is one.
     let solids: Vec<_> = match loaded.objects.as_slice() {
         [] => loaded.bodies.iter().map(|body| &body.solid).collect(),
@@ -768,15 +797,15 @@ fn footprints(file: &File, plate: Option<u32>) -> Result<Vec<Footprint>, String>
         .collect())
 }
 
-/// Slices one plate of a file and writes its G-code.
+/// Slices one plate of a model as it stands and writes its G-code.
 fn slice_plate(
-    path: &Path,
+    file: &File,
     plate: Option<u32>,
     chosen: &Chosen,
     overrides: &Overrides,
     work: &Work,
 ) -> Result<Done, edge_engine::Failure> {
-    let loaded = edge_engine::open(path, plate)?.place()?;
+    let loaded = file.model.place(plate)?;
     let job = edge_engine::prepare(loaded, chosen, overrides)?;
     let bed_type = job.bed_type.clone();
     let sliced = edge_engine::slice(job, &Watch(work))?;
@@ -791,7 +820,7 @@ fn slice_plate(
     Ok(Done {
         sliced,
         gcode,
-        model: path.to_owned(),
+        model: file.named(),
         bed_type,
     })
 }
@@ -999,6 +1028,7 @@ impl Session {
                     .map_err(|e| format!("{}: {e}", path.display()))?;
                 Ok(json!({ "path": shown(path), "bytes": gcode.text.len() }))
             }
+            name if edit::JSON.contains(&name) => self.edit_json(name, args),
             name if scene::JSON.contains(&name) => self.scene_json(name, args),
             name if scene::BYTES.contains(&name) => {
                 Err(format!("{name} answers in bytes, not in JSON"))
@@ -1389,8 +1419,11 @@ impl Session {
                 found
             }
         };
-        // A bare model has no place of its own: the middle of the bed.
-        let bare = file.as_ref().is_some_and(|file| file.settings.is_none());
+        // A model without settings that nothing has been put anywhere in
+        // has no place of its own: the middle of the bed.
+        let bare = file
+            .as_ref()
+            .is_some_and(|file| file.settings.is_none() && !file.model.placed());
         let extent = objects.iter().map(|object| object.extent).reduce(|a, b| {
             [
                 a[0].min(b[0]),
@@ -1552,7 +1585,7 @@ impl Session {
                     progress.plate = *plate;
                     progress.at = at;
                 }
-                let outcome = slice_plate(&file.path, *plate, &chosen, &overrides, &work);
+                let outcome = slice_plate(&file, *plate, &chosen, &overrides, &work);
                 if work.cancel.load(Ordering::Relaxed) {
                     cancelled = true;
                     break;
@@ -1569,9 +1602,15 @@ impl Session {
                     }
                 };
                 // Kept before it is said to be done, and only while this
-                // is still the project's slice. The two locks are never
-                // held together.
+                // is still the project's slice and was not called off (an
+                // edit calls it off with the session locked, so what is
+                // kept here is never of a model that has changed since).
+                // The two locks are never held together.
                 let mut state = lock(&session.state);
+                if work.cancel.load(Ordering::Relaxed) {
+                    cancelled = true;
+                    break;
+                }
                 let project =
                     state
                         .index_of(id)
