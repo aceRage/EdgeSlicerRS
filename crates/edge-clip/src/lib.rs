@@ -313,6 +313,10 @@ fn mitred_offset_path(contour: &[Point2], deltas: &[f32], miter_limit: f64) -> P
     } else {
         0.5
     };
+    // As the reference: the largest delta, which among inward (negative)
+    // deltas is the one nearest zero, where Clipper goes by the size of
+    // the delta. Whether that was meant is not clear, so it is kept; all
+    // it decides is which edges under a micrometre are skipped.
     let largest = deltas.iter().copied().fold(f32::NEG_INFINITY, f32::max);
     let shortest = f64::from(largest) * SHORTEST_EDGE_FACTOR;
     let shortest_sq = shortest * shortest;
