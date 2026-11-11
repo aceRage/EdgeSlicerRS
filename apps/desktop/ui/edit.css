@@ -24,7 +24,9 @@
 .toolbar button.icon.tool[aria-pressed="true"] { color: var(--accent); background: var(--accent-soft); }
 .toolbar-gap { align-self: stretch; width: 1px; margin: 3px 3px; background: var(--line-2); }
 
-#edit-bar { position: absolute; top: var(--space-3); left: 50%; transform: translateX(-50%); z-index: var(--z-overlay); }
+/* In the middle of the stage's width that the column of plates at its
+   left leaves free. */
+#edit-bar { position: absolute; top: var(--space-3); left: 84px; right: var(--space-3); width: max-content; max-width: calc(100% - 96px); margin-inline: auto; flex-wrap: wrap; z-index: var(--z-overlay); }
 
 /* The stage's older overlays give every button and list on it the stage's
    own dark look (style.css, "#stage button"); what is laid over it here is
@@ -40,13 +42,15 @@
 .edit-panel {
   position: absolute;
   top: 56px;
-  left: 50%;
-  transform: translateX(-50%);
+  left: 84px;
+  right: var(--space-3);
+  width: max-content;
+  max-width: calc(100% - 96px);
+  margin-inline: auto;
   z-index: var(--z-overlay);
   display: flex;
   flex-direction: column;
   gap: var(--space-2);
-  max-width: calc(100% - 24px);
   padding: var(--space-2) var(--space-3) var(--space-3);
   border: 1px solid var(--line-2);
   border-radius: var(--radius-l);
@@ -56,7 +60,7 @@
   font-size: var(--size-label);
 }
 .edit-panel h3 { margin: 0; }
-.edit-grid { display: grid; grid-template-columns: minmax(78px, auto) repeat(3, 86px) var(--control-s); align-items: center; gap: var(--space-1) var(--space-2); }
+.edit-grid { display: grid; grid-template-columns: minmax(78px, auto) repeat(3, minmax(0, 86px)) var(--control-s); align-items: center; gap: var(--space-1) var(--space-2); }
 .edit-grid > b { text-align: center; font: 700 var(--size-small) var(--font-mono); }
 .edit-grid > select { height: var(--control-s); min-width: 0; font-size: var(--size-small); }
 .edit-grid .unit { height: var(--control-s); min-width: 0; }
@@ -130,6 +134,7 @@ input.obj-rename { height: var(--control-s); min-width: 0; margin: 0 2px; }
    of what they are about. */
 @media (max-width: 760px) {
   #edit-bar { top: var(--space-2); }
-  .edit-panel { top: auto; bottom: var(--space-2); }
+  .edit-panel { top: auto; bottom: var(--space-2); left: auto; margin-inline: 0; max-width: calc(100% - 24px); }
+  .edit-grid { grid-template-columns: minmax(70px, auto) repeat(3, minmax(0, 78px)) var(--control-s); }
   .edit-warning { bottom: auto; top: 48px; }
 }
