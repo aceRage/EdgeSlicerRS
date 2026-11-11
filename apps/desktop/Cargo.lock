@@ -813,6 +813,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "edge-arachne"
+version = "0.0.0"
+dependencies = [
+ "edge-clip",
+ "edge-geom",
+ "edge-medial",
+ "thiserror 2.0.21",
+]
+
+[[package]]
 name = "edge-clip"
 version = "0.0.0"
 dependencies = [
@@ -936,6 +946,7 @@ dependencies = [
 name = "edge-perimeter"
 version = "0.0.0"
 dependencies = [
+ "edge-arachne",
  "edge-clip",
  "edge-config",
  "edge-extrusion",

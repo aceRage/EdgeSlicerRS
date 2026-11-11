@@ -599,7 +599,8 @@ pub fn slice(job: Job, watch: &dyn Watcher) -> Result<Sliced, Failure> {
         in_hand = order.last().copied();
     }
     // What the profile asks of the order and is not followed.
-    let mut order_notes = Vec::new();
+    // What the walls were asked for and do not do goes with these.
+    let mut order_notes = walls.notes();
     if used.len() > 1 {
         if let Some(kind) = settings.text("toolchange_ordering")
             && kind != "default"

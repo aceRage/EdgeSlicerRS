@@ -6,11 +6,16 @@
 //! A port of `SkeletalTrapezoidation::constructFromPolygons` with
 //! `transferEdge`, `discretize` and `separatePointyQuadEndNodes`
 //! (SkeletalTrapezoidation.cpp), and of what they use from
-//! Geometry/VoronoiUtils.cpp. The reference tries turning the outline a
-//! little and building again when the diagram comes out broken; that is
-//! not done here, and such an outline is an error.
+//! Geometry/VoronoiUtils.cpp. Now and then a diagram comes out broken
+//! for an outline that has nothing wrong with it; as the reference
+//! does, the diagram is then built for the outline turned by a few odd
+//! angles in turn and turned back (Geometry/Voronoi.cpp
+//! `try_to_repair_degenerated_voronoi_diagram`). Of the reference's
+//! checks for a broken diagram the one that needs exact arithmetic
+//! (`is_voronoi_diagram_planar_angle`) is not made.
 
 use std::collections::HashMap;
+use std::f64::consts::PI;
 
 use edge_geom::{Coord, Point2, Polygon};
 use edge_medial::{MedialError, Source, VoronoiCell, VoronoiDiagram};
@@ -78,6 +83,61 @@ fn inside_corner(a: Point2, b: Point2, c: Point2, query: Point2) -> bool {
 }
 
 impl Builder<'_> {
+    /// Whether the diagram is broken in one of the ways the reference
+    /// knows of (Voronoi.cpp `detect_known_voronoi_edge_issues` and
+    /// `detect_known_voronoi_cell_issues`).
+    fn has_known_issue(&self) -> bool {
+        let finite = |vertex: usize| self.diagram.vertices[vertex].iter().all(|c| c.is_finite());
+        for edge in &self.diagram.edges {
+            let (Some(v0), Some(v1)) = (edge.vertex0, edge.vertex1) else {
+                continue;
+            };
+            if !finite(v0) || !finite(v1) {
+                return true;
+            }
+            // A parabola with no point to be the focus of it.
+            if edge.curved
+                && self.diagram.cells[edge.cell].source == Source::Segment
+                && self.diagram.cells[self.diagram.edges[edge.twin].cell].source == Source::Segment
+            {
+                return true;
+            }
+        }
+        for cell in &self.diagram.cells {
+            if cell.incident_edge.is_none() || cell.source != Source::Segment {
+                continue;
+            }
+            // A vertex is missing where the cell does not reach both
+            // ends of its edge of the outline.
+            let Some((begin, end)) = self.segment_cell_range(cell) else {
+                return true;
+            };
+            let (from, to) = self.segment(cell.segment);
+            let along = ((to.x - from.x) as f64, (to.y - from.y) as f64);
+            let mut edge = begin;
+            let mut steps = 0;
+            while edge != end {
+                let Some(v1) = self.diagram.edges[edge].vertex1 else {
+                    return true;
+                };
+                if self.diagram.edges[edge].vertex0.is_none() {
+                    return true;
+                }
+                // No edge of the cell may lie beyond the outline.
+                let [x, y] = self.diagram.vertices[v1];
+                if along.0 * (y - from.y as f64) - along.1 * (x - from.x as f64) < 0.0 {
+                    return true;
+                }
+                edge = self.diagram.edges[edge].next;
+                steps += 1;
+                if steps > self.diagram.edges.len() {
+                    return true;
+                }
+            }
+        }
+        false
+    }
+
     fn point(&self, (poly, at): (usize, usize)) -> Point2 {
         let points = &self.polys[poly].points;
         points[at % points.len()]
@@ -247,7 +307,7 @@ impl Builder<'_> {
         let (start_x, end_x) = (projected_x(start), projected_x(end));
 
         // How far along the edge the markings at its ends reach.
-        let bound = (0.5 / ((std::f64::consts::PI - self.transitioning_angle) * 0.5).tan()) as f32;
+        let bound = (0.5 / ((PI - self.transitioning_angle) * 0.5).tan()) as f32;
         let mut marking_start_x = ((-d) as f32 * bound) as i64;
         let mut marking_end_x = (d as f32 * bound) as i64;
         let along = |x: i64| Point2 {
@@ -405,6 +465,103 @@ impl Builder<'_> {
     }
 }
 
+/// The angles an outline is turned by, in turn, when its diagram comes
+/// out broken.
+const FIX_ANGLES: [f64; 4] = [PI / 6.0, PI / 5.0, PI / 7.0, PI / 11.0];
+
+/// A builder that is only asked about its diagram.
+fn checker<'a>(
+    polys: &'a [Polygon],
+    segments: &[(usize, usize)],
+    diagram: VoronoiDiagram,
+) -> Builder<'a> {
+    Builder {
+        polys,
+        segments: segments.to_vec(),
+        diagram,
+        graph: Graph::default(),
+        edge_of: HashMap::new(),
+        node_of: HashMap::new(),
+        transitioning_angle: 0.0,
+        discretization_step_size: 1,
+    }
+}
+
+/// The diagram of `polys`' edges, repaired if it came out broken.
+fn sound_diagram(
+    polys: &[Polygon],
+    segments: &[(usize, usize)],
+) -> Result<VoronoiDiagram, MedialError> {
+    let ends_of = |polys: &[Polygon]| -> Vec<[i64; 4]> {
+        segments
+            .iter()
+            .map(|&(poly, at)| {
+                let points = &polys[poly].points;
+                let (from, to) = (points[at], points[(at + 1) % points.len()]);
+                [from.x, from.y, to.x, to.y]
+            })
+            .collect()
+    };
+    let first = checker(polys, segments, edge_medial::diagram(&ends_of(polys))?);
+    if !first.has_known_issue() {
+        return Ok(first.diagram);
+    }
+    let mut best = first.diagram;
+    for angle in FIX_ANGLES {
+        let (sin, cos) = angle.sin_cos();
+        let turned: Vec<Polygon> = polys
+            .iter()
+            .map(|poly| Polygon {
+                points: poly
+                    .points
+                    .iter()
+                    .map(|p| rotated(p.x, p.y, cos, sin))
+                    .collect(),
+            })
+            .collect();
+        let Ok(diagram) = edge_medial::diagram(&ends_of(&turned)) else {
+            continue;
+        };
+        let turned_check = checker(&turned, segments, diagram);
+        let broken = turned_check.has_known_issue();
+        // The vertices that are ends of the outline's edges go back to
+        // exactly where those are; the rest are turned back.
+        let mut exact: Vec<Option<Point2>> = vec![None; turned_check.diagram.vertices.len()];
+        for cell in &turned_check.diagram.cells {
+            if cell.incident_edge.is_none() || cell.source != Source::Segment {
+                continue;
+            }
+            let Some((begin, end)) = turned_check.segment_cell_range(cell) else {
+                continue;
+            };
+            let (poly, at) = segments[cell.segment];
+            let points = &polys[poly].points;
+            let (from, to) = (points[at], points[(at + 1) % points.len()]);
+            if let Some(vertex) = turned_check.diagram.edges[end].vertex1 {
+                exact[vertex].get_or_insert(from);
+            }
+            if let Some(vertex) = turned_check.diagram.edges[begin].vertex0 {
+                exact[vertex].get_or_insert(to);
+            }
+        }
+        let mut diagram = turned_check.diagram;
+        for (vertex, exact) in diagram.vertices.iter_mut().zip(exact) {
+            *vertex = match exact {
+                Some(point) => [point.x as f64, point.y as f64],
+                None => [
+                    cos * vertex[0] + sin * vertex[1],
+                    cos * vertex[1] - sin * vertex[0],
+                ],
+            };
+        }
+        best = diagram;
+        if !broken {
+            break;
+        }
+    }
+    Ok(best)
+}
+
 /// VoronoiUtils.cpp `discretize_parabola`: the curve between `start` and
 /// `end` that is as far from `source_point` as from `source_segment`, in
 /// steps of about `step_size`, with a point at its apex and at either
@@ -500,18 +657,11 @@ pub(crate) fn from_polygons(
         .enumerate()
         .flat_map(|(poly, polygon)| (0..polygon.points.len()).map(move |at| (poly, at)))
         .collect();
-    let ends: Vec<[i64; 4]> = segments
-        .iter()
-        .map(|&(poly, at)| {
-            let points = &polys[poly].points;
-            let (from, to) = (points[at], points[(at + 1) % points.len()]);
-            [from.x, from.y, to.x, to.y]
-        })
-        .collect();
+    let diagram = sound_diagram(polys, &segments)?;
     let mut builder = Builder {
         polys,
         segments,
-        diagram: edge_medial::diagram(&ends)?,
+        diagram,
         graph: Graph::default(),
         edge_of: HashMap::new(),
         node_of: HashMap::new(),
@@ -602,4 +752,96 @@ pub(crate) fn from_polygons(
         }
     }
     Ok(builder.graph)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn poly(points: &[(f64, f64)]) -> Polygon {
+        Polygon {
+            points: points.iter().map(|&(x, y)| Point2::from_mm(x, y)).collect(),
+        }
+    }
+
+    #[test]
+    fn every_edge_of_a_skeleton_has_its_other_side() {
+        // A square with a notch, and a hole in it.
+        let outline = [
+            poly(&[
+                (0.0, 0.0),
+                (20.0, 0.0),
+                (20.0, 20.0),
+                (12.0, 20.0),
+                (12.0, 15.0),
+                (8.0, 15.0),
+                (8.0, 20.0),
+                (0.0, 20.0),
+            ]),
+            poly(&[(4.0, 4.0), (4.0, 8.0), (8.0, 8.0), (8.0, 4.0)]),
+        ];
+        let graph = from_polygons(&outline, 10f64.to_radians(), 800_000).unwrap();
+        let edges = graph.edges();
+        assert!(edges.len() > 40);
+        for &edge in &edges {
+            let twin = graph.edge[edge].twin.expect("a twin");
+            assert_eq!(graph.edge[twin].twin, Some(edge));
+            assert_eq!(graph.edge[twin].from, graph.edge[edge].to);
+            // A cell starts and ends on the outline.
+            if graph.edge[edge].prev.is_none() {
+                assert_eq!(graph.node[graph.edge[edge].from].distance_to_boundary, 0);
+            }
+            if graph.edge[edge].next.is_none() {
+                assert_eq!(graph.node[graph.edge[edge].to].distance_to_boundary, 0);
+            }
+        }
+        // The furthest any point is from the outline: 6 mm, between the
+        // hole and the far sides.
+        let deepest = graph
+            .nodes()
+            .into_iter()
+            .map(|node| graph.node[node].distance_to_boundary)
+            .max()
+            .unwrap();
+        assert!((5_000_000..=8_500_000).contains(&deepest), "{deepest}");
+    }
+
+    #[test]
+    fn a_point_is_told_inside_a_corner_from_outside_it() {
+        let (a, b, c) = (
+            Point2::from_mm(10.0, 0.0),
+            Point2::from_mm(0.0, 0.0),
+            Point2::from_mm(0.0, 10.0),
+        );
+        // Going a, b, c with the inside on the left: the corner is the
+        // quarter between the two.
+        assert!(!inside_corner(a, b, c, Point2::from_mm(5.0, 5.0)));
+        assert!(inside_corner(c, b, a, Point2::from_mm(5.0, 5.0)));
+        assert!(inside_corner(a, b, c, Point2::from_mm(-5.0, -5.0)));
+    }
+
+    #[test]
+    fn a_parabola_is_cut_into_steps_through_its_apex() {
+        // Between the point (0, 2) and the x axis, from x = -4 to x = 4.
+        let at = |x: f64| Point2::from_mm(x, x * x / 4.0 + 1.0);
+        let points = discretize_parabola(
+            Point2::from_mm(0.0, 2.0),
+            (Point2::from_mm(-10.0, 0.0), Point2::from_mm(10.0, 0.0)),
+            at(-4.0),
+            at(4.0),
+            800_000,
+            10f32.to_radians(),
+        );
+        assert_eq!((points[0], points[points.len() - 1]), (at(-4.0), at(4.0)));
+        assert!(points.contains(&Point2::from_mm(0.0, 1.0)));
+        assert!(points.len() >= 10);
+        // Every point is as far from the focus as from the line.
+        for p in &points {
+            let to_focus = (p.x as f64).hypot(p.y as f64 - 2e6);
+            assert!((to_focus - p.y as f64).abs() < 5.0, "{p:?}");
+        }
+        // In order along the line (the apex may be there twice, as in the
+        // reference, where a step lands on it).
+        assert!(points.windows(2).all(|pair| pair[1].x >= pair[0].x));
+    }
 }

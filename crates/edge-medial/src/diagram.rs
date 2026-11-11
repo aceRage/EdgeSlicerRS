@@ -39,6 +39,8 @@ pub struct VoronoiEdge {
     pub next: usize,
     /// False for an edge between a segment and its own end.
     pub primary: bool,
+    /// Whether it is a piece of a parabola: between a point and a segment.
+    pub curved: bool,
 }
 
 #[derive(Clone, Debug, Default, PartialEq)]
@@ -85,6 +87,7 @@ pub fn diagram(segments: &[[i64; 4]]) -> Result<VoronoiDiagram, MedialError> {
             twin: built.edge_get_twin(edge)?.usize(),
             next: built.edge_get_next(edge)?.usize(),
             primary: built.edge(edge)?.is_primary(),
+            curved: built.edge(edge)?.is_curved(),
         });
     }
     let vertices = built

@@ -1,6 +1,6 @@
 use edge_config::{ConfigError, FloatOrPercent, Settings};
 use edge_extrusion::{Flow, FlowError, LineWidths};
-use edge_geom::scaled;
+use edge_geom::{Coord, scaled};
 
 use crate::Params;
 
@@ -43,6 +43,44 @@ pub struct WallSettings {
     pub gap_infill_speed: f64,
     /// Gap lines shorter than this many mm are left out.
     pub filter_out_gap_fill: f64,
+    /// Set where walls are of changing width (`wall_generator` at
+    /// `arachne`, which is the reference's default); none for `classic`.
+    pub arachne: Option<ArachneSettings>,
+}
+
+/// What `wall_generator = arachne` is tuned by. The percentages are of
+/// the nozzle's diameter.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct ArachneSettings {
+    pub min_bead_width_percent: f64,
+    pub initial_layer_min_bead_width_percent: f64,
+    pub min_feature_size_percent: f64,
+    pub min_length_factor: f64,
+    pub wall_transition_length_percent: f64,
+    /// In degrees.
+    pub wall_transition_angle: f64,
+    pub wall_transition_filter_deviation_percent: f64,
+    pub wall_distribution_count: i32,
+    /// In mm.
+    pub wall_maximum_resolution: f64,
+    pub wall_maximum_deviation: f64,
+}
+
+impl Default for ArachneSettings {
+    fn default() -> Self {
+        Self {
+            min_bead_width_percent: 85.0,
+            initial_layer_min_bead_width_percent: 85.0,
+            min_feature_size_percent: 25.0,
+            min_length_factor: 0.5,
+            wall_transition_length_percent: 100.0,
+            wall_transition_angle: 10.0,
+            wall_transition_filter_deviation_percent: 25.0,
+            wall_distribution_count: 1,
+            wall_maximum_resolution: 0.5,
+            wall_maximum_deviation: 0.025,
+        }
+    }
 }
 
 impl Default for WallSettings {
@@ -68,6 +106,7 @@ impl Default for WallSettings {
             bottom_shell_layers: 3,
             gap_infill_speed: 30.0,
             filter_out_gap_fill: 0.0,
+            arachne: Some(ArachneSettings::default()),
         }
     }
 }
@@ -100,7 +139,69 @@ impl WallSettings {
                 })
             })
         };
+        // A percentage whether or not the sign is written.
+        let percent = |key: &str, default: f64| -> Result<f64, ConfigError> {
+            Ok(match settings.float_or_percent(key)? {
+                Some(FloatOrPercent::Percent(percent) | FloatOrPercent::Value(percent)) => percent,
+                None => default,
+            })
+        };
+        let number = |key: &str, default: f64| -> Result<f64, ConfigError> {
+            Ok(settings.float(key)?.unwrap_or(default))
+        };
+        let arachne = match settings.text("wall_generator") {
+            Some("classic") => None,
+            Some("arachne") | None => {
+                let defaults = ArachneSettings::default();
+                Some(ArachneSettings {
+                    min_bead_width_percent: percent(
+                        "min_bead_width",
+                        defaults.min_bead_width_percent,
+                    )?,
+                    initial_layer_min_bead_width_percent: percent(
+                        "initial_layer_min_bead_width",
+                        defaults.initial_layer_min_bead_width_percent,
+                    )?,
+                    min_feature_size_percent: percent(
+                        "min_feature_size",
+                        defaults.min_feature_size_percent,
+                    )?,
+                    min_length_factor: number("min_length_factor", defaults.min_length_factor)?,
+                    wall_transition_length_percent: percent(
+                        "wall_transition_length",
+                        defaults.wall_transition_length_percent,
+                    )?,
+                    wall_transition_angle: number(
+                        "wall_transition_angle",
+                        defaults.wall_transition_angle,
+                    )?,
+                    wall_transition_filter_deviation_percent: percent(
+                        "wall_transition_filter_deviation",
+                        defaults.wall_transition_filter_deviation_percent,
+                    )?,
+                    wall_distribution_count: settings
+                        .integer("wall_distribution_count")?
+                        .map_or(defaults.wall_distribution_count, |count| count as i32),
+                    wall_maximum_resolution: number(
+                        "wall_maximum_resolution",
+                        defaults.wall_maximum_resolution,
+                    )?,
+                    wall_maximum_deviation: number(
+                        "wall_maximum_deviation",
+                        defaults.wall_maximum_deviation,
+                    )?,
+                })
+            }
+            Some(other) => {
+                return Err(ConfigError::BadValue {
+                    key: "wall_generator".into(),
+                    found: other.to_owned(),
+                    expected: "classic or arachne",
+                });
+            }
+        };
         Ok(Self {
+            arachne,
             wall_loops: count("wall_loops", defaults.wall_loops)?,
             outer_wall_line_width: width("outer_wall_line_width", defaults.outer_wall_line_width)?,
             inner_wall_line_width: width("inner_wall_line_width", defaults.inner_wall_line_width)?,
@@ -147,6 +248,20 @@ impl WallSettings {
         })
     }
 
+    /// What the settings ask of the walls that is not done, each with
+    /// what is done instead.
+    pub fn notes(&self) -> Vec<String> {
+        let mut notes = Vec::new();
+        if self.arachne.is_some() && self.only_one_wall_top && self.top_shell_layers > 0 {
+            notes.push(
+                "only_one_wall_top \"1\" with wall_generator \"arachne\": a top surface below \
+                 the last layer keeps all its walls"
+                    .to_owned(),
+            );
+        }
+        notes
+    }
+
     /// What the generator needs for layer `index` of `layer_count`, which
     /// adds to [`Self::params`] the rules that depend on where a layer is.
     /// The object's very last layer gets the single top wall all over; a
@@ -174,7 +289,17 @@ impl WallSettings {
         }
         // Below the last layer a top surface keeps only its outer wall,
         // where there is a top shell to make one of it.
-        if self.only_one_wall_top && self.top_shell_layers > 0 && index + 1 < layer_count {
+        if let Some(arachne) = &mut params.arachne {
+            arachne.is_top_or_bottom_layer = index == 0 || index + 1 == layer_count;
+        }
+        // Below the last layer a top surface keeps only its outer wall,
+        // where there is a top shell to make one of it. (Not with walls
+        // of changing width yet: see `notes`.)
+        if self.arachne.is_none()
+            && self.only_one_wall_top
+            && self.top_shell_layers > 0
+            && index + 1 < layer_count
+        {
             let infill = self.sparse_infill_line_width.resolve(self.nozzle_diameter);
             let infill = if infill > 0.0 {
                 infill
@@ -217,6 +342,29 @@ impl WallSettings {
                 shortest: scaled(self.filter_out_gap_fill),
             }),
             one_wall_top: None,
+            arachne: self.arachne.map(|arachne| {
+                // Of the nozzle's diameter, and kept in single precision,
+                // as the reference keeps them (`make_paths_params`).
+                let of_nozzle = |percent: f64| (percent * 0.01 * self.nozzle_diameter) as f32;
+                crate::ArachneParams {
+                    min_bead_width: of_nozzle(if first_layer {
+                        arachne.initial_layer_min_bead_width_percent
+                    } else {
+                        arachne.min_bead_width_percent
+                    }),
+                    min_feature_size: of_nozzle(arachne.min_feature_size_percent),
+                    min_length_factor: arachne.min_length_factor as f32,
+                    wall_transition_length: of_nozzle(arachne.wall_transition_length_percent),
+                    wall_transition_angle: arachne.wall_transition_angle as f32,
+                    wall_transition_filter_deviation: of_nozzle(
+                        arachne.wall_transition_filter_deviation_percent,
+                    ),
+                    wall_distribution_count: arachne.wall_distribution_count,
+                    is_top_or_bottom_layer: false,
+                    wall_maximum_resolution: (arachne.wall_maximum_resolution / 1e-6) as Coord,
+                    wall_maximum_deviation: (arachne.wall_maximum_deviation / 1e-6) as Coord,
+                }
+            }),
         })
     }
 
@@ -318,6 +466,7 @@ mod tests {
         let settings = WallSettings::from_settings(
             &Settings::from_json(
                 r#"{"only_one_wall_top": "1", "top_shell_layers": "4", "wall_loops": "3",
+                    "wall_generator": "classic",
                     "min_width_top_surface": "200%", "inner_wall_line_width": "0.45",
                     "sparse_infill_line_width": "0.5", "nozzle_diameter": ["0.4"],
                     "top_bottom_infill_wall_overlap": "25%"}"#,
@@ -373,6 +522,80 @@ mod tests {
             ..WallSettings::default()
         };
         assert_eq!(none.params_at(0.2, 9, 10).unwrap().wall_loops, 0);
+    }
+
+    #[test]
+    fn the_wall_generator_and_what_tunes_it_are_read() {
+        let read = |json: &str| WallSettings::from_settings(&Settings::from_json(json).unwrap());
+        // Walls of changing width unless classic ones are asked for.
+        assert_eq!(
+            read("{}").unwrap().arachne,
+            Some(ArachneSettings::default())
+        );
+        assert_eq!(
+            read(r#"{"wall_generator": "classic"}"#).unwrap().arachne,
+            None
+        );
+        assert!(read(r#"{"wall_generator": "spiral"}"#).is_err());
+        let set = read(
+            r#"{"wall_generator": "arachne", "min_bead_width": "70%", "initial_layer_min_bead_width": "90%",
+                "min_feature_size": "20%", "wall_transition_length": "150%", "wall_transition_angle": "15",
+                "wall_transition_filter_deviation": "30%", "wall_distribution_count": "2",
+                "min_length_factor": "0.7", "wall_maximum_resolution": "0.3", "wall_maximum_deviation": "0.02",
+                "nozzle_diameter": ["0.6"]}"#,
+        )
+        .unwrap();
+        // Shares of the nozzle's diameter, the first layer with its own.
+        let (first, later) = (
+            set.params(0.2, true).unwrap().arachne.unwrap(),
+            set.params(0.2, false).unwrap().arachne.unwrap(),
+        );
+        assert!((first.min_bead_width - 0.54).abs() < 1e-6);
+        assert!((later.min_bead_width - 0.42).abs() < 1e-6);
+        assert!((later.min_feature_size - 0.12).abs() < 1e-6);
+        assert!((later.wall_transition_length - 0.9).abs() < 1e-6);
+        assert!((later.wall_transition_filter_deviation - 0.18).abs() < 1e-6);
+        assert_eq!(
+            (
+                later.wall_transition_angle,
+                later.wall_distribution_count,
+                later.min_length_factor
+            ),
+            (15.0, 2, 0.7)
+        );
+        assert_eq!(
+            (later.wall_maximum_resolution, later.wall_maximum_deviation),
+            (300_000, 20_000)
+        );
+        // The first layer and the last are told what they are.
+        let ends = |index| {
+            set.params_at(0.2, index, 10)
+                .unwrap()
+                .arachne
+                .unwrap()
+                .is_top_or_bottom_layer
+        };
+        assert_eq!((ends(0), ends(4), ends(9)), (true, false, true));
+        assert!(
+            read(r#"{"wall_generator": "classic"}"#)
+                .unwrap()
+                .params(0.2, false)
+                .unwrap()
+                .arachne
+                .is_none()
+        );
+
+        // One wall over top surfaces is not done with these walls, and said.
+        let asked = read(r#"{"only_one_wall_top": "1"}"#).unwrap();
+        assert!(asked.notes()[0].starts_with("only_one_wall_top"));
+        assert!(asked.params_at(0.2, 4, 10).unwrap().one_wall_top.is_none());
+        assert!(
+            read(r#"{"only_one_wall_top": "1", "wall_generator": "classic"}"#)
+                .unwrap()
+                .notes()
+                .is_empty()
+        );
+        assert!(read("{}").unwrap().notes().is_empty());
     }
 
     #[test]

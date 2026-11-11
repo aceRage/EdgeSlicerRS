@@ -397,6 +397,7 @@ name = "edge-perimeter"
 version = "0.0.0"
 dependencies = [
  "edge-3mf",
+ "edge-arachne",
  "edge-clip",
  "edge-config",
  "edge-extrusion",

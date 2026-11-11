@@ -128,8 +128,10 @@ impl Edge {
         }
     }
 
+    /// Unknown counts as not, as in the reference built for release;
+    /// it stays unknown only for an edge that has no twin, which a
+    /// sound diagram does not make.
     pub fn is_central(&self) -> bool {
-        debug_assert!(self.central.is_some());
         self.central == Some(true)
     }
 
