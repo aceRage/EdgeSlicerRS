@@ -19,6 +19,7 @@ mod inside;
 mod overhang;
 mod scarf;
 mod seam;
+mod seam_align;
 mod seam_plan;
 mod settings;
 mod wipe;

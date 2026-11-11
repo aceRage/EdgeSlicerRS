@@ -596,9 +596,15 @@ fn a_round_wall_keeps_its_seam_in_line_with_the_one_beneath() {
             assert!(moved < 0.75, "{seam:?} moved {moved} mm");
         }
     }
-    // At the back the first layer's seam is the point furthest back.
+    // At the back the line sets out from the seam furthest back of
+    // all, and no seam on it is more than 1.5 mm further forward than
+    // its own layer's furthest back.
     let back = plan(&layers, Seam::Back);
-    assert!(start(&back, 0, &walls[0][0]).1 > 69.9);
+    let ys: Vec<f64> = (0..12)
+        .map(|at| start(&back, at, &walls[at][0]).1)
+        .collect();
+    assert!(ys.iter().any(|y| *y > 69.98), "{ys:?}");
+    assert!(ys.iter().all(|y| *y > 68.5), "{ys:?}");
     // A seam picked by where the nozzle is is not kept in line.
     let nearest = plan(&layers, Seam::Nearest);
     assert!(seams(&nearest, 5).perimeters[0].finalized.is_none());
@@ -700,6 +706,95 @@ fn the_distance_to_the_outline_beneath_is_told_however_far() {
     // Where the nearer measure tells them apart the two agree.
     assert!(near(below.signed_distance(10.25, 5.0), 0.25));
     assert!(near(below.signed_distance(2.0, 5.0), -0.6));
+}
+
+#[test]
+fn seams_are_lined_up_along_a_curve_and_a_sharp_corner_keeps_its_own() {
+    // A round wall whose corners are elsewhere on every layer: once
+    // lined up the seams lie along a smooth line, nearer each other
+    // than the corners they were picked at.
+    let walls: Vec<[ExtrusionLoop; 1]> = (0..30)
+        .map(|at| {
+            let turn = f64::from(at % 2).to_radians();
+            [wall(circle(20.0, 90, turn), 0, false)]
+        })
+        .collect();
+    let layers: Vec<Layer<'_>> = (walls.iter().enumerate())
+        .map(|(at, loops)| layer(0.2 * (at + 1) as f64, loops, &[]))
+        .collect();
+    let aligned = plan(&layers, Seam::Aligned);
+    assert!((0..30).all(|at| seams(&aligned, at).perimeters[0].finalized.is_some()));
+    let starts: Vec<(f64, f64)> = (0..30)
+        .map(|at| start(&aligned, at, &walls[at][0]))
+        .collect();
+    // The corners of one layer are 1.4 mm apart and turned a degree,
+    // 0.35 mm, from the next layer's, so the seams as picked go to and
+    // fro by that; lined up, those in the middle of the line are
+    // within a twentieth of a mm of each other.
+    for pair in starts[8..22].windows(2) {
+        let moved = (pair[0].0 - pair[1].0).hypot(pair[0].1 - pair[1].1);
+        assert!(moved < 0.05, "moved {moved} mm: {starts:?}");
+    }
+    // And each is on its wall.
+    for (at, point) in starts.iter().enumerate() {
+        let off = ((point.0 - 50.0).hypot(point.1 - 50.0) - 20.0).abs();
+        assert!(off < 0.03, "layer {at} is {off} mm off its wall");
+    }
+
+    // A square's seam is at a sharp corner, which holds it: lined up,
+    // every layer's is still at the corner.
+    let squares: Vec<[ExtrusionLoop; 1]> = (0..12)
+        .map(|at| {
+            [wall(
+                square(0.0, 0.0, 20.0 + 0.01 * f64::from(at % 2)),
+                0,
+                false,
+            )]
+        })
+        .collect();
+    let layers: Vec<Layer<'_>> = (squares.iter().enumerate())
+        .map(|(at, loops)| layer(0.2 * (at + 1) as f64, loops, &[]))
+        .collect();
+    let aligned = plan(&layers, Seam::Aligned);
+    for (at, loops) in squares.iter().enumerate() {
+        let side = 20.0 + 0.01 * (at % 2) as f64;
+        assert!(seams(&aligned, at).perimeters[0].finalized.is_some());
+        assert!(near(start(&aligned, at, &loops[0]), (side, side)));
+    }
+    // A line of fewer than six seams is left as it was picked.
+    let short = plan(&layers[..5], Seam::Aligned);
+    assert!((0..5).all(|at| seams(&short, at).perimeters[0].finalized.is_none()));
+}
+
+#[test]
+fn a_line_of_seams_that_stops_short_of_the_top_takes_in_the_layer_beneath_its_first() {
+    // Thirty layers of a square wall; from the 26th on the wall is
+    // somewhere else, so a line of seams from below ends at the 25th.
+    // The 13th layer's wall reaches a little further back, which makes
+    // its seam the best at the back and the one the line sets out from.
+    let walls: Vec<[ExtrusionLoop; 1]> = (0..30)
+        .map(|at| {
+            let side = if at == 12 { 20.05 } else { 20.0 };
+            let x = if at >= 25 { 100.0 } else { 0.0 };
+            [wall(square(x, 0.0, side), 0, false)]
+        })
+        .collect();
+    let layers: Vec<Layer<'_>> = (walls.iter().enumerate())
+        .map(|(at, loops)| layer(0.2 * (at + 1) as f64, loops, &[]))
+        .collect();
+    let back = plan(&layers, Seam::Back);
+    // Every layer up to the 25th is in the line, the 12th with them.
+    // (The reference, having looked upward and stopped short of the
+    // top, steps down twice before it looks again, and leaves the layer
+    // beneath the first seam out.)
+    for at in 0..25 {
+        assert!(
+            seams(&back, at).perimeters[0].finalized.is_some(),
+            "layer {at} is not in the line"
+        );
+    }
+    // The five above are too few to line up.
+    assert!((25..30).all(|at| seams(&back, at).perimeters[0].finalized.is_none()));
 }
 
 /// A box from `min` to `max`, as triangles facing out.

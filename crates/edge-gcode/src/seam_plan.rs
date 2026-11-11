@@ -39,11 +39,8 @@
 //!   as hidden as every other; the positions that lean to one side of
 //!   the bed, which the reference leans by adding to that measure, are
 //!   then leant by the way the wall itself faces.
-//! - Seams are not yet lined up along a curve fitted through the layers
-//!   (`align_seam_points`): for the seam positions the reference aligns,
-//!   a seam follows the one beneath it where a point near enough is no
-//!   worse by much, which is how the reference gathers the seams it
-//!   then fits its curve to.
+//!
+//! Seams are lined up from layer to layer in `seam_align.rs`.
 
 use std::{
     collections::HashMap,
@@ -55,7 +52,7 @@ use edge_geom::{ExPolygon, Point2};
 use edge_visibility::{Triangles, Visibility};
 use rayon::prelude::*;
 
-use crate::{Layer, PrintSettings, Seam, address, overhang::Below, seam};
+use crate::{Layer, PrintSettings, Seam, address, overhang::Below, seam, seam_align};
 
 /// What seams are placed by that the layers' own walls do not say.
 #[derive(Clone, Copy, Debug, Default)]
@@ -188,9 +185,6 @@ pub(crate) struct Placed {
 /// The slope a wall may hang out by and still be a good place for a
 /// seam, from the vertical (SeamPlacer.hpp `overhang_angle_threshold`).
 const OVERHANG_ANGLE: f32 = 45.0 * std::f32::consts::PI / 180.0;
-/// How far a seam is looked for from the one on the next layer, in line
-/// widths (`seam_align_tolerable_dist_factor`).
-const ALIGN_REACH: f32 = 4.0;
 /// The root of two as the reference writes it where it reckons how deep
 /// a wall lies behind a seam (`place_seam`).
 #[allow(clippy::approx_constant)]
@@ -236,7 +230,7 @@ impl Comparator {
 
     /// Whether the seam is pulled one way by a rule and not by a score:
     /// to the back (`directional_seam_axis`).
-    fn directional(&self) -> bool {
+    pub(crate) fn directional(&self) -> bool {
         self.setup == Seam::Back
     }
 
@@ -621,7 +615,7 @@ impl Plan {
                     }
                 });
                 if lined_up(setup) {
-                    follow(&mut object.layers, &comparator);
+                    seam_align::align(&mut object.layers, &comparator);
                 }
             }
         }
@@ -909,7 +903,7 @@ fn pick_random(
 /// best of those within `reach`, if that is no worse by much than the
 /// seam of the wall it is on. Gives the candidate. A port of
 /// `SeamPlacer::find_next_seam_in_layer`.
-fn find_next_seam_in_layer(
+pub(crate) fn find_next_seam_in_layer(
     layer: &LayerSeams,
     projected: [f32; 3],
     reach: f32,
@@ -953,33 +947,6 @@ fn find_next_seam_in_layer(
     comparator
         .is_first_not_much_worse(&layer.points[best], own, width)
         .then_some(best)
-}
-
-/// Keeps seams in line from the bottom up: a wall's seam goes to the
-/// point nearest a seam of the layer beneath, or the best near it, where
-/// that is no worse by much. This stands in for the reference's
-/// `align_seam_points`, which gathers its strings of seams by the same
-/// step (`find_seam_string`) both ways from the best seams and then
-/// fits a curve through each.
-fn follow(layers: &mut [LayerSeams], comparator: &Comparator) {
-    for index in 1..layers.len() {
-        let (beneath, above) = layers.split_at_mut(index);
-        let (beneath, layer) = (&beneath[index - 1], &mut above[0]);
-        let Some(z) = layer.points.first().map(|point| point.position[2]) else {
-            continue;
-        };
-        for perimeter in &beneath.perimeters {
-            let from = beneath.points[perimeter.seam].position;
-            let reach = ALIGN_REACH * perimeter.flow_width;
-            let projected = [from[0], from[1], z];
-            if let Some(found) = find_next_seam_in_layer(layer, projected, reach, comparator) {
-                let position = layer.points[found].position;
-                let moved = &mut layer.perimeters[layer.points[found].perimeter as usize];
-                moved.seam = found;
-                moved.finalized = Some(position);
-            }
-        }
-    }
 }
 
 /// How visible an object's surface is: its mesh brought to the object's
