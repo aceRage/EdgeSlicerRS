@@ -234,13 +234,8 @@ impl Writer<'_> {
     /// Whether a wall hangs clear of the layer beneath where it starts,
     /// and so starts as an overhang wall.
     fn starts_clear(&self, start: Point2) -> bool {
-        let s = self.settings;
-        !self.state.first_layer
-            && s.detect_overhang_wall
-            && self.below.as_ref().is_some_and(|below| {
-                below.signed_distance(unscaled(start.x), unscaled(start.y))
-                    > 0.5 * s.nozzle_diameter
-            })
+        self.clear_of()
+            .is_some_and(|(below, by)| below.clear(unscaled(start.x), unscaled(start.y), by))
     }
 
     /// Comes at an outer wall from inside the part, if that is asked for

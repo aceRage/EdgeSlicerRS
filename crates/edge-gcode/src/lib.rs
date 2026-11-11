@@ -597,7 +597,7 @@ struct Writer<'a> {
     /// Walls measured against it so far this layer, each with what tells
     /// it apart, and how many of them the pass being written has used: a
     /// layer laid out a second time, slower, measures nothing again.
-    measured: Vec<(Measured, Vec<overhang::Piece>)>,
+    measured: Vec<(Measured, Vec<Run>)>,
     measured_used: usize,
     /// The arcs of the layers being written, fitted ahead of laying
     /// them: for each wall loop and line, by where it is kept and, for a
@@ -642,6 +642,25 @@ struct FileInfo {
 /// how many points it has, its kind and its width.
 type Measured = (Point2, Point2, usize, Role, u64);
 
+/// A stretch of a wall measured against the layer beneath, as it is to
+/// be laid.
+#[derive(Clone, Debug)]
+struct Run {
+    points: Vec<Point2>,
+    /// Whether it hangs clear of the layer beneath, and so is laid as an
+    /// overhang wall.
+    clear: bool,
+    /// The points it is written by, with their speeds and cover, where
+    /// its speed or its fan changes on the way; empty where it is laid
+    /// at one speed along its own points (GCode.cpp `_extrude`,
+    /// `variable_speed`).
+    readings: Vec<overhang::Reading>,
+    /// For a stretch laid at one speed, whether so little of it is
+    /// supported that it gets the overhang fan
+    /// (`path_overhang_fan_active`).
+    cooled: bool,
+}
+
 /// How a wall measured against the layer beneath is laid: as itself
 /// where it is supported, and as a bridge where it hangs clear.
 #[derive(Clone, Copy)]
@@ -656,6 +675,32 @@ struct Laid<'a> {
     /// whether there is an overhang fan at all.
     cooled: bool,
     fan: bool,
+    /// The fan comes on where no more than this share of the wall's
+    /// width is supported; none when it does not go by that.
+    fan_at: Option<f32>,
+    /// The wall's speed as it is written where it is supported.
+    written: f64,
+}
+
+impl<'a> Laid<'a> {
+    /// What a stretch is laid as, with what line and how fast.
+    fn of(&self, clear: bool) -> (Role, &'a Flow, Motion) {
+        if clear {
+            (Role::OverhangPerimeter, self.bridge, self.over_air)
+        } else {
+            (self.role, self.flow, self.motion)
+        }
+    }
+
+    /// Whether the overhang fan is on at a point of a stretch with this
+    /// much of its width supported (GCode.cpp `overhang_fan_on_at`).
+    fn fan_on(&self, clear: bool, cover: f32) -> bool {
+        if clear {
+            self.fan
+        } else {
+            self.cooled || self.fan_at.is_some_and(|at| cover <= at)
+        }
+    }
 }
 
 /// Where the machine stands as the text is written. Kept apart so a layer
@@ -1192,9 +1237,15 @@ impl Writer<'_> {
         self.below = if index == 0 {
             None
         } else {
-            // Nothing a wall is judged by reaches further than its own
-            // width from the outline beneath.
-            overhang::Below::new(layer.below, (1.5 * s.nozzle_diameter).max(0.6))
+            // What is asked of it most often is within a wall's width
+            // of the outline beneath, and the corners of that outline
+            // grown by half a nozzle reach three times as far as that:
+            // by the widest nozzle a wall of this print may be laid
+            // with.
+            let widest = (self.all.iter())
+                .map(|filament| filament.nozzle_diameter)
+                .fold(s.nozzle_diameter, f64::max);
+            overhang::Below::new(layer.below, (1.5 * widest).max(0.6))
         };
 
         // Lay the layer out to see how long it takes; if that is too short
@@ -1981,128 +2032,62 @@ impl Writer<'_> {
             .measured
             .get(self.measured_used)
             .filter(|(known, _)| *known == key)
-            .map(|(_, pieces)| pieces.clone());
+            .map(|(_, runs)| runs.clone());
         let measure = is_wall
-            && known.is_none()
+            && self.below.is_some()
             && (s.enable_overhang_speed || s.detect_overhang_wall || fan.is_some());
-        let measured = measure
-            .then_some(self.below.as_ref())
-            .flatten()
-            .map(|below| {
-                // The wall's speed where it is fully supported, and where a
-                // quarter, a half, three quarters and nearly all of it hangs
-                // over; a bridge's where nothing is under it (GCode.cpp `_extrude`).
-                // A scarf's speed as a percentage is of the wall's own.
-                let own = if role == Role::ExternalPerimeter {
-                    s.outer_wall_speed
+        if known.is_none() && !measure {
+            self.fan_over_air(cooled)?;
+            match parts {
+                Some(parts) => self.lay_parts(points, parts, role, flow, motion)?,
+                None => {
+                    for &point in &points[1..] {
+                        self.extrude(point, role, flow, motion)?;
+                    }
+                }
+            }
+        } else {
+            // A wall over air is a bridge of the inner walls' width,
+            // whichever wall it is (`PerimeterGenerator` `overhang_flow`).
+            // At `bridge_line_width` where that is set.
+            let bridge = self
+                .inner_wall
+                .unwrap_or(*flow)
+                .bridging_sized(s.bridge_flow, s.thick_bridges, s.bridge_line_width)
+                .map_err(|e| io::Error::other(e.to_string()))?;
+            let laid = Laid {
+                role,
+                flow,
+                motion,
+                bridge: &bridge,
+                over_air: self.motion(Role::OverhangPerimeter, &bridge, false),
+                cooled,
+                fan: fan.is_some(),
+                fan_at: fan.and_then(|fan| fan.at).map(|at| at as f32),
+                // Not as the reference, which writes a wall's own speed
+                // as it is (GCode.cpp `_extrude`, `F = speed * 60`):
+                // here it is a whole number of mm/s wherever overhangs
+                // slow walls down, as this engine has always written it.
+                // Kept so that a part with no overhang is the file it
+                // was; the reference's way is `motion.speed` alone.
+                written: if s.enable_overhang_speed {
+                    motion.speed.round().min(motion.speed)
                 } else {
-                    s.inner_wall_speed
-                };
-                let melted = |speed: f64| {
-                    if s.filament_max_volumetric_speed > 0.0 {
-                        speed.min(
-                            s.filament_max_volumetric_speed
-                                / (flow.mm3_per_mm() * self.scarf_flow()),
-                        )
-                    } else {
-                        speed
-                    }
-                };
-                let usual = melted(self.state.small_wall.unwrap_or(own));
-                let usual = self.scarf_speed(usual, melted(own));
-                let step = |speed: FloatOrPercent| {
-                    let speed = speed.resolve(usual);
-                    if speed < 0.5 { usual } else { speed }
-                };
-                let sections = [
-                    (0.1, usual),
-                    (0.25, step(s.overhang_speeds[0])),
-                    (0.5, step(s.overhang_speeds[1])),
-                    (0.75, step(s.overhang_speeds[2])),
-                    (0.87, step(s.overhang_speeds[3])),
-                    // With nothing under it at all a wall goes at the
-                    // bridge's speed, or with
-                    // `slowdown_for_curled_perimeters` at the last of
-                    // the overhang speeds.
-                    (
-                        1.0,
-                        if s.slowdown_for_curled_perimeters {
-                            step(s.overhang_speeds[3])
-                        } else {
-                            s.bridge_speed
-                        },
-                    ),
-                ];
-                let speed = |short: f64| {
-                    if s.enable_overhang_speed {
-                        overhang::speed_for(&sections, flow.width, motion.speed, short)
-                    } else {
-                        motion.speed
-                    }
-                };
-                overhang::Judge {
-                    below,
-                    width: flow.width,
-                    clear_beyond: s.detect_overhang_wall.then_some(0.5 * s.nozzle_diameter),
-                    speed: &speed,
-                    fan_at: fan.and_then(|fan| fan.at),
+                    motion.speed
+                },
+            };
+            let runs = match known {
+                Some(runs) => runs,
+                None => {
+                    let runs = self.measure(points, &laid);
+                    // Anything kept from a pass that went another way is dropped.
+                    self.measured.truncate(self.measured_used);
+                    self.measured.push((key, runs.clone()));
+                    runs
                 }
-                .pieces(points)
-            });
-        let measured = match (known, measured) {
-            (Some(pieces), _) => {
-                self.measured_used += 1;
-                Some(pieces)
-            }
-            (None, Some(pieces)) => {
-                // Anything kept from a pass that went another way is dropped.
-                self.measured.truncate(self.measured_used);
-                self.measured.push((key, pieces.clone()));
-                self.measured_used += 1;
-                Some(pieces)
-            }
-            (None, None) => None,
-        };
-        match measured {
-            Some(pieces) => {
-                // A wall over air is a bridge of the inner walls' width,
-                // whichever wall it is (`PerimeterGenerator` `overhang_flow`).
-                // At `bridge_line_width` where that is set.
-                let bridge = self
-                    .inner_wall
-                    .unwrap_or(*flow)
-                    .bridging_sized(s.bridge_flow, s.thick_bridges, s.bridge_line_width)
-                    .map_err(|e| io::Error::other(e.to_string()))?;
-                let over_air = self.motion(Role::OverhangPerimeter, &bridge, false);
-                let laid = Laid {
-                    role,
-                    flow,
-                    motion,
-                    bridge: &bridge,
-                    over_air,
-                    cooled,
-                    fan: fan.is_some(),
-                };
-                match parts {
-                    Some(parts) => self.pieces_with_arcs(points, parts, &pieces, &laid)?,
-                    None => {
-                        for piece in &pieces {
-                            self.piece(piece, &laid)?;
-                        }
-                    }
-                }
-            }
-            None => {
-                self.fan_over_air(cooled)?;
-                match parts {
-                    Some(parts) => self.lay_parts(points, parts, role, flow, motion)?,
-                    None => {
-                        for &point in &points[1..] {
-                            self.extrude(point, role, flow, motion)?;
-                        }
-                    }
-                }
-            }
+            };
+            self.measured_used += 1;
+            self.lay_runs(points, parts, &runs, &laid)?;
         }
         self.state.wipe_path = points.to_vec();
         if !closed {
@@ -2111,91 +2096,256 @@ impl Writer<'_> {
         Ok(())
     }
 
-    /// One straight move of a wall measured against the layer beneath.
-    fn piece(&mut self, piece: &overhang::Piece, laid: &Laid<'_>) -> io::Result<()> {
-        if piece.clear {
-            self.fan_over_air(laid.fan)?;
-            let motion = Motion {
-                speed: piece.speed.min(laid.over_air.speed),
-                ..laid.over_air
-            };
-            self.extrude(piece.to, Role::OverhangPerimeter, laid.bridge, motion)
-        } else {
-            self.fan_over_air(laid.cooled || piece.cooled)?;
-            let motion = Motion {
-                speed: piece.speed,
-                ..laid.motion
-            };
-            self.extrude(piece.to, laid.role, laid.flow, motion)
-        }
+    /// The layer beneath and how far beyond it a line's middle has to be
+    /// for the line to hang clear, half the nozzle's width, where such
+    /// walls are told apart (`detect_overhang_wall`) and there is a layer
+    /// beneath: what [`overhang::stretches`] and [`overhang::Below::clear`]
+    /// go by.
+    pub(crate) fn clear_of(&self) -> Option<(&overhang::Below, f64)> {
+        let s = self.settings;
+        let below = self.below.as_ref()?;
+        (s.detect_overhang_wall && !self.state.first_layer)
+            .then_some((below, 0.5 * s.nozzle_diameter))
     }
 
-    /// A measured wall whose path has arcs in it. As in the reference
-    /// (GCode.cpp `_extrude`), a stretch keeps its arcs only where it is
-    /// laid one way throughout: at one speed, to within 1 mm/s of its
-    /// own, and with the overhang fan either on all along or off. A
-    /// stretch whose speed or fan changes on the way is laid as the
-    /// straight moves it was measured in. A stretch is the wall between
-    /// the places where it starts and stops hanging clear, which the
-    /// reference makes separate paths of before it fits arcs to any.
-    fn pieces_with_arcs(
+    /// A wall measured against the layer beneath: cut into the stretches
+    /// that rest on it and those that hang clear, and each measured
+    /// along its length as a path of its own, as the reference has them
+    /// (GCode.cpp `_extrude`, from `need_overhang_detection` to
+    /// `variable_speed`).
+    fn measure(&self, points: &[Point2], laid: &Laid<'_>) -> Vec<Run> {
+        let s = self.settings;
+        // Each stretch with how far its points are from the outline
+        // beneath, where cutting it has found that out already.
+        let stretches: Vec<(overhang::Stretch, Option<Vec<f64>>)> = match self.clear_of() {
+            Some((below, by)) => (overhang::stretches_measured(below, by, points).into_iter())
+                .map(|(stretch, known)| (stretch, Some(known)))
+                .collect(),
+            None => vec![(
+                overhang::Stretch {
+                    points: points.to_vec(),
+                    clear: false,
+                },
+                None,
+            )],
+        };
+        let Some(below) = self
+            .below
+            .as_ref()
+            .filter(|_| s.enable_overhang_speed || laid.fan)
+        else {
+            return (stretches.into_iter())
+                .map(|(stretch, _)| Run {
+                    points: stretch.points,
+                    clear: stretch.clear,
+                    readings: Vec::new(),
+                    cooled: false,
+                })
+                .collect();
+        };
+        (stretches.into_iter())
+            .map(|(stretch, known)| {
+                let (role, flow, motion) = laid.of(stretch.clear);
+                // The speed the overhang speeds are shares of: the
+                // wall's own setting, the inner walls' for a stretch
+                // over air, held to what the hot end can melt and on a
+                // scarf to the scarf's (`ref_speed`). Not the speed of
+                // a small loop or of anything else the wall is slowed
+                // by: that is `motion.speed`, which no step exceeds.
+                let own = if role == Role::ExternalPerimeter {
+                    s.outer_wall_speed
+                } else {
+                    s.inner_wall_speed
+                };
+                let melts =
+                    s.filament_max_volumetric_speed / (flow.mm3_per_mm() * self.scarf_flow());
+                let reference = if s.filament_max_volumetric_speed <= 0.0 {
+                    own
+                } else if own == 0.0 {
+                    melts
+                } else {
+                    own.min(melts)
+                };
+                let reference = self.scarf_speed(reference, reference);
+                // A step set to nothing leaves the wall at its own speed.
+                let step = |speed: FloatOrPercent| {
+                    let speed = speed.resolve(reference);
+                    (speed >= 0.5).then_some(speed)
+                };
+                let speeds = overhang::Speeds::new(
+                    flow.width as f32,
+                    reference,
+                    [
+                        None,
+                        step(s.overhang_speeds[0]),
+                        step(s.overhang_speeds[1]),
+                        step(s.overhang_speeds[2]),
+                        step(s.overhang_speeds[3]),
+                        // With nothing under it at all a wall goes at
+                        // the bridge's speed, or with
+                        // `slowdown_for_curled_perimeters` at the last
+                        // of the overhang speeds.
+                        if s.slowdown_for_curled_perimeters {
+                            step(s.overhang_speeds[3])
+                        } else {
+                            Some(s.bridge_speed)
+                        },
+                    ],
+                    motion.speed,
+                );
+                // An overhang wall is cooled whatever is under it, so
+                // nothing along it turns on how much is.
+                let fan_at = laid.fan_at.filter(|_| !stretch.clear);
+                let mut readings = overhang::Gauge {
+                    below,
+                    width: flow.width as f32,
+                    speeds: &speeds,
+                    fan_at,
+                }
+                .readings(&stretch.points, known.as_deref());
+                // "with the slowdown off the points only carry the
+                // overhang fan transitions"
+                if !s.enable_overhang_speed {
+                    for reading in &mut readings {
+                        reading.speed = motion.speed as f32;
+                    }
+                }
+                // "Ignore small speed variations (under 1mm/sec)"
+                let mut varies = readings
+                    .iter()
+                    .any(|reading| (f64::from(reading.speed) - motion.speed).abs() > 1.0);
+                let mut cooled = false;
+                if let (Some(at), Some(first)) = (fan_at, readings.first()) {
+                    cooled = first.cover <= at;
+                    varies |= readings
+                        .windows(2)
+                        .any(|pair| (pair[0].cover <= at) != (pair[1].cover <= at));
+                }
+                if !varies {
+                    readings.clear();
+                }
+                Run {
+                    points: stretch.points,
+                    clear: stretch.clear,
+                    readings,
+                    cooled,
+                }
+            })
+            .collect()
+    }
+
+    /// Lays a measured wall stretch by stretch. As in the reference
+    /// (GCode.cpp `_extrude`), a stretch laid one way throughout, at one
+    /// speed to within 1 mm/s of its own and with the overhang fan
+    /// either on all along or off, is laid along its own points and
+    /// keeps its arcs; one whose speed or fan changes on the way is laid
+    /// as straight moves between the points it was measured at.
+    fn lay_runs(
         &mut self,
         points: &[Point2],
-        parts: &[arc::Part],
-        pieces: &[overhang::Piece],
+        parts: Option<&[arc::Part]>,
+        runs: &[Run],
         laid: &Laid<'_>,
     ) -> io::Result<()> {
-        let mut done = 0;
-        let mut from = points[0];
-        while done < pieces.len() {
-            let first = pieces[done];
-            let length = pieces[done..]
-                .iter()
-                .take_while(|piece| piece.clear == first.clear)
-                .count();
-            let run = &pieces[done..done + length];
-            let whole = length == pieces.len();
-            done += length;
-            let (role, flow, motion) = if first.clear {
-                (Role::OverhangPerimeter, laid.bridge, laid.over_air)
+        for run in runs {
+            let (role, flow, motion) = laid.of(run.clear);
+            if !run.readings.is_empty() {
+                self.lay_readings(run, laid)?;
+                continue;
+            }
+            self.fan_over_air(if run.clear {
+                laid.fan
             } else {
-                (laid.role, laid.flow, laid.motion)
+                laid.cooled || run.cooled
+            })?;
+            let motion = Motion {
+                speed: if run.clear {
+                    motion.speed
+                } else {
+                    laid.written
+                },
+                ..motion
             };
-            let alike = run.iter().all(|piece| {
-                (piece.speed.min(motion.speed) - motion.speed).abs() <= 1.0
-                    && (first.clear || piece.cooled == first.cooled)
-            });
-            if !alike {
-                for piece in run {
-                    self.piece(piece, laid)?;
-                }
-            } else {
-                self.fan_over_air(if first.clear {
-                    laid.fan
-                } else {
-                    laid.cooled || first.cooled
-                })?;
-                if whole {
+            // Part of a wall keeps the arcs of that stretch by itself:
+            // the reference makes separate paths of the stretches
+            // before it fits arcs to any.
+            let fitted = match parts {
+                Some(_) if runs.len() > 1 => fit(self.settings, &run.points, laid.role),
+                _ => None,
+            };
+            match (parts, fitted) {
+                (Some(parts), _) if runs.len() == 1 => {
                     self.lay_parts(points, parts, role, flow, motion)?;
-                } else {
-                    // Part of the wall: the arcs are those of this
-                    // stretch by itself.
-                    let stretch: Vec<Point2> = std::iter::once(from)
-                        .chain(run.iter().map(|piece| piece.to))
-                        .collect();
-                    match fit(self.settings, &stretch, laid.role) {
-                        Some(fitted) => {
-                            self.lay_parts(&fitted.points, &fitted.parts, role, flow, motion)?;
-                        }
-                        None => {
-                            for &point in &stretch[1..] {
-                                self.extrude(point, role, flow, motion)?;
-                            }
-                        }
+                }
+                (_, Some(fitted)) => {
+                    self.lay_parts(&fitted.points, &fitted.parts, role, flow, motion)?;
+                }
+                _ => {
+                    for &point in &run.points[1..] {
+                        self.extrude(point, role, flow, motion)?;
                     }
                 }
             }
-            from = run[length - 1].to;
+        }
+        Ok(())
+    }
+
+    /// A stretch of wall whose speed or fan changes on the way, one
+    /// straight move to each point it was measured at (GCode.cpp
+    /// `_extrude`, the branch taken with `variable_speed`).
+    fn lay_readings(&mut self, run: &Run, laid: &Laid<'_>) -> io::Result<()> {
+        let (role, flow, motion) = laid.of(run.clear);
+        let readings = &run.readings;
+        // In mm/min, as the reference compares them.
+        let own = motion.speed * 60.0;
+        let mut set = f64::from(readings[0].speed) * 60.0;
+        let mut fan_before = laid.fan_on(run.clear, readings[0].cover);
+        for index in 1..readings.len() {
+            // A point's cover is that of the line leaving it, so the fan
+            // is on over a line that is itself short of support and
+            // followed by another that is, or that ends the path so.
+            let fan_now = laid.fan_on(run.clear, readings[index].cover);
+            let fan = fan_before && fan_now;
+            fan_before = fan_now;
+            let to = readings[index].at;
+            // "if (line_length < EPSILON) continue": a move that comes
+            // to nothing as it is written goes with the next.
+            let written = |point: Point2| {
+                (
+                    (unscaled(point.x) * 1000.0).round(),
+                    (unscaled(point.y) * 1000.0).round(),
+                )
+            };
+            if self.state.position.map(written) == Some(written(to)) {
+                continue;
+            }
+            // "Ignore small speed variations - emit speed change if the
+            // delta between current and new is greater than 60mm/min /
+            // 1mm/sec. Reset speed to F if delta to F is less than
+            // 1mm/sec". The line goes at the speed of the point it
+            // leaves.
+            //
+            // The reference asks the two the other way round, and so
+            // comes to the second only when the speed has changed by
+            // 1 mm/s or less: the first move back at full speed after
+            // an overhang is written at the whole number of mm/s the
+            // measuring rounds to (F9720 for a wall at 162.36 mm/s) and
+            // only the one after it at the wall's own (F9741.893), or
+            // none if the path ends there. Here a move within 1 mm/s
+            // of the wall's own speed goes at that speed at once.
+            let wanted = f64::from(readings[index - 1].speed) * 60.0;
+            if (own - wanted).abs() <= 60.0 {
+                set = own;
+            } else if (set - wanted).abs() > 60.0 {
+                set = wanted;
+            }
+            let speed = match (set == own, run.clear) {
+                (true, false) => laid.written,
+                (true, true) => motion.speed,
+                (false, _) => set / 60.0,
+            };
+            self.fan_over_air(fan)?;
+            self.extrude(to, role, flow, Motion { speed, ..motion })?;
         }
         Ok(())
     }
