@@ -293,7 +293,9 @@ pub(super) fn remember(state: &mut State, at: usize, args: &Value) {
     };
     keep(state, |data| {
         let kept = data.printers.entry(machine).or_default();
-        if args.get("bed_type").is_some() {
+        // A bed type let go of (back to the project's own) is not one
+        // that was used with the printer.
+        if args.get("bed_type").is_some() && choices.bed_type.is_some() {
             kept.bed_type = choices.bed_type.clone();
         }
         if choices.from_presets {
@@ -579,9 +581,14 @@ impl Session {
                     "added": false,
                 }),
             }),
+            // The printer a project was saved with. Its vendor is known
+            // where a printer of that model is among those added.
             (false, _, _) if saved.is_some() => Some(json!({
                 "source": "project",
-                "vendor": null,
+                "vendor": installed
+                    .iter()
+                    .find(|known| Some(known.model.as_str()) == named("printer_model"))
+                    .map(|known| known.vendor.as_str()),
                 "machine": named("printer_settings_id"),
                 "model": named("printer_model"),
                 "variant": named("printer_variant"),
@@ -1420,6 +1427,16 @@ mod tests {
             json!({ "vendor": "Snapmaker", "model": "Snapmaker U1" }),
         );
         assert_eq!(project["choices"]["bed_type"], "Cool Plate");
+
+        // A project started from this one is on its printer, bed type
+        // and all.
+        let fresh = ask(&again, "project_new", json!({}))["id"]
+            .as_u64()
+            .unwrap();
+        let fresh = ask(&again, "project", json!({ "project": fresh }));
+        assert_eq!(fresh["choices"]["machine"], project["choices"]["machine"]);
+        assert_eq!(fresh["choices"]["bed_type"], "Cool Plate");
+        assert_eq!(fresh["dirty"], false);
     }
 
     #[test]
@@ -1454,8 +1471,20 @@ mod tests {
         )["id"]
             .as_u64()
             .unwrap();
+        // It was opened in a new project, started from one on the U1:
+        // that printer's bed type is not chosen for it, its own holds.
+        let opened = ask(&session, "project", json!({ "project": own }));
+        assert_eq!(opened["choices"]["bed_type"], Value::Null);
+        assert_eq!(opened["dirty"], false);
+        let own_bed =
+            ask(&session, "settled", json!({ "project": own }))["printer"]["bed_types"]["in_force"]
+                .clone();
+        assert!(own_bed.is_string());
         let listing = ask(&session, "printers", json!({}));
         assert_eq!(listing["selected"]["source"], "project");
+        // The picture of its printer can be shown: a U1 is among those added.
+        assert_eq!(listing["selected"]["vendor"], "Snapmaker");
+        assert_eq!(listing["selected"]["model"], "Snapmaker U1");
         assert_eq!(listing["project_printer"], listing["selected"]["machine"]);
         assert!(listing["project_printer"].as_str().unwrap().contains("U1"));
 
@@ -1534,7 +1563,6 @@ mod tests {
         let saved = ask(&session, "printers_save", models(&[U1, CC, A1]));
         assert_eq!(saved["selected"]["machine"], "Bambu Lab A1 mini 0.4 nozzle");
         assert_eq!(saved["switched"], json!([]));
-        assert_eq!(ask(&session, "project", json!({}))["dirty"], true);
 
         // The project on its own settings goes to a printer of the list
         // when one is picked for it: on the process of the same name.
@@ -1544,6 +1572,22 @@ mod tests {
             json!({ "project": own, "vendor": "Snapmaker", "model": "Snapmaker U1" }),
         );
         assert_eq!(project["choices"]["source"], "presets");
+        assert!(project["choices"]["bed_type"].is_string());
+        let back = ask(
+            &session,
+            "project_set",
+            json!({ "project": own, "source": "project", "bed_type": null }),
+        );
+        assert_eq!(back["dirty"], false);
+        assert_eq!(
+            ask(&session, "settled", json!({ "project": own }))["printer"]["bed_types"]["in_force"],
+            own_bed
+        );
+        let project = ask(
+            &session,
+            "printer_select",
+            json!({ "project": own, "vendor": "Snapmaker", "model": "Snapmaker U1" }),
+        );
         // Each filament is the one of the name it was saved under, as
         // that printer's presets have it now.
         let short = |names: &Value| -> Vec<String> {

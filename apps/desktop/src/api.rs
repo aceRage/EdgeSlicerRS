@@ -471,6 +471,12 @@ impl Project {
             .or(file.plates.first())
             .map(|plate| plate.id);
         self.choices.from_presets = file.settings.is_none();
+        // A project's own bed type is in force until another is chosen
+        // for it: the one that went with the printer the empty project
+        // was on is not a choice made for this file.
+        if file.settings.is_some() {
+            self.choices.bed_type = None;
+        }
         self.baseline = self.choices.clone();
         self.file = Some(file);
         self.tab = "prepare";
@@ -643,12 +649,25 @@ impl State {
         let mut project = Project::new(self.next_id, name);
         self.next_id += 1;
         let started_from = &self.projects[from].choices;
+        // The bed type goes with the printer: the one the project it was
+        // started from is on, or for one sliced with its own settings the
+        // one last used with that printer.
+        let bed_type = if started_from.from_presets {
+            started_from.bed_type.clone()
+        } else {
+            started_from
+                .machine
+                .as_ref()
+                .and_then(|machine| self.store.data.printers.get(machine))
+                .and_then(|kept| kept.bed_type.clone())
+        };
         project.choices = Choices {
             from_presets: true,
             vendor: started_from.vendor.clone(),
             machine: started_from.machine.clone(),
             process: started_from.process.clone(),
             filaments: started_from.filaments.clone(),
+            bed_type,
             ..Choices::default()
         };
         project.baseline = project.choices.clone();
