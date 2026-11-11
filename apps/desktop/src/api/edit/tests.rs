@@ -539,3 +539,116 @@ fn geometry_is_added_to_the_project_shown_cloned_and_arranged() {
     assert_eq!(detail["dirty"], false);
     assert_eq!(detail["edit"]["redo"], "Import Object");
 }
+
+/// Boxes, each `(corner, size)`, as one mesh in a binary STL file: the
+/// separate shells a model of several pieces is made of.
+fn boxes(path: &Path, boxes: &[([f32; 3], [f32; 3])]) -> String {
+    let mut triangles: Vec<[[f32; 3]; 3]> = Vec::new();
+    for (at, size) in boxes {
+        let corner = |i: usize| -> [f32; 3] {
+            std::array::from_fn(|axis| at[axis] + if i >> axis & 1 == 1 { size[axis] } else { 0.0 })
+        };
+        for face in [
+            [0, 2, 3],
+            [0, 3, 1],
+            [4, 5, 7],
+            [4, 7, 6],
+            [0, 1, 5],
+            [0, 5, 4],
+            [2, 6, 7],
+            [2, 7, 3],
+            [0, 4, 6],
+            [0, 6, 2],
+            [1, 3, 7],
+            [1, 7, 5],
+        ] {
+            triangles.push(face.map(corner));
+        }
+    }
+    let mut bytes = vec![0u8; 80];
+    bytes.extend_from_slice(&(triangles.len() as u32).to_le_bytes());
+    for t in &triangles {
+        bytes.extend_from_slice(&[0u8; 12]);
+        for corner in t {
+            for value in corner {
+                bytes.extend_from_slice(&value.to_le_bytes());
+            }
+        }
+        bytes.extend_from_slice(&[0u8; 2]);
+    }
+    std::fs::write(path, bytes).unwrap();
+    path.to_string_lossy().into_owned()
+}
+
+/// A project of one STL on the U1, its presets chosen.
+fn stl_project(session: &Arc<Session>, path: &str) -> u64 {
+    let project = ask(session, "project_open", json!({ "path": path }))["id"]
+        .as_u64()
+        .unwrap();
+    choose_presets(session, project);
+    project
+}
+
+#[test]
+fn a_box_is_laid_on_a_face_and_slices_as_it_then_lies() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = boxes(
+        &dir.path().join("box.stl"),
+        &[([0.0; 3], [30.0, 20.0, 10.0])],
+    );
+    let session = Arc::new(Session::new(None));
+    let project = stl_project(&session, &path);
+    let scene = ask(&session, "scene", json!({}));
+    let copy = scene["placings"][0]["id"].clone();
+    sliced(&session, project, None);
+    let before = numbers(&ask(&session, "toolpath", json!({}))["box"][1]);
+    assert!((before[2] - 10.0).abs() < 0.1, "{before:?}");
+
+    let faces = ask(&session, "scene_faces", json!({ "copy": copy }));
+    assert_eq!(faces["copy"], copy);
+    let list = faces["faces"].as_array().unwrap();
+    assert_eq!(list.len(), 6);
+    assert_eq!(list[0]["area"], 600.0);
+    // Each is drawn as the reference draws it: twenty points a corner.
+    assert_eq!(list[0]["drawn"].as_array().unwrap().len(), 80);
+    let side = list
+        .iter()
+        .find(|face| numbers(&face["normal"]) == [1.0, 0.0, 0.0])
+        .unwrap();
+
+    let laid = edit(
+        &session,
+        json!({ "op": "lay_on_face", "copy": copy, "normal": side["normal"] }),
+    );
+    assert_eq!(laid["done"], "Gizmo-Place on Face");
+    assert_eq!(laid["project"]["sliced"], false);
+    let reach = &laid["scene"]["placings"][0]["box"];
+    let (low, high) = (numbers(&reach[0]), numbers(&reach[1]));
+    assert_eq!(low[2], 0.0);
+    assert!((high[2] - low[2] - 30.0).abs() < 1e-3, "{reach}");
+    assert!((high[0] - low[0] - 10.0).abs() < 1e-3, "{reach}");
+
+    // Sliced as it now lies: 30 mm tall, where it stands.
+    sliced(&session, project, None);
+    let path_box = ask(&session, "toolpath", json!({}))["box"].clone();
+    let (from, to) = (numbers(&path_box[0]), numbers(&path_box[1]));
+    assert!((to[2] - 30.0).abs() < 0.1, "{path_box}");
+    assert!((to[0] - from[0] - 10.0).abs() < 0.5, "{path_box}");
+    assert!(
+        from[0] >= low[0] - 0.01 && to[0] <= high[0] + 0.01,
+        "{path_box} {reach}"
+    );
+
+    // One step to take back.
+    let undone = ask(&session, "undo", json!({}));
+    assert_eq!(undone["done"], "Gizmo-Place on Face");
+    assert_eq!(undone["project"]["edit"]["undo"], Value::Null);
+    assert!(
+        refused(
+            &session,
+            "scene_edit",
+            json!({ "op": "lay_on_face", "copy": copy, "normal": [0, 0] })
+        )
+        .contains("normal is not three numbers")
+    );
+}

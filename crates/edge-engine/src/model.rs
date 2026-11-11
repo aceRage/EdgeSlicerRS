@@ -23,17 +23,18 @@
 use std::{
     path::{Path, PathBuf},
     sync::{
-        Arc,
+        Arc, OnceLock,
         atomic::{AtomicU64, Ordering},
     },
 };
 
 use edge_3mf::{Instance, InstanceRef, Object, Part, PartKind, Plate, Project};
 use edge_config::Settings;
-use edge_mesh::Transform;
+use edge_mesh::{Transform, hull::Hull};
 
 use crate::{
     Failure, Loaded, PlateInfo,
+    lay_on_face::{self, Face, Filter},
     load::{self, Held, Opened, plate_origin},
     scene::{SceneObject, object_of},
 };
@@ -132,6 +133,8 @@ fn within(reach: &Reach, bed: [f64; 4]) -> bool {
 pub struct Shape {
     stamp: u64,
     parts: Vec<Part>,
+    /// The convex hull of its printed parts, worked out when first asked.
+    hull: OnceLock<Option<Hull>>,
 }
 
 impl Shape {
@@ -139,7 +142,35 @@ impl Shape {
         Arc::new(Self {
             stamp: fresh(),
             parts,
+            hull: OnceLock::new(),
         })
+    }
+
+    /// Its parts, in order.
+    pub fn parts(&self) -> &[Part] {
+        &self.parts
+    }
+
+    /// The convex hull of its printed parts in the object's own
+    /// coordinates: what it can rest on. None when they do not enclose
+    /// anything (flat, or nothing at all). The reference merges the hulls
+    /// of the parts and takes the hull of that (LayOnFace.cpp
+    /// `lay_on_face_planes`), which is the same solid.
+    pub fn hull(&self) -> Option<&Hull> {
+        self.hull
+            .get_or_init(|| {
+                let points: Vec<[f64; 3]> = self
+                    .printed()
+                    .flat_map(|part| {
+                        part.mesh
+                            .vertices
+                            .iter()
+                            .map(|vertex| part.transform.apply(vertex.map(f64::from)))
+                    })
+                    .collect();
+                edge_mesh::hull::convex_hull(&points)
+            })
+            .as_ref()
     }
 
     /// A number that is this shape's alone: another shape, or this one
@@ -836,6 +867,67 @@ impl Model {
             }
         }
         self.objects[at].shape = Shape::new(parts);
+        Ok(())
+    }
+
+    /// The faces a copy can be laid on, largest first, as the reference's
+    /// "Lay on face" offers them for its turn and size (LayOnFace.cpp
+    /// `lay_on_face_planes` with the gizmo's filter).
+    pub fn faces(&self, copy: u64) -> Result<Vec<Face>, Failure> {
+        let (object, at) = self.copy_at(copy)?;
+        let shape = &self.objects[object].shape;
+        let mut linear = self.objects[object].copies[at].local;
+        linear.rows[3] = [0.0; 3];
+        let size = shape.reach(&linear).map_or(0.0, |[low, high]| {
+            (0..3)
+                .map(|axis| (high[axis] - low[axis]).powi(2))
+                .sum::<f64>()
+                .sqrt()
+        });
+        let Some(hull) = shape.hull() else {
+            return Ok(Vec::new());
+        };
+        Ok(lay_on_face::faces(
+            hull,
+            &lay_on_face::linear_of(&linear),
+            &Filter::for_gizmo(size),
+            size,
+        ))
+    }
+
+    /// Lays a copy on the face whose outward `normal` (in the object's own
+    /// coordinates) is given: turned so that face points straight down
+    /// (Selection.cpp `flattening_rotate`), then stood on the bed as any
+    /// turn is (GLCanvas3D.cpp `do_rotate`).
+    ///
+    /// The turn is about the middle of the box round the copy. The
+    /// reference turns an instance about its own origin, which it keeps in
+    /// the middle of the object's geometry; a model read here is not moved
+    /// to stand about its origin, so its origin may be anywhere.
+    pub fn lay_on_face(
+        &mut self,
+        bed: Option<&Bed>,
+        copy: u64,
+        normal: [f64; 3],
+    ) -> Result<(), Failure> {
+        self.copy_at(copy)?;
+        if !normal.iter().all(|value| value.is_finite()) || normal == [0.0; 3] {
+            return Err(refused("that is no direction to lay the object on"));
+        }
+        self.settle(bed);
+        let (scene, reach) = self
+            .in_scene(bed, copy)
+            .ok_or_else(|| refused(format!("there is no copy {copy}")))?;
+        let turn = lay_on_face::turn_down(&lay_on_face::linear_of(&scene), normal)
+            .ok_or_else(|| refused("that would squash the object to nothing"))?;
+        let middle = reach.map_or([0.0; 3], |[low, high]| {
+            std::array::from_fn(|axis| (low[axis] + high[axis]) / 2.0)
+        });
+        let turned = scene
+            .then(&Transform::translation(middle.map(|value| -value)))
+            .then(&lay_on_face::transform_of(&turn))
+            .then(&Transform::translation(middle));
+        self.stand_in_scene(bed, copy, turned);
         Ok(())
     }
 

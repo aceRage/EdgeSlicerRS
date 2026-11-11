@@ -151,7 +151,7 @@ does with each option.
 | --- | --- | --- |
 | A 3D view of every plate with the objects on it, orbit / pan / zoom, selection | `View3D`, `GLCanvas3D` | **added**, in 3D: section 9. Where the browser has no WebGL2, the view from above the first pass built is kept: the bed of the printer chosen with its grid and each object's outline (its convex hull), name and size, drag to move, wheel to zoom, "Fit part" [Z] and "Fit bed" |
 | Main toolbar: "Add" [Ctrl+I], "Add plate", "Auto orient all/selected objects" [Q], "Arrange all objects" [A] with its options, "Split to objects", "Split to parts", "Variable layer height", "Assembly View" | `GLCanvas3D::_init_main_toolbar` l.9274 | **added**: "Add", "Add plate" and "Arrange all objects" (section 13; the arrangement is a plain one, not the reference's). **not yet**: auto orient, splitting (the engine does neither), variable layer height, the assembly view, the arrangement's options |
-| Gizmos: "Move" [M], "Rotate" [R], "Scale" [S], "Lay on face" [F], "Cut" [C], "Mesh Boolean" [B], "Support Painting" [L], "Seam painting" [P], "Paint-on fuzzy skin" [H], "Color Painting" [N], "Texture displacement", "Emboss" [T], "SVG", "Measure" [U], "Assemble" [Y], "Simplify", "Brim Ears" [E], "Sculpt", "Edit", "Fillet / chamfer (CAD)" | `Gizmos/GLGizmosManager.cpp::init` l.224 | **added**: "Move", "Rotate" and "Scale" with their number fields (section 13). **not yet**: the rest; "Lay on face" waits for the convex hull of a mesh in three dimensions, which nothing here works out |
+| Gizmos: "Move" [M], "Rotate" [R], "Scale" [S], "Lay on face" [F], "Cut" [C], "Mesh Boolean" [B], "Support Painting" [L], "Seam painting" [P], "Paint-on fuzzy skin" [H], "Color Painting" [N], "Texture displacement", "Emboss" [T], "SVG", "Measure" [U], "Assemble" [Y], "Simplify", "Brim Ears" [E], "Sculpt", "Edit", "Fillet / chamfer (CAD)" | `Gizmos/GLGizmosManager.cpp::init` l.224 | **added**: "Move", "Rotate" and "Scale" with their number fields, and "Lay on face" [F] (section 13). **not yet**: the rest |
 | Object list: plates, objects, parts, instances, layer ranges; columns "Name", printable, "Fila.", paint marks; the object, part and plate menus | `GUI_ObjectList.cpp`, `GUI_Factories.cpp` | **added**: plates, objects and instances with "Name", printable and "Fila.", and the object's and the plate's menus (section 13). **not yet**: parts, layer ranges, the paint marks, settings of an object |
 | View options: "Realistic View", "X-Ray", "Center of Mass", "Show 3D Navigator", Ctrl+0..6 views | `GLCanvas3D.cpp` l.8297, View menu | **added**: the navigator and the views (section 9). **not yet**: the three view options |
 
@@ -322,7 +322,7 @@ Read from `ProjectStrip.cpp/.hpp`, `ProjectSessions.hpp` and their uses in
 | Z: zoom to the objects | **added**: "Fit in all view" in 3D (section 9); "Fit part" from above |
 | Ctrl+S, Ctrl+Shift+S, Ctrl+I, Ctrl+G, Ctrl+Shift+G, Ctrl+P (Preferences), "?" (the list of shortcuts) | **not yet** |
 | Left / Right, Home / End (the move slider), L (one layer mode), C (G-code window) | **added** in 3D: all but C (no G-code window) |
-| A, Shift+A, Q, Shift+Q, the gizmo keys, Ctrl+0..6, Ctrl+A / D / Z / Y / C / V / X, Del, 1–9, arrows to move objects | **added** in 3D: Ctrl+0..7 (the views), Ctrl+A, Esc, I and O, Ctrl+E (section 9); A, Shift+A, M, R, S, Ctrl+Z, Ctrl+Y, Ctrl+C, Ctrl+V, Ctrl+K, Ctrl+I, Del and the arrows (section 13). **not yet**: Q and Shift+Q, the other gizmos' keys, Ctrl+D, Ctrl+X, 1–9 (the filament of what is selected) |
+| A, Shift+A, Q, Shift+Q, the gizmo keys, Ctrl+0..6, Ctrl+A / D / Z / Y / C / V / X, Del, 1–9, arrows to move objects | **added** in 3D: Ctrl+0..7 (the views), Ctrl+A, Esc, I and O, Ctrl+E (section 9); A, Shift+A, M, R, S, F, Ctrl+Z, Ctrl+Y, Ctrl+C, Ctrl+V, Ctrl+K, Ctrl+I, Del and the arrows (section 13). **not yet**: Q and Shift+Q, the other gizmos' keys, Ctrl+D, Ctrl+X, 1–9 (the filament of what is selected) |
 
 ## 7. What the page asks for
 
@@ -370,6 +370,7 @@ the project is on.
 | `scene` | `project?` | the project for Prepare in 3D: `{ project, key, bare, bed { box, shape, height, model, texture }, plates: [{ id, name, origin }], plate, colours, objects: [{ id, name, mesh, vertices, triangles, bytes, filaments, filament, parts }], placings: [{ id, object, plate, printable, matrix (16 numbers, column by column), box, over }] }`. An object's `id` and a copy's (a placing's) `id` stay theirs through every edit; `mesh` is the number of the object's mesh, the same for as long as the mesh is; `filament` is the object's own when its parts agree; `over` says a copy reaches over the edge of its plate |
 | `scene_edit` | `project?`, `op` and what it takes (section 13) | `{ project, scene, done, made, note }`: the project and its scene as they then are, the edit's name in the history, the copies it made, and something to tell the person or null |
 | `undo`, `redo` | `project?` | `{ project, scene, done }`; an error when there is nothing to take back or to make again |
+| `scene_faces` | `project?`, `copy` | the faces "Lay on face" offers for a copy, largest first: `{ project, copy, faces: [{ normal, area, drawn }] }`, `normal` outward in the object's own coordinates (what `lay_on_face` takes), `area` in mm² at the printed size, `drawn` the outline to draw over the face (rounded and lifted as the reference draws it), in the object's own coordinates |
 | `toolpath` | `project?`, `plate?` | a sliced plate's moves, before they are asked for: `{ source: "gcode" \| "lines", moves, move_size, at_once, layers { first, z, height }, features, filaments, counts { travel, line, wipe, retract, unretract, seam, tool_change }, box, plate, run }` |
 | `scene_mesh` (bytes) | `project?`, `mesh` (its number in `scene`) or `object` (its place in the list) | an object's mesh, `EDGM`: 24 bytes of header, vertices (`f32` × 3), triangles (`u32` × 3), a mark byte for each triangle when they differ |
 | `bed_model` (bytes) | `project?` | the vendor's model of the printer's bed, as `scene_mesh` |
@@ -807,6 +808,7 @@ undo history.
 | `add_plate` | — | a plate after the last, which is then the one shown | "add partplate" |
 | `delete_plate` | `plate?` | takes a plate away, not the last one | "delete partplate" |
 | `arrange` | `plate?`, or `all: true` | lays out one plate, or every plate | "Arrange" |
+| `lay_on_face` | `copy`, `normal` (three numbers, a face's from `scene_faces`) | turns the copy so that face points straight down, about the middle of its box, and stands it on the bed | "Gizmo-Place on Face" |
 
 ### Undo and redo
 
@@ -876,6 +878,24 @@ as the reference's is.
 | Inches for millimetres ("in") | `m_imperial_units` | **not yet**: no preferences |
 | What is typed is a step of its own: "Set Position", "Set Orientation", "Set Scale" | `change_position_value` l.286 and on | **added** |
 
+### Lay on face
+
+Read from `Gizmos/GLGizmoFlatten.cpp`, `libslic3r/LayOnFace.cpp`,
+`Selection.cpp` (`flattening_rotate`) and `GLCanvas3D.cpp` (`do_rotate`).
+The engine has the convex hull of a mesh (`edge_mesh::hull`, an
+incremental hull of its own where the reference has qhull) and the faces
+and the turn (`edge_engine::lay_on_face`); the page draws and picks the
+faces (`ui/scene-edit.js`).
+
+| C++ | Where | Here |
+| --- | --- | --- |
+| "Lay on face" [F] in the gizmos' column, on for one whole instance (`is_selection_supported`) | `GLGizmosManager.cpp` l.227, `GLGizmoFlatten.cpp` l.166 | **added**: the tool in Prepare's toolbar beside Scale, "Lay on face [F]", off unless one copy is selected; F and its button open and close it, Esc closes it |
+| The faces: the convex hull of the object's model parts, its triangles grouped by normal (to a thousandth) across shared edges, each group's outline taken round in the plane; dropped: a single triangle with a side under the least side, an outline under the least area or with an inner angle under 1°. The gizmo's limits go by the printed size: every face of 5 mm² or more, else the 12 largest down to max(0.01 mm², 1e-4 × diagonal²), the least side min(1 mm, 5% of the diagonal) | `LayOnFace.cpp` `hull_planes` l.18, `LayOnFaceFilter::for_gizmo` l.167 | **added** (`scene_faces`), the same grouping and limits at the copy's size and turn. The hull is cached with the object's shape (an affine map keeps a hull a hull) |
+| Each face drawn over the object, a tenth of the way in towards its middle, its corners rounded (ten passes), lifted min(0.1 mm, 1% of the diagonal), in front of the object and hiding one another; the one under the pointer lighter (`FLATTEN_COLOR`, `FLATTEN_HOVER_COLOR`) | `update_planes` l.477, `on_render` l.327 | **added**: the same outline from the engine, the same colours |
+| A click on a face turns the object so the face points down, then `do_rotate("Gizmo-Place on Face")` stands it on the bed: one undo step | `on_mouse` l.90, `lay_on` l.107 | **added**, as the button goes down, as in the C++. **differs**: the turn is about the middle of the copy's box; the reference's is about the instance's origin, which it keeps in the middle of the object's geometry, where a model read here may have its origin anywhere |
+| The panel: "Convex hull" / "Face under cursor", "Click a highlighted face to lay the object on it.", "Hold Alt to pick any face under the pointer." | `on_render_input_window` l.386 | **added**: the panel titled "Lay on face" with the first hint, and "No resting faces found on the convex hull." when there are none. **not yet**: "Face under cursor" and Alt (section 13, "Left for later"); the hint about Alt is not shown, Alt doing nothing here |
+| The other instances of the object take the same turn | `Selection::synchronize_unselected_instances` | **differs**: as with Rotate here, only the copy selected turns |
+
 ### The main toolbar
 
 Over the stage, in the middle (`.toolbar`, STYLE.md). A tool that cannot be
@@ -928,7 +948,7 @@ reference's on fixtures; the comparison needs the reference run with
 
 | C++ | Waits for |
 | --- | --- |
-| "Lay on face" [F] (`GLGizmoFlatten.cpp`: the faces of the object's convex hull, a click lays one on the bed) | the convex hull of a mesh in three dimensions, in the engine; the page has only the mesh |
+| "Lay on face": its second mode, "Face under cursor" (any flat face under the pointer, recessed ones too, and Alt to use it for a moment), and laying one part of an object on a face | the first needs the page to grow a flat face from the triangle under the pointer (`grow_flat_face`) and to warn of a recessed one; the second, parts that can be selected (see below) |
 | "Fill bed with copies" (`GUI_Factories.cpp` l.1146, `FillBedJob.cpp`) | the reference's arrangement: it asks the arranger how many more fit |
 | Sinking an object under the bed; the arrow along Z; "Drop" | the engine cutting what is under the bed away (it slices from an object's lowest point) |
 | "Mirror", "Auto orient", "Split to objects" / "Split to parts", "Cut", "Mesh Boolean", "Simplify" | mesh operations the engine does not have |

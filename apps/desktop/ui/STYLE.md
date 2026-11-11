@@ -431,13 +431,17 @@ Icon tools in a row on the overlay surface: over the 3D stage, where a row
 of the page would not be at home. `.toolbar.vertical` is a column (the
 plates); a text tool in one is a `button.quiet` ("View", "Fit part"). A tool is 28 px square with a 16 px icon;
 `.toolbar-gap` is the hairline between groups. A tool that stays on while
-it is in use (Move, Rotate, Scale) carries `aria-pressed`, and the one that
+it is in use (Move, Rotate, Scale, Lay on face) carries `aria-pressed`, and the one that
 is on is the accent on its tint. That is the toolbar's one use of the
 accent: what was done (undo) and what can be added are plain. The keys of a
 tool are in its tooltip, in the reference's own wording ("Move [M]"); a
 tool that cannot be used now is `disabled`, never hidden. A panel that
 belongs to the tool that is on (`.edit-panel`: the number fields) stands
 under the toolbar on the same surface, and is the only thing that does.
+A tool with nothing to type ("Lay on face") has the same panel with its
+title and one line of what to do (`p.edit-hint`, `--text-2`). What a tool
+draws in the scene over an object (the faces of "Lay on face") keeps the
+reference's own colours, as the handles do; it is not the page's accent.
 
 ### Trees: `.tree`
 

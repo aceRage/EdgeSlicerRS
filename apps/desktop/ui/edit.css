@@ -33,6 +33,8 @@
 .edit-grid .unit input { width: 100%; min-width: 0; font-size: var(--size-small); }
 .edit-grid .unit:has(input:disabled) { color: var(--text-off); background: transparent; }
 .edit-label { color: var(--text-2); }
+/* What a tool without number fields says to do (Lay on face). */
+.edit-hint { margin: 0; max-width: 36ch; color: var(--text-2); font-size: var(--size-label); }
 .edit-check { display: flex; flex-direction: row; align-items: center; gap: var(--space-2); color: var(--text-2); }
 /* The axes' own colours, as the reference letters them (ColorRGB::X, Y, Z). */
 .edit-panel .gl-x { color: rgb(255, 60, 91); }

@@ -25,7 +25,7 @@ use serde_json::{Value, json};
 use super::{File, Project, Session, lock, needed, scene::Stage, text, whole};
 
 /// The calls answered here.
-pub(super) const JSON: [&str; 3] = ["scene_edit", "undo", "redo"];
+pub(super) const JSON: [&str; 4] = ["scene_edit", "undo", "redo", "scene_faces"];
 
 /// The most edits a project keeps to take back. The reference keeps as
 /// many as fit in a tenth of the machine's memory (UndoRedo.cpp
@@ -157,6 +157,16 @@ fn ids(args: &Value, key: &str) -> Result<Vec<u64>, String> {
         .and_then(|list| list.iter().map(Value::as_u64).collect::<Option<Vec<u64>>>())
         .filter(|list| !list.is_empty())
         .ok_or_else(|| format!("{key} was not given"))
+}
+
+/// Three numbers a call gives under `key`.
+fn numbers(args: &Value, key: &str) -> Result<[f64; 3], String> {
+    let list: Vec<f64> = args
+        .get(key)
+        .and_then(Value::as_array)
+        .map(|list| list.iter().filter_map(Value::as_f64).collect())
+        .unwrap_or_default();
+    <[f64; 3]>::try_from(list).map_err(|_| format!("{key} is not three numbers"))
 }
 
 /// What an edit by the gizmos or the number fields may be called in the
@@ -321,6 +331,13 @@ impl Session {
                 }
                 outcome.name = "Arrange".into();
             }
+            "lay_on_face" => {
+                let normal = numbers(args, "normal")?;
+                model
+                    .lay_on_face(bed, whole(args, "copy")?, normal)
+                    .map_err(failed)?;
+                outcome.name = "Gizmo-Place on Face".into();
+            }
             other => return Err(format!("there is no edit named {other}")),
         }
         Ok(outcome)
@@ -346,6 +363,7 @@ impl Session {
         match name {
             "scene_edit" => self.scene_edit(args),
             "undo" | "redo" => self.step(args, name == "undo"),
+            "scene_faces" => self.scene_faces(args),
             other => Err(format!("there is no call named {other}")),
         }
     }
@@ -407,6 +425,31 @@ impl Session {
             stage.id,
             json!({ "done": outcome.name, "made": outcome.made, "note": outcome.note }),
         )
+    }
+
+    /// The faces a copy can be laid on ("Lay on face"), largest first: each
+    /// with its outward normal in the object's own coordinates (what
+    /// `lay_on_face` takes), its area at the printed size, and the outline
+    /// to draw over it, also in the object's own coordinates.
+    fn scene_faces(&self, args: &Value) -> Result<Value, String> {
+        let stage = self.stage_of(args)?;
+        let copy = whole(args, "copy")?;
+        let file = stage
+            .file
+            .ok_or("the project is empty: it has no objects")?;
+        let faces = file.model.faces(copy).map_err(|e| e.to_string())?;
+        let mm = |value: f64| (value * 1e4).round() / 1e4;
+        let faces: Vec<Value> = faces
+            .iter()
+            .map(|face| {
+                json!({
+                    "normal": face.normal,
+                    "area": mm(face.area),
+                    "drawn": face.drawn.iter().map(|p| p.map(mm)).collect::<Vec<_>>(),
+                })
+            })
+            .collect();
+        Ok(json!({ "project": stage.id, "copy": copy, "faces": faces }))
     }
 
     /// Takes the last edit back, or makes the last one taken back again.

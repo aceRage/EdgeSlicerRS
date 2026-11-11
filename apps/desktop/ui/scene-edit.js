@@ -35,11 +35,16 @@
   const RING_OFFSET = 5;
   // GLGizmoMove.hpp, GLGizmoScale.cpp `m_snap_step`: with Shift held.
   const [MOVE_STEP, SCALE_STEP] = [1, 0.05];
+  // GLGizmoBase.cpp FLATTEN_COLOR, FLATTEN_HOVER_COLOR: the faces to lay
+  // an object on, and the one under the pointer.
+  const [FACE, FACE_HOT] = [[0.96, 0.93, 0.93, 0.5], [1, 1, 1, 0.75]];
 
   const TOOLS = {
     move: { name: 'Move', key: 'm', icon: 'M8,1.5v13M1.5,8h13M8,1.5l-2,2M8,1.5l2,2M8,14.5l-2-2M8,14.5l2-2M1.5,8l2-2M1.5,8l2,2M14.5,8l-2-2M14.5,8l-2,2' },
     rotate: { name: 'Rotate', key: 'r', icon: 'M13.5,8a5.5,5.5,0,1,1-1.6-3.9M13.5,1.5v3h-3' },
     scale: { name: 'Scale', key: 's', icon: 'M1.5,14.5h6v-6h-6ZM9.5,6.5l5-5M14.5,1.5h-4M14.5,1.5v4' },
+    // GLGizmoFlatten.cpp: for one object at a time (`is_selection_supported`).
+    flatten: { name: 'Lay on face', key: 'f', one: true, icon: 'M1.5,14.5h13M4.5,11.5l2-8l7,3l-3,5Z' },
   };
   const ICONS = {
     add: 'M1.5,12.5v-9a1,1,0,0,1,1-1h3l1.5,2h6.5a1,1,0,0,1,1,1v7a1,1,0,0,1-1,1h-11A1,1,0,0,1,1.5,12.5ZM8,7v4M6,9h4',
@@ -156,7 +161,7 @@
       }
       const b = this.buttons;
       this.bar = el('div', { className: 'toolbar', id: 'edit-bar' },
-        b.add, b.addPlate, gap(), b.arrange, gap(), b.move, b.rotate, b.scale, gap(), b.undo, b.redo);
+        b.add, b.addPlate, gap(), b.arrange, gap(), b.move, b.rotate, b.scale, b.flatten, gap(), b.undo, b.redo);
       this.bar.setAttribute('role', 'toolbar');
       this.bar.setAttribute('aria-label', 'Prepare');
       this.panel = el('div', { className: 'edit-panel overlay', id: 'edit-panel', hidden: true });
@@ -281,8 +286,13 @@
       this.commit({ op: 'clone', copies, ...args }, { select: true });
     },
 
+    // Whether a tool can be opened for what is selected.
+    usable(tool, chosen = this.chosen()) {
+      return Boolean(chosen) && (!TOOLS[tool].one || chosen.copies.length === 1);
+    },
+
     setTool(tool) {
-      if (tool && !this.chosen()) return;
+      if (tool && !this.usable(tool)) return;
       this.tool = tool;
       this.hot = null;
       this.fields.of = '';
@@ -388,13 +398,13 @@
     },
 
     sceneChanged() {
-      if (this.tool && !this.chosen()) this.tool = null;
+      if (this.tool && !this.usable(this.tool)) this.tool = null;
       this.refresh();
       if (GL.objects) GL.objects.render();
     },
 
     selectionChanged() {
-      if (this.tool && !this.chosen()) this.tool = null;
+      if (this.tool && !this.usable(this.tool)) this.tool = null;
       this.fields.of = '';
       this.refresh();
       if (GL.objects) GL.objects.mark();
@@ -424,9 +434,10 @@
       b.undo.title = `Undo [Ctrl+Z]${history.undo ? `\n${history.undo}` : ''}`;
       b.redo.title = `Redo [Ctrl+Y]${history.redo ? `\n${history.redo}` : ''}`;
       for (const tool of Object.keys(TOOLS)) {
-        b[tool].disabled = !chosen;
+        b[tool].disabled = !this.usable(tool, chosen);
         b[tool].setAttribute('aria-pressed', String(this.tool === tool));
       }
+      if (this.tool === 'flatten' && chosen && chosen.copies.length === 1) this.wantFaces(chosen.copies[0]);
       // A plate with an object over its edge cannot be printed
       // (Plater.cpp `validate_current_plate`).
       const over = data && data.placings.some((placing) => placing.over && placing.plate === project.plate);
@@ -498,6 +509,7 @@
 
     // The handle at a pixel of the view, or null.
     handleAt(x, y, chosen) {
+      if (this.tool === 'flatten') return this.faceAt(x, y, chosen);
       const frame = this.stage.matrices();
       let [best, least] = [null, GRIP];
       const near = (a, b) => {
@@ -547,6 +559,12 @@
       if (this.busy || !this.data()) return null;
       const chosen = this.tool ? this.chosen() : null;
       const handle = chosen ? this.handleAt(x, y, chosen) : null;
+      if (handle && handle.kind === 'face') {
+        // A face is laid on the bed as the button goes down, as the
+        // reference does (GLGizmoFlatten.cpp `on_mouse`); nothing is dragged.
+        this.layOn(chosen.copies[0], handle.face);
+        return { kind: 'face', cancelled: true, x, y };
+      }
       if (handle) return { kind: handle.kind, handle, x, y };
       // With Ctrl or Shift a click adds to what is selected; it is no drag.
       if (event.ctrlKey || event.metaKey || event.shiftKey) return null;
@@ -753,6 +771,7 @@
       if (!chosen) return;
       const r = this.stage.renderer;
       const gl = r.gl;
+      if (this.tool === 'flatten') { this.drawFaces(frame, chosen); return; }
       const parts = this.parts();
       const matrix = M.multiply(frame.projection, frame.view);
       const mm = this.scale();
@@ -777,6 +796,78 @@
       }
       r.blend(false);
       gl.enable(gl.DEPTH_TEST);
+    },
+
+    // ---- Lay on face ----
+
+    // The faces of the copy selected, asked for once for each place and
+    // shape it has (`scene_faces`), and made ready to draw.
+    async wantFaces(copy) {
+      const data = this.data();
+      if (!data) return;
+      const key = `${data.project}|${copy.id}|${data.objects[copy.object].mesh}|${copy.matrix.join(',')}`;
+      if (this.faces && this.faces.key === key) return;
+      this.dropFaces();
+      const held = { key, list: null, meshes: [] };
+      this.faces = held;
+      try {
+        const answer = await this.host.call('scene_faces', { project: data.project, copy: copy.id });
+        if (this.faces !== held) return;
+        const r = this.stage.renderer;
+        held.list = answer.faces;
+        // Each outline is convex, so a fan of triangles fills it.
+        held.meshes = answer.faces.map((face) => {
+          const fan = [];
+          for (let at = 1; at + 1 < face.drawn.length; at += 1) fan.push(...face.drawn[0], ...face.drawn[at], ...face.drawn[at + 1]);
+          return r.triangles(fan);
+        });
+      } catch (error) {
+        if (this.faces !== held) return;
+        held.list = [];
+        this.host.say(error.message, true);
+      }
+      this.showFields();
+      this.stage.frame();
+    },
+
+    dropFaces() {
+      if (this.faces) for (const mesh of this.faces.meshes) this.stage.renderer.drop(mesh);
+      this.faces = null;
+    },
+
+    // The face under a pixel, as a handle; null where there is none.
+    faceAt(x, y, chosen) {
+      const faces = this.faces;
+      if (!faces || !faces.meshes.length) return null;
+      const r = this.stage.renderer;
+      const frame = this.stage.matrices();
+      const matrix = chosen.copies[0].matrix;
+      // Drawn alone and over everything, as the reference's gizmo picks its
+      // faces in front of the object (`set_raycaster_gizmos_on_top`).
+      const hit = r.pick(x, y, frame.projection, (projection) => {
+        const m = M.multiply(M.multiply(projection, frame.view), matrix);
+        faces.meshes.forEach((mesh, at) => r.drawFlat(mesh, m, GL.Renderer.pickColour(at + 1)));
+      });
+      if (!hit || hit > faces.list.length) return null;
+      return { kind: 'face', id: `face-${hit - 1}`, face: faces.list[hit - 1] };
+    },
+
+    drawFaces(frame, chosen) {
+      const faces = this.faces;
+      if (!faces || !faces.meshes.length) return;
+      const r = this.stage.renderer;
+      const gl = r.gl;
+      const m = M.multiply(M.multiply(frame.projection, frame.view), chosen.copies[0].matrix);
+      // Over the object, each face hiding those behind it.
+      gl.clear(gl.DEPTH_BUFFER_BIT);
+      r.blend(true);
+      faces.meshes.forEach((mesh, at) => r.drawFlat(mesh, m, this.hot === `face-${at}` ? FACE_HOT : FACE));
+      r.blend(false);
+    },
+
+    layOn(copy, face) {
+      this.hot = null;
+      this.commit({ op: 'lay_on_face', copy: copy.id, normal: face.normal });
     },
 
     // ---- the number fields ----
@@ -811,6 +902,13 @@
         this.fields.of = of;
         this.fields.relative = [0, 0, 0];
         live = false;
+      }
+      if (this.tool === 'flatten') {
+        // GLGizmoFlatten.cpp `on_render_input_window`, its convex hull mode.
+        const faces = this.faces && this.faces.list;
+        const hint = !faces ? '…' : faces.length ? 'Click a highlighted face to lay the object on it.' : 'No resting faces found on the convex hull.';
+        this.panel.replaceChildren(el('h3', { textContent: 'Lay on face' }), el('p', { className: 'edit-hint', textContent: hint }));
+        return;
       }
       const m = this.measured(chosen);
       const row = (label, values, { unit, key, off = [], digits = 2, min = null }) => {

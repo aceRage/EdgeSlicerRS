@@ -15,6 +15,7 @@ mod clock;
 mod followed;
 mod holes;
 mod job;
+pub mod lay_on_face;
 mod layer_heights;
 mod load;
 mod model;
