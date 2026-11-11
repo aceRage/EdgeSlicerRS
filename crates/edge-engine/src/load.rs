@@ -34,6 +34,9 @@ pub struct Loaded {
     /// For a project, each object on the plate by itself, for what depends
     /// on which object is which. Empty for a bare model, which is one object.
     pub objects: Vec<Mesh>,
+    /// What is cut out of each of those objects (its negative parts): an
+    /// empty mesh for an object with none.
+    pub negatives: Vec<Mesh>,
     /// Which of the project's plates this is, counting from 0.
     pub plate: usize,
     /// The order the plate sets for filaments on the first layer, as
@@ -207,7 +210,8 @@ impl Opened {
             Held::Project { project, .. } => project.unread_paint.clone(),
             Held::Model(_) => Vec::new(),
         };
-        let (mut bodies, mut painted, settings, mut objects, plate) = match self.held {
+        let (mut bodies, mut painted, settings, mut objects, mut negatives, plate) = match self.held
+        {
             Held::Model(solid) => (
                 vec![Body {
                     solid,
@@ -217,6 +221,7 @@ impl Opened {
                 Vec::new(),
                 None,
                 Vec::new(),
+                Vec::new(),
                 None,
             ),
             Held::Project { project, plate } => (
@@ -224,6 +229,7 @@ impl Opened {
                 project.painted(plate),
                 project.settings.clone(),
                 project.instance_meshes(plate),
+                project.instance_negatives(plate),
                 plate.map(|index| (index, project.plates[index].id, project.plates.len())),
             ),
         };
@@ -236,6 +242,7 @@ impl Opened {
             })?;
             shift(&mut bodies, -x, -y);
             shift_meshes(objects.iter_mut(), -x, -y);
+            shift_meshes(negatives.iter_mut(), -x, -y);
             for object in &mut painted {
                 shift_meshes(
                     std::iter::once(&mut object.solid).chain(object.negative.as_mut()),
@@ -271,6 +278,7 @@ impl Opened {
             settings,
             unread_paint,
             objects,
+            negatives,
             plate: plate.map_or(0, |(index, ..)| index),
             first_layer_sequence,
             bounds,

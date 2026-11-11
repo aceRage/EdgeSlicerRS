@@ -72,8 +72,13 @@ pub struct Sliced {
     /// against elephant foot.
     modelled: Vec<Vec<ExPolygon>>,
     /// The objects on the plate, as seams are placed by them: each one's
-    /// bounds across the bed and their middle.
+    /// bounds across the bed and their middle; its surface, with where
+    /// in it the triangles of what is cut out of it start (none for a
+    /// bare model, whose surface is its one body's); and the height the
+    /// print stands on.
     seam_frames: Vec<(Point2, Point2, Point2)>,
+    seam_meshes: Vec<(Mesh, usize)>,
+    floor: f64,
     /// The filaments in use, by number from 1.
     pub used: Vec<usize>,
     /// Each filament's share of every layer; empty with one filament,
@@ -282,6 +287,7 @@ pub fn slice(job: Job, watch: &dyn Watcher) -> Result<Sliced, Failure> {
         remarks,
     } = job;
     let (mut bodies, objects, plate) = (loaded.bodies, loaded.objects, loaded.plate);
+    let negatives = loaded.negatives;
     let painted = loaded.painted;
     let first_layer_sequence = loaded.first_layer_sequence;
     let (min, max) = loaded.bounds;
@@ -1143,6 +1149,17 @@ pub fn slice(job: Job, watch: &dyn Watcher) -> Result<Sliced, Failure> {
         }
     }
 
+    // Each object's whole surface, what is cut out of it last: what its
+    // seams are hidden by.
+    let seam_meshes: Vec<(Mesh, usize)> = (objects.into_iter().enumerate())
+        .map(|(object, mut solid)| {
+            let cut_from = solid.triangles.len();
+            if let Some(negative) = negatives.get(object) {
+                solid.append(negative, &edge_mesh::Transform::IDENTITY);
+            }
+            (solid, cut_from)
+        })
+        .collect();
     Ok(Sliced {
         bodies,
         bounds: (min, max),
@@ -1162,6 +1179,8 @@ pub fn slice(job: Job, watch: &dyn Watcher) -> Result<Sliced, Failure> {
         layers,
         modelled,
         seam_frames,
+        seam_meshes,
+        floor: min[2].into(),
         used,
         shares,
         walls_by,
@@ -1416,12 +1435,31 @@ impl Sliced {
                 printed.push(outlines[turn.layer]);
             }
         }
-        let seam_objects: Vec<edge_gcode::SeamObject> = (self.seam_frames.iter())
-            .map(|&(min, max, centre)| edge_gcode::SeamObject { min, max, centre })
+        let surface = |object: usize| -> Option<(&Mesh, usize)> {
+            match self.seam_meshes.get(object) {
+                Some((mesh, cut_from)) => Some((mesh, *cut_from)),
+                // A bare model is its one body.
+                None => (self.seam_meshes.is_empty() && self.bodies.len() == 1)
+                    .then(|| &self.bodies[0].solid)
+                    .map(|mesh| (mesh, mesh.triangles.len())),
+            }
+        };
+        let seam_objects: Vec<edge_gcode::SeamObject<'_>> = (self.seam_frames.iter().enumerate())
+            .map(|(object, &(min, max, centre))| edge_gcode::SeamObject {
+                min,
+                max,
+                centre,
+                mesh: surface(object).map(|(mesh, negative_from)| edge_gcode::SeamMesh {
+                    vertices: &mesh.vertices,
+                    triangles: &mesh.triangles,
+                    negative_from,
+                }),
+            })
             .collect();
         let scene = edge_gcode::SeamScene {
             outlines: &printed,
             objects: &seam_objects,
+            floor: self.floor,
         };
         let summary = edge_gcode::write_placed(&mut text, &plan, &slices, &scene, &prints)?;
         Ok(Gcode { text, summary })

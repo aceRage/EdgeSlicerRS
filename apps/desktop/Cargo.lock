@@ -915,6 +915,7 @@ dependencies = [
  "edge-medial",
  "edge-template",
  "edge-time",
+ "edge-visibility",
  "rayon",
  "thiserror 2.0.21",
 ]
@@ -1028,6 +1029,13 @@ dependencies = [
  "edge-extrusion",
  "edge-geom",
  "thiserror 2.0.21",
+]
+
+[[package]]
+name = "edge-visibility"
+version = "0.0.0"
+dependencies = [
+ "rayon",
 ]
 
 [[package]]

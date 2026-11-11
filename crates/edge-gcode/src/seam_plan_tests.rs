@@ -262,6 +262,7 @@ fn places_are_measured_from_the_middle_of_the_object_they_are_of() {
         min: Point2::from_mm(x, 100.0),
         max: Point2::from_mm(x + side, 100.0 + side),
         centre: Point2::from_mm(x + side / 2.0, 100.0 + side / 2.0),
+        mesh: None,
     };
     let objects = [object(100.0, 20.0), object(150.0, 10.0)];
     let layers = [layer(0.2, &loops, &[])];
@@ -699,4 +700,131 @@ fn the_distance_to_the_outline_beneath_is_told_however_far() {
     // Where the nearer measure tells them apart the two agree.
     assert!(near(below.signed_distance(10.25, 5.0), 0.25));
     assert!(near(below.signed_distance(2.0, 5.0), -0.6));
+}
+
+/// A box from `min` to `max`, as triangles facing out.
+fn block(
+    min: [f32; 3],
+    max: [f32; 3],
+    vertices: &mut Vec<[f32; 3]>,
+    triangles: &mut Vec<[u32; 3]>,
+) {
+    let offset = vertices.len() as u32;
+    vertices.extend((0..8).map(|index| -> [f32; 3] {
+        std::array::from_fn(|axis| {
+            if index >> axis & 1 == 1 {
+                max[axis]
+            } else {
+                min[axis]
+            }
+        })
+    }));
+    let faces = [
+        [0, 2, 1],
+        [1, 2, 3],
+        [4, 5, 6],
+        [5, 7, 6],
+        [0, 1, 4],
+        [1, 5, 4],
+        [2, 6, 3],
+        [3, 6, 7],
+        [0, 4, 2],
+        [2, 4, 6],
+        [1, 3, 5],
+        [3, 7, 5],
+    ];
+    triangles.extend(faces.iter().map(|face| face.map(|vertex| vertex + offset)));
+}
+
+#[test]
+fn a_seam_goes_where_the_parts_surface_is_least_seen() {
+    // Two blocks 10 mm a side and 4 mm apart, one object: the faces
+    // that look at each other across the gap are seen less than those
+    // that look out.
+    let (mut vertices, mut triangles) = (Vec::new(), Vec::new());
+    block(
+        [0.0, 0.0, 0.0],
+        [10.0, 10.0, 10.0],
+        &mut vertices,
+        &mut triangles,
+    );
+    block(
+        [14.0, 0.0, 0.0],
+        [24.0, 10.0, 10.0],
+        &mut vertices,
+        &mut triangles,
+    );
+    fn object(mesh: Option<SeamMesh<'_>>) -> [SeamObject<'_>; 1] {
+        [SeamObject {
+            min: Point2::from_mm(0.0, 0.0),
+            max: Point2::from_mm(24.0, 10.0),
+            centre: Point2::from_mm(12.0, 5.0),
+            mesh,
+        }]
+    }
+    let mesh = SeamMesh {
+        vertices: &vertices,
+        triangles: &triangles,
+        negative_from: triangles.len(),
+    };
+    let loops = [
+        wall(square(0.21, 0.21, 9.58), 0, false),
+        wall(square(14.21, 0.21, 9.58), 0, false),
+    ];
+    let layers = [layer(5.0, &loops, &[])];
+    let placed = |seam: Seam, mesh: Option<SeamMesh<'_>>| {
+        let objects = object(mesh);
+        let scene = SeamScene {
+            objects: &objects,
+            ..SeamScene::default()
+        };
+        let plan = Plan::new(
+            &layers,
+            std::slice::from_ref(&(0..1)),
+            &settings(seam),
+            &scene,
+        );
+        let nozzle = Some(Point2::from_mm(200.0, 12.0));
+        at(plan
+            .place(0, &loops[1], false, nozzle, false)
+            .unwrap()
+            .start)
+    };
+    // With nothing known of the surface every corner of the second
+    // block's wall is as good as another: the first, or the one
+    // nearest the nozzle, which is far off to the right; both are on
+    // the block's far side.
+    assert!(near(placed(Seam::Aligned, None), (23.79, 9.79)));
+    assert!(near(placed(Seam::Nearest, None), (23.79, 9.79)));
+    // With the surface known the seam is at a corner by the gap.
+    assert!(placed(Seam::Aligned, Some(mesh)).0 < 14.3);
+    assert!(placed(Seam::Nearest, Some(mesh)).0 < 14.3);
+    // The back and anywhere do not go by what is seen.
+    assert!(near(placed(Seam::Back, Some(mesh)), (23.79, 9.79)));
+    // The candidates carry the measure: less by the gap than outside.
+    let objects = object(Some(mesh));
+    let scene = SeamScene {
+        objects: &objects,
+        ..SeamScene::default()
+    };
+    let plan = Plan::new(
+        &layers,
+        std::slice::from_ref(&(0..1)),
+        &settings(Seam::Aligned),
+        &scene,
+    );
+    let points = &seams(&plan, 0).points[4..8];
+    let seen = |x: f32| -> f32 {
+        (points.iter())
+            .filter(|point| (point.position[0] - x).abs() < 0.01)
+            .map(|point| point.visibility)
+            .fold(0.0, f32::max)
+    };
+    // From the object's middle the wall runs from 2.21 to 11.79 mm.
+    assert!(
+        seen(2.21) < seen(11.79) - 0.1,
+        "{} {}",
+        seen(2.21),
+        seen(11.79)
+    );
 }

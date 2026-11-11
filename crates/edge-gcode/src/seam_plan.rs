@@ -34,19 +34,25 @@
 //!   the nearest point of its stretches that rest, where it has any
 //!   (`ExtrusionLoop::split_at`, `prefer_non_overhang`); here at the
 //!   nearest point of the loop.
+//! - With nothing known of an object's surface (no mesh given), nothing
+//!   is known of how visible any place on it is, and every place counts
+//!   as hidden as every other; the positions that lean to one side of
+//!   the bed, which the reference leans by adding to that measure, are
+//!   then leant by the way the wall itself faces.
 //! - Seams are not yet lined up along a curve fitted through the layers
 //!   (`align_seam_points`): for the seam positions the reference aligns,
 //!   a seam follows the one beneath it where a point near enough is no
 //!   worse by much, which is how the reference gathers the seams it
-//!   then fits its curve to. Nor is the visibility measure taken; the
-//!   positions that lean to one side of the bed, which the reference
-//!   leans by adding to that measure, are leant by the way the wall
-//!   itself faces.
+//!   then fits its curve to.
 
-use std::{collections::HashMap, ops::Range};
+use std::{
+    collections::HashMap,
+    ops::{Not, Range},
+};
 
 use edge_extrusion::ExtrusionLoop;
 use edge_geom::{ExPolygon, Point2};
+use edge_visibility::{Triangles, Visibility};
 use rayon::prelude::*;
 
 use crate::{Layer, PrintSettings, Seam, address, overhang::Below, seam};
@@ -60,18 +66,34 @@ pub struct SeamScene<'a> {
     pub outlines: &'a [&'a [ExPolygon]],
     /// The objects on the plate; with none, everything is one object
     /// measured from the bed's corner.
-    pub objects: &'a [SeamObject],
+    pub objects: &'a [SeamObject<'a>],
+    /// The height of the bed in the meshes' coordinates, in mm.
+    pub floor: f64,
 }
 
 /// One object on the plate.
 #[derive(Clone, Copy, Debug)]
-pub struct SeamObject {
+pub struct SeamObject<'a> {
     /// The least and greatest corners of its bounds across the bed.
     pub min: Point2,
     pub max: Point2,
     /// Where its seams are reckoned from: the middle of its bounds (the
     /// reference's `PrintObject::center_offset` and instance shift).
     pub centre: Point2,
+    /// Its surface, for how visible each place on it is; without one,
+    /// nothing is known of that.
+    pub mesh: Option<SeamMesh<'a>>,
+}
+
+/// An object's surface: its parts' triangles, where it stands on the bed.
+#[derive(Clone, Copy, Debug)]
+pub struct SeamMesh<'a> {
+    /// In mm.
+    pub vertices: &'a [[f32; 3]],
+    pub triangles: &'a [[u32; 3]],
+    /// The triangles from here on are of volumes cut out of the object
+    /// (negative parts); the number of triangles where there are none.
+    pub negative_from: usize,
 }
 
 /// An object's bounds and middle.
@@ -529,6 +551,17 @@ impl Plan {
         } else {
             &[]
         };
+        // How visible each object's surface is, for the setups that go
+        // by it: the reference measures it for the aligned ones and for
+        // the nearest corner (`init_object`).
+        let seen: Vec<Option<Visibility>> = (0..frames.len())
+            .map(|object| {
+                let mesh = scene.objects.get(object)?.mesh?;
+                matches!(setup, Seam::Back | Seam::Random)
+                    .not()
+                    .then(|| visibility(&mesh, frames[object].centre, scene.floor, setup))
+            })
+            .collect();
         let objects = &frames;
         // By layer, then by object.
         let gathered: Vec<Vec<(LayerSeams, Vec<usize>)>> = groups
@@ -542,6 +575,7 @@ impl Plan {
                     objects,
                     outlines.get(index).copied(),
                     setup,
+                    &seen,
                 )
             })
             .collect();
@@ -948,6 +982,24 @@ fn follow(layers: &mut [LayerSeams], comparator: &Comparator) {
     }
 }
 
+/// How visible an object's surface is: its mesh brought to the object's
+/// own coordinates, as the reference holds it, and measured
+/// (`compute_global_occlusion`).
+fn visibility(mesh: &SeamMesh<'_>, centre: Point2, floor: f64, setup: Seam) -> Visibility {
+    let middle = [centre.x as f64 * 1e-6, centre.y as f64 * 1e-6, floor];
+    let triangles = Triangles {
+        vertices: (mesh.vertices.iter())
+            .map(|vertex| {
+                std::array::from_fn(|axis| (f64::from(vertex[axis]) - middle[axis]) as f32)
+            })
+            .collect(),
+        indices: mesh.triangles.to_vec(),
+    };
+    let negative_from = mesh.negative_from.min(triangles.indices.len());
+    let toward = lean(setup).map(|[x, y]| [x, y, 0.0]);
+    Visibility::new(&triangles, negative_from, toward)
+}
+
 /// The candidates of one physical layer, object by object, each with
 /// the addresses of the walls its perimeters are.
 fn gather(
@@ -957,6 +1009,7 @@ fn gather(
     objects: &[Frame],
     outline: Option<&[ExPolygon]>,
     setup: Seam,
+    seen: &[Option<Visibility>],
 ) -> Vec<(LayerSeams, Vec<usize>)> {
     let mut found: Vec<(LayerSeams, Vec<usize>)> = objects
         .iter()
@@ -1049,26 +1102,31 @@ fn gather(
                     embedded =
                         (own.distance(on_bed.0, on_bed.1) + f64::from(0.65 * flow_width)) as f32;
                 }
-                // Until the part's own visibility is measured, a setup
-                // that leans to one side of the bed is leant by which
-                // way the wall faces here: the reference adds as much to
-                // the visibility of each sample of the part's surface,
-                // by the way the surface faces (`raycast_visibility`).
-                let visibility = lean(setup).map_or(0.0, |toward| {
-                    let (before, after) = (ring[(at + count - 1) % count], ring[(at + 1) % count]);
-                    let (dx, dy) = ((after.0 - before.0) as f32, (after.1 - before.1) as f32);
-                    let length = (dx * dx + dy * dy).sqrt();
-                    // To the right of the way round is out of the
-                    // material, round a hole to the left.
-                    let side = if wall.is_hole { -1.0 } else { 1.0 };
-                    let normal = if length > 0.0 {
-                        [side * dy / length, -side * dx / length]
-                    } else {
-                        [0.0, 0.0]
-                    };
-                    let facing = -(normal[0] * toward[0] + normal[1] * toward[1]);
-                    ((facing + 1.2) * 0.5).clamp(0.0, 1.0)
-                });
+                // How visible the part's surface is here. With nothing
+                // known of the part's surface, a setup that leans to one
+                // side of the bed is leant by which way the wall faces:
+                // the reference adds as much to the visibility of each
+                // sample of the surface, by the way the surface faces
+                // (`raycast_visibility`).
+                let visibility = match &seen[object] {
+                    Some(seen) => seen.at([x, y, z]),
+                    None => lean(setup).map_or(0.0, |toward| {
+                        let (before, after) =
+                            (ring[(at + count - 1) % count], ring[(at + 1) % count]);
+                        let (dx, dy) = ((after.0 - before.0) as f32, (after.1 - before.1) as f32);
+                        let length = (dx * dx + dy * dy).sqrt();
+                        // To the right of the way round is out of the
+                        // material, round a hole to the left.
+                        let side = if wall.is_hole { -1.0 } else { 1.0 };
+                        let normal = if length > 0.0 {
+                            [side * dy / length, -side * dx / length]
+                        } else {
+                            [0.0, 0.0]
+                        };
+                        let facing = -(normal[0] * toward[0] + normal[1] * toward[1]);
+                        ((facing + 1.2) * 0.5).clamp(0.0, 1.0)
+                    }),
+                };
                 seams.points.push(Candidate {
                     position: [x, y, z],
                     perimeter: seams.perimeters.len() as u32,

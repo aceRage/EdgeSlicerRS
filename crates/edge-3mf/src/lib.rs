@@ -365,6 +365,22 @@ impl Project {
             .collect()
     }
 
+    /// The volumes cut out of each of those instances (its negative
+    /// parts), in the same order and coordinates: an empty mesh for an
+    /// instance with none. For what goes by an object's whole surface,
+    /// such as how visible each place on it is.
+    pub fn instance_negatives(&self, plate: Option<usize>) -> Vec<Mesh> {
+        self.printable(plate)
+            .filter_map(|(object, instance)| {
+                let mut solid = Mesh::default();
+                append_parts(&mut solid, object, instance, PartKind::Normal, None);
+                let mut negative = Mesh::default();
+                append_parts(&mut negative, object, instance, PartKind::Negative, None);
+                (!solid.triangles.is_empty()).then_some(negative)
+            })
+            .collect()
+    }
+
     /// The printable instances on a plate, each with its object.
     fn printable(&self, plate: Option<usize>) -> impl Iterator<Item = (&Object, &Instance)> {
         let selected: Vec<InstanceRef> = match plate {

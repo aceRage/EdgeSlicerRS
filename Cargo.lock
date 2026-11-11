@@ -353,6 +353,7 @@ dependencies = [
  "edge-slice",
  "edge-template",
  "edge-time",
+ "edge-visibility",
  "rayon",
  "thiserror",
 ]
@@ -479,6 +480,13 @@ dependencies = [
  "edge-extrusion",
  "edge-geom",
  "thiserror",
+]
+
+[[package]]
+name = "edge-visibility"
+version = "0.0.0"
+dependencies = [
+ "rayon",
 ]
 
 [[package]]

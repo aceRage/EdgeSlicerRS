@@ -8,8 +8,7 @@
 //! It has not been run on a printer. Without a profile a generic preamble
 //! stands in and the output is only good for viewing.
 //!
-//! Not done: seams placed by visibility, progress (`M73`) and object
-//! labels.
+//! Not done: progress (`M73`) and object labels.
 
 mod arc;
 mod avoid;
@@ -42,7 +41,7 @@ use rayon::prelude::*;
 pub use edge_avoid::{Detour, Slices};
 pub use scarf::{Scarf, ScarfSeam};
 pub use seam::Seam;
-pub use seam_plan::{SeamObject, SeamScene};
+pub use seam_plan::{SeamMesh, SeamObject, SeamScene};
 pub use settings::{Lift, OverhangFan, PrintSettings, WallDirection, WallOrder};
 
 #[derive(Debug, thiserror::Error)]
