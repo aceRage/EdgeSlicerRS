@@ -56,6 +56,7 @@
 use std::{
     collections::HashMap,
     ops::{Not, Range},
+    time::{Duration, Instant},
 };
 
 use edge_extrusion::ExtrusionLoop;
@@ -618,12 +619,24 @@ fn polygon_angles(points: &[(i64, i64)], lengths: &[f32], arm: f32) -> Vec<f32> 
 impl Plan {
     /// Settles the seams of `layers`, of which `groups` says which are
     /// at one height. `settings` has an entry for each filament.
+    #[cfg(test)]
     pub(crate) fn new(
         layers: &[Layer<'_>],
         groups: &[Range<usize>],
         settings: &[PrintSettings],
         scene: &SeamScene<'_>,
     ) -> Self {
+        Self::timed(layers, groups, settings, scene).0
+    }
+
+    /// [`Plan::new`], with how long measuring how visible the objects
+    /// are and finding where their parts meet took.
+    pub(crate) fn timed(
+        layers: &[Layer<'_>],
+        groups: &[Range<usize>],
+        settings: &[PrintSettings],
+        scene: &SeamScene<'_>,
+    ) -> (Self, (Duration, Duration)) {
         let setup = layers
             .first()
             .and_then(|layer| settings.get(layer.filament))
@@ -676,26 +689,30 @@ impl Plan {
                 })
             })
             .collect();
-        let (seen, joints): (Vec<Option<Visibility>>, Vec<Option<Joints>>) = rayon::join(
+        let ((seen, seen_time), (joints, joints_time)) = rayon::join(
             || {
-                (0..frames.len())
+                let started = Instant::now();
+                let seen: Vec<Option<Visibility>> = (0..frames.len())
                     .map(|object| {
                         let mesh = scene.objects.get(object)?.mesh?;
                         matches!(setup, Seam::Back | Seam::Random)
                             .not()
                             .then(|| visibility(&mesh, frames[object].centre, scene.floor, setup))
                     })
-                    .collect()
+                    .collect();
+                (seen, started.elapsed())
             },
             || {
-                if scene.part_joints && aligned(setup) {
+                let started = Instant::now();
+                let joints: Vec<Option<Joints>> = if scene.part_joints && aligned(setup) {
                     (0..frames.len())
                         .into_par_iter()
                         .map(|object| part_joints_of(scene, object, frames[object].centre))
                         .collect()
                 } else {
                     vec![None; frames.len()]
-                }
+                };
+                (joints, started.elapsed())
             },
         );
         let objects = &frames;
@@ -765,7 +782,7 @@ impl Plan {
                 }
             }
         }
-        plan
+        (plan, (seen_time, joints_time))
     }
 
     /// Where a wall of physical layer `layer` starts: an outermost wall

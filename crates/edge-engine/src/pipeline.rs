@@ -22,11 +22,18 @@ use crate::{Failure, Job, Stage, Watcher, load::shift};
 /// How long each stage took.
 #[derive(Clone, Copy, Debug, Default)]
 pub struct Timings {
+    /// Every stage before the walls: cutting, paint and the compensations.
     pub slice: Duration,
+    /// Of `slice`, cutting the meshes into layers and making overhangs
+    /// printable; and sharing the layers out by painted colour.
+    pub cut: Duration,
+    pub paint: Duration,
     pub perimeters: Duration,
     pub supports: Duration,
     pub surfaces: Duration,
     pub fill: Duration,
+    /// Tool order, prime tower, skirt and brim, and the seams' meshes.
+    pub around: Duration,
 }
 
 /// One tool's turn on a layer.
@@ -268,6 +275,8 @@ fn kept_inside(
 pub struct Gcode {
     pub text: Vec<u8>,
     pub summary: Summary,
+    /// How long each part of writing it took.
+    pub timings: edge_gcode::WriteTimings,
 }
 
 fn step(watch: &dyn Watcher, stage: Stage) -> Result<(), Failure> {
@@ -368,6 +377,8 @@ pub fn slice(job: Job, watch: &dyn Watcher) -> Result<Sliced, Failure> {
     // layers as cut; `crate::printable` has the rest.
     let mut printable = crate::printable::Printable::from_settings(&settings)?;
     quality_notes.extend(printable.apply(&mut layers, &heights, !painted.is_empty())?);
+    let cut_time = started.elapsed();
+    let painting = Instant::now();
 
     // Colours painted onto a part move what they cover from the filament
     // the part is made of to the one painted. Each painted object is
@@ -417,6 +428,8 @@ pub fn slice(job: Job, watch: &dyn Watcher) -> Result<Sliced, Failure> {
                 crate::paint::apply(layer, &painted, base)
             })?;
     }
+
+    let paint_time = painting.elapsed();
 
     // Outlines and holes are made larger or smaller by what the profile
     // sets, to make up for a printer that prints them off size
@@ -991,6 +1004,7 @@ pub fn slice(job: Job, watch: &dyn Watcher) -> Result<Sliced, Failure> {
     let infill_time = started.elapsed();
 
     step(watch, Stage::Around)?;
+    let started = Instant::now();
     // Which filaments print on each layer, and in what order
     // (ToolOrdering.cpp). The first layer takes them by the size of
     // the smallest piece each prints, smaller first; every later layer
@@ -1248,6 +1262,7 @@ pub fn slice(job: Job, watch: &dyn Watcher) -> Result<Sliced, Failure> {
             (solid, cut_from)
         })
         .collect();
+    let around_time = started.elapsed();
     Ok(Sliced {
         bodies,
         bounds: (min, max),
@@ -1290,10 +1305,13 @@ pub fn slice(job: Job, watch: &dyn Watcher) -> Result<Sliced, Failure> {
         remarks,
         timings: Timings {
             slice: slice_time,
+            cut: cut_time,
+            paint: paint_time,
             perimeters: perimeter_time,
             supports: support_time,
             surfaces: classify_time,
             fill: infill_time - classify_time,
+            around: around_time,
         },
     })
 }
@@ -1596,9 +1614,13 @@ impl Sliced {
             layers: &profiles,
             speed_scaling: self.contour_speed,
         };
-        let summary =
-            edge_gcode::write_contoured(&mut text, &plan, &slices, &scene, &contours, &prints)?;
-        Ok(Gcode { text, summary })
+        let (summary, timings) =
+            edge_gcode::write_timed(&mut text, &plan, &slices, &scene, &contours, &prints)?;
+        Ok(Gcode {
+            text,
+            summary,
+            timings,
+        })
     }
 }
 
