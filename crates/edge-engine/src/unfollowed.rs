@@ -6,12 +6,7 @@ use edge_config::Settings;
 
 /// A setting, the value that turns it off, and what is done whatever it
 /// is set to.
-const UNREAD: [(&str, &str, &str); 12] = [
-    (
-        "staggered_inner_seams",
-        "0",
-        "inner walls start beside the outer wall's seam on every layer",
-    ),
+const UNREAD: [(&str, &str, &str); 11] = [
     (
         "wipe_inward",
         "0",
