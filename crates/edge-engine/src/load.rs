@@ -65,6 +65,138 @@ pub struct Loaded {
     pub placed: bool,
     /// The G-code set at the plate's layers, when it has an entry.
     pub custom_gcode: Option<edge_3mf::CustomGcode>,
+    /// The objects on the plate that set something for themselves: their
+    /// own settings, a part's, a modifier, a height range, a support
+    /// blocker or enforcer. Their printed parts are among `bodies`, one
+    /// body a part, each tagged with its place here.
+    pub own: Vec<OwnObject>,
+}
+
+/// An object on the plate that sets something for itself.
+#[derive(Clone, Debug)]
+pub struct OwnObject {
+    /// Its place among [`Loaded::objects`].
+    pub object: usize,
+    /// Its name, for what is said of it.
+    pub name: String,
+    /// What it sets, as its file has it.
+    pub settings: Vec<(String, String)>,
+    /// Its printed parts, modifiers, support blockers and enforcers, in
+    /// its own order, in world coordinates.
+    pub volumes: Vec<OwnVolume>,
+    /// Its height ranges, with their heights measured from the bed.
+    pub ranges: Vec<edge_3mf::LayerRange>,
+}
+
+/// One part of an [`OwnObject`].
+#[derive(Clone, Debug)]
+pub struct OwnVolume {
+    /// A printed part, a modifier, a support blocker or enforcer.
+    pub kind: PartKind,
+    /// Its name, for what is said of it.
+    pub name: String,
+    /// The filament it prints in, from 1: for a printed part its own or
+    /// its object's; for a modifier its own, when it sets one.
+    pub filament: Option<usize>,
+    /// What it sets, as its file has it.
+    pub settings: Vec<(String, String)>,
+    /// Its mesh, in world coordinates. Empty for a printed part, which is
+    /// among the bodies.
+    pub mesh: Mesh,
+}
+
+/// Whether an object sets anything for itself that slicing has to keep
+/// apart: settings of its own or of a part, a modifier, a height range, a
+/// support blocker or enforcer.
+fn sets_own(object: &edge_3mf::Object) -> bool {
+    !object.settings().is_empty()
+        || (object.parts.iter()).any(|part| match part.kind {
+            PartKind::Normal => !part.settings().is_empty(),
+            PartKind::Modifier | PartKind::SupportBlocker | PartKind::SupportEnforcer => true,
+            PartKind::Negative | PartKind::PreciseSeam => false,
+        })
+        || !object.layer_ranges().is_empty()
+}
+
+/// The objects on a plate that set something for themselves, and a body
+/// for each of their printed parts.
+fn own_objects(project: &Project, plate: Option<usize>) -> (Vec<OwnObject>, Vec<Body>) {
+    let (mut own, mut bodies) = (Vec::new(), Vec::new());
+    let mut place = 0;
+    for (object, instance) in project.printed(plate) {
+        let printed = (object.parts.iter())
+            .any(|part| part.kind == PartKind::Normal && !part.mesh.triangles.is_empty());
+        if !printed {
+            continue;
+        }
+        place += 1;
+        if !sets_own(object) {
+            continue;
+        }
+        let mut negative = Mesh::default();
+        for part in object
+            .parts
+            .iter()
+            .filter(|part| part.kind == PartKind::Negative)
+        {
+            negative.append(&part.mesh, &part.transform.then(&instance.transform));
+        }
+        let at = own.len();
+        let mut volumes = Vec::new();
+        for part in &object.parts {
+            let (filament, mesh) = match part.kind {
+                PartKind::Normal => {
+                    if part.mesh.triangles.is_empty() {
+                        continue;
+                    }
+                    bodies.push(Body {
+                        solid: part.placed(instance),
+                        negative: (!negative.triangles.is_empty()).then(|| negative.clone()),
+                        filament: part.filament,
+                        part: Some((at, volumes.len())),
+                    });
+                    (Some(part.filament), Mesh::default())
+                }
+                PartKind::Modifier | PartKind::SupportBlocker | PartKind::SupportEnforcer => {
+                    (part.own_filament, part.placed(instance))
+                }
+                PartKind::Negative | PartKind::PreciseSeam => continue,
+            };
+            volumes.push(OwnVolume {
+                kind: part.kind,
+                name: part.name.clone().unwrap_or_default(),
+                filament,
+                settings: part.settings(),
+                mesh,
+            });
+        }
+        // A range's heights are the object's own, measured from its
+        // bottom as it stands on the bed (Model.cpp: the ranges are in
+        // the object's coordinates, its bottom at 0).
+        let mut solid = Mesh::default();
+        for part in object
+            .parts
+            .iter()
+            .filter(|part| part.kind == PartKind::Normal)
+        {
+            solid.append(&part.mesh, &part.transform.then(&instance.transform));
+        }
+        let bottom = solid.bounds().map_or(0.0, |(low, _)| f64::from(low[2]));
+        own.push(OwnObject {
+            object: place - 1,
+            name: object.name.clone().unwrap_or_default(),
+            settings: object.settings(),
+            volumes,
+            ranges: (object.layer_ranges().into_iter())
+                .map(|range| edge_3mf::LayerRange {
+                    min_z: range.min_z + bottom,
+                    max_z: range.max_z + bottom,
+                    ..range
+                })
+                .collect(),
+        });
+    }
+    (own, bodies)
 }
 
 /// One plate of a project, as it is listed before anything is placed.
@@ -257,6 +389,7 @@ pub(crate) fn lone(path: &Path, solid: Mesh) -> Result<Loaded, Failure> {
         solid,
         negative: None,
         filament: 1,
+        part: None,
     }];
     let bounds = bounds_of(path, &bodies)?;
     Ok(Loaded {
@@ -275,6 +408,7 @@ pub(crate) fn lone(path: &Path, solid: Mesh) -> Result<Loaded, Failure> {
         bounds,
         placed: false,
         custom_gcode: None,
+        own: Vec::new(),
     })
 }
 
@@ -291,7 +425,11 @@ pub(crate) fn placed(
     let first_layer_sequence = plate
         .map(|index| project.plates[index].first_layer_sequence.clone())
         .unwrap_or_default();
-    let mut bodies = project.bodies(plate);
+    // The objects that set something for themselves are sliced part by
+    // part; the rest as they always were.
+    let mut bodies = project.bodies_where(plate, |object| !sets_own(object));
+    let (mut own, own_bodies) = own_objects(project, plate);
+    bodies.extend(own_bodies);
     let mut painted = project.painted(plate);
     let mut objects = project.instance_meshes(plate);
     let mut negatives = project.instance_negatives(plate);
@@ -302,6 +440,13 @@ pub(crate) fn placed(
         shift_meshes(negatives.iter_mut(), -x, -y);
         shift_meshes(
             parts.iter_mut().flat_map(|object| &mut object.parts),
+            -x,
+            -y,
+        );
+        shift_meshes(
+            own.iter_mut()
+                .flat_map(|object| &mut object.volumes)
+                .map(|volume| &mut volume.mesh),
             -x,
             -y,
         );
@@ -352,6 +497,7 @@ pub(crate) fn placed(
             .custom_gcode
             .get(&plate.map_or(1, |index| project.plates[index].id))
             .cloned(),
+        own,
     })
 }
 
@@ -592,6 +738,7 @@ mod tests {
             solid: cube.clone(),
             negative: Some(cube),
             filament: 1,
+            part: None,
         }];
         shift(&mut bodies, 10.0, -5.0);
         for mesh in [&bodies[0].solid, bodies[0].negative.as_ref().unwrap()] {

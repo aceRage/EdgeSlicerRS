@@ -158,6 +158,14 @@ pub struct Sliced {
     measured: Option<edge_gcode::SeamMeasures>,
     /// The filaments in use, by number from 1.
     pub used: Vec<usize>,
+    /// The filament each region prints in, by number from 1: what walls,
+    /// surfaces and fill are kept by (`crate::regions`). Without regions
+    /// of their own settings, `used` itself.
+    pub(crate) slots: Vec<usize>,
+    /// Each of those regions' key, and the regions with settings of
+    /// their own.
+    keys: Vec<usize>,
+    regions: crate::regions::Regions,
     /// Each filament's share of every layer; empty with one filament,
     /// whose share is the layer itself.
     shares: Vec<Vec<Vec<ExPolygon>>>,
@@ -381,6 +389,7 @@ pub fn slice(job: Job, watch: &dyn Watcher) -> Result<Sliced, Failure> {
     let painted = loaded.painted;
     let first_layer_sequence = loaded.first_layer_sequence;
     let custom_gcode = loaded.custom_gcode;
+    let own = loaded.own;
     let (min, max) = loaded.bounds;
 
     let print = PrintSettings::from_settings(&settings)?;
@@ -526,12 +535,30 @@ pub fn slice(job: Job, watch: &dyn Watcher) -> Result<Sliced, Failure> {
         crate::contour::plane(contouring, &mut planes, &heights, min[2].into())?;
     }
     quality_notes.extend(zaa.notes);
+    // Each body's region: its filament's, or one of its own where its
+    // object or the part sets something (`crate::regions`).
+    let mut regions = crate::regions::Regions::default();
+    let mut own_set: std::collections::BTreeMap<String, std::collections::BTreeSet<String>> =
+        Default::default();
+    let body_keys: Vec<usize> = bodies
+        .iter()
+        .map(|body| match body.part {
+            Some((object, volume)) => {
+                let (object, volume) = (&own[object], &own[object].volumes[volume]);
+                let overrides =
+                    crate::regions::part_overrides(&settings, object, volume, &mut own_set);
+                regions.key(&settings, body.filament, &overrides)
+            }
+            None => body.filament,
+        })
+        .collect();
     let borrowed: Vec<edge_slice::Body<'_>> = bodies
         .iter()
-        .map(|body| edge_slice::Body {
+        .zip(&body_keys)
+        .map(|(body, key)| edge_slice::Body {
             solid: &body.solid,
             negative: body.negative.as_ref(),
-            filament: body.filament,
+            filament: *key,
         })
         .collect();
     let holes = crate::holes::HoleSettings::from_settings(&settings)?;
@@ -554,7 +581,7 @@ pub fn slice(job: Job, watch: &dyn Watcher) -> Result<Sliced, Failure> {
         let (paint, notes) =
             crate::paint::settings(&settings, &outer, layer_height, &heights.all())?;
         paint_notes = notes;
-        let base = bodies.first().map_or(1, |body| body.filament);
+        let base = body_keys.first().copied().unwrap_or(1);
         // Worked out side by side, then applied in the order given.
         let shares = painted
             .par_iter()
@@ -699,10 +726,19 @@ pub fn slice(job: Job, watch: &dyn Watcher) -> Result<Sliced, Failure> {
     let object_filaments: Vec<usize> = {
         let mut own: Vec<usize> = layers
             .iter()
-            .flat_map(|layer| layer.by_filament.iter().map(|(filament, _)| *filament))
+            .flat_map(|layer| {
+                layer
+                    .by_filament
+                    .iter()
+                    .map(|(key, _)| regions.filament(*key))
+            })
             .collect();
         if own.is_empty() {
-            own = bodies.iter().map(|body| body.filament).take(1).collect();
+            own = body_keys
+                .iter()
+                .map(|key| regions.filament(*key))
+                .take(1)
+                .collect();
         }
         own.sort_unstable();
         own.dedup();
@@ -715,27 +751,48 @@ pub fn slice(job: Job, watch: &dyn Watcher) -> Result<Sliced, Failure> {
             .map(|index| heights.top_of(index))
             .collect();
         let by_layer = crate::layer_codes::filament_by_layer(&switches, *own, &tops);
-        if by_layer.iter().any(|filament| filament != own) {
+        if by_layer.iter().any(|filament| filament != own) && !regions.any() {
             for (layer, filament) in layers.iter_mut().zip(by_layer) {
                 layer.by_filament = vec![(filament, layer.regions.clone())];
                 layer.cut_by_filament = vec![(filament, layer.regions.clone())];
+            }
+        } else if by_layer.iter().any(|filament| filament != own) {
+            // Every region of the layer goes over to the filament named,
+            // each keeping its own settings.
+            let single = body_keys.first().copied().unwrap_or(*own);
+            for (layer, filament) in layers.iter_mut().zip(by_layer) {
+                for shares in [&mut layer.by_filament, &mut layer.cut_by_filament] {
+                    if shares.is_empty() {
+                        *shares = vec![(single, layer.regions.clone())];
+                    }
+                    for (key, _) in shares.iter_mut() {
+                        *key = regions.in_filament(*key, &settings, filament);
+                    }
+                    shares.sort_by_key(|(key, _)| *key);
+                }
             }
         }
     }
 
     // The filaments in use, and each one's share of every layer. With one
     // filament its share is the layer itself.
-    let mut used: Vec<usize> = layers
+    //
+    // Each of these is a region (`crate::regions`): `keys` holds each
+    // one's key and `used` the filament it prints in, so a filament may
+    // come more than once in `used` where it prints regions with settings
+    // of their own. Without any, a region is a filament and its key the
+    // filament's number.
+    let mut keys: Vec<usize> = layers
         .iter()
-        .flat_map(|layer| layer.by_filament.iter().map(|(filament, _)| *filament))
+        .flat_map(|layer| layer.by_filament.iter().map(|(key, _)| *key))
         .collect();
-    used.sort_unstable();
-    used.dedup();
-    let mut shares: Vec<Vec<Vec<ExPolygon>>> = if used.is_empty() {
-        used = vec![bodies.first().map_or(1, |body| body.filament)];
+    keys.sort_unstable();
+    keys.dedup();
+    let mut shares: Vec<Vec<Vec<ExPolygon>>> = if keys.is_empty() {
+        keys = vec![body_keys.first().copied().unwrap_or(1)];
         Vec::new()
     } else {
-        used.iter()
+        keys.iter()
             .map(|filament| {
                 layers
                     .par_iter()
@@ -758,6 +815,37 @@ pub fn slice(job: Job, watch: &dyn Watcher) -> Result<Sliced, Failure> {
             })
             .collect::<Result<_, String>>()?
     };
+    let used: Vec<usize> = keys.iter().map(|key| regions.filament(*key)).collect();
+    // The tools: each filament in use once, in order, and the tool each
+    // region is printed with.
+    let mut tools = used.clone();
+    tools.sort_unstable();
+    tools.dedup();
+    let tool_of: Vec<usize> = (used.iter())
+        .map(|filament| tools.binary_search(filament).unwrap_or(0))
+        .collect();
+    // The settings of the stages worked out region by region: the
+    // plate's for a filament's own region.
+    let walls_override = |mut own: crate::regions::StageSettings| {
+        if let Some(count) = wall_loops {
+            own.walls.wall_loops = count;
+        }
+        own
+    };
+    let plate_stages = crate::regions::StageSettings {
+        walls,
+        infill: InfillSettings::from_settings(&settings)?,
+        ironing: edge_infill::IroningSettings::from_settings(&settings)?,
+    };
+    let stages: Vec<crate::regions::StageSettings> = keys
+        .iter()
+        .zip(&used)
+        .map(|(key, filament)| match regions.own(*key) {
+            Some(region) => crate::regions::StageSettings::read(&region.settings, *filament)
+                .map(walls_override),
+            None => Ok(plate_stages.clone()),
+        })
+        .collect::<Result<_, _>>()?;
     // Round outlines and holes are resized by what the filament prints
     // them off by, and round holes that run up through the part are made
     // polygons of few sides (`enable_circle_compensation`,
@@ -796,6 +884,7 @@ pub fn slice(job: Job, watch: &dyn Watcher) -> Result<Sliced, Failure> {
         .map(|at| {
             let (filament, index) = (at / count, at % count);
             let height = heights.height_of(index);
+            let walls = &stages[filament].walls;
             let mut params = walls
                 .params_at(height, index, layers.len())
                 .map_err(|e| e.to_string())?;
@@ -863,7 +952,7 @@ pub fn slice(job: Job, watch: &dyn Watcher) -> Result<Sliced, Failure> {
 
     step(watch, Stage::Fill)?;
     let started = Instant::now();
-    let infill = InfillSettings::from_settings(&settings)?;
+    let infill = plate_stages.infill.clone();
     let mut classify_time = Duration::ZERO;
     let mut surfaces_by = Vec::with_capacity(used.len());
     let mut fills_by: Vec<Vec<Vec<ExtrusionPath>>> = Vec::with_capacity(used.len());
@@ -895,19 +984,24 @@ pub fn slice(job: Job, watch: &dyn Watcher) -> Result<Sliced, Failure> {
     // A shell is as thick as `top_shell_thickness` and
     // `bottom_shell_thickness` ask, measured in the layers as they lie.
     let thick = heights.all();
-    let shells = infill.shells(layer_height)?;
-    let anchoring = infill.anchoring(layer_height)?;
+    let shells_of: Vec<edge_infill::Shells> = (stages.iter())
+        .map(|own| own.infill.shells(layer_height))
+        .collect::<Result<_, _>>()?;
+    let anchoring_of: Vec<edge_infill::Anchoring> = (stages.iter())
+        .map(|own| own.infill.anchoring(layer_height))
+        .collect::<Result<_, _>>()?;
     // Filament by filament side by side, each over its layers.
     type Classified = (Vec<Vec<ExPolygon>>, Vec<Vec<Surface>>);
     let classified: Vec<Classified> = inside_by
         .par_iter()
         .enumerate()
         .map(|(filament, inside_walls)| -> Result<Classified, String> {
+            let (shells, anchoring) = (&shells_of[filament], &anchoring_of[filament]);
             let slices: Vec<&[ExPolygon]> = (0..layers.len())
                 .map(|index| share(filament, index))
                 .collect();
             let sheltered =
-                edge_infill::internal(&slices, &outlines, &shells).map_err(|e| e.to_string())?;
+                edge_infill::internal(&slices, &outlines, shells).map_err(|e| e.to_string())?;
             // Whatever the filament, a surface is a top or a bottom by
             // what the whole part has above and below it.
             let surfaces = edge_infill::classify(
@@ -916,16 +1010,16 @@ pub fn slice(job: Job, watch: &dyn Watcher) -> Result<Sliced, Failure> {
                 inside_walls,
                 &inside_all,
                 &thick,
-                &shells,
+                shells,
             )
             .map_err(|e| e.to_string())?;
             // Bridges, bottoms and tops reach into the fill beside them,
             // and each bridge is turned to run from support to support.
             let mut anchored =
-                edge_infill::anchor(&surfaces, &anchoring).map_err(|e| e.to_string())?;
+                edge_infill::anchor(&surfaces, anchoring).map_err(|e| e.to_string())?;
             // What the walls left to be bridged over a hole that narrows
             // is a bridge as it stands, walls between it and the rest.
-            if let Some(bore) = &walls.counterbore {
+            if let Some(bore) = &stages[filament].walls.counterbore {
                 for (index, bridged) in bored_by[filament].iter().enumerate().skip(1) {
                     if !bridged.is_empty() {
                         edge_infill::bridge_counterbores(
@@ -969,8 +1063,10 @@ pub fn slice(job: Job, watch: &dyn Watcher) -> Result<Sliced, Failure> {
     let classifying = Instant::now();
     // What laying a layer's fill needs. A sparse pattern is laid
     // through the middle of the object it fills, as in the reference.
-    let params_of = |index: usize| -> Result<edge_infill::FillParams, Failure> {
-        let mut params = infill.params(heights.height_of(index), index == 0)?;
+    let params_of = |filament: usize, index: usize| -> Result<edge_infill::FillParams, Failure> {
+        let mut params = stages[filament]
+            .infill
+            .params(heights.height_of(index), index == 0)?;
         params.origin = middle;
         params.z = heights.top_of(index);
         Ok(params)
@@ -994,9 +1090,8 @@ pub fn slice(job: Job, watch: &dyn Watcher) -> Result<Sliced, Failure> {
         .map(|index| heights.top_of(index))
         .collect();
     let sparse_lines = |index: usize| -> Result<Vec<Vec<Point2>>, Failure> {
-        let params = params_of(index)?;
         let mut lines = Vec::new();
-        for surfaces in &anchored_by {
+        for (filament, surfaces) in anchored_by.iter().enumerate() {
             let sparse: Vec<edge_infill::Surface> = surfaces[index]
                 .iter()
                 .filter(|s| s.kind == edge_infill::SurfaceKind::Sparse)
@@ -1005,6 +1100,7 @@ pub fn slice(job: Job, watch: &dyn Watcher) -> Result<Sliced, Failure> {
             if sparse.is_empty() {
                 continue;
             }
+            let params = params_of(filament, index)?;
             lines.extend(
                 edge_infill::fill_within(&sparse, index, &params, &frame, &[])?
                     .into_iter()
@@ -1035,7 +1131,7 @@ pub fn slice(job: Job, watch: &dyn Watcher) -> Result<Sliced, Failure> {
         .into_par_iter()
         .map(|at| {
             let (filament, index) = (at / count, at % count);
-            let params = params_of(index).map_err(|e| e.to_string())?;
+            let params = params_of(filament, index).map_err(|e| e.to_string())?;
             edge_infill::fill_within(
                 &bridged_by[filament][index],
                 index,
@@ -1069,10 +1165,16 @@ pub fn slice(job: Job, watch: &dyn Watcher) -> Result<Sliced, Failure> {
     // reference irons a region with that region's solid fill filament,
     // "to not contaminate the print with another material leaking from
     // the nozzle".
-    let ironing = edge_infill::IroningSettings::from_settings(&settings)?;
-    let mut ironing_notes = Vec::new();
-    if ironing.enabled() {
-        ironing_notes.clone_from(&ironing.unsupported);
+    // A region irons by its own settings.
+    let mut ironing_notes: Vec<String> = Vec::new();
+    for own in stages.iter().filter(|own| own.ironing.enabled()) {
+        for note in &own.ironing.unsupported {
+            if !ironing_notes.contains(note) {
+                ironing_notes.push(note.clone());
+            }
+        }
+    }
+    if stages.iter().any(|own| own.ironing.enabled()) {
         // The last layer of each object: the last whose middle, where it
         // is sliced, is still inside the object. A bare model is one
         // object, and ends with the print.
@@ -1090,8 +1192,12 @@ pub fn slice(job: Job, watch: &dyn Watcher) -> Result<Sliced, Failure> {
                 )
             })
             .collect();
-        let opening = infill.shells(layer_height)?.opening;
         for (filament, fills) in fills_by.iter_mut().enumerate() {
+            let ironing = &stages[filament].ironing;
+            if !ironing.enabled() {
+                continue;
+            }
+            let opening = shells_of[filament].opening;
             let own = ironing.for_filament(used[filament], layer_height);
             let slices: Vec<&[ExPolygon]> = (0..layers.len())
                 .map(|index| share(filament, index))
@@ -1178,12 +1284,19 @@ pub fn slice(job: Job, watch: &dyn Watcher) -> Result<Sliced, Failure> {
     // the smallest piece each prints, smaller first; every later layer
     // starts with the tool already in hand and takes the rest from the
     // highest down.
+    //
+    // The order is worked out for tools, each filament in use once; each
+    // tool then prints its regions one after another, in the order of
+    // their keys.
     let on_layer = |filament: usize, index: usize| {
         !walls_by[filament][index].loops.is_empty() || !fills_by[filament][index].is_empty()
     };
     let tools_on = |index: usize| -> Vec<usize> {
-        (0..used.len())
-            .filter(|filament| on_layer(*filament, index))
+        (0..tools.len())
+            .filter(|tool| {
+                (0..used.len())
+                    .any(|filament| tool_of[filament] == *tool && on_layer(filament, index))
+            })
             .collect()
     };
     let tower_settings = TowerSettings::from_settings(&settings, plate)?;
@@ -1209,8 +1322,8 @@ pub fn slice(job: Job, watch: &dyn Watcher) -> Result<Sliced, Failure> {
             let cut = layers[0]
                 .cut_by_filament
                 .iter()
-                .find(|(filament, _)| *filament == used[*tool])
-                .map_or(&[][..], |(_, regions)| regions.as_slice());
+                .filter(|(key, _)| regions.filament(*key) == tools[*tool])
+                .flat_map(|(_, regions)| regions);
             let mut smallest = f64::INFINITY;
             for region in cut {
                 let shrunk = edge_clip::offset(
@@ -1225,7 +1338,7 @@ pub fn slice(job: Job, watch: &dyn Watcher) -> Result<Sliced, Failure> {
             pieces.push((*tool, smallest));
         }
         on_bed =
-            crate::order::first_layer(&pieces, &first_layer_sequence, |tool| used[tool] as u32);
+            crate::order::first_layer(&pieces, &first_layer_sequence, |tool| tools[tool] as u32);
     }
     let later: Vec<Vec<usize>> = (1..layers.len()).map(tools_on).collect();
     // A nozzle for each filament: every change costs the tower the same.
@@ -1243,10 +1356,40 @@ pub fn slice(job: Job, watch: &dyn Watcher) -> Result<Sliced, Failure> {
     // What the profile asks of the order and is not followed.
     // What the walls were asked for and do not do goes with these.
     let mut order_notes = walls.notes(&settings);
+    let plate_pattern = (plate_stages.infill.unsupported_pattern.as_ref())
+        .map(|pattern| format!("sparse_infill_pattern \"{pattern}\": grid is used in its place"));
     order_notes.extend(size_notes);
     order_notes.extend(quality_notes);
     order_notes.extend(ironing_notes);
     order_notes.extend(crate::unfollowed::notes(&settings));
+    order_notes.extend(crate::regions::unfollowed(&own_set));
+    // What a region's own settings ask of its walls and fill that is not
+    // done, said once.
+    for (key, own) in keys.iter().zip(&stages) {
+        let Some(region) = regions.own(*key) else {
+            continue;
+        };
+        let pattern = (own.infill.unsupported_pattern.as_ref()).map(|pattern| {
+            format!("sparse_infill_pattern \"{pattern}\": grid is used in its place")
+        });
+        let said = (own.walls.notes(&region.settings).into_iter())
+            .chain(own.infill.unsupported.iter().cloned())
+            .chain(pattern);
+        for note in said {
+            let plate_says = order_notes.contains(&note)
+                || plate_stages.infill.unsupported.contains(&note)
+                || Some(&note) == plate_pattern.as_ref();
+            if !plate_says {
+                order_notes.push(note);
+            }
+        }
+    }
+    if regions.any() && !painted.is_empty() {
+        order_notes.push(
+            "paint: colour painted on an object with settings of its own prints with the plate's settings"
+                .to_owned(),
+        );
+    }
     // Everything on the plate is sliced as one, so travel that goes
     // round the walls takes a move from one object to another as it
     // takes one between two pieces of an object: along the inside of
@@ -1288,16 +1431,40 @@ pub fn slice(job: Job, watch: &dyn Watcher) -> Result<Sliced, Failure> {
         for filament in order {
             if Some(*filament) != held {
                 changes[index] += 1;
-                rams[index].push(
-                    held.and_then(|old| {
-                        tower_settings.ramming.get(used[old] - 1).copied().flatten()
-                    }),
-                );
+                rams[index].push(held.and_then(|old| {
+                    tower_settings
+                        .ramming
+                        .get(tools[old] - 1)
+                        .copied()
+                        .flatten()
+                }));
                 held = Some(*filament);
             }
         }
     }
     let tower = edge_tower::plan(&rams, &heights.all(), &tower_settings)?;
+    // Each tool's turn on a layer, as its regions there, in order.
+    let tool_orders = orders;
+    let orders: Vec<Vec<usize>> = (tool_orders.iter().enumerate())
+        .map(|(index, order)| {
+            order
+                .iter()
+                .flat_map(|tool| {
+                    let mine: Vec<usize> = (0..used.len())
+                        .filter(|filament| tool_of[*filament] == *tool)
+                        .collect();
+                    let printing: Vec<usize> = (mine.iter().copied())
+                        .filter(|filament| index < layers.len() && on_layer(*filament, index))
+                        .collect();
+                    if printing.is_empty() {
+                        mine.into_iter().take(1).collect()
+                    } else {
+                        printing
+                    }
+                })
+                .collect()
+        })
+        .collect();
 
     // Skirt and brim, per layer, in the order they are printed.
     let adhesion = AdhesionSettings::from_settings(&settings)?;
@@ -1391,7 +1558,9 @@ pub fn slice(job: Job, watch: &dyn Watcher) -> Result<Sliced, Failure> {
     // block after a change, and once a layer the tower's wall and fill,
     // by the first tool to arrive, or by the tool in hand when none does.
     let mut entries: Vec<Entry> = Vec::new();
-    let mut held = orders.first().and_then(|order| order.first().copied());
+    let mut held = (orders.first())
+        .and_then(|order| order.first())
+        .map(|filament| tool_of[*filament]);
     for (index, order) in orders.iter().enumerate() {
         let mut blocks = tower.layers[index].changes.iter();
         let mut finish = Some(&tower.layers[index].finish);
@@ -1399,14 +1568,14 @@ pub fn slice(job: Job, watch: &dyn Watcher) -> Result<Sliced, Failure> {
         for filament in order {
             let mut lines = Vec::new();
             let (mut ram, mut enter) = (None, Vec::new());
-            let switched = Some(*filament) != held;
+            let switched = Some(tool_of[*filament]) != held;
             if switched {
                 if let Some(block) = blocks.next() {
                     lines.extend(block.lines.iter().cloned());
                     ram = block.ram.clone();
                     enter = block.enter.clone();
                 }
-                held = Some(*filament);
+                held = Some(tool_of[*filament]);
             }
             if (switched || !any_change)
                 && let Some(finish) = finish.take()
@@ -1470,7 +1639,10 @@ pub fn slice(job: Job, watch: &dyn Watcher) -> Result<Sliced, Failure> {
         modelled,
         seams,
         measured,
-        used,
+        used: tools,
+        slots: used,
+        keys,
+        regions,
         shares,
         walls_by,
         surfaces_by,
@@ -1538,7 +1710,7 @@ impl Sliced {
     /// Every filament's walls and fill on a layer taken together, by
     /// layer. One filament's are given as they are.
     pub fn combined(&self) -> (Cow<'_, [Perimeters]>, Cow<'_, [Vec<ExtrusionPath>]>) {
-        if self.used.len() <= 1 {
+        if self.slots.len() <= 1 {
             return (
                 Cow::Borrowed(&self.walls_by[0]),
                 Cow::Borrowed(&self.fills_by[0]),
@@ -1549,7 +1721,7 @@ impl Sliced {
                 .map(|index| {
                     let mut all = Perimeters::default();
                     let mut fill = Vec::new();
-                    for filament in 0..self.used.len() {
+                    for filament in 0..self.slots.len() {
                         let own = &self.walls_by[filament][index];
                         let from = all.loops.len();
                         all.islands.extend(
@@ -1634,6 +1806,21 @@ impl Sliced {
         for print in &mut prints {
             print.produced_at = Some(produced_at.to_owned());
         }
+        // A region with settings of its own lays its walls and fill by
+        // them; each such region's place among these, by region.
+        let mut region_prints: Vec<PrintSettings> = Vec::new();
+        let mut region_of: Vec<Option<usize>> = Vec::with_capacity(self.keys.len());
+        for (key, filament) in self.keys.iter().zip(&self.slots) {
+            region_of.push(match self.regions.own(*key) {
+                Some(region) => {
+                    let mut print = PrintSettings::for_filament(&region.settings, filament - 1)?;
+                    print.produced_at = Some(produced_at.to_owned());
+                    region_prints.push(print);
+                    Some(region_prints.len() - 1)
+                }
+                None => None,
+            });
+        }
         let outlines = self.outlines();
         // Layer tops, measured from the bottom of the model as the bed.
         // Skirt, brim and supports go to whichever tool starts the layer.
@@ -1648,7 +1835,7 @@ impl Sliced {
                 edge_gcode::Layer {
                     z: self.top_of(index),
                     height: self.height_of(index),
-                    filament: self.used[*filament] - 1,
+                    filament: self.slots[*filament] - 1,
                     ram: turn.ram.as_ref().map(|ram| edge_gcode::Ram {
                         lines: &ram.lines,
                         speed: ram.speed,
@@ -1663,6 +1850,7 @@ impl Sliced {
                     paths: &self.fills_by[*filament][index],
                     shelter: &self.shelter[index],
                     below: if index > 0 { outlines[index - 1] } else { &[] },
+                    region: region_of[*filament],
                 }
             })
             .collect();
@@ -1769,6 +1957,7 @@ impl Sliced {
                         &contours,
                         &self.codes,
                         &prints,
+                        &region_prints,
                     )
                 })?;
         Ok(Gcode {

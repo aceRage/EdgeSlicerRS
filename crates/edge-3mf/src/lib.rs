@@ -29,7 +29,7 @@ use edge_mesh::{Mesh, Transform};
 use rayon::prelude::*;
 
 pub use custom_gcode::{CustomGcode, CustomItem, CustomKind, CustomMode};
-pub use kept::{Entry, Extras, Kept, Left, ObjectKept, PartKept, PlateKept};
+pub use kept::{Entry, Extras, Kept, LayerRange, Left, ObjectKept, PartKept, PlateKept};
 use model::{ModelFile, RawObject, Shape};
 use model_settings::{ModelSettings, ObjectSettings};
 use package::Package;
@@ -125,7 +125,34 @@ pub struct Part {
     pub kept: Option<Arc<PartKept>>,
 }
 
+impl Object {
+    /// The object's own settings as its file carries them
+    /// ([`ObjectKept::settings`]); none for an object no file held.
+    pub fn settings(&self) -> Vec<(String, String)> {
+        self.kept
+            .as_deref()
+            .map(ObjectKept::settings)
+            .unwrap_or_default()
+    }
+
+    /// The object's height ranges ([`ObjectKept::layer_ranges`]).
+    pub fn layer_ranges(&self) -> Vec<LayerRange> {
+        self.kept
+            .as_deref()
+            .map(ObjectKept::layer_ranges)
+            .unwrap_or_default()
+    }
+}
+
 impl Part {
+    /// The part placed where `instance` puts its object, in world
+    /// coordinates.
+    pub fn placed(&self, instance: &Instance) -> Mesh {
+        let mut mesh = Mesh::default();
+        mesh.append(&self.mesh, &self.transform.then(&instance.transform));
+        mesh
+    }
+
     /// The part's own settings as its file carries them, in the file's
     /// order ([`PartKept::settings`]); none for a part no file held.
     pub fn settings(&self) -> Vec<(String, String)> {
@@ -442,9 +469,14 @@ impl Project {
     /// that has them gets bodies of its own, so its negative parts carve it
     /// and nothing else. Bodies come in ascending order of filament.
     pub fn bodies(&self, plate: Option<usize>) -> Vec<Body> {
+        self.bodies_where(plate, |_| true)
+    }
+
+    /// [`Project::bodies`] of the objects `keep` keeps alone.
+    pub fn bodies_where(&self, plate: Option<usize>, keep: impl Fn(&Object) -> bool) -> Vec<Body> {
         let mut shared: std::collections::BTreeMap<usize, Mesh> = Default::default();
         let mut carved = Vec::new();
-        for (object, instance) in self.printable(plate) {
+        for (object, instance) in self.printable(plate).filter(|(object, _)| keep(object)) {
             let has_negative = object
                 .parts
                 .iter()
@@ -455,6 +487,7 @@ impl Project {
                         solid: Mesh::default(),
                         negative: Some(Mesh::default()),
                         filament,
+                        part: None,
                     };
                     append_parts(
                         &mut body.solid,
@@ -489,6 +522,7 @@ impl Project {
                 solid,
                 negative: None,
                 filament,
+                part: None,
             })
             .collect();
         bodies.extend(carved);
@@ -657,6 +691,12 @@ impl Project {
             .any(|(object, _)| (object.parts.iter()).any(|part| part.kind == kind))
     }
 
+    /// The printable instances on a plate (or in the whole project for
+    /// `None`), each with its object, in the plate's order.
+    pub fn printed(&self, plate: Option<usize>) -> Vec<(&Object, &Instance)> {
+        self.printable(plate).collect()
+    }
+
     /// The printable instances on a plate, each with its object.
     fn printable(&self, plate: Option<usize>) -> impl Iterator<Item = (&Object, &Instance)> {
         let selected: Vec<InstanceRef> = match plate {
@@ -746,6 +786,9 @@ pub struct Body {
     pub negative: Option<Mesh>,
     /// Which filament the solid is printed in, counting from 1.
     pub filament: usize,
+    /// A tag of whoever made the body from one part by itself, to find
+    /// the part again by; none for every body [`Project::bodies`] makes.
+    pub part: Option<(usize, usize)>,
 }
 
 /// Adds an object's parts of one kind to a mesh; with `filament`, only

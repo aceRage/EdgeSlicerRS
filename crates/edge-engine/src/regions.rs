@@ -1,0 +1,1026 @@
+//! Settings that belong to one object, one part or one region of a print:
+//! the reference's region model (PrintApply.cpp `generate_print_object_regions`,
+//! PrintObject.cpp `region_config_from_model_volume`).
+//!
+//! The reference slices each object by itself and gives every set of its
+//! volumes that share one region config a `PrintRegion`; each stage reads
+//! a region-level option from the region and an object-level one from the
+//! object. Here everything on a plate is sliced together, and each layer
+//! is shared out among keys, a key standing for one region: a filament
+//! number for a region with the plate's settings in that filament, as it
+//! always was, and a number from [`BASE`] up for one with settings of its
+//! own. Each stage that reads region-level settings reads them from the
+//! region's own [`Settings`] (the plate's with the region's laid over
+//! them), so a plate without settings of its own anywhere has one region
+//! per filament, keyed by its number, and slices as it did before.
+
+use std::{
+    collections::{BTreeMap, BTreeSet},
+    sync::{Arc, OnceLock},
+};
+
+use edge_config::{Reads, Settings, Value};
+
+/// The first key of a region with settings of its own. Below it, a key is
+/// a filament number and its region has the plate's settings.
+pub(crate) const BASE: usize = 1 << 20;
+
+/// The settings of the reference's `PrintObjectConfig` (PrintConfig.hpp),
+/// which an object may set for itself, in order of name.
+pub const OBJECT_KEYS: [&str; 168] = [
+    "adaptive_layer_height",
+    "apply_scarf_seam_on_circles",
+    "bridge_acceleration",
+    "bridge_no_support",
+    "brim_ears_detection_length",
+    "brim_ears_max_angle",
+    "brim_ears_outer_only",
+    "brim_flow_ratio",
+    "brim_object_gap",
+    "brim_type",
+    "brim_use_efc_outline",
+    "brim_width",
+    "calib_flowrate_topinfill_special_order",
+    "circle_compensation_manual_offset",
+    "default_acceleration",
+    "default_jerk",
+    "default_junction_deviation",
+    "detect_narrow_internal_solid_infill",
+    "dont_filter_internal_bridges",
+    "elefant_foot_compensation",
+    "elefant_foot_compensation_layers",
+    "elefant_foot_layers_density",
+    "enable_circle_compensation",
+    "enable_extra_bridge_layer",
+    "enable_support",
+    "enforce_support_layers",
+    "first_layer_travel_acceleration",
+    "first_layer_travel_jerk",
+    "flush_into_infill",
+    "flush_into_objects",
+    "flush_into_support",
+    "gap_fill_target",
+    "image_fill_detail",
+    "image_fill_params",
+    "independent_support_layer_height",
+    "infill_jerk",
+    "initial_layer_acceleration",
+    "initial_layer_jerk",
+    "initial_layer_min_bead_width",
+    "initial_layer_travel_acceleration",
+    "inner_wall_acceleration",
+    "inner_wall_jerk",
+    "interface_shells",
+    "interlocking_beam",
+    "interlocking_beam_layer_count",
+    "interlocking_beam_width",
+    "interlocking_boundary_avoidance",
+    "interlocking_depth",
+    "interlocking_orientation",
+    "internal_bridge_density",
+    "internal_solid_infill_acceleration",
+    "layer_height",
+    "line_width",
+    "make_overhang_printable_angle",
+    "make_overhang_printable_hole_size",
+    "max_bridge_length",
+    "min_bead_width",
+    "min_feature_size",
+    "min_length_factor",
+    "mmu_segmented_region_interlocking_depth",
+    "mmu_segmented_region_max_width",
+    "nozzle_support_line_width",
+    "outer_wall_acceleration",
+    "outer_wall_jerk",
+    "paint_depth_mm",
+    "paint_depth_mode",
+    "paint_depth_solid_interfaces",
+    "paint_depth_walls",
+    "paint_infill_override",
+    "precise_z_height",
+    "raft_contact_distance",
+    "raft_expansion",
+    "raft_first_layer_density",
+    "raft_first_layer_expansion",
+    "raft_layers",
+    "seam_position",
+    "seam_prefer_part_joints",
+    "skirt_start_angle",
+    "slice_closing_radius",
+    "slicing_mode",
+    "small_support_perimeter_speed",
+    "small_support_perimeter_threshold",
+    "sparse_infill_acceleration",
+    "stabilizer_brace_max_span",
+    "stabilizer_brace_max_unbraced",
+    "stabilizer_bracing",
+    "stabilizer_column_length",
+    "stabilizer_column_min_height",
+    "stabilizer_column_shape",
+    "stabilizer_column_width",
+    "stabilizer_infill_density",
+    "stabilizer_infill_pattern",
+    "stabilizer_max_island_width",
+    "stabilizer_pillar_base_diameter",
+    "stabilizer_pillar_diameter",
+    "stabilizer_points_per_ring",
+    "stabilizer_ring_spacing",
+    "stabilizer_supports",
+    "stabilizer_tip_diameter",
+    "stabilizer_tip_gap",
+    "stabilizer_wall_loops",
+    "staggered_inner_seams",
+    "support_angle",
+    "support_base_pattern",
+    "support_base_pattern_spacing",
+    "support_bottom_interface_spacing",
+    "support_bottom_z_distance",
+    "support_critical_regions_only",
+    "support_expansion",
+    "support_filament",
+    "support_filament_matching",
+    "support_interface_bottom_layers",
+    "support_interface_filament",
+    "support_interface_interlock",
+    "support_interface_interlock_beam_lines",
+    "support_interface_interlock_layers",
+    "support_interface_loop_pattern",
+    "support_interface_not_for_body",
+    "support_interface_pattern",
+    "support_interface_spacing",
+    "support_interface_speed",
+    "support_interface_top_layers",
+    "support_ironing",
+    "support_ironing_direction",
+    "support_ironing_flow",
+    "support_ironing_inset",
+    "support_ironing_pattern",
+    "support_ironing_spacing",
+    "support_ironing_speed",
+    "support_line_width",
+    "support_object_first_layer_gap",
+    "support_object_xy_distance",
+    "support_on_build_plate_only",
+    "support_remove_small_overhang",
+    "support_speed",
+    "support_style",
+    "support_threshold_angle",
+    "support_threshold_overlap",
+    "support_top_z_distance",
+    "support_type",
+    "thick_bridges",
+    "thick_internal_bridges",
+    "top_surface_acceleration",
+    "top_surface_jerk",
+    "travel_acceleration",
+    "travel_jerk",
+    "tree_support_angle_slow",
+    "tree_support_auto_brim",
+    "tree_support_branch_angle",
+    "tree_support_branch_angle_organic",
+    "tree_support_branch_diameter",
+    "tree_support_branch_diameter_angle",
+    "tree_support_branch_diameter_organic",
+    "tree_support_branch_distance",
+    "tree_support_branch_distance_organic",
+    "tree_support_brim_width",
+    "tree_support_tip_diameter",
+    "tree_support_top_rate",
+    "tree_support_wall_count",
+    "wall_distribution_count",
+    "wall_generator",
+    "wall_maximum_deviation",
+    "wall_maximum_resolution",
+    "wall_transition_angle",
+    "wall_transition_filter_deviation",
+    "wall_transition_length",
+    "xy_contour_compensation",
+    "xy_hole_compensation",
+];
+
+/// The settings of the reference's `PrintRegionConfig` (PrintConfig.hpp),
+/// which an object, a part, a modifier or a height range may set, in order
+/// of name.
+pub const REGION_KEYS: [&str; 191] = [
+    "adaptive_infill_gradient",
+    "adaptive_infill_interior_density",
+    "adaptive_infill_mode",
+    "align_infill_direction_to_model",
+    "alternate_extra_wall",
+    "bottom_color_penetration_layers",
+    "bottom_layer_direction",
+    "bottom_shell_layers",
+    "bottom_shell_thickness",
+    "bottom_solid_infill_flow_ratio",
+    "bottom_surface_density",
+    "bottom_surface_fill_order",
+    "bottom_surface_pattern",
+    "bridge_angle",
+    "bridge_density",
+    "bridge_expansion_extra",
+    "bridge_flow",
+    "bridge_line_width",
+    "bridge_speed",
+    "center_of_surface_pattern",
+    "counterbore_hole_bridging",
+    "detect_overhang_wall",
+    "detect_thin_wall",
+    "enable_overhang_speed",
+    "ensure_vertical_shell_thickness",
+    "extra_perimeters_on_overhangs",
+    "extra_solid_infills",
+    "filament_ironing_flow",
+    "filament_ironing_inset",
+    "filament_ironing_spacing",
+    "filament_ironing_speed",
+    "fill_multiline",
+    "filter_out_gap_fill",
+    "fuzzy_skin",
+    "fuzzy_skin_first_layer",
+    "fuzzy_skin_layers_between_ripple_offset",
+    "fuzzy_skin_mode",
+    "fuzzy_skin_noise_type",
+    "fuzzy_skin_octaves",
+    "fuzzy_skin_persistence",
+    "fuzzy_skin_point_distance",
+    "fuzzy_skin_ripple_offset",
+    "fuzzy_skin_ripples_per_layer",
+    "fuzzy_skin_scale",
+    "fuzzy_skin_skip_overhangs",
+    "fuzzy_skin_thickness",
+    "gap_infill_speed",
+    "gyroid_optimized",
+    "hole_to_polyhole",
+    "hole_to_polyhole_max_edges",
+    "hole_to_polyhole_threshold",
+    "hole_to_polyhole_twisted",
+    "hollow_interior",
+    "hollow_shell_thickness",
+    "infill_anchor",
+    "infill_anchor_max",
+    "infill_combination",
+    "infill_combination_max_layer_height",
+    "infill_complete_top",
+    "infill_direction",
+    "infill_instead_top_bottom_surfaces",
+    "infill_lock_depth",
+    "infill_overhang_angle",
+    "infill_shift_step",
+    "infill_wall_overlap",
+    "inner_wall_line_width",
+    "inner_wall_speed",
+    "internal_bridge_angle",
+    "internal_bridge_flow",
+    "internal_bridge_speed",
+    "internal_solid_infill_line_width",
+    "internal_solid_infill_pattern",
+    "internal_solid_infill_speed",
+    "ironing_angle",
+    "ironing_angle_fixed",
+    "ironing_direction",
+    "ironing_flow",
+    "ironing_inset",
+    "ironing_pattern",
+    "ironing_spacing",
+    "ironing_speed",
+    "ironing_type",
+    "is_infill_first",
+    "lateral_lattice_angle_1",
+    "lateral_lattice_angle_2",
+    "lightning_overhang_angle",
+    "lightning_prune_angle",
+    "lightning_straightening_angle",
+    "locked_skeleton_infill_pattern",
+    "locked_skin_infill_pattern",
+    "make_overhang_printable",
+    "min_layer_time_pause",
+    "min_width_top_surface",
+    "minimum_sparse_infill_area",
+    "nozzle_bridge_line_width",
+    "nozzle_inner_wall_line_width",
+    "nozzle_internal_solid_infill_line_width",
+    "nozzle_outer_wall_line_width",
+    "nozzle_region_values",
+    "nozzle_skeleton_infill_line_width",
+    "nozzle_skin_infill_line_width",
+    "nozzle_sparse_infill_line_width",
+    "nozzle_top_surface_line_width",
+    "offset_layers",
+    "only_one_wall_first_layer",
+    "only_one_wall_top",
+    "outer_wall_filament",
+    "outer_wall_line_width",
+    "outer_wall_speed",
+    "over_support_flow",
+    "over_support_speed",
+    "over_support_surfaces",
+    "overhang_1_4_speed",
+    "overhang_2_4_speed",
+    "overhang_3_4_speed",
+    "overhang_4_4_speed",
+    "overhang_reverse",
+    "overhang_reverse_internal_only",
+    "overhang_reverse_threshold",
+    "overhang_shadow_distance",
+    "overhang_shadow_inner_wall",
+    "overhang_shadow_speed_ratio",
+    "override_paint",
+    "precise_outer_wall",
+    "print_flow_ratio",
+    "relative_bridge_angle",
+    "role_based_wipe_speed",
+    "scarf_angle_threshold",
+    "scarf_joint_flow_ratio",
+    "scarf_joint_speed",
+    "scarf_overhang_threshold",
+    "seam_gap",
+    "seam_slope_conditional",
+    "seam_slope_entire_loop",
+    "seam_slope_inner_walls",
+    "seam_slope_min_length",
+    "seam_slope_start_height",
+    "seam_slope_steps",
+    "seam_slope_type",
+    "separated_infills",
+    "skeleton_infill_density",
+    "skeleton_infill_line_width",
+    "skin_infill_density",
+    "skin_infill_depth",
+    "skin_infill_line_width",
+    "slowdown_for_curled_perimeters",
+    "small_area_infill_flow_compensation",
+    "small_perimeter_speed",
+    "small_perimeter_threshold",
+    "solid_infill_direction",
+    "solid_infill_filament",
+    "solid_infill_rotate_template",
+    "sparse_infill_density",
+    "sparse_infill_filament",
+    "sparse_infill_line_width",
+    "sparse_infill_pattern",
+    "sparse_infill_rotate_template",
+    "sparse_infill_smooth_factor",
+    "sparse_infill_speed",
+    "symmetric_infill_y_axis",
+    "top_bottom_infill_wall_overlap",
+    "top_color_penetration_layers",
+    "top_layer_direction",
+    "top_shell_layers",
+    "top_shell_thickness",
+    "top_solid_infill_flow_ratio",
+    "top_surface_density",
+    "top_surface_expansion",
+    "top_surface_expansion_direction",
+    "top_surface_expansion_margin",
+    "top_surface_fill_order",
+    "top_surface_line_width",
+    "top_surface_pattern",
+    "top_surface_speed",
+    "undertop_surface_pattern",
+    "unsupported_wall_last",
+    "wall_direction",
+    "wall_filament",
+    "wall_infill_order",
+    "wall_loops",
+    "wall_sequence",
+    "wipe_before_external_loop",
+    "wipe_inward",
+    "wipe_inward_distance",
+    "wipe_on_loops",
+    "wipe_speed",
+    "zaa_dont_alternate_fill_direction",
+    "zaa_enabled",
+    "zaa_min_z",
+    "zaa_minimize_perimeter_height",
+    "zaa_speed_scaling",
+];
+
+/// Where a setting may be set for less than the whole plate, as the
+/// reference's key lists have it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Scope {
+    /// Object-level (`PrintObjectConfig`): on an object only.
+    Object,
+    /// Region-level (`PrintRegionConfig`): on an object, a part, a
+    /// modifier or a height range.
+    Region,
+    /// Neither: the whole plate's alone. The reference takes no notice of
+    /// it set on an object or a part.
+    Plate,
+}
+
+/// Which of the reference's lists a setting is in.
+pub fn scope(key: &str) -> Scope {
+    if REGION_KEYS.binary_search(&key).is_ok() {
+        Scope::Region
+    } else if OBJECT_KEYS.binary_search(&key).is_ok() {
+        Scope::Object
+    } else {
+        Scope::Plate
+    }
+}
+
+/// What may be set where, and what the engine does with it there: for the
+/// desktop app's object and part settings.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Settable {
+    /// Whether the reference reads it set on an object, on a part or
+    /// modifier, and on a height range.
+    pub on_object: bool,
+    pub on_part: bool,
+    pub on_range: bool,
+    /// Whether this engine follows it set on an object, on a part or a
+    /// modifier, and on a height range. Where it may be set but is not
+    /// followed, a slice says so in a note.
+    pub followed_on_object: bool,
+    pub followed_on_part: bool,
+    pub followed_on_range: bool,
+}
+
+/// [`Settable`] for one setting.
+pub fn settable(key: &str) -> Settable {
+    let scope = scope(key);
+    let region = scope == Scope::Region;
+    let followed = per_region(key);
+    Settable {
+        on_object: scope != Scope::Plate,
+        on_part: region,
+        // A height range is laid over the object's parts as a region's
+        // config is (`region_config_from_model_volume`), and its
+        // `layer_height` sets the range's layers' height.
+        on_range: region || key == "layer_height",
+        followed_on_object: scope != Scope::Plate && followed,
+        followed_on_part: region && followed,
+        followed_on_range: region && followed,
+    }
+}
+
+/// The settings every stage that is worked out region by region reads:
+/// what a region's own settings change. Found by doing that work's
+/// reading with defaults and with each kind of fill, wall and skin, as
+/// [`crate::followed`] finds what a slice reads.
+fn region_reads() -> &'static BTreeSet<String> {
+    static READS: OnceLock<BTreeSet<String>> = OnceLock::new();
+    READS.get_or_init(|| {
+        let reads = Reads::default();
+        let mut variants: Vec<Vec<(&str, &str)>> = vec![
+            vec![],
+            vec![("ironing_type", "top"), ("fuzzy_skin", "allwalls")],
+            vec![("wall_generator", "arachne"), ("ironing_type", "solid")],
+            vec![("sparse_infill_pattern", "gyroid")],
+            vec![("sparse_infill_pattern", "cubic")],
+        ];
+        for pattern in [
+            "rectilinear",
+            "alignedrectilinear",
+            "line",
+            "honeycomb",
+            "lightning",
+            "adaptivecubic",
+            "supportcubic",
+            "concentric",
+            "crosshatch",
+            "zigzag",
+            "crosszag",
+            "lockedzag",
+            "tpmsd",
+            "tpmsfk",
+            "3dhoneycomb",
+            "hilbertcurve",
+            "archimedeanchords",
+            "octagramspiral",
+            "triangles",
+            "tri-hexagon",
+            "quartercubic",
+        ] {
+            variants.push(vec![("sparse_infill_pattern", pattern)]);
+        }
+        for variant in variants {
+            let mut settings = edge_config::reference_defaults().clone();
+            for (key, value) in variant {
+                settings.insert(key, Value::One(value.to_owned()));
+            }
+            settings.noted_by(&reads);
+            let _ = StageSettings::read(&settings, 1);
+        }
+        reads.keys()
+    })
+}
+
+/// Whether a setting set for one object, part, modifier or range is
+/// followed there: read by a stage worked out region by region, or one
+/// the G-code writer takes from a region's own settings as it lays the
+/// region's walls and fill.
+pub(crate) fn per_region(key: &str) -> bool {
+    (region_reads().contains(key) || WRITTEN_BY_REGION.contains(&key)) && !PLATE_WIDE.contains(&key)
+}
+
+/// What the stages worked out region by region read but take from the
+/// plate's settings all the same, where the work is done for every
+/// region at once: bridges over sparse fill and their second layer, and
+/// how many layers elephant foot compensation runs over.
+const PLATE_WIDE: [&str; 3] = [
+    "dont_filter_internal_bridges",
+    "enable_extra_bridge_layer",
+    "elefant_foot_compensation_layers",
+];
+
+/// What the G-code writer reads from a region's own settings as it lays
+/// its walls and fill (`edge_gcode::Layer::region`): how fast, how hard
+/// and with how much plastic each line is laid, and in what order an
+/// island's walls and fill come.
+const WRITTEN_BY_REGION: [&str; 30] = [
+    "outer_wall_speed",
+    "inner_wall_speed",
+    "small_perimeter_speed",
+    "small_perimeter_threshold",
+    "sparse_infill_speed",
+    "internal_solid_infill_speed",
+    "top_surface_speed",
+    "gap_infill_speed",
+    "bridge_speed",
+    "internal_bridge_speed",
+    "ironing_speed",
+    "enable_overhang_speed",
+    "overhang_1_4_speed",
+    "overhang_2_4_speed",
+    "overhang_3_4_speed",
+    "overhang_4_4_speed",
+    "default_acceleration",
+    "outer_wall_acceleration",
+    "inner_wall_acceleration",
+    "top_surface_acceleration",
+    "sparse_infill_acceleration",
+    "internal_solid_infill_acceleration",
+    "bridge_acceleration",
+    "print_flow_ratio",
+    "top_solid_infill_flow_ratio",
+    "bottom_solid_infill_flow_ratio",
+    "bridge_flow",
+    "internal_bridge_flow",
+    "wall_sequence",
+    "is_infill_first",
+];
+
+/// The settings of the stages worked out region by region.
+#[derive(Clone)]
+pub(crate) struct StageSettings {
+    pub(crate) walls: edge_perimeter::WallSettings,
+    pub(crate) infill: edge_infill::InfillSettings,
+    pub(crate) ironing: edge_infill::IroningSettings,
+}
+
+impl StageSettings {
+    /// Reads them from a region's settings, as filament `filament` (from
+    /// 1) prints that region.
+    pub(crate) fn read(settings: &Settings, filament: usize) -> Result<Self, crate::Failure> {
+        let walls = edge_perimeter::WallSettings::from_settings(settings)?;
+        let infill = edge_infill::InfillSettings::from_settings(settings)?;
+        let ironing = edge_infill::IroningSettings::from_settings(settings)?;
+        // What is read only once they are worked out at a height.
+        for first in [false, true] {
+            let _ = walls.params(0.2, first);
+            let _ = infill.params(0.2, first);
+        }
+        let _ = infill.shells(0.2);
+        let _ = infill.anchoring(0.2);
+        let _ = ironing.for_filament(filament, 0.2);
+        Ok(Self {
+            walls,
+            infill,
+            ironing,
+        })
+    }
+}
+
+/// One region with settings of its own.
+#[derive(Clone, Debug)]
+pub(crate) struct Region {
+    /// The filament it prints in, from 1.
+    pub(crate) filament: usize,
+    /// What it sets over the plate's settings, each differing from them.
+    pub(crate) overrides: BTreeMap<String, String>,
+    /// The plate's settings with `overrides` laid over them.
+    pub(crate) settings: Arc<Settings>,
+}
+
+/// Every region of a plate with settings of its own, by key from
+/// [`BASE`]; below it a key is a filament number.
+#[derive(Clone, Debug, Default)]
+pub(crate) struct Regions {
+    own: Vec<Region>,
+}
+
+/// A value as the plate's settings give it, in the text a file gives it in.
+fn plate_text(settings: &Settings, key: &str) -> Option<String> {
+    match settings.get(key)? {
+        Value::One(text) => Some(text.clone()),
+        Value::Many(texts) => Some(texts.join(",")),
+    }
+}
+
+/// Whether two values of a setting are the same: as text, or as numbers.
+fn same_value(a: &str, b: &str) -> bool {
+    let (a, b) = (a.trim(), b.trim());
+    a == b
+        || matches!((a.parse::<f64>(), b.parse::<f64>()), (Ok(x), Ok(y)) if x == y)
+        || matches!(
+            (a, b),
+            ("1" | "true", "1" | "true") | ("0" | "false", "0" | "false")
+        )
+}
+
+/// Lays `pairs` over `overrides`, keeping only what `allowed` lets through
+/// and what differs from the plate's own value: a value that comes back
+/// to the plate's takes the setting out again, so a part that sets what
+/// its object changed back to what the plate has shares the plate's
+/// region, as the reference finds it by comparing configs.
+pub(crate) fn lay_over(
+    overrides: &mut BTreeMap<String, String>,
+    plate: &Settings,
+    pairs: &[(String, String)],
+    allowed: impl Fn(&str) -> bool,
+) {
+    for (key, value) in pairs {
+        if !allowed(key) || FEATURE_FILAMENTS.contains(&key.as_str()) {
+            continue;
+        }
+        let same = plate_text(plate, key).is_some_and(|own| same_value(&own, value));
+        if same {
+            overrides.remove(key);
+        } else {
+            overrides.insert(key.clone(), value.clone());
+        }
+    }
+}
+
+/// The settings of an object, part or range that name the filament a
+/// feature is printed in. Not followed: the feature prints in the
+/// region's own filament, and a slice says so.
+pub(crate) const FEATURE_FILAMENTS: [&str; 4] = [
+    "wall_filament",
+    "outer_wall_filament",
+    "sparse_infill_filament",
+    "solid_infill_filament",
+];
+
+impl Regions {
+    /// The key of the region printed in `filament` with `overrides` over
+    /// the plate's settings: the filament itself when there are none.
+    pub(crate) fn key(
+        &mut self,
+        plate: &Settings,
+        filament: usize,
+        overrides: &BTreeMap<String, String>,
+    ) -> usize {
+        if overrides.is_empty() {
+            return filament;
+        }
+        if let Some(at) = (self.own.iter())
+            .position(|region| region.filament == filament && region.overrides == *overrides)
+        {
+            return BASE + at;
+        }
+        let mut settings = plate.clone();
+        for (key, value) in overrides {
+            let value = match plate.get(key) {
+                Some(Value::Many(_)) => Value::Many(
+                    value
+                        .split(',')
+                        .map(|item| item.trim().to_owned())
+                        .collect(),
+                ),
+                _ => Value::One(value.clone()),
+            };
+            settings.insert(key.clone(), value);
+        }
+        self.own.push(Region {
+            filament,
+            overrides: overrides.clone(),
+            settings: Arc::new(settings),
+        });
+        BASE + self.own.len() - 1
+    }
+
+    /// The region `key` stands for when it has settings of its own.
+    pub(crate) fn own(&self, key: usize) -> Option<&Region> {
+        key.checked_sub(BASE).and_then(|at| self.own.get(at))
+    }
+
+    /// The filament region `key` prints in, from 1.
+    pub(crate) fn filament(&self, key: usize) -> usize {
+        self.own(key).map_or(key, |region| region.filament)
+    }
+
+    /// What region `key` sets over the plate's settings: nothing for a
+    /// filament's own region.
+    pub(crate) fn overrides(&self, key: usize) -> BTreeMap<String, String> {
+        self.own(key)
+            .map(|region| region.overrides.clone())
+            .unwrap_or_default()
+    }
+
+    /// The same region printed in another filament: what a filament
+    /// change set at a layer makes of it.
+    pub(crate) fn in_filament(&mut self, key: usize, plate: &Settings, filament: usize) -> usize {
+        let overrides = self.overrides(key);
+        self.key(plate, filament, &overrides)
+    }
+
+    /// Whether any region has settings of its own.
+    pub(crate) fn any(&self) -> bool {
+        !self.own.is_empty()
+    }
+}
+
+/// What a printed part's region sets over the plate's settings: its
+/// object's settings, object-level and region-level, then the part's
+/// own, region-level alone, as `region_config_from_model_volume` lays the
+/// object's config and then the volume's over the print's. Each setting
+/// that differs from the plate's is put in `set`, with what set it, for
+/// the notes on what is not followed.
+pub(crate) fn part_overrides(
+    plate: &Settings,
+    object: &crate::OwnObject,
+    volume: &crate::OwnVolume,
+    set: &mut BTreeMap<String, BTreeSet<String>>,
+) -> BTreeMap<String, String> {
+    let mut overrides = BTreeMap::new();
+    lay_over(&mut overrides, plate, &object.settings, |key| {
+        scope(key) != Scope::Plate
+    });
+    note_set(
+        set,
+        plate,
+        &object.settings,
+        |key| scope(key) != Scope::Plate,
+        &format!("object \"{}\"", object.name),
+    );
+    lay_over(&mut overrides, plate, &volume.settings, |key| {
+        scope(key) == Scope::Region
+    });
+    note_set(
+        set,
+        plate,
+        &volume.settings,
+        |key| scope(key) == Scope::Region,
+        &format!("part \"{}\" of \"{}\"", volume.name, object.name),
+    );
+    overrides
+}
+
+/// Puts each of `pairs` that differs from the plate's settings in `set`,
+/// as set on `what`.
+pub(crate) fn note_set(
+    set: &mut BTreeMap<String, BTreeSet<String>>,
+    plate: &Settings,
+    pairs: &[(String, String)],
+    applies: impl Fn(&str) -> bool,
+    what: &str,
+) {
+    for (key, value) in pairs.iter().filter(|(key, _)| applies(key)) {
+        if !plate_text(plate, key).is_some_and(|own| same_value(&own, value)) {
+            set.entry(key.clone()).or_default().insert(what.to_owned());
+        }
+    }
+}
+
+/// What an object, a part or a modifier sets that is not followed there,
+/// each as a note that starts with the setting's name: `set` is each
+/// setting with what it was set on, already reduced to what differs from
+/// the plate's settings.
+pub(crate) fn unfollowed(set: &BTreeMap<String, BTreeSet<String>>) -> Vec<String> {
+    set.iter()
+        .filter_map(|(key, on)| {
+            let on: Vec<&str> = on.iter().map(String::as_str).collect();
+            let on = on.join(", ");
+            if FEATURE_FILAMENTS.contains(&key.as_str()) {
+                return Some(format!(
+                    "{key}: set on {on}, not followed; walls and fill there print in the part's own filament"
+                ));
+            }
+            match scope(key) {
+                // The reference takes no notice of it there either.
+                Scope::Plate => None,
+                _ if per_region(key) => None,
+                _ => Some(format!(
+                    "{key}: set on {on}, not followed there; the plate's value is used"
+                )),
+            }
+        })
+        .collect()
+}
+
+#[cfg(test)]
+pub(crate) mod tests {
+    use super::*;
+    use edge_mesh::{Mesh, primitives};
+
+    use crate::{Chosen, Loaded, Overrides, OwnObject, OwnVolume, PartKind, Sliced, Unwatched};
+
+    /// Two 10 mm cubes 5 mm apart, each an object; the second sets
+    /// `object` for itself and its part `part`, and `extra` are its
+    /// modifiers and the like, already in world coordinates.
+    pub(crate) fn two_cubes(
+        object: &[(&str, &str)],
+        part: &[(&str, &str)],
+        extra: Vec<OwnVolume>,
+        ranges: Vec<edge_3mf::LayerRange>,
+        process: &str,
+    ) -> Sliced {
+        let cube = |x: f32| {
+            Mesh::from_triangle_soup(primitives::cuboid([x, 0.0, 0.0], [x + 10.0, 10.0, 10.0]))
+        };
+        let pairs = |list: &[(&str, &str)]| -> Vec<(String, String)> {
+            list.iter()
+                .map(|(k, v)| ((*k).to_owned(), (*v).to_owned()))
+                .collect()
+        };
+        let mut volumes = vec![OwnVolume {
+            kind: PartKind::Normal,
+            name: "cube".into(),
+            filament: Some(1),
+            settings: pairs(part),
+            mesh: Mesh::default(),
+        }];
+        volumes.extend(extra);
+        let loaded = Loaded {
+            bodies: vec![
+                edge_3mf::Body {
+                    solid: cube(0.0),
+                    negative: None,
+                    filament: 1,
+                    part: None,
+                },
+                edge_3mf::Body {
+                    solid: cube(15.0),
+                    negative: None,
+                    filament: 1,
+                    part: Some((0, 0)),
+                },
+            ],
+            painted: Vec::new(),
+            settings: None,
+            unread_paint: Vec::new(),
+            precise_seams: false,
+            unfollowed_parts: Vec::new(),
+            own: vec![OwnObject {
+                object: 1,
+                name: "second".into(),
+                settings: pairs(object),
+                volumes,
+                ranges,
+            }],
+            objects: vec![cube(0.0), cube(15.0)],
+            negatives: vec![Mesh::default(), Mesh::default()],
+            parts: Vec::new(),
+            plate: 0,
+            first_layer_sequence: Vec::new(),
+            plate_settings: Default::default(),
+            bounds: ([0.0; 3], [25.0, 10.0, 10.0]),
+            placed: true,
+            custom_gcode: None,
+        };
+        let printer = Settings::from_json(
+            r#"{"machine_start_gcode": "G28", "printable_area": ["0x0", "200x0", "200x200", "0x200"],
+                "nozzle_diameter": ["0.4"], "printable_height": "200"}"#,
+        )
+        .unwrap();
+        let chosen = Chosen {
+            machine: Some(("printer".into(), printer)),
+            process: Some(("process".into(), Settings::from_json(process).unwrap())),
+            filaments: Vec::new(),
+        };
+        let job = crate::prepare(loaded, &chosen, &Overrides::default()).unwrap();
+        crate::slice(job, &Unwatched).unwrap()
+    }
+
+    /// The walls of the layer `index` that lie in x from `low` to `high`.
+    pub(crate) fn loops_within(sliced: &Sliced, index: usize, low: f64, high: f64) -> usize {
+        (0..sliced.slots.len())
+            .flat_map(|slot| &sliced.walls_by[slot][index].loops)
+            .filter(|wall| {
+                wall.polygon.points.iter().all(|point| {
+                    let x = edge_geom::unscaled(point.x);
+                    x >= low && x <= high
+                })
+            })
+            .count()
+    }
+
+    #[test]
+    fn an_object_and_a_part_set_their_own_walls() {
+        let plain = two_cubes(&[], &[], Vec::new(), Vec::new(), r#"{"wall_loops": "2"}"#);
+        assert_eq!(plain.slots.len(), 1);
+        assert_eq!(loops_within(&plain, 20, -1.0, 11.0), 2);
+        assert_eq!(loops_within(&plain, 20, 14.0, 26.0), 2);
+        // The second object's own count, and the part's over it.
+        let own = two_cubes(
+            &[("wall_loops", "4")],
+            &[],
+            Vec::new(),
+            Vec::new(),
+            r#"{"wall_loops": "2"}"#,
+        );
+        assert_eq!(own.slots, vec![1, 1]);
+        assert_eq!(loops_within(&own, 20, -1.0, 11.0), 2);
+        assert_eq!(loops_within(&own, 20, 14.0, 26.0), 4);
+        let part = two_cubes(
+            &[("wall_loops", "4")],
+            &[("wall_loops", "3")],
+            Vec::new(),
+            Vec::new(),
+            r#"{"wall_loops": "2"}"#,
+        );
+        assert_eq!(loops_within(&part, 20, 14.0, 26.0), 3);
+        // A part that sets back what its object changed is the plate's.
+        let back = two_cubes(
+            &[("wall_loops", "4")],
+            &[("wall_loops", "2")],
+            Vec::new(),
+            Vec::new(),
+            r#"{"wall_loops": "2"}"#,
+        );
+        assert_eq!(back.slots.len(), 1);
+        // What is set and not followed is said; what a part may not set
+        // is not, as the reference takes no notice of it either.
+        let noted = two_cubes(
+            &[("layer_height", "0.1"), ("travel_speed", "50")],
+            &[("brim_width", "9")],
+            Vec::new(),
+            Vec::new(),
+            "{}",
+        );
+        let gaps = noted.gaps();
+        assert!(
+            gaps.iter()
+                .any(|gap| gap.starts_with("layer_height: set on object \"second\"")),
+            "{gaps:?}"
+        );
+        assert!(!gaps.iter().any(|gap| gap.starts_with("travel_speed")));
+        assert!(!gaps.iter().any(|gap| gap.starts_with("brim_width")));
+    }
+
+    #[test]
+    fn the_key_lists_are_sorted_and_apart() {
+        assert!(OBJECT_KEYS.windows(2).all(|pair| pair[0] < pair[1]));
+        assert!(REGION_KEYS.windows(2).all(|pair| pair[0] < pair[1]));
+        assert!(OBJECT_KEYS.iter().all(|key| !REGION_KEYS.contains(key)));
+        assert_eq!(scope("wall_loops"), Scope::Region);
+        assert_eq!(scope("layer_height"), Scope::Object);
+        assert_eq!(scope("enable_support"), Scope::Object);
+        assert_eq!(scope("travel_speed"), Scope::Plate);
+    }
+
+    #[test]
+    fn what_is_settable_where_and_followed() {
+        let walls = settable("wall_loops");
+        assert!(walls.on_object && walls.on_part && walls.on_range);
+        assert!(walls.followed_on_object && walls.followed_on_part);
+        let density = settable("sparse_infill_density");
+        assert!(density.followed_on_part);
+        let layer = settable("layer_height");
+        assert!(layer.on_object && !layer.on_part && layer.on_range);
+        assert!(!layer.followed_on_object);
+        let travel = settable("travel_speed");
+        assert!(!travel.on_object && !travel.on_part);
+    }
+
+    #[test]
+    fn regions_are_found_again_by_what_they_set() {
+        let plate =
+            Settings::from_json(r#"{"wall_loops": "2", "sparse_infill_density": "15%"}"#).unwrap();
+        let mut regions = Regions::default();
+        let mut overrides = BTreeMap::new();
+        // Nothing of its own: the filament's region.
+        assert_eq!(regions.key(&plate, 2, &overrides), 2);
+        lay_over(
+            &mut overrides,
+            &plate,
+            &[("wall_loops".into(), "5".into())],
+            |_| true,
+        );
+        let five = regions.key(&plate, 1, &overrides);
+        assert_eq!(five, BASE);
+        assert_eq!(regions.key(&plate, 1, &overrides), BASE);
+        assert_eq!(regions.key(&plate, 2, &overrides), BASE + 1);
+        assert_eq!(regions.filament(BASE + 1), 2);
+        assert_eq!(
+            regions
+                .own(five)
+                .unwrap()
+                .settings
+                .integer("wall_loops")
+                .unwrap(),
+            Some(5)
+        );
+        // A part that sets it back to the plate's value is the plate's.
+        lay_over(
+            &mut overrides,
+            &plate,
+            &[("wall_loops".into(), "2".into())],
+            |_| true,
+        );
+        assert!(overrides.is_empty());
+    }
+}
