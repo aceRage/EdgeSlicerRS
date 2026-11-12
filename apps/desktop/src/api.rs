@@ -17,6 +17,7 @@
 mod edit;
 mod save;
 mod scene;
+mod ticks;
 
 use std::{
     collections::{BTreeMap, HashMap},
@@ -1071,6 +1072,7 @@ impl Session {
                 Ok(json!({ "path": shown(path), "bytes": gcode.text.len() }))
             }
             name if edit::JSON.contains(&name) => self.edit_json(name, args),
+            name if ticks::JSON.contains(&name) => self.ticks_json(name, args),
             name if scene::JSON.contains(&name) => self.scene_json(name, args),
             name if scene::BYTES.contains(&name) => {
                 Err(format!("{name} answers in bytes, not in JSON"))

@@ -98,6 +98,54 @@
 /* The upper thumb's label sits over its middle, the lower one's under. */
 .gl-layer-label.high { transform: translateY(6px); }
 .gl-layer-label.low { transform: translateY(calc(100% - 6px)); }
+/* What is set at layers: a mark across the track, its kind in a small
+   label at its left (the filament's colour for a filament change), and
+   at the layer the thumb taken up is on, its label under the thumb's
+   own, framed in the accent, and the button that deletes it at the
+   track's right. */
+.gl-ticks { position: absolute; top: 0; bottom: 34px; left: 0; right: 0; pointer-events: none; }
+.gl-tick { position: absolute; right: 0; left: 0; height: 0; }
+.gl-tick-mark {
+  position: absolute;
+  right: 12px;
+  width: 14px;
+  height: 3px;
+  margin-top: -1.5px;
+  border-radius: 1px;
+  background: var(--text-1);
+  box-shadow: 0 0 0 1px var(--surface-float);
+  z-index: 1;
+}
+.gl-tick-label {
+  position: absolute;
+  right: 30px;
+  padding: 0 4px;
+  transform: translateY(-50%);
+  border: 1px solid var(--line-2);
+  border-radius: var(--radius-s);
+  background: var(--surface-overlay);
+  color: var(--text-2);
+  font-size: var(--size-caps);
+  line-height: 14px;
+  white-space: nowrap;
+  pointer-events: auto;
+  cursor: pointer;
+}
+.gl-tick.here .gl-tick-label { transform: translateY(9px); border-color: var(--accent); color: var(--text-1); }
+.gl-tick-delete {
+  position: absolute;
+  right: -8px;
+  width: 18px;
+  height: 18px;
+  padding: 0;
+  transform: translateY(-50%);
+  display: none;
+  pointer-events: auto;
+}
+.gl-tick.here .gl-tick-delete { display: inline-flex; }
+.gl-tick-delete svg { width: 12px; height: 12px; }
+.gl-layer-label { z-index: 1; }
+
 /* One layer mode: a tool that stays on. */
 .gl-one {
   position: absolute;

@@ -22,7 +22,8 @@ The last column reads:
   "Split to parts", in section 13; eighth pass: saving projects, the
   "Files" rows of section 2, the strip's saving in section 5, and
   section 15; ninth pass: the parts of an object, "Parts" in section 13,
-  and what a saved project holds of them in section 15).
+  and what a saved project holds of them in section 15; tenth pass: the
+  G-code window and what is set at layers, in sections 3, 10 and 15).
 - **differs** — built, but on purpose not as the C++ does it; the cell says how.
 - **not yet** — not built, with what it waits for. Nothing in this column is
   shown in the page as a control that does nothing.
@@ -194,7 +195,7 @@ does with each option.
 | The sliced toolpaths in 3D over transparent shells of the objects | `Preview::load_print_as_fff` (GUI_Preview.cpp l.659), `GCodeViewer` | **added**, in 3D: section 10, from the moves of the G-code (`toolpath`, `toolpath_moves`). Without WebGL2: one layer from above, drawn from the engine's own lines (`layer`), as before |
 | View type list, in this order: "Line Type", "Filament", "Speed", "Actual Speed", "Acceleration", "Jerk", "Layer Height", "Line Width", "Flow", "Actual Flow", "Layer Time", "Layer Time (log)", "Fan Speed", "Temperature", "Pressure Advance" | `GCodeViewer::update_by_mode` l.1272, `get_view_type_string` l.106 | **added**: "Line Type", "Filament", "Layer Height", "Line Width" (first pass), and in 3D "Speed", "Flow", "Fan Speed", "Temperature" where the print was read back from its G-code (section 10). **not yet**: the views that need each move's time or planned speed ("Actual Speed", "Acceleration", "Jerk", "Actual Flow", the layer times, "Pressure Advance") |
 | The view type a print opens in: "Automatic" (Filament with several filaments, else Line Type) or "Last used" ("Default preview view type") | `apply_default_view_type` l.1248, Preferences.cpp l.2038 | **differs**: the last one used in that project, kept with it in the session (`view`); a new project starts in "Line Type". **not yet**: the preference |
-| Legend, top right: fold button, G-code window button, the list | `render_legend` l.4120 | **added**: fold button and list. **not yet**: the G-code window |
+| Legend, top right: fold button, G-code window button, the list | `render_legend` l.4120 | **added**: fold button and list; the G-code window's button (tenth pass), "On/Off G-code window [C]" as its tooltip, the reference's button having none |
 | "Line Type" rows in the order of the roles, only those in the print, each with the C++ colour; columns "Line Type", "Time", "%", "Usage", "Display"; a click on a row hides or shows it | l.4300–4645, `libvgcode/src/ViewerImpl.cpp` l.302 | **added**: the C++ order and colours (before: this app's own), a "Display" mark on each row, a click on the row toggles it (**had** as checkboxes). **not yet**: "Time", "%" and "Usage" for each feature; the roles the engine never makes ("Ironing", "Custom", "Support transition", "Wall over support", "Bottom surface over support") |
 | "Supported overhangs" / "Unsupported overhangs" overlays | l.4600 | **not yet** |
 | Option rows: "Travel", "Wipe", "Retract", "Unretract", "Seams", "Filament changes" | l.4624, `append_option_item` l.4497 | **added** in 3D (section 10) |
@@ -203,10 +204,13 @@ does with each option.
 | Vertical layer slider at the right: two thumbs (a range of layers), the layer's number over its height beside the thumb, hover shows a layer's time | `IMSlider.cpp` l.890–1230, `get_label` l.1723 | **added** in 3D: two thumbs, the same labels, one layer mode [L] (section 10). Without WebGL2, the first pass's slider: one thumb, always one layer. **not yet**: layer times |
 | Up / Down move a layer; five with Shift or Ctrl; the mouse wheel over the slider likewise | `GLCanvas3D` l.5866, `IMSlider.cpp` l.1636 | **added** (before: arrows by one, PageUp / PageDown by ten; those two keys now go round the projects with Ctrl, as in the C++) |
 | "Jump to Layer" (the slider's menu; Shift+G): "Please enter the layer number (min - max):" | `IMSlider::render_add_menu` l.1512 | **added**: the slider's menu and Shift+G |
-| The slider's other menu entries: "Add Pause", "Add Custom G-code", "Add Custom Template", "Change Filament"; ticks with their delete and edit | l.1512, `render_edit_menu` l.1569 | **not yet**: the engine has no per-layer custom G-code |
+| The slider's other menu entries, for the layer of the thumb taken up: "Add Pause" ("Insert a pause command at the beginning of this layer."), "Add Custom G-code" ("Insert custom G-code at the beginning of this layer."), "Add Custom Template" (only when the printer has `template_custom_gcode`), "Change Filament" with "Filament 1"… in their colours (with more than one filament; off unless the plate prints in one of them and is neither printed by object nor a spiral vase); greyed when printed by object | `render_add_menu` l.1512, GUI_Preview.cpp `update_layers_slider_mode` l.490 | **added** (tenth pass; `layer_codes`, `layer_code_set`), the same entries, conditions and words. The item made is the reference's (`add_code_as_tick`, `add_custom_gcode`): a pause or a template only where nothing is set, custom G-code in place of whatever is there, a filament change over a filament change |
+| A tick where something is set: marks across the track, the kind's label beside it ("Pause", "Custom", "Template", "Color"), its tooltip ("Pause: \"M600\"", "Custom G-code: \"…\"", "Custom Template: \"…\"", "Change Filament"), a delete icon at the selected tick; the slider's menu on a tick: "Delete Pause"; "Delete Custom Template"; "Edit Custom G-code", "Delete Custom G-code"; "Change Filament" and "Delete Filament Change" | `draw_ticks` l.703, `draw_custom_label_block`, `show_tooltip` l.817, `render_edit_menu` l.1569 | **added**: the same, with the reference's words. **differs**: a filament change's mark is in the filament's colour where the reference colours the track above it; the estimated time before a tick's tooltip is not shown (no layer times, see "Actual Speed"); a colour change or an unknown item (read from a file; the reference makes none) gets "Jump to Layer" alone where the reference's menu is empty |
+| "Custom G-code": "Enter Custom G-code used on current layer:", a box of six lines, "OK" (off while empty) and "Cancel" | `render_input_custom_gcode` l.1323 | **added**, a dialog of the page's own (`#custom-gcode`); "Edit Custom G-code" opens it with the text that is there |
+| What an edit of the ticks does: the plate's items set as a whole, the project modified, the plate's slice made invalid; not a step of the undo history (the handler takes no snapshot, and the undo stack keeps the objects, not `plates_custom_gcodes`) | Plater.cpp l.13532 (`EVT_CUSTOMEVT_TICKSCHANGED`), Model.hpp l.1727 | **added**: the same (`layer_code_set`, `layer_code_delete`); undo and redo leave the items as they are. **differs**: the plate is sliced again at once, so the change is seen; the reference waits for the slice button |
 | "Compare slices (A/B)" | IMSlider.cpp l.1300 | **not yet** |
 | Horizontal move slider, the tool marker, the position window with its properties | `update_moves_slider` l.2331, GCodeViewer.cpp l.393–760 | **added** in 3D: the slider, the marker (an arrow) and the window's two lines (section 10). **not yet**: the table of a move's properties, a vendor's hotend model |
-| G-code window [C] | `GCodeWindow::render` l.877 | **not yet** |
+| G-code window [C]: the lines round the move the moves slider is on, that line framed, each with its number, the command, its words and the comment in colours of their own, a line over 55 characters cut to 52 and "..."; under the legend at the right; shown to start with and remembered (`show_gcode_window`); not scrolled, the wheel over the moves slider moving it | `GCodeWindow::render` l.877, `load_gcode` l.839, GUI_App.cpp l.1364, AppConfig.cpp l.297 | **added** (tenth pass): the same lines, split and cut the same way, the line found by the move as the reference finds it (the move's own line, `gcode_id`); C and the legend's button; remembered by the page. The colours are the page's (`STYLE.md`). The wheel over the window moves the moves slider as over the slider. **differs**: where the legend leaves too little room under it (fewer than eight lines), the window stands at its left; it stops above "About this print" rather than covering it. How it stays quick: section 11 |
 | "Select Plate" bar at the top left: a tile for each plate with its state (not sliced, slicing, sliced, failed); a click selects the plate and slices it if it is not sliced | `GLCanvas3D::_render_imgui_select_plate_toolbar` l.11656 | **added**: the same column of plates as in Prepare, with a tick for sliced, "…" for slicing and "!" for failed; a click selects and, in Preview, slices |
 | Its first tile: "Slice all" with sliced/total while some are not sliced, then "All Plates" / "Stats", which opens "Statistics of All Plates" (each filament's use, "Total time:", "Total cost") | l.11656–11730, `render_all_plates_stats` l.3295 | **added**: the tile in both states; the statistics list each plate's filament and time and their totals. **not yet**: by filament, cost |
 | Canvas warnings: paths beyond the plate, beyond the height, conflicting paths | GLCanvas3D.cpp l.12998 | **differs**: the engine refuses to write G-code with toolpaths off the bed; the reason is shown under "About this print" |
@@ -326,12 +330,12 @@ Read from `ProjectStrip.cpp/.hpp`, `ProjectSessions.hpp` and their uses in
 | Z: zoom to the objects | **added**: "Fit in all view" in 3D (section 9); "Fit part" from above |
 | Ctrl+S "Save Project", Ctrl+Shift+S "Save Project as..." | **added** (and Cmd on a Mac), anywhere in the page but in a dialog; in a browser they are taken from the browser's own |
 | Ctrl+G, Ctrl+Shift+G, Ctrl+P (Preferences), "?" (the list of shortcuts) | **not yet** (Ctrl+I is "Add", section 13) |
-| Left / Right, Home / End (the move slider), L (one layer mode), C (G-code window) | **added** in 3D: all but C (no G-code window) |
+| Left / Right, Home / End (the move slider), L (one layer mode), C (G-code window) | **added** in 3D, C in the tenth pass |
 | A, Shift+A, Q, Shift+Q, the gizmo keys, Ctrl+0..6, Ctrl+A / D / Z / Y / C / V / X, Del, 1–9, arrows to move objects | **added** in 3D: Ctrl+0..7 (the views), Ctrl+A, Esc, I and O, Ctrl+E (section 9); A, Shift+A, M, R, S, F, Ctrl+Z, Ctrl+Y, Ctrl+C, Ctrl+V, Ctrl+K, Ctrl+I, Del and the arrows (section 13). **not yet**: Q and Shift+Q, the other gizmos' keys, Ctrl+D, Ctrl+X, 1–9 (the filament of what is selected) |
 
 ## 7. What the page asks for
 
-Every call takes JSON and answers JSON, but the four at the end of the table,
+Every call takes JSON and answers JSON, but the five at the end of the table,
 which answer bytes (`Session::call_bytes`; section 11); an error is a sentence
 to show. A call about a project takes `project` (its id) and means the one
 shown when it is left out; one about a plate takes `plate` and means the plate
@@ -378,11 +382,16 @@ the project is on.
 | `scene_edit` | `project?`, `op` and what it takes (section 13) | `{ project, scene, done, made, note, part }`: the project and its scene as they then are, the edit's name in the history, the copies it made, something to tell the person or null, and the part it made (`part_add`) or null |
 | `undo`, `redo` | `project?` | `{ project, scene, done }`; an error when there is nothing to take back or to make again |
 | `scene_faces` | `project?`, `copy` | the faces "Lay on face" offers for a copy, largest first: `{ project, copy, faces: [{ normal, area, drawn }] }`, `normal` outward in the object's own coordinates (what `lay_on_face` takes), `area` in mm² at the printed size, `drawn` the outline to draw over the face (rounded and lifted as the reference draws it), in the object's own coordinates |
-| `toolpath` | `project?`, `plate?` | a sliced plate's moves, before they are asked for: `{ source: "gcode" \| "lines", moves, move_size, at_once, layers { first, z, height }, features, filaments, counts { travel, line, wipe, retract, unretract, seam, tool_change }, box, plate, run }` |
+| `toolpath` | `project?`, `plate?` | a sliced plate's moves, before they are asked for: `{ source: "gcode" \| "lines", moves, move_size, at_once, layers { first, z, height }, features, filaments, counts { travel, line, wipe, retract, unretract, seam, tool_change }, box, plate, run, gcode_lines }` (`gcode_lines`: how many lines the G-code has, 0 without one) |
+| `gcode_lines` | `project?`, `plate?`, `from` (a line, from 1), `count` (at most 2048) | `{ total, from, lines: [text] }`: the G-code's lines as the G-code window shows them (no new line; over 55 characters cut to 52 and "...") |
+| `layer_codes` | `project?`, `plate?` | what is set at the plate's layers and what the slider offers there: `{ project, plate, items: [{ print_z, kind (pause, custom, template, filament, color, unknown), extruder, color, extra }], pause, template (the printer's `machine_pause_gcode` and `template_custom_gcode`, as text), colours (each filament's), change_filament (null with one filament, else whether it can be picked), sequential }` |
+| `layer_code_set` | `project?`, `plate?`, `print_z` (a layer's top, as `toolpath` gives it), `kind` (`pause`, `custom` with `extra`, `template`, `filament` with `extruder`) | as `layer_codes`, and `detail` (as `project`). An item added or changed as the reference's slider does it; the project unsaved; the plate's slice let go. Refused, nothing changed: a layer the slice has none at, a pause or a template where something is set, custom G-code with no text, a template the printer has none of, a filament change not offered, a plate printed by object |
+| `layer_code_delete` | `project?`, `plate?`, `print_z` | as `layer_code_set`; an error when nothing is set there |
 | `scene_mesh` (bytes) | `project?`, `mesh` (its number in `scene`) or `object` (its place in the list) | an object's mesh, `EDGM`: 24 bytes of header, vertices (`f32` × 3), triangles (`u32` × 3), a mark byte for each triangle when they differ |
 | `bed_model` (bytes) | `project?` | the vendor's model of the printer's bed, as `scene_mesh` |
 | `bed_texture` (bytes) | `project?` | the vendor's picture of the bed: the SVG or PNG file as it is |
 | `toolpath_moves` (bytes) | `project?`, `plate?`, `from`, `count` | a stretch of moves, `EDGT`: 24 bytes of header, then 32 bytes a move (where it ends, speed, height, width, turn, temperature, layer, what it is, feature, filament, fan) |
+| `toolpath_lines` (bytes) | `project?`, `plate?`, `from`, `count` | the line of the G-code each of a stretch of moves was read from, `EDGL`: 24 bytes of header as `toolpath_moves`', then a `u32` a move (from 1) |
 
 Replaced by these: `open` (now `project_open` and `project`), and the model,
 plate and presets that `slice` used to take with each call (now the project's,
@@ -629,7 +638,8 @@ Read from `GCodeViewer.cpp/.hpp`, `LibVGCode/LibVGCodeWrapper.cpp`,
 | The position window: "X", "Y", "Z" in the axes' colours, "Speed: " and what the view shows ("Height: ", "Width: ", "Flow: ", "Fan: ", "Temperature: ", "Tool: "); unfolded, a table of everything about the move | l.393–791 | **added**: the two lines. **not yet**: the table |
 | The objects under the print, seen through (0.2), in their filaments' colours | `load_shells` l.2752, `render_shells` l.3269 | **added**. Until a plate is sliced they are all that is shown of it |
 | Only the plate shown is drawn, where it stands among the others; the axes move to it | GLCanvas3D.cpp l.3854, 3DBed.cpp `set_axes_mode` | **added**. **differs**: the camera goes with the plate, so going to another plate in Preview shows it where the last one was |
-| The G-code window [C]; "Compare slices (A/B)"; ticks on the layers slider (pause, custom G-code, filament change) | l.877, IMSlider.cpp l.1300, l.1512 | **not yet** (section 3) |
+| The G-code window [C]; ticks on the layers slider (pause, custom G-code, template, filament change) | l.877, IMSlider.cpp l.1512 | **added** (section 3) |
+| "Compare slices (A/B)" | IMSlider.cpp l.1300 | **not yet** (section 3) |
 
 ## 11. How meshes and moves reach the page
 
@@ -654,6 +664,19 @@ bytes, little-endian, in layouts written out byte for byte in
   moves, 8 MB), 32 bytes a move, and go to the graphics card as they are: the
   page reads none of them number by number. `toolpath.run` says which slice
   they are of. The moves of the last three plates looked at stay on the card.
+- **The G-code window holds no file.** Each move's line of the G-code is
+  read with the moves, once a slice (`Toolpath::lines`), and the session
+  keeps where each line of the file ends; the page asks for the moves'
+  lines once a print, a stretch at a time (`toolpath_lines`, 4 bytes a
+  move: 0.7 MB for the 180 473 moves of `mcbrim_test.3mf`'s plate 1, in
+  about 50 ms), and only when the window is on. The text comes as JSON in
+  blocks of 256 lines (`gcode_lines`, about 20 ms each through `--serve`
+  with a debug build) as they come into sight: two blocks at most on
+  their way at once, so a slider dragged fast asks only for what is then
+  in sight, the next block asked for while it is quiet, the last 48
+  blocks kept. The window's rows are made once and filled again; drawing
+  the window with the scene, for a move anywhere on that plate, took
+  1.3 ms (median of 300, 4.9 ms at most) in the app's browser pane.
 - **Nothing is rebuilt to change what is seen**: the layers shown and the
   moves slider are a range of moves; the view type, the colour range and what
   is hidden are numbers given to the shader.
@@ -1410,7 +1433,7 @@ entry, in a fixed order:
 | `Metadata/project_settings.config` | the settings, below |
 | `Metadata/slice_info.config` | written afresh: the header alone, as the reference writes a project saved unsliced |
 | `Metadata/layer_heights_profile.txt` (variable layer height), `layer_config_ranges.xml` (height ranges and their settings), `brim_ear_points.txt`, `cut_information.xml` (cut connectors) | kept, each object's line or block written under its place in the list as it stands, so they follow an object when one before it is deleted; a clone carries its original's, as the reference's clone does. A cut connector names its part by the part's place among the object's parts, which is written as it now stands (a part before it deleted, one added after it); once the connector's part itself is deleted or split, the object's cut information is not written, and that is asked about first |
-| `Metadata/custom_gcode_per_layer.xml` (pauses, colour changes, custom G-code at layers) | kept, each plate's under its number as it stands |
+| `Metadata/custom_gcode_per_layer.xml` (pauses, custom G-code, templates, filament changes at layers) | read (`edge_3mf::CustomGcode`, by plate, plate 1's for a file without plates as the reference reads it) and written afresh in the reference's layout: Boost's XML with a new line between tags, `top_z` to 17 digits, values escaped as Boost escapes them (new lines kept), a plate with no items still written when it has an entry, an undefined mode written `MultiExtruder`; the pressure advance pattern's file is written back to the byte. Each plate's go with it (deleting a plate before it renumbers them with it). Edited from the slider (section 3). A file laid out otherwise (PrusaSlicer's `custom_gcodes_per_print_z`), which the reference does not read, is kept as it was while nothing is set here |
 | `Metadata/plate_<n>.png`, `_small`, `plate_no_light_<n>`, `top_<n>`, `pick_<n>` | kept for each plate while it is as it was read (`PlateStamp`: what is on it and where, its filaments and first-layer order), under its number now; a plate that has changed is saved without pictures, which would show it as it was. **not yet**: drawing new ones |
 | `Metadata/process_settings_<n>.config`, `filament_settings_<n>.config`, `machine_settings_<n>.config` (presets the file carries) | kept while the project is saved with its file's own settings; with presets chosen here they are not, and that is asked about first |
 | `Metadata/cut_recipe.xml` and its meshes, `edgeslicer_height_patterns.json`, `Metadata/showcase/` | not read here and kept by each object's place in the list: kept as they were while every object of the file is at its place; once one is deleted they are not kept, and that is asked about first |
@@ -1567,6 +1590,26 @@ save` lists the same and writes only with `--accept-losses`.
   changes the filament used as it does here. A file added at a place
   partly off the bed is refused by both slicers alike.
 
+- What is set at layers (tenth pass). `crates/edge-3mf`: the pressure
+  advance pattern's file written back to the byte, and a pause added to
+  another plate written in the reference's layout and read back.
+  `crates/edge-engine/tests/save.rs`: a pause and a custom line set on
+  `twopart_groups.3mf` are written at their layers, saved, opened again
+  and sliced to the same G-code, and stay with their plate when one
+  before it is deleted. `src/api/ticks/tests.rs`: each edit through the
+  calls, the project unsaved and the plate's slice let go, the G-code
+  exported with them, the menu's refusals, undo and redo leaving them,
+  saved and opened in another session. In the served page on a 20 mm cube
+  (U1, two filaments, the plate in filament 1): "Add Pause" at layer 10,
+  "Add Custom G-code" at layer 20 (typed in the dialog, then "Edit Custom
+  G-code"), "Change Filament" › "Filament 2" at layer 30, each sliced
+  again at once; `;PAUSE_PRINT` and `M600` seen in the G-code window at
+  layer 10 and in the exported file; "Delete Pause" from the tick's
+  button; saved, closed, opened again with the custom line and the
+  filament change. The C++ slicer given the saved file writes the pause,
+  the custom lines and the change to filament 2 at the same layers as
+  this engine.
+
 ### Not yet
 
 - Drawing a plate's pictures, and the project's cover.
@@ -1600,3 +1643,21 @@ save` lists the same and writes only with `--accept-losses`.
   builds a header line into `out` that is never used.
 - `bbs_3mf.cpp` l.8039: the cover's `rel-5` line is written without the
   space the others have (wording only).
+- `Model::plates_custom_gcodes` is keyed by a plate's index and nothing
+  renumbers it when a plate is deleted (`PartPlateList::delete_plate`;
+  the only writers are Plater.cpp l.13536, l.22649 and the importer):
+  deleting plate 1 leaves plate 2's pauses keyed to index 1, so they are
+  now plate 1's no longer and land on the plate that took index 1 next.
+  Here they go with their plate.
+- ToolOrdering.cpp l.2294–2297 (`assign_custom_gcodes`): every
+  `ToolChange` item is passed over by the loop that finds a layer's item,
+  so `tool_changes_as_color_changes` (l.2285, used l.2319) is never acted on: a
+  filament change on a printer of one filament does nothing, and says
+  nothing. Here the same is done and said in a note.
+- GCode.cpp l.6900–6928: what a colour change (`M600`, `color_change_gcode`)
+  writes is behind `#if 0`, so a colour change read from a project is
+  written as an empty `;CUSTOM_GCODE` block. Here the same is written,
+  with a note.
+- GCode.cpp l.2689–2697: the custom G-code set at layers is not checked
+  for reserved tags (`validate_custom_gcode`), though the reference's
+  G-code viewer and estimator read its own tags back from the file.

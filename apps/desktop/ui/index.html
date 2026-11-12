@@ -266,6 +266,19 @@
   </form>
 </dialog>
 
+<!-- "Add Custom G-code" / "Edit Custom G-code" on the layers slider (IMSlider.cpp `render_input_custom_gcode`). -->
+<dialog id="custom-gcode" aria-labelledby="custom-gcode-title">
+  <form method="dialog">
+    <h2 id="custom-gcode-title">Custom G-code</h2>
+    <label for="custom-gcode-text">Enter Custom G-code used on current layer:</label>
+    <textarea id="custom-gcode-text" class="code" rows="6" spellcheck="false" autocomplete="off"></textarea>
+    <div class="row end">
+      <button type="submit" value="ok" id="custom-gcode-ok" class="primary">OK</button>
+      <button type="submit" value="cancel" formnovalidate>Cancel</button>
+    </div>
+  </form>
+</dialog>
+
 <dialog id="confirm">
   <form method="dialog">
     <h2 id="confirm-title"></h2>

@@ -34,7 +34,7 @@ mod unfollowed;
 use std::{error::Error, fmt};
 
 pub use clock::timestamp;
-pub use edge_3mf::PartKind;
+pub use edge_3mf::{CustomGcode, CustomItem, CustomKind, CustomMode, PartKind};
 pub use edge_mesh::Transform;
 pub use followed::{Followed, followed, followed_in, settled};
 pub use job::{BedType, Chosen, Job, Overrides, Sourced, prepare, prepare_noted};
