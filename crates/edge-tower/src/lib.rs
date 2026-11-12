@@ -56,6 +56,15 @@ const WIDTH_TO_NOZZLE: f64 = 1.25;
 /// nozzle comes in (WipeTower2.cpp `generate_support_rib_wall`).
 const GAP_HALF: f64 = 2.5;
 
+/// How long a line a nozzle coming in lays before it irons the tower,
+/// in mm, and the speeds it irons at, in mm/s: 600 mm/min back over that
+/// line and round the spiral, 240 forward again (`toolchange_Wipe`,
+/// `flat_iron_speed`).
+const IRON_LENGTH: f64 = 3.0;
+const IRON_BACK_SPEED: f64 = 10.0;
+const IRON_SLOW_SPEED: f64 = 4.0;
+const IRON_SPEED: f64 = 10.0;
+
 /// A rib's corners, and where it leaves the tower's sides, are rounded to
 /// arcs of this many mm (WipeTower2.cpp `rounding_polygon`), each drawn
 /// in this many pieces (`arc_fit_size`).
@@ -168,6 +177,9 @@ pub struct TowerSettings {
     /// The print's sparse infill speed, which the purge is held to as well
     /// (`sparse_infill_speed`), in mm/s.
     pub infill_speed: f64,
+    /// How much of the tower each filament irons flat as its nozzle comes
+    /// in, in mm² (`filament_tower_ironing_area`).
+    pub iron_areas: Vec<f64>,
     /// Settings present in the input that are not honoured, each with what
     /// is done instead.
     pub unsupported: Vec<String>,
@@ -180,6 +192,8 @@ pub struct Change {
     pub ram: Option<Ramming>,
     /// What the new filament lays down, in mm³.
     pub volume: f64,
+    /// The new filament, counting from 0.
+    pub filament: usize,
 }
 
 impl Default for TowerSettings {
@@ -211,6 +225,7 @@ impl Default for TowerSettings {
             first_layer_speed: 30.0,
             max_purge_speed: 90.0,
             infill_speed: 100.0,
+            iron_areas: Vec::new(),
             unsupported: Vec::new(),
         }
     }
@@ -251,11 +266,6 @@ impl TowerSettings {
         let mut unsupported = Vec::new();
         if enabled {
             for (key, plain, instead) in [
-                (
-                    "wipe_tower_wall_gap",
-                    "0",
-                    "the wall is left open, but the nozzle is not wiped flat on the tower as it comes in",
-                ),
                 (
                     "wipe_tower_stagger_toolchange_start",
                     "0",
@@ -452,6 +462,10 @@ impl TowerSettings {
             infill_speed: Some(first_of("sparse_infill_speed", defaults.infill_speed)?)
                 .filter(|speed| *speed > 0.0)
                 .unwrap_or(80.0),
+            iron_areas: list("filament_tower_ironing_area")?
+                .into_iter()
+                .map(|area| area.unwrap_or(4.0))
+                .collect(),
             unsupported,
         })
     }
@@ -656,6 +670,14 @@ impl Wipe {
     fn lay(&mut self, to: Point2, speed: f64) {
         if to != self.at() {
             self.strokes.push(TowerStroke::Lay(to, speed));
+        }
+    }
+
+    /// A move that goes nowhere is left out, as the reference's writer
+    /// leaves it out.
+    fn go(&mut self, to: Point2, speed: Option<f64>) {
+        if to != self.at() {
+            self.strokes.push(TowerStroke::Move(to, speed));
         }
     }
 
@@ -1018,6 +1040,7 @@ pub fn plan(
                 .map(|ram| Change {
                     ram: *ram,
                     volume: settings.prime_volume,
+                    filament: 0,
                 })
                 .collect()
         })
@@ -1122,6 +1145,10 @@ pub fn plan_changes(
         let mut used = 0.0;
         // A block's rows lay `wipe_tower_extra_flow` times a tower line.
         let wipe_flow = flow.with_spacing(flow.spacing * settings.extra_flow)?;
+        // Where the wall is left open, the nozzle coming in irons the
+        // tower flat first (WipeTower2.cpp `toolchange_Wipe`, with
+        // `m_use_gap_wall`; not in WipeTower.cpp's).
+        let iron = settings.wall_gap && !settings.bambu_tower;
         // Where each new nozzle comes in: which side, and how far back.
         let mut ways_in: Vec<(bool, f64)> = Vec::with_capacity(changes[layer].len());
         for change in &changes[layer] {
@@ -1242,6 +1269,46 @@ pub fn plan_changes(
                 } else {
                     left + line / 2.0
                 };
+                if row_index == 0 && iron {
+                    // The nozzle that has just come in through the gap in
+                    // the wall lays a little, is pulled back and irons the
+                    // tower flat round where it is, then lays the row.
+                    let toward = if rightward { 1.0 } else { -1.0 };
+                    let edge = if rightward { right } else { left };
+                    let length = IRON_LENGTH.min((edge - x).abs());
+                    x += toward * length;
+                    wipe.lay(at(x, y), speed);
+                    wipe.strokes.push(TowerStroke::Retract);
+                    x -= toward * 1.5 * length;
+                    wipe.go(at(x, y), Some(IRON_BACK_SPEED));
+                    x += toward * 0.5 * length;
+                    wipe.go(at(x, y), Some(IRON_SLOW_SPEED));
+                    let area = (settings.iron_areas.get(change.filament))
+                        .or(settings.iron_areas.last())
+                        .copied()
+                        .unwrap_or(4.0);
+                    // A square spiral out from where the nozzle is, a
+                    // line further out each turn (`spiral_flat_ironing`).
+                    let turns = ((area.max(0.0) as f32).sqrt() / line as f32 / 2.0).ceil() as usize;
+                    let (mut low, mut high) = ((x - line, y - line), (x + line, y + line));
+                    let mut at_y = y;
+                    for _ in 0..turns {
+                        for (to_x, to_y) in [
+                            (high.0, at_y),
+                            (high.0, high.1),
+                            (low.0, high.1),
+                            (low.0, low.1),
+                        ] {
+                            at_y = to_y;
+                            wipe.go(at(to_x, to_y), Some(IRON_SPEED));
+                        }
+                        high = (high.0 + line, high.1 + line);
+                        low = (low.0 - line, low.1 - line);
+                    }
+                    x += toward * length;
+                    wipe.go(at(x, y), Some(speed));
+                    wipe.strokes.push(TowerStroke::Unretract);
+                }
                 x = end;
                 wipe.lay(at(x, y), speed);
                 if y + 1e-4 > full - 0.5 * row {
@@ -1492,6 +1559,75 @@ mod tests {
             panic!("{:?}", wipe.strokes[0]);
         };
         assert_eq!((speed * 60.0).round(), (0.33f32 * 1800.0).round() as f64);
+    }
+
+    #[test]
+    fn a_nozzle_coming_in_irons_the_tower_flat() {
+        let settings = on();
+        let tower = plan(&counts(&[0, 1]), &[0.2; 2], &settings).unwrap();
+        let change = &tower.layers[1].changes[0];
+        let wipe = change.wipe.as_ref().unwrap();
+        let x = |point: &Point2| unscaled(point.x);
+        let start = x(&wipe.start);
+        // 3 mm laid towards the far side, the filament pulled back, back
+        // 4.5 mm at 600 mm/min and on 1.5 mm at 240, a square spiral of
+        // two turns a line apart round where it is at 600 mm/min, then on
+        // to 3 mm past it, the filament pushed on and the row laid.
+        let moves: Vec<(String, f64, f64)> = (wipe.strokes.iter())
+            .map(|stroke| match stroke {
+                TowerStroke::Lay(to, speed) => ("lay".into(), x(to) - start, *speed * 60.0),
+                TowerStroke::Move(to, speed) => {
+                    ("move".into(), x(to) - start, speed.unwrap_or(0.0) * 60.0)
+                }
+                TowerStroke::Retract => ("retract".into(), 0.0, 0.0),
+                TowerStroke::Unretract => ("unretract".into(), 0.0, 0.0),
+            })
+            .take(15)
+            .collect();
+        let kinds: Vec<&str> = moves.iter().map(|(kind, ..)| kind.as_str()).collect();
+        assert_eq!(
+            kinds,
+            [
+                "lay",
+                "retract",
+                "move",
+                "move",
+                "move",
+                "move",
+                "move",
+                "move",
+                "move",
+                "move",
+                "move",
+                "move",
+                "move",
+                "unretract",
+                "lay"
+            ]
+        );
+        let near = |a: f64, b: f64| (a - b).abs() < 1e-6;
+        assert!(near(moves[0].1, 3.0) && near(moves[0].2.round(), 1782.0));
+        assert!(near(moves[2].1, -1.5) && near(moves[2].2, 600.0));
+        assert!(near(moves[3].1, 0.0) && near(moves[3].2, 240.0));
+        assert!(near(moves[4].1, 0.5) && near(moves[11].1, -1.0));
+        assert!(moves[4..12].iter().all(|(_, _, feed)| near(*feed, 600.0)));
+        assert!(near(moves[12].1, 3.0) && near(moves[12].2.round(), 1782.0));
+        // What it irons is no part of what it lays, which is one line
+        // for the first 3 mm and one for the rows.
+        assert_eq!(change.lines.len(), 2);
+        assert!(near(change.lines[0].length_mm(), 3.0));
+        // Without the gap in the wall there is no ironing.
+        let shut = TowerSettings {
+            wall_gap: false,
+            ..on()
+        };
+        let tower = plan(&counts(&[0, 1]), &[0.2; 2], &shut).unwrap();
+        let strokes = &tower.layers[1].changes[0].wipe.as_ref().unwrap().strokes;
+        assert!(
+            strokes
+                .iter()
+                .all(|stroke| matches!(stroke, TowerStroke::Lay(..)))
+        );
     }
 
     /// The wall on a layer of a tower with no brim above the bed: the
@@ -2083,15 +2219,14 @@ mod tests {
             ]
         );
         assert!(!rammed.wall_gap && rammed.ram_width == 4.0);
-        // A wall of a kind not made is said, and so is what goes with
-        // the gap and is not done.
+        // A wall of a kind not made is said.
         let cone = read(
             r#"{"enable_prime_tower": "1", "wipe_tower_wall_type": "cone", "wipe_tower_wall_gap": "1",
                 "single_extruder_multi_material": "0"}"#,
             0,
         );
         assert_eq!(cone.wall, Wall::Box);
-        assert_eq!(cone.unsupported.len(), 2);
+        assert_eq!(cone.unsupported.len(), 1);
         assert!(
             read(r#"{"wipe_tower_wall_type": "rib"}"#, 0)
                 .unsupported
@@ -2218,7 +2353,11 @@ mod tests {
             brim_chamfer: false,
             ..on()
         };
-        let change = |volume: f64| Change { ram: None, volume };
+        let change = |volume: f64| Change {
+            ram: None,
+            volume,
+            filament: 0,
+        };
         // Two changes on a layer, one flushing three times what the other does.
         let tower = plan_changes(
             &[vec![], vec![change(45.0), change(135.0)]],
