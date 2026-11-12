@@ -99,6 +99,10 @@
       };
       this.track.addEventListener('pointerdown', (event) => {
         if (event.button !== 0 || !this.count) return;
+        // A drag that leaves the track would otherwise select the page's
+        // text from here on, painting the legend in the selection's colour.
+        event.preventDefault();
+        this.track.focus({ preventScroll: true });
         dragging = true;
         this.track.setPointerCapture(event.pointerId);
         const layer = at(event);
@@ -249,6 +253,9 @@
       };
       this.track.addEventListener('pointerdown', (event) => {
         if (event.button !== 0) return;
+        // As for the layers slider: no text selection from a drag.
+        event.preventDefault();
+        this.track.focus({ preventScroll: true });
         dragging = true;
         this.track.setPointerCapture(event.pointerId);
         this.move(at(event));
