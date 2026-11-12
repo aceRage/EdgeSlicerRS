@@ -13,14 +13,15 @@
 //!   could be in, areas that meet merged (create_layer_pathing);
 //! - `nodes`: a centre picked in each area from the bed up
 //!   (create_nodes_from_area);
-//! - `draw`: the branches drawn on their layers;
+//! - `branch`: the branches smoothed, built as tubes and sliced
+//!   (organic_draw_branches);
 //! - this module: dense layers at the top and foot
 //!   (generate_interface_layers), the first layer spread out
 //!   (generate_raft_base) and the lines (generate_support_toolpaths,
 //!   with `paths` for a branch's walls).
 
+mod branch;
 mod config;
-mod draw;
 mod element;
 mod geometry;
 mod nodes;
@@ -86,7 +87,7 @@ pub(crate) fn build(job: &Job<'_>) -> Result<Vec<Vec<ExtrusionPath>>, SupportErr
     elements.resize(max_layer, Vec::new());
     pathing::create_layer_pathing(&volumes, &config, &mut elements)?;
     nodes::create_nodes_from_area(&volumes, &config, &mut elements)?;
-    let drawn = draw::draw_circles(&volumes, &config, &elements, job.bed.as_ref())?;
+    let drawn = branch::draw(job, &volumes, &config, &mut elements)?;
     let layers = finish(job, &config, drawn, tips.roofs)?;
     let mut out = toolpaths(job, &config, &layers)?;
     out.resize(count, Vec::new());
@@ -98,7 +99,7 @@ pub(crate) fn build(job: &Job<'_>) -> Result<Vec<Vec<ExtrusionPath>>, SupportErr
 fn finish(
     job: &Job<'_>,
     config: &TreeConfig,
-    drawn: draw::Drawn,
+    drawn: branch::Drawn,
     roofs: tips::Roofs,
 ) -> Result<Layers, SupportError> {
     let count = drawn

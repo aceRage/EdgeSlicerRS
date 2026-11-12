@@ -467,6 +467,8 @@ dependencies = [
  "edge-extrusion",
  "edge-geom",
  "edge-infill",
+ "edge-mesh",
+ "edge-slice",
  "rayon",
  "thiserror",
 ]

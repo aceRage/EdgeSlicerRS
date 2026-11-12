@@ -64,6 +64,21 @@ pub fn union_even_odd<'a>(
     Ok(regions_of(&tree))
 }
 
+/// The regions with a positive winding number: what counter-clockwise
+/// contours cover more often than clockwise ones. Slicing a closed mesh
+/// whose surface folds through itself, as a tube bent sharply does, gives
+/// contours whose folded parts wind the wrong way; this keeps only what
+/// is inside (the reference's `MeshSlicingParams::SlicingMode::Positive`).
+pub fn union_positive<'a>(
+    polygons: impl IntoIterator<Item = &'a Polygon>,
+) -> Result<Vec<ExPolygon>, ClipError> {
+    let mut clipper = Clipper64::new();
+    clipper.set_preserve_collinear(false);
+    clipper.add_subject(&paths(polygons.into_iter()));
+    let (tree, _open) = clipper.execute_tree(ClipType::Union, FillRule::Positive)?;
+    Ok(regions_of(&tree))
+}
+
 /// Unites regions that may overlap or touch.
 pub fn union_ex(regions: &[ExPolygon]) -> Result<Vec<ExPolygon>, ClipError> {
     boolean(ClipType::Union, rings(regions), std::iter::empty())

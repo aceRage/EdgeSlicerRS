@@ -11,6 +11,8 @@ edge-config.workspace = true
 edge-extrusion.workspace = true
 edge-geom.workspace = true
 edge-infill.workspace = true
+edge-mesh.workspace = true
+edge-slice.workspace = true
 rayon.workspace = true
 thiserror.workspace = true
 

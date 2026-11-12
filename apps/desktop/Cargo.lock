@@ -1014,6 +1014,8 @@ dependencies = [
  "edge-extrusion",
  "edge-geom",
  "edge-infill",
+ "edge-mesh",
+ "edge-slice",
  "rayon",
  "thiserror 2.0.21",
 ]
