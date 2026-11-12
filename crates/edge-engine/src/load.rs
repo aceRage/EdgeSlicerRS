@@ -103,7 +103,7 @@ fn filaments_on(project: &Project, plate: Option<usize>) -> Vec<usize> {
     used
 }
 
-/// Reads an STL (binary or ASCII) or a 3MF project. `plate` is the number
+/// Reads an STL (binary or ASCII), an OBJ (its geometry) or a 3MF project. `plate` is the number
 /// of the plate to take from a project; left out, it is plate 1 when the
 /// project has plates.
 pub fn open(path: &Path, plate: Option<u32>) -> Result<Opened, Failure> {
@@ -115,7 +115,14 @@ pub fn open(path: &Path, plate: Option<u32>) -> Result<Opened, Failure> {
         if plate.is_some() {
             return Err("--plate only applies to 3MF files".into());
         }
-        let solid = edge_mesh::stl::load(path).map_err(|e| named(&e))?;
+        let is_obj = path
+            .extension()
+            .is_some_and(|ext| ext.eq_ignore_ascii_case("obj"));
+        let solid = if is_obj {
+            edge_mesh::obj::load(path).map_err(|e| named(&e))?
+        } else {
+            edge_mesh::stl::load(path).map_err(|e| named(&e))?
+        };
         return Ok(Opened {
             path: path.to_owned(),
             held: Held::Model(solid),

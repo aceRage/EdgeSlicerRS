@@ -12,23 +12,33 @@
 
 mod api;
 mod hosts;
+mod menubar;
 mod serve;
 
 use std::sync::Arc;
 
 use api::Session;
 use serde_json::{Value, json};
-use tauri::Emitter;
+use tauri::{Emitter, Manager};
 use tauri_plugin_dialog::DialogExt;
 
-/// Everything the page asks of the engine.
+/// Everything the page asks of the engine. The menu's description
+/// (`menu`) is also made the window's menu bar (menubar.rs).
 #[tauri::command(async)]
 fn call(
+    app: tauri::AppHandle,
     session: tauri::State<'_, Arc<Session>>,
+    bar: tauri::State<'_, menubar::Bar>,
     name: String,
     args: Value,
 ) -> Result<Value, String> {
-    session.call(&name, &args)
+    let answer = session.call(&name, &args)?;
+    if name == "menu"
+        && let Err(error) = bar.apply(&app, &answer)
+    {
+        eprintln!("the menu bar could not be made: {error}");
+    }
+    Ok(answer)
 }
 
 /// The same for what is answered in bytes (a mesh, a print's moves): the
@@ -51,9 +61,9 @@ fn pick(app: tauri::AppHandle, what: String, suggested: Option<String>) -> Optio
     let dialog = app.dialog().file();
     let picked = match what.as_str() {
         "model" => dialog
-            .add_filter("Models", &["3mf", "stl"])
+            .add_filter("Models", &["3mf", "stl", "obj"])
             .blocking_pick_file(),
-        "folder" => dialog.blocking_pick_folder(),
+        "folder" | "stl_folder" => dialog.blocking_pick_folder(),
         "gcode" => dialog
             .add_filter("G-code", &["gcode"])
             .set_file_name(suggested.unwrap_or_else(|| "print.gcode".into()))
@@ -66,6 +76,22 @@ fn pick(app: tauri::AppHandle, what: String, suggested: Option<String>) -> Optio
             let mut dialog = dialog
                 .set_title("Save file as:")
                 .add_filter("3MF files", &["3mf"]);
+            if let Some(dir) = suggested.parent().filter(|dir| dir.is_dir()) {
+                dialog = dialog.set_directory(dir);
+            }
+            if let Some(name) = suggested.file_name() {
+                dialog = dialog.set_file_name(name.to_string_lossy());
+            }
+            dialog.blocking_save_file()
+        }
+        // "Export all objects as one STL..." (Plater.cpp `get_export_file`,
+        // FT_STL); the system's dialog asks before a file is replaced.
+        "stl" => {
+            let suggested =
+                std::path::PathBuf::from(suggested.unwrap_or_else(|| "Untitled.stl".into()));
+            let mut dialog = dialog
+                .set_title("Export STL file:")
+                .add_filter("STL files", &["stl"]);
             if let Some(dir) = suggested.parent().filter(|dir| dir.is_dir()) {
                 dialog = dialog.set_directory(dir);
             }
@@ -109,9 +135,23 @@ fn main() {
         return;
     }
     let asking = session.clone();
+    let first_menu = session.clone();
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
         .manage(session)
+        .manage(menubar::Bar::default())
+        // The menu bar is there before the page is: as the session
+        // describes it until the page says how it stands.
+        .setup(move |app| {
+            if let Ok(tree) = first_menu.call("menu", &json!({ "window": true })) {
+                app.state::<menubar::Bar>().apply(app.handle(), &tree)?;
+            }
+            Ok(())
+        })
+        // An entry chosen: its id to the page, which does what it stands for.
+        .on_menu_event(|app, event| {
+            let _ = app.emit("menu", event.id().0.clone());
+        })
         // With a project unsaved, the window is not closed but the page
         // asks first (save.js), and closes it itself.
         .on_window_event(move |window, event| {

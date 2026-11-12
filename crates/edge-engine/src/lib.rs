@@ -13,6 +13,7 @@
 
 mod clock;
 mod contour;
+pub mod export;
 pub mod flush;
 mod followed;
 mod holes;

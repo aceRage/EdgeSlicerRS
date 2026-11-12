@@ -53,6 +53,10 @@ pub struct Data {
     pub last: Option<(String, String)>,
     /// What was last used with each printer preset, by its name.
     pub printers: BTreeMap<String, Remembered>,
+    /// The projects last opened or saved, the latest first: the
+    /// reference's `recent_projects` (AppConfig.cpp
+    /// `set_recent_projects`), kept the same way, by number from "01".
+    pub recent_projects: Vec<String>,
     /// What the file held that this build does not know: written back
     /// as it was.
     other: Map<String, Value>,
@@ -164,7 +168,28 @@ impl Data {
                 },
             );
         }
-        for known in ["version", "app", "models", "presets", "printers"] {
+        // By number, the latest first. The reference reads them in the
+        // order of their keys as text, so "100" comes before "11"; here
+        // they are read as numbers.
+        if let Some(recent) = root.get("recent_projects").and_then(Value::as_object) {
+            let mut numbered: Vec<(u64, String)> = recent
+                .iter()
+                .filter_map(|(at, path)| {
+                    let path = path.as_str().filter(|path| !path.is_empty())?;
+                    Some((at.parse().ok()?, path.to_owned()))
+                })
+                .collect();
+            numbered.sort_by_key(|(at, _)| *at);
+            data.recent_projects = numbered.into_iter().map(|(_, path)| path).collect();
+        }
+        for known in [
+            "version",
+            "app",
+            "models",
+            "presets",
+            "printers",
+            "recent_projects",
+        ] {
             root.remove(known);
         }
         data.other = root;
@@ -210,6 +235,13 @@ impl Data {
             })
             .collect();
         root.insert("printers".into(), json!(printers));
+        let recent: Map<String, Value> = self
+            .recent_projects
+            .iter()
+            .enumerate()
+            .map(|(at, path)| (format!("{:02}", at + 1), json!(path)))
+            .collect();
+        root.insert("recent_projects".into(), Value::Object(recent));
         Value::Object(root)
     }
 }
@@ -346,6 +378,26 @@ mod tests {
             .map(|entry| entry.unwrap().file_name())
             .collect();
         assert_eq!(names, ["settings.json"]);
+    }
+
+    #[test]
+    fn recent_projects_are_kept_by_number_latest_first() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut store = Store::open(Some(dir.path().to_owned()));
+        let paths: Vec<String> = (1..=101).map(|n| format!("p{n}.3mf")).collect();
+        store
+            .change(|data| data.recent_projects = paths.clone())
+            .unwrap();
+        let written: Value = serde_json::from_str(
+            &std::fs::read_to_string(dir.path().join("settings.json")).unwrap(),
+        )
+        .unwrap();
+        // As the reference writes them: "01", "02", ...
+        assert_eq!(written["recent_projects"]["01"], "p1.3mf");
+        assert_eq!(written["recent_projects"]["100"], "p100.3mf");
+        // Read back as numbers: "100" does not come between "10" and "11".
+        let again = Store::open(Some(dir.path().to_owned()));
+        assert_eq!(again.data.recent_projects, paths);
     }
 
     #[test]
