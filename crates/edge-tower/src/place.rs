@@ -11,7 +11,7 @@
 //! Worked in single precision where the reference works in it.
 
 use edge_clip::ClipError;
-use edge_config::{ConfigError, Settings};
+use edge_config::{ConfigError, FloatOrPercent, Settings};
 use edge_geom::{ExPolygon, Point2, Polygon, convex_hull, scaled, unscaled};
 
 use crate::{TowerSettings, least_depth};
@@ -75,7 +75,15 @@ fn footprint(
     } as f32;
     let type1 = tower.bambu_tower;
     let width = tower.width as f32;
-    let spacing = (tower.extra_spacing * 1.0) as f32;
+    // Type1 spaces its rows by Bambu Studio's prime_tower_infill_gap where
+    // the project gives one (WipeTowerEstimate.cpp; the tower itself, this
+    // fork's WipeTower.cpp, does not read it).
+    let spacing = match settings.float_or_percent("prime_tower_infill_gap")? {
+        Some(FloatOrPercent::Percent(gap) | FloatOrPercent::Value(gap)) if type1 => {
+            (gap / 100.0) as f32
+        }
+        _ => (tower.extra_spacing * 1.0) as f32,
+    };
     let nozzle = tower.nozzle_diameter as f32;
     let height = ground.height as f32;
     let rib = match tower.wall {
