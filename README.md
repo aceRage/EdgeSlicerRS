@@ -58,6 +58,7 @@ cargo run --release -p edge-cli -- preset Snapmaker process "0.20mm Standard @Sn
 # A model or project saved as a project file the reference opens as its own: a 3MF keeps its own
 # settings, an STL is saved without any; --vendor/--machine/--process/--filament save it with presets.
 # What the file holds that would not be kept is listed and nothing is written, unless --accept-losses.
+# --timings says how long each stage of a slice took (on stdout, never in the G-code).
 cargo run --release -p edge-cli -- save model.stl --out model.3mf --vendor Snapmaker --machine "Snapmaker U1 (0.4 nozzle)" \
   --process "0.20mm Standard @Snapmaker U1 (0.4 nozzle)" --filament "Snapmaker PLA @U1"
 ```
@@ -1519,6 +1520,21 @@ Results, 2026-11-10, Mac mini, reference build 2.4.9.0, best of 3:
 | `stabilizer_v1.3mf` (499 layers) | 0.87 s | 0.163 s | 0.85% apart | -43% (no supports) |
 | `twopart_groups.3mf` (60 layers) | 0.18 s | 0.010 s | under 0.01% apart | -2.7% |
 
+Time from loading to the G-code written, best of 5 on all 18 cores,
+2026-11-11, against the reference's own work as its log has it: the
+3DBenchy (`benchy_u1.3mf`) 0.63 s against 2.77 s; `mcbrim_test.3mf`
+plate 1 (16 layers, eight painted objects of 85,000 triangles, seven
+filaments, supports, a prime tower) 1.65 s against 2.66 s, plates 2
+and 3 0.57 s and 0.55 s against 1.31 s each. Plate 1 took 2.8 s before
+a pass for speed, which measures in its stages (`edge slice --timings`)
+the first island's offset of the layer above kept for the rest, travel
+inside the part asked of the cells it is sorted into, every filament's
+layers and every object's visibility worked out side by side, the
+triangles' corners kept in the leaves of the ray tree, and the seams'
+visibility measure made beside the slicing; none of it moves the
+G-code. On one thread plate 1 takes 15.2 s (16.7 s before): painting
+6 s, the visibility measure 3.4 s, finding where parts meet 1.2 s.
+
 By feature, in metres of extruded path, reference against this engine:
 
 | Project | Overhang wall | Internal bridge | Internal solid fill | Gap fill |
@@ -1588,8 +1604,9 @@ on the border between two parts, they are there only with the paint
 start above the bottom shell, where the bottom face's paint keeps the
 two sides different colours. And the reference fills narrow parts of
 the top surface with gap fill (405 mm against 310 mm for the inlays'
-tool on their top layer). The plate takes 0.9 s to slice, most of it the painting:
-eight objects of 85,000 triangles each.
+tool on their top layer). The plate takes 1.4 s to slice on 18 threads (0.7 s of it
+the painting: eight objects of 85,000 triangles each), and 1.65 s with
+its G-code.
 
 Top and bottom surfaces now come to the reference's length within 0.1%,
 at the same pitch and width, on the cube, the deck, the tower and the
