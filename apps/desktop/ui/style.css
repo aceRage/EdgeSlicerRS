@@ -82,6 +82,7 @@
   --control-m: 28px;
   --control-l: 32px;
   --bar-height: 40px;          /* the tab bar, and the strip's head beside it */
+  --menubar-height: 28px;      /* the menu bar, in a browser only (menu.css) */
 
   --time-fast: 90ms;
   --time: 140ms;

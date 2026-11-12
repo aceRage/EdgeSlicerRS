@@ -17,6 +17,10 @@
 Absolute	GUI/Gizmos/GizmoObjectManipulation.cpp:1561
 All non-solid parts (modifiers) were deleted	GUI/Plater.cpp:16185
 Apply All	GUI/Plater.cpp:3688
+Bambu Lab Printer Help...	GUI/MainFrame.cpp:3188
+Bring back filament presets that a profile update removed from printers they were made for	GUI/MainFrame.cpp:3119
+Check whether Windows Firewall blocks printer discovery, and fix its rules	GUI/MainFrame.cpp:3184
+Check Windows Firewall...	GUI/MainFrame.cpp:3183
 Clear all	GUI/CostsDialog.cpp:555
 Click a highlighted face to lay the object on it.	GUI/Gizmos/GLGizmoFlatten.cpp:422
 Click to collapse / expand	GUI/Plater.cpp:2395
@@ -25,10 +29,18 @@ Close project	GUI/ProjectStrip.cpp:590
 Collapse the project strip	GUI/ProjectStrip.cpp:1377
 Colour	GUI/Showcase/ShowcaseView.cpp:652
 Colours	GUI/FilamentColorDialog.cpp:1097
+Colours, fonts, corners and the title bar	GUI/MainFrame.cpp:3945
+Combined temperature and retraction stringing grid	GUI/MainFrame.cpp:4035
+Compare Slices	GUI/MainFrame.cpp:3903
+Compare the last two slices of this session	GUI/MainFrame.cpp:3906
+Compare two sliced results visually	GUI/MainFrame.cpp:3903
+Compare with Previous Slice	GUI/MainFrame.cpp:3906
 Connect to printer	GUI/Plater.cpp:2685
 Connection to ElegooLink is working correctly.	Utils/ElegooLink.cpp:382
 Connection to Moonraker works correctly.	Utils/MoonRaker.cpp:429
 Coordinate system used for transform actions.	GUI/Gizmos/GizmoObjectManipulation.cpp:911
+Cornering calibration	GUI/MainFrame.cpp:4053
+Costs	GUI/MainFrame.cpp:3949
 Could not connect to ElegooLink	Utils/ElegooLink.cpp:387
 Could not connect to Moonraker	Utils/MoonRaker.cpp:434
 Default width	GUI/ProjectStrip.cpp:1459
@@ -36,6 +48,14 @@ Delete this filament	GUI/GUI_Factories.cpp:2612
 Delete this file from the printer (Delete)	GUI/PrinterStoragePanel.cpp:245
 Drag to widen the project strip	GUI/ProjectStrip.cpp:1379
 Error code not found	Utils/ElegooLink.cpp:858
+Export && Open in Bambu Studio	GUI/MainFrame.cpp:3511
+Export a project Bambu Studio opens with its settings (settings Bambu Studio does not have are left out)	GUI/MainFrame.cpp:3508
+Export a project Bambu Studio opens with its settings, then launch Bambu Studio with it	GUI/MainFrame.cpp:3511
+Export application logs as ZIP file	GUI/MainFrame.cpp:3122
+Export as STEP	GUI/MainFrame.cpp:3501
+Export Bambu 3MF	GUI/MainFrame.cpp:3508
+Export Logs	GUI/MainFrame.cpp:3122
+Export the selected objects, or all objects on the current plate, as a STEP file of solids	GUI/MainFrame.cpp:3502
 Extrude	GUI/GCodeViewer.cpp:356
 Filament Management	GUI/Plater.cpp:2882
 Filament preset to apply to all filaments	GUI/Plater.cpp:3625
@@ -43,29 +63,54 @@ File/data transfer interrupted. Please check the printer and network, then try i
 Files on the printer	GUI/PrinterStoragePanel.cpp:212
 Fit in all view	GUI/MainFrame.cpp:3258
 Hue	GUI/Gizmos/GLGizmoTextureDisplacement.cpp:4081
+Import 3MF/STL/STEP/SVG/OBJ/AMF/GLB	GUI/MainFrame.cpp:3469
+Import Config from G-code	GUI/MainFrame.cpp:3486
+Ironing flow calibration	GUI/MainFrame.cpp:4093
 List the printer's files again (F5)	GUI/PrinterStoragePanel.cpp:199
+Load print/filament/printer settings embedded in a sliced G-code file	GUI/MainFrame.cpp:3486
+Migrate Filament Presets	GUI/MainFrame.cpp:3118
+Minimize	GUI/MainFrame.cpp:4272
+Mobile Hub	GUI/MainFrame.cpp:4117
 Modified	GUI/PrinterStoragePanel.cpp:221
 New project	GUI/LayerlingPanel.cpp:1266
+Next open project	GUI/KBShortcutsDialog.cpp:204
+Next Project	GUI/MainFrame.cpp:4275
 none	GUI/CostsDialog.cpp:505
 Noop	GUI/GCodeViewer.cpp:346
 Note: Moonraker version at least 1.1.0 is required.	Utils/MoonRaker.cpp:435
 Nozzles	GUI/Widgets/NozzleStrip.cpp:336
 Open project	GUI/ProjectStrip.cpp:140
+Open the Mobile Hub page in your browser (phone access, cameras, open windows)	GUI/MainFrame.cpp:4117
+PgDn	GUI/KBShortcutsDialog.cpp:204
+PgUp	GUI/KBShortcutsDialog.cpp:205
 Plate bed types reset	GUI/Plater.cpp:21453
 Precise Seam	libGCode/SeamPlacer.cpp:2074
+Previous open project	GUI/KBShortcutsDialog.cpp:205
+Previous Project	GUI/MainFrame.cpp:4276
 Printer page	GUI/PrinterWebView.cpp:120
+Realistic View	GUI/MainFrame.cpp:3872
+Recent projects	GUI/MainFrame.cpp:3418
 Relative	GUI/Gizmos/GizmoObjectManipulation.cpp:1560
+Render objects with Phong shading, and optionally ambient occlusion and cast shadows (Preferences > Graphics).	GUI/MainFrame.cpp:3873
 Save as...	GUI/ProjectStrip.cpp:1415
 Set all filaments to the selected preset	GUI/Plater.cpp:3690
 settings	GUI/Plater.cpp:2588
+Show 3Dconnexion Settings	GUI/MainFrame.cpp:3841
+Show Center of Mass	GUI/MainFrame.cpp:3884
+Show every object as a translucent, edge-weighted surface to see inside and behind parts.	GUI/MainFrame.cpp:3864
 Show names only	GUI/ProjectStrip.cpp:1456
+Show the center of mass of each plate, object, separate part and support in Prepare and Preview. Click a marker for its weight, volume and moment of inertia.	GUI/MainFrame.cpp:3885
 Show the project strip	GUI/ProjectStrip.cpp:1377
+Show the start page with recent projects on the Home tab	GUI/MainFrame.cpp:3438
 Show thumbnails	GUI/ProjectStrip.cpp:1455
+Start page	GUI/MainFrame.cpp:3438
 Start print timeout	Utils/ElegooLink.cpp:911
 Start printing this file on the printer (Enter)	GUI/PrinterStoragePanel.cpp:240
+Stringing (temp × retraction)	GUI/MainFrame.cpp:4035
 The file has been transferred, but some unknown errors occurred. Please check the device page for the file and try to start printing again.	Utils/ElegooLink.cpp:612
 The G-code files on the printer	GUI/PrinterWebView.cpp:125
 The printer's own page	GUI/PrinterWebView.cpp:121
+Themes	GUI/MainFrame.cpp:3945
 There are no G-code files on the printer.	GUI/PrinterStoragePanel.cpp:496
 These projects have unsaved changes. Save the ticked ones before closing?	GUI/ProjectStrip.cpp:693
 Too many open projects	GUI/ProjectStrip.cpp:457
@@ -73,7 +118,11 @@ Tool: 	GUI/GCodeViewer.cpp:467
 Unload filaments after print	libPrintConfig.cpp:2281
 Unsaved changes	GUI/ProjectStrip.cpp:752
 Unsaved projects	GUI/ProjectStrip.cpp:691
+What a Bambu Lab printer needs to show up and connect	GUI/MainFrame.cpp:3189
+Window	GUI/MainFrame.cpp:4321 (wxWidgets' own title of macOS's Window menu)
 World	GUI/Gizmos/GizmoObjectManipulation.cpp:849
+X-Ray	GUI/MainFrame.cpp:3864
+Your own filament prices and machine rates, over the presets' values	GUI/MainFrame.cpp:3949
 
 [own]
 # This app's own words on the static page, with no counterpart in the
@@ -118,7 +167,7 @@ Zoom to the objects [Z]
 # This app's own words in its scripts (ui/*.js), with no counterpart in
 # the C++, left as they are (not passed through t): shown in English in
 # every language. Where a value goes in, the source's template is given.
-Path of an STL or 3MF file on this machine
+Path of an STL, OBJ or 3MF file on this machine
 Path of the folder of vendor profiles
 Save the G-code as (a full path)
 Save the project as (a full path)
@@ -216,3 +265,42 @@ No setting matches.
 The project names no filament preset.
 The project names no printer.
 ${name} (the project's own settings)
+
+# The menu bar's entries that are not built: what each waits for
+# (src/api/menu.rs), shown as the entry's tooltip.
+not yet: 3D mice are not read
+not yet: Bambu Lab printers are not sent to
+not yet: STEP needs a CAD kernel, which the engine has not
+not yet: calibration models are not built
+not yet: centres of mass are not worked out
+not yet: folders are not shown in the system's file manager
+not yet: models are not read from a ZIP archive
+not yet: no Bambu Studio export
+not yet: no network test
+not yet: no prices or rates of your own are kept
+not yet: overhangs are not marked in the scene
+not yet: settings are not read from a G-code file
+not yet: slices are not compared
+not yet: the app follows the system's dark or light
+not yet: the app has one window
+not yet: the app keeps no logs
+not yet: the firewall is not checked
+not yet: the project file is written in the reference's own layout only (a model file for each object)
+not yet: the scene has no X-ray view
+not yet: the scene has one way of shading
+not yet: the sidebar's layout is not reset
+not yet: the sliced file (.gcode.3mf) is not written; Export G-code is
+not yet: there are no releases to check for
+not yet: there are no tips
+not yet: there is no Home tab
+not yet: there is no Mobile Hub
+not yet: waits for user presets
+# The menu bar in a browser (index.html, menu.js), and "About".
+Menu bar
+EdgeSlicerRS: a slicer for EdgeSlicer, written anew in Rust. It follows the C++ EdgeSlicer it is built beside, 2.4.9.0.
+Licence: AGPL-3.0.
+Export the STL as (a full path)
+Path of the folder to export the STL files to
+Path of the configs to import
+Saved ${answer.path} (${answer.triangles} triangles).
+Saved ${answer.files.length} STL files in ${dir}.

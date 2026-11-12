@@ -371,6 +371,13 @@ impl ModelCopy {
         self.local
     }
 
+    /// Takes the object's coordinates to the project's, in which each
+    /// plate stands where the reference's grid of plates puts it: what an
+    /// export of the model's objects places them by.
+    pub fn world(&self) -> Transform {
+        self.world
+    }
+
     /// The corners of its printed material in the coordinates of
     /// [`ModelCopy::transform`]; none when it has no printed material.
     pub fn reach(&self) -> Option<Reach> {
