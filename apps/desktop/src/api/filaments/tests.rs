@@ -411,3 +411,104 @@ fn a_colour_and_apply_all_are_steps_and_are_saved() {
     assert_eq!(texts(&shown["colours"])[1], "#000000");
     assert_eq!(texts(&shown["saved"]["filaments"]), [other.clone(), other]);
 }
+
+#[test]
+fn the_flushing_volumes_dialog_reads_recalculates_and_sets_in_one_step() {
+    let session = Arc::new(Session::new(None));
+    let dir = tempfile::tempdir().unwrap();
+    let id = open(&session, &reference(BARE));
+    choose_presets(&session, id);
+    filaments(&session, id, json!({ "op": "add", "colour": "#000000" }));
+    let shown = ask(&session, "flush_volumes", json!({ "project": id }));
+    assert_eq!(shown["count"], 2);
+    assert_eq!(texts(&shown["colours"]).len(), 2);
+    let matrix: Vec<f64> = shown["matrix"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|v| v.as_f64().unwrap())
+        .collect();
+    assert_eq!(matrix.len(), 4);
+    assert_eq!((matrix[0], matrix[3]), (0.0, 0.0));
+    assert!(matrix[1] > 0.0 && matrix[2] > 0.0);
+    // The multiplier a slice reads: the reference's default, here.
+    let multiplier = shown["multiplier"].as_f64().unwrap();
+    assert!(multiplier > 0.0 && multiplier <= 3.0);
+    assert_eq!(shown["max_multiplier"], 3.0);
+    assert_eq!(shown["typical_max"], 800);
+    // Re-calculate answers the volumes for the colours given, changing
+    // nothing.
+    let calc = ask(
+        &session,
+        "flush_calc",
+        json!({ "project": id, "colours": ["#F2754E", "#000000"] }),
+    );
+    assert_eq!(calc["matrix"], shown["matrix"]);
+    let white = ask(
+        &session,
+        "flush_calc",
+        json!({ "project": id, "colours": ["#000000", "#FFFFFF"] }),
+    );
+    assert!(white["matrix"][1].as_f64().unwrap() > white["matrix"][2].as_f64().unwrap());
+    assert_eq!(
+        ask(&session, "flush_volumes", json!({ "project": id }))["matrix"],
+        shown["matrix"]
+    );
+
+    // OK: one pair doubled, the multiplier at 0.5; one step, undone and
+    // done again.
+    let doubled = [0.0, matrix[1] * 2.0, matrix[2], 0.0];
+    let set = filaments(
+        &session,
+        id,
+        json!({ "op": "flush", "matrix": doubled, "multiplier": 0.5 }),
+    );
+    assert_eq!(set["done"], "Flushing volumes");
+    let now = ask(&session, "flush_volumes", json!({ "project": id }));
+    assert_eq!(now["matrix"], json!(doubled));
+    assert_eq!(now["multiplier"], 0.5);
+    // The same again changes nothing and is no step.
+    let same = filaments(
+        &session,
+        id,
+        json!({ "op": "flush", "matrix": doubled, "multiplier": 0.5 }),
+    );
+    assert_eq!(same["done"], Value::Null);
+    ask(&session, "undo", json!({ "project": id }));
+    let back = ask(&session, "flush_volumes", json!({ "project": id }));
+    assert_eq!(back["matrix"], shown["matrix"]);
+    assert_eq!(back["multiplier"], shown["multiplier"]);
+    ask(&session, "redo", json!({ "project": id }));
+    // What is out of bounds is refused.
+    for (matrix, multiplier) in [
+        (json!([0.0, 1.0, 2.0]), 1.0),
+        (json!([0.0, -5.0, 2.0, 0.0]), 1.0),
+        (json!(doubled), 3.5),
+    ] {
+        refused(
+            &session,
+            "filament_edit",
+            json!({ "project": id, "op": "flush", "matrix": matrix, "multiplier": multiplier }),
+        );
+    }
+    // A slice, the file's settings and a save carry them.
+    sliced(&session, id, None);
+    let text = gcode(&session, id, dir.path());
+    assert_eq!(listed(&text, "flush_multiplier"), Some("0.5"));
+    let listed_matrix = listed(&text, "flush_volumes_matrix").unwrap();
+    assert!(
+        listed_matrix.contains(&format!("{}", matrix[1] * 2.0)),
+        "{listed_matrix}"
+    );
+    let path = dir.path().join("flushed.3mf");
+    ask(
+        &session,
+        "project_save",
+        json!({ "project": id, "path": path }),
+    );
+    let again = Arc::new(Session::new(None));
+    let reopened = open(&again, &path);
+    let kept = ask(&again, "flush_volumes", json!({ "project": reopened }));
+    assert_eq!(kept["matrix"], json!(doubled));
+    assert_eq!(kept["multiplier"], 0.5);
+}

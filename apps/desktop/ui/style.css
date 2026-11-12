@@ -1051,6 +1051,34 @@ dialog .row button { min-width: 84px; }
 .filaments-head { display: flex; align-items: center; gap: var(--space-1); margin-bottom: var(--space-1); }
 .filaments-head h3 { flex: 1; display: flex; align-items: center; gap: var(--space-2); margin: 0; }
 .filaments-head h3::after { content: ""; flex: 1; height: 1px; background: var(--line-1); }
+/* "Flushing volumes", in the list's head when there is more than one. */
+.flush-open { height: var(--control-s); padding: 0 var(--space-2); font-size: var(--size-label); }
+/* Its dialog: the volumes from each filament (a row) to each (a column),
+   the head's corner "From" under "To" across a hairline; what is outside
+   the suggested range in --danger. */
+#flush-dialog { width: min(720px, calc(100vw - 32px)); max-height: calc(100vh - 32px); display: none; flex-direction: column; gap: var(--space-3); }
+#flush-dialog[open] { display: flex; }
+.flush-scroll { min-height: 0; overflow: auto; border: 1px solid var(--line-2); border-radius: var(--radius-m); background: var(--surface-well); }
+.flush-table { border-collapse: separate; border-spacing: 0; margin: 0 auto; }
+.flush-table th, .flush-table td { padding: 3px var(--space-2); text-align: center; }
+.flush-table thead th { position: sticky; top: 0; background: var(--surface-raised); border-bottom: 1px solid var(--line-1); }
+.flush-table tbody th { position: sticky; left: 0; background: var(--surface-raised); border-right: 1px solid var(--line-1); }
+.flush-table tbody tr:nth-child(even) td { background: var(--fill-hover); }
+.flush-table .swatch { width: 20px; height: 20px; display: inline-grid; place-items: center; font: 700 10px var(--font-mono); vertical-align: middle; }
+.flush-corner { position: relative; width: 64px; height: 36px; font-size: var(--size-label); color: var(--text-2); }
+.flush-corner span { position: absolute; }
+.flush-corner .to { top: 3px; right: 8px; }
+.flush-corner .from { bottom: 3px; left: 8px; }
+.flush-corner::after { content: ""; position: absolute; inset: 6px 10px; background: linear-gradient(to top right, transparent calc(50% - 0.5px), var(--line-2) 50%, transparent calc(50% + 0.5px)); }
+.flush-table input { width: 64px; height: var(--control-s); text-align: center; font-variant-numeric: tabular-nums; }
+.flush-table input:read-only { color: var(--text-3); background: transparent; border-color: transparent; }
+.flush-table input.out { color: var(--danger); }
+.flush-under { display: grid; grid-template-columns: auto minmax(0, 1fr); align-items: center; gap: var(--space-1) var(--space-3); }
+.flush-under > button { grid-row: span 2; }
+.flush-under p { margin: 0; }
+.flush-under p.out { color: var(--danger); }
+.flush-multiplier { grid-column: 1 / -1; justify-self: start; flex-direction: row; align-items: center; gap: var(--space-2); color: var(--text-1); font-size: var(--size-body); }
+.flush-multiplier input { width: 72px; }
 /* "Apply All": one preset for every filament, under the list. */
 .apply-all { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: center; gap: var(--space-2); margin-top: var(--space-2); padding: 2px 2px 2px var(--space-1); }
 .apply-all > button { height: var(--control-s); padding: 0 var(--space-2); font-size: var(--size-label); }

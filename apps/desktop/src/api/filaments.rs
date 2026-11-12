@@ -27,7 +27,7 @@ use serde_json::{Value, json};
 use super::{Choices, File, Project, Session, lock, needed, settings, whole};
 
 /// The calls answered here.
-pub(super) const JSON: [&str; 1] = ["filament_edit"];
+pub(super) const JSON: [&str; 3] = ["filament_edit", "flush_volumes", "flush_calc"];
 
 /// The choices a step of the history carries for the filaments: the
 /// preset each has and what is set over it, as they were.
@@ -78,6 +78,8 @@ impl Session {
     pub(super) fn filaments_json(&self, name: &str, args: &Value) -> Result<Value, String> {
         match name {
             "filament_edit" => self.filament_edit(args),
+            "flush_volumes" => self.flush_volumes(args),
+            "flush_calc" => self.flush_calc(args),
             other => Err(format!("there is no call named {other}")),
         }
     }
@@ -113,6 +115,73 @@ impl Session {
         }
     }
 
+    /// What the "Flushing volumes" dialog shows (Plater.cpp, the button in
+    /// the head of the filaments; WipeTowerDialog.cpp `WipingDialog`): the
+    /// filaments' colours, the volumes from each to each before the
+    /// multiplier (n × n, from i to j at `i * n + j`), the multiplier a
+    /// slice would use now, the least each filament flushes, and the
+    /// bounds the dialog keeps to.
+    fn flush_volumes(&self, args: &Value) -> Result<Value, String> {
+        let stage = self.stage_of(args)?;
+        let (model, choices) = {
+            let state = lock(&self.state);
+            let project = &state.projects[state.target(args)?];
+            let model = project
+                .file
+                .as_ref()
+                .map_or_else(Model::new, |file| file.model.clone());
+            (model, project.choices.clone())
+        };
+        let count = model.filament_count();
+        let basis = self.flush_basis(&choices, stage.file.as_deref(), count);
+        let (matrix, _) = model.flush_volumes();
+        // What a slice reads: the project's own, else the presets', else
+        // the reference's default.
+        let multiplier = model.flush_multiplier().or_else(|| {
+            let basis = self.basis(&choices, stage.file.as_deref()).ok()?;
+            let overrides = settings::overrides(&choices, &basis);
+            let settled =
+                edge_engine::settled(&basis.chosen, &overrides, basis.project.as_deref()).ok()?;
+            settled
+                .floats("flush_multiplier")
+                .ok()
+                .flatten()
+                .and_then(|values| values.first().copied().flatten())
+        });
+        Ok(json!({
+            "count": count,
+            "colours": model.filament_colours(),
+            "matrix": matrix,
+            "multiplier": multiplier.unwrap_or(1.0),
+            "minimums": basis.minimums,
+            "max_volume": edge_engine::flush::MAX_FLUSH,
+            "typical_max": edge_engine::flush::TYPICAL_MAX_FLUSH,
+            "max_multiplier": edge_engine::flush::MAX_MULTIPLIER,
+        }))
+    }
+
+    /// "Re-calculate": every pair's volume worked out again from the
+    /// colours (`colours`, the filaments' as shown), before the
+    /// multiplier. Nothing is changed until the dialog's OK.
+    fn flush_calc(&self, args: &Value) -> Result<Value, String> {
+        let stage = self.stage_of(args)?;
+        let choices = {
+            let state = lock(&self.state);
+            state.projects[state.target(args)?].choices.clone()
+        };
+        let colours: Vec<String> = args
+            .get("colours")
+            .and_then(Value::as_array)
+            .ok_or("colours: a list is needed")?
+            .iter()
+            .map(|colour| colour.as_str().unwrap_or_default().to_owned())
+            .collect();
+        let basis = self.flush_basis(&choices, stage.file.as_deref(), colours.len());
+        Ok(json!({
+            "matrix": edge_engine::flush::calculated(&colours, &basis.minimums, &basis.support),
+        }))
+    }
+
     /// One edit of the filament list: `op` and what it takes.
     ///
     /// - `add` (`colour?`): "Add one filament": after the last, its preset
@@ -124,6 +193,8 @@ impl Session {
     ///   what printed in it prints in `into`.
     /// - `colour` (`filament`, `colour` "#RRGGBB").
     /// - `apply_all` (`preset`): "Apply All", that preset for every one.
+    /// - `flush` (`matrix`, `multiplier`): the "Flushing volumes" dialog's
+    ///   OK: the volumes before the multiplier, n × n, and the multiplier.
     ///
     /// Answers `{ project, scene, done }`, as `scene_edit` does.
     fn filament_edit(&self, args: &Value) -> Result<Value, String> {
@@ -213,6 +284,27 @@ impl Session {
                     .set_filament_colour(bed.as_ref(), filament()?, colour, basis.as_ref())
                     .map_err(|e| e.to_string())?;
                 "Change Filament Color"
+            }
+            "flush" => {
+                let matrix: Vec<f64> = args
+                    .get("matrix")
+                    .and_then(Value::as_array)
+                    .ok_or("matrix: a list is needed")?
+                    .iter()
+                    .map(|volume| volume.as_f64().ok_or("matrix: a list of numbers is needed"))
+                    .collect::<Result<_, _>>()?;
+                let multiplier = args
+                    .get("multiplier")
+                    .and_then(Value::as_f64)
+                    .ok_or("multiplier: a number is needed")?;
+                let (now, _) = model.flush_volumes();
+                if now == matrix && model.flush_multiplier() == Some(multiplier) {
+                    return self.edited(stage.id, json!({ "done": null }));
+                }
+                model
+                    .set_flush_volumes(bed.as_ref(), &matrix, multiplier)
+                    .map_err(|e| e.to_string())?;
+                "Flushing volumes"
             }
             "apply_all" => {
                 let preset = needed(args, "preset")?;

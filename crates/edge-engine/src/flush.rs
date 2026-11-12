@@ -289,6 +289,28 @@ pub fn auto_calc(
     }
 }
 
+/// The volume the reference's dialog suggests a flush stays under
+/// ("Suggestion: Flushing Volume in range [%d, %d]"; FlushVolCalc.hpp
+/// `g_typical_max_flush_volume`).
+pub const TYPICAL_MAX_FLUSH: i32 = 800;
+
+/// The most a multiplier may be ("The multiplier should be in range
+/// [%.2f, %.2f]."; WipeTowerDialog.cpp `g_max_flush_multiplier`), and the
+/// least is 0.
+pub const MAX_MULTIPLIER: f64 = 3.0;
+
+/// Every pair's flushing volume worked out from the colours, as the
+/// dialog's "Re-calculate" does (WipeTowerDialog.cpp
+/// `calc_flushing_volumes`): n × n, nothing from a filament to itself.
+pub fn calculated(colours: &[String], minimums: &[i32], support: &[bool]) -> Vec<f64> {
+    let count = colours.len();
+    let mut matrix = vec![0.0; count * count];
+    for changed in 0..count {
+        auto_calc(&mut matrix, colours, minimums, support, changed);
+    }
+    matrix
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

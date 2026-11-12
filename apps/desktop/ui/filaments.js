@@ -4,8 +4,9 @@
 // row for each filament with its colour ("Click to select filament
 // color"), its preset and its pages; "Add one filament" and "Remove last
 // filament" in the head; a row's menu ("Edit", "Delete", "Merge with");
-// "Apply All". Every change is one `filament_edit`, which the session
-// answers as it answers an edit of the scene, so it is taken as one.
+// "Apply All"; "Flushing volumes" and its dialog. Every change is one
+// `filament_edit`, which the session answers as it answers an edit of the
+// scene, so it is taken as one.
 //
 // Loaded before app.js, whose helpers (`$`, `el`, `call`, `attempt`,
 // `showMenu`, `listbox`, `fill`, `svg`) it uses when it runs.
@@ -20,6 +21,9 @@ const Filaments = (() => {
     '#ED1E79', '#2EBDEF', '#345B2F', '#800080', '#FA8173', '#800000', '#F7B763', '#A4C41E',
     '#FFFFFF', '#C0C0C0', '#808080', '#000000',
   ];
+  // The most a box of the flushing volumes takes (WipeTowerDialog.cpp
+  // `MAX_FLUSH_VALUE`).
+  const FLUSH_MOST = 2147483520;
   const PLUS = 'M8,3.5v9M3.5,8h9';
   const MINUS = 'M3.5,8h9';
 
@@ -59,6 +63,175 @@ const Filaments = (() => {
     add.disabled = count >= MAX;
     // There while there is more than one to take away, as in the reference.
     remove.hidden = count <= 1;
+    // "Flushing volumes" too (Plater.cpp `on_filaments_change`).
+    $('flush-open').hidden = count <= 1;
+  }
+
+  // ---- "Flushing volumes" (WipeTowerDialog.cpp `WipingDialog`) ----
+  //
+  // A box for each pair, from a filament (a row) to another (a column),
+  // shows its volume times the multiplier, cut to a whole number, as the
+  // reference shows it. The volumes are kept as they are before the
+  // multiplier: one typed in is that number over the multiplier, and one
+  // not touched is kept exactly. (The reference reads every box back over
+  // the multiplier on OK, so a dialog opened and closed with OK rounds
+  // every volume; and with the multiplier at 0 it keeps nothing. Neither
+  // is done here: a box not touched keeps its volume, and with the
+  // multiplier at 0 the boxes cannot be typed in.)
+
+  let flush = null;          // { project, count, colours, matrix, multiplier, minimums, ... }
+
+  const shownVolume = (volume, multiplier) => Math.trunc(volume * multiplier + 1e-9);
+
+  function flushBoxes() {
+    return [...$('flush-table').querySelectorAll('input')];
+  }
+
+  // The boxes from the volumes and the multiplier.
+  function flushFill() {
+    const { count, matrix, multiplier } = flush;
+    for (const box of flushBoxes()) {
+      const from = Number(box.dataset.from);
+      const to = Number(box.dataset.to);
+      if (from === to) continue;
+      box.value = String(shownVolume(matrix[from * count + to], multiplier));
+      box.readOnly = multiplier === 0;
+    }
+    flushWarn();
+  }
+
+  // A volume under what its filament flushes at least, or over the most,
+  // in --danger, and the suggestion with it (`update_warning_texts`; the
+  // least is the filament flushed out's, as "Re-calculate" takes it,
+  // where the reference measures against the one flushed in).
+  function flushWarn() {
+    let any = false;
+    for (const box of flushBoxes()) {
+      const from = Number(box.dataset.from);
+      if (from === Number(box.dataset.to)) continue;
+      const value = Number(box.value);
+      const out = value < (flush.minimums[from] || 0) || value > flush.max_volume;
+      box.classList.toggle('out', out);
+      box.setAttribute('aria-invalid', String(out));
+      any ||= out;
+    }
+    $('flush-suggest').classList.toggle('out', any);
+  }
+
+  // A box typed in: a whole number, at least 0 (`EVT_TEXT`), kept over
+  // the multiplier (`on_apply_text_modify`).
+  function flushTyped(box) {
+    const { count, multiplier } = flush;
+    const from = Number(box.dataset.from);
+    const to = Number(box.dataset.to);
+    let value = parseInt(box.value, 10);
+    if (!Number.isFinite(value) || value < 0) value = 0;
+    value = Math.min(value, FLUSH_MOST);
+    box.value = String(value);
+    if (multiplier > 0 && value !== shownVolume(flush.matrix[from * count + to], multiplier)) {
+      flush.matrix[from * count + to] = value / multiplier;
+    }
+    flushWarn();
+  }
+
+  // The multiplier typed in: from 0 to 3, or put there and said.
+  async function flushMultiplier() {
+    const field = $('flush-multiplier');
+    let value = parseFloat(field.value.replace(',', '.'));
+    if (!Number.isFinite(value)) value = flush.multiplier;
+    const most = flush.max_multiplier;
+    if (value < 0 || value > most) {
+      value = value < 0 ? 0 : most;
+      field.value = value.toFixed(2);
+      await inform(t('Warning'), fmt(t('The multiplier should be in range [%.2f, %.2f].'), 0, most));
+    }
+    flush.multiplier = value;
+    field.value = value.toFixed(2);
+    flushFill();
+  }
+
+  function flushTable() {
+    const { count, colours } = flush;
+    const swatchOf = (index) => {
+      const colour = plain(colours[index]);
+      const swatch = el('span', { className: 'swatch', textContent: String(index + 1) });
+      if (colour) {
+        swatch.style.background = colour;
+        swatch.style.color = brightness(colour) > 0.55 ? '#1c2026' : '#ffffff';
+      }
+      return swatch;
+    };
+    const corner = el('th', { className: 'flush-corner', scope: 'col' },
+      el('span', { className: 'to', textContent: t('To') }),
+      el('span', { className: 'from', textContent: t('From') }));
+    const head = el('tr', {}, corner);
+    for (let to = 0; to < count; to += 1) {
+      const cell = el('th', { scope: 'col' }, swatchOf(to));
+      cell.setAttribute('aria-label', `${t('To')} ${fmt(t('Filament %d'), to + 1)}`);
+      head.append(cell);
+    }
+    const body = el('tbody');
+    for (let from = 0; from < count; from += 1) {
+      const row = el('tr', {}, el('th', { scope: 'row', ariaLabel: `${t('From')} ${fmt(t('Filament %d'), from + 1)}` }, swatchOf(from)));
+      for (let to = 0; to < count; to += 1) {
+        const box = el('input', { type: 'text', inputMode: 'numeric', autocomplete: 'off', spellcheck: false });
+        box.dataset.from = String(from);
+        box.dataset.to = String(to);
+        box.setAttribute('aria-label', `${t('From')} ${fmt(t('Filament %d'), from + 1)} ${t('To')} ${fmt(t('Filament %d'), to + 1)}`);
+        if (from === to) {
+          box.value = '0';
+          box.readOnly = true;
+          box.tabIndex = -1;
+        } else {
+          box.addEventListener('change', () => flushTyped(box));
+          box.addEventListener('keydown', (event) => {
+            if (event.key === 'Enter') { event.preventDefault(); flushTyped(box); }
+          });
+        }
+        row.append(el('td', {}, box));
+      }
+      body.append(row);
+    }
+    $('flush-table').replaceChildren(el('thead', {}, head), body);
+  }
+
+  async function openFlush() {
+    const project = state.project;
+    if (!project) return;
+    const shown = await call('flush_volumes', { project: project.id });
+    flush = { project: project.id, ...shown, matrix: shown.matrix.slice() };
+    $('flush-multiplier').value = flush.multiplier.toFixed(2);
+    // The least any filament flushes, and the most a flush typically is
+    // (Orca #11778: not the most a box takes).
+    const least = Math.min(...flush.minimums);
+    $('flush-suggest').textContent = fmt(t('Suggestion: Flushing Volume in range [%d, %d]'), Number.isFinite(least) ? least : 0, flush.typical_max);
+    $('flush-error').hidden = true;
+    flushTable();
+    flushFill();
+    $('flush-dialog').showModal();
+  }
+
+  async function flushCalc() {
+    const answer = await call('flush_calc', { project: flush.project, colours: flush.colours });
+    flush.matrix = answer.matrix.slice();
+    flushFill();
+  }
+
+  async function flushOk() {
+    // What was typed and not yet left.
+    const focused = document.activeElement;
+    if (focused && focused.closest && focused.closest('#flush-table')) flushTyped(focused);
+    if (focused === $('flush-multiplier') && focused.value !== flush.multiplier.toFixed(2)) await flushMultiplier();
+    const { project, matrix, multiplier } = flush;
+    try {
+      const answer = await call('filament_edit', { project, op: 'flush', matrix, multiplier });
+      $('flush-dialog').close();
+      if (answer.done !== null) window.EdgeGL.editor.take(answer);
+    } catch (error) {
+      const shown = $('flush-error');
+      shown.textContent = String(error.message || error);
+      shown.hidden = false;
+    }
   }
 
   // ---- a row ----
@@ -283,6 +456,15 @@ const Filaments = (() => {
     remove.addEventListener('click', () => attempt(() => edit({ op: 'remove_last' })));
     listbox($('apply-all-preset'), { bare: true });
     $('apply-all-button').addEventListener('click', () => attempt(() => edit({ op: 'apply_all', preset: $('apply-all-preset').value })));
+    $('flush-open').addEventListener('click', () => attempt(openFlush));
+    $('flush-calc').addEventListener('click', () => attempt(flushCalc));
+    $('flush-ok').addEventListener('click', () => attempt(flushOk));
+    $('flush-cancel').addEventListener('click', () => $('flush-dialog').close());
+    const multiplier = $('flush-multiplier');
+    multiplier.addEventListener('change', () => attempt(flushMultiplier));
+    multiplier.addEventListener('keydown', (event) => {
+      if (event.key === 'Enter') { event.preventDefault(); attempt(flushMultiplier); }
+    });
   }
 
   return { init, head, row, applyAll, closePicker };

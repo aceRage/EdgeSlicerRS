@@ -161,6 +161,13 @@ fn slice_settings(
     Ok([layer, first, closing])
 }
 
+/// The project's own settings that come over the presets.
+const FLUSH_KEYS: [&str; 3] = [
+    "flush_volumes_matrix",
+    "flush_volumes_vector",
+    "flush_multiplier",
+];
+
 /// Settles what a model is sliced with: the project's own settings, then
 /// the presets chosen over them, then what the person set.
 pub fn prepare(mut loaded: Loaded, chosen: &Chosen, overrides: &Overrides) -> Result<Job, Failure> {
@@ -217,6 +224,18 @@ pub fn prepare(mut loaded: Loaded, chosen: &Chosen, overrides: &Overrides) -> Re
         remarks.extend(notes);
         settings
     });
+    // What the project holds of its own beside the presets, as the
+    // reference's `project_config`: the flushing volumes and their
+    // multiplier, which its "Flushing volumes" dialog sets, come over the
+    // presets (PresetBundle.cpp `full_fff_config`), where a printer's
+    // profile gives a multiplier of its own.
+    let own: Vec<(&str, Value)> = FLUSH_KEYS
+        .iter()
+        .filter_map(|key| {
+            let held = project_settings.as_ref()?.get(key)?.clone();
+            Some((*key, held))
+        })
+        .collect();
     // Later sources replace earlier ones: project, then the presets named.
     let mut settings = project_settings.unwrap_or_default();
     for preset in [
@@ -228,6 +247,9 @@ pub fn prepare(mut loaded: Loaded, chosen: &Chosen, overrides: &Overrides) -> Re
     .flatten()
     {
         settings.overlay(preset);
+    }
+    for (key, held) in own {
+        settings.insert(key, held);
     }
     // What was set by hand comes over all of them.
     settings.overlay(&overrides.settings);

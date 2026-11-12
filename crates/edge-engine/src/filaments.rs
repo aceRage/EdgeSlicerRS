@@ -120,6 +120,72 @@ impl Model {
         )
     }
 
+    /// The flushing multiplier the project holds (`flush_multiplier`, a
+    /// project setting in the reference), none where it holds none.
+    pub fn flush_multiplier(&self) -> Option<f64> {
+        let settings = self.underlying()?;
+        let held = match settings.get("flush_multiplier")? {
+            Value::One(text) => text.clone(),
+            Value::Many(items) => items.first()?.clone(),
+        };
+        held.trim().parse().ok()
+    }
+
+    /// Sets what is flushed between the filaments, as the reference's
+    /// "Flushing volumes" dialog does (Plater.cpp, WipeTowerDialog.cpp):
+    /// `matrix` the volumes as worked out before the multiplier, n × n in
+    /// mm³ from filament i to filament j at `i * n + j`, and the
+    /// multiplier. Nothing is flushed from a filament to itself; a volume
+    /// must be a number from 0 to 20000 and the multiplier from 0 to 3.
+    pub fn set_flush_volumes(
+        &mut self,
+        bed: Option<&Bed>,
+        matrix: &[f64],
+        multiplier: f64,
+    ) -> Result<(), Failure> {
+        let count = self.filament_count();
+        if matrix.len() != count * count {
+            return Err(refused(format!(
+                "{} flushing volumes were given for {count} filaments, which need {}",
+                matrix.len(),
+                count * count
+            )));
+        }
+        if let Some(wrong) = matrix
+            .iter()
+            .find(|volume| !(0.0..=f64::from(flush::MAX_FLUSH)).contains(*volume))
+        {
+            return Err(refused(format!(
+                "a flushing volume of {wrong} mm³ is not from 0 to {}",
+                flush::MAX_FLUSH
+            )));
+        }
+        if !(0.0..=flush::MAX_MULTIPLIER).contains(&multiplier) {
+            return Err(refused(format!(
+                "the multiplier should be from 0 to {}, not {multiplier}",
+                flush::MAX_MULTIPLIER
+            )));
+        }
+        self.settle(bed);
+        let held = self
+            .underlying()
+            .map_or(1, |settings| lists::count(settings));
+        let sources: Vec<usize> = (0..count).map(|at| at.min(held - 1)).collect();
+        let colours = self.filament_colours();
+        let mut matrix = matrix.to_vec();
+        for at in 0..count {
+            matrix[at * count + at] = 0.0;
+        }
+        let (_, vector) = self.flush_volumes();
+        self.relay(&sources, &|at| at, &colours, &matrix, &vector);
+        let settings = match (&mut self.settings, &mut self.filament_lists) {
+            (Some(own), _) | (None, Some(own)) => Arc::make_mut(own),
+            (None, None) => unreachable!("relay keeps the settings"),
+        };
+        settings.insert("flush_multiplier", Value::One(written(multiplier)));
+        Ok(())
+    }
+
     /// Whether the filaments have been changed since the file was read:
     /// its own settings, as they were, no longer say what they are.
     pub fn filaments_edited(&self) -> bool {

@@ -125,6 +125,7 @@
             <!-- The list of filaments (filaments.js): its head with what adds and takes away, a row for each. -->
             <div class="filaments-head">
               <h3>Filaments</h3>
+              <button type="button" id="flush-open" class="flush-open" hidden>Flushing volumes</button>
               <button type="button" id="filament-remove" class="icon tool" title="Remove last filament" aria-label="Remove last filament" hidden></button>
               <button type="button" id="filament-add" class="icon tool" title="Add one filament" aria-label="Add one filament"></button>
             </div>
@@ -473,6 +474,25 @@
       <button type="button" id="queue-error" disabled>Show error message</button>
     </div>
     <button type="button" id="queue-close" class="primary">Close</button>
+  </div>
+</dialog>
+
+<!-- "Flushing volumes" (WipeTowerDialog.cpp `WipingDialog`), from the head of the filaments (filaments.js). -->
+<dialog id="flush-dialog" class="flush-dialog" aria-labelledby="flush-title">
+  <h2 id="flush-title">Flushing volumes for filament change</h2>
+  <div class="flush-scroll">
+    <table class="flush-table" id="flush-table"></table>
+  </div>
+  <div class="flush-under">
+    <button type="button" id="flush-calc">Re-calculate</button>
+    <p class="quiet">Flushing volume (mm³) for each filament pair.</p>
+    <p class="quiet" id="flush-suggest"></p>
+    <label class="flush-multiplier"><span>Multiplier</span><input type="text" id="flush-multiplier" inputmode="decimal" autocomplete="off" spellcheck="false"></label>
+  </div>
+  <div class="dialog-foot">
+    <div class="grow"><p class="error" id="flush-error" hidden></p></div>
+    <button type="button" id="flush-ok" class="primary">OK</button>
+    <button type="button" id="flush-cancel">Cancel</button>
   </div>
 </dialog>
 
