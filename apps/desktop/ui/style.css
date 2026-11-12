@@ -363,7 +363,7 @@ details > summary:focus-visible { outline-offset: 1px; border-radius: var(--radi
 
 /* -- fields: text, numbers, search, and the closed face of a list -- */
 
-select, input[type="text"], input[type="number"], input[type="search"], .lb-trigger {
+select, input[type="text"], input[type="number"], input[type="search"], input[type="password"], .lb-trigger {
   width: 100%;
   min-width: 0;
   height: var(--control-m);
@@ -375,9 +375,9 @@ select, input[type="text"], input[type="number"], input[type="search"], .lb-trig
   font: inherit;
   transition: border-color var(--time-fast) var(--ease);
 }
-select:hover:not(:disabled), input[type="text"]:hover:not(:disabled), input[type="number"]:hover:not(:disabled),
+select:hover:not(:disabled), input[type="text"]:hover:not(:disabled), input[type="number"]:hover:not(:disabled), input[type="password"]:hover:not(:disabled),
 input[type="search"]:hover:not(:disabled), .lb-trigger:hover:not([aria-disabled="true"]) { border-color: var(--line-3); }
-select:focus-visible, input[type="text"]:focus-visible, input[type="number"]:focus-visible,
+select:focus-visible, input[type="text"]:focus-visible, input[type="number"]:focus-visible, input[type="password"]:focus-visible,
 input[type="search"]:focus-visible, .lb-trigger:focus-visible { outline: 2px solid var(--focus); outline-offset: -1px; }
 select:disabled, input:disabled { color: var(--text-off); }
 ::placeholder { color: var(--text-3); opacity: 1; }

@@ -19,12 +19,20 @@ edge-engine = { path = "../../crates/edge-engine" }
 edge-extrusion = { path = "../../crates/edge-extrusion" }
 edge-gcode = { path = "../../crates/edge-gcode" }
 edge-geom = { path = "../../crates/edge-geom" }
+# The Centauri Carbon is sent the MD5 of each file it is sent (ElegooLink.cpp).
+md-5 = "0.10.6"
 serde_json = "1"
 tauri = { version = "2", features = [] }
 tauri-plugin-dialog = "2"
 # Serves the same page to a browser (`--serve`), for working on the page
 # and for checking it where no window can be opened.
 tiny_http = "0.12"
+# The Centauri Carbon is started over its websocket (SDCP); plain ws only,
+# on a TcpStream of our own so every read is timed.
+tungstenite = { version = "0.30.0", default-features = false, features = ["handshake"] }
+# Sending to printers (`src/hosts`): a small blocking HTTP client, with
+# time-outs of each kind and TLS through rustls, for "HTTPS CA File".
+ureq = { version = "3.5.1", default-features = false, features = ["rustls"] }
 
 [dev-dependencies]
 # A folder of its own for each test's settings and profiles.

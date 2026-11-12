@@ -225,5 +225,6 @@ button.opt-reset svg { width: 13px; height: 13px; fill: none; stroke: currentCol
 /* The edit icon of a filament's row and of the printer's card. */
 .filament > button.tool, .printer-head > button.tool { color: var(--text-2); }
 .filament > button.tool:hover:not(:disabled), .printer-head > button.tool:hover:not(:disabled) { color: var(--text-1); }
-.printer-head { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: center; }
+.printer-head { display: grid; grid-template-columns: minmax(0, 1fr) auto auto; align-items: center; }
 .printer-head > button.tool { margin-right: var(--space-1); }
+.printer-head > button.tool + button.tool { margin-left: calc(-1 * var(--space-1)); }

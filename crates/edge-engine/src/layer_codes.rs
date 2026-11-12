@@ -246,16 +246,19 @@ pub(crate) fn assign(
                 LayerCode::Template(template.clone().unwrap_or_default())
             }
             CustomKind::Custom | CustomKind::Unknown => LayerCode::Custom(item.extra.clone()),
-            // What the reference writes for a colour change, and for a
-            // filament change on a printer of one filament: the tag and
-            // the item's text, which it leaves empty (the `M600` it once
-            // wrote is left out, GCode.cpp `#if 0`).
+            // A colour change, and a filament change on a printer of one
+            // filament, are not done: the `M600` the reference once wrote
+            // is left out there on purpose (GCode.cpp, `#if 0`). What it
+            // still writes in its place, the tag with the item's empty
+            // text, is a leftover of that removal and not copied: an empty
+            // block says custom G-code ran where none did.
             CustomKind::ColorChange | CustomKind::ToolChange => {
                 notes.push(format!(
-                    "{} is not done: the reference writes no colour change, only its mark",
+                    "{} is not done: no colour change is written, as in the reference, and \
+                     nothing in its place",
                     named(item)
                 ));
-                LayerCode::Custom(item.extra.clone())
+                continue;
             }
         };
         codes.push(AtLayer {
@@ -327,6 +330,31 @@ mod tests {
         assert_eq!(notes.len(), 2, "{notes:?}");
         assert!(notes[0].starts_with("Custom Template at 0.8 mm is not written"));
         assert!(notes[1].starts_with("Custom G-code at 0.05 mm is not written"));
+    }
+
+    /// The reference leaves its `M600` out and still writes the tag with
+    /// nothing under it (GCode.cpp); the tag is not copied.
+    #[test]
+    fn a_colour_change_writes_nothing_and_says_so() {
+        let layers: Vec<(f64, Vec<usize>)> =
+            [0.2, 0.4, 0.6].iter().map(|z| (*z, vec![0])).collect();
+        let info = CustomGcode {
+            mode: Some(CustomMode::SingleExtruder),
+            items: vec![
+                item(0.4, CustomKind::ColorChange, 1, ""),
+                item(0.6, CustomKind::PausePrint, 1, ""),
+            ],
+        };
+        let (codes, notes) = assign(Some(&info), &settings(1), &layers, &[1]).unwrap();
+        assert_eq!(
+            codes,
+            vec![AtLayer {
+                z: 0.6,
+                code: LayerCode::Pause("M601".into())
+            }]
+        );
+        assert_eq!(notes.len(), 1, "{notes:?}");
+        assert!(notes[0].starts_with("Color change at 0.4 mm is not done"));
     }
 
     #[test]

@@ -57,6 +57,16 @@ pub struct Session {
     traced: bool,
     /// What the 3D views' calls keep between them.
     scene: scene::Cache,
+    /// The printers' connections and the files being sent to them.
+    hosts: Hosts,
+}
+
+/// Sending to printers: each printer's connection, kept between runs, and
+/// the upload queue.
+struct Hosts {
+    kept: Mutex<crate::hosts::kept::Kept>,
+    queue: crate::hosts::queue::Queue,
+    timeouts: crate::hosts::Timeouts,
 }
 
 struct State {
@@ -355,6 +365,7 @@ fn bed_of(settings: &Settings) -> Option<[f64; 4]> {
     extent
 }
 
+mod print_host;
 mod printers;
 mod settings;
 mod store;
@@ -928,6 +939,7 @@ impl Session {
     /// the run only. The profiles are those `EDGE_PROFILES` names, else
     /// the folder last chosen, else the ones beside this build.
     pub fn with_settings(startup: Option<PathBuf>, settings: Option<PathBuf>) -> Self {
+        let kept = crate::hosts::kept::Kept::open(settings.clone());
         let store = store::Store::open(settings);
         let dir = std::env::var_os("EDGE_PROFILES")
             .map(PathBuf::from)
@@ -951,13 +963,18 @@ impl Session {
             startup,
             traced: std::env::var_os("EDGE_DESKTOP_TRACE").is_some(),
             scene: scene::Cache::default(),
+            hosts: Hosts {
+                kept: Mutex::new(kept),
+                queue: crate::hosts::queue::Queue::default(),
+                timeouts: crate::hosts::Timeouts::default(),
+            },
         }
     }
 
     /// Answers the page. An error is a sentence to show as it is.
     pub fn call(self: &Arc<Self>, name: &str, args: &Value) -> Result<Value, String> {
         let answer = self.answer(name, args);
-        if self.traced && !matches!(name, "status" | "projects") {
+        if self.traced && !matches!(name, "status" | "projects" | "print_queue") {
             match &answer {
                 Ok(_) => eprintln!("call {name}: ok"),
                 Err(error) => eprintln!("call {name}: {error}"),
@@ -1128,6 +1145,7 @@ impl Session {
             name if edit::JSON.contains(&name) => self.edit_json(name, args),
             name if ticks::JSON.contains(&name) => self.ticks_json(name, args),
             name if filaments::JSON.contains(&name) => self.filaments_json(name, args),
+            name if print_host::JSON.contains(&name) => self.print_host_json(name, args),
             name if scene::JSON.contains(&name) => self.scene_json(name, args),
             name if scene::BYTES.contains(&name) => {
                 Err(format!("{name} answers in bytes, not in JSON"))
@@ -2838,5 +2856,132 @@ mod tests {
             let named = format!("'{}': '#", role_name(role));
             assert!(page.contains(&named), "no colour for {}", role_name(role));
         }
+    }
+
+    #[test]
+    fn a_plate_is_sent_to_a_printer_as_it_is_exported() {
+        use crate::hosts::mock::{Got, Printer};
+        // A U1's Moonraker on 127.0.0.1, which wants a key.
+        let printer = Printer::start(
+            Box::new(|got: &Got, _: &[Got]| {
+                if got.header("X-Api-Key") != Some("k-123") {
+                    return (
+                        401,
+                        json!({ "error": { "code": 401, "message": "Unauthorized" } }).to_string(),
+                    );
+                }
+                match got.url.as_str() {
+                    "/server/info" => (200, json!({ "result": {} }).to_string()),
+                    "/access/info" => (
+                        200,
+                        json!({ "result": { "login_required": false } }).to_string(),
+                    ),
+                    "/server/files/upload" => (201, json!({ "result": {} }).to_string()),
+                    _ => (404, "{}".into()),
+                }
+            }),
+            None,
+        );
+        let session = Arc::new(Session::new(None));
+        let id = open(&session, SMALL);
+        choose_presets(&session, id, 1);
+        ask(&session, "slice", json!({}));
+        assert_eq!(wait(&session, id)["state"], "done");
+
+        // The U1's preset has no address: nothing can be sent yet.
+        let host = ask(&session, "print_host", json!({}));
+        assert_eq!(host["printer"], MACHINE);
+        assert_eq!(host["from"], "preset");
+        assert_eq!(host["connection"]["host_type"], "octoprint");
+        assert_eq!(host["route"], "snapmaker");
+        assert_eq!(host["can_send"], false);
+        assert!(host["offers"]["unload"].is_object());
+
+        // "Test" what is typed, before it is saved.
+        let typed =
+            json!({ "host_type": "octoprint", "print_host": printer.address(), "apikey": "wrong" });
+        let tested = ask(&session, "print_host_test", typed);
+        assert_eq!(tested["ok"], false);
+        assert_eq!(
+            tested["message"],
+            "Could not connect to Moonraker: HTTP 401: Unauthorized"
+        );
+        let host = ask(
+            &session,
+            "print_host_set",
+            json!({ "host_type": "octoprint", "print_host": format!("http://{}", printer.address()), "apikey": "k-123" }),
+        );
+        assert_eq!(host["from"], "kept");
+        assert_eq!(host["can_send"], true);
+        assert_eq!(host["connection"]["has_api_key"], true);
+        assert_eq!(host["device_url"], format!("http://{}/", printer.address()));
+        assert!(
+            !host.to_string().contains("k-123"),
+            "the key is never answered"
+        );
+        // The served page may frame that printer's page, and nothing else.
+        assert_eq!(
+            session.frame_origins(),
+            [format!("http://{}", printer.address())]
+        );
+        let tested = ask(&session, "print_host_test", json!({}));
+        assert_eq!(
+            tested,
+            json!({ "ok": true, "message": "Connection to Moonraker works correctly." })
+        );
+
+        let name = ask(&session, "print_send_name", json!({}))["name"]
+            .as_str()
+            .unwrap()
+            .to_owned();
+        assert!(
+            name.starts_with("twopart_groups") && name.ends_with(".gcode"),
+            "{name}"
+        );
+        let sent = ask(
+            &session,
+            "print_send",
+            json!({ "name": name, "start": false }),
+        );
+        let job = sent["id"].clone();
+        let queue = loop {
+            let queue = ask(&session, "print_queue", json!({}));
+            if queue["busy"] == false {
+                break queue;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        };
+        assert_eq!(queue["jobs"][0]["id"], job);
+        assert_eq!(queue["jobs"][0]["said"], "Completed", "{queue}");
+        assert_eq!(
+            queue["jobs"][0]["host"],
+            format!("http://{}/", printer.address())
+        );
+
+        // The bytes the printer received are those "Export G-code file"
+        // writes for the plate.
+        let out =
+            std::env::temp_dir().join(format!("edge-desktop-send-{}.gcode", std::process::id()));
+        ask(&session, "export", json!({ "path": out }));
+        let exported = std::fs::read(&out).unwrap();
+        std::fs::remove_file(&out).unwrap();
+        let upload = printer
+            .got()
+            .into_iter()
+            .find(|got| got.url == "/server/files/upload")
+            .unwrap();
+        let file = upload
+            .form()
+            .into_iter()
+            .find(|(name, _, _)| name == "file")
+            .unwrap();
+        assert_eq!(file.1.as_deref(), Some(name.as_str()));
+        assert!(file.2 == exported, "the file sent is the file exported");
+
+        // Back to the preset's connection.
+        let host = ask(&session, "print_host_set", json!({ "forget": true }));
+        assert_eq!(host["from"], "preset");
+        assert_eq!(host["connection"]["has_api_key"], false);
+        assert!(session.frame_origins().is_empty());
     }
 }
