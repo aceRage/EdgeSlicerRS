@@ -1,6 +1,7 @@
 //! Printer, process and filament presets in the reference slicer's on-disk
 //! format, resolved through inheritance into flat settings.
 
+pub mod bundle;
 mod defaults;
 pub mod filaments;
 mod settings;
