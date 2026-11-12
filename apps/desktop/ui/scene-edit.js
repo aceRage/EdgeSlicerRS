@@ -466,9 +466,13 @@
         ['Delete Del', () => this.remove()],
         null,
         ...adding,
+        // GUI_Factories.cpp `append_menu_item_layers_editing`, and "Edit
+        // Process Settings" (`append_menu_item_edit_process`): objsettings.js.
+        [window.ObjectSettings.WORDS.heightRange, () => window.ObjectSettings.heightRange(object.id, copies.filter((copy) => copy.object === one.object).map((copy) => copy.id)), { disabled: !object }],
         null,
         ['Clone Ctrl+K', () => this.clone([...selection])],
         ['Printable', () => this.commit({ op: 'printable', copies: [...selection], value: !printable }), { checked: printable }],
+        [window.ObjectSettings.WORDS.editProcess, () => window.ObjectSettings.editProcess(), { title: window.ObjectSettings.WORDS.editProcess }],
       ];
       if (copies.length === 1 && GL.objects) items.push(['Rename', () => GL.objects.rename(data.objects[copies[0].object].id)]);
       this.host.menu(x, y, items);

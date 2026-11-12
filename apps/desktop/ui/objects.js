@@ -38,6 +38,9 @@
     host: null,
     // The row a click last selected, for Shift to select from.
     anchor: null,
+    // A height range selected, or "Layers": { object, range } or
+    // { object, layers: true }; the scene selects the object meanwhile.
+    range: null,
 
     init(host) {
       this.host = host;
@@ -66,6 +69,13 @@
           // volumes), before its instances.
           const parts = object.part_list || [];
           if (parts.length > 1) parts.forEach((part, at) => out.push({ object, index, copies: here, child: true, part, number: at + 1 }));
+          // Its height ranges under "Layers" (ObjectDataViewModel.cpp
+          // `ObjectDataViewModelNode` of `itLayerRoot`, `itLayer`).
+          const ranges = object.ranges || [];
+          if (ranges.length) {
+            out.push({ object, index, copies: here, child: true, layers: true });
+            ranges.forEach((range, at) => out.push({ object, index, copies: here, child: true, range, number: at }));
+          }
           // An object with several copies lists each under it.
           if (all.length > 1) here.forEach((copy) => out.push({ object, index, copies: [copy], child: true, number: all.indexOf(copy) + 1 }));
         });
@@ -139,6 +149,7 @@
       const { el, listbox } = this.host;
       const ids = row.copies.map((copy) => copy.id);
       if (row.part) return this.partRow(row, ids, swatch);
+      if (row.layers || row.range) return this.rangeRow(row, ids);
       const label = row.child ? `Instance ${row.number}` : (row.object.name || project.file || 'Object');
       const printable = row.copies.every((copy) => copy.printable);
       const eye = el('button', { type: 'button', className: 'icon tool obj-print', title: 'Printable', textContent: printable ? '●' : '○' });
@@ -152,7 +163,8 @@
         if (!ids.every((id) => GL.edit.stage.selection().has(id)) || GL.edit.stage.parts().size) GL.edit.stage.select(ids);
         GL.edit.menu(event.clientX, event.clientY);
       });
-      const node = el('div', { className: `obj-row${row.child ? ' child' : ''}${printable ? '' : ' off'}` }, name, eye);
+      const cell = row.child ? name : this.named(name, row.object.settings, { object: row.object.id });
+      const node = el('div', { className: `obj-row${row.child ? ' child' : ''}${printable ? '' : ' off'}` }, cell, eye);
       node.setAttribute('role', 'treeitem');
       node.dataset.copies = ids.join(',');
       node.dataset.object = String(row.object.id);
@@ -190,7 +202,7 @@
       const kind = PART_KINDS[part.kind] || 'Part';
       const label = part.name || `${kind} ${row.number}`;
       const name = el('button', { type: 'button', className: 'obj-name', title: `${label}\n${kind}` }, icon(KIND_ICONS[part.kind] || KIND_ICONS.part), el('span', { className: 'obj-label', textContent: label }));
-      const node = el('div', { className: `obj-row child part${part.kind === 'part' ? '' : ' helper'}` }, name, el('span'));
+      const node = el('div', { className: `obj-row child part${part.kind === 'part' ? '' : ' helper'}` }, this.named(name, part.settings, { object: row.object.id, part: part.id }), el('span'));
       name.addEventListener('click', (event) => this.pick(node, event));
       name.addEventListener('dblclick', () => this.renamePart(row.object.id, part.id));
       name.addEventListener('keydown', (event) => { if (event.key === 'F2') { event.preventDefault(); this.renamePart(row.object.id, part.id); } });
@@ -233,6 +245,53 @@
       return node;
     },
 
+    // A name with, after it, the mark of an item that has settings of its
+    // own: the reference's icon in the list's editing column
+    // (GUI_ObjectList.cpp `add_settings_item`), a click on which takes
+    // them all away ("Reset Options"), as the reference's does.
+    named(name, count, item) {
+      const { el } = this.host;
+      const cell = el('span', { className: 'obj-name-cell' }, name);
+      if (count) {
+        const words = window.ObjectSettings.WORDS;
+        const mark = el('button', { type: 'button', className: 'icon tool obj-own', title: words.resetAll });
+        mark.setAttribute('aria-label', `${words.resetAll}: ${name.textContent}`);
+        mark.append(icon(window.ObjectSettings.OWN_ICON));
+        mark.addEventListener('click', () => window.ObjectSettings.reset(item));
+        cell.append(mark);
+      }
+      return cell;
+    },
+
+    // "Layers" under an object, and each of its height ranges ("Range
+    // 0.00-2.00 (mm)", ObjectDataViewModel.cpp): a click selects it, and
+    // its settings or the ranges' heights are the Process section's.
+    rangeRow(row, ids) {
+      const { el } = this.host;
+      const words = window.ObjectSettings.WORDS;
+      const label = row.layers ? words.layers : window.ObjectSettings.rangeName(row.range);
+      const name = el('button', { type: 'button', className: 'obj-name', title: label }, el('span', { className: 'obj-label', textContent: label }));
+      const item = row.layers ? { object: row.object.id, layers: true } : { object: row.object.id, range: row.number };
+      const cell = row.layers ? name : this.named(name, row.range.settings, item);
+      const node = el('div', { className: `obj-row child ${row.layers ? 'layers' : 'range'}` }, cell, el('span'), el('span'));
+      name.addEventListener('click', () => this.pickRange(item, ids));
+      node.setAttribute('role', 'treeitem');
+      node.dataset.copies = ids.join(',');
+      node.dataset.object = String(row.object.id);
+      node.dataset.range = row.layers ? 'layers' : String(row.number);
+      return node;
+    },
+
+    // A height range, or "Layers", selected: its object's copies in the
+    // scene, the row in the list.
+    pickRange(item, ids) {
+      const stage = GL.edit.stage;
+      this.range = null;
+      stage.select(ids);
+      this.range = item;
+      this.mark();
+    },
+
     // The name of a part becomes a field to type another into.
     renamePart(object, part) {
       const row = this.rows().find((held) => held.dataset.part === String(part));
@@ -267,6 +326,7 @@
     // it away, Shift selects from the row last clicked to this one.
     pick(node, event) {
       const stage = GL.edit.stage;
+      this.range = null;
       const ids = node.dataset.copies.split(',').map(Number);
       const adding = event.ctrlKey || event.metaKey || event.shiftKey;
       const parts = stage.parts();
@@ -286,12 +346,13 @@
           return;
         }
         stage.selectParts(ids[0], [part]);
+        this.mark();
         return;
       }
       if (adding && parts.size) { this.host.say(CONFLICT_PART, false); return; }
       let chosen;
       if (event.shiftKey && this.anchor) {
-        const rows = this.rows().filter((row) => !row.dataset.part);
+        const rows = this.rows().filter((row) => !row.dataset.part && !row.dataset.range);
         const [from, to] = [rows.findIndex((row) => row.dataset.copies === this.anchor), rows.indexOf(node)];
         const [low, high] = from < 0 ? [to, to] : [Math.min(from, to), Math.max(from, to)];
         chosen = new Set(rows.slice(low, high + 1).flatMap((row) => row.dataset.copies.split(',').map(Number)));
@@ -305,6 +366,7 @@
         this.anchor = node.dataset.copies;
       }
       stage.select(chosen);
+      this.mark();
     },
 
     // Shows which rows are selected, without drawing them anew.
@@ -312,12 +374,28 @@
       if (!this.node || !GL.edit) return;
       const selection = GL.edit.stage.selection();
       const parts = GL.edit.stage.parts();
+      // A height range stays selected while its object alone is.
+      if (this.range) {
+        const object = this.rows().find((row) => row.dataset.object === String(this.range.object) && !row.dataset.part && !row.dataset.range);
+        const ids = object ? object.dataset.copies.split(',').map(Number) : [];
+        const still = ids.length && !parts.size && selection.size === ids.length && ids.every((id) => selection.has(id));
+        if (!still) this.range = null;
+      }
+      const range = this.range;
       for (const row of this.rows()) {
         const ids = row.dataset.copies.split(',').map(Number);
-        // While parts are selected, their rows and no others.
-        const on = parts.size ? Boolean(row.dataset.part) && parts.has(Number(row.dataset.part)) && ids.some((id) => selection.has(id)) : !row.dataset.part && ids.every((id) => selection.has(id));
+        let on;
+        if (row.dataset.range) {
+          on = Boolean(range) && String(range.object) === row.dataset.object && (range.layers ? row.dataset.range === 'layers' : row.dataset.range === String(range.range));
+        } else if (range) {
+          on = false;
+        } else {
+          // While parts are selected, their rows and no others.
+          on = parts.size ? Boolean(row.dataset.part) && parts.has(Number(row.dataset.part)) && ids.some((id) => selection.has(id)) : !row.dataset.part && ids.every((id) => selection.has(id));
+        }
         row.setAttribute('aria-selected', String(on));
       }
+      if (this.host.selected) this.host.selected();
     },
 
     // The name of an object becomes a field to type another into: Enter

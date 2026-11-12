@@ -148,6 +148,14 @@
               <label class="switch" title="Shows the advanced settings with the simple ones">Advance <input type="checkbox" id="process-advanced" role="switch"></label>
             </h2>
             <div class="fold-body">
+              <!-- "Global" / "Objects": the project's settings, or those of what is selected (objsettings.js). -->
+              <div id="process-mode" class="process-mode">
+                <div id="process-mode-switch" class="joined segmented" role="group">
+                  <button type="button" id="process-global" aria-pressed="true">Global</button>
+                  <button type="button" id="process-objects" aria-pressed="false">Objects</button>
+                </div>
+                <span id="process-item" class="process-item" hidden></span>
+              </div>
               <p id="saved-process" class="value" hidden></p>
               <label id="process-row">Preset <select id="process"></select></label>
               <!-- The reference's pages of process settings, drawn from data by settings.js. -->
@@ -475,6 +483,7 @@
 <script src="objects.js"></script>
 <script src="printers.js"></script>
 <script src="settings.js"></script>
+<script src="objsettings.js"></script>
 <script src="filaments.js"></script>
 <script src="app.js"></script>
 <script src="save.js"></script>

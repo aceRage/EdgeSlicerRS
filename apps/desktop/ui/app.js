@@ -2095,6 +2095,8 @@ window.EdgeGL.objectList.init({
   el,
   listbox,
   say,
+  // What is selected is what "Objects" shows the settings of (objsettings.js).
+  selected: () => window.ObjectSettings.selected(),
   project: () => state.project,
   plate: (id) => attempt(() => selectPlate(id)),
 });
