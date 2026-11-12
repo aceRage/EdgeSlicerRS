@@ -1120,15 +1120,41 @@ impl Writer<'_> {
         v.set("x_after_toolchange", Value::Float(position.0));
         v.set("y_after_toolchange", Value::Float(position.1));
         v.set("z_after_toolchange", Value::Float(height));
-        // Nothing is flushed between tools that each have a nozzle of their own.
+        // What is flushed: on a printer of one nozzle, the project's
+        // flushing volume from the filament put away to the new one, as a
+        // length of filament, which the printer's own G-code may purge
+        // (GCode.cpp `set_extruder`: `flush_length`, half of it each as
+        // `first_flush_volume` and `second_flush_volume`, and in chunks of
+        // at most 135 mm³, at most four, as `flush_length_1` to `_4`).
+        // Nothing is flushed between tools that each have a nozzle of
+        // their own; the reference gives their templates the volume all
+        // the same, which none of theirs reads.
+        let flushed = match (old, self.all[to].tools) {
+            (Some(old), 1) => {
+                let count = (new_settings.flush_volumes.len() as f64).sqrt().round() as usize;
+                new_settings
+                    .flush_volumes
+                    .get(old * count + to)
+                    .copied()
+                    .filter(|_| old < count && to < count)
+                    .unwrap_or(0.0)
+            }
+            _ => 0.0,
+        };
+        let length = (flushed as f32 / area(new_settings) as f32) as f64;
+        v.set("flush_length", Value::Float(length));
+        v.set("first_flush_volume", Value::Float(length / 2.0));
+        v.set("second_flush_volume", Value::Float(length / 2.0));
+        let chunks = ((flushed as f32 / 135.0).round() as usize).clamp(1, 4);
+        for chunk in 1..=4 {
+            let each = if chunk <= chunks {
+                length / chunks as f64
+            } else {
+                0.0
+            };
+            v.set(format!("flush_length_{chunk}"), Value::Float(each));
+        }
         for name in [
-            "flush_length",
-            "first_flush_volume",
-            "second_flush_volume",
-            "flush_length_1",
-            "flush_length_2",
-            "flush_length_3",
-            "flush_length_4",
             "travel_point_1_x",
             "travel_point_1_y",
             "travel_point_2_x",

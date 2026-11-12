@@ -181,7 +181,10 @@ fn expand_over(
                 if name.is_empty() || !name.chars().all(|c| c.is_ascii_alphanumeric() || c == '_') {
                     return Err(fail(format!("\"[{body}]\" is not a variable name")));
                 }
-                out.push_str(&read(overlay, name).map_err(fail)?.to_string());
+                // A number as the reference writes a setting's value out
+                // (Config.hpp `ConfigOptionFloat::serialize`, a stream's
+                // six significant digits).
+                out.push_str(&read(overlay, name).map_err(fail)?.brief());
             }
         } else {
             let trimmed = body.trim();

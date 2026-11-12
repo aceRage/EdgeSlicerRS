@@ -2,6 +2,7 @@
 //! format, resolved through inheritance into flat settings.
 
 mod defaults;
+pub mod filaments;
 mod settings;
 pub mod variants;
 mod vendor;

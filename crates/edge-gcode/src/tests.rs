@@ -3056,3 +3056,52 @@ fn a_layer_slowed_to_cool_leaves_the_prime_tower_at_its_speed() {
     assert_eq!(feed("Prime tower"), 5400.0);
     assert!(feed("Outer wall") < 300.0, "{}", feed("Outer wall"));
 }
+
+#[test]
+fn a_printer_of_one_nozzle_is_told_how_much_to_flush() {
+    // Two filaments through one nozzle, with the project's flushing
+    // volumes: 0 to 1 is 300 mm³, 1 to 0 is 200, at a multiplier of 0.5.
+    let mut settings = two_tools(Some(
+        "; flush [flush_length] {first_flush_volume} {flush_length_1} {flush_length_2}\nT[next_extruder]",
+    ));
+    for tool in &mut settings {
+        tool.tools = 1;
+        tool.flush_volumes = vec![0.0, 150.0, 100.0, 0.0];
+    }
+    let (text, _) = in_filaments(&[&[0, 1], &[1, 0]], &settings);
+    let flushes: Vec<&str> = text
+        .lines()
+        .filter(|line| line.starts_with("; flush "))
+        .collect();
+    let area = std::f32::consts::PI * 0.875 * 0.875;
+    let length = |volume: f32| (volume / area) as f64;
+    // The first, from no filament, flushes nothing; 150 mm³ is one chunk
+    // of at most 135, rounded.
+    assert_eq!(flushes[0], "; flush 0 0 0 0");
+    let words: Vec<f64> = flushes[1][8..]
+        .split(' ')
+        .map(|word| word.parse().unwrap())
+        .collect();
+    assert_eq!(
+        words[0],
+        format!("{:.4}", length(150.0)).parse::<f64>().unwrap()
+    );
+    assert!((words[1] - length(150.0) / 2.0).abs() < 1e-4);
+    assert!((words[2] - length(150.0)).abs() < 1e-4);
+    assert_eq!(words[3], 0.0);
+    assert!(
+        flushes[2].starts_with(&format!("; flush {:.4}", length(100.0))),
+        "{}",
+        flushes[2]
+    );
+    // Tools of a nozzle each flush nothing.
+    let (text, _) = in_filaments(
+        &[&[0, 1]],
+        &two_tools(Some("; flush [flush_length]\nT[next_extruder]")),
+    );
+    assert!(
+        text.lines()
+            .filter(|line| line.starts_with("; flush "))
+            .all(|line| line == "; flush 0")
+    );
+}

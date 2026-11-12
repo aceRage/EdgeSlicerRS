@@ -41,6 +41,10 @@ pub use save::{Changed, Saved, Saving, own_settings, project_settings};
 
 #[path = "plates.rs"]
 mod plates;
+
+#[path = "filaments.rs"]
+mod filaments;
+pub use filaments::{FlushBasis, MAX_FILAMENTS, NEXT_COLOURS};
 pub use plates::{FIRST_LATER_LAYER, LAST_LAYER, LONGEST_PLATE_NAME, LayerSequence, PlateSettings};
 
 use crate::{
@@ -472,6 +476,13 @@ pub struct Model {
     /// plate 1's as the reference reads it; it goes to plate 1 when that
     /// is made.
     loose_custom_gcode: Option<CustomGcode>,
+    /// Whether its filaments were changed here ([`Model::add_filament`]
+    /// and the rest), so that its settings are no longer its file's.
+    filaments_edited: bool,
+    /// For a model without settings of its own, what says what its
+    /// filaments are once they were changed: their colours and what is
+    /// flushed between them. A slice lays the presets over it.
+    filament_lists: Option<Arc<Settings>>,
 }
 
 impl Default for Model {
@@ -493,6 +504,8 @@ impl Model {
             placed: true,
             kept: None,
             loose_custom_gcode: None,
+            filaments_edited: false,
+            filament_lists: None,
         }
     }
 
@@ -522,6 +535,12 @@ impl Model {
     /// The settings a project was saved with.
     pub fn settings(&self) -> Option<&Arc<Settings>> {
         self.settings.as_ref()
+    }
+
+    /// What a slice lays the presets over: its own settings, else what
+    /// says what its filaments are once they were changed here.
+    pub fn underlying(&self) -> Option<&Arc<Settings>> {
+        self.settings.as_ref().or(self.filament_lists.as_ref())
     }
 
     /// A bare model that nothing has been done to: it has no place on a
@@ -742,7 +761,7 @@ impl Model {
                 plate.origin.ok_or_else(|| load::unplaced(&path, plate.id))
             })
             .transpose()?;
-        let settings = self.settings.as_deref().cloned();
+        let settings = self.underlying().map(|settings| (**settings).clone());
         let mut loaded = load::placed(&path, &self.project(), index, origin, settings)?;
         loaded.placed = self.placed;
         Ok(loaded)
@@ -2383,6 +2402,8 @@ impl From<Opened> for Model {
                     placed: false,
                     kept: None,
                     loose_custom_gcode: None,
+                    filaments_edited: false,
+                    filament_lists: None,
                 }
             }
             Held::Project { project, .. } => {
@@ -2467,6 +2488,8 @@ impl From<Opened> for Model {
                     placed: false,
                     kept: project.kept,
                     // A project without plates has its items under plate 1.
+                    filaments_edited: false,
+                    filament_lists: None,
                     loose_custom_gcode: if project.plates.is_empty() {
                         project.custom_gcode.get(&1).cloned()
                     } else {
