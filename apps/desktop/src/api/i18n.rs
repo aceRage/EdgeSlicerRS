@@ -90,23 +90,9 @@ pub const ENGLISH: &str = "en_GB";
 pub struct Catalog {
     pub code: &'static str,
     messages: HashMap<String, String>,
-    #[cfg_attr(
-        not(test),
-        expect(
-            dead_code,
-            reason = "the session composes nothing with a context or a plural yet; the page does"
-        )
-    )]
     plurals: HashMap<String, Vec<String>>,
     /// The plural form for n = 0 to 199; past that, that of
     /// 100 + n % 100 (see the tool).
-    #[cfg_attr(
-        not(test),
-        expect(
-            dead_code,
-            reason = "the session composes nothing with a context or a plural yet; the page does"
-        )
-    )]
     forms: Vec<u8>,
 }
 
@@ -153,13 +139,6 @@ impl Catalog {
 
     /// The translation of `msgid` in `context` (gettext's key: the
     /// context, U+0004, the message id), or `msgid`.
-    #[cfg_attr(
-        not(test),
-        expect(
-            dead_code,
-            reason = "the session composes nothing with a context or a plural yet; the page does"
-        )
-    )]
     pub fn trc(&self, context: &str, msgid: &str) -> String {
         let key = format!("{context}\u{4}{msgid}");
         self.messages
@@ -170,13 +149,6 @@ impl Catalog {
 
     /// The form of `singular` for `n`, or `singular` (n = 1) or `plural`
     /// as they are when the table has none, as gettext gives them.
-    #[cfg_attr(
-        not(test),
-        expect(
-            dead_code,
-            reason = "the session composes nothing with a context or a plural yet; the page does"
-        )
-    )]
     pub fn trn(&self, singular: &str, plural: &str, n: u64) -> String {
         if let Some(forms) = self.plurals.get(singular) {
             let at = if n < 200 { n } else { 100 + n % 100 } as usize;
@@ -295,25 +267,11 @@ pub fn tr(msgid: &str) -> String {
 }
 
 /// The same for a message id with a context.
-#[cfg_attr(
-    not(test),
-    expect(
-        dead_code,
-        reason = "the session composes nothing with a context or a plural yet; the page does"
-    )
-)]
 pub fn trc(context: &str, msgid: &str) -> String {
     current().trc(context, msgid)
 }
 
 /// The same for a message id with a plural, for `n`.
-#[cfg_attr(
-    not(test),
-    expect(
-        dead_code,
-        reason = "the session composes nothing with a context or a plural yet; the page does"
-    )
-)]
 pub fn trn(singular: &str, plural: &str, n: u64) -> String {
     current().trn(singular, plural, n)
 }

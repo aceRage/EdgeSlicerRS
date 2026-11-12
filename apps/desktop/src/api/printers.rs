@@ -22,7 +22,7 @@ use edge_config::Settings;
 use edge_engine::{ModelPreset, PrinterModel, Shelf};
 use serde_json::{Value, json};
 
-use super::{Choices, Session, State, lock, plates_for, shown, text};
+use super::{Choices, Session, State, lock, plates_for, presets::Offered, shown, text};
 
 /// The vendor the reference lists first in the printer selection
 /// (printer_table.js `VENDOR_PRIORITY`) and looks at first for the
@@ -168,24 +168,26 @@ fn similar<'a>(
 /// `PreferedPrintProfileMatch`).
 fn pick_process(
     shelf: &Shelf,
-    machine: &str,
+    offered: &Offered,
+    base: &str,
     current: Option<&str>,
     kept: Option<&str>,
 ) -> Option<String> {
-    let offered = shelf.processes_for(machine);
-    let fits = |name: &&str| offered.contains(name);
+    let all = offered.all_processes();
+    let fits = |name: &&str| all.contains(name);
     let same_name = |current: &str| {
         offered
+            .processes
             .iter()
-            .copied()
+            .map(String::as_str)
             .find(|name| alias(name) == alias(current))
     };
     kept.filter(fits)
         .or(current.filter(fits))
         .or_else(|| current.and_then(same_name))
         .map(str::to_owned)
-        .or_else(|| shelf.usual_for(machine).0)
-        .or_else(|| offered.first().map(|name| (*name).to_owned()))
+        .or_else(|| shelf.usual_for(base).0)
+        .or_else(|| offered.processes.first().cloned())
 }
 
 /// The filament a slot is put on when its project goes to a printer. One
@@ -196,22 +198,24 @@ fn pick_process(
 /// what was last used in it with this printer, else the printer's usual.
 fn pick_filament(
     shelf: &Shelf,
-    machine: &str,
+    offered: &Offered,
+    base: &str,
     current: Option<(&str, Option<&str>)>,
     kept: Option<&str>,
 ) -> Option<String> {
-    let offered = shelf.filaments_for(machine);
-    let usual = shelf.usual_for(machine).1;
+    let all = offered.all_filaments();
+    let usual = shelf.usual_for(base).1;
     let Some((current, material)) = current else {
         return kept
-            .filter(|name| offered.contains(name))
+            .filter(|name| all.contains(name))
             .map(str::to_owned)
             .or(usual)
-            .or_else(|| offered.first().map(|name| (*name).to_owned()));
+            .or_else(|| offered.filaments.first().cloned());
     };
-    if offered.contains(&current) {
+    if all.contains(&current) {
         return Some(current.to_owned());
     }
+    let offered: Vec<&str> = offered.filaments.iter().map(String::as_str).collect();
     if let Some(same) = offered.iter().find(|name| alias(name) == alias(current)) {
         return Some((*same).to_owned());
     }
@@ -258,7 +262,7 @@ fn base64(bytes: &[u8]) -> String {
 /// Changes what is kept between runs. If it cannot be written, the run
 /// goes on with what it has and the reason is noted: what was chosen
 /// still holds until the app is closed.
-fn keep(state: &mut State, change: impl FnOnce(&mut super::store::Data)) {
+pub(super) fn keep(state: &mut State, change: impl FnOnce(&mut super::store::Data)) {
     if let Err(error) = state.store.change(change) {
         eprintln!("warning: {error}");
     }
@@ -357,8 +361,11 @@ impl Session {
     }
 
     /// The model a printer preset is of, and the nozzle it is for.
-    fn located(&self, vendor: &str, machine: &str) -> Option<(PrinterModel, String)> {
+    /// One of the person's printers is of the model, and for the nozzle,
+    /// of the system printer it is made from.
+    pub(super) fn located(&self, vendor: &str, machine: &str) -> Option<(PrinterModel, String)> {
         let models = self.models_of(vendor).ok()?;
+        let machine = self.system_printer(machine);
         models.iter().find_map(|model| {
             let preset = model.machines.iter().find(|p| p.name == machine)?;
             Some((model.clone(), preset.variant.clone()))
@@ -378,6 +385,7 @@ impl Session {
     fn usual_printer(&self, installed: &[PrinterModel]) -> Option<(String, String)> {
         let last = lock(&self.state).store.data.last.clone();
         let added = |vendor: &str, machine: &str| {
+            let machine = self.system_printer(machine);
             installed.iter().any(|model| {
                 model.vendor == vendor && model.machines.iter().any(|p| p.name == machine)
             })
@@ -398,7 +406,7 @@ impl Session {
     /// printer a project starts with, which is not a change to it;
     /// `selected` is a printer that was picked, which is the one the next
     /// project starts with.
-    fn put_on(
+    pub(super) fn put_on(
         &self,
         id: u32,
         vendor: &str,
@@ -407,11 +415,12 @@ impl Session {
         selected: bool,
     ) -> Result<(), String> {
         let shelf = self.shelf(vendor)?;
-        let (_, printer) = shelf
-            .choose(Some(machine), None, &[])
-            .map_err(|e| e.to_string())?
+        let (_, printer) = self
+            .choose_presets(vendor, Some(machine), None, &[])?
             .machine
             .ok_or_else(|| format!("{vendor} has no printer preset {machine}"))?;
+        let offered = self.offered(&shelf, machine);
+        let base = self.system_printer(machine);
         let model = self.located(vendor, machine).map(|(model, _)| model);
         let (current, saved, count, kept) = {
             let state = lock(&self.state);
@@ -456,10 +465,15 @@ impl Session {
                         _ => Some(shelf.clone()),
                     };
                     let material = |name: &str| {
-                        theirs
-                            .as_ref()
-                            .and_then(|shelf| shelf.filament_type(name))
-                            .map(str::to_owned)
+                        let shelf = theirs.as_ref()?;
+                        shelf.filament_type(name).map(str::to_owned).or_else(|| {
+                            // One of the person's: what its settings say.
+                            self.resolve_named(shelf, edge_config::Kind::Filament, name)
+                                .ok()?
+                                .texts("filament_type")?
+                                .first()
+                                .cloned()
+                        })
                     };
                     (
                         current.process.clone(),
@@ -474,7 +488,8 @@ impl Session {
         let kept = kept.unwrap_or_default();
         let process = pick_process(
             &shelf,
-            machine,
+            &offered,
+            &base,
             process_now.as_deref(),
             kept.process.as_deref(),
         );
@@ -484,7 +499,8 @@ impl Session {
                 let now = filaments_now.get(slot).or(filaments_now.last());
                 pick_filament(
                     &shelf,
-                    machine,
+                    &offered,
+                    &base,
                     now.map(|(name, material)| (name.as_str(), material.as_deref())),
                     kept.filaments.get(slot).map(String::as_str),
                 )
@@ -570,6 +586,7 @@ impl Session {
                     "model": model.model,
                     "variant": variant,
                     "added": is_added(vendor, &model.model),
+                    "user": self.is_users(edge_config::Kind::Machine, machine),
                 }),
                 // A name the vendor does not have: said when slicing.
                 None => json!({
@@ -596,6 +613,7 @@ impl Session {
             })),
             _ => None,
         };
+        let user = self.user_printers(&installed);
         let installed: Vec<Value> = installed
             .iter()
             .map(|model| {
@@ -620,6 +638,8 @@ impl Session {
             // Nothing is added yet: the reference opens its setup then.
             "first_run": has_library && installed.is_empty(),
             "installed": installed,
+            // The person's own printer presets, under "User presets".
+            "user": user,
             "selected": selected,
             // The printer a project was saved with: its own row.
             "project_printer": saved.as_ref().map(|_| named("printer_settings_id")),
@@ -899,6 +919,14 @@ impl Session {
         let variant = text(args, "variant");
         let installed = self.installed();
         let target = match (text(args, "vendor"), text(args, "model")) {
+            // One of the person's printers, by name.
+            (Some(vendor), None) if text(args, "machine").is_some() => {
+                let machine = text(args, "machine").unwrap_or_default();
+                if !self.is_users(edge_config::Kind::Machine, machine) {
+                    return Err(format!("{machine} is not a printer preset of your own"));
+                }
+                Some((vendor.to_owned(), machine.to_owned()))
+            }
             (Some(vendor), Some(wanted)) => {
                 let model = installed
                     .iter()

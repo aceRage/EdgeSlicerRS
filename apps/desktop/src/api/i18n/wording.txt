@@ -39,6 +39,7 @@ Error code not found	Utils/ElegooLink.cpp:858
 Extrude	GUI/GCodeViewer.cpp:356
 Filament Management	GUI/Plater.cpp:2882
 Filament preset to apply to all filaments	GUI/Plater.cpp:3625
+Filament slot %d of this project	GUI/PresetManagerDialog.cpp:540
 File/data transfer interrupted. Please check the printer and network, then try it again.	Utils/PrintHost.cpp:255
 Files on the printer	GUI/PrinterStoragePanel.cpp:212
 Fit in all view	GUI/MainFrame.cpp:3258
@@ -63,8 +64,11 @@ Show the project strip	GUI/ProjectStrip.cpp:1377
 Show thumbnails	GUI/ProjectStrip.cpp:1455
 Start print timeout	Utils/ElegooLink.cpp:911
 Start printing this file on the printer (Enter)	GUI/PrinterStoragePanel.cpp:240
+System presets cannot be deleted.	GUI/PresetManagerDialog.cpp:511
+System presets cannot be renamed.	GUI/PresetManagerDialog.cpp:430
 The file has been transferred, but some unknown errors occurred. Please check the device page for the file and try to start printing again.	Utils/ElegooLink.cpp:612
 The G-code files on the printer	GUI/PrinterWebView.cpp:125
+The plate's process	GUI/PresetManagerDialog.cpp:542
 The printer's own page	GUI/PrinterWebView.cpp:121
 There are no G-code files on the printer.	GUI/PrinterStoragePanel.cpp:496
 These projects have unsaved changes. Save the ticked ones before closing?	GUI/ProjectStrip.cpp:693
@@ -73,6 +77,7 @@ Tool: 	GUI/GCodeViewer.cpp:467
 Unload filaments after print	libPrintConfig.cpp:2281
 Unsaved changes	GUI/ProjectStrip.cpp:752
 Unsaved projects	GUI/ProjectStrip.cpp:691
+Used by:	GUI/PresetManagerDialog.cpp:547
 World	GUI/Gizmos/GizmoObjectManipulation.cpp:849
 
 [own]
