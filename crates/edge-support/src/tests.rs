@@ -388,7 +388,19 @@ fn settings_are_read_and_what_is_not_done_is_said() {
     assert_eq!(normal.style, Style::Normal);
     let tree = read(r#"{"enable_support": "1", "support_type": "tree(auto)", "raft_layers": "2"}"#);
     assert!(tree.enabled);
-    assert_eq!((tree.style, tree.unsupported.len()), (Style::Tree, 1));
+    // The raft, and the support left under short bridges (the reference's
+    // max_bridge_length, 10 mm unless set), are noted.
+    assert_eq!((tree.style, tree.unsupported.len()), (Style::Tree, 2));
+    assert!(tree.unsupported[1].starts_with("max_bridge_length \"10\""));
+    // Organic trees stand on the part's layers in the reference as well,
+    // so independent support layers are not noted for them.
+    let tree = read(
+        r#"{"enable_support": "1", "support_type": "tree(auto)", "max_bridge_length": "0",
+            "independent_support_layer_height": "1", "support_style": "tree_slim"}"#,
+    );
+    assert_eq!(tree.unsupported.len(), 1, "{:?}", tree.unsupported);
+    assert!(tree.unsupported[0].contains("organic trees are built"));
+    assert_eq!(tree.tree_branch_distance, 1.0);
     // Painted-only supports cannot be honoured at all, and that is said louder.
     let manual = read(r#"{"enable_support": "1", "support_type": "normal(manual)"}"#);
     assert!(!manual.enabled && manual.unsupported[0].contains("NO supports"));
@@ -572,17 +584,15 @@ fn a_tree_stands_on_the_part_where_it_cannot_reach_the_bed() {
     }
 
     // Asked for, a branch's foot on the part is dense for its first
-    // layers. As in the reference's organic trees, the foot itself (layer
-    // 6) is a contact the dense layers are worked out from and is not
-    // printed; they are the two layers over it.
+    // layers, the foot (layer 6) and the one over it.
     let footed = SupportSettings {
         interface_bottom_layers: 2,
         ..tree()
     };
     let found = supports(&layers, &footed);
-    let low: Vec<usize> = (0..7).filter(|l| !found[*l].is_empty()).collect();
-    assert!(low.is_empty(), "support at the foot or below: {low:?}");
-    for layer in [7, 8] {
+    let low: Vec<usize> = (0..6).filter(|l| !found[*l].is_empty()).collect();
+    assert!(low.is_empty(), "support below the foot: {low:?}");
+    for layer in [6, 7] {
         assert!(!found[layer].is_empty());
         assert!(
             found[layer]
@@ -591,7 +601,7 @@ fn a_tree_stands_on_the_part_where_it_cannot_reach_the_bed() {
             "layer {layer} is not a dense foot"
         );
     }
-    assert!(found[9].iter().any(|path| path.role == Role::Support));
+    assert!(found[8].iter().any(|path| path.role == Role::Support));
 
     // Held to the build plate, a tree has nowhere to stand here.
     let plate_only = SupportSettings {

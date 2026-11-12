@@ -184,7 +184,11 @@ fn finish(
     let island_top = (spacing as f64 / top_density) as i64;
     let island_bottom = (spacing as f64 / bottom_density) as i64;
     let num_top = config.roof_layers.saturating_sub(1);
-    let num_bottom = config.floor_layers;
+    // A foot is printed as the first of its dense layers and projected
+    // onto the rest, which is what the reference's output has: its foot
+    // layer is dense (SupportCommon.cpp counts the contact as a layer for
+    // other supports, and the organic trees come out the same).
+    let num_bottom = config.floor_layers.saturating_sub(1);
     let present: Vec<usize> = (0..count)
         .filter(|layer| !base[*layer].is_empty())
         .collect();
@@ -235,13 +239,18 @@ fn finish(
         .collect::<Result<_, _>>()?;
     let mut interfaces: Vec<Polys> = roof_interfaces;
     let mut bottom_interfaces: Vec<Polys> = vec![Vec::new(); count];
+    for (layer, foot) in feet.iter().enumerate() {
+        if !foot.is_empty() {
+            bottom_interfaces[layer] = foot.clone();
+        }
+    }
     for (layer, dense, from_feet) in found {
         if dense.is_empty() {
             continue;
         }
         base[layer] = diff(&base[layer], &dense)?;
         if from_feet {
-            bottom_interfaces[layer] = dense;
+            bottom_interfaces[layer] = geometry::union2(&bottom_interfaces[layer], &dense)?;
             interfaces[layer].clear();
         } else {
             interfaces[layer] = dense;

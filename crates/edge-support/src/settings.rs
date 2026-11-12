@@ -181,8 +181,8 @@ impl SupportSettings {
                     "support_style \"{other}\": normal supports are squared off to a grid"
                 )),
                 (Style::Tree, Some(other)) => unsupported.push(format!(
-                    "support_style \"{other}\": tree supports are built one way, as round \
-                     branches"
+                    "support_style \"{other}\": the older tree styles are a generator of \
+                     their own, not yet ported; organic trees are built"
                 )),
             }
         }
@@ -234,11 +234,32 @@ impl SupportSettings {
                     "the dense top of a support is not ironed",
                 ),
             ] {
+                // Organic trees are built on the part's layers whatever
+                // this says, in the reference too; and bridges are left
+                // unsupported by `max_bridge_length` there, not by this.
+                if style == Style::Tree
+                    && matches!(
+                        key,
+                        "independent_support_layer_height" | "bridge_no_support"
+                    )
+                {
+                    continue;
+                }
                 if let Some(value) = text(key)
                     && !plain.contains(&value)
                 {
                     unsupported.push(format!("{key} \"{value}\": {instead}"));
                 }
+            }
+            // The reference's trees leave out the support under bridges
+            // shorter than this, which needs the walls and the bridges the
+            // fill finds, and is not done here.
+            let bridges = settings.float("max_bridge_length")?.unwrap_or(10.0);
+            if style == Style::Tree && bridges > 0.0 {
+                unsupported.push(format!(
+                    "max_bridge_length \"{bridges}\": bridges are held up like any overhang, \
+                     where the reference leaves out the support under one shorter than this"
+                ));
             }
         }
         // A share of full density, written as a percentage.
