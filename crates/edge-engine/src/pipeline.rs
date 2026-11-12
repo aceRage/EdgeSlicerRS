@@ -1260,9 +1260,15 @@ pub fn slice(job: Job, watch: &dyn Watcher) -> Result<Sliced, Failure> {
             let params = params_of(filament, index).map_err(|e| e.to_string())?;
             let mut alike = vec![filament];
             if regions.any() {
+                let settings_of = |slot: usize| {
+                    regions
+                        .own(keys[slot])
+                        .map_or(&settings, |region| &*region.settings)
+                };
                 let same = |other: usize| -> Result<bool, String> {
                     Ok(used[other] == used[filament]
-                        && params_of(other, index).map_err(|e| e.to_string())? == params)
+                        && params_of(other, index).map_err(|e| e.to_string())? == params
+                        && crate::regions::written_alike(settings_of(other), settings_of(filament)))
                 };
                 for (other, surfaces) in bridged_by.iter().enumerate() {
                     if other < filament && same(other)? && !surfaces[index].is_empty() {

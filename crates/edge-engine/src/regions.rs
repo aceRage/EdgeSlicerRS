@@ -518,11 +518,14 @@ pub(crate) fn per_region(key: &str) -> bool {
 /// What the stages worked out region by region read but take from the
 /// plate's settings all the same, where the work is done for every
 /// region at once: bridges over sparse fill and their second layer, and
-/// how many layers elephant foot compensation runs over.
-const PLATE_WIDE: [&str; 3] = [
+/// how many layers elephant foot compensation runs over, and Z contouring,
+/// which is laid over the whole plate's walls and fill at once.
+const PLATE_WIDE: [&str; 5] = [
     "dont_filter_internal_bridges",
     "enable_extra_bridge_layer",
+    "internal_bridge_density",
     "elefant_foot_compensation_layers",
+    "zaa_enabled",
 ];
 
 /// What the G-code writer reads from a region's own settings as it lays
@@ -763,7 +766,7 @@ pub(crate) fn part_overrides(
         set,
         plate,
         &volume.settings,
-        |key| scope(key) == Scope::Region,
+        |key| scope(key) == Scope::Region || key == "support_group",
         &format!("part \"{}\" of \"{}\"", volume.name, object.name),
     );
     overrides
@@ -817,6 +820,13 @@ pub(crate) fn unfollowed(set: &BTreeMap<String, BTreeSet<String>>) -> Vec<String
         .filter_map(|(key, on)| {
             let on: Vec<&str> = on.iter().map(String::as_str).collect();
             let on = on.join(", ");
+            // EdgeSlicer's support groups: a part named into one is
+            // supported by the group's own settings.
+            if key == "support_group" {
+                return Some(format!(
+                    "support_group: set on {on}, not followed; the part is supported by its object's settings"
+                ));
+            }
             if FEATURE_FILAMENTS.contains(&key.as_str()) {
                 return Some(format!(
                     "{key}: set on {on}, not followed; walls and fill there print in the part's own filament"
@@ -835,6 +845,19 @@ pub(crate) fn unfollowed(set: &BTreeMap<String, BTreeSet<String>>) -> Vec<String
             }
         })
         .collect()
+}
+
+/// Whether two regions' lines are written alike: the same in all the
+/// G-code writer takes from a region (speeds, accelerations, flow), as
+/// the reference fills two regions' surfaces together only where their
+/// lines go at the same speed (Fill.cpp `SurfaceFillParams::role_speed`).
+pub(crate) fn written_alike(a: &Settings, b: &Settings) -> bool {
+    WRITTEN_BY_REGION
+        .iter()
+        .all(|key| match (plate_text(a, key), plate_text(b, key)) {
+            (Some(x), Some(y)) => same_value(&x, &y),
+            (x, y) => x == y,
+        })
 }
 
 /// What decides whether two regions' walls are alike enough to be laid
@@ -1593,6 +1616,13 @@ pub(crate) mod tests {
             own.len() == 2
         });
         assert!(both.is_some(), "{:?}", sliced.keys);
+        // A modifier with a filament of its own prints what it takes in
+        // it, and the plate in two tools.
+        let mut own_filament = modifier([20.0, -1.0, -1.0], [30.0, 11.0, 11.0], &[]);
+        own_filament.filament = Some(2);
+        let sliced = two_cubes(&[], &[], vec![own_filament], Vec::new(), "{}");
+        assert_eq!(sliced.used, vec![1, 2]);
+        assert_eq!(sliced.slots, vec![1, 2]);
     }
 
     #[test]

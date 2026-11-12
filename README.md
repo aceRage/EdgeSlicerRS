@@ -648,8 +648,94 @@ Working:
   of a solid layer keep 57% of their plastic where the reference's
   keep 66% (0.84 mm of filament of 1.47 mm, against 1.06 mm of 1.59).
 
-Known gaps: painted supports and seams, per-object setting overrides, typed settings
-(values are text until a stage needs them), and modifier parts.
+- Regions: settings that belong to one object, one part or one band
+  of an object's height, and the parts that are not printed but change
+  what is (`crates/edge-engine/src/regions.rs`, ported from
+  PrintApply.cpp `generate_print_object_regions`, PrintObject.cpp
+  `region_config_from_model_volume`, PrintObjectSlice.cpp
+  `slices_to_regions`, Layer.cpp `make_perimeters`, Fill.cpp
+  `group_fills`). Everything on a plate is sliced together, and each
+  layer is shared out among keys, one a region: a filament's number for
+  the plate's settings in that filament, as it always was, and a number
+  from 2^20 up for a region with settings of its own: the plate's with
+  the object's laid over them (object-level and region-level keys),
+  then the part's (region-level), then a height range's, then each
+  modifier's in turn. A part that sets back what its object changed is
+  the plate's region again, as the reference finds regions by comparing
+  configs, so a plate that sets nothing of its own slices exactly as
+  before. Walls, surfaces and shells, fill, ironing and the bridges
+  laid over an object's holes read their settings from the region; the
+  G-code writer lays a region's walls and fill at its own speeds,
+  accelerations, flow and wall order (`edge_gcode::Layer::region`).
+  Regions whose walls are alike (`is_perimeter_compatible`'s keys, and
+  fuzzy skin, below) have one set laid round all of them, by the
+  settings of the densest, each keeping its own part of the area inside;
+  regions in one filament whose fill is laid alike and at the same
+  speeds on a layer are filled as one. The single set of walls that
+  tells walls between regions from the shell is as deep as the deepest
+  walls on each layer (`discover_vertical_shells`). Tool order is
+  worked out for tools, each printing its regions in turn.
+  - Modifiers take what of their own object's parts lies inside them on
+    each layer, every region they meet becoming one with the modifier's
+    settings over its own, a later modifier laid over an earlier where
+    they overlap; one that sets nothing new leaves its parent's region,
+    and one with a filament of its own prints what it takes in it.
+    Height ranges (`Metadata/layer_config_ranges.xml`) give the object's
+    parts their settings on the ranges' layers, before the modifiers.
+  - Support blockers and enforcers, and supports painted on or off
+    (`paint_supports`, the downward faces projected onto the layers they
+    hang over): normal supports take blockers out of the overhangs and
+    hold up what of a layer an enforcer covers that the layer below does
+    not; organic trees do the same, an enforced area grown by a tip's
+    diameter, and keep their branches out of blocker volumes
+    (TreeModelVolumes.cpp `m_anti_overhang`). `normal(manual)` and
+    `tree(manual)` hold up only what is enforced. With `enable_support`
+    off nothing is supported, enforcers or not, as in the reference.
+  - An object's own brim (`brim_type`, `brim_width`, `brim_object_gap`).
+  - `edge_engine::settable(key)` says whether the reference reads a
+    setting on an object, a part or modifier, a height range, and
+    whether this engine follows it there; the desktop app builds its
+    object and part settings lists on it.
+
+  What is followed where (anything else set on an object, part,
+  modifier or range that differs from the plate is a note naming it and
+  what set it; a setting the reference itself ignores there is not):
+
+  | Settings | Object | Part | Modifier | Height range |
+  | --- | --- | --- | --- | --- |
+  | wall count, wall order, line widths, wall generator (object), Arachne options (object) | yes | yes | yes | yes |
+  | top and bottom shell layers and thicknesses, solid infill | yes | yes | yes | yes |
+  | sparse infill density and pattern, infill direction, anchors | yes | yes | yes | yes |
+  | speeds, accelerations, flow ratios of walls and fill | yes | yes | yes | yes |
+  | fuzzy skin | yes | yes | yes | yes |
+  | ironing | yes | yes | yes | yes |
+  | the part's filament (`extruder`) | yes | yes | yes | no (as the reference) |
+  | wall, sparse and solid infill filaments | noted | noted | noted | noted |
+  | brim type, width and gap | yes | ignored (as the reference) | ignored | ignored |
+  | `layer_height` | noted | ignored | ignored | noted |
+  | supports on/off and their options, `seam_position`, elephant foot, XY compensation, closing radius | noted | ignored | ignored | ignored |
+  | holes to polyholes, `make_overhang_printable`, Z contouring, scarf seams, bridges over sparse fill, `enable_extra_bridge_layer` | noted | noted | noted | noted |
+  | EdgeSlicer support groups (`support_group` on a part) | | noted | | |
+
+  Not as the reference, each marked in the code: where parts of one
+  object with settings of their own overlap, the region with the
+  higher key keeps the overlap, where the reference gives it to the
+  part later in the object's list; a region keeps one set of fuzzy skin
+  settings, so regions that differ only in fuzzy skin get walls of their
+  own where the reference lays one set and fuzzes each piece by its
+  region; painted triangles that stand upright, which the reference
+  hands tree supports as points to grow a tip from, are not followed;
+  colour painted on an object with settings of its own prints with the
+  plate's settings (a note says so). Not done, and noted: an object's
+  own layer height (everything on a plate is cut at the same heights,
+  so the reference's objects of different layer heights, and what that
+  asks of a prime tower, do not arise), supports on or off for one
+  object, and an object's own seam position.
+
+Known gaps: typed settings (values are text until a stage needs them),
+an object's own layer height, supports and seam position, and the
+feature filaments (`wall_filament`, `sparse_infill_filament`,
+`solid_infill_filament`).
 
 - Infill: each layer's inside is split into top, bottom, bridge, solid
   shell and sparse areas (`top_shell_layers`, `bottom_shell_layers`,
