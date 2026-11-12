@@ -975,11 +975,30 @@ pub(crate) fn draw(
                             let mut l = layer_begin;
                             while l > bottommost {
                                 l -= 1;
-                                // The reference cuts the first layer down by
-                                // the collision of the layer above it, which
-                                // leaves out the part inside the gap under a
-                                // support, so that layer can sit right on the
-                                // part; each is cut by its own here.
+                                // Each layer is cut by its own layer's
+                                // collision, which takes in the part on the
+                                // `z_distance_bottom_layers` under it, so no
+                                // layer comes nearer the part than the bottom
+                                // gap; and the foot this leaves is printed
+                                // (`finish` in mod.rs), so none is further
+                                // either. The reference (TreeSupport3D.cpp
+                                // `organic_draw_branches`, l.4178) cuts the
+                                // first layer down by the collision of the
+                                // layer above, so it may sit right on the
+                                // part, and does not print an organic foot
+                                // (SupportCommon.cpp `generate_interface_layers`:
+                                // "projection seeds"): the two together keep
+                                // the gap where there are dense bottom layers,
+                                // and fuse the foot to the part where there
+                                // are none. Cutting by the layer's own
+                                // collision there, without printing the foot,
+                                // doubles the gap (EdgeSlicer PR #984, item 2,
+                                // reverted for it). Measured 2026-11-12 on the
+                                // U1's 3DBenchy with tree supports: the
+                                // reference's feet 25.2 mm of line at 0.2 mm
+                                // over the part with two dense bottom layers,
+                                // 15.5 mm at 0 (fused) with none; here 25.3
+                                // and 30.7 mm, all at 0.2 mm.
                                 let collision = volumes.collision(0, l, false);
                                 rest = diff_safe(
                                     if rest.is_empty() {
