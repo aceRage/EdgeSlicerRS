@@ -56,6 +56,12 @@ const WIDTH_TO_NOZZLE: f64 = 1.25;
 /// nozzle comes in (WipeTower2.cpp `generate_support_rib_wall`).
 const GAP_HALF: f64 = 2.5;
 
+/// How near two figures of the tower's are taken to be the same
+/// (WipeTower2.cpp `WT_EPSILON`).
+const WT_EPSILON: f64 = 1e-3;
+/// How many places in turn a tool change's rows may start at
+/// (WipeTower2.cpp `wipe_tower_stagger_slots`).
+const STAGGER_SLOTS: usize = 17;
 /// How long a line a nozzle coming in lays before it irons the tower,
 /// in mm, and the speeds it irons at, in mm/s: 600 mm/min back over that
 /// line and round the spiral, 240 forward again (`toolchange_Wipe`,
@@ -172,6 +178,10 @@ pub struct TowerSettings {
     /// The least each filament lays on the tower when it is flushed in
     /// it, in mm³ (`filament_minimal_purge_on_wipe_tower`).
     pub minimal_purge: Vec<f64>,
+    /// Each tool change's rows start somewhere else in its block, in
+    /// turn, above the tower's first layer
+    /// (`wipe_tower_stagger_toolchange_start`).
+    pub stagger: bool,
     /// How fast the tower is laid on its first layer, in mm/s
     /// (`initial_layer_speed`).
     pub first_layer_speed: f64,
@@ -229,6 +239,7 @@ impl Default for TowerSettings {
             flush_matrix: Vec::new(),
             flush_multiplier: 0.3,
             minimal_purge: Vec::new(),
+            stagger: false,
             first_layer_speed: 30.0,
             max_purge_speed: 90.0,
             infill_speed: 100.0,
@@ -273,11 +284,6 @@ impl TowerSettings {
         let mut unsupported = Vec::new();
         if enabled {
             for (key, plain, instead) in [
-                (
-                    "wipe_tower_stagger_toolchange_start",
-                    "0",
-                    "every tool change starts at the same place in its block",
-                ),
                 (
                     "enable_change_pressure_when_wiping",
                     "0",
@@ -482,6 +488,9 @@ impl TowerSettings {
                 .into_iter()
                 .map(|volume| volume.unwrap_or(15.0))
                 .collect(),
+            stagger: settings
+                .flag("wipe_tower_stagger_toolchange_start")?
+                .unwrap_or(defaults.stagger),
             // A speed of 0 is the reference's "work it out", which the
             // tower takes as these (WipeTower2.cpp, its constructor).
             first_layer_speed: Some(first_of("initial_layer_speed", defaults.first_layer_speed)?)
@@ -623,6 +632,23 @@ impl TowerSettings {
             first
         } else {
             purge.min(self.infill_speed as f32 * 60.0)
+        }
+    }
+
+    /// Where a nozzle that comes in to a block with a staggered start
+    /// irons the tower: up to four half lines either side of where it
+    /// is, by the block's `slot`, and clear of the block's sides
+    /// (WipeTower2.cpp `toolchange_Wipe`, `staggered_ironing_center_x`).
+    fn iron_middle(&self, x: f64, area: f64, left: f64, right: f64, slot: usize) -> f64 {
+        let line = WIDTH_TO_NOZZLE * self.nozzle_diameter;
+        let shift = ((slot % 9) as f64 - 4.0) * 0.5 * line;
+        let reach = f64::from(((area.max(0.0) as f32).sqrt() / line as f32 / 2.0).ceil()) * line;
+        let margin = (1.5 * line).max(reach + 0.5 * line);
+        let (low, high) = (left + margin, right - margin);
+        if low > high {
+            x
+        } else {
+            (x + shift).clamp(low, high)
         }
     }
 
@@ -1212,7 +1238,7 @@ pub fn plan_changes(
         let iron = settings.wall_gap && !settings.bambu_tower;
         // Where each new nozzle comes in: which side, and how far back.
         let mut ways_in: Vec<(bool, f64)> = Vec::with_capacity(changes[layer].len());
-        for change in &changes[layer] {
+        for (index, change) in changes[layer].iter().enumerate() {
             let ram = &change.ram;
             let wide = line * settings.ram_ratio(change.old);
             let planned = settings.planned_by(
@@ -1223,6 +1249,14 @@ pub fn plan_changes(
                 change.volume,
                 settings.ram_ratio(change.old),
             );
+            // How far in this change's rows start (WipeTower2.cpp
+            // `stagger_offset_for`): never on the tower's first layer.
+            let slot = (layer * 7 + index * 5) % STAGGER_SLOTS;
+            let staggered = if settings.stagger && layer > 0 {
+                (slot as f64 * step).min((planned.depth() - planned.ramming - 4.0 * row).max(0.0))
+            } else {
+                0.0
+            };
             let mut block = Block::default();
             let (mut x, mut y, mut rightward) = (1.5 * line, used + step - row / 2.0, true);
             if let Some(ram) = ram {
@@ -1308,7 +1342,7 @@ pub fn plan_changes(
                 };
                 end < span / 2.0
             };
-            ways_in.push((from_left, used + planned.ramming + line / 2.0));
+            ways_in.push((from_left, used + planned.ramming + line / 2.0 + staggered));
 
             // The new nozzle's rows, from side to side: until the block
             // is full where nothing was rammed, and otherwise until the
@@ -1327,6 +1361,15 @@ pub fn plan_changes(
             let target = settings.wipe_target(first);
             let mut feed = 0.33 * target;
             let mut wipe = Wipe::new(at(x, y), wipe_flow);
+            // Every tool change but the tower's first layer's starts so
+            // many rows further in, in turn (`stagger_offset_for`); what
+            // it skips is filled at the end.
+            let hop = staggered.min((full - y).max(0.0));
+            let (start_x, start_y, start_rightward) = (x, y, rightward);
+            if hop > WT_EPSILON {
+                y += hop;
+                wipe.go(at(x, y), None);
+            }
             for row_index in 0.. {
                 if row_index != 0 {
                     feed = next_feed(feed, target);
@@ -1356,6 +1399,18 @@ pub fn plan_changes(
                         .or(settings.iron_areas.last())
                         .copied()
                         .unwrap_or(4.0);
+                    if staggered > 0.0 {
+                        x = settings.iron_middle(x, area, left, right, slot);
+                        wipe.go(at(x, y), Some(IRON_SLOW_SPEED));
+                    }
+                    let mut onward = x + toward * length;
+                    if settings.stagger {
+                        onward = if rightward {
+                            onward.min(right - line / 2.0)
+                        } else {
+                            onward.max(left + line / 2.0)
+                        };
+                    }
                     // A square spiral out from where the nozzle is, a
                     // line further out each turn (`spiral_flat_ironing`).
                     let turns = ((area.max(0.0) as f32).sqrt() / line as f32 / 2.0).ceil() as usize;
@@ -1374,7 +1429,7 @@ pub fn plan_changes(
                         high = (high.0 + line, high.1 + line);
                         low = (low.0 - line, low.1 - line);
                     }
-                    x += toward * length;
+                    x = onward;
                     wipe.go(at(x, y), Some(speed));
                     wipe.strokes.push(TowerStroke::Unretract);
                 }
@@ -1390,6 +1445,30 @@ pub fn plan_changes(
                 y += step;
                 wipe.lay(at(x, y), speed);
                 rightward = !rightward;
+            }
+            // What the stagger skipped, from where the rows would have
+            // started up to where they did.
+            if hop > WT_EPSILON && (owed > WT_EPSILON || whole) {
+                let speed = f64::from(feed) / 60.0;
+                (x, y, rightward) = (start_x, start_y, start_rightward);
+                wipe.go(at(x, y), Some(speed));
+                let top = start_y + hop;
+                while y + 1e-4 < top {
+                    let before = x;
+                    x = if rightward {
+                        right - line / 2.0
+                    } else {
+                        left + line / 2.0
+                    };
+                    wipe.lay(at(x, y), speed);
+                    owed -= (before - x).abs();
+                    if (!whole && owed < WT_EPSILON) || y + step + 1e-4 >= top {
+                        break;
+                    }
+                    y += step;
+                    wipe.lay(at(x, y), speed);
+                    rightward = !rightward;
+                }
             }
             block.lines.extend(wipe.lines());
             block.wipe = Some(wipe);
@@ -1628,6 +1707,62 @@ mod tests {
             panic!("{:?}", wipe.strokes[0]);
         };
         assert_eq!((speed * 60.0).round(), (0.33f32 * 1800.0).round() as f64);
+    }
+
+    #[test]
+    fn each_change_starts_somewhere_else_in_its_block_when_staggered() {
+        let plain = TowerSettings {
+            wall_gap: false,
+            ..on()
+        };
+        let staggered = TowerSettings {
+            stagger: true,
+            ..plain.clone()
+        };
+        let changes = counts(&[1, 2, 2]);
+        let (a, b) = (
+            plan(&changes, &[0.2; 3], &plain).unwrap(),
+            plan(&changes, &[0.2; 3], &staggered).unwrap(),
+        );
+        let rows = |tower: &Tower, layer: usize, change: usize| -> Vec<i64> {
+            let mut rows: Vec<i64> = tower.layers[layer].changes[change].lines[..]
+                .iter()
+                .flat_map(|line| &line.points)
+                .map(|p| p.y)
+                .collect();
+            rows.sort();
+            rows.dedup();
+            rows
+        };
+        let first_row = |tower: &Tower, layer: usize, change: usize| {
+            let wipe = tower.layers[layer].changes[change].wipe.as_ref().unwrap();
+            wipe.strokes
+                .iter()
+                .find_map(|stroke| match stroke {
+                    TowerStroke::Lay(to, _) => Some(to.y),
+                    _ => None,
+                })
+                .unwrap()
+        };
+        // Not on the tower's first layer.
+        assert_eq!(first_row(&a, 0, 0), first_row(&b, 0, 0));
+        // Above it, so many rows in by the slot each change has in turn:
+        // (7 a layer + 5 a change) of 17, no further than the block allows.
+        let step = 0.5 * 1.2;
+        let depth = plain.block_depth(plain.width, 0.2, false);
+        for (layer, change) in [(1, 0), (1, 1), (2, 0), (2, 1)] {
+            let slot = (layer * 7 + change * 5) % 17;
+            let hop = (slot as f64 * step).min(depth - 4.0 * 0.5);
+            let moved = unscaled(first_row(&b, layer, change) - first_row(&a, layer, change));
+            assert!(
+                (moved - hop).abs() < 1e-6,
+                "{layer} {change}: {moved} for {hop}"
+            );
+            // What it skipped is filled after: the same rows are laid.
+            assert_eq!(rows(&a, layer, change), rows(&b, layer, change));
+        }
+        // The nozzle comes in level with where it starts.
+        assert_eq!(a.footprint, b.footprint);
     }
 
     #[test]
