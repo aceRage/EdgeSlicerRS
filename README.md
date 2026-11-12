@@ -10,7 +10,7 @@ replaces it until output matches on the printers we care about.
 | Path | What it is |
 | --- | --- |
 | `crates/edge-geom` | Fixed-point 2D geometry (nanometre `i64`, same scale as libslic3r): points, polygons, regions, convex hull |
-| `crates/edge-mesh` | Indexed triangle mesh, transforms, STL read/write |
+| `crates/edge-mesh` | Indexed triangle mesh, transforms, STL read/write; the triangle selector (`selector`: paint on a mesh's triangles, split as finely as a stroke needs, and the codes a project stores them as, a port of the reference's `TriangleSelector`) and a tree of boxes for what a line of sight meets (`raycast`), which the desktop app's painting tools work with |
 | `crates/edge-config` | Vendor presets resolved through `inherits`, `include` and `renamed_from`; the reference's defaults for every setting, and the text form it writes settings in |
 | `crates/edge-3mf` | 3MF projects: objects, parts and their roles, instances, plates, project settings, and colours painted onto triangles; and writing a project back in the reference's own layout (`write`), keeping what was read and not changed (every kind of paint, per-object and per-part settings, layer ranges and heights, cut information, a plate's settings and pictures, every other entry) and leaving out print-host addresses and keys; the G-code set at each plate's layers (pauses, custom G-code, filament changes), read and written as the reference does |
 | `crates/edge-fuzzy` | Fuzzy skin: walls roughened by moving their points or changing their width, with the noise it is drawn from (a port of the reference's FuzzySkin and of the libnoise modules it uses) |
@@ -1470,7 +1470,10 @@ solid area. That is not copied. The bounded depths
 `top_color_penetration_layers` are noted and not followed. Seams
 painted on or off are followed (G-code, Seams, below). Painted supports
 and fuzzy skin are not read; a project that has either painted on says
-so when it is sliced.
+so when it is sliced. Paint is read through one reader of the codes
+(`edge_mesh::selector::code`), and paint made with the desktop app's
+painting tools goes into the model (`Model::set_paint`) and is saved as
+the reference saves it.
 
 Not done in G-code: supports only where painted (none are
 generated, and a note says so), the older tree styles (`tree_slim`,
