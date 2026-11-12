@@ -3467,7 +3467,7 @@ plans it, above).
 | wedge | 1567 / 1836 / 1567 | 1135 / 1135 / 1135 | 7431 / 7090 / 7420 | 2407 / 2431 / 2428 |  | 1667 / 1678 / 1679 | 611.5 / 610.9 / 612.4 | 5m 10s / 5m 31s / 5m 20s |
 | holed | 2185 / 2566 / 2184 | 1582 / 1575 / 1575 | 10561 / 10008 / 10480 | 3709 / 3753 / 3753 |  | 2269 / 2341 / 2306 | 882.1 / 881.6 / 882.5 | 6m 31s / 7m 3s / 6m 46s |
 | ramp | 1810 / 2110 / 1810 | 1339 / 1339 / 1339 | 8334 / 7957 / 8333 | 2440 / 2444 / 2444 |  | 1819 / 1828 / 1824 | 653.8 / 653.3 / 654.2 | 4m 41s / 4m 59s / 4m 48s |
-| dome | 398 / 427 / 399 | 851 / 850 / 850 | 5929 / 5869 / 5913 | 1607 / 1608 / 1607 |  | 210 / 216 / 211 | 390.7 / 392.4 / 392.3 | 4m 9s / 4m 21s / 4m 20s |
+| dome | 398 / 427 / 399 | 851 / 850 / 850 | 5929 / 5869 / 5914 | 1607 / 1608 / 1607 |  | 210 / 216 / 211 | 390.7 / 392.4 / 392.3 | 4m 9s / 4m 21s / 4m 20s |
 | mushroom | 2280 / 2280 / 2280 | 143 / 143 / 143 | 10930 / 10932 / 10935 | 5972 / 5776 / 5775 | 1970 / 1970 / 1970 | 1993 / 1993 / 1993 | 1002.2 / 995.8 / 995.8 | 10m 32s / 10m 34s / 10m 34s |
 | steps | 2874 / 2874 / 2874 | 2159 / 2159 / 2159 | 13832 / 13839 / 13840 | 7345 / 7345 / 7345 |  | 2740 / 2740 / 2745 | 1300.5 / 1300.8 / 1301.0 | 10m 11s / 10m 29s / 10m 29s |
 | holes | 5962 / 5966 / 5962 | 4316 / 4297 / 4297 | 29671 / 29649 / 29651 | 22162 / 22164 / 22160 | 162 / 162 / 162 | 5407 / 5397 / 5407 | 3314.1 / 3311.5 / 3311.9 | 23m 32s / 24m 22s / 24m 22s |
@@ -3496,7 +3496,7 @@ plans it, above).
 | steps_tsl1_t0 | 2874 / 2867 / 2874 | 2159 / 2159 / 2159 | 5329 / 5342 / 5330 | 9025 / 9001 / 9025 |  | 0 / 167 / 0 | 983.5 / 989.8 / 983.5 | 9m 8s / 9m 29s / 9m 24s |
 | wedge_zaa | 1567 / 1866 / 1567 | 1135 / 1135 / 1135 | 7481 / 7048 / 7383 | 2492 / 2481 / 2472 |  | 1517 / 1551 / 1561 | 598.3 / 595.5 / 596.8 | 5m 6s / 5m 31s / 5m 19s |
 | dome_zaa | 427 / 467 / 426 | 851 / 850 / 850 | 5749 / 5670 / 5758 | 1677 / 1677 / 1653 |  | 146 / 152 / 216 | 381.0 / 382.4 / 385.5 | 4m 21s / 4m 24s / 4m 22s |
-| benchy | 3453 / 3867 / 3445 | 460 / 517 / 517 | 21347 / 20801 / 21422 | 16244 / 16233 / 16181 | 1599 / 1611 / 1608 | 3480 / 3630 / 3490 | 3767.6 / 3773.3 / 3772.1 | 38m 43s / 40m 50s / 40m 26s |
+| benchy | 3453 / 3867 / 3445 | 460 / 517 / 517 | 21347 / 20801 / 21423 | 16244 / 16233 / 16181 | 1599 / 1611 / 1608 | 3480 / 3630 / 3490 | 3767.6 / 3773.3 / 3772.1 | 38m 43s / 40m 50s / 40m 26s |
 | mc1 | 8965 / 9025 / 9016 | 8776 / 8773 / 8773 | 50507 / 48846 / 48872 | 5623 / 6891 / 6891 | 220 / 362 / 354 | 3020 / 3586 / 3586 | 6886.5 / 6814.2 / 6814.4 | 1h 5m 1s / 1h 2m 54s / 1h 2m 54s |
 | mc2 | 4450 / 4507 / 4507 | 4389 / 4415 / 4415 | 24290 / 24524 / 24525 | 2721 / 2718 / 2718 | 190 / 191 / 190 | 2598 / 2657 / 2657 | 4462.7 / 4463.3 / 4463.3 | 42m 32s / 41m 18s / 41m 18s |
 | owner's figurine, m | 0.48 / 0.39 / 0.46 | 2.88 / 2.88 / 2.88 | 69.35 / 26.95 / 69.33 | 111.24 / 114.16 / 111.32 | 1.06 / 0.97 / 1.09 | 0.67 / 1.10 / 0.72 | | |
@@ -3517,6 +3517,16 @@ What moved, in the order it was found:
   a hair apart, were opened away as strips, and the solid under a
   sloped top began a layer higher (3DBenchy's deck at z 14.05).
 - A face that is its own whole shell is held at its edges.
+- Each front of a wave is thinned of points within a tenth of a micron
+  of the line through their neighbours before it grows again. The
+  clipping library here leaves the two ends of a corner that hardly
+  turns a nanometre apart where the reference's leaves one point, and
+  each wave rounded those scraps again: the Benchy's second layer came
+  to 61,000 points and the whole Benchy took 11 s instead of 0.6 s.
+  Lengths move by under a millimetre (the Benchy's internal solid
+  21422 to 21423 mm, the dome's 5913 to 5914). A test in
+  `edge-infill` fails if a round bridge grown in waves comes back
+  heavier than its curve; `edge slice --timings` shows the stages.
 
 The wedge's contoured top (`zaa_enabled`) is now the reference's move
 for move: 3783 top surface moves in both files where there were 4113
