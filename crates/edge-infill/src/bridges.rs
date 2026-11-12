@@ -105,7 +105,7 @@ impl Waves {
 /// little, is kept where it runs inside the piece, thickened by one step,
 /// and what that covers of the piece is grown a step at a time, cut to
 /// the piece after each.
-fn wave(
+pub(crate) fn wave(
     source: &ExPolygon,
     boundary: &ExPolygon,
     waves: &Waves,

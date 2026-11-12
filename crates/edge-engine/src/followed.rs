@@ -55,6 +55,7 @@ fn block(project: Option<&Settings>, filament: usize) -> Loaded {
         painted: Vec::new(),
         settings: project.cloned(),
         unread_paint: Vec::new(),
+        custom_gcode: None,
         precise_seams: false,
         unfollowed_parts: Vec::new(),
         objects: Vec::new(),
@@ -62,6 +63,7 @@ fn block(project: Option<&Settings>, filament: usize) -> Loaded {
         parts: Vec::new(),
         plate: 0,
         first_layer_sequence: Vec::new(),
+        plate_settings: Default::default(),
         bounds: (min, max),
         placed: false,
     }

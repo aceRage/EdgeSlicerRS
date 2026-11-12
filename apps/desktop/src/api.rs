@@ -17,6 +17,7 @@
 mod edit;
 mod save;
 mod scene;
+mod ticks;
 
 use std::{
     collections::{BTreeMap, HashMap},
@@ -55,6 +56,16 @@ pub struct Session {
     traced: bool,
     /// What the 3D views' calls keep between them.
     scene: scene::Cache,
+    /// The printers' connections and the files being sent to them.
+    hosts: Hosts,
+}
+
+/// Sending to printers: each printer's connection, kept between runs, and
+/// the upload queue.
+struct Hosts {
+    kept: Mutex<crate::hosts::kept::Kept>,
+    queue: crate::hosts::queue::Queue,
+    timeouts: crate::hosts::Timeouts,
 }
 
 struct State {
@@ -348,6 +359,7 @@ fn bed_of(settings: &Settings) -> Option<[f64; 4]> {
     extent
 }
 
+mod print_host;
 mod printers;
 mod settings;
 mod store;
@@ -426,6 +438,22 @@ struct Plates {
     /// The printer says it takes every plate (`support_multi_bed_types`).
     several: bool,
     offered: &'static [(&'static str, &'static str)],
+}
+
+impl Plates {
+    /// Whether a plate may have this bed type of its own on the printer
+    /// (PlateBedTypes.cpp `allowed_bed_types`): any, on a Bambu printer or
+    /// one that takes several; a U1's own four on a U1; none on the rest.
+    fn takes(&self, bed: &str) -> bool {
+        match (self.enabled, self.u1 && !self.several) {
+            (false, _) => false,
+            (true, true) => matches!(
+                bed,
+                "Textured PEI Plate" | "High Temp Plate" | "Graphic Effect Plate" | "Cool Plate"
+            ),
+            (true, false) => true,
+        }
+    }
 }
 
 fn plates_for(printer: &Settings, vendor: Option<&str>) -> Plates {
@@ -591,6 +619,12 @@ impl Project {
                 file.plates
                     .iter()
                     .map(|plate| {
+                        let held = file
+                            .model
+                            .plates()
+                            .iter()
+                            .find(|held| held.id() == plate.id);
+                        let own = held.map(|held| held.settings()).unwrap_or_default();
                         json!({
                             "id": plate.id,
                             "name": plate.name,
@@ -598,6 +632,13 @@ impl Project {
                             "objects": plate.objects,
                             "sliced": self.results.contains_key(&plate.id),
                             "failed": self.failures.get(&plate.id),
+                            "locked": held.is_some_and(|held| held.locked()),
+                            // What it sets for itself ("Customize current
+                            // plate"), and whether it sets anything
+                            // (PartPlate.cpp `render_icons`,
+                            // `has_plate_settings`).
+                            "own": edit::plate_settings_json(&own),
+                            "customized": own != edge_engine::PlateSettings::default(),
                         })
                     })
                     .collect()
@@ -888,6 +929,7 @@ impl Session {
     /// the run only. The profiles are those `EDGE_PROFILES` names, else
     /// the folder last chosen, else the ones beside this build.
     pub fn with_settings(startup: Option<PathBuf>, settings: Option<PathBuf>) -> Self {
+        let kept = crate::hosts::kept::Kept::open(settings.clone());
         let store = store::Store::open(settings);
         let dir = std::env::var_os("EDGE_PROFILES")
             .map(PathBuf::from)
@@ -910,13 +952,18 @@ impl Session {
             startup,
             traced: std::env::var_os("EDGE_DESKTOP_TRACE").is_some(),
             scene: scene::Cache::default(),
+            hosts: Hosts {
+                kept: Mutex::new(kept),
+                queue: crate::hosts::queue::Queue::default(),
+                timeouts: crate::hosts::Timeouts::default(),
+            },
         }
     }
 
     /// Answers the page. An error is a sentence to show as it is.
     pub fn call(self: &Arc<Self>, name: &str, args: &Value) -> Result<Value, String> {
         let answer = self.answer(name, args);
-        if self.traced && !matches!(name, "status" | "projects") {
+        if self.traced && !matches!(name, "status" | "projects" | "print_queue") {
             match &answer {
                 Ok(_) => eprintln!("call {name}: ok"),
                 Err(error) => eprintln!("call {name}: {error}"),
@@ -971,7 +1018,10 @@ impl Session {
             "printer_cover" => self.printer_cover(args),
             "printers_save" => self.printers_save(args),
             "printers_default" => self.printers_default(args),
-            "printer_select" => self.printer_select(args),
+            "printer_select" => {
+                let answer = self.printer_select(args)?;
+                self.with_notice(args, answer)
+            }
             "machines" => {
                 let shelf = self.shelf(needed(args, "vendor")?)?;
                 Ok(json!({ "machines": shelf.machines() }))
@@ -1032,7 +1082,18 @@ impl Session {
             "project_close" => self.project_close(args),
             "project_save" => self.project_save(args),
             "unsaved" => Ok(self.unsaved()),
-            "project_set" => self.project_set(args),
+            "project_set" => {
+                let answer = self.project_set(args)?;
+                // Another printer may not take a plate's own bed type.
+                if ["source", "vendor", "machine"]
+                    .iter()
+                    .any(|key| args.get(key).is_some())
+                {
+                    self.with_notice(args, answer)
+                } else {
+                    Ok(answer)
+                }
+            }
 
             "process_pages" => Ok(Self::settings_pages(settings::Book::Process)),
             "process" => self.settings(args, settings::Book::Process),
@@ -1071,6 +1132,8 @@ impl Session {
                 Ok(json!({ "path": shown(path), "bytes": gcode.text.len() }))
             }
             name if edit::JSON.contains(&name) => self.edit_json(name, args),
+            name if ticks::JSON.contains(&name) => self.ticks_json(name, args),
+            name if print_host::JSON.contains(&name) => self.print_host_json(name, args),
             name if scene::JSON.contains(&name) => self.scene_json(name, args),
             name if scene::BYTES.contains(&name) => {
                 Err(format!("{name} answers in bytes, not in JSON"))
@@ -1342,6 +1405,71 @@ impl Session {
         let detail = project.detail();
         printers::remember(&mut state, at, args);
         Ok(detail)
+    }
+
+    /// The print sequence a project's plates follow unless they set their
+    /// own: set by hand, else the process preset's, else the project's
+    /// own, else the reference's default.
+    fn print_sequence(&self, id: u32) -> Result<String, String> {
+        let (choices, file) = {
+            let state = lock(&self.state);
+            let project = &state.projects[state.target(&json!({ "project": id }))?];
+            (project.choices.clone(), project.file.clone())
+        };
+        if let Some(own) = choices.over.get("print_sequence") {
+            return Ok(own.clone());
+        }
+        let basis = self.basis(&choices, file.as_deref()).ok();
+        let preset = basis
+            .as_ref()
+            .and_then(|basis| basis.chosen.process.as_ref())
+            .and_then(|(_, process)| process.text("print_sequence").map(str::to_owned));
+        let project = file
+            .as_ref()
+            .and_then(|file| file.settings.as_ref())
+            .and_then(|settings| settings.text("print_sequence").map(str::to_owned));
+        Ok(preset.or(project).unwrap_or_else(|| "by layer".into()))
+    }
+
+    /// After another printer is chosen for a project: each plate's own bed
+    /// type the printer does not take is taken away, and the answer says
+    /// so in the reference's words (Plater.cpp `normalize_bed_types`).
+    fn with_notice(&self, args: &Value, mut answer: Value) -> Result<Value, String> {
+        let (id, choices, file) = {
+            let state = lock(&self.state);
+            let project = &state.projects[state.target(args)?];
+            (project.id, project.choices.clone(), project.file.clone())
+        };
+        let Some((_, printer)) = self.printer_of(&choices, file.as_deref())? else {
+            return Ok(answer);
+        };
+        let vendor = choices.vendor.as_deref().filter(|_| choices.from_presets);
+        let plates = plates_for(&printer, vendor);
+        let mut state = lock(&self.state);
+        let Some(at) = state.index_of(id) else {
+            return Ok(answer);
+        };
+        let project = &mut state.projects[at];
+        if !edit::reset_bed_types(project, |bed| plates.takes(bed)) {
+            return Ok(answer);
+        }
+        let text = if plates.enabled {
+            "The selected printer does not have some of the plates' bed types.\nThose bed type overrides were reset to the global bed type."
+        } else {
+            "The selected printer does not support multiple bed types.\nBed type overrides were reset to the global bed type."
+        };
+        let detail = project.detail();
+        if let (Some(answer), Some(detail)) = (answer.as_object_mut(), detail.as_object()) {
+            // An answer that is a project's is that project as it now is.
+            if answer.contains_key("choices") {
+                answer.extend(detail.clone());
+            }
+            answer.insert(
+                "notice".into(),
+                json!({ "title": "Plate bed types reset", "text": text }),
+            );
+        }
+        Ok(answer)
     }
 
     /// The printer's settings a project would be sliced with and where
@@ -2716,5 +2844,132 @@ mod tests {
             let named = format!("'{}': '#", role_name(role));
             assert!(page.contains(&named), "no colour for {}", role_name(role));
         }
+    }
+
+    #[test]
+    fn a_plate_is_sent_to_a_printer_as_it_is_exported() {
+        use crate::hosts::mock::{Got, Printer};
+        // A U1's Moonraker on 127.0.0.1, which wants a key.
+        let printer = Printer::start(
+            Box::new(|got: &Got, _: &[Got]| {
+                if got.header("X-Api-Key") != Some("k-123") {
+                    return (
+                        401,
+                        json!({ "error": { "code": 401, "message": "Unauthorized" } }).to_string(),
+                    );
+                }
+                match got.url.as_str() {
+                    "/server/info" => (200, json!({ "result": {} }).to_string()),
+                    "/access/info" => (
+                        200,
+                        json!({ "result": { "login_required": false } }).to_string(),
+                    ),
+                    "/server/files/upload" => (201, json!({ "result": {} }).to_string()),
+                    _ => (404, "{}".into()),
+                }
+            }),
+            None,
+        );
+        let session = Arc::new(Session::new(None));
+        let id = open(&session, SMALL);
+        choose_presets(&session, id, 1);
+        ask(&session, "slice", json!({}));
+        assert_eq!(wait(&session, id)["state"], "done");
+
+        // The U1's preset has no address: nothing can be sent yet.
+        let host = ask(&session, "print_host", json!({}));
+        assert_eq!(host["printer"], MACHINE);
+        assert_eq!(host["from"], "preset");
+        assert_eq!(host["connection"]["host_type"], "octoprint");
+        assert_eq!(host["route"], "snapmaker");
+        assert_eq!(host["can_send"], false);
+        assert!(host["offers"]["unload"].is_object());
+
+        // "Test" what is typed, before it is saved.
+        let typed =
+            json!({ "host_type": "octoprint", "print_host": printer.address(), "apikey": "wrong" });
+        let tested = ask(&session, "print_host_test", typed);
+        assert_eq!(tested["ok"], false);
+        assert_eq!(
+            tested["message"],
+            "Could not connect to Moonraker: HTTP 401: Unauthorized"
+        );
+        let host = ask(
+            &session,
+            "print_host_set",
+            json!({ "host_type": "octoprint", "print_host": format!("http://{}", printer.address()), "apikey": "k-123" }),
+        );
+        assert_eq!(host["from"], "kept");
+        assert_eq!(host["can_send"], true);
+        assert_eq!(host["connection"]["has_api_key"], true);
+        assert_eq!(host["device_url"], format!("http://{}/", printer.address()));
+        assert!(
+            !host.to_string().contains("k-123"),
+            "the key is never answered"
+        );
+        // The served page may frame that printer's page, and nothing else.
+        assert_eq!(
+            session.frame_origins(),
+            [format!("http://{}", printer.address())]
+        );
+        let tested = ask(&session, "print_host_test", json!({}));
+        assert_eq!(
+            tested,
+            json!({ "ok": true, "message": "Connection to Moonraker works correctly." })
+        );
+
+        let name = ask(&session, "print_send_name", json!({}))["name"]
+            .as_str()
+            .unwrap()
+            .to_owned();
+        assert!(
+            name.starts_with("twopart_groups") && name.ends_with(".gcode"),
+            "{name}"
+        );
+        let sent = ask(
+            &session,
+            "print_send",
+            json!({ "name": name, "start": false }),
+        );
+        let job = sent["id"].clone();
+        let queue = loop {
+            let queue = ask(&session, "print_queue", json!({}));
+            if queue["busy"] == false {
+                break queue;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        };
+        assert_eq!(queue["jobs"][0]["id"], job);
+        assert_eq!(queue["jobs"][0]["said"], "Completed", "{queue}");
+        assert_eq!(
+            queue["jobs"][0]["host"],
+            format!("http://{}/", printer.address())
+        );
+
+        // The bytes the printer received are those "Export G-code file"
+        // writes for the plate.
+        let out =
+            std::env::temp_dir().join(format!("edge-desktop-send-{}.gcode", std::process::id()));
+        ask(&session, "export", json!({ "path": out }));
+        let exported = std::fs::read(&out).unwrap();
+        std::fs::remove_file(&out).unwrap();
+        let upload = printer
+            .got()
+            .into_iter()
+            .find(|got| got.url == "/server/files/upload")
+            .unwrap();
+        let file = upload
+            .form()
+            .into_iter()
+            .find(|(name, _, _)| name == "file")
+            .unwrap();
+        assert_eq!(file.1.as_deref(), Some(name.as_str()));
+        assert!(file.2 == exported, "the file sent is the file exported");
+
+        // Back to the preset's connection.
+        let host = ask(&session, "print_host_set", json!({ "forget": true }));
+        assert_eq!(host["from"], "preset");
+        assert_eq!(host["connection"]["has_api_key"], false);
+        assert!(session.frame_origins().is_empty());
     }
 }

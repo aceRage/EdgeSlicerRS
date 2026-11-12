@@ -331,9 +331,6 @@ pub struct PlateKept {
     pub(crate) entries: Vec<Entry>,
     /// Its pictures, when they still show it.
     pub(crate) pictures: Pictures,
-    /// Inside its `<plate>` of `Metadata/custom_gcode_per_layer.xml`,
-    /// without its `<plate_info>`: the G-code set at its layers.
-    pub(crate) custom_gcode: Option<String>,
 }
 
 impl PlateKept {
@@ -350,7 +347,99 @@ impl PlateKept {
     pub fn has_pictures(&self) -> bool {
         !self.pictures.is_empty()
     }
+
+    /// What a plate the file did not have holds: what the writer writes
+    /// for one (`locked`, its first layer's order when it sets one, the
+    /// filament map), so that keeping it changes nothing in the file. `id`
+    /// is the plate's number.
+    pub fn fresh(id: u32, first_layer_sequence: &[u32]) -> Self {
+        let meta = |key: &str, value: String| Entry::Meta {
+            key: key.to_owned(),
+            value,
+        };
+        let mut entries = vec![meta("locked", "false".into())];
+        if !first_layer_sequence.is_empty() {
+            let order: Vec<String> = first_layer_sequence.iter().map(u32::to_string).collect();
+            entries.push(meta("first_layer_print_sequence", order.join(" ")));
+        }
+        entries.push(meta("filament_map_mode", "Auto For Flush".into()));
+        entries.push(meta("filament_maps", "1".into()));
+        Self {
+            id,
+            entries,
+            ..Self::default()
+        }
+    }
+
+    /// One of the plate's own settings or metadata as the file has it
+    /// (`locked`, `bed_type`, `print_sequence`, `spiral_mode`, …).
+    pub fn value(&self, key: &str) -> Option<&str> {
+        Entry::value_of(&self.entries, key)
+    }
+
+    /// The same plate with `key` set to `value`, or taken out for none. An
+    /// entry it has already is changed where it stands; a new one goes
+    /// where the reference writes it among the others
+    /// (bbs_3mf.cpp `_add_model_config_file_to_archive`), so that the file
+    /// reads as the reference's own.
+    pub fn with(&self, key: &str, value: Option<&str>) -> Self {
+        let mut entries = self.entries.clone();
+        let at = entries.iter().position(|entry| entry.key() == Some(key));
+        match (at, value) {
+            (Some(at), Some(value)) => {
+                entries[at] = Entry::Meta {
+                    key: key.to_owned(),
+                    value: value.to_owned(),
+                }
+            }
+            (Some(at), None) => {
+                entries.remove(at);
+            }
+            (None, Some(value)) => {
+                let rank = |key: &str| PLATE_ORDER.iter().position(|known| *known == key);
+                let mine = rank(key).unwrap_or(PLATE_ORDER.len());
+                // After the last entry the reference writes before it.
+                let place = entries
+                    .iter()
+                    .rposition(|entry| {
+                        entry
+                            .key()
+                            .and_then(rank)
+                            .is_some_and(|theirs| theirs < mine)
+                    })
+                    .map_or(0, |at| at + 1);
+                entries.insert(
+                    place,
+                    Entry::Meta {
+                        key: key.to_owned(),
+                        value: value.to_owned(),
+                    },
+                );
+            }
+            (None, None) => {}
+        }
+        Self {
+            entries,
+            ..self.clone()
+        }
+    }
 }
+
+/// The order the reference writes a plate's own metadata in, after its
+/// number and name (bbs_3mf.cpp `_add_model_config_file_to_archive`).
+const PLATE_ORDER: [&str; 11] = [
+    "locked",
+    "bed_type",
+    "print_sequence",
+    "first_layer_print_sequence",
+    "other_layers_print_sequence",
+    "other_layers_print_sequence_nums",
+    "spiral_mode",
+    "filament_map_mode",
+    "filament_maps",
+    "dual_nozzle_confirm",
+    "print_history",
+];
 
 /// What kind of entry of the package a file is, for writing it back.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -386,8 +475,8 @@ pub struct Kept {
     pub(crate) settings: Option<String>,
     /// The first line of `Metadata/brim_ear_points.txt`.
     pub(crate) brim_version: Option<String>,
-    /// `Metadata/custom_gcode_per_layer.xml` when it is not laid out by
-    /// plate, as it was.
+    /// `Metadata/custom_gcode_per_layer.xml` when it is not laid out as
+    /// the reference lays it (which it then does not read), as it was.
     pub(crate) custom_gcode: Option<String>,
     /// Children of `model_settings.config`'s `<config>` that are not an
     /// object, a plate or the assembly, as written.
@@ -780,74 +869,6 @@ impl ByPlace {
         }
         Ok(())
     }
-}
-
-/// The custom G-code of each plate, by the plate's number, when the file
-/// is laid out by plate; none when it is not.
-pub(crate) fn custom_gcode_by_plate(
-    text: &str,
-    part: &str,
-) -> Result<Option<BTreeMap<u32, String>>, Error> {
-    let mut reader = Reader::from_str(text);
-    let mut found = BTreeMap::new();
-    let mut depth = 0usize;
-    let mut by_plate = false;
-    loop {
-        let event = reader
-            .read_event()
-            .map_err(|e| malformed(part, e.to_string()))?;
-        match event {
-            Event::Start(element) if depth == 0 => {
-                by_plate = element.local_name().as_ref() == "custom_gcodes_per_layer";
-                depth = 1;
-            }
-            Event::Start(element) if depth == 1 && element.local_name().as_ref() == "plate" => {
-                let name = element.name().as_ref().to_owned();
-                let span = reader
-                    .read_to_end(quick_xml::name::QName(name.as_str()))
-                    .map_err(|e| malformed(part, e.to_string()))?;
-                let inside = &text[span.start as usize..span.end as usize];
-                // The plate's number, and the rest without it.
-                let mut id = None;
-                let mut rest = String::new();
-                let mut inner = Reader::from_str(inside);
-                loop {
-                    let before = inner.buffer_position() as usize;
-                    match inner
-                        .read_event()
-                        .map_err(|e| malformed(part, e.to_string()))?
-                    {
-                        Event::Empty(element) | Event::Start(element)
-                            if element.local_name().as_ref() == "plate_info" =>
-                        {
-                            attributes(&element, part, |name, value| {
-                                if name == "id" {
-                                    id = value.trim().parse::<u32>().ok();
-                                }
-                                Ok(())
-                            })?;
-                        }
-                        Event::Eof => break,
-                        _ => {
-                            let after = inner.buffer_position() as usize;
-                            rest.push_str(&inside[before..after]);
-                        }
-                    }
-                }
-                match id {
-                    Some(id) => {
-                        found.insert(id, rest.trim().to_owned());
-                    }
-                    None => return Ok(None),
-                }
-            }
-            Event::Start(_) => depth += 1,
-            Event::End(_) => depth = depth.saturating_sub(1),
-            Event::Eof => break,
-            _ => {}
-        }
-    }
-    Ok(by_plate.then_some(found))
 }
 
 /// What becomes of an entry of a package that is not one of the parts

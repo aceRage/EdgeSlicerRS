@@ -287,3 +287,68 @@ fn parts_edited_are_saved_and_opened_again_as_they_were_left() {
     assert_eq!(parts_shown(&session, id).len(), 2);
     assert_eq!(std::fs::read(&to).unwrap(), saved);
 }
+
+/// Each plate as the page has it: number, name, lock, own settings, and
+/// how many copies stand on it.
+fn plates_shown(session: &Arc<Session>, id: u64) -> Vec<Value> {
+    let detail = ask(session, "project", json!({ "project": id }));
+    let scene = ask(session, "scene", json!({ "project": id }));
+    detail["plates"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|plate| {
+            let on = scene["placings"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .filter(|placing| placing["plate"] == plate["id"])
+                .count();
+            json!({
+                "id": plate["id"], "name": plate["name"], "locked": plate["locked"],
+                "own": plate["own"], "copies": on,
+            })
+        })
+        .collect()
+}
+
+#[test]
+fn plates_edited_are_saved_and_opened_again_as_they_were_left() {
+    let dir = tempfile::tempdir().unwrap();
+    let session = Arc::new(Session::new(None));
+    let (id, _) = open_copy(&session, dir.path(), THREE_PLATES);
+    let edit = |args: Value| {
+        let mut args = args;
+        args["project"] = json!(id);
+        ask(&session, "scene_edit", args)
+    };
+    edit(json!({ "op": "plate_rename", "plate": 2, "name": "Arms \"two\"" }));
+    edit(json!({ "op": "plate_lock", "plate": 2, "value": true }));
+    edit(json!({
+        "op": "plate_settings", "plate": 3, "bed_type": "High Temp Plate",
+        "print_sequence": "by layer", "spiral_mode": false,
+        "first_layer_sequence": [5, 1, 2, 3, 4, 6, 7],
+        "other_layers_sequence": [{ "begin": 3, "end": 20, "order": [2, 1] }],
+    }));
+    edit(json!({ "op": "plate_front", "plate": 2 }));
+    edit(json!({ "op": "plate_duplicate", "plate": 3 }));
+    let left = plates_shown(&session, id);
+    assert_eq!(left.len(), 4);
+    assert_eq!(left[0]["name"], "Arms \"two\"");
+    assert_eq!(left[0]["locked"], true);
+    assert_eq!(left[2]["own"]["bed_type"], "High Temp Plate");
+    assert_eq!(left[3]["copies"], left[2]["copies"]);
+
+    let to = dir.path().join("plates.3mf");
+    let answer = ask(
+        &session,
+        "project_save",
+        json!({ "project": id, "path": to }),
+    );
+    assert_eq!(answer["saved"], true, "{answer}");
+    let other = Arc::new(Session::new(None));
+    let again = ask(&other, "project_open", json!({ "path": to }))["id"]
+        .as_u64()
+        .unwrap();
+    assert_eq!(plates_shown(&other, again), left);
+}

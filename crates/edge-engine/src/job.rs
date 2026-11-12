@@ -302,6 +302,15 @@ pub fn prepare(mut loaded: Loaded, chosen: &Chosen, overrides: &Overrides) -> Re
         };
         settings.insert("curr_bed_type", Value::One(plate));
     }
+    // What the plate sets for itself comes over everything else, as the
+    // reference lays a plate's config over the whole one before it slices
+    // (BackgroundSlicingProcess.cpp `apply`: `new_config.apply(*plate->config())`).
+    if !loaded.plate_settings.is_empty() {
+        if loaded.plate_settings.get("curr_bed_type").is_some() {
+            bed_type = BedType::Settled;
+        }
+        settings.overlay(&loaded.plate_settings);
+    }
     // What a printer's profile leaves unsaid is as the reference has it
     // by default, so a model sliced with named presets comes out as the
     // same model in a project would.

@@ -62,6 +62,9 @@
         reverseZoom: host.remembered.get('gl.reverse_zoom') === '1',
         navigator: host.remembered.get('gl.navigator') !== '0',
         labels: host.remembered.get('gl.labels') === '1',
+        // The G-code window, shown unless it was hidden (the reference
+        // starts with it on, `show_gcode_window`).
+        gcodeWindow: host.remembered.get('gl.gcode_window') !== '0',
       };
       this.camera.perspective = this.prefs.perspective;
       this.build(host.stage);
@@ -96,9 +99,17 @@
       parent.append(this.loading);
       this.layerSlider = new GL.controls.LayerSlider(parent, {
         onChange: (low, high, which) => this.layersChanged(low, high, which),
-        onMenu: (x, y) => this.host.menu(x, y, [['Jump to Layer', () => this.host.jump()]]),
+        onMenu: (x, y) => this.host.layerMenu(x, y),
       });
       this.moveSlider = new GL.controls.MoveSlider(parent, { onChange: (value) => this.moveChanged(value) });
+      this.gcodeWindow = new GL.GcodeWindow(parent, {
+        call: (name, args) => this.call(name, args),
+        bytes: (name, args) => this.bytes(name, args),
+        step: (by) => this.moveSlider.step(by),
+        say: (text, bad) => this.host.say(text, bad),
+      });
+      this.gcodeButton = document.getElementById('legend-gcode');
+      if (this.gcodeButton) this.gcodeButton.addEventListener('click', () => this.toggleGcode());
       this.navigator.node.hidden = !this.prefs.navigator;
     },
 
@@ -469,17 +480,94 @@
       const preview = this.model && this.model.tab === 'preview';
       const path = preview ? this.path() : null;
       const range = this.range();
+      if (this.gcodeButton) {
+        this.gcodeButton.hidden = !path || !path.index.gcode_lines;
+        this.gcodeButton.setAttribute('aria-pressed', String(this.prefs.gcodeWindow));
+      }
       if (!path || !range) {
         this.layerSlider.set(0, 0, 0, () => ['', '']);
         this.moveSlider.set(0, 0, 0);
         this.readout.hidden = true;
+        this.gcodeWindow.show(null, null, -1, false);
         return;
       }
       this.layerSlider.set(range.last + 1, range.low, range.high, (layer) => [String(layer + 1), path.layers.z[layer].toFixed(2)]);
+      this.showTicks(path);
       // The moves slider runs over the moves of the layers shown that
       // have come in so far.
       this.moveSlider.set(range.from + 1, Math.min(range.end, Math.max(path.loaded, range.from + 1)), range.to);
       this.showReadout(path, range);
+      this.showGcode(range);
+    },
+
+    // What is set at the plate's layers (`layer_codes`), as app.js last
+    // had it for this print.
+    setCodes(codes) {
+      this.codes = codes;
+      this.ticksShown = null;
+      this.syncControls();
+    },
+
+    // The layer an item set at a height is at: the one whose top is
+    // there, else the first above it (IMSlider.cpp `get_tick_from_value`).
+    layerAtZ(path, z) {
+      const tops = path.layers.z;
+      let at = tops.findIndex((top) => Math.abs(top - z) < 0.002);
+      if (at < 0) at = tops.findIndex((top) => top > z);
+      return at < 0 ? tops.length - 1 : at;
+    },
+
+    showTicks(path) {
+      const codes = this.codes;
+      const plate = this.plateId();
+      const mine = codes && codes.project === this.model.project.id && (codes.plate ?? null) === plate ? codes : null;
+      const key = mine ? `${this.print.key}|${JSON.stringify(mine.items)}` : '';
+      if (key === this.ticksShown) return;
+      this.ticksShown = key;
+      const ticks = (mine ? mine.items : []).map((item) => ({ ...this.host.describeCode(item, mine), layer: this.layerAtZ(path, item.print_z), item }));
+      this.layerSlider.setTicks(ticks, (tick) => this.host.deleteCode(tick.item));
+    },
+
+    // The layer the thumb taken up is on, and its top.
+    selectedLayer() {
+      const path = this.path();
+      if (!path) return null;
+      const slider = this.layerSlider;
+      const layer = slider.one || slider.selected === 'high' ? slider.high : slider.low;
+      return { layer, z: path.layers.z[layer], count: path.layers.z.length, tick: slider.tickHere() };
+    },
+
+    // The G-code window, at the line of the move the print has got to
+    // (the last of the layers shown when the slider is at its end), under
+    // the legend and right-aligned with it.
+    showGcode(range) {
+      const legend = document.getElementById('legend');
+      const stage = this.host.stage;
+      const inset = 12;
+      // Down to the moves slider, or to "About this print" where the
+      // window would reach over it.
+      const notes = document.getElementById('notes');
+      const bottomFor = (right) => (notes && !notes.hidden && notes.offsetLeft + notes.offsetWidth > stage.clientWidth - right - 480
+        ? Math.max(64, stage.clientHeight - notes.offsetTop + 6)
+        : 64);
+      let place = { top: inset, right: 104 };
+      if (legend && !legend.hidden) {
+        const right = stage.clientWidth - legend.offsetLeft - legend.offsetWidth;
+        place = { top: legend.offsetTop + legend.offsetHeight + 6, right };
+        // Where a long legend leaves too little under it for eight
+        // lines, the window stands beside it instead, at its left.
+        if (stage.clientHeight - bottomFor(right) - place.top < 8 * 17) place = { top: legend.offsetTop, right: right + legend.offsetWidth + 8 };
+      }
+      place.bottom = bottomFor(place.right);
+      const plate = this.plateId();
+      const args = { project: this.model.project.id, plate: plate === null ? undefined : plate };
+      this.gcodeWindow.show(this.print, args, range.to - 1, this.prefs.gcodeWindow && range.to - 1 < this.path().loaded, place);
+    },
+
+    toggleGcode() {
+      this.prefs.gcodeWindow = !this.prefs.gcodeWindow;
+      this.host.remembered.set('gl.gcode_window', this.prefs.gcodeWindow ? '1' : '0');
+      this.syncControls();
     },
 
     // Where the nozzle is and what it is doing there, while the print is
@@ -858,6 +946,7 @@
       if (this.model.tab !== 'preview' || !this.path()) return;
       const fast = event.shiftKey ? 5 : 1;
       if (key === 'l' && !event.shiftKey) { this.layerSlider.setOne(!this.layerSlider.one); done(); return; }
+      if (key === 'c' && !event.shiftKey) { this.toggleGcode(); done(); return; }
       if (key === 'ArrowLeft' || key === 'ArrowRight') { this.moveSlider.step((key === 'ArrowRight' ? 1 : -1) * fast); done(); return; }
       if (key === 'Home') { this.moveSlider.move(this.moveSlider.least); done(); return; }
       if (key === 'End') { this.moveSlider.move(this.moveSlider.most); done(); }

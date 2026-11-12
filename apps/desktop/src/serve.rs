@@ -26,7 +26,7 @@ const PRINTERS_STYLE: &str = include_str!("../ui/printers.css");
 const SETTINGS_SCRIPT: &str = include_str!("../ui/settings.js");
 const SETTINGS_STYLE: &str = include_str!("../ui/settings.css");
 /// The 3D views' scripts, under `ui/gl`.
-const GL: [(&str, &str); 9] = [
+const GL: [(&str, &str); 10] = [
     ("math.js", include_str!("../ui/gl/math.js")),
     ("camera.js", include_str!("../ui/gl/camera.js")),
     ("shaders.js", include_str!("../ui/gl/shaders.js")),
@@ -34,18 +34,25 @@ const GL: [(&str, &str); 9] = [
     ("scene.js", include_str!("../ui/gl/scene.js")),
     ("toolpath.js", include_str!("../ui/gl/toolpath.js")),
     ("controls.js", include_str!("../ui/gl/controls.js")),
+    ("gcode.js", include_str!("../ui/gl/gcode.js")),
     ("stage.js", include_str!("../ui/gl/stage.js")),
     ("gl.css", include_str!("../ui/gl/gl.css")),
 ];
 /// The files of the tools that change what stands on the plates.
-const EDIT: [(&str, &str); 3] = [
+const EDIT: [(&str, &str); 4] = [
     ("scene-edit.js", include_str!("../ui/scene-edit.js")),
+    ("plates.js", include_str!("../ui/plates.js")),
     ("objects.js", include_str!("../ui/objects.js")),
     ("edit.css", include_str!("../ui/edit.css")),
 ];
 /// Saving a project, and what is asked before a project or the window
 /// closes.
 const SAVE_SCRIPT: &str = include_str!("../ui/save.js");
+/// Sending to printers, and the printer's page in Device.
+const HOSTS: [(&str, &str); 2] = [
+    ("hosts.js", include_str!("../ui/hosts.js")),
+    ("hosts.css", include_str!("../ui/hosts.css")),
+];
 /// A file of the page. A debug build reads it from the source folder each
 /// time, so a change to the page shows on reload; any other build serves
 /// what it was built with.
@@ -126,8 +133,31 @@ fn handle(mut request: Request, session: &Arc<Session>, token: &str, port: u16) 
     let url = request.url().to_owned();
     match (request.method(), url.as_str()) {
         (Method::Get, "/") => {
-            let page = asset("index.html", PAGE).replace("__EDGE_TOKEN__", token);
-            respond(request, 200, "text/html; charset=utf-8", page);
+            // The page's own policy: everything from here, nothing from the
+            // network, but the printers' own pages in a frame, each named
+            // (the connections in force when the page is loaded; the page
+            // loads itself again for a new one, hosts.js `framable`).
+            let frames = session.frame_origins();
+            let page = asset("index.html", PAGE)
+                .replace("__EDGE_TOKEN__", token)
+                .replace("__EDGE_FRAMES__", &frames.join(" "));
+            let frame_src = if frames.is_empty() {
+                "'none'".to_owned()
+            } else {
+                frames.join(" ")
+            };
+            let policy = format!(
+                "default-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'self'; frame-src {frame_src}; object-src 'none'; base-uri 'none'; form-action 'self'; frame-ancestors 'none'"
+            );
+            let html = Header::from_bytes("Content-Type", "text/html; charset=utf-8")
+                .expect("a plain header");
+            let csp = Header::from_bytes("Content-Security-Policy", policy.as_bytes())
+                .expect("a plain header");
+            let _ = request.respond(
+                Response::from_data(page.into_bytes())
+                    .with_header(html)
+                    .with_header(csp),
+            );
         }
         (Method::Get, "/app.js") => {
             respond(
@@ -185,9 +215,15 @@ fn handle(mut request: Request, session: &Arc<Session>, token: &str, port: u16) 
                 asset("save.js", SAVE_SCRIPT),
             );
         }
-        (Method::Get, path) if EDIT.iter().any(|(known, _)| path[1..] == **known) => {
+        (Method::Get, path)
+            if EDIT
+                .iter()
+                .chain(&HOSTS)
+                .any(|(known, _)| path[1..] == **known) =>
+        {
             let (name, built_in) = EDIT
                 .iter()
+                .chain(&HOSTS)
                 .find(|(known, _)| path[1..] == **known)
                 .expect("one of them is it");
             let kind = if name.ends_with(".css") {

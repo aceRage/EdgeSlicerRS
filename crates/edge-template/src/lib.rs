@@ -80,6 +80,11 @@ impl Variables {
         self.values.insert(name.into(), Variable::Many(values));
     }
 
+    /// Takes a variable away, so that a template naming it is refused.
+    pub fn remove(&mut self, name: &str) {
+        self.values.remove(name);
+    }
+
     pub fn contains(&self, name: &str) -> bool {
         self.values.contains_key(name)
     }

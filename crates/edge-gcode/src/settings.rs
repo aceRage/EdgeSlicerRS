@@ -975,6 +975,17 @@ impl PrintSettings {
 /// `\n` a line break and `\r` a carriage return, and stands any other
 /// character after it for itself (Config.cpp `unescape_string_cstyle`).
 /// Vendor presets write their G-code that way; a project's is already plain.
+/// One of the printer's G-code settings as the template it is, its
+/// escapes taken out; none when it is empty (`machine_pause_gcode`,
+/// `template_custom_gcode`).
+pub fn gcode_template(settings: &Settings, key: &str) -> Option<String> {
+    settings
+        .texts(key)
+        .and_then(|texts| texts.first())
+        .filter(|text| !text.trim().is_empty())
+        .map(|text| unescaped(text))
+}
+
 fn unescaped(text: &str) -> String {
     let mut out = String::with_capacity(text.len());
     let mut chars = text.chars();

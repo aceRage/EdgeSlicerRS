@@ -4,12 +4,15 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <meta name="edge-token" content="__EDGE_TOKEN__">
+<!-- The printers' pages this page may frame, as its policy names them (served page only). -->
+<meta name="edge-frames" content="__EDGE_FRAMES__">
 <title>EdgeSlicerRS</title>
 <link rel="stylesheet" href="style.css">
 <link rel="stylesheet" href="printers.css">
 <link rel="stylesheet" href="settings.css">
 <link rel="stylesheet" href="gl/gl.css">
 <link rel="stylesheet" href="edit.css">
+<link rel="stylesheet" href="hosts.css">
 </head>
 <body>
 
@@ -51,7 +54,11 @@
         <button id="slice" type="button" class="primary" disabled>Slice plate</button>
         <button id="slice-more" type="button" class="primary" aria-haspopup="menu" aria-label="Slice plate or slice all"><svg class="chevron" viewBox="0 0 10 6" aria-hidden="true"><path d="M1 1l4 4 4-4"/></svg></button>
       </div>
-      <button id="export" type="button" disabled>Export G-code file</button>
+      <!-- The print button and its menu: "Print" (send to the printer's host) and "Export G-code file". -->
+      <div class="joined">
+        <button id="export" type="button" disabled>Export G-code file</button>
+        <button id="export-more" type="button" aria-haspopup="menu" aria-label="Print or export"><svg class="chevron" viewBox="0 0 10 6" aria-hidden="true"><path d="M1 1l4 4 4-4"/></svg></button>
+      </div>
     </div>
   </header>
 
@@ -82,6 +89,10 @@
                 <!-- The printer's own pages of settings (settings.js), in the panel below. -->
                 <button type="button" id="printer-edit" class="icon tool" title="Click to edit preset" aria-label="Printer settings">
                   <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M10.6,2.4l3,3l-8.1,8.1H2.5v-3ZM9,4l3,3"/></svg>
+                </button>
+                <!-- "Physical Printer": where the printer is and how it is reached (hosts.js). -->
+                <button type="button" id="printer-connect" class="icon tool" title="Connect to printer" aria-label="Connect to printer">
+                  <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M5.5,8.5a3.5,3.5,0,0,1,5,0M3.5,6.5a6.4,6.4,0,0,1,9,0M1.5,4.5a9.2,9.2,0,0,1,13,0"/><circle cx="8" cy="11.5" r="1.2"/></svg>
                 </button>
               </div>
               <label class="card-row">Bed type <select id="bed"></select></label>
@@ -204,6 +215,7 @@
         <div id="legend-head">
           <button type="button" id="legend-fold" class="icon tool" aria-expanded="true" title="Fold or unfold the legend" aria-label="Fold or unfold the legend"><svg viewBox="0 0 16 16" aria-hidden="true"><path d="M4.5,6.5L8,10l3.5-3.5"/></svg></button>
           <select id="view-type" aria-label="View type"></select>
+          <button type="button" id="legend-gcode" class="icon tool" aria-pressed="true" title="On/Off G-code window [C]" aria-label="G-code window" hidden><svg viewBox="0 0 16 16" aria-hidden="true"><path d="M5.5,4.5L2.5,8l3,3.5M10.5,4.5l3,3.5-3,3.5M9,3.5L7,12.5"/></svg></button>
         </div>
         <div id="legend-body">
           <table id="legend-rows"></table>
@@ -241,8 +253,39 @@
     </main>
   </div>
 
-  <!-- Device: the printer of the project shown. Nothing here reaches the printer yet. -->
+  <!-- Device: the printer of the project shown. With a connection, the printer's own page in a frame
+       of its own (hosts.js), and its files; without one, what the preset says of it. -->
   <section id="device" role="tabpanel" hidden>
+    <div id="device-bar" hidden>
+      <div class="tabs" role="tablist" aria-label="Device">
+        <button type="button" role="tab" id="device-tab-page" aria-selected="true" title="The printer's own page">Printer page</button>
+        <button type="button" role="tab" id="device-tab-storage" aria-selected="false" title="The G-code files on the printer">Storage</button>
+      </div>
+      <span id="device-address" class="quiet"></span>
+      <button type="button" id="device-reload" class="icon tool" title="Reload the printer's page" aria-label="Reload the printer's page">
+        <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M13.5,8A5.5,5.5,0,1,1,11.9,4.1M12.5,1.5v3h-3"/></svg>
+      </button>
+      <button type="button" id="device-connect" class="icon tool" title="Connect to printer" aria-label="Connect to printer">
+        <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M5.5,8.5a3.5,3.5,0,0,1,5,0M3.5,6.5a6.4,6.4,0,0,1,9,0M1.5,4.5a9.2,9.2,0,0,1,13,0"/><circle cx="8" cy="11.5" r="1.2"/></svg>
+      </button>
+    </div>
+    <div id="device-view" hidden>
+      <!-- The printer's page: another origin, sandboxed, without the app's calls or the API key. -->
+      <iframe id="device-frame" title="Printer page" sandbox="allow-scripts allow-same-origin allow-forms allow-popups allow-downloads" referrerpolicy="no-referrer"></iframe>
+      <div id="device-storage" hidden>
+        <div class="storage-head">
+          <h2 id="storage-title">Files on the printer</h2>
+          <button type="button" id="storage-refresh" title="List the printer's files again (F5)">Refresh</button>
+        </div>
+        <div class="storage-scroll">
+          <table class="data-table" id="storage-table">
+            <thead><tr><th>Name</th><th class="num">Size</th><th>Modified</th><th></th></tr></thead>
+            <tbody id="storage-body"></tbody>
+          </table>
+          <p id="storage-note" class="quiet"></p>
+        </div>
+      </div>
+    </div>
     <div id="device-page">
       <h1 id="device-name"></h1>
       <p id="device-source" class="quiet"></p>
@@ -250,6 +293,7 @@
       <h2>Printer Connection</h2>
       <p id="device-connection"></p>
       <p class="quiet" id="device-offline"></p>
+      <div class="row"><button type="button" id="device-setup" hidden>Connect to printer</button></div>
     </div>
   </section>
 </div>
@@ -260,6 +304,19 @@
     <input id="ask-text" type="text" autocomplete="off" spellcheck="false">
     <div class="row end">
       <button type="submit" value="ok" class="primary">OK</button>
+      <button type="submit" value="cancel" formnovalidate>Cancel</button>
+    </div>
+  </form>
+</dialog>
+
+<!-- "Add Custom G-code" / "Edit Custom G-code" on the layers slider (IMSlider.cpp `render_input_custom_gcode`). -->
+<dialog id="custom-gcode" aria-labelledby="custom-gcode-title">
+  <form method="dialog">
+    <h2 id="custom-gcode-title">Custom G-code</h2>
+    <label for="custom-gcode-text">Enter Custom G-code used on current layer:</label>
+    <textarea id="custom-gcode-text" class="code" rows="6" spellcheck="false" autocomplete="off"></textarea>
+    <div class="row end">
+      <button type="submit" value="ok" id="custom-gcode-ok" class="primary">OK</button>
       <button type="submit" value="cancel" formnovalidate>Cancel</button>
     </div>
   </form>
@@ -324,6 +381,74 @@
   <div id="pt-pop" class="popover" hidden></div>
 </dialog>
 
+<!-- "Physical Printer": the "Print Host upload" group of PhysicalPrinterDialog.cpp, for the printer preset of the project shown. -->
+<dialog id="host-dialog" class="host-dialog" aria-labelledby="host-title">
+  <form method="dialog" id="host-form">
+    <h2 id="host-title">Physical Printer</h2>
+    <p id="host-printer" class="quiet"></p>
+    <h3 class="caps">Print Host upload</h3>
+    <div class="card">
+      <div class="card-row"><label for="host-type" title="EdgeSlicer can upload G-code files to a printer host. This field must contain the kind of the host.">Host Type</label><select id="host-type"></select></div>
+      <div class="card-row"><label for="host-address" title="EdgeSlicer can upload G-code files to a printer host. This field should contain the hostname, IP address or URL of the printer host instance. Print host behind HAProxy with basic auth enabled can be accessed by putting the user name and password into the URL in the following format: https://username:password@your-octopi-address/">Hostname, IP or URL</label><span class="host-field"><input id="host-address" type="text" autocomplete="off" spellcheck="false"><button type="button" id="host-test">Test</button></span></div>
+      <div class="card-row"><label for="host-webui" title="Specify the URL of your device user interface if it's not same as print_host.">Device UI</label><span class="host-field"><input id="host-webui" type="text" autocomplete="off" spellcheck="false"></span></div>
+      <div class="card-row"><label for="host-key" title="EdgeSlicer can upload G-code files to a printer host. This field should contain the API Key or the password required for authentication.">API Key / Password</label><span class="host-field"><input id="host-key" type="password" autocomplete="off" spellcheck="false"><button type="button" id="host-key-clear" class="link">Clear</button></span></div>
+      <div class="card-row"><label for="host-cafile" title="Custom CA certificate file can be specified for HTTPS OctoPrint connections, in crt/pem format. If left blank, the default OS CA certificate repository is used.">HTTPS CA File</label><span class="host-field"><input id="host-cafile" type="text" autocomplete="off" spellcheck="false"><button type="button" id="host-cafile-browse">Browse ...</button></span></div>
+      <p class="card-row quiet host-hint">HTTPS CA file is optional. It is only needed if you use HTTPS with a self-signed certificate.</p>
+    </div>
+    <p id="host-note" class="quiet"></p>
+    <p id="host-result" role="status" hidden></p>
+    <div class="dialog-foot">
+      <div class="grow"><button type="button" id="host-forget" class="link" hidden>Use the preset's connection</button></div>
+      <button type="submit" value="ok" class="primary">OK</button>
+      <button type="submit" value="cancel" formnovalidate>Cancel</button>
+    </div>
+  </form>
+</dialog>
+
+<!-- "Send G-code to printer host" (PrintHostDialogs.cpp `PrintHostSendDialog`, and the Centauri Carbon's options of `ElegooPrintHostSendDialog`). -->
+<dialog id="send-dialog" class="host-dialog" aria-labelledby="send-title">
+  <form method="dialog" id="send-form">
+    <h2 id="send-title">Send G-code to printer host</h2>
+    <label for="send-name">Upload to Printer Host with the following filename:</label>
+    <input id="send-name" type="text" autocomplete="off" spellcheck="false">
+    <p class="quiet">Please do not include the special characters #, *, ;, \, /, :, ", &lt;, &gt;, or | in filenames.</p>
+    <label class="tick" id="send-unload-row" hidden title="The printer unloads the toolheads this print used once it has finished, skipping any that holds a flexible filament. The printer preset sets the default; this box changes it for this print only."><input type="checkbox" id="send-unload"> Unload filaments after print</label>
+    <div id="send-elegoo" class="send-options" hidden>
+      <label class="tick"><input type="checkbox" id="send-timelapse"> Time-lapse</label>
+      <label class="tick"><input type="checkbox" id="send-leveling"> Heated Bed Leveling</label>
+      <label class="tick"><input type="radio" name="send-plate" id="send-plate-a" value="a"> Textured Build Plate (Side A)</label>
+      <label class="tick"><input type="radio" name="send-plate" id="send-plate-b" value="b"> Smooth Build Plate (Side B)</label>
+      <p id="send-plate-warn" class="warn" hidden>The selected bed type does not match the file. Please confirm before starting the print.</p>
+    </div>
+    <label class="tick"><input type="checkbox" id="send-device"> Switch to Device tab after upload.</label>
+    <p id="send-to" class="quiet"></p>
+    <div class="row end">
+      <button type="submit" value="upload" class="primary">Upload</button>
+      <button type="submit" value="print" id="send-print">Upload and Print</button>
+      <button type="submit" value="cancel" formnovalidate>Cancel</button>
+    </div>
+  </form>
+</dialog>
+
+<!-- "Print host upload queue" (PrintHostDialogs.cpp `PrintHostQueueDialog`). -->
+<dialog id="queue-dialog" aria-labelledby="queue-title">
+  <h2 id="queue-title">Print host upload queue</h2>
+  <div class="queue-scroll">
+    <table class="data-table" id="queue-table">
+      <thead><tr><th class="num">ID</th><th>Progress</th><th>Status</th><th>Host</th><th class="num">Size</th><th>Filename</th><th>Message</th></tr></thead>
+      <tbody id="queue-body"></tbody>
+    </table>
+    <p id="queue-none" class="quiet">Nothing has been sent to a printer yet.</p>
+  </div>
+  <div class="dialog-foot">
+    <div class="grow">
+      <button type="button" id="queue-cancel" disabled>Cancel selected</button>
+      <button type="button" id="queue-error" disabled>Show error message</button>
+    </div>
+    <button type="button" id="queue-close" class="primary">Close</button>
+  </div>
+</dialog>
+
 <div id="menu" role="menu" hidden></div>
 
 <script src="gl/math.js"></script>
@@ -333,12 +458,15 @@
 <script src="gl/scene.js"></script>
 <script src="gl/toolpath.js"></script>
 <script src="gl/controls.js"></script>
+<script src="gl/gcode.js"></script>
 <script src="gl/stage.js"></script>
 <script src="scene-edit.js"></script>
+<script src="plates.js"></script>
 <script src="objects.js"></script>
 <script src="printers.js"></script>
 <script src="settings.js"></script>
 <script src="app.js"></script>
 <script src="save.js"></script>
+<script src="hosts.js"></script>
 </body>
 </html>

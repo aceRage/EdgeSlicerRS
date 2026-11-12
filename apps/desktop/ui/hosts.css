@@ -1,0 +1,73 @@
+/* Sending to printers (hosts.js): "Physical Printer", "Send G-code to
+   printer host", "Print host upload queue", and Device with a printer's
+   page. Only what is theirs alone; everything else is the components of
+   style.css. No colour or size here that is not a token. */
+
+/* -- the two small dialogs: a card of rows, the field 280 px at the right -- */
+
+dialog.host-dialog { width: min(560px, calc(100vw - 32px)); max-height: calc(100vh - 32px); }
+dialog.host-dialog h3 { margin: 0; }
+dialog.host-dialog .card-row > label { flex: 1; color: var(--text-2); font-size: var(--size-label); }
+dialog.host-dialog .card-row > .lb { flex: 0 0 280px; max-width: 60%; }
+.host-field { flex: 0 0 280px; max-width: 60%; display: flex; align-items: center; gap: var(--space-1); }
+.host-field > input { flex: 1; min-width: 0; }
+.host-field > button:not(.link) { flex: none; }
+.host-field > button.link { flex: none; padding: 0 var(--space-1); font-size: var(--size-label); }
+.card-row.host-hint { font-size: var(--size-small); color: var(--text-3); }
+#host-result { margin: 0; white-space: pre-line; overflow-wrap: anywhere; }
+#host-result.ok { color: var(--ok); }
+
+/* A tick box or a radio with its words after it, on one line. */
+label.tick { flex-direction: row; align-items: center; gap: var(--space-2); color: var(--text-1); font-size: var(--size-body); cursor: pointer; }
+label.tick[hidden] { display: none; }
+.send-options { display: flex; flex-direction: column; gap: var(--space-2); padding-left: var(--space-3); border-left: 2px solid var(--line-2); }
+.send-options[hidden] { display: none; }
+p.warn { margin: 0; color: var(--warn); }
+#send-name { font-family: var(--font-mono); font-size: var(--size-label); }
+
+/* -- the queue: a table in a large dialog -- */
+
+#queue-dialog { width: min(980px, calc(100vw - 32px)); max-height: calc(100vh - 32px); padding: var(--space-4); display: none; flex-direction: column; gap: var(--space-3); }
+#queue-dialog[open] { display: flex; }
+#queue-dialog h2 { font-size: var(--size-title); }
+.queue-scroll { min-height: 120px; max-height: 50vh; overflow: auto; border: 1px solid var(--line-2); border-radius: var(--radius-l); background: var(--surface-well); }
+.queue-scroll > p { padding: var(--space-4); }
+#queue-table th:nth-child(1) { width: 44px; }
+#queue-table th:nth-child(2) { width: 150px; }
+#queue-table th:nth-child(3) { width: 104px; }
+#queue-table th:nth-child(5) { width: 84px; }
+#queue-table td:nth-child(2) { display: flex; align-items: center; gap: var(--space-2); }
+.queue-bar { flex: 1; height: 4px; border-radius: var(--radius-s); background: var(--line-2); overflow: hidden; }
+.queue-bar > span { display: block; height: 100%; background: var(--accent); transition: width var(--time) var(--ease); }
+.queue-error td:nth-child(3), .queue-error td:last-child { color: var(--danger); }
+.queue-completed td:nth-child(3) { color: var(--ok); }
+.queue-canceled td, .queue-canceling td { color: var(--text-3); }
+#queue-dialog .dialog-foot .grow { display: flex; gap: var(--space-2); }
+
+/* -- Device with a connection: a bar over the printer's page -- */
+
+#device:has(#device-view:not([hidden])) { display: flex; flex-direction: column; overflow: hidden; }
+#device-bar { flex: none; display: flex; align-items: center; gap: var(--space-2); padding: 0 var(--space-3); border-bottom: 1px solid var(--line-1); background: var(--surface-panel); }
+#device-bar[hidden] { display: none; }
+#device-bar .tabs { border-bottom: 0; }
+#device-address { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font: var(--size-label) var(--font-mono); color: var(--text-3); text-align: right; }
+#device-bar button.tool { color: var(--text-2); }
+#device-view { flex: 1; min-height: 0; display: flex; flex-direction: column; }
+#device-view[hidden] { display: none; }
+/* The printer's page is its own: a plain white sheet behind it, as a
+   browser gives a page that sets no background. */
+#device-frame { flex: 1; width: 100%; min-height: 0; border: 0; background: var(--cover-plate); }
+#device-frame[hidden] { display: none; }
+#device-storage { flex: 1; min-height: 0; display: flex; flex-direction: column; gap: var(--space-3); padding: var(--space-4) var(--space-5); }
+#device-storage[hidden] { display: none; }
+.storage-head { display: flex; align-items: center; gap: var(--space-2); }
+.storage-head h2 { flex: 1; }
+.storage-scroll { flex: 1; min-height: 0; overflow: auto; border: 1px solid var(--line-2); border-radius: var(--radius-l); background: var(--surface-well); }
+.storage-scroll > p { padding: var(--space-4); white-space: pre-line; }
+.storage-scroll > p:empty { display: none; }
+#storage-table th:nth-child(2) { width: 96px; }
+#storage-table th:nth-child(3) { width: 180px; }
+#storage-table th:nth-child(4) { width: 150px; }
+#storage-table tbody tr { cursor: default; }
+.storage-actions { display: flex; align-items: center; justify-content: flex-end; gap: var(--space-1); height: 40px; }
+#device-page .row { margin-top: var(--space-2); }

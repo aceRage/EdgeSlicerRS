@@ -920,7 +920,8 @@ pub fn write_to<W: Write + Seek>(save: &Save<'_>, out: W) -> Result<Written, Err
         zip.add(name, text.as_bytes())?;
     }
 
-    // Custom G-code at layers, under each plate's number now.
+    // Custom G-code at layers, by plate number (the engine keeps each
+    // plate's with it, so it is under the plate's number as it stands).
     if let Some(text) = custom_gcode(project, kept) {
         zip.add(kept::CUSTOM_GCODE, text.as_bytes())?;
     }
@@ -1164,27 +1165,12 @@ fn cut_of(object: &Object) -> Option<Result<String, ()>> {
 }
 
 fn custom_gcode(project: &Project, kept: Option<&Kept>) -> Option<String> {
-    if let Some(whole) = kept.and_then(|kept| kept.custom_gcode.clone()) {
-        return Some(whole);
+    if project.custom_gcode.is_empty() {
+        return kept.and_then(|kept| kept.custom_gcode.clone());
     }
-    let plates: Vec<(u32, &String)> = project
-        .plates
-        .iter()
-        .filter_map(|plate| Some((plate.id, plate.kept.as_ref()?.custom_gcode.as_ref()?)))
-        .collect();
-    if plates.is_empty() {
-        return None;
-    }
-    let mut text =
-        String::from("<?xml version=\"1.0\" encoding=\"utf-8\"?>\n<custom_gcodes_per_layer>\n");
-    for (id, inside) in plates {
-        let _ = writeln!(
-            text,
-            "<plate>\n<plate_info id=\"{id}\"/>\n{inside}\n</plate>"
-        );
-    }
-    text.push_str("</custom_gcodes_per_layer>\n");
-    Some(text)
+    Some(crate::custom_gcode::text(
+        project.custom_gcode.iter().map(|(id, info)| (*id, info)),
+    ))
 }
 
 fn model_settings(

@@ -67,6 +67,10 @@ pub struct Shells {
     /// layer's fill is not over and under the fill of the layers within
     /// a shell of it is then made solid.
     pub ensure: Option<Coord>,
+    /// The outer wall's line spacing. With `ensure` set and a shell of
+    /// one layer, the face itself, the fill this far round a face on its
+    /// own layer is made solid, so that the face is held at its edges.
+    pub outer_spacing: Coord,
     /// Set where a bridge gets a second layer of bridge over it
     /// (`enable_extra_bridge_layer` for bridges over air): the least
     /// half-width of bridge worth a second layer, which the reference
@@ -222,6 +226,36 @@ pub fn classify(
     let count = slices.len();
 
     let faces = faces(slices, outlines, shells)?;
+    // With walls kept thick, the faces a shell is made from are each
+    // grown by a twentieth of a solid line's spacing first, so that the
+    // faces of neighbouring layers on a slope, which meet edge to edge,
+    // are made one (`top_bottom_expansion_coeff` in
+    // `discover_vertical_shells`, PrintObject.cpp): a shell is then
+    // opened as a whole and not as so many strips each too narrow to keep.
+    let grown_faces: Vec<Faces> = match shells.ensure {
+        Some(spacing) => {
+            let by = (0.05 * spacing as f64) as Coord;
+            faces
+                .par_iter()
+                .map(|(top, bottom)| {
+                    let grown = |face: &[ExPolygon]| {
+                        if face.is_empty() {
+                            Ok(Vec::new())
+                        } else {
+                            edge_clip::offset(face, by, Join::MITER)
+                        }
+                    };
+                    Ok((grown(top)?, grown(bottom)?))
+                })
+                .collect::<Result<_, ClipError>>()?
+        }
+        None => Vec::new(),
+    };
+    let shell_faces = if shells.ensure.is_some() {
+        &grown_faces
+    } else {
+        &faces
+    };
     let reach = Reach::new(
         heights,
         (shells.top_layers, shells.bottom_layers),
@@ -268,12 +302,36 @@ pub fn classify(
             // next `bottom_layers - 1` layers down, and in as many more
             // as the thickness asked of a shell takes.
             let (above, below) = (reach.above(layer), reach.below(layer));
-            let shell: Vec<ExPolygon> = above
+            let mut shell: Vec<ExPolygon> = above
                 .clone()
-                .flat_map(|other| &faces[other].0)
-                .chain(below.clone().flat_map(|other| &faces[other].1))
+                .flat_map(|other| &shell_faces[other].0)
+                .chain(below.clone().flat_map(|other| &shell_faces[other].1))
                 .cloned()
                 .collect();
+            // With walls kept thick, a face with no shell layers beyond
+            // itself is held at its edges: the fill an outer wall's
+            // spacing round it, under the layer over a top or on the
+            // layer under a bottom, is shell too
+            // (`discover_vertical_shells`, PrintObject.cpp, where no
+            // layer's faces are projected onto this one).
+            if shells.ensure.is_some() {
+                let (top, bottom) = &shell_faces[layer];
+                let mut held = |face: &[ExPolygon], next: usize| -> Result<(), ClipError> {
+                    if !face.is_empty() {
+                        shell.extend(edge_clip::intersection(
+                            &edge_clip::offset(face, shells.outer_spacing, Join::MITER)?,
+                            outlines[next],
+                        )?);
+                    }
+                    Ok(())
+                };
+                if shells.top_layers > 0 && above.is_empty() && layer + 1 < count {
+                    held(top, layer + 1)?;
+                }
+                if shells.bottom_layers > 0 && below.is_empty() && layer > 0 {
+                    held(bottom, layer - 1)?;
+                }
+            }
 
             let (mut solid, mut sparse) = if shells.sparse_density >= 1.0 {
                 (internal, Vec::new())
@@ -497,9 +555,8 @@ pub struct Anchoring {
 /// Grows each layer's bridges, bottoms and tops into the fill beside
 /// them, and gives every bridge the direction that carries it from
 /// support to support (`LayerRegion::process_external_surfaces`). The
-/// reference grows in waves that cannot leave the area they start in;
-/// here a surface is grown by the same distance and cut to the fill it
-/// may grow into.
+/// reference grows in waves that cannot leave the area they start in, and
+/// so does this.
 pub fn anchor(
     surfaces: &[Vec<Surface>],
     anchoring: &Anchoring,
@@ -516,16 +573,26 @@ pub fn anchor(
                     .collect()
             };
             let (bridges, mut bottoms) = (of(SurfaceKind::Bridge), of(SurfaceKind::Bottom));
-            let mut top = of(SurfaceKind::Top);
+            let top = of(SurfaceKind::Top);
             if bridges.is_empty() && bottoms.is_empty() && top.is_empty() {
                 return Ok(layer.clone());
             }
-            let mut solid = of(SurfaceKind::InternalSolid);
-            let mut sparse = of(SurfaceKind::Sparse);
+            // Each kind of fill grown into is taken whole, its touching
+            // pieces made one, as the reference takes it (`union_ex` of
+            // each zone in `process_external_surfaces`): a wave crosses
+            // from one piece into the next only so.
+            let mut top = edge_clip::union_ex(&top)?;
+            let mut solid = edge_clip::union_ex(&of(SurfaceKind::InternalSolid))?;
+            let mut sparse = edge_clip::union_ex(&of(SurfaceKind::Sparse))?;
             let mut out = Vec::with_capacity(layer.len());
 
             // A surface with what it gains from each kind of fill beside
             // it, closed up and kept to what it started from and gained.
+            // It grows as the reference grows it (`expand_merge_surfaces`,
+            // LayerRegion.cpp, by `propagate_waves`,
+            // Algorithm/RegionExpansion.cpp): a step at a time within each
+            // piece of fill it touches, so that it never jumps the walls
+            // between it and fill it does not touch.
             let grown = |surface: &[ExPolygon],
                          into: &[(&[ExPolygon], Coord)]|
              -> Result<Vec<ExPolygon>, ClipError> {
@@ -535,10 +602,12 @@ pub fn anchor(
                     if zone.is_empty() || *reach <= 0 {
                         continue;
                     }
-                    all.extend(edge_clip::intersection(
-                        &edge_clip::offset(surface, *reach, join)?,
-                        zone,
-                    )?);
+                    let steps = crate::bridges::Waves::of(*reach);
+                    for source in surface {
+                        for piece in *zone {
+                            all.extend(crate::bridges::wave(source, piece, &steps)?);
+                        }
+                    }
                     allowed.extend(zone.iter().cloned());
                 }
                 if all.len() == surface.len() {
@@ -551,92 +620,65 @@ pub fn anchor(
             };
 
             // Bridges first, each with its own direction, judged by the
-            // edges it has no fill beside.
-            if !bridges.is_empty() && anchoring.bridge_extra > 0 {
-                // With extra reach set (`bridge_expansion_extra`) bridges
-                // are grown as the reference grows them
-                // (`expand_bridges_detect_orientations`): further by that
-                // much into solid fill and a top surface, into a bottom
-                // surface beside them as well, in waves that keep to the
-                // area they grow in, and those that grow into one another
-                // made one. Into sparse fill they reach as they did.
-                // Different from the reference: a bridge's direction is
-                // found as it is here with no extra reach, and the gaps
-                // closed in a grown bridge stay inside the fill.
-                let beside: Vec<ExPolygon> = solid
-                    .iter()
-                    .chain(&sparse)
-                    .chain(&top)
-                    .chain(&bottoms)
-                    .cloned()
-                    .collect();
+            // edges it has no fill beside, and grown as the reference grows
+            // them (`expand_bridges_detect_orientations`, LayerRegion.cpp):
+            // into solid fill, sparse fill and a top surface beside them,
+            // in waves that keep to the area they grow in, and those that
+            // grow into one another made one. With extra reach set
+            // (`bridge_expansion_extra`) they reach that much further into
+            // solid fill and a top surface, and into a bottom surface
+            // beside them as well. Different from the reference: a
+            // bridge's direction is found from the edges with no fill
+            // beside them (`bridge_direction`), and the gaps closed in a
+            // grown bridge stay inside the fill.
+            if !bridges.is_empty() {
+                let extra = anchoring.bridge_extra > 0;
+                if extra {
+                    bottoms = edge_clip::union_ex(&bottoms)?;
+                }
+                let mut beside: Vec<ExPolygon> =
+                    solid.iter().chain(&sparse).chain(&top).cloned().collect();
+                if extra {
+                    beside.extend(bottoms.iter().cloned());
+                }
                 let beside = edge_clip::offset(&beside, BESIDE, join)?;
                 let angles: Vec<f64> = bridges
                     .iter()
                     .map(|bridge| bridge_direction(bridge, &beside))
                     .collect();
                 let reach = anchoring.into_solid + anchoring.bridge_extra;
-                let grown = crate::bridges::expand(
-                    &bridges,
-                    &angles,
-                    &[
-                        crate::bridges::Zone {
-                            area: &solid,
-                            reach,
-                            waves: true,
-                        },
-                        crate::bridges::Zone {
-                            area: &sparse,
-                            reach: anchoring.into_sparse,
-                            waves: false,
-                        },
-                        crate::bridges::Zone {
-                            area: &top,
-                            reach,
-                            waves: true,
-                        },
-                        crate::bridges::Zone {
-                            area: &bottoms,
-                            reach,
-                            waves: true,
-                        },
-                    ],
-                    anchoring.closing,
-                )?;
+                let mut zones = vec![
+                    crate::bridges::Zone {
+                        area: &solid,
+                        reach,
+                        waves: true,
+                    },
+                    crate::bridges::Zone {
+                        area: &sparse,
+                        reach: anchoring.into_sparse,
+                        waves: true,
+                    },
+                    crate::bridges::Zone {
+                        area: &top,
+                        reach,
+                        waves: true,
+                    },
+                ];
+                if extra {
+                    zones.push(crate::bridges::Zone {
+                        area: &bottoms,
+                        reach,
+                        waves: true,
+                    });
+                }
+                let grown = crate::bridges::expand(&bridges, &angles, &zones, anchoring.closing)?;
                 for (area, angle) in grown {
                     solid = edge_clip::difference(&solid, &area)?;
                     sparse = edge_clip::difference(&sparse, &area)?;
                     top = edge_clip::difference(&top, &area)?;
-                    bottoms = edge_clip::difference(&bottoms, &area)?;
-                    out.extend(area.into_iter().map(|area| Surface {
-                        kind: SurfaceKind::Bridge,
-                        area,
-                        angle: Some(angle),
-                    }));
-                }
-            } else if !bridges.is_empty() {
-                let beside: Vec<ExPolygon> =
-                    solid.iter().chain(&sparse).chain(&top).cloned().collect();
-                let beside = edge_clip::offset(&beside, BESIDE, join)?;
-                let mut taken: Vec<ExPolygon> = Vec::new();
-                for bridge in &bridges {
-                    let angle = bridge_direction(bridge, &beside);
-                    let own = std::slice::from_ref(bridge);
-                    let mut area = grown(
-                        own,
-                        &[
-                            (&solid, anchoring.into_solid),
-                            (&sparse, anchoring.into_sparse),
-                            (&top, anchoring.into_solid),
-                        ],
-                    )?;
-                    if !taken.is_empty() {
-                        area = edge_clip::difference(&area, &taken)?;
+                    if extra {
+                        bottoms = edge_clip::difference(&bottoms, &area)?;
                     }
-                    solid = edge_clip::difference(&solid, &area)?;
-                    sparse = edge_clip::difference(&sparse, &area)?;
-                    top = edge_clip::difference(&top, &area)?;
-                    taken.extend(area.iter().cloned());
                     out.extend(area.into_iter().map(|area| Surface {
                         kind: SurfaceKind::Bridge,
                         area,
@@ -898,6 +940,7 @@ mod tests {
             minimum_sparse_area: 15.0,
             opening: scaled(0.045),
             ensure: None,
+            outer_spacing: scaled(0.42),
             second_bridge: None,
         }
     }
@@ -1123,6 +1166,77 @@ mod tests {
             solid_on(&ensuring, 10).round(),
             solid_on(&plain, 10).round()
         );
+    }
+
+    #[test]
+    fn a_face_that_is_its_own_whole_shell_is_held_at_its_edges() {
+        // A 20 mm base four layers tall carrying a 10 mm tower: the
+        // base's last layer is a ledge round the tower's foot.
+        let mut layers = vec![block(0.0, 0.0, 20.0, 20.0); 4];
+        layers.extend(vec![block(0.0, 0.0, 10.0, 10.0); 4]);
+        let slices: Vec<&[ExPolygon]> = layers.iter().map(Vec::as_slice).collect();
+        let inside = inside_walls(std::slice::from_ref(&slices), &slices, None).unwrap();
+        let solid_under_the_foot = |shells: &Shells| -> f64 {
+            classify(&slices, &slices, &slices, &inside, &flat(8), shells).unwrap()[3]
+                .iter()
+                .filter(|s| s.kind == InternalSolid)
+                .map(|s| s.area.area_mm2())
+                .sum()
+        };
+        let ensuring = |top_layers: usize| Shells {
+            ensure: Some(scaled(0.4)),
+            ..shells(top_layers, 1)
+        };
+        // With a top shell of one layer, a strip an outer wall's spacing
+        // wide inside the foot, along its two sides on the ledge, and
+        // the little the shell is grown by.
+        let held = solid_under_the_foot(&ensuring(1));
+        assert!((8.4..10.5).contains(&held), "{held} mm²");
+        // Not without walls kept thick, nor where the shell has a layer
+        // beyond the face.
+        assert_eq!(solid_under_the_foot(&shells(1, 1)), 0.0);
+        assert_eq!(solid_under_the_foot(&ensuring(2)), 0.0);
+    }
+
+    #[test]
+    fn faces_a_hair_apart_on_a_slope_make_one_shell() {
+        // A slope stepping in 0.25 mm a layer, its outlines as modelled a
+        // hundredth of a millimetre wider than printed: each layer's top
+        // face is a strip 0.24 mm wide, a hair from the next one's, and
+        // too narrow alone for a line of solid fill.
+        let count = 12;
+        let side = |layer: usize| 20.0 - 0.25 * layer as f64;
+        let slices: Vec<Vec<ExPolygon>> = (0..count)
+            .map(|layer| block(0.0, 0.0, side(layer), 20.0))
+            .collect();
+        let outlines: Vec<Vec<ExPolygon>> = (0..count)
+            .map(|layer| block(0.0, 0.0, side(layer) + 0.01, 20.0))
+            .collect();
+        let slices: Vec<&[ExPolygon]> = slices.iter().map(Vec::as_slice).collect();
+        let outlines: Vec<&[ExPolygon]> = outlines.iter().map(Vec::as_slice).collect();
+        // The fill of every layer taken to cover the whole slope, so that
+        // the shell is the faces' alone.
+        let inside = vec![block(0.0, 0.0, 20.0, 20.0); count];
+        let ensuring = Shells {
+            ensure: Some(scaled(0.4)),
+            ..shells(5, 1)
+        };
+        let found = classify(
+            &slices,
+            &outlines,
+            &slices,
+            &inside,
+            &flat(count),
+            &ensuring,
+        )
+        .unwrap();
+        // Under four layers' faces, a band about a millimetre wide.
+        let solid: f64 = found[4]
+            .iter()
+            .filter(|s| s.kind == InternalSolid)
+            .map(|s| s.area.area_mm2())
+            .sum();
+        assert!((18.0..24.0).contains(&solid), "{solid} mm²");
     }
 
     #[test]
@@ -1584,6 +1698,59 @@ mod tests {
             area > 8.0 * 14.0 + 15.0 && area < 8.0 * 14.0 + 20.0,
             "{area} mm²"
         );
+    }
+
+    #[test]
+    fn a_top_does_not_reach_across_a_wall_into_fill_it_does_not_touch() {
+        // A strip of top fill, then a wall 0.5 mm wide with nothing to
+        // fill under it, then solid fill: the strip's walls go round the
+        // fill and not the top, as `only_one_wall_top` leaves them.
+        let layer = vec![
+            Surface::new(Top, block(0.0, 0.0, 3.0, 10.0).remove(0)),
+            Surface::new(InternalSolid, block(3.5, 0.0, 13.5, 10.0).remove(0)),
+        ];
+        let found = anchor(std::slice::from_ref(&layer), &anchoring())
+            .unwrap()
+            .remove(0);
+        assert!((area_of(&found, Top) - 30.0).abs() < 1e-6);
+        assert!((area_of(&found, InternalSolid) - 100.0).abs() < 1e-6);
+        // Touching the fill, it reaches 1.4 mm into it.
+        let layer = vec![
+            Surface::new(Top, block(0.0, 0.0, 3.0, 10.0).remove(0)),
+            Surface::new(InternalSolid, block(3.0, 0.0, 13.0, 10.0).remove(0)),
+        ];
+        let found = anchor(std::slice::from_ref(&layer), &anchoring())
+            .unwrap()
+            .remove(0);
+        assert!((area_of(&found, Top) - 44.0).abs() < 0.05);
+        assert!((area_of(&found, InternalSolid) - 86.0).abs() < 0.05);
+        // The same fill in two pieces that touch is one to grow into.
+        let layer = vec![
+            Surface::new(Top, block(0.0, 0.0, 3.0, 10.0).remove(0)),
+            Surface::new(InternalSolid, block(3.0, 0.0, 3.5, 10.0).remove(0)),
+            Surface::new(InternalSolid, block(3.5, 0.0, 13.0, 10.0).remove(0)),
+        ];
+        let found = anchor(std::slice::from_ref(&layer), &anchoring())
+            .unwrap()
+            .remove(0);
+        assert!((area_of(&found, Top) - 44.0).abs() < 0.05);
+    }
+
+    #[test]
+    fn a_bridge_does_not_reach_across_a_wall_into_fill_it_does_not_touch() {
+        // A bridge with solid fill on its right, and more solid fill
+        // beyond a wall 0.5 mm wide on its left.
+        let layer = vec![
+            Surface::new(InternalSolid, block(-10.5, 0.0, -0.5, 10.0).remove(0)),
+            Surface::new(Bridge, block(0.0, 0.0, 10.0, 10.0).remove(0)),
+            Surface::new(InternalSolid, block(10.0, 0.0, 20.0, 10.0).remove(0)),
+        ];
+        let found = anchor(std::slice::from_ref(&layer), &anchoring())
+            .unwrap()
+            .remove(0);
+        // 1.4 mm onto the fill it touches, none onto the other.
+        assert!((area_of(&found, Bridge) - 114.0).abs() < 0.05);
+        assert!((area_of(&found, InternalSolid) - 186.0).abs() < 0.05);
     }
 
     #[test]

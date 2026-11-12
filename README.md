@@ -12,7 +12,7 @@ replaces it until output matches on the printers we care about.
 | `crates/edge-geom` | Fixed-point 2D geometry (nanometre `i64`, same scale as libslic3r): points, polygons, regions, convex hull |
 | `crates/edge-mesh` | Indexed triangle mesh, transforms, STL read/write |
 | `crates/edge-config` | Vendor presets resolved through `inherits`, `include` and `renamed_from`; the reference's defaults for every setting, and the text form it writes settings in |
-| `crates/edge-3mf` | 3MF projects: objects, parts and their roles, instances, plates, project settings, and colours painted onto triangles; and writing a project back in the reference's own layout (`write`), keeping what was read and not changed (every kind of paint, per-object and per-part settings, layer ranges and heights, cut information, custom G-code, a plate's settings and pictures, every other entry) and leaving out print-host addresses and keys |
+| `crates/edge-3mf` | 3MF projects: objects, parts and their roles, instances, plates, project settings, and colours painted onto triangles; and writing a project back in the reference's own layout (`write`), keeping what was read and not changed (every kind of paint, per-object and per-part settings, layer ranges and heights, cut information, a plate's settings and pictures, every other entry) and leaving out print-host addresses and keys; the G-code set at each plate's layers (pauses, custom G-code, filament changes), read and written as the reference does |
 | `crates/edge-fuzzy` | Fuzzy skin: walls roughened by moving their points or changing their width, with the noise it is drawn from (a port of the reference's FuzzySkin and of the libnoise modules it uses) |
 | `crates/edge-avoid` | Travel routed round the inside of a part's walls where a straight move would cross them: what a layer's moves are routed by, and the way round for each (a port of the reference's AvoidCrossingPerimeters) |
 | `crates/edge-arachne` | Walls of changing width: a region's skeleton, how many lines fit along it and where that number changes, and the lines themselves (a port of the reference's Arachne) |
@@ -121,11 +121,21 @@ the controls it is built from are described in `apps/desktop/ui/STYLE.md`.
   it is; what the print comes to; and, kept apart,
   what is wrong with this print, what was settled without being asked,
   and the settings the profile turns on that this engine does not follow
-  yet. "Slice plate" or "Slice all", and "Export G-code file", which
-  writes the file the command line writes.
-- **Device**: the printer of the project shown, as its preset describes
-  it, with its address when the preset has one. Nothing is sent to a
-  printer or read from one yet; the inventory says what that takes.
+  yet. "Slice plate" or "Slice all", and the print button: "Export
+  G-code file", which writes the file the command line writes, or
+  "Print", which sends those same bytes to the printer ("Upload" or
+  "Upload and Print", and the "Print host upload queue").
+- **Sending to a printer**: "Connect to printer" on the Printer card sets
+  where the printer is ("Host Type", "Hostname, IP or URL", "Device UI",
+  "API Key / Password", "HTTPS CA File", "Test"), kept for that printer
+  preset in the app's data folder, the key in a file of its own. Built:
+  OctoPrint's API ("Octo/Klipper"), a Snapmaker U1 over its Moonraker,
+  and the Elegoo Centauri Carbon ("Elegoo Link"); `src/hosts/`, with a
+  mock of each printer in the tests. Nothing is asked of a printer
+  unless the person asks.
+- **Device**: with a connection, the printer's own page in an isolated
+  frame, and for a U1 its files ("Storage": "Print", "Delete"); without
+  one, the printer of the project shown as its preset describes it.
 
 - **Printer Selection** ("Select/Remove printers (system presets)" in
   the printer list, or the gear beside "Printer"): every printer model
@@ -714,8 +724,18 @@ Known gaps: painted supports and seams, per-object setting overrides, typed sett
   layer's fill is not over and under the fill of the layers within a
   shell of it is made solid too, so a leaning wall stays as thick
   measured straight up as it is sideways; walls between two filaments
-  inside a part do not count (`discover_vertical_shells`). Any other
-  value of that setting is noted and not followed.
+  inside a part do not count (`discover_vertical_shells`). The faces
+  a shell is made from are first grown by a twentieth of a solid
+  line's spacing, as the reference grows them, so that the faces of
+  neighbouring layers on a slope, which meet a hair apart, make one
+  shell and not strips each too narrow to keep; and a face that is its
+  whole shell (`top_shell_layers` 1 with `top_shell_thickness` 0, or
+  the same over a bottom) is held at its edges, the fill an outer
+  wall's spacing round it on the layer over a top or under a bottom
+  made solid. Bambu Studio's projects say `enabled` for `ensure_all`
+  (older ones `1`), and are read so, as the reference reads them
+  (Format/BambuKeyAliases.cpp). Any other value of that setting is
+  noted and not followed.
   A shell is as many layers as `top_shell_layers` or
   `bottom_shell_layers` says, and as many more as it takes to measure
   `top_shell_thickness` or `bottom_shell_thickness`: a layer is shell
@@ -752,8 +772,14 @@ Known gaps: painted supports and seams, per-object setting overrides, typed sett
   666.2 mm in both; laid from edge to edge, as they were, there were
   22, each 0.14 mm longer at either end and 0.13 mm to one side, and
   703.6 mm. Bridges, bottoms and
-  tops reach a wall's spacing into the fill beside them, to have
-  something to hold on to.
+  tops reach into the fill beside them, to have something to hold on
+  to: a wall's spacing into sparse fill and the width of the walls
+  times the square root of two into solid fill, grown in the
+  reference's waves within each kind of fill, its touching pieces
+  taken as one, so that a surface never jumps a wall into fill it does
+  not touch, and bridges that grow into one another become one
+  (LayerRegion.cpp `process_external_surfaces`,
+  `expand_merge_surfaces`, `expand_bridges_detect_orientations`).
   The bridging options of the reference's Quality tab are followed.
   `bridge_line_width` gives bridges, bridges over infill and
   walls over air a width of their own: a round thread is that thick in
@@ -763,11 +789,9 @@ Known gaps: painted supports and seams, per-object setting overrides, typed sett
   the reference (`LayerRegion::bridging_flow`, `Print::validate`).
   `bridge_expansion_extra` carries a bridge that many millimetres
   further onto solid fill and onto a top or bottom surface beside it,
-  grown in the reference's waves so that it follows the area and does
-  not jump a gap, and bridges that grow into one another become one
-  (`expand_bridges_detect_orientations`, Algorithm/RegionExpansion.cpp);
-  sparse fill beside a bridge is reached no further, in the reference
-  either. `dont_filter_internal_bridges` at `limited` and `nofilter`
+  in the same waves (`expand_bridges_detect_orientations`,
+  Algorithm/RegionExpansion.cpp); sparse fill beside a bridge is
+  reached no further, in the reference either. `dont_filter_internal_bridges` at `limited` and `nofilter`
   lets smaller patches of solid fill over sparse fill be bridged (the
   first sorting-out of `bridge_over_infill` with one spacing where the
   default has three, and with no filter every patch found, four
@@ -1292,6 +1316,43 @@ Known gaps: painted supports and seams, per-object setting overrides, typed sett
   in the reference, the expanded start G-code is identical to the
   reference's on every line. A bare model exports with a printer's own
   G-code when `--machine`, `--process` and `--filament` name its presets.
+- G-code set at layers (the layers slider's "Add Pause", "Add Custom
+  G-code", "Add Custom Template" and "Change Filament", kept per plate in
+  `Metadata/custom_gcode_per_layer.xml`): read, kept with the plate
+  through edits, and written back in the reference's own layout, numbers
+  at 17 digits as it writes them (the pressure advance pattern's file is
+  written back to the byte). At the layer an item is set at (the layer
+  whose top is nearest, the highest item where several are; ToolOrdering.cpp
+  `assign_custom_gcodes`), after the layer change, the second layer's
+  temperatures and before anything is printed, a pause writes
+  `;PAUSE_PRINT` and the printer's `machine_pause_gcode`, a template
+  `;CUSTOM_GCODE` and the printer's `template_custom_gcode`, both expanded
+  with what the reference gives them (not the layer's own number or
+  height, which a template is refused for naming, as there), and custom
+  G-code `;CUSTOM_GCODE` and its text as it is (GCode.cpp
+  `emit_custom_gcode_per_print_z`). A filament change, on a project of
+  several filaments whose plate prints in one of them, prints every layer
+  from it up in the filament named, with the tool change, temperatures
+  and prime tower any change of filament has here (ToolOrdering.cpp's
+  `extruder_override`); on a U1 and a Centauri Carbon the change comes at
+  the reference's layer with the reference's `change_filament_gcode`.
+  What the reference leaves out is left out and said in a note: a filament
+  change on a plate of several filaments or a project of one, a colour
+  change (the reference writes no `M600` and an empty `;CUSTOM_GCODE` in
+  its place, which is not copied), an item below the
+  first layer or beaten to a layer by a higher one; a pause on a printer
+  with no pause G-code is written as the reference writes it and said.
+  The time estimate stops the head at a pause, as the reference's does
+  (`simulate_st_synchronize`); the pause itself takes no time a file can
+  know. On a 20 mm cube with a pause, a custom line, a template and a
+  filament change, on the U1 and on the Centauri Carbon, the lines written
+  at each layer are the reference's; the reference's own files with them,
+  timed here, come to its own time. Not as the reference: its G-code
+  writer rewrites the feed rates inside a custom block (a `G1 F1800`
+  already in force taken out, leaving an empty line); here custom G-code
+  is written exactly as given. A Bambu printer's tags (`; PAUSE_PRINTING`,
+  `; CUSTOM_GCODE`) are written in the form the engine writes every tag
+  in (`;PAUSE_PRINT`), as for its layer changes.
 - File layout: the G-code file is laid out as the reference lays its own
   out, because printers and their hosts read it by that layout: a header
   block, the line widths, the G-code between `EXECUTABLE_BLOCK` markers
@@ -1343,7 +1404,11 @@ Multi-filament printing is a first working version. Where parts of
 different filaments overlap, the higher-numbered filament has the overlap
 (the reference gives it to the later part). `toolchange_ordering` other
 than the default and `other_layers_print_sequence` are noted and not
-followed. On the first layer two tools whose smallest pieces are the
+followed. A plate's own settings in a project ("Customize current plate":
+its bed type, print sequence, vase mode, later layers' order) are laid over
+the project's for that plate's slice, as the reference lays a plate's
+config over the whole; `print_sequence` "by object" is noted and not
+followed: every object is printed together, layer by layer. On the first layer two tools whose smallest pieces are the
 same to a millionth count as the same, and the lower number goes first;
 the reference compares exactly, so where it has identical parts in
 several filaments its order among them can differ (plate 3 of
@@ -1437,8 +1502,7 @@ the outline between them, here they are when they overlap. A bridge reaches 0.4 
 reaches 0.8 mm, a bridge over infill is turned the other way from the
 reference's on about one layer in five where the vote between the two
 directions of a grid is close (below, under Bridges over infill),
-bridges that reach into one another are made one only with
-`bridge_expansion_extra` set, narrow parts of top and
+narrow parts of top and
 bottom surfaces get no gap fill
 (`gap_fill_target`), and eight of the
 reference's sparse patterns are not laid (below). Gap closing runs across objects, so two separate objects closer than twice
@@ -1970,7 +2034,8 @@ the same points. Where they differ it is the lines that differ, not
 their heights: with contouring off the two already lay the top surfaces
 of these parts differently (the reference's 1.57 m of the wedge's top
 against 1.84 m here, and with the Centauri Carbon's presets on the dome
-0.83 m against 1.52, too few lines alike to pair), and on 3DBenchy the
+0.83 m against 1.52, too few lines alike to pair; since measured again
+under Top surfaces on slopes, where they are the same), and on 3DBenchy the
 reference contours 6649 top surface moves and this engine 5339 of a top
 laid otherwise, the pairs within 0.0023 mm in 95 of 100. A wall of
 changing width (`arachne`) is contoured here as a whole loop and in the
@@ -3420,6 +3485,88 @@ time for the whole of it both times; `holes` in 36 ms and 42 ms;
 plate 1 of `mcbrim_test.3mf` in 554 ms and 550 ms. The files are the
 same at 1, 4 and 18 threads.
 
+### Top surfaces on slopes
+
+2026-11-11, on parts from `tools/make_fixture.py` with the U1's presets
+(and the Centauri Carbon's where `_cc` is named; with one option changed
+where it is named: `oowt0` is `only_one_wall_top` off, `tsl1_t0`
+`top_shell_layers` 1 with `top_shell_thickness` 0, `lh012` a 0.12 mm
+layer), 3DBenchy, the lettered plates and the owner's figurine. Each cell
+is the C++ slicer / this engine before / this engine now, in millimetres
+of path; the time is as each file states it (this engine's as Klipper
+plans it, above).
+
+| Part | Top surface | Bottom surface | Internal solid | Sparse | Bridge | Internal bridge | Filament, mm | Time |
+|---|---|---|---|---|---|---|---|---|
+| wedge | 1567 / 1836 / 1567 | 1135 / 1135 / 1135 | 7431 / 7090 / 7420 | 2407 / 2431 / 2428 |  | 1667 / 1678 / 1679 | 611.5 / 610.9 / 612.4 | 5m 10s / 5m 31s / 5m 20s |
+| holed | 2185 / 2566 / 2184 | 1582 / 1575 / 1575 | 10561 / 10008 / 10480 | 3709 / 3753 / 3753 |  | 2269 / 2341 / 2306 | 882.1 / 881.6 / 882.5 | 6m 31s / 7m 3s / 6m 46s |
+| ramp | 1810 / 2110 / 1810 | 1339 / 1339 / 1339 | 8334 / 7957 / 8333 | 2440 / 2444 / 2444 |  | 1819 / 1828 / 1824 | 653.8 / 653.3 / 654.2 | 4m 41s / 4m 59s / 4m 48s |
+| dome | 398 / 427 / 399 | 851 / 850 / 850 | 5929 / 5869 / 5913 | 1607 / 1608 / 1607 |  | 210 / 216 / 211 | 390.7 / 392.4 / 392.3 | 4m 9s / 4m 21s / 4m 20s |
+| mushroom | 2280 / 2280 / 2280 | 143 / 143 / 143 | 10930 / 10932 / 10935 | 5972 / 5776 / 5775 | 1970 / 1970 / 1970 | 1993 / 1993 / 1993 | 1002.2 / 995.8 / 995.8 | 10m 32s / 10m 34s / 10m 34s |
+| steps | 2874 / 2874 / 2874 | 2159 / 2159 / 2159 | 13832 / 13839 / 13840 | 7345 / 7345 / 7345 |  | 2740 / 2740 / 2745 | 1300.5 / 1300.8 / 1301.0 | 10m 11s / 10m 29s / 10m 29s |
+| holes | 5962 / 5966 / 5962 | 4316 / 4297 / 4297 | 29671 / 29649 / 29651 | 22162 / 22164 / 22160 | 162 / 162 / 162 | 5407 / 5397 / 5407 | 3314.1 / 3311.5 / 3311.9 | 23m 32s / 24m 22s / 24m 22s |
+| cube | 983 / 983 / 983 | 728 / 728 / 728 | 4676 / 4680 / 4680 | 14509 / 14357 / 14357 |  | 839 / 839 / 839 | 1211.9 / 1206.9 / 1206.9 | 14m 59s / 15m 18s / 15m 18s |
+| frame | 1608 / 1608 / 1608 | 962 / 962 / 962 | 7062 / 7066 / 7066 | 4250 / 4250 / 4250 |  | 1204 / 1204 / 1204 | 1034.4 / 1034.5 / 1034.5 | 7m 19s / 7m 31s / 7m 31s |
+| tube | 803 / 803 / 803 | 520 / 512 / 512 | 3591 / 3567 / 3567 | 3194 / 3194 / 3194 |  | 624 / 624 / 624 | 577.9 / 578.1 / 578.1 | 6m 46s / 7m 2s / 7m 2s |
+| funnel | 1112 / 1112 / 1112 | 175 / 175 / 175 | 4216 / 4150 / 4150 | 2657 / 2657 / 2657 |  | 773 / 774 / 774 | 440.5 / 441.4 / 441.4 | 6m 56s / 7m 4s / 7m 4s |
+| curve | 1596 / 1596 / 1596 | 1211 / 1211 / 1211 | 7689 / 7642 / 7642 | 4617 / 4619 / 4619 |  | 1385 / 1386 / 1386 | 744.3 / 744.4 / 744.4 | 5m 49s / 5m 55s / 5m 55s |
+| wedge_cc | 1452 / 1752 / 1452 | 1098 / 1098 / 1098 | 7593 / 7260 / 7578 | 2700 / 2700 / 2700 |  | 1447 / 1508 / 1508 | 595.5 / 597.5 / 597.8 | 5m 20s / 5m 50s / 5m 30s |
+| holed_cc | 2058 / 2482 / 2058 | 1533 / 1528 / 1528 | 10696 / 10243 / 10670 | 3818 / 3808 / 3808 |  | 2038 / 2101 / 2101 | 850.3 / 851.8 / 852.3 | 6m 52s / 7m 42s / 7m 14s |
+| ramp_cc | 1701 / 2000 / 1701 | 1283 / 1283 / 1283 | 8606 / 8282 / 8617 | 2575 / 2571 / 2571 |  | 1492 / 1527 / 1527 | 628.3 / 629.7 / 630.1 | 5m 3s / 5m 33s / 5m 13s |
+| dome_cc | 832 / 1524 / 832 | 829 / 829 / 829 | 5843 / 4925 / 5769 | 1624 / 1624 / 1624 |  | 98 / 98 / 98 | 390.5 / 389.4 / 389.8 | 4m 37s / 5m 29s / 4m 51s |
+| holes_cc | 5803 / 5859 / 5803 | 4176 / 4169 / 4169 | 29732 / 29598 / 29665 | 23849 / 23978 / 23978 | 166 / 166 / 166 | 4861 / 4868 / 4868 | 3238.2 / 3240.6 / 3240.7 | 20m 43s / 22m 30s / 22m 26s |
+| cube_cc | 975 / 975 / 975 | 699 / 699 / 699 | 4676 / 4680 / 4680 | 14061 / 14061 / 14061 |  | 760 / 760 / 760 | 1155.3 / 1155.4 / 1155.4 | 9m 51s / 10m 6s / 10m 6s |
+| wedge_oowt0 | 1649 / 1649 / 1649 | 1135 / 1135 / 1135 | 7131 / 7088 / 7111 | 2407 / 2431 / 2428 |  | 1664 / 1670 / 1672 | 608.2 / 608.0 / 608.6 | 5m 7s / 5m 16s / 5m 16s |
+| wedge_tsl1_t0 | 1566 / 1567 / 1567 | 1135 / 1135 / 1135 | 2796 / 2797 / 2797 | 3395 / 3395 / 3395 |  |  | 433.8 / 433.8 / 433.8 | 4m 30s / 4m 37s / 4m 37s |
+| wedge_tsl3_t0 | 1567 / 1836 / 1567 | 1135 / 1135 / 1135 | 4631 / 4293 / 4617 | 2838 / 2862 / 2859 |  | 1667 / 1678 / 1679 | 540.0 / 539.9 / 540.8 | 5m 1s / 5m 21s / 5m 10s |
+| wedge_arachne | 1572 / 1869 / 1572 | 1135 / 1135 / 1135 | 7446 / 7105 / 7437 | 2417 / 2423 / 2428 |  | 1677 / 1681 / 1672 | 612.3 / 611.8 / 612.3 | 5m 10s / 5m 32s / 5m 19s |
+| wedge_lh012 | 1557 / 2015 / 1557 | 1135 / 1135 / 1135 | 12419 / 11983 / 12517 | 4057 / 4038 / 4050 |  | 1367 / 1375 / 1401 | 602.6 / 603.0 / 605.5 | 7m 29s / 7m 58s / 7m 41s |
+| wedge_lh028 | 1614 / 1826 / 1614 | 1135 / 1135 / 1135 | 7856 / 7638 / 7855 | 1345 / 1345 / 1345 |  | 1470 / 1481 / 1477 | 689.0 / 689.0 / 689.4 | 4m 22s / 4m 39s / 4m 30s |
+| dome_tsl1_t0 | 267 / 262 / 267 | 851 / 850 / 850 | 2194 / 2086 / 2168 | 2206 / 2237 / 2218 |  | 58 / 0 / 23 | 283.1 / 279.1 / 282.0 | 4m 1s / 4m 12s / 4m 12s |
+| dome_arachne | 377 / 445 / 377 | 851 / 850 / 850 | 5970 / 5869 / 5961 | 1616 / 1608 / 1607 |  | 210 / 217 / 214 | 391.1 / 392.9 / 393.1 | 4m 9s / 4m 23s / 4m 20s |
+| dome_lh028 | 966 / 1020 / 965 | 851 / 850 / 850 | 5730 / 5504 / 5598 | 906 / 920 / 917 |  | 313 / 394 / 388 | 459.5 / 459.5 / 460.0 | 3m 33s / 3m 47s / 3m 46s |
+| holes_tsl1_t0 | 5880 / 5874 / 5880 | 4316 / 4297 / 4297 | 12041 / 12019 / 12020 | 25642 / 25691 / 25689 | 162 / 162 / 162 | 220 / 0 / 0 | 2671.9 / 2662.9 / 2663.1 | 20m 32s / 21m 13s / 21m 13s |
+| holes_arachne | 5888 / 5948 / 5888 | 4329 / 4310 / 4310 | 29029 / 28946 / 29016 | 22569 / 22569 / 22565 | 162 / 162 / 162 | 5411 / 5437 / 5448 | 3298.5 / 3297.4 / 3297.7 | 23m 35s / 24m 20s / 24m 17s |
+| steps_tsl1_t0 | 2874 / 2867 / 2874 | 2159 / 2159 / 2159 | 5329 / 5342 / 5330 | 9025 / 9001 / 9025 |  | 0 / 167 / 0 | 983.5 / 989.8 / 983.5 | 9m 8s / 9m 29s / 9m 24s |
+| wedge_zaa | 1567 / 1866 / 1567 | 1135 / 1135 / 1135 | 7481 / 7048 / 7383 | 2492 / 2481 / 2472 |  | 1517 / 1551 / 1561 | 598.3 / 595.5 / 596.8 | 5m 6s / 5m 31s / 5m 19s |
+| dome_zaa | 427 / 467 / 426 | 851 / 850 / 850 | 5749 / 5670 / 5758 | 1677 / 1677 / 1653 |  | 146 / 152 / 216 | 381.0 / 382.4 / 385.5 | 4m 21s / 4m 24s / 4m 22s |
+| benchy | 3453 / 3867 / 3445 | 460 / 517 / 517 | 21347 / 20801 / 21422 | 16244 / 16233 / 16181 | 1599 / 1611 / 1608 | 3480 / 3630 / 3490 | 3767.6 / 3773.3 / 3772.1 | 38m 43s / 40m 50s / 40m 26s |
+| mc1 | 8965 / 9025 / 9016 | 8776 / 8773 / 8773 | 50507 / 48846 / 48872 | 5623 / 6891 / 6891 | 220 / 362 / 354 | 3020 / 3586 / 3586 | 6886.5 / 6814.2 / 6814.4 | 1h 5m 1s / 1h 2m 54s / 1h 2m 54s |
+| mc2 | 4450 / 4507 / 4507 | 4389 / 4415 / 4415 | 24290 / 24524 / 24525 | 2721 / 2718 / 2718 | 190 / 191 / 190 | 2598 / 2657 / 2657 | 4462.7 / 4463.3 / 4463.3 | 42m 32s / 41m 18s / 41m 18s |
+| owner's figurine, m | 0.48 / 0.39 / 0.46 | 2.88 / 2.88 / 2.88 | 69.35 / 26.95 / 69.33 | 111.24 / 114.16 / 111.32 | 1.06 / 0.97 / 1.09 | 0.67 / 1.10 / 0.72 | | |
+
+What moved, in the order it was found:
+
+- A top surface was grown into the fill beside it by its whole reach at
+  once, and so jumped the inner wall between a strip of top under
+  `only_one_wall_top` and the solid fill inside that wall: on every
+  layer of a slope a second strip of top was laid over the inner wall
+  (30 mm a layer on the wedge, 17% of its top). Tops, bottoms and
+  bridges now grow in the reference's waves, within each kind of fill
+  taken whole.
+- Bambu Studio's `enabled` for `ensure_vertical_shell_thickness` was
+  taken for a value not ported, and the figurine got no vertical shells.
+- With walls kept thick the faces a shell is made from are grown by a
+  twentieth of a line first; without it the faces of a slope's layers,
+  a hair apart, were opened away as strips, and the solid under a
+  sloped top began a layer higher (3DBenchy's deck at z 14.05).
+- A face that is its own whole shell is held at its edges.
+
+The wedge's contoured top (`zaa_enabled`) is now the reference's move
+for move: 3783 top surface moves in both files where there were 4113
+here, every one paired with the reference's at the same height.
+
+What still differs. On 3DBenchy's roof, between z 37.6 and 39.3, the
+bridges over infill fall on alternate layers from the reference's (the
+totals over those layers agree within 1%). With `top_shell_layers` 1 the
+reference lays the fill under the boss on the `holes` slab as an internal
+bridge (220 mm) and this engine as sparse fill. With `zaa_enabled` on the
+dome, the layers being sliced 0.05 mm off, a band of internal bridge falls
+a layer lower than the reference's (216 mm against 146), where without
+contouring it falls on the same layer. On lettered plate 1, whose walls
+under the lettering are not the reference's (below), internal solid is
+3% short and sparse fill 23% over on the layers under the letters.
+
 ## Print time against the reference
 
 2026-11-11, U1 presets unless said. Each file is timed here by
@@ -3478,10 +3625,13 @@ What is left:
   Benchy that is 51 s of the reference's layer time at the speeds
   written, which is most of what is left on it (its walls, gap fill
   and sparse fill are 42 s longer here), and all of the cube's 8 s.
-- The Benchy's surfaces: 3867 mm of top surface against 3453, and more
-  internal bridge and bridge, mostly on layer 41 and from layer 184 to
-  198 (21 s); and on layer 212 a run of short open inner walls laid
-  end to end in the reference and back and forth here (3 s).
+- The Benchy's surfaces: 3445 mm of top surface against 3453 and
+  3490 mm of internal bridge against 3480 (3867 and 3630 before the
+  top surfaces were made the reference's, under Top surfaces on slopes
+  above, which took 24 s off its time); what is left is its roof from
+  layer 184 to 198, where bridges over infill fall on other layers;
+  and on layer 212 a run of short open inner walls laid end to end in
+  the reference and back and forth here (3 s).
 - The parts of `mcbrim_test.3mf` are lettering whose walls are not the
   reference's, so its time is no measure of this.
 - The time written in this engine's file for a Klipper printer is
