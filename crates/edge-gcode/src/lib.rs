@@ -39,7 +39,7 @@ use std::{
 use cooling::{Slowdown, Timing};
 use edge_avoid::Kind;
 use edge_config::FloatOrPercent;
-use edge_extrusion::{ExtrusionLoop, ExtrusionPath, Flow, Role};
+use edge_extrusion::{ExtrusionLoop, ExtrusionPath, Flow, Role, TowerStroke};
 use edge_geom::{ExPolygon, Point2, scaled, unscaled};
 use edge_template::{TemplateError, Value, Variables};
 use rayon::prelude::*;
@@ -91,6 +91,17 @@ pub struct Ram<'a> {
     pub park: Point2,
 }
 
+/// A new nozzle's block on the prime tower, as the tower lays it out:
+/// every move with its own speed (WipeTower2.cpp `toolchange_Wipe`).
+#[derive(Clone, Copy, Debug)]
+pub struct TowerWipe<'a> {
+    /// Where the nozzle is taken first.
+    pub start: Point2,
+    pub strokes: &'a [TowerStroke],
+    /// What each line lays.
+    pub flow: Flow,
+}
+
 /// One layer's toolpaths.
 #[derive(Clone, Copy, Debug)]
 pub struct Layer<'a> {
@@ -109,6 +120,9 @@ pub struct Layer<'a> {
     /// Where the nozzle goes on its way to the prime tower's lines: in
     /// through the gap left in the tower's wall.
     pub enter: &'a [Point2],
+    /// How a nozzle just brought into use lays its block on the prime
+    /// tower, move by move, before the tower's other lines.
+    pub wipe: Option<TowerWipe<'a>>,
     /// Prime tower lines, printed before anything else.
     pub tower: &'a [ExtrusionPath],
     /// Loops laid before the part on this layer, in order: skirt and brim.
@@ -1603,19 +1617,27 @@ impl Writer<'_> {
                 self.state.routing.kind = Kind::Outside;
             }
             if layer.filament != self.state.tool {
-                let over = layer.tower.first().and_then(|line| line.points.first());
+                let over = (layer.wipe.map(|wipe| wipe.start)).or_else(|| {
+                    layer
+                        .tower
+                        .first()
+                        .and_then(|line| line.points.first().copied())
+                });
                 self.change_tool(
                     layer.filament,
                     index,
                     layer.z,
                     cursor + offset,
-                    over.copied(),
+                    over,
                     layer.ram,
                 )?;
                 // The new tool comes in through the gap in the tower's wall.
                 for point in layer.enter {
                     self.travel(*point, false, None)?;
                 }
+            }
+            if let Some(wipe) = layer.wipe {
+                self.tower_wipe(wipe)?;
             }
             self.inner_wall = layer
                 .loops
@@ -2149,6 +2171,63 @@ impl Writer<'_> {
             }
             self.path(&points, path.role, &path.flow, false, false)?;
         }
+        Ok(())
+    }
+
+    /// A new nozzle's block on the prime tower, move by move, each at its
+    /// own speed, held only to what the hot end can melt, as the
+    /// reference's tower writer holds it (WipeTower2.cpp
+    /// `extrude_explicit`). The filament is pulled back and pushed on
+    /// again where the tower says, by its retraction length at its
+    /// retraction speed and with nothing else in between.
+    fn tower_wipe(&mut self, wipe: TowerWipe<'_>) -> io::Result<()> {
+        let s = self.settings;
+        self.travel(wipe.start, false, Some(Role::PrimeTower))?;
+        let usual = self.motion(Role::PrimeTower, &wipe.flow, self.state.first_layer);
+        let most = if s.filament_max_volumetric_speed > 0.0 {
+            s.filament_max_volumetric_speed / wipe.flow.mm3_per_mm()
+        } else {
+            f64::INFINITY
+        };
+        let mut run: Vec<Point2> = Vec::new();
+        for stroke in wipe.strokes {
+            match *stroke {
+                TowerStroke::Lay(to, speed) => {
+                    if run.is_empty()
+                        && let Some(at) = self.state.position
+                    {
+                        run.push(at);
+                    }
+                    let motion = Motion {
+                        speed: speed.min(most),
+                        ..usual
+                    };
+                    self.extrude(to, Role::PrimeTower, &wipe.flow, motion)?;
+                    run.push(to);
+                }
+                TowerStroke::Move(to, speed) => {
+                    let length = self.state.position.map_or(0.0, |at| distance(at, to));
+                    self.go(to, None, speed.unwrap_or(s.travel_speed), length)?;
+                    run.clear();
+                }
+                TowerStroke::Retract | TowerStroke::Unretract if s.retraction_length > 0.0 => {
+                    let sign = if *stroke == TowerStroke::Retract {
+                        "-"
+                    } else {
+                        ""
+                    };
+                    self.feed(s.retraction_speed);
+                    let feed_word = self.feed_word();
+                    writeln!(self.out, "G1 E{sign}{:.5}{feed_word}", s.retraction_length)?;
+                    self.spend(s.retraction_length / s.retraction_speed);
+                }
+                TowerStroke::Retract | TowerStroke::Unretract => {}
+            }
+        }
+        // Going back to the part, the nozzle wipes back along the row it
+        // laid last.
+        run.reverse();
+        self.state.wipe_path = run;
         Ok(())
     }
 

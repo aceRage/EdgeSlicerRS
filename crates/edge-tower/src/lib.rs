@@ -46,7 +46,7 @@ use std::f64::consts::PI;
 
 use edge_clip::{ClipError, Join};
 use edge_config::{ConfigError, FloatOrPercent, Settings};
-use edge_extrusion::{ExtrusionPath, Flow, FlowError, Role};
+use edge_extrusion::{ExtrusionPath, Flow, FlowError, Role, TowerStroke};
 use edge_geom::{ExPolygon, Point2, Polygon, scaled, unscaled};
 
 /// The tower's lines are this many nozzle diameters wide
@@ -159,6 +159,15 @@ pub struct TowerSettings {
     /// The least each filament lays on the tower when it is flushed in
     /// it, in mm³ (`filament_minimal_purge_on_wipe_tower`).
     pub minimal_purge: Vec<f64>,
+    /// How fast the tower is laid on its first layer, in mm/s
+    /// (`initial_layer_speed`).
+    pub first_layer_speed: f64,
+    /// The fastest a nozzle purges on the tower, in mm/s
+    /// (`wipe_tower_max_purge_speed`).
+    pub max_purge_speed: f64,
+    /// The print's sparse infill speed, which the purge is held to as well
+    /// (`sparse_infill_speed`), in mm/s.
+    pub infill_speed: f64,
     /// Settings present in the input that are not honoured, each with what
     /// is done instead.
     pub unsupported: Vec<String>,
@@ -199,6 +208,9 @@ impl Default for TowerSettings {
             flush_matrix: Vec::new(),
             flush_multiplier: 0.3,
             minimal_purge: Vec::new(),
+            first_layer_speed: 30.0,
+            max_purge_speed: 90.0,
+            infill_speed: 100.0,
             unsupported: Vec::new(),
         }
     }
@@ -216,6 +228,13 @@ impl TowerSettings {
             Ok(settings
                 .floats(key)?
                 .and_then(|values| values.get(plate).or(values.last()).copied().flatten())
+                .unwrap_or(default))
+        };
+        // A speed the process may give as a list, one for each extruder.
+        let first_of = |key: &str, default: f64| -> Result<f64, ConfigError> {
+            Ok(settings
+                .floats(key)?
+                .and_then(|values| values.first().copied().flatten())
                 .unwrap_or(default))
         };
         let share = |key: &str, default: f64| -> Result<f64, ConfigError> {
@@ -424,6 +443,15 @@ impl TowerSettings {
                 .into_iter()
                 .map(|volume| volume.unwrap_or(15.0))
                 .collect(),
+            // A speed of 0 is the reference's "work it out", which the
+            // tower takes as these (WipeTower2.cpp, its constructor).
+            first_layer_speed: Some(first_of("initial_layer_speed", defaults.first_layer_speed)?)
+                .filter(|speed| *speed > 0.0)
+                .unwrap_or(30.0),
+            max_purge_speed: number("wipe_tower_max_purge_speed", defaults.max_purge_speed)?,
+            infill_speed: Some(first_of("sparse_infill_speed", defaults.infill_speed)?)
+                .filter(|speed| *speed > 0.0)
+                .unwrap_or(80.0),
             unsupported,
         })
     }
@@ -523,6 +551,24 @@ impl TowerSettings {
             .depth()
     }
 
+    /// The speed a block's rows build up to, in mm/min, worked in single
+    /// precision as there: on the first layer that layer's speed, above
+    /// it the purge speed held to the infill's (WipeTower2.cpp
+    /// `toolchange_Wipe`), or on a Bambu Lab printer's tower 80 mm/s at
+    /// most (WipeTower.cpp `toolchange_Wipe`).
+    fn wipe_target(&self, first_layer: bool) -> f32 {
+        let first = self.first_layer_speed as f32 * 60.0;
+        let purge = self.max_purge_speed as f32 * 60.0;
+        if self.bambu_tower {
+            let most = purge.min(4800.0);
+            if first_layer { first.min(most) } else { most }
+        } else if first_layer {
+            first
+        } else {
+            purge.min(self.infill_speed as f32 * 60.0)
+        }
+    }
+
     /// How far apart a block's rows are, in line widths.
     fn row_step(&self, first_layer: bool) -> f64 {
         if first_layer {
@@ -570,8 +616,79 @@ pub struct Block {
     /// The way in for the new nozzle: from outside the wall, through the
     /// gap left for it. Empty when the wall has no gap.
     pub enter: Vec<Point2>,
-    /// What the new nozzle lays down.
+    /// What the new nozzle lays down: the lines of `wipe`.
     pub lines: Vec<ExtrusionPath>,
+    /// How it lays them, move by move.
+    pub wipe: Option<Wipe>,
+}
+
+/// What a new nozzle does on the tower, move by move, from where it
+/// starts (WipeTower2.cpp `toolchange_Wipe`).
+#[derive(Clone, Debug, PartialEq)]
+pub struct Wipe {
+    /// Where the nozzle is taken first, to lay from.
+    pub start: Point2,
+    pub strokes: Vec<TowerStroke>,
+    /// What each line lays.
+    pub flow: Flow,
+}
+
+impl Wipe {
+    fn new(start: Point2, flow: Flow) -> Self {
+        Self {
+            start,
+            strokes: Vec::new(),
+            flow,
+        }
+    }
+
+    /// Where the nozzle is after the strokes so far.
+    fn at(&self) -> Point2 {
+        match self.strokes.iter().rev().find_map(|stroke| match stroke {
+            TowerStroke::Lay(to, _) | TowerStroke::Move(to, _) => Some(*to),
+            _ => None,
+        }) {
+            Some(at) => at,
+            None => self.start,
+        }
+    }
+
+    fn lay(&mut self, to: Point2, speed: f64) {
+        if to != self.at() {
+            self.strokes.push(TowerStroke::Lay(to, speed));
+        }
+    }
+
+    /// What is laid, as lines: each run of lines laid one after another.
+    pub fn lines(&self) -> Vec<ExtrusionPath> {
+        let mut lines = Vec::new();
+        let mut run = vec![self.start];
+        for stroke in &self.strokes {
+            match stroke {
+                TowerStroke::Lay(to, _) => run.push(*to),
+                TowerStroke::Move(to, _) => {
+                    if run.len() >= 2 {
+                        lines.push(std::mem::take(&mut run));
+                    }
+                    run = vec![*to];
+                }
+                TowerStroke::Retract | TowerStroke::Unretract => {}
+            }
+        }
+        if run.len() >= 2 {
+            lines.push(run);
+        }
+        lines
+            .into_iter()
+            .map(|points| ExtrusionPath {
+                points,
+                role: Role::PrimeTower,
+                flow: self.flow,
+                in_turn: false,
+                part: 0,
+            })
+            .collect()
+    }
 }
 
 /// What the tower has on one layer.
@@ -592,6 +709,23 @@ pub struct Tower {
     /// The ground the tower takes, ribs and brim included, as min x, min
     /// y, max x, max y in mm; none when there is no tower.
     pub footprint: Option<[f64; 4]>,
+}
+
+/// The speed of a block's next row, in mm/min, from the last
+/// (WipeTower2.cpp and WipeTower.cpp `toolchange_Wipe`): a third of
+/// `target` first, then three eighths, eleven twenty-fourths and seven
+/// eighths of it, then 50 mm/min more a row up to it. The middle step is
+/// compared in double precision, as there.
+fn next_feed(feed: f32, target: f32) -> f32 {
+    if feed < 0.34 * target {
+        0.375 * target
+    } else if f64::from(feed) < 0.377 * f64::from(target) {
+        0.458 * target
+    } else if feed < 0.46 * target {
+        0.875 * target
+    } else {
+        target.min(feed + 50.0)
+    }
 }
 
 /// The least depth a tower as tall as `height` mm should have to stand
@@ -986,6 +1120,8 @@ pub fn plan_changes(
         let step = line * settings.row_step(first);
         let row = line * settings.extra_flow;
         let mut used = 0.0;
+        // A block's rows lay `wipe_tower_extra_flow` times a tower line.
+        let wipe_flow = flow.with_spacing(flow.spacing * settings.extra_flow)?;
         // Where each new nozzle comes in: which side, and how far back.
         let mut ways_in: Vec<(bool, f64)> = Vec::with_capacity(changes[layer].len());
         for change in &changes[layer] {
@@ -1080,7 +1216,9 @@ pub fn plan_changes(
 
             // The new nozzle's rows, from side to side: until the block
             // is full where nothing was rammed, and otherwise until the
-            // plastic asked for is down.
+            // plastic asked for is down (`toolchange_Wipe`). Each row is
+            // laid faster than the one before, from a third of the speed
+            // the tower is laid at up to all of it.
             let (left, right) = (line / 2.0, span - line / 2.0);
             let whole = ram.is_none();
             let mut owed = change.volume / per_mm(line) / settings.extra_flow;
@@ -1090,15 +1228,22 @@ pub fn plan_changes(
                 y += step;
                 rightward = !rightward;
             }
-            let mut points = vec![at(x, y)];
-            loop {
+            let target = settings.wipe_target(first);
+            let mut feed = 0.33 * target;
+            let mut wipe = Wipe::new(at(x, y), wipe_flow);
+            for row_index in 0.. {
+                if row_index != 0 {
+                    feed = next_feed(feed, target);
+                }
+                let speed = f64::from(feed) / 60.0;
                 let before = x;
-                x = if rightward {
+                let end = if rightward {
                     right - line / 2.0
                 } else {
                     left + line / 2.0
                 };
-                points.push(at(x, y));
+                x = end;
+                wipe.lay(at(x, y), speed);
                 if y + 1e-4 > full - 0.5 * row {
                     break;
                 }
@@ -1107,20 +1252,11 @@ pub fn plan_changes(
                     break;
                 }
                 y += step;
-                points.push(at(x, y));
+                wipe.lay(at(x, y), speed);
                 rightward = !rightward;
             }
-            // The first of them is laid slowly.
-            block.lines.push(ExtrusionPath {
-                points: points[..2].to_vec(),
-                role: Role::PrimeLine,
-                flow,
-                in_turn: false,
-                part: 0,
-            });
-            if points.len() > 2 {
-                block.lines.push(path(points[1..].to_vec()));
-            }
+            block.lines.extend(wipe.lines());
+            block.wipe = Some(wipe);
             tower.layers[layer].changes.push(block);
             used += planned.depth();
         }
@@ -1298,25 +1434,22 @@ mod tests {
 
     #[test]
     fn a_block_lays_down_the_prime_volume() {
-        let settings = on();
+        let settings = TowerSettings {
+            wall_gap: false,
+            ..on()
+        };
         let tower = plan(&counts(&[0, 1, 0]), &[0.2; 3], &settings).unwrap();
-        let block = &tower.layers[1].changes[0].lines;
-        // One slow line first, then the rest.
-        assert_eq!(
-            (block[0].role, block[1].role),
-            (Role::PrimeLine, Role::PrimeTower)
-        );
-        assert_eq!(block[0].points.len(), 2);
+        let change = &tower.layers[1].changes[0];
+        // Its rows are one line, from one row to the next.
+        let block = &change.lines;
+        assert_eq!(block.len(), 1);
+        assert_eq!(block[0].role, Role::PrimeTower);
         let volume: f64 = block.iter().map(ExtrusionPath::volume_mm3).sum();
         // At least what was asked for, and not much more than a row over.
         assert!((45.0..45.0 * 1.2).contains(&volume), "{volume} mm³");
         // 0.5 mm lines on a 0.4 mm nozzle, rows 1.2 line widths apart.
         assert_eq!(block[0].flow.width, 0.5);
-        let mut rows: Vec<f64> = block
-            .iter()
-            .flat_map(|path| &path.points)
-            .map(|p| unscaled(p.y))
-            .collect();
+        let mut rows: Vec<f64> = block[0].points.iter().map(|p| unscaled(p.y)).collect();
         rows.dedup();
         assert!(
             rows.windows(2)
@@ -1327,8 +1460,38 @@ mod tests {
         // next block's first.
         let depth = settings.block_depth(settings.width, 0.2, false);
         assert!((rows.len() as f64 * 0.6 - depth).abs() < 1e-6);
-        // From one row to the next the nozzle keeps laying.
-        assert!(block[1].points.len() > 2 * (rows.len() - 1));
+        assert_eq!(block[0].points.len(), 2 * rows.len());
+        // Each row is laid faster than the one before, and the step to
+        // the next at the row's speed: a third of the 90 mm/s the tower
+        // is laid at (the purge speed, under the infill's 100), three
+        // eighths, eleven twenty-fourths, seven eighths, then 50 mm/min
+        // more a row (WipeTower2.cpp `toolchange_Wipe`).
+        let wipe = change.wipe.as_ref().unwrap();
+        let speeds: Vec<f64> = (wipe.strokes.iter())
+            .filter_map(|stroke| match stroke {
+                TowerStroke::Lay(_, speed) => Some(*speed * 60.0),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(speeds.len(), 2 * rows.len() - 1);
+        let rows_at: Vec<f64> = speeds.iter().step_by(2).map(|feed| feed.round()).collect();
+        assert_eq!(
+            rows_at[..6],
+            [1782.0, 2025.0, 2473.0, 4725.0, 4775.0, 4825.0]
+        );
+        assert!(
+            speeds
+                .chunks(2)
+                .all(|row| row.len() == 1 || row[0] == row[1])
+        );
+        assert!(speeds.iter().all(|feed| *feed <= 5400.0 + 1e-3));
+        // On the first layer it builds up to that layer's speed.
+        let first = plan(&counts(&[1]), &[0.2], &settings).unwrap();
+        let wipe = first.layers[0].changes[0].wipe.as_ref().unwrap();
+        let TowerStroke::Lay(_, speed) = wipe.strokes[0] else {
+            panic!("{:?}", wipe.strokes[0]);
+        };
+        assert_eq!((speed * 60.0).round(), (0.33f32 * 1800.0).round() as f64);
     }
 
     /// The wall on a layer of a tower with no brim above the bed: the
@@ -1673,7 +1836,7 @@ mod tests {
         // The new nozzle carries on from where the ram stopped, in the
         // far half of its row, to the far wall.
         let first = &block.lines[0];
-        assert_eq!(first.role, Role::PrimeLine);
+        assert_eq!(first.role, Role::PrimeTower);
         assert_eq!(first.points[0].x, to.x);
         assert!((unscaled(first.points[0].y) - 51.1).abs() < 1e-6);
         assert!((unscaled(first.points[1].x) - 129.5).abs() < 1e-6);
@@ -2082,8 +2245,8 @@ mod tests {
         let old = plan(&counts(&[0, 2]), &[0.2; 2], &settings).unwrap();
         assert_eq!(same.footprint, old.footprint);
         assert_eq!(
-            same.layers[1].changes[1].lines[1].points,
-            old.layers[1].changes[1].lines[1].points
+            same.layers[1].changes[1].lines[0].points,
+            old.layers[1].changes[1].lines[0].points
         );
     }
 }

@@ -74,6 +74,7 @@ fn one_layer<'a>(
         filament: 0,
         ram: None,
         enter: &[],
+        wipe: None,
         tower: &[],
         around: &[],
         support: &[],
@@ -574,6 +575,7 @@ fn speeds_follow_role_layer_and_the_melt_limit() {
             filament: 0,
             ram: None,
             enter: &[],
+            wipe: None,
             tower: &[],
             around: &[],
             support: &[],
@@ -590,6 +592,7 @@ fn speeds_follow_role_layer_and_the_melt_limit() {
             filament: 0,
             ram: None,
             enter: &[],
+            wipe: None,
             tower: &[],
             around: &[],
             support: &[],
@@ -656,6 +659,7 @@ fn temperatures_change_after_the_first_layer() {
         filament: 0,
         ram: None,
         enter: &[],
+        wipe: None,
         tower: &[],
         around: &[],
         support: &[],
@@ -745,6 +749,7 @@ fn moves_inside_the_shelter_can_skip_retraction() {
         filament: 0,
         ram: None,
         enter: &[],
+        wipe: None,
         tower: &[],
         around: &[],
         support: &[],
@@ -1088,6 +1093,7 @@ fn printed(count: usize, settings: &PrintSettings) -> String {
             filament: 0,
             ram: None,
             enter: &[],
+            wipe: None,
             tower: &[],
             around: &[],
             support: &[],
@@ -1919,6 +1925,7 @@ fn the_prime_tower_is_printed_first_and_its_first_line_slowly() {
             z,
             ram: None,
             enter: &[],
+            wipe: None,
             tower: &tower,
             ..one_layer(&part, &[0..1], &[])[0]
         })
@@ -1942,6 +1949,65 @@ fn the_prime_tower_is_printed_first_and_its_first_line_slowly() {
         feed_of(&text, "Prime tower"),
         Some((0.33 * 30.0 * 60.0_f64).round())
     );
+}
+
+#[test]
+fn a_new_nozzle_lays_its_block_on_the_tower_move_by_move() {
+    let part = [wall(0.0, 0.0, 10.0, 0)];
+    let at = |x: f64, y: f64| Point2::from_mm(x, y);
+    let strokes = [
+        TowerStroke::Lay(at(43.0, 40.0), 29.7),
+        TowerStroke::Retract,
+        TowerStroke::Move(at(38.5, 40.0), Some(10.0)),
+        TowerStroke::Move(at(40.0, 40.0), None),
+        TowerStroke::Unretract,
+        TowerStroke::Lay(at(60.0, 40.0), 29.7),
+        TowerStroke::Lay(at(60.0, 40.6), 29.7),
+        TowerStroke::Lay(at(40.0, 40.6), 33.75),
+    ];
+    let flow = Flow::new(0.5, 0.2, 0.4).unwrap();
+    let layer = Layer {
+        wipe: Some(TowerWipe {
+            start: at(40.0, 40.0),
+            strokes: &strokes,
+            flow,
+        }),
+        ..one_layer(&part, &[0..1], &[])[0]
+    };
+    let settings = PrintSettings {
+        retraction_length: 0.8,
+        retraction_speed: 30.0,
+        ..basic()
+    };
+    let (text, _) = print(&[layer], &settings);
+    let lines: Vec<&str> = text.lines().collect();
+    let first = lines
+        .iter()
+        .position(|line| line.starts_with("G1 X43.000 Y40.000 E"))
+        .unwrap();
+    // Each line at its own speed.
+    let area = std::f64::consts::PI * 1.75 * 1.75 / 4.0;
+    let e = word(lines[first], 'E').unwrap();
+    assert!(
+        (e - 3.0 * flow.mm3_per_mm() / area).abs() < 1e-5,
+        "{}",
+        lines[first]
+    );
+    assert_eq!(word(lines[first], 'F'), Some(1782.0));
+    // The filament pulled back and pushed on by its retraction length at
+    // its speed, with the moves between at theirs and nothing else.
+    assert_eq!(
+        lines[first + 1..first + 6],
+        [
+            "G1 E-0.80000 F1800",
+            "G1 X38.500 Y40.000 F600",
+            &format!("G1 X40.000 Y40.000 F{:.0}", settings.travel_speed * 60.0),
+            "G1 E0.80000 F1800",
+            "G1 X60.000 Y40.000 E0.76013 F1782",
+        ]
+    );
+    assert_eq!(word(lines[first + 6], 'F'), None);
+    assert_eq!(word(lines[first + 7], 'F'), Some(2025.0));
 }
 
 #[test]
@@ -2008,6 +2074,7 @@ fn a_rammed_filament_is_laid_by_the_tool_being_put_away() {
                 park: Point2::from_mm(43.35, 41.85),
             }),
             enter: &enter,
+            wipe: None,
             tower: &tower,
             ..one_layer(&loops, &[0..1], &[])[0]
         },
@@ -2080,6 +2147,7 @@ fn wall_over_a_smaller_plate(settings: &PrintSettings, measured: bool) -> String
         filament: 0,
         ram: None,
         enter: &[],
+        wipe: None,
         tower: &[],
         around: &[],
         support: &[],
@@ -2824,6 +2892,7 @@ fn round_wall_over_a_round_plate(settings: &PrintSettings, out: f64) -> (usize, 
         filament: 0,
         ram: None,
         enter: &[],
+        wipe: None,
         tower: &[],
         around: &[],
         support: &[],
@@ -2907,6 +2976,7 @@ fn a_speed_within_one_mm_a_second_of_the_last_is_not_written() {
         filament: 0,
         ram: None,
         enter: &[],
+        wipe: None,
         tower: &[],
         around: &[],
         support: &[],

@@ -118,6 +118,10 @@ pub(crate) struct Entry {
     pub(crate) ram: Option<edge_tower::Rammed>,
     /// Its way in through the tower's wall.
     pub(crate) enter: Vec<Point2>,
+    /// How it lays its block, move by move, after a tool change: the
+    /// first `laid` of `lines`.
+    pub(crate) wipe: Option<edge_tower::Wipe>,
+    pub(crate) laid: usize,
 }
 
 /// A model sliced: every layer's walls, fill, supports and what goes
@@ -1755,13 +1759,17 @@ pub fn slice(job: Job, watch: &dyn Watcher) -> Result<Sliced, Failure> {
         let any_change = changes[index] > 0;
         for filament in order {
             let mut lines = Vec::new();
-            let (mut ram, mut enter) = (None, Vec::new());
+            let (mut ram, mut enter, mut wipe, mut laid) = (None, Vec::new(), None, 0);
             let switched = Some(tool_of[*filament]) != held;
             if switched {
                 if let Some(block) = blocks.next() {
                     lines.extend(block.lines.iter().cloned());
                     ram = block.ram.clone();
                     enter = block.enter.clone();
+                    wipe = block.wipe.clone();
+                    if wipe.is_some() {
+                        laid = block.lines.len();
+                    }
                 }
                 held = Some(tool_of[*filament]);
             }
@@ -1776,6 +1784,8 @@ pub fn slice(job: Job, watch: &dyn Watcher) -> Result<Sliced, Failure> {
                 lines,
                 ram,
                 enter,
+                wipe,
+                laid,
             });
         }
     }
@@ -2033,7 +2043,12 @@ impl Sliced {
                         park: ram.park,
                     }),
                     enter: &turn.enter,
-                    tower: &turn.lines,
+                    wipe: turn.wipe.as_ref().map(|wipe| edge_gcode::TowerWipe {
+                        start: wipe.start,
+                        strokes: &wipe.strokes,
+                        flow: wipe.flow,
+                    }),
+                    tower: &turn.lines[turn.laid..],
                     around: if starts { &self.around[index] } else { &[] },
                     support: if starts { &self.supports[index] } else { &[] },
                     loops: &own.loops,
@@ -2067,6 +2082,15 @@ impl Sliced {
                     )
                     .chain(ram)
                     .chain(layer.enter)
+                    .chain(layer.wipe.iter().flat_map(|wipe| {
+                        std::iter::once(&wipe.start).chain(wipe.strokes.iter().filter_map(
+                            |stroke| match stroke {
+                                edge_extrusion::TowerStroke::Lay(to, _)
+                                | edge_extrusion::TowerStroke::Move(to, _) => Some(to),
+                                _ => None,
+                            },
+                        ))
+                    }))
             });
             let mut reach: Option<[f64; 4]> = None;
             for point in points {
