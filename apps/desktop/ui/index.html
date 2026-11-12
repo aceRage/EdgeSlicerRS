@@ -13,6 +13,9 @@
 <link rel="stylesheet" href="gl/gl.css">
 <link rel="stylesheet" href="edit.css">
 <link rel="stylesheet" href="hosts.css">
+<!-- The words first: it asks for the language's table, puts this page in it,
+     then loads the page's scripts (i18n.js). -->
+<script src="i18n.js"></script>
 </head>
 <body>
 
@@ -151,7 +154,7 @@
               <p id="saved-process" class="value" hidden></p>
               <label id="process-row">Preset <select id="process"></select></label>
               <!-- The reference's pages of process settings, drawn from data by settings.js. -->
-              <input type="search" id="process-search" placeholder="Search in preset…" aria-label="Search in preset" role="combobox" aria-controls="process-found" aria-expanded="false" aria-autocomplete="list" autocomplete="off" spellcheck="false">
+              <input type="search" id="process-search" placeholder="Search in preset" aria-label="Search in preset" role="combobox" aria-controls="process-found" aria-expanded="false" aria-autocomplete="list" autocomplete="off" spellcheck="false">
               <div id="process-tabs" class="tabs scrolls" role="tablist" aria-label="Process settings"></div>
             </div>
           </div>
@@ -186,7 +189,7 @@
             </header>
             <div id="preset-filaments" role="group" aria-label="Filaments" hidden></div>
             <div id="preset-tools" class="fold-body">
-              <input type="search" id="preset-search" placeholder="Search in preset…" aria-label="Search in preset" role="combobox" aria-controls="preset-found" aria-expanded="false" aria-autocomplete="list" autocomplete="off" spellcheck="false">
+              <input type="search" id="preset-search" placeholder="Search in preset" aria-label="Search in preset" role="combobox" aria-controls="preset-found" aria-expanded="false" aria-autocomplete="list" autocomplete="off" spellcheck="false">
               <div id="preset-tabs" class="tabs scrolls" role="tablist" aria-label="Preset settings"></div>
             </div>
           </div>
@@ -230,7 +233,7 @@
         <div id="legend-body">
           <table id="legend-rows"></table>
           <div id="estimate">
-            <h3 id="estimate-title">Total estimation</h3>
+            <h3 id="estimate-title">Total Estimation</h3>
             <dl id="figures"></dl>
             <p id="timed" class="quiet"></p>
           </div>
@@ -461,23 +464,5 @@
 
 <div id="menu" role="menu" hidden></div>
 
-<script src="gl/math.js"></script>
-<script src="gl/camera.js"></script>
-<script src="gl/shaders.js"></script>
-<script src="gl/renderer.js"></script>
-<script src="gl/scene.js"></script>
-<script src="gl/toolpath.js"></script>
-<script src="gl/controls.js"></script>
-<script src="gl/gcode.js"></script>
-<script src="gl/stage.js"></script>
-<script src="scene-edit.js"></script>
-<script src="plates.js"></script>
-<script src="objects.js"></script>
-<script src="printers.js"></script>
-<script src="settings.js"></script>
-<script src="filaments.js"></script>
-<script src="app.js"></script>
-<script src="save.js"></script>
-<script src="hosts.js"></script>
 </body>
 </html>

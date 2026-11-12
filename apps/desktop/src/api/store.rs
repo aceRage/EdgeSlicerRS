@@ -42,6 +42,10 @@ pub struct Remembered {
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct Data {
     pub profiles_dir: Option<String>,
+    /// The language chosen, by its canonical name ("de_DE"), as the
+    /// reference keeps `language` in its `app` section (GUI_App.cpp
+    /// `load_language`, Preferences.cpp `create_item_language_combobox`).
+    pub language: Option<String>,
     /// The printers added: vendor, then model, then the nozzles of it
     /// that are added (AppConfig.hpp `VendorMap`).
     pub models: BTreeMap<String, BTreeMap<String, Vec<String>>>,
@@ -103,6 +107,7 @@ impl Data {
         let mut data = Data::default();
         if let Some(app) = root.get("app") {
             data.profiles_dir = text(app, "profiles_dir");
+            data.language = text(app, "language");
         }
         // As the reference writes them: one entry for each model, its
         // nozzles in one text, "0.2;0.4".
@@ -169,7 +174,11 @@ impl Data {
     fn to_json(&self) -> Value {
         let mut root = self.other.clone();
         root.insert("version".into(), json!(1));
-        root.insert("app".into(), json!({ "profiles_dir": self.profiles_dir }));
+        let mut app = json!({ "profiles_dir": self.profiles_dir });
+        if let Some(language) = &self.language {
+            app["language"] = json!(language);
+        }
+        root.insert("app".into(), app);
         let models: Vec<Value> = self
             .models
             .iter()

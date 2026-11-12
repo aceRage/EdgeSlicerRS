@@ -1,0 +1,218 @@
+# What the page (ui/*.js, ui/index.html) and the session (src/) pass
+# through the translation layer, or show on the static page, that is not
+# a message id of the reference's catalog
+# (reference/EdgeSlicer/localization/i18n/Snapmaker_Orca.pot). The test
+# `every_word_shown_is_a_message_id_or_listed` (src/api/i18n/tests.rs)
+# fails on anything shown that is neither, and on an entry here that is a
+# message id now or is shown nowhere any more. A line is the words as the
+# source writes them (\n for a new line), then a tab and where the
+# reference has them.
+
+[newer]
+# The C++ application's own words (`_L`), newer than its catalog: they
+# go through t() / tr() like any message id, and read in English in every
+# language until a pin bump brings catalogs that have them.
+"%s" has unsaved changes. Save them before closing it?	GUI/ProjectStrip.cpp:589
+"%s" is slicing. Stop slicing and close it?	GUI/ProjectStrip.cpp:602
+Absolute	GUI/Gizmos/GizmoObjectManipulation.cpp:1561
+All non-solid parts (modifiers) were deleted	GUI/Plater.cpp:16185
+Apply All	GUI/Plater.cpp:3688
+Clear all	GUI/CostsDialog.cpp:555
+Click a highlighted face to lay the object on it.	GUI/Gizmos/GLGizmoFlatten.cpp:422
+Click to collapse / expand	GUI/Plater.cpp:2395
+Close others	GUI/ProjectStrip.cpp:1422
+Close project	GUI/ProjectStrip.cpp:590
+Collapse the project strip	GUI/ProjectStrip.cpp:1377
+Colour	GUI/Showcase/ShowcaseView.cpp:652
+Colours	GUI/FilamentColorDialog.cpp:1097
+Connect to printer	GUI/Plater.cpp:2685
+Connection to ElegooLink is working correctly.	Utils/ElegooLink.cpp:382
+Connection to Moonraker works correctly.	Utils/MoonRaker.cpp:429
+Coordinate system used for transform actions.	GUI/Gizmos/GizmoObjectManipulation.cpp:911
+Could not connect to ElegooLink	Utils/ElegooLink.cpp:387
+Could not connect to Moonraker	Utils/MoonRaker.cpp:434
+Default width	GUI/ProjectStrip.cpp:1459
+Delete this filament	GUI/GUI_Factories.cpp:2612
+Delete this file from the printer (Delete)	GUI/PrinterStoragePanel.cpp:245
+Drag to widen the project strip	GUI/ProjectStrip.cpp:1379
+Error code not found	Utils/ElegooLink.cpp:858
+Extrude	GUI/GCodeViewer.cpp:356
+Filament Management	GUI/Plater.cpp:2882
+Filament preset to apply to all filaments	GUI/Plater.cpp:3625
+File/data transfer interrupted. Please check the printer and network, then try it again.	Utils/PrintHost.cpp:255
+Files on the printer	GUI/PrinterStoragePanel.cpp:212
+Fit in all view	GUI/MainFrame.cpp:3258
+Hue	GUI/Gizmos/GLGizmoTextureDisplacement.cpp:4081
+List the printer's files again (F5)	GUI/PrinterStoragePanel.cpp:199
+Modified	GUI/PrinterStoragePanel.cpp:221
+New project	GUI/LayerlingPanel.cpp:1266
+none	GUI/CostsDialog.cpp:505
+Noop	GUI/GCodeViewer.cpp:346
+Note: Moonraker version at least 1.1.0 is required.	Utils/MoonRaker.cpp:435
+Nozzles	GUI/Widgets/NozzleStrip.cpp:336
+Open project	GUI/ProjectStrip.cpp:140
+Plate bed types reset	GUI/Plater.cpp:21453
+Precise Seam	libGCode/SeamPlacer.cpp:2074
+Printer page	GUI/PrinterWebView.cpp:120
+Relative	GUI/Gizmos/GizmoObjectManipulation.cpp:1560
+Save as...	GUI/ProjectStrip.cpp:1415
+Set all filaments to the selected preset	GUI/Plater.cpp:3690
+settings	GUI/Plater.cpp:2588
+Show names only	GUI/ProjectStrip.cpp:1456
+Show the project strip	GUI/ProjectStrip.cpp:1377
+Show thumbnails	GUI/ProjectStrip.cpp:1455
+Start print timeout	Utils/ElegooLink.cpp:911
+Start printing this file on the printer (Enter)	GUI/PrinterStoragePanel.cpp:240
+The file has been transferred, but some unknown errors occurred. Please check the device page for the file and try to start printing again.	Utils/ElegooLink.cpp:612
+The G-code files on the printer	GUI/PrinterWebView.cpp:125
+The printer's own page	GUI/PrinterWebView.cpp:121
+There are no G-code files on the printer.	GUI/PrinterStoragePanel.cpp:496
+These projects have unsaved changes. Save the ticked ones before closing?	GUI/ProjectStrip.cpp:693
+Too many open projects	GUI/ProjectStrip.cpp:457
+Tool: 	GUI/GCodeViewer.cpp:467
+Unload filaments after print	libPrintConfig.cpp:2281
+Unsaved changes	GUI/ProjectStrip.cpp:752
+Unsaved projects	GUI/ProjectStrip.cpp:691
+World	GUI/Gizmos/GizmoObjectManipulation.cpp:849
+
+[own]
+# This app's own words on the static page, with no counterpart in the
+# C++: shown in English in every language.
+About this print
+Back to the sidebar
+Back to the sidebar [Esc]
+Browse ...
+Change…
+EdgeSlicerRS
+Fit bed
+Fit part
+Fold or unfold the legend
+G-code window
+Main tabs
+No printer matches the search and filters.
+Nothing has been sent to a printer yet.
+Nothing on this page with the settings as they are.
+Open projects
+Preset settings
+Print or export
+Printer Connection
+Printer Selection
+Process settings
+Profiles:
+Reload the printer's page
+Reset all of these settings to the preset
+Reset all process settings to the preset
+Search brand or model
+Settings found
+Shows the advanced settings with the simple ones
+Slice plate or slice all
+The plate
+The plate in 3D
+The printer unloads the toolheads this print used once it has finished, skipping any that holds a flexible filament. The printer preset sets the default; this box changes it for this print only.
+The profile turns these on. The print goes ahead without them.
+There are no objects in the project. "Add" [Ctrl+I] over the plate puts a model on it.
+Use the preset's connection
+View type
+Zoom to the objects [Z]
+
+# This app's own words in its scripts (ui/*.js), with no counterpart in
+# the C++, left as they are (not passed through t): shown in English in
+# every language. Where a value goes in, the source's template is given.
+Path of an STL or 3MF file on this machine
+Path of the folder of vendor profiles
+Save the G-code as (a full path)
+Save the project as (a full path)
+Path of the CA certificate file (crt or pem)
+The project names no process.
+Send the plate to ${hostsState.info.printer}
+Slicing failed.
+${listing.max_open} projects are open, the most this window keeps. Close one to open another:
+Layer preview
+The plate
+The project is empty. Open a model: an STL or a 3MF project.
+There is nothing to print on this plate.
+${gaps} setting${gaps === 1 ? '' : 's'} this engine does not follow yet
+Planned as Klipper plans it; heating is not counted.
+With acceleration; heating is not counted.
+At the speeds set, before acceleration.
+Layer ${index + 1} of ${summary.layers}, top at ${layer.z} mm
+slicing failed: ${plate.failed}
+No printer is chosen for the project shown. Choose one in Prepare.
+Please set up your printer connection to view the device.
+The printer preset chosen for "${state.project.name}".
+The printer "${state.project.name}" was saved with.
+The preset gives this printer's address as ${address}.
+Neither the preset nor a connection kept for it gives the printer's address: set it with "Connect to printer".
+Saturation and brightness
+The 3D view needs WebGL2, which this browser does not offer. The plate is shown from above instead.
+The 3D view could not be started (${error.message}). The plate is shown from above instead.
+Loading ${data.objects[object].name || 'the model'}…
+Loading the print… ${Math.round((100 * path.loaded) / path.total)}%
+The graphics card took the 3D view away; reload the page to have it back.
+No printer is chosen for the project.
+This app cannot send to a ${known.label} host yet.
+A Snapmaker U1 is sent to over its Moonraker on the local network, as the reference sends to one there; it asks for no key.
+The Centauri Carbon is started over its websocket, on port 3030 of the same address.
+Kept for this printer preset in this app's data folder, never in a project.
+As the printer preset gives it. OK keeps it for this printer preset in this app's data folder, never in a project.
+Set (type to change it)
+For the printer preset "${info.printer}".
+The printer's page is shown after the page is loaded again.
+Send the plate to the printer
+${start ? 'Uploading and printing' : 'Uploading'} ${name}…
+${job.name} was uploaded to ${job.host} and the print was started.
+${job.name} was uploaded to ${job.host}.
+The upload of ${job.name} was canceled.
+Kept for this printer preset
+As the printer preset gives it
+Reading the printer's files...
+Files on ${hostsState.info.printer}
+The printer's files could not be listed.\n${error.message}
+Start printing "${file.name}" on ${hostsState.info.printer}?
+${file.name} was started on ${hostsState.info.printer}.
+Delete "${file.name}" from ${hostsState.info.printer}?\nThis cannot be undone.
+No objects on this plate.
+Add a range of layers
+Delete the last range of layers
+Filament order
+Drag, or Left and Right, to put it in its place
+From layer
+The project names no printer
+No printer selected
+No printer added
+Not enabled
+Bed width, from the printer's default (0.4 mm nozzle) preset
+Bed depth, from the printer's default (0.4 mm nozzle) preset
+Printable height, from the printer's default (0.4 mm nozzle) preset
+Number of extruders / toolheads
+${column.tip}\nClick to sort
+Click to sort
+Remove this filter
+Remove the filter on ${column.label}
+Clear search and filters
+All / Clear all: the ${shown} shown
+All / Clear all: every printer
+Applies to the ${shown} printers shown by the search and filters (${shownOn} of them enabled)
+Find a ${column.label.toLowerCase()}
+Select none
+In mm. Printers without this value are hidden while a limit is set.
+Not listed, because their profiles could not be read: ${catalogue.unread.join('; ')}
+"${moved.name}" is now on ${moved.to}: ${moved.from} is no longer among the printers added.
+No resting faces found on the convex hull.
+Not followed: with the settings as they are the engine does not read this setting, so changing it changes nothing in the print. It is not followed yet, or is read only when another setting turns it on.
+Followed with a note
+Off: the printer's value for this filament's extruder is used.
+Off: the process's value is used.
+${option.label}: values to pick from
+${option.label}: reset to the preset's value
+${option.label}: the filament's own value
+1 setting changed
+${count} settings changed
+The engine will not slice with these settings: ${answer.refused}
+Kept 1 ${what} setting from "${before}" (revertable).
+Kept ${answer.changed} ${what} settings from "${before}" (revertable).
+Not shown with the settings as they are: it depends on another setting.
+No setting matches.
+The project names no filament preset.
+The project names no printer.
+${name} (the project's own settings)

@@ -36,6 +36,7 @@ replaces it until output matches on the printers we care about.
 | `crates/edge-cli` | The `edge` command line |
 | `tools/make_defaults.py` | Asks the reference for its default of every setting and writes the table `edge-config` carries; run again when the pin moves |
 | `tools/make_settings_pages.py` | Reads the reference's process, filament and printer pages and option definitions from its source and writes the data the desktop app draws its settings pages from; run again when the pin moves, after `make_defaults.py` |
+| `tools/make_translations.py` | Reads the reference's gettext catalogs (`localization/i18n/<language>/*.po`) and writes the desktop app's table of each language, English included, only the entries gettext would use; run again when the pin moves |
 | `tools/make_fixture.py` | Writes small test 3MFs (parts that need supports or a brim, a plain cube, two blocks in two filaments, a comb with thin teeth on the bed, three tiers with a top surface on each, bars over a base for small bridges over infill, a slab with round holes for the hole options, a slab with holes that narrow on the way up for bridging them, a slab with pockets underneath, three round ones for arc fitting: a post, a post with a hole, a slab with a wide curve and tight ones, a post that widens as it rises for scarf seams, two of two parts for seams where parts meet: a round post cut in two, and a block with a post pushed half into it, and two with seams painted on: a post with a strip painted to have them, and a cube with two sides painted to keep them off, a plate on a frame with walls wholly over air, and for Z contouring a wedge of 4 degrees, a shallow dome, a ramp meeting a flat, and the wedge with a hole down through it) to compare with the reference on |
 | `tools/make_app.sh` | Builds the desktop app and wraps it in a macOS `.app` that opens with a double click (macOS only) |
 | `tools/make_project.py` | Writes one of those parts as a project whose settings are named presets, with as many filaments as are named, each list holding the value each filament reads at standard flow: how the test prints for a printer are made |
@@ -3695,3 +3696,12 @@ What is left:
 AGPL-3.0, the same as EdgeSlicer, so algorithms may be ported from it.
 `vendor/cpp_map` is another's work under MIT or Apache-2.0, which this
 licence can take in; both texts are kept beside it.
+
+The desktop app's translations (`apps/desktop/src/api/i18n/*.json`) are
+made by `tools/make_translations.py` from the reference's catalogs
+(`reference/EdgeSlicer/localization/i18n/<language>/*.po`), the work of
+EdgeSlicer's, OrcaSlicer's, Bambu Studio's and PrusaSlicer's translators.
+The catalogs carry no licence of their own: their headers say they are
+"distributed under the same license as the PACKAGE package", which is
+EdgeSlicer's AGPL-3.0 (`reference/EdgeSlicer/LICENSE.txt`), this
+repository's own.

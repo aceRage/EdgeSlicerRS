@@ -7,7 +7,10 @@ C++ side is listed whole, including what is not built here.
 The C++ source read is the pinned `reference/EdgeSlicer` (156e9591fe, the
 merge of PR 920 "feat/multi-project-strip"). Paths are under
 `src/slic3r/GUI/` unless they start with `libslic3r/`, `libvgcode/` or
-`Utils/`. Strings in "quotes" are the C++ application's own English.
+`Utils/`. Strings in "quotes" are the C++ application's own English as
+its source writes them (its message ids); the C++ shows them through its
+catalog of the language chosen, English included, and so does this app
+(section 16).
 
 The last column reads:
 
@@ -30,7 +33,8 @@ The last column reads:
   Device tab with the printer's own page, in sections 2, 4, 7 and 8;
   thirteenth pass: the list of filaments, "Sidebar: Filament" in section 2,
   `filament_edit` in section 7, the undo history in section 13 and what
-  a saved project holds of them in section 15).
+  a saved project holds of them in section 15; fourteenth pass: wording
+  and languages, section 16, and the rows that point to it).
 - **differs** — built, but on purpose not as the C++ does it; the cell says how.
 - **not yet** — not built, with what it waits for. Nothing in this column is
   shown in the page as a control that does nothing.
@@ -140,7 +144,7 @@ does with each option.
 | --- | --- | --- |
 | Section "Process" with the process preset list | `ParamsPanel::ParamsPanel` l.210, `Tab.cpp` l.300 | **added** as its own section (first pass) |
 | Pages "Quality", "Strength", "Speed", "Support", "Multimaterial", "Others", each a page of option groups; a row of tabs picks the page | `TabPrint::build`, Tab.cpp l.3441 | **added**: the six pages with every group and every option in the C++ order, 433 options. A page's controls are built when it is first opened. Before: four settings ("Layer height", "Initial layer height", "Slice gap closing radius", "Wall loops") |
-| An option's label, its tooltip with "parameter name: key" under it, its unit after the field | `libslic3r/PrintConfig.cpp`, Field.cpp `get_formatted_tooltip_text` l.109 | **added**, the C++ strings. **differs**: a length that may be a percentage ("mm or %") shows "mm" after a plain number and nothing after one typed with its %. **not yet**: the wiki link behind a label (the page loads nothing from the network) |
+| An option's label, its tooltip with "parameter name: key" under it, its unit after the field | `libslic3r/PrintConfig.cpp`, Field.cpp `get_formatted_tooltip_text` l.109 | **added**, the C++ strings, kept as message ids in the data and shown in the language (section 16). **differs**: a length that may be a percentage ("mm or %") shows "mm" after a plain number and nothing after one typed with its %. **not yet**: the wiki link behind a label (the page loads nothing from the network) |
 | Controls by kind: a tick box (`coBool`), a number with its unit (`coInt`, `coFloat`, `coPercent`), a length or a percentage (`coFloatOrPercent`), a list (`coEnum`), a list that also takes a typed value (`i_enum_open`, `f_enum_open`: the infill anchors, the support interface layers), text, a box of text for G-code, scripts and notes | Field.cpp, OptionsGroup.cpp | **added**: the controls of `ui/STYLE.md`; a list is the page's own listbox; a list that takes a typed value is a field with a chevron that opens the values as a menu |
 | One line with several options under one label: "Overhang speed" with its four ranges, "Bridge" with external and internal | Tab.cpp l.3703–3714 | **differs**: the line's label and tooltip, then a row for each option under it; four fields do not fit beside a label in a sidebar |
 | A value for each nozzle flow variant (the speeds, accelerations and jerks: `coFloats`), picked by the variant selector at the top of the tab | `register_flow_variant_view`, Tab.cpp l.3670 | **differs**: one field, showing the first variant's value and setting every variant alike. **not yet**: a value for each variant (the engine reads the first) |
@@ -151,7 +155,7 @@ does with each option.
 | A value out of range or not a number: "Invalid numeric.", "Value is out of range.", "Value %s is out of range. The valid range is from %d to %d.", "%s can't be a percentage"; the field goes back | Field.cpp l.386–498 | **added**, said in the status line before anything is sent, with the limit; the session holds to the same limits (`process_set`). **differs**: a length over `max_literal` is refused with its range, where the C++ asks whether a percentage was meant. **added** beyond the C++: a value in range that the engine would stop at (a 5 mm layer on a 0.4 nozzle) is refused with the engine's own reason, found by asking it |
 | Options shown, hidden and greyed out by what the others are set to | `ConfigManipulation::toggle_print_fff_options` l.757–1441 | **added**: the whole function, every page's rules (`src/api/process/rules.rs`, in the C++ order; `toggle_line` hides, `toggle_field` greys out). The printer's side of them (G-code flavor, Bambu or not, tower type, extruder variants) is read from the settings a slice gets; the number of filaments is the project's. **not yet**: the values the C++ changes by itself while toggling (arc fitting off under extrusion rate smoothing, a multi-line fill back to one line, the reverse threshold to 0%); "Brim ear radius" as the label of "Brim width" with brim ears |
 | Settings that need one another: "Spiral mode only works when…", "Change these settings automatically?" and the rest | `ConfigManipulation::update_print_fff_config` l.150–756 | **not yet**: the questions; a value is taken as it is set |
-| "Advance" switch: off, the simple options; on, the advanced ones too; a page with nothing to show in the mode is not among the tabs. Developer options with "Develop mode" (Preferences) | ParamsPanel.cpp l.229, `ConfigOptionMode`, GUI_App.cpp l.8520, `Tab::update_visibility` | **added**: the switch, off to start with as in the C++, kept by the page; 54 options without it (no Speed page), 428 with. **not yet**: develop mode, so the 5 developer options are not shown |
+| "Advance" switch: off, the simple options; on, the advanced ones too; a page with nothing to show in the mode is not among the tabs. Developer options with "Develop mode" (Preferences) | ParamsPanel.cpp l.229, `ConfigOptionMode`, GUI_App.cpp l.8520, `Tab::update_visibility` | **added**: the switch, off to start with as in the C++, kept by the page; it reads "Advanced", as the C++ shows it through the `en` catalog (section 16); 54 options without it (no Speed page), 428 with. **not yet**: develop mode, so the 5 developer options are not shown |
 | Search ("Search in preset"): finds options by label, jumps to the page and the option | Tab.cpp l.382–420, `Search.cpp` | **added**: every word typed must be in the label, the name (`seam_slope_type`), the group or the page; the list shows label, page › group and name; Enter or a click opens the page, goes to the row and marks it for a moment; Escape clears. An option the rules hide is listed greyed, and its group is gone to |
 | What the slicer does with an option | — | this app's own (**added**): a quiet ring beside an option the engine does not read with the settings as they are, a dot beside one it follows with a note, each said in the label's tooltip; nothing is hidden for it and every option can still be set (section 12) |
 | The support sets row ("Support set": apply, save, delete) | Tab.cpp l.3776, `support_set_create_widget` | **not yet**: it writes files of user presets |
@@ -331,7 +335,7 @@ Read from `ProjectStrip.cpp/.hpp`, `ProjectSessions.hpp` and their uses in
 | A tile dragged up or down moves to where the line shows | `on_motion`, `drop_index_at`, `ProjectSessions::move` | **added** (`project_move`) |
 | More tiles than fit: the wheel scrolls the strip | `on_wheel` | **added** |
 | Tile menu: "Save", "Save as...", "Send...", "Close", "Close others", "Reveal in Finder" / "Show in Explorer", "Open in new window" | `show_item_menu` | **added**: "Save", "Save as...", "Close", "Close others". **not yet**: sending, showing the file, a second window |
-| Strip menu: "Show thumbnails" / "Show names only", "Default width", "Collapse the project strip" / "Show the project strip" | `show_strip_menu` | **added** |
+| Strip menu: "Show thumbnails" / "Show names only", "Default width", "Collapse the project strip" / "Show the project strip" | `show_strip_menu` | **added**; and, after a line, "Language" (the C++ has it in Preferences, which this app has not: section 16) |
 | The right edge is dragged to widen the strip: 88 to 200, names alone at least 120; remembered | `StripLayout`, `on_motion`, `project_strip_width` | **added**, remembered by the page |
 | The chevron folds the strip to a 24 wide rail: New and Open stacked, a mark for each project (filled for the active one, a ring when sliced, the unsaved dot); remembered | `set_collapsed`, `on_paint` | **added** |
 | Closing the window with several projects open: one dialog, "Unsaved projects", "These projects have unsaved changes. Save the ticked ones before closing?", every unsaved one ticked, "Save" / "Don't save" / "Cancel"; with one project, "EdgeSlicer - Save": "The current project has unsaved changes, save it before continue?" (Yes / No / Cancel) | `confirm_close_all`, MainFrame.cpp l.604, Plater.cpp `close_with_confirm` l.25050 | **added** in the window: it is held open while a project is unsaved (`unsaved`), the page asks in these words ("EdgeSlicerRS - Save"), saves what is ticked and then closes it. **not yet**: "Remember my choice."; in a browser (`--serve`) nothing is asked, the session outliving the page |
@@ -365,6 +369,8 @@ the project is on.
 | Call | Takes | Answers |
 | --- | --- | --- |
 | `startup` | — | `{ model }`: a file named when the app was started |
+| `language` | `system?` (the system's preferred languages, the page's `navigator.languages`) | `{ language, catalog, languages: [{ code, name }], table }`: the language the page is shown in (chosen and kept at the first run, section 16) and its table as `tools/make_translations.py` wrote it |
+| `language_set` | `language` (a code of `languages`) | as `language`; kept. An error for a code not listed |
 | `library`, `set_profiles { dir }` | | `{ dir, vendors }`. The folder set is kept for the next run |
 | `printers` | `project?` | `{ first_run, installed: [{ vendor, brand, model, name, cover, variants: [{ variant, machine }] }], selected: { source: "preset" \| "project", vendor, machine, model, variant, added } \| null, project_printer, last: { vendor, machine } \| null, settings: { file, problem } }` |
 | `printer_catalogue` | — | `{ models: [{ vendor, brand, model, name, nozzle_diameter, x, y, z, toolheads, cover, enabled }], unread }` |
@@ -489,6 +495,7 @@ Read from `WebGuideDialog.cpp/.hpp` (`GuideFrame`), the pages under
 | The filaments added: `"filaments": [...]`; process presets hidden; `firstguide.finish`; `app.region` | `AppConfig::save` l.1224, `SaveProfile` l.687 | **not yet**: every filament and process made for a printer is offered (below) |
 | The profiles in use: the vendors installed into the data folder's `system`, else `resources/profiles` | `LoadProfileData` l.1194–1252 | **added**: the profiles folder chosen in the window is kept (`app.profiles_dir`); `EDGE_PROFILES` comes before it. Before: it was forgotten when the app closed |
 | A printer's connection: in its physical printer preset (`print_host`, `print_host_webui`, `printhost_apikey`, `printhost_cafile`, …), and several printers of one model in `<datadir>/hub/print_host_devices.json`, keys and passwords there in plain text (PrintHostDevices.cpp l.173) | `PhysicalPrinterDialog::OnOK`, `Utils/PrintHostDevices.cpp` | **differs**: this app has no user presets, so a connection is kept for each printer preset by its name, in `print_hosts.json` beside `settings.json` (`src/hosts/kept.rs`), under the reference's keys so a later pass that adds user presets can take each entry over as a physical printer of that preset. The key is kept apart, in `print_host_secrets.json`, made readable by this user alone (0600; on Windows the folder is the user's own `%APPDATA%`), and is never answered to the page, logged, put in an error or in a project. Not the system's keychain: a build of this app is not signed, so macOS would ask each new build for leave to read its own entry, and the keychain would not follow `EDGE_DESKTOP_DATA`; it can take the file's place behind `Kept::key` and `Kept::set` |
+| The language: `app.language`, the canonical name of the one chosen ("de_DE"); at the first run the system's, written at once | GUI_App.cpp `load_language` l.8279, Preferences.cpp l.274 | **added**: `app.language` in `settings.json`, the same name. **differs**: a system language with no catalog is not kept (the reference keeps it and then shows the bare message ids); English is |
 | The send dialog's choices: `recent` (`open_device_tab_post_upload`, `elegoolink_timelapse`, `elegoolink_heated_bed_leveling`, …) | `PrintHostDialogs.cpp` l.2998 | **differs**: kept by the page (`localStorage`), as the print button's last action |
 | The page's own: the strip's width and folding, the last file opened | — | **had**, kept by the page (`localStorage`). The printer, process and filaments last used were kept there too; they are in `settings.json` now, and the old entries are no longer read |
 
@@ -1877,3 +1884,194 @@ save` lists the same and writes only with `--accept-losses`.
 - GCode.cpp l.2689–2697: the custom G-code set at layers is not checked
   for reserved tags (`validate_custom_gcode`), though the reference's
   G-code viewer and estimator read its own tags back from the file.
+
+## 16. Wording and languages
+
+The C++ application never shows a string as its source writes it: every
+`_L("…")` and `L("…")` (and the labels, tooltips, units and list labels of
+`PrintConfig.cpp`, the pages and groups of `Tab.cpp`) is a message id that
+gettext looks up in the catalog of the language chosen, English included.
+The `en` catalog words 520 of its 4,466 strings otherwise than the source
+("Advance" reads "Advanced", "Lay on face" "Lay on Face", "Top Solid
+Layers" "Top solid layers"). This app copied the message ids and showed
+them raw, so its English was wrong in those places and no other language
+was offered. Now it shows them as the C++ does.
+
+### Where the words come from
+
+| C++ | Where | Here |
+| --- | --- | --- |
+| The catalogs: `localization/i18n/<language>/Snapmaker_Orca_<language>.po`, made into `resources/i18n/<language>/EdgeSlicer.mo` by `msgfmt --check-format` at build time; 20 languages (ca cs de en es fr hu it ja ko lt nl pl pt_BR ru sv tr uk zh_CN zh_TW), about 4,500 to 5,100 entries each | CMakeLists.txt `gettext_po_to_mo` | **added**: `tools/make_translations.py` reads every `.po` (multi-line strings, escapes, `msgctxt`, plurals with the header's `Plural-Forms`; fuzzy and obsolete entries left out, as gettext leaves them) and writes `src/api/i18n/<language>.json`: JSON, an entry to a line, of the entries gettext would use and that say something other than their message id; the plural rule worked out once for n = 0 to 199 (a digit each, `100 + n % 100` past that, which the tool checks holds for every rule here), so neither side evaluates C. 20 tables, 8.0 MiB in all: `en` 77 KiB (522 entries), the others 219 KiB (ja, 2,536) to 667 KiB (ru, 4,222). Built into the binary like the settings pages; one language is read (`serde_json`, a few milliseconds) the first time it is asked for. Run the tool again at a pin bump; `--check` fails when a table is not what the catalogs give, `--report` lists what was left out as broken |
+| `wxTranslations` with the catalog of the language; the message id when the catalog has none; English loads `en` (wxWidgets takes the message ids to be US English, and English here is `en_GB`) | GUI_App.cpp `load_language` l.8279–8492 | **added**: `src/api/i18n.rs` (`tr`, `trc` with a context, `trn` with a plural, `fill` for the placeholders `%1%`, `%1$d`, `%s`, `%d`, `%.2f`) and `ui/i18n.js` (`t`, `tc`, `tn`, `fmt`), the same behaviour on both sides |
+| The language of what the application composes: gettext's, one for the process | | **added**: the session's. `Session::call` runs each call in it, so an error or a notice a call composes is in the page's language; a slice's thread and an upload take the language of the call that started them; anything else (a test, the CLI, the engine) is English as the C++ shows it, the `en` catalog over the message ids. The engine crates have no translations: their notes and errors are in English, as they were |
+| Right-to-left languages are refused ("…which is not supported") | GUI_App.cpp l.8389 | none of the 20 is one; nothing to do |
+| Slovak is given the Czech catalog | GUI_App.cpp l.8407 | **not yet**: no Slovak system language is matched to Czech |
+
+### Choosing the language, and keeping it
+
+| C++ | Where | Here |
+| --- | --- | --- |
+| At the first run (no `language` in `app_config`): the system's language (`wxLocale::GetSystemLanguage`, on Windows the user's locale), kept at once as `language`; a language with no catalog shows the bare message ids | GUI_App.cpp l.8285–8340 | **added**: the page sends the system's preferred languages (`navigator.languages`, which the window's web view takes from the system; the session falls back on `LC_ALL`, `LC_MESSAGES`, `LANG`), and the first of them is taken where the reference has a catalog for it (`de-AT` finds German, `zh-Hant`, `zh-TW`, `zh-HK` Traditional Chinese, `pt-BR` Portuguese; `pt-PT` none, as in the reference), and kept. **differs**: a system language with no catalog is English, and nothing is kept, so a catalog that comes later is found; the reference keeps `fi_FI` and shows message ids, not even the English catalog's words |
+| Preferences > General > "Language": English and the languages with a catalog, sorted by their English names, shown by the names Preferences gives them ("Deutsch", "Français", "日本語", "中文(简体)", "中文(繁体)", "Português (Brasil)", "Czech", "Turkish", "Ukrainian", "Catalan" …) | Preferences.cpp l.164–242, l.1925–1966 | **added**: "Language" at the end of the project strip's menu (a right click on the strip), a menu beside it of the same 20 names in the same order, the one in force ticked. This app has no Preferences window; the strip's menu is where the app's own settings are |
+| A change asks about an unsaved project, then "Switching the language requires application restart.\n\nDo you want to continue?" ("Language selection"), keeps the language and rebuilds the whole window | Preferences.cpp l.274–310 | **differs**: the language is kept (`language_set`) and the page loads itself again in it at once; the projects stay open in the session as they are, so nothing is asked and nothing is lost |
+| `language` kept in `app_config` (`EdgeSlicer.conf`) | Preferences.cpp l.304 | **added**: `app.language` in `settings.json` (section 8), the same canonical name ("de_DE"); found again at the next start |
+
+### What goes through the catalogs
+
+- **The settings pages**: `settings_pages.json` keeps the message ids (one
+  file for every language); the page puts an option's label, full label,
+  tooltip and list labels, a group's title and a line's label and tooltip
+  in the language as it loads the pages, and a page's title, an
+  extruder's "Extruder %d" and a unit when it shows them. Of the pages'
+  1,607 distinct texts, 1,082 are message ids of the catalog; the rest are
+  numbers, material names and options newer than the catalog, shown as
+  they are. The search searches the words as shown.
+- **The page**: every string of `ui/*.js` that is the C++'s goes through
+  `t()` as its message id (255 distinct literals; 222 message ids of
+  `Snapmaker_Orca.pot`, 33 of the C++'s newer words); what the session
+  hands over that the C++ names (the line types, view types, undo steps,
+  bed types, host types, the upload queue's states, the option rules'
+  line labels) is put through `t()` where it is shown. A tooltip with its
+  keys ("Undo [Ctrl+Z]") is the message id and the keys, as the C++ builds
+  it; a menu entry with its keys ("Delete  Del") likewise.
+- **The static page** (`index.html`): `i18n.js` puts every text, title,
+  label and placeholder that is a message id in the language before
+  anything else of the page runs (128 distinct; 72 message ids, 20 newer
+  words, 36 the app's own).
+- **The session** (`src/`): what a call composes in the C++'s words goes
+  through `tr()` (23 distinct literals: 12 message ids, 11 newer words):
+  the bed types notice, "An object is laid over the boundary of plate…",
+  "Enter Custom G-code used on current layer:", "Please input layer value
+  (>= 2).", the settings' "Value %s is out of range. The valid range is
+  from %d to %d.", "Value is out of range.", "Invalid numeric.", "%s can't
+  be a percentage" (each after the option's label, in the language), and
+  the printers' connections' messages (PrintHost.cpp, OctoPrint.cpp,
+  MoonRaker.cpp, ElegooLink.cpp: "Connection timed out…", "Could not
+  connect to OctoPrint", "Error uploading to print host", "Error code:
+  %d"…), composed as the C++ composes them ("%s: %s\n\n%s").
+
+`src/api/i18n/wording.txt` lists what is shown and is not a message id:
+
+- **newer** (62): the C++'s own `_L` words that are newer than its
+  catalog (the project strip, the printer's storage page, the filament
+  list's head, the object manipulation panel, the connection messages):
+  they go through the layer like any message id, and read in English in
+  every language until a pin bump brings catalogs that have them.
+- **own** (134): this app's own words, with no counterpart in the C++ (36
+  on the static page, 98 in the scripts): the browser's path prompts,
+  "About this print", the notes on what the engine follows, the printer's
+  page in Device, Printer Selection's column tips, the connection notes.
+  They are shown in English in every language.
+
+The session's own sentences (the errors of a call given what it should
+not be, "there is no project 3", the notes of a slice, the connection
+notes "The printer asks for a login…") are English too and are not
+listed one by one. Words the C++ shows without translating them
+("ElegooLink not detected", "Could not parse server response", "Instance
+%d", a `_devL` string) are left as they are.
+
+`every_word_shown_is_a_message_id_or_listed` (`src/api/i18n/tests.rs`)
+reads every `t()`, `tc()`, `tn()` of the scripts, every `tr()` of the
+session and every word of the static page, and fails on one that is
+neither a message id of the template nor listed; and on a listed entry
+that is a message id now, or shown nowhere any more. A form typed as the
+English reads (the `en` catalog's "Layer height (mm)" for "Layer Height
+(mm)") fails it, since other languages would not find it: the audit put
+back four ("Layer Height (mm)", "Line Width (mm)" in the 2D and 3D
+legends, "Fan Speed (%)", "Total Estimation") and the search's placeholder
+("Search in preset").
+
+### English, as the C++ shows it
+
+With the `en` catalog, 168 strings this app shows read otherwise than
+they did, as the C++ reads them; among the labels and menus: "Advance" →
+"Advanced", "Lay on face" → "Lay on Face", "Add part" → "Add Part", "Add
+negative part" → "Add Negative Part", "Add modifier" → "Add Modifier",
+"Add support blocker" / "enforcer" → "Add Support Blocker" / "Enforcer",
+"Along X axis" → "Along X Axis" (and Y, Z), "Change type" → "Change Type",
+"To objects" / "To parts" → "To Objects" / "To Parts", "Object
+Operations" → "Object operations" (and Volume, Group), "Jump to Layer" →
+"Jump to layer", "Slice ok." → "Slice complete", "Select all" → "Select
+All", "arrange current plate" → "Arrange current plate", "Initial layer
+height" → "First layer height" (and the other "Initial layer" options),
+"Support filament" → "Filament for Supports", "Detect thin wall" →
+"Detect thin walls",
+"De-retraction Speed" → "Deretraction speed", "Bed exclude area" →
+"Excluded bed area", "%s can't be a percentage" → "%s can’t be a
+percentage"; the rest are the options' tooltips and labels of the
+settings pages.
+
+The settings' messages also changed in English on their own account:
+"Invalid numeric. It is a whole number." is "Invalid numeric." as
+Field.cpp has it; a value out of a one-sided range reads "Value is out of
+range. (≥ 0)" where it read "Value -1 is out of range. It cannot be less
+than 0." (the C++'s words, the limit after them); "Could not connect to
+Moonraker: …" is followed by the reference's note "Note: Moonraker version
+at least 1.1.0 is required.".
+
+### Fonts and layout
+
+The page uses the system's fonts (`--font-ui`: `system-ui`,
+`-apple-system`, "Segoe UI"), and sets `lang` on the page to the language
+chosen, so that the system picks the right CJK face: on a Mac PingFang SC
+or TC for Chinese and Hiragino Sans for Japanese; on Windows "Segoe UI"
+should fall back on Microsoft YaHei, JhengHei and Yu Gothic (not seen).
+Chinese and Japanese were checked to render in Chromium (`--serve`) on
+the Mac; the window (WebKit) was not looked at in them.
+German, French, Japanese and Simplified Chinese were checked at 1280 × 820
+and 900 × 560, dark and light, in the sidebar, every process page, the
+filament's and the printer's pages, the object menu, the strip's menu,
+"Plate Settings", "Physical Printer" and "Send G-code to printer host":
+nothing runs out of its box or past the window. Two things were cut
+badly and are fixed: a list's closed face in an option row (now up to 58 %
+of the row, 210 px, the label wrapping beside it: "Obere und untere
+Oberflächen", "Surfaces supérieure et inférieure"), and "Plate
+Settings"' lists ("Identique à la séquence d'impression globale"; the
+dialog 640 px, its controls 310 px). What is still cut with an ellipsis
+is so by design and whole in its tooltip (a preset's name, a long list
+value in the narrowest sidebar). A tab row that does not fit scrolls, as
+it did.
+
+### Not yet
+
+- The reference's web pages (Printer Selection, the guide) translate
+  themselves from `resources/web/data/text.js`, tables of their own for
+  13 languages, not the catalogs. Printer Selection here is in English in
+  every language but for its buttons; "At least one printer must be
+  selected." is that table's `t37`.
+- `tc()` (a message id with a context) is not called yet: no string the
+  page shows has a context in the C++; it is there and tested.
+- The native file dialogs' titles and filters (`main.rs` `pick`: "Save
+  file as:", "3MF files") are in English: `pick` is Tauri's command, not
+  the session's, and is not given the language yet. They are message
+  ids and can follow.
+- The developer's own diagnostics (the page's console, WebGL errors) and
+  the session's own sentences stay English.
+- Slovak to Czech (above).
+
+### Errors found in the catalogs
+
+- `nl/Snapmaker_Orca_nl.po` l.2121, 2127, 2136, 2311, 2320, 5763, 5773,
+  8345 and `sv/Snapmaker_Orca_sv.po` l.2091, 2097, 2106, 2278, 2285, 5704,
+  5710, 8206: plural entries whose forms are the singular and the plural
+  run together with "@" between them ("%1$d fouten hersteld@%1$d fouten
+  hersteld"), so each form holds the placeholder twice or ends in "@";
+  the C++ would show "@" in the message, or format it with one value for
+  two placeholders. Left out here (the message id is shown).
+- `de/Snapmaker_Orca_de.po` l.2449: "Plate" is translated "Aktuelle Platte
+  drucken" ("Print current plate"), the translation of another string;
+  every "Plate 2" of the German C++ reads "Aktuelle Platte drucken 2".
+  Left out here (`WRONG` in the tool). Its "Print" is "aktuelle Platte
+  drucken" too, which reads oddly on a menu entry but is not plainly
+  another string's; kept.
+- `de/Snapmaker_Orca_de.po` l.1705: "Language" is "Spache" (for
+  "Sprache"), so the German C++ titles its Preferences' list so, and so
+  does the strip's menu here. A misspelling, not another string's
+  translation: kept, for the catalog to be mended where it is.
+- `Snapmaker_Orca.pot` l.16281: the `msgstr` of "EdgeSlicer integrates
+  some features from the 3D printing open-source community…" is a string
+  that is never closed (`msgstr "`), which gettext's own tools refuse.
+  Only the template; the catalogs do not have the entry.
+- No entry of any catalog has placeholders that differ from its message
+  id's but for the plurals above (`--report`).
+

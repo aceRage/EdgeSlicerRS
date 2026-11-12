@@ -218,7 +218,7 @@
           [x + TEXT_X * factor, y + TEXT_Y * factor, 0], [x + size - TEXT_X * factor, y + TEXT_Y * factor, 0],
           [x + size - TEXT_X * factor, y + size - TEXT_Y * factor, 0], [x + TEXT_X * factor, y + size - TEXT_Y * factor, 0],
         ]);
-        const picture = textPicture(plate.name || 'Untitled', '700', 64);
+        const picture = textPicture(plate.name || t('Untitled'), '700', 64);
         const [high, y0] = [NAME * factor, box[3] + TEXT_Y * factor];
         const wide = (high * picture.width) / picture.height;
         parts.namePicture = r.picture(picture);

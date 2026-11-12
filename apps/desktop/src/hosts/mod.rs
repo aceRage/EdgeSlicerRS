@@ -34,6 +34,8 @@ use std::{
 
 use serde_json::Value;
 
+use crate::api::i18n::tr;
+
 pub mod elegoo;
 pub mod kept;
 #[cfg(test)]
@@ -254,8 +256,7 @@ impl Address {
     /// As OctoPrint.cpp `make_url` reads it: `http://` when no scheme is
     /// given.
     pub fn parse(typed: &str) -> Result<Self, String> {
-        let unparsable =
-            || "The Hostname/IP/URL could not be parsed, please check it and try again.".to_owned();
+        let unparsable = || tr(UNPARSABLE);
         let typed = typed.trim();
         let (https, rest) = if let Some(rest) = typed.strip_prefix("https://") {
             (true, rest)
@@ -565,10 +566,8 @@ fn read_answer(
 pub fn said(error: ureq::Error) -> String {
     use ureq::Error as E;
     match error {
-        E::Timeout(_) => TIMED_OUT.into(),
-        E::HostNotFound | E::BadUri(_) => {
-            "The Hostname/IP/URL could not be parsed, please check it and try again.".into()
-        }
+        E::Timeout(_) => tr(TIMED_OUT),
+        E::HostNotFound | E::BadUri(_) => tr(UNPARSABLE),
         E::Io(io) => io_said(&io),
         E::ConnectionFailed => "Could not connect to the printer.".into(),
         E::Tls(_) | E::Pem(_) | E::Rustls(_) => {
@@ -578,17 +577,21 @@ pub fn said(error: ureq::Error) -> String {
     }
 }
 
+/// The reference's words (PrintHost.cpp `format_error`, l.251–255).
+pub const UNPARSABLE: &str =
+    "The Hostname/IP/URL could not be parsed, please check it and try again.";
 pub const TIMED_OUT: &str = "Connection timed out. Please check if the printer and computer network are functioning properly, and confirm that they are on the same network.";
 
 pub(crate) fn io_said(io: &std::io::Error) -> String {
     use std::io::ErrorKind as K;
     match io.kind() {
-        K::TimedOut | K::WouldBlock => TIMED_OUT.into(),
-        K::ConnectionReset | K::ConnectionAborted | K::BrokenPipe | K::UnexpectedEof => {
-            "File/data transfer interrupted. Please check the printer and network, then try it again."
-                .into()
+        K::TimedOut | K::WouldBlock => tr(TIMED_OUT),
+        K::ConnectionReset | K::ConnectionAborted | K::BrokenPipe | K::UnexpectedEof => tr(
+            "File/data transfer interrupted. Please check the printer and network, then try it again.",
+        ),
+        K::ConnectionRefused => {
+            "Could not connect to the printer: the connection was refused.".into()
         }
-        K::ConnectionRefused => "Could not connect to the printer: the connection was refused.".into(),
         _ => format!("Could not connect to the printer ({}).", io.kind()),
     }
 }

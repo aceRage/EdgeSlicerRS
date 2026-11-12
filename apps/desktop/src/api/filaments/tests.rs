@@ -180,7 +180,10 @@ fn a_filament_added_to_a_one_filament_model_prints_what_is_given_it_with_a_tool_
     }
     let back = detail(&session, id);
     assert_eq!(back["filament_count"], 1);
-    assert_eq!(texts(&back["choices"]["filaments"]), std::slice::from_ref(&first));
+    assert_eq!(
+        texts(&back["choices"]["filaments"]),
+        std::slice::from_ref(&first)
+    );
     sliced(&session, id, None);
     assert_eq!(gcode(&session, id, dir.path()), before);
     // And made again.

@@ -52,8 +52,8 @@ const presetPanel = { book: null };
 const NOT_FOLLOWED = 'Not followed: with the settings as they are the engine does not read this setting, so changing it changes nothing in the print. It is not followed yet, or is read only when another setting turns it on.';
 const WITH_A_NOTE = 'Followed with a note';
 // The reference's own words (Tab.cpp `m_tt_value_revert`, Field.cpp `get_formatted_tooltip_text`).
-const REVERT = 'Click to drop current modify and reset to saved value.';
-const PARAMETER = 'parameter name';
+const REVERT = t('Click to drop current modify and reset to saved value.');
+const PARAMETER = t('parameter name');
 // The overrides page: an option's tick box turns the filament's own value on.
 const OVERRIDE_OFF = { printer: 'Off: the printer\'s value for this filament\'s extruder is used.', process: 'Off: the process\'s value is used.' };
 
@@ -83,8 +83,43 @@ async function loadPages(book) {
     settingsMode.advanced = remembered.get('process.advanced') === '1';
   }
   for (const id of ['process-advanced', 'preset-advanced']) $(id).checked = settingsMode.advanced;
-  book.data = data;
+  book.data = translatedBook(data);
+  return book.data;
+}
+
+// The pages' words in the language: the file holds the reference's
+// message ids (one file for every language), put in the language here,
+// once, as the reference shows each through `_()` (an option's label,
+// full label, tooltip and list labels; a group's title; a line's label
+// and tooltip). What the code looks things up by stays as it is: the
+// keys, the values of a list, the pages' titles (shown with `pageTitle`)
+// and the units (shown with `unitFor`).
+function translatedBook(data) {
+  for (const option of Object.values(data.options)) {
+    for (const field of ['label', 'full_label', 'tooltip']) if (option[field]) option[field] = t(option[field]);
+    if (option.labels) option.labels = option.labels.map((label) => t(label));
+  }
+  for (const page of data.pages) {
+    for (const group of page.groups) {
+      if (group.title) group.title = t(group.title);
+      for (const line of group.lines) {
+        if (line.label) line.label = t(line.label);
+        if (line.tooltip) line.tooltip = t(line.tooltip);
+        if (line.labels) for (const key of Object.keys(line.labels)) line.labels[key] = t(line.labels[key]);
+      }
+    }
+  }
   return data;
+}
+
+// A page's title in the language; an extruder's ("Extruder 2") is the
+// reference's "Extruder %d" with its number.
+function pageTitle(book, title) {
+  const pages = (book.data && book.data.pages) || [];
+  if (pages.some((page) => page.title === title)) return t(title);
+  const template = pages.find((page) => page.per === 'extruder' && new RegExp(`^${page.title.replace('%d', '(\\d+)')}$`).test(title));
+  if (!template) return t(title);
+  return fmt(t(template.title), Number(new RegExp(template.title.replace('%d', '(\\d+)')).exec(title)[1]));
 }
 
 // The pages as they stand: of the printer's, an extruder's page for each
@@ -120,34 +155,37 @@ function typedValue(option, typed) {
     const under = option.min !== undefined && number < option.min;
     const over = most !== undefined && number > most;
     if (!under && !over) return null;
-    if (option.min !== undefined && most !== undefined) return `${label}: Value ${shown} is out of range. The valid range is from ${option.min} to ${most}.`;
+    // As the session says it (settings.rs `out_of_range`): Field.cpp's
+    // words, with both limits or with the one there is.
+    if (option.min !== undefined && most !== undefined) {
+      return `${label}: ${fmt(t('Value %s is out of range. The valid range is from %d to %d.'), shown, option.min, most)}`;
+    }
     return option.min !== undefined
-      ? `${label}: Value ${shown} is out of range. It cannot be less than ${option.min}.`
-      : `${label}: Value ${shown} is out of range. It cannot be more than ${most}.`;
+      ? `${label}: ${t('Value is out of range.')} (≥ ${option.min})`
+      : `${label}: ${t('Value is out of range.')} (≤ ${most})`;
   };
   const number = (written) => (/^[-+]?(\d+\.?\d*|\.\d+)(e[-+]?\d+)?$/i.test(written.trim()) ? Number(written) : NaN);
   switch (option.type) {
     case 'int': {
       const value = number(text);
-      if (!Number.isFinite(value)) return { error: `${label}: Invalid numeric.` };
-      if (!Number.isInteger(value)) return { error: `${label}: Invalid numeric. It is a whole number.` };
+      if (!Number.isFinite(value) || !Number.isInteger(value)) return { error: `${label}: ${t('Invalid numeric.')}` };
       return { value: String(value), error: range(value, text, option.max) };
     }
     case 'float': {
-      if (text.endsWith('%')) return { error: `${label} can't be a percentage` };
+      if (text.endsWith('%')) return { error: fmt(t("%s can't be a percentage"), label) };
       const value = number(text);
-      if (!Number.isFinite(value)) return { error: `${label}: Invalid numeric.` };
+      if (!Number.isFinite(value)) return { error: `${label}: ${t('Invalid numeric.')}` };
       return { value: String(value), error: range(value, text, option.max) };
     }
     case 'percent': {
       const value = number(text.replace(/%$/, ''));
-      if (!Number.isFinite(value)) return { error: `${label}: Invalid numeric.` };
+      if (!Number.isFinite(value)) return { error: `${label}: ${t('Invalid numeric.')}` };
       return { value: `${value}%`, error: range(value, `${value}%`, option.max) };
     }
     case 'float_or_percent': {
       const percent = text.endsWith('%');
       const value = number(text.replace(/%$/, ''));
-      if (!Number.isFinite(value)) return { error: `${label}: Invalid numeric.` };
+      if (!Number.isFinite(value)) return { error: `${label}: ${t('Invalid numeric.')}` };
       const most = percent ? option.max : (option.max_literal !== undefined ? option.max_literal : option.max);
       return { value: percent ? `${value}%` : String(value), error: range(value, percent ? `${value}%` : text, most) };
     }
@@ -161,8 +199,8 @@ function typedValue(option, typed) {
 // nothing after a value that carries its own %).
 function unitFor(option, value) {
   const unit = option.unit || '';
-  if (option.type !== 'float_or_percent') return unit === '%' && option.type === 'percent' ? '%' : unit;
-  return String(value).trim().endsWith('%') ? '' : unit.replace(/ or %$/, '');
+  if (option.type !== 'float_or_percent') return unit === '%' && option.type === 'percent' ? '%' : t(unit);
+  return String(value).trim().endsWith('%') ? '' : t(unit.replace(/ or %$/, ''));
 }
 
 // ---- one option's row ----
@@ -415,7 +453,7 @@ function showSettingsPage(book) {
         if (visible) { showSettingsRow(book, row.key); lineShown = true; }
       }
       // The rules may name a line their own way ("Cool Steel Plate").
-      if (line.title) line.title.textContent = (answer.labels && answer.labels[line.first]) || line.label;
+      if (line.title) line.title.textContent = (answer.labels && answer.labels[line.first] && t(answer.labels[line.first])) || line.label;
       line.node.hidden = !lineShown;
       any = any || lineShown;
       if (lineShown) shown += 1;
@@ -432,7 +470,7 @@ function showSettingsPage(book) {
   // The tabs, each with how many of its options are set by hand.
   $(`${prefix}-tabs`).replaceChildren(...offered.map((each) => {
     const count = answer.counts[each.title] || 0;
-    const tab = el('button', { type: 'button', id: tabId(each.title), className: 'process-tab', textContent: each.title });
+    const tab = el('button', { type: 'button', id: tabId(each.title), className: 'process-tab', textContent: pageTitle(book, each.title) });
     tab.dataset.page = each.title;
     tab.setAttribute('role', 'tab');
     tab.setAttribute('aria-selected', String(each.title === page.title));
@@ -538,7 +576,7 @@ function searchSettings(book, text) {
         for (const key of line.keys) {
           const option = book.data.options[key];
           if (!inMode(option)) continue;
-          const hay = `${option.label} ${line.label || ''} ${key} ${key.replace(/_/g, ' ')} ${group.title} ${page.title}`.toLowerCase();
+          const hay = `${option.label} ${line.label || ''} ${key} ${key.replace(/_/g, ' ')} ${group.title} ${pageTitle(book, page.title)}`.toLowerCase();
           if (words.every((word) => hay.includes(word))) found.push({ key: nameIn(page, key), option, page: page.title, group: group.title, line: line.label });
         }
       }
@@ -566,7 +604,7 @@ function showSettingsSearch(book) {
     const hidden = answer && answer.hidden.has(hit.key);
     const row = el('button', { type: 'button', className: 'found-row', id: `${prefix}-found-${index}` },
       el('span', { className: 'found-label', textContent: hit.line ? `${hit.line} ${hit.option.label}` : hit.option.label }),
-      el('span', { className: 'found-where', textContent: `${hit.page} › ${hit.group}` }),
+      el('span', { className: 'found-where', textContent: `${pageTitle(book, hit.page)} › ${hit.group}` }),
       el('span', { className: 'found-key', textContent: baseKey(hit.key) }));
     row.setAttribute('role', 'option');
     row.setAttribute('aria-selected', String(index === book.at));
@@ -638,7 +676,7 @@ function showPresetHead() {
   const answer = book && book.answer;
   if (!answer) return;
   const filament = book.kind === 'filament';
-  $('preset-title').textContent = filament ? `Filament ${book.filament}` : 'Printer';
+  $('preset-title').textContent = filament ? fmt(t('Filament %d'), book.filament) : t('Printer');
   const name = answer.name || (filament ? 'The project names no filament preset.' : 'The project names no printer.');
   $('preset-name').textContent = answer.source === 'project' ? `${name} (the project's own settings)` : name;
   $('preset-name').title = $('preset-name').textContent;
@@ -647,9 +685,9 @@ function showPresetHead() {
   $('preset-filaments').hidden = count < 2;
   $('preset-filaments').replaceChildren(...Array.from({ length: count }, (_, index) => {
     const number = index + 1;
-    const swatch = el('button', { type: 'button', className: 'swatch', textContent: String(number), title: `Filament ${number}` });
+    const swatch = el('button', { type: 'button', className: 'swatch', textContent: String(number), title: fmt(t('Filament %d'), number) });
     swatch.setAttribute('aria-pressed', String(number === book.filament));
-    swatch.setAttribute('aria-label', `Filament ${number}`);
+    swatch.setAttribute('aria-label', fmt(t('Filament %d'), number));
     const colour = /^#[0-9a-f]{6}/i.test(colours[index] || '') ? colours[index].slice(0, 7) : null;
     if (colour) {
       swatch.style.background = colour;
@@ -724,7 +762,8 @@ function wireSettings(book) {
   }));
 }
 
-document.addEventListener('DOMContentLoaded', () => {
+// Once every script of the page has run (i18n.js loads them).
+document.addEventListener('scripts-loaded', () => {
   for (const id of ['process-advanced', 'preset-advanced']) {
     $(id).addEventListener('change', () => {
       settingsMode.advanced = $(id).checked;
