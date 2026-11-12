@@ -45,7 +45,9 @@ The last column reads:
   eighteenth pass: settings of an object, a part and a height range,
   "Sidebar: Process" in section 2, sections 7, 12 ("On an object, a part,
   a height range"), 13 (`scene_edit`, undo, "The object list", "Parts"),
-  15 and 16).
+  15 and 16);
+  nineteenth pass: "Cut", in section 13 ("Cut"), with the rows of
+  sections 2, 6, 7, 9, 15 and 17 that point to it).
 - **differs** — built, but on purpose not as the C++ does it; the cell says how.
 - **not yet** — not built, with what it waits for. Nothing in this column is
   shown in the page as a control that does nothing.
@@ -194,7 +196,7 @@ does with each option.
 | --- | --- | --- |
 | A 3D view of every plate with the objects on it, orbit / pan / zoom, selection | `View3D`, `GLCanvas3D` | **added**, in 3D: section 9. Where the browser has no WebGL2, the view from above the first pass built is kept: the bed of the printer chosen with its grid and each object's outline (its convex hull), name and size, drag to move, wheel to zoom, "Fit part" [Z] and "Fit bed" |
 | Main toolbar: "Add" [Ctrl+I], "Add plate", "Auto orient all/selected objects" [Q], "Arrange all objects" [A] with its options, "Split to objects", "Split to parts", "Variable layer height", "Assembly View" | `GLCanvas3D::_init_main_toolbar` l.9274 | **added**: "Add", "Add plate", "Arrange all objects" with its options (section 13, "Arrange": the reference's arranger, ported), "Split to objects" and "Split to parts". **not yet**: auto orient (the engine does not do it), variable layer height, the assembly view |
-| Gizmos: "Move" [M], "Rotate" [R], "Scale" [S], "Lay on face" [F], "Cut" [C], "Mesh Boolean" [B], "Support Painting" [L], "Seam painting" [P], "Paint-on fuzzy skin" [H], "Color Painting" [N], "Texture displacement", "Emboss" [T], "SVG", "Measure" [U], "Assemble" [Y], "Simplify", "Brim Ears" [E], "Sculpt", "Edit", "Fillet / chamfer (CAD)" | `Gizmos/GLGizmosManager.cpp::init` l.224 | **added**: "Move", "Rotate" and "Scale" with their number fields, and "Lay on face" [F] (section 13); "Support Painting" [L], "Seam painting" [P], "Paint-on fuzzy skin" [H] and "Color Painting" [N] (section 13, "The painting tools"). **not yet**: "Cut", "Mesh Boolean", "Texture displacement", "Emboss", "SVG", "Measure", "Assemble", "Simplify", "Brim Ears", "Sculpt", "Edit", "Fillet / chamfer (CAD)": each waits for the engine to do what it does (cutting and joining meshes, displacing a surface, text and pictures made into meshes, measuring and assembling, simplifying, brim ears in the brim) |
+| Gizmos: "Move" [M], "Rotate" [R], "Scale" [S], "Lay on face" [F], "Cut" [C], "Mesh Boolean" [B], "Support Painting" [L], "Seam painting" [P], "Paint-on fuzzy skin" [H], "Color Painting" [N], "Texture displacement", "Emboss" [T], "SVG", "Measure" [U], "Assemble" [Y], "Simplify", "Brim Ears" [E], "Sculpt", "Edit", "Fillet / chamfer (CAD)" | `Gizmos/GLGizmosManager.cpp::init` l.224 | **added**: "Move", "Rotate" and "Scale" with their number fields, and "Lay on face" [F] (section 13); "Support Painting" [L], "Seam painting" [P], "Paint-on fuzzy skin" [H] and "Color Painting" [N] (section 13, "The painting tools"); "Cut" [C]: "Planar" on a flat surface, "Pick face", a part given to the other side, "Dovetail", "Keep cut editable" / "Edit cut..." / "Copy cut to..." (section 13, "Cut"). **not yet**: "Cut"'s curved and drawn surfaces and connectors (section 13, "Cut"), "Mesh Boolean", "Texture displacement", "Emboss", "SVG", "Measure", "Assemble", "Simplify", "Brim Ears", "Sculpt", "Edit", "Fillet / chamfer (CAD)": each waits for the engine to do what it does (joining meshes, displacing a surface, text and pictures made into meshes, measuring and assembling, simplifying, brim ears in the brim) |
 | Object list: plates, objects, parts, instances, layer ranges; columns "Name", printable, "Fila.", paint marks; the object, part and plate menus | `GUI_ObjectList.cpp`, `GUI_Factories.cpp` | **added**: plates, objects, parts and instances with "Name", printable and "Fila.", and the object's, the part's and the plate's menus (section 13); the mark of an item with settings of its own, "Layers" and its height ranges (eighteenth pass, section 13). **not yet**: the paint marks |
 | View options: "Realistic View", "X-Ray", "Center of Mass", "Show 3D Navigator", Ctrl+0..6 views | `GLCanvas3D.cpp` l.8297, View menu | **added**: the navigator and the views (section 9). **not yet**: the three view options |
 
@@ -386,7 +388,7 @@ Read from `ProjectStrip.cpp/.hpp`, `ProjectSessions.hpp` and their uses in
 | Ctrl+P (Cmd+, on a Mac): Preferences; "?": the list of shortcuts; Ctrl+D: "Delete all"; Ctrl+X: "Cut"; Ctrl+Q: Quit (Windows and Linux; Cmd+Q in the application menu on a Mac) | **added** (fifteenth pass) |
 | Ctrl+G ("Export plate sliced file"), Ctrl+Shift+G ("Print plate") | **not yet**: the sliced file is not written; "Print plate" is Bambu's. Ctrl+G's entry is shown, off |
 | Left / Right, Home / End (the move slider), L (one layer mode), C (G-code window) | **added** in 3D, C in the eleventh pass |
-| A, Shift+A, Q, Shift+Q, the gizmo keys, Ctrl+0..6, Ctrl+A / D / Z / Y / C / V / X, Del, 1–9, arrows to move objects | **added** in 3D: Ctrl+0..7 (the views), Ctrl+A, Esc, I and O, Ctrl+E (section 9); A, Shift+A, M, R, S, F, Ctrl+Z, Ctrl+Y, Ctrl+C, Ctrl+V, Ctrl+K, Ctrl+I, Del and the arrows (section 13); L, P, H, N (the painting tools), and while one is open its own keys: C, S, F, T, H, G for its tools, 1–9 and 1 then 0–6 for the colour tool's filaments, Ctrl and Alt with the wheel (section 13, "The painting tools"; where each is bound, section 17). **not yet**: Q and Shift+Q, the other gizmos' keys, 1–9 (the filament of what is selected, with no painting tool open) |
+| A, Shift+A, Q, Shift+Q, the gizmo keys, Ctrl+0..6, Ctrl+A / D / Z / Y / C / V / X, Del, 1–9, arrows to move objects | **added** in 3D: Ctrl+0..7 (the views), Ctrl+A, Esc, I and O, Ctrl+E (section 9); A, Shift+A, M, R, S, F, C, Ctrl+Z, Ctrl+Y, Ctrl+C, Ctrl+V, Ctrl+K, Ctrl+I, Del and the arrows (section 13; C is "Cut" in Prepare and the G-code window in Preview, as in the reference, and Up / Down move the cut plane while "Cut" is open); L, P, H, N (the painting tools), and while one is open its own keys: C, S, F, T, H, G for its tools, 1–9 and 1 then 0–6 for the colour tool's filaments, Ctrl and Alt with the wheel (section 13, "The painting tools"; where each is bound, section 17). **not yet**: Q and Shift+Q, the other gizmos' keys, 1–9 (the filament of what is selected, with no painting tool open) |
 
 ## 7. What the page asks for
 
@@ -463,6 +465,11 @@ the project is on.
 | `undo`, `redo` | `project?` | `{ project, scene, done }`; an error when there is nothing to take back or to make again |
 | `filament_edit` | `project?`, `op`: `add` (`colour?`, "#RRGGBB"; else the next of the reference's palette), `remove_last`, `delete` (`filament`), `merge` (`filament`, `into`), `colour` (`filament`, `colour`), `apply_all` (`preset`) | as `scene_edit`: `{ project, scene, done }`, `done` the step's name ("Add one filament", "Remove last filament", "Delete this filament", "Merge with", "Change Filament Color", "Apply All"), or null when nothing changed. Refused, nothing changed: the last filament, a 65th, a filament the project has not got, a merge into itself, a colour that is not `#RRGGBB`, "Apply All" on a project on its own settings |
 | `scene_faces` | `project?`, `copy` | the faces "Lay on face" offers for a copy, largest first: `{ project, copy, faces: [{ normal, area, drawn }] }`, `normal` outward in the object's own coordinates (what `lay_on_face` takes), `area` in mm² at the printed size, `drawn` the outline to draw over the face (rounded and lifted as the reference draws it), in the object's own coordinates |
+| `cut_section` | `project?`, `copy`, `plane` (sixteen numbers, column by column: the plane's x, y and normal, then its middle, in the scene) | `{ project, copy, lines, above, below, reach }`: where the plane cuts the copy's printed parts (six numbers a line, in the scene), how far the copy reaches over and under the plane along its normal (the grip's tooltip), and the box round it in the plane's own axes, least and greatest corners ("Build Volume"); with `cap: true`, `cap` too: the cut face as triangles (nine numbers each, in the scene), for the connectors. A bare model is measured where it is shown (section 13, "Cut") |
+| `cut_pick` | `project?`, `copy`, `from`, `to` (a line of sight in the scene) | `{ point, normal, corners }` of the face of the copy's printed parts it meets first, or null ("Pick face") |
+| `cut_parts` | `project?`, `copy`, `plane`, the cut's options | `{ count, upper, ranges, offset }`: the pieces the cut would make, the side each is on and its triangles in `cut_parts_mesh` (bytes, EDGM), for a piece to be given to the other side |
+| `cut_connector_mesh` | `type`, `style`, `shape`, `snap?` | bytes (EDGM): a connector's shape at unit size, as the cut makes it, for the tool to draw |
+| `cut_recipe` | `project?`, `copy`, `onto?` | how the copy's object was cut when it was kept editable, set up on `onto` (the copy itself when not given): `{ plane, mode, thickness, thickness_from, keep_upper, keep_lower, to_parts, place_on_cut_upper, place_on_cut_lower, flip_upper, flip_lower, groove }` ("Copy cut to...") |
 | `toolpath` | `project?`, `plate?` | a sliced plate's moves, before they are asked for: `{ source: "gcode" \| "lines", moves, move_size, at_once, layers { first, z, height }, features, filaments, counts { travel, line, wipe, retract, unretract, seam, tool_change }, box, plate, run, gcode_lines }` (`gcode_lines`: how many lines the G-code has, 0 without one) |
 | `gcode_lines` | `project?`, `plate?`, `from` (a line, from 1), `count` (at most 2048) | `{ total, from, lines: [text] }`: the G-code's lines as the G-code window shows them (no new line; over 55 characters cut to 52 and "...") |
 | `layer_codes` | `project?`, `plate?` | what is set at the plate's layers and what the slider offers there: `{ project, plate, items: [{ print_z, kind (pause, custom, template, filament, color, unknown), extruder, color, extra }], pause, template (the printer's `machine_pause_gcode` and `template_custom_gcode`, as text), colours (each filament's), change_filament (null with one filament, else whether it can be picked), sequential }` |
@@ -677,7 +684,7 @@ reference's own numbers; each is named in `scene.js` with where it is from.
 | Ctrl+A "Select all objects" | **added**: those on the plate shown |
 | Ctrl+E "Show Labels" | **added**: the names of the objects on the plate shown |
 | Tab "Switch between Prepare/Preview" | **had** |
-| Arrows, PgUp / PgDn, Del, Ctrl+C / V / X / Z / Y / D / K, 1–9, A, Q, the gizmo keys, "?" | **added**: the arrows, Del, Ctrl+C / V / Z / Y / K, A, and M, R, S of the gizmo keys (section 13). **not yet**: PgUp / PgDn (turning what is selected), Ctrl+X, Ctrl+D, 1–9, Q, the other gizmos, "?" |
+| Arrows, PgUp / PgDn, Del, Ctrl+C / V / X / Z / Y / D / K, 1–9, A, Q, the gizmo keys, "?" | **added**: the arrows, Del, Ctrl+C / V / Z / Y / K, A, and M, R, S, F, C of the gizmo keys (section 13). **not yet**: PgUp / PgDn (turning what is selected), Ctrl+X, Ctrl+D, 1–9, Q, the other gizmos, "?" |
 
 ### The bed
 
@@ -1110,6 +1117,8 @@ undo history.
 | `plate_settings` | `plate?` and, each null or left out for the project's, `bed_type` (one the printer takes), `print_sequence` (`by layer`, `by object`), `spiral_mode` (true, false), `first_layer_sequence` (filament numbers, each once), `other_layers_sequence` (`[{ begin, end (null: "End"), order }]`, layers from 2) | what the plate sets for itself ("Customize current plate"); refused, nothing changed, with "Please input layer value (>= 2)." and the like | "Plate Settings" (the reference takes no snapshot) |
 | `plate_front` | `plate?` | "Move plate to the front": the plate is plate 1 and the one shown, the others one back each | "move plate to the front" |
 | `plate_duplicate` | `plate?` | "Duplicate Current Plate": a plate after the last with a new object for each object with copies on the plate, each copy where it stood on its plate; the new plate is shown; `made` is its copies | "Duplicate Current Plate" (the reference takes no snapshot) |
+| `cut` | `copy`, `plane` (as `cut_section` takes it; the normal points into the upper part), `keep_upper`, `keep_lower`, `place_on_cut_upper`, `place_on_cut_lower`, `flip_upper`, `flip_lower`, `to_parts`, `thickness` (0 to 20 mm), `thickness_from` (`centred`, `above`, `below`), `sides` (a piece given to the other side), `groove` (a dovetail, with its `init`), `editable` ("Keep cut editable", on unless false), `amend` ("Edit cut": one step with putting the cut back), each left out as the tool starts | the copy's object cut by the plane (section 13, "Cut"); `made` is the copies of what it made; `note` says how many of the cut's outlines could not be closed on an open mesh. Refused, nothing changed: "Select at least one object to keep after cutting.", "Cut plane is placed out of object" (Cut to parts with nothing on either side), a plane that is not one | "Cut by Plane" |
+| `cut_edit` | `copy` | the halves of the cut that made the copy's object put back as the object was (section 13, "Cut"); `made` is its copy, `recipe` the cut as `cut_recipe` answers it with `missing` (fewer halves left than the cut made). Refused, nothing changed, for an object whose cut was not kept editable or cannot be made here | "Edit cut" |
 | `item_set` | `object`, `part?` or `range?`, `key`, `value` (null: given back to what is over it) | an object's, a part's or a height range's own setting (Tab.cpp `TabPrintModel::on_value_change`): checked as the global pages check it, kept in the shape the value over it has (a list for each nozzle flow stays one), written as the reference serializes it. Refused, nothing changed: a key that kind of item may not set (`layer_height` on a part: "layer_height cannot be set on a part"), a value the option does not take, a negative part, a support blocker or enforcer or a Precise Seam part. The same value again is no step | "Change Option `key`" |
 | `item_reset` | `object`, `part?` or `range?` | takes away every setting of the item's own that its pages offer (`reset_model_config`; the list's mark) | "Reset Options" |
 | `range_add` | `object`, `range?` | without `range`, "Height range Modifier" on an object without ranges: 0 to 2 mm, the object's layer height (else the project's) and filament 0 (`get_default_layer_config`); one with ranges is left as it is. With `range`, "Add height range" after that range (`add_layer_range_after_current`): after the last, 2 mm on its top; into a range starting at its top, that range split as the reference splits it; into a gap of a layer or more, the gap. Refused where there is no room ("There is no room for another height range after this one.", the reference doing nothing without a word) | "Add layers"; "Add height range" (the reference's snapshot is unnamed) |
@@ -1255,6 +1264,124 @@ faces (`ui/scene-edit.js`).
 | A click on a face turns the object so the face points down, then `do_rotate("Gizmo-Place on Face")` stands it on the bed: one undo step | `on_mouse` l.90, `lay_on` l.107 | **added**, as the button goes down, as in the C++. **differs**: the turn is about the middle of the copy's box; the reference's is about the instance's origin, which it keeps in the middle of the object's geometry, where a model read here may have its origin anywhere |
 | The panel: "Convex hull" / "Face under cursor", "Click a highlighted face to lay the object on it.", "Hold Alt to pick any face under the pointer." | `on_render_input_window` l.386 | **added**: the panel titled "Lay on face" with the first hint, and "No resting faces found on the convex hull." when there are none. **not yet**: "Face under cursor" and Alt (section 13, "Left for later"); the hint about Alt is not shown, Alt doing nothing here |
 | The other instances of the object take the same turn | `Selection::synchronize_unselected_instances` | **differs**: as with Rotate here, only the copy selected turns |
+
+### Cut
+
+Read from `Gizmos/GLGizmoCut.cpp/.hpp` (the fork's: 11 734 lines, with its
+curved and drawn surfaces, flexi joints, push-fit pins, TAC joints and
+re-editable cuts), `GLGizmosManager.cpp`, `KBShortcutsDialog.cpp`,
+`libslic3r/CutUtils.cpp/.hpp` (`Cut::perform_with_plane`,
+`process_solid_part_cut`, `process_modifier_cut`, `post_process`,
+`reset_instance_transformation`, `finalize`), `libslic3r/Model.cpp`
+(`clone_for_cut`, `assign_copy`, `invalidate_cut`),
+`libslic3r/TriangleMeshSlicer.cpp` (`cut_mesh`, `triangulate_slice`),
+`libslic3r/CurvedCut.cpp` (`curved_cut_thickness_faces`),
+`libslic3r/CutRecipe.hpp` (`cut_plane_center_allowed`),
+`Plater.cpp` (`apply_cut_object_to_model`) and `Format/bbs_3mf.cpp`
+(`cut_information.xml`, `cut_recipe.xml`). The mesh's side is
+`edge_mesh::cut` (and `edge_mesh::earcut` for the caps), the model's
+`Model::cut` and `Model::cut_section` (`crates/edge-engine/src/cut.rs`),
+the session's `scene_edit` `cut` and `cut_section`, the page's
+`ui/cut.js`.
+
+The modes the fork offers: "Planar" (a plane; its surface "Flat", or
+"Curved", a height field over the plane bent by control points, or
+"Draw", a ruled strip along a line drawn on the model), and "Dovetail"
+(a tongue and groove along the plane, "Tongue and groove" in PrusaSlicer:
+"Depth", "Width", "Flap Angle", "Groove Angle", "Count", "Gap"). Built:
+"Planar" with the flat surface, "Pick face", a part given to the other
+side, "Dovetail", "Keep cut editable" with "Edit cut..." and "Copy
+cut to...", and the connectors "Plug", "Dowel" and "Snap". Not built:
+the curved and drawn surfaces (below) and the fork's own connectors.
+
+| C++ | Where | Here |
+| --- | --- | --- |
+| "Cut" [C] in the gizmos' column, for one whole instance (`on_is_activable`: `is_single_full_instance`); C again or Esc closes it | `GLGizmosManager.cpp` l.228, `GLGizmoCut.cpp` l.6291, `on_init` (`m_shortcut_key`) | **added**: "Cut [C]" in Prepare's toolbar after "Lay on face", off unless one copy is selected; C and its button open and close it, Esc closes it. Another copy selected while it is open moves it to that copy; parts selected close it |
+| The mesh cut: each model part cut in the instance's frame (`instance_matrix * volume_matrix`), the upper and lower meshes with their caps (`cut_mesh`, `triangulate_slice`) | `CutUtils.cpp` l.529 `process_volume_cut`, `TriangleMeshSlicer.cpp` l.2450 | **differs**, on purpose: `edge_mesh::cut` builds the halves so that they are always closed (the reference finds a cap's corners by nearness and adds a vertex where it finds none, which leaves open edges: see "Errors found in the C++"). A corner within 1e-4 mm of the plane is on it; a crossed edge is cut once for both its triangles; corners of the cut nearer than 1e-4 mm are one (the reference's own duplicate rule); the cap is laid only over the edges the cut opened, followed round as loops (where loops touch, the one turning furthest left), holes put in the smallest outline round them, and triangulated by ears (after Mapbox's earcut) using every corner of the loops and no other, no ear taken that does not turn. A mesh open where it is cut keeps its opening, and the session says so ("The object is open where it was cut: %d of the cut's outlines could not be closed.") |
+| "Cut position" ("Z:", the plane's middle's height), "Reset cutting plane" (↺, off at the start); "Build Volume" (the object's size in the plane's axes) | `render_cut_plane_input_window` l.8935, `render_move_center_input` l.876, `render_build_size` l.8302 | **added**, each a step of the tool's own ("Move cut plane", "Reset cutting plane"). The plane's middle goes where the reference lets it: while the object reaches past it by more than half a millimetre either way, or nearer the object's middle (`set_center_pos`, `cut_plane_center_allowed`) |
+| The plane: a square 1.5 times the object's bounding sphere's radius a side (half), (0.9, 0.9, 0.9, 0.5), pink (1, 0.8, 0.8, 0.5) when the cut cannot be made; drawn twice with a thickness; the object cyan above it and magenta under it (the canvas's colour clip plane); the section's outline over it | `render_cut_plane` l.1284, `init_picking_models` l.6665, `apply_color_clip_plane_colors`, `render_clipper_cut` | **added**: the same colours (the scene's, not the page's accent); the section is the session's (`cut_section`), asked for as the plane moves, one call at a time. Only the printed parts take the two tints; modifiers and the other helpers are drawn as they are |
+| The grip: a yellow stalk half the radius out along the normal, a ball (yellow under the pointer, else grey) 32 px across at 0.35, a quarter larger while dragged; two red cones (about the plane's x) and two green (about its y) | `render_cut_plane_grabbers` l.5700 | **added**, the same sizes and colours, over the object (the depth cleared for them) |
+| Dragging the ball, or the plane, moves the plane along its normal, by whole millimetres with Shift; a cone turns it about the plane's own x or y, by eighths of a turn between a third and two thirds of the grip's reach and by 5° about the reach itself; "X: 30.0°" while turning; the heights of the two parts on the ball's tooltip ("12.50 mm (Object A)"; "Part A" with Cut to parts) | `dragging_grabber_move` l.6351, `dragging_grabber_rotation` l.6389, `get_tooltip` l.288 | **added**. The tooltip is the stage's own (`title`) |
+| A click on the plane flips it ("Click to flip the cut plane\nDrag to move the cut plane"); "Flip cut plane" | `on_mouse` l.330, `flip_cut_plane` l.8415 | **added**: half a turn about the plane's own x, the plane's tooltip in those words. The fork's "Flip cut plane" button is commented out (`render_flip_plane_button`), so it is not shown either |
+| Shift with a drag: "Draw cut line"; the plane laid through the line and the line of sight, its middle the object's brought onto it ("Cut by line") | `process_cut_line` l.11349, `m_shortcuts_cut` | **added**. **differs**: a line under 3 pixels is ignored (the reference measures 3 units at the near plane) |
+| Up / Down: the plane 1 mm along its normal ("Move cut plane") | `GLGizmosManager.cpp` l.1121 `shift_cut` | **added** |
+| "Mirror cut" X / Y / Z ("Mirror the whole cut - plane, surface and connectors - about the object's centre on the world X axis"), the side that was upper staying upper | `render_mirror_buttons` l.8648, `mirror_cut` l.8604 | **added**, a step of the tool's own |
+| "Thickness" (0 to 20 mm, "Width of the band of material the cut removes, …"), "Remove from" "Centred" / "Above" / "Below", and its note; started at 0 each time the tool opens | `render_cut_thickness_input` l.5646, `on_set_state` | **added**: the engine cuts each half at its own face (`CutOptions::faces`) |
+| "Reset cut" ("Reset cutting plane and remove connectors") | l.9006 | **added**: the plane (there are no connectors) |
+| "After cut": "Upper part" / "Lower part" each with its colour, "Keep", "Place on cut", "Flip" (the last two exclusive, off without "Keep"); "Cut to parts" (keeps both, as they stood); kept from one cut to the next | l.9066–9124 | **added** |
+| "Perform cut": off while nothing is kept; the warnings "Warning: Select at least one object to keep after cutting.", "Warning: Cut plane is placed out of object" | `can_perform_cut` l.9805, `render_input_window_warning_lines` l.9269 | **added**, the same words; a plane past the object warns and still cuts, as in the reference |
+| The plane's moves are snapshots of the gizmo ("Move cut plane", "Rotate cut plane", "Flip cut plane", "Cut by line", "Mirror cut on X" …) in the project's undo history | `Plater::TakeSnapshot` with `SnapshotType::GizmoAction` | **differs**: they are the tool's own while it is open: Ctrl+Z (and the Edit menu's Undo) takes back the plane's last move, then, with none left, the project's last step. They go when the tool closes, the project's history holding the model only (above, "Undo and redo") |
+| "Cut by Plane": one snapshot; the tool closes first; the object is replaced by what is made, which is selected; the project is modified; the plates' slices go | `perform_cut` l.10751, `Plater::apply_cut_object_to_model` l.25405 | **added** (`scene_edit` `cut`). **differs**: the objects made stand where the object stood in the list (the reference adds them at the end), as "Split to objects" here does |
+| What each part becomes: a model part is cut, each piece keeping its name (with `_A` / `_B` for Cut to parts), filament and settings; a negative part, modifier, support blocker or enforcer goes whole, its place put into its own transform, to each side its box reaches (all of them to the one object with Cut to parts), and is left out of a side whose printed material its box does not meet | `process_solid_part_cut` l.841, `add_cut_volume` l.496, `process_modifier_cut` l.818, `delete_extra_modifiers` | **added**. **differs**: a side with no printed part makes no object (see "Errors found in the C++") |
+| The copies: the cut copy's turn and size go into the halves' meshes, which stand where it stood; "Place on cut" turns a part to lie on its cut face, "Flip" upside down; every copy is then put on the bed | `reset_instance_transformation` l.868, `post_process` l.987, `load_model_objects` | **added**. **differs**: the other copies of the object keep their own turn and size relative to the cut one; the reference gives them their own turn about z on top of the cut copy's turn, which is in the meshes (see "Errors found in the C++"). The turn is about the middle of the part's box, the reference's about the instance's origin |
+| The halves' own settings, height ranges, variable layer heights and brim ears are the object's (`clone_for_cut` copies them, at the object's old heights) | `Model.cpp` l.2293, l.1399–1402 | **added**, as the reference: kept as they were, at the object's heights (listed with the errors: on a part that was lifted or turned they no longer fit) |
+| Paint: the fork carries every kind over the cut (`KeepPaint`, "painting survives a cut, always": `save_paintings`, `restore_painting` by where the faces are) | `Cut::finalize` l.1034 | **differs**: a triangle that is whole on a side keeps its codes as they were; a piece of a painted triangle takes the state at its middle whole; the cap is unpainted, as the reference leaves a cut face. A copy that was mirrored carries its pieces' paint the same way, its whole triangles too |
+| The cut information: a plain cut's halves are not cut objects (`InvalidateCutInfo` while the object has no cut id): no `cut_information.xml` entry; a cut with connectors or a dovetail, both parts kept, gives its results one cut id (`check_sum` 2 and one for each dowel, the connectors counted); with "Keep cut editable" (on unless turned off) a `cut_recipe.xml` with the uncut mesh | `perform_cut` l.10902, `update_object_cut_id` l.10006 | **added** (`ObjectKept::cut_id`, `PartKept::connector`), written as the reference writes it (section 15); "Edit cut..." takes a cut's dowels with its halves, as the reference takes every object of the cut id |
+| "Mode": "Planar", "Dovetail" | `render_cut_mode_combo` l.718 | **added**, as two joined buttons (STYLE.md: a choice of one of two), kept from one cut to the next |
+| "Dovetail": the groove drawn over the plane (`its_make_groove_plane`), "Groove" with "Depth" and "Width" each with its tolerance, "Flap Angle" (30°–120°), "Groove Angle" (0°–15°), "Multiple" with "Count" (1–20), "Gap" (off with one) and the "Spacing" they come to, each with its reset; its grabbers: a move across the plane (x), along it when the groove is angled (y), a turn about the normal; the upper part's tongue cyan and the lower part's groove magenta; "Perform cut" off with "Warning: Cut plane with groove is invalid" while a side of a dovetail misses the object (`has_valid_groove`) | `render_cut_plane_input_window` l.8935, `update_plane_model`, `has_valid_groove`, CutUtils.cpp `perform_with_groove` l.2218–2427 | **added**. The cut is the reference's own run of plane cuts (the slab either side of the plane, each dovetail's sides and flaps, the tolerances), each piece closed, the pieces of a side one part, the objects `_A` and `_B`; no mesh boolean is needed. Checked: closed halves adding up to the block less the tolerance's gap, the slice at the groove showing a gap of the tolerance, the C++ slicer reading both halves as manifold with those volumes. **differs**: the depth it starts at goes by the object's size; the reference's goes by its grabbers' size, which is fixed on the screen, so it changes with the zoom (section 17). Paint is not carried over a dovetail's pieces |
+| "Surface": "Flat", "Curved", "Draw", with "Upper" / "Lower": "Visible", "Ghost", "Hidden" | `render_curved_surface_inputs` l.2891, `render_side_visibility_inputs` l.2851 | **not yet**, not shown: both cut the object with a closed solid built from the surface (CurvedCut.cpp `cut_with_solid`, 1 063 lines, DrawCut.cpp 3 809), by a general mesh boolean (Manifold, then mcut: MeshBoolean.cpp, 1 189 lines). That boolean is a project of its own (robust intersection of two arbitrary meshes, exact predicates, retriangulating along the cut, keeping each side closed), well beyond the plane cuts here; the sheet's and the stroke's editors (their control points, smoothing, extension angles, undo) come on top. The sides' visibility waits for an alpha a side in the scene's shader |
+| "Add connectors" / "Edit connectors" (off unless both parts are kept as objects of their own): the cut face shown with what is over the plane hidden; a click on the face adds a connector, a click chooses one (Shift adds to the choice, Alt takes off it), a drag moves it, the right button takes it off, Ctrl+A chooses all, Delete takes the chosen off; "Type" ("Plug", "Dowel", "Snap"), "Style" ("Prism", "Frustum", a plug's only), "Shape" ("Triangle", "Square", "Hexagon", "Circle", not a snap's), "Depth" and "Size" each with its tolerance, "Rotation", a snap's "Bulge" and "Space"; each change to the chosen ones and the next; "Remove connectors", "Confirm connectors", "Cancel" (takes them all off); "Warning: Invalid connectors detected" with what is out of the cut contour, out of the object, overlapped, and "Perform cut" off meanwhile; with connectors "Keep" is forced on, "Cut to parts" and "Pick face" off, "Reset cut" takes them off; the cut: a plug or a snap a part of the lower object with its hole (the snap's a round one) a negative part of the upper, wider and deeper by the tolerances and through the face by 0.05 mm, a dowel an object of its own ("name-Dowel-Connector-n") with a hole each side; a cut's thickness added to each; the results one cut in `cut_information.xml` (its id, `check_sum`, the connectors by part) and in the recipe | `render_connectors_input_window` l.7147, `add_connector` l.11413, `gizmo_event` l.11540, `check_and_update_connectors_state` l.9617, `apply_connectors_in_model` l.9898, `apply_cut_connectors` l.11692, `get_connector_mesh`, CutUtils.cpp `process_connector_cut` l.711, `apply_tolerance` l.451, TriangleMesh.cpp `its_make_cylinder`, `its_make_frustum`, `its_make_frustum_dowel`, `its_make_snap` | **added** ("Plug", "Dowel", "Snap"; `connectors.js`, `edge_mesh::connector`, `Model::cut` with `CutOptions::connectors`): the same shapes (each closed and wound outward, checked), placings, holes and tolerances, the same colours. Checked: sliced, a plug's hole is wider than the plug by the radius tolerance (0.2 mm) and deeper by the height tolerance; the C++ slicer reads the file as its own (its `--info` manifold, `--export-3mf` writing the same cut information and recipe back), and "Edit cut..." puts the connectors back. **differs**: a connector's mesh is not centred on its box across the plane (the reference's `add_volume` puts a triangle's middle a quarter of its radius off where it is drawn), and the outline checked against the cut contour is turned as it is drawn (section 17). The fields are number fields with a reset each; the reference has sliders and resets the snap's two only. A dowel's frustum (two cones) is cut when a file asks for it, but, as in the reference, the panel makes a dowel a prism. **not yet**: the fork's "Flexi", "Pin" and "TAC Joint"; a box drawn to choose connectors (Shift or Alt with a drag); the hovered connector's colour, which the pane does not show for want of hover events (the code has it) |
+| "Pick face" ("Click a model face to set the cut plane flush with it; use Cut position to offset"), "Click a face of the model." while armed | `apply_picked_facet` l.8375, l.9022–9029 | **added** (`cut_pick`, the session's ray tree): the face under the pointer lit, a click lays the plane on it, its middle where the click was; refused where the plane would miss the object |
+| A part given to the other side by the right button ("Right-click a part to assign it to the other side") | `process_contours`, `PartSelection`, `perform_by_contour` | **added** (`cut_parts`, `cut_parts_mesh`): the pieces worked out as the plane is placed, each drawn in its side's colour, a right click on one moving it to the other side; the cut then makes one part of each side's pieces, the objects `_A` and `_B`; "Cut to parts" off meanwhile; refused when every piece is on one side |
+| "Keep cut editable" (on unless turned off, with its tooltip): the halves carry how they were cut and the object as it was, written as `Metadata/cut_recipe.xml` and `Metadata/cut_recipe/<sha256>.bin` | `build_recipe_from_gizmo` l.10089, `object_part_mesh`, bbs_3mf.cpp `_add_cut_recipe_file_to_archive` | **added** (`edge-3mf` `recipe`): the reference's schema (version 8) and blob ("ESCUTMSH", f32 corners, u32 triangles), the blob named by its SHA-256 and written once for both halves; a recipe read is written back as it was. The uncut mesh is kept in the halves' coordinates (the copy's turn and size in it), so `instance_linear` is written as the identity; one the reference wrote is turned by its `instance_linear` when read. Checked: the C++ slicer reads ours and writes it back with the same hash, and its file reads back here with "Edit cut..." working |
+| "Edit cut..." ("Edit the cut that produced this object") in the object's menu: the halves taken out, the uncut object put in their place, the tool opened as the cut was made ("Editing an existing cut. Perform cut replaces both halves.", "One half of this cut is missing …"); Cancel puts the halves back; one snapshot for the whole | GUI_ObjectList.cpp `edit_cut` l.3583, GLGizmoCut.cpp `begin_reedit`, `cancel_reedit`, `render_reedit_notice` | **added** (`scene_edit` `cut_edit`, `cut` with `amend`): one undo step, "Edit cut", for putting back and cutting again; closing the tool without cutting takes that step back. **differs**: the halves are those carrying the same cut on the copy's plate, where the reference goes by the cut id, which a plain cut takes away, so it put back the chosen half alone and said the other was missing (section 17). The uncut object takes the halves' helpers (each once) and settings; the reference's has its mesh alone. A recipe of a curved or drawn cut, or one with connectors of the fork's own kinds, is refused with a reason; its plugs, dowels and snaps come back as they were placed |
+| "Copy cut to..." ("Set this cut up on an object, ready to cut it the same way"): every object, "1. name (parts)", " (this object)" on the one selected; the tool opened on it with the cut set up in its own place | GUI_Factories.cpp `append_menu_item_copy_cut` l.2194, `cut_target_label`, `copy_cut_to` l.3755 | **added** (`cut_recipe` with `onto`), the same labels and tooltips |
+
+How it was checked:
+
+- `crates/edge-mesh/tests/cut.rs`: cubes across, through corners, edges
+  and faces, missed; cylinders at heights and slants; a tube (a hole in
+  each cap); two shells and two touching along an edge; a hollow box; a
+  thickness; an open box and an open sheet; 72 planes through a fine
+  cylinder and 200 at random through a sphere plus one through each ring
+  of its corners. Each half closed and wound alike (every edge run once
+  each way), no triangle of no area, the volumes adding up to the whole.
+- `crates/edge-engine/tests/cut.rs`: a block cut (volumes, bounds, both
+  on the bed, on its plate), keeping one side and laying it on a slanted
+  cut (the cap flat on the bed, its area the section's), Flip, Cut to
+  parts (`block_A`, `block_B`, the object's height), the helpers' sides,
+  settings and height ranges, paint, a turned copy, a thickness, and the
+  reference's 3DBenchy (`resources/handy_models/3DBenchy.3mf`) at seven
+  planes, through its cabin and at slants: closed, volumes to 1e-6 of
+  the whole, no triangle of no area made (the Benchy has 11 of its own,
+  which the halves share). Its halves, the upper stood on the bed, slice
+  (`edge_slice::slice`) to the whole's outlines on each side of cuts at
+  9, 25 and 33.6 mm: as many outlines, areas within 1e-5, no open chain.
+- The C++ slicer has no cut on its command line (`Snapmaker_Orca.cpp`
+  l.4990: "Cut operation is not supported yet"), and its tests of the cut
+  are of the fork's curved cuts and joints, not of numbers for a plane.
+  So what this cut makes was given to it instead: the Benchy cut at 30 mm
+  in the page and saved; its `--info` reads two objects, each
+  "manifold = yes", one part, 38 470 and 188 760 facets, 2 112.66 and
+  13 437.80 mm³ (the whole: 15 550.38; the sum 15 550.46, the difference
+  its float sums); `--export-3mf` writes them back as two objects of the
+  same facets, which this reader reads; `edge-parity` on the saved file:
+  150 of 150 layers at the same heights, the walls within 0.03 % a
+  layer. The cube cut at 7.5 mm: 20 facets each, 5 000 and 3 000 mm³,
+  manifold. Cut to parts (a slant through the Benchy): one object, its
+  two parts, manifold, 15 550.35 mm³, back through `--export-3mf` as one
+  object of two parts.
+- The session (`src/api/edit/tests.rs`): `cut_section` on the Benchy and
+  on a bare STL (measured where it is shown), the refusal, "Cut by
+  Plane" as one step that undoes and redoes, both parts on the bed,
+  saved and read back by another session to the same triangles, Cut to
+  parts, and the halves sliced.
+- In the page (`--serve`, 1280 × 820 and 900 × 560, dark and light,
+  English and German): C opened it on a 20 mm cube; the ball dragged by
+  the pointer (10 → 13.75 mm); a cone dragged (the plane turned 40°, the
+  section and the tints following); a click on the plane flipped it;
+  "Cut position" typed (6.5, then 7.5); "Mirror cut" Y; Ctrl+Z took back
+  a plane move; "Reset cutting plane"; "Place on cut" ticked; "Perform
+  cut": two objects, both selected, the project unsaved, "Cut by Plane"
+  to undo; Ctrl+Z and Ctrl+Shift+Z; A arranged them; "Slice plate"
+  sliced both; saved. The Benchy cut through its cabin at 30 mm with
+  "Flip" (an 18 mm upper part upside down beside a 30 mm hull after A),
+  Up twice (24 → 26 mm), a thickness of 2 mm with "Remove from", Cut to
+  parts (`3DBenchy_A`, `3DBenchy_B` under the object in the list). The
+  line drawn with Shift was made through the page's own handlers
+  (`grab`, `drag`, `drop` with Shift), the pane's drag not carrying the
+  key; so was selecting the copy before C on a server started anew, and
+  the camera's turn for the pictures.
 
 ### The main toolbar
 
@@ -1441,7 +1568,7 @@ paint) has no counterpart here yet.
 | "Lay on face": its second mode, "Face under cursor" (any flat face under the pointer, recessed ones too, and Alt to use it for a moment), and laying one part of an object on a face | the first needs the page to grow a flat face from the triangle under the pointer (`grow_flat_face`) and to warn of a recessed one; the second, the faces of one part (`scene_faces` for a part) and a turn of the part within its object |
 | "Fill bed with copies" (`GUI_Factories.cpp` l.1146, `FillBedJob.cpp`) | the reference's arrangement: it asks the arranger how many more fit |
 | Sinking an object under the bed; the arrow along Z; "Drop" | the engine cutting what is under the bed away (it slices from an object's lowest point) |
-| "Auto orient", "Cut", "Mesh Boolean", "Simplify" | mesh operations the engine does not have |
+| "Auto orient", "Mesh Boolean", "Simplify" | mesh operations the engine does not have |
 | "Split" > "By painted colour" ("Convert the part's colour painting into separate parts, one per filament") | cutting a mesh along its painted borders, which the engine does only layer by layer while slicing |
 | The other instances of an object taking a mirror or a turn of the object too | instances kept alike, which no tool here does yet (a part's edits are every instance's, as in the C++) |
 | "Edit in Parameter Table" (the table of section 2), "Separate" / "Set as an individual object", copying and pasting parts | the table is a piece of work of its own; copying parts in the model. A modifier's and a part's own settings are set on their pages (eighteenth pass) |
@@ -1604,6 +1731,79 @@ and then gone through with the mouse. The screenshots are under the
 session's scratch folder, `ui_plates/shots/`.
 
 ### Errors found in the C++
+- TriangleMeshSlicer.cpp l.2398–2406 (`triangulate_slice`): each corner
+  of a cap triangle is looked for among the cut's vertices by nearness
+  (`is_equal`), and where none is found a new vertex is added. A corner
+  added so, or matched to the wrong one of two near vertices, leaves the
+  cap not sharing its edges with the side: the half has open edges. The
+  person sees nothing on a Mac or Linux; on Windows only, a box asks
+  "non-manifold edges be caused by cut tool, do you want to fix it now?"
+  (GLGizmoCut.cpp l.10966) and sends the part to Windows' repair. The
+  cut here shares every cap corner with the side by construction
+  (`edge_mesh::cut`).
+- CutUtils.cpp l.2050–2052 (`perform_with_plane`; the same at l.1736,
+  l.1924): `post_process` adds a side to the result when it has any
+  volume, before `delete_extra_modifiers` takes away the modifiers that
+  meet none of its printed material. A plane within half a millimetre
+  above the object's printed parts (which `cut_plane_center_allowed`
+  lets it be) with a modifier reaching above it makes an upper "half" of
+  that modifier alone, which is then deleted: an object with no volume
+  reaches the model and the object list. Here a side with no printed
+  part makes no object.
+- CutUtils.cpp l.868–906 (`reset_instance_transformation`): the cut
+  instance's turn and size are put into the halves' meshes, and every
+  other instance is given only its own turn about z (its size dropped,
+  `get_matrix_no_scaling_factor`). Another copy of an object whose cut
+  copy was turned about z comes out turned by both, and one sized
+  otherwise comes out the cut copy's size: the copies of the halves no
+  longer stand as their object's did. Here each keeps its turn and size
+  relative to the cut copy.
+- Model.cpp l.1399–1402 (`assign_copy`, by `clone_for_cut` l.2293): the
+  halves take the object's height ranges, variable layer heights and
+  brim ears at the object's heights. The upper half, stood on the bed,
+  or a half laid on its cut or flipped, has them where the object had
+  them, not where its material now is: a range's settings land on
+  another part of it. Kept the same here, there being no one right way
+  to move them for a tilted cut; listed.
+- GLGizmoCut.cpp l.6635 with l.975–983 (`update_bb`,
+  `get_grabber_mean_size`): the dovetail's depth (and with it its width,
+  four times the depth) starts at half the grabbers' mean size, which
+  with `ENABLE_FIXED_GRABBER` is `32 * INV_ZOOM`, a size on the screen.
+  The groove a person is first offered depends on how far the camera is
+  zoomed when the tool opens, not on the object: zoomed in on a large
+  part it is a sliver, zoomed out on a small one it is wider than the
+  part. Here it goes by the object's size, as the size-based branch of
+  the same function does.
+- GUI_ObjectList.cpp l.3621 (`edit_cut`) with GLGizmoCut.cpp l.10902
+  (`InvalidateCutInfo`) and l.10518: "Edit cut..." finds the halves of
+  a cut by their cut id, but a cut without connectors or a dovetail (the
+  common one) takes the halves' cut id away, so only the half chosen is
+  taken out. The other stays on the bed, the panel says "One half of
+  this cut is missing from the project", and "Perform cut" makes both
+  halves again: the person ends up with three pieces, one of them twice.
+  Here the halves are those carrying the same recipe on that plate.
+- GLGizmoCut.cpp l.10069–10081 (`object_part_mesh`) with l.10575–10580
+  (`begin_reedit`): the uncut mesh is kept in the object's coordinates
+  (the volumes' matrices only), and the plane in the instance's turned
+  and sized ones less its move; the stand-in is put back with a half's
+  instance, which after a cut has no turn or size (they went into the
+  halves' meshes, `reset_instance_transformation`). For an object that
+  was turned or sized when it was cut, "Edit cut..." shows it unturned
+  and unsized under a plane still in the turned frame: the cut made
+  again is not where the first was. (`instance_linear` is kept, but used
+  only to carry the painting.) Here the uncut mesh is kept in the
+  halves' coordinates.
+- GLGizmoCut.cpp l.11692–11712 (`apply_cut_connectors`): a connector's
+  mesh is added with `add_volume`, which centres it on its box, while the
+  tool draws it uncentred at the point placed. A triangle's box is not
+  centred on its middle, so a triangular plug and its hole come out a
+  quarter of the radius away from where they were drawn and placed. Here
+  only the height is centred.
+- GLGizmoCut.cpp l.9515–9530 (`is_outside_of_cut_contour`): the outline
+  checked against the cut contour leaves the connector's "Rotation" out,
+  so a turned triangle or square is passed or refused as if unturned: one
+  that pokes out of the part once turned is cut through the outside of
+  it. Here the outline is checked as drawn.
 - WipeTowerDialog.cpp l.783–800 (`read_matrix_values`): OK reads every
   box back and divides it by the multiplier, though each box holds the
   volume times the multiplier cut to a whole number, so a dialog opened
@@ -2026,7 +2226,9 @@ entry, in a fixed order:
 | `Metadata/custom_gcode_per_layer.xml` (pauses, custom G-code, templates, filament changes at layers) | read (`edge_3mf::CustomGcode`, by plate, plate 1's for a file without plates as the reference reads it) and written afresh in the reference's layout: Boost's XML with a new line between tags, `top_z` to 17 digits, values escaped as Boost escapes them (new lines kept), a plate with no items still written when it has an entry, an undefined mode written `MultiExtruder`; the pressure advance pattern's file is written back to the byte. Each plate's go with it (deleting a plate before it renumbers them with it). Edited from the slider (section 3). A file laid out otherwise (PrusaSlicer's `custom_gcodes_per_print_z`), which the reference does not read, is kept as it was while nothing is set here |
 | `Metadata/plate_<n>.png`, `_small`, `plate_no_light_<n>`, `top_<n>`, `pick_<n>` | kept for each plate while it is as it was read (`PlateStamp`: what is on it and where, its filaments and first-layer order), under its number now; a plate that has changed is saved without pictures, which would show it as it was. **not yet**: drawing new ones |
 | `Metadata/process_settings_<n>.config`, `filament_settings_<n>.config`, `machine_settings_<n>.config` (presets the file carries) | kept while the project is saved with its file's own settings; with presets chosen here they are not, and that is asked about first |
-| `Metadata/cut_recipe.xml` and its meshes, `edgeslicer_height_patterns.json`, `Metadata/showcase/` | not read here and kept by each object's place in the list: kept as they were while every object of the file is at its place; once one is deleted they are not kept, and that is asked about first |
+| An object cut here ("Cut", section 13) | each part a new object (or a part of the one, with Cut to parts) with its own mesh, written as any part made here; no `cut_information.xml` entry, what the reference writes for its own cut without connectors; a cut with connectors or a dovetail an entry for each object it made, `<cut_id id check_sum connectors_cnt>` and each connector's part (`volume_id`, `type`, `r_tolerance`, `h_tolerance`), as `_add_cut_information_file_to_archive` writes them; a file's connector parts are read as such; with "Keep cut editable" (the default) the recipe and the uncut mesh, as the reference writes them (next row). The objects made carry the object's settings, height ranges, layer heights and brim ears (`ObjectKept::cut_half`), not its place in the file, its cut information, its copies' assembly view or labels. Checked: the C++ slicer's `--info` and `--export-3mf` read the parts back whole and manifold (section 13, "Cut") |
+| `Metadata/cut_recipe.xml` and its meshes `Metadata/cut_recipe/<sha256>.bin` | read with each object (a mesh whose name is not its SHA-256, or a recipe of no known kind, left out as the reference leaves it); written afresh under each object's place now, a recipe read written back as it was (its own element, the half's own matrices with it), the meshes once each (section 13, "Cut") |
+| `edgeslicer_height_patterns.json`, `Metadata/showcase/` | not read here and kept by each object's place in the list: kept as they were while every object of the file is at its place; once one is deleted they are not kept, and that is asked about first |
 | Every other entry (`Auxiliaries/`, embossing SVGs, CAD bodies, airbrush fields, texture layers, image fill…) | kept byte for byte |
 | `Metadata/plate_<n>.gcode` and `.md5`, `plate_<n>.json`, `filament_sequence.json`, `_rels/model_settings.config.rels` | not written: a slice saved with the project. A saved project is unsliced, as the reference's "Save Project" writes it |
 | An entry whose name reaches outside the package (`../`, a drive, a leading `/`) | not written, and said before saving |
@@ -2714,7 +2916,7 @@ its tooltip "not yet: …" saying what it waits for.
 | Window (macOS) | "Minimize" [Cmd+M], "Zoom" | | the system's own, in the window; off in a browser |
 | | "Next Project", "Previous Project" | Cmd+Shift+] / [ | wired (`project_cycle`); on with two projects |
 | | the open projects, the one shown ticked | | built: choosing one shows it |
-| Help | "Keyboard Shortcuts" | ? | built: the reference's lists (KBShortcutsDialog.cpp: "Global shortcuts", "Plater", "Gizmo", "Objects List", "Preview"; its "Sculpt Gizmo" list is left out, there being no sculpting), each key as this system shows it, the menu bar's keys taken from its table; what this app does not do is dimmed |
+| Help | "Keyboard Shortcuts" | ? | built (its "Gizmo cut" [C] row built in the nineteenth pass): the reference's lists (KBShortcutsDialog.cpp: "Global shortcuts", "Plater", "Gizmo", "Objects List", "Preview"; its "Sculpt Gizmo" list is left out, there being no sculpting), each key as this system shows it, the menu bar's keys taken from its table; what this app does not do is dimmed |
 | | "Setup Wizard" | | wired: Printer Selection (section 8; the app's guide is that page alone) |
 | | "Show Configuration Folder" | | off: folders are not shown in the system's file manager |
 | | "Migrate Filament Presets", "Import Profile" | | off: "Migrate Filament Presets" brings back system filament presets a profile update took away, and "Import Profile" imports a vendor's system profile (`PresetUpdater::import_system_profile`); neither is about a person's presets, which are built (sixteenth pass) |

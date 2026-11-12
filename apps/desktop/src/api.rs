@@ -1031,6 +1031,7 @@ impl Session {
         let answer = i18n::with(language, || match name {
             name if scene::BYTES.contains(&name) => self.scene_bytes(name, args),
             name if paint::BYTES.contains(&name) => self.paint_bytes(name, args),
+            name if edit::BYTES.contains(&name) => self.edit_bytes(name, args),
             other => Err(format!(
                 "there is no call named {other} that answers in bytes"
             )),

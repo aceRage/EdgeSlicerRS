@@ -304,7 +304,9 @@
     // these triangles, [first, how many].
     // `clip`: [normal x, y, z, offset], what is beyond the plane cut away;
     // `slope`: what faces down more steeply than this normal's z is marked.
-    drawMesh(mesh, frame, model, { palette = null, tint = [0, 0, 0, -1], alpha = 1, ghost = false, pass = 2, emission = 0, volume = null, range = null, clip = null, slope = null } = {}) {
+    // `split`: { plane: [normal x, y, z, offset], upper, lower }, each side
+    // of the plane in its own colour (the cut tool's).
+    drawMesh(mesh, frame, model, { palette = null, tint = [0, 0, 0, -1], alpha = 1, ghost = false, pass = 2, emission = 0, volume = null, range = null, clip = null, slope = null, split = null } = {}) {
       const gl = this.gl;
       const u = this.use('mesh');
       const viewModel = M.multiply(frame.view, model);
@@ -320,6 +322,12 @@
       gl.uniform1i(u.u_volume, volume ? 1 : 0);
       gl.uniform1i(u.u_clipped, clip ? 1 : 0);
       if (clip) gl.uniform4fv(u.u_clip, clip);
+      gl.uniform1i(u.u_split, split ? 1 : 0);
+      if (split) {
+        gl.uniform4fv(u.u_split_plane, split.plane);
+        gl.uniform3fv(u.u_split_upper, split.upper);
+        gl.uniform3fv(u.u_split_lower, split.lower);
+      }
       gl.uniform1f(u.u_slope, slope === null ? -3 : slope);
       if (slope !== null) gl.uniformMatrix3fv(u.u_model_normal, false, M.normalMatrix(model));
       if (volume) {

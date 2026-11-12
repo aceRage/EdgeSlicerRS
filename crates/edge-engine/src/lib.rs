@@ -38,7 +38,8 @@ use std::{error::Error, fmt};
 
 pub use clock::timestamp;
 pub use edge_3mf::{
-    CustomGcode, CustomItem, CustomKind, CustomMode, LayerRange, PaintKind, PartKind,
+    CustomGcode, CustomItem, CustomKind, CustomMode, CutRecipe, LayerRange, PaintKind, PartKind,
+    RecipeGroove, RecipeKind,
 };
 pub use edge_mesh::Transform;
 /// Painting a mesh's triangles, and finding which one a line of sight
@@ -49,10 +50,12 @@ pub use job::{BedType, Chosen, Job, Overrides, Sourced, prepare, prepare_noted};
 pub use load::{Loaded, Opened, OwnObject, OwnVolume, PlateInfo, open};
 pub use model::SettingChange;
 pub use model::{
-    ArrangeOptions, ArrangeScope, Arranged, Bed, Changed, FIRST_LATER_LAYER, FlushBasis,
-    LAST_LAYER, LONGEST_PLATE_NAME, LayerSequence, Look, MAX_FILAMENTS, MAX_PLATES, Model,
+    ArrangeOptions, ArrangeScope, Arranged, Bed, CONNECTOR_HOLE_OVERLAP, CUT_THICKNESS_MAX,
+    Changed, Connector, ConnectorKind, ConnectorShape, ConnectorStyle, CutDone, CutEdit,
+    CutOptions, CutPieces, CutSection, CutThickness, FIRST_LATER_LAYER, FaceHit, FlushBasis,
+    Groove, LAST_LAYER, LONGEST_PLATE_NAME, LayerSequence, Look, MAX_FILAMENTS, MAX_PLATES, Model,
     ModelCopy, ModelObject, ModelPlate, NEXT_COLOURS, NewPart, PlateSettings, PlateStamp, Reach,
-    Saved, Saving, Shape, own_settings, project_settings,
+    Saved, Saving, Shape, connector_mesh, own_settings, project_settings,
 };
 pub use pipeline::{Gcode, Sliced, Timings, slice};
 pub use presets::{Library, ModelPreset, PrinterModel, Shelf};

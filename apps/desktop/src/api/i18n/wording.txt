@@ -147,6 +147,34 @@ Your own filament prices and machine rates, over the presets' values	GUI/MainFra
 Enable painted fuzzy skin for this object	GUI/Gizmos/GLGizmoFuzzySkin.cpp:346
 Warning: Fuzzy skin is disabled, painted fuzzy skin will not take effect!	GUI/Gizmos/GLGizmoFuzzySkin.cpp:341
 
+Above	GUI/Gizmos/GLGizmoCut.cpp:5668
+Below	GUI/Gizmos/GLGizmoCut.cpp:5669
+Centred	GUI/Gizmos/GLGizmoCut.cpp:5667
+Mirror cut	GUI/Gizmos/GLGizmoCut.cpp:8654
+Mirror the whole cut - plane, surface and connectors - about the object's centre on the world X axis	GUI/Gizmos/GLGizmoCut.cpp:8660
+Mirror the whole cut - plane, surface and connectors - about the object's centre on the world Y axis	GUI/Gizmos/GLGizmoCut.cpp:8663
+Mirror the whole cut - plane, surface and connectors - about the object's centre on the world Z axis	GUI/Gizmos/GLGizmoCut.cpp:8666
+Remove from	GUI/Gizmos/GLGizmoCut.cpp:5672
+The two halves will be this far apart. Connectors span the gap; a Thread connector needs a thickness below its pitch to stay usable.	GUI/Gizmos/GLGizmoCut.cpp:5694
+Width of the band of material the cut removes, measured along the cut normal. 0 is a zero-width cut - the two halves meet exactly, as they do today.	GUI/Gizmos/GLGizmoCut.cpp:5659
+X	GUI/Gizmos/GLGizmoCut.cpp:8660
+Y	GUI/Gizmos/GLGizmoCut.cpp:8663
+Z	GUI/Gizmos/GLGizmoCut.cpp:8666
+Click a face of the model.	GUI/Gizmos/GLGizmoCut.cpp:9029
+Click a model face to set the cut plane flush with it; use Cut position to offset	GUI/Gizmos/GLGizmoCut.cpp:9022
+Pick face	GUI/Gizmos/GLGizmoCut.cpp:9022
+Count	GUI/Gizmos/GLGizmoCut.cpp:248
+Gap	GUI/Gizmos/GLGizmoCut.cpp:249
+Edit cut...	GUI/GUI_Factories.cpp:2148
+Edit the cut that produced this object	GUI/GUI_Factories.cpp:2155
+Copy cut to...	GUI/GUI_Factories.cpp:2196
+ (this object)	GUI/GUI_Factories.cpp:2223
+Open the Cut gizmo on this object with the selected object's cut - plane, surface and connectors - applied in this object's own model space	GUI/GUI_Factories.cpp:2229
+Set this cut up on an object, ready to cut it the same way	GUI/GUI_Factories.cpp:2248
+Keep cut editable	GUI/Gizmos/GLGizmoCut.cpp:9134
+Remember this cut so it can be edited later: select either half and choose "Edit cut..." to reopen this panel with the same surface and settings.\n\nThe original, uncut shape is stored in the project file, so a cut object takes about twice the space. Turn this off for a one-off cut.	GUI/Gizmos/GLGizmoCut.cpp:9136
+Editing an existing cut. Perform cut replaces both halves.	GUI/Gizmos/GLGizmoCut.cpp:10744
+One half of this cut is missing from the project. Cutting again will produce both halves.	GUI/Gizmos/GLGizmoCut.cpp:10746
 [own]
 # This app's own words on the static page, with no counterpart in the
 # C++: shown in English in every language.
@@ -359,3 +387,4 @@ Path of the folder to export the STL files to
 Path of the configs to import
 Saved ${answer.path} (${answer.triangles} triangles).
 Saved ${answer.files.length} STL files in ${dir}.
+The object is open where it was cut: %d of the cut's outlines could not be closed.
