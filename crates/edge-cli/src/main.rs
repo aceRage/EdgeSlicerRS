@@ -764,7 +764,7 @@ fn slice(args: SliceArgs) -> Result<(), Failure> {
                     .tower
                     .layers
                     .iter()
-                    .filter(|layer| !layer.finish.is_empty())
+                    .filter(|layer| !layer.finish.is_empty() || !layer.changes.is_empty())
                     .count(),
                 sliced.changes.iter().sum::<usize>(),
             );

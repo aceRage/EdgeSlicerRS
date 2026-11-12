@@ -82,6 +82,8 @@ pub struct Type1 {
     /// Each filament's `wipe_distance`: how far the nozzle wipes back along
     /// a ribbed wall it has just laid.
     pub wipe_distance: Vec<f64>,
+    /// Whether arcs are fitted to a ribbed wall (`enable_arc_fitting`).
+    pub arc_fitting: bool,
 }
 
 /// One tool change as planned (`WipeTowerInfo::ToolChange`).
@@ -278,33 +280,78 @@ impl Pen {
     }
 
     /// A closed outline, from the corner nearest the nozzle round to it
-    /// again (`WipeTowerWriter::polygon`, without arcs): thinned first.
-    fn polygon(&mut self, outline: &[(f64, f64)], feed: f32, flow: Flow, pre_simplify: bool) {
+    /// again (`WipeTowerWriter::polygon`): thinned to the tower's
+    /// resolution from its own first corner, as there, and laid from the
+    /// corner left that is nearest; or, where arcs are asked for, handed
+    /// on whole from the corner nearest of those, for the writer to fit
+    /// arcs to ([`TowerStroke::Bend`]).
+    fn polygon(
+        &mut self,
+        outline: &[(f64, f64)],
+        feed: f32,
+        flow: Flow,
+        pre_simplify: bool,
+        arcs: bool,
+    ) {
         let mut path: Vec<(f64, f64)> = outline.iter().chain(outline.first()).copied().collect();
         if pre_simplify {
             path = douglas_peucker(&path, PRE_SIMPLIFY);
         }
-        path = douglas_peucker(&path, RESOLUTION);
-        if path.len() < 2 {
+        let thin = douglas_peucker(&path, RESOLUTION);
+        if thin.len() < 2 || path.len() < 2 {
             return;
         }
-        let starts: Vec<(f32, f32)> = path[..path.len() - 1]
-            .iter()
-            .map(|(x, y)| (*x as f32, *y as f32))
-            .collect();
-        let mut nearest = 0;
+        let mut nearest = thin[0];
         let mut least = f32::MAX;
-        for (index, start) in starts.iter().enumerate() {
-            let distance = (start.0 - self.at.0).powi(2) + (start.1 - self.at.1).powi(2);
+        for start in &thin[..thin.len() - 1] {
+            let (x, y) = (start.0 as f32, start.1 as f32);
+            let distance = (x - self.at.0).powi(2) + (y - self.at.1).powi(2);
             if distance < least {
-                (nearest, least) = (index, distance);
+                (nearest, least) = (*start, distance);
             }
         }
-        let count = starts.len();
-        self.travel(starts[nearest], None);
+        let laid = if arcs { &path } else { &thin };
+        let count = laid.len() - 1;
+        let first = laid[..count]
+            .iter()
+            .position(|p| *p == nearest)
+            .unwrap_or(0);
+        let corner = |index: usize| {
+            let (x, y) = laid[(first + index) % count];
+            (x as f32, y as f32)
+        };
+        self.travel(corner(0), None);
+        self.feed = feed;
         for step in 1..=count {
-            let index = (nearest + step) % count;
-            self.lay(starts[index], Some(feed), flow);
+            let to = corner(step);
+            if to == self.at {
+                continue;
+            }
+            let (from, point) = (self.bed(self.at), self.bed(to));
+            let speed = f64::from(feed) / 60.0;
+            self.strokes.push(if arcs {
+                TowerStroke::Bend(point, speed, flow)
+            } else {
+                TowerStroke::LayAs(point, speed, flow)
+            });
+            self.extend(from, point, flow);
+            self.at = to;
+        }
+    }
+
+    /// Adds a line laid from `from` to `to` to what is laid.
+    fn extend(&mut self, from: Point2, to: Point2, flow: Flow) {
+        match self.lines.last_mut() {
+            Some(line) if line.flow == flow && line.points.last() == Some(&from) => {
+                line.points.push(to);
+            }
+            _ => self.lines.push(ExtrusionPath {
+                points: vec![from, to],
+                role: Role::PrimeTower,
+                flow,
+                in_turn: false,
+                part: 0,
+            }),
         }
     }
 
@@ -602,7 +649,13 @@ impl Generator<'_> {
             let area = self.align(area);
             let feed = self.wall_feed(new, first, layer.height);
             match self.wall(&area, layer.z)? {
-                Some(outline) => pen.polygon(&outline, feed, plain, false),
+                Some(outline) => pen.polygon(
+                    &outline,
+                    feed,
+                    plain,
+                    false,
+                    self.settings.type1.arc_fitting,
+                ),
                 // Laid at the wall's speed; the reference gives it none,
                 // and it goes at whatever the change G-code left in force.
                 None => pen.rectangle(&area, feed, plain),
@@ -781,7 +834,9 @@ impl Generator<'_> {
         let mut outline = self.wall(&area, layer.z)?;
         if wall {
             match &outline {
-                Some(outline) => pen.polygon(outline, feed, plain, false),
+                Some(outline) => {
+                    pen.polygon(outline, feed, plain, false, self.settings.type1.arc_fitting)
+                }
                 None => pen.rectangle(&area, feed, plain),
             }
         }
@@ -806,7 +861,7 @@ impl Generator<'_> {
                     )?;
                     let Some(next) = grown.first() else { break };
                     *ring = to_mm(next);
-                    pen.polygon(ring, feed, plain, true);
+                    pen.polygon(ring, feed, plain, true, self.settings.type1.arc_fitting);
                 }
                 None => {
                     area = Box2 {
@@ -1269,7 +1324,7 @@ mod tests {
                     at = (unscaled(to.x), unscaled(to.y));
                     walled = false;
                 }
-                TowerStroke::LayAs(to, speed, flow) => {
+                TowerStroke::LayAs(to, speed, flow) | TowerStroke::Bend(to, speed, flow) => {
                     let to = (unscaled(to.x), unscaled(to.y));
                     if !walled && (to.0 - at.0).abs() > 1.0 && near(to.1, at.1) {
                         rows.push((to.0, to.1, (*speed * 60.0).round(), *flow));

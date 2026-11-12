@@ -39,10 +39,11 @@
 //! `_make_wipe_tower`). A block's rows are planned by the ramming line
 //! width of the filament put away (`filament_ramming_parameters`). Not
 //! done there: ramming, cooling and loading the
-//! filament on the tower (`enable_filament_ramming`), flushing into
-//! infill, objects or support, and the tower Bambu Lab printers get
-//! (WipeTower.cpp), which is laid out here as the other one is; each is
-//! said in a note.
+//! filament on the tower (`enable_filament_ramming`), and flushing into
+//! infill, objects or support; each is said in a note.
+//!
+//! A Bambu Lab printer, or one set to `wipe_tower_type` `type1`, gets the
+//! reference's other tower, WipeTower.cpp (`bambu.rs`).
 //!
 //! A tower whose saved place no longer fits it is moved onto the bed
 //! before it is planned (`place.rs`).
@@ -480,6 +481,9 @@ impl TowerSettings {
                     .into_iter()
                     .map(|reach| reach.unwrap_or(2.0))
                     .collect(),
+                // Not for a rotated tower, as there.
+                arc_fitting: settings.flag("enable_arc_fitting")?.unwrap_or(false)
+                    && number("wipe_tower_rotation_angle", 0.0)?.abs() < 1e-4,
             }
         } else {
             Type1::default()
@@ -518,13 +522,6 @@ impl TowerSettings {
                          filament is primed on the tower as any other"
                     ));
                 }
-            }
-            if wall_kind.is_some() && settings.flag("enable_arc_fitting")?.unwrap_or(false) {
-                unsupported.push(
-                    "enable_arc_fitting \"1\": the prime tower's rounded rib wall and its brim are \
-                     laid in straight moves, where the reference fits arcs to them"
-                        .to_owned(),
-                );
             }
         }
         Ok(Self {
@@ -863,6 +860,7 @@ impl Wipe {
         match self.strokes.iter().rev().find_map(|stroke| match stroke {
             TowerStroke::Lay(to, _)
             | TowerStroke::LayAs(to, ..)
+            | TowerStroke::Bend(to, ..)
             | TowerStroke::Move(to, _)
             | TowerStroke::Glide(to) => Some(*to),
             _ => None,
@@ -892,7 +890,9 @@ impl Wipe {
         let mut run = vec![self.start];
         for stroke in &self.strokes {
             match stroke {
-                TowerStroke::Lay(to, _) | TowerStroke::LayAs(to, ..) => run.push(*to),
+                TowerStroke::Lay(to, _)
+                | TowerStroke::LayAs(to, ..)
+                | TowerStroke::Bend(to, ..) => run.push(*to),
                 TowerStroke::Move(to, _) | TowerStroke::Glide(to) => {
                     if run.len() >= 2 {
                         lines.push(std::mem::take(&mut run));

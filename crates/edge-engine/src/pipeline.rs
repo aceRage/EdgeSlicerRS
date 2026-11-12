@@ -2167,6 +2167,7 @@ impl Sliced {
                             |stroke| match stroke {
                                 edge_extrusion::TowerStroke::Lay(to, _)
                                 | edge_extrusion::TowerStroke::LayAs(to, ..)
+                                | edge_extrusion::TowerStroke::Bend(to, ..)
                                 | edge_extrusion::TowerStroke::Glide(to)
                                 | edge_extrusion::TowerStroke::Move(to, _) => Some(to),
                                 _ => None,

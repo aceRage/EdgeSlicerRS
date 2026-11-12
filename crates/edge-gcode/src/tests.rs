@@ -2072,6 +2072,66 @@ fn bambu_s_tower_moves_at_the_speed_in_force_and_lays_its_own_cross_sections() {
 }
 
 #[test]
+fn bambu_s_tower_wall_is_thinned_or_fitted_with_arcs() {
+    let part = [wall(0.0, 0.0, 10.0, 0)];
+    let at = |x: f64, y: f64| Point2::from_mm(x, y);
+    let flow = Flow::new(0.5, 0.2, 0.4).unwrap();
+    // A quarter circle of radius 10 round (40, 40), in 32 pieces, then
+    // a straight run back to where it started.
+    let mut strokes: Vec<TowerStroke> = (1..=32)
+        .map(|step| {
+            let angle = std::f64::consts::FRAC_PI_2 * step as f64 / 32.0;
+            TowerStroke::Bend(
+                at(40.0 + 10.0 * angle.cos(), 40.0 + 10.0 * angle.sin()),
+                90.0,
+                flow,
+            )
+        })
+        .collect();
+    strokes.push(TowerStroke::Bend(at(40.0, 45.0), 90.0, flow));
+    strokes.push(TowerStroke::Bend(at(40.0, 40.0), 90.0, flow));
+    strokes.push(TowerStroke::Bend(at(50.0, 40.0), 90.0, flow));
+    let layer = Layer {
+        wipe: Some(TowerWipe {
+            start: at(50.0, 40.0),
+            strokes: &strokes,
+            flow,
+            wipe_path: &[],
+        }),
+        ..one_layer(&part, &[0..1], &[])[0]
+    };
+    let tower = |arcs: bool| {
+        let settings = PrintSettings {
+            bambu_tower: true,
+            arc_fitting: arcs,
+            ..basic()
+        };
+        let (text, _) = print(&[layer], &settings);
+        let start = text.find(";TYPE:Prime tower").unwrap();
+        text[start..]
+            .lines()
+            .skip(1)
+            .take_while(|line| !line.starts_with(";TYPE") && !line.starts_with("G1 E-"))
+            .filter(|line| {
+                line.starts_with("G1 X") || line.starts_with("G2") || line.starts_with("G3")
+            })
+            .map(str::to_owned)
+            .collect::<Vec<String>>()
+    };
+    // Thinned to 0.1 mm: the quarter circle in a few straight pieces.
+    let straight = tower(false);
+    assert!(
+        straight.iter().all(|line| line.starts_with("G1")),
+        "{straight:?}"
+    );
+    assert!(straight.len() < 20, "{straight:?}");
+    // With arcs: one G3 for the quarter circle, then the straight run.
+    let arcs = tower(true);
+    assert!(arcs[0].starts_with("G3 X40.000 Y50.000"), "{arcs:?}");
+    assert_eq!(arcs.len(), 3, "{arcs:?}");
+}
+
+#[test]
 fn a_tree_branch_s_wall_is_laid_hook_first() {
     // A support line that ends at (10, 0), then a branch's wall whose
     // hook starts at (14, 0) and whose far end, at (12, 0), is the nearer.

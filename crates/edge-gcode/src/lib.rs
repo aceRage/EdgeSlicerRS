@@ -2236,8 +2236,49 @@ impl Writer<'_> {
             }
         };
         let mut run: Vec<Point2> = Vec::new();
-        for stroke in wipe.strokes {
+        let mut index = 0;
+        while index < wipe.strokes.len() {
+            let stroke = &wipe.strokes[index];
+            index += 1;
             match *stroke {
+                // A wall: its lines together, thinned to the tower's
+                // resolution or fitted with arcs within it, as the
+                // reference's tower writer lays them (WipeTower.cpp
+                // `WipeTowerWriter::polygon`).
+                TowerStroke::Bend(to, speed, flow) => {
+                    let Some(at) = self.state.position else {
+                        continue;
+                    };
+                    let mut points = vec![at, to];
+                    while let Some(TowerStroke::Bend(next, more, same)) = wipe.strokes.get(index)
+                        && *more == speed
+                        && *same == flow
+                    {
+                        points.push(*next);
+                        index += 1;
+                    }
+                    let within = arc::tolerance(TOWER_RESOLUTION);
+                    let fitted = if s.arc_fitting {
+                        arc::Fitted::new(&points, within)
+                    } else {
+                        arc::Fitted::straight(arc::douglas_peucker(&points, within))
+                    };
+                    let motion = Motion {
+                        speed: speed.min(most(&flow)),
+                        ..usual
+                    };
+                    if run.is_empty() {
+                        run.push(at);
+                    }
+                    self.lay_parts(
+                        &fitted.points,
+                        &fitted.parts,
+                        Role::PrimeTower,
+                        &flow,
+                        motion,
+                    )?;
+                    run.extend_from_slice(&fitted.points[1..]);
+                }
                 TowerStroke::Lay(to, speed) | TowerStroke::LayAs(to, speed, _) => {
                     let flow = match *stroke {
                         TowerStroke::LayAs(_, _, flow) => flow,
@@ -2984,7 +3025,12 @@ impl Writer<'_> {
         // straight line.
         let straight = from.map_or(f64::INFINITY, |from| distance(from, to));
         let short = straight < s.retraction_minimum_travel;
-        if self.state.first_layer && s.initial_layer_acceleration > 0.0 {
+        if self.state.first_layer
+            && s.first_layer_travel_acceleration > 0.0
+            && s.default_acceleration > 0.0
+        {
+            self.accelerate(s.first_layer_travel_acceleration.round())?;
+        } else if self.state.first_layer && s.initial_layer_acceleration > 0.0 {
             self.accelerate(s.initial_layer_acceleration)?;
         } else if s.default_acceleration > 0.0 {
             let bridge = s.bridge_acceleration.resolve(s.outer_wall_acceleration);
@@ -3992,6 +4038,9 @@ fn find(text: &[u8], needle: &[u8]) -> Option<usize> {
 
 /// Markers a layer is written with where the fan is to change for an
 /// overhang and back, until the layer's own fan speed is known.
+/// How closely the prime tower's walls are followed, in mm, whether
+/// thinned or fitted with arcs (WipeTower.cpp `WIPE_TOWER_RESOLUTION`).
+const TOWER_RESOLUTION: f64 = 0.1;
 const FAN_MARK: &[u8] = b";_FAN_OVER_AIR_";
 const FAN_OVER_AIR: &[u8] = b";_FAN_OVER_AIR_ON\n";
 const FAN_AS_LAYER: &[u8] = b";_FAN_OVER_AIR_OFF\n";
