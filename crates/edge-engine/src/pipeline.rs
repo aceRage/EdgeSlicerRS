@@ -591,60 +591,65 @@ pub fn slice(job: Job, watch: &dyn Watcher) -> Result<Sliced, Failure> {
     // With each layer's walls, what of it is left to be bridged without
     // any: the roof of a hole that narrows from the layer below
     // (`counterbore_hole_bridging`), which `edge_perimeter`'s
-    // `counterbore` has the rest of.
-    let (mut walls_by, bored_by): (Vec<Vec<Perimeters>>, Vec<Vec<Vec<ExPolygon>>>) = (0..used
-        .len())
-        .map(|filament| {
-            (0..layers.len())
-                .into_par_iter()
-                .map(|index| {
-                    let height = heights.height_of(index);
-                    let mut params = walls
-                        .params_at(height, index, layers.len())
-                        .map_err(|e| e.to_string())?;
-                    if let Some(fuzzy) = &mut params.fuzzy {
-                        // The middle of the layer, where it was sliced;
-                        // with Z contouring, where that was instead.
-                        fuzzy.slice_z = match zaa.zaa {
-                            Some(_) => planes[index] - f64::from(min[2]),
-                            None => heights.top_of(index) - height / 2.0,
-                        };
-                    }
-                    // A top surface is told from the part as a whole, on
-                    // the layer above and the one below.
-                    let around = Some(edge_perimeter::Around {
-                        upper: outlines.get(index + 1).copied().unwrap_or(&[]),
-                        lower: index.checked_sub(1).map(|below| outlines[below]),
-                    });
-                    let regions = share(filament, index);
-                    let bores = match (&walls.counterbore, index.checked_sub(1)) {
-                        (Some(bore), Some(below)) => Some(
-                            edge_perimeter::split_counterbores(
-                                regions,
-                                outlines[below],
-                                &params,
-                                bore,
-                            )
-                            .map_err(|e| e.to_string())?,
-                        ),
-                        _ => None,
-                    };
-                    let (walled, bridged) = match bores {
-                        Some(split) => (Cow::Owned(split.walled), split.bridged),
-                        None => (Cow::Borrowed(regions), Vec::new()),
-                    };
-                    let mut made = edge_perimeter::classic_between(&walled, &params, around)
-                        .map_err(|e| e.to_string())?;
-                    // The walls round a compensated circle are told apart,
-                    // by the regions as they were cut.
-                    circle_marks
-                        .flag(filament, index, regions, &params, &mut made)
-                        .map_err(|e| e.to_string())?;
-                    Ok((made, bridged))
-                })
-                .collect::<Result<(Vec<Perimeters>, Vec<Vec<ExPolygon>>), String>>()
+    // `counterbore` has the rest of. Every filament's layers side by
+    // side: a plate of few layers and many filaments has too few layers
+    // alone to keep every thread busy.
+    let count = layers.len();
+    let walled: Vec<(Perimeters, Vec<ExPolygon>)> = (0..used.len() * count)
+        .into_par_iter()
+        .map(|at| {
+            let (filament, index) = (at / count, at % count);
+            let height = heights.height_of(index);
+            let mut params = walls
+                .params_at(height, index, layers.len())
+                .map_err(|e| e.to_string())?;
+            if let Some(fuzzy) = &mut params.fuzzy {
+                // The middle of the layer, where it was sliced;
+                // with Z contouring, where that was instead.
+                fuzzy.slice_z = match zaa.zaa {
+                    Some(_) => planes[index] - f64::from(min[2]),
+                    None => heights.top_of(index) - height / 2.0,
+                };
+            }
+            // A top surface is told from the part as a whole, on
+            // the layer above and the one below.
+            let around = Some(edge_perimeter::Around {
+                upper: outlines.get(index + 1).copied().unwrap_or(&[]),
+                lower: index.checked_sub(1).map(|below| outlines[below]),
+            });
+            let regions = share(filament, index);
+            let bores = match (&walls.counterbore, index.checked_sub(1)) {
+                (Some(bore), Some(below)) => Some(
+                    edge_perimeter::split_counterbores(regions, outlines[below], &params, bore)
+                        .map_err(|e| e.to_string())?,
+                ),
+                _ => None,
+            };
+            let (walled, bridged) = match bores {
+                Some(split) => (Cow::Owned(split.walled), split.bridged),
+                None => (Cow::Borrowed(regions), Vec::new()),
+            };
+            let mut made = edge_perimeter::classic_between(&walled, &params, around)
+                .map_err(|e| e.to_string())?;
+            // The walls round a compensated circle are told apart,
+            // by the regions as they were cut.
+            circle_marks
+                .flag(filament, index, regions, &params, &mut made)
+                .map_err(|e| e.to_string())?;
+            Ok((made, bridged))
         })
         .collect::<Result<_, String>>()?;
+    let (mut walls_by, mut bored_by): (Vec<Vec<Perimeters>>, Vec<Vec<Vec<ExPolygon>>>) = (
+        Vec::with_capacity(used.len()),
+        Vec::with_capacity(used.len()),
+    );
+    let mut walled = walled.into_iter();
+    for _ in 0..used.len() {
+        let (walls, bored): (Vec<Perimeters>, Vec<Vec<ExPolygon>>) =
+            walled.by_ref().take(count).unzip();
+        walls_by.push(walls);
+        bored_by.push(bored);
+    }
     let perimeter_time = started.elapsed();
 
     step(watch, Stage::Supports)?;
@@ -741,48 +746,59 @@ pub fn slice(job: Job, watch: &dyn Watcher) -> Result<Sliced, Failure> {
     // A shell is as thick as `top_shell_thickness` and
     // `bottom_shell_thickness` ask, measured in the layers as they lie.
     let thick = heights.all();
-    for (filament, inside_walls) in inside_by.iter().enumerate() {
-        let slices: Vec<&[ExPolygon]> = (0..layers.len())
-            .map(|index| share(filament, index))
-            .collect();
-        // Each filament's pieces are kept apart, as the reference keeps
-        // its regions': a move from one into another is not sheltered.
-        for (all, own) in shelter.iter_mut().zip(edge_infill::internal(
-            &slices,
-            &outlines,
-            &infill.shells(layer_height)?,
-        )?) {
-            all.extend(own);
-        }
-        // Whatever the filament, a surface is a top or a bottom by what
-        // the whole part has above and below it.
-        let surfaces = edge_infill::classify(
-            &slices,
-            &outlines,
-            inside_walls,
-            &inside_all,
-            &thick,
-            &infill.shells(layer_height)?,
-        )?;
-        // Bridges, bottoms and tops reach into the fill beside them, and
-        // each bridge is turned to run from support to support.
-        let mut anchored = edge_infill::anchor(&surfaces, &infill.anchoring(layer_height)?)?;
-        // What the walls left to be bridged over a hole that narrows is
-        // a bridge as it stands, walls between it and the rest.
-        if let Some(bore) = &walls.counterbore {
-            let opening = infill.shells(layer_height)?.opening;
-            for (index, bridged) in bored_by[filament].iter().enumerate().skip(1) {
-                if !bridged.is_empty() {
-                    edge_infill::bridge_counterbores(
-                        &mut anchored[index],
-                        bridged,
-                        outlines[index - 1],
-                        opening,
-                        bore.fixed_angle,
-                        bore.added_angle,
-                    )?;
+    let shells = infill.shells(layer_height)?;
+    let anchoring = infill.anchoring(layer_height)?;
+    // Filament by filament side by side, each over its layers.
+    type Classified = (Vec<Vec<ExPolygon>>, Vec<Vec<Surface>>);
+    let classified: Vec<Classified> = inside_by
+        .par_iter()
+        .enumerate()
+        .map(|(filament, inside_walls)| -> Result<Classified, String> {
+            let slices: Vec<&[ExPolygon]> = (0..layers.len())
+                .map(|index| share(filament, index))
+                .collect();
+            let sheltered =
+                edge_infill::internal(&slices, &outlines, &shells).map_err(|e| e.to_string())?;
+            // Whatever the filament, a surface is a top or a bottom by
+            // what the whole part has above and below it.
+            let surfaces = edge_infill::classify(
+                &slices,
+                &outlines,
+                inside_walls,
+                &inside_all,
+                &thick,
+                &shells,
+            )
+            .map_err(|e| e.to_string())?;
+            // Bridges, bottoms and tops reach into the fill beside them,
+            // and each bridge is turned to run from support to support.
+            let mut anchored =
+                edge_infill::anchor(&surfaces, &anchoring).map_err(|e| e.to_string())?;
+            // What the walls left to be bridged over a hole that narrows
+            // is a bridge as it stands, walls between it and the rest.
+            if let Some(bore) = &walls.counterbore {
+                for (index, bridged) in bored_by[filament].iter().enumerate().skip(1) {
+                    if !bridged.is_empty() {
+                        edge_infill::bridge_counterbores(
+                            &mut anchored[index],
+                            bridged,
+                            outlines[index - 1],
+                            shells.opening,
+                            bore.fixed_angle,
+                            bore.added_angle,
+                        )
+                        .map_err(|e| e.to_string())?;
+                    }
                 }
             }
+            Ok((sheltered, anchored))
+        })
+        .collect::<Result<_, String>>()?;
+    for (sheltered, anchored) in classified {
+        // Each filament's pieces are kept apart, as the reference keeps
+        // its regions': a move from one into another is not sheltered.
+        for (all, own) in shelter.iter_mut().zip(sheltered) {
+            all.extend(own);
         }
         anchored_by.push(anchored);
     }
@@ -864,27 +880,30 @@ pub fn slice(job: Job, watch: &dyn Watcher) -> Result<Sliced, Failure> {
         bridged_by
     };
     classify_time += classifying.elapsed();
+    // Every filament's layers side by side, as the walls are.
+    let count = layers.len();
+    let filled: Vec<Vec<ExtrusionPath>> = (0..bridged_by.len() * count)
+        .into_par_iter()
+        .map(|at| {
+            let (filament, index) = (at / count, at % count);
+            let params = params_of(index).map_err(|e| e.to_string())?;
+            edge_infill::fill_within(
+                &bridged_by[filament][index],
+                index,
+                &params,
+                &frame,
+                // What is inside this filament's walls on the layer,
+                // for the fill's own gap fill.
+                &walls_by[filament][index].infill_no_overlap,
+            )
+            .map_err(|e| e.to_string())
+        })
+        .collect::<Result<_, String>>()?;
+    let mut filled = filled.into_iter();
     for (surfaces, perimeters) in bridged_by.into_iter().zip(&walls_by) {
-        let fills = surfaces
-            .par_iter()
-            .enumerate()
-            .map(|(index, surfaces)| {
-                let params = params_of(index).map_err(|e| e.to_string())?;
-                edge_infill::fill_within(
-                    surfaces,
-                    index,
-                    &params,
-                    &frame,
-                    // What is inside this filament's walls on the layer,
-                    // for the fill's own gap fill.
-                    &perimeters[index].infill_no_overlap,
-                )
-                .map_err(|e| e.to_string())
-            })
-            .collect::<Result<Vec<Vec<ExtrusionPath>>, String>>()?;
+        let mut fills: Vec<Vec<ExtrusionPath>> = filled.by_ref().take(count).collect();
         // The lines that fill gaps between walls go with the fill, and
         // before it: the reference lays them with the walls.
-        let mut fills = fills;
         for (layer, walls) in fills.iter_mut().zip(perimeters) {
             layer.splice(0..0, walls.gap_fill.iter().cloned());
             // So do walls over fill that hangs over air; the writer

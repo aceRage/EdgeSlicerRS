@@ -692,7 +692,9 @@ impl Plan {
         let ((seen, seen_time), (joints, joints_time)) = rayon::join(
             || {
                 let started = Instant::now();
+                // Object by object side by side, as well as within each.
                 let seen: Vec<Option<Visibility>> = (0..frames.len())
+                    .into_par_iter()
                     .map(|object| {
                         let mesh = scene.objects.get(object)?.mesh?;
                         matches!(setup, Seam::Back | Seam::Random)
