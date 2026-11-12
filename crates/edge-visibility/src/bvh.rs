@@ -30,11 +30,17 @@ struct Node {
     count: u32,
 }
 
-/// A mesh's triangles in a tree of boxes.
+/// A mesh's triangles in a tree of boxes. The tree holds the corners of
+/// the triangles it was made of; the mesh its queries take is that one,
+/// for the numbers of the triangles it gives back.
 #[derive(Clone, Debug, Default)]
 pub struct Bvh {
     nodes: Vec<Node>,
     order: Vec<u32>,
+    /// The corners of the triangle at each place in `order`, in double
+    /// precision: what a ray is tried against, read in the order the
+    /// leaves hold them and not looked up through the mesh each time.
+    corners: Vec<[[f64; 3]; 3]>,
 }
 
 /// Triangles in a leaf, at most.
@@ -252,6 +258,7 @@ impl Bvh {
         let mut bvh = Self {
             nodes: Vec::with_capacity(count / 2 + 1),
             order: (0..count as u32).collect(),
+            corners: Vec::new(),
         };
         if count == 0 {
             return bvh;
@@ -271,6 +278,10 @@ impl Bvh {
             .collect();
         let mut order = std::mem::take(&mut bvh.order);
         grow(&mut bvh.nodes, &mut order, 0, &boxes, side_by_side);
+        bvh.corners = order
+            .iter()
+            .map(|&triangle| [0, 1, 2].map(|which| corner(mesh, triangle, which)))
+            .collect();
         bvh.order = order;
         bvh
     }
@@ -306,7 +317,6 @@ impl Bvh {
     /// to in the tree.
     fn each_hit(
         &self,
-        mesh: &Triangles,
         origin: [f64; 3],
         direction: [f64; 3],
         reach: f64,
@@ -335,8 +345,8 @@ impl Bvh {
                 continue;
             }
             let from = node.at as usize;
-            for &triangle in &self.order[from..from + node.count as usize] {
-                let corners = [0, 1, 2].map(|which| corner(mesh, triangle, which));
+            let to = from + node.count as usize;
+            for (&triangle, &corners) in self.order[from..to].iter().zip(&self.corners[from..to]) {
                 if let Some(t) =
                     intersect(origin, direction, corners).filter(|t| *t > 0.0 && *t <= reach)
                 {
@@ -365,13 +375,13 @@ impl Bvh {
     /// `reach`: no box beyond that is looked in.
     pub fn first_hit_within(
         &self,
-        mesh: &Triangles,
+        _mesh: &Triangles,
         origin: [f64; 3],
         direction: [f64; 3],
         reach: f64,
     ) -> Option<Hit> {
         let mut best: Option<Hit> = None;
-        self.each_hit(mesh, origin, direction, reach, |hit| {
+        self.each_hit(origin, direction, reach, |hit| {
             if best.is_none_or(|kept| {
                 hit.t < kept.t || (hit.t == kept.t && hit.triangle < kept.triangle)
             }) {
@@ -390,7 +400,7 @@ impl Bvh {
     /// `squared_distance_to_indexed_primitives_recursive`).
     pub fn closest_within(
         &self,
-        mesh: &Triangles,
+        _mesh: &Triangles,
         point: [f64; 3],
         reach: f64,
     ) -> Option<(u32, [f64; 3], f64)> {
@@ -433,8 +443,8 @@ impl Bvh {
                 continue;
             }
             let from = node.at as usize;
-            for &triangle in &self.order[from..from + node.count as usize] {
-                let corners = [0, 1, 2].map(|which| corner(mesh, triangle, which));
+            let to = from + node.count as usize;
+            for (&triangle, &corners) in self.order[from..to].iter().zip(&self.corners[from..to]) {
                 let on = closest_on_triangle(point, corners);
                 let away = sub(on, point);
                 let distance = dot(away, away);
@@ -455,9 +465,9 @@ impl Bvh {
 
     /// Every triangle a ray meets ahead of its origin, nearest first
     /// (`intersect_ray_all_hits`).
-    pub fn all_hits(&self, mesh: &Triangles, origin: [f64; 3], direction: [f64; 3]) -> Vec<Hit> {
+    pub fn all_hits(&self, _mesh: &Triangles, origin: [f64; 3], direction: [f64; 3]) -> Vec<Hit> {
         let mut hits = Vec::new();
-        self.each_hit(mesh, origin, direction, f64::INFINITY, |hit| {
+        self.each_hit(origin, direction, f64::INFINITY, |hit| {
             hits.push(hit);
             f64::INFINITY
         });
