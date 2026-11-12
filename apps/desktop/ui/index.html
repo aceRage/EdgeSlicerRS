@@ -113,8 +113,18 @@
         <section class="fold" id="s-filament">
           <h2><button type="button" class="fold-title" title="Click to collapse / expand" aria-expanded="true">Filament Management</button></h2>
           <div class="fold-body">
-            <h3>Filaments</h3>
+            <!-- The list of filaments (filaments.js): its head with what adds and takes away, a row for each. -->
+            <div class="filaments-head">
+              <h3>Filaments</h3>
+              <button type="button" id="filament-remove" class="icon tool" title="Remove last filament" aria-label="Remove last filament" hidden></button>
+              <button type="button" id="filament-add" class="icon tool" title="Add one filament" aria-label="Add one filament"></button>
+            </div>
             <div id="filaments" class="card"></div>
+            <!-- One preset for every filament ("Apply All"), where presets are chosen here. -->
+            <div id="apply-all" class="card apply-all" hidden>
+              <select id="apply-all-preset" title="Filament preset to apply to all filaments" aria-label="Filament preset to apply to all filaments"></select>
+              <button type="button" id="apply-all-button" title="Set all filaments to the selected preset">Apply All</button>
+            </div>
           </div>
         </section>
 
@@ -465,6 +475,7 @@
 <script src="objects.js"></script>
 <script src="printers.js"></script>
 <script src="settings.js"></script>
+<script src="filaments.js"></script>
 <script src="app.js"></script>
 <script src="save.js"></script>
 <script src="hosts.js"></script>

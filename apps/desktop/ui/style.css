@@ -531,7 +531,7 @@ input[type="radio"]:checked { border-color: var(--accent); background: var(--acc
 @keyframes float-in { from { opacity: 0; transform: translateY(-3px); } }
 @media (prefers-reduced-motion: reduce) {
   * { transition-duration: 0s !important; }
-  .lb-pop, .popover, #menu, .menu, .tip { animation: none; }
+  .lb-pop, .popover, .colour-picker, #menu, .menu, .tip { animation: none; }
 }
 
 /* -- a section that folds: <section class="fold"><h2><button class="fold-title">…
@@ -713,6 +713,37 @@ dialog .row button { min-width: 84px; }
   animation: float-in var(--time) var(--ease);
 }
 .popover h3 { margin: 0; }
+
+/* -- a colour to pick (filaments.js): the palette's chips, a square of
+      saturation and brightness over a strip of hue, the colour typed -- */
+
+.colour-picker {
+  position: fixed;
+  z-index: var(--z-menu);
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  width: 220px;
+  padding: 10px;
+  border: 1px solid var(--line-2);
+  border-radius: var(--radius-l);
+  background: var(--surface-float);
+  box-shadow: var(--shadow-float);
+  animation: float-in var(--time) var(--ease);
+}
+.colour-picker h3 { margin: 0; }
+.cp-chips { display: grid; grid-template-columns: repeat(10, 1fr); gap: var(--space-1); }
+.cp-chip { width: auto; height: 16px; padding: 0; border: 0; cursor: pointer; }
+.cp-chip[aria-pressed="true"] { box-shadow: 0 0 0 2px var(--surface-float), 0 0 0 3px var(--accent); }
+.cp-area { position: relative; height: 110px; border-radius: var(--radius-m); box-shadow: inset 0 0 0 1px var(--line-swatch); cursor: crosshair; touch-action: none; }
+.cp-knob { position: absolute; width: 10px; height: 10px; margin: -5px 0 0 -5px; border-radius: 50%; box-shadow: 0 0 0 2px var(--surface-float), 0 0 0 3px var(--text-1); pointer-events: none; }
+/* The strip of hue: its colours are set by the code (data, not the page's). */
+.cp-hue { -webkit-appearance: none; appearance: none; width: 100%; height: 12px; margin: 0; border-radius: var(--radius-m); box-shadow: inset 0 0 0 1px var(--line-swatch); cursor: pointer; }
+.cp-hue::-webkit-slider-thumb { -webkit-appearance: none; appearance: none; width: 8px; height: 16px; border-radius: var(--radius-s); background: var(--text-1); box-shadow: 0 0 0 1px var(--surface-float); }
+.cp-hue::-moz-range-thumb { width: 8px; height: 16px; border: 0; border-radius: var(--radius-s); background: var(--text-1); box-shadow: 0 0 0 1px var(--surface-float); }
+.cp-line { display: flex; align-items: center; gap: var(--space-2); }
+.cp-sample { width: var(--control-m); height: var(--control-m); }
+.cp-hex { flex: 1; font-family: var(--font-mono); text-transform: uppercase; }
 /* Values to tick, in a list that scrolls. */
 .check-list { display: flex; flex-direction: column; max-height: min(286px, calc(100vh - 330px)); min-height: 52px; margin: 0 -4px; overflow-y: auto; }
 .check-list label { flex: none; flex-direction: row; align-items: center; gap: var(--space-2); min-height: 26px; padding: 0 6px; border-radius: var(--radius-m); color: var(--text-1); font-size: var(--size-body); cursor: pointer; }
@@ -1001,6 +1032,17 @@ dialog .row button { min-width: 84px; }
   font: 700 11px var(--font-mono);
 }
 .filament .value { padding: 0 var(--space-2); overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
+/* The swatch is the colour's button ("Click to select filament color"). */
+.filament .swatch-pick { padding: 0; border: 0; border-radius: var(--radius-s); color: var(--text-1); box-shadow: inset 0 0 0 1px var(--line-swatch); cursor: pointer; }
+.filament .swatch-pick:hover { box-shadow: inset 0 0 0 1px var(--line-3); }
+/* The list's head: its label running into a hairline, then what adds and
+   takes away a filament. */
+.filaments-head { display: flex; align-items: center; gap: var(--space-1); margin-bottom: var(--space-1); }
+.filaments-head h3 { flex: 1; display: flex; align-items: center; gap: var(--space-2); margin: 0; }
+.filaments-head h3::after { content: ""; flex: 1; height: 1px; background: var(--line-1); }
+/* "Apply All": one preset for every filament, under the list. */
+.apply-all { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: center; gap: var(--space-2); margin-top: var(--space-2); padding: 2px 2px 2px var(--space-1); }
+.apply-all > button { height: var(--control-s); padding: 0 var(--space-2); font-size: var(--size-label); }
 
 /* Process: the settings set over the preset, a label and its number. */
 .grid { display: grid; grid-template-columns: minmax(0, 1fr) 96px; align-items: center; gap: 6px var(--space-2); }

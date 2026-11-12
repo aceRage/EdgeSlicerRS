@@ -224,6 +224,146 @@ impl PartKept {
     }
 }
 
+/// The settings of an object, a part or a height range that name a
+/// filament, 0 being "default" (MixedFilamentConfigRemap.hpp
+/// `remap_model_config_filament_ids`): `extruder` and the feature filaments.
+const FILAMENT_KEYS: [&str; 6] = [
+    "extruder",
+    "wall_filament",
+    "sparse_infill_filament",
+    "solid_infill_filament",
+    "support_filament",
+    "support_interface_filament",
+];
+
+/// Entries with the filaments they name renumbered by `map` (old number
+/// from 1 to new, 0 for none): a feature filament that is gone is taken
+/// out, so the project's own takes effect, and an `extruder` that is gone
+/// becomes 0, "default", as MixedFilamentConfigRemap.hpp does it.
+fn renumbered(entries: &[Entry], map: &dyn Fn(usize) -> usize) -> Vec<Entry> {
+    entries
+        .iter()
+        .filter_map(|entry| match entry {
+            Entry::Meta { key, value } if FILAMENT_KEYS.contains(&key.as_str()) => {
+                match value.trim().parse::<usize>() {
+                    Ok(0) | Err(_) => Some(entry.clone()),
+                    Ok(old) => match map(old) {
+                        0 if key != "extruder" => None,
+                        new => Some(Entry::Meta {
+                            key: key.clone(),
+                            value: new.to_string(),
+                        }),
+                    },
+                }
+            }
+            _ => Some(entry.clone()),
+        })
+        .collect()
+}
+
+/// A height range's settings (`<option opt_key="extruder">2</option>`)
+/// with the filaments they name renumbered as [`renumbered`] does.
+fn renumbered_ranges(text: &str, map: &dyn Fn(usize) -> usize) -> String {
+    let mut out = String::with_capacity(text.len());
+    let mut rest = text;
+    while let Some(start) = rest.find("<option opt_key=\"") {
+        out.push_str(&rest[..start]);
+        let tail = &rest[start..];
+        let Some(close) = tail.find("</option>") else {
+            out.push_str(tail);
+            return out;
+        };
+        let element = &tail[..close + "</option>".len()];
+        rest = &tail[element.len()..];
+        let key = element["<option opt_key=\"".len()..]
+            .split('"')
+            .next()
+            .unwrap_or_default();
+        let value_at = element.find('>').map_or(0, |at| at + 1);
+        let value = &element[value_at..close];
+        match (FILAMENT_KEYS.contains(&key), value.trim().parse::<usize>()) {
+            (true, Ok(old)) if old > 0 => match map(old) {
+                0 if key != "extruder" => {}
+                new => {
+                    out.push_str(&element[..value_at]);
+                    out.push_str(&new.to_string());
+                    out.push_str("</option>");
+                }
+            },
+            _ => out.push_str(element),
+        }
+    }
+    out.push_str(rest);
+    out
+}
+
+impl PartKept {
+    /// The part with the filaments it names renumbered by `map` (old
+    /// number from 1 to new, 0 for none): the feature filaments of its
+    /// settings, and what its triangles are painted with, a colour that
+    /// is gone left unpainted (Plater.cpp `on_filaments_delete`).
+    pub fn with_filaments(&self, map: &dyn Fn(usize) -> usize) -> PartKept {
+        let paint = |filament: u8| -> u8 {
+            match filament {
+                0 => 0,
+                old => u8::try_from(map(usize::from(old))).unwrap_or(0),
+            }
+        };
+        let extras = self.extras.as_ref().map(|extras| {
+            Arc::new(
+                extras
+                    .iter()
+                    .filter_map(|(triangle, attributes)| {
+                        let rewritten = rewrite_paint(attributes, &paint)?;
+                        Some((*triangle, rewritten))
+                    })
+                    .collect::<Extras>(),
+            )
+        });
+        PartKept {
+            entries: renumbered(&self.entries, map),
+            extras,
+            ..self.clone()
+        }
+    }
+}
+
+/// A triangle's attributes with its `paint_color` renumbered; none when
+/// nothing is left on it.
+fn rewrite_paint(attributes: &str, map: &dyn Fn(u8) -> u8) -> Option<Box<str>> {
+    const KEY: &str = " paint_color=\"";
+    let Some(start) = attributes.find(KEY) else {
+        return Some(attributes.into());
+    };
+    let value_at = start + KEY.len();
+    let Some(length) = attributes[value_at..].find('"') else {
+        return Some(attributes.into());
+    };
+    let code = &attributes[value_at..value_at + length];
+    let rest = &attributes[value_at + length + 1..];
+    let out = match crate::paint::remap(code, map) {
+        None => return Some(attributes.into()),
+        Some(None) => format!("{}{rest}", &attributes[..start]),
+        Some(Some(code)) => format!("{}{KEY}{code}\"{rest}", &attributes[..start]),
+    };
+    (!out.trim().is_empty()).then(|| out.into())
+}
+
+impl ObjectKept {
+    /// The object with the filaments its settings and its height ranges
+    /// name renumbered by `map`, as [`PartKept::with_filaments`] does.
+    pub fn with_filaments(&self, map: &dyn Fn(usize) -> usize) -> ObjectKept {
+        ObjectKept {
+            entries: renumbered(&self.entries, map),
+            layer_ranges: self
+                .layer_ranges
+                .as_deref()
+                .map(|ranges| renumbered_ranges(ranges, map)),
+            ..self.clone()
+        }
+    }
+}
+
 /// Whether an entry of a part is its text's description (bbs_3mf.cpp
 /// `TEXT_TAG`).
 fn is_text(raw: &str) -> bool {

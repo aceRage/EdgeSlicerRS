@@ -1288,6 +1288,28 @@ Known gaps: painted supports and seams, per-object setting overrides, typed sett
     filament its settings say nothing of gets no G-code and a sentence
     saying which. Printer scripts are given a bed temperature for every
     filament.
+  - A project's filament list can be changed (`Model::add_filament`,
+    `remove_filament`, `set_filament_colour`; the desktop app's "Add one
+    filament", "Remove last filament", "Delete", "Merge with"). A filament
+    added is the last one again (its preset and, for a project on its own
+    settings, every one of its values; `edge_config::filaments::reslot`
+    lays the project's lists out for the new list); one taken away
+    renumbers what printed in the filaments after it, parts, objects,
+    painted colours, plates' orders and filament changes at layers, as the
+    reference's `on_filaments_delete` does. The flushing volumes are kept
+    the size of the list, a new or recoloured filament's worked out from
+    the colours (`edge_engine::flush`, FlushVolCalc.cpp). Whether there is
+    a prime tower is the process's `enable_prime_tower`, as there: the
+    reference turns nothing on when a second filament arrives.
+  - A printer of one nozzle (the Centauri Carbon) is given the flushing
+    volume from the filament put away to the new one at each change
+    (`flush_length`, `first_flush_volume`, `flush_length_1` to `_4`,
+    GCode.cpp `set_extruder`), so its own G-code purges what the
+    reference's does (`M6211 … L28.4374`). Not as the reference: the
+    reference also purges that volume into the prime tower and sets the
+    new temperature without waiting; here the tower takes `prime_volume`
+    at each change and the temperature is waited for, so such a print
+    takes longer and lays less on the tower.
   - A prime tower, on every layer up to the last tool change: a wall, a
     block for each change where the new nozzle lays down `prime_volume`,
     a frame and lines across the depth no change uses, a solid first

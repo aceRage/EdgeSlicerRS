@@ -319,6 +319,17 @@ impl Model {
     /// is the printer's, for a bare model that has no place yet.
     pub fn save(&self, path: &Path, saving: &Saving, bed: Option<&Bed>) -> Result<Saved, Failure> {
         let (text, settings) = match saving {
+            // Its own settings laid out for filaments changed here.
+            Saving::Own if self.filaments_edited => {
+                let settings = self
+                    .settings
+                    .as_deref()
+                    .ok_or("the project has no settings of its own to save")?;
+                (
+                    Some(edge_3mf::settings_text(settings)),
+                    Some(settings.clone()),
+                )
+            }
             Saving::Own => {
                 let text = self
                     .kept

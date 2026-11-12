@@ -447,6 +447,39 @@ hairline round it. A chip is dragged into place by the pointer (the one
 held is ringed in the accent), or given the keys and moved with Left and
 Right; its `aria-label` says where it stands ("Filament 3, 2 of 7").
 
+### The list of filaments
+
+```html
+<div class="filaments-head"><h3>Filaments</h3><button class="icon tool" id="filament-remove" …/><button class="icon tool" id="filament-add" …/></div>
+<div id="filaments" class="card"><div class="filament"><button class="swatch swatch-pick">1</button>…list…<button class="icon tool">…pencil…</button></div>…</div>
+<div id="apply-all" class="card apply-all"><select …></select><button>Apply All</button></div>
+```
+
+The list's head is its group label running into its hairline, then the
+two `.tool`s that take the last filament away (a minus, there only with
+more than one) and add one (a plus, off at the most there can be). A
+row's number stands on its colour (`button.swatch.swatch-pick`, 22 px,
+the number in white or ink by the colour's brightness), and is the
+button that opens the colour picker; the row's menu is on the right
+button and the menu key, as an object's is in the list. "Apply All"
+is a card of its own under the list: a `bare` listbox and a small plain
+button (`--control-s` high), never the accent, there only where presets
+are chosen here.
+
+### A colour to pick: `.colour-picker`
+
+`filaments.js`: a panel that floats beside the swatch that opened it (the
+float surface, `--line-2`, `--radius-l`, `--shadow-float`), 220 px wide:
+its title (the filament), a grid of chips of colours to start from
+(`.cp-chip`, the one picked ringed in the accent), a square of
+saturation and brightness (`.cp-area`, its knob ringed so it shows on any
+colour; arrows move it, Shift by more) over a strip of hue
+(`input.cp-hue`, drawn as the page's own: no system track), the colour
+as a swatch and as text in the fixed-width face (typed, it is taken as
+soon as it is a colour), then OK (primary) and Cancel. Escape or a click
+outside cancels; Enter in the text is OK. The colours in it are data,
+set by the code; the rules name none.
+
 ### Swatches
 
 `span.swatch`: a small square of a colour that means something (a

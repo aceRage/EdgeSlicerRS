@@ -137,6 +137,89 @@ fn read(
     Some(())
 }
 
+/// The code of a triangle with each piece's filament changed by `map`
+/// (0 is unpainted), the splits as they were: what the reference writes
+/// after renumbering a volume's painted states when a filament is deleted
+/// (Model.cpp `remap_extruder_ids`, TriangleSelector.cpp `serialize`). None
+/// for a code that cannot be read, which is left as it is, and for one
+/// that comes to a single unpainted triangle, which the reference does not
+/// write.
+pub(crate) fn remap(code: &str, map: &dyn Fn(u8) -> u8) -> Option<Option<String>> {
+    let nibbles = nibbles(code)?;
+    let mut at = 0;
+    let mut out = Vec::with_capacity(nibbles.len());
+    let mut any = false;
+    rewrite(&nibbles, &mut at, 0, map, &mut out, &mut any)?;
+    // Nothing painted is left: the triangle is not written. The reference
+    // writes back a split whose pieces are all unpainted; it reads the same.
+    if !any {
+        return Some(None);
+    }
+    Some(Some(
+        out.iter()
+            .rev()
+            .map(|nibble| {
+                char::from_digit(*nibble, 16)
+                    .unwrap_or('0')
+                    .to_ascii_uppercase()
+            })
+            .collect(),
+    ))
+}
+
+fn rewrite(
+    nibbles: &[u32],
+    at: &mut usize,
+    depth: usize,
+    map: &dyn Fn(u8) -> u8,
+    out: &mut Vec<u32>,
+    any: &mut bool,
+) -> Option<()> {
+    let code = *nibbles.get(*at)?;
+    *at += 1;
+    let sides = code & 0b11;
+    if sides == 0 {
+        let filament = if code >> 2 != 0b11 {
+            code >> 2
+        } else {
+            let mut more = 0;
+            loop {
+                if 15 * more + 3 > MAX_FILAMENT {
+                    return None;
+                }
+                let next = *nibbles.get(*at)?;
+                *at += 1;
+                if next != 0b1111 {
+                    break next + 15 * more + 3;
+                }
+                more += 1;
+            }
+        };
+        let state = u32::from(map(u8::try_from(filament).ok()?));
+        *any |= state != 0;
+        if state < 3 {
+            out.push(state << 2);
+        } else {
+            out.push(0b1100);
+            let mut rest = state - 3;
+            while rest >= 15 {
+                out.push(0b1111);
+                rest -= 15;
+            }
+            out.push(rest);
+        }
+        return Some(());
+    }
+    if depth >= MAX_DEPTH {
+        return None;
+    }
+    out.push(code);
+    for _ in 0..=sides {
+        rewrite(nibbles, at, depth + 1, map, out, any)?;
+    }
+    Some(())
+}
+
 /// The triangles a split makes, in the reference's order: new corners
 /// are put at the middle of the split sides.
 fn split(corners: Triangle, sides: u32, special: usize) -> Vec<Triangle> {
@@ -182,6 +265,33 @@ mod tests {
     fn area(corners: &Triangle) -> f32 {
         let [a, b, c] = corners;
         0.5 * ((b[0] - a[0]) * (c[1] - a[1]) - (c[0] - a[0]) * (b[1] - a[1]))
+    }
+
+    #[test]
+    fn renumbered_paint_reads_back_renumbered_with_its_splits() {
+        let map = |filament: u8| match filament {
+            2 => 0,
+            3.. => filament - 1,
+            other => other,
+        };
+        for code in ["4", "8", "0C", "1C", "4C", "EC", "0C8483", "8C3", "4848C3"] {
+            let Some(was) = painted(code) else { continue };
+            let now = match remap(code, &map) {
+                Some(Some(now)) => painted(&now).unwrap(),
+                Some(None) => vec![(0, WHOLE)],
+                None => panic!("{code} not rewritten"),
+            };
+            let expected: Vec<(u8, Triangle)> = was
+                .into_iter()
+                .map(|(filament, corners)| (map(filament), corners))
+                .collect();
+            assert_eq!(now, expected, "{code}");
+        }
+        // Filament 2 alone, taken away: nothing is painted.
+        assert_eq!(remap("8", &map), Some(None));
+        // 17 to 16, and 4 to 3.
+        assert_eq!(remap("EC", &map).unwrap().unwrap(), "DC");
+        assert_eq!(remap("1C", &map).unwrap().unwrap(), "0C");
     }
 
     #[test]

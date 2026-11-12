@@ -15,6 +15,7 @@
 //! [`Session::call_bytes`], which is `call` in every other way.
 
 mod edit;
+mod filaments;
 mod save;
 mod scene;
 mod ticks;
@@ -80,6 +81,11 @@ struct State {
     /// The id of the project shown.
     active: u32,
     next_id: u32,
+    /// How many filaments have been added with a colour of the reference's
+    /// palette: the next takes the next colour, in whichever project, as
+    /// the reference's counter runs for the whole window (Plater.cpp
+    /// `get_next_color_for_filament`).
+    next_colour: usize,
 }
 
 /// One open project.
@@ -579,12 +585,12 @@ impl Project {
         self.failures.clear();
     }
 
-    /// The highest-numbered filament anything in the file prints in.
+    /// How many filaments it has: as many as its settings describe, at
+    /// least the highest anything prints in (`Model::filament_count`).
     fn filament_count(&self) -> usize {
         self.file
             .as_ref()
-            .and_then(|file| file.used.iter().max().copied())
-            .unwrap_or(1)
+            .map_or(1, |file| file.model.filament_count())
     }
 
     /// One line of the strip.
@@ -658,7 +664,11 @@ impl Project {
             // The filaments all of it prints in, by number from 1.
             "used": file.map_or(vec![1], |file| file.used.clone()),
             "filament_count": self.filament_count(),
-            "colours": settings.and_then(|settings| settings.texts("filament_colour")),
+            // Each filament's colour; none for a model with no settings
+            // whose filaments were never changed.
+            "colours": file.and_then(|file| {
+                file.model.underlying().map(|_| file.model.filament_colours())
+            }),
             // The presets the file names itself as saved with.
             "saved": {
                 "printer": named("printer_settings_id"),
@@ -948,6 +958,7 @@ impl Session {
                 projects: vec![Project::new(1, UNTITLED.to_owned())],
                 active: 1,
                 next_id: 2,
+                next_colour: 0,
             }),
             startup,
             traced: std::env::var_os("EDGE_DESKTOP_TRACE").is_some(),
@@ -1133,6 +1144,7 @@ impl Session {
             }
             name if edit::JSON.contains(&name) => self.edit_json(name, args),
             name if ticks::JSON.contains(&name) => self.ticks_json(name, args),
+            name if filaments::JSON.contains(&name) => self.filaments_json(name, args),
             name if print_host::JSON.contains(&name) => self.print_host_json(name, args),
             name if scene::JSON.contains(&name) => self.scene_json(name, args),
             name if scene::BYTES.contains(&name) => {

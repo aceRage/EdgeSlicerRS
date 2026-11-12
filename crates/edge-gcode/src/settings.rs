@@ -285,6 +285,10 @@ pub struct PrintSettings {
     pub tool_change_temperature_wait: bool,
     /// How many tools the printer has.
     pub tools: usize,
+    /// What is flushed going from filament i to filament j, in mm³
+    /// (`flush_volumes_matrix` at `i * n + j`, n filaments), times
+    /// `flush_multiplier`; empty where nothing is said of it.
+    pub flush_volumes: Vec<f64>,
     /// How many filaments the project is set up with, used or not.
     pub filaments: usize,
     /// Every setting, by name, for the templates to refer to.
@@ -422,6 +426,7 @@ impl Default for PrintSettings {
             preheat_time: 30.0,
             tool_change_temperature_wait: true,
             tools: 1,
+            flush_volumes: Vec::new(),
             filaments: 1,
             variables: variables(&Settings::default(), None, None, None, None),
             config: Vec::new(),
@@ -939,6 +944,24 @@ impl PrintSettings {
             tool_change_temperature_wait: settings
                 .flag("tool_change_temprature_wait")?
                 .unwrap_or(defaults.tool_change_temperature_wait),
+            flush_volumes: {
+                // Some projects write the multiplier as a list of one;
+                // what cannot be read flushes nothing, as an empty matrix.
+                let multiplier = settings
+                    .floats("flush_multiplier")
+                    .ok()
+                    .flatten()
+                    .and_then(|values| values.first().copied().flatten())
+                    .unwrap_or(1.0);
+                settings
+                    .floats("flush_volumes_matrix")
+                    .ok()
+                    .flatten()
+                    .unwrap_or_default()
+                    .into_iter()
+                    .map(|volume| volume.unwrap_or(0.0) * multiplier)
+                    .collect()
+            },
             tools: settings
                 .texts("nozzle_diameter")
                 .map_or(defaults.tools, |nozzles| nozzles.len().max(1)),

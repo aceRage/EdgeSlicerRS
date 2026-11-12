@@ -38,8 +38,10 @@ const GL: [(&str, &str); 10] = [
     ("stage.js", include_str!("../ui/gl/stage.js")),
     ("gl.css", include_str!("../ui/gl/gl.css")),
 ];
-/// The files of the tools that change what stands on the plates.
-const EDIT: [(&str, &str); 4] = [
+/// The files of the tools that change what stands on the plates, and the
+/// list of filaments.
+const EDIT: [(&str, &str); 5] = [
+    ("filaments.js", include_str!("../ui/filaments.js")),
     ("scene-edit.js", include_str!("../ui/scene-edit.js")),
     ("plates.js", include_str!("../ui/plates.js")),
     ("objects.js", include_str!("../ui/objects.js")),
