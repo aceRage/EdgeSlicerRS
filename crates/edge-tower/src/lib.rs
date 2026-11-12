@@ -50,6 +50,7 @@
 //! Not done: the cone wall, turning the tower end for end on alternate
 //! layers, and leaving out the layers no tool change uses.
 
+mod bambu;
 mod place;
 
 use std::f64::consts::PI;
@@ -59,6 +60,7 @@ use edge_config::{ConfigError, FloatOrPercent, Settings};
 use edge_extrusion::{ExtrusionPath, Flow, FlowError, Role, TowerStroke};
 use edge_geom::{ExPolygon, Point2, Polygon, scaled, unscaled};
 
+pub use bambu::Type1;
 pub use place::{Ground, Moved, PlaceError, relocate};
 
 /// The tower's lines are this many nozzle diameters wide
@@ -206,6 +208,8 @@ pub struct TowerSettings {
     /// How much of the tower each filament irons flat as its nozzle comes
     /// in, in mm² (`filament_tower_ironing_area`).
     pub iron_areas: Vec<f64>,
+    /// What the Bambu Lab tower reads besides (`bambu_tower`).
+    pub type1: Type1,
     /// Settings present in the input that are not honoured, each with what
     /// is done instead.
     pub unsupported: Vec<String>,
@@ -256,6 +260,7 @@ impl Default for TowerSettings {
             max_purge_speed: 90.0,
             infill_speed: 100.0,
             iron_areas: Vec::new(),
+            type1: Type1::default(),
             unsupported: Vec::new(),
         }
     }
@@ -315,8 +320,16 @@ impl TowerSettings {
                     unsupported.push(format!("{key} \"{value}\": {instead}"));
                 }
             }
+            // Bambu's tower lays a cone as a box as well, as the
+            // reference's does.
             if let Some(kind) = settings.text("wipe_tower_wall_type")
                 && !matches!(kind, "rectangle" | "rib")
+                && !(settings
+                    .text("printer_model")
+                    .filter(|model| !model.is_empty()))
+                .or(settings.text("printer_settings_id"))
+                .is_some_and(|name| name.starts_with("Bambu Lab"))
+                && settings.text("wipe_tower_type") != Some("type1")
             {
                 unsupported.push(format!(
                     "wipe_tower_wall_type \"{kind}\": the tower has a plain box for a wall"
@@ -386,15 +399,7 @@ impl TowerSettings {
             .unwrap_or(defaults.flush_multiplier);
         if enabled && single_nozzle {
             if bambu_tower {
-                unsupported.push(
-                    "wipe_tower_type: a Bambu Lab printer's prime tower is the reference's \
-                     WipeTower.cpp, Bambu Studio's; it is laid out here as the reference lays out \
-                     its other tower (WipeTower2.cpp), with prime_volume at each change and the \
-                     rows at WipeTower.cpp's speeds: its wall, its blocks (one a filament, by \
-                     prime_volume and adhesion), the spacing of its rows and its depth are not \
-                     the reference's"
-                        .to_owned(),
-                );
+                // Said below, with the rest of what that tower leaves out.
             } else if settings.flag("enable_filament_ramming")?.unwrap_or(true) {
                 unsupported.push(
                     "enable_filament_ramming \"1\": on a printer of one nozzle the filament is \
@@ -425,6 +430,103 @@ impl TowerSettings {
                 }
             }
         }
+        // Bambu Studio names some of the tower's settings its own way; a
+        // project of its is read under those names, which the reference
+        // takes over ours as it loads it (Format/BambuKeyAliases.cpp).
+        // Only for its tower, so that no other printer's reads change.
+        let alias = |ours: &'static str, theirs: &'static str| -> &'static str {
+            if bambu_tower && settings.text(theirs).is_some() {
+                theirs
+            } else {
+                ours
+            }
+        };
+        let wall_kind = match settings.text(alias("wipe_tower_wall_type", "prime_tower_rib_wall")) {
+            Some("rib" | "1") => Some("rib"),
+            _ => None,
+        };
+        let max_purge_speed = number(
+            alias("wipe_tower_max_purge_speed", "prime_tower_max_speed"),
+            defaults.max_purge_speed,
+        )?;
+        let type1 = if bambu_tower {
+            let flags = |key: &str| -> Vec<bool> {
+                settings
+                    .texts(key)
+                    .unwrap_or_default()
+                    .iter()
+                    .map(|flag| flag == "1")
+                    .collect()
+            };
+            let forced = number("wipe_tower_filament", 0.0)? as usize;
+            let soluble = if forced > 0 {
+                (0..flags("filament_soluble").len().max(forced))
+                    .map(|filament| filament != forced - 1)
+                    .collect()
+            } else {
+                flags("filament_soluble")
+            };
+            Type1 {
+                line_width: number("prime_tower_line_width", 0.0)?.max(0.0),
+                brim_width: number("prime_tower_brim_width", defaults.brim_width)?,
+                max_speed: max_purge_speed,
+                max_volumetric: list("filament_max_volumetric_speed")?
+                    .into_iter()
+                    .map(|speed| speed.unwrap_or(0.0))
+                    .collect(),
+                soluble,
+                support: flags("filament_is_support"),
+                wipe_distance: list("wipe_distance")?
+                    .into_iter()
+                    .map(|reach| reach.unwrap_or(2.0))
+                    .collect(),
+            }
+        } else {
+            Type1::default()
+        };
+        if enabled && bambu_tower {
+            let on = |key: &str| settings.text(key).is_some_and(|value| value != "0");
+            if settings.text("timelapse_type") == Some("1") {
+                unsupported.push(
+                    "timelapse_type \"1\": the prime tower is laid only up to the last tool change, \
+                     where for a smooth timelapse the reference stands it on every layer"
+                        .to_owned(),
+                );
+            }
+            if on("wipe_tower_sparse_layers_combination") {
+                unsupported.push(
+                    "wipe_tower_sparse_layers_combination \"1\": the tower's layers with no tool \
+                     change are laid one by one, where the reference lays a run of them as one"
+                        .to_owned(),
+                );
+            }
+            if number("prime_tower_acceleration", 0.0)? > 0.0 {
+                unsupported.push(
+                    "prime_tower_acceleration: the prime tower is laid at the acceleration in force"
+                        .to_owned(),
+                );
+            }
+            for key in [
+                "wipe_tower_interface_temp",
+                "wipe_tower_interface_run_in",
+                "wipe_tower_interface_extra_prime",
+                "enable_tower_interface_features",
+            ] {
+                if on(key) {
+                    unsupported.push(format!(
+                        "{key} \"1\": tower interfaces are not done; a change between two kinds of \
+                         filament is primed on the tower as any other"
+                    ));
+                }
+            }
+            if wall_kind.is_some() && settings.flag("enable_arc_fitting")?.unwrap_or(false) {
+                unsupported.push(
+                    "enable_arc_fitting \"1\": the prime tower's rounded rib wall and its brim are \
+                     laid in straight moves, where the reference fits arcs to them"
+                        .to_owned(),
+                );
+            }
+        }
         Ok(Self {
             enabled,
             x: placed("wipe_tower_x", defaults.x)?,
@@ -439,11 +541,21 @@ impl TowerSettings {
             extra_spacing: share("wipe_tower_extra_spacing", defaults.extra_spacing)?.max(0.5),
             extra_flow: share("wipe_tower_extra_flow", defaults.extra_flow)?.max(0.1),
             bridging: number("wipe_tower_bridging", defaults.bridging)?.max(1.0),
-            wall: if settings.text("wipe_tower_wall_type") == Some("rib") {
+            wall: if wall_kind == Some("rib") {
                 Wall::Ribs {
-                    width: number("wipe_tower_rib_width", 8.0)?.max(0.0),
-                    extra: number("wipe_tower_extra_rib_length", 0.0)?.max(0.0),
-                    rounded: settings.flag("wipe_tower_fillet_wall")?.unwrap_or(true),
+                    width: number(alias("wipe_tower_rib_width", "prime_tower_rib_width"), 8.0)?
+                        .max(0.0),
+                    extra: number(
+                        alias(
+                            "wipe_tower_extra_rib_length",
+                            "prime_tower_extra_rib_length",
+                        ),
+                        0.0,
+                    )?
+                    .max(0.0),
+                    rounded: settings
+                        .flag(alias("wipe_tower_fillet_wall", "prime_tower_fillet_wall"))?
+                        .unwrap_or(true),
                 }
             } else {
                 Wall::Box
@@ -501,7 +613,7 @@ impl TowerSettings {
             first_layer_speed: Some(first_of("initial_layer_speed", defaults.first_layer_speed)?)
                 .filter(|speed| *speed > 0.0)
                 .unwrap_or(30.0),
-            max_purge_speed: number("wipe_tower_max_purge_speed", defaults.max_purge_speed)?,
+            max_purge_speed,
             infill_speed: Some(first_of("sparse_infill_speed", defaults.infill_speed)?)
                 .filter(|speed| *speed > 0.0)
                 .unwrap_or(80.0),
@@ -509,6 +621,7 @@ impl TowerSettings {
                 .into_iter()
                 .map(|area| area.unwrap_or(4.0))
                 .collect(),
+            type1,
             unsupported,
         })
     }
@@ -730,6 +843,9 @@ pub struct Wipe {
     pub strokes: Vec<TowerStroke>,
     /// What each line lays.
     pub flow: Flow,
+    /// Where the nozzle wipes on its way back to the part, from where it
+    /// ends; nothing for back along the row it laid last.
+    pub wipe_path: Vec<Point2>,
 }
 
 impl Wipe {
@@ -738,13 +854,17 @@ impl Wipe {
             start,
             strokes: Vec::new(),
             flow,
+            wipe_path: Vec::new(),
         }
     }
 
     /// Where the nozzle is after the strokes so far.
     fn at(&self) -> Point2 {
         match self.strokes.iter().rev().find_map(|stroke| match stroke {
-            TowerStroke::Lay(to, _) | TowerStroke::Move(to, _) => Some(*to),
+            TowerStroke::Lay(to, _)
+            | TowerStroke::LayAs(to, ..)
+            | TowerStroke::Move(to, _)
+            | TowerStroke::Glide(to) => Some(*to),
             _ => None,
         }) {
             Some(at) => at,
@@ -772,14 +892,14 @@ impl Wipe {
         let mut run = vec![self.start];
         for stroke in &self.strokes {
             match stroke {
-                TowerStroke::Lay(to, _) => run.push(*to),
-                TowerStroke::Move(to, _) => {
+                TowerStroke::Lay(to, _) | TowerStroke::LayAs(to, ..) => run.push(*to),
+                TowerStroke::Move(to, _) | TowerStroke::Glide(to) => {
                     if run.len() >= 2 {
                         lines.push(std::mem::take(&mut run));
                     }
                     run = vec![*to];
                 }
-                TowerStroke::Retract | TowerStroke::Unretract => {}
+                TowerStroke::Retract | TowerStroke::Unretract | TowerStroke::Sync => {}
             }
         }
         if run.len() >= 2 {
@@ -806,6 +926,10 @@ pub struct TowerLayer {
     pub finish: Vec<ExtrusionPath>,
     /// What each tool change on the layer has, in order.
     pub changes: Vec<Block>,
+    /// On a layer with no tool change, how `finish` is laid move by move,
+    /// where the tower lays it so (WipeTower.cpp `finish_layer`); none
+    /// where its lines are laid nearest first.
+    pub sparse: Option<Wipe>,
 }
 
 /// The whole tower.
@@ -1154,6 +1278,10 @@ pub fn plan_changes(
     };
     if !settings.enabled {
         return Ok(tower);
+    }
+    // A Bambu Lab printer's tower is the reference's other one.
+    if settings.bambu_tower {
+        return bambu::plan(changes, heights, settings);
     }
     let line = WIDTH_TO_NOZZLE * settings.nozzle_diameter;
     // What each layer's tool changes take of a tower `span` wide.
@@ -1790,6 +1918,7 @@ mod tests {
                 }
                 TowerStroke::Retract => ("retract".into(), 0.0, 0.0),
                 TowerStroke::Unretract => ("unretract".into(), 0.0, 0.0),
+                other => panic!("not a stroke of this tower's: {other:?}"),
             })
             .take(15)
             .collect();
@@ -2553,16 +2682,15 @@ mod tests {
         assert!(!tools.purge_in_tower && !tools.order_by_flush);
         assert_eq!(tools.wipe_volume(0, 1), 45.0);
         // A Bambu Lab printer's change G-code flushes; its tools are put in
-        // order by the flush all the same, and its tower is said not to be
-        // the reference's.
+        // order by the flush all the same, and its tower is the
+        // reference's own for it, with nothing to say.
         let bambu = read(&format!(
             r#"{{{base}, "purge_in_prime_tower": "1", "printer_model": "Bambu Lab A1"}}"#
         ));
         assert!(bambu.bambu_tower && !bambu.purge_in_tower && bambu.order_by_flush);
         assert_eq!(bambu.wipe_volume(0, 1), 45.0);
         assert_eq!(bambu.change_cost(0, 1), 418.0);
-        assert_eq!(bambu.unsupported.len(), 1);
-        assert!(bambu.unsupported[0].starts_with("wipe_tower_type"));
+        assert!(bambu.unsupported.is_empty(), "{:?}", bambu.unsupported);
         // Ramming on one nozzle, and flushing into the print, are not done
         // and are said.
         let rammed = read(

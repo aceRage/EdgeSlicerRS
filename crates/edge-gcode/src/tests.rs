@@ -1971,6 +1971,7 @@ fn a_new_nozzle_lays_its_block_on_the_tower_move_by_move() {
             start: at(40.0, 40.0),
             strokes: &strokes,
             flow,
+            wipe_path: &[],
         }),
         ..one_layer(&part, &[0..1], &[])[0]
     };
@@ -2010,6 +2011,64 @@ fn a_new_nozzle_lays_its_block_on_the_tower_move_by_move() {
     );
     assert_eq!(word(lines[first + 6], 'F'), None);
     assert_eq!(word(lines[first + 7], 'F'), Some(2025.0));
+}
+
+#[test]
+fn bambu_s_tower_moves_at_the_speed_in_force_and_lays_its_own_cross_sections() {
+    let part = [wall(0.0, 0.0, 10.0, 0)];
+    let at = |x: f64, y: f64| Point2::from_mm(x, y);
+    let flow = Flow::new(0.5, 0.2, 0.4).unwrap();
+    let fuller = flow
+        .with_width(1.15 * (0.5 - 0.2 * (1.0 - PI / 4.0)) + 0.2 * (1.0 - PI / 4.0))
+        .unwrap();
+    let strokes = [
+        TowerStroke::LayAs(at(60.0, 40.0), 90.0, flow),
+        TowerStroke::Glide(at(40.0, 40.0)),
+        TowerStroke::LayAs(at(60.0, 40.5), 26.4, fuller),
+        TowerStroke::Sync,
+        TowerStroke::Move(at(60.0, 50.0), Some(120.0)),
+    ];
+    let wiped = [at(60.0, 50.0), at(58.0, 50.0)];
+    let layer = Layer {
+        wipe: Some(TowerWipe {
+            start: at(40.0, 40.0),
+            strokes: &strokes,
+            flow,
+            wipe_path: &wiped,
+        }),
+        ..one_layer(&part, &[0..1], &[])[0]
+    };
+    let settings = PrintSettings {
+        bambu_tower: true,
+        ..basic()
+    };
+    let (text, _) = print(&[layer], &settings);
+    let lines: Vec<&str> = text.lines().collect();
+    let first = lines
+        .iter()
+        .position(|line| line.starts_with("G1 X60.000 Y40.000 E"))
+        .unwrap_or_else(|| panic!("{text}"));
+    assert_eq!(
+        word(lines[first], 'F'),
+        Some(5400.0),
+        "{:?}",
+        &lines[first..first + 6]
+    );
+    // The way back across goes at the speed in force, none written
+    // (WipeTower.cpp's `travel` with no speed).
+    assert_eq!(lines[first + 1], "G1 X40.000 Y40.000");
+    // A row of the first layer's carries 15% more plastic.
+    let area = PI * 1.75 * 1.75 / 4.0;
+    assert!(lines[first + 2].starts_with(";WIDTH:"));
+    let e = word(lines[first + 3], 'E').unwrap();
+    let length = (20.0f64).hypot(0.5);
+    assert!(
+        (e - length * fuller.mm3_per_mm() / area).abs() < 1e-5,
+        "{}",
+        lines[first + 3]
+    );
+    assert_eq!(lines[first + 4], "G4 S0");
+    assert_eq!(lines[first + 5], "G1 X60.000 Y50.000 F7200");
 }
 
 #[test]
