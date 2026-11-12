@@ -23,7 +23,7 @@ use std::{
 };
 
 use edge_config::Settings;
-use edge_engine::{Bed, Feature, Mark, MoveKind, SceneObject, Shape, Toolpath};
+use edge_engine::{Bed, Feature, Look, Mark, MoveKind, SceneObject, Shape, Toolpath};
 use serde_json::{Value, json};
 
 use super::{Done, File, Session, bed_of, lock};
@@ -45,7 +45,7 @@ pub(super) const BYTES: [&str; 5] = [
 /// does.
 #[derive(Default)]
 pub(super) struct Cache {
-    meshes: Kept<Shape, SceneObject>,
+    meshes: Kept<Look, SceneObject>,
     paths: Kept<Done, Paths>,
     /// The printers every vendor's profiles describe, for the folder they
     /// were read from.
@@ -400,17 +400,21 @@ struct BedFiles {
 impl Session {
     /// An object's shape as one mesh to look at, made once for as long
     /// as any model holds the shape.
+    ///
+    /// Shapes that look alike (`Shape::look`: only what is painted for the
+    /// slice and not drawn changed) share it.
     fn mesh_of(&self, shape: &Arc<Shape>) -> Arc<SceneObject> {
-        let key = Arc::as_ptr(shape) as usize;
+        let look = shape.look();
+        let key = Arc::as_ptr(look) as usize;
         if let Some((held, mesh)) = lock(&self.scene.meshes).get(&key)
-            && held.upgrade().is_some_and(|held| Arc::ptr_eq(&held, shape))
+            && held.upgrade().is_some_and(|held| Arc::ptr_eq(&held, look))
         {
             return mesh.clone();
         }
         let mesh = Arc::new(shape.mesh(""));
         let mut meshes = lock(&self.scene.meshes);
         meshes.retain(|_, (held, _)| held.strong_count() > 0);
-        meshes.insert(key, (Arc::downgrade(shape), mesh.clone()));
+        meshes.insert(key, (Arc::downgrade(look), mesh.clone()));
         mesh
     }
 
@@ -605,7 +609,7 @@ impl Session {
                     "name": object.name(),
                     // The number of its mesh: the same for as long as the
                     // mesh is, whatever is done to its copies.
-                    "mesh": object.shape().stamp(),
+                    "mesh": object.shape().look().stamp(),
                     "vertices": mesh.vertices.len(),
                     "triangles": mesh.triangles.len(),
                     "bytes": mesh_size(mesh),
@@ -756,7 +760,7 @@ impl Session {
                 let object = match args.get("mesh").and_then(Value::as_u64) {
                     Some(mesh) => objects
                         .iter()
-                        .find(|object| object.shape().stamp() == mesh)
+                        .find(|object| object.shape().look().stamp() == mesh)
                         .ok_or_else(|| format!("no object has the mesh {mesh} any more"))?,
                     None => {
                         let index = super::whole(args, "object")? as usize;

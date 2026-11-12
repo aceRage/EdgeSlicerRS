@@ -37,15 +37,19 @@ mod unfollowed;
 use std::{error::Error, fmt};
 
 pub use clock::timestamp;
-pub use edge_3mf::{CustomGcode, CustomItem, CustomKind, CustomMode, PartKind};
+pub use edge_3mf::{CustomGcode, CustomItem, CustomKind, CustomMode, PaintKind, PartKind};
 pub use edge_mesh::Transform;
+/// Painting a mesh's triangles, and finding which one a line of sight
+/// meets, for the painting tools of whoever shows a model.
+pub use edge_mesh::{Mesh, raycast, selector};
 pub use followed::{Followed, followed, followed_in, settled};
 pub use job::{BedType, Chosen, Job, Overrides, Sourced, prepare, prepare_noted};
 pub use load::{Loaded, Opened, OwnObject, OwnVolume, PlateInfo, open};
 pub use model::{
     Bed, Changed, FIRST_LATER_LAYER, FlushBasis, LAST_LAYER, LONGEST_PLATE_NAME, LayerSequence,
-    MAX_FILAMENTS, MAX_PLATES, Model, ModelCopy, ModelObject, ModelPlate, NEXT_COLOURS, NewPart,
-    PlateSettings, PlateStamp, Reach, Saved, Saving, Shape, own_settings, project_settings,
+    Look, MAX_FILAMENTS, MAX_PLATES, Model, ModelCopy, ModelObject, ModelPlate, NEXT_COLOURS,
+    NewPart, PlateSettings, PlateStamp, Reach, Saved, Saving, Shape, own_settings,
+    project_settings,
 };
 pub use pipeline::{Gcode, Sliced, Timings, slice};
 pub use presets::{Library, ModelPreset, PrinterModel, Shelf};

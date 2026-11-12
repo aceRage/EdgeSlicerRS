@@ -1402,9 +1402,12 @@ fn sections(mac: bool) -> Vec<(&'static str, Vec<Shortcut>)> {
                 row(K(plain("F")), "Gizmo place face on bed", true),
                 row(K(plain("C")), "Gizmo cut", false),
                 row(K(plain("B")), "Gizmo mesh boolean", false),
-                row(K(plain("H")), "Gizmo FDM paint-on fuzzy skin", false),
-                row(K(plain("L")), "Gizmo SLA support points", false),
-                row(K(plain("P")), "Gizmo FDM paint-on seam", false),
+                // L opens "Support Painting" here: the reference's list still
+                // names it for the SLA gizmo. "Color Painting" [N] is not in
+                // its list.
+                row(K(plain("H")), "Gizmo FDM paint-on fuzzy skin", true),
+                row(K(plain("L")), "Gizmo SLA support points", true),
+                row(K(plain("P")), "Gizmo FDM paint-on seam", true),
                 row(K(plain("T")), "Gizmo text emboss/engrave", false),
                 row(K(plain("U")), "Gizmo measure", false),
                 row(K(plain("Y")), "Gizmo assemble", false),
@@ -1419,15 +1422,16 @@ fn sections(mac: bool) -> Vec<(&'static str, Vec<Shortcut>)> {
             vec![
                 row(Words("Esc"), "Deselect all", true),
                 row(Shift(""), "Move: press to snap by 1mm", false),
+                // The painting tools (paint.js `wheel`).
                 row(
                     Command("Mouse wheel"),
                     "Support/Color Painting: adjust pen radius",
-                    false,
+                    true,
                 ),
                 row(
                     Alt("Mouse wheel"),
                     "Support/Color Painting: adjust section position",
-                    false,
+                    true,
                 ),
             ],
         ),

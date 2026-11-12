@@ -640,8 +640,14 @@ struct Placed {
 /// Whether two parts' meshes can be written once for both: the same
 /// mesh, painted alike (bbs_3mf.cpp: `ShareMesh` compares every kind of
 /// paint).
-fn extras_of(part: &Part) -> Option<&Arc<Extras>> {
+pub(crate) fn extras_of(part: &Part) -> Option<&Arc<Extras>> {
     let kept = part.kept.as_deref()?;
+    // Painted here: of the mesh it was painted on.
+    if let Some(painted) = &kept.painted_on {
+        return Arc::ptr_eq(&painted.0, &part.mesh)
+            .then_some(kept.extras.as_ref())
+            .flatten();
+    }
     // Of the mesh it was read with, by the triangle's place: not of a mesh
     // that has taken its place.
     if let Some(read) = &kept.read

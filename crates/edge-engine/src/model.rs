@@ -29,8 +29,8 @@ use std::{
 };
 
 use edge_3mf::{
-    CustomGcode, Instance, InstanceRef, Kept, Object, ObjectKept, Part, PartKind, Plate, PlateKept,
-    Project,
+    CustomGcode, Instance, InstanceRef, Kept, Object, ObjectKept, PaintKind, Part, PartKind, Plate,
+    PlateKept, Project,
 };
 use edge_config::Settings;
 use edge_mesh::{Transform, hull::Hull};
@@ -147,6 +147,11 @@ fn within(reach: &Reach, bed: [f64; 4]) -> bool {
 #[derive(Debug)]
 pub struct Shape {
     stamp: u64,
+    /// What it looks like: shared with the shape it was made from when
+    /// only what is painted on it for the slice changed (supports, seams,
+    /// fuzzy skin), which is not drawn with it, so that its mesh to look
+    /// at need not be made and sent again.
+    look: Arc<Look>,
     parts: Vec<Part>,
     /// A number for each part that stays the part's through every edit
     /// that leaves it there, in the order of `parts`.
@@ -169,6 +174,7 @@ impl Shape {
         debug_assert_eq!(parts.len(), ids.len());
         Arc::new(Self {
             stamp: fresh(),
+            look: Arc::new(Look { stamp: fresh() }),
             parts,
             ids,
             hull: OnceLock::new(),
@@ -242,6 +248,12 @@ impl Shape {
         self.stamp
     }
 
+    /// What it looks like ([`Look`]): two shapes with the same look have
+    /// the same mesh to look at ([`Shape::mesh`]).
+    pub fn look(&self) -> &Arc<Look> {
+        &self.look
+    }
+
     /// The shape as one mesh to look at, in the object's own coordinates,
     /// with what each triangle is. This is the costly part of showing a
     /// model; it is the same for as long as [`Shape::stamp`] is.
@@ -286,6 +298,20 @@ impl Shape {
             }
         }
         reach
+    }
+}
+
+/// What a shape looks like, shared by the shapes that look alike: see
+/// [`Shape::look`].
+#[derive(Debug)]
+pub struct Look {
+    stamp: u64,
+}
+
+impl Look {
+    /// A number that is this look's alone.
+    pub fn stamp(&self) -> u64 {
+        self.stamp
     }
 }
 
@@ -548,6 +574,12 @@ impl Model {
     /// says what its filaments are once they were changed here.
     pub fn underlying(&self) -> Option<&Arc<Settings>> {
         self.settings.as_ref().or(self.filament_lists.as_ref())
+    }
+
+    /// What is painted on it that a slice does not follow ("fuzzy skin",
+    /// "supports"), in order of name: a slice notes each.
+    pub fn unread_paint(&self) -> &[&'static str] {
+        &self.unread_paint
     }
 
     /// A bare model that nothing has been done to: it has no place on a
@@ -1294,6 +1326,72 @@ impl Model {
             ));
         }
         self.split_part(bed, object, shape.ids[0])
+    }
+
+    // ---- paint ----
+
+    /// Paints an object's parts (the painting gizmos: GLGizmoPainterBase.cpp
+    /// `update_model_object`, `ModelVolume` `supported_facets`,
+    /// `seam_facets`, `mmu_segmentation_facets`, `fuzzy_skin_facets`):
+    /// each part named takes `kind` as its codes say, by the triangle's
+    /// place in its mesh (`edge_mesh::selector::Selector::serialize`). Its
+    /// slices go, its copies stay where they stand. Paint that is kept but
+    /// not followed by the slice (fuzzy skin) is noted as such.
+    /// False when nothing changed.
+    pub fn set_paint(
+        &mut self,
+        bed: Option<&Bed>,
+        object: u64,
+        kind: PaintKind,
+        parts: &[(u64, Vec<(u32, String)>)],
+    ) -> Result<bool, Failure> {
+        let at = self.object_at(object)?;
+        let shape = self.objects[at].shape.clone();
+        let mut list = shape.parts.clone();
+        let mut changed = false;
+        for (id, codes) in parts {
+            let index = self.part_at(at, *id)?;
+            if list[index].kind != PartKind::Normal {
+                return Err(refused("only a part that is printed is painted"));
+            }
+            if list[index].paint_codes(kind) == *codes {
+                continue;
+            }
+            list[index] = list[index].with_paint(kind, codes);
+            changed = true;
+        }
+        if !changed {
+            return Ok(false);
+        }
+        // A bare model painted has its place on the bed from now on, as it
+        // has after any other edit.
+        self.settle(bed);
+        let mut next = Shape::keeping(list, shape.ids.clone());
+        if kind != PaintKind::Color {
+            // Only colours are drawn with the object.
+            Arc::get_mut(&mut next).expect("just made").look = shape.look.clone();
+        }
+        self.objects[at].shape = next;
+        // What is painted and not followed is said, as it is of a project
+        // read with it (`unread_paint`): fuzzy skin. Supports painted are
+        // followed (`regions`).
+        let name = match kind {
+            PaintKind::FuzzySkin => Some("fuzzy skin"),
+            PaintKind::Supports | PaintKind::Seam | PaintKind::Color => None,
+        };
+        if let Some(name) = name {
+            let anywhere = self
+                .objects
+                .iter()
+                .flat_map(|object| object.shape.parts.iter())
+                .any(|part| part.has_paint(kind));
+            self.unread_paint.retain(|other| *other != name);
+            if anywhere {
+                self.unread_paint.push(name);
+                self.unread_paint.sort_unstable();
+            }
+        }
+        Ok(true)
     }
 
     // ---- parts ----
