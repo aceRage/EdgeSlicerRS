@@ -32,7 +32,14 @@ use super::{
 };
 
 /// The calls answered here.
-pub(super) const JSON: [&str; 5] = ["scene_edit", "undo", "redo", "scene_faces", "cut_section"];
+pub(super) const JSON: [&str; 6] = [
+    "scene_edit",
+    "undo",
+    "redo",
+    "scene_faces",
+    "cut_section",
+    "cut_pick",
+];
 
 /// The most edits a project keeps to take back. The reference keeps as
 /// many as fit in a tenth of the machine's memory (UndoRedo.cpp
@@ -805,6 +812,7 @@ impl Session {
             "undo" | "redo" => self.step(args, name == "undo"),
             "scene_faces" => self.scene_faces(args),
             "cut_section" => self.cut_section(args),
+            "cut_pick" => self.cut_pick(args),
             other => Err(format!("there is no call named {other}")),
         }
     }
@@ -973,6 +981,28 @@ impl Session {
             "above": mm(section.above),
             "below": mm(section.below),
             "reach": section.reach.map(|corners| corners.map(|corner| corner.map(mm))),
+        }))
+    }
+
+    /// The face of a copy a line of sight meets ("Cut"'s "Pick face"):
+    /// `{ hit: { point, normal, corners } }`, or `hit` null.
+    fn cut_pick(&self, args: &Value) -> Result<Value, String> {
+        let stage = self.stage_of(args)?;
+        let copy = whole(args, "copy")?;
+        let origin = numbers(args, "origin")?;
+        let direction = numbers(args, "direction")?;
+        let bed = stage.bed();
+        let file = stage
+            .file
+            .ok_or("the project is empty: it has no objects")?;
+        let hit = file
+            .model
+            .face_hit(bed.as_ref(), copy, origin, direction)
+            .map_err(|e| e.to_string())?;
+        Ok(json!({
+            "project": stage.id,
+            "copy": copy,
+            "hit": hit.map(|hit| json!({ "point": hit.point, "normal": hit.normal, "corners": hit.corners })),
         }))
     }
 

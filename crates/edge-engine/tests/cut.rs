@@ -594,3 +594,61 @@ fn a_thick_cut_takes_its_slab_away() {
     assert!(near(upper.signed_volume(), 400.0 * 8.0, 1e-6));
     assert!(near(lower.signed_volume(), 400.0 * 10.0, 1e-6));
 }
+
+#[test]
+fn a_line_of_sight_finds_the_face_pick_face_lays_the_plane_on() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut model = block(dir.path(), [20.0, 20.0, 20.0]);
+    let copy = model.objects()[0].copies()[0].id();
+    let (_, reach) = model.in_scene(Some(&BED), copy).unwrap();
+    let [low, high] = reach.unwrap();
+    let middle = [(low[0] + high[0]) / 2.0, (low[1] + high[1]) / 2.0];
+    // From above: the top face, facing up.
+    let hit = model
+        .face_hit(
+            Some(&BED),
+            copy,
+            [middle[0], middle[1], 100.0],
+            [0.0, 0.0, -1.0],
+        )
+        .unwrap()
+        .unwrap();
+    assert!(near(hit.point[2], 20.0, 1e-9));
+    assert_eq!(hit.normal, [0.0, 0.0, 1.0]);
+    assert!(hit.corners.iter().all(|c| near(c[2], 20.0, 1e-9)));
+    // From the side, from below (a face met from behind still counts) and
+    // past the block.
+    let side = model
+        .face_hit(
+            Some(&BED),
+            copy,
+            [low[0] - 50.0, middle[1], 5.0],
+            [1.0, 0.0, 0.0],
+        )
+        .unwrap()
+        .unwrap();
+    assert!(near(side.point[0], low[0], 1e-9) && side.normal == [-1.0, 0.0, 0.0]);
+    assert!(
+        model
+            .face_hit(
+                Some(&BED),
+                copy,
+                [low[0] - 50.0, middle[1], 50.0],
+                [1.0, 0.0, 0.0]
+            )
+            .unwrap()
+            .is_none()
+    );
+    // Mirrored, the face still faces out.
+    model.mirror(Some(&BED), &[copy], 0).unwrap();
+    let side = model
+        .face_hit(
+            Some(&BED),
+            copy,
+            [low[0] - 50.0, middle[1], 5.0],
+            [1.0, 0.0, 0.0],
+        )
+        .unwrap()
+        .unwrap();
+    assert_eq!(side.normal, [-1.0, 0.0, 0.0]);
+}

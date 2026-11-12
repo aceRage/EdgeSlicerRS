@@ -27,6 +27,10 @@
   const GRAY = [0.5, 0.5, 0.5, 1];
   const AXES = [[1, 60 / 255, 91 / 255, 1], [100 / 255, 200 / 255, 24 / 255, 1]];
   const SECTION = [1, 1, 1, 1];
+  // GLGizmoBase.cpp FLATTEN_HOVER_COLOR: the face "Pick face" would take,
+  // lifted 0.05 mm off it (FacetPicker.cpp `render`).
+  const PICKED = [1, 1, 1, 0.75];
+  const LIFT = 0.05;
   // GLGizmoCut.cpp `get_grabber_mean_size` (ENABLE_FIXED_GRABBER: 32 px),
   // `get_half_size` (0.35 of it), larger by a quarter while dragged.
   const GRIP_PX = 32 * 0.35;
@@ -105,6 +109,9 @@
         history: [],
         future: [],
         line: null,
+        // "Pick face": armed, and the face under the pointer.
+        picking: false,
+        picked: null,
       };
       this.changed(false);
     },
@@ -414,6 +421,11 @@
     },
 
     hover(x, y) {
+      if (this.open && this.open.picking) {
+        this.pickAt(x, y);
+        this.stage.canvas.title = '';
+        return null;
+      }
       const handle = this.handleAt(x, y);
       this.stage.canvas.title = this.tip(handle);
       return handle;
@@ -425,6 +437,9 @@
     // along (`process_cut_line`).
     grab(x, y, event) {
       if (!this.open || this.editor.busy) return null;
+      // Armed, a click lays the plane on the face (`on_mouse`: the press is
+      // the pick's and nothing else's).
+      if (this.open.picking) return { kind: 'cut', part: 'pick', x, y, tap: () => this.applyPick(x, y) };
       if (event.shiftKey) return { kind: 'cut', part: 'line', x, y, tap: () => {} };
       const handle = this.handleAt(x, y);
       if (!handle) return null;
@@ -471,6 +486,7 @@
     },
 
     drag(grab, x, y, event) {
+      if (grab.part === 'pick') { grab.cancelled = true; return; }
       if (!grab.begun && !this.begin(grab)) { grab.cancelled = true; return; }
       if (grab.cancelled) return;
       const o = this.open;
@@ -548,6 +564,84 @@
       this.remember();
       o.axes = M.rows.tidy(axes);
       o.middle = middle;
+      this.changed();
+    },
+
+    // ---- "Pick face" ----
+
+    // Arms or disarms it (`m_facet_picker.set_active`).
+    setPicking(on) {
+      if (!this.open) return;
+      this.open.picking = on;
+      this.open.picked = null;
+      this.panel();
+      this.stage.frame();
+    },
+
+    // The face under a pixel, asked of the session (its tree of boxes),
+    // one question at a time, the last pixel asked next.
+    async pickAt(x, y) {
+      const o = this.open;
+      o.wantPick = [x, y];
+      if (o.picking_busy) return;
+      o.picking_busy = true;
+      try {
+        while (o.wantPick && this.open === o && o.picking) {
+          const [px, py] = o.wantPick;
+          o.wantPick = null;
+          o.picked = await this.faceAt(px, py);
+          this.stage.frame();
+        }
+      } finally {
+        o.picking_busy = false;
+      }
+    },
+
+    async faceAt(x, y) {
+      const project = this.host.project();
+      if (!project || !this.open) return null;
+      const ray = this.stage.camera.ray(x, y);
+      try {
+        const answer = await this.host.call('cut_pick', { project: project.id, copy: this.open.copy, origin: ray.origin, direction: ray.direction });
+        return answer.hit;
+      } catch (error) {
+        this.host.say(error.message, true);
+        return null;
+      }
+    },
+
+    // The plane laid on the face under a pixel, its normal the face's,
+    // its middle where the line of sight met it ("Cut plane from face",
+    // `apply_picked_facet`), when the plane then cuts the object (its box
+    // in the new plane's axes crosses it, by half a millimetre). It is
+    // disarmed after one face, as the reference's is.
+    async applyPick(x, y) {
+      const o = this.open;
+      if (!o) return;
+      const hit = await this.faceAt(x, y);
+      if (!hit || this.open !== o) return;
+      const n = unit(hit.normal);
+      const z = [0, 0, 1];
+      const axis = M.cross(z, n);
+      const angle = Math.atan2(M.length(axis), M.dot(z, n));
+      const pivot = M.length(axis) > 1e-9 ? unit(axis) : [1, 0, 0];
+      const axes = M.rows.tidy([turn([1, 0, 0], pivot, angle), turn([0, 1, 0], pivot, angle), n]);
+      const plane = [...axes[0], 0, ...axes[1], 0, ...axes[2], 0, ...hit.point, 1];
+      const project = this.host.project();
+      let answer;
+      try {
+        answer = await this.host.call('cut_section', { project: project.id, copy: o.copy, plane });
+      } catch (error) {
+        this.host.say(error.message, true);
+        return;
+      }
+      const reach = answer.reach;
+      if (!reach || !(reach[1][2] > -PAST && reach[0][2] < PAST)) return;
+      this.remember();
+      o.axes = axes;
+      o.middle = hit.point.slice();
+      o.picking = false;
+      o.picked = null;
       this.changed();
     },
 
@@ -633,6 +727,15 @@
         const id = `cut-turn-${cone.axis}`;
         if ((turning || this.held) && held !== id) continue;
         r.drawFlat(this.editor.parts().cone, M.chain(view, this.pointing(cone.at, cone.points, [0.75 * size / 0.32, 0.75 * size / 0.32, 1.8 * size])), AXES[cone.axis]);
+      }
+      // The face "Pick face" would take.
+      if (o.picking && o.picked) {
+        const lift = M.scale(unit(o.picked.normal), LIFT);
+        const face = r.triangles(o.picked.corners.flatMap((corner) => M.add(corner, lift)));
+        gl.enable(gl.DEPTH_TEST);
+        r.blend(true);
+        r.drawFlat(face, view, PICKED);
+        r.drop(face);
       }
       // The line being drawn with Shift.
       if (o.line) {
@@ -733,7 +836,14 @@
       // "Reset cut": the plane, and the connectors there are none of.
       const resetCut = el('button', { type: 'button', textContent: t('Reset cut'), title: t('Reset cutting plane and remove connectors'), disabled: busy || this.atStart() });
       resetCut.addEventListener('click', () => this.reset());
-      rows.push(el('div', { className: 'cut-foot cut-start' }, resetCut));
+      // "Pick face": armed by a press, a click on the object then lays the
+      // plane on the face under it.
+      const pick = el('button', { type: 'button', textContent: t('Pick face'), title: t('Click a model face to set the cut plane flush with it; use Cut position to offset'), disabled: busy });
+      pick.setAttribute('aria-pressed', String(o.picking));
+      pick.classList.toggle('cut-armed', o.picking);
+      pick.addEventListener('click', () => this.setPicking(!o.picking));
+      const picking = o.picking ? [el('span', { className: 'edit-hint', textContent: t('Click a face of the model.') })] : [];
+      rows.push(el('div', { className: 'cut-foot cut-start' }, resetCut, pick, ...picking));
       rows.push(el('hr', { className: 'arrange-rule' }));
       // "After cut".
       rows.push(el('span', { className: 'edit-label', textContent: t('After cut') }));

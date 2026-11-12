@@ -237,3 +237,6 @@ dialog.plate-settings .row.end .grow { flex: 1; align-self: center; }
 @media (max-width: 760px) {
   .cut-panel { max-height: calc(100% - 64px); }
 }
+/* "Pick face" while it is armed: pressed, as a toolbar's tool in use. */
+.cut-panel button.cut-armed { color: var(--accent); border-color: var(--accent); background: var(--accent-soft); }
+.cut-foot.cut-start { align-items: center; flex-wrap: wrap; }

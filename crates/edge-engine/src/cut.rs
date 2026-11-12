@@ -138,6 +138,15 @@ pub struct CutSection {
     pub reach: Option<[[f64; 3]; 2]>,
 }
 
+/// Where a line of sight meets a copy's printed parts ("Pick face"): the
+/// point, the face's outward normal and its corners, in the scene.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct FaceHit {
+    pub point: [f64; 3],
+    pub normal: [f64; 3],
+    pub corners: [[f64; 3]; 3],
+}
+
 /// The linear part of a transform, its move left out.
 fn linear(transform: &Transform) -> Transform {
     let mut out = *transform;
@@ -215,6 +224,93 @@ impl Model {
             }
         }
         Ok(out)
+    }
+
+    /// The face of a copy's printed parts a line of sight from `origin`
+    /// along `direction` (both in the scene) meets first, from either side
+    /// (FacetPicker.cpp `update`: the nearest hit of any model part).
+    pub fn face_hit(
+        &self,
+        bed: Option<&Bed>,
+        copy: u64,
+        origin: [f64; 3],
+        direction: [f64; 3],
+    ) -> Result<Option<FaceHit>, Failure> {
+        let (at, _) = self.copy_at(copy)?;
+        if self.bare {
+            let mut settled = self.clone();
+            settled.settle(bed);
+            return settled.face_hit(bed, copy, origin, direction);
+        }
+        let (scene, _) = self
+            .in_scene(bed, copy)
+            .ok_or_else(|| refused(format!("there is no copy {copy}")))?;
+        let shape = &self.objects[at].shape;
+        let trees = shape.trees.get_or_init(|| {
+            shape
+                .parts
+                .iter()
+                .map(|part| {
+                    (part.kind == PartKind::Normal)
+                        .then(|| edge_mesh::raycast::Tree::new(&part.mesh))
+                })
+                .collect()
+        });
+        let mut best: Option<(f64, FaceHit)> = None;
+        for (part, tree) in shape.parts.iter().zip(trees) {
+            let Some(tree) = tree else { continue };
+            let placed = part.transform.then(&scene);
+            let Some(back) = placed.inverse() else {
+                continue;
+            };
+            let local_origin = back.apply(origin);
+            let ahead = back.apply([
+                origin[0] + direction[0],
+                origin[1] + direction[1],
+                origin[2] + direction[2],
+            ]);
+            let local_direction: [f64; 3] =
+                std::array::from_fn(|axis| ahead[axis] - local_origin[axis]);
+            let Some(hit) = tree.hit(local_origin, local_direction, (0.0, f64::INFINITY), &|_| {
+                true
+            }) else {
+                continue;
+            };
+            let corners = part
+                .mesh
+                .triangle(hit.triangle)
+                .map(|p| placed.apply(p.map(f64::from)));
+            let point = placed.apply(hit.point);
+            let distance: f64 = (0..3)
+                .map(|axis| (point[axis] - origin[axis]).powi(2))
+                .sum();
+            if best.as_ref().is_some_and(|(far, _)| *far <= distance) {
+                continue;
+            }
+            let u: [f64; 3] = std::array::from_fn(|axis| corners[1][axis] - corners[0][axis]);
+            let v: [f64; 3] = std::array::from_fn(|axis| corners[2][axis] - corners[0][axis]);
+            let n = [
+                u[1] * v[2] - u[2] * v[1],
+                u[2] * v[0] - u[0] * v[2],
+                u[0] * v[1] - u[1] * v[0],
+            ];
+            let length = (n[0] * n[0] + n[1] * n[1] + n[2] * n[2]).sqrt();
+            if length == 0.0 {
+                continue;
+            }
+            // A mirrored part's triangles face in: its normal is turned.
+            let sign = if placed.is_mirrored() { -1.0 } else { 1.0 };
+            let normal = n.map(|value| sign * value / length);
+            best = Some((
+                distance,
+                FaceHit {
+                    point,
+                    normal,
+                    corners,
+                },
+            ));
+        }
+        Ok(best.map(|(_, hit)| hit))
     }
 
     /// Cuts a copy's object by `plane` (its frame in the scene: rows x, y,
