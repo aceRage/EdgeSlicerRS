@@ -391,6 +391,45 @@ impl Session {
     }
 }
 
+impl Session {
+    /// The origins of the printers' pages the page may frame: every
+    /// connection kept, and the address each open project's printer
+    /// preset gives.
+    pub fn frame_origins(&self) -> Vec<String> {
+        let ids: Vec<u32> = lock(&self.state)
+            .projects
+            .iter()
+            .map(|project| project.id)
+            .collect();
+        let mut origins: Vec<String> = lock(&self.hosts.kept)
+            .all()
+            .filter_map(|saved| {
+                hosts::device_url(&Connection {
+                    print_host: saved.print_host.clone(),
+                    print_host_webui: saved.print_host_webui.clone(),
+                    ..Connection::default()
+                })
+            })
+            .collect();
+        for id in ids {
+            if let Ok(Some(printer)) = self.printer(&json!({ "project": id })) {
+                origins.extend(hosts::device_url(&self.connection(&printer).0));
+            }
+        }
+        let mut origins: Vec<String> = origins.iter().filter_map(|url| origin(url)).collect();
+        origins.sort();
+        origins.dedup();
+        origins
+    }
+}
+
+/// `http://host:port` of `http://host:port/path/`.
+fn origin(url: &str) -> Option<String> {
+    let after = url.find("://")? + 3;
+    let end = url[after..].find('/').map_or(url.len(), |at| after + at);
+    Some(url[..end].to_owned())
+}
+
 /// `filename_format` filled in for a plate sent to a printer. The
 /// placeholders the reference's default and the vendors' own use are
 /// filled in: `input_filename_base` (the project's name),

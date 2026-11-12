@@ -99,6 +99,7 @@ const asking = {
   folder: 'Path of the folder of vendor profiles',
   gcode: 'Save the G-code as (a full path)',
   project: 'Save the project as (a full path)',
+  cafile: 'Path of the CA certificate file (crt or pem)',
 };
 
 function modal(dialog) {
@@ -771,6 +772,8 @@ async function showSidebar() {
   if (project.id !== activeId()) return;
   state.settled = settled;
   state.printers = printers;
+  // Where the printer is, for the print button and Device (hosts.js).
+  if (typeof refreshPrintHost === 'function') refreshPrintHost();
   const { printer } = state.settled;
 
   // Printer: the list, the picture and the nozzles (printers.js).
@@ -946,7 +949,14 @@ function showButtons() {
   $('slice').disabled = !can;
   const summary = project && here().summaries.get(plateKey());
   const failed = summary && 'error' in summary.summary.gcode;
-  $('export').disabled = !(project && onPlater && project.sliced && !busy && !failed);
+  // The print button: "Print" (send to the printer's host, hosts.js) or
+  // "Export G-code file", whichever was picked from its menu.
+  const sending = typeof printAction === 'function' && printAction() === 'send';
+  const ready = Boolean(project && onPlater && project.sliced && !busy && !failed);
+  $('export').textContent = sending ? 'Print' : 'Export G-code file';
+  $('export').disabled = !ready;
+  $('export').title = sending && hostsState.info ? `Send the plate to ${hostsState.info.printer}` : '';
+  $('export-more').disabled = !project;
 }
 
 // Slices the plate shown, or every plate not sliced yet, and goes to
@@ -980,6 +990,10 @@ $('slice-more').addEventListener('click', (event) => {
 $('cancel').addEventListener('click', () => call('cancel', { project: activeId() }).catch(() => {}));
 
 $('export').addEventListener('click', () => attempt(async () => {
+  if (typeof printAction === 'function' && printAction() === 'send') {
+    await openSend();
+    return;
+  }
   const project = state.project;
   const summary = here().summaries.get(plateKey());
   const stem = (summary && summary.summary.stem) || project.name || 'print';
@@ -2304,8 +2318,8 @@ for (const button of document.querySelectorAll('[data-fit]')) {
 // ---- Device ----
 
 // The printer of the project shown, as its preset or the project
-// describes it. Nothing is asked of the printer itself: this build has no
-// connection to one.
+// describes it; with a connection, its own page instead (hosts.js
+// `showPrinterPage`).
 function showDevice() {
   const printer = state.settled ? state.settled.printer : null;
   const facts = [];
@@ -2315,6 +2329,7 @@ function showDevice() {
     $('device-facts').replaceChildren();
     $('device-connection').textContent = 'Please set up your printer connection to view the device.';
     $('device-offline').textContent = '';
+    if (typeof showPrinterPage === 'function') showPrinterPage();
     return;
   }
   $('device-name').textContent = printer.name || printer.model || 'Printer';
@@ -2330,7 +2345,11 @@ function showDevice() {
   if (printer.height) add('Height', `${number(printer.height, 0)} mm`);
   add('G-code flavor', printer.gcode_flavor);
   add('Bed type', (printer.bed_types.choices.find((choice) => choice.value === printer.bed_types.in_force) || {}).label || printer.bed_types.in_force);
-  add('Host Type', printer.host_type);
+  // The host type by the reference's label ("Octo/Klipper"), not its key.
+  const hostType = typeof hostsState !== 'undefined' && hostsState.info
+    ? (hostsState.info.host_types.find((type) => type.value === printer.host_type) || {}).label
+    : null;
+  add('Host Type', hostType || printer.host_type);
   add('Hostname, IP or URL', printer.print_host);
   add('Device UI', printer.print_host_webui);
   if (printer.print_host || printer.print_host_webui) add('API Key / Password', printer.has_api_key ? 'set in the preset' : 'none');
@@ -2340,8 +2359,9 @@ function showDevice() {
     ? `The preset gives this printer's address as ${address}.`
     : 'Please set up your printer connection to view the device.';
   $('device-offline').textContent = address
-    ? 'This build does not connect to a printer yet: nothing is sent to that address and nothing is read from it. Export the G-code file and send it with the printer\'s own page.'
-    : 'This build does not connect to a printer yet. Neither the preset nor the project gives the printer\'s address, and it cannot be set here.';
+    ? ''
+    : 'Neither the preset nor a connection kept for it gives the printer\'s address: set it with "Connect to printer".';
+  if (typeof showPrinterPage === 'function') showPrinterPage();
 }
 
 // ---- keeping up with what the session is doing ----

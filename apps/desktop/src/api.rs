@@ -2907,6 +2907,11 @@ mod tests {
             !host.to_string().contains("k-123"),
             "the key is never answered"
         );
+        // The served page may frame that printer's page, and nothing else.
+        assert_eq!(
+            session.frame_origins(),
+            [format!("http://{}", printer.address())]
+        );
         let tested = ask(&session, "print_host_test", json!({}));
         assert_eq!(
             tested,
@@ -2965,5 +2970,6 @@ mod tests {
         let host = ask(&session, "print_host_set", json!({ "forget": true }));
         assert_eq!(host["from"], "preset");
         assert_eq!(host["connection"]["has_api_key"], false);
+        assert!(session.frame_origins().is_empty());
     }
 }

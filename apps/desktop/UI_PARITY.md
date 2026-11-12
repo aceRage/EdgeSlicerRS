@@ -25,7 +25,9 @@ The last column reads:
   and what a saved project holds of them in section 15; tenth pass: plates
   as plates, the "Plates" rows of section 2, "Plates" in section 13 and
   what a saved project holds of them in section 15; eleventh pass: the
-  G-code window and what is set at layers, in sections 3, 10 and 15).
+  G-code window and what is set at layers, in sections 3, 10 and 15;
+  twelfth pass: sending to printers, the print button's "Print", the
+  Device tab with the printer's own page, in sections 2, 4, 7 and 8).
 - **differs** — built, but on purpose not as the C++ does it; the cell says how.
 - **not yet** — not built, with what it waits for. Nothing in this column is
   shown in the page as a control that does nothing.
@@ -60,7 +62,7 @@ calls are listed in section 7.
 | Tab on the canvas switches between Prepare and Preview | `GLCanvas3D::on_key` l.5729 (`EVT_GLCANVAS_TAB`), KBShortcutsDialog "Switch between Prepare/Preview" | **added**: while the stage has the keys (it was clicked); elsewhere Tab moves focus as usual |
 | Leaving Prepare disables undo and redo in the title bar | `init_tabpanel` page-changed handler | **added**: undo and redo are Prepare's (section 13); in Preview and Device their buttons are not shown and their keys do nothing |
 | In a G-code-only or exported-file session Prepare is refused with a warning | `MainFrame::preview_only_hint` | **not yet**: G-code files are not opened |
-| Entering and leaving Device tells the device web view "active" / "inactive"; entering Home refreshes it | `init_tabpanel` page-changed handler | **not yet**: no web view |
+| Entering and leaving Device tells the device web view "active" / "inactive"; entering Home refreshes it | `init_tabpanel` page-changed handler | **differs**: the printer's page is a frame (section 4) that is first pointed at the printer when Device is looked at, and then left as it is; there is nothing to tell it |
 | Right of the tabs: the slice button with its menu, and the print button with its menu | `MainFrame::create_side_tools` l.2482 | **added**: see section 2, "Slice and export" |
 | Ctrl+1..4 for Home, Prepare, Preview, Device | `MainTabs::tab_for_field_shortcut` (no longer bound in the C++ either) | not built, as in the C++ |
 | What each tab keeps: the project's own view (Prepare or Preview) is remembered per project; Home, Device and the rest are the window's | `ProjectSlot::main_tab`, `ProjectStrip::after_switch` | **added**: `tab` is kept with each project in the session; Device is the window's |
@@ -167,7 +169,7 @@ does with each option.
 | C++ | Where | Here |
 | --- | --- | --- |
 | Every plate shown on the canvas; a click selects it | `PartPlateList`, `Plater::select_plate_by_hover_id` l.30481 | **added**: in the 3D scene, every plate where it stands, a click selecting it (section 9); and the column of plate numbers of the first pass (two plates or more), in Prepare and in Preview |
-| Per plate: delete, orient, arrange, lock, "Customize current plate" (bed type, print sequence, spiral vase, filament sequences), name, "Move plate to the front", "Print history" | `PartPlate::render_icons` l.1173, `PlateSettingsDialog.cpp` | **added** (tenth pass): delete, arrange, lock, "Customize current plate", the name and "Move plate to the front", as tools beside the plate shown, in its menu (its tile, its row, the plate in the scene) and kept by a save (section 13, "Plates"). **not yet**: orient (the engine has no orientation), "Print history" (nothing is sent to a printer, section 4) |
+| Per plate: delete, orient, arrange, lock, "Customize current plate" (bed type, print sequence, spiral vase, filament sequences), name, "Move plate to the front", "Print history" | `PartPlate::render_icons` l.1173, `PlateSettingsDialog.cpp` | **added** (tenth pass): delete, arrange, lock, "Customize current plate", the name and "Move plate to the front", as tools beside the plate shown, in its menu (its tile, its row, the plate in the scene) and kept by a save (section 13, "Plates"). **not yet**: orient (the engine has no orientation), "Print history" (sending is built, section 4, but no history of it is kept) |
 | "Add plate", "Duplicate Current Plate", the plate menu ("Select All", "Delete All", "Arrange", "Reload All", "Auto Rotate", "Delete Plate") | toolbar, `create_plate_menu` l.2831 | **added**: "Add plate", "Duplicate Current Plate" (in the plate's menu, there being no Edit menu), and of the menu "Select All", "Delete All", "Arrange", "Delete Plate", "Lock" / "Unlock", "Edit Plate Name". **not yet**: "Reload All" (no edit reads an object's source file again: "Reload from disk" waits for it), "Auto Rotate" (orientation); neither is shown |
 
 ### Slice and export
@@ -177,7 +179,7 @@ does with each option.
 | "Slice plate", with a menu: "Slice all", "Slice plate" (and "Filament arrangement..." on dual-nozzle Bambu printers); the button keeps the mode picked | `create_side_tools` l.2482 | **added**: the button and its menu, in the tab bar. Before: one "Slice" button in the sidebar. "Slice all" slices every plate that holds something and is not sliced yet, one after another (`slice` with `all`) |
 | "Slice plate" is off while slicing, when the plate's result is valid, or when the plate cannot be sliced; "Slice all" when no plate can be | `MainFrame::get_enable_slice_status` l.2672 | **added**: the same three rules. **not yet**: the blocks for mixed filament temperatures, a cold plate and zero flow ratio |
 | Progress as a notification on the canvas with the stage's text, a percentage and a cancel; "Slice ok." when done, "Slicing Canceled" when called off | `SlicingProgressNotification.cpp`, Plater.cpp l.18718, l.19108 | **added**: a note on the stage with the engine's stage, a bar, "Cancel", then "Slice ok." or "Slicing Canceled" (before: a bar in the sidebar). Cancel takes effect between stages, as before |
-| The print button and its menu: "Print plate", "Print all", "Print" (send to a print host), "Send", "Send all", "Export plate sliced file" [Ctrl+G], "Export all sliced file", "Export G-code file", "Send to Multi-device", "Send to Bambu Connect"; the last one used is remembered | `print_select_type_label` l.2378, `available_print_actions` l.2397 | **added**: "Export G-code file" for the plate shown (**had** as "Export G-code…"), on when the plate is sliced and its G-code was written. **not yet**: the sliced-file (3MF) exports, and everything that sends to a printer (section 4) |
+| The print button and its menu: "Print plate", "Print all", "Print" (send to a print host), "Send", "Send all", "Export plate sliced file" [Ctrl+G], "Export all sliced file", "Export G-code file", "Send to Multi-device", "Send to Bambu Connect"; the last one used is remembered | `print_select_type_label` l.2378, `available_print_actions` l.2397 | **added**: "Export G-code file" for the plate shown (**had** as "Export G-code…"), on when the plate is sliced and its G-code was written. **added** (twelfth pass): the button with its menu, as the reference offers it for a printer that is not Bambu's: "Print" (send to the printer's host, section 4) and "Export G-code file"; the last one picked is remembered (by the page), "Print" not brought back for a printer that cannot be sent to (as the fork's `get_remembered_print_select`). "Print" opens "Send G-code to printer host" for the plate shown. **differs**: "Print host upload queue" is in the button's menu as well, the app having no menu bar. **not yet**: the sliced-file (3MF) exports; "Print plate", "Send" and the rest are Bambu's or not offered by the fork for other printers |
 | Ctrl+R slices the plate | `MainFrame` char hook l.771 | **added** |
 | Warnings and errors of a slice as notifications | `NotificationManager` | **had**, moved to Preview: "About this print" on the stage keeps the three kinds apart (what is wrong with this print; what was settled without being asked; the settings this engine does not follow yet) |
 
@@ -224,65 +226,77 @@ does with each option.
 | C++ | Where | Here |
 | --- | --- | --- |
 | The tab "Device" holds one of three panels, by the printer preset selected: Bambu's monitor (`MonitorPanel`: "Status", "Storage", "Update", "HMS") for a Bambu printer on Bambu's network; Flashforge's own pages; for every other printer a web view (`PrinterWebView`) | `MainFrame::show_device` l.1906, `Sidebar::update_all_preset_comboboxes` (Plater.cpp l.4576), `libslic3r/PresetBundle.cpp::use_bbl_device_tab` l.723 | **added**: the tab follows the printer of the project shown (its preset, or the printer the project was saved with) |
-| The web view loads the printer's own page: `print_host_webui` if the preset has it, else `print_host`, with `http://` put in front; a Snapmaker U1 gets Snapmaker's bundled device page, driven over MQTT or a websocket; a device picked from the per-model "Devices" list comes before the preset's address | Plater.cpp l.4304–4430, `MainFrame::load_printer_url` l.5286, `Utils/PrintHostDevices` | **not yet**: see "What a real Device tab needs". **added**: the address is shown as text when the preset carries one ("Hostname, IP or URL", "Device UI") |
-| With no address: a page "Printer Connection" — "Please set up your printer connection to view the device." | `resources/web/orca/missing_connection.html` | **added**: the same words, and that an address cannot be set here yet |
-| The API key is put into every request of the page (`X-API-Key`) | `PrinterWebView::SendAPIKey` l.473 | **not yet**. The page is told only whether the preset has a key, never the key |
-| Bar over the page: "Printer page" / "Storage" (the G-code files on the printer: "Name", "Print time", "Filament", "Size", "Modified"; "Print", "Delete"), and "Printer:" to pick among several printers of the model | `PrinterWebView.cpp`, `Utils/PrinterStorage.cpp` l.337 | **not yet** |
+| The web view loads the printer's own page: `print_host_webui` if the preset has it, else `print_host`, with `http://` put in front; a Snapmaker U1 gets Snapmaker's bundled device page, driven over MQTT or a websocket; a device picked from the per-model "Devices" list comes before the preset's address | Plater.cpp l.4304–4430, `MainFrame::load_printer_url` l.5286, `Utils/PrintHostDevices` | **added** (twelfth pass): the printer's page at "Device UI", else "Hostname, IP or URL", `http://` put in front, in a frame of its own (below, "The printer's page in the app"); the connection kept for the printer, else the preset's. The frame is first pointed at the printer when Device is looked at. **differs**: a U1 shows its own page at its address, not Snapmaker's bundled page (that page and its MQTT pairing are not in the source). **not yet**: the "Devices" list |
+| With no address: a page "Printer Connection" — "Please set up your printer connection to view the device." | `resources/web/orca/missing_connection.html` | **added**: the same words, the preset's facts, and "Connect to printer", which opens "Physical Printer" |
+| The API key is put into every request of the page (`X-API-Key`) | `PrinterWebView::SendAPIKey` l.473 | **not yet**, on purpose: the key is never handed to a page the app does not control. What it would take: a page that needs the key (a Moonraker with keys on, for its own page) would be shown through the session, which would fetch the printer's page and its requests itself and add the header, a proxy for one origin; or in the window, a second web view of the printer alone with a request hook (Tauri's `on_web_resource_request`, not on every platform). The page is told only whether a key is set, never the key |
+| Bar over the page: "Printer page" / "Storage" (the G-code files on the printer: "Name", "Print time", "Filament", "Size", "Modified"; "Print", "Delete"), and "Printer:" to pick among several printers of the model | `PrinterWebView.cpp`, `Utils/PrinterStorage.cpp` l.337, `PrinterStoragePanel.cpp` | **added** for a U1 (Moonraker): "Printer page" / "Storage", the files with "Name", "Size", "Modified", "Print" and "Delete" (each asked first: "Delete \"%s\" from %s?\nThis cannot be undone."), "Refresh"; "Print" refused while the printer prints, as `PrinterStorage` refuses it. The address, a button to load the page again, and "Connect to printer" in the bar. **not yet**: "Print time" and "Filament" (`/server/files/metadata` for each file), sorting, the details pane, "Printer:" (one printer for each preset here); "Storage" for the Centauri Carbon (SDCP commands 258, 259) |
 | What the tab shows of the printer itself | the preset | **added**: name, vendor, model, nozzles, bed and height, G-code flavor, bed type in force, "Host Type" |
-| Where the address is set: "Physical Printer" ("Print Host upload": "Host Type", "Hostname, IP or URL", "Device UI", "Authorization Type", "API Key / Password", "HTTPS CA File", "User", "Password", "Test", "Browse ..."), and the "Devices" list for several printers of one model | `PhysicalPrinterDialog.cpp` l.127, `PrintHostDevicesDialog.cpp` | **not yet**: needs user presets, or a list of printers of this app's own |
-| Where it is kept: the user's printer preset, and `<datadir>/hub/print_host_devices.json`; never the project (a saved 3MF has `print_host`, `print_host_webui`, `printhost_apikey` and the rest taken out, and they are ignored on load) | `libslic3r/Preset.cpp` l.1394, l.2710, `PresetBundle::full_config_secure` l.3220 | Read from the preset chosen only. Forty-seven vendor presets carry an address (for example Volumic's `192.168.0.60`), which is why the tab can show one today |
-| Sending: "Send G-code to printer host" ("Upload", "Upload and Print", the file name, "Switch to Device tab after upload."), and "Print host upload queue" | `PrintHostDialogs.cpp` l.515, l.2358 | **not yet** |
+| Where the address is set: "Physical Printer" ("Print Host upload": "Host Type", "Hostname, IP or URL", "Device UI", "Authorization Type", "API Key / Password", "HTTPS CA File", "User", "Password", "Test", "Browse ..."), and the "Devices" list for several printers of one model | `PhysicalPrinterDialog.cpp` l.127, l.596, `PrintHostDevicesDialog.cpp` | **added** (twelfth pass, `ui/hosts.js`): "Physical Printer" with "Print Host upload": "Host Type" (the types this app can send to, "Octo/Klipper" and "Elegoo Link", and the one in force if it is another, marked "(not yet)"), "Hostname, IP or URL" with "Test", "Device UI", "API Key / Password" (a field that shows only that a key is set; "Clear"), "HTTPS CA File" with "Browse ..." and the reference's hint; the reference's tooltips; "Test" tries what is typed before it is kept and says "Success!" and the host's own sentence, or its failure. Opened by "Connect to printer" on the Printer card (the fork's icon, `set_connection_tooltip`) and from Device. **differs**: the icon opens this dialog; in the fork it opens "Devices" with "Edit connection..." inside. "Use the preset's connection" takes a kept connection away. There is no name to save it under (the reference saves a physical printer preset; here it is kept for the printer preset, below). **not yet**: "Authorization Type", "User", "Password" (shown by the reference for PrusaLink only, which is not built), "Browse ..." for the address (Bonjour discovery), "Devices", "Printer" (`printhost_port`, Repetier and Obico), "Ignore HTTPS certificate revocation checks" (Windows) |
+| Where it is kept: the user's printer preset, and `<datadir>/hub/print_host_devices.json`; never the project (a saved 3MF has `print_host`, `print_host_webui`, `printhost_apikey` and the rest taken out, and they are ignored on load) | `libslic3r/Preset.cpp` l.1394, l.2710, `PresetBundle::full_config_secure` l.3220 | **differs**: kept for each printer preset in this app's data folder (section 8), the key in a file of its own; never in a project, which this app never writes them to. A printer without a kept connection uses its preset's (forty-seven vendor presets carry an address, for example Volumic's `192.168.0.60`) |
+| Sending: "Send G-code to printer host" ("Upload", "Upload and Print", the file name, "Switch to Device tab after upload."), and "Print host upload queue" | `PrintHostDialogs.cpp` l.515, l.1532, l.2358 | **added** (twelfth pass): "Send G-code to printer host", "Upload to Printer Host with the following filename:", the name offered as the reference offers it (the printer's `filename_format` filled in, `{print_time}` with the slice's time, folded to ASCII, the stem selected), "Please do not include the special characters …", the two questions before sending ("The filename '%s' contains special characters …", "Upload filename doesn't end with \".gcode\". …"), "Unload filaments after print" for Snapmaker's tool changers (ticked as the preset's `unload_filaments_at_end`), the Centauri Carbon's "Time-lapse", "Heated Bed Leveling", "Textured Build Plate (Side A)" / "Smooth Build Plate (Side B)" (the side the project's bed type means, and "The selected bed type does not match the file. …" when another is picked; the two ticks remembered), "Switch to Device tab after upload." (remembered), "Upload", "Upload and Print", "Cancel". The bytes sent are those "Export G-code file" writes. The queue: "ID", "Progress", "Status" ("Queued", "Uploading", "Error", "Canceling", "Canceled", "Completed"), "Host", "Size", "Filename", "Message", "Cancel selected", "Show error message", "Close"; one file after another; an error is shown as it happens ("Error uploading to print host:"). **differs**: the Centauri Carbon's options are in the same dialog under its name, with the two buttons (the reference's Elegoo dialog has an "Upload and Print" tick and one button); the queue says when a print was started. **not yet**: the "Group" and "Upload to storage" lists (Repetier, PrusaLink), the QIDI, Creality and Flashforge options, a toolhead map chosen by hand (the U1 is sent each filament on its own toolhead); "Ongoing uploads" asked when the window closes |
 | Bambu monitor: camera, "Printing Progress", "Pause" / "Resume" / "Stop", temperatures, AMS, speed; needs Bambu's network plug-in | `Monitor.cpp`, `StatusPanel` | **not yet**, and not planned before the print hosts |
 | Next to Device: "Stream" (cameras), "Printers" (every printer at a glance), the mobile hub | `StreamPanel`, `PrintersPanel`, `RemoteHub.cpp` | **not yet** |
 
-### What a real Device tab needs
+### Sending to a printer: what is built
 
-Nothing below is built. The page loads nothing from the network and the engine
-has no printer connection; this is what the C++ does over the network for the
-printers this project is tested on, so the next pass can be decided.
+The session talks to the printer; the page still talks only to the session
+(option 1 of the plan this section held before; option 3, the printer's
+page inside the app's page, was taken for the printer's own page alone,
+isolated as below). The requests are made by `src/hosts/` in the desktop
+app (not an engine crate), behind one trait (`Host`: `test`, `upload` with
+a start and its progress, `files`, `delete`, `print`), by
+`ureq` (HTTP, rustls) and `tungstenite` (a plain websocket). Nothing is
+asked of a printer unless the person asks ("Test", "Upload", "Upload and
+Print", Device); nothing looks for printers on the network.
 
-**Requests, all to the printer's own address on the local network** (the host
-of `print_host`; `X-Api-Key: <printhost_apikey>` on each when a key is set):
+| Host type | Reached as | "Test" | "Upload" | "Upload and Print" | Ported from |
+| --- | --- | --- | --- | --- | --- |
+| "Octo/Klipper" (`octoprint`), a printer that is not a U1 | OctoPrint's API at the address, `X-Api-Key` | `GET api/version`: `api` in it, `text` (if any) starting "OctoPrint"; Moonraker's OctoPrint compatibility answers it | "Test", then `POST api/files/local`: `print`, `path`, `file` | the same with `print=true` | `Utils/OctoPrint.cpp` |
+| "Octo/Klipper" with a printer model naming "Snapmaker" and "U1" | Moonraker's own API at the address (port 80 on a U1), `X-Api-Key` if a key is set | `GET server/info` (`result`), `GET access/info` (a printer that wants a login is refused) | `POST server/files/upload`: `print=false`, `root=gcodes`, `file` | `GET printer/objects/query?print_stats` first (printing or paused: refused, nothing sent), the upload, `GET server/files/metadata` (the size must be the file's), `print_stats` again, the toolhead map (`SET_PRINT_EXTRUDER_MAP`… each filament on its own toolhead, `SET_PRINT_USED_EXTRUDERS`, `SET_PRINT_PREFERENCES … [END_UNLOAD_FILAMENT=[…]]`) by `POST printer/gcode/script?script=`, then `POST printer/print/start?filename=` | `GUI/SnapmakerLan.cpp`, `GUI/RemoteSend.cpp` l.2390, `GUI/SnapmakerTaskConfig.cpp`. The fork's own desktop path for a U1 is Snapmaker's bundled page over MQTT (`send_flow_for`), whose upload code is not in the source |
+| "Elegoo Link" (`elegoolink`), Centauri Carbon | its web server at the address; its websocket at `ws://<host>:3030/websocket` (SDCP) | OctoPrint's test, else `GET /` naming "ELEGOO" | OctoPrint's upload when it answers as OctoPrint; else `POST uploadFile/upload` in parts of 1 MiB (`Check`, `S-File-MD5`, `Offset`, `Uuid`, `TotalSize`, `File`), each answered `code: "000000"` | SDCP command 0 first (not idle: refused, nothing sent), the upload, command 0 each second while the printer checks the file (`CurrentStatus` 8, at most 60 s), command 128 (`Filename "/local/<name>"`, `Calibration_switch`, `PrintPlatformType`, `Tlp_Switch`), its `Ack` read (the reference's sentence for each) | `Utils/ElegooLink.cpp`, `Utils/ElegooStartPrint.hpp`. The Centauri Carbon 2 (`ElegooCc2`) is refused: not yet |
 
-| For | Klipper through Moonraker (`Utils/MoonRaker.cpp`, `Utils/PrinterStorage.cpp`, `Utils/PrintHostDeviceStatus.cpp`, `RemoteControl.cpp`) | OctoPrint's interface, which is what a preset with "Host Type" `octoprint` ("Octo/Klipper") uses, Moonraker answering it too (`Utils/OctoPrint.cpp`) |
-| --- | --- | --- |
-| Is it there | `GET /printer/info` | `GET /api/version` (JSON with `api`; `text` starting "OctoPrint" when given) |
-| Send a file | `POST /server/files/upload`, multipart: `file`, `path`, `print` = true / false | `POST /api/files/local`, multipart: `file`, `path`, `print` = true / false |
-| Start it | `print=true` on the upload, or `POST /printer/print/start?filename=` | `print=true` on the upload |
-| What it is doing | `GET /printer/objects/query?print_stats&...` (state, file, progress, temperatures); live over `ws://<host>/websocket` (JSON-RPC) | not used by the C++ beyond the printer's own page |
-| Files on it | `GET /server/files/list?root=gcodes`, `GET /server/files/metadata?filename=`, `DELETE /server/files/gcodes/<name>` | — |
-| Pause, resume, stop | `POST /printer/print/pause`, `/resume`, `/cancel`; `POST /printer/gcode/script` | — |
+Everything is timed (10 s to connect, 15 s for a question, 60 s for each
+write of a file and 120 s for the answer to it, 60 s for a print to
+start); a file being sent is called off between pieces of 64 KiB.
 
-A Snapmaker U1 is reached the same way on port 80 by the C++ "LAN" route
-(`SnapmakerLan.hpp`: `/printer/info`, `/server/files/upload`,
-`/printer/print/start?filename=`), and otherwise by Moonraker's JSON-RPC over
-MQTT (ports 1884 and 8883, with pairing). Finding printers is mDNS
-(`_snapmaker._tcp.local`, UDP 5353). The other fifteen host types
-(`Utils/PrintHost.cpp::make_print_host`) each have a class of their own.
+The other host types of the reference (`PrintHost.cpp::make_print_host`),
+not yet: PrusaLink and PrusaConnect (`OctoPrint.cpp`, digest
+authorisation; about 600 lines), Duet (279), FlashAir (233), AstroBox
+(175), Repetier (295, groups and printers), MKS (142, with `TCPConsole`),
+ESP3D (175), CrealityPrint (604), Obico (219, a cloud), Flashforge (796),
+SimplyPrint (492, a cloud with OAuth). None is used by the printers this
+project is tested on; each is a class behind the same trait.
 
-**Three ways to do it, given "the page loads nothing from the network":**
+### The printer's page in the app
 
-1. **The session talks to the printer; the page still talks only to the
-   session.** New calls behind `Session::call` (`printer_test`, `printer_send`,
-   `printer_status`, `printer_files`) make the requests above from Rust, in a
-   crate of their own beside the engine, and the Device tab draws what comes
-   back. The rule stands as written, the content security policy does not
-   change, `--serve` and the tests share it, and a test can stand a fake
-   Moonraker on a loopback port. It needs an HTTP client in the app (and a
-   websocket one for live status), and a place to keep addresses, since vendor
-   presets rarely have one: a list of this app's own, as the C++ keeps
-   `print_host_devices.json`. **Recommended.**
-2. **A window of its own for the printer's page.** The app opens a second web
-   view at the printer's address, apart from the app's page: what the C++ web
-   view shows, with no monitoring code to write. The app's page still loads
-   nothing, but the application then shows a page it does not control, it does
-   nothing for `--serve`, and sending a file still needs option 1.
-3. **The printer's page inside the app's page** (a frame, with the policy
-   opened to the printer's address). This breaks the rule itself, and a
-   printer's page is not written to be framed. Not recommended.
+What is allowed, and why. `CLAUDE.md` says the page "loads nothing from the
+network": that is about the app's own code and assets, and stays so. The
+printer's own page, at the address the person typed, is the feature, and is
+the one thing from the network the page shows:
 
-Option 1 first (test, send, status, files), then option 2 as a convenience for
-the printer's own page if it is still wanted.
+- It is a frame (`#device-frame`) of another origin than the app's page,
+  so it cannot reach the page's document, its `call`, or the session's
+  token; `sandbox="allow-scripts allow-same-origin allow-forms allow-popups
+  allow-downloads"` (same-origin is the printer's own origin, which its page
+  needs for its own requests and storage; never top navigation),
+  `referrerpolicy="no-referrer"`.
+- The app's own document keeps its policy: scripts, styles, connections
+  and images from itself only. In `--serve` the policy is sent with the
+  page and names, in `frame-src`, only the origins of the connections in
+  force when the page is loaded (each kept connection and each open
+  project's preset address); a connection saved to a new address loads the
+  page again (`hosts.js` `framable`; the session keeps every project as it
+  was). In the window the policy is Tauri's, fixed when the app is built,
+  so it cannot name the printer: `frame-src http: https:` (no `data:`,
+  `blob:` or other schemes), everything else as before. The window's
+  commands are given to the window's own page only (`capabilities/default.json`
+  names no remote URL), so a framed page cannot call them.
+- The API key is never put into the frame (above, `X-API-Key`).
+- The frame is pointed at the printer only when Device is looked at.
+
+Not checked in the window itself (the macOS web view and the Windows one may
+treat an `http:` frame in the app's page as mixed content); in a browser
+through `--serve` it is checked.
 
 ## 5. The project strip
 
@@ -380,6 +394,17 @@ the project is on.
 | `summary` | `project?`, `plate?` | as before, and `plate`, `widths`, `heights`. `gaps` ends with each setting set by hand that the slice did not read |
 | `layer` | `project?`, `plate?`, `index` | as before |
 | `export` | `project?`, `plate?`, `path` | `{ path, bytes }` |
+| `print_host` | `project?` | the connection of the project's printer: `{ printer (the preset's name), model, from ("kept", "preset"), connection { host_type, print_host, print_host_webui, printhost_cafile, has_api_key }, host_types [{ value, label, built }], built, can_send, why_not, can_start, storage, device_url, route ("octoprint", "snapmaker", "elegoolink", …), offers { elegoo, unload { default } \| null }, problem }`; `{ printer: null, host_types }` without a printer. Never the key |
+| `print_host_set` | `project?`, `host_type`, `print_host`, `print_host_webui`, `printhost_cafile`, `apikey?` (a new key; "" or null clears it; left out keeps it); or `forget: true` (back to the preset's) | as `print_host`. Refused, nothing kept: a host type that is not one, an address that cannot be read |
+| `print_host_test` | `project?` and the fields of `print_host_set` (as typed; what is left out is as kept) | `{ ok, message }`: the host's own sentence ("Connection to OctoPrint is working correctly.", "Could not connect to Moonraker: HTTP 401: Unauthorized") |
+| `print_send_name` | `project?`, `plate?` | `{ name }`: the name "Send G-code to printer host" offers |
+| `print_send` | `project?`, `plate?`, `name`, `start`, `options { unload_at_end, timelapse, leveling, smooth_plate }` | `{ id, queue }`: the plate's G-code (the bytes `export` writes) put in the queue |
+| `print_queue` | — | `{ jobs: [{ id, name, host, printer, size, start, state (queued, uploading, error, canceling, canceled, completed), said, progress (0–100), stage, message }], busy }` |
+| `print_cancel` | `id` | as `print_queue`: a job waiting is not sent, one going is stopped |
+| `print_queue_clear` | — | as `print_queue`, without the jobs that are over |
+| `printer_files` | `project?` | `{ files: [{ name, size, modified }] }`, newest first; an error for a printer whose files cannot be listed here |
+| `printer_file_delete` | `project?`, `name` | as `printer_files` |
+| `printer_file_print` | `project?`, `name` | `{ started: true }`; refused while the printer prints |
 | `scene` | `project?` | the project for Prepare in 3D: `{ project, key, bare, bed { box, shape, height, model, texture }, plates: [{ id, name, origin, locked }], plate, colours, objects: [{ id, name, mesh, vertices, triangles, bytes, filaments, filament, parts }], placings: [{ id, object, plate, printable, matrix (16 numbers, column by column), box, over }] }`. An object also has `own_filament` (the filament it is set to itself, or null: what its parts set to "default" print in), `part_list: [{ id, name, kind (part, negative, modifier, support_blocker, support_enforcer, precise_seam), filament, own (the part's own filament, or null for "default"), matrix (16 numbers, column by column: the part's own coordinates to the object's), box (round the part's own mesh), triangles ([first, how many] of the object's mesh), split (whether "Split" can be done to the part), settings (how many settings of its own the file gives it) }]` and `split: { objects, parts }` (whether "Split to objects" and "Split to parts" can be done to it). A part's `id` stays its own through every edit that leaves it there. An object's `id` and a copy's (a placing's) `id` stay theirs through every edit; `mesh` is the number of the object's mesh, the same for as long as the mesh is; `filament` is the object's own when its parts agree; `over` says a copy reaches over the edge of its plate |
 | `scene_edit` | `project?`, `op` and what it takes (section 13) | `{ project, scene, done, made, note, part }`: the project and its scene as they then are, the edit's name in the history, the copies it made, something to tell the person or null, and the part it made (`part_add`) or null |
 | `undo`, `redo` | `project?` | `{ project, scene, done }`; an error when there is nothing to take back or to make again |
@@ -457,6 +482,8 @@ Read from `WebGuideDialog.cpp/.hpp` (`GuideFrame`), the pages under
 | The printer selected: `presets.machine`; what was last used with each printer: `orca_presets: [{ machine, process, filament, filament_01…, curr_bed_type, filament colours, flush volumes }]`, written whenever the selection changes | `PresetBundle::export_selections` l.2687–2786 | **added**: `presets { vendor, machine }` and `printers: [{ machine, vendor, process, filaments, curr_bed_type }]`, written when a printer is selected by hand and when a process, a filament or a bed type is chosen. **not yet**: colours and flush volumes (the page sets neither) |
 | The filaments added: `"filaments": [...]`; process presets hidden; `firstguide.finish`; `app.region` | `AppConfig::save` l.1224, `SaveProfile` l.687 | **not yet**: every filament and process made for a printer is offered (below) |
 | The profiles in use: the vendors installed into the data folder's `system`, else `resources/profiles` | `LoadProfileData` l.1194–1252 | **added**: the profiles folder chosen in the window is kept (`app.profiles_dir`); `EDGE_PROFILES` comes before it. Before: it was forgotten when the app closed |
+| A printer's connection: in its physical printer preset (`print_host`, `print_host_webui`, `printhost_apikey`, `printhost_cafile`, …), and several printers of one model in `<datadir>/hub/print_host_devices.json`, keys and passwords there in plain text (PrintHostDevices.cpp l.173) | `PhysicalPrinterDialog::OnOK`, `Utils/PrintHostDevices.cpp` | **differs**: this app has no user presets, so a connection is kept for each printer preset by its name, in `print_hosts.json` beside `settings.json` (`src/hosts/kept.rs`), under the reference's keys so a later pass that adds user presets can take each entry over as a physical printer of that preset. The key is kept apart, in `print_host_secrets.json`, made readable by this user alone (0600; on Windows the folder is the user's own `%APPDATA%`), and is never answered to the page, logged, put in an error or in a project. Not the system's keychain: a build of this app is not signed, so macOS would ask each new build for leave to read its own entry, and the keychain would not follow `EDGE_DESKTOP_DATA`; it can take the file's place behind `Kept::key` and `Kept::set` |
+| The send dialog's choices: `recent` (`open_device_tab_post_upload`, `elegoolink_timelapse`, `elegoolink_heated_bed_leveling`, …) | `PrintHostDialogs.cpp` l.2998 | **differs**: kept by the page (`localStorage`), as the print button's last action |
 | The page's own: the strip's width and folding, the last file opened | — | **had**, kept by the page (`localStorage`). The printer, process and filaments last used were kept there too; they are in `settings.json` now, and the old entries are no longer read |
 
 ### Not built: filaments, creating and deleting printers

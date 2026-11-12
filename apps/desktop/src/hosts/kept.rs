@@ -144,6 +144,11 @@ impl Kept {
         self.connections.get(printer)
     }
 
+    /// Every connection kept.
+    pub fn all(&self) -> impl Iterator<Item = &Saved> {
+        self.connections.values()
+    }
+
     /// The key kept for a printer. Only the hosts are handed it.
     pub fn key(&self, printer: &str) -> Option<&str> {
         self.keys.get(printer).map(String::as_str)
