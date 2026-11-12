@@ -616,6 +616,7 @@
         thickness_from: o.from,
         connectors: this.dovetail() ? [] : this.connectorsArgs(),
         snap: this.snap,
+        nozzle: this.nozzle || 0.4,
         // Cut to parts is not offered with pieces given to sides.
         ...(o.parts && !this.dovetail() ? { sides: o.parts.sides, to_parts: false } : {}),
         ...(this.dovetail() ? { groove: this.grooveArgs(), to_parts: false, thickness: 0, sides: null } : {}),

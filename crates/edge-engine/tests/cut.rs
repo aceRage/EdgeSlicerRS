@@ -938,6 +938,7 @@ fn connectors_make_plugs_holes_and_dowels_that_fit_by_their_tolerances() {
         kind,
         style,
         shape,
+        pin: Default::default(),
     };
     let connectors = vec![
         connector(
@@ -1117,6 +1118,7 @@ fn sliced_a_plug_and_its_hole_are_apart_by_the_tolerance() {
             kind: ConnectorKind::Plug,
             style: ConnectorStyle::Prism,
             shape: ConnectorShape::Circle,
+            pin: Default::default(),
         }],
         ..CutOptions::default()
     };
@@ -1171,4 +1173,126 @@ fn sliced_a_plug_and_its_hole_are_apart_by_the_tolerance() {
     };
     assert_eq!(top(&upper, 6.2), 1);
     assert_eq!(top(&upper, 6.6), 0);
+}
+
+#[test]
+fn a_pin_is_its_own_object_with_a_hole_in_each_half() {
+    use edge_engine::pushfit::Pin;
+    use edge_engine::{Connector, ConnectorKind, ConnectorShape, ConnectorStyle};
+    let dir = tempfile::tempdir().unwrap();
+    let mut model = block(dir.path(), [30.0, 30.0, 30.0]);
+    let copy = model.objects()[0].copies()[0].id();
+    let (_, reach) = model.in_scene(Some(&BED), copy).unwrap();
+    let [low, high] = reach.unwrap();
+    let mid = [(low[0] + high[0]) / 2.0, (low[1] + high[1]) / 2.0, 15.0];
+    let pin = Pin::default();
+    let connector = Connector {
+        at: mid,
+        radius: 0.5 * pin.diameter,
+        height: pin.length_upper + pin.length_lower,
+        radius_tolerance: 0.0,
+        height_tolerance: 0.0,
+        z_angle: 0.0,
+        kind: ConnectorKind::Pin,
+        style: ConnectorStyle::Prism,
+        shape: ConnectorShape::Circle,
+        pin,
+    };
+    // A pin that cannot be made stops the cut.
+    let mut refused = model.clone();
+    let bad = CutOptions {
+        connectors: vec![Connector {
+            pin: Pin {
+                diameter: 2.0,
+                ..pin
+            },
+            ..connector
+        }],
+        ..CutOptions::default()
+    };
+    assert!(
+        refused
+            .cut(Some(&BED), copy, &plane(mid, [0.0, 0.0, 1.0]), &bad)
+            .is_err()
+    );
+    let options = CutOptions {
+        connectors: vec![connector],
+        ..CutOptions::default()
+    };
+    let done = model
+        .cut(Some(&BED), copy, &plane(mid, [0.0, 0.0, 1.0]), &options)
+        .unwrap();
+    assert_eq!(
+        (done.pins, done.pins_lying, done.pin_slot_failures),
+        (1, 1, 0)
+    );
+    let names: Vec<&str> = model.objects().iter().map(|o| o.name()).collect();
+    assert_eq!(names, ["block", "block", "block-Pin-1"]);
+    let part = |object: usize, at: usize| {
+        let part = &model.objects()[object].shape().parts()[at];
+        let mut mesh = Mesh::default();
+        mesh.append(&part.mesh, &part.transform);
+        (part.kind, mesh)
+    };
+    let (kind, hole_a) = part(0, 1);
+    assert_eq!(kind, PartKind::Negative);
+    let (kind, hole_b) = part(1, 1);
+    assert_eq!(kind, PartKind::Negative);
+    let (_, made) = part(2, 0);
+    for mesh in [&hole_a, &hole_b, &made] {
+        sound(mesh);
+    }
+    // The pin lies on its flat beside the block, on the bed.
+    let pin_at = model.objects()[2].copies()[0].reach().unwrap();
+    let block_at = model.objects()[0].copies()[0].reach().unwrap();
+    assert!(pin_at[0][0] >= block_at[1][0] + 5.0 - 1e-6);
+    assert!(near(pin_at[0][2], 0.0, 1e-6));
+    assert!(near(pin_at[1][2] - pin_at[0][2], 6.0 - 2.0 * 0.9, 1e-3));
+    // Each hole goes into its half, from the cut, deeper than the pin by the
+    // depth clearance and its cone.
+    let (a_low, a_high) = bounds(&hole_a);
+    assert!(near(a_low[2], 15.0 - 0.2, 1e-4) && near(a_high[2], 15.0 + 7.0 + 0.4 + 3.1, 1e-4));
+    let (b_low, b_high) = bounds(&hole_b);
+    assert!(near(b_high[2], 15.2, 1e-4) && near(b_low[2], 15.0 - 10.5, 1e-4));
+    // Sliced, the upper half's hole is the pin's radius and its clearance
+    // (a 96-sided round).
+    let mut upper = model.clone();
+    let others: Vec<u64> = [1, 2]
+        .iter()
+        .map(|&at| upper.objects()[at].copies()[0].id())
+        .collect();
+    upper.remove(Some(&BED), &others).unwrap();
+    let path = dir.path().join("upper.3mf");
+    upper
+        .save(&path, &edge_engine::Saving::None, Some(&BED))
+        .unwrap();
+    let sliced = slice_file(&path);
+    let layer = (0..sliced.outlines().len())
+        .find(|&at| sliced.top_of(at) >= 4.0)
+        .unwrap();
+    let hole = &sliced.outlines()[layer][0].holes[0];
+    let radius = (hole.signed_area_mm2().abs() / std::f64::consts::PI).sqrt();
+    let sides = 96.0_f64;
+    let round = 3.1
+        * (sides / (2.0 * std::f64::consts::PI) * (2.0 * std::f64::consts::PI / sides).sin())
+            .sqrt();
+    assert!(near(radius, round, 0.01), "the hole's radius is {radius}");
+    // Saved and read back: the pin's shape is in the cut information and
+    // the recipe, and putting the cut back takes the pin with the halves.
+    let path = dir.path().join("pin.3mf");
+    model
+        .save(&path, &edge_engine::Saving::None, Some(&BED))
+        .unwrap();
+    let mut back = Model::open(&path).unwrap();
+    let half = back.objects()[0].copies()[0].id();
+    let edit = back.cut_edit(Some(&BED), half).unwrap();
+    assert_eq!(back.objects().len(), 1);
+    let read = Pin::from_attributes(|name| {
+        edit.recipe.connectors[0]
+            .extra
+            .iter()
+            .find(|(key, _)| key == name)
+            .map(|(_, value)| *value)
+    });
+    assert_eq!(read, pin);
 }

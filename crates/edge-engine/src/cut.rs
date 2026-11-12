@@ -103,6 +103,8 @@ pub struct CutOptions {
     /// A snap's slit and bulge, of its radius (`m_snap_space_proportion`,
     /// `m_snap_bulge_proportion`): the tool's, not each connector's.
     pub snap: [f64; 2],
+    /// The nozzle's diameter, which a pin's slot is measured against.
+    pub nozzle: f64,
 }
 
 /// What a connector is (Model.hpp `CutConnectorType`): a plug on the
@@ -113,6 +115,9 @@ pub enum ConnectorKind {
     Plug,
     Dowel,
     Snap,
+    /// The fork's push-fit pin: printed on its own, pushed into a hole in
+    /// each half ([`crate::pushfit`]).
+    Pin,
 }
 
 /// Its sides: straight, or narrowing (a plug's to half its radius at the
@@ -139,13 +144,19 @@ impl ConnectorKind {
             Self::Plug => 0,
             Self::Dowel => 1,
             Self::Snap => 2,
+            // 3 is BambuStudio's Thread, 4 the fork's Flexi.
+            Self::Pin => 5,
         }
     }
 
     pub fn of(code: u32) -> Option<Self> {
-        [Self::Plug, Self::Dowel, Self::Snap]
-            .get(code as usize)
-            .copied()
+        match code {
+            0 => Some(Self::Plug),
+            1 => Some(Self::Dowel),
+            2 => Some(Self::Snap),
+            5 => Some(Self::Pin),
+            _ => None,
+        }
     }
 }
 
@@ -205,6 +216,9 @@ pub struct Connector {
     pub kind: ConnectorKind,
     pub style: ConnectorStyle,
     pub shape: ConnectorShape,
+    /// A pin's shape; its radius and height above are then its own (half
+    /// its diameter, its two lengths).
+    pub pin: crate::pushfit::Pin,
 }
 
 /// How far a connector's hole reaches through the cut face, so that the
@@ -276,6 +290,7 @@ impl Default for CutOptions {
             editable: true,
             connectors: Vec::new(),
             snap: [0.3, 0.15],
+            nozzle: 0.4,
         }
     }
 }
@@ -298,6 +313,11 @@ impl CutOptions {
 pub struct CutDone {
     /// The copies of the objects made, which the reference selects.
     pub made: Vec<u64>,
+    /// The pins made, how many print lying, and how many were made
+    /// without the slit asked for (the boolean failed).
+    pub pins: usize,
+    pub pins_lying: usize,
+    pub pin_slot_failures: usize,
     /// How many chains of cut edges were left without a cap, the object
     /// being open where the plane crossed it.
     pub open: usize,
@@ -855,6 +875,17 @@ impl Model {
         // (GLGizmoCut.cpp `perform_cut`: KeepUpper, KeepLower, not
         // KeepAsParts while there are connectors); a dovetail takes none.
         let connected = !options.connectors.is_empty() && options.groove.is_none();
+        // A pin that cannot be made stops the cut (`can_perform_cut`,
+        // `pushfit_validate`).
+        if connected {
+            for c in &options.connectors {
+                if c.kind == ConnectorKind::Pin
+                    && let Some(why) = c.pin.invalid(options.nozzle)
+                {
+                    return Err(refused(why));
+                }
+            }
+        }
         let forced;
         let options = if connected {
             forced = CutOptions {
@@ -925,6 +956,11 @@ impl Model {
                         kind: c.kind.code(),
                         style: c.style.code(),
                         shape: c.shape.code(),
+                        extra: if c.kind == ConnectorKind::Pin {
+                            c.pin.attributes()
+                        } else {
+                            Vec::new()
+                        },
                     })
                     .collect();
             }
@@ -1036,6 +1072,7 @@ impl Model {
             .find(|part| part.kind == PartKind::Normal && !is_connector(part))
             .cloned();
         let mut dowels: Vec<Part> = Vec::new();
+        let mut pins: Vec<(Part, bool, bool)> = Vec::new();
         if connected
             && !upper.is_empty()
             && !lower.is_empty()
@@ -1045,6 +1082,7 @@ impl Model {
             upper.extend(made.upper);
             lower.extend(made.lower);
             dowels = made.dowels;
+            pins = made.pins;
         }
         let mut made_objects: Vec<(Vec<Part>, Option<bool>)> = Vec::new();
         if to_parts {
@@ -1086,7 +1124,7 @@ impl Model {
             .count();
         let cut_id = ((connected || options.groove.is_some()) && halves == 2).then(|| CutId {
             id: fresh(),
-            check_sum: 2 + dowel_count as u64,
+            check_sum: 2 + (dowel_count + pins.len()) as u64,
             connectors: if connected {
                 options.connectors.len() as u64
             } else {
@@ -1203,6 +1241,54 @@ impl Model {
                 },
             });
         }
+        // The pins: each an object in its print pose, in a row along +x five
+        // millimetres past its copy, eight to a row (`add_separate_parts`).
+        let (pins_made, pins_lying, slot_failures) = (
+            pins.len(),
+            pins.iter().filter(|(_, lying, _)| *lying).count(),
+            pins.iter().filter(|(_, _, failed)| *failed).count(),
+        );
+        for (number, (pin, _, _)) in pins.into_iter().enumerate() {
+            let (low, high) = pin.mesh.bounds().unwrap_or(([0.0; 3], [5.0; 3]));
+            let size = [f64::from(high[0] - low[0]), f64::from(high[1] - low[1])];
+            let (column, row) = ((number % 8) as f64, (number / 8) as f64);
+            let shape = Shape::new(vec![pin]);
+            let copies: Vec<ModelCopy> = held
+                .copies
+                .iter()
+                .zip(&mut instead)
+                .map(|(old, (_, made))| {
+                    let id = fresh();
+                    made.push(id);
+                    let [from, _] = old.reach.unwrap_or([[0.0; 3]; 2]);
+                    let to = old.reach.map_or([0.0; 3], |[_, to]| to);
+                    let x = to[0] + 5.0 + column * (size[0] + 3.0) + 0.5 * size[0];
+                    let y = from[1] + row * (size[1] + 3.0) + 0.5 * size[1];
+                    let local = Transform::translation([x, y, 0.0]);
+                    ModelCopy {
+                        id,
+                        reach: shape.reach(&local),
+                        local,
+                        world: local,
+                        printable: old.printable,
+                    }
+                })
+                .collect();
+            objects.push(ModelObject {
+                id: fresh(),
+                name: format!("{base}-Pin-{}", number + 1),
+                filament: held.filament,
+                shape,
+                copies,
+                kept: Some(Arc::new(
+                    held.kept
+                        .as_deref()
+                        .map(ObjectKept::cut_half)
+                        .unwrap_or_default()
+                        .with_cut_id(cut_id),
+                )),
+            });
+        }
         self.objects.remove(at);
         let count = objects.len();
         self.objects.splice(at..at, objects);
@@ -1232,7 +1318,13 @@ impl Model {
                 self.stand_in_scene(bed, *copy, scene);
             }
         }
-        Ok(CutDone { made: new, open })
+        Ok(CutDone {
+            made: new,
+            open,
+            pins: pins_made,
+            pins_lying,
+            pin_slot_failures: slot_failures,
+        })
     }
 
     /// How the object of a copy was cut, when the cut was kept editable.
@@ -1465,6 +1557,8 @@ pub fn connector_mesh(
     let sides = shape.sides();
     match (kind, style) {
         (ConnectorKind::Snap, _) => centred(connector::snap(snap[0], snap[1])),
+        // A pin is made from its own shape ([`crate::pushfit::Pin::mesh`]).
+        (ConnectorKind::Pin, _) => centred(connector::prism(sides, 1.0)),
         (_, ConnectorStyle::Prism) => centred(connector::prism(sides, 1.0)),
         (ConnectorKind::Plug, ConnectorStyle::Frustum) => centred(connector::prism(sides, 0.5)),
         (ConnectorKind::Dowel, ConnectorStyle::Frustum) => connector::bicone(sides),
@@ -1481,6 +1575,8 @@ struct ConnectorParts {
     upper: Vec<Part>,
     lower: Vec<Part>,
     dowels: Vec<Part>,
+    /// Each pin, whether it prints lying, whether its slit failed.
+    pins: Vec<(Part, bool, bool)>,
 }
 
 /// The parts the connectors make, in the halves' coordinates, `back`
@@ -1505,6 +1601,7 @@ fn connector_parts(
         upper: Vec::new(),
         lower: Vec::new(),
         dowels: Vec::new(),
+        pins: Vec::new(),
     };
     let frame = linear(back);
     let normal = back.rows[2];
@@ -1532,6 +1629,15 @@ fn connector_parts(
             kind: c.kind.code(),
             radius_tolerance: c.radius_tolerance,
             height_tolerance: c.height_tolerance,
+            // A pin's shape is written with it, and whether it was cut
+            // (bbs_3mf.cpp `_add_cut_information_file_to_archive`).
+            extra: if c.kind == ConnectorKind::Pin {
+                let mut extra = vec![("processed".to_owned(), 1.0)];
+                extra.extend(c.pin.attributes());
+                extra
+            } else {
+                Vec::new()
+            },
         };
         let mesh = Arc::new(connector_mesh(c.kind, c.style, c.shape, options.snap));
         // On the plane, in the halves' coordinates.
@@ -1563,7 +1669,7 @@ fn connector_parts(
                     PartKind::Normal,
                     mesh.clone(),
                     placed(c.radius, height, middle),
-                    info,
+                    info.clone(),
                 ));
                 // Its hole: wider and deeper by the tolerances, through the
                 // face; a snap's a plain round one.
@@ -1610,7 +1716,7 @@ fn connector_parts(
                     PartKind::Normal,
                     mesh.clone(),
                     upright,
-                    info,
+                    info.clone(),
                 ));
                 // Its holes: the dowel with the tolerances, cut just past
                 // the plane each way so that each breaks through its face.
@@ -1637,8 +1743,47 @@ fn connector_parts(
                             PartKind::Negative,
                             Arc::new(half.mesh),
                             Transform::IDENTITY,
-                            info,
+                            info.clone(),
                         ));
+                    }
+                }
+            }
+            ConnectorKind::Pin => {
+                // The pin straddles the cut, each end across a cut's
+                // thickness, and is an object of its own; a hole each side
+                // from its face (CutUtils.cpp `process_pushfit_cut`).
+                let (kerf_lo, kerf_hi) = ((-lo).max(0.0), hi.max(0.0));
+                let made = c.pin.mesh(kerf_lo, kerf_hi, true);
+                let failed = made.slot_requested && !made.slot_made;
+                out.pins.push((
+                    part(
+                        name.clone(),
+                        PartKind::Normal,
+                        Arc::new(made.mesh),
+                        Transform::IDENTITY,
+                        info.clone(),
+                    ),
+                    made.lying,
+                    failed,
+                ));
+                let there = rotation_xyz(0.0, 0.0, -c.z_angle)
+                    .then(&frame)
+                    .then(&Transform::translation(at));
+                for (side, suffix, face) in [
+                    (crate::pushfit::PinSide::Upper, "_A", kerf_hi),
+                    (crate::pushfit::PinSide::Lower, "_B", kerf_lo),
+                ] {
+                    let hole = part(
+                        format!("{name}{suffix}"),
+                        PartKind::Negative,
+                        Arc::new(c.pin.hole_mesh(side, face)),
+                        there,
+                        info.clone(),
+                    );
+                    if side == crate::pushfit::PinSide::Upper {
+                        out.upper.push(hole);
+                    } else {
+                        out.lower.push(hole);
                     }
                 }
             }

@@ -244,3 +244,12 @@ dialog.plate-settings .row.end .grow { flex: 1; align-self: center; }
    as every group label is. */
 .cut-panel .cut-group { font-size: var(--size-caps); letter-spacing: var(--caps-spacing); text-transform: uppercase; color: var(--text-3); }
 .cut-line select { height: var(--control-s); min-width: 0; font-size: var(--size-small); }
+
+/* "Cut"'s pin drawing (connectors.js `pinDrawing`): the reference's
+   colours for the body, the flats and the slits (data, not tokens). */
+.cut-panel .pin-drawing { display: block; width: 100%; height: 84px; flex: none; margin: 4px 0; }
+.cut-panel .pin-drawing .pin-body { fill: none; stroke: rgb(217, 166, 38); stroke-width: 1.5; }
+.cut-panel .pin-drawing .pin-flat { stroke: rgb(140, 191, 255); stroke-width: 1; stroke-dasharray: 4 3; }
+.cut-panel .pin-drawing .pin-slot { fill: rgb(230, 77, 77); }
+.cut-panel .pin-drawing .pin-cut { stroke: var(--text-3); stroke-width: 1; }
+.cut-panel .pin-drawing .pin-word { fill: var(--text-3); font-size: 10px; }

@@ -738,6 +738,11 @@ tool's panel does, and scrolls). Its rows:
   and the primary "Confirm connectors" at the foot. In the scene the part
   over the plane is not drawn, the cut face is a flat light grey, and the
   connectors take the reference's colours (data, not tokens).
+- **A pin's drawing** (`.pin-drawing`): an inline SVG 84 px tall across the
+  panel, the pin's outline in the reference's amber, its flats dashed in
+  its pale blue, its slits filled in its red (data, not tokens), the cut
+  a `--text-3` line with "lower" and "upper" either side; the pin's other
+  rows are ticks and number fields as the rest of the panel.
 - **A side and what is done with it** (`.cut-side`): a 10 px swatch of
   the side's tint in the scene (cyan, magenta: the reference's, data, not
   tokens) and its name in `--text-1`, then its ticks; a tick never breaks

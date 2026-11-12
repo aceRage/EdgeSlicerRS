@@ -29,6 +29,7 @@ mod pipeline;
 mod presets;
 mod preview;
 mod printable;
+pub mod pushfit;
 mod regions;
 mod scene;
 mod toolpath;

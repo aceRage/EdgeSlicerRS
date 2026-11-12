@@ -175,6 +175,61 @@ Keep cut editable	GUI/Gizmos/GLGizmoCut.cpp:9134
 Remember this cut so it can be edited later: select either half and choose "Edit cut..." to reopen this panel with the same surface and settings.\n\nThe original, uncut shape is stored in the project file, so a cut object takes about twice the space. Turn this off for a one-off cut.	GUI/Gizmos/GLGizmoCut.cpp:9136
 Editing an existing cut. Perform cut replaces both halves.	GUI/Gizmos/GLGizmoCut.cpp:10744
 One half of this cut is missing from the project. Cutting again will produce both halves.	GUI/Gizmos/GLGizmoCut.cpp:10746
+%1% pin(s) could not be slit and were made without a slot.	GUI/Gizmos/GLGizmoCut.cpp:11055
+45 degree flare at each hole's mouth. It also takes up elephant's foot.	GUI/Gizmos/GLGizmoCut.cpp:8050
+45 degree lead-in at each end of the pin.	GUI/Gizmos/GLGizmoCut.cpp:8049
+Auto (lying when it can)	GUI/Gizmos/GLGizmoCut.cpp:213
+Auto lays the pin on a flat when it has one flat enough to print on without supports, which puts the layer lines along the pin (strongest). Upright prints round holes and pins most accurately, but layer lines then cross the pin at the joint, where it is weakest.	GUI/Gizmos/GLGizmoCut.cpp:8033
+Axial length of the lip, flanks included.	GUI/Gizmos/GLGizmoCut.cpp:7986
+Clearance	GUI/Gizmos/GLGizmoCut.cpp:255
+Cutout	GUI/Gizmos/GLGizmoCut.cpp:8007
+Depth clearance	GUI/Gizmos/GLGizmoCut.cpp:8051
+Each pin becomes its own object beside the part. PETG and ABS/ASA flex better than PLA; for PLA prefer a groove over a slot.	GUI/Gizmos/GLGizmoCut.cpp:8075
+End chamfer	GUI/Gizmos/GLGizmoCut.cpp:8049
+Extra depth at the bottom of each hole, for air and squish.	GUI/Gizmos/GLGizmoCut.cpp:8051
+Flat	GUI/Gizmos/GLGizmoCut.cpp:212
+Flat + slot	GUI/Gizmos/GLGizmoCut.cpp:212
+Flat depth	GUI/Gizmos/GLGizmoCut.cpp:8014
+Flats on both sides	GUI/Gizmos/GLGizmoCut.cpp:8016
+Groove for the lip	GUI/Gizmos/GLGizmoCut.cpp:7980
+How far each slit runs in from the pin's end.	GUI/Gizmos/GLGizmoCut.cpp:8021
+How far the lip stands proud of the pin.	GUI/Gizmos/GLGizmoCut.cpp:7985
+How far the pin reaches into each half, from that half's cut face.	GUI/Gizmos/GLGizmoCut.cpp:7965
+How far the pin reaches into the lower half.	GUI/Gizmos/GLGizmoCut.cpp:7968
+How far the pin reaches into the upper half.	GUI/Gizmos/GLGizmoCut.cpp:7967
+How much the printing flat takes off. 0.15 x the diameter keeps every overhang at 45 degrees or less, so the pin lies on it with no supports.	GUI/Gizmos/GLGizmoCut.cpp:8015
+L	GUI/Gizmos/GLGizmoCut.cpp:210
+Lip	GUI/Gizmos/GLGizmoCut.cpp:7983
+Lip height	GUI/Gizmos/GLGizmoCut.cpp:7985
+Lip position	GUI/Gizmos/GLGizmoCut.cpp:7989
+Lip width	GUI/Gizmos/GLGizmoCut.cpp:7986
+Lower clearance	GUI/Gizmos/GLGizmoCut.cpp:7978
+Lower length	GUI/Gizmos/GLGizmoCut.cpp:7968
+M	GUI/Gizmos/GLGizmoCut.cpp:210
+Mouth chamfer	GUI/Gizmos/GLGizmoCut.cpp:8050
+No preset fits this cut; S is used. Check the fit.	GUI/Gizmos/GLGizmoCut.cpp:7957
+Nominal pin diameter.	GUI/Gizmos/GLGizmoCut.cpp:7961
+Pin	GUI/Gizmos/GLGizmoCut.cpp:208
+Pointed hole end	GUI/Gizmos/GLGizmoCut.cpp:8052
+Prints lying on its flat.	GUI/Gizmos/GLGizmoCut.cpp:8038
+Prints upright.	GUI/Gizmos/GLGizmoCut.cpp:8040
+Prints upright:	GUI/Gizmos/GLGizmoCut.cpp:8042
+Radial clearance of the lower hole.	GUI/Gizmos/GLGizmoCut.cpp:7978
+Radial clearance of the upper hole.	GUI/Gizmos/GLGizmoCut.cpp:7977
+Radial gap between the pin and its hole. Printed holes come out small, so a little clearance is needed even for a tight fit.	GUI/Gizmos/GLGizmoCut.cpp:7975
+S	GUI/Gizmos/GLGizmoCut.cpp:210
+Same clearance both sides	GUI/Gizmos/GLGizmoCut.cpp:7972
+Same length both sides	GUI/Gizmos/GLGizmoCut.cpp:7962
+Slot	GUI/Gizmos/GLGizmoCut.cpp:212
+Slot length	GUI/Gizmos/GLGizmoCut.cpp:8021
+Slot width	GUI/Gizmos/GLGizmoCut.cpp:8019
+Upper clearance	GUI/Gizmos/GLGizmoCut.cpp:7977
+Upper length	GUI/Gizmos/GLGizmoCut.cpp:7967
+Upright	GUI/Gizmos/GLGizmoCut.cpp:213
+Where the lip sits along each side, from the cut face.	GUI/Gizmos/GLGizmoCut.cpp:7996
+Width of the slit at each end. It lets the lip side flex so the pin goes in by hand.	GUI/Gizmos/GLGizmoCut.cpp:8020
+lower	GUI/Gizmos/GLGizmoCut.cpp:7881
+upper	GUI/Gizmos/GLGizmoCut.cpp:7880
 [own]
 # This app's own words on the static page, with no counterpart in the
 # C++: shown in English in every language.

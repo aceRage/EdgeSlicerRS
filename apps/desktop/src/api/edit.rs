@@ -32,7 +32,7 @@ use super::{
 };
 
 /// The calls answered here.
-pub(super) const JSON: [&str; 8] = [
+pub(super) const JSON: [&str; 9] = [
     "scene_edit",
     "undo",
     "redo",
@@ -41,6 +41,7 @@ pub(super) const JSON: [&str; 8] = [
     "cut_pick",
     "cut_parts",
     "cut_recipe",
+    "cut_pin",
 ];
 
 /// The calls here answered in bytes (`Session::call_bytes`).
@@ -329,6 +330,11 @@ fn cut_options(args: &Value) -> Result<edge_engine::CutOptions, String> {
                 .collect::<Result<Vec<_>, String>>()?,
             Some(_) => return Err("connectors is not a list".into()),
         },
+        nozzle: args
+            .get("nozzle")
+            .and_then(Value::as_f64)
+            .filter(|value| *value > 0.0)
+            .unwrap_or(0.4),
         snap: match args.get("snap") {
             None | Some(Value::Null) => [0.3, 0.15],
             Some(snap) => {
@@ -380,10 +386,15 @@ fn connector_of(value: &Value) -> Result<edge_engine::Connector, String> {
         radius_tolerance: number("radius_tolerance")?.max(0.0),
         height_tolerance: number("height_tolerance")?.max(0.0),
         z_angle: number("z_angle")?,
+        pin: match value.get("pin") {
+            None | Some(Value::Null) => edge_engine::pushfit::Pin::default(),
+            Some(pin) => pin_of(pin),
+        },
         kind: match word("type") {
             "plug" => ConnectorKind::Plug,
             "dowel" => ConnectorKind::Dowel,
             "snap" => ConnectorKind::Snap,
+            "pin" => ConnectorKind::Pin,
             other => return Err(format!("a connector cannot be a {other}")),
         },
         style: match word("style") {
@@ -399,6 +410,71 @@ fn connector_of(value: &Value) -> Result<edge_engine::Connector, String> {
             other => return Err(format!("a connector's shape cannot be {other}")),
         },
     })
+}
+
+/// A pin's shape as the page gives it: the reference's names without
+/// their `pushfit_` (`diameter`, `length_upper`, …, `cutout` 0–3, `pose`
+/// 0 or 1, the flags true or false), each left out at its default.
+pub(super) fn pin_of(value: &Value) -> edge_engine::pushfit::Pin {
+    edge_engine::pushfit::Pin::from_attributes(|name| {
+        let key = name.strip_prefix("pushfit_").unwrap_or(name);
+        match value.get(key)? {
+            Value::Bool(flag) => Some(if *flag { 1.0 } else { 0.0 }),
+            other => other.as_f64(),
+        }
+    })
+}
+
+/// A pin for the panel (GLGizmoCut.cpp `render_pushfit_inputs`): `pin`
+/// as given, or a preset's (`preset` 0 S, 1 M, 2 L, or `auto`: the
+/// largest the section takes, its inscribed radius `inscribed`); why it
+/// cannot be made, what may go wrong, how it prints, and its outline for
+/// the drawing of it.
+fn cut_pin(args: &Value) -> Value {
+    let mut pin = pin_of(args.get("pin").unwrap_or(&Value::Null));
+    let nozzle = args.get("nozzle").and_then(Value::as_f64).unwrap_or(0.4);
+    let mut fits = true;
+    match args.get("preset") {
+        Some(Value::String(word)) if word == "auto" => {
+            let inscribed = args.get("inscribed").and_then(Value::as_f64).unwrap_or(0.0);
+            (pin, fits) = pin.auto_size(inscribed, 0.0, 0.0);
+        }
+        Some(preset) if preset.as_u64().is_some_and(|preset| preset < 3) => {
+            pin = pin.with_preset(preset.as_u64().unwrap_or(1) as u32);
+        }
+        _ => {}
+    }
+    let profile: Vec<[f64; 2]> = pin.profile(0.0, 0.0);
+    json!({
+        "pin": pin_json(&pin),
+        "fits": fits,
+        "invalid": pin.invalid(nozzle),
+        "warnings": pin.warnings(nozzle, 0.0, 0.0),
+        "lies": pin.lies(),
+        "why": pin.can_lie().err(),
+        "profile": profile,
+    })
+}
+
+/// A pin as the page takes it: [`pin_of`]'s names.
+pub(super) fn pin_json(pin: &edge_engine::pushfit::Pin) -> Value {
+    let mut out = serde_json::Map::new();
+    for (name, value) in pin.attributes() {
+        let key = name.trim_start_matches("pushfit_").to_owned();
+        let flag = matches!(
+            key.as_str(),
+            "lip" | "flat_both_sides" | "hole_groove" | "pointed_end"
+        );
+        out.insert(
+            key,
+            if flag {
+                json!(value != 0.0)
+            } else {
+                json!(value)
+            },
+        );
+    }
+    Value::Object(out)
 }
 
 /// What an edit by the gizmos or the number fields may be called in the
@@ -457,10 +533,20 @@ fn recipe_json(recipe: &edge_engine::CutRecipe, plane: &Transform) -> Value {
         .iter()
         .map(|c| {
             let at: [f64; 3] = std::array::from_fn(|axis| c.pos[axis] + shift[axis]);
-            let kind = ["plug", "dowel", "snap"]
-                .get(c.kind as usize)
-                .copied()
-                .unwrap_or("plug");
+            let kind = match c.kind {
+                1 => "dowel",
+                2 => "snap",
+                5 => "pin",
+                _ => "plug",
+            };
+            let pin = (c.kind == 5).then(|| {
+                pin_json(&edge_engine::pushfit::Pin::from_attributes(|name| {
+                    c.extra
+                        .iter()
+                        .find(|(key, _)| key == name)
+                        .map(|(_, value)| *value)
+                }))
+            });
             let style = ["prism", "frustum"]
                 .get(c.style as usize)
                 .copied()
@@ -479,6 +565,7 @@ fn recipe_json(recipe: &edge_engine::CutRecipe, plane: &Transform) -> Value {
                 "type": kind,
                 "style": style,
                 "shape": shape,
+                "pin": pin,
             })
         })
         .collect();
@@ -978,6 +1065,32 @@ impl Session {
                         &[&done.open.to_string()],
                     ));
                 }
+                // Where the pins went, and whether any came out without
+                // its slit (GLGizmoCut.cpp `perform_cut`).
+                if done.pins > 0 {
+                    let words = if done.pins == done.pins_lying {
+                        "%1% pin(s) added beside the object (print lying flat)."
+                    } else if done.pins_lying == 0 {
+                        "%1% pin(s) added beside the object (print upright)."
+                    } else {
+                        "%1% pin(s) added beside the object."
+                    };
+                    let mut note =
+                        super::i18n::fill(&super::i18n::tr(words), &[&done.pins.to_string()]);
+                    if done.pin_slot_failures > 0 {
+                        note.push(' ');
+                        note.push_str(&super::i18n::fill(
+                            &super::i18n::tr(
+                                "%1% pin(s) could not be slit and were made without a slot.",
+                            ),
+                            &[&done.pin_slot_failures.to_string()],
+                        ));
+                    }
+                    outcome.note = Some(match outcome.note.take() {
+                        Some(before) => format!("{before} {note}"),
+                        None => note,
+                    });
+                }
                 outcome.name = "Cut by Plane".into();
             }
             "cut_edit" => {
@@ -1029,6 +1142,7 @@ impl Session {
             "cut_pick" => self.cut_pick(args),
             "cut_parts" => self.cut_parts(args),
             "cut_recipe" => self.cut_recipe(args),
+            "cut_pin" => Ok(cut_pin(args)),
             other => Err(format!("there is no call named {other}")),
         }
     }
@@ -1339,7 +1453,13 @@ impl Session {
                 }
                 let c = connector_of(&asked)?;
                 let snap = cut_options(&json!({ "snap": args.get("snap") }))?.snap;
-                let mesh = edge_engine::connector_mesh(c.kind, c.style, c.shape, snap);
+                // A pin as it will be, in mm, straddling the cut
+                // (`pushfit_preview_body`).
+                let mesh = if c.kind == edge_engine::ConnectorKind::Pin {
+                    c.pin.mesh(0.0, 0.0, false).mesh
+                } else {
+                    edge_engine::connector_mesh(c.kind, c.style, c.shape, snap)
+                };
                 let object = edge_engine::SceneObject {
                     name: String::new(),
                     marks: vec![edge_engine::Mark::Filament(1); mesh.triangles.len()],

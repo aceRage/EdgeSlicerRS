@@ -447,7 +447,7 @@ impl Project {
                         let read = part.kept.as_ref().and_then(|own| own.read.as_ref());
                         if read.is_some_and(|read| read.index == volume) {
                             let own = Arc::make_mut(part.kept.get_or_insert_with(Default::default));
-                            own.connector = Some(info);
+                            own.connector = Some(info.clone());
                         }
                     }
                 }

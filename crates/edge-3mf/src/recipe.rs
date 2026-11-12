@@ -102,6 +102,9 @@ pub struct RecipeConnector {
     pub kind: u32,
     pub style: u32,
     pub shape: u32,
+    /// What else is written on it (a pin's `pushfit_*`, the fork's other
+    /// kinds' own), by name, as numbers.
+    pub extra: Vec<(String, f64)>,
 }
 
 /// How a cut was made, and what it was made of.
@@ -540,6 +543,22 @@ fn matrix_text(frame: &Transform) -> String {
         .join(" ")
 }
 
+/// What every recipe connector carries.
+const STANDARD: [&str; 12] = [
+    "x",
+    "y",
+    "z",
+    "rotation",
+    "radius",
+    "height",
+    "r_tolerance",
+    "h_tolerance",
+    "z_angle",
+    "type",
+    "style",
+    "shape",
+];
+
 /// The `<connector>`s inside a recipe.
 fn connectors_of(inner: &str, part: &str) -> Result<Vec<RecipeConnector>, Error> {
     let mut reader = Reader::from_str(inner);
@@ -592,6 +611,13 @@ fn connectors_of(inner: &str, part: &str) -> Result<Vec<RecipeConnector>, Error>
                     kind: whole("type"),
                     style: whole("style"),
                     shape: whole("shape"),
+                    extra: values
+                        .iter()
+                        .filter(|(key, _)| !STANDARD.contains(&key.as_str()))
+                        .filter_map(|(key, value)| Some((key.clone(), value.trim().parse().ok()?)))
+                        .collect::<std::collections::BTreeMap<String, f64>>()
+                        .into_iter()
+                        .collect(),
                 });
             }
             Event::Eof => return Ok(out),
@@ -728,7 +754,7 @@ pub(crate) fn element_of(recipe: &CutRecipe, place: usize, hash: &str) -> String
                 out,
                 concat!(
                     "\n   <connector x=\"{}\" y=\"{}\" z=\"{}\" rotation=\"{}\" radius=\"{}\" height=\"{}\"",
-                    " r_tolerance=\"{}\" h_tolerance=\"{}\" z_angle=\"{}\" type=\"{}\" style=\"{}\" shape=\"{}\"/>"
+                    " r_tolerance=\"{}\" h_tolerance=\"{}\" z_angle=\"{}\" type=\"{}\" style=\"{}\" shape=\"{}\"{}/>"
                 ),
                 c.pos[0],
                 c.pos[1],
@@ -742,6 +768,10 @@ pub(crate) fn element_of(recipe: &CutRecipe, place: usize, hash: &str) -> String
                 c.kind,
                 c.style,
                 c.shape,
+                c.extra
+                    .iter()
+                    .map(|(name, value)| format!(" {name}=\"{}\"", *value as f32))
+                    .collect::<String>(),
             );
         }
         out.push_str("\n  </connectors>");
