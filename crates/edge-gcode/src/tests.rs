@@ -1860,6 +1860,54 @@ fn the_tool_is_named_when_the_profile_does_not() {
 }
 
 #[test]
+fn a_template_move_to_where_the_head_already_is_is_kept() {
+    // The H2D's tool-change G-code moves to its wipe-avoid spot and, in
+    // its resume branch (M622 J1), moves there again with the same
+    // feedrate: a line of no length. The reference's CoolingBuffer once
+    // dropped such a line whole when its F was the one already set
+    // (EdgeSlicer PR #973 now keeps it, minus the F). This engine writes
+    // a template as it is expanded and never reads it back for cooling,
+    // so the line stays, F and all; so does the F-only line, which the
+    // reference may drop. Checked between printed moves on layers that
+    // are slowed for cooling.
+    const RESUME: &str =
+        "G1 X200 Y20 F30000\nM622 J1\nG1 X200 F30000\nM623\nG1 F30000\nT[next_extruder]";
+    let settings = two_tools(Some(RESUME)).map(|tool| PrintSettings {
+        slow_down_for_layer_cooling: true,
+        slow_down_layer_time: 60.0,
+        slow_down_min_speed: 1.0,
+        ..tool
+    });
+    let (text, summary) = in_filaments(&[&[0, 1], &[1, 0]], &settings);
+    assert_eq!(summary.slowed_layers, 2);
+    for layer in 1..=2 {
+        let part = text.split(";LAYER_CHANGE").nth(layer).unwrap();
+        let lines: Vec<&str> = part.lines().collect();
+        let start = lines
+            .iter()
+            .position(|line| *line == "; custom gcode start")
+            .unwrap();
+        // Printed moves on both sides of the change.
+        let printed =
+            |line: &&str| line.starts_with("G1 X") && word(line, 'E').is_some_and(|e| e > 0.0);
+        assert!(lines[..start].iter().any(printed), "layer {layer}");
+        assert!(lines[start..].iter().any(printed), "layer {layer}");
+        assert_eq!(
+            lines[start + 1..start + 7],
+            [
+                "G1 X200 Y20 F30000",
+                "M622 J1",
+                "G1 X200 F30000",
+                "M623",
+                "G1 F30000",
+                if layer == 1 { "T1" } else { "T0" },
+            ],
+            "layer {layer}"
+        );
+    }
+}
+
+#[test]
 fn the_next_tool_is_warmed_ahead_of_its_turn() {
     // One tool prints for a long time before the other is wanted: a slow
     // wall, 160 mm at 2 mm/s.
