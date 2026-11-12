@@ -18,6 +18,29 @@ fn english_shows_the_message_ids_as_the_cpp_shows_them() {
     assert!(count(find(ENGLISH).unwrap()) > 500);
 }
 
+/// The search fields' words: this app's own in English, the catalog's for
+/// "Search in preset" in a language that has it, and this app's own again
+/// in one that has not (none of the twenty lacks it now: a table without
+/// it stands in for one).
+#[test]
+fn the_search_fields_read_search_for_setting_in_english_and_the_catalogs_words_elsewhere() {
+    assert_eq!(search_words(english()), "Search for setting");
+    let german = catalog(find("de_DE").unwrap());
+    assert_eq!(search_words(german), "In Profilen suchen");
+    let japanese = catalog(find("ja_JP").unwrap());
+    assert_eq!(search_words(japanese), "検索");
+    let without = Arc::new(Catalog {
+        code: "xx_XX",
+        messages: HashMap::new(),
+        plurals: HashMap::new(),
+        forms: Vec::new(),
+    });
+    assert_eq!(search_words(without), "Search for setting");
+    for language in &LANGUAGES {
+        assert!(!search_words(catalog(language)).is_empty());
+    }
+}
+
 #[test]
 fn every_language_has_its_table_and_reads_it() {
     let mut codes = std::collections::HashSet::new();

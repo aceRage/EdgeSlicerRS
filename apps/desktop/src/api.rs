@@ -1287,6 +1287,7 @@ impl Session {
         json!({
             "language": catalog.code,
             "catalog": language.catalog,
+            "search": i18n::search_words(catalog.clone()),
             "languages": languages,
             "table": i18n::table_json(language),
         })

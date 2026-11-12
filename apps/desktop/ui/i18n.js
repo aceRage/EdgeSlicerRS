@@ -38,7 +38,7 @@ const I18n = (() => {
 
   function take(answer) {
     table = answer.table;
-    current = { language: answer.language, languages: answer.languages };
+    current = { language: answer.language, languages: answer.languages, search: answer.search };
     // The page's own language, for the system's choice of fonts (CJK)
     // and of hyphenation.
     const tag = answer.language.replace('_', '-');
@@ -74,6 +74,18 @@ const I18n = (() => {
       for (const element of root.querySelectorAll(`[${name}]`)) {
         element.setAttribute(name, translated(element.getAttribute(name)));
       }
+    }
+  }
+
+  // The settings pages' search fields (`data-search-words`): "Search for
+  // setting" in English, the catalog's words for "Search in preset"
+  // elsewhere, as the session picks them (`search_words`, src/api/i18n.rs).
+  // A change of language loads the page again, which puts them in anew.
+  const searchWords = () => current.search || 'Search for setting';
+  function wordSearches(root = document.body) {
+    for (const field of root.querySelectorAll('[data-search-words]')) {
+      field.placeholder = searchWords();
+      field.setAttribute('aria-label', searchWords());
     }
   }
 
@@ -128,6 +140,7 @@ const I18n = (() => {
     await laidOut;
     takeLayout();
     translatePage();
+    wordSearches();
     document.documentElement.classList.remove('words-wait');
     loadScripts();
   }
@@ -146,6 +159,7 @@ const I18n = (() => {
     get language() { return current.language; },
     get languages() { return current.languages; },
     get layout() { return layout; },
+    searchWords,
     translatePage,
     choose,
     start,

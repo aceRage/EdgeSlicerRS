@@ -176,6 +176,7 @@ Reload the printer's page
 Reset all of these settings to the preset
 Reset all process settings to the preset
 Search brand or model
+Search for setting
 Settings found
 Shows the advanced settings with the simple ones
 Sidebar width
