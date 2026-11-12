@@ -54,7 +54,9 @@ mod arrange;
 #[path = "cut.rs"]
 mod cut;
 pub use arrange::{ArrangeOptions, ArrangeScope, Arranged};
-pub use cut::{CUT_THICKNESS_MAX, CutDone, CutOptions, CutSection, CutThickness, FaceHit};
+pub use cut::{
+    CUT_THICKNESS_MAX, CutDone, CutOptions, CutPieces, CutSection, CutThickness, FaceHit,
+};
 pub use filaments::{FlushBasis, MAX_FILAMENTS, NEXT_COLOURS};
 pub use item_settings::SettingChange;
 pub use plates::{FIRST_LATER_LAYER, LAST_LAYER, LONGEST_PLATE_NAME, LayerSequence, PlateSettings};

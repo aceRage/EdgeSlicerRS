@@ -874,6 +874,12 @@
     // and right button released without a drag).
     click(press, event) {
       if (this.model.tab !== 'prepare' || !this.scene.data) return;
+      // "Cut" takes the right button with no key held: the piece under it
+      // goes to the other side (GLGizmoCut.cpp `on_mouse`).
+      if (press.button === 2 && GL.cutter && GL.cutter.active() && !event.shiftKey && !event.ctrlKey && !event.metaKey && !event.altKey) {
+        GL.cutter.rightClick(press.x, press.y);
+        return;
+      }
       const mine = this.mine();
       const frame = this.matrices();
       const hit = this.scene.pick(this.camera, frame, press.x, press.y, { plates: true });

@@ -418,8 +418,18 @@
         // (cut.js), its helper parts as they are.
         const cutting = this.cutting && this.cutting.copy === placing.id ? this.cutting : null;
         if (cutting) {
+          const pieces = cutting.pieces;
           for (const part of this.data.objects[placing.object].part_list || [{ kind: 'part', triangles: null }]) {
+            // With pieces given to sides, the pieces stand in for the
+            // printed parts, each in its side's colour (`PartSelection::render`).
+            if (pieces && part.kind === 'part') continue;
             r.drawMesh(mesh, frame, placing.matrix, { palette: this.palette, pass, volume, range: part.triangles, split: part.kind === 'part' ? cutting.split : null });
+          }
+          if (pieces && pass === 0) {
+            const at = M.translation(...pieces.offset);
+            pieces.ranges.forEach((range, piece) => {
+              r.drawMesh(pieces.mesh, frame, at, { tint: [...(pieces.sides[piece] ? pieces.upper : pieces.lower), 1], range, volume });
+            });
           }
           return;
         }

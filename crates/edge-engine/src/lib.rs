@@ -50,7 +50,7 @@ pub use load::{Loaded, Opened, OwnObject, OwnVolume, PlateInfo, open};
 pub use model::SettingChange;
 pub use model::{
     ArrangeOptions, ArrangeScope, Arranged, Bed, CUT_THICKNESS_MAX, Changed, CutDone, CutOptions,
-    CutSection, CutThickness, FIRST_LATER_LAYER, FaceHit, FlushBasis, LAST_LAYER,
+    CutPieces, CutSection, CutThickness, FIRST_LATER_LAYER, FaceHit, FlushBasis, LAST_LAYER,
     LONGEST_PLATE_NAME, LayerSequence, Look, MAX_FILAMENTS, MAX_PLATES, Model, ModelCopy,
     ModelObject, ModelPlate, NEXT_COLOURS, NewPart, PlateSettings, PlateStamp, Reach, Saved,
     Saving, Shape, own_settings, project_settings,

@@ -32,14 +32,18 @@ use super::{
 };
 
 /// The calls answered here.
-pub(super) const JSON: [&str; 6] = [
+pub(super) const JSON: [&str; 7] = [
     "scene_edit",
     "undo",
     "redo",
     "scene_faces",
     "cut_section",
     "cut_pick",
+    "cut_parts",
 ];
+
+/// The calls here answered in bytes (`Session::call_bytes`).
+pub(super) const BYTES: [&str; 1] = ["cut_parts_mesh"];
 
 /// The most edits a project keeps to take back. The reference keeps as
 /// many as fit in a tenth of the machine's memory (UndoRedo.cpp
@@ -266,6 +270,15 @@ fn cut_options(args: &Value) -> Result<edge_engine::CutOptions, String> {
         to_parts: flag("to_parts", false)?,
         thickness,
         thickness_from,
+        sides: match args.get("sides") {
+            None | Some(Value::Null) => None,
+            Some(Value::Array(list)) => Some(
+                list.iter()
+                    .map(|side| side.as_bool().ok_or("sides are true or false"))
+                    .collect::<Result<Vec<bool>, _>>()?,
+            ),
+            Some(_) => return Err("sides is not a list".into()),
+        },
     })
 }
 
@@ -813,6 +826,7 @@ impl Session {
             "scene_faces" => self.scene_faces(args),
             "cut_section" => self.cut_section(args),
             "cut_pick" => self.cut_pick(args),
+            "cut_parts" => self.cut_parts(args),
             other => Err(format!("there is no call named {other}")),
         }
     }
@@ -1004,6 +1018,66 @@ impl Session {
             "copy": copy,
             "hit": hit.map(|hit| json!({ "point": hit.point, "normal": hit.normal, "corners": hit.corners })),
         }))
+    }
+
+    /// The pieces a cut makes of a copy's object, for a piece to be given
+    /// to the other side: the model's [`edge_engine::CutPieces`].
+    fn pieces_of(&self, args: &Value) -> Result<(u32, edge_engine::CutPieces), String> {
+        let stage = self.stage_of(args)?;
+        let copy = whole(args, "copy")?;
+        let plane = transform_of(args.get("plane").unwrap_or(&Value::Null))?;
+        let options = cut_options(args)?;
+        let bed = stage.bed();
+        let file = stage
+            .file
+            .ok_or("the project is empty: it has no objects")?;
+        let pieces = file
+            .model
+            .cut_pieces(bed.as_ref(), copy, &plane, &options)
+            .map_err(|e| e.to_string())?;
+        Ok((stage.id, pieces))
+    }
+
+    /// `cut_parts`: how many pieces, the side each was cut on, the
+    /// triangles of each (`[first, how many]` of `cut_parts_mesh`'s) and
+    /// the copy's move in the scene.
+    fn cut_parts(&self, args: &Value) -> Result<Value, String> {
+        let (id, pieces) = self.pieces_of(args)?;
+        let mut ranges: Vec<[u32; 2]> = vec![[0, 0]; pieces.upper.len()];
+        for (at, piece) in pieces.piece_of.iter().enumerate() {
+            let range = &mut ranges[*piece as usize];
+            if range[1] == 0 {
+                range[0] = at as u32;
+            }
+            range[1] += 1;
+        }
+        Ok(json!({
+            "project": id,
+            "count": pieces.upper.len(),
+            "upper": pieces.upper,
+            "ranges": ranges,
+            "offset": pieces.offset,
+        }))
+    }
+
+    pub(super) fn edit_bytes(&self, name: &str, args: &Value) -> Result<Vec<u8>, String> {
+        match name {
+            "cut_parts_mesh" => {
+                let (_, pieces) = self.pieces_of(args)?;
+                let object = edge_engine::SceneObject {
+                    name: String::new(),
+                    marks: vec![edge_engine::Mark::Filament(1); pieces.mesh.triangles.len()],
+                    bounds: pieces.mesh.bounds(),
+                    parts: Vec::new(),
+                    vertices: pieces.mesh.vertices,
+                    triangles: pieces.mesh.triangles,
+                };
+                Ok(super::scene::mesh_bytes(&object))
+            }
+            other => Err(format!(
+                "there is no call named {other} that answers in bytes"
+            )),
+        }
     }
 
     /// Takes the last edit back, or makes the last one taken back again.

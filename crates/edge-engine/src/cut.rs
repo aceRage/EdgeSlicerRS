@@ -64,7 +64,7 @@ pub enum CutThickness {
 pub const CUT_THICKNESS_MAX: f64 = 20.0;
 
 /// What a cut keeps and how it lays what it keeps ("After cut").
-#[derive(Clone, Copy, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct CutOptions {
     pub keep_upper: bool,
     pub keep_lower: bool,
@@ -78,6 +78,12 @@ pub struct CutOptions {
     /// How much is cut away, in mm along the plane's normal.
     pub thickness: f64,
     pub thickness_from: CutThickness,
+    /// Which side each piece of the cut goes to, upper (true) or lower,
+    /// in the order of [`Model::cut_pieces`]: the reference's part
+    /// selection, a piece given to the other side by the right button
+    /// (GLGizmoCut.cpp `PartSelection`, CutUtils.cpp `perform_by_contour`).
+    /// None: each piece on its own side.
+    pub sides: Option<Vec<bool>>,
 }
 
 impl Default for CutOptions {
@@ -92,6 +98,7 @@ impl Default for CutOptions {
             to_parts: false,
             thickness: 0.0,
             thickness_from: CutThickness::Centred,
+            sides: None,
         }
     }
 }
@@ -117,6 +124,31 @@ pub struct CutDone {
     /// How many chains of cut edges were left without a cap, the object
     /// being open where the plane crossed it.
     pub open: usize,
+}
+
+/// The pieces a cut makes: each half's parts split into the shells that
+/// share no edge (`PartSelection`'s `volumes[id]->split(1)`), each on the
+/// side it was cut on, in the order the parts are and upper before lower.
+#[derive(Clone, Debug, Default)]
+pub struct CutPieces {
+    /// Every piece, one mesh, in the copy's coordinates with its move left
+    /// out (what [`CutPieces::offset`] takes to the scene).
+    pub mesh: edge_mesh::Mesh,
+    /// The piece each triangle of `mesh` is of.
+    pub piece_of: Vec<u32>,
+    /// The side each piece was cut on: upper (true) or lower.
+    pub upper: Vec<bool>,
+    /// The copy's move in the scene.
+    pub offset: [f64; 3],
+}
+
+/// What cutting each part makes, before it is made into objects.
+struct Made {
+    upper: Vec<Part>,
+    lower: Vec<Part>,
+    helpers: Vec<(Part, bool, bool)>,
+    open: usize,
+    turned: Transform,
 }
 
 /// The section of an object by a plane, for the tool to show while the
@@ -313,51 +345,31 @@ impl Model {
         Ok(best.map(|(_, hit)| hit))
     }
 
-    /// Cuts a copy's object by `plane` (its frame in the scene: rows x, y,
-    /// the normal, which points into the upper part, then its middle), as
-    /// `options` say. The object is replaced by what is kept of it, in its
-    /// place in the list, on the plates its copies were on. Refused,
-    /// nothing changed, when nothing would be kept.
-    pub fn cut(
-        &mut self,
-        bed: Option<&Bed>,
-        copy: u64,
+    /// Cuts each part of object `at`, whose copy stands at `scene`: the
+    /// printed parts' halves (with what was painted on them), the other
+    /// parts whole with the sides they reach into.
+    fn cut_parts(
+        &self,
+        at: usize,
+        scene: &Transform,
         plane: &Transform,
         options: &CutOptions,
-    ) -> Result<CutDone, Failure> {
-        let (at, which) = self.copy_at(copy)?;
-        if !sound_plane(plane) {
-            return Err(refused("that is no plane to cut by"));
-        }
-        if !(0.0..=CUT_THICKNESS_MAX).contains(&options.thickness) {
-            return Err(refused(format!(
-                "a cut is from 0 to {CUT_THICKNESS_MAX} mm thick"
-            )));
-        }
-        let to_parts = options.to_parts;
-        let keep_upper = options.keep_upper || to_parts;
-        let keep_lower = options.keep_lower || to_parts;
-        if !keep_upper && !keep_lower {
-            return Err(refused("Select at least one object to keep after cutting."));
-        }
-        self.settle(bed);
-        let (scene, _) = self
-            .in_scene(bed, copy)
-            .ok_or_else(|| refused(format!("there is no copy {copy}")))?;
+    ) -> Result<Made, Failure> {
+        let to_parts = options.to_parts && options.sides.is_none();
+        let keep_upper = options.keep_upper || to_parts || options.sides.is_some();
+        let keep_lower = options.keep_lower || to_parts || options.sides.is_some();
+        let base = self.name_of(at);
         // The halves are made in the copy's coordinates with its move left
         // out: its turn and size go into their meshes, as the reference
         // cuts each volume in `instance_matrix * volume_matrix`.
         let offset = scene.rows[3];
-        let turned = linear(&scene);
+        let turned = linear(scene);
         let back = plane.then(&Transform::translation(offset.map(|value| -value)));
         let to_plane = back
             .inverse()
             .ok_or_else(|| refused("that is no plane to cut by"))?;
         let faces = options.faces();
-        let held = self.objects[at].clone();
-        let base = self.name_of(at);
-
-        // Each part's pieces, and where the others go.
+        let held = &self.objects[at];
         let mut upper: Vec<Part> = Vec::new();
         let mut lower: Vec<Part> = Vec::new();
         let mut helpers: Vec<(Part, bool, bool)> = Vec::new();
@@ -415,6 +427,161 @@ impl Model {
             }
         }
 
+        Ok(Made {
+            upper,
+            lower,
+            helpers,
+            open,
+            turned,
+        })
+    }
+
+    /// The pieces a cut by `plane` makes of a copy's object, for the tool
+    /// to show and for a piece to be given to the other side
+    /// ([`CutOptions::sides`]).
+    pub fn cut_pieces(
+        &self,
+        bed: Option<&Bed>,
+        copy: u64,
+        plane: &Transform,
+        options: &CutOptions,
+    ) -> Result<CutPieces, Failure> {
+        let (at, _) = self.copy_at(copy)?;
+        if !sound_plane(plane) {
+            return Err(refused("that is no plane to cut by"));
+        }
+        if self.bare {
+            let mut settled = self.clone();
+            settled.settle(bed);
+            return settled.cut_pieces(bed, copy, plane, options);
+        }
+        let (scene, _) = self
+            .in_scene(bed, copy)
+            .ok_or_else(|| refused(format!("there is no copy {copy}")))?;
+        let options = CutOptions {
+            to_parts: false,
+            sides: Some(Vec::new()),
+            ..options.clone()
+        };
+        let made = self.cut_parts(at, &scene, plane, &options)?;
+        let mut out = CutPieces {
+            offset: scene.rows[3],
+            ..CutPieces::default()
+        };
+        for (part, side) in made
+            .upper
+            .iter()
+            .map(|part| (part, true))
+            .chain(made.lower.iter().map(|part| (part, false)))
+        {
+            for piece in split_part(part) {
+                let number = out.upper.len() as u32;
+                out.upper.push(side);
+                let first = out.mesh.vertices.len() as u32;
+                out.mesh
+                    .vertices
+                    .extend(piece.mesh.vertices.iter().copied());
+                out.mesh
+                    .triangles
+                    .extend(piece.mesh.triangles.iter().map(|t| t.map(|v| v + first)));
+                out.piece_of
+                    .extend(std::iter::repeat_n(number, piece.mesh.triangles.len()));
+            }
+        }
+        Ok(out)
+    }
+
+    /// Cuts a copy's object by `plane` (its frame in the scene: rows x, y,
+    /// the normal, which points into the upper part, then its middle), as
+    /// `options` say. The object is replaced by what is kept of it, in its
+    /// place in the list, on the plates its copies were on. Refused,
+    /// nothing changed, when nothing would be kept.
+    pub fn cut(
+        &mut self,
+        bed: Option<&Bed>,
+        copy: u64,
+        plane: &Transform,
+        options: &CutOptions,
+    ) -> Result<CutDone, Failure> {
+        let (at, which) = self.copy_at(copy)?;
+        if !sound_plane(plane) {
+            return Err(refused("that is no plane to cut by"));
+        }
+        if !(0.0..=CUT_THICKNESS_MAX).contains(&options.thickness) {
+            return Err(refused(format!(
+                "a cut is from 0 to {CUT_THICKNESS_MAX} mm thick"
+            )));
+        }
+        let to_parts = options.to_parts;
+        let keep_upper = options.keep_upper || to_parts;
+        let keep_lower = options.keep_lower || to_parts;
+        if !keep_upper && !keep_lower {
+            return Err(refused("Select at least one object to keep after cutting."));
+        }
+        self.settle(bed);
+        let (scene, _) = self
+            .in_scene(bed, copy)
+            .ok_or_else(|| refused(format!("there is no copy {copy}")))?;
+        let held = self.objects[at].clone();
+        let base = self.name_of(at);
+        let made = self.cut_parts(at, &scene, plane, options)?;
+        let Made {
+            mut upper,
+            mut lower,
+            helpers,
+            open,
+            turned,
+        } = made;
+        // A piece given to the other side: the pieces of each side made
+        // into one part, the objects named `_A` and `_B`, as
+        // `perform_by_contour` and `merge_solid_parts_inside_object` make
+        // them.
+        let to_parts = to_parts && options.sides.is_none();
+        let mut renamed: Option<(String, String)> = None;
+        if let Some(sides) = &options.sides {
+            let pieces: Vec<(Part, bool)> = upper
+                .iter()
+                .map(|part| (part, true))
+                .chain(lower.iter().map(|part| (part, false)))
+                .flat_map(|(part, side)| {
+                    split_part(part).into_iter().map(move |piece| (piece, side))
+                })
+                .collect();
+            if sides.len() != pieces.len() {
+                return Err(refused(
+                    "the pieces of the cut have changed; place the plane again",
+                ));
+            }
+            if sides.iter().all(|side| *side == sides[0]) {
+                return Err(refused(
+                    "every piece is on one side: there is nothing to cut",
+                ));
+            }
+            let side_of = |want: bool| -> Vec<Part> {
+                let chosen: Vec<&Part> = pieces
+                    .iter()
+                    .zip(sides)
+                    .filter(|(_, side)| **side == want)
+                    .map(|((piece, _), _)| piece)
+                    .collect();
+                if chosen.is_empty() {
+                    Vec::new()
+                } else {
+                    vec![merge_parts(&chosen, Some(base.clone()))]
+                }
+            };
+            upper = if keep_upper {
+                side_of(true)
+            } else {
+                Vec::new()
+            };
+            lower = if keep_lower {
+                side_of(false)
+            } else {
+                Vec::new()
+            };
+            renamed = Some((format!("{base}_A"), format!("{base}_B")));
+        }
         // The objects made, each as its parts with the copies it will have.
         let mut made_objects: Vec<(Vec<Part>, bool)> = Vec::new();
         if to_parts {
@@ -523,9 +690,19 @@ impl Model {
                     }
                 })
                 .collect();
+            let name = match &renamed {
+                Some((a, b)) => {
+                    if side {
+                        a.clone()
+                    } else {
+                        b.clone()
+                    }
+                }
+                None => base.clone(),
+            };
             objects.push(ModelObject {
                 id: fresh(),
-                name: base.clone(),
+                name,
                 filament: held.filament,
                 shape,
                 copies,
@@ -603,6 +780,139 @@ fn meets(reach: &[[f64; 3]; 2], part: &Part) -> bool {
         return false;
     };
     (0..3).all(|axis| theirs[0][axis] <= reach[1][axis] && theirs[1][axis] >= reach[0][axis])
+}
+
+/// The triangles of a mesh by the shells they are of (two triangles are of
+/// one when they share an edge run the other way round, as
+/// `edge_mesh::split` pairs them), each shell's in order, the shells in the
+/// order of their first triangle.
+fn shells(mesh: &edge_mesh::Mesh) -> Vec<Vec<u32>> {
+    let next = edge_mesh::split::neighbours(mesh);
+    let mut seen = vec![false; mesh.triangles.len()];
+    let mut out = Vec::new();
+    for start in 0..mesh.triangles.len() {
+        if seen[start] {
+            continue;
+        }
+        seen[start] = true;
+        let mut shell = Vec::new();
+        let mut stack = vec![start as u32];
+        while let Some(at) = stack.pop() {
+            shell.push(at);
+            for other in next[at as usize].into_iter().flatten() {
+                if !seen[other as usize] {
+                    seen[other as usize] = true;
+                    stack.push(other);
+                }
+            }
+        }
+        shell.sort_unstable();
+        out.push(shell);
+    }
+    out
+}
+
+/// A part's mesh as a part for each of its shells, each with what was
+/// painted on its triangles.
+fn split_part(part: &Part) -> Vec<Part> {
+    let shells = shells(&part.mesh);
+    if shells.len() < 2 {
+        return vec![part.clone()];
+    }
+    let codes: Vec<(PaintKind, Vec<(u32, String)>)> = PaintKind::ALL
+        .into_iter()
+        .map(|kind| {
+            let mut codes = part.paint_codes(kind);
+            codes.sort_by_key(|(triangle, _)| *triangle);
+            (kind, codes)
+        })
+        .filter(|(_, codes)| !codes.is_empty())
+        .collect();
+    shells
+        .into_iter()
+        .map(|shell| {
+            let mut index = vec![u32::MAX; part.mesh.vertices.len()];
+            let mut mesh = edge_mesh::Mesh::default();
+            for &t in &shell {
+                let tri = part.mesh.triangles[t as usize].map(|v| {
+                    if index[v as usize] == u32::MAX {
+                        index[v as usize] = mesh.vertices.len() as u32;
+                        mesh.vertices.push(part.mesh.vertices[v as usize]);
+                    }
+                    index[v as usize]
+                });
+                mesh.triangles.push(tri);
+            }
+            let mut piece = Part {
+                mesh: Arc::new(mesh),
+                paint: None,
+                seam: None,
+                kept: part.kept.as_deref().map(|kept| Arc::new(kept.piece())),
+                ..part.clone()
+            };
+            for (kind, codes) in &codes {
+                let mapped: Vec<(u32, String)> = shell
+                    .iter()
+                    .enumerate()
+                    .filter_map(|(at, t)| {
+                        codes
+                            .binary_search_by_key(t, |(triangle, _)| *triangle)
+                            .ok()
+                            .map(|found| (at as u32, codes[found].1.clone()))
+                    })
+                    .collect();
+                piece = piece.with_paint(*kind, &mapped);
+            }
+            piece
+        })
+        .collect()
+}
+
+/// Parts of one object made one part (CutUtils.cpp
+/// `merge_solid_parts_inside_object`: their meshes side by side, the part
+/// named after the object), each part's paint going with its triangles.
+fn merge_parts(parts: &[&Part], name: Option<String>) -> Part {
+    if let [one] = parts {
+        return Part {
+            name,
+            ..(*one).clone()
+        };
+    }
+    let mut mesh = edge_mesh::Mesh::default();
+    let mut codes: Vec<Vec<(u32, String)>> = vec![Vec::new(); PaintKind::ALL.len()];
+    for part in parts {
+        let first = mesh.triangles.len() as u32;
+        mesh.append(&part.mesh, &part.transform);
+        // A mirrored part's triangles are turned round: its codes no
+        // longer fit them.
+        if part.transform.is_mirrored() {
+            continue;
+        }
+        for (slot, kind) in PaintKind::ALL.into_iter().enumerate() {
+            codes[slot].extend(
+                part.paint_codes(kind)
+                    .into_iter()
+                    .map(|(t, code)| (t + first, code)),
+            );
+        }
+    }
+    let first = parts[0];
+    let mut merged = Part {
+        name,
+        mesh: Arc::new(mesh),
+        paint: None,
+        seam: None,
+        transform: Transform::IDENTITY,
+        kept: first.kept.as_deref().map(|kept| Arc::new(kept.piece())),
+        ..first.clone()
+    };
+    for (slot, kind) in PaintKind::ALL.into_iter().enumerate() {
+        if !codes[slot].is_empty() {
+            codes[slot].sort_by_key(|(t, _)| *t);
+            merged = merged.with_paint(kind, &codes[slot]);
+        }
+    }
+    merged
 }
 
 /// A piece of a part: its mesh, named as given, with what was painted on

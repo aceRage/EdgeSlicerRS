@@ -112,11 +112,15 @@
         // "Pick face": armed, and the face under the pointer.
         picking: false,
         picked: null,
+        // The cut's pieces once one is given to the other side (the
+        // reference's part selection), for the plane they were made for.
+        parts: null,
       };
       this.changed(false);
     },
 
     close() {
+      if (this.open) this.dropParts();
       this.open = null;
       this.stage.scene.cutting = null;
       this.stage.canvas.title = '';
@@ -264,7 +268,14 @@
       const o = this.open;
       if (!o) return;
       const n = this.normal();
-      this.stage.scene.cutting = { copy: o.copy, split: { plane: [...n, M.dot(n, o.middle)], upper: UPPER, lower: LOWER } };
+      // The pieces were of another plane: the reference lets them go as the
+      // plane moves (`reset_cut_by_contours`).
+      if (o.parts && o.parts.key !== this.partsKey()) this.dropParts();
+      this.stage.scene.cutting = {
+        copy: o.copy,
+        split: { plane: [...n, M.dot(n, o.middle)], upper: UPPER, lower: LOWER },
+        pieces: o.parts ? { mesh: o.parts.mesh, ranges: o.parts.ranges, sides: o.parts.sides, offset: o.parts.offset, upper: UPPER, lower: LOWER } : null,
+      };
       this.ask(soon);
       this.panel();
       this.stage.frame();
@@ -321,6 +332,10 @@
     // `can_perform_cut`: something is kept.
     canPerform() {
       const p = this.options;
+      const parts = this.open && this.open.parts;
+      // With pieces given to sides, not every piece on one side
+      // (`m_part_selection.is_one_object()`).
+      if (parts && parts.sides.every((side) => side === parts.sides[0])) return false;
       return this.open && (p.keep_upper || p.keep_lower || p.to_parts) && !this.editor.busy;
     },
 
@@ -335,6 +350,8 @@
         ...p,
         thickness: o.thickness,
         thickness_from: o.from,
+        // Cut to parts is not offered with pieces given to sides.
+        ...(o.parts ? { sides: o.parts.sides, to_parts: false } : {}),
       };
       // The tool closes before the cut is made, as the reference resets
       // its gizmos first (`perform_cut`); what the cut made is selected.
@@ -416,7 +433,7 @@
         if (reach.below > 0) lines.push(`${fixed(reach.below)} ${unitWord} (${name} B)`);
         return lines.join('\n');
       }
-      if (handle.part === 'plane') return t('Click to flip the cut plane\nDrag to move the cut plane');
+      if (handle.part === 'plane') return t('Click to flip the cut plane\nDrag to move the cut plane\nRight-click a part to assign it to the other side');
       return '';
     },
 
@@ -565,6 +582,94 @@
       o.axes = M.rows.tidy(axes);
       o.middle = middle;
       this.changed();
+    },
+
+    // ---- giving a piece to the other side ----
+
+    // What the pieces are made for: the plane and the thickness.
+    partsKey() {
+      const o = this.open;
+      return `${this.frame().join(',')}|${o.thickness}|${o.from}`;
+    },
+
+    dropParts() {
+      const o = this.open;
+      if (o && o.parts && o.parts.mesh) this.stage.renderer.drop(o.parts.mesh);
+      if (o) o.parts = null;
+    },
+
+    // The right button on the object (`on_mouse`, RightDown with no key
+    // held): the piece under the pointer goes to the other side; the
+    // pieces are asked for the first time.
+    async rightClick(x, y) {
+      const o = this.open;
+      const project = this.host.project();
+      if (!o || !project || this.editor.busy || o.picking) return;
+      const key = this.partsKey();
+      if (!o.parts || o.parts.key !== key) {
+        const args = { project: project.id, copy: o.copy, plane: this.frame(), thickness: o.thickness, thickness_from: o.from };
+        let info;
+        let bytes;
+        try {
+          info = await this.host.call('cut_parts', args);
+          bytes = await this.stage.bytes('cut_parts_mesh', args);
+        } catch (error) {
+          this.host.say(error.message, true);
+          return;
+        }
+        if (this.open !== o || this.partsKey() !== key) return;
+        this.dropParts();
+        const view = new DataView(bytes);
+        const vertices = view.getUint32(8, true);
+        const triangles = view.getUint32(12, true);
+        o.parts = {
+          key,
+          ranges: info.ranges,
+          sides: info.upper.slice(),
+          offset: info.offset,
+          mesh: this.stage.renderer.meshFromBytes(bytes),
+          points: new Float32Array(bytes, 24, vertices * 3),
+          corners: new Uint32Array(bytes, 24 + 12 * vertices, triangles * 3),
+        };
+      }
+      const piece = this.pieceAt(x, y);
+      if (piece !== null) o.parts.sides[piece] = !o.parts.sides[piece];
+      // Cut to parts is not offered with pieces given to sides.
+      this.options.to_parts = false;
+      this.changed();
+    },
+
+    // The piece a line of sight meets first (`toggle_selection`).
+    pieceAt(x, y) {
+      const parts = this.open.parts;
+      const ray = this.stage.camera.ray(x, y);
+      const o = sub(ray.origin, parts.offset);
+      const d = ray.direction;
+      const p = parts.points;
+      const c = parts.corners;
+      let best = Infinity;
+      let found = -1;
+      for (let t = 0; t < c.length; t += 3) {
+        const a = c[t] * 3;
+        const b = c[t + 1] * 3;
+        const e = c[t + 2] * 3;
+        const e1 = [p[b] - p[a], p[b + 1] - p[a + 1], p[b + 2] - p[a + 2]];
+        const e2 = [p[e] - p[a], p[e + 1] - p[a + 1], p[e + 2] - p[a + 2]];
+        const h = M.cross(d, e2);
+        const det = M.dot(e1, h);
+        if (Math.abs(det) < 1e-12) continue;
+        const s0 = [o[0] - p[a], o[1] - p[a + 1], o[2] - p[a + 2]];
+        const u = M.dot(s0, h) / det;
+        if (u < 0 || u > 1) continue;
+        const q = M.cross(s0, e1);
+        const v = M.dot(d, q) / det;
+        if (v < 0 || u + v > 1) continue;
+        const far = M.dot(e2, q) / det;
+        if (far > 0 && far < best) { best = far; found = t / 3; }
+      }
+      if (found < 0) return null;
+      const piece = parts.ranges.findIndex(([first, count]) => found >= first && found < first + count);
+      return piece < 0 ? null : piece;
     },
 
     // ---- "Pick face" ----
@@ -863,7 +968,7 @@
       };
       rows.push(side(t('Upper part'), UPPER, 'keep_upper', 'place_on_cut_upper', 'flip_upper'));
       rows.push(side(t('Lower part'), LOWER, 'keep_lower', 'place_on_cut_lower', 'flip_lower'));
-      const parts = el('input', { type: 'checkbox', checked: p.to_parts, disabled: busy });
+      const parts = el('input', { type: 'checkbox', checked: p.to_parts && !o.parts, disabled: busy || Boolean(o.parts) });
       parts.addEventListener('change', () => {
         p.to_parts = parts.checked;
         // Both parts are kept, as they stood (`m_keep_as_parts`).

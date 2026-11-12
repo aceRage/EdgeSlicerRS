@@ -652,3 +652,59 @@ fn a_line_of_sight_finds_the_face_pick_face_lays_the_plane_on() {
         .unwrap();
     assert_eq!(side.normal, [-1.0, 0.0, 0.0]);
 }
+
+#[test]
+fn a_piece_given_to_the_other_side() {
+    // Two posts on a common foot, cut above the foot: two pieces above,
+    // one under.
+    let dir = tempfile::tempdir().unwrap();
+    let mut soup = cuboid([0.0; 3], [30.0, 10.0, 5.0]);
+    soup.extend(cuboid([0.0, 0.0, 5.0], [10.0, 10.0, 20.0]));
+    soup.extend(cuboid([20.0, 0.0, 5.0], [30.0, 10.0, 20.0]));
+    // As three shells: the foot and the posts touch, and the cut makes
+    // pieces of each shell.
+    let mesh = Mesh::from_triangle_soup(soup);
+    let path = dir.path().join("posts.stl");
+    std::fs::write(&path, edge_mesh::stl::to_binary(&mesh)).unwrap();
+    let mut model = Model::open(&path).unwrap();
+    let id = model.objects()[0].id();
+    model.rename(Some(&BED), id, "posts").unwrap();
+    let copy = model.objects()[0].copies()[0].id();
+    let (_, reach) = model.in_scene(Some(&BED), copy).unwrap();
+    let [low, high] = reach.unwrap();
+    let at = [(low[0] + high[0]) / 2.0, (low[1] + high[1]) / 2.0, 12.0];
+    let cut_plane = plane(at, [0.0, 0.0, 1.0]);
+    let pieces = model
+        .cut_pieces(Some(&BED), copy, &cut_plane, &CutOptions::default())
+        .unwrap();
+    assert_eq!(pieces.upper, [true, true, false, false, false]);
+    assert_eq!(pieces.piece_of.len(), pieces.mesh.triangles.len());
+    // The first post's top goes under.
+    let options = CutOptions {
+        sides: Some(vec![false, true, false, false, false]),
+        ..CutOptions::default()
+    };
+    model.cut(Some(&BED), copy, &cut_plane, &options).unwrap();
+    let names: Vec<&str> = model.objects().iter().map(|o| o.name()).collect();
+    assert_eq!(names, ["posts_A", "posts_B"]);
+    let upper = printed(&model, &model.objects()[0], 0);
+    let lower = printed(&model, &model.objects()[1], 0);
+    assert!(near(upper.signed_volume(), 800.0, 1e-6));
+    assert!(near(
+        lower.signed_volume(),
+        1500.0 + 700.0 + 700.0 + 800.0,
+        1e-6
+    ));
+    assert!(cut::is_closed(&upper) && cut::is_closed(&lower));
+    // Everything on one side is no cut.
+    let mut again = Model::open(&path).unwrap();
+    again
+        .rename(Some(&BED), again.objects()[0].id(), "posts")
+        .unwrap();
+    let copy = again.objects()[0].copies()[0].id();
+    let options = CutOptions {
+        sides: Some(vec![true; 5]),
+        ..CutOptions::default()
+    };
+    assert!(again.cut(Some(&BED), copy, &cut_plane, &options).is_err());
+}
