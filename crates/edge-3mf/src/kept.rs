@@ -97,6 +97,19 @@ pub struct PartKept {
     /// none for a part the file did not hold as it is (a piece of a part
     /// split).
     pub(crate) read: Option<PartRead>,
+    /// The mesh `extras` is of, where it was painted here rather than read
+    /// with the part ([`crate::Part::with_paint`]).
+    pub(crate) painted_on: Option<MeshOf>,
+}
+
+/// A mesh, two being alike when they are the same mesh in memory.
+#[derive(Clone, Debug)]
+pub(crate) struct MeshOf(pub Arc<edge_mesh::Mesh>);
+
+impl PartialEq for MeshOf {
+    fn eq(&self, other: &Self) -> bool {
+        Arc::ptr_eq(&self.0, &other.0)
+    }
 }
 
 /// What a part was read as.
@@ -206,6 +219,7 @@ impl PartKept {
             entries,
             extras: None,
             read: None,
+            painted_on: None,
         }
     }
 

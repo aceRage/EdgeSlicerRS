@@ -33,7 +33,7 @@ pub use kept::{Entry, Extras, Kept, Left, ObjectKept, PartKept, PlateKept};
 use model::{ModelFile, RawObject, Shape};
 use model_settings::{ModelSettings, ObjectSettings};
 use package::Package;
-pub use paint::{Facet, SeamFacet, SeamPaint};
+pub use paint::{Facet, PaintKind, SeamFacet, SeamPaint};
 pub use write::{
     REFERENCE_VERSION, SECRETS, Save, Written, losses, own_settings_text, settings_text, write,
     write_to,
