@@ -972,6 +972,7 @@ impl Session {
             "lines": lines,
             "above": mm(section.above),
             "below": mm(section.below),
+            "reach": section.reach.map(|corners| corners.map(|corner| corner.map(mm))),
         }))
     }
 

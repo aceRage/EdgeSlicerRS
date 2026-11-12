@@ -147,6 +147,19 @@ Your own filament prices and machine rates, over the presets' values	GUI/MainFra
 Enable painted fuzzy skin for this object	GUI/Gizmos/GLGizmoFuzzySkin.cpp:346
 Warning: Fuzzy skin is disabled, painted fuzzy skin will not take effect!	GUI/Gizmos/GLGizmoFuzzySkin.cpp:341
 
+Above	GUI/Gizmos/GLGizmoCut.cpp:5668
+Below	GUI/Gizmos/GLGizmoCut.cpp:5669
+Centred	GUI/Gizmos/GLGizmoCut.cpp:5667
+Mirror cut	GUI/Gizmos/GLGizmoCut.cpp:8654
+Mirror the whole cut - plane, surface and connectors - about the object's centre on the world X axis	GUI/Gizmos/GLGizmoCut.cpp:8660
+Mirror the whole cut - plane, surface and connectors - about the object's centre on the world Y axis	GUI/Gizmos/GLGizmoCut.cpp:8663
+Mirror the whole cut - plane, surface and connectors - about the object's centre on the world Z axis	GUI/Gizmos/GLGizmoCut.cpp:8666
+Remove from	GUI/Gizmos/GLGizmoCut.cpp:5672
+The two halves will be this far apart. Connectors span the gap; a Thread connector needs a thickness below its pitch to stay usable.	GUI/Gizmos/GLGizmoCut.cpp:5694
+Width of the band of material the cut removes, measured along the cut normal. 0 is a zero-width cut - the two halves meet exactly, as they do today.	GUI/Gizmos/GLGizmoCut.cpp:5659
+X	GUI/Gizmos/GLGizmoCut.cpp:8660
+Y	GUI/Gizmos/GLGizmoCut.cpp:8663
+Z	GUI/Gizmos/GLGizmoCut.cpp:8666
 [own]
 # This app's own words on the static page, with no counterpart in the
 # C++: shown in English in every language.

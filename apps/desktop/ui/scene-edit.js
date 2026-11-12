@@ -45,6 +45,9 @@
     scale: { name: t('Scale'), key: 's', icon: 'M1.5,14.5h6v-6h-6ZM9.5,6.5l5-5M14.5,1.5h-4M14.5,1.5v4' },
     // GLGizmoFlatten.cpp: for one object at a time (`is_selection_supported`).
     flatten: { name: t('Lay on face'), key: 'f', one: true, icon: 'M1.5,14.5h13M4.5,11.5l2-8l7,3l-3,5Z' },
+    // GLGizmoCut.cpp: for one whole copy (`on_is_activable`:
+    // `is_single_full_instance`); cut.js.
+    cut: { name: t('Cut'), key: 'c', one: true, cut: true, icon: 'M3.5,2.5h9v11h-9ZM1,8h14M12.5,5.5l2.5,2.5l-2.5,2.5' },
     // The painting tools (paint.js), each on one whole copy
     // (GLGizmoPainterBase.cpp `on_is_activable`: `is_single_full_instance`),
     // in the reference's order (GLGizmosManager.cpp `init`).
@@ -146,6 +149,7 @@
       document.addEventListener('keydown', (event) => this.key(event));
       GL.edit = this;
       // The painting tools, with what they need of this.
+      if (GL.cutter) GL.cutter.init(host, this);
       if (GL.painter) {
         GL.painter.init({
           ...host,
@@ -187,7 +191,7 @@
       }
       const b = this.buttons;
       this.bar = el('div', { className: 'toolbar', id: 'edit-bar' },
-        b.add, b.addPlate, gap(), b.arrange, gap(), b.splitObjects, b.splitParts, gap(), b.move, b.rotate, b.scale, b.flatten, gap(),
+        b.add, b.addPlate, gap(), b.arrange, gap(), b.splitObjects, b.splitParts, gap(), b.move, b.rotate, b.scale, b.flatten, b.cut, gap(),
         b.supports, b.seam, b.fuzzy_skin, b.color, gap(), b.undo, b.redo);
       this.bar.setAttribute('role', 'toolbar');
       this.bar.setAttribute('aria-label', t('Prepare'));
@@ -315,6 +319,8 @@
     },
 
     async step(which) {
+      // While "Cut" is open its plane's moves are taken back first.
+      if (GL.cutter && GL.cutter.active() && this.editing() && GL.cutter.step(which)) return;
       const project = this.host.project();
       if (!project || this.busy || !project.edit || !project.edit[which] || !this.editing()) return;
       this.busy = true;
@@ -509,6 +515,12 @@
         const chosen = this.chosen();
         if (chosen) painter.start(TOOLS[tool].paint, chosen.copies[0].id);
       }
+      const cutter = GL.cutter;
+      if (cutter && cutter.active() && tool !== 'cut') cutter.close();
+      if (cutter && tool === 'cut' && tool !== this.tool) {
+        const chosen = this.chosen();
+        if (chosen) cutter.start(chosen.copies[0]);
+      }
       this.tool = tool;
       this.hot = null;
       this.fields.of = '';
@@ -694,6 +706,7 @@
       // has it.
       // A painting tool's own keys come first (GLGizmosManager.cpp `on_key`).
       if (GL.painter && GL.painter.active() && GL.painter.key(event)) { event.preventDefault(); return; }
+      if (GL.cutter && GL.cutter.active() && GL.cutter.key(event)) { event.preventDefault(); return; }
       if (command) {
         if (key === 'z' && event.shiftKey) take(() => this.step('redo'));
         return;
@@ -734,13 +747,23 @@
 
     sceneChanged() {
       if (this.tool && !this.usable(this.tool)) this.setTool(null);
+      this.followCut();
       if (GL.painter) GL.painter.keep();
       this.refresh();
       if (GL.objects) GL.objects.render();
     },
 
+    // "Cut" follows the copy selected: another one, or the same one
+    // moved, starts the plane again round it.
+    followCut() {
+      if (!GL.cutter || !GL.cutter.active()) return;
+      const chosen = this.chosen();
+      GL.cutter.follow(chosen && chosen.copies.length === 1 ? chosen.copies[0] : null);
+    },
+
     selectionChanged() {
       if (this.tool && !this.usable(this.tool)) this.setTool(null);
+      this.followCut();
       this.fields.of = '';
       this.refresh();
       if (GL.objects) GL.objects.mark();
@@ -779,6 +802,7 @@
         b[tool].setAttribute('aria-pressed', String(this.tool === tool));
       }
       if (this.tool === 'flatten' && chosen && chosen.copies.length === 1) this.wantFaces(chosen.copies[0]);
+      if (this.tool === 'cut' && GL.cutter) GL.cutter.panel();
       // A plate with an object over its edge cannot be printed
       // (Plater.cpp `validate_current_plate`).
       const over = data && data.placings.some((placing) => placing.over && placing.plate === project.plate);
@@ -852,6 +876,7 @@
     // The handle at a pixel of the view, or null.
     handleAt(x, y, chosen) {
       if (this.tool === 'flatten') return this.faceAt(x, y, chosen);
+      if (this.tool === 'cut') return GL.cutter ? GL.cutter.hover(x, y) : null;
       const frame = this.stage.matrices();
       let [best, least] = [null, GRIP];
       const near = (a, b) => {
@@ -899,6 +924,10 @@
     // and the drag turns the view.
     grab(x, y, event) {
       if (this.busy || !this.data()) return null;
+      // "Cut" takes its plane's handles, and with Shift a line to lay the
+      // plane along; no object is dragged while it is open, as the
+      // reference's gizmo lets none be (GLGizmoCut.cpp `on_mouse`).
+      if (this.tool === 'cut') return GL.cutter ? GL.cutter.grab(x, y, event) : null;
       const chosen = this.tool ? this.chosen() : null;
       const handle = chosen ? this.handleAt(x, y, chosen) : null;
       if (handle && handle.kind === 'face') {
@@ -985,6 +1014,7 @@
 
     drag(grab, x, y, event) {
       if (grab.cancelled) return;
+      if (grab.kind === 'cut') { GL.cutter.drag(grab, x, y, event); return; }
       if (!grab.begun && !this.begin(grab)) { grab.cancelled = true; return; }
       const set = (matrixOf) => {
         for (const start of grab.starts) {
@@ -1075,6 +1105,7 @@
     // everything goes back where it was.
     async drop(grab, done) {
       this.held = null;
+      if (grab.kind === 'cut') { GL.cutter.drop(grab, done); this.stage.frame(); return; }
       if (!grab.begun || grab.cancelled) { this.stage.frame(); return; }
       if (!done) {
         this.revert(grab);
@@ -1132,6 +1163,7 @@
       const r = this.stage.renderer;
       const gl = r.gl;
       if (this.tool === 'flatten') { this.drawFaces(frame, chosen); return; }
+      if (this.tool === 'cut') { if (GL.cutter) GL.cutter.draw(frame); return; }
       const parts = this.parts();
       const matrix = M.multiply(frame.projection, frame.view);
       const mm = this.scale();
@@ -1257,8 +1289,9 @@
     // `do_render_rotate_window`, `do_render_scale_input_window`). `live`:
     // only the numbers are set, for a drag that is going on.
     showFields(live = false) {
-      // A painting tool has its own panel (paint.js).
-      const chosen = this.tool && !TOOLS[this.tool].paint && this.editing() ? this.chosen() : null;
+      // A painting tool has its own panel (paint.js), and so has "Cut"
+      // (cut.js).
+      const chosen = this.tool && !TOOLS[this.tool].paint && !TOOLS[this.tool].cut && this.editing() ? this.chosen() : null;
       this.panel.hidden = !chosen;
       if (!chosen) return;
       const { el } = this.host;

@@ -131,6 +131,11 @@ pub struct CutSection {
     /// plane's grip ("Object A", "Object B").
     pub above: f64,
     pub below: f64,
+    /// The box round the copy's printed material in the plane's own
+    /// coordinates (x, y in the plane, z along its normal), least and
+    /// greatest corners: the reference's "Build Volume" of the cut
+    /// (`m_transformed_bounding_box`). None for nothing printed.
+    pub reach: Option<[[f64; 3]; 2]>,
 }
 
 /// The linear part of a transform, its move left out.
@@ -170,6 +175,13 @@ impl Model {
         if !sound_plane(plane) {
             return Err(refused("that is no plane to cut by"));
         }
+        // A bare model is shown where an edit would settle it (in the
+        // middle of the bed): measured there too.
+        if self.bare {
+            let mut settled = self.clone();
+            settled.settle(bed);
+            return settled.cut_section(bed, copy, plane);
+        }
         let (scene, _) = self
             .in_scene(bed, copy)
             .ok_or_else(|| refused(format!("there is no copy {copy}")))?;
@@ -180,6 +192,7 @@ impl Model {
             lines: Vec::new(),
             above: 0.0,
             below: 0.0,
+            reach: None,
         };
         for part in self.objects[at].shape.parts.iter() {
             if part.kind != PartKind::Normal {
@@ -191,9 +204,14 @@ impl Model {
                 out.lines.push(line.map(|p| plane.apply(p)));
             }
             for vertex in &part.mesh.vertices {
-                let z = into.apply(vertex.map(f64::from))[2];
-                out.above = out.above.max(z);
-                out.below = out.below.max(-z);
+                let p = into.apply(vertex.map(f64::from));
+                out.above = out.above.max(p[2]);
+                out.below = out.below.max(-p[2]);
+                let [low, high] = out.reach.get_or_insert([p, p]);
+                for axis in 0..3 {
+                    low[axis] = low[axis].min(p[axis]);
+                    high[axis] = high[axis].max(p[axis]);
+                }
             }
         }
         Ok(out)

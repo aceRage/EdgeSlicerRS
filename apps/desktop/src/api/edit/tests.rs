@@ -1567,3 +1567,24 @@ fn the_halves_of_a_cut_are_sliced() {
     let summary = ask(&session, "summary", json!({ "project": project }));
     assert!(summary.to_string().len() > 10);
 }
+
+#[test]
+fn a_bare_model_is_cut_where_it_is_shown() {
+    let session = Arc::new(Session::new(None));
+    let project = open(&session, BARE);
+    choose_presets(&session, project);
+    let (copy, low, high) = first_copy(&session, project);
+    // Shown in the middle of the bed before any edit: the section is of
+    // the model there, not where its file has it.
+    let middle = (low[2] + high[2]) / 2.0;
+    let section = ask(
+        &session,
+        "cut_section",
+        json!({ "project": project, "copy": copy, "plane": across(low, high, middle) }),
+    );
+    assert!(!numbers(&section["lines"]).is_empty());
+    let reach = &section["reach"];
+    let width = numbers(&reach[1])[0] - numbers(&reach[0])[0];
+    assert!((width - (high[0] - low[0])).abs() < 1e-3, "{reach}");
+    assert!(numbers(&reach[0])[0] < 0.0 && numbers(&reach[1])[0] > 0.0);
+}

@@ -41,10 +41,11 @@ const GL: [(&str, &str); 10] = [
 /// The files of the tools that change what stands on the plates (the
 /// painting tools among them), the list of filaments, and the settings
 /// of an object, a part or a height range.
-const EDIT: [(&str, &str); 8] = [
+const EDIT: [(&str, &str); 9] = [
     ("filaments.js", include_str!("../ui/filaments.js")),
     ("objsettings.js", include_str!("../ui/objsettings.js")),
     ("paint.js", include_str!("../ui/paint.js")),
+    ("cut.js", include_str!("../ui/cut.js")),
     ("paint.css", include_str!("../ui/paint.css")),
     ("scene-edit.js", include_str!("../ui/scene-edit.js")),
     ("plates.js", include_str!("../ui/plates.js")),

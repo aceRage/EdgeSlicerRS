@@ -830,6 +830,9 @@
         canvas.classList.remove('dragging');
         if (done.paint) { GL.painter.release(); return; }
         if (done.grab && done.moved) GL.edit.drop(done.grab, event.type === 'pointerup');
+        // A press that is a tool's own when it is let go where it was
+        // ("Cut": a click on its plane flips it).
+        else if (!done.moved && event.type === 'pointerup' && done.grab && done.grab.tap) { done.grab.tap(); this.frame(); }
         // A face laid on the bed was the press itself (scene-edit.js).
         else if (!done.moved && event.type === 'pointerup' && !(done.grab && done.grab.kind === 'face')) this.click(done, event);
       };

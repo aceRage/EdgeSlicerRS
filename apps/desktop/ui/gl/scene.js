@@ -414,6 +414,15 @@
           });
           return;
         }
+        // The copy being cut: each side of the plane in its colour
+        // (cut.js), its helper parts as they are.
+        const cutting = this.cutting && this.cutting.copy === placing.id ? this.cutting : null;
+        if (cutting) {
+          for (const part of this.data.objects[placing.object].part_list || [{ kind: 'part', triangles: null }]) {
+            r.drawMesh(mesh, frame, placing.matrix, { palette: this.palette, pass, volume, range: part.triangles, split: part.kind === 'part' ? cutting.split : null });
+          }
+          return;
+        }
         for (const piece of this.pieces(placing)) {
           r.drawMesh(mesh, frame, piece.matrix, {
             palette: this.palette,
