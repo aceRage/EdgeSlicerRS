@@ -50,9 +50,10 @@ use serde_json::{Value, json};
 use tungstenite::{Message, WebSocket};
 
 use super::{
-    Connection, Failure, Form, Host, Http, Progress, TIMED_OUT, Timeouts, Upload, http_error,
-    octoprint, snapmaker::BUSY, uuid,
+    Connection, Failure, Form, Host, Http, Progress, TIMED_OUT, Timeouts, UNPARSABLE, Upload,
+    http_error, octoprint, snapmaker::BUSY, uuid,
 };
+use crate::api::i18n::{fill, tr};
 
 /// `MAX_UPLOAD_PACKAGE_LENGTH` (ElegooLink.cpp l.39).
 pub const PART: usize = 1024 * 1024;
@@ -108,7 +109,7 @@ impl ElegooLink {
         if answer.body.to_lowercase().contains("elegoo") {
             Ok(())
         } else {
-            Err("ElegooLink not detected".into())
+            Err(tr("ElegooLink not detected"))
         }
     }
 
@@ -143,7 +144,7 @@ impl ElegooLink {
                 return Err(Failure::Error(http_error(&answer)));
             }
             let Some(json) = answer.json() else {
-                return Err(Failure::Error("Error parsing response".into()));
+                return Err(Failure::Error(tr("Error parsing response")));
             };
             if json["code"].as_str() != Some("000000") {
                 let mut said = format!("ErrorCode : {}", json["code"].as_str().unwrap_or("?"));
@@ -173,11 +174,11 @@ impl Host for ElegooLink {
     }
 
     fn test_ok(&self) -> String {
-        "Connection to ElegooLink is working correctly.".into()
+        tr("Connection to ElegooLink is working correctly.")
     }
 
     fn test_failed(&self, reason: &str) -> String {
-        format!("Could not connect to ElegooLink: {reason}")
+        format!("{}: {reason}", tr("Could not connect to ElegooLink"))
     }
 
     fn upload(&self, upload: &Upload, progress: &Progress) -> Result<(), Failure> {
@@ -192,7 +193,7 @@ impl Host for ElegooLink {
             let mut socket = self.connect()?;
             let status = request_status(&mut socket, self.timeouts.ask, progress)?;
             if !status.iter().all(|state| *state == IDLE) {
-                return Err(Failure::Error(BUSY.into()));
+                return Err(Failure::Error(tr(BUSY)));
             }
             let _ = socket.close(None);
         }
@@ -202,7 +203,7 @@ impl Host for ElegooLink {
         }
         progress.set_stage("Starting the print");
         let mut socket = self.connect().map_err(|_| {
-            Failure::Error("The file has been transferred, but some unknown errors occurred. Please check the device page for the file and try to start printing again.".into())
+            Failure::Error(tr("The file has been transferred, but some unknown errors occurred. Please check the device page for the file and try to start printing again."))
         })?;
         pause(Duration::from_secs(1), progress)?;
         wait_checked(&mut socket, self.timeouts.start, progress)?;
@@ -231,11 +232,9 @@ impl ElegooLink {
     fn connect(&self) -> Result<WebSocket<TcpStream>, String> {
         let address = (self.ws_host.as_str(), self.ws_port)
             .to_socket_addrs()
-            .map_err(|_| {
-                "The Hostname/IP/URL could not be parsed, please check it and try again.".to_owned()
-            })?
+            .map_err(|_| tr(UNPARSABLE))?
             .next()
-            .ok_or("The Hostname/IP/URL could not be parsed, please check it and try again.")?;
+            .ok_or_else(|| tr(UNPARSABLE))?;
         let stream = TcpStream::connect_timeout(&address, self.timeouts.connect)
             .map_err(|error| super::io_said(&error))?;
         stream
@@ -250,7 +249,7 @@ impl ElegooLink {
         let url = format!("ws://{host}:{}/websocket", self.ws_port);
         let (socket, _) = tungstenite::client(url, stream).map_err(|error| match error {
             tungstenite::HandshakeError::Failure(error) => ws_said(&error),
-            tungstenite::HandshakeError::Interrupted(_) => TIMED_OUT.to_owned(),
+            tungstenite::HandshakeError::Interrupted(_) => tr(TIMED_OUT),
         })?;
         // Short reads from now on, so a cancel and the limits are seen.
         socket
@@ -365,7 +364,7 @@ fn request_status(
             return Ok(status);
         }
     }
-    Err(Failure::Error(TIMED_OUT.into()))
+    Err(Failure::Error(tr(TIMED_OUT)))
 }
 
 /// `checkResult`: asks for the state each second while the printer checks
@@ -380,7 +379,7 @@ fn wait_checked(
     loop {
         let left = until.saturating_duration_since(Instant::now());
         if left.is_zero() {
-            return Err(Failure::Error("Start print timeout".into()));
+            return Err(Failure::Error(tr("Start print timeout")));
         }
         let status = request_status(socket, left.min(Duration::from_secs(5)), progress)?;
         if !status.contains(&FILE_CHECKING) {
@@ -410,7 +409,7 @@ fn read_ack(
             return Ok(message["Data"]["Data"]["Ack"].as_i64());
         }
     }
-    Err(Failure::Error("Start print timeout".into()))
+    Err(Failure::Error(tr("Start print timeout")))
 }
 
 /// The reference's words for each `Ack` (ElegooLink.cpp l.52, l.860).
@@ -425,13 +424,13 @@ pub fn ack_said(ack: i64) -> String {
         7 => "The file does not match the printer, please check and try again.",
         _ => "Unknown error",
     };
-    format!("{text} Error code: {ack}")
+    format!("{} {}", tr(text), fill(&tr("Error code: %d"), &[&ack]))
 }
 
 fn ack_result(ack: Option<i64>) -> Result<(), Failure> {
     match ack {
         Some(0) => Ok(()),
         Some(ack) => Err(Failure::Error(ack_said(ack))),
-        None => Err(Failure::Error("Error code not found".into())),
+        None => Err(Failure::Error(tr("Error code not found"))),
     }
 }

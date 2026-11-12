@@ -214,7 +214,9 @@ impl Session {
             "custom" => {
                 let extra = text(args, "extra").unwrap_or_default();
                 if extra.is_empty() {
-                    return Err("Enter Custom G-code used on current layer:".into());
+                    return Err(super::i18n::tr(
+                        "Enter Custom G-code used on current layer:",
+                    ));
                 }
                 if let Some(at) = at {
                     info.items.remove(at);
