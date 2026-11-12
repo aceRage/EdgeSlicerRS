@@ -47,6 +47,10 @@ mod filaments;
 
 #[path = "item_settings.rs"]
 mod item_settings;
+
+#[path = "arrange.rs"]
+mod arrange;
+pub use arrange::{ArrangeOptions, ArrangeScope, Arranged};
 pub use filaments::{FlushBasis, MAX_FILAMENTS, NEXT_COLOURS};
 pub use item_settings::SettingChange;
 pub use plates::{FIRST_LATER_LAYER, LAST_LAYER, LONGEST_PLATE_NAME, LayerSequence, PlateSettings};
@@ -2252,21 +2256,16 @@ impl Model {
         Ok(added)
     }
 
-    /// Lays out what stands on a plate (on every plate for none named) so
-    /// that nothing overlaps and everything is on the bed: in rows, the
-    /// deepest copies first, [`APART`] mm apart, the whole set in the
-    /// middle of the bed. Nothing is turned. What a plate has no room for
-    /// is put beside the plates, on none of them. Answers how many copies
-    /// that was.
-    ///
-    /// This is not the reference's arrangement (libslic3r/Arrange, which
-    /// nests the outlines of the objects and may turn them); it is a plain
-    /// one by the boxes round the copies.
+    /// Arranges what stands on a plate (on every plate for none named)
+    /// with the reference's arranger and the default options, by the
+    /// model's own settings: see [`Model::arrange_with`]. Answers how many
+    /// copies no plate could hold, which are put beside the plates.
     ///
     /// A locked plate is left as it is, as the reference leaves it
-    /// (ArrangeJob.cpp: `preprocess_arrange_polygon` makes what stands on
-    /// it a fixed item); arranging it alone is refused in the reference's
-    /// words (`prepare_partplate`). So are the plates in `leave`.
+    /// (ArrangeJob.cpp: `preprocess_arrange_polygon` keeps what stands on
+    /// it out of the arrangement); arranging it alone is refused in the
+    /// reference's words (`prepare_partplate`). So are the plates in
+    /// `leave`.
     pub fn arrange(&mut self, bed: Option<&Bed>, plate: Option<u32>) -> Result<usize, Failure> {
         self.arrange_leaving(bed, plate, &[])
     }
@@ -2281,120 +2280,14 @@ impl Model {
         plate: Option<u32>,
         leave: &[u32],
     ) -> Result<usize, Failure> {
-        let bed =
-            bed.ok_or_else(|| refused("no printer is chosen: there is no bed to arrange on"))?;
-        let only = match plate {
-            Some(id) => Some(
-                self.plate_index(id)
-                    .ok_or_else(|| refused(format!("there is no plate {id}")))?,
-            ),
-            None => None,
+        let scope = match plate {
+            Some(id) => ArrangeScope::Plate(id),
+            None => ArrangeScope::All { leave },
         };
-        if let Some(only) = only
-            && self.plates[only].locked()
-        {
-            return Err(refused(
-                "This plate is locked.\nCannot auto-arrange on this plate.",
-            ));
-        }
-        self.settle(Some(bed));
-        let (width, depth) = (bed.max[0] - bed.min[0], bed.max[1] - bed.min[1]);
-        let mut left_out = 0;
-        for plate in 0..self.plates.len() {
-            if only.is_some_and(|only| only != plate) {
-                continue;
-            }
-            let held = &self.plates[plate];
-            if only.is_none() && (held.locked() || leave.contains(&held.id)) {
-                continue;
-            }
-            // The copies with the ground each takes, the deepest first; as
-            // the plate lists them among equals.
-            let mut boxes: Vec<(u64, f64, f64)> = self.plates[plate]
-                .order
-                .iter()
-                .filter_map(|copy| {
-                    let (object, at) = self.find(*copy)?;
-                    let [low, high] = self.objects[object].copies[at].reach?;
-                    Some((*copy, high[0] - low[0], high[1] - low[1]))
-                })
-                .collect();
-            boxes.sort_by(|a, b| b.2.total_cmp(&a.2));
-            // Rows from the front of the bed to the back.
-            let mut rows: Vec<Row> = Vec::new();
-            let mut over: Vec<u64> = Vec::new();
-            let mut used = 0.0;
-            for (copy, wide, deep) in boxes {
-                if wide > width || deep > depth {
-                    over.push(copy);
-                    continue;
-                }
-                let fits = rows
-                    .last()
-                    .is_some_and(|(_, along, _)| along + APART + wide <= width);
-                if fits {
-                    let (row, along, _) = rows.last_mut().expect("there is a row");
-                    row.push((copy, wide, deep));
-                    *along += APART + wide;
-                } else if used + if rows.is_empty() { 0.0 } else { APART } + deep <= depth {
-                    used += if rows.is_empty() { 0.0 } else { APART } + deep;
-                    rows.push((vec![(copy, wide, deep)], wide, deep));
-                } else {
-                    over.push(copy);
-                }
-            }
-            let widest = rows.iter().map(|(_, along, _)| *along).fold(0.0, f64::max);
-            let mut y = bed.min[1] + (depth - used) / 2.0;
-            for (row, _, deep) in rows {
-                let mut x = bed.min[0] + (width - widest) / 2.0;
-                for (copy, wide, own) in row {
-                    self.slide(copy, Some(plate), (x + wide / 2.0, y + own / 2.0));
-                    x += wide + APART;
-                }
-                y += deep + APART;
-            }
-            left_out += over.len();
-            let (ax, ay) = bed.aside(self.plates.len());
-            for copy in over {
-                self.assign(copy, None);
-                self.slide(
-                    copy,
-                    None,
-                    (
-                        ax + (bed.min[0] + bed.max[0]) / 2.0,
-                        ay + (bed.min[1] + bed.max[1]) / 2.0,
-                    ),
-                );
-            }
-        }
-        Ok(left_out)
-    }
-
-    /// Moves a copy across the ground so that the middle of the ground it
-    /// takes is at `centre`, in the coordinates of `plate`.
-    fn slide(&mut self, copy: u64, plate: Option<usize>, centre: (f64, f64)) {
-        let Some(at) = self.find(copy) else { return };
-        let held = &self.objects[at.0].copies[at.1];
-        let Some([low, high]) = held.reach else {
-            return;
-        };
-        let by = [
-            centre.0 - (low[0] + high[0]) / 2.0,
-            centre.1 - (low[1] + high[1]) / 2.0,
-            0.0,
-        ];
-        // Where it is already, it is left to the bit.
-        if by[0].abs() < 1e-9 && by[1].abs() < 1e-9 && self.plate_of(copy) == plate {
-            return;
-        }
-        let local = held.local.then(&Transform::translation(by));
-        self.stand(at, plate, local);
+        let arranged = self.arrange_with(bed, None, &ArrangeOptions::default(), scope)?;
+        Ok(arranged.unplaced.len())
     }
 }
-
-/// A row of an arrangement: the copies in it with the ground each takes
-/// (how wide, how deep), how far along the row is filled, and how deep it is.
-type Row = (Vec<(u64, f64, f64)>, f64, f64);
 
 /// The middle of the free place on a bed nearest `near` for something
 /// `size` mm wide and deep, [`APART`] mm from everything in `taken` (each

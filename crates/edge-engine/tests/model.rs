@@ -431,7 +431,10 @@ fn what_is_added_and_cloned_finds_a_free_place_and_arranging_keeps_things_apart(
     model.set_transforms(Some(&BED), &heap).unwrap();
     assert!(!apart(&model, 0, 6.0));
     assert_eq!(model.arrange(Some(&BED), None).unwrap(), 0);
-    assert!(apart(&model, 0, 6.0));
+    // The reference's arranger with the spacing at "auto" keeps a
+    // millimetre round each object without supports, so 2 mm between two
+    // (this pinned the old rows' 6 mm before the arranger was ported).
+    assert!(apart(&model, 0, 2.0 - 1e-6));
     assert_eq!(model.plates()[0].copies().len(), 5);
     // The same again changes nothing: an arrangement is the same every time.
     let stamp = model.stamp(Some(1));
@@ -447,4 +450,120 @@ fn what_is_added_and_cloned_finds_a_free_place_and_arranging_keeps_things_apart(
     assert_eq!(standing(&full, two), ([340.0, 100.0], None));
     assert_eq!(full.plate_list()[0].objects.len(), 1);
     assert!(full.arrange(None, None).is_err());
+    // Arranged, what the plate cannot hold goes on a plate added for it.
+    assert_eq!(full.arrange(Some(&BED), None).unwrap(), 0);
+    assert_eq!(full.plates().len(), 2);
+    assert_eq!(standing(&full, one).1, Some(1));
+    assert_eq!(standing(&full, two).1, Some(2));
+    assert!(apart(&full, 0, 0.0) && apart(&full, 1, 0.0));
+}
+
+#[test]
+fn arranging_leaves_locked_plates_and_keeps_the_rest_of_a_plate_still() {
+    use edge_engine::{ArrangeOptions, ArrangeScope};
+    let dir = tempfile::tempdir().unwrap();
+    let cube = Model::open(&block(dir.path(), "cube.stl", [0.0; 3], [30.0, 30.0, 10.0])).unwrap();
+    let mut model = Model::new();
+    let on_first: Vec<u64> = (0..4)
+        .map(|_| model.import(Some(&BED), &cube, None).unwrap()[0])
+        .collect();
+    model.add_plate(Some(&BED)).unwrap();
+    let on_second: Vec<u64> = (0..3)
+        .map(|_| model.import(Some(&BED), &cube, Some(2)).unwrap()[0])
+        .collect();
+    model.lock_plate(2, true).unwrap();
+    let locked_stamp = model.stamp(Some(2));
+    // Every plate: the locked one is left as it is.
+    model.arrange(Some(&BED), None).unwrap();
+    assert_eq!(model.stamp(Some(2)), locked_stamp);
+    assert!(
+        on_first
+            .iter()
+            .all(|copy| standing(&model, *copy).1 == Some(1))
+    );
+    assert!(
+        on_second
+            .iter()
+            .all(|copy| standing(&model, *copy).1 == Some(2))
+    );
+    // Alone, it is refused in the reference's words.
+    let refused = model.arrange(Some(&BED), Some(2)).unwrap_err().to_string();
+    assert!(refused.contains("This plate is locked."), "{refused}");
+
+    // A selection: the copies not chosen stay where they are.
+    let still: Vec<([f64; 2], Option<u32>)> =
+        on_first[2..].iter().map(|c| standing(&model, *c)).collect();
+    let thrown: Vec<(u64, Transform)> = on_first[..2]
+        .iter()
+        .map(|c| (*c, Transform::translation([15.0, 15.0, 0.0])))
+        .collect();
+    model.set_transforms(Some(&BED), &thrown).unwrap();
+    model
+        .arrange_with(
+            Some(&BED),
+            None,
+            &ArrangeOptions::default(),
+            ArrangeScope::Copies(&on_first[..2]),
+        )
+        .unwrap();
+    let now: Vec<([f64; 2], Option<u32>)> =
+        on_first[2..].iter().map(|c| standing(&model, *c)).collect();
+    assert_eq!(now, still);
+    // Fixed objects are shrunk by 0.2 µm (Arrange.cpp `inflate(-2 * EPSILON)`).
+    assert!(apart(&model, 0, 2.0 - 1e-3));
+
+    // A spacing given is kept, and the same options give the same
+    // arrangement every time.
+    let options = ArrangeOptions {
+        spacing: 12.0,
+        ..ArrangeOptions::default()
+    };
+    model
+        .arrange_with(Some(&BED), None, &options, ArrangeScope::Plate(1))
+        .unwrap();
+    assert!(apart(&model, 0, 12.0 - 1e-6));
+    let stamp = model.stamp(Some(1));
+    model
+        .arrange_with(Some(&BED), None, &options, ArrangeScope::Plate(1))
+        .unwrap();
+    assert_eq!(model.stamp(Some(1)), stamp);
+}
+
+#[test]
+fn a_plate_with_more_than_it_holds_gets_plates_added() {
+    use edge_engine::{ArrangeOptions, ArrangeScope};
+    let dir = tempfile::tempdir().unwrap();
+    let big = Model::open(&block(dir.path(), "big.stl", [0.0; 3], [90.0, 90.0, 10.0])).unwrap();
+    let mut model = Model::new();
+    let copies: Vec<u64> = (0..9)
+        .map(|_| {
+            let added = model.import(Some(&BED), &big, None).unwrap()[0];
+            // All on plate 1, piled up.
+            model
+                .set_transforms(
+                    Some(&BED),
+                    &[(added, Transform::translation([50.0, 50.0, 0.0]))],
+                )
+                .unwrap();
+            added
+        })
+        .collect();
+    let arranged = model
+        .arrange_with(
+            Some(&BED),
+            None,
+            &ArrangeOptions::default(),
+            ArrangeScope::Plate(1),
+        )
+        .unwrap();
+    // Four 90 mm squares to a 198 mm bed, so three plates.
+    assert!(arranged.unplaced.is_empty());
+    assert_eq!(arranged.plates_added, 2);
+    assert_eq!(model.plates().len(), 3);
+    for plate in 0..3 {
+        assert!(apart(&model, plate, 2.0 - 1e-6));
+    }
+    let on: Vec<usize> = (0..3).map(|p| model.plates()[p].copies().len()).collect();
+    assert_eq!(on, [4, 4, 1]);
+    assert_eq!(copies.len(), 9);
 }

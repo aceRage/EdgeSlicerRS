@@ -3,6 +3,7 @@
 //! leave room, the place along their outlines the objective scores best.
 
 use edge_geom::{ExPolygon, Point2, Polygon, convex_hull};
+use rayon::prelude::*;
 
 use crate::edges::EdgeCache;
 use crate::geom::{Bbox, Side, add, projection_onto, region_side, sub};
@@ -59,7 +60,7 @@ pub struct Pile<'a> {
 
 /// Scores an item standing where it is against a pile, with whichever
 /// objective the bed uses.
-pub trait Scorer {
+pub trait Scorer: Sync {
     fn score(&self, item: &Item, pile: &Pile<'_>, objective: &Objective, bin: &Bbox) -> f64;
     fn is_big(&self, area: f64) -> bool;
 }
@@ -306,20 +307,29 @@ impl Placer {
                 let budget = (1000.0 * config.accuracy).floor() as usize;
                 for (ch, cache) in caches.iter().enumerate() {
                     for ring in 0..cache.ring_count() {
+                        // A search from each corner, side by side as the
+                        // reference runs them; the first best is taken, so
+                        // the answer is the same at any thread count.
+                        let found: Vec<subplex::Optimum> = cache
+                            .corners(ring)
+                            .into_par_iter()
+                            .map(|start| {
+                                let mut probe = item.clone();
+                                subplex::minimize(
+                                    |pos| {
+                                        probe.set_translation(at(ch, ring, pos));
+                                        scorer.score(&probe, &pile, &self.objective, &self.bin)
+                                    },
+                                    start,
+                                    0.0,
+                                    1.0,
+                                    budget,
+                                    1e-20,
+                                )
+                            })
+                            .collect();
                         let mut best_here: Option<subplex::Optimum> = None;
-                        for start in cache.corners(ring) {
-                            let mut probe = item.clone();
-                            let result = subplex::minimize(
-                                |pos| {
-                                    probe.set_translation(at(ch, ring, pos));
-                                    scorer.score(&probe, &pile, &self.objective, &self.bin)
-                                },
-                                start,
-                                0.0,
-                                1.0,
-                                budget,
-                                1e-20,
-                            );
+                        for result in found {
                             if best_here.is_none_or(|b| result.score < b.score) {
                                 best_here = Some(result);
                             }

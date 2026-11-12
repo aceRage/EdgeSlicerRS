@@ -253,6 +253,7 @@ version = "0.0.0"
 dependencies = [
  "edge-clip",
  "edge-geom",
+ "rayon",
 ]
 
 [[package]]
@@ -283,6 +284,7 @@ dependencies = [
  "edge-support",
  "edge-tower",
  "rayon",
+ "serde_json",
 ]
 
 [[package]]
@@ -323,6 +325,7 @@ version = "0.0.0"
 dependencies = [
  "edge-3mf",
  "edge-adhesion",
+ "edge-arrange",
  "edge-clip",
  "edge-config",
  "edge-contour",
