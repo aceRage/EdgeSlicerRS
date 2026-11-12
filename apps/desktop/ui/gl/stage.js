@@ -307,7 +307,10 @@
     // The meshes the scene has not got yet, one object after another,
     // those of the plate shown first.
     async wantMeshes(data, turn, since, sent) {
-      const order = [...data.objects.keys()].filter((object) => !this.scene.meshes.has(`${data.key}:${data.objects[object].mesh}`));
+      // The object being painted is drawn by its tool, and its mesh as the
+      // paint now colours it is asked for when the tool closes.
+      const painting = this.scene.painting;
+      const order = [...data.objects.keys()].filter((object) => !this.scene.meshes.has(`${data.key}:${data.objects[object].mesh}`) && !(painting && painting.object === object));
       const onPlate = new Set(data.placings.filter((placing) => placing.plate === data.plate).map((placing) => placing.object));
       order.sort((a, b) => Number(onPlate.has(b)) - Number(onPlate.has(a)));
       let first = true;
@@ -331,6 +334,15 @@
         const triangles = data.objects.reduce((sum, object) => sum + object.triangles, 0);
         this.note('scene: all objects drawn', since, { bytes: this.stats.bytes - sent, triangles, objects: order.length });
       }
+    },
+
+    // The meshes of the scene shown that are not here yet: those not asked
+    // for while a painting tool was open.
+    wantMissing() {
+      const data = this.scene.data;
+      if (!data) return;
+      const turn = this.sceneTurn;
+      this.wantMeshes(data, turn, performance.now(), this.stats.bytes).catch((error) => { if (turn === this.sceneTurn) this.host.say(error.message, true); });
     },
 
     // The vendor's model and picture of the bed, when the printer's
@@ -767,12 +779,17 @@
         canvas.focus({ preventScroll: true });
         canvas.setPointerCapture(event.pointerId);
         const [x, y] = at(event);
-        press = { id: event.pointerId, button: event.button, x, y, from: [x, y], moved: false, pivot: null, grab: null };
+        press = { id: event.pointerId, button: event.button, x, y, from: [x, y], moved: false, pivot: null, grab: null, paint: false };
+        // A painting tool paints with the button on the object
+        // (GLGizmoPainterBase.cpp `on_mouse`); off it, the view turns or
+        // moves, and no object is dragged while the tool is open.
+        const painter = this.model.tab === 'prepare' && GL.painter && GL.painter.active() ? GL.painter : null;
+        if (painter) press.paint = painter.press(x, y, event);
         // In Prepare the left button takes hold of a tool's handle, or of
         // the object under it, which a drag then moves (GLCanvas3D.cpp
         // `on_mouse`); anywhere else it turns the view.
-        if (event.button === 0 && this.model.tab === 'prepare' && GL.edit) press.grab = GL.edit.grab(x, y, event);
-        if (event.button === 0 && !press.grab) {
+        if (!painter && event.button === 0 && this.model.tab === 'prepare' && GL.edit) press.grab = GL.edit.grab(x, y, event);
+        if (event.button === 0 && !press.grab && !press.paint) {
           // With Ctrl or Cmd, about the point of the bed in the middle
           // of the view.
           const centre = event.ctrlKey || event.metaKey ? this.camera.onGround(this.camera.viewport[0] / 2, this.camera.viewport[1] / 2) : null;
@@ -784,6 +801,12 @@
         if (!press || event.pointerId !== press.id) return;
         const [x, y] = at(event);
         const [dx, dy] = [x - press.x, y - press.y];
+        // A stroke of paint follows the pointer from the first pixel.
+        if (press.paint) {
+          press.moved = true;
+          GL.painter.drag(x, y);
+          return;
+        }
         if (!press.moved && Math.hypot(x - press.from[0], y - press.from[1]) < CLICK) return;
         press.moved = true;
         press.x = x;
@@ -805,6 +828,7 @@
         const done = press;
         press = null;
         canvas.classList.remove('dragging');
+        if (done.paint) { GL.painter.release(); return; }
         if (done.grab && done.moved) GL.edit.drop(done.grab, event.type === 'pointerup');
         // A face laid on the bed was the press itself (scene-edit.js).
         else if (!done.moved && event.type === 'pointerup' && !(done.grab && done.grab.kind === 'face')) this.click(done, event);
@@ -813,13 +837,18 @@
       canvas.addEventListener('pointermove', (event) => {
         if (press || !this.model || this.model.tab !== 'prepare' || !GL.edit) return;
         const [x, y] = at(event);
+        if (GL.painter && GL.painter.active()) { GL.painter.hover(x, y); return; }
         if (GL.edit.hover(x, y)) this.frame();
       });
+      canvas.addEventListener('pointerleave', () => { if (!press && GL.painter && GL.painter.active()) GL.painter.leave(); });
       canvas.addEventListener('pointerup', release);
       canvas.addEventListener('pointercancel', release);
       canvas.addEventListener('wheel', (event) => {
         event.preventDefault();
         if (!this.model) return;
+        // A painting tool takes the wheel with Ctrl (its size) or Alt (its
+        // section view).
+        if (this.model.tab === 'prepare' && GL.painter && GL.painter.active() && GL.painter.wheel(event)) return;
         // A notch of a wheel is a step; a pad sends many small ones, and
         // a pinch comes as a wheel with Ctrl.
         const notch = event.deltaMode === 1 ? 3 : event.ctrlKey ? 10 : 100;

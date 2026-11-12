@@ -58,9 +58,12 @@ uniform float u_alpha;
 uniform bool u_ghost;
 // 0: only what is opaque. 1: only what is not. 2: everything.
 uniform int u_pass;
+// The normals' matrix of u_model, for what faces down (u_slope).
+uniform mat3 u_model_normal;
 out vec2 v_intensity;
 out vec4 v_color;
 out vec3 v_world;
+out float v_world_nz;
 void main() {
   vec4 color = u_tint.a >= 0.0 ? u_tint : texelFetch(u_palette, ivec2(int(a_mark + 0.5), 0), 0);
   if (u_ghost) color.a = 1.0;
@@ -74,6 +77,7 @@ void main() {
   v_intensity = lit(position.xyz, eye_normal);
   v_color = vec4(color.rgb, color.a * u_alpha);
   v_world = (u_model * vec4(a_position, 1.0)).xyz;
+  v_world_nz = normalize(u_model_normal * a_normal).z;
   gl_Position = u_projection * position;
 }`,
     fragment: `${head}
@@ -83,12 +87,26 @@ uniform float u_emission;
 uniform bool u_volume;
 uniform vec3 u_volume_min;
 uniform vec3 u_volume_max;
+// A section view (the painting tools' "Section view"): what has
+// dot(normal, p) > offset in the world is cut away (u_clip: normal, offset).
+uniform bool u_clipped;
+uniform vec4 u_clip;
+// What faces down more steeply than this is marked (mm_gouraud.fs, its
+// slope detection: under -2, nothing): what is near the bed light blue, an
+// overhang half red.
+uniform float u_slope;
 in vec2 v_intensity;
 in vec4 v_color;
 in vec3 v_world;
+in float v_world_nz;
 out vec4 out_color;
 void main() {
+  if (u_clipped && dot(v_world, u_clip.xyz) > u_clip.w) discard;
   vec3 color = v_color.rgb;
+  if (u_slope > -2.0) {
+    if (v_world.z < 0.1 && v_world.z > -0.1) color = vec3(0.73, 1.0, 1.0);
+    else if (v_world_nz < u_slope - 0.0001) color = color * 0.5 + vec3(0.78, 0.0, 0.0) * 0.5;
+  }
   if (u_volume && (any(lessThan(v_world, u_volume_min)) || any(greaterThan(v_world, u_volume_max))))
     color = mix(color, vec3(0.0), 0.3333);
   out_color = vec4(vec3(v_intensity.y) + color * (v_intensity.x + u_emission), v_color.a);

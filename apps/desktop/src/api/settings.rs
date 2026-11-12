@@ -37,6 +37,7 @@
 
 mod filament_rules;
 pub(super) mod items;
+pub(super) mod kept;
 mod printer_rules;
 mod rules;
 
@@ -697,13 +698,12 @@ impl Session {
         let chosen = match (choices.from_presets, &choices.vendor) {
             (true, Some(vendor)) => {
                 let filaments: Vec<&str> = choices.filaments.iter().map(String::as_str).collect();
-                self.shelf(vendor)?
-                    .choose(
-                        choices.machine.as_deref(),
-                        choices.process.as_deref(),
-                        &filaments,
-                    )
-                    .map_err(|e| e.to_string())?
+                self.choose_presets(
+                    vendor,
+                    choices.machine.as_deref(),
+                    choices.process.as_deref(),
+                    &filaments,
+                )?
             }
             _ => Chosen::default(),
         };

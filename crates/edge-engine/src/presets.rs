@@ -282,6 +282,34 @@ impl Shelf {
         &self.machines
     }
 
+    /// A preset of this vendor (or its filament library) with everything
+    /// it inherits, by name.
+    pub fn resolve(&self, kind: Kind, name: &str) -> Result<Settings, edge_config::ConfigError> {
+        self.vendor.resolve(kind, name)
+    }
+
+    /// Whether the vendor has a preset of this name, one only there to
+    /// inherit from included.
+    pub fn knows(&self, kind: Kind, name: &str) -> bool {
+        self.vendor.has(kind, name)
+    }
+
+    /// The version a preset made from these is stamped with ("2.3.3.14").
+    pub fn preset_version(&self) -> String {
+        self.vendor.preset_version()
+    }
+
+    /// Every process or filament preset that can be picked, whatever
+    /// printer it is made for, in the vendor's own order.
+    pub fn all_of(&self, kind: Kind) -> Vec<String> {
+        let presets = match kind {
+            Kind::Process => &self.processes,
+            Kind::Filament => &self.filaments,
+            _ => return self.machines.clone(),
+        };
+        presets.iter().map(|(name, _)| name.clone()).collect()
+    }
+
     /// The process presets made for a printer.
     pub fn processes_for(&self, machine: &str) -> Vec<&str> {
         for_machine(&self.processes, machine)

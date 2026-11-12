@@ -63,7 +63,7 @@ fn pick(app: tauri::AppHandle, what: String, suggested: Option<String>) -> Optio
         "model" => dialog
             .add_filter("Models", &["3mf", "stl", "obj"])
             .blocking_pick_file(),
-        "folder" | "stl_folder" => dialog.blocking_pick_folder(),
+        "folder" | "stl_folder" | "preset_folder" => dialog.blocking_pick_folder(),
         "gcode" => dialog
             .add_filter("G-code", &["gcode"])
             .set_file_name(suggested.unwrap_or_else(|| "print.gcode".into()))
@@ -101,8 +101,13 @@ fn pick(app: tauri::AppHandle, what: String, suggested: Option<String>) -> Optio
             dialog.blocking_save_file()
         }
         // "Import Configs..." (MainFrame.cpp `load_config_file`).
+        // The reference's title and filter (MainFrame.cpp l.4561).
         "presets" => dialog
-            .add_filter("Config files", &["json", "ini", "zip", "bbscfg", "bbsflmt"])
+            .set_title("Select profile to load:")
+            .add_filter(
+                "Config files",
+                &["json", "zip", "orca_printer", "orca_filament"],
+            )
             .blocking_pick_file(),
         // "HTTPS CA File"'s "Browse ..." (PhysicalPrinterDialog.cpp l.357).
         "cafile" => dialog

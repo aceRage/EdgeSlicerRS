@@ -421,11 +421,12 @@ fn every_word_shown_is_a_message_id_or_listed() {
             "wording.txt: {words:?} is a message id now; pass it through t or tr"
         );
         // As a script or the session may write it: a new line as `\n`, an
-        // apostrophe as `\'`.
+        // apostrophe as `\'`, a double quote as `\"`.
         let written = words.replace('\n', "\\n");
         let quoted = written.replace('\'', "\\'");
+        let double = written.replace('"', "\\\"");
         assert!(
-            [words.as_str(), &written, &quoted]
+            [words.as_str(), &written, &quoted, &double]
                 .iter()
                 .any(|form| everything.contains(form)),
             "wording.txt: {words:?} is shown nowhere any more"

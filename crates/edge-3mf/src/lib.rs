@@ -34,7 +34,7 @@ pub use kept::{Entry, Extras, Kept, LayerRange, Left, ObjectKept, PartKept, Plat
 use model::{ModelFile, RawObject, Shape};
 use model_settings::{ModelSettings, ObjectSettings};
 use package::Package;
-pub use paint::{Facet, SeamFacet, SeamPaint};
+pub use paint::{Facet, PaintKind, SeamFacet, SeamPaint};
 pub use write::{
     REFERENCE_VERSION, SECRETS, Save, Written, losses, own_settings_text, settings_text, write,
     write_to,
@@ -158,19 +158,13 @@ impl Part {
     /// coordinates: its triangles' `paint_supports`, as the reference
     /// keeps them in `supported_facets`, coded as seams are.
     pub fn support_paint(&self) -> Vec<SeamFacet> {
+        // Read as every kind of paint is ([`Part::paint_codes`]): what the
+        // mesh the part has now carries, read with it or painted on it
+        // here; never what a mesh that took its place was painted with.
         let mut facets = Vec::new();
-        let Some(extras) = self.kept.as_deref().and_then(PartKept::extras) else {
-            return facets;
-        };
-        const KEY: &str = " paint_supports=\"";
-        for (triangle, attributes) in extras.iter() {
-            let Some(at) = attributes.find(KEY) else {
-                continue;
-            };
-            let rest = &attributes[at + KEY.len()..];
-            let code = &rest[..rest.find('"').unwrap_or(rest.len())];
-            if (*triangle as usize) < self.mesh.triangles.len() && !code.is_empty() {
-                paint::decode_seam(code, self.mesh.triangle(*triangle as usize), &mut facets);
+        for (triangle, code) in self.paint_codes(PaintKind::Supports) {
+            if (triangle as usize) < self.mesh.triangles.len() {
+                paint::decode_seam(&code, self.mesh.triangle(triangle as usize), &mut facets);
             }
         }
         facets

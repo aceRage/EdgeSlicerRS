@@ -182,3 +182,9 @@ dialog.plate-settings .row.end .grow { flex: 1; align-self: center; }
 .ps-chip:hover { border-color: var(--line-3); }
 .ps-chip.held { cursor: grabbing; border-color: var(--accent); background: var(--accent-soft); }
 .ps-chip .swatch { width: 10px; height: 10px; }
+
+/* Where the stage is too narrow for the toolbar in one row (the painting
+   tools made it longer), it takes two, and the panel stands under both. */
+@container stage (max-width: 760px) {
+  .edit-panel { top: calc(var(--stage-inset) + 2 * (var(--control-m) + 8px) + var(--space-2)); }
+}

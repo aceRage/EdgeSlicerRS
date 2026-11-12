@@ -17,6 +17,9 @@
 mod edit;
 mod filaments;
 mod menu;
+mod paint;
+mod preset_files;
+mod presets;
 mod save;
 mod scene;
 mod ticks;
@@ -58,6 +61,8 @@ pub struct Session {
     traced: bool,
     /// What the 3D views' calls keep between them.
     scene: scene::Cache,
+    /// The painting tool that is open, and what it keeps of each mesh.
+    paint: paint::Cache,
     /// The printers' connections and the files being sent to them.
     hosts: Hosts,
     /// The language the page is shown in and the calls compose in.
@@ -79,6 +84,8 @@ struct State {
     catalogue: HashMap<String, Arc<Vec<edge_engine::PrinterModel>>>,
     /// What is kept between runs: the printers added, what was last used.
     store: store::Store,
+    /// The person's own presets, and where they are kept.
+    users: presets::Users,
     /// The open projects, in the order the strip shows them. Never empty.
     projects: Vec<Project>,
     /// The id of the project shown.
@@ -953,6 +960,7 @@ impl Session {
     /// the folder last chosen, else the ones beside this build.
     pub fn with_settings(startup: Option<PathBuf>, settings: Option<PathBuf>) -> Self {
         let kept = crate::hosts::kept::Kept::open(settings.clone());
+        let users = presets::Users::open(settings.as_deref());
         let store = store::Store::open(settings);
         // The language kept; until one is (the first run), English, and
         // the page's first call (`language`) chooses from the system's.
@@ -975,6 +983,7 @@ impl Session {
                 shelves: HashMap::new(),
                 catalogue: HashMap::new(),
                 store,
+                users,
                 // The project a window starts with.
                 projects: vec![Project::new(1, UNTITLED.to_owned())],
                 active: 1,
@@ -984,6 +993,7 @@ impl Session {
             startup,
             traced: std::env::var_os("EDGE_DESKTOP_TRACE").is_some(),
             scene: scene::Cache::default(),
+            paint: paint::Cache::default(),
             hosts: Hosts {
                 kept: Mutex::new(kept),
                 queue: crate::hosts::queue::Queue::default(),
@@ -1013,6 +1023,7 @@ impl Session {
         let language = lock(&self.language).clone();
         let answer = i18n::with(language, || match name {
             name if scene::BYTES.contains(&name) => self.scene_bytes(name, args),
+            name if paint::BYTES.contains(&name) => self.paint_bytes(name, args),
             other => Err(format!(
                 "there is no call named {other} that answers in bytes"
             )),
@@ -1063,18 +1074,20 @@ impl Session {
                 let shelf = self.shelf(needed(args, "vendor")?)?;
                 Ok(json!({ "machines": shelf.machines() }))
             }
-            "presets" => {
-                let shelf = self.shelf(needed(args, "vendor")?)?;
-                let machine = needed(args, "machine")?;
-                let (process, filament) = shelf.usual_for(machine);
-                Ok(json!({
-                    "processes": shelf.processes_for(machine),
-                    "filaments": shelf.filaments_for(machine),
-                    // What the printer's own profile usually prints with.
-                    "usual_process": process,
-                    "usual_filament": filament,
-                }))
+            "presets" => self.presets_for(args),
+            "user_presets" => Ok(self.user_presets()),
+            "presets_reload" => Ok(self.presets_reload()),
+            "preset_check" => self.preset_check(args),
+            "preset_save" => self.preset_save(args),
+            "preset_rename" => self.preset_rename(args),
+            "preset_delete" => self.preset_delete(args),
+            "preset_changes" => {
+                let book = settings::Book::of(args)?;
+                self.preset_changes(args, book)
             }
+            "preset_compare" => self.preset_compare(args),
+            "preset_import" => self.preset_import(args),
+            "preset_export" => self.preset_export(args),
 
             "projects" => Ok(lock(&self.state).listing()),
             "project" => {
@@ -1191,6 +1204,7 @@ impl Session {
             name if filaments::JSON.contains(&name) => self.filaments_json(name, args),
             name if print_host::JSON.contains(&name) => self.print_host_json(name, args),
             name if scene::JSON.contains(&name) => self.scene_json(name, args),
+            name if paint::JSON.contains(&name) => self.paint_json(name, args),
             name if scene::BYTES.contains(&name) => {
                 Err(format!("{name} answers in bytes, not in JSON"))
             }
@@ -1613,7 +1627,7 @@ impl Session {
         };
         // A name that is not among the vendor's is no printer yet: it is
         // said when slicing is asked for.
-        let chosen = self.shelf(vendor)?.choose(Some(machine), None, &[]).ok();
+        let chosen = self.choose_presets(vendor, Some(machine), None, &[]).ok();
         Ok(chosen
             .and_then(|chosen| chosen.machine)
             .map(|(_, settings)| ("preset", Arc::new(settings))))
@@ -1634,8 +1648,7 @@ impl Session {
         } else {
             match (&choices.vendor, &choices.process) {
                 (Some(vendor), Some(process)) => self
-                    .shelf(vendor)?
-                    .choose(None, Some(process), &[])
+                    .choose_presets(vendor, None, Some(process), &[])
                     .ok()
                     .and_then(|chosen| chosen.process)
                     .map(|(_, settings)| Arc::new(settings)),

@@ -56,85 +56,23 @@ pub(crate) fn decode_seam(code: &str, corners: Triangle, out: &mut Vec<SeamFacet
     }
 }
 
-/// The reference reads no deeper, so a corrupt code cannot run away.
-const MAX_DEPTH: usize = 256;
-/// The highest filament a triangle can be painted for (`ExtruderMax`).
-const MAX_FILAMENT: u32 = 255;
-
-/// The code's hex digits as numbers, last digit first, which is the
-/// order they are read in. `None` for anything that is not a hex digit.
-fn nibbles(code: &str) -> Option<Vec<u32>> {
-    code.chars().rev().map(|digit| digit.to_digit(16)).collect()
-}
-
 /// Adds to `out` the triangles `code` makes of `corners`, each with its
 /// filament. A code that cannot be read adds nothing and gives `false`:
-/// the triangle is then unpainted, as in the reference.
+/// the triangle is then unpainted, as in the reference. The code is read
+/// by the selector's reader (`edge_mesh::selector::code`), the one this
+/// workspace has.
 pub(crate) fn decode(code: &str, corners: Triangle, out: &mut Vec<Facet>) -> bool {
-    let Some(nibbles) = nibbles(code) else {
-        return false;
-    };
-    let before = out.len();
-    let mut at = 0;
-    if read(&nibbles, &mut at, corners, 0, out).is_none() {
-        out.truncate(before);
-        return false;
-    }
-    true
-}
-
-/// One triangle of the tree: a leaf with its filament, or a split with
-/// its children, which are stored last child first.
-fn read(
-    nibbles: &[u32],
-    at: &mut usize,
-    corners: Triangle,
-    depth: usize,
-    out: &mut Vec<Facet>,
-) -> Option<()> {
-    let code = *nibbles.get(*at)?;
-    *at += 1;
-    let sides = code & 0b11;
-    if sides == 0 {
-        // A leaf: its filament in the upper two bits, or, when those are
-        // both set, three more than what follows in base 15, a digit of
-        // 15 meaning that another follows.
-        let filament = if code >> 2 != 0b11 {
-            code >> 2
-        } else {
-            let mut more = 0;
-            loop {
-                if 15 * more + 3 > MAX_FILAMENT {
-                    return None;
-                }
-                let next = *nibbles.get(*at)?;
-                *at += 1;
-                if next != 0b1111 {
-                    break next + 15 * more + 3;
-                }
-                more += 1;
-            }
-        };
-        if filament > MAX_FILAMENT {
-            return None;
+    match edge_mesh::selector::code::pieces(code, corners) {
+        Some(pieces) => {
+            out.extend(
+                pieces
+                    .into_iter()
+                    .map(|(corners, filament)| Facet { corners, filament }),
+            );
+            true
         }
-        out.push(Facet {
-            corners,
-            filament: filament as u8,
-        });
-        return Some(());
+        None => false,
     }
-    // A split keeps the side it is about in its upper two bits, where 3
-    // is no side; with all three sides split there is none to keep.
-    let special = if sides == 3 { 0 } else { (code >> 2) as usize };
-    if special == 3 || depth >= MAX_DEPTH {
-        return None;
-    }
-    let children = split(corners, sides, special);
-    for child in children.into_iter().rev() {
-        read(nibbles, at, child, depth + 1, out)?;
-    }
-    Some(())
 }
 
 /// The code of a triangle with each piece's filament changed by `map`
@@ -145,105 +83,205 @@ fn read(
 /// that comes to a single unpainted triangle, which the reference does not
 /// write.
 pub(crate) fn remap(code: &str, map: &dyn Fn(u8) -> u8) -> Option<Option<String>> {
-    let nibbles = nibbles(code)?;
-    let mut at = 0;
-    let mut out = Vec::with_capacity(nibbles.len());
-    let mut any = false;
-    rewrite(&nibbles, &mut at, 0, map, &mut out, &mut any)?;
+    use edge_mesh::selector::code::{self as codes, Node};
+    let nodes: Vec<Node> = codes::parse(code)?
+        .into_iter()
+        .map(|node| match node {
+            Node::Leaf(state) => Node::Leaf(map(state)),
+            split => split,
+        })
+        .collect();
     // Nothing painted is left: the triangle is not written. The reference
     // writes back a split whose pieces are all unpainted; it reads the same.
-    if !any {
+    if !nodes
+        .iter()
+        .any(|node| matches!(node, Node::Leaf(state) if *state != 0))
+    {
         return Some(None);
     }
-    Some(Some(
-        out.iter()
-            .rev()
-            .map(|nibble| {
-                char::from_digit(*nibble, 16)
-                    .unwrap_or('0')
-                    .to_ascii_uppercase()
-            })
-            .collect(),
-    ))
+    Some(Some(codes::write(&nodes)))
 }
 
-fn rewrite(
-    nibbles: &[u32],
-    at: &mut usize,
-    depth: usize,
-    map: &dyn Fn(u8) -> u8,
-    out: &mut Vec<u32>,
-    any: &mut bool,
-) -> Option<()> {
-    let code = *nibbles.get(*at)?;
-    *at += 1;
-    let sides = code & 0b11;
-    if sides == 0 {
-        let filament = if code >> 2 != 0b11 {
-            code >> 2
-        } else {
-            let mut more = 0;
-            loop {
-                if 15 * more + 3 > MAX_FILAMENT {
-                    return None;
-                }
-                let next = *nibbles.get(*at)?;
-                *at += 1;
-                if next != 0b1111 {
-                    break next + 15 * more + 3;
-                }
-                more += 1;
-            }
+/// What a triangle can be painted with, in the order the reference writes
+/// them on a triangle (bbs_3mf.cpp `_add_mesh_to_object_stream`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum PaintKind {
+    /// Supports painted on or off (`supported_facets`).
+    Supports,
+    /// Seams painted on or off (`seam_facets`).
+    Seam,
+    /// Filaments (`mmu_segmentation_facets`).
+    Color,
+    /// Fuzzy skin painted on (`fuzzy_skin_facets`).
+    FuzzySkin,
+}
+
+impl PaintKind {
+    pub const ALL: [PaintKind; 4] = [
+        PaintKind::Supports,
+        PaintKind::Seam,
+        PaintKind::Color,
+        PaintKind::FuzzySkin,
+    ];
+
+    /// The attribute a project stores it under.
+    pub fn attribute(self) -> &'static str {
+        match self {
+            PaintKind::Supports => "paint_supports",
+            PaintKind::Seam => "paint_seam",
+            PaintKind::Color => "paint_color",
+            PaintKind::FuzzySkin => "paint_fuzzy_skin",
+        }
+    }
+
+    /// Whether an attribute of a triangle is this kind of paint: fuzzy
+    /// skin was once written `paint_fuzzy`, which the reference still reads.
+    fn names(self, key: &str) -> bool {
+        key == self.attribute() || (self == PaintKind::FuzzySkin && key == "paint_fuzzy")
+    }
+
+    fn of(key: &str) -> Option<PaintKind> {
+        PaintKind::ALL.into_iter().find(|kind| kind.names(key))
+    }
+}
+
+/// A triangle's attributes as written (` key="value"`), each as its key
+/// and its value as written.
+fn attributes_of(text: &str) -> Vec<(&str, &str)> {
+    let mut out = Vec::new();
+    let mut rest = text;
+    while let Some(eq) = rest.find("=\"") {
+        let key = rest[..eq].trim();
+        let after = &rest[eq + 2..];
+        let Some(end) = after.find('"') else { break };
+        out.push((key, &after[..end]));
+        rest = &after[end + 1..];
+    }
+    out
+}
+
+impl crate::Part {
+    /// The code of `kind` on each triangle of the part's mesh that has one,
+    /// by the triangle's place in the mesh, in order. Only what was read or
+    /// painted on the mesh the part has now.
+    pub fn paint_codes(&self, kind: PaintKind) -> Vec<(u32, String)> {
+        let Some(extras) = crate::write::extras_of(self) else {
+            return Vec::new();
         };
-        let state = u32::from(map(u8::try_from(filament).ok()?));
-        *any |= state != 0;
-        if state < 3 {
-            out.push(state << 2);
-        } else {
-            out.push(0b1100);
-            let mut rest = state - 3;
-            while rest >= 15 {
-                out.push(0b1111);
-                rest -= 15;
-            }
-            out.push(rest);
-        }
-        return Some(());
+        extras
+            .iter()
+            .filter_map(|(triangle, text)| {
+                attributes_of(text)
+                    .into_iter()
+                    .find(|(key, value)| kind.names(key) && !value.is_empty())
+                    .map(|(_, value)| (*triangle, value.to_owned()))
+            })
+            .collect()
     }
-    if depth >= MAX_DEPTH {
-        return None;
-    }
-    out.push(code);
-    for _ in 0..=sides {
-        rewrite(nibbles, at, depth + 1, map, out, any)?;
-    }
-    Some(())
-}
 
-/// The triangles a split makes, in the reference's order: new corners
-/// are put at the middle of the split sides.
-fn split(corners: Triangle, sides: u32, special: usize) -> Vec<Triangle> {
-    let middle = |a: [f32; 3], b: [f32; 3]| -> [f32; 3] {
-        std::array::from_fn(|axis| 0.5 * (a[axis] + b[axis]))
-    };
-    // The corners, turned to begin at the special side's.
-    let [a, b, c]: [[f32; 3]; 3] = std::array::from_fn(|index| corners[(special + index) % 3]);
-    match sides {
-        1 => {
-            let bc = middle(c, b);
-            vec![[a, b, bc], [bc, c, a]]
+    /// Whether any triangle of the part carries `kind`.
+    pub fn has_paint(&self, kind: PaintKind) -> bool {
+        crate::write::extras_of(self).is_some_and(|extras| {
+            extras.iter().any(|(_, text)| {
+                attributes_of(text)
+                    .iter()
+                    .any(|(key, value)| kind.names(key) && !value.is_empty())
+            })
+        })
+    }
+
+    /// The part with `kind` painted as `codes` say (each triangle's code by
+    /// its place in the mesh, in order; a triangle not listed is not
+    /// painted with it), what else its triangles carry kept. What the
+    /// slice reads of colours and seams is worked out anew.
+    pub fn with_paint(&self, kind: PaintKind, codes: &[(u32, String)]) -> crate::Part {
+        let old: &[(u32, Box<str>)] =
+            crate::write::extras_of(self).map_or(&[], |extras| extras.as_slice());
+        let mut extras: crate::Extras = Vec::with_capacity(old.len().max(codes.len()));
+        let (mut a, mut b) = (old.iter().peekable(), codes.iter().peekable());
+        loop {
+            let triangle = match (a.peek(), b.peek()) {
+                (None, None) => break,
+                (Some((x, _)), None) => *x,
+                (None, Some((y, _))) => *y,
+                (Some((x, _)), Some((y, _))) => (*x).min(*y),
+            };
+            let was = a
+                .next_if(|(at, _)| *at == triangle)
+                .map(|(_, text)| &**text);
+            let code = b
+                .next_if(|(at, _)| *at == triangle)
+                .map(|(_, code)| code.as_str());
+            let mut attributes: Vec<(&str, &str)> = was.map(attributes_of).unwrap_or_default();
+            attributes.retain(|(key, _)| !kind.names(key));
+            if let Some(code) = code.filter(|code| !code.is_empty()) {
+                // In the reference's order: after the kinds written before
+                // it, before the later kinds and anything else.
+                let at = attributes
+                    .iter()
+                    .position(|(key, _)| {
+                        PaintKind::of(key).is_none_or(|other| other as u8 > kind as u8)
+                    })
+                    .unwrap_or(attributes.len());
+                attributes.insert(at, (kind.attribute(), code));
+            }
+            if attributes.is_empty() {
+                continue;
+            }
+            let mut text = String::new();
+            for (key, value) in attributes {
+                text.push(' ');
+                text.push_str(key);
+                text.push_str("=\"");
+                text.push_str(value);
+                text.push('"');
+            }
+            extras.push((triangle, text.into_boxed_str()));
         }
-        2 => {
-            let ab = middle(b, a);
-            let ca = middle(a, c);
-            vec![[a, ab, ca], [ab, b, ca], [b, c, ca]]
+        let mut part = self.clone();
+        let own = part.kept.get_or_insert_with(Default::default);
+        let own = std::sync::Arc::make_mut(own);
+        own.extras = (!extras.is_empty()).then(|| std::sync::Arc::new(extras));
+        own.painted_on = Some(crate::kept::MeshOf(self.mesh.clone()));
+        match kind {
+            PaintKind::Color => {
+                part.paint = (!codes.is_empty()).then(|| {
+                    let mut facets = Vec::with_capacity(self.mesh.triangles.len());
+                    let mut listed = codes.iter().peekable();
+                    for at in 0..self.mesh.triangles.len() {
+                        let corners = self.mesh.triangle(at);
+                        let read = listed
+                            .next_if(|(triangle, _)| *triangle as usize == at)
+                            .is_some_and(|(_, code)| decode(code, corners, &mut facets));
+                        if !read {
+                            facets.push(Facet {
+                                corners,
+                                filament: 0,
+                            });
+                        }
+                    }
+                    std::sync::Arc::new(facets)
+                });
+                if part
+                    .paint
+                    .as_ref()
+                    .is_some_and(|facets| facets.iter().all(|facet| facet.filament == 0))
+                {
+                    part.paint = None;
+                }
+            }
+            PaintKind::Seam => {
+                let mut facets = Vec::new();
+                for (triangle, code) in codes {
+                    if (*triangle as usize) < self.mesh.triangles.len() {
+                        decode_seam(code, self.mesh.triangle(*triangle as usize), &mut facets);
+                    }
+                }
+                part.seam = (!facets.is_empty()).then(|| std::sync::Arc::new(facets));
+            }
+            PaintKind::Supports | PaintKind::FuzzySkin => {}
         }
-        _ => {
-            let ab = middle(b, a);
-            let bc = middle(c, b);
-            let ca = middle(a, c);
-            vec![[a, ab, ca], [ab, b, bc], [bc, c, ca], [ab, bc, ca]]
-        }
+        part
     }
 }
 

@@ -45,6 +45,13 @@
     scale: { name: t('Scale'), key: 's', icon: 'M1.5,14.5h6v-6h-6ZM9.5,6.5l5-5M14.5,1.5h-4M14.5,1.5v4' },
     // GLGizmoFlatten.cpp: for one object at a time (`is_selection_supported`).
     flatten: { name: t('Lay on face'), key: 'f', one: true, icon: 'M1.5,14.5h13M4.5,11.5l2-8l7,3l-3,5Z' },
+    // The painting tools (paint.js), each on one whole copy
+    // (GLGizmoPainterBase.cpp `on_is_activable`: `is_single_full_instance`),
+    // in the reference's order (GLGizmosManager.cpp `init`).
+    supports: { name: t('Support Painting'), key: 'l', one: true, paint: 'supports', icon: 'M2.5,14.5h11M5,14.5v-5M11,14.5v-5M3.5,9.5h9M8,9.5v-4M5.5,5.5h5l-2.5-4Z' },
+    seam: { name: t('Seam painting'), key: 'p', one: true, paint: 'seam', icon: 'M8,1.5a6.5,6.5,0,1,0,0.01,0ZM8,1.5v13' },
+    fuzzy_skin: { name: t('Paint-on fuzzy skin'), key: 'h', one: true, paint: 'fuzzy_skin', icon: 'M2,13.5l1.5-2l1.5,1l1.5-2l1.5,1l1.5-2l1.5,1l1.5-2l1.5,1M3.5,8.5l7-7l3,3l-7,7' },
+    color: { name: t('Color Painting'), key: 'n', one: true, paint: 'color', icon: 'M9.5,1.5l5,5l-7,7l-5-5ZM2.5,8.5l-1,6h6M6,5l5,5' },
   };
   const ICONS = {
     add: 'M1.5,12.5v-9a1,1,0,0,1,1-1h3l1.5,2h6.5a1,1,0,0,1,1,1v7a1,1,0,0,1-1,1h-11A1,1,0,0,1,1.5,12.5ZM8,7v4M6,9h4',
@@ -138,6 +145,16 @@
       this.build();
       document.addEventListener('keydown', (event) => this.key(event));
       GL.edit = this;
+      // The painting tools, with what they need of this.
+      if (GL.painter) {
+        GL.painter.init({
+          ...host,
+          data: () => this.data(),
+          filamentCount: () => this.filamentCount(),
+          bytes: (name, args) => this.stage.bytes(name, args),
+          toolClosed: () => { this.tool = null; this.refresh(); },
+        });
+      }
     },
 
     // ---- what is laid over the stage ----
@@ -167,7 +184,8 @@
       }
       const b = this.buttons;
       this.bar = el('div', { className: 'toolbar', id: 'edit-bar' },
-        b.add, b.addPlate, gap(), b.arrange, gap(), b.splitObjects, b.splitParts, gap(), b.move, b.rotate, b.scale, b.flatten, gap(), b.undo, b.redo);
+        b.add, b.addPlate, gap(), b.arrange, gap(), b.splitObjects, b.splitParts, gap(), b.move, b.rotate, b.scale, b.flatten, gap(),
+        b.supports, b.seam, b.fuzzy_skin, b.color, gap(), b.undo, b.redo);
       this.bar.setAttribute('role', 'toolbar');
       this.bar.setAttribute('aria-label', t('Prepare'));
       this.panel = el('div', { className: 'edit-panel overlay', id: 'edit-panel', hidden: true });
@@ -395,6 +413,14 @@
 
     setTool(tool) {
       if (tool && !this.usable(tool)) return;
+      // A painting tool opens on the copy selected and closes with the
+      // tool (paint.js).
+      const painter = GL.painter;
+      if (painter && painter.active() && (!tool || !TOOLS[tool].paint || tool !== this.tool)) painter.close();
+      if (painter && tool && TOOLS[tool].paint && tool !== this.tool) {
+        const chosen = this.chosen();
+        if (chosen) painter.start(TOOLS[tool].paint, chosen.copies[0].id);
+      }
       this.tool = tool;
       this.hot = null;
       this.fields.of = '';
@@ -574,6 +600,8 @@
       // Undo, Redo, Import, Cut, Copy, Paste, Clone and Delete are the menu
       // bar's keys (menu.js). Shift with Ctrl+Z makes again too, as a Mac
       // has it.
+      // A painting tool's own keys come first (GLGizmosManager.cpp `on_key`).
+      if (GL.painter && GL.painter.active() && GL.painter.key(event)) { event.preventDefault(); return; }
       if (command) {
         if (key === 'z' && event.shiftKey) take(() => this.step('redo'));
         return;
@@ -613,13 +641,14 @@
     },
 
     sceneChanged() {
-      if (this.tool && !this.usable(this.tool)) this.tool = null;
+      if (this.tool && !this.usable(this.tool)) this.setTool(null);
+      if (GL.painter) GL.painter.keep();
       this.refresh();
       if (GL.objects) GL.objects.render();
     },
 
     selectionChanged() {
-      if (this.tool && !this.usable(this.tool)) this.tool = null;
+      if (this.tool && !this.usable(this.tool)) this.setTool(null);
       this.fields.of = '';
       this.refresh();
       if (GL.objects) GL.objects.mark();
@@ -1005,6 +1034,7 @@
     draw(frame) {
       // The plate's own tools stand beside the plate shown.
       if (GL.plateTools) GL.plateTools.place(frame);
+      if (GL.painter && GL.painter.active()) { GL.painter.draw(frame); return; }
       const chosen = this.tool && this.editing() ? this.chosen() : null;
       if (!chosen) return;
       const r = this.stage.renderer;
@@ -1135,7 +1165,8 @@
     // `do_render_rotate_window`, `do_render_scale_input_window`). `live`:
     // only the numbers are set, for a drag that is going on.
     showFields(live = false) {
-      const chosen = this.tool && this.editing() ? this.chosen() : null;
+      // A painting tool has its own panel (paint.js).
+      const chosen = this.tool && !TOOLS[this.tool].paint && this.editing() ? this.chosen() : null;
       this.panel.hidden = !chosen;
       if (!chosen) return;
       const { el } = this.host;

@@ -38,11 +38,14 @@ const GL: [(&str, &str); 10] = [
     ("stage.js", include_str!("../ui/gl/stage.js")),
     ("gl.css", include_str!("../ui/gl/gl.css")),
 ];
-/// The files of the tools that change what stands on the plates, and the
-/// list of filaments.
-const EDIT: [(&str, &str); 6] = [
+/// The files of the tools that change what stands on the plates (the
+/// painting tools among them), the list of filaments, and the settings
+/// of an object, a part or a height range.
+const EDIT: [(&str, &str); 8] = [
     ("filaments.js", include_str!("../ui/filaments.js")),
     ("objsettings.js", include_str!("../ui/objsettings.js")),
+    ("paint.js", include_str!("../ui/paint.js")),
+    ("paint.css", include_str!("../ui/paint.css")),
     ("scene-edit.js", include_str!("../ui/scene-edit.js")),
     ("plates.js", include_str!("../ui/plates.js")),
     ("objects.js", include_str!("../ui/objects.js")),
@@ -55,6 +58,11 @@ const SAVE_SCRIPT: &str = include_str!("../ui/save.js");
 const HOSTS: [(&str, &str); 2] = [
     ("hosts.js", include_str!("../ui/hosts.js")),
     ("hosts.css", include_str!("../ui/hosts.css")),
+];
+/// A person's own presets: the lists' cog menus and their dialogs.
+const PRESETS: [(&str, &str); 2] = [
+    ("presets.js", include_str!("../ui/presets.js")),
+    ("presets.css", include_str!("../ui/presets.css")),
 ];
 /// The menu bar: what its entries do and its keys, and the bar itself in
 /// a browser.
@@ -231,6 +239,7 @@ fn handle(mut request: Request, session: &Arc<Session>, token: &str, port: u16) 
             if EDIT
                 .iter()
                 .chain(&HOSTS)
+                .chain(&PRESETS)
                 .chain(&WORDS)
                 .chain(&MENU)
                 .any(|(known, _)| path[1..] == **known) =>
@@ -238,6 +247,7 @@ fn handle(mut request: Request, session: &Arc<Session>, token: &str, port: u16) 
             let (name, built_in) = EDIT
                 .iter()
                 .chain(&HOSTS)
+                .chain(&PRESETS)
                 .chain(&WORDS)
                 .chain(&MENU)
                 .find(|(known, _)| path[1..] == **known)

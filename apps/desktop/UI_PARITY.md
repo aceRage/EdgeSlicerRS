@@ -37,7 +37,12 @@ The last column reads:
   and languages, section 16, and the rows that point to it; fifteenth
   pass: the menu bar, section 17, recent projects, importing OBJ and
   exporting STL in section 2 "Files", and the keys of section 6;
-  sixteenth pass: settings of an object, a part and a height range,
+  sixteenth pass: user presets, the preset rows of section 2, the calls of
+  section 7, "User presets" in section 8, and the marks of sections 12
+  and 14);
+  seventeenth pass: the painting tools, "The painting tools" in section 13,
+  with the rows of sections 2, 6, 7, 9, 11 and 15 that point to it);
+  eighteenth pass: settings of an object, a part and a height range,
   "Sidebar: Process" in section 2, sections 7, 12 ("On an object, a part,
   a height range"), 13 (`scene_edit`, undo, "The object list", "Parts"),
   15 and 16).
@@ -105,15 +110,15 @@ runs, is section 8.
 | Title bar, right: "Synchronize nozzle information" (a U1 or a Bambu printer only): reads the nozzles of the connected printer; "Printer not connected. Please go to the home page or the device page to connect the printer.", "Set Nozzle Diameter", "Nozzle settings synchronized successfully" | l.2406–2577, l.4668 | **not yet**: needs a printer connection (section 4) |
 | The printer row: a framed panel (green frame on hover), a 48 px picture of the printer, the preset list; a click anywhere on it opens the list | l.2637–2705 | **added**: the picture, the model's name and the build volume as the head of one card for the printer; a click anywhere on it opens the list |
 | The picture: `<printer_model>_cover.png` from the vendor's profiles folder (Snapmaker's from `resources/images` by the preset's name), "printer_placeholder" when there is none | `Sidebar::update_printer_thumbnail` l.12170 | **added**: the cover from the profiles folder for every vendor (`printer_cover`), a grey box when there is none. A project on its own settings shows its printer's picture when that model is among those added |
-| The list holds every visible printer preset, in groups with these titles, in this order: "Project-inside presets", "User presets", "System presets". Each group is in order of name (`std::map`: by code unit, capitals first). A system printer is listed once for each `printer_model`, under the model's name, whatever its nozzles | `PlaterPresetComboBox::update`, PresetComboBoxes.cpp l.1528–1749 | **added**: one list (`printers`), the same groups, titles and order; "System presets" has a row for each model added, by model name. Before: "Vendor" and "Printer", listing every preset of every vendor. **not yet**: "User presets" (there are no user presets; the group is left out while it is empty, as in the C++) |
+| The list holds every visible printer preset, in groups with these titles, in this order: "Project-inside presets", "User presets", "System presets". Each group is in order of name (`std::map`: by code unit, capitals first). A system printer is listed once for each `printer_model`, under the model's name, whatever its nozzles | `PlaterPresetComboBox::update`, PresetComboBoxes.cpp l.1528–1749 | **added**: one list (`printers`), the same groups, titles and order; "System presets" has a row for each model added, by model name. Before: "Vendor" and "Printer", listing every preset of every vendor. **added** (sixteenth pass): "User presets", the person's printer presets (section 8, "User presets") whose system printer is of a model added, each by its name with the model's picture; picked, the project goes on it (`printer_select` with `machine`). The group is left out while it is empty, as in the C++ |
 | "Project-inside presets": the presets a project file carries that are not the vendor's own | l.1656–1663, l.1722–1730 | **differs**: the row is the printer the project was saved with (`printer_settings_id`) and stands for the project's own settings as a whole, which is how this engine slices a project. It replaces the first pass's "Sliced with: the project's own settings / presets chosen here". Picking it goes back to those settings, the project's own bed type among them; picking a row of "System presets" slices with presets |
 | A preset is listed only if visible; a system printer is visible only when its vendor, model and nozzle are among the printers added (`AppConfig` "models"); with one nozzle of a model added, all of them are | `Preset::set_visible_from_appconfig` Preset.cpp l.1060, `PresetBundle::load_installed_printers` l.2127, `install_missing_variants_for_enabled_models` l.2100 | **added** (section 8). A printer a project is on that is not among those added is listed while it is in force, as the C++ makes a preset visible when it is selected (Plater.cpp l.18619) |
-| The row shown as selected; the list's tooltip is the preset's own name; a modified preset has "* " before its name; typing filters the list | l.1595–1599, l.1769–1778, `Preset::label` Preset.cpp l.899 | **added**: the selection and the tooltip. Nothing modifies a preset here, so there is no mark. Typing jumps to a row, as a list of the system's does. The list is the page's own (`listbox` in `app.js`), so that it can show the groups, each printer's picture and the entry at its foot; its keys are those of a system list (arrows, Home, End, typing, Enter, Escape) |
+| The row shown as selected; the list's tooltip is the preset's own name; a modified preset has "* " before its name; typing filters the list | l.1595–1599, l.1769–1778, `Preset::label` Preset.cpp l.899 | **added**: the selection and the tooltip. **added** (sixteenth pass): "* " before the preset in force while something is set over it (the `*` message id and a space, as GUI_App.cpp l.8490 sets the suffix), in the printer list, each filament's and the process's. Typing jumps to a row, as a list of the system's does. The list is the page's own (`listbox` in `app.js`), so that it can show the groups, each printer's picture and the entry at its foot; its keys are those of a system list (arrows, Home, End, typing, Enter, Escape) |
 | Two vendors with a model of the same name are one row (the group is keyed by name) | l.1636–1641 | **differs**: a row each, the vendor in the row's tooltip. One row that picks whichever preset comes first is not what a list of printers is for |
 | Picking a model: the preset of that model for the nozzle the project is on, else for 0.4, else the first by name; when the model changes, the nozzles last used on its rack | `Plater::priv::on_select_preset` l.18536–18648, `PresetBundle::get_similar_printer_preset` l.3141, `printer_preset_for_remembered_nozzles` l.4047 | **added** (`printer_select`). **not yet**: the rack's remembered nozzles (the engine has no rack) |
 | At the foot of the list: "Select/Remove printers (system presets)" opens Printer Selection; "Create printer" opens "Create Printer/Nozzle". Picked, they leave the list on the printer it was on | l.1751–1762, `OnSelect` l.1188–1222, Plater.cpp l.18547 | **added**: "Select/Remove printers (system presets)". **not yet**: "Create printer" (section 8); it is not listed |
 | In the list's own row: the edit icon (opens the printer's settings), "Connect to printer" (opens "Devices"), "The machine has been connected and is currently in working mode" | Plater.cpp l.2659–2686, PresetComboBoxes.cpp l.1907–1985 | **added**: the edit icon at the right of the printer card's head, "Click to edit preset", opens the printer's pages (section 14). **not yet**: "Connect to printer" and the working-mode mark, which need a printer connection (section 4) |
-| Leaving a printer or filament preset with unsaved changes asks first ("Unsaved Changes") | `Tab::select_preset` Tab.cpp l.9037–9105 | not needed: presets are not edited |
+| Leaving a printer, filament or process preset with unsaved changes asks first: "Transfer or discard changes", "You have changed some settings of preset \"%1%\"." and what can be done, the list of the options changed with "Old Value" and "New Value" by page and group, "Transfer", "Discard", "Save" (the save dialog, then the new preset) and closing the box | `Tab::select_preset` Tab.cpp l.9037–9105, `may_discard_current_dirty_preset` l.9441, UnsavedChangesDialog.cpp l.808–1470 | **added** (sixteenth pass; `preset_changes`, `ui/presets.js`): for each of the three lists, a filament's for its own slot; "Cancel" stays on the preset. **differs**: every option listed goes (no tick for each: the C++'s tree has one); the dialog is not asked for when a printer change only carries process settings over (the fork's own carry, below, which it does without asking either); "Remember my choice." is not offered |
 | **Another printer, the process**: the one last used with that printer ("Remember printer configuration", on unless turned off); else the one of the same name (alias: the name up to "@") cut for it; else the printer's `default_print_profile`; else the first that fits | `PresetBundle::update_selections` l.2432, `update_compatible` l.7171 (`PreferedPrintProfileMatch` l.7213), Tab.cpp l.9196–9306 | **added** (`printer_select`), in that order, a process that still fits staying before the search by name. **not yet**: the profile remembered for each layer height, the preference itself |
 | **Another printer, the process settings changed by hand** are carried over: "Kept %1% process settings from \"%2%\" (revertable)."; each carried value stays marked as changed and can be reverted | `capture_print_settings_carry`, `apply_print_settings_carry` Tab.cpp l.9096, l.9314 | **added**: every process setting set over the preset stays set, with the same sentence in the status line (one setting: "Kept 1 process setting from …"), and each is given back with its own reset or all with the reset in the Process title bar. **differs**: said for a change of process preset too, where the C++ asks ("Unsaved Changes": transfer, discard, save); line widths and layer heights are kept across nozzle sizes, where the C++ lets them "follow the new nozzle size" |
 | **Another printer, the filaments**: each one that fits stays; one that does not is replaced by the one of the same name cut for the new printer, else by one of the same `filament_type`, the printer's `default_filament_profile` before others. The filaments last used with the printer are read back and then put aside again for the project's (Tab.cpp l.9251) | `update_compatible` l.7275–7357, Tab.cpp l.9235–9306 | **added**, the same rule for each slot (`Shelf::filament_type` gives the material). A slot with nothing in it yet, as in a new project, takes what was last used in it with that printer, else the printer's usual. **differs**: every slot's usual filament is the printer's first `default_filament_profile`, the engine handing out one |
@@ -139,6 +144,7 @@ runs, is section 8.
 | "Add one filament" (at most 64, `MAXIMUM_FILAMENT_NUMBER`), "Remove last filament" (shown with more than one) | l.3508–3600, `Sidebar::add_filament`, `delete_filament` l.10223 | **added**, in the list's head, the same words (`filament_edit` `add`, `remove_last`). The new filament is the last one again: its preset (`filament_presets.back()`), what is set over it, and with the project's own settings all its values; its colour the next of the reference's sixteen (`get_next_color_for_filament`, one counter for the window as the reference's is static); what is flushed to and from it worked out from the colours (below). Nothing is asked, as in the reference (it asks only about mixed filaments, which are not read here). A printer with fewer tools takes a fifth filament as the reference does: `T4` is written, with the engine's warning |
 | "Delete" of any filament; "Merge with" | `Sidebar::delete_filament` with an index, `change_filament` l.10069, `Plater::on_filaments_delete` l.28076, `PartPlate::on_filament_deleted` l.6798, MixedFilamentConfigRemap.hpp | **added** (`delete`, `merge`): the filaments after it are numbered one less wherever they are named: a part's and an object's filament, the colours painted on (`paint_color`, the triangles' codes rewritten), an object's, a part's and a height range's feature filaments (`wall_filament`, `support_filament`…), the project's own process settings that name one, a plate's first-layer and later-layers orders (the filament taken out of them) and its `filament_maps` entry, a filament change at a layer (one to it taken out; merged, to the filament merged into). What was in it prints in its object's filament (a part), filament 1 (an object), unpainted (a colour); merged, in the filament merged into. Its flushing volumes go with it. **differs**: the flushing volumes are taken out by row and column, where the reference keeps the first n − 1 (see "Errors found in the C++"); a filament change merged goes to the right filament (ditto); a range of later layers whose order is left empty is taken away, where the reference keeps it empty and its dialog then refuses it. **not yet**: a feature filament set by hand over a process preset (`process_set`) is not renumbered |
 | "Apply All" with "Filament preset to apply to all filaments", "Set all filaments to the selected preset" | l.3624 | **added** under the list while presets are chosen here (a project on its own settings has none to choose), its list starting at filament 1's preset. **differs**: on a printer whose heads carry nozzles of different sizes the reference lists families and gives each slot the variant for its nozzle; the engine has one nozzle size for all tools, so the plain list is offered |
+| Each filament's preset list in the reference's groups ("User presets", then "System presets"), compatible filaments only, "* " before one with something set over it | `PlaterPresetComboBox::update`, Preset.cpp `is_compatible_with_printer` l.943 | **added** (sixteenth pass): the person's filament presets that go with the printer (their `compatible_printers` name it or a printer it is made from; none named and no condition: every printer) before the vendor's made for it. Picking another with something set over the slot's preset asks first (above, "Sidebar: Printer"). Saving one from the slot's pages ("Save current Filament") puts the slot on it, and every other slot on the same preset with nothing of its own set, as `update_presets_from_to` moves the plater's slots. **differs**: a preset with a `compatible_printers_condition` and no list is offered where the system preset it is made from is offered: the condition is not worked out, as the vendor's own lists here go by `compatible_printers` alone |
 | "Flushing volumes" (shown with more than one filament): `WipingDialog` with the matrix, "Auto-Calc", the multiplier | l.2903, `WipingDialog.cpp` | **not yet**: the volumes are kept right (the matrix and vector the size of the list, a new filament's row and column and a recoloured one's worked out as "Auto-Calc" does, saved), and a printer of one nozzle is given them at a tool change (`flush_length`); the dialog waits for the engine to purge them into the prime tower (section 14, "Not yet"), without which what it sets would change only that number |
 | "Color Mixing Match", "Synchronize filament list from AMS", "Sync Filament Information", "Spool Manager", "Manage filament presets" | l.2936, l.3404, l.3508 | **not yet** |
 | "Mixed Filaments": "Add Gradient", "Add Pattern", "Add Color" | l.3794 | **not yet** |
@@ -162,7 +168,7 @@ does with each option.
 | Controls by kind: a tick box (`coBool`), a number with its unit (`coInt`, `coFloat`, `coPercent`), a length or a percentage (`coFloatOrPercent`), a list (`coEnum`), a list that also takes a typed value (`i_enum_open`, `f_enum_open`: the infill anchors, the support interface layers), text, a box of text for G-code, scripts and notes | Field.cpp, OptionsGroup.cpp | **added**: the controls of `ui/STYLE.md`; a list is the page's own listbox; a list that takes a typed value is a field with a chevron that opens the values as a menu |
 | One line with several options under one label: "Overhang speed" with its four ranges, "Bridge" with external and internal | Tab.cpp l.3703–3714 | **differs**: the line's label and tooltip, then a row for each option under it; four fields do not fit beside a label in a sidebar |
 | A value for each nozzle flow variant (the speeds, accelerations and jerks: `coFloats`), picked by the variant selector at the top of the tab | `register_flow_variant_view`, Tab.cpp l.3670 | **differs**: one field, showing the first variant's value and setting every variant alike. **not yet**: a value for each variant (the engine reads the first) |
-| A changed option is marked (its label orange) with an arrow that puts it back: "Click to drop current modify and reset to saved value." | Tab.cpp l.10523, `OG_CustomCtrl` | **added**: a bar of the accent on the control, the label in bold, and the arrow with the same tooltip. Here a change is the project's own over the preset (`process_set`), not an edit to the preset: the preset's value is what the arrow goes back to and what an emptied field shows in grey |
+| A changed option is marked (its label orange) with an arrow that puts it back: "Click to drop current modify and reset to saved value." | Tab.cpp l.10523, `OG_CustomCtrl` | **added**: a bar of the accent on the control, the label in bold, and the arrow with the same tooltip. Here a change is the project's own over the preset (`process_set`): the preset's value is what the arrow goes back to and what an emptied field shows in grey. That is the reference's "dirty" preset (`get_edited_preset` against `get_selected_preset`, `current_is_dirty`): what is set over a preset is what "Save current …" writes into a preset of one's own, what "Transfer or discard changes" lists, and what puts "* " before the preset in its list (sixteenth pass). The C++ edits one preset for the whole window; here each project has its own changes over its presets, kept with the project, as before. **not yet**: the lock beside an option of a preset of one's own whose value is not the system preset's ("Click to reset current value and attach to the global value.") |
 | How many options are changed | the preset's "* " mark, the tab's orange title | **added**: a count on each page's tab ("2 settings changed") |
 | "Click to reset all settings to the last saved preset." | Tab.cpp l.2229 | **added**: the arrow in the Process title bar, there while anything is changed |
 | A change marks the project modified and drops the slices | `Tab::on_value_change`, `Plater::on_config_change` | **added** (**had** for the four) |
@@ -172,11 +178,11 @@ does with each option.
 | "Advance" switch: off, the simple options; on, the advanced ones too; a page with nothing to show in the mode is not among the tabs. Developer options with "Develop mode" (Preferences) | ParamsPanel.cpp l.229, `ConfigOptionMode`, GUI_App.cpp l.8520, `Tab::update_visibility` | **added**: the switch, off to start with as in the C++, kept by the page; it reads "Advanced", as the C++ shows it through the `en` catalog (section 16); 54 options without it (no Speed page), 428 with. **not yet**: develop mode, so the 5 developer options are not shown |
 | Search ("Search in preset"): finds options by label, jumps to the page and the option | Tab.cpp l.382–420, `Search.cpp` | **added**: every word typed must be in the label, the name (`seam_slope_type`), the group or the page; the list shows label, page › group and name; Enter or a click opens the page, goes to the row and marks it for a moment; Escape clears. An option the rules hide is listed greyed, and its group is gone to |
 | What the slicer does with an option | — | this app's own (**added**): a quiet ring beside an option the engine does not read with the settings as they are, a dot beside one it follows with a note, each said in the label's tooltip; nothing is hidden for it and every option can still be set (section 12) |
-| The support sets row ("Support set": apply, save, delete) | Tab.cpp l.3776, `support_set_create_widget` | **not yet**: it writes files of user presets |
-| "Global" / "Objects" switch (`SwitchButton`, `_L("Global")`, `_L("Objects")`); in "Objects" the pages of what the object list has selected: an object (`TabPrintObject`), a part or a modifier (`TabPrintPart`), a height range (`TabPrintLayer`); nothing selected, the panel is hidden | ParamsPanel.cpp l.222, `set_active_tab` l.581, Tab.cpp l.5027–5579, GUI_ObjectSettings.cpp `update_settings_list` l.189 | **added** (sixteenth pass, `ui/objsettings.js`, `src/api/settings/items.rs`): the switch at the head of the section, the pages of the item selected, its name beside the switch. The options an item may set are the reference's (section 12, "On an object, a part, a height range"), the reference's "Frequent" page first; the value shown is the item's own, else its parent's (part and range: the object's; object: the project's); its own is marked as a value set by hand (`.set`), with the arrow "Click to reset current value and attach to the global value."; a change makes it the item's own even when it equals the parent's (Tab.cpp l.5217, `set = true`); the rules are the global pages' (`rules.rs`) on the item's settings. Each change is one step of the history ("Change Option wall_loops", untranslated as the reference's `boost::format`); the reset of all "Reset Options". "Objects" carries the dot of what is set by hand while anything has settings of its own, as the reference colours its word. **differs**: with nothing selected, or several objects or parts, the section says so ("Select an object, a part or a height range…") where the reference hides it; several items at once (the reference's blank fields for values that differ) are not offered; the switch starts on "Global" for every project, where the reference turns to "Objects" by itself after opening a project with settings of objects (`switch_to_object_if_has_object_configs`); the preset row is hidden in "Objects". What the engine does with each option set there is shown as on the global pages, from the engine's own answer (section 12): walls, shells, infill, speeds and the rest followed on an object, a part, a modifier and a height range; a layer height on an object or a range, an object's supports and seam, the feature filaments noted as not followed, with the engine's note. **not yet**: the tool selector |
+| The support sets row ("Support set": apply, save, delete) | Tab.cpp l.3776, `support_set_create_widget` | **not yet**: it keeps its sets in files of its own beside the user presets, which this pass does not read or write |
+| "Global" / "Objects" switch (`SwitchButton`, `_L("Global")`, `_L("Objects")`); in "Objects" the pages of what the object list has selected: an object (`TabPrintObject`), a part or a modifier (`TabPrintPart`), a height range (`TabPrintLayer`); nothing selected, the panel is hidden | ParamsPanel.cpp l.222, `set_active_tab` l.581, Tab.cpp l.5027–5579, GUI_ObjectSettings.cpp `update_settings_list` l.189 | **added** (eighteenth pass, `ui/objsettings.js`, `src/api/settings/items.rs`): the switch at the head of the section, the pages of the item selected, its name beside the switch. The options an item may set are the reference's (section 12, "On an object, a part, a height range"), the reference's "Frequent" page first; the value shown is the item's own, else its parent's (part and range: the object's; object: the project's); its own is marked as a value set by hand (`.set`), with the arrow "Click to reset current value and attach to the global value."; a change makes it the item's own even when it equals the parent's (Tab.cpp l.5217, `set = true`); the rules are the global pages' (`rules.rs`) on the item's settings. Each change is one step of the history ("Change Option wall_loops", untranslated as the reference's `boost::format`); the reset of all "Reset Options". "Objects" carries the dot of what is set by hand while anything has settings of its own, as the reference colours its word. **differs**: with nothing selected, or several objects or parts, the section says so ("Select an object, a part or a height range…") where the reference hides it; several items at once (the reference's blank fields for values that differ) are not offered; the switch starts on "Global" for every project, where the reference turns to "Objects" by itself after opening a project with settings of objects (`switch_to_object_if_has_object_configs`); the preset row and its cog are hidden in "Objects": an item's own values are not edits of the preset, so they put no "* " on the list, are not what "Save current Process" saves (it saves what is set over the preset, the global pages' alone) and are not asked about when another preset is picked ("Transfer or discard changes"); the reset arrows keep their two meanings (an item's: back to what is over it; the global pages': back to the preset). What the engine does with each option set there is shown as on the global pages, from the engine's own answer (section 12): walls, shells, infill, speeds and the rest followed on an object, a part, a modifier and a height range; a layer height on an object or a range, an object's supports and seam, the feature filaments noted as not followed, with the engine's note. **not yet**: the tool selector |
 | "View all object's settings" (the table icon, `ObjectTableDialog` "Object/Part Setting": a grid of every object and part with "Plate", "Name", "Printable", "Filament", "Layer height", "Perimeter", "Infill density(%)", "Support", "Brim", "Perimeter speed", each with a reset), and the menus' "Edit in Parameter Table" | ParamsPanel.cpp l.248, GUI_ObjectTable.cpp (3 350 lines), GUI_Factories.cpp l.3280 | **not yet**: a grid editor of its own size (GUI_ObjectTable.cpp is 3 350 lines, with a side window of settings); every one of its columns can be set from the item's pages now. Not shown |
 | The tool selector at the top of the tab ([Plate] [T1 0.4] …) | `create_tool_selector` | **not yet** |
-| "Compare presets", save ("Save current …") and delete preset, favourites, "Manage process presets" | ParamsPanel.cpp l.238, Tab.cpp l.300–420 | **not yet**: there are no user presets (`edge-config` reads vendor profiles only); what is changed is kept with the project while it is open |
+| "Compare presets", save ("Save current …") and delete preset, favourites, "Manage process presets" | ParamsPanel.cpp l.238, Tab.cpp l.300–420 | **added** (sixteenth pass): a cog beside the process list (and in the head of a filament's or the printer's pages) opens "Save current %s", "Rename preset" and "Delete this preset" (both for one's own preset only, as the C++ hides its delete button for a system one) and "Compare presets" (section 8, "User presets"). **differs**: the C++ has save and delete as icons in the tab's head and compare in the title bar; here they are one menu, the head being shared with the "Global / Objects" switch. A project sliced with its own settings has nothing to save: the C++ makes a preset of the project's own settings, which are one whole here (this row's "Project-inside presets" above). **not yet**: favourites, "Manage process presets" (the Process manager window), "Preset Inside Project" in the save dialog (the project would carry presets of its own in its file, which section 15's save does not write), detaching from the parent ("Detach from parent", develop mode) |
 | The filament's and the printer's own pages of settings | `TabFilament::build`, `TabPrinter::build` | **added**: section 14, from the same tool, drawn by the same code |
 
 ### The bed
@@ -185,8 +191,8 @@ does with each option.
 | --- | --- | --- |
 | A 3D view of every plate with the objects on it, orbit / pan / zoom, selection | `View3D`, `GLCanvas3D` | **added**, in 3D: section 9. Where the browser has no WebGL2, the view from above the first pass built is kept: the bed of the printer chosen with its grid and each object's outline (its convex hull), name and size, drag to move, wheel to zoom, "Fit part" [Z] and "Fit bed" |
 | Main toolbar: "Add" [Ctrl+I], "Add plate", "Auto orient all/selected objects" [Q], "Arrange all objects" [A] with its options, "Split to objects", "Split to parts", "Variable layer height", "Assembly View" | `GLCanvas3D::_init_main_toolbar` l.9274 | **added**: "Add", "Add plate", "Arrange all objects" (section 13; the arrangement is a plain one, not the reference's), "Split to objects" and "Split to parts". **not yet**: auto orient (the engine does not do it), variable layer height, the assembly view, the arrangement's options |
-| Gizmos: "Move" [M], "Rotate" [R], "Scale" [S], "Lay on face" [F], "Cut" [C], "Mesh Boolean" [B], "Support Painting" [L], "Seam painting" [P], "Paint-on fuzzy skin" [H], "Color Painting" [N], "Texture displacement", "Emboss" [T], "SVG", "Measure" [U], "Assemble" [Y], "Simplify", "Brim Ears" [E], "Sculpt", "Edit", "Fillet / chamfer (CAD)" | `Gizmos/GLGizmosManager.cpp::init` l.224 | **added**: "Move", "Rotate" and "Scale" with their number fields, and "Lay on face" [F] (section 13). **not yet**: the rest |
-| Object list: plates, objects, parts, instances, layer ranges; columns "Name", printable, "Fila.", paint marks; the object, part and plate menus | `GUI_ObjectList.cpp`, `GUI_Factories.cpp` | **added**: plates, objects, parts and instances with "Name", printable and "Fila.", and the object's, the part's and the plate's menus (section 13); the mark of an item with settings of its own, "Layers" and its height ranges (sixteenth pass, section 13). **not yet**: the paint marks |
+| Gizmos: "Move" [M], "Rotate" [R], "Scale" [S], "Lay on face" [F], "Cut" [C], "Mesh Boolean" [B], "Support Painting" [L], "Seam painting" [P], "Paint-on fuzzy skin" [H], "Color Painting" [N], "Texture displacement", "Emboss" [T], "SVG", "Measure" [U], "Assemble" [Y], "Simplify", "Brim Ears" [E], "Sculpt", "Edit", "Fillet / chamfer (CAD)" | `Gizmos/GLGizmosManager.cpp::init` l.224 | **added**: "Move", "Rotate" and "Scale" with their number fields, and "Lay on face" [F] (section 13); "Support Painting" [L], "Seam painting" [P], "Paint-on fuzzy skin" [H] and "Color Painting" [N] (section 13, "The painting tools"). **not yet**: "Cut", "Mesh Boolean", "Texture displacement", "Emboss", "SVG", "Measure", "Assemble", "Simplify", "Brim Ears", "Sculpt", "Edit", "Fillet / chamfer (CAD)": each waits for the engine to do what it does (cutting and joining meshes, displacing a surface, text and pictures made into meshes, measuring and assembling, simplifying, brim ears in the brim) |
+| Object list: plates, objects, parts, instances, layer ranges; columns "Name", printable, "Fila.", paint marks; the object, part and plate menus | `GUI_ObjectList.cpp`, `GUI_Factories.cpp` | **added**: plates, objects, parts and instances with "Name", printable and "Fila.", and the object's, the part's and the plate's menus (section 13); the mark of an item with settings of its own, "Layers" and its height ranges (eighteenth pass, section 13). **not yet**: the paint marks |
 | View options: "Realistic View", "X-Ray", "Center of Mass", "Show 3D Navigator", Ctrl+0..6 views | `GLCanvas3D.cpp` l.8297, View menu | **added**: the navigator and the views (section 9). **not yet**: the three view options |
 
 ### Plates
@@ -377,11 +383,11 @@ Read from `ProjectStrip.cpp/.hpp`, `ProjectSessions.hpp` and their uses in
 | Ctrl+P (Cmd+, on a Mac): Preferences; "?": the list of shortcuts; Ctrl+D: "Delete all"; Ctrl+X: "Cut"; Ctrl+Q: Quit (Windows and Linux; Cmd+Q in the application menu on a Mac) | **added** (fifteenth pass) |
 | Ctrl+G ("Export plate sliced file"), Ctrl+Shift+G ("Print plate") | **not yet**: the sliced file is not written; "Print plate" is Bambu's. Ctrl+G's entry is shown, off |
 | Left / Right, Home / End (the move slider), L (one layer mode), C (G-code window) | **added** in 3D, C in the eleventh pass |
-| A, Shift+A, Q, Shift+Q, the gizmo keys, Ctrl+0..6, Ctrl+A / D / Z / Y / C / V / X, Del, 1–9, arrows to move objects | **added** in 3D: Ctrl+0..7 (the views), Ctrl+A, Esc, I and O, Ctrl+E (section 9); A, Shift+A, M, R, S, F, Ctrl+Z, Ctrl+Y, Ctrl+C, Ctrl+V, Ctrl+K, Ctrl+I, Del and the arrows (section 13). **not yet**: Q and Shift+Q, the other gizmos' keys, 1–9 (the filament of what is selected) |
+| A, Shift+A, Q, Shift+Q, the gizmo keys, Ctrl+0..6, Ctrl+A / D / Z / Y / C / V / X, Del, 1–9, arrows to move objects | **added** in 3D: Ctrl+0..7 (the views), Ctrl+A, Esc, I and O, Ctrl+E (section 9); A, Shift+A, M, R, S, F, Ctrl+Z, Ctrl+Y, Ctrl+C, Ctrl+V, Ctrl+K, Ctrl+I, Del and the arrows (section 13); L, P, H, N (the painting tools), and while one is open its own keys: C, S, F, T, H, G for its tools, 1–9 and 1 then 0–6 for the colour tool's filaments, Ctrl and Alt with the wheel (section 13, "The painting tools"; where each is bound, section 17). **not yet**: Q and Shift+Q, the other gizmos' keys, 1–9 (the filament of what is selected, with no painting tool open) |
 
 ## 7. What the page asks for
 
-Every call takes JSON and answers JSON, but the five at the end of the table,
+Every call takes JSON and answers JSON, but the seven at the end of the table,
 which answer bytes (`Session::call_bytes`; section 11); an error is a sentence
 to show. A call about a project takes `project` (its id) and means the one
 shown when it is left out; one about a plate takes `plate` and means the plate
@@ -393,14 +399,14 @@ the project is on.
 | `language` | `system?` (the system's preferred languages, the page's `navigator.languages`) | `{ language, catalog, languages: [{ code, name }], table }`: the language the page is shown in (chosen and kept at the first run, section 16) and its table as `tools/make_translations.py` wrote it |
 | `language_set` | `language` (a code of `languages`) | as `language`; kept. An error for a code not listed |
 | `library`, `set_profiles { dir }` | | `{ dir, vendors }`. The folder set is kept for the next run |
-| `printers` | `project?` | `{ first_run, installed: [{ vendor, brand, model, name, cover, variants: [{ variant, machine }] }], selected: { source: "preset" \| "project", vendor, machine, model, variant, added } \| null, project_printer, last: { vendor, machine } \| null, settings: { file, problem } }` |
+| `printers` | `project?` | `{ first_run, installed: [{ vendor, brand, model, name, cover, variants: [{ variant, machine }] }], selected: { source: "preset" \| "project", vendor, machine, model, variant, added } \| null, project_printer, last: { vendor, machine } \| null, settings: { file, problem }, user: [{ name, vendor, model, variant, base }] }` (the person's printer presets; `selected.user` says the one in force is one of them) |
 | `printer_catalogue` | — | `{ models: [{ vendor, brand, model, name, nozzle_diameter, x, y, z, toolheads, cover, enabled }], unread }` |
 | `printer_cover` | `vendor`, `model` | `{ data }`: the picture as a `data:` URL, or null |
 | `printers_save` | `project?`, `models: [{ vendor, model }]` | as `printers`, and `added`, `removed` (`[{ vendor, model }]`), `switched: [{ project, name, from, to }]`. An error with none: "At least one printer must be selected." |
 | `printers_default` | `project?` | as `printers_save`: adds the Snapmaker U1 when no printer is added |
-| `printer_select` | `project?` and `vendor` with `model` (one of those added), `variant?`; or `variant` alone (another nozzle of the model the project is on); or neither (the printer a project starts with); `initial?` | as `project`; and `notice { title, text }` when plates' own bed types the printer does not take were taken away ("Plate bed types reset"); so does `project_set` given `source`, `vendor` or `machine` |
+| `printer_select` | `project?` and `vendor` with `model` (one of those added), `variant?`; or `vendor` with `machine` (a printer preset of one's own); or `variant` alone (another nozzle of the model the project is on); or neither (the printer a project starts with); `initial?` | as `project`; and `notice { title, text }` when plates' own bed types the printer does not take were taken away ("Plate bed types reset"); so does `project_set` given `source`, `vendor` or `machine` |
 | `machines { vendor }` | | `{ machines }` |
-| `presets { vendor, machine }` | | `{ processes, filaments, usual_process, usual_filament }` |
+| `presets { vendor, machine }` | | `{ processes, filaments, user_processes, user_filaments, usual_process, usual_filament }`: the vendor's made for the printer (for a printer preset of one's own, for the system printer it is made from) and the person's that go with it |
 | `projects` | — | the strip: `{ active, max_open, projects: [{ id, name, path, dirty, empty, plate, tab, revision, slicing, plates_with_objects, plates_sliced }] }`. `revision` counts the edits to the project's model |
 | `project` | `project?` | a strip entry and `file`, `plates: [{ id, name, filaments, objects, sliced, failed, locked, own { bed_type, print_sequence, spiral_mode, first_layer_sequence, other_layers_sequence: [{ begin, end (null: "End"), order }] } (null or empty: the project's), customized (whether it sets any of them) }]`, `sliced`, `failed`, `has_settings`, `used`, `filament_count` (as many filaments as its settings describe, at least the highest anything prints in), `colours` (each filament's; null for a model with no settings whose filaments were never changed), `saved { printer, process, filaments }`, `choices { source, vendor, machine, process, filaments, bed_type, over { key: value }, filament_over [{ key: value }], printer_over { key or key#n: value }, layer_height, first_layer_height, wall_loops, closing_radius }` (`over` is every process setting set over the preset, `filament_over` each filament's own from filament 1, `printer_over` the printer's; the four after them are four process settings under their older names), `view`, `edit { revision, undo, redo }` (what there is to take back and to make again, by name, or null), `status`. All of it is of the model as it stands, edits included |
 | `project_new` | — | the strip and `id`; or the strip and `full: true` |
@@ -418,6 +424,15 @@ the project is on.
 | `settings_pages` | `kind` (`process`, `filament`, `printer`) | as `process_pages`, for that kind. A printer's page with `per: "extruder"` ("Extruder %d") stands for one page for each extruder; a page with `flavors` is shown for those G-code flavors only. An option may also have `vector` (a value for each filament or extruder), `modes` (a value for the normal mode, then the silent), `override` (`printer` or `process`) with `of` (a filament's own value of that option, "nil" while off), `widget` (set in a dialog of the reference's own), `own` (the tab's own, `extruders_count`); a line may have `full` (the row is named with the option's `full_label`) and `labels` (a name for an option on that line) |
 | `settings` | `project?`, `kind`, `filament` (from 1; for `filament`) | as `process`, and for a filament or the printer: `filament`, `filaments`, `extruders`, `pages` (the titles as they stand, "Extruder 1" …), `away` (pages not shown for this G-code flavor), `labels` (a line's name by the rules, by its first option), `fallback` (what an override that is off stands for), `fixed` (why an option is not set here), `gcode_flavor`. An extruder's own option is named `key#n`, n from 0, in every list |
 | `settings_set` | `project?`, `kind`, `filament?`, and `key` (or `key#n`) with `value`, or `reset: true` (that kind's, and that filament's, all back) | as `settings`. Refused with the reason, nothing changed: a value the option does not take; "nil" for what is not an override; an extruder or a filament the project has not got; an option set in a dialog of the reference's own, or that is the preset's and not a filament's; a value the engine would stop at with the block printed in that filament |
+| `user_presets`, `presets_reload` | — | `{ dir, printer, process, filament: [{ name, inherits }], unread: [{ file, reason }] }`: the person's presets (section 8, "User presets"), as read at the start or read again from the disk; `unread` the files there that could not be taken as presets, left as they are |
+| `preset_check` | `project?`, `kind` (`process`, `filament`, `printer`), `filament?` (from 1), `name?`, `preset?` (the one renamed), `rename?` | `{ kind, name, suggested, current, level (ok, warn, invalid), message, title }`: what the save or rename dialog says of a name as it is typed, in the reference's words and order (`validate_preset_name`); `suggested` is "<name> - Copy" for a system preset |
+| `preset_save` | `project?`, `kind`, `filament?`, `name`, `accept?` | as `project`, and `saved: true`, `preset`: the project's preset of that kind with what is set over it, saved as one of the person's and chosen in its place with nothing over it. Or `{ saved: false, ask }` when the name is one of theirs (`accept: true` saves over it). Refused with the reason: a name that cannot be had, a project on its own settings, a session with no data folder |
+| `preset_rename` | `project?`, `kind`, `preset`, `name` | as `project`: every open project and what is remembered with each printer name it so. Refused: a system preset ("System presets cannot be renamed."), a name taken |
+| `preset_delete` | `project?`, `kind`, `preset`, `confirm?` | without `confirm`, `{ deleted: false, title, ask }` (the reference's question, "Used by:"); with it, as `project` and `deleted: true`. Refused: a system preset, one others inherit (the reference's message with their names) |
+| `preset_changes` | `project?`, `kind`, `filament?` | `{ kind, filament, name, count, pages: [{ title, extruder, groups: [{ title, rows: [{ key, label, old, new }] }] }] }`: what is set over the preset, old and new, by page and group |
+| `preset_compare` | `project?`, `kind`, `vendor?`, `all?`, `left?`, `right?` | `{ kind, vendor, system, user }` (what can be compared: those offered for the project's printer, or with `all` every one of the kind); with `left` and `right`, also `count` and `pages` as `preset_changes` (`old` the left's value, `new` the right's) |
+| `preset_import` | `path` or `paths` (`.json`, `.zip`, `.orca_printer`, `.orca_filament`), `overwrite?`, `keep_untrusted?` | `{ imported: true, printer, filament, process, passed, removed, title, message, presets }`; or `{ imported: false, title, ask, conflicts }` ("Overwrite config", before saving over one of theirs: `overwrite` true or false answers it), or `{ imported: false, title, ask, remove, keep, untrusted }` ("Untrusted settings in file": `keep_untrusted` answers it). For the menu bar to call: no entry of the page's own |
+| `preset_export` | `path?` (a folder), `type` (`printer_bundle`, `filament_bundle`, `printer`, `filament`, `process`), `names?`, `replace?` | without `path`, the choices `{ types: [{ type, title, note }], printer_bundle, filament_bundle, printer, filament, process }`; with it, `{ exported: true, files, message }`, or `{ exported: false, file, ask }` when the zip is there (`replace` answers it). For the menu bar to call |
 | `settled` | `project?` | `{ printer: { source, name, vendor, model, variant, nozzle_diameter, bed, height, gcode_flavor, host_type, print_host, print_host_webui, has_api_key, bed_types { enabled, in_force, choices } }, process: { name, layer_height, first_layer_height, wall_loops, closing_radius } }`, either null when nothing is chosen |
 | `plate_view` | `project?`, `plate?` | `{ project, plate, bed, height, objects: [{ name, outline, box, height }] }` |
 | `slice` | `project?`, `plate?` or `all: true` | `{ project, run }`; `status` says how it goes. The model is sliced as it stands, not the file. A plate with an object over its edge is refused in the reference's words |
@@ -453,11 +468,15 @@ the project is on.
 | `recent_remove` | `path` | `{ recent }`: the recent projects without it, kept |
 | `export_stl` | `project?`, `path` (".stl" added), `replace?`; or `suggest: true` | `{ path, bytes, triangles, uncut }`; `{ exists: true, path }` when a file is there and `replace` was not given; with `suggest`, `{ suggested }`. An error with no objects: "There are no objects in the project." |
 | `export_stls` | `project?`, `dir` | `{ files, uncut }`: a file for each object, named by it, none written over |
+| `paint_open` | `project?`, `copy`, `kind` (`supports`, `seam`, `fuzzy_skin`, `color`), `filaments` (how many, for `color`) | opens a painting tool on the copy's object, its printed parts' paint read into the session's selectors: `{ project, object, parts: [{ id, triangles, filament }], max_state, ms }`. One tool at a time; an object with no printed part is refused |
+| `paint_close` | — | `{}`: the tool's selectors let go |
 | `scene_mesh` (bytes) | `project?`, `mesh` (its number in `scene`) or `object` (its place in the list) | an object's mesh, `EDGM`: 24 bytes of header, vertices (`f32` × 3), triangles (`u32` × 3), a mark byte for each triangle when they differ |
 | `bed_model` (bytes) | `project?` | the vendor's model of the printer's bed, as `scene_mesh` |
 | `bed_texture` (bytes) | `project?` | the vendor's picture of the bed: the SVG or PNG file as it is |
 | `toolpath_moves` (bytes) | `project?`, `plate?`, `from`, `count` | a stretch of moves, `EDGT`: 24 bytes of header, then 32 bytes a move (where it ends, speed, height, width, turn, temperature, layer, what it is, feature, filament, fan) |
 | `toolpath_lines` (bytes) | `project?`, `plate?`, `from`, `count` | the line of the G-code each of a stretch of moves was read from, `EDGL`: 24 bytes of header as `toolpath_moves`', then a `u32` a move (from 1) |
+| `paint_mesh` (bytes) | — | the painted parts' own triangles, unpainted, in the object's coordinates: a `u32` count and a `u32` number of parts, then 48 bytes a triangle (three vertices of `renderer.js`'s 16 bytes: `f32` x, y, z, the normal as three `i8`, a mark: the part's filament) |
+| `paint_event` (bytes) | `project?`, `matrix` (the copy's), `eye`, `clip` (null or `{ normal, offset }`), `op` (`hover`, `paint`, `commit`, `erase_all`, `gap`, `gap_fill`, `unmark`, `refresh`) and what it takes (`api/paint.rs`): `ray` / `rays` (origin and direction in the world, the newest first), `state`, `tool`, `radius`, `height`, `angle`, `highlight`, `area`, `name` | a `u32` length and that much JSON (`{ hit { part, facet, point, normal }, all, states, marked, note, done, edited, band, blocks, ms }`, padded to 4), then blocks of painted pieces: for each a `u32` part, a `u32` block (1024 of the part's triangles), a `u32` count and that many triangles of 48 bytes, their mark the state (128 more for what a fill has marked). A block sent replaces the page's; with `all` every block is sent. `commit` and the panel's buttons make the step of the history and answer `edited` (as `scene_edit` does) |
 
 Replaced by these: `open` (now `project_open` and `project`), and the model,
 plate and presets that `slice` used to take with each call (now the project's,
@@ -506,7 +525,7 @@ Read from `WebGuideDialog.cpp/.hpp` (`GuideFrame`), the pages under
 | Confirm keeps the models ticked, every nozzle of each, as the printers added (`AppConfig::set_vendors`); the list is built anew from what the page sends | `SaveProfile` l.676–758, `apply_config` l.788–957 | **added** (`printers_save`). A printer added from another profiles folder was not on the page to be unticked, and stays added |
 | The printer selected afterwards: the first model newly added (Snapmaker's before other vendors', then by name) on its 0.4 nozzle, or its smallest without one; with nothing added, the printer that was selected | `apply_config` l.854–897, `PresetBundle::default_printer_variant` l.297, `load_selections` l.2506–2563 | **added**, for the project shown. **differs**: a project sliced with its own settings stays on them (the C++, which has one selection, would move it) |
 | The printer that was selected has been removed: another nozzle of its model that is still added, else the first printer added, by preset name; with none at all, "Default Printer". The open project simply goes to that printer; nothing is asked | `PresetCollection::select_preset_by_name` Preset.cpp l.4114–4161 | **added**, for every open project that was on a removed printer, each named in the status line afterwards (`switched`): the printer last selected if it is still added, else the first by preset name. **differs**: of that first model the 0.4 preset is taken, not the first by name, which is the 0.2 one; where the C++ picks a preset of a model elsewhere (`get_similar_printer_preset`) it says that is not wanted |
-| With changes to a preset unsaved: "Configuration package changed" (keep or save) | `apply_config` l.821–828 | not needed: presets are not edited |
+| With changes to a preset unsaved: "Configuration package changed" (keep or save) | `apply_config` l.821–828 | not needed: what is set over a preset is the project's, and stays with it through a change of printers added |
 | Removing a vendor's last printer leaves its profiles on the disk | l.839–852 | the same: the profiles folder is only read |
 | The guide opens by itself at startup when there is no config file, when only the default printers are there, or when it was never finished | `GUI_App::config_wizard_startup` l.9874, `Utils/StartupWizardLogic.hpp` l.40 | **added**: with no printer added, Printer Selection opens by itself when the page starts and when another profiles folder is chosen |
 | No printer is ticked beforehand on a first run (but a model that is the only one there is) | `SaveProfileData` l.1315; no default in the page | **added**: none is |
@@ -521,11 +540,67 @@ Read from `WebGuideDialog.cpp/.hpp` (`GuideFrame`), the pages under
 | The printer selected: `presets.machine`; what was last used with each printer: `orca_presets: [{ machine, process, filament, filament_01…, curr_bed_type, filament colours, flush volumes }]`, written whenever the selection changes | `PresetBundle::export_selections` l.2687–2786 | **added**: `presets { vendor, machine }` and `printers: [{ machine, vendor, process, filaments, curr_bed_type }]`, written when a printer is selected by hand and when a process, a filament or a bed type is chosen. **not yet**: colours and flush volumes (the page sets neither) |
 | The filaments added: `"filaments": [...]`; process presets hidden; `firstguide.finish`; `app.region` | `AppConfig::save` l.1224, `SaveProfile` l.687 | **not yet**: every filament and process made for a printer is offered (below) |
 | The profiles in use: the vendors installed into the data folder's `system`, else `resources/profiles` | `LoadProfileData` l.1194–1252 | **added**: the profiles folder chosen in the window is kept (`app.profiles_dir`); `EDGE_PROFILES` comes before it. Before: it was forgotten when the app closed |
-| A printer's connection: in its physical printer preset (`print_host`, `print_host_webui`, `printhost_apikey`, `printhost_cafile`, …), and several printers of one model in `<datadir>/hub/print_host_devices.json`, keys and passwords there in plain text (PrintHostDevices.cpp l.173) | `PhysicalPrinterDialog::OnOK`, `Utils/PrintHostDevices.cpp` | **differs**: this app has no user presets, so a connection is kept for each printer preset by its name, in `print_hosts.json` beside `settings.json` (`src/hosts/kept.rs`), under the reference's keys so a later pass that adds user presets can take each entry over as a physical printer of that preset. The key is kept apart, in `print_host_secrets.json`, made readable by this user alone (0600; on Windows the folder is the user's own `%APPDATA%`), and is never answered to the page, logged, put in an error or in a project. Not the system's keychain: a build of this app is not signed, so macOS would ask each new build for leave to read its own entry, and the keychain would not follow `EDGE_DESKTOP_DATA`; it can take the file's place behind `Kept::key` and `Kept::set` |
+| A printer's connection: in its physical printer preset (`print_host`, `print_host_webui`, `printhost_apikey`, `printhost_cafile`, …), and several printers of one model in `<datadir>/hub/print_host_devices.json`, keys and passwords there in plain text (PrintHostDevices.cpp l.173) | `PhysicalPrinterDialog::OnOK`, `Utils/PrintHostDevices.cpp` | **differs**: a connection is kept for each printer preset by its name (user printer presets, sixteenth pass, do not carry one yet), in `print_hosts.json` beside `settings.json` (`src/hosts/kept.rs`), under the reference's keys so a later pass can take each entry over as a physical printer of that preset; renaming a printer preset of one's own does not carry its connection yet. The key is kept apart, in `print_host_secrets.json`, made readable by this user alone (0600; on Windows the folder is the user's own `%APPDATA%`), and is never answered to the page, logged, put in an error or in a project. Not the system's keychain: a build of this app is not signed, so macOS would ask each new build for leave to read its own entry, and the keychain would not follow `EDGE_DESKTOP_DATA`; it can take the file's place behind `Kept::key` and `Kept::set` |
 | The language: `app.language`, the canonical name of the one chosen ("de_DE"); at the first run the system's, written at once | GUI_App.cpp `load_language` l.8279, Preferences.cpp l.274 | **added**: `app.language` in `settings.json`, the same name. **differs**: a system language with no catalog is not kept (the reference keeps it and then shows the bare message ids); English is |
 | The send dialog's choices: `recent` (`open_device_tab_post_upload`, `elegoolink_timelapse`, `elegoolink_heated_bed_leveling`, …) | `PrintHostDialogs.cpp` l.2998 | **differs**: kept by the page (`localStorage`), as the print button's last action |
 | The recent projects: `recent_projects` | AppConfig.cpp `set_recent_projects` l.1642 | **added**: `recent_projects` in `settings.json`, `{ "01": path, "02": path, … }` as the reference keeps them, read back in the order of their numbers (section 2, "Files") |
 | The page's own: the strip's width and folding, the last file opened | — | **had**, kept by the page (`localStorage`). The printer, process and filaments last used were kept there too; they are in `settings.json` now, and the old entries are no longer read |
+
+### User presets
+
+Read from PresetBundle.cpp (`load_user_presets`, `import_presets`), Preset.cpp
+(`PresetCollection::load_presets`, `save_current_preset`, `Preset::save`,
+`save_info`, `load_info`, `rename_user_preset`, `delete_current_preset`,
+`validate_preset_name`, `is_compatible_with_printer`), Tab.cpp (`save_preset`,
+`delete_preset`, `may_discard_current_dirty_preset`), SavePresetDialog.cpp,
+UnsavedChangesDialog.cpp (and its `DiffPresetDialog`), PresetComboBoxes.cpp,
+PresetManagerDialog.cpp and CreatePresetsDialog.cpp (`ExportConfigsDialog`).
+
+| C++ | Where | Here |
+| --- | --- | --- |
+| A person's presets live in the data folder: `user/<user id, or "default" without an account>/machine`, `filament`, `process`, each `<name>.json` with `<name>.info` beside it; one that inherits from nothing in `<kind>/base/` | `load_user_presets` PresetBundle.cpp l.1090, `path_from_name` Preset.cpp l.4402 | **added** (`edge_config::user`, `src/api/presets.rs`): the same layout and format under this app's data folder (`EDGE_DESKTOP_DATA`, else the folder `settings.json` is in), `user/default/`. A folder copied from the C++ application's data folder (its `user/default`), or into it, is read by both: checked with files written by the C++'s code as written out by hand in the tests, and the other way with the C++ build of the pinned commit (below). **differs**: only `default`; a folder of an account's id is not read (there is no account here) |
+| A preset's JSON: only what differs from the preset it inherits (`Preset::save` with the parent's config, keys the reference does not know left out, a flow-variant list of more than one kept), its name twice (`name` and `print_settings_id` / `filament_settings_id` / `printer_settings_id`), `inherits`, `from: "User"`, `is_custom_defined: "0"`, `version` (the vendor's, "02.03.03.14" written "2.3.3.14"); every value text or a list of texts; the keys in order, four spaces a level, a new line at the end (nlohmann `dump(4)`) | `Preset::save` Preset.cpp l.797, `ConfigBase::save_to_json` Config.cpp l.1977 | **added**, written so; a test compares the text byte for byte with what the C++ writes. A text of several lines is written as the text (the reference writes a string option raw) |
+| The `.info`: `sync_info`, `user_id`, `setting_id`, `base_id` (the parent system preset's `setting_id`), `updated_time`, a `key = value` line each; "null" reads as nothing; "hold" is not written | `save_info` l.754, `load_info` l.712 | **added**. **differs**: a new preset gets the time it is saved; the reference writes 0 and fills it in at its next start |
+| A file is written beside and renamed over (`write_file_atomically`); one that does not parse is moved to a quarantine folder (upstream deleted it) | Preset.cpp l.1735, `PresetQuarantine.cpp` | **added**: written whole or not at all. **differs**: one that does not parse is left where it is and listed (`user_presets` `unread`); nothing is moved or deleted |
+| A file of another kind in a folder, or a second file of a name already read, is passed over; a file with no version that reads is passed over too | l.1745–1766 | **added** for the first two, each listed as unread with why. **differs**: a file without a version is read |
+| A preset of one's own is laid over the preset it inherits, which may be another of one's own; one of the name of a system preset is not loaded | l.1772–1822 | **added**: followed through any chain into the vendor's presets; a name the vendor has is the vendor's |
+| Offered where its `compatible_printers` name the printer, or, for a printer of one's own, the system printer it was made from (one step up only: "FIXME only check the parent now"); none named and no condition: every printer | `is_compatible_with_printer` Preset.cpp l.943, `is_compatible_with_parent_printer` l.933 | **added**, the whole chain up. **differs**: a `compatible_printers_condition` is not worked out (the vendor's lists here go by the list alone): such a preset is offered where the system preset it is made from is |
+| "Save preset": "Save %s as", the name ("<name> - Copy" for a system preset), checked as it is typed: "Name is invalid;" with "illegal characters:" and `<>[]:/\|?*"`, "Name is unavailable." (the default presets' names), "Overwriting a system profile is not allowed.", "Preset \"%1%\" already exists." (or "… and is incompatible with the current printer.") with "Please note that saving will overwrite this preset.", empty, a space first or last; OK off while it cannot be had | SavePresetDialog.cpp l.208–270, Preset.cpp `validate_preset_name` l.3488 | **added** (`preset_check`, `preset_save`), the same checks in the same order. A filament made from a system preset that names no printer is made for the printer it is saved on (Orca's rule). Saving over one of one's own keeps its file and its `.info` ("update") |
+| "User Preset" / "Preset Inside Project", "Use for every printer", "Detach from parent" | SavePresetDialog.cpp l.140–205 | **not yet**: a preset inside the project (section 15's save would have to carry presets of the project's own); detaching (develop mode) |
+| Renaming one's own preset (the managers): the same checks, refused for a system preset; written under the new name before the old files go; presets laid over it follow | `rename_user_preset` Preset.cpp l.3384, PresetManagerDialog.cpp l.441 | **added** (`preset_rename`), from the lists' cog menu ("Rename preset"). What is set over it in a project stays set over it, so the C++'s refusal of a preset with unsaved changes is not needed. **not yet**: renaming a filament's family at once |
+| Deleting (above, "Not built"'s row of printers, for every kind) | `Tab::delete_preset` | **added** (`preset_delete`) |
+| Import ("Import Configs") and export ("Export Preset Bundle": `.orca_printer`, `.orca_filament`, zips of printer, filament or process presets) | PresetBundle.cpp `import_presets`, CreatePresetsDialog.cpp `ExportConfigsDialog` | **added** in the session (`preset_import`, `preset_export`, `edge_config::bundle`), for the menu bar to call. **differs**: asked once for the whole import (overwrite all or none), not for each preset; a file that is not a preset stops the import before anything is written |
+| Cloud sync of user presets (`sync_info`, `setting_id`), favourites, the Filament and Process managers | `PresetBundle::load_user_presets(config, my_presets)`, PresetManagerDialog.cpp | **not yet**: there is no account; the managers are their own windows |
+
+How it was checked against the C++: the C++ build of the pinned commit
+(`EdgeSlicer --datadir <a copy of this app's data folder> --list-presets`)
+lists the process, filament and printer preset this app saved, each with
+its `inherits` and the printers it goes with; sliced by it
+(`--printer-preset "Snapmaker U1 (0.4 nozzle)" --process-preset "Strong walls"
+--filament-presets "My PLA"`) its G-code has `print_settings_id = Strong
+walls`, `filament_settings_id = "My PLA"`, `wall_loops = 3`,
+`sparse_infill_density = 25%` and `nozzle_temperature = 212`, the values the
+app saved. This app slicing the same model with those presets writes G-code
+identical, but for the names, to the same model sliced with the system
+presets and the same three values set by hand. The other way, the tests read
+files laid out as `Preset::save` and `save_info` write them.
+
+#### Errors found in the C++ (user presets)
+
+| Where | What is wrong | What a person sees |
+| --- | --- | --- |
+| Tab.cpp l.10072 | `_L_PLURAL("The following presets inherit this preset.", "The following preset inherits this preset.", count)`: the singular and plural are the wrong way round | With one preset inheriting, "The following presets inherit this preset."; with several, "The following preset inherits this preset." Here the count picks the sentence that fits |
+| Tab.cpp l.10124 | "Are you sure to %1% the selected preset?" is filled with `_L("Delete")`, a capitalised button word | "Are you sure you want to Delete the selected preset?" (kept here: the message id is the reference's and its catalogs translate it so) |
+| Preset.cpp l.937 | `is_compatible_with_parent_printer` looks one step up ("FIXME only check the parent now") | A printer preset made from another of one's own is offered no process or filament made for the system printer. Here the chain is followed |
+| Preset.cpp l.1763–1764 | A user preset whose `version` does not read is passed over with nothing said | The preset is gone from the lists. Here it is read |
+| Preset.cpp l.746, Tab.cpp `save_preset` | A new preset's `.info` is written with `updated_time = 0`, put right at the next start | Nothing at once; the time is the next start's, not the save's. Here the save's |
+| Snapmaker_Orca.cpp l.787 with l.3299 | `--printer-preset` with a printer preset of one's own writes it flattened with `"inherits": ""`, so the printer's system name is lost and every process is "not compatible" | The CLI refuses to slice ("process not compatible with printer", exit 239) with any process and a user printer |
+| CreatePresetsDialog.cpp l.371 (`get_filament_name`) | `substr(0, index_at - 1)` drops the character before the "@" | "PLA@U1" is exported as "PL" (the bundle's name and the `.orca_filament` file's) |
+| CreatePresetsDialog.cpp l.3966–3969, l.4082–4085 | After `initial_zip_archive`, a `continue` leaves the writer open | A broken, unfinished archive on the disk, with "Export successful" said |
+| CreatePresetsDialog.cpp l.4089 with l.4562 | A filament made from a preset whose name has no "@" gets no vendor and is left out of the `.orca_filament`; the "vendor" folder is the first word after "@" | A bundle that may hold only `bundle_structure.json`, said to be exported |
+| CreatePresetsDialog.cpp l.3686, l.3704 | The question calls a zip a "folder"; `find(".zip")` searches the whole path | A wrong word; a folder named with ".zip" in it puts the time stamp in the wrong place |
+| PresetBundle.cpp l.1382–1392 | A preset whose parent comes later in the same archive is skipped ("can not find inherit preset") | A lower count of imported presets, nothing said of which |
+| PresetBundle.cpp l.1344 | An imported file whose version does not read is skipped | As above |
 
 ### Not built: filaments, creating and deleting printers
 
@@ -533,8 +608,8 @@ Read from `WebGuideDialog.cpp/.hpp` (`GuideFrame`), the pages under
 | --- | --- | --- |
 | "Filament Selection" (the guide's last page): the filaments of the printers ticked, to tick by "Printer", "Filament type" and "Vendor", the models' `default_materials` ticked when none is ("Do you want to use default filament ?"); kept as the `filaments` section; a filament list shows only those | `22/22.js`, `SaveProfile` l.704–715, `Preset::set_visible_from_appconfig` | **not yet**: a filament list here offers every filament preset made for the printer. It waits for nothing in the engine (`PrinterModel::default_materials` is there); it is its own pass |
 | "Add/Remove filaments" at the foot of each filament list opens the Filament manager (`run_preset_manager`), not the guide | PresetComboBoxes.cpp l.1756, GUI_App.cpp l.9598 | **not yet**, with the above |
-| "Create printer" opens "Create Printer/Nozzle": "Create Printer" or "Create Nozzle for Existing Printer"; vendor and model ("Select Vendor", "Select Model", "Input Custom Vendor", "Input Custom Model", "Can't find my printer model"), "Nozzle Diameter", "Bed Shape", "Printable Space", "Origin", "Hot Bed STL", "Hot Bed SVG", "Max Print Height"; then "Create from Template" or "Create Based on Current Printer" with the filament and process presets to make; "Printer Created Successfully" | `CreatePrinterPresetDialog`, CreatePresetsDialog.cpp l.1769–3490 | **not yet**: it writes user presets, which neither the engine (`edge-config` reads vendor profiles only) nor this app has |
-| Deleting a user printer preset (the delete button of the printer's settings, "Delete this preset"): never a system or default one; "Are you sure to delete the selected preset?"; "%d Filament Preset and %d Process Preset is attached to this printer. Those presets would be deleted if the printer is deleted."; "Presets inherited by other presets cannot be deleted!"; then the next preset by name is selected and the project goes to it | `Tab::delete_preset` Tab.cpp l.10030–10159, l.8978 | **not yet**: there are no user presets and no settings editor |
+| "Create printer" opens "Create Printer/Nozzle": "Create Printer" or "Create Nozzle for Existing Printer"; vendor and model ("Select Vendor", "Select Model", "Input Custom Vendor", "Input Custom Model", "Can't find my printer model"), "Nozzle Diameter", "Bed Shape", "Printable Space", "Origin", "Hot Bed STL", "Hot Bed SVG", "Max Print Height"; then "Create from Template" or "Create Based on Current Printer" with the filament and process presets to make; "Printer Created Successfully" | `CreatePrinterPresetDialog`, CreatePresetsDialog.cpp l.1769–3490 | **not yet**: a printer preset of one's own is now saved from the printer's pages (section 8, "User presets"); a new model or nozzle with its bed and the presets made for it waits for this dialog |
+| Deleting a user printer preset (the delete button of the printer's settings, "Delete this preset"): never a system or default one; "Are you sure to delete the selected preset?"; "%d Filament Preset and %d Process Preset is attached to this printer. Those presets would be deleted if the printer is deleted."; "Presets inherited by other presets cannot be deleted!"; then the next preset by name is selected and the project goes to it | `Tab::delete_preset` Tab.cpp l.10030–10159, l.8978 | **added** (sixteenth pass, `preset_delete`): refused for a system preset and for one others inherit; "Are you sure to %1% the selected preset?" with "Used by:" and where the open projects use it; the projects on it go to the system printer it was made from. **not yet**: "%d Filament Preset and %d Process Preset is attached…", which is for a printer that stands alone ("Create printer") |
 
 
 ## 9. Prepare: the 3D scene
@@ -582,6 +657,7 @@ reference's own numbers; each is named in `scene.js` with where it is from.
 | Alt: "Select a part"; Shift: "Select objects by rectangle"; a double click opens the object's settings; the right button's menus | l.6423–6551, l.6871 | **added**: Alt with a click selects the part under the pointer, Alt with Shift adds it to the parts of that copy selected or takes it away, and Alt with a drag moves the part within its object (section 13, "Parts"); the right button's menu on an object, on the parts selected and on a plate. **differs**: Shift with a click adds to what is selected, as Ctrl does. **not yet**: the rectangle, object settings |
 | Dragging an object moves it on the bed | l.6553–6608 | **added** (section 13) |
 | Hovering changes no colour (the hover colours are commented out) | 3DScene.cpp l.362 | the same |
+| With a painting tool open, the buttons paint on the object (the left, the right, Shift with the left to erase), Ctrl with a button turns or moves the view, off the object the buttons turn and move the view; no object is dragged; the wheel with Ctrl sizes the brush, with Alt moves the section view | `GLGizmoPainterBase::on_mouse`, `gizmo_event` | **added** (section 13, "The painting tools") |
 | What is under the pointer is found by casting a ray at the meshes | `_picking_pass` l.9819, `SceneRaycaster` | **differs**: the one pixel under the pointer is drawn with every object and plate in a colour of its own, and read back (`renderer.js` `pick`) |
 
 ### Keys
@@ -750,6 +826,19 @@ bytes, little-endian, in layouts written out byte for byte in
 - **Nothing is rebuilt to change what is seen**: the layers shown and the
   moves slider are a range of moves; the view type, the colour range and what
   is hidden are numbers given to the shader.
+- **Paint is the session's.** While a painting tool is open the session
+  holds a selector for each printed part (`edge_mesh::selector`, the
+  reference's `TriangleSelector`) and a tree of boxes round its triangles
+  (`edge_mesh::raycast`). The page sends the lines of sight under the
+  pointer (`paint_event`, a pixel apart along a drag) and gets back, in
+  bytes, the painted pieces of the blocks of 1024 triangles whose paint
+  changed, which replace what it drew for those blocks; the object's own
+  triangles come once (`paint_mesh`). The alternative was the selector in
+  the page: the same port in JavaScript, a second tree of boxes built in
+  the page from the mesh it already has, and the codes sent to the
+  session to be saved. It was not taken, by what was measured: the work
+  per event is small enough that the round trip is the cost, and the
+  codes stay where they are saved. See the table below.
 - **Not built**: coarser meshes for far-away objects. The largest project
   tried (1.36 million triangles) draws in about a millisecond.
 
@@ -769,6 +858,28 @@ build of the app with the engine optimised:
 | Moves sent | 0.25 MB | 4.21 MB | 6.72 MB |
 | On screen after `toolpath` is asked for | 10 ms | 0.09 s | 0.02–0.18 s |
 | Frame while turning, Prepare / Preview | 16.7 ms (the screen's own) | 16.7 ms | 16.7 ms; drawn 16 times a frame, 19.8 ms / 16.7 ms: about 1.2 ms a draw in Prepare, under 1 ms in Preview |
+
+Painting the figurine (`jolteon_cmp.3mf`: one object of five parts,
+1 411 438 triangles; the largest part 696 152), the same machine. In the
+engine, release build (`EDGE_PAINT_BENCH=… cargo test --release -p
+edge-engine --test paint -- --ignored`), on the largest part: its
+neighbours and normals 30 ms, its tree of boxes 96 ms, a selector 5 ms;
+a line of sight 1 µs (400 cast); a dragged stroke's step (a capsule
+between two hits) 0.15 ms on average and 1.0 ms at most with a 1 mm
+brush, 0.66 ms and 1.8 ms with a 5 mm one; writing the part's codes
+0.7 ms; a smart fill 6 ms and putting it on 1.2 ms. Through the page
+(`--serve`, the app's own crate in a debug build, the engine optimised):
+
+| | Figurine |
+| --- | --- |
+| Opening "Color Painting" (`paint_open`: five selectors and trees) | 0.60 s |
+| The object's own triangles (`paint_mesh`) | 67.7 MB, 0.95 s; the tool is open 2.1 s after the key |
+| A step of a stroke, three lines of sight (`paint_event` `paint`): in the session / round trip | 5–6 ms / 6–8 ms (20 steps); 6 to 10 blocks of 1024 triangles sent again |
+| The button let go (`commit`: the codes written into the model, a step of the history, the scene answered) | 0.16 s, after the stroke |
+
+A step takes less than a frame of the screen, so a stroke follows the
+pointer; pointer moves that come while one is on its way go together in the
+next (a line of sight a pixel apart from where the last ended).
 
 ## 12. The process pages: the options, and what the engine does with them
 
@@ -805,6 +916,14 @@ and the session cannot disagree about a limit or a list.
 | Support | Support, Raft, Support filament, Support ironing, Over-support surfaces, Advanced, Tree supports, Side stabilizers | 78 | 11 | 67 | 0 |
 | Multimaterial | Prime tower, Filament for Features, Ooze prevention, Flush options, Advanced, Color Mixing (Experimental) | 63 | 6 | 54 | 3 |
 | Others | Skirt, Brim, Special mode, Fuzzy Skin, G-code output, Change extrusion role G-code, Post-processing Scripts, Notes | 51 | 14 | 36 | 1 |
+
+What is set on these pages is the project's own over its preset; since
+the sixteenth pass it is also what the reference calls the "dirty" preset:
+"* " before the preset in its list, listed by "Transfer or discard
+changes" when another preset is picked, and written into a preset of one's
+own by "Save current Process" (section 2, "Sidebar: Process"; section 8,
+"User presets"). The values a preset of one's own shows are its own laid
+over the system preset it is made from.
 
 ### What the engine does with an option
 
@@ -1040,7 +1159,7 @@ section, where the C++ shows it too (at the head of Process).
 | A double click on the name, or F2, renames in place; an empty name leaves the name as it was; `<>:/\|?*"` are not allowed | `ObjectList::rename_item` l.6307, `update_name_in_model` l.1233 | **added**: Enter takes the name, Escape or an empty name leaves it. **not yet**: the characters that are not allowed (nothing is written under an object's name yet) |
 | The plate's row: a click shows the plate; its menu | `ObjectList::OnContextMenu`, `create_plate_menu` | **added**: a click shows the plate; the right button opens "Select All", "Delete All", "Arrange", "Delete Plate"; a cross at the row is "Remove current plate (if not last one)" |
 | Dragging rows to reorder, or onto another plate | `ObjectList::OnDrop` | **not yet** |
-| An item's settings: the reference's settings rows under an item are gone (`NEW_OBJECT_SETTING`, GUI_ObjectSettings.hpp l.9); an item with settings of its own has an icon in the editing column ("Click the icon to reset all settings of the object"), a click on which takes them all away without asking ("Reset Options") | GUI_ObjectList.cpp `add_settings_item` l.4180, l.699, l.1582; ObjectDataViewModel.cpp l.219 | **added** (sixteenth pass): the mark after the name of an object, a part or a range with settings of its own that its pages offer, the same tooltip, a click taking them away (one step). A range's layer height, which every range carries, does not count |
+| An item's settings: the reference's settings rows under an item are gone (`NEW_OBJECT_SETTING`, GUI_ObjectSettings.hpp l.9); an item with settings of its own has an icon in the editing column ("Click the icon to reset all settings of the object"), a click on which takes them all away without asking ("Reset Options") | GUI_ObjectList.cpp `add_settings_item` l.4180, l.699, l.1582; ObjectDataViewModel.cpp l.219 | **added** (eighteenth pass): the mark after the name of an object, a part or a range with settings of its own that its pages offer, the same tooltip, a click taking them away (one step). A range's layer height, which every range carries, does not count |
 | Copying an item's settings (Ctrl+C / Ctrl+V on a settings row, `copy_settings_to_clipboard`) | GUI_ObjectList.cpp l.1379–1418 | not built, as in the reference: the rows they need are no longer made, so nothing reaches it (listed with the errors found) |
 | "Layers" under an object, and a row for each height range: "Range 0.00-2.00 (mm)"; a click on "Layers" shows the ranges' heights, on a range its settings; a range's "Fila." | ObjectDataViewModel.cpp l.133, l.161; GUI_ObjectList.cpp `add_layer_root_item`, `add_layer_item` | **added**: "Layers" after the parts, each range under it a step in; a click selects the object in the scene and the row in the list. **not yet**: a range's filament in "Fila." (it is kept: filament 0, "default"), the range drawn on the object in the scene, the right button's menu on a range (the reference has none) |
 
@@ -1195,13 +1314,13 @@ shows; `part_menu`; `append_menu_items_add_volume`;
 | C++ | Where | Here |
 | --- | --- | --- |
 | The part menu: "Delete", "Edit text", "Repair", "Simplify", "Center", "Drop", "Mirror", "Hide"/"Show", "Separate", "Split" ("To objects", "To parts", "By painted colour"), "Edit in Parameter Table", "Change type", "Reload from disk", "Replace with STL", "Edit in Blender", "Edit in FreeCAD", "Fillet / chamfer", "Export as one STL", then "Change Filament", "Override paint", the support groups, "Precise Seam Type" | GUI_Factories.cpp l.2539–2585, l.2998 | **added**: "Delete", "Center", "Drop" (both "Move Object" steps), "Mirror" ▸ "Along X axis"…, "Split" ▸ "To objects" (off, as the C++ has it for a part) and "To parts", "Change type", "Change Filament" ("Default" and each filament by its preset's name; "Set Filament for selected items" for several; only with more than one filament, for parts and modifiers). **differs**: "Change type" is a sub-menu of the six kinds, where the C++ asks in a dialog ("Choose part type", "Type:"); "Split" is on whenever "To parts" can be done (see "Errors found in the C++"). **not yet**: the rest (each needs something the model does not have: text and SVG parts, mesh repair and simplifying, hiding, a part made an object of its own, the table of "Edit in Parameter Table", reloading from a file, exporting). "Rename" is not in the C++'s shown part menu either; a double click or F2 renames |
-| "Height range Modifier" (no tooltip) after them, and "Edit Process Settings" after "Printable" | GUI_Factories.cpp l.967, l.3262 | **added** (sixteenth pass): "Height range Modifier" gives an object without ranges one from 0 to 2 mm, selects "Layers" and turns the Process section to "Objects"; "Edit Process Settings" turns it to "Objects" for what is selected. **not yet**: "Color Pattern...", "Edit in Parameter Table" (the table, section 2) |
+| "Height range Modifier" (no tooltip) after them, and "Edit Process Settings" after "Printable" | GUI_Factories.cpp l.967, l.3262 | **added** (eighteenth pass): "Height range Modifier" gives an object without ranges one from 0 to 2 mm, selects "Layers" and turns the Process section to "Objects"; "Edit Process Settings" turns it to "Objects" for what is selected. **not yet**: "Color Pattern...", "Edit in Parameter Table" (the table, section 2) |
 | "Add part", "Add negative part", "Add modifier", "Add support blocker", "Add support enforcer", "Add precise seam" in the object's menu, each "Load..." and the generic shapes "Cube", "Cylinder", "Sphere", "Cone", "Disc", "Torus", text, SVG… | GUI_Factories.cpp l.426, l.659, l.922 | **added**: the first five, each with "Load..." (an STL's or a 3MF's printed geometry, as it stands in its file, named after it: "Load Part" / "Load Modifier") and "Cube" (a tenth of the bed's greater side, square to the bed, beside the right front corner of the object's box at its foot: "Add primitive", named "Generic-Cube"). The part made is selected. **not yet**: "Add precise seam", "Height range Modifier", "Color Pattern...", and "Cylinder", "Sphere", "Cone", "Disc", "Torus" and the rest, which wait for `edge_mesh::primitives` to make them (it makes boxes only) |
 | A new model part takes the object's `extruder` as its own; any other kind none | GUI_ObjectList.cpp l.2416–2421, l.2529–2534 | **added** |
 | Deleting a part: not the last solid one ("Deleting the last solid part is not allowed."); when one volume is left, its config goes to the object | l.2856–2913 | **added**, the filament going to the object; a part's other settings stay with the part (the model keeps no settings of an object's) |
 | Changing a part's type: the last solid part keeps its type ("The type of the last solid object part is not to be changed."); the volumes are sorted by type after | `change_part_type` l.5819, `set_volume_type` l.5930 | **added**. **differs**: a part keeps its place in the list; the reference sorts the volumes by type |
 | "Split" of a part: a part for each piece, named with `_1`, `_2`…, each given the original's filament (`extruder_id`) | `ModelVolume::split` Model.cpp l.3186 | **added**, the pieces in the part's place, keeping its transform (see the error at l.3014 below) |
-| Modifiers carry settings for the region inside them; support blockers and enforcers say where supports go | `PrintObject`, `SupportMaterial` | **added** (the engine's regions, `crates/edge-engine/src/regions.rs`, aceRage/EdgeSlicerRS#79): a modifier's settings are laid over what of its object's parts lies inside it, a blocker takes supports out, an enforcer adds them; what is not followed is said in a note. A modifier's settings are set on its pages ("Objects", a part or modifier selected) since the sixteenth pass, and they are kept through every edit, listed and drawn see-through in their colours |
+| Modifiers carry settings for the region inside them; support blockers and enforcers say where supports go | `PrintObject`, `SupportMaterial` | **added** (the engine's regions, `crates/edge-engine/src/regions.rs`, aceRage/EdgeSlicerRS#79): a modifier's settings are laid over what of its object's parts lies inside it, a blocker takes supports out, an enforcer adds them; what is not followed is said in a note. A modifier's settings are set on its pages ("Objects", a part or modifier selected) since the eighteenth pass, and they are kept through every edit, listed and drawn see-through in their colours |
 
 ### Plates
 
@@ -1231,6 +1350,77 @@ engine's side is `crates/edge-engine/src/plates.rs`; the page's
 | Another printer that does not take a plate's bed type: it is taken away, "Plate bed types reset" | `normalize_bed_types` l.21433 | **added** (section 2) |
 | Keys for plates | KBShortcutsDialog.cpp | Shift+A "Arrange objects on selected plates" (**had**); the reference has no other key for a plate. A plate is selected by a click on it, its tile or its row (**had**) |
 
+### The painting tools
+
+Read from `Gizmos/GLGizmoPainterBase.cpp/.hpp`, `GLGizmoFdmSupports.cpp`,
+`GLGizmoSeam.cpp`, `GLGizmoFuzzySkin.cpp`, `GLGizmoMmuSegmentation.cpp`,
+`GLGizmosManager.cpp` and `libslic3r/TriangleSelector.cpp/.hpp`. The page's
+side is `ui/paint.js` (and `paint.css`), the session's `src/api/paint.rs`,
+the selector `crates/edge-mesh/src/selector/` and the model's paint
+`Model::set_paint` (section 13 above, and section 15).
+
+| C++ | Where | Here |
+| --- | --- | --- |
+| The selector: each triangle of a part split as finely as the stroke needs (sides longer than the edge limit halved, the limit a fifth of the brush's radius and at most 0.05 mm, 0.1 mm for a height range), a state for each piece, pieces put back whole where all of a triangle's are alike, the free ones collected when half the list is free | `TriangleSelector::select_patch`, `split_triangle`, `remove_useless_children`, `garbage_collect` | **added**: `edge_mesh::selector::Selector`, the same tree, corners shared with the neighbours across a split side, the same limits. Codes the C++ wrote read back the same (174 386 in the reference's projects, `edge-3mf/tests/paint_codes.rs`), and codes written here are written back the same by the C++ |
+| The cursors: "Circle" (what is under a disc as the camera sees it, only faces turned to the camera), "Sphere" (a ball), a drag a capsule of either between two points, "Height range" (a band of the world's heights), what the section view cuts away left out; a mesh scaled unevenly tested in the world | `Cursor`, `Circle`, `Sphere`, `Capsule2D`, `Capsule3D`, `HeightRange` | **added** (`selector::Cursor`) |
+| Smart fill: from the triangle under the pointer across edges where the faces turn by no more than "Smart fill angle"; on hover the faces it would take are marked lighter, the press paints them | `seed_fill_select_triangles`, `seed_fill_apply_on_triangles`, `get_seed_fill_color` | **added** |
+| Bucket fill (the colour tool's "Fill", with "Edge detection" its angle, else any angle), "Triangle" (the piece under the pointer) | `bucket_fill_select_triangles` | **added**. **differs**: a "Triangle" dragged paints the triangle it is let go on; the reference leaves it marked (listed below) |
+| "Gap fill": groups of pieces of one state smaller than "Gap area" shown in the least state round them; "Perform" paints them so | `TriangleSelectorPatch::update_triangles_per_patch`, `update_selector_triangles` | **added** (`Selector::gaps`, `fill_gaps`) |
+| A stroke: the pointer's way since the last event sampled a pixel apart, the hits cut into runs on one part, a run on one triangle reduced to its ends, a longer one simplified to a tenth of the brush's radius, capsules between the points kept | `get_projected_mouse_positions` | **added**. **differs**: the points kept are the hits; the reference moves them onto a plane through three of them and looks for the nearest triangle again |
+| What the pointer is on: a ray cast at each printed part, the nearest hit not cut away by the section view | `update_raycast_cache`, `MeshRaycaster` | **added**: in the session, a tree of boxes for each part (`edge_mesh::raycast`) |
+| The buttons: left paints the tool's state, right its other one ("Block …"; the colour tool has none and the right button moves the view; fuzzy skin's right erases), Shift with the left erases; Ctrl with a button is the view's; a press off the object is the view's | `gizmo_event`, `on_mouse`, `get_left_button_state_type`, `get_right_button_state_type` | **added** |
+| One step of the history when the button is let go, named as each tool names it ("Enforce supports", "Block supports", "Unselect all"; "Enforce seam", "Block seam", "Remove selection"; "Add fuzzy skin", "Remove fuzzy skin"; "Painted using: Filament %1%", "Remove painted color"); "Erase all painting" and "Perform" one step each ("Reset selection"; the colour tool's "Perform" "Gap fill") | `gizmo_event` (`LeftUp`), `handle_snapshot_action_name`, the panels | **added**. **differs**: a stroke that changed nothing is no step (the reference takes one each time) |
+| Undo and redo while a tool is open: the tool reads the paint back from the model | `on_load`, `update_from_model_object` | **added** |
+| The ring of the brush round the pointer ("Circle"), a ball at the point under the pointer ("Sphere", blue with the left button, red with the right), the band's outlines on the object ("Height range") | `render_cursor_circle`, `render_cursor_sphere`, `render_cursor_height_range` | **added** |
+| The object while painting: its own triangles in the neutral grey (supports, seam, fuzzy skin) or each part in its filament's colour (colours), the paint over them: enforcers green {0.5, 1, 0.5}, blockers red {1, 0.5, 0.5}, stabilizer points purple, filaments in their colours; what a fill marks 1.25 times lighter. The object's other copies hidden | `TriangleSelectorGUI::enforcers_color`, `blockers_color`, `TriangleSelectorPatch`, `InstancesHider` | **added**, drawn with the page's own shading. The reference's enforcers are green in this fork (its ball cursor is blue), and so they are here |
+| "Section view": a plane square to the line of sight cutting the object from the camera's side, its place from 0 to 1 across the copy's bounding sphere, kept square to where the camera looked when it began; "Reset direction"; Alt with the wheel by 0.01 | `ObjectClipper::set_position_by_ratio`, `get_clipping_plane_in_volume_coordinates` | **added**: the scene's shader cuts the object at the plane (one dot product a pixel), and painting and the pointer's hits leave what it cuts away. **differs**: the sphere's middle is the copy's box's, not the instance's origin (an object read here may have its origin anywhere). **not yet**: the cut face drawn over the cut (`render_cut`) |
+| **"Support Painting" [L]**: "Tool type" "Circle", "Sphere", "Fill", "Gap Fill" (keys C, S, F, G); "Pen size" (0.4 to 8 mm, Ctrl with the wheel by 0.2); "Smart fill angle"; "Gap area" and "Perform"; "On overhangs only" (paints only what faces down more steeply than the threshold); "Threshold Angle", whose overhangs are shaded red, what touches the bed light blue; "Vertical" / "Horizontal" (a drag held to the line it began on); "Section view"; "Erase all painting"; what the buttons do | `GLGizmoFdmSupports::on_render_input_window` | **added**. **not yet**: "Paint stabilizer points" (the engine has no stabilizers), "Threshold Overlap", "Simulate Auto Supports" and "By layer (before slicing)" (they need the support generator's own rule and its preview of the layers; "Threshold Angle" here is the one the panel sets, starting at 30°) |
+| **"Seam painting" [P]**: "Brush shape" "Circle", "Sphere" (C, S); "Brush size"; "Vertical"; "Section view"; "Erase all painting" | `GLGizmoSeam::on_render_input_window` | **added**. **not yet**: "Auto-paint seam" (it slices the object's walls to find where the seam would go, which waits for the walls to be asked for alone) |
+| **"Paint-on fuzzy skin" [H]**: "Circle", "Sphere", "Triangle", "Fill" (smart fill); "Brush size"; "Smart fill angle"; "Section view"; "Erase all painting"; "Warning: Fuzzy skin is disabled, painted fuzzy skin will not take effect!" with "Enable painted fuzzy skin for this object" | `GLGizmoFuzzySkin::on_render_input_window` | **added**: the tools; and (eighteenth pass) the warning, shown while the object's own `fuzzy_skin`, else the project's, is "Disabled", and its link, which sets the object's own to "None (allow paint)" as the reference does. **differs**: the link is a step of the history ("Change Option fuzzy_skin"); the reference sets the object's config without a snapshot. The panel says, in the engine's words, what of the paint it does not follow |
+| **"Color Painting" [N]**: "Filaments" (a button of each filament's colour with its number, "Shortcut Key 1"…; keys 1 to 9, and 1 then 0 to 6 for 10 to 16), "Selected filament n / count"; "Circle", "Sphere", "Triangle", "Height Range", "Fill", "Gap Fill" (C, S, T, H, F, G); "Pen size", "Height range" (0.1 to 8 mm), "Edge detection" with "Smart fill angle", "Gap area" with "Perform"; "Vertical" / "Horizontal"; "Section view"; "Erase all painting" | `GLGizmoMmuSegmentation::on_render_input_window`, `on_number_key_down` | **added**. **not yet**: "Spread" and "Airbrush" (EdgeSlicer's own brushes, with their own fields), "Remap filaments", "Color Pattern...", "Toggle Wireframe" |
+| The panel's list of what the buttons and keys do | `show_tooltip_information` | **added**, under the fields, in the reference's words |
+| The keys: L, P, H, N open and close the tools; while one is open, its own (C, S, F, T, H, G, the colour tool's 1–9), Ctrl and Alt with the wheel; Esc closes it | `GLGizmosManager::handle_shortcut`, `on_key`, KBShortcutsDialog.cpp | **added**. L, P, H, N are bound with the other gizmos' letters in `scene-edit.js` (`TOOLS`; none of the menu bar's, section 17) and listed, built, in "Keyboard Shortcuts" (its rows "Gizmo FDM paint-on fuzzy skin", "Gizmo SLA support points" for L, "Gizmo FDM paint-on seam", and the Gizmo list's two wheel rows); a tool's own keys mean something only while it is open, so they stay in its handler (`paint.js` `key`, asked first by `scene-edit.js` `key`), as the reference's gizmo takes them before the manager; the wheel in the stage's (`stage.js`). Esc is the menu's "Deselect all", which closes a tool first. Undo and Redo, by their keys or the Edit menu, take back a stroke whole, the tool open. A key typed in a field reaches the field |
+
+What the engine does with paint made here, checked against the C++ slicer
+(`edge-parity` on the file saved from the page, the reference's build of the
+pinned commit):
+
+- **Seams**: a strip painted down `cylinder` (`tools/make_fixture.py`)
+  with "Seam painting": the C++ re-exports the file with the same 19 codes,
+  and both slicers put every layer's seam in the strip, 229.6° to 231.5°
+  round the post, the same on every layer (unpainted, both put it at 346°).
+- **Colours**: a cube in filament 1 of a seven-filament project
+  (`cube` with `mcbrim_test.3mf`'s settings), its top filled with filament 4
+  and a stroke of filament 3 over it: both slicers make 13 tool changes; on
+  the top millimetre the C++ lays 116 / 116 / 343 mm of filament 1 / 3 / 4,
+  this engine 116 / 112 / 336 (what remains is the engine's own sharing out
+  of colours, `edge-paint`, not the paint).
+- **Supports**: followed (the engine's regions read the triangles' kept
+  `paint_supports`, which `Model::set_paint` writes; `Part::support_paint`
+  now reads them as every kind is read, only of the mesh the part has). On
+  `mushroom` (`tools/make_fixture.py`, `enable_support=1`) the underside of
+  the cap filled with a blocker in the page ("Fill", the right button's
+  state; two triangles, `paint_supports="8"`): unpainted the C++ lays
+  3189 mm of support on 49 layers and this engine 3433 mm on 49; with the
+  blocker both lay none, and the walls are the same to 0.00 %. The same
+  cap filled with an enforcer with supports switched off: neither slicer
+  lays any (an enforcer does not turn supports on).
+- **Fuzzy skin**: kept and saved (the C++ reads it back), not followed by
+  this engine yet; the tool's panel says so in the engine's words ("the
+  project has fuzzy skin painted on it, which is not followed: the settings
+  alone decide"), as a slice does, while the model has it.
+
+What an edit does to paint (Model.cpp, followed): a mirror, a scale, a
+turn, a move and "Lay on face" keep it (only the transformation changes:
+`ModelVolume::mirror`, `scale`); "Split to parts" and "Split" of a part
+start every piece unpainted (`ModelVolume::split` resets the facets of the
+first and makes the others without them); "Split to objects" of an object
+of several parts keeps each part's (`ModelObject::split` assigns them); a
+part deleted takes its paint with it; a filament deleted renumbers the
+colours painted after it and leaves those of the one deleted unpainted
+(as before). `convert_from_imperial` (which scales the mesh and keeps the
+paint) has no counterpart here yet.
+
 ### Left for later
 
 | C++ | Waits for |
@@ -1241,7 +1431,7 @@ engine's side is `crates/edge-engine/src/plates.rs`; the page's
 | "Auto orient", "Cut", "Mesh Boolean", "Simplify" | mesh operations the engine does not have |
 | "Split" > "By painted colour" ("Convert the part's colour painting into separate parts, one per filament") | cutting a mesh along its painted borders, which the engine does only layer by layer while slicing |
 | The other instances of an object taking a mirror or a turn of the object too | instances kept alike, which no tool here does yet (a part's edits are every instance's, as in the C++) |
-| "Edit in Parameter Table" (the table of section 2), "Separate" / "Set as an individual object", copying and pasting parts | the table is a piece of work of its own; copying parts in the model. A modifier's and a part's own settings are set on their pages (sixteenth pass) |
+| "Edit in Parameter Table" (the table of section 2), "Separate" / "Set as an individual object", copying and pasting parts | the table is a piece of work of its own; copying parts in the model. A modifier's and a part's own settings are set on their pages (eighteenth pass) |
 | "Center" and "Drop" for an object; "Hide" / "Show" of a part | nothing; not built in this pass |
 | Saving the project with its edits | **added**: section 15 |
 | The glow round what is selected, the red background while something is over the edge, the ticks of the rotate ring | nothing; they are looks, left for a pass on the stage's own drawing |
@@ -1401,6 +1591,36 @@ and then gone through with the mouse. The screenshots are under the
 session's scratch folder, `ui_plates/shots/`.
 
 ### Errors found in the C++
+
+- `KBShortcutsDialog.cpp` l.260–262: the list of shortcuts names L "Gizmo
+  SLA support points", the key that opens "Support Painting" in an FFF
+  printer's window, and leaves out N, which opens "Color Painting" (its
+  `m_shortcut_key` is `WXK_CONTROL_N`). The window tells the person of a
+  gizmo there is not and not of one there is. Here the rows are the
+  reference's (L under its name) and N is in the tool's tooltip.
+
+- `Gizmos/GLGizmoPainterBase.cpp` l.1080–1095 (`gizmo_event`, `LeftUp`): the
+  colour tool's "Triangle" (and any pointer tool) paints at each position
+  what was marked at the one before, and the release takes its snapshot
+  without painting what is marked last. Drag "Triangle" across a model and
+  the triangle the button is let go on stays marked, lighter, and is not
+  painted. Here it is painted with the step.
+- `Gizmos/GLGizmoPainterBase.cpp` l.1088–1091: a snapshot is taken on every
+  release, whether or not the stroke changed anything, so painting over
+  paint already there, or a click that paints nothing new, leaves a step in
+  the undo history that undoes nothing. Here no step is made.
+- `Gizmos/GLGizmoFdmSupports.cpp` l.1326–1341: the support tool's step names
+  ("Enforce supports", "Block supports", "Unselect all") are written without
+  `_L` ("BBS remove _L()"), so the undo history shows them in English in
+  every language; "Unselect all" is not in the catalog at all. Here they are
+  passed through the catalog like the other tools'.
+- `libslic3r/MeshSplitImpl.hpp` l.238–268 (`create_face_neighbors_index`),
+  which the selector's neighbours come from: run on several threads, with
+  BBS's check of whether the other triangle's side is taken, so on a mesh
+  with sides shared by more than two triangles which pairs are made depends
+  on the threads' timing, and paint can spread (or a split side be shared)
+  differently from one opening of a tool to the next. Here the pairs are
+  made in one pass, in order (as `edge_mesh::split` already did).
 
 - `PartPlate.cpp` l.4461–4487 (`PartPlateList::duplicate_plate`): the
   objects to copy come from `get_objects_on_this_plate` (l.2423), which
@@ -1586,6 +1806,13 @@ page, "Nozzle rack (experimental)" on an extruder's, and the
 | What the engine would stop at | **added**: refused with the engine's reason, asked with the block printed in the filament being set |
 | A setting set by hand that nothing read | **added**: with the print's notes, named with whose it is: `fan_max_speed (filament 1) "60": not read by the engine; it changes nothing in this print` |
 
+Since the sixteenth pass a filament's or the printer's preset may be one
+of the person's (section 8, "User presets"): the head of the panel carries
+the cog of section 2 ("Save current Filament", "Save current Machine",
+"Rename preset", "Delete this preset", "Compare presets"), what is set here
+is the "dirty" preset those save, and the lists show "* " while anything is
+set.
+
 ### The rules
 
 `src/api/settings/filament_rules.rs` ports `TabFilament::toggle_options`
@@ -1655,9 +1882,7 @@ screenshots are under `target/ui-shots/presets/`.
 
 | C++ | Waits for |
 | --- | --- |
-| Saving, renaming, deleting user presets; "Save current …"; detaching from the system preset | user presets, which `edge-config` does not read or write |
-| "Compare presets" | the same |
-| Preset bundles, import and export | the same |
+| Detaching from the system preset ("Detach from parent") | develop mode, which the app has not got. Saving, renaming, deleting, comparing, importing and exporting are built (sixteenth pass, section 8) |
 | A printer of one nozzle (the Centauri Carbon) changing filament as the reference does: each change's flushing volume purged into the prime tower (WipeTower2 `toolchange_Wipe`, "CP TOOLCHANGE WIPE"), the temperature set without a tool number and not waited for | a port of the single-extruder half of the tower: here the tower takes `prime_volume` at each change and the next tool's temperature is waited for with `M109 … T1`. The flush itself is given to the printer's template (`M6211 … L28.4374`, the reference's number) since the thirteenth pass |
 | AMS sync, "Sync Filament Information" | a printer connection (section 4) |
 | The physical printer and print host dialog | a list of printers of this app's own (section 4) |
@@ -1717,7 +1942,7 @@ entry, in a fixed order:
 | `Metadata/model_settings.config` | written afresh from the model: each object's name and filament (`extruder`), each part's name, `subtype`, own filament (`extruder`, none for "default") and, once it has moved, `matrix` (see "Parts" below). Kept as the file had them, where the part is still what it was read as: every other metadata and setting of each object and part (per-object and per-part settings, modifiers' settings, `matrix`, `source_*`, Precise Seam's type, embossed text and SVG descriptions, `mesh_stat`), each plate's own (`locked`, `bed_type`, `print_sequence`, `first_layer_print_sequence`, `spiral_mode`, `filament_map_mode`, `filament_maps` with one entry for each filament, `print_history`…), a setting changed here (the lock, "Plate Settings") set in place or added where the reference writes it and one given back to the project taken out (`PlateKept::with`), a plate added here written as the reference writes a new one until something is set on it (`PlateKept::fresh`), each copy's place in the assembly view while its object has all its copies, and each copy's `identify_id` (the number the reference labels it with in G-code) while it has. Plates are numbered as they stand, each with its name and its copies |
 | `Metadata/project_settings.config` | the settings, below |
 | `Metadata/slice_info.config` | written afresh: the header alone, as the reference writes a project saved unsliced |
-| `Metadata/layer_config_ranges.xml` (height ranges and their settings) | an object's ranges kept as the file has them until they are edited here; then written as the reference writes them (`_add_layer_config_ranges_file_to_archive`: Boost's XML with each tag on a line, a range's `min_z` and `max_z`, an `<option opt_key>` for each of its settings in order of key), under the object's place as it stands (sixteenth pass). **differs**: the file ends with a new line, which the reference's does not have, as before this pass (the writer's own, for kept ranges too) |
+| `Metadata/layer_config_ranges.xml` (height ranges and their settings) | an object's ranges kept as the file has them until they are edited here; then written as the reference writes them (`_add_layer_config_ranges_file_to_archive`: Boost's XML with each tag on a line, a range's `min_z` and `max_z`, an `<option opt_key>` for each of its settings in order of key), under the object's place as it stands (eighteenth pass). **differs**: the file ends with a new line, which the reference's does not have, as before this pass (the writer's own, for kept ranges too) |
 | `Metadata/layer_heights_profile.txt` (variable layer height), `brim_ear_points.txt`, `cut_information.xml` (cut connectors) | kept, each object's line or block written under its place in the list as it stands, so they follow an object when one before it is deleted; a clone carries its original's, as the reference's clone does. A cut connector names its part by the part's place among the object's parts, which is written as it now stands (a part before it deleted, one added after it); once the connector's part itself is deleted or split, the object's cut information is not written, and that is asked about first |
 | `Metadata/custom_gcode_per_layer.xml` (pauses, custom G-code, templates, filament changes at layers) | read (`edge_3mf::CustomGcode`, by plate, plate 1's for a file without plates as the reference reads it) and written afresh in the reference's layout: Boost's XML with a new line between tags, `top_z` to 17 digits, values escaped as Boost escapes them (new lines kept), a plate with no items still written when it has an entry, an undefined mode written `MultiExtruder`; the pressure advance pattern's file is written back to the byte. Each plate's go with it (deleting a plate before it renumbers them with it). Edited from the slider (section 3). A file laid out otherwise (PrusaSlicer's `custom_gcodes_per_print_z`), which the reference does not read, is kept as it was while nothing is set here |
 | `Metadata/plate_<n>.png`, `_small`, `plate_no_light_<n>`, `top_<n>`, `pick_<n>` | kept for each plate while it is as it was read (`PlateStamp`: what is on it and where, its filaments and first-layer order), under its number now; a plate that has changed is saved without pictures, which would show it as it was. **not yet**: drawing new ones |
@@ -1754,8 +1979,14 @@ written as the file had it, so an unedited project is written as before.
 | A part added (a file's, or a cube) | a `<part>` with its name, kind, `matrix`, filament when it has its own, and `mesh_stat` | the added volume |
 
 What each triangle carries (paint) is written only with the mesh it was
-read with: a split part's pieces are new meshes and carry none, as in the
-C++.
+read with, or painted on (`PartKept::painted_on`): a split part's pieces are
+new meshes and carry none, as in the C++.
+
+| Paint made here | What the saved project holds | Read back by the reference as |
+| --- | --- | --- |
+| A part painted with a tool (section 13, "The painting tools") | each triangle's code for that kind (`paint_supports`, `paint_seam`, `paint_color`, `paint_fuzzy_skin`), in the reference's order on the triangle, what else it carries as it was; a triangle with nothing left carries nothing; the older `paint_fuzzy` is written as `paint_fuzzy_skin` once fuzzy skin is painted again | the same paint: re-exported with `--export-3mf`, the C++ writes the same codes back (19 seam codes of a strip painted on `cylinder`, 3 colour codes of a cube, byte for byte), and slices with them (section 13) |
+| A part painted on that had no file (an STL's) | a `PartKept` made for it, with the codes and the mesh they are of | as above |
+| Paint given back as it was read | the file's bytes: every painted project of the reference's written with its parts repainted from their own codes is the file written without (`edge-3mf/tests/paint_codes.rs`) | |
 
 ### The settings
 
@@ -1901,7 +2132,7 @@ save` lists the same and writes only with `--accept-losses`.
   self") and refuses the plate for objects too close for it, which this
   engine prints layer by layer with its note.
 
-- Settings of an object, a part and a height range (sixteenth pass).
+- Settings of an object, a part and a height range (eighteenth pass).
   `crates/edge-3mf/src/own.rs`: ranges written as the reference lays them
   out and read back, a setting set in place, added after the metadata and
   taken away. `crates/edge-engine/tests/item_settings.rs`: on
@@ -2167,7 +2398,7 @@ listed one by one. Words the C++ shows without translating them
 ("ElegooLink not detected", "Could not parse server response", "Instance
 %d", a `_devL` string) are left as they are.
 
-The sixteenth pass's words (settings of an object, a part and a height
+The eighteenth pass's words (settings of an object, a part and a height
 range): the switch's "Global" / "Objects", "Frequent" (a page title, put
 in the language as the others are), "Layers", "Range", "mm", "Height
 range Modifier", "Edit Process Settings", "Add height range", "Remove
@@ -2356,7 +2587,7 @@ its tooltip "not yet: …" saying what it waits for.
 | | "Save Project as..." | Ctrl+Shift+S | wired |
 | | Import ▸ "Import 3MF/STL/STEP/SVG/OBJ/AMF/GLB..." | Ctrl+I | wired to "Add" (section 13), Prepare, not while slicing; reads 3MF, STL and OBJ (built: OBJ). STEP, SVG, AMF, GLB: not yet, and not in the dialog's filter |
 | | Import ▸ "Import Zip Archive..." | | off: models are not read from a ZIP archive |
-| | Import ▸ "Import Configs..." | | on only when the session has one of the user presets' calls (below); off on this branch |
+| | Import ▸ "Import Configs..." | | wired (sixteenth pass): the page's `presetImport()` picks a file (`.json`, `.zip`, `.orca_printer`, `.orca_filament`, the reference's filter and "Select profile to load:"), calls `preset_import`, asks the reference's questions it answers with ("Untrusted settings in file": "Remove (recommended)" / "Keep"; "Overwrite config": "Yes to All" / "No to All") and shows "Import result" (section 8, "User presets"). **differs**: no "Yes" / "No" for each preset, the session asking once for all |
 | | Import ▸ "Import Config from G-code..." | | off: settings are not read from a G-code file |
 | | Export ▸ "Export all objects as one STL..." | | built (section 2, "Files"); on with objects |
 | | Export ▸ "Export all objects as STLs..." | | built; on with objects |
@@ -2367,7 +2598,7 @@ its tooltip "not yet: …" saying what it waits for.
 | | Export ▸ "Export all plate sliced file..." | | off: the same |
 | | Export ▸ "Send plate to Bambu Connect", "Send all plates to Bambu Connect" | | not shown: the reference takes them out for a printer not Bambu's, and sending to Bambu is not this app's |
 | | Export ▸ "Export G-code..." | | wired: the print button's "Export G-code file" (section 2); on when the plate shown is sliced and its G-code written |
-| | Export ▸ "Export Preset Bundle..." | | on only with the user presets' call (below) |
+| | Export ▸ "Export Preset Bundle..." | | wired (sixteenth pass): "Export Preset Bundle", the reference's five kinds ("Printer config bundle(.orca_printer)" and its note, "Filament bundle(.orca_filament)", "Printer presets(.zip)", "Filament presets(.zip)", "Process presets(.zip)"), the presets of the kind each ticked, "Export", then a folder; a zip already there is asked about in the reference's words; "Export successful" with the files written (`presetExport()`, `preset_export`) |
 | | "Preferences", "Themes...", "Costs..." (Windows, Linux) | Ctrl+P | as in the application menu |
 | | "Quit" (Windows, Linux) | Ctrl+Q | as above |
 | Edit | "Undo", "Redo" | Ctrl+Z, Ctrl+Y | wired (section 13), with the step's name: "Undo: Delete", "Redo: Import Object" (the step's message id, through the layer); Prepare. Cmd+Shift+Z makes again as well (`scene-edit.js`) |
@@ -2398,7 +2629,7 @@ its tooltip "not yet: …" saying what it waits for.
 | Help | "Keyboard Shortcuts" | ? | built: the reference's lists (KBShortcutsDialog.cpp: "Global shortcuts", "Plater", "Gizmo", "Objects List", "Preview"; its "Sculpt Gizmo" list is left out, there being no sculpting), each key as this system shows it, the menu bar's keys taken from its table; what this app does not do is dimmed |
 | | "Setup Wizard" | | wired: Printer Selection (section 8; the app's guide is that page alone) |
 | | "Show Configuration Folder" | | off: folders are not shown in the system's file manager |
-| | "Migrate Filament Presets", "Import Profile" | | off: they wait for user presets |
+| | "Migrate Filament Presets", "Import Profile" | | off: "Migrate Filament Presets" brings back system filament presets a profile update took away, and "Import Profile" imports a vendor's system profile (`PresetUpdater::import_system_profile`); neither is about a person's presets, which are built (sixteenth pass) |
 | | "Export Logs" | | off: the app keeps no logs |
 | | "Show Tip of the Day", "Check for Update", "Open Network Test", "Check Windows Firewall..." (Windows), "Bambu Lab Printer Help..." | | off, each with its reason |
 | | "&About %s" (Windows, Linux) | | built, as above |
@@ -2406,7 +2637,7 @@ its tooltip "not yet: …" saying what it waits for.
 
 ### The user presets' calls
 
-The user presets are built on another branch. "Import Configs..." and
+The user presets are built (sixteenth pass, section 8). "Import Configs..." and
 "Export Preset Bundle..." are on only when the session has one of these
 calls, looked up by name when the menu is first asked for (each is sent
 `{ "probe": true }`, and one the session does not have answers "there is
@@ -2415,7 +2646,14 @@ acting): for import `preset_import`, `presets_import`, `import_presets`;
 for export `preset_export`, `presets_export`, `export_presets`,
 `preset_bundle_export`. The entry then calls the page's own `presetImport()`
 / `presetExport()` where that branch defines one, else the call with
-`{ path }` (a configs file picked) or `{ dir }` (a folder picked).
+`{ path }` (a configs file picked) or `{ dir }` (a folder picked). The
+session has `preset_import` and `preset_export`, each of which answers a
+probe with `{ "probe": true }` and does nothing; the page defines
+`presetImport()` and `presetExport()`. "Import Profile" (Help) stays off:
+in the reference it imports a vendor's system profile
+(`PresetUpdater::import_system_profile`), not a person's presets.
+"Compare presets" has no menu entry in the reference (ParamsPanel's
+button only); here it is in the preset lists' cog (section 2).
 
 ### How it was checked
 

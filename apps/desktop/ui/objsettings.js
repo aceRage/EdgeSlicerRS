@@ -161,6 +161,9 @@ function showModeHead(item) {
   const fromPresets = Boolean(choices) && choices.source === 'presets';
   $('process-row').hidden = on || !fromPresets;
   $('saved-process').hidden = on || fromPresets;
+  // The preset's cog (presets.js) is the global settings', as the row is:
+  // an item's own values are not the preset's edits.
+  if ($('process-cog')) $('process-cog').hidden = on || !fromPresets;
   const line = $('process-item');
   line.hidden = !on;
   line.textContent = on && item && item.object !== undefined ? itemName(item) : '';

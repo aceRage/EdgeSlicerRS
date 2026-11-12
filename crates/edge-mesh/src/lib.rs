@@ -3,6 +3,8 @@
 pub mod hull;
 pub mod obj;
 pub mod primitives;
+pub mod raycast;
+pub mod selector;
 pub mod split;
 pub mod stl;
 mod transform;

@@ -1,9 +1,11 @@
 //! Printer, process and filament presets in the reference slicer's on-disk
 //! format, resolved through inheritance into flat settings.
 
+pub mod bundle;
 mod defaults;
 pub mod filaments;
 mod settings;
+pub mod user;
 pub mod variants;
 mod vendor;
 
@@ -13,6 +15,7 @@ pub use defaults::{
     deserialized, reference_defaults, reference_knows, reference_producer, serialized,
 };
 pub use settings::{FloatOrPercent, Reads, Settings, Value};
+pub use user::{UserPreset, UserPresets};
 pub use vendor::{Kind, Vendor};
 
 #[derive(Debug, thiserror::Error)]
