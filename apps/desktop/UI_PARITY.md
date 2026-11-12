@@ -25,7 +25,10 @@ The last column reads:
   and what a saved project holds of them in section 15; tenth pass: plates
   as plates, the "Plates" rows of section 2, "Plates" in section 13 and
   what a saved project holds of them in section 15; eleventh pass: the
-  G-code window and what is set at layers, in sections 3, 10 and 15).
+  G-code window and what is set at layers, in sections 3, 10 and 15;
+  twelfth pass: the list of filaments, "Sidebar: Filament" in section 2,
+  `filament_edit` in section 7, the undo history in section 13 and what
+  a saved project holds of them in section 15).
 - **differs** — built, but on purpose not as the C++ does it; the cell says how.
 - **not yet** — not built, with what it waits for. Nothing in this column is
   shown in the page as a control that does nothing.
@@ -94,7 +97,7 @@ runs, is section 8.
 | **Another printer, the process**: the one last used with that printer ("Remember printer configuration", on unless turned off); else the one of the same name (alias: the name up to "@") cut for it; else the printer's `default_print_profile`; else the first that fits | `PresetBundle::update_selections` l.2432, `update_compatible` l.7171 (`PreferedPrintProfileMatch` l.7213), Tab.cpp l.9196–9306 | **added** (`printer_select`), in that order, a process that still fits staying before the search by name. **not yet**: the profile remembered for each layer height, the preference itself |
 | **Another printer, the process settings changed by hand** are carried over: "Kept %1% process settings from \"%2%\" (revertable)."; each carried value stays marked as changed and can be reverted | `capture_print_settings_carry`, `apply_print_settings_carry` Tab.cpp l.9096, l.9314 | **added**: every process setting set over the preset stays set, with the same sentence in the status line (one setting: "Kept 1 process setting from …"), and each is given back with its own reset or all with the reset in the Process title bar. **differs**: said for a change of process preset too, where the C++ asks ("Unsaved Changes": transfer, discard, save); line widths and layer heights are kept across nozzle sizes, where the C++ lets them "follow the new nozzle size" |
 | **Another printer, the filaments**: each one that fits stays; one that does not is replaced by the one of the same name cut for the new printer, else by one of the same `filament_type`, the printer's `default_filament_profile` before others. The filaments last used with the printer are read back and then put aside again for the project's (Tab.cpp l.9251) | `update_compatible` l.7275–7357, Tab.cpp l.9235–9306 | **added**, the same rule for each slot (`Shelf::filament_type` gives the material). A slot with nothing in it yet, as in a new project, takes what was last used in it with that printer, else the printer's usual. **differs**: every slot's usual filament is the printer's first `default_filament_profile`, the engine handing out one |
-| **Another printer, the number of filaments**: the larger of the printer's nozzles and the project's filaments; it never shrinks | `TabPrinter::extruders_count_changed` Tab.cpp l.7355, l.3005 | **not yet**: there is a filament for each the file prints in, as before (the engine prints the filaments the file assigns; see "Add one filament") |
+| **Another printer, the number of filaments**: the larger of the printer's nozzles and the project's filaments; it never shrinks | `TabPrinter::extruders_count_changed` Tab.cpp l.7355, l.3005 | **not yet**: another printer leaves the list as it is. It waits for nothing now that the list can grow ("Add one filament"); it is left out because it would give every new project on a U1 four filaments, which changes what an untouched project is sliced and saved with, and wants deciding |
 | **Another printer, the bed**: the plate takes the printer's bed and height, objects are moved to keep their place on it, every plate's slice is dropped | Plater.cpp l.18554–18703, `on_config_change` l.29200 | **added**: the bed and height (`plate_view`), fitted to the stage anew; the slices are dropped (**had**). **not yet**: moving the objects; they stay where the file puts them |
 | "Bed type", a label that opens the wiki page on bed types, and a list: the six plates ("Smooth Cool Plate", "Engineering Plate", "Smooth High Temp Plate", "Textured PEI Plate", "Textured Cool Plate", "Cool Plate (SuperTack)"); a Snapmaker U1's own four ("Textured PEI Plate", "Smooth PEI Plate", "Graphic Effect Plate", "Cool Plate"); or a U1's seven with `support_multi_bed_types` | l.2725–2786, `update_all_preset_comboboxes` l.4464–4487, `libslic3r/PrintConfig.cpp` l.1284–1327 | **had**: the same lists and labels (`settled`, `bed_types`). **not yet**: "Graphic Effect Plate" (the engine has no bed temperature for it); the link (the page loads nothing from the network) |
 | The list is enabled for a Bambu printer, a U1, or `support_multi_bed_types`. Any other printer is on its own default, shown greyed | l.4503, l.4555–4559 | **had** the rule. **added**: such a printer is put on its default when it is selected |
@@ -112,10 +115,12 @@ runs, is section 8.
 | C++ | Where | Here |
 | --- | --- | --- |
 | Section "Filament Management" ("Pellet Configuration" for pellet printers), sub-title "Filaments" | l.2882, l.3515, l.4450 | **added** |
-| One row for each filament of the project: a numbered colour swatch ("Click to select filament color"), the filament preset list, the tool badge, the row menu ("Edit", "Delete", "Merge with", "Print on nozzle", "Rack slot"…) | `init_filament_combo` l.4135, `GUI_Factories.cpp::create_filament_action_menu` l.2600 | **added**: a row for filament 1 up to the highest the file prints in, with its number on the project's colour and a preset list each (before: one list for each filament the plate shown used, no colours). With the project's own settings the saved names are shown. **added** (sixth pass): the row's edit icon ("Click to edit preset", the row menu's "Edit"), which opens that filament's pages (section 14). **not yet**: changing a colour (the colour picker), the tool badge, the rest of the row menu |
-| "Add one filament", "Remove last filament" | l.3508–3600 | **not yet**: the engine prints the filaments the file assigns |
-| "Apply All" (one preset for every filament) | l.3624 | **not yet** |
-| "Flushing volumes", "Color Mixing Match", "Synchronize filament list from AMS", "Sync Filament Information", "Spool Manager", "Manage filament presets" | l.2903, l.2936, l.3404, l.3508 | **not yet** |
+| One row for each filament of the project: a numbered colour swatch ("Click to select filament color"), the filament preset list, the tool badge, the row menu ("Edit", "Delete", "Merge with", "Print on nozzle", "Rack slot"…) | `init_filament_combo` l.4135, `GUI_Factories.cpp::create_filament_action_menu` l.2600 | **added**: a row for each filament the project has: as many as its settings describe, at least the highest anything prints in (`Model::filament_count`; before: up to the highest the file printed in), its number on its colour, its preset list (with the project's own settings, the saved names). The row's edit icon ("Click to edit preset", sixth pass). **added** (twelfth pass): the swatch is a button, "Click to select filament color", opening a picker of the page's own (the reference's palette with white, greys and black, a square of saturation and brightness over a strip of hue, the colour typed; OK / Cancel); the row menu on the right button or the menu key: "Edit", "Delete" ("Delete this filament", off with one filament), "Merge with" (the other filaments, each by its preset's name and colour). **differs**: the reference's colour dialog also takes several colours to a filament, their make-up and a filament library's colours; one colour here. **not yet**: the tool badge, "Print on nozzle", "Rack nozzle size", "Print on", "Rack slot" (the engine has no assignment of a filament to a nozzle of the person's choosing) |
+| "Add one filament" (at most 64, `MAXIMUM_FILAMENT_NUMBER`), "Remove last filament" (shown with more than one) | l.3508–3600, `Sidebar::add_filament`, `delete_filament` l.10223 | **added**, in the list's head, the same words (`filament_edit` `add`, `remove_last`). The new filament is the last one again: its preset (`filament_presets.back()`), what is set over it, and with the project's own settings all its values; its colour the next of the reference's sixteen (`get_next_color_for_filament`, one counter for the window as the reference's is static); what is flushed to and from it worked out from the colours (below). Nothing is asked, as in the reference (it asks only about mixed filaments, which are not read here). A printer with fewer tools takes a fifth filament as the reference does: `T4` is written, with the engine's warning |
+| "Delete" of any filament; "Merge with" | `Sidebar::delete_filament` with an index, `change_filament` l.10069, `Plater::on_filaments_delete` l.28076, `PartPlate::on_filament_deleted` l.6798, MixedFilamentConfigRemap.hpp | **added** (`delete`, `merge`): the filaments after it are numbered one less wherever they are named: a part's and an object's filament, the colours painted on (`paint_color`, the triangles' codes rewritten), an object's, a part's and a height range's feature filaments (`wall_filament`, `support_filament`…), the project's own process settings that name one, a plate's first-layer and later-layers orders (the filament taken out of them) and its `filament_maps` entry, a filament change at a layer (one to it taken out; merged, to the filament merged into). What was in it prints in its object's filament (a part), filament 1 (an object), unpainted (a colour); merged, in the filament merged into. Its flushing volumes go with it. **differs**: the flushing volumes are taken out by row and column, where the reference keeps the first n − 1 (see "Errors found in the C++"); a filament change merged goes to the right filament (ditto); a range of later layers whose order is left empty is taken away, where the reference keeps it empty and its dialog then refuses it. **not yet**: a feature filament set by hand over a process preset (`process_set`) is not renumbered |
+| "Apply All" with "Filament preset to apply to all filaments", "Set all filaments to the selected preset" | l.3624 | **added** under the list while presets are chosen here (a project on its own settings has none to choose), its list starting at filament 1's preset. **differs**: on a printer whose heads carry nozzles of different sizes the reference lists families and gives each slot the variant for its nozzle; the engine has one nozzle size for all tools, so the plain list is offered |
+| "Flushing volumes" (shown with more than one filament): `WipingDialog` with the matrix, "Auto-Calc", the multiplier | l.2903, `WipingDialog.cpp` | **not yet**: the volumes are kept right (the matrix and vector the size of the list, a new filament's row and column and a recoloured one's worked out as "Auto-Calc" does, saved), and a printer of one nozzle is given them at a tool change (`flush_length`); the dialog waits for the engine to purge them into the prime tower (section 14, "Not yet"), without which what it sets would change only that number |
+| "Color Mixing Match", "Synchronize filament list from AMS", "Sync Filament Information", "Spool Manager", "Manage filament presets" | l.2936, l.3404, l.3508 | **not yet** |
 | "Mixed Filaments": "Add Gradient", "Add Pattern", "Add Color" | l.3794 | **not yet** |
 
 ### Sidebar: Process
@@ -356,7 +361,7 @@ the project is on.
 | `machines { vendor }` | | `{ machines }` |
 | `presets { vendor, machine }` | | `{ processes, filaments, usual_process, usual_filament }` |
 | `projects` | — | the strip: `{ active, max_open, projects: [{ id, name, path, dirty, empty, plate, tab, revision, slicing, plates_with_objects, plates_sliced }] }`. `revision` counts the edits to the project's model |
-| `project` | `project?` | a strip entry and `file`, `plates: [{ id, name, filaments, objects, sliced, failed, locked, own { bed_type, print_sequence, spiral_mode, first_layer_sequence, other_layers_sequence: [{ begin, end (null: "End"), order }] } (null or empty: the project's), customized (whether it sets any of them) }]`, `sliced`, `failed`, `has_settings`, `used`, `filament_count`, `colours`, `saved { printer, process, filaments }`, `choices { source, vendor, machine, process, filaments, bed_type, over { key: value }, filament_over [{ key: value }], printer_over { key or key#n: value }, layer_height, first_layer_height, wall_loops, closing_radius }` (`over` is every process setting set over the preset, `filament_over` each filament's own from filament 1, `printer_over` the printer's; the four after them are four process settings under their older names), `view`, `edit { revision, undo, redo }` (what there is to take back and to make again, by name, or null), `status`. All of it is of the model as it stands, edits included |
+| `project` | `project?` | a strip entry and `file`, `plates: [{ id, name, filaments, objects, sliced, failed, locked, own { bed_type, print_sequence, spiral_mode, first_layer_sequence, other_layers_sequence: [{ begin, end (null: "End"), order }] } (null or empty: the project's), customized (whether it sets any of them) }]`, `sliced`, `failed`, `has_settings`, `used`, `filament_count` (as many filaments as its settings describe, at least the highest anything prints in), `colours` (each filament's; null for a model with no settings whose filaments were never changed), `saved { printer, process, filaments }`, `choices { source, vendor, machine, process, filaments, bed_type, over { key: value }, filament_over [{ key: value }], printer_over { key or key#n: value }, layer_height, first_layer_height, wall_loops, closing_radius }` (`over` is every process setting set over the preset, `filament_over` each filament's own from filament 1, `printer_over` the printer's; the four after them are four process settings under their older names), `view`, `edit { revision, undo, redo }` (what there is to take back and to make again, by name, or null), `status`. All of it is of the model as it stands, edits included |
 | `project_new` | — | the strip and `id`; or the strip and `full: true` |
 | `project_open` | `path` | the strip and `id` (`already: true` when it was open); or `full: true` |
 | `project_select` | `id` | the strip |
@@ -383,6 +388,7 @@ the project is on.
 | `scene` | `project?` | the project for Prepare in 3D: `{ project, key, bare, bed { box, shape, height, model, texture }, plates: [{ id, name, origin, locked }], plate, colours, objects: [{ id, name, mesh, vertices, triangles, bytes, filaments, filament, parts }], placings: [{ id, object, plate, printable, matrix (16 numbers, column by column), box, over }] }`. An object also has `own_filament` (the filament it is set to itself, or null: what its parts set to "default" print in), `part_list: [{ id, name, kind (part, negative, modifier, support_blocker, support_enforcer, precise_seam), filament, own (the part's own filament, or null for "default"), matrix (16 numbers, column by column: the part's own coordinates to the object's), box (round the part's own mesh), triangles ([first, how many] of the object's mesh), split (whether "Split" can be done to the part), settings (how many settings of its own the file gives it) }]` and `split: { objects, parts }` (whether "Split to objects" and "Split to parts" can be done to it). A part's `id` stays its own through every edit that leaves it there. An object's `id` and a copy's (a placing's) `id` stay theirs through every edit; `mesh` is the number of the object's mesh, the same for as long as the mesh is; `filament` is the object's own when its parts agree; `over` says a copy reaches over the edge of its plate |
 | `scene_edit` | `project?`, `op` and what it takes (section 13) | `{ project, scene, done, made, note, part }`: the project and its scene as they then are, the edit's name in the history, the copies it made, something to tell the person or null, and the part it made (`part_add`) or null |
 | `undo`, `redo` | `project?` | `{ project, scene, done }`; an error when there is nothing to take back or to make again |
+| `filament_edit` | `project?`, `op`: `add` (`colour?`, "#RRGGBB"; else the next of the reference's palette), `remove_last`, `delete` (`filament`), `merge` (`filament`, `into`), `colour` (`filament`, `colour`), `apply_all` (`preset`) | as `scene_edit`: `{ project, scene, done }`, `done` the step's name ("Add one filament", "Remove last filament", "Delete this filament", "Merge with", "Change Filament Color", "Apply All"), or null when nothing changed. Refused, nothing changed: the last filament, a 65th, a filament the project has not got, a merge into itself, a colour that is not `#RRGGBB`, "Apply All" on a project on its own settings |
 | `scene_faces` | `project?`, `copy` | the faces "Lay on face" offers for a copy, largest first: `{ project, copy, faces: [{ normal, area, drawn }] }`, `normal` outward in the object's own coordinates (what `lay_on_face` takes), `area` in mm² at the printed size, `drawn` the outline to draw over the face (rounded and lifted as the reference draws it), in the object's own coordinates |
 | `toolpath` | `project?`, `plate?` | a sliced plate's moves, before they are asked for: `{ source: "gcode" \| "lines", moves, move_size, at_once, layers { first, z, height }, features, filaments, counts { travel, line, wipe, retract, unretract, seam, tool_change }, box, plate, run, gcode_lines }` (`gcode_lines`: how many lines the G-code has, 0 without one) |
 | `gcode_lines` | `project?`, `plate?`, `from` (a line, from 1), `count` (at most 2048) | `{ total, from, lines: [text] }`: the G-code's lines as the G-code window shows them (no new line; over 55 characters cut to 52 and "...") |
@@ -877,6 +883,7 @@ sequence is not the project's, as the reference does (ArrangeJob.cpp
 | A new change forgets what was undone | `Stack::take_snapshot` | **added** |
 | Selecting is a step too ("Selection-Add Object") | Selection.cpp | **differs**: only edits are steps; what is selected stays selected while it is still there |
 | The settings are not in the history: a preset or a setting changed is not undone by Ctrl+Z | `Plater::priv::take_snapshot` (the model, the plates, the gizmos; the presets are not serialized) | the same: the history holds the model only. A process setting set by hand, a preset or a bed type is neither a step nor taken back by one, and an edit does not touch it (tested) |
+| The filament list is not in the history either: adding, removing, deleting, merging, a colour and "Apply All" take no snapshot, while what a deletion renumbers in the model is in the model the history holds | Plater.cpp `on_filaments_change`, `on_filaments_delete`, `Sidebar::delete_filament`, `on_filament_color_changed` | **differs**: each is one step ("Add one filament", "Remove last filament", "Delete this filament", "Merge with", "Change Filament Color", "Apply All"), the model and the filaments' presets and what is set over them taken back together, and the filament changes at layers with them. Undoing a deletion in the reference gives the objects their old numbers against the shorter list, which is what keeping them apart comes to. Picking one row's preset stays as before, no step, as in the reference |
 | Undoing back to the state that was saved leaves the project unmodified | `Plater::is_project_dirty` | **added**: the project is unsaved while its model is not the one it was opened with |
 
 ### Selection
@@ -1478,7 +1485,7 @@ screenshots are under `target/ui-shots/presets/`.
 | Saving, renaming, deleting user presets; "Save current …"; detaching from the system preset | user presets, which `edge-config` does not read or write |
 | "Compare presets" | the same |
 | Preset bundles, import and export | the same |
-| The filament colour picker ("Click to select filament color"), "Add one filament", "Remove last filament" | the engine printing filaments the file does not assign |
+| A printer of one nozzle (the Centauri Carbon) changing filament as the reference does: each change's flushing volume purged into the prime tower (WipeTower2 `toolchange_Wipe`, "CP TOOLCHANGE WIPE"), the temperature set without a tool number and not waited for | a port of the single-extruder half of the tower: here the tower takes `prime_volume` at each change and the next tool's temperature is waited for with `M109 … T1`. The flush itself is given to the printer's template (`M6211 … L28.4374`, the reference's number) since the twelfth pass |
 | AMS sync, "Sync Filament Information" | a printer connection (section 4) |
 | The physical printer and print host dialog | a list of printers of this app's own (section 4) |
 | The dialogs above (bed shape, ramming, compatible presets, Extruder settings, the G-code placeholders) | each its own piece of work |
@@ -1584,6 +1591,7 @@ C++.
 | On its file's own settings, with process, filament or printer settings or the bed type set here | the file's own, each setting set here taking the value the engine settles it to (`edge_engine::own_settings`), everything else as the file has it; what was set is added to the file's `different_settings_to_system`; the file's presets go with it |
 | On presets chosen here | what a slice reads (`edge_engine::settled`: the presets with everything they inherit, the file's own settings under them, what was set over them, the reference's defaults for the rest), only the reference's own options and the names (`printer_settings_id`, `print_settings_id`, `filament_settings_id`), a value from the defaults' table in the text a project holds (its escapes taken out); `different_settings_to_system` lists, for the process, each filament and the printer, the settings set here (`edge_engine::project_settings`) |
 | No printer chosen (an STL, an empty project) | none: the reference opens it on the presets it is on |
+| Its filaments changed here (added, taken away, merged, recoloured) | on its own settings, the file's own laid out for the list (`edge_config::filaments::reslot`: every filament's list one entry for each, the added one the last one's, a deleted one's gone, `different_settings_to_system` and `inherits_group` with them, the process's feature filaments renumbered), `filament_colour`, `flush_volumes_matrix` and `flush_volumes_vector` the size of the list; on presets, the same three in the settings saved. Each plate's `filament_maps` one entry for each filament, a deleted filament's taken out. What the model renumbers (parts, objects, paint, height ranges, plates' orders, filament changes at layers) is written as it stands |
 
 `different_settings_to_system` is written truthfully, as the reference
 reads it (Preset.cpp `load_external_preset`): when it opens the file it
@@ -1739,6 +1747,37 @@ save` lists the same and writes only with `--accept-losses`.
   the custom lines and the change to filament 2 at the same layers as
   this engine.
 
+- The filament list (twelfth pass). `crates/edge-engine/tests/filaments.rs`:
+  on `mcbrim_test.3mf` filament 3 deleted (every part, object and painted
+  triangle renumbered as the reference's remap does, the lists and the
+  colours without it, the flushing volumes 6 × 6), saved and opened again
+  the same model and the same G-code on its three plates; filament 2
+  merged into 6; a filament added, saved, opened again with eight; a bare
+  STL given the lists of its filaments without settings of its own.
+  `src/api/filaments/tests.rs`: each edit through the session, each a
+  step taken back and made again, the G-code of a one-filament model the
+  same bytes after adding a filament and taking it back; deleting and
+  removing on a copy of `mcbrim_test.3mf`, saved, opened in another
+  session, plate 1 sliced to the same G-code there; colours and "Apply
+  All" saved and read back. The C++ slicer, headless, re-exporting each
+  file saved in the page (`--export-3mf`): `filament_settings_id`,
+  `filament_colour`, `flush_volumes_matrix`, `flush_volumes_vector` and
+  the per-filament lists as left (two filaments on the U1 and on the
+  Centauri Carbon; six after deleting filament 3 of the lettered project),
+  and this engine slices the C++'s re-export of the deleted project to the
+  same bytes as the file saved here, paint included.
+  In the served page (1280 × 820 dark, 900 × 700 light): a two-part cube
+  on the U1 given a second filament with "Add one filament" (teal, the
+  palette's first), part 2 given filament 2 in the object list, its colour
+  picked black in the picker and its preset "Generic PETG @U1 0.4
+  nozzle"; sliced, Preview showed the prime tower and 50 filament
+  changes; saved as, and the same on the Centauri Carbon; on the lettered
+  project the row menu of filament 3, "Merge with" listing the six others,
+  "Delete" taking it (six rows, plates' filaments renumbered), saved,
+  undone from the toolbar (seven again, "Delete this filament" to redo);
+  "Apply All" with PETG and undone. Screenshots in the pass's scratch
+  folder.
+
 ### Not yet
 
 - Drawing a plate's pictures, and the project's cover.
@@ -1787,6 +1826,27 @@ save` lists the same and writes only with `--accept-losses`.
   writes is behind `#if 0`, so a colour change read from a project is
   written as an empty `;CUSTOM_GCODE` block. Here the same is written,
   with a note.
+- PresetBundle.cpp l.6364–6388 (`update_multi_material_filament_presets`):
+  when a filament is deleted the flushing matrix keeps its first n − 1
+  rows and columns and the vector drops its last pair, whichever filament
+  went, so deleting filament 2 of 3 leaves filament 3 with filament 2's
+  volumes (to it and from it). A person sees the wrong numbers in
+  "Flushing volumes" and, on a printer that purges, the wrong purge.
+- Plater.cpp l.28187–28198 (`on_filaments_delete`, "update customize
+  gcode"): merging a filament, only the first filament change to it (the
+  element `std::remove_if` leaves at its new end) is given the target, the
+  others stay in the unspecified tail it leaves, and the loop after numbers
+  that first one down once more (the target's number is already the one
+  after the deletion), so a "Change Filament" at a layer to a merged
+  filament goes to the filament after the one meant, and others may be
+  lost or doubled.
+- Plater.cpp l.13876 (`get_next_color_for_filament`): the colour counter is
+  a function `static`, so the colour a new filament gets depends on how
+  many were added before in the whole run, in any project (followed here,
+  as it is harmless).
+- PartPlate.cpp l.3771–3779: `need_update_data` is set for every plate
+  that has later layers' orders, whether or not one names the filament
+  deleted, so each is written back (harmless).
 - GCode.cpp l.2689–2697: the custom G-code set at layers is not checked
   for reserved tags (`validate_custom_gcode`), though the reference's
   G-code viewer and estimator read its own tags back from the file.
