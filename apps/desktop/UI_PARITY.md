@@ -1983,7 +1983,7 @@ legends, "Fan Speed (%)", "Total Estimation") and the search's placeholder
 
 ### English, as the C++ shows it
 
-With the `en` catalog, 172 strings this app shows read otherwise than
+With the `en` catalog, 168 strings this app shows read otherwise than
 they did, as the C++ reads them; among the labels and menus: "Advance" →
 "Advanced", "Lay on face" → "Lay on Face", "Add part" → "Add Part", "Add
 negative part" → "Add Negative Part", "Add modifier" → "Add Modifier",
@@ -1992,8 +1992,10 @@ negative part" → "Add Negative Part", "Add modifier" → "Add Modifier",
 "To objects" / "To parts" → "To Objects" / "To Parts", "Object
 Operations" → "Object operations" (and Volume, Group), "Jump to Layer" →
 "Jump to layer", "Slice ok." → "Slice complete", "Select all" → "Select
-All", "arrange current plate" → "Arrange current plate", "Top Solid
-Layers" → "Top solid layers", "Detect thin wall" → "Detect thin walls",
+All", "arrange current plate" → "Arrange current plate", "Initial layer
+height" → "First layer height" (and the other "Initial layer" options),
+"Support filament" → "Filament for Supports", "Detect thin wall" →
+"Detect thin walls",
 "De-retraction Speed" → "Deretraction speed", "Bed exclude area" →
 "Excluded bed area", "%s can't be a percentage" → "%s can’t be a
 percentage"; the rest are the options' tooltips and labels of the
