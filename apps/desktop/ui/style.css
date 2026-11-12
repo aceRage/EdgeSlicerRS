@@ -83,6 +83,10 @@
   --control-l: 32px;
   --bar-height: 40px;          /* the tab bar, and the strip's head beside it */
   --menubar-height: 28px;      /* the menu bar, in a browser only (menu.css) */
+  --side-min: 300px;           /* the sidebar dragged narrowest (src/api/layout.rs SIDEBAR_MIN) */
+  --side-panel-min: 340px;     /* the sidebar while a filament's or the printer's pages are open */
+  --stage-min: 420px;          /* the stage left beside a sidebar dragged wide (STAGE_MIN) */
+  --grip: 8px;                 /* what is dragged at an edge: the sidebar's */
 
   --time-fast: 90ms;
   --time: 140ms;
@@ -1011,7 +1015,28 @@ dialog .row button { min-width: 84px; }
   background: var(--surface-panel);
   border-right: 1px solid var(--line-1);
 }
+#side { position: relative; }
 #side-scroll { flex: 1; min-height: 0; overflow-y: auto; scrollbar-gutter: stable; }
+/* The sidebar's right edge, to drag (app.js): over the hairline, half on
+   the stage; a short mark in its middle says it is there, the whole edge
+   lights while pointed at, given the keys or dragged. */
+#side-grip {
+  position: absolute;
+  top: 0;
+  right: calc(var(--grip) / -2);
+  bottom: 0;
+  width: var(--grip);
+  z-index: var(--z-overlay);
+  cursor: ew-resize;
+  touch-action: none;
+}
+#side-grip::before, #side-grip::after { content: ""; position: absolute; left: calc(var(--grip) / 2 - 1px); width: 2px; border-radius: 1px; }
+#side-grip::before { top: calc(50% - 12px); height: 24px; background: var(--line-3); opacity: 0.6; }
+#side-grip::after { top: 0; bottom: 0; background: var(--accent); opacity: 0; transition: opacity var(--time-fast) var(--ease); }
+#side-grip:hover::after, #side-grip:focus-visible::after, body.side-dragging #side-grip::after { opacity: 1; }
+#side-grip:focus-visible { outline: none; }
+/* While the edge is dragged nothing is selected, and the pointer keeps its look across the page. */
+body.side-dragging { cursor: ew-resize; user-select: none; -webkit-user-select: none; }
 #side-scroll .fold > h2, #side-scroll .fold-pin, #preset-scroll > .fold-pin {
   position: sticky;
   top: 0;
@@ -1344,6 +1369,7 @@ dialog .row button { min-width: 84px; }
   #plater { grid-template-columns: 1fr; grid-template-rows: auto minmax(360px, 1fr); overflow-y: auto; }
   #side { min-height: auto; border-right: 0; border-bottom: 1px solid var(--line-1); }
   #side-scroll { flex: none; overflow: visible; }
+  #side-grip { display: none; }
   #side-tools { gap: var(--space-1); }
   #tabs > [role="tab"] { padding: 0 var(--space-3); }
 }

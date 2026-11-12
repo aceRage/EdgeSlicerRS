@@ -106,6 +106,7 @@ runs, is section 8.
 | C++ | Where | Here |
 | --- | --- | --- |
 | Section "Printer", folded and unfolded by its title bar (chevron, printer icon, "Printer"; "Click to collapse / expand") | `Sidebar::Sidebar` l.2385–2403, l.2614 | **had** |
+| The sidebar (Printer, Filament, Objects, Process) has a width of the window's choosing; it cannot be dragged wider or narrower | `Sidebar::Sidebar`, `ParamsPanel` | **differs** (the owner's choice): its right edge is dragged (or given the keys: Left, Right, Home, End; Enter or a double-click for the usual width) from 300 to 640 px, never leaving the stage less than 420 px; the stage follows it as it is dragged, and the width is kept between runs in `settings.json` (`layout_set`, section 8). `ui/STYLE.md`, "The sidebar's edge" |
 | Title bar, right: the gear "settings", which opens Printer Selection (`run_wizard(RR_USER, SP_PRINTERS)`) | l.2588–2591 | **added**: the gear, with the same tooltip |
 | Title bar, right: "Synchronize nozzle information" (a U1 or a Bambu printer only): reads the nozzles of the connected printer; "Printer not connected. Please go to the home page or the device page to connect the printer.", "Set Nozzle Diameter", "Nozzle settings synchronized successfully" | l.2406–2577, l.4668 | **not yet**: needs a printer connection (section 4) |
 | The printer row: a framed panel (green frame on hover), a 48 px picture of the printer, the preset list; a click anywhere on it opens the list | l.2637–2705 | **added**: the picture, the model's name and the build volume as the head of one card for the printer; a click anywhere on it opens the list |
@@ -398,6 +399,8 @@ the project is on.
 | `startup` | — | `{ model }`: a file named when the app was started |
 | `language` | `system?` (the system's preferred languages, the page's `navigator.languages`) | `{ language, catalog, languages: [{ code, name }], table }`: the language the page is shown in (chosen and kept at the first run, section 16) and its table as `tools/make_translations.py` wrote it |
 | `language_set` | `language` (a code of `languages`) | as `language`; kept. An error for a code not listed |
+| `layout` | — | `{ sidebar_width, sidebar_min, sidebar_max, stage_min }`: the page's layout as it was left (the sidebar's width dragged to, null for the usual one) and the limits it holds to (`src/api/layout.rs`) |
+| `layout_set` | `sidebar_width?` (whole pixels from `sidebar_min` to `sidebar_max`, or null) | as `layout`; kept at once. Refused out of range, nothing changed |
 | `library`, `set_profiles { dir }` | | `{ dir, vendors }`. The folder set is kept for the next run |
 | `printers` | `project?` | `{ first_run, installed: [{ vendor, brand, model, name, cover, variants: [{ variant, machine }] }], selected: { source: "preset" \| "project", vendor, machine, model, variant, added } \| null, project_printer, last: { vendor, machine } \| null, settings: { file, problem }, user: [{ name, vendor, model, variant, base }] }` (the person's printer presets; `selected.user` says the one in force is one of them) |
 | `printer_catalogue` | — | `{ models: [{ vendor, brand, model, name, nozzle_diameter, x, y, z, toolheads, cover, enabled }], unread }` |
@@ -544,6 +547,7 @@ Read from `WebGuideDialog.cpp/.hpp` (`GuideFrame`), the pages under
 | The language: `app.language`, the canonical name of the one chosen ("de_DE"); at the first run the system's, written at once | GUI_App.cpp `load_language` l.8279, Preferences.cpp l.274 | **added**: `app.language` in `settings.json`, the same name. **differs**: a system language with no catalog is not kept (the reference keeps it and then shows the bare message ids); English is |
 | The send dialog's choices: `recent` (`open_device_tab_post_upload`, `elegoolink_timelapse`, `elegoolink_heated_bed_leveling`, …) | `PrintHostDialogs.cpp` l.2998 | **differs**: kept by the page (`localStorage`), as the print button's last action |
 | The recent projects: `recent_projects` | AppConfig.cpp `set_recent_projects` l.1642 | **added**: `recent_projects` in `settings.json`, `{ "01": path, "02": path, … }` as the reference keeps them, read back in the order of their numbers (section 2, "Files") |
+| — | — | **differs** (the owner's choice; this app's own): the sidebar's width as it was dragged, `layout.sidebar_width` in `settings.json`, kept by the session (`layout_set`) so the window and a browser (`--serve`) find it alike; nothing is kept for the usual width |
 | The page's own: the strip's width and folding, the last file opened | — | **had**, kept by the page (`localStorage`). The printer, process and filaments last used were kept there too; they are in `settings.json` now, and the old entries are no longer read |
 
 ### User presets

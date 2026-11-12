@@ -119,6 +119,8 @@ primary: make it plain.
 | `--control-s`, `-m`, `-l` | 22, 28, 32 px | Heights: a chip or an icon button; a field or a button; a table's head |
 | `--bar-height` | 40 px | The tab bar, and the strip's head beside it, whose hairlines meet |
 | `--menubar-height` | 28 px | The menu bar, in a browser only, over both |
+| `--side-min`, `--side-panel-min`, `--stage-min` | 300, 340, 420 px | The sidebar dragged narrowest; the sidebar while a filament's or the printer's pages are open; the stage left beside a sidebar dragged wide (the session's `SIDEBAR_MIN`, `STAGE_MIN`, `src/api/layout.rs`) |
+| `--grip` | 8 px | What is dragged at an edge: the sidebar's |
 | `--font-ui` | The system's | Everything |
 | `--font-mono` | The system's fixed-width | A value that is a number: a field's number, a size in a table, a nozzle, a path |
 | `--size-caps` | 10.5 px | Group labels, in capitals, spaced `--caps-spacing` |
@@ -899,5 +901,29 @@ without touching the system's setting.
 
 The sidebar is 300 px wide in a narrow window and up to 380 px in a wide one
 (`clamp(300px, 24vw, 380px)`, in `settings.css`), 340 to 520 px while a
-filament's or the printer's pages are open: look at a form in it at both
-ends, and at a box of G-code at 900 px, the window's minimum.
+filament's or the printer's pages are open, until it is dragged: then it
+is the width dragged to, from 300 to 640 px, never leaving the stage less
+than 420 px (392 px at most in a 900 px window), and at least 340 px while
+those pages are open. Look at a form in it at both ends, and at a box of
+G-code at 900 px, the window's minimum.
+
+### The sidebar's edge
+
+```html
+<div id="side-grip" role="separator" tabindex="0" aria-orientation="vertical" aria-controls="side" aria-label="Sidebar width" title="…"></div>
+```
+
+The sidebar's right edge is dragged to widen or narrow it (`app.js`, "the
+sidebar's width"): a strip of `--grip` over the hairline, half of it on the
+stage, with the resize pointer; a short mark of `--line-3` in its middle
+says it is there, and the whole edge is a 2 px line of the accent while it
+is pointed at, given the keys or dragged. It is a window splitter (ARIA's
+`separator` with its value): Left and Right step it 16 px (64 with Shift),
+Home and End go to the least and the most the window allows, Enter or a
+double-click gives the usual width back. The drag takes the pointer
+(pointer capture) and selects nothing (`body.side-dragging`); the stage
+follows it as it goes (the 3D view is drawn again by its own
+`ResizeObserver`, the same frame). The width is kept by the session
+(`layout_set`, section 8 of `../UI_PARITY.md`), so the window and a
+browser share it, and put on the page by `i18n.js` before it is first
+shown. Not shown where the page is one column (under 761 px).

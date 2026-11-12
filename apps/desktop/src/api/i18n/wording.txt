@@ -155,6 +155,7 @@ Back to the sidebar
 Back to the sidebar [Esc]
 Browse ...
 Change…
+Drag to widen or narrow the sidebar; double-click for its usual width
 EdgeSlicerRS
 Fit bed
 Fit part
@@ -177,6 +178,7 @@ Reset all process settings to the preset
 Search brand or model
 Settings found
 Shows the advanced settings with the simple ones
+Sidebar width
 Slice plate or slice all
 The plate
 The plate in 3D

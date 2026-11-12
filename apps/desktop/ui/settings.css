@@ -11,7 +11,13 @@
   #plater { grid-template-columns: clamp(300px, 24vw, 380px) minmax(0, 1fr); }
   /* A filament's or the printer's pages hold boxes of G-code: the
      sidebar is wider while they are open, the plate keeping the rest. */
-  #plater.presets-open { grid-template-columns: clamp(340px, 30vw, 520px) minmax(0, 1fr); }
+  #plater.presets-open { grid-template-columns: clamp(var(--side-panel-min), 30vw, 520px) minmax(0, 1fr); }
+  /* A width dragged (app.js, kept by the session): the person's, never
+     less than --side-min, and never leaving the stage less than
+     --stage-min; with a filament's or the printer's pages open, at least
+     --side-panel-min. */
+  #plater.side-sized { grid-template-columns: max(var(--side-min), min(var(--side-width), 100% - var(--stage-min))) minmax(0, 1fr); }
+  #plater.side-sized.presets-open { grid-template-columns: max(var(--side-min), min(max(var(--side-width), var(--side-panel-min)), 100% - var(--stage-min))) minmax(0, 1fr); }
 }
 
 /* ---- components ---- */
