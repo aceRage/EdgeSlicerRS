@@ -11,6 +11,7 @@ pub mod raycast;
 pub mod selector;
 pub mod split;
 pub mod stl;
+pub mod tidy;
 mod transform;
 
 pub use transform::Transform;

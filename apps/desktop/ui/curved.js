@@ -176,8 +176,13 @@
       if (fresh || !o.sheet) {
         o.sheet = Sheet.flat(count(halfU), count(halfV), halfU, halfV);
         this.curvedUi.userGrid = false;
+        this.publishSheet();
       } else {
-        let sheet = Sheet.resized(o.sheet, halfU, halfV);
+        // From the sheet as the person last set it, not as the last fit
+        // left it, so that fit after fit does not drift
+        // (`publish_reference`).
+        const ref = o.sheetRef && o.sheetRef.nx === o.sheet.nx && o.sheetRef.ny === o.sheet.ny ? o.sheetRef : o.sheet;
+        let sheet = Sheet.resized(ref, halfU, halfV);
         if (!this.curvedUi.userGrid) sheet = Sheet.regrid(sheet, count(halfU), count(halfV));
         o.sheet = sheet;
       }
@@ -277,10 +282,17 @@
       return true;
     },
 
+    // The sheet as the person set it, what a later fit resamples from.
+    publishSheet() {
+      const o = this.open;
+      if (o && o.sheet) o.sheetRef = { ...o.sheet, z: o.sheet.z.slice() };
+    },
+
     // The surface changed: drawn again, and its halves worked out anew
     // once it is still for a moment.
     sheetChanged(dragging) {
       const o = this.open;
+      if (!dragging) this.publishSheet();
       o.sheetMesh = null;
       clearTimeout(this.previewTimer);
       this.previewTimer = setTimeout(() => this.askPreview(), dragging ? 250 : 60);

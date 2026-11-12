@@ -297,6 +297,7 @@
         this.curvedUi.userGrid = true;
         // Fitted to this plane already: kept as it was cut.
         o.fitKey = `${this.frame().join(',')}|`;
+        this.publishSheet();
         o.bendRadius = this.defaultBend();
       }
       if (reedit) o.reedit = { missing: Boolean(recipe.missing) };

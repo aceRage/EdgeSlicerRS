@@ -388,7 +388,7 @@ impl Pin {
                     && sound(&slit)
                     && slit.signed_volume() < mesh.signed_volume() - 1e-3
                 {
-                    mesh = slit;
+                    mesh = crate::curved::tidy(slit);
                     slot_made = true;
                 }
             }

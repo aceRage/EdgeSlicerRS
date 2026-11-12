@@ -293,7 +293,18 @@ pub fn cut_with_solid(
     if stopped() {
         return Err(CurvedError::Cancelled);
     }
-    Ok((above_mesh, below_mesh))
+    Ok((tidy(above_mesh), tidy(below_mesh)))
+}
+
+/// Corners the boolean left a hair apart made one, so that a half placed
+/// on the bed cannot fold a triangle to no area in single precision
+/// ([`edge_mesh::tidy::weld_close`], within the cut's own 1e-4 mm); the
+/// mesh as it was when that would open it.
+pub fn tidy(mesh: Mesh) -> Mesh {
+    if mesh.triangles.is_empty() {
+        return mesh;
+    }
+    edge_mesh::tidy::weld_close(&mesh, 1e-4).unwrap_or(mesh)
 }
 
 /// The slabs a cut by `sheet` takes, in the frame `plane` takes the

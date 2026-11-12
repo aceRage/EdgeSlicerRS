@@ -1335,10 +1335,10 @@ fn a_curved_cut_is_made_by_the_solid_under_its_surface_and_made_again() {
         .objects()
         .iter()
         .map(|object| {
-            // Its own mesh: placed on the bed, single precision can fold a
-            // sliver of the boolean's flat.
-            let mesh = &object.shape().parts()[0].mesh;
-            sound(mesh);
+            // Placed on the bed: no corner the boolean left a hair from
+            // another folds a triangle flat in single precision.
+            let mesh = printed(&model, object, 0);
+            sound(&mesh);
             mesh.signed_volume()
         })
         .collect();
