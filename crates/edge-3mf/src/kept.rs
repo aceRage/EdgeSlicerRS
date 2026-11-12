@@ -485,6 +485,24 @@ fn is_text(raw: &str) -> bool {
 }
 
 impl ObjectKept {
+    /// What each object a cut makes of this one keeps of it: its settings,
+    /// height ranges, variable layer heights and brim ears, as the
+    /// reference's halves are copies of the object (Model.cpp
+    /// `ModelObject::clone_for_cut`, `assign_copy`). Not its place in the
+    /// file (it is a new object, so what goes by place is not its), its cut
+    /// information (a plain cut's halves are not cut objects to the
+    /// reference: GLGizmoCut.cpp sets `InvalidateCutInfo` for them), nor
+    /// where its copies stood in the assembly view or their labels.
+    pub fn cut_half(&self) -> ObjectKept {
+        ObjectKept {
+            index: 0,
+            cut: None,
+            assembly: Vec::new(),
+            identify: Vec::new(),
+            ..self.clone()
+        }
+    }
+
     /// The object with a part's settings given to it, each set over what
     /// the object had: what the reference does when one part is left of an
     /// object (GUI_ObjectList.cpp `del_subobject_from_object`,

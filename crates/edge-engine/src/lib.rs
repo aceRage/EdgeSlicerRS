@@ -49,10 +49,11 @@ pub use job::{BedType, Chosen, Job, Overrides, Sourced, prepare, prepare_noted};
 pub use load::{Loaded, Opened, OwnObject, OwnVolume, PlateInfo, open};
 pub use model::SettingChange;
 pub use model::{
-    ArrangeOptions, ArrangeScope, Arranged, Bed, Changed, FIRST_LATER_LAYER, FlushBasis,
-    LAST_LAYER, LONGEST_PLATE_NAME, LayerSequence, Look, MAX_FILAMENTS, MAX_PLATES, Model,
-    ModelCopy, ModelObject, ModelPlate, NEXT_COLOURS, NewPart, PlateSettings, PlateStamp, Reach,
-    Saved, Saving, Shape, own_settings, project_settings,
+    ArrangeOptions, ArrangeScope, Arranged, Bed, CUT_THICKNESS_MAX, Changed, CutDone, CutOptions,
+    CutSection, CutThickness, FIRST_LATER_LAYER, FlushBasis, LAST_LAYER, LONGEST_PLATE_NAME,
+    LayerSequence, Look, MAX_FILAMENTS, MAX_PLATES, Model, ModelCopy, ModelObject, ModelPlate,
+    NEXT_COLOURS, NewPart, PlateSettings, PlateStamp, Reach, Saved, Saving, Shape, own_settings,
+    project_settings,
 };
 pub use pipeline::{Gcode, Sliced, Timings, slice};
 pub use presets::{Library, ModelPreset, PrinterModel, Shelf};

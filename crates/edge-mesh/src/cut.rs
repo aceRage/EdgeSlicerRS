@@ -328,8 +328,9 @@ fn halves(
             }
         }
     }
-    // The cap: over the edges in the plane that the cut opened.
     let on_plane = |v: u32| (v as usize) >= sides.len() || sides[v as usize] == 0;
+    weld(&points, &on_plane, &mut upper, &mut lower);
+    // The cap: over the edges in the plane that the cut opened.
     let mut runs: FxHashMap<(u32, u32), [i64; 2]> = FxHashMap::default();
     for (which, half) in [&upper, &lower].into_iter().enumerate() {
         for t in &half.triangles {
@@ -372,6 +373,79 @@ fn halves(
         Sided { points, raw: lower },
         open,
     )
+}
+
+/// Joins corners in the plane that are nearer each other than
+/// [`ON_PLANE`] into one (the lowest numbered), and drops the triangles
+/// that then have two corners alike: what the reference does with the
+/// cut's duplicate vertices (`triangulate_slice`, "Remap duplicate vertices
+/// to a vertex with a lowest index"). A mesh with triangles of no area can
+/// be cut into an outline that doubles back on itself by less than that,
+/// which no triangle with area could cap.
+fn weld(points: &[[f64; 3]], on_plane: &impl Fn(u32) -> bool, upper: &mut Raw, lower: &mut Raw) {
+    let cell = |p: [f64; 3]| {
+        [
+            (p[0] / ON_PLANE).floor() as i64,
+            (p[1] / ON_PLANE).floor() as i64,
+        ]
+    };
+    let mut used: Vec<u32> = upper
+        .triangles
+        .iter()
+        .chain(&lower.triangles)
+        .flatten()
+        .copied()
+        .filter(|v| on_plane(*v))
+        .collect();
+    used.sort_unstable();
+    used.dedup();
+    let mut grid: FxHashMap<[i64; 2], Vec<u32>> = FxHashMap::default();
+    let mut to: FxHashMap<u32, u32> = FxHashMap::default();
+    for v in used {
+        let p = points[v as usize];
+        let [cx, cy] = cell(p);
+        let mut found = None;
+        'look: for dx in -1..=1 {
+            for dy in -1..=1 {
+                if let Some(list) = grid.get(&[cx + dx, cy + dy]) {
+                    for w in list {
+                        let q = points[*w as usize];
+                        if (p[0] - q[0]).hypot(p[1] - q[1]) < ON_PLANE {
+                            found = Some(*w);
+                            break 'look;
+                        }
+                    }
+                }
+            }
+        }
+        match found {
+            Some(w) => {
+                to.insert(v, w);
+            }
+            None => grid.entry([cx, cy]).or_default().push(v),
+        }
+    }
+    if to.is_empty() {
+        return;
+    }
+    for half in [upper, lower] {
+        let mut kept = 0;
+        for at in 0..half.triangles.len() {
+            let t = half.triangles[at].map(|v| to.get(&v).copied().unwrap_or(v));
+            if t[0] != t[1] && t[1] != t[2] && t[2] != t[0] {
+                // A triangle whose corner moved is no longer the one it was.
+                let moved = t != half.triangles[at];
+                half.triangles[kept] = t;
+                half.from[kept] = half.from[at].map(|origin| Origin {
+                    whole: origin.whole && !moved,
+                    ..origin
+                });
+                kept += 1;
+            }
+        }
+        half.triangles.truncate(kept);
+        half.from.truncate(kept);
+    }
 }
 
 /// A half over the points it was worked out on.
