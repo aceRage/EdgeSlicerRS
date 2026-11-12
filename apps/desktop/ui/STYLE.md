@@ -24,6 +24,7 @@ fixed-width face for values.
 | `settings.css` | The pages of settings (`settings.js`; the process's, a filament's, the printer's): the switch and the box of text, which came with them, the option row, the pages' tabs, the search's list, the panel a filament's or the printer's pages open in; and the sidebar's width |
 | `gl/gl.css` | What lies over the 3D views that `gl/` draws: the navigator, the sliders, the position window, the labels |
 | `hosts.css` | Sending to printers (`hosts.js`): "Physical Printer" and "Send G-code to printer host" (`dialog.host-dialog`), the tick with its words (`label.tick`), the upload queue, and Device with a printer's page and its files |
+| `presets.css` | A person's own presets (`presets.js`): the preset row with its cog, the dialog that asks for a name, "Transfer or discard changes" and "Compare presets" |
 | `edit.css` | Prepare as an editor: where its toolbar and the number fields stand over the stage, the object list; a plate's own tools, its lock mark and "Plate Settings" (`plates.js`) |
 | `app.js`, "controls" | `listbox` (the page's own list for a `<select>`) and the tooltips |
 
@@ -379,6 +380,42 @@ long one last, where it can have the whole height when scrolled to.
 `<details><summary>` (the stage's "About this print") carries the same
 chevron as a section that folds, drawn by the style; the system's triangle
 is hidden.
+
+### A preset list and its cog
+
+```html
+<div class="preset-row"><label id="process-row">Preset <select id="process"></select></label><button class="icon tool preset-cog" …>…</button></div>
+```
+
+A preset list (the process's, a filament's, the printer's) is a listbox
+with the reference's groups as `<optgroup>`s, "User presets" before
+"System presets", and the preset in force named with "* " before it while
+something is set over it (`Presets.fillList`, `Presets.label`). Its cog
+(`button.preset-cog`, a 16 px gear in strokes, `--text-2` until pointed
+at) stands at the right of the list on the same baseline, and in the head
+of a filament's or the printer's pages before the reset arrow; it opens a
+`#menu` of what can be done to the preset ("Save current %s", "Rename
+preset" and "Delete this preset" only for one's own, a line, "Compare
+presets"). No entry is shown that cannot be used.
+
+### Dialogs of presets
+
+- **A name** (`dialog.preset-dialog`, 440 px): the title, the caption over
+  one text field, a line under it that says what the name would do
+  (`.pn-message`: `--text-3`; `.warn` in `--warn` when it saves over a
+  preset of one's own; `.invalid` in `--danger`, with OK off), and OK
+  (primary) and Cancel. The line keeps its height so the buttons do not
+  move as it is typed.
+- **A table of options** (`dialog.preset-dialog.wide`, 820 px at most:
+  "Transfer or discard changes", "Compare presets"): the head (title and
+  what it is about, or the pickers in a grid of three: kind, left, right,
+  with the tick under them), then a `.data-table.pc-table` in a well that
+  scrolls (`.pc-scroll`): a page's title on the raised surface in
+  `--text-1`, a group's in small capitals, then a row for each option,
+  its label then the two values in the fixed-width face, each cut with an
+  ellipsis and whole in its tooltip (an option's key is the label's). The
+  buttons in `.dialog-foot`, the one that goes on primary ("Transfer",
+  "Close").
 
 ### Cards
 
