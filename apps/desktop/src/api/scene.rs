@@ -622,6 +622,9 @@ impl Session {
                     // The filament the object itself is set to, when it is:
                     // what a part set to "default" prints in.
                     "own_filament": object.filament(),
+                    // Whether the cut that made it can be edited again
+                    // ("Edit cut...", "Copy cut to...").
+                    "cut_recipe": object.cut_recipe().is_some(),
                     // Each part, in order: a number that stays its own
                     // through every edit, its name, what it is, the filament
                     // it prints in and the one it was given itself (null:

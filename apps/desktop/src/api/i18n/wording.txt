@@ -165,6 +165,16 @@ Click a model face to set the cut plane flush with it; use Cut position to offse
 Pick face	GUI/Gizmos/GLGizmoCut.cpp:9022
 Count	GUI/Gizmos/GLGizmoCut.cpp:248
 Gap	GUI/Gizmos/GLGizmoCut.cpp:249
+Edit cut...	GUI/GUI_Factories.cpp:2148
+Edit the cut that produced this object	GUI/GUI_Factories.cpp:2155
+Copy cut to...	GUI/GUI_Factories.cpp:2196
+ (this object)	GUI/GUI_Factories.cpp:2223
+Open the Cut gizmo on this object with the selected object's cut - plane, surface and connectors - applied in this object's own model space	GUI/GUI_Factories.cpp:2229
+Set this cut up on an object, ready to cut it the same way	GUI/GUI_Factories.cpp:2248
+Keep cut editable	GUI/Gizmos/GLGizmoCut.cpp:9134
+Remember this cut so it can be edited later: select either half and choose "Edit cut..." to reopen this panel with the same surface and settings.\n\nThe original, uncut shape is stored in the project file, so a cut object takes about twice the space. Turn this off for a one-off cut.	GUI/Gizmos/GLGizmoCut.cpp:9136
+Editing an existing cut. Perform cut replaces both halves.	GUI/Gizmos/GLGizmoCut.cpp:10744
+One half of this cut is missing from the project. Cutting again will produce both halves.	GUI/Gizmos/GLGizmoCut.cpp:10746
 [own]
 # This app's own words on the static page, with no counterpart in the
 # C++: shown in English in every language.

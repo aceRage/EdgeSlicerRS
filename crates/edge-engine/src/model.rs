@@ -55,7 +55,8 @@ mod arrange;
 mod cut;
 pub use arrange::{ArrangeOptions, ArrangeScope, Arranged};
 pub use cut::{
-    CUT_THICKNESS_MAX, CutDone, CutOptions, CutPieces, CutSection, CutThickness, FaceHit, Groove,
+    CUT_THICKNESS_MAX, CutDone, CutEdit, CutOptions, CutPieces, CutSection, CutThickness, FaceHit,
+    Groove,
 };
 pub use filaments::{FlushBasis, MAX_FILAMENTS, NEXT_COLOURS};
 pub use item_settings::SettingChange;
@@ -357,6 +358,11 @@ impl ModelObject {
     /// The name it goes by; empty when it has none.
     pub fn name(&self) -> &str {
         &self.name
+    }
+
+    /// The cut that made it, when it was kept editable ("Edit cut...").
+    pub fn cut_recipe(&self) -> Option<&Arc<edge_3mf::CutRecipe>> {
+        self.kept.as_deref()?.recipe()
     }
 
     pub fn shape(&self) -> &Arc<Shape> {

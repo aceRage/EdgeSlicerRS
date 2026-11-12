@@ -1544,6 +1544,81 @@ fn a_cut_is_one_step_selects_its_parts_and_is_saved() {
 }
 
 #[test]
+fn a_cut_kept_editable_is_put_back_cut_again_and_undone_in_one_step() {
+    let session = Arc::new(Session::new(None));
+    let project = open(&session, "resources/handy_models/3DBenchy.3mf");
+    let (copy, low, high) = first_copy(&session, project);
+    let done = edit(
+        &session,
+        json!({ "project": project, "op": "cut", "copy": copy,
+                "plane": across(low, high, 20.0), "groove": null }),
+    );
+    let objects = done["scene"]["objects"].as_array().unwrap();
+    assert!(objects.iter().all(|object| object["cut_recipe"] == true));
+    let made: Vec<u64> = done["made"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|id| id.as_u64().unwrap())
+        .collect();
+    // Copied onto the other half: the plane where that half is.
+    let copied = ask(
+        &session,
+        "cut_recipe",
+        json!({ "project": project, "copy": made[0], "onto": made[1] }),
+    );
+    assert_eq!(copied["mode"], "planar");
+    assert_eq!(numbers(&copied["plane"]).len(), 16);
+    // Put back: one object, the tool's settings as the cut had them.
+    let put = edit(
+        &session,
+        json!({ "project": project, "op": "cut_edit", "copy": made[1] }),
+    );
+    assert_eq!(put["done"], "Edit cut");
+    assert_eq!(put["scene"]["objects"].as_array().unwrap().len(), 1);
+    assert_eq!(put["recipe"]["missing"], false);
+    assert_eq!(put["recipe"]["keep_upper"], true);
+    let stand_in = put["made"][0].as_u64().unwrap();
+    // Cut again: one step with putting it back.
+    let mut plane = numbers(&put["recipe"]["plane"]);
+    plane[14] += 5.0;
+    let again = edit(
+        &session,
+        json!({ "project": project, "op": "cut", "copy": stand_in, "plane": plane,
+                "amend": "Edit cut" }),
+    );
+    assert_eq!(again["done"], "Edit cut");
+    assert_eq!(again["scene"]["objects"].as_array().unwrap().len(), 2);
+    assert_eq!(again["project"]["edit"]["undo"], "Edit cut");
+    let undone = ask(&session, "undo", json!({ "project": project }));
+    assert_eq!(undone["scene"]["objects"].as_array().unwrap().len(), 2);
+    assert_eq!(undone["project"]["edit"]["undo"], "Cut by Plane");
+    // Not kept editable: nothing to put back.
+    let plain = open(&session, BARE);
+    choose_presets(&session, plain);
+    let (copy, low, high) = first_copy(&session, plain);
+    let done = edit(
+        &session,
+        json!({ "project": plain, "op": "cut", "copy": copy,
+                "plane": across(low, high, (low[2] + high[2]) / 2.0), "editable": false }),
+    );
+    assert!(
+        done["scene"]["objects"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|object| object["cut_recipe"] == false)
+    );
+    let half = done["made"][0].as_u64().unwrap();
+    let error = refused(
+        &session,
+        "scene_edit",
+        json!({ "project": plain, "op": "cut_edit", "copy": half }),
+    );
+    assert!(error.starts_with("This cut cannot be edited"), "{error}");
+}
+
+#[test]
 fn a_dovetail_cut_is_checked_then_made_and_sliced() {
     let session = Arc::new(Session::new(None));
     let project = open(&session, "resources/handy_models/3DBenchy.3mf");

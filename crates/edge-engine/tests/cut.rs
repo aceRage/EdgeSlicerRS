@@ -813,3 +813,108 @@ fn a_dovetail_gives_the_upper_part_a_tongue_and_the_lower_its_groove() {
             .is_err()
     );
 }
+
+#[test]
+fn an_editable_cut_is_saved_read_back_put_back_and_cut_again() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut model = block(dir.path(), [40.0, 20.0, 20.0]);
+    let copy = model.objects()[0].copies()[0].id();
+    let (_, reach) = model.in_scene(Some(&BED), copy).unwrap();
+    let [low, high] = reach.unwrap();
+    let at = [(low[0] + high[0]) / 2.0, (low[1] + high[1]) / 2.0, 6.0];
+    let options = CutOptions {
+        flip_lower: true,
+        ..CutOptions::default()
+    };
+    let done = model
+        .cut(Some(&BED), copy, &plane(at, [0.0, 0.0, 1.0]), &options)
+        .unwrap();
+    // Both halves carry the one cut, and the object as it was.
+    let recipe = model.cut_recipe(done.made[0]).unwrap();
+    assert!(std::sync::Arc::ptr_eq(
+        &recipe,
+        &model.cut_recipe(done.made[1]).unwrap()
+    ));
+    assert!((recipe.mesh.signed_volume() - 16000.0).abs() < 1e-3);
+    assert!(recipe.flip_lower && !recipe.flip_upper);
+    // Saved and read back: still one cut shared by the halves.
+    let path = dir.path().join("cut.3mf");
+    model
+        .save(&path, &edge_engine::Saving::None, Some(&BED))
+        .unwrap();
+    let mut model = Model::open(&path).unwrap();
+    let copies: Vec<u64> = model.objects().iter().map(|o| o.copies()[0].id()).collect();
+    let read = model.cut_recipe(copies[0]).unwrap();
+    assert!(std::sync::Arc::ptr_eq(
+        &read,
+        &model.cut_recipe(copies[1]).unwrap()
+    ));
+    assert_eq!(read.plane, recipe.plane);
+    assert_eq!(read.mesh.triangles, recipe.mesh.triangles);
+    // Put back from the upper half, which stood on the bed: the block
+    // whole stands on it too.
+    let mut upper = model.clone();
+    let edit = upper.cut_edit(Some(&BED), copies[0]).unwrap();
+    let (_, reach) = upper.in_scene(Some(&BED), edit.copy).unwrap();
+    assert!(near(reach.unwrap()[0][2], 0.0, 1e-9));
+    assert!(near(edit.plane.rows[3][2], 6.0, 1e-6));
+    // Put back from the flipped lower half: one object, the block whole,
+    // the plane where it cut it.
+    let edit = model.cut_edit(Some(&BED), copies[1]).unwrap();
+    assert!(!edit.missing);
+    assert_eq!(model.objects().len(), 1);
+    assert_eq!(model.objects()[0].name(), "block");
+    let mesh = printed(&model, &model.objects()[0], 0);
+    assert!((mesh.signed_volume() - 16000.0).abs() < 1e-3);
+    let (_, reach) = model.in_scene(Some(&BED), edit.copy).unwrap();
+    let [low, _] = reach.unwrap();
+    assert!(
+        near(edit.plane.rows[3][2] - low[2], 6.0, 1e-6),
+        "{:?}",
+        edit.plane
+    );
+    // Cut again, a little higher: both halves made anew.
+    let mut again = edit.plane;
+    again.rows[3][2] += 4.0;
+    let done = model.cut(Some(&BED), edit.copy, &again, &options).unwrap();
+    assert_eq!(done.made.len(), 2);
+    let volumes: Vec<f64> = model
+        .objects()
+        .iter()
+        .map(|object| printed(&model, object, 0).signed_volume())
+        .collect();
+    assert!(
+        near(volumes[0], 40.0 * 20.0 * 10.0, 1e-3) && near(volumes[1], 40.0 * 20.0 * 10.0, 1e-3),
+        "{volumes:?}"
+    );
+    // One half gone: putting back says so.
+    let mut one = model.clone();
+    let gone = one.objects()[1].copies()[0].id();
+    one.remove(Some(&BED), &[gone]).unwrap();
+    let kept = one.objects()[0].copies()[0].id();
+    assert!(one.cut_edit(Some(&BED), kept).unwrap().missing);
+    // A cut not kept editable cannot be.
+    let mut plain = block(dir.path(), [10.0, 10.0, 10.0]);
+    let copy = plain.objects()[0].copies()[0].id();
+    let options = CutOptions {
+        editable: false,
+        ..CutOptions::default()
+    };
+    let (_, reach) = plain.in_scene(Some(&BED), copy).unwrap();
+    let [low, high] = reach.unwrap();
+    let at = [(low[0] + high[0]) / 2.0, (low[1] + high[1]) / 2.0, 5.0];
+    let done = plain
+        .cut(Some(&BED), copy, &plane(at, [0.0, 0.0, 1.0]), &options)
+        .unwrap();
+    assert!(plain.cut_recipe(done.made[0]).is_none());
+    assert!(plain.cut_edit(Some(&BED), done.made[0]).is_err());
+    // Copy cut to: the plane in the target's place.
+    let (_, plane_there) = model
+        .cut_copied(
+            Some(&BED),
+            model.objects()[0].copies()[0].id(),
+            model.objects()[1].copies()[0].id(),
+        )
+        .unwrap();
+    assert_eq!(plane_there.rows[2], [0.0, 0.0, 1.0]);
+}

@@ -307,8 +307,9 @@
       if (!project || this.busy) return false;
       this.busy = true;
       try {
-        this.take(await this.host.call('scene_edit', { project: project.id, ...args }), more);
-        return true;
+        const answer = await this.host.call('scene_edit', { project: project.id, ...args });
+        this.take(answer, more);
+        return answer || true;
       } catch (error) {
         this.host.say(error.message, true);
         return false;
@@ -603,6 +604,24 @@
         [window.ObjectSettings.WORDS.editProcess, () => window.ObjectSettings.editProcess(), { title: window.ObjectSettings.WORDS.editProcess }],
       ];
       if (copies.length === 1 && GL.objects) items.push([t('Rename'), () => GL.objects.rename(data.objects[copies[0].object].id)]);
+      // "Edit cut..." and "Copy cut to...", for an object a cut kept
+      // editable made (GUI_Factories.cpp `append_menu_item_edit_cut`,
+      // `append_menu_item_copy_cut`).
+      if (object && object.cut_recipe && GL.cutter) {
+        items.push(null, [t('Edit cut...'), () => GL.cutter.editCut(one.id), { title: t('Edit the cut that produced this object') }]);
+        const targets = data.objects.map((target, at) => {
+          const placing = data.placings.find((held) => held.object === at);
+          if (!placing) return null;
+          // The object's name and, for one of several parts, theirs
+          // (CutRecipe.cpp `cut_target_label`).
+          const names = (target.part_list || []).filter((part) => part.kind === 'part').map((part) => part.name || 'part');
+          let label = target.name || 'Object';
+          if (names.length > 1) label += ` (${names.slice(0, 3).join(', ')}${names.length > 3 ? `, +${names.length - 3} more` : ''})`;
+          if (target === object) label += t(' (this object)');
+          return [`${at + 1}. ${label}`, () => GL.cutter.copyCut(one.id, placing.id), { title: t("Open the Cut gizmo on this object with the selected object's cut - plane, surface and connectors - applied in this object's own model space") }];
+        }).filter(Boolean);
+        items.push([t('Copy cut to...'), null, { title: t('Set this cut up on an object, ready to cut it the same way'), items: targets }]);
+      }
       this.host.menu(x, y, items);
     },
 

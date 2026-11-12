@@ -926,6 +926,24 @@ pub fn write_to<W: Write + Seek>(save: &Save<'_>, out: W) -> Result<Written, Err
         zip.add(name, text.as_bytes())?;
     }
 
+    // The cuts kept editable, under each object's place now, and the
+    // uncut meshes they name (`_add_cut_recipe_file_to_archive`).
+    let recipes = project
+        .objects
+        .iter()
+        .enumerate()
+        .filter_map(|(at, object)| {
+            let own = object.kept.as_deref()?;
+            let recipe = own.recipe.as_deref()?;
+            Some((at + 1, recipe, own.recipe_element.as_deref()))
+        });
+    if let Some((text, meshes)) = crate::recipe::write(recipes) {
+        zip.add(crate::recipe::RECIPES, text.as_bytes())?;
+        for (name, bytes) in &meshes {
+            zip.add(name, bytes)?;
+        }
+    }
+
     // Custom G-code at layers, by plate number (the engine keeps each
     // plate's with it, so it is under the plate's number as it stands).
     if let Some(text) = custom_gcode(project, kept) {

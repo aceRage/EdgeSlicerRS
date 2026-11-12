@@ -37,7 +37,7 @@
 
 use std::sync::Arc;
 
-use edge_3mf::{PaintKind, Part, PartKind};
+use edge_3mf::{CutRecipe, ObjectKept, PaintKind, Part, PartKind, RecipeGroove, RecipeKind};
 use edge_mesh::{
     Transform,
     cut::{self, Half},
@@ -87,6 +87,12 @@ pub struct CutOptions {
     /// "Dovetail": a tongue on the upper part and its groove in the lower
     /// (the reference's tongue-and-groove cut, `Cut::perform_with_groove`).
     pub groove: Option<Groove>,
+    /// The values the dovetail's reset buttons go back to (depth, width,
+    /// flap angle, groove angle), kept with the cut.
+    pub groove_init: Option<[f64; 4]>,
+    /// "Keep cut editable": the halves carry how they were cut and the
+    /// object as it was, so the cut can be edited again ([`Model::cut_edit`]).
+    pub editable: bool,
 }
 
 /// A dovetail's shape (the reference's `Cut::Groove`, with its count and
@@ -150,6 +156,8 @@ impl Default for CutOptions {
             thickness_from: CutThickness::Centred,
             sides: None,
             groove: None,
+            groove_init: None,
+            editable: true,
         }
     }
 }
@@ -175,6 +183,21 @@ pub struct CutDone {
     /// How many chains of cut edges were left without a cap, the object
     /// being open where the plane crossed it.
     pub open: usize,
+}
+
+/// A cut put back to be made again ([`Model::cut_edit`]).
+#[derive(Clone, Debug)]
+pub struct CutEdit {
+    /// The copy of the object as it was before the cut, which stands in
+    /// for its halves.
+    pub copy: u64,
+    /// The plane the cut was made by, in the scene.
+    pub plane: Transform,
+    /// How it was made.
+    pub recipe: Arc<CutRecipe>,
+    /// Whether fewer halves were left than the cut made: cutting again
+    /// makes them all.
+    pub missing: bool,
 }
 
 /// The pieces a cut makes: each half's parts split into the shells that
@@ -690,6 +713,64 @@ impl Model {
             open,
             turned,
         } = made;
+        // "Keep cut editable": the object as it was, in the coordinates of
+        // its halves, and the plane in them (GLGizmoCut.cpp
+        // `build_recipe_from_gizmo`, `object_part_mesh`).
+        let recipe = options.editable.then(|| {
+            let mut mesh = edge_mesh::Mesh::default();
+            for part in held.shape.parts.iter() {
+                if part.kind == PartKind::Normal {
+                    mesh.append(&part.mesh, &part.transform.then(&turned));
+                }
+            }
+            let offset = scene.rows[3];
+            let back = plane.then(&Transform::translation(offset.map(|value| -value)));
+            let kind = if options.groove.is_some() {
+                RecipeKind::Groove
+            } else {
+                RecipeKind::Plane
+            };
+            let mut recipe = CutRecipe::new(kind, back, Arc::new(mesh));
+            recipe.thickness = if options.groove.is_some() {
+                0.0
+            } else {
+                options.thickness
+            };
+            recipe.thickness_offset = match options.thickness_from {
+                CutThickness::Centred => 0,
+                CutThickness::Above => 1,
+                CutThickness::Below => 2,
+            };
+            recipe.keep_upper = options.keep_upper;
+            recipe.keep_lower = options.keep_lower;
+            recipe.keep_as_parts = options.to_parts;
+            recipe.place_on_cut_upper = options.place_on_cut_upper;
+            recipe.place_on_cut_lower = options.place_on_cut_lower;
+            recipe.flip_upper = options.flip_upper;
+            recipe.flip_lower = options.flip_lower;
+            recipe.groove = options.groove.map(|g| {
+                let init =
+                    options
+                        .groove_init
+                        .unwrap_or([g.depth, g.width, g.flaps_angle, g.angle]);
+                RecipeGroove {
+                    depth: g.depth,
+                    width: g.width,
+                    flaps_angle: g.flaps_angle,
+                    angle: g.angle,
+                    depth_init: init[0],
+                    width_init: init[1],
+                    flaps_angle_init: init[2],
+                    angle_init: init[3],
+                    depth_tolerance: g.depth_tolerance,
+                    width_tolerance: g.width_tolerance,
+                    count: g.count as u32,
+                    gap: g.gap,
+                    plane_radius: g.plane_radius,
+                }
+            });
+            Arc::new(recipe)
+        });
         // A piece given to the other side: the pieces of each side made
         // into one part, the objects named `_A` and `_B`, as
         // `perform_by_contour` and `merge_solid_parts_inside_object` make
@@ -870,7 +951,14 @@ impl Model {
                 filament: held.filament,
                 shape,
                 copies,
-                kept: held.kept.as_deref().map(|kept| Arc::new(kept.cut_half())),
+                kept: match (&recipe, held.kept.as_deref()) {
+                    (Some(recipe), kept) => Some(Arc::new(
+                        kept.map(ObjectKept::cut_half)
+                            .unwrap_or_default()
+                            .with_recipe(Some(recipe.clone())),
+                    )),
+                    (None, kept) => kept.map(|kept| Arc::new(kept.cut_half())),
+                },
             });
         }
         self.objects.remove(at);
@@ -904,6 +992,217 @@ impl Model {
         }
         Ok(CutDone { made: new, open })
     }
+
+    /// How the object of a copy was cut, when the cut was kept editable.
+    pub fn cut_recipe(&self, copy: u64) -> Option<Arc<CutRecipe>> {
+        let (at, _) = self.find(copy)?;
+        self.objects[at].kept.as_deref()?.recipe().cloned()
+    }
+
+    /// The cut of `source`'s object set up on `target` ("Copy cut to..."):
+    /// its plane taken into the target's coordinates as it is, moved where
+    /// the target stands (GUI_ObjectList.cpp `copy_cut_to`, "object-local
+    /// as-is"), with how it was made.
+    pub fn cut_copied(
+        &self,
+        bed: Option<&Bed>,
+        source: u64,
+        target: u64,
+    ) -> Result<(Arc<CutRecipe>, Transform), Failure> {
+        let recipe = self.cut_recipe(source).ok_or_else(|| {
+            refused("This cut cannot be copied: the surface it describes is incomplete.")
+        })?;
+        cuttable(
+            &recipe,
+            "This cut cannot be copied: the surface it describes is incomplete.",
+        )?;
+        let (scene, _) = self
+            .in_scene(bed, target)
+            .ok_or_else(|| refused(format!("there is no copy {target}")))?;
+        let plane = recipe.plane.then(&Transform::translation(scene.rows[3]));
+        Ok((recipe, plane))
+    }
+
+    /// "Edit cut...": the halves of the cut that made a copy's object put
+    /// back as the object was before it, one object standing in for them
+    /// where the copy is, for the cut to be made again
+    /// (GUI_ObjectList.cpp `edit_cut`, GLGizmoCut.cpp `begin_reedit`).
+    ///
+    /// The halves are those that carry the same cut and are on the
+    /// copy's plate. The reference finds them by the cut's id, which a cut
+    /// without connectors or a dovetail takes away from them; so for a
+    /// plain cut it put back the half chosen alone, left the other on the
+    /// bed and said that one was missing.
+    pub fn cut_edit(&mut self, bed: Option<&Bed>, copy: u64) -> Result<CutEdit, Failure> {
+        const CANNOT: &str = "This cut cannot be edited: the project does not contain the original, uncut shape. It was cut with \"Keep cut editable\" turned off, or the project was written by a different version.";
+        let (at, which) = self.copy_at(copy)?;
+        let recipe = self.objects[at]
+            .kept
+            .as_deref()
+            .and_then(ObjectKept::recipe)
+            .cloned()
+            .ok_or_else(|| refused(CANNOT))?;
+        cuttable(&recipe, CANNOT)?;
+        self.settle(bed);
+        let plate = self.plate_of(copy);
+        let on_plate = |object: &ModelObject| {
+            object
+                .copies
+                .iter()
+                .any(|held| held.id == copy || self.plate_of(held.id) == plate)
+        };
+        let halves: Vec<usize> = self
+            .objects
+            .iter()
+            .enumerate()
+            .filter(|(_, object)| {
+                object
+                    .kept
+                    .as_deref()
+                    .and_then(ObjectKept::recipe)
+                    .is_some_and(|held| Arc::ptr_eq(held, &recipe))
+                    && on_plate(object)
+            })
+            .map(|(index, _)| index)
+            .collect();
+        let made = if recipe.keep_as_parts {
+            1
+        } else {
+            usize::from(recipe.keep_upper) + usize::from(recipe.keep_lower)
+        };
+        let missing = halves.len() < made;
+        let first = &self.objects[at];
+        // Its name: the halves' own, less the `_A` and `_B` a dovetail or
+        // a piece given to the other side puts on them.
+        let names: Vec<&str> = halves
+            .iter()
+            .map(|&index| self.objects[index].name.as_str())
+            .collect();
+        let base = names
+            .first()
+            .and_then(|name| name.strip_suffix("_A").or_else(|| name.strip_suffix("_B")))
+            .filter(|base| {
+                names.iter().all(|name| {
+                    name.strip_suffix("_A").or_else(|| name.strip_suffix("_B")) == Some(*base)
+                })
+            })
+            .map(str::to_owned)
+            .unwrap_or_else(|| first.name.clone());
+        // The object as it was: its printed parts as one, and the halves'
+        // other parts (each once), which are in the same coordinates.
+        let printed = first
+            .shape
+            .parts
+            .iter()
+            .find(|part| part.kind == PartKind::Normal)
+            .cloned();
+        let mut parts = vec![Part {
+            name: None,
+            mesh: recipe.mesh.clone(),
+            paint: None,
+            seam: None,
+            transform: Transform::IDENTITY,
+            kept: printed
+                .as_ref()
+                .and_then(|part| part.kept.as_deref())
+                .map(|kept| Arc::new(kept.piece())),
+            ..printed.ok_or_else(|| refused(CANNOT))?
+        }];
+        for &index in &halves {
+            for part in self.objects[index].shape.parts.iter() {
+                let seen = parts.iter().any(|held| {
+                    Arc::ptr_eq(&held.mesh, &part.mesh) && held.transform == part.transform
+                });
+                if part.kind != PartKind::Normal && !seen {
+                    parts.push(part.clone());
+                }
+            }
+        }
+        let shape = Shape::new(parts);
+        let held = &first.copies[which];
+        // Where the half stands, its turn left out, standing on the bed.
+        let mut local = Transform::translation(held.local.rows[3]);
+        if let Some([low, _]) = shape.reach(&local) {
+            local.rows[3][2] -= low[2];
+        }
+        let id = fresh();
+        let object = ModelObject {
+            id: fresh(),
+            name: base,
+            filament: first.filament,
+            copies: vec![ModelCopy {
+                id,
+                reach: shape.reach(&local),
+                local,
+                world: local,
+                printable: held.printable,
+            }],
+            shape,
+            kept: Some(Arc::new(
+                first
+                    .kept
+                    .as_deref()
+                    .map(ObjectKept::cut_half)
+                    .unwrap_or_default()
+                    .with_recipe(Some(recipe.clone())),
+            )),
+        };
+        // In the place of the first half in the list and on its plate.
+        let gone: Vec<u64> = halves
+            .iter()
+            .flat_map(|&index| self.objects[index].copies.iter().map(|copy| copy.id))
+            .collect();
+        let place = halves.iter().copied().min().unwrap_or(at);
+        for &index in halves.iter().rev() {
+            self.objects.remove(index);
+        }
+        self.objects.insert(place, object);
+        let mut put = false;
+        for held in &mut self.plates {
+            let mut order = Vec::with_capacity(held.order.len());
+            for one in &held.order {
+                if *one == copy && !put {
+                    order.push(id);
+                    put = true;
+                } else if !gone.contains(one) {
+                    order.push(*one);
+                }
+            }
+            held.order = order;
+        }
+        self.stand((place, 0), plate, local);
+        if let Some((scene, _)) = self.in_scene(bed, id) {
+            self.stand_in_scene(bed, id, scene);
+        }
+        let (scene, _) = self.in_scene(bed, id).ok_or_else(|| refused(CANNOT))?;
+        let plane = recipe.plane.then(&Transform::translation(scene.rows[3]));
+        Ok(CutEdit {
+            copy: id,
+            plane,
+            recipe,
+            missing,
+        })
+    }
+}
+
+/// Whether a recipe can be made again here: one of a schema this knows,
+/// by a plane or a dovetail. A curved or drawn surface needs a mesh
+/// boolean this does not have, and connectors are not placed here yet.
+fn cuttable(recipe: &CutRecipe, why: &str) -> Result<(), Failure> {
+    if !recipe.known() || recipe.mesh.triangles.is_empty() {
+        return Err(refused(why));
+    }
+    if matches!(recipe.kind, RecipeKind::Curved | RecipeKind::Drawn) {
+        return Err(refused(
+            "This cut was made with a curved or drawn surface, which cannot be made here yet.",
+        ));
+    }
+    if recipe.connectors > 0 {
+        return Err(refused(
+            "This cut has connectors, which cannot be placed here yet.",
+        ));
+    }
+    Ok(())
 }
 
 /// Half a turn about x (the reference's `rotation_transform(PI * UnitX)`).

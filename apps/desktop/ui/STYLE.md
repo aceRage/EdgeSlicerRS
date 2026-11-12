@@ -661,6 +661,20 @@ tool's panel does, and scrolls). Its rows:
   number (`.cut-slide`, as `.paint-slide`).
 - **Three letters to press** ("Mirror cut"): plain buttons joined
   (`.cut-line.joined`), the letters in the fixed-width face.
+- **One of two** ("Mode": "Planar" / "Dovetail"): two joined buttons
+  (`.joined.segmented`), the chosen one `aria-pressed`; not a list, which
+  for two choices hides one of them behind a click.
+- **A group's heading** (`.cut-group`, "Groove", "Multiple"): small
+  capitals in `--text-3`, as the sidebar's section heads. Its rows are
+  `.cut-row`s, a value and its tolerance side by side as two `.unit`
+  fields (88 px each), the reset after them.
+- **Armed** (`.cut-armed`, "Pick face" while a click will lay the plane):
+  the button in the accent's colour and outline over `--accent-soft`,
+  `aria-pressed`, the hint beside it.
+- **A cut being made again** ("Edit cut..."): the reference's notice at
+  the top as an `.edit-hint`, the missing half's sentence as a
+  `.cut-warning`. "Keep cut editable" is a tick under "Cut to parts", its
+  tooltip the reference's.
 - **A side and what is done with it** (`.cut-side`): a 10 px swatch of
   the side's tint in the scene (cyan, magenta: the reference's, data, not
   tokens) and its name in `--text-1`, then its ticks; a tick never breaks
@@ -677,7 +691,11 @@ What the tool draws in the scene keeps the reference's colours: the plane
 (light grey, pink when the cut cannot be made), the section in white, the
 grip's stalk yellow, its ball grey (lit yellow or in an axis's colour
 under the pointer), its cones in the axes' red and green, the two sides
-cyan and magenta through the mesh shader's colour plane.
+cyan and magenta through the mesh shader's colour plane. With pieces
+given to sides, each piece is drawn in its side's tint; "Pick face"
+lights the face under the pointer in white at 0.75, a little off the
+surface. A dovetail's groove is drawn over the plane in the plane's
+grey at 0.4, its grabbers the grip's ball and a cube.
 
 ### Trees: `.tree`
 

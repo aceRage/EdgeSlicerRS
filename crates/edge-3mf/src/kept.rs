@@ -78,6 +78,12 @@ pub struct ObjectKept {
     /// Each copy's `identify_id`, by the copy's place: the number the
     /// reference labels it with in G-code (`; model label id`).
     pub(crate) identify: Vec<Option<u32>>,
+    /// The cut that made it, when it was kept editable
+    /// (`Metadata/cut_recipe.xml`); the halves of one cut share it.
+    pub(crate) recipe: Option<Arc<crate::CutRecipe>>,
+    /// Its own `<recipe>` element as read, written back while `recipe` is
+    /// the one read with it.
+    pub(crate) recipe_element: Option<String>,
 }
 
 /// What a part of a file holds that [`crate::Part`] does not. This is the
@@ -499,6 +505,22 @@ impl ObjectKept {
             cut: None,
             assembly: Vec::new(),
             identify: Vec::new(),
+            recipe: None,
+            recipe_element: None,
+            ..self.clone()
+        }
+    }
+
+    /// The cut that made the object, when it was kept editable.
+    pub fn recipe(&self) -> Option<&Arc<crate::CutRecipe>> {
+        self.recipe.as_ref()
+    }
+
+    /// The object as made by the cut `recipe` describes.
+    pub fn with_recipe(&self, recipe: Option<Arc<crate::CutRecipe>>) -> ObjectKept {
+        ObjectKept {
+            recipe,
+            recipe_element: None,
             ..self.clone()
         }
     }
@@ -1211,9 +1233,11 @@ pub(crate) fn role(name: &str, models: &[String]) -> Role {
             return Role::Carried(Carry::Preset);
         }
     }
+    // The cut recipes and their meshes are read with the objects.
+    if lower == "metadata/cut_recipe.xml" || lower.starts_with("metadata/cut_recipe/") {
+        return Role::Written;
+    }
     for by_place in [
-        "metadata/cut_recipe.xml",
-        "metadata/cut_recipe/",
         "metadata/edgeslicer_height_patterns.json",
         "metadata/showcase/",
     ] {

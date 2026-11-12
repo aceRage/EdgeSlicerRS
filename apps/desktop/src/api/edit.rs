@@ -32,7 +32,7 @@ use super::{
 };
 
 /// The calls answered here.
-pub(super) const JSON: [&str; 7] = [
+pub(super) const JSON: [&str; 8] = [
     "scene_edit",
     "undo",
     "redo",
@@ -40,6 +40,7 @@ pub(super) const JSON: [&str; 7] = [
     "cut_section",
     "cut_pick",
     "cut_parts",
+    "cut_recipe",
 ];
 
 /// The calls here answered in bytes (`Session::call_bytes`).
@@ -118,6 +119,19 @@ pub(super) struct History {
 }
 
 impl History {
+    /// Takes the last step back off when it is `name` and nothing came
+    /// after it, giving what it was made to: the step to come is then
+    /// one with it.
+    fn amend(&mut self, name: &str, before: &mut Option<Arc<File>>) -> bool {
+        if self.redo.is_empty() && self.undo.last().is_some_and(|step| step.name == name) {
+            let step = self.undo.pop().expect("a last step");
+            *before = step.file;
+            true
+        } else {
+            false
+        }
+    }
+
     /// How many changes the model has seen.
     pub(super) fn revision(&self) -> u64 {
         self.revision
@@ -293,6 +307,20 @@ fn cut_options(args: &Value) -> Result<edge_engine::CutOptions, String> {
                 })
             }
         },
+        groove_init: match args.get("groove").and_then(|groove| groove.get("init")) {
+            None | Some(Value::Null) => None,
+            Some(init) => {
+                let list: Vec<f64> = init
+                    .as_array()
+                    .map(|list| list.iter().filter_map(Value::as_f64).collect())
+                    .unwrap_or_default();
+                Some(
+                    <[f64; 4]>::try_from(list.as_slice())
+                        .map_err(|_| "the groove's init is not four numbers")?,
+                )
+            }
+        },
+        editable: flag("editable", true)?,
         sides: match args.get("sides") {
             None | Some(Value::Null) => None,
             Some(Value::Array(list)) => Some(
@@ -334,6 +362,44 @@ struct Outcome {
     part: Option<u64>,
     /// Nothing changed (a plate given the name it had): no step is taken.
     unchanged: bool,
+    /// The cut put back to be made again ("Edit cut...").
+    recipe: Option<Value>,
+}
+
+/// A matrix as the page takes it: sixteen numbers, column by column.
+fn matrix_json(transform: &Transform) -> Value {
+    let mut numbers = Vec::with_capacity(16);
+    for (row, values) in transform.rows.iter().enumerate() {
+        numbers.extend_from_slice(values);
+        numbers.push(if row == 3 { 1.0 } else { 0.0 });
+    }
+    json!(numbers)
+}
+
+/// How a cut was made, for the tool to be set up with it: its plane in
+/// the scene and every setting it was made with (GLGizmoCut.cpp
+/// `apply_recipe_to_gizmo`).
+fn recipe_json(recipe: &edge_engine::CutRecipe, plane: &Transform) -> Value {
+    let from = ["centred", "above", "below"][recipe.thickness_offset.min(2) as usize];
+    json!({
+        "plane": matrix_json(plane),
+        "mode": if recipe.groove.is_some() { "dovetail" } else { "planar" },
+        "thickness": recipe.thickness,
+        "thickness_from": from,
+        "keep_upper": recipe.keep_upper,
+        "keep_lower": recipe.keep_lower,
+        "to_parts": recipe.keep_as_parts,
+        "place_on_cut_upper": recipe.place_on_cut_upper,
+        "place_on_cut_lower": recipe.place_on_cut_lower,
+        "flip_upper": recipe.flip_upper,
+        "flip_lower": recipe.flip_lower,
+        "groove": recipe.groove.map(|g| json!({
+            "depth": g.depth, "width": g.width, "flaps_angle": g.flaps_angle, "angle": g.angle,
+            "depth_tolerance": g.depth_tolerance, "width_tolerance": g.width_tolerance,
+            "count": g.count, "gap": g.gap, "plane_radius": g.plane_radius,
+            "init": [g.depth_init, g.width_init, g.flaps_angle_init, g.angle_init],
+        })),
+    })
 }
 
 /// Filament numbers a call gives under `key`; none given is an empty list.
@@ -812,6 +878,16 @@ impl Session {
                 }
                 outcome.name = "Cut by Plane".into();
             }
+            "cut_edit" => {
+                let edit = model
+                    .cut_edit(bed, whole(args, "copy")?)
+                    .map_err(|error| super::i18n::tr(&error.to_string()))?;
+                outcome.made = vec![edit.copy];
+                let mut recipe = recipe_json(&edit.recipe, &edit.plane);
+                recipe["missing"] = json!(edit.missing);
+                outcome.recipe = Some(recipe);
+                outcome.name = "Edit cut".into();
+            }
             // An object's, a part's or a height range's own settings, and
             // the height ranges (settings/items.rs).
             op if items::OPS.contains(&op) => {
@@ -850,6 +926,7 @@ impl Session {
             "cut_section" => self.cut_section(args),
             "cut_pick" => self.cut_pick(args),
             "cut_parts" => self.cut_parts(args),
+            "cut_recipe" => self.cut_recipe(args),
             other => Err(format!("there is no call named {other}")),
         }
     }
@@ -911,7 +988,7 @@ impl Session {
         } else {
             (None, None)
         };
-        let outcome = Self::apply(
+        let mut outcome = Self::apply(
             &mut model,
             bed.as_ref(),
             stage.plate,
@@ -943,7 +1020,15 @@ impl Session {
             if !still {
                 return Err("the project changed meanwhile; nothing was done".into());
             }
-            let before = project.file.replace(next);
+            let mut before = project.file.replace(next);
+            // The cut made of a cut put back ("Edit cut...") is one step
+            // with putting it back, so one undo brings the halves back
+            // (GUI_ObjectList.cpp `edit_cut`: one snapshot for the whole).
+            if text(args, "amend") == Some("Edit cut")
+                && project.history.amend("Edit cut", &mut before)
+            {
+                outcome.name = "Edit cut".into();
+            }
             push_step(project, &outcome.name, before, None);
             if let Some(show) = outcome.show
                 && project
@@ -956,8 +1041,23 @@ impl Session {
         }
         self.edited(
             stage.id,
-            json!({ "done": outcome.name, "made": outcome.made, "note": outcome.note, "part": outcome.part }),
+            json!({ "done": outcome.name, "made": outcome.made, "note": outcome.note, "part": outcome.part, "recipe": outcome.recipe }),
         )
+    }
+
+    /// How a copy's object was cut, when the cut was kept editable, set
+    /// up on `onto` ("Copy cut to..."; the copy itself when not given).
+    fn cut_recipe(&self, args: &Value) -> Result<Value, String> {
+        let stage = self.stage_of(args)?;
+        let bed = stage.bed();
+        let file = stage.file.as_ref().ok_or("the project has no model")?;
+        let copy = whole(args, "copy")?;
+        let onto = args.get("onto").and_then(Value::as_u64).unwrap_or(copy);
+        let (recipe, plane) = file
+            .model
+            .cut_copied(bed.as_ref(), copy, onto)
+            .map_err(|error| super::i18n::tr(&error.to_string()))?;
+        Ok(recipe_json(&recipe, &plane))
     }
 
     /// The faces a copy can be laid on ("Lay on face"), largest first: each

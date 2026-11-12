@@ -181,7 +181,13 @@
       flip_upper: false,
       flip_lower: false,
       to_parts: false,
+      // "Keep cut editable", on unless turned off (`m_keep_cut_editable`).
+      editable: true,
     },
+    // A cut to set the tool up with when it next opens: one put back by
+    // "Edit cut..." (`arm_reedit`) or copied by "Copy cut to..."
+    // (`arm_copy`).
+    pending: null,
     panelNode: null,
     shapes: null,
     // "Mode": 'planar' or 'dovetail', kept from one cut to the next as the
@@ -237,12 +243,82 @@
       const depth = Math.max(1, 0.5 * mean);
       this.open.groove = { depth, width: 4 * depth, flaps_angle: Math.PI / 3, angle: 0, depth_tolerance: 0.1, width_tolerance: 0.1, count: 1, gap: 10 };
       this.open.grooveStart = { ...this.open.groove };
+      const pending = this.pending;
+      this.pending = null;
+      if (pending && pending.copy === placing.id) this.apply(pending.recipe, pending.reedit);
       this.changed(false);
+    },
+
+    // The tool set up as a cut was made (`apply_recipe_to_gizmo`): its
+    // mode, its plane, its settings and its dovetail. `reedit`: the cut is
+    // being made again, of the object it was put back as.
+    apply(recipe, reedit) {
+      const o = this.open;
+      const m = recipe.plane;
+      o.axes = [m.slice(0, 3), m.slice(4, 7), m.slice(8, 11)];
+      o.middle = m.slice(12, 15);
+      this.mode = recipe.mode === 'dovetail' ? 'dovetail' : 'planar';
+      for (const key of ['keep_upper', 'keep_lower', 'place_on_cut_upper', 'place_on_cut_lower', 'flip_upper', 'flip_lower', 'to_parts']) this.options[key] = Boolean(recipe[key]);
+      o.thickness = Math.min(THICKNESS_MAX, Math.max(0, recipe.thickness || 0));
+      o.from = recipe.thickness_from || 'centred';
+      const g = recipe.groove;
+      if (g) {
+        o.groove = { depth: g.depth, width: g.width, flaps_angle: g.flaps_angle, angle: g.angle, depth_tolerance: g.depth_tolerance, width_tolerance: g.width_tolerance, count: Math.min(GROOVE_COUNT_MAX, Math.max(1, Math.round(g.count))), gap: g.gap };
+        const [depth, width, flaps, angle] = g.init;
+        o.grooveStart = { ...o.groove, depth, width, flaps_angle: flaps, angle };
+        // The dovetails keep the spacing they were cut with, here and on
+        // an object of another size (`m_groove_plane_radius`).
+        if (g.plane_radius > 0) o.grooveRadius = g.plane_radius;
+      }
+      if (reedit) o.reedit = { missing: Boolean(recipe.missing) };
+    },
+
+    // The radius the dovetails are spaced by.
+    grooveRadius() {
+      return this.open.grooveRadius || this.open.radius;
+    },
+
+    // "Edit cut...": the halves of the cut that made a copy's object put
+    // back as the object was, and the tool opened on it as the cut was
+    // made (GUI_ObjectList.cpp `edit_cut`).
+    async editCut(copy) {
+      if (this.editor.tool) this.editor.setTool(null);
+      const answer = await this.editor.commit({ op: 'cut_edit', copy }, { select: true });
+      if (!answer || !answer.recipe || !answer.made || !answer.made.length) return;
+      this.pending = { copy: answer.made[0], recipe: answer.recipe, reedit: true };
+      this.editor.setTool('cut');
+    },
+
+    // "Copy cut to...": the tool opened on `target` with the cut of
+    // `source`'s object set up on it, in its own place (`copy_cut_to`).
+    async copyCut(source, target) {
+      const project = this.host.project();
+      if (!project) return;
+      let recipe;
+      try {
+        recipe = await this.host.call('cut_recipe', { project: project.id, copy: source, onto: target });
+      } catch (error) {
+        this.host.say(error.message, true);
+        return;
+      }
+      if (this.editor.tool) this.editor.setTool(null);
+      this.stage.select([target]);
+      this.pending = { copy: target, recipe, reedit: false };
+      this.editor.setTool('cut');
     },
 
     close() {
       if (this.open) this.dropParts();
+      // Closed without cutting again: the halves come back
+      // (`cancel_reedit`), by the step that put them away.
+      const reedit = this.open && this.open.reedit;
       this.open = null;
+      if (reedit) {
+        setTimeout(() => {
+          const project = this.host.project();
+          if (project && project.edit && project.edit.undo === 'Edit cut') this.editor.step('undo');
+        }, 0);
+      }
       this.stage.scene.cutting = null;
       this.stage.canvas.title = '';
       if (this.panelNode) this.panelNode.hidden = true;
@@ -257,7 +333,11 @@
       const box = placing.box;
       const same = placing.id === this.open.copy && box && this.open.box
         && box.every((corner, at) => corner.every((value, axis) => Math.abs(value - this.open.box[at][axis]) < 1e-6));
-      if (!same) this.start(placing);
+      if (same) return;
+      // Another copy chosen while a cut is being made again: that is put
+      // away first, as the reference's gizmo closes.
+      if (this.open.reedit) { this.editor.setTool(null); return; }
+      this.start(placing);
     },
 
     // ---- the plane ----
@@ -410,7 +490,9 @@
 
     // The dovetail as the session takes it.
     grooveArgs() {
-      return { ...this.open.groove, plane_radius: this.open.radius };
+      const o = this.open;
+      const start = o.grooveStart;
+      return { ...o.groove, plane_radius: this.grooveRadius(), init: [start.depth, start.width, start.flaps_angle, start.angle] };
     },
 
     // "Mode": "Planar" or "Dovetail" ("Change cut mode", `switch_to_mode`).
@@ -513,6 +595,9 @@
         ...(o.parts && !this.dovetail() ? { sides: o.parts.sides, to_parts: false } : {}),
         ...(this.dovetail() ? { groove: this.grooveArgs(), to_parts: false, thickness: 0, sides: null } : {}),
       };
+      // A cut made again is one step with putting it back.
+      if (o.reedit) args.amend = 'Edit cut';
+      o.reedit = null;
       // The tool closes before the cut is made, as the reference resets
       // its gizmos first (`perform_cut`); what the cut made is selected.
       this.editor.setTool(null);
@@ -1021,10 +1106,10 @@
       if (this.dovetail()) {
         // The dovetail's plane (`its_make_groove_plane`), a tenth more
         // see-through (`render_cut_plane`).
-        const key = `${JSON.stringify(o.groove)}|${o.radius}`;
+        const key = `${JSON.stringify(o.groove)}|${this.grooveRadius()}`;
         if (!this.groovePlane || this.groovePlane.key !== key) {
           if (this.groovePlane) r.drop(this.groovePlane.mesh);
-          this.groovePlane = { key, mesh: r.triangles(groovePlane(o.groove, o.radius)) };
+          this.groovePlane = { key, mesh: r.triangles(groovePlane(o.groove, this.grooveRadius())) };
         }
         const valid = o.grooveValid !== false;
         r.drawFlat(this.groovePlane.mesh, M.chain(view, plane), [...(valid ? PLANE : PLANE_ERROR).slice(0, 3), 0.4]);
@@ -1111,6 +1196,11 @@
       const p = this.options;
       const busy = this.editor.busy;
       const rows = [el('h3', { textContent: t('Cut') })];
+      // A cut being made again (`render_reedit_notice`).
+      if (o.reedit) {
+        rows.push(el('p', { className: 'edit-hint', textContent: t('Editing an existing cut. Perform cut replaces both halves.') }));
+        if (o.reedit.missing) rows.push(el('p', { className: 'edit-hint cut-warning', role: 'status', textContent: t('One half of this cut is missing from the project. Cutting again will produce both halves.') }));
+      }
       const dovetail = this.dovetail();
       // "Mode": "Planar" or "Dovetail" (`render_cut_mode_combo`).
       // Two joined buttons, as STYLE.md has a choice of which of two.
@@ -1228,6 +1318,10 @@
         this.stage.frame();
       });
       rows.push(el('label', { className: 'edit-check' }, parts, ` ${t('Cut to parts')}`));
+      // "Keep cut editable".
+      const editable = el('input', { type: 'checkbox', checked: p.editable, disabled: busy });
+      editable.addEventListener('change', () => { p.editable = editable.checked; });
+      rows.push(el('label', { className: 'edit-check', title: t('Remember this cut so it can be edited later: select either half and choose "Edit cut..." to reopen this panel with the same surface and settings.\n\nThe original, uncut shape is stored in the project file, so a cut object takes about twice the space. Turn this off for a one-off cut.') }, editable, ` ${t('Keep cut editable')}`));
       // What the keys and the pointer do (`m_shortcuts_cut`).
       const help = el('div', { className: 'paint-help' });
       help.append(el('span', { className: 'paint-key', textContent: `${t('Shift+')}${t('Drag')}` }), el('span', { textContent: t('Draw cut line') }));
@@ -1281,7 +1375,7 @@
       };
       const row = (label, ...cells) => el('div', { className: 'cut-row' }, el('span', { className: 'edit-label', textContent: label }), el('span', { className: 'cut-line' }, ...cells));
       const tolerance = t('Tolerance');
-      const width = grooveWidth(g, o.radius);
+      const width = grooveWidth(g, this.grooveRadius());
       const bed = this.host.settled() && this.host.settled().printer && this.host.settled().printer.bed;
       const plate = bed ? Math.max(bed[2] - bed[0], bed[3] - bed[1]) : 300;
       return [
