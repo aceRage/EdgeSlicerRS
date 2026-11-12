@@ -44,7 +44,11 @@ mod plates;
 
 #[path = "filaments.rs"]
 mod filaments;
+
+#[path = "item_settings.rs"]
+mod item_settings;
 pub use filaments::{FlushBasis, MAX_FILAMENTS, NEXT_COLOURS};
+pub use item_settings::SettingChange;
 pub use plates::{FIRST_LATER_LAYER, LAST_LAYER, LONGEST_PLATE_NAME, LayerSequence, PlateSettings};
 
 use crate::{

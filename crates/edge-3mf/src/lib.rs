@@ -11,6 +11,7 @@ mod custom_gcode;
 mod kept;
 mod model;
 mod model_settings;
+mod own;
 mod package;
 mod paint;
 mod write;
@@ -32,6 +33,7 @@ pub use custom_gcode::{CustomGcode, CustomItem, CustomKind, CustomMode};
 pub use kept::{Entry, Extras, Kept, Left, ObjectKept, PartKept, PlateKept};
 use model::{ModelFile, RawObject, Shape};
 use model_settings::{ModelSettings, ObjectSettings};
+pub use own::HeightRange;
 use package::Package;
 pub use paint::{Facet, SeamFacet, SeamPaint};
 pub use write::{

@@ -9,7 +9,9 @@ mod vendor;
 
 use std::{io, path::PathBuf};
 
-pub use defaults::{reference_defaults, reference_knows, reference_producer, serialized};
+pub use defaults::{
+    deserialized, reference_defaults, reference_knows, reference_producer, serialized,
+};
 pub use settings::{FloatOrPercent, Reads, Settings, Value};
 pub use vendor::{Kind, Vendor};
 

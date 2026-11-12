@@ -671,6 +671,45 @@ def book(layout, described, table, made, kind):
     return {"pages": layout, "options": listed}, undefaulted
 
 
+# --- What may be set on an object, a part or a height range -------------
+
+def config_class_keys(header, name):
+    """The options of one `PRINT_CONFIG_CLASS_DEFINE` of PrintConfig.hpp, in
+    order: what `PrintObjectConfig().keys()` and the like give."""
+    start = re.search(r"PRINT_CONFIG_CLASS_DEFINE\(\s*" + name + r"\s*,", header).end()
+    end = header.find("PRINT_CONFIG_CLASS_", start)
+    body = without_comments(header[start:end if end >= 0 else len(header)])
+    return re.findall(r"\(\(\s*ConfigOption[\w<>:]*\s*,\s*(\w+)\s*\)\)", body)
+
+
+def item_keys(pages, tab, factories, preset, header):
+    """The options an object, a part and a height range may set, as the
+    reference's per-item tabs offer them (Tab.cpp `TabPrintObject`,
+    `TabPrintPart`, `TabPrintLayer`: `Preset::print_options()` met with
+    PrintObjectConfig and PrintRegionConfig, PrintRegionConfig and
+    `part_support_keys()`, and `layer_height` with PrintRegionConfig), each
+    in the order of the process pages, which are what they are drawn from;
+    and the "Frequent" page `TabPrintModel::build` puts first."""
+    body = preset[preset.index("s_Preset_print_options {"):]
+    body = without_comments(body[:body.index("};")])
+    offered = set(strings(body))
+    region = config_class_keys(header, "PrintRegionConfig")
+    obj = config_class_keys(header, "PrintObjectConfig")
+    part_support = strings(without_comments(function_body(factories, "const std::vector<std::string>& part_support_keys()")))
+    on_pages = [key for page in pages for group in page["groups"] for line in group["lines"] for key in line["keys"]]
+    kinds = {
+        "object": set(obj) | set(region),
+        "part": set(region) | set(part_support),
+        "range": {"layer_height"} | set(region),
+    }
+    model = function_body(tab, "void TabPrintModel::build()")
+    frequent = re.search(r'add_options_page\(\s*L\("([^"]+)"\)', model).group(1)
+    frequent_keys = re.findall(r'append_single_option_line\(\s*"(\w+)"', model)
+    made = {kind: [key for key in on_pages if key in keys and key in offered] for kind, keys in kinds.items()}
+    made["frequent"] = {"title": frequent, "keys": frequent_keys}
+    return made
+
+
 def main():
     config = read("src", "libslic3r", "PrintConfig.cpp")
     described = options(config)
@@ -683,7 +722,10 @@ def main():
     for kind, layout, own in (("process", process_pages(tab), {}), ("filament", filament, filament_made), ("printer", printer, printer_made)):
         made[kind], missing = book(layout, described, table, own, kind)
         undefaulted += [f"{kind} {key}" for key in missing]
-    text = json.dumps(made, ensure_ascii=False, indent=1) + "\n"
+    made["process"]["items"] = item_keys(
+        made["process"]["pages"], tab, config, read("src", "libslic3r", "Preset.cpp"),
+        read("src", "libslic3r", "PrintConfig.hpp"))
+    text =json.dumps(made, ensure_ascii=False, indent=1) + "\n"
     if "--check" in sys.argv[1:]:
         with open(out, encoding="utf-8") as f:
             if f.read() != text:
