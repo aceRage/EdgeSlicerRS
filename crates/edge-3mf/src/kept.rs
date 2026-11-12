@@ -331,9 +331,6 @@ pub struct PlateKept {
     pub(crate) entries: Vec<Entry>,
     /// Its pictures, when they still show it.
     pub(crate) pictures: Pictures,
-    /// Inside its `<plate>` of `Metadata/custom_gcode_per_layer.xml`,
-    /// without its `<plate_info>`: the G-code set at its layers.
-    pub(crate) custom_gcode: Option<String>,
 }
 
 impl PlateKept {
@@ -478,8 +475,8 @@ pub struct Kept {
     pub(crate) settings: Option<String>,
     /// The first line of `Metadata/brim_ear_points.txt`.
     pub(crate) brim_version: Option<String>,
-    /// `Metadata/custom_gcode_per_layer.xml` when it is not laid out by
-    /// plate, as it was.
+    /// `Metadata/custom_gcode_per_layer.xml` when it is not laid out as
+    /// the reference lays it (which it then does not read), as it was.
     pub(crate) custom_gcode: Option<String>,
     /// Children of `model_settings.config`'s `<config>` that are not an
     /// object, a plate or the assembly, as written.
@@ -872,74 +869,6 @@ impl ByPlace {
         }
         Ok(())
     }
-}
-
-/// The custom G-code of each plate, by the plate's number, when the file
-/// is laid out by plate; none when it is not.
-pub(crate) fn custom_gcode_by_plate(
-    text: &str,
-    part: &str,
-) -> Result<Option<BTreeMap<u32, String>>, Error> {
-    let mut reader = Reader::from_str(text);
-    let mut found = BTreeMap::new();
-    let mut depth = 0usize;
-    let mut by_plate = false;
-    loop {
-        let event = reader
-            .read_event()
-            .map_err(|e| malformed(part, e.to_string()))?;
-        match event {
-            Event::Start(element) if depth == 0 => {
-                by_plate = element.local_name().as_ref() == "custom_gcodes_per_layer";
-                depth = 1;
-            }
-            Event::Start(element) if depth == 1 && element.local_name().as_ref() == "plate" => {
-                let name = element.name().as_ref().to_owned();
-                let span = reader
-                    .read_to_end(quick_xml::name::QName(name.as_str()))
-                    .map_err(|e| malformed(part, e.to_string()))?;
-                let inside = &text[span.start as usize..span.end as usize];
-                // The plate's number, and the rest without it.
-                let mut id = None;
-                let mut rest = String::new();
-                let mut inner = Reader::from_str(inside);
-                loop {
-                    let before = inner.buffer_position() as usize;
-                    match inner
-                        .read_event()
-                        .map_err(|e| malformed(part, e.to_string()))?
-                    {
-                        Event::Empty(element) | Event::Start(element)
-                            if element.local_name().as_ref() == "plate_info" =>
-                        {
-                            attributes(&element, part, |name, value| {
-                                if name == "id" {
-                                    id = value.trim().parse::<u32>().ok();
-                                }
-                                Ok(())
-                            })?;
-                        }
-                        Event::Eof => break,
-                        _ => {
-                            let after = inner.buffer_position() as usize;
-                            rest.push_str(&inside[before..after]);
-                        }
-                    }
-                }
-                match id {
-                    Some(id) => {
-                        found.insert(id, rest.trim().to_owned());
-                    }
-                    None => return Ok(None),
-                }
-            }
-            Event::Start(_) => depth += 1,
-            Event::End(_) => depth = depth.saturating_sub(1),
-            Event::Eof => break,
-            _ => {}
-        }
-    }
-    Ok(by_plate.then_some(found))
 }
 
 /// What becomes of an entry of a package that is not one of the parts

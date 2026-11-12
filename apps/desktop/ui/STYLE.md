@@ -79,6 +79,7 @@ no thinner.
 | `--text-2` | Labels, what explains | 8.4 : 1 | 7.1 : 1 |
 | `--text-3` | Hints, units, placeholders, group labels | 5.9 : 1 | 4.7 : 1 |
 | `--text-off` | What is off (not held to a contrast) | 2.8 : 1 | 2.2 : 1 |
+| `--code-command` | A G-code line's command, in the G-code window | 9.6 : 1 on the overlay | 6.9 : 1 on white |
 
 Every level but the last keeps 4.5 : 1 on every surface it is used on.
 Check a new pairing before using it.
@@ -525,7 +526,8 @@ Where each stands (`#stage` sets the margins, `--stage-inset` all round):
 | By the plate shown | Its own tools (`#plate-tools`), at its far right corner |
 | Top, from `--stage-left` | Prepare's toolbar, centred; under it "Object Operations" (`.edit-panel`) |
 | Top right, `--stage-right` in | The legend (`--legend-width`); the layer slider's labels keep the band right of it |
-| Right | The layers slider and its one-layer button |
+| Right | The layers slider and its one-layer button; on the slider, what is set at layers (below) |
+| Right, under the legend | The G-code window (below); beside the legend, at its left, where the legend leaves too little room under it |
 | Bottom left | The navigator cube, and Fit / View (a toolbar) under it; "About this print" beside them |
 | Bottom | The moves slider; the position window over its right end; the progress at the right |
 | Middle | What there is to say where there is nothing to show (`#empty`) |
@@ -537,6 +539,38 @@ shown in the accent, thumbs of the accent ringed in `--surface-float`; the
 one the keys move is ringed in the accent, and the focus ring is a second
 ring of `--focus` outside it. The navigator's faces, the labels' frames
 over the objects and the axes' letters keep the reference's colours.
+
+### The G-code window
+
+`.gl-gcode` (`gl/gcode.js`): an `.overlay` panel of lines of G-code in the
+fixed-width face at `--size-small`, 17 px a line, as wide as 55
+characters and a line number, so it keeps its width as the slider moves.
+Each line's number and comment in `--text-3`, its command in
+`--code-command` (the one colour the page has for code: a muted yellow on
+dark, a dark ochre on light), its words in `--text-1`. The line of the
+move shown is marked as a selected row is: the accent's tint and a bar of
+the accent at its head. It does not scroll; the wheel over it moves the
+moves slider. Its button in the legend's head (`#legend-gcode`, a `.tool`
+with `aria-pressed`) has the accent's tint while the window is on.
+
+### What is set at layers (the layers slider's ticks)
+
+A mark across the slider's track at each layer something is set at
+(`.gl-tick-mark`: `--text-1`, or the filament's colour for a filament
+change, ringed in the float surface so it shows on the track's fill), and
+its kind in a small label at the track's left (`.gl-tick-label`: the
+overlay surface, `--line-2`, `--size-caps`, the reference's word: "Pause",
+"Custom", "Template", "Color"). Its tooltip says what it writes. At the
+layer the thumb taken up is on, the label drops under the thumb's own
+label and is framed in the accent, and a 18 px `.icon` button with a
+cross (`.gl-tick-delete`, titled "Delete Pause" and the rest) stands at
+the track's right. The slider's menu (`#menu`) lists what can be added
+there or done to what is there; a filament in a menu has its swatch
+before its name (`more.swatch` of `showMenu`'s entries).
+
+The dialog for custom G-code (`#custom-gcode`) is a small dialog: title,
+the reference's sentence as the label, a `textarea.code` of six lines,
+"OK" (off while the box is empty) and "Cancel".
 
 ### Scrollbars
 

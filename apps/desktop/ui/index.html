@@ -204,6 +204,7 @@
         <div id="legend-head">
           <button type="button" id="legend-fold" class="icon tool" aria-expanded="true" title="Fold or unfold the legend" aria-label="Fold or unfold the legend"><svg viewBox="0 0 16 16" aria-hidden="true"><path d="M4.5,6.5L8,10l3.5-3.5"/></svg></button>
           <select id="view-type" aria-label="View type"></select>
+          <button type="button" id="legend-gcode" class="icon tool" aria-pressed="true" title="On/Off G-code window [C]" aria-label="G-code window" hidden><svg viewBox="0 0 16 16" aria-hidden="true"><path d="M5.5,4.5L2.5,8l3,3.5M10.5,4.5l3,3.5-3,3.5M9,3.5L7,12.5"/></svg></button>
         </div>
         <div id="legend-body">
           <table id="legend-rows"></table>
@@ -260,6 +261,19 @@
     <input id="ask-text" type="text" autocomplete="off" spellcheck="false">
     <div class="row end">
       <button type="submit" value="ok" class="primary">OK</button>
+      <button type="submit" value="cancel" formnovalidate>Cancel</button>
+    </div>
+  </form>
+</dialog>
+
+<!-- "Add Custom G-code" / "Edit Custom G-code" on the layers slider (IMSlider.cpp `render_input_custom_gcode`). -->
+<dialog id="custom-gcode" aria-labelledby="custom-gcode-title">
+  <form method="dialog">
+    <h2 id="custom-gcode-title">Custom G-code</h2>
+    <label for="custom-gcode-text">Enter Custom G-code used on current layer:</label>
+    <textarea id="custom-gcode-text" class="code" rows="6" spellcheck="false" autocomplete="off"></textarea>
+    <div class="row end">
+      <button type="submit" value="ok" id="custom-gcode-ok" class="primary">OK</button>
       <button type="submit" value="cancel" formnovalidate>Cancel</button>
     </div>
   </form>
@@ -333,6 +347,7 @@
 <script src="gl/scene.js"></script>
 <script src="gl/toolpath.js"></script>
 <script src="gl/controls.js"></script>
+<script src="gl/gcode.js"></script>
 <script src="gl/stage.js"></script>
 <script src="scene-edit.js"></script>
 <script src="plates.js"></script>

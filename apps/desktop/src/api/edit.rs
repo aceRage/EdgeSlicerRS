@@ -835,7 +835,15 @@ impl Session {
             } else {
                 "there is nothing to redo"
             })?;
-            let before = std::mem::replace(&mut project.file, step.file);
+            // What is set at the layers is not in the history, as in the
+            // reference: it stays as it is (`ticks`).
+            let file = match (&project.file, step.file) {
+                (Some(now), Some(then)) => {
+                    Some(super::ticks::carried(now, &then).map_or(then, Arc::new))
+                }
+                (_, then) => then,
+            };
+            let before = std::mem::replace(&mut project.file, file);
             onto.push(Step {
                 name: step.name.clone(),
                 file: before.clone(),

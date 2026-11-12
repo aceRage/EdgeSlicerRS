@@ -29,7 +29,8 @@ use std::{
 };
 
 use edge_3mf::{
-    Instance, InstanceRef, Kept, Object, ObjectKept, Part, PartKind, Plate, PlateKept, Project,
+    CustomGcode, Instance, InstanceRef, Kept, Object, ObjectKept, Part, PartKind, Plate, PlateKept,
+    Project,
 };
 use edge_config::Settings;
 use edge_mesh::{Transform, hull::Hull};
@@ -391,6 +392,10 @@ pub struct ModelPlate {
     /// What its slice depended on when it was read: while that is so, its
     /// pictures in the file still show it.
     read: Option<PlateStamp>,
+    /// The G-code set at its layers (pauses, custom G-code, filament
+    /// changes), when it has an entry: one emptied stays, as the
+    /// reference keeps it. It goes with the plate, whatever its number.
+    custom_gcode: Option<CustomGcode>,
 }
 
 impl ModelPlate {
@@ -406,6 +411,11 @@ impl ModelPlate {
     /// The copies on it, by [`ModelCopy::id`], in the plate's own order.
     pub fn copies(&self) -> &[u64] {
         &self.order
+    }
+
+    /// The G-code set at its layers, when it has an entry.
+    pub fn custom_gcode(&self) -> Option<&CustomGcode> {
+        self.custom_gcode.as_ref()
     }
 }
 
@@ -458,6 +468,10 @@ pub struct Model {
     placed: bool,
     /// What its file held beyond this, to be saved with it.
     kept: Option<Arc<Kept>>,
+    /// The G-code set at layers of a model without plates, which is
+    /// plate 1's as the reference reads it; it goes to plate 1 when that
+    /// is made.
+    loose_custom_gcode: Option<CustomGcode>,
 }
 
 impl Default for Model {
@@ -478,6 +492,7 @@ impl Model {
             bare: false,
             placed: true,
             kept: None,
+            loose_custom_gcode: None,
         }
     }
 
@@ -689,6 +704,7 @@ impl Model {
                 .collect(),
             settings: None,
             unread_paint: self.unread_paint.clone(),
+            custom_gcode: self.custom_gcode_by_plate(),
             kept: self.kept.clone(),
         }
     }
@@ -823,6 +839,7 @@ impl Model {
                 origin: Some((0.0, 0.0)),
                 kept: None,
                 read: None,
+                custom_gcode: self.loose_custom_gcode.take(),
                 order: self
                     .objects
                     .iter()
@@ -1814,6 +1831,7 @@ impl Model {
             order: Vec::new(),
             kept: None,
             read: None,
+            custom_gcode: None,
         });
         self.gather(bed);
         Ok(id)
@@ -1844,6 +1862,57 @@ impl Model {
         }
         self.gather(bed);
         Ok(())
+    }
+
+    // ---- G-code at layers ----
+
+    /// The G-code set at the layers of a plate (by number; none for a
+    /// model without plates, whose plate 1 it then is), when it has an
+    /// entry.
+    pub fn custom_gcode(&self, plate: Option<u32>) -> Option<&CustomGcode> {
+        match plate.or((!self.plates.is_empty()).then_some(1)) {
+            Some(id) => self
+                .plate_index(id)
+                .and_then(|index| self.plates[index].custom_gcode.as_ref()),
+            None => self.loose_custom_gcode.as_ref(),
+        }
+    }
+
+    /// Sets what is done at a plate's layers, as the reference sets it
+    /// when a tick of the layers slider is added, edited or deleted
+    /// (Plater.cpp, `EVT_CUSTOMEVT_TICKSCHANGED`): the plate's entry as a
+    /// whole, an emptied one staying. Nothing on the plate moves.
+    pub fn set_custom_gcode(
+        &mut self,
+        plate: Option<u32>,
+        info: CustomGcode,
+    ) -> Result<(), Failure> {
+        match plate.or((!self.plates.is_empty()).then_some(1)) {
+            Some(id) => {
+                let index = self
+                    .plate_index(id)
+                    .ok_or_else(|| refused(format!("there is no plate {id}")))?;
+                self.plates[index].custom_gcode = Some(info);
+            }
+            None => self.loose_custom_gcode = Some(info),
+        }
+        Ok(())
+    }
+
+    /// Each plate's G-code at layers by its number as it stands, as a
+    /// project file holds them.
+    pub(crate) fn custom_gcode_by_plate(&self) -> std::collections::BTreeMap<u32, CustomGcode> {
+        let mut out: std::collections::BTreeMap<u32, CustomGcode> = self
+            .plates
+            .iter()
+            .filter_map(|plate| Some((plate.id, plate.custom_gcode.clone()?)))
+            .collect();
+        if self.plates.is_empty()
+            && let Some(loose) = &self.loose_custom_gcode
+        {
+            out.insert(1, loose.clone());
+        }
+        out
     }
 
     // ---- putting things somewhere ----
@@ -2313,6 +2382,7 @@ impl From<Opened> for Model {
                     bare: true,
                     placed: false,
                     kept: None,
+                    loose_custom_gcode: None,
                 }
             }
             Held::Project { project, .. } => {
@@ -2384,6 +2454,7 @@ impl From<Opened> for Model {
                             .collect(),
                         kept: plate.kept.clone(),
                         read: None,
+                        custom_gcode: project.custom_gcode.get(&plate.id).cloned(),
                     })
                     .collect();
                 let mut model = Self {
@@ -2395,6 +2466,12 @@ impl From<Opened> for Model {
                     bare: false,
                     placed: false,
                     kept: project.kept,
+                    // A project without plates has its items under plate 1.
+                    loose_custom_gcode: if project.plates.is_empty() {
+                        project.custom_gcode.get(&1).cloned()
+                    } else {
+                        None
+                    },
                 };
                 // What each plate's slice depends on as read, for its
                 // pictures.

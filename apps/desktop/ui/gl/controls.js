@@ -84,7 +84,11 @@
       this.oneButton = el('button', { type: 'button', className: 'gl-one overlay', textContent: '1', title: 'On/Off one layer mode of the vertical slider [L]' });
       this.oneButton.setAttribute('aria-pressed', 'false');
       this.oneButton.addEventListener('click', () => this.setOne(!this.one));
-      this.node = el('div', { className: 'gl-layers', hidden: true }, this.labels.high, this.labels.low, this.track, this.oneButton);
+      // What is set at layers: a mark across the track at each, its kind
+      // beside it (IMSlider.cpp `draw_ticks`, `draw_custom_label_block`).
+      this.ticks = [];
+      this.tickLayer = el('div', { className: 'gl-ticks' });
+      this.node = el('div', { className: 'gl-layers', hidden: true }, this.tickLayer, this.labels.high, this.labels.low, this.track, this.oneButton);
       parent.append(this.node);
 
       let dragging = false;
@@ -114,6 +118,32 @@
         event.preventDefault();
         onMenu(event.clientX, event.clientY);
       });
+    }
+
+    // The items set at layers: [{ layer, kind, label, title, colour,
+    // remove }], `remove` the words of the button that takes it away,
+    // shown on the item at the layer the thumb taken up is on.
+    setTicks(ticks, onDelete) {
+      this.ticks = ticks.map((tick) => {
+        const mark = el('span', { className: 'gl-tick-mark' });
+        if (tick.colour) mark.style.background = tick.colour;
+        const label = el('span', { className: 'gl-tick-label', textContent: tick.label, title: tick.title });
+        label.addEventListener('click', () => this.move(tick.layer));
+        const remove = el('button', { type: 'button', className: 'gl-tick-delete icon', title: tick.remove });
+        remove.setAttribute('aria-label', tick.remove);
+        remove.innerHTML = '<svg viewBox="0 0 16 16" aria-hidden="true"><path d="M4.5,4.5l7,7M11.5,4.5l-7,7"/></svg>';
+        remove.addEventListener('click', () => onDelete(tick));
+        const node = el('div', { className: `gl-tick ${tick.kind}` }, label, mark, remove);
+        return { ...tick, node };
+      });
+      this.tickLayer.replaceChildren(...this.ticks.map((tick) => tick.node));
+      this.show();
+    }
+
+    // The item at the layer the thumb taken up is on, if there is one.
+    tickHere() {
+      const layer = this.one || this.selected === 'high' ? this.high : this.low;
+      return this.ticks.find((tick) => tick.layer === layer) || null;
     }
 
     select(which) {
@@ -178,6 +208,11 @@
         this.labels[which].style.bottom = at;
         const [number, height] = this.label(this[which]);
         this.labels[which].textContent = `${number}\n${height}`;
+      }
+      const here = this.tickHere();
+      for (const tick of this.ticks) {
+        tick.node.style.bottom = `${100 * part(tick.layer)}%`;
+        tick.node.classList.toggle('here', tick === here);
       }
       this.fill.style.bottom = `${100 * part(this.low)}%`;
       this.fill.style.height = `${100 * (part(this.high) - part(this.low))}%`;

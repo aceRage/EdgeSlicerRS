@@ -48,7 +48,7 @@ pub use edge_avoid::{Detour, Slices};
 pub use scarf::{Scarf, ScarfSeam};
 pub use seam::Seam;
 pub use seam_plan::{SeamMesh, SeamObject, SeamPart, SeamScene};
-pub use settings::{Lift, OverhangFan, PrintSettings, WallDirection, WallOrder};
+pub use settings::{Lift, OverhangFan, PrintSettings, WallDirection, WallOrder, gcode_template};
 
 #[derive(Debug, thiserror::Error)]
 pub enum GcodeError {
@@ -132,6 +132,28 @@ pub struct Layer<'a> {
     /// walls are measured against to find where they overhang. Empty on
     /// the first layer, or to leave overhangs alone.
     pub below: &'a [ExPolygon],
+}
+
+/// G-code set at a layer by the person (a pause, a custom line, the
+/// printer's template), written at the start of the layer after its layer
+/// change, as the reference writes it (GCode.cpp
+/// `ProcessLayer::emit_custom_gcode_per_print_z`).
+#[derive(Clone, Debug, PartialEq)]
+pub enum LayerCode {
+    /// A pause: the printer's `machine_pause_gcode`, as a template.
+    Pause(String),
+    /// The printer's `template_custom_gcode`, as a template.
+    Template(String),
+    /// G-code written as it is, placeholders and all.
+    Custom(String),
+}
+
+/// A [`LayerCode`] and the layer it is written at, by the layer's top.
+#[derive(Clone, Debug, PartialEq)]
+pub struct AtLayer {
+    /// The top of the layer, as [`Layer::z`] has it.
+    pub z: f64,
+    pub code: LayerCode,
 }
 
 /// What a print comes to.
@@ -236,6 +258,21 @@ pub fn write_contoured(
     slices: &[Slices<'_>],
     scene: &SeamScene<'_>,
     contours: &Contours<'_>,
+    settings: &[PrintSettings],
+) -> Result<Summary, GcodeError> {
+    write_coded(out, layers, slices, scene, contours, &[], settings)
+}
+
+/// [`write_contoured`], with G-code set at layers (`codes`): each written
+/// at the start of the layer whose top it names. One that names no layer
+/// is not written; what is given is matched to the layers beforehand.
+pub fn write_coded(
+    out: &mut impl Write,
+    layers: &[Layer<'_>],
+    slices: &[Slices<'_>],
+    scene: &SeamScene<'_>,
+    contours: &Contours<'_>,
+    codes: &[AtLayer],
     settings: &[PrintSettings],
 ) -> Result<Summary, GcodeError> {
     let profiles = if contours.layers.len() == layers.len() {
@@ -378,6 +415,7 @@ pub fn write_contoured(
         shelters: HashMap::new(),
         contoured: HashMap::new(),
         contour_speed: contours.speed_scaling,
+        codes,
     };
     let several = layers.iter().any(|layer| layer.filament > 0);
     writer.preamble(several)?;
@@ -627,6 +665,8 @@ struct Motion {
 struct Writer<'a> {
     /// The text of the part being written; handed on a layer at a time.
     out: Vec<u8>,
+    /// G-code set at layers, by the layer's top.
+    codes: &'a [AtLayer],
     /// The settings for each filament, and those of the one in use.
     all: &'a [PrintSettings],
     settings: &'a PrintSettings,
@@ -956,6 +996,40 @@ impl Writer<'_> {
             writeln!(self.out)?;
         }
         Ok(text)
+    }
+
+    /// G-code set at a layer, with the tag the reference's G-code viewer
+    /// and time estimator know it by (GCode.cpp
+    /// `emit_custom_gcode_per_print_z`): a pause's G-code and a template
+    /// are filled in like any of the printer's; custom G-code is written
+    /// as it is. Each ends with a new line, as there.
+    ///
+    /// The two templates are given what the reference gives them: not the
+    /// layer's own number and height, which it sets for the layer-change
+    /// G-code alone, so a template that names them is refused here as it
+    /// is there.
+    fn layer_code(&mut self, code: &LayerCode) -> Result<(), GcodeError> {
+        let expand = |name: &'static str, template: &str, variables: &Variables| {
+            let mut variables = variables.clone();
+            for local in ["layer_num", "layer_z", "max_layer_z"] {
+                variables.remove(local);
+            }
+            edge_template::expand(template, &variables)
+                .map_err(|source| GcodeError::Template { name, source })
+        };
+        match code {
+            LayerCode::Pause(template) => {
+                let text = expand("machine_pause_gcode", template, &self.variables)?;
+                write!(self.out, ";PAUSE_PRINT\n{text}\n")?;
+            }
+            LayerCode::Template(template) => {
+                let text = expand("template_custom_gcode", template, &self.variables)?;
+                write!(self.out, ";CUSTOM_GCODE\n{text}")?;
+            }
+            LayerCode::Custom(text) => write!(self.out, ";CUSTOM_GCODE\n{text}")?,
+        }
+        writeln!(self.out)?;
+        Ok(())
     }
 
     /// The temperature a tool prints at on the layer being written.
@@ -1288,6 +1362,11 @@ impl Writer<'_> {
             {
                 writeln!(self.out, "M140 S{bed:.0}")?;
             }
+        }
+        // What the person set at this layer, after the layer change and
+        // whatever the second layer resets, before anything is printed.
+        if let Some(code) = self.codes.iter().find(|code| code.z == layer.z) {
+            self.layer_code(&code.code)?;
         }
         self.state.first_layer = index == 0;
         self.state.layer = index;

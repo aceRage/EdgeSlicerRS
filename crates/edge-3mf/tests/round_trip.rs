@@ -58,6 +58,9 @@ pub fn saved(project: &Project) -> Vec<u8> {
 pub fn differences(a: &Project, b: &Project) -> Vec<String> {
     let mut found = Vec::new();
     let mut differ = |what: String| found.push(what);
+    if a.custom_gcode != b.custom_gcode {
+        differ("the G-code set at layers".into());
+    }
     if a.objects.len() != b.objects.len() {
         differ(format!(
             "{} objects, then {}",
@@ -203,6 +206,59 @@ fn every_reference_project_is_itself_once_written_and_read_again() {
     }
     assert!(checked >= 30, "only {checked} projects checked");
     assert!(failures.is_empty(), "{}", failures.join("\n"));
+}
+
+/// The reference's own file of G-code at layers (the pressure advance
+/// pattern's, every number at 17 digits and its G-code over many lines in
+/// one attribute) is written back as the reference wrote it, to the byte;
+/// and items edited are written in the same layout.
+#[test]
+fn custom_gcode_at_layers_is_written_as_the_reference_writes_it() {
+    use std::io::Read;
+    let path = reference().join("resources/calib/pressure_advance/pa_pattern.3mf");
+    let entry = |bytes: &[u8]| {
+        let mut archive = zip::ZipArchive::new(Cursor::new(bytes.to_vec())).unwrap();
+        let mut text = String::new();
+        archive
+            .by_name("Metadata/custom_gcode_per_layer.xml")
+            .unwrap()
+            .read_to_string(&mut text)
+            .unwrap();
+        text
+    };
+    let original = entry(&std::fs::read(&path).unwrap());
+    let mut project = Project::open(&path).unwrap();
+    let plate = &project.custom_gcode[&1];
+    assert_eq!(plate.items.len(), 4);
+    assert_eq!(plate.items[1].print_z, 0.45);
+    assert_eq!(plate.mode, Some(edge_3mf::CustomMode::SingleExtruder));
+    assert!(plate.items[0].extra.lines().count() > 900);
+    assert_eq!(entry(&saved(&project)), original);
+
+    // A pause added to plate 2, which had none, and the last item taken
+    // from plate 1.
+    project.custom_gcode.get_mut(&1).unwrap().items.pop();
+    project.custom_gcode.insert(
+        2,
+        edge_3mf::CustomGcode {
+            mode: Some(edge_3mf::CustomMode::MultiAsSingle),
+            items: vec![edge_3mf::CustomItem {
+                print_z: 1.05,
+                kind: edge_3mf::CustomKind::PausePrint,
+                extruder: 1,
+                color: String::new(),
+                extra: String::new(),
+                gcode: "M600".into(),
+            }],
+        },
+    );
+    let text = entry(&saved(&project));
+    assert!(text.ends_with(
+        "<plate>\n<plate_info id=\"2\"/>\n<layer top_z=\"1.05\" type=\"1\" extruder=\"1\" color=\"\" \
+         extra=\"\" gcode=\"M600\"/>\n<mode value=\"MultiAsSingle\"/>\n</plate>\n</custom_gcodes_per_layer>"
+    ));
+    let again = Project::read(Cursor::new(saved(&project))).unwrap();
+    assert_eq!(again.custom_gcode, project.custom_gcode);
 }
 
 /// A project that names a printer's address and keys is written without
