@@ -83,6 +83,27 @@ pub struct RecipeGroove {
     pub plane_radius: f64,
 }
 
+/// A connector as a cut placed it (CutRecipe.hpp `CutRecipeConnector`),
+/// in the coordinates of the recipe's mesh: its point on the plane, its
+/// frame (rows x, y, the plane's normal; the move unused), its radius,
+/// height and their tolerances in mm, its turn about the normal in
+/// radians, and its type (0 plug, 1 dowel, 2 snap, and the fork's own
+/// after), style (0 prism, 1 frustum) and shape (0 triangle, 1 square,
+/// 2 hexagon, 3 circle).
+#[derive(Clone, Debug, PartialEq)]
+pub struct RecipeConnector {
+    pub pos: [f64; 3],
+    pub rotation: Transform,
+    pub radius: f64,
+    pub height: f64,
+    pub radius_tolerance: f64,
+    pub height_tolerance: f64,
+    pub z_angle: f64,
+    pub kind: u32,
+    pub style: u32,
+    pub shape: u32,
+}
+
 /// How a cut was made, and what it was made of.
 #[derive(Clone, Debug)]
 pub struct CutRecipe {
@@ -105,8 +126,8 @@ pub struct CutRecipe {
     pub flip_upper: bool,
     pub flip_lower: bool,
     pub groove: Option<RecipeGroove>,
-    /// How many connectors the cut placed.
-    pub connectors: usize,
+    /// The connectors the cut placed, as they were placed.
+    pub connectors: Vec<RecipeConnector>,
     /// The object's printed parts as they were before the cut, as one
     /// mesh, in the coordinates the halves are in.
     pub mesh: Arc<Mesh>,
@@ -161,7 +182,7 @@ impl CutRecipe {
             flip_upper: false,
             flip_lower: false,
             groove: None,
-            connectors: 0,
+            connectors: Vec::new(),
             mesh,
             blob: None,
         }
@@ -412,8 +433,7 @@ pub(crate) fn read(
             }),
         };
         let groove = groove_of(inner, part)?;
-        let connectors =
-            inner.matches("<connector ").count() + inner.matches("<connector>").count();
+        let connectors = connectors_of(inner, part)?;
         let thickness_offset = get("thickness_offset")
             .and_then(|v| v.trim().parse().ok())
             .filter(|v| *v <= 2)
@@ -490,6 +510,94 @@ pub(crate) fn read(
         );
     }
     Ok(out)
+}
+
+/// The rows of a 4×4 matrix written row by row, as a frame: rows its
+/// columns (axes), the move its last column.
+fn frame_of(matrix: &[[f64; 4]; 4]) -> Transform {
+    Transform {
+        rows: std::array::from_fn(|axis| std::array::from_fn(|row| matrix[row][axis])),
+    }
+}
+
+/// A frame written as the reference writes a rotation: sixteen numbers,
+/// row by row, its axes the columns.
+fn matrix_text(frame: &Transform) -> String {
+    let mut values = Vec::with_capacity(16);
+    for row in 0..4 {
+        for col in 0..4 {
+            values.push(match (row, col) {
+                (3, 3) => 1.0,
+                (3, _) | (_, 3) => 0.0,
+                _ => frame.rows[col][row],
+            });
+        }
+    }
+    values
+        .iter()
+        .map(|value| value.to_string())
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
+/// The `<connector>`s inside a recipe.
+fn connectors_of(inner: &str, part: &str) -> Result<Vec<RecipeConnector>, Error> {
+    let mut reader = Reader::from_str(inner);
+    let mut out = Vec::new();
+    loop {
+        match reader
+            .read_event()
+            .map_err(|e| malformed(part, e.to_string()))?
+        {
+            Event::Start(element) | Event::Empty(element)
+                if element.local_name().as_ref() == "connector" =>
+            {
+                let mut values: HashMap<String, String> = HashMap::new();
+                attributes(&element, part, |key, value| {
+                    values.insert(key.to_owned(), value.to_owned());
+                    Ok(())
+                })?;
+                let float = |key: &str, default: f64| {
+                    values
+                        .get(key)
+                        .and_then(|v| v.trim().parse().ok())
+                        .unwrap_or(default)
+                };
+                let whole = |key: &str| {
+                    values
+                        .get(key)
+                        .and_then(|v| v.trim().parse().ok())
+                        .unwrap_or(0)
+                };
+                let rotation = values
+                    .get("rotation")
+                    .and_then(|text| matrix(text))
+                    .map(|m| frame_of(&m))
+                    .unwrap_or(Transform::IDENTITY);
+                out.push(RecipeConnector {
+                    pos: [float("x", 0.0), float("y", 0.0), float("z", 0.0)],
+                    rotation: Transform {
+                        rows: [
+                            rotation.rows[0],
+                            rotation.rows[1],
+                            rotation.rows[2],
+                            [0.0; 3],
+                        ],
+                    },
+                    radius: float("radius", 5.0),
+                    height: float("height", 10.0),
+                    radius_tolerance: float("r_tolerance", 0.0),
+                    height_tolerance: float("h_tolerance", 0.1),
+                    z_angle: float("z_angle", 0.0),
+                    kind: whole("type"),
+                    style: whole("style"),
+                    shape: whole("shape"),
+                });
+            }
+            Event::Eof => return Ok(out),
+            _ => {}
+        }
+    }
 }
 
 /// The `<groove>` inside a recipe, when there is one.
@@ -613,6 +721,31 @@ pub(crate) fn element_of(recipe: &CutRecipe, place: usize, hash: &str) -> String
         bit(recipe.flip_upper),
         bit(recipe.flip_lower),
     );
+    if !recipe.connectors.is_empty() {
+        out.push_str("\n  <connectors>");
+        for c in &recipe.connectors {
+            let _ = write!(
+                out,
+                concat!(
+                    "\n   <connector x=\"{}\" y=\"{}\" z=\"{}\" rotation=\"{}\" radius=\"{}\" height=\"{}\"",
+                    " r_tolerance=\"{}\" h_tolerance=\"{}\" z_angle=\"{}\" type=\"{}\" style=\"{}\" shape=\"{}\"/>"
+                ),
+                c.pos[0],
+                c.pos[1],
+                c.pos[2],
+                matrix_text(&c.rotation),
+                c.radius as f32,
+                c.height as f32,
+                c.radius_tolerance as f32,
+                c.height_tolerance as f32,
+                c.z_angle as f32,
+                c.kind,
+                c.style,
+                c.shape,
+            );
+        }
+        out.push_str("\n  </connectors>");
+    }
     if let Some(g) = &recipe.groove {
         let _ = write!(
             out,

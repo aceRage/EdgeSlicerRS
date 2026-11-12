@@ -918,3 +918,257 @@ fn an_editable_cut_is_saved_read_back_put_back_and_cut_again() {
         .unwrap();
     assert_eq!(plane_there.rows[2], [0.0, 0.0, 1.0]);
 }
+
+#[test]
+fn connectors_make_plugs_holes_and_dowels_that_fit_by_their_tolerances() {
+    use edge_engine::{Connector, ConnectorKind, ConnectorShape, ConnectorStyle};
+    let dir = tempfile::tempdir().unwrap();
+    let base = block(dir.path(), [40.0, 20.0, 20.0]);
+    let copy = base.objects()[0].copies()[0].id();
+    let (_, reach) = base.in_scene(Some(&BED), copy).unwrap();
+    let [low, high] = reach.unwrap();
+    let mid = [(low[0] + high[0]) / 2.0, (low[1] + high[1]) / 2.0, 10.0];
+    let connector = |dx: f64, kind, style, shape| Connector {
+        at: [mid[0] + dx, mid[1], 10.0],
+        radius: 2.5,
+        height: 5.0,
+        radius_tolerance: 0.1,
+        height_tolerance: 0.2,
+        z_angle: 0.3,
+        kind,
+        style,
+        shape,
+    };
+    let connectors = vec![
+        connector(
+            -12.0,
+            ConnectorKind::Plug,
+            ConnectorStyle::Prism,
+            ConnectorShape::Circle,
+        ),
+        connector(
+            -4.0,
+            ConnectorKind::Dowel,
+            ConnectorStyle::Prism,
+            ConnectorShape::Square,
+        ),
+        connector(
+            4.0,
+            ConnectorKind::Snap,
+            ConnectorStyle::Prism,
+            ConnectorShape::Circle,
+        ),
+        connector(
+            12.0,
+            ConnectorKind::Plug,
+            ConnectorStyle::Frustum,
+            ConnectorShape::Hexagon,
+        ),
+    ];
+    let mut model = base.clone();
+    let options = CutOptions {
+        // Taken back on: connectors keep both parts as objects.
+        keep_lower: false,
+        to_parts: true,
+        connectors,
+        ..CutOptions::default()
+    };
+    let done = model
+        .cut(Some(&BED), copy, &plane(mid, [0.0, 0.0, 1.0]), &options)
+        .unwrap();
+    assert_eq!(done.made.len(), 3);
+    let names: Vec<&str> = model.objects().iter().map(|o| o.name()).collect();
+    assert_eq!(names, ["block", "block", "block-Dowel-Connector-2"]);
+    let kinds = |object: &ModelObject| -> Vec<(String, PartKind)> {
+        object
+            .shape()
+            .parts()
+            .iter()
+            .map(|p| (p.name.clone().unwrap_or_default(), p.kind))
+            .collect()
+    };
+    let (upper, lower, dowel) = (
+        &model.objects()[0],
+        &model.objects()[1],
+        &model.objects()[2],
+    );
+    let negative = |name: &str| (name.to_owned(), PartKind::Negative);
+    let normal = |name: &str| (name.to_owned(), PartKind::Normal);
+    assert_eq!(
+        kinds(upper)[1..],
+        [
+            negative("Connector-1"),
+            negative("Connector-2_A"),
+            negative("Connector-3"),
+            negative("Connector-4")
+        ]
+    );
+    assert_eq!(
+        kinds(lower)[1..],
+        [
+            normal("Connector-1"),
+            negative("Connector-2_B"),
+            normal("Connector-3"),
+            normal("Connector-4")
+        ]
+    );
+    assert_eq!(kinds(dowel), [normal("Connector-2")]);
+    // Every connector's mesh closed, placed as it is.
+    let placed = |object: &ModelObject, at: usize| -> Mesh {
+        let part = &object.shape().parts()[at];
+        let mut mesh = Mesh::default();
+        mesh.append(&part.mesh, &part.transform);
+        mesh
+    };
+    for (object, count) in [(upper, 5), (lower, 5), (dowel, 1)] {
+        for at in 0..count {
+            sound(&placed(object, at));
+        }
+    }
+    // The plug and its hole, across a layer 2 mm over the cut: the hole's
+    // radius is the plug's and the radius tolerance; the hole is deeper by
+    // the height tolerance and reaches through the face.
+    let area = |mesh: &Mesh, z: f64| -> f64 {
+        edge_slice::slice(mesh, &[z])[0]
+            .polygons
+            .iter()
+            .map(|p| p.signed_area_mm2())
+            .sum()
+    };
+    let (plug, hole) = (placed(lower, 1), placed(upper, 1));
+    let radius = |area: f64| (area / std::f64::consts::PI).sqrt();
+    // Both in the halves' own coordinates, where the cut is at 10 mm.
+    let gap = radius(area(&hole, 12.0)) - radius(area(&plug, 12.0));
+    assert!(near(gap, 0.1, 1e-3), "the gap is {gap}");
+    let (plug_low, plug_high) = bounds(&plug);
+    let (hole_low, hole_high) = bounds(&hole);
+    assert!(near(plug_low[2], 10.0, 1e-5) && near(plug_high[2], 15.0, 1e-5));
+    assert!(near(hole_high[2], 15.2, 1e-5) && near(hole_low[2], 10.0 - 0.05, 1e-5));
+    // The dowel: twice its height, upright; its holes each half of it with
+    // the tolerances, through their faces.
+    let (d_low, d_high) = bounds(&placed(dowel, 0));
+    assert!(near(d_high[2] - d_low[2], 10.0, 1e-5));
+    let (a_low, a_high) = bounds(&placed(upper, 2));
+    let (b_low, b_high) = bounds(&placed(lower, 2));
+    assert!(
+        near(a_low[2], 9.95, 1e-5) && near(a_high[2], 15.1, 1e-5),
+        "{a_low:?} {a_high:?}"
+    );
+    assert!(
+        near(b_low[2], 4.9, 1e-5) && near(b_high[2], 10.05, 1e-5),
+        "{b_low:?} {b_high:?}"
+    );
+    // The snap's hole is round, of the snap's radius and tolerance.
+    let snap_hole = placed(upper, 3);
+    assert!(near(radius(area(&snap_hole, 12.0)), 2.6, 1e-3));
+    // One cut's three objects: their number shared, three results, four
+    // connectors; the halves keep the cut editable, the dowel does not.
+    let recipe = model
+        .cut_recipe(model.objects()[0].copies()[0].id())
+        .unwrap();
+    assert_eq!(recipe.connectors.len(), 4);
+    assert!(
+        model
+            .cut_recipe(model.objects()[2].copies()[0].id())
+            .is_none()
+    );
+    // Saved and read back, then put back: the dowel goes with the halves.
+    let path = dir.path().join("connectors.3mf");
+    model
+        .save(&path, &edge_engine::Saving::None, Some(&BED))
+        .unwrap();
+    let mut model = Model::open(&path).unwrap();
+    assert_eq!(model.objects().len(), 3);
+    let kinds_read = kinds(&model.objects()[0]);
+    assert_eq!(kinds_read[2], negative("Connector-2_A"));
+    let half = model.objects()[0].copies()[0].id();
+    let edit = model.cut_edit(Some(&BED), half).unwrap();
+    assert_eq!(model.objects().len(), 1);
+    assert_eq!(edit.recipe.connectors.len(), 4);
+    assert_eq!(model.objects()[0].shape().parts().len(), 1);
+}
+
+/// The objects of a project file, sliced with the reference's defaults:
+/// each layer's outlines.
+fn slice_file(path: &Path) -> edge_engine::Sliced {
+    use edge_engine::{Chosen, Overrides, Unwatched};
+    let loaded = edge_engine::open(path, None).unwrap().place().unwrap();
+    let job = edge_engine::prepare(loaded, &Chosen::default(), &Overrides::default()).unwrap();
+    edge_engine::slice(job, &Unwatched).unwrap()
+}
+
+#[test]
+fn sliced_a_plug_and_its_hole_are_apart_by_the_tolerance() {
+    use edge_engine::{Connector, ConnectorKind, ConnectorShape, ConnectorStyle};
+    let dir = tempfile::tempdir().unwrap();
+    let mut model = block(dir.path(), [30.0, 30.0, 20.0]);
+    let copy = model.objects()[0].copies()[0].id();
+    let (_, reach) = model.in_scene(Some(&BED), copy).unwrap();
+    let [low, high] = reach.unwrap();
+    let mid = [(low[0] + high[0]) / 2.0, (low[1] + high[1]) / 2.0, 10.0];
+    let options = CutOptions {
+        connectors: vec![Connector {
+            at: mid,
+            radius: 4.0,
+            height: 6.0,
+            radius_tolerance: 0.2,
+            height_tolerance: 0.3,
+            z_angle: 0.0,
+            kind: ConnectorKind::Plug,
+            style: ConnectorStyle::Prism,
+            shape: ConnectorShape::Circle,
+        }],
+        ..CutOptions::default()
+    };
+    model
+        .cut(Some(&BED), copy, &plane(mid, [0.0, 0.0, 1.0]), &options)
+        .unwrap();
+    // Each half alone, as it stands on the bed: the upper with its hole
+    // from its face (now at the bed) up, the lower with its plug over its
+    // top (at 10 mm).
+    let alone = |keep: usize| {
+        let mut one = model.clone();
+        let other = one.objects()[1 - keep].copies()[0].id();
+        one.remove(Some(&BED), &[other]).unwrap();
+        let path = dir.path().join(format!("half{keep}.3mf"));
+        one.save(&path, &edge_engine::Saving::None, Some(&BED))
+            .unwrap();
+        slice_file(&path)
+    };
+    let radius_at = |sliced: &edge_engine::Sliced, z: f64, hole: bool| -> f64 {
+        let layer = (0..sliced.outlines().len())
+            .find(|&at| sliced.top_of(at) >= z)
+            .unwrap();
+        let outline = &sliced.outlines()[layer][0];
+        let ring = if hole {
+            &outline.holes[0]
+        } else {
+            &sliced.outlines()[layer]
+                .iter()
+                .min_by(|a, b| {
+                    a.contour
+                        .signed_area_mm2()
+                        .abs()
+                        .total_cmp(&b.contour.signed_area_mm2().abs())
+                })
+                .unwrap()
+                .contour
+        };
+        (ring.signed_area_mm2().abs() / std::f64::consts::PI).sqrt()
+    };
+    let upper = alone(0);
+    let lower = alone(1);
+    let hole = radius_at(&upper, 3.0, true);
+    let plug = radius_at(&lower, 13.0, false);
+    assert!(near(hole - plug, 0.2, 0.01), "hole {hole}, plug {plug}");
+    // The hole is deeper than the plug is tall by the height tolerance:
+    // the upper half has it up to 6.3 mm, solid above.
+    let top = |sliced: &edge_engine::Sliced, z: f64| {
+        let layer = (0..sliced.outlines().len())
+            .find(|&at| sliced.top_of(at) >= z)
+            .unwrap();
+        sliced.outlines()[layer][0].holes.len()
+    };
+    assert_eq!(top(&upper, 6.2), 1);
+    assert_eq!(top(&upper, 6.6), 0);
+}

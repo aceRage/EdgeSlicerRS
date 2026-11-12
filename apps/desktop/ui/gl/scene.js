@@ -415,7 +415,8 @@
           return;
         }
         // The copy being cut: each side of the plane in its colour
-        // (cut.js), its helper parts as they are.
+        // (cut.js), its helper parts as they are; while connectors are
+        // placed, what is over the plane is not drawn (`clip`).
         const cutting = this.cutting && this.cutting.copy === placing.id ? this.cutting : null;
         if (cutting) {
           const pieces = cutting.pieces;
@@ -423,7 +424,7 @@
             // With pieces given to sides, the pieces stand in for the
             // printed parts, each in its side's colour (`PartSelection::render`).
             if (pieces && part.kind === 'part') continue;
-            r.drawMesh(mesh, frame, placing.matrix, { palette: this.palette, pass, volume, range: part.triangles, split: part.kind === 'part' ? cutting.split : null });
+            r.drawMesh(mesh, frame, placing.matrix, { palette: this.palette, pass, volume, range: part.triangles, split: part.kind === 'part' ? cutting.split : null, clip: cutting.clip || null });
           }
           if (pieces && pass === 0) {
             const at = M.translation(...pieces.offset);

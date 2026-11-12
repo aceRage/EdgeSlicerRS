@@ -1619,6 +1619,76 @@ fn a_cut_kept_editable_is_put_back_cut_again_and_undone_in_one_step() {
 }
 
 #[test]
+fn connectors_are_placed_on_the_cut_face_cut_saved_and_put_back() {
+    let dir = tempfile::tempdir().unwrap();
+    let session = Arc::new(Session::new(None));
+    let project = open(&session, "resources/handy_models/3DBenchy.3mf");
+    choose_presets(&session, project);
+    let (copy, low, high) = first_copy(&session, project);
+    let plane = across(low, high, 6.0);
+    // The cut face, for the connectors to stand on.
+    let section = ask(
+        &session,
+        "cut_section",
+        json!({ "project": project, "copy": copy, "plane": plane, "cap": true }),
+    );
+    let cap = numbers(&section["cap"]);
+    assert!(cap.len() >= 9 && cap.len().is_multiple_of(9));
+    let at: Vec<f64> = (0..3)
+        .map(|axis| (cap[axis] + cap[3 + axis] + cap[6 + axis]) / 3.0)
+        .collect();
+    let connector = |kind: &str| {
+        json!({ "at": at, "radius": 0.5, "height": 1.5, "radius_tolerance": 0.05,
+                "height_tolerance": 0.1, "z_angle": 0.0, "type": kind, "style": "prism",
+                "shape": "circle" })
+    };
+    let error = refused(
+        &session,
+        "scene_edit",
+        json!({ "project": project, "op": "cut", "copy": copy, "plane": plane,
+                "connectors": [connector("bolt")] }),
+    );
+    assert!(error.contains("connector"), "{error}");
+    let done = edit(
+        &session,
+        json!({ "project": project, "op": "cut", "copy": copy, "plane": plane,
+                "connectors": [connector("dowel")], "keep_lower": false }),
+    );
+    // Both halves and the dowel.
+    let objects = done["scene"]["objects"].as_array().unwrap();
+    assert_eq!(objects.len(), 3);
+    assert!(
+        objects[2]["name"]
+            .as_str()
+            .unwrap()
+            .ends_with("-Dowel-Connector-1")
+    );
+    ask(
+        &session,
+        "scene_edit",
+        json!({ "project": project, "op": "arrange" }),
+    );
+    sliced(&session, project, None);
+    let path = dir.path().join("dowel.3mf");
+    let saved = ask(
+        &session,
+        "project_save",
+        json!({ "project": project, "path": path.to_string_lossy(), "accept": true }),
+    );
+    assert_eq!(saved["saved"], true, "{saved}");
+    // Put back from a half: the tool's connectors as they were placed.
+    let half = done["made"][0].as_u64().unwrap();
+    let put = edit(
+        &session,
+        json!({ "project": project, "op": "cut_edit", "copy": half }),
+    );
+    assert_eq!(put["scene"]["objects"].as_array().unwrap().len(), 1);
+    let connectors = put["recipe"]["connectors"].as_array().unwrap();
+    assert_eq!(connectors.len(), 1);
+    assert_eq!(connectors[0]["type"], "dowel");
+}
+
+#[test]
 fn a_dovetail_cut_is_checked_then_made_and_sliced() {
     let session = Arc::new(Session::new(None));
     let project = open(&session, "resources/handy_models/3DBenchy.3mf");

@@ -675,6 +675,14 @@ tool's panel does, and scrolls). Its rows:
   the top as an `.edit-hint`, the missing half's sentence as a
   `.cut-warning`. "Keep cut editable" is a tick under "Cut to parts", its
   tooltip the reference's.
+- **Connectors being placed** (`connectors.js`): the panel holds them
+  alone, "Connectors" as a group heading with "Remove connectors" (↺),
+  "Type" as three joined buttons, "Style" and "Shape" as lists (off where
+  the type has no choice), each number with its tolerance beside it and a
+  reset, the keys and the pointer as the painting tools' help, "Cancel"
+  and the primary "Confirm connectors" at the foot. In the scene the part
+  over the plane is not drawn, the cut face is a flat light grey, and the
+  connectors take the reference's colours (data, not tokens).
 - **A side and what is done with it** (`.cut-side`): a 10 px swatch of
   the side's tint in the scene (cyan, magenta: the reference's, data, not
   tokens) and its name in `--text-1`, then its ticks; a tick never breaks

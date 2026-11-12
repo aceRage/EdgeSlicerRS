@@ -44,7 +44,7 @@ pub(super) const JSON: [&str; 8] = [
 ];
 
 /// The calls here answered in bytes (`Session::call_bytes`).
-pub(super) const BYTES: [&str; 1] = ["cut_parts_mesh"];
+pub(super) const BYTES: [&str; 2] = ["cut_parts_mesh", "cut_connector_mesh"];
 
 /// The most edits a project keeps to take back. The reference keeps as
 /// many as fit in a tenth of the machine's memory (UndoRedo.cpp
@@ -321,6 +321,26 @@ fn cut_options(args: &Value) -> Result<edge_engine::CutOptions, String> {
             }
         },
         editable: flag("editable", true)?,
+        connectors: match args.get("connectors") {
+            None | Some(Value::Null) => Vec::new(),
+            Some(Value::Array(list)) => list
+                .iter()
+                .map(connector_of)
+                .collect::<Result<Vec<_>, String>>()?,
+            Some(_) => return Err("connectors is not a list".into()),
+        },
+        snap: match args.get("snap") {
+            None | Some(Value::Null) => [0.3, 0.15],
+            Some(snap) => {
+                let number = |key: &str, least: f64, most: f64| -> Result<f64, String> {
+                    snap.get(key)
+                        .and_then(Value::as_f64)
+                        .filter(|value| (least..=most).contains(value))
+                        .ok_or_else(|| format!("the snap's {key} is not from {least} to {most}"))
+                };
+                [number("space", 0.1, 0.5)?, number("bulge", 0.05, 1.0)?]
+            }
+        },
         sides: match args.get("sides") {
             None | Some(Value::Null) => None,
             Some(Value::Array(list)) => Some(
@@ -329,6 +349,54 @@ fn cut_options(args: &Value) -> Result<edge_engine::CutOptions, String> {
                     .collect::<Result<Vec<bool>, _>>()?,
             ),
             Some(_) => return Err("sides is not a list".into()),
+        },
+    })
+}
+
+/// A connector as the page gives it: `at` (on the plane, in the scene),
+/// `radius`, `height`, `radius_tolerance`, `height_tolerance` (mm),
+/// `z_angle` (radians), `type` (`plug`, `dowel`, `snap`), `style`
+/// (`prism`, `frustum`), `shape` (`triangle`, `square`, `hexagon`,
+/// `circle`).
+fn connector_of(value: &Value) -> Result<edge_engine::Connector, String> {
+    use edge_engine::{ConnectorKind, ConnectorShape, ConnectorStyle};
+    let number = |key: &str| -> Result<f64, String> {
+        value
+            .get(key)
+            .and_then(Value::as_f64)
+            .filter(|value| value.is_finite())
+            .ok_or_else(|| format!("a connector's {key} was not given"))
+    };
+    let at = numbers(value, "at")?;
+    let (radius, height) = (number("radius")?, number("height")?);
+    if radius <= 0.0 || height <= 0.0 {
+        return Err("a connector's radius and height are more than 0".into());
+    }
+    let word = |key: &str| value.get(key).and_then(Value::as_str).unwrap_or("");
+    Ok(edge_engine::Connector {
+        at,
+        radius,
+        height,
+        radius_tolerance: number("radius_tolerance")?.max(0.0),
+        height_tolerance: number("height_tolerance")?.max(0.0),
+        z_angle: number("z_angle")?,
+        kind: match word("type") {
+            "plug" => ConnectorKind::Plug,
+            "dowel" => ConnectorKind::Dowel,
+            "snap" => ConnectorKind::Snap,
+            other => return Err(format!("a connector cannot be a {other}")),
+        },
+        style: match word("style") {
+            "prism" => ConnectorStyle::Prism,
+            "frustum" => ConnectorStyle::Frustum,
+            other => return Err(format!("a connector's style cannot be {other}")),
+        },
+        shape: match word("shape") {
+            "triangle" => ConnectorShape::Triangle,
+            "square" => ConnectorShape::Square,
+            "hexagon" => ConnectorShape::Hexagon,
+            "circle" => ConnectorShape::Circle,
+            other => return Err(format!("a connector's shape cannot be {other}")),
         },
     })
 }
@@ -381,6 +449,39 @@ fn matrix_json(transform: &Transform) -> Value {
 /// `apply_recipe_to_gizmo`).
 fn recipe_json(recipe: &edge_engine::CutRecipe, plane: &Transform) -> Value {
     let from = ["centred", "above", "below"][recipe.thickness_offset.min(2) as usize];
+    // Where the recipe's coordinates are in the scene.
+    let shift: [f64; 3] =
+        std::array::from_fn(|axis| plane.rows[3][axis] - recipe.plane.rows[3][axis]);
+    let connectors: Vec<Value> = recipe
+        .connectors
+        .iter()
+        .map(|c| {
+            let at: [f64; 3] = std::array::from_fn(|axis| c.pos[axis] + shift[axis]);
+            let kind = ["plug", "dowel", "snap"]
+                .get(c.kind as usize)
+                .copied()
+                .unwrap_or("plug");
+            let style = ["prism", "frustum"]
+                .get(c.style as usize)
+                .copied()
+                .unwrap_or("prism");
+            let shape = ["triangle", "square", "hexagon", "circle"]
+                .get(c.shape as usize)
+                .copied()
+                .unwrap_or("circle");
+            json!({
+                "at": at,
+                "radius": c.radius,
+                "height": c.height,
+                "radius_tolerance": c.radius_tolerance,
+                "height_tolerance": c.height_tolerance,
+                "z_angle": c.z_angle,
+                "type": kind,
+                "style": style,
+                "shape": shape,
+            })
+        })
+        .collect();
     json!({
         "plane": matrix_json(plane),
         "mode": if recipe.groove.is_some() { "dovetail" } else { "planar" },
@@ -393,6 +494,7 @@ fn recipe_json(recipe: &edge_engine::CutRecipe, plane: &Transform) -> Value {
         "place_on_cut_lower": recipe.place_on_cut_lower,
         "flip_upper": recipe.flip_upper,
         "flip_lower": recipe.flip_lower,
+        "connectors": connectors,
         "groove": recipe.groove.map(|g| json!({
             "depth": g.depth, "width": g.width, "flaps_angle": g.flaps_angle, "angle": g.angle,
             "depth_tolerance": g.depth_tolerance, "width_tolerance": g.width_tolerance,
@@ -1110,6 +1212,20 @@ impl Session {
             None => None,
         };
         let mm = |value: f64| (value * 1e4).round() / 1e4;
+        // The cut face itself, while connectors are placed on it.
+        let cap = match args.get("cap").and_then(Value::as_bool) {
+            Some(true) => Some(
+                file.model
+                    .cut_cap(bed.as_ref(), copy, &plane)
+                    .map_err(|e| e.to_string())?
+                    .iter()
+                    .flatten()
+                    .flatten()
+                    .map(|value| mm(*value))
+                    .collect::<Vec<f64>>(),
+            ),
+            _ => None,
+        };
         let lines: Vec<f64> = section
             .lines
             .iter()
@@ -1128,6 +1244,7 @@ impl Session {
             "below": mm(section.below),
             "reach": section.reach.map(|corners| corners.map(|corner| corner.map(mm))),
             "groove": groove,
+            "cap": cap,
         }))
     }
 
@@ -1204,6 +1321,32 @@ impl Session {
                     parts: Vec::new(),
                     vertices: pieces.mesh.vertices,
                     triangles: pieces.mesh.triangles,
+                };
+                Ok(super::scene::mesh_bytes(&object))
+            }
+            // A connector's shape at unit size, as the cut makes it, for the
+            // tool to draw (`type`, `style`, `shape`, `snap` as `cut` takes
+            // them).
+            "cut_connector_mesh" => {
+                let mut asked = args.clone();
+                if let Some(object) = asked.as_object_mut() {
+                    object.insert("at".into(), json!([0.0, 0.0, 0.0]));
+                    object.insert("radius".into(), json!(1.0));
+                    object.insert("height".into(), json!(1.0));
+                    for key in ["radius_tolerance", "height_tolerance", "z_angle"] {
+                        object.insert(key.into(), json!(0.0));
+                    }
+                }
+                let c = connector_of(&asked)?;
+                let snap = cut_options(&json!({ "snap": args.get("snap") }))?.snap;
+                let mesh = edge_engine::connector_mesh(c.kind, c.style, c.shape, snap);
+                let object = edge_engine::SceneObject {
+                    name: String::new(),
+                    marks: vec![edge_engine::Mark::Filament(1); mesh.triangles.len()],
+                    bounds: mesh.bounds(),
+                    parts: Vec::new(),
+                    vertices: mesh.vertices,
+                    triangles: mesh.triangles,
                 };
                 Ok(super::scene::mesh_bytes(&object))
             }

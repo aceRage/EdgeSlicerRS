@@ -31,13 +31,16 @@ use edge_mesh::{Mesh, Transform};
 use rayon::prelude::*;
 
 pub use custom_gcode::{CustomGcode, CustomItem, CustomKind, CustomMode};
-pub use kept::{Entry, Extras, Kept, LayerRange, Left, ObjectKept, PartKept, PlateKept};
+pub use kept::{
+    CutConnectorInfo, CutId, Entry, Extras, Kept, LayerRange, Left, ObjectKept, PartKept, PlateKept,
+};
 use model::{ModelFile, RawObject, Shape};
 use model_settings::{ModelSettings, ObjectSettings};
 use package::Package;
 pub use paint::{Facet, PaintKind, SeamFacet, SeamPaint};
 pub use recipe::{
-    CutRecipe, RECIPE_VERSION, RecipeGroove, RecipeKind, mesh_blob, mesh_of_blob, sha256,
+    CutRecipe, RECIPE_VERSION, RecipeConnector, RecipeGroove, RecipeKind, mesh_blob, mesh_of_blob,
+    sha256,
 };
 pub use write::{
     REFERENCE_VERSION, SECRETS, Save, Written, losses, own_settings_text, settings_text, write,
@@ -437,6 +440,16 @@ impl Project {
                 if let Some(read) = recipes.remove(&index) {
                     kept.recipe = Some(read.recipe);
                     kept.recipe_element = Some(read.element);
+                }
+                // The parts that are a cut's connectors.
+                for (volume, info) in kept.read_connectors() {
+                    for part in &mut object.parts {
+                        let read = part.kept.as_ref().and_then(|own| own.read.as_ref());
+                        if read.is_some_and(|read| read.index == volume) {
+                            let own = Arc::make_mut(part.kept.get_or_insert_with(Default::default));
+                            own.connector = Some(info);
+                        }
+                    }
                 }
             }
         }

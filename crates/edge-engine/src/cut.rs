@@ -37,7 +37,10 @@
 
 use std::sync::Arc;
 
-use edge_3mf::{CutRecipe, ObjectKept, PaintKind, Part, PartKind, RecipeGroove, RecipeKind};
+use edge_3mf::{
+    CutConnectorInfo, CutId, CutRecipe, ObjectKept, PaintKind, Part, PartKept, PartKind,
+    RecipeConnector, RecipeGroove, RecipeKind,
+};
 use edge_mesh::{
     Transform,
     cut::{self, Half},
@@ -93,7 +96,120 @@ pub struct CutOptions {
     /// "Keep cut editable": the halves carry how they were cut and the
     /// object as it was, so the cut can be edited again ([`Model::cut_edit`]).
     pub editable: bool,
+    /// The connectors placed on the cut ("Add connectors"). With any, both
+    /// parts are kept as objects of their own, as the reference keeps them;
+    /// a dovetail takes none.
+    pub connectors: Vec<Connector>,
+    /// A snap's slit and bulge, of its radius (`m_snap_space_proportion`,
+    /// `m_snap_bulge_proportion`): the tool's, not each connector's.
+    pub snap: [f64; 2],
 }
+
+/// What a connector is (Model.hpp `CutConnectorType`): a plug on the
+/// lower part with its hole in the upper, a dowel of its own with a hole
+/// in each, or a snap, a split plug that clicks into a round hole.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ConnectorKind {
+    Plug,
+    Dowel,
+    Snap,
+}
+
+/// Its sides: straight, or narrowing (a plug's to half its radius at the
+/// top, a dowel's to a point at each end).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ConnectorStyle {
+    Prism,
+    Frustum,
+}
+
+/// Its outline across the plane.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ConnectorShape {
+    Triangle,
+    Square,
+    Hexagon,
+    Circle,
+}
+
+impl ConnectorKind {
+    /// The reference's number for it.
+    pub fn code(self) -> u32 {
+        match self {
+            Self::Plug => 0,
+            Self::Dowel => 1,
+            Self::Snap => 2,
+        }
+    }
+
+    pub fn of(code: u32) -> Option<Self> {
+        [Self::Plug, Self::Dowel, Self::Snap]
+            .get(code as usize)
+            .copied()
+    }
+}
+
+impl ConnectorStyle {
+    pub fn code(self) -> u32 {
+        match self {
+            Self::Prism => 0,
+            Self::Frustum => 1,
+        }
+    }
+
+    pub fn of(code: u32) -> Option<Self> {
+        [Self::Prism, Self::Frustum].get(code as usize).copied()
+    }
+}
+
+impl ConnectorShape {
+    pub fn code(self) -> u32 {
+        match self {
+            Self::Triangle => 0,
+            Self::Square => 1,
+            Self::Hexagon => 2,
+            Self::Circle => 3,
+        }
+    }
+
+    pub fn of(code: u32) -> Option<Self> {
+        [Self::Triangle, Self::Square, Self::Hexagon, Self::Circle]
+            .get(code as usize)
+            .copied()
+    }
+
+    /// How many corners its outline has.
+    pub fn sides(self) -> usize {
+        match self {
+            Self::Triangle => 3,
+            Self::Square => 4,
+            Self::Hexagon => 6,
+            Self::Circle => edge_mesh::connector::CIRCLE,
+        }
+    }
+}
+
+/// A connector placed on the cut (Model.hpp `CutConnector`): where it
+/// stands on the plane, in the scene; its radius and height (how deep it
+/// reaches into the part over the plane, or each way for a dowel), in mm;
+/// what is added to the hole's radius and depth; its turn about the
+/// plane's normal, in radians; and what it is.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Connector {
+    pub at: [f64; 3],
+    pub radius: f64,
+    pub height: f64,
+    pub radius_tolerance: f64,
+    pub height_tolerance: f64,
+    pub z_angle: f64,
+    pub kind: ConnectorKind,
+    pub style: ConnectorStyle,
+    pub shape: ConnectorShape,
+}
+
+/// How far a connector's hole reaches through the cut face, so that the
+/// face is left open (CutUtils.hpp `CONNECTOR_HOLE_OVERLAP`).
+pub const CONNECTOR_HOLE_OVERLAP: f64 = 0.05;
 
 /// A dovetail's shape (the reference's `Cut::Groove`, with its count and
 /// gap): in mm and radians, in the plane's own axes.
@@ -158,6 +274,8 @@ impl Default for CutOptions {
             groove: None,
             groove_init: None,
             editable: true,
+            connectors: Vec::new(),
+            snap: [0.3, 0.15],
         }
     }
 }
@@ -326,6 +444,46 @@ impl Model {
                 for axis in 0..3 {
                     low[axis] = low[axis].min(p[axis]);
                     high[axis] = high[axis].max(p[axis]);
+                }
+            }
+        }
+        Ok(out)
+    }
+
+    /// The cut face a plane makes of a copy's printed parts, as triangles
+    /// in the scene: what the connectors are placed on (the reference
+    /// draws it, `render_clipper_cut`, while they are edited).
+    pub fn cut_cap(
+        &self,
+        bed: Option<&Bed>,
+        copy: u64,
+        plane: &Transform,
+    ) -> Result<Vec<[[f64; 3]; 3]>, Failure> {
+        let (at, _) = self.copy_at(copy)?;
+        if !sound_plane(plane) {
+            return Err(refused("that is no plane to cut by"));
+        }
+        if self.bare {
+            let mut settled = self.clone();
+            settled.settle(bed);
+            return settled.cut_cap(bed, copy, plane);
+        }
+        let (scene, _) = self
+            .in_scene(bed, copy)
+            .ok_or_else(|| refused(format!("there is no copy {copy}")))?;
+        let to_plane = plane
+            .inverse()
+            .ok_or_else(|| refused("that is no plane to cut by"))?;
+        let mut out = Vec::new();
+        for part in self.objects[at].shape.parts.iter() {
+            if part.kind != PartKind::Normal || is_connector(part) {
+                continue;
+            }
+            let into = part.transform.then(&scene).then(&to_plane);
+            let lower = cut::cut(&part.mesh, &into, [0.0, 0.0], plane).lower;
+            for (triangle, from) in lower.mesh.triangles.iter().zip(&lower.from) {
+                if from.is_none() {
+                    out.push(triangle.map(|v| lower.mesh.vertices[v as usize].map(f64::from)));
                 }
             }
         }
@@ -693,6 +851,22 @@ impl Model {
                 "a cut is from 0 to {CUT_THICKNESS_MAX} mm thick"
             )));
         }
+        // With connectors both parts are kept, each an object of its own
+        // (GLGizmoCut.cpp `perform_cut`: KeepUpper, KeepLower, not
+        // KeepAsParts while there are connectors); a dovetail takes none.
+        let connected = !options.connectors.is_empty() && options.groove.is_none();
+        let forced;
+        let options = if connected {
+            forced = CutOptions {
+                keep_upper: true,
+                keep_lower: true,
+                to_parts: false,
+                ..options.clone()
+            };
+            &forced
+        } else {
+            options
+        };
         let to_parts = options.to_parts;
         let keep_upper = options.keep_upper || to_parts;
         let keep_lower = options.keep_lower || to_parts;
@@ -713,24 +887,47 @@ impl Model {
             open,
             turned,
         } = made;
+        // The plane in the halves' coordinates: the scene's with the copy's
+        // move taken off.
+        let offset = scene.rows[3];
+        let back = plane.then(&Transform::translation(offset.map(|value| -value)));
         // "Keep cut editable": the object as it was, in the coordinates of
         // its halves, and the plane in them (GLGizmoCut.cpp
         // `build_recipe_from_gizmo`, `object_part_mesh`).
         let recipe = options.editable.then(|| {
             let mut mesh = edge_mesh::Mesh::default();
+            // Not the connectors an earlier cut made: they are made again from
+            // what the recipe keeps of them.
             for part in held.shape.parts.iter() {
-                if part.kind == PartKind::Normal {
+                if part.kind == PartKind::Normal && !is_connector(part) {
                     mesh.append(&part.mesh, &part.transform.then(&turned));
                 }
             }
-            let offset = scene.rows[3];
-            let back = plane.then(&Transform::translation(offset.map(|value| -value)));
             let kind = if options.groove.is_some() {
                 RecipeKind::Groove
             } else {
                 RecipeKind::Plane
             };
             let mut recipe = CutRecipe::new(kind, back, Arc::new(mesh));
+            if connected {
+                let frame = linear(&back);
+                recipe.connectors = options
+                    .connectors
+                    .iter()
+                    .map(|c| RecipeConnector {
+                        pos: std::array::from_fn(|axis| c.at[axis] - offset[axis]),
+                        rotation: frame,
+                        radius: c.radius,
+                        height: c.height,
+                        radius_tolerance: c.radius_tolerance,
+                        height_tolerance: c.height_tolerance,
+                        z_angle: c.z_angle,
+                        kind: c.kind.code(),
+                        style: c.style.code(),
+                        shape: c.shape.code(),
+                    })
+                    .collect();
+            }
             recipe.thickness = if options.groove.is_some() {
                 0.0
             } else {
@@ -828,7 +1025,28 @@ impl Model {
             renamed = Some((format!("{base}_A"), format!("{base}_B")));
         }
         // The objects made, each as its parts with the copies it will have.
-        let mut made_objects: Vec<(Vec<Part>, bool)> = Vec::new();
+        // The connectors (GLGizmoCut.cpp `apply_connectors_in_model`,
+        // CutUtils.cpp `process_connector_cut`): a plug or a snap a part of
+        // the lower object with its hole in the upper, a dowel an object of
+        // its own with a hole in each.
+        let template = held
+            .shape
+            .parts
+            .iter()
+            .find(|part| part.kind == PartKind::Normal && !is_connector(part))
+            .cloned();
+        let mut dowels: Vec<Part> = Vec::new();
+        if connected
+            && !upper.is_empty()
+            && !lower.is_empty()
+            && let Some(template) = &template
+        {
+            let made = connector_parts(options, &back, offset, template);
+            upper.extend(made.upper);
+            lower.extend(made.lower);
+            dowels = made.dowels;
+        }
+        let mut made_objects: Vec<(Vec<Part>, Option<bool>)> = Vec::new();
         if to_parts {
             let mut parts = upper;
             parts.extend(lower);
@@ -836,7 +1054,7 @@ impl Model {
                 return Err(refused("Cut plane is placed out of object"));
             }
             parts.extend(helpers.into_iter().map(|(part, _, _)| part));
-            made_objects.push((parts, true));
+            made_objects.push((parts, Some(true)));
         } else {
             for (mut parts, side) in [(upper, true), (lower, false)] {
                 if parts.is_empty() {
@@ -851,12 +1069,30 @@ impl Model {
                         parts.push(helper.clone());
                     }
                 }
-                made_objects.push((parts, side));
+                made_objects.push((parts, Some(side)));
             }
             if made_objects.is_empty() {
                 return Err(refused("Select at least one object to keep after cutting."));
             }
         }
+        let dowel_count = dowels.len();
+        made_objects.extend(dowels.into_iter().map(|dowel| (vec![dowel], None)));
+        // The results of a cut with connectors or a dovetail, both parts
+        // kept, are one cut's (`update_object_cut_id`); a plain cut's are
+        // not (`InvalidateCutInfo`).
+        let halves = made_objects
+            .iter()
+            .filter(|(_, side)| side.is_some())
+            .count();
+        let cut_id = ((connected || options.groove.is_some()) && halves == 2).then(|| CutId {
+            id: fresh(),
+            check_sum: 2 + dowel_count as u64,
+            connectors: if connected {
+                options.connectors.len() as u64
+            } else {
+                0
+            },
+        });
 
         // Where the copies stand: the copy cut as it stood, without its turn
         // and size (they are in the meshes now); the others keep theirs
@@ -871,10 +1107,15 @@ impl Model {
             .map(|copy| (copy.id, Vec::new()))
             .collect();
         for (parts, side) in made_objects {
+            let dowel_name = side.is_none().then(|| {
+                format!(
+                    "{base}-Dowel-{}",
+                    parts[0].name.as_deref().unwrap_or_default()
+                )
+            });
             let shape = Shape::new(parts);
-            let about = if to_parts {
-                Transform::IDENTITY
-            } else {
+            // A dowel stands upright where it was (`add_separate_parts`).
+            let about = if let (false, Some(side)) = (to_parts, side) {
                 let place = if side {
                     options.place_on_cut_upper
                 } else {
@@ -908,6 +1149,8 @@ impl Model {
                     }
                     _ => Transform::IDENTITY,
                 }
+            } else {
+                Transform::IDENTITY
             };
             let copies: Vec<ModelCopy> = held
                 .copies
@@ -935,29 +1178,28 @@ impl Model {
                     }
                 })
                 .collect();
-            let name = match &renamed {
-                Some((a, b)) => {
-                    if side {
-                        a.clone()
-                    } else {
-                        b.clone()
-                    }
-                }
-                None => base.clone(),
+            let name = match (&renamed, side, dowel_name) {
+                (_, None, Some(name)) => name,
+                (Some((a, _)), Some(true), _) => a.clone(),
+                (Some((_, b)), Some(false), _) => b.clone(),
+                _ => base.clone(),
             };
+            // Dowels carry no recipe: the cut is edited from its halves.
+            let recipe = recipe.as_ref().filter(|_| side.is_some());
             objects.push(ModelObject {
                 id: fresh(),
                 name,
                 filament: held.filament,
                 shape,
                 copies,
-                kept: match (&recipe, held.kept.as_deref()) {
-                    (Some(recipe), kept) => Some(Arc::new(
+                kept: match (recipe, held.kept.as_deref(), cut_id) {
+                    (None, kept, None) => kept.map(|kept| Arc::new(kept.cut_half())),
+                    (recipe, kept, cut_id) => Some(Arc::new(
                         kept.map(ObjectKept::cut_half)
                             .unwrap_or_default()
-                            .with_recipe(Some(recipe.clone())),
+                            .with_recipe(recipe.cloned())
+                            .with_cut_id(cut_id),
                     )),
-                    (None, kept) => kept.map(|kept| Arc::new(kept.cut_half())),
                 },
             });
         }
@@ -1094,7 +1336,7 @@ impl Model {
             .shape
             .parts
             .iter()
-            .find(|part| part.kind == PartKind::Normal)
+            .find(|part| part.kind == PartKind::Normal && !is_connector(part))
             .cloned();
         let mut parts = vec![Part {
             name: None,
@@ -1113,7 +1355,7 @@ impl Model {
                 let seen = parts.iter().any(|held| {
                     Arc::ptr_eq(&held.mesh, &part.mesh) && held.transform == part.transform
                 });
-                if part.kind != PartKind::Normal && !seen {
+                if part.kind != PartKind::Normal && !seen && !is_connector(part) {
                     parts.push(part.clone());
                 }
             }
@@ -1148,6 +1390,25 @@ impl Model {
             )),
         };
         // In the place of the first half in the list and on its plate.
+        // The dowels the cut made go with its halves (`edit_cut` takes every
+        // object of the cut's id).
+        let ids: Vec<u64> = halves
+            .iter()
+            .filter_map(|&index| self.objects[index].kept.as_deref()?.cut_id())
+            .map(|cut| cut.id)
+            .collect();
+        let mut halves = halves;
+        for (index, object) in self.objects.iter().enumerate() {
+            let ours = object
+                .kept
+                .as_deref()
+                .and_then(ObjectKept::cut_id)
+                .is_some_and(|cut| ids.contains(&cut.id));
+            if ours && on_plate(object) && !halves.contains(&index) {
+                halves.push(index);
+            }
+        }
+        halves.sort_unstable();
         let gone: Vec<u64> = halves
             .iter()
             .flat_map(|&index| self.objects[index].copies.iter().map(|copy| copy.id))
@@ -1185,6 +1446,207 @@ impl Model {
     }
 }
 
+/// A connector's shape at unit size, as the cut makes it: radius 1, its
+/// height centred on `z = 0` (from -0.5 to 0.5; a dowel's frustum from -1
+/// to 1). `snap` is a snap's slit and bulge.
+pub fn connector_mesh(
+    kind: ConnectorKind,
+    style: ConnectorStyle,
+    shape: ConnectorShape,
+    snap: [f64; 2],
+) -> edge_mesh::Mesh {
+    use edge_mesh::connector;
+    let centred = |mut mesh: edge_mesh::Mesh| {
+        for vertex in &mut mesh.vertices {
+            vertex[2] -= 0.5;
+        }
+        mesh
+    };
+    let sides = shape.sides();
+    match (kind, style) {
+        (ConnectorKind::Snap, _) => centred(connector::snap(snap[0], snap[1])),
+        (_, ConnectorStyle::Prism) => centred(connector::prism(sides, 1.0)),
+        (ConnectorKind::Plug, ConnectorStyle::Frustum) => centred(connector::prism(sides, 0.5)),
+        (ConnectorKind::Dowel, ConnectorStyle::Frustum) => connector::bicone(sides),
+    }
+}
+
+/// Whether a part is a connector a cut made.
+fn is_connector(part: &Part) -> bool {
+    part.kept.as_deref().and_then(PartKept::connector).is_some()
+}
+
+/// What the connectors of a cut make.
+struct ConnectorParts {
+    upper: Vec<Part>,
+    lower: Vec<Part>,
+    dowels: Vec<Part>,
+}
+
+/// The parts the connectors make, in the halves' coordinates, `back`
+/// being the plane in them and `offset` the copy's move in the scene
+/// (GLGizmoCut.cpp `apply_connectors_in_model`,
+/// `apply_cut_connectors`, `get_connector_mesh`; CutUtils.cpp
+/// `process_connector_cut`, `apply_tolerance`). `template` is a printed
+/// part of the object, whose filament they print in.
+///
+/// Differs on purpose: the reference centres each connector's mesh on its
+/// box when it adds it (`add_volume`), which puts a triangle's middle a
+/// quarter of its radius off the point it was placed on, where the tool
+/// draws it; here only its height is centred, so it is cut where it is
+/// shown.
+fn connector_parts(
+    options: &CutOptions,
+    back: &Transform,
+    offset: [f64; 3],
+    template: &Part,
+) -> ConnectorParts {
+    let mut out = ConnectorParts {
+        upper: Vec::new(),
+        lower: Vec::new(),
+        dowels: Vec::new(),
+    };
+    let frame = linear(back);
+    let normal = back.rows[2];
+    let [lo, hi] = options.faces();
+    let kerf = hi - lo;
+    let part = |name: String,
+                kind: PartKind,
+                mesh: Arc<edge_mesh::Mesh>,
+                transform: Transform,
+                info: CutConnectorInfo| Part {
+        name: Some(name),
+        kind,
+        mesh,
+        paint: None,
+        seam: None,
+        transform,
+        decoration: false,
+        kept: Some(Arc::new(PartKept::of_connector(info))),
+        ..template.clone()
+    };
+    let centred = |mesh: edge_mesh::Mesh| Arc::new(mesh);
+    for (number, c) in options.connectors.iter().enumerate() {
+        let name = format!("Connector-{}", number + 1);
+        let info = CutConnectorInfo {
+            kind: c.kind.code(),
+            radius_tolerance: c.radius_tolerance,
+            height_tolerance: c.height_tolerance,
+        };
+        let mesh = Arc::new(connector_mesh(c.kind, c.style, c.shape, options.snap));
+        // On the plane, in the halves' coordinates.
+        let at: [f64; 3] = std::array::from_fn(|axis| c.at[axis] - offset[axis]);
+        let placed = |radius: f64, height: f64, middle: [f64; 3]| {
+            Transform {
+                rows: [
+                    [radius, 0.0, 0.0],
+                    [0.0, radius, 0.0],
+                    [0.0, 0.0, height],
+                    [0.0; 3],
+                ],
+            }
+            .then(&rotation_xyz(0.0, 0.0, -c.z_angle))
+            .then(&frame)
+            .then(&Transform::translation(middle))
+        };
+        let along = |from: [f64; 3], by: f64| -> [f64; 3] {
+            std::array::from_fn(|axis| from[axis] + normal[axis] * by)
+        };
+        match c.kind {
+            ConnectorKind::Plug | ConnectorKind::Snap => {
+                // Over the plane, from the lower part's face, as long again
+                // as the cut is thick.
+                let height = c.height + kerf;
+                let middle = along(at, lo + 0.5 * height);
+                out.lower.push(part(
+                    name.clone(),
+                    PartKind::Normal,
+                    mesh.clone(),
+                    placed(c.radius, height, middle),
+                    info,
+                ));
+                // Its hole: wider and deeper by the tolerances, through the
+                // face; a snap's a plain round one.
+                let hole = if c.kind == ConnectorKind::Snap {
+                    centred(connector_mesh(
+                        ConnectorKind::Plug,
+                        ConnectorStyle::Prism,
+                        ConnectorShape::Circle,
+                        options.snap,
+                    ))
+                } else {
+                    mesh
+                };
+                let deeper = height + c.height_tolerance + CONNECTOR_HOLE_OVERLAP;
+                let middle = along(middle, 0.5 * (c.height_tolerance - CONNECTOR_HOLE_OVERLAP));
+                out.upper.push(part(
+                    name,
+                    PartKind::Negative,
+                    hole,
+                    placed(c.radius + c.radius_tolerance, deeper, middle),
+                    info,
+                ));
+            }
+            ConnectorKind::Dowel => {
+                // Each way from the plane; a prism's height is how far it
+                // reaches each way.
+                let height = if c.style == ConnectorStyle::Prism {
+                    2.0 * c.height
+                } else {
+                    c.height
+                } + kerf;
+                // The dowel: upright, where it stood across the plane
+                // (`add_separate_parts`: its turn and height taken off).
+                let upright = Transform {
+                    rows: [
+                        [c.radius, 0.0, 0.0],
+                        [0.0, c.radius, 0.0],
+                        [0.0, 0.0, height],
+                        [at[0], at[1], 0.0],
+                    ],
+                };
+                out.dowels.push(part(
+                    name.clone(),
+                    PartKind::Normal,
+                    mesh.clone(),
+                    upright,
+                    info,
+                ));
+                // Its holes: the dowel with the tolerances, cut just past
+                // the plane each way so that each breaks through its face.
+                let hole = placed(
+                    c.radius + c.radius_tolerance,
+                    height + c.height_tolerance,
+                    at,
+                );
+                let mut baked = edge_mesh::Mesh::default();
+                baked.append(&mesh, &hole);
+                let Some(to_plane) = back.inverse() else {
+                    continue;
+                };
+                let up = edge_mesh::cut::cut(&baked, &to_plane, [-CONNECTOR_HOLE_OVERLAP; 2], back)
+                    .upper;
+                let down =
+                    edge_mesh::cut::cut(&baked, &to_plane, [CONNECTOR_HOLE_OVERLAP; 2], back).lower;
+                for (half, suffix, into) in
+                    [(up, "_A", &mut out.upper), (down, "_B", &mut out.lower)]
+                {
+                    if !half.is_empty() {
+                        into.push(part(
+                            format!("{name}{suffix}"),
+                            PartKind::Negative,
+                            Arc::new(half.mesh),
+                            Transform::IDENTITY,
+                            info,
+                        ));
+                    }
+                }
+            }
+        }
+    }
+    out
+}
+
 /// Whether a recipe can be made again here: one of a schema this knows,
 /// by a plane or a dovetail. A curved or drawn surface needs a mesh
 /// boolean this does not have, and connectors are not placed here yet.
@@ -1197,9 +1659,13 @@ fn cuttable(recipe: &CutRecipe, why: &str) -> Result<(), Failure> {
             "This cut was made with a curved or drawn surface, which cannot be made here yet.",
         ));
     }
-    if recipe.connectors > 0 {
+    if recipe
+        .connectors
+        .iter()
+        .any(|c| ConnectorKind::of(c.kind).is_none())
+    {
         return Err(refused(
-            "This cut has connectors, which cannot be placed here yet.",
+            "This cut has connectors of a kind that cannot be placed here yet.",
         ));
     }
     Ok(())

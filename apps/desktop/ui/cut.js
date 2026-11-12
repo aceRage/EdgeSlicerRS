@@ -9,10 +9,11 @@
 // each side. "Perform cut" is one `scene_edit` (`cut`); the section the
 // plane makes is asked of the session (`cut_section`) as it moves.
 //
-// What the reference has besides, and this has not (UI_PARITY.md,
-// section 13, "Cut"): the "Dovetail" mode, the curved and drawn surfaces,
-// connectors, "Pick face", "Keep cut editable", a part given to the other
-// side by the right button. None of them is shown.
+// Besides: "Dovetail", "Pick face", a part given to the other side by the
+// right button, "Keep cut editable" with "Edit cut..." and "Copy cut
+// to...", and the connectors (connectors.js). What the reference has and
+// this has not (UI_PARITY.md, section 13, "Cut"): the curved and drawn
+// surfaces and the fork's own connectors; neither is shown.
 (function (GL) {
   const M = GL.math;
 
@@ -238,6 +239,15 @@
         groove: null,
         grooveStart: null,
         grooveValid: null,
+        // The connectors (connectors.js): each in the plane's own
+        // coordinates; which are chosen, which do not fit; whether they are
+        // being placed, on the cut face (`cap`).
+        connectors: [],
+        selected: new Set(),
+        invalid: new Set(),
+        stats: null,
+        editing: false,
+        cap: null,
       };
       const mean = (box[1][0] - box[0][0] + box[1][1] - box[0][1] + box[1][2] - box[0][2]) / 30;
       const depth = Math.max(1, 0.5 * mean);
@@ -270,6 +280,7 @@
         // an object of another size (`m_groove_plane_radius`).
         if (g.plane_radius > 0) o.grooveRadius = g.plane_radius;
       }
+      if (recipe.connectors && recipe.connectors.length) this.takeConnectors(recipe.connectors);
       if (reedit) o.reedit = { missing: Boolean(recipe.missing) };
     },
 
@@ -308,7 +319,7 @@
     },
 
     close() {
-      if (this.open) this.dropParts();
+      if (this.open) { this.dropParts(); this.dropCap(); }
       // Closed without cutting again: the halves come back
       // (`cancel_reedit`), by the step that put them away.
       const reedit = this.open && this.open.reedit;
@@ -427,6 +438,7 @@
       this.remember();
       const [u, v, n] = this.open.axes;
       this.open.axes = [u, M.scale(v, -1), M.scale(n, -1)];
+      this.connectorsMirrored(false);
       this.changed();
     },
 
@@ -450,6 +462,7 @@
       const u = reflect(o.axes[0]);
       o.axes = [u, M.cross(n, u), n];
       o.middle = middle;
+      this.connectorsMirrored(true);
       this.changed();
     },
 
@@ -478,7 +491,12 @@
         // both the plane's colour); its result is shown once it is made.
         split: { plane: [...n, M.dot(n, o.middle)], upper: this.dovetail() ? PLANE.slice(0, 3) : UPPER, lower: this.dovetail() ? PLANE.slice(0, 3) : LOWER },
         pieces: o.parts ? { mesh: o.parts.mesh, ranges: o.parts.ranges, sides: o.parts.sides, offset: o.parts.offset, upper: UPPER, lower: LOWER } : null,
+        // While connectors are placed, what is over the plane is not drawn.
+        clip: o.editing ? [...n, M.dot(n, o.middle)] : null,
       };
+      // The cut face was of another plane.
+      if (o.cap && o.cap.key !== JSON.stringify(this.frame())) this.dropCap();
+      this.checkConnectors();
       this.ask(soon);
       this.panel();
       this.stage.frame();
@@ -539,6 +557,9 @@
           o.section = answer;
           o.grooveValid = answer.groove === undefined ? null : answer.groove;
           this.setSection(this.dovetail() ? [] : answer.lines);
+          // The connectors are measured on the cut face where the plane is.
+          if (!this.dovetail() && (o.editing || o.connectors.length)) this.fetchCap();
+          this.checkConnectors();
           // The dovetail's result shown while the plane stands still
           // (`reset_cut_by_contours`, `process_contours`).
           if (this.dovetail() && o.grooveValid && !this.held) this.previewGroove();
@@ -571,6 +592,8 @@
     // `can_perform_cut`: something is kept.
     canPerform() {
       const p = this.options;
+      // Not while connectors are placed, nor with one that does not fit.
+      if (this.open && !this.dovetail() && (this.open.editing || (this.open.invalid && this.open.invalid.size))) return false;
       const parts = this.open && this.open.parts;
       // A dovetail only where it can be cut (`has_valid_groove`).
       if (this.open && this.dovetail()) return this.open.grooveValid === true && (p.keep_upper || p.keep_lower) && !this.editor.busy;
@@ -591,6 +614,8 @@
         ...p,
         thickness: o.thickness,
         thickness_from: o.from,
+        connectors: this.dovetail() ? [] : this.connectorsArgs(),
+        snap: this.snap,
         // Cut to parts is not offered with pieces given to sides.
         ...(o.parts && !this.dovetail() ? { sides: o.parts.sides, to_parts: false } : {}),
         ...(this.dovetail() ? { groove: this.grooveArgs(), to_parts: false, thickness: 0, sides: null } : {}),
@@ -647,6 +672,7 @@
     // What is under a pixel: the grip, a cone, the plane, or null.
     handleAt(x, y) {
       if (!this.open || this.editor.busy) return null;
+      if (this.open.editing) return this.connectorHandle(x, y);
       const frame = this.stage.matrices();
       const view = (point) => this.editor.toView(frame, point);
       const { at, size } = this.grip();
@@ -723,6 +749,7 @@
       if (!this.open || this.editor.busy) return null;
       // Armed, a click lays the plane on the face (`on_mouse`: the press is
       // the pick's and nothing else's).
+      if (this.open.editing) return this.connectorGrab(x, y, event);
       if (this.open.picking) return { kind: 'cut', part: 'pick', x, y, tap: () => this.applyPick(x, y) };
       if (event.shiftKey) return { kind: 'cut', part: 'line', x, y, tap: () => {} };
       const handle = this.handleAt(x, y);
@@ -774,6 +801,7 @@
     },
 
     drag(grab, x, y, event) {
+      if (grab.part === 'connector' || grab.part === 'add') { this.connectorDrag(grab, x, y); return; }
       if (grab.part === 'pick') { grab.cancelled = true; return; }
       if (!grab.begun && !this.begin(grab)) { grab.cancelled = true; return; }
       if (grab.cancelled) return;
@@ -820,6 +848,7 @@
     },
 
     drop(grab, done) {
+      if (grab.part === 'connector' || grab.part === 'add') { if (grab.begun) this.connectorDrop(grab, done); else this.held = null; return; }
       this.held = null;
       const o = this.open;
       if (!o || !grab.begun) return;
@@ -885,6 +914,7 @@
       const o = this.open;
       const project = this.host.project();
       if (!o || !project || this.editor.busy || o.picking) return;
+      if (o.editing) { this.connectorRightClick(x, y); return; }
       if (this.dovetail()) return;
       if (!(await this.fetchParts())) return;
       const piece = this.pieceAt(x, y);
@@ -1050,6 +1080,7 @@
     // The tool's own keys, asked before the others: Up and Down move the
     // plane by 1 mm. True when the key was the tool's.
     key(event) {
+      if (this.open && this.open.editing && this.connectorKey(event)) return true;
       if (!this.open || event.ctrlKey || event.metaKey || event.altKey) return false;
       if (event.target.matches('input, select, textarea')) return false;
       if (event.key === 'ArrowUp' || event.key === 'ArrowDown') {
@@ -1093,6 +1124,17 @@
     draw(frame) {
       const o = this.open;
       if (!o) return;
+      // Placing connectors: the cut face, the section and the connectors
+      // only (`render_connectors`, the plane hidden).
+      if (o.editing) {
+        this.drawConnectors(frame);
+        const r = this.stage.renderer;
+        r.gl.disable(r.gl.DEPTH_TEST);
+        if (this.sectionLines) r.drawLines(this.sectionLines, M.multiply(frame.projection, frame.view), SECTION, 1.5);
+        r.gl.enable(r.gl.DEPTH_TEST);
+        return;
+      }
+      if (!this.dovetail() && o.connectors.length) this.drawConnectors(frame);
       const r = this.stage.renderer;
       const gl = r.gl;
       const shapes = this.parts();
@@ -1196,6 +1238,11 @@
       const p = this.options;
       const busy = this.editor.busy;
       const rows = [el('h3', { textContent: t('Cut') })];
+      if (o.editing) {
+        rows.push(...this.connectorRows(busy));
+        node.replaceChildren(...rows);
+        return;
+      }
       // A cut being made again (`render_reedit_notice`).
       if (o.reedit) {
         rows.push(el('p', { className: 'edit-hint', textContent: t('Editing an existing cut. Perform cut replaces both halves.') }));
@@ -1278,23 +1325,30 @@
         rows.push(el('p', { className: 'edit-hint cut-note', textContent: t('The two halves will be this far apart. Connectors span the gap; a Thread connector needs a thickness below its pitch to stay usable.') }));
       }
       // "Reset cut": the plane, and the connectors there are none of.
-      const resetCut = el('button', { type: 'button', textContent: t('Reset cut'), title: t('Reset cutting plane and remove connectors'), disabled: busy || this.atStart() });
-      resetCut.addEventListener('click', () => this.reset());
+      const connected = o.connectors.length > 0;
+      const resetCut = el('button', { type: 'button', textContent: t('Reset cut'), title: t('Reset cutting plane and remove connectors'), disabled: busy || (this.atStart() && !connected) });
+      resetCut.addEventListener('click', () => { o.connectors = []; o.selected = new Set(); this.reset(); });
+      // "Add connectors" / "Edit connectors": both parts kept as objects
+      // of their own.
+      const add = el('button', { type: 'button', textContent: connected ? t('Edit connectors') : t('Add connectors'), disabled: busy || !this.connectorsAllowed() });
+      add.addEventListener('click', () => this.startConnectors());
       // "Pick face": armed by a press, a click on the object then lays the
       // plane on the face under it.
-      const pick = el('button', { type: 'button', textContent: t('Pick face'), title: t('Click a model face to set the cut plane flush with it; use Cut position to offset'), disabled: busy });
+      const pick = el('button', { type: 'button', textContent: t('Pick face'), title: t('Click a model face to set the cut plane flush with it; use Cut position to offset'), disabled: busy || connected });
       pick.setAttribute('aria-pressed', String(o.picking));
       pick.classList.toggle('cut-armed', o.picking);
       pick.addEventListener('click', () => this.setPicking(!o.picking));
       const picking = o.picking ? [el('span', { className: 'edit-hint', textContent: t('Click a face of the model.') })] : [];
-      rows.push(el('div', { className: 'cut-foot cut-start' }, resetCut, pick, ...picking));
+      rows.push(el('div', { className: 'cut-foot cut-start' }, add, resetCut, pick, ...picking));
       }
       rows.push(el('hr', { className: 'arrange-rule' }));
       // "After cut".
       rows.push(el('span', { className: 'edit-label', textContent: t('After cut') }));
       const side = (label, colour, keep, place, flip) => {
         const box = (word, key, disabled, act) => {
-          const input = el('input', { type: 'checkbox', checked: Boolean(p[key]), disabled: disabled || busy });
+          // With connectors both parts are kept (`render_part_action_line`).
+          const forced = key.startsWith('keep') && o.connectors.length > 0 && !dovetail;
+          const input = el('input', { type: 'checkbox', checked: forced || Boolean(p[key]), disabled: disabled || busy || forced });
           input.addEventListener('change', () => { p[key] = input.checked; if (act) act(input.checked); this.panel(); this.stage.frame(); });
           return el('label', { className: 'edit-check' }, input, ` ${word}`);
         };
@@ -1309,7 +1363,7 @@
       rows.push(side(t('Upper part'), UPPER, 'keep_upper', 'place_on_cut_upper', 'flip_upper'));
       rows.push(side(t('Lower part'), LOWER, 'keep_lower', 'place_on_cut_lower', 'flip_lower'));
       // Not with pieces given to sides, nor with a dovetail.
-      const parts = el('input', { type: 'checkbox', checked: p.to_parts && !o.parts && !dovetail, disabled: busy || Boolean(o.parts) || dovetail });
+      const parts = el('input', { type: 'checkbox', checked: p.to_parts && !o.parts && !dovetail, disabled: busy || Boolean(o.parts) || dovetail || o.connectors.length > 0 });
       parts.addEventListener('change', () => {
         p.to_parts = parts.checked;
         // Both parts are kept, as they stood (`m_keep_as_parts`).
@@ -1330,6 +1384,7 @@
       const warnings = [];
       if (!p.keep_upper && !p.keep_lower && !p.to_parts) warnings.push(t('Select at least one object to keep after cutting.'));
       if (!this.meets()) warnings.push(t('Cut plane is placed out of object'));
+      if (!dovetail) warnings.push(...this.connectorWarnings().map((line) => line.replace(`${t('Warning')}: `, '')));
       else if (dovetail && o.grooveValid === false) warnings.push(t('Cut plane with groove is invalid'));
       for (const warning of warnings) rows.push(el('p', { className: 'edit-hint cut-warning', role: 'status', textContent: `${t('Warning')}: ${warning}` }));
       const perform = el('button', { type: 'button', className: 'primary', textContent: t('Perform cut'), disabled: !this.canPerform() });
