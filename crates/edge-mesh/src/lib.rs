@@ -1,5 +1,7 @@
 //! Indexed triangle meshes and the file formats that produce them.
 
+pub mod cut;
+mod earcut;
 pub mod hull;
 pub mod obj;
 pub mod primitives;
