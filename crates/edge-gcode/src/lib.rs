@@ -1361,7 +1361,10 @@ impl Writer<'_> {
             // A rammed filament is pushed out fast on the tower, and its
             // tool then waits just clear of what it laid.
             Some(ram) => {
-                for line in ram.lines.iter().filter(|line| line.points.len() >= 2) {
+                for (index, line) in (ram.lines.iter())
+                    .filter(|line| line.points.len() >= 2)
+                    .enumerate()
+                {
                     // As fast as the filament is to be pushed out, with
                     // the acceleration any line of the tower has here.
                     let motion = Motion {
@@ -1369,6 +1372,22 @@ impl Writer<'_> {
                         ..self.motion(line.role, &line.flow, self.state.first_layer)
                     };
                     self.travel(line.points[0], false, None)?;
+                    // Pressure advance is set for the ram once the nozzle
+                    // is at its start (WipeTower2.cpp `toolchange_Unload`,
+                    // `disable_linear_advance_value`). The tower does not
+                    // set it back: the filament's own is set again when
+                    // its tool is next taken up, where it has one.
+                    if index == 0
+                        && let Some(advance) = s.ram_advance
+                    {
+                        if s.klipper {
+                            writeln!(self.out, "SET_PRESSURE_ADVANCE ADVANCE={advance:.4}")?;
+                        } else if s.reprap {
+                            writeln!(self.out, "M572 D{from} S{advance:.6}")?;
+                        } else {
+                            writeln!(self.out, "M900 K{advance:.6}")?;
+                        }
+                    }
                     for point in &line.points[1..] {
                         self.extrude(*point, line.role, &line.flow, motion)?;
                     }

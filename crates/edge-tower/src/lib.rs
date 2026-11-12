@@ -285,11 +285,6 @@ impl TowerSettings {
         if enabled {
             for (key, plain, instead) in [
                 (
-                    "enable_change_pressure_when_wiping",
-                    "0",
-                    "pressure advance is left as it is while a filament is rammed",
-                ),
-                (
                     "wipe_tower_rotation_angle",
                     "0",
                     "the tower stands square to the bed",
@@ -345,12 +340,6 @@ impl TowerSettings {
                     .collect()
             })
             .unwrap_or_default();
-        // Pressure advance is only touched while a filament is rammed
-        // (WipeTower2.cpp `toolchange_Unload`), so with nothing rammed
-        // nothing is left undone.
-        if ramming.iter().all(Option::is_none) {
-            unsupported.retain(|note| !note.starts_with("enable_change_pressure_when_wiping"));
-        }
         // A printer of one nozzle (Print.cpp `_make_wipe_tower`,
         // ToolOrdering.cpp `reorder_extruders_for_minimum_flush_volume`).
         let single_nozzle = settings

@@ -2129,6 +2129,44 @@ fn a_rammed_filament_is_laid_by_the_tool_being_put_away() {
     write_tools(&mut out, &plain, &settings).unwrap();
     let text = String::from_utf8(out).unwrap();
     assert!(!text.contains("G1 X43.350 Y40.850 E") && !text.contains(";WIDTH:1.000"));
+
+    // Asked to, the ram is pushed out at the ramming pressure advance, set
+    // once the nozzle is at its start, in the firmware's own words; it is
+    // not set back after (WipeTower2.cpp `toolchange_Unload`).
+    for (klipper, reprap, wanted) in [
+        (true, false, "SET_PRESSURE_ADVANCE ADVANCE=0.0200"),
+        (false, true, "M572 D0 S0.020000"),
+        (false, false, "M900 K0.020000"),
+    ] {
+        let advanced = settings.clone().map(|tool| PrintSettings {
+            ram_advance: Some(0.02),
+            klipper,
+            reprap,
+            ..tool
+        });
+        let mut out = Vec::new();
+        write_tools(&mut out, &plan, &advanced).unwrap();
+        let text = String::from_utf8(out).unwrap();
+        let lines: Vec<&str> = text.lines().collect();
+        let set = lines.iter().position(|line| *line == wanted).unwrap();
+        assert!(lines[set - 1].starts_with("G1 X40.750 Y40.850"));
+        // Before the ram, after the nozzle has come down to it.
+        let ram = (lines.iter())
+            .position(|line| line.starts_with("G1 X43.350 Y40.850 E"))
+            .unwrap();
+        assert!(set < ram, "{:?}", &lines[set..=ram]);
+        assert!(lines[set + 1..ram].iter().all(|line| !line.contains(" X")));
+        assert_eq!(lines.iter().filter(|line| **line == wanted).count(), 1);
+    }
+    // Not where the profile does not ask.
+    let left = settings.clone().map(|tool| PrintSettings {
+        ram_advance: None,
+        ..tool
+    });
+    let mut out = Vec::new();
+    write_tools(&mut out, &plan, &left).unwrap();
+    let text = String::from_utf8(out).unwrap();
+    assert!(!text.contains("PRESSURE_ADVANCE") && !text.contains("M900"));
 }
 
 /// A 10 mm plate with a 20 mm wall on the layer above it: the wall is over
