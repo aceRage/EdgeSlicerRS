@@ -1222,18 +1222,24 @@ Known gaps: painted supports and seams, per-object setting overrides, typed sett
   the top and at a foot that stands on the part.
   - Normal (`normal(auto)`): a column down to the bed or to the part,
     squared off to the reference's grid, with a wider, denser first layer.
-  - Tree (`tree(auto)`, which the U1 profiles use): under a dense roof,
-    thin tips that thicken into branches, lean together into trunks and
-    flare out at the bed, or stand on the part where the bed is out of
-    reach. Branches are hollow loops, as in the reference's default
-    "organic" style, and keep clear of anywhere they could not get down
-    from. They pair off, nearest first, and each pair leans together
-    until it is one. A leaning branch is drawn as the oval a level cut
-    through its tube makes. Each loop starts from a hook laid inside it
-    (SupportCommon.cpp `tree_supports_generate_paths`), and is always
-    laid hook first. On the bed the trunks spread out by
-    `raft_first_layer_expansion`, as other supports do, which joins
-    their feet into a sheet.
+  - Tree (`tree(auto)`, which the U1 profiles use): a port of the
+    reference's organic trees (TreeSupport3D.cpp, TreeModelVolumes.cpp),
+    what `tree(auto)` with the default style builds. Overhangs as
+    TreeSupport::detect_overhangs finds them (sharp tails, cantilevers,
+    small clusters dropped); roofs under them and tips along the lines a
+    support fill would have there; every branch carried down as the whole
+    area its centre could be in, kept out of the part and out of wherever
+    it could not get down from (collision and avoidance for each radius,
+    worked out up front), areas that meet merged; centres picked from
+    the bed up, standing on the part where the bed is out of reach;
+    centres smoothed and pushed clear of the part as balls; each branch
+    built as a tube of circles with round ends and sliced, so it thickens
+    towards the bed and spreads to 7.5 mm there. Branches are hollow
+    loops, each started from a hook laid inside it
+    (SupportCommon.cpp `tree_supports_generate_paths`); a foot on the
+    part is dense; on the bed the trunks spread out in steps by
+    `raft_first_layer_expansion`. The code is in
+    `crates/edge-support/src/tree/`, one module a step.
 - Placement: each plate of a 3MF is moved to bed coordinates, and a bare
   model is centred on the bed of the machine preset. Export refuses
   toolpaths that leave the bed, and writes the file whole or not at all.
@@ -1509,12 +1515,23 @@ so regions agree in shape and area but not vertex for vertex.
 Supports are a first working version, not a port: the grid of normal
 supports is always square to the bed, a support's lines are not sheltered
 from retraction, bridges are supported like any overhang, and where a brim
-and a support meet on the first layer neither gives way. Tree supports use
-the reference's numbers (how a branch thickens, leans and flares, how far
-apart tips stand) but a much simpler method: each branch is one point
-moved layer by layer, where the reference follows every place a branch
-could be and picks afterwards; and branches are not smoothed, so they
-stand in more regular rows than the reference's.
+and a support meet on the first layer neither gives way. Tree supports
+are a port of the reference's organic trees. What still differs: the
+support under bridges shorter than `max_bridge_length` is kept (the
+reference leaves it out, which needs the walls and the fill's bridges;
+a note says so); the older tree styles are not ported (organic trees are
+built, with a note); a tip wider than the smallest roof does not turn
+the branch's top layers back into roof (EdgeSlicer's
+`recover_pending_branch_roofs`); `smooth_outward` is a closing; the
+areas are merged in groups of neighbours ordered as the reference's
+bounding box tree orders them, not by that tree itself; and two of the
+reference's mistakes are not copied (a smoothing push applied twice
+over, and a branch carried down onto a slope cut by the layer above's
+collision, which can leave no gap under it), nor one in its overhang
+clusters (a second overhang on a layer joining a cluster is never
+supported). On `ledge` the reference holds up a 0.37 mm overhang round
+the frame that its own small-overhang rule drops on a plain block
+(`lip`, nothing in either); why was not found, and here it is dropped.
 
 Next: thumbnails.
 
@@ -1617,16 +1634,13 @@ Supports and the automatic brim are compared on parts written by
 | --- | --- | --- | --- |
 | `mushroom` (a cap on a stem), normal | -1.6%, same extents | -3.6% | none in either |
 | `shelf` (a shelf over a plate), normal | -1.5%, same extents | -5.0% | none in either |
-| `mushroom`, tree | -5.2% | -5.3% | none in either |
-| `shelf`, tree | +4.0% | -8.9% | none in either |
 | `tower` (6 x 6 x 80 mm) | | | same length, same reach (5.63 mm) |
 | `bar` (200 x 10 x 30 mm, PLA) | | | same length, same reach (7.42 mm) |
 
 Normal support lines come as close to the part as the reference's
-(0.54 mm). Both styles put support on the same layers as the reference,
-with the same layers of air above and below. Trees start from about as
-many tips (96 against 101 under the mushroom's cap) and join up a little
-more slowly on the way down.
+(0.54 mm). They put support on the same layers as the reference,
+with the same layers of air above and below. Tree supports are compared
+below.
 
 On `mcbrim_test.3mf`, printed in up to six filaments, tools are taken in
 the reference's order on every layer of plates 1 and 2 (plate 2 sets its
@@ -2656,18 +2670,45 @@ middle) are noted and
 not followed, and `line` is noted as laid like `rectilinear`; the
 adaptive forms of the gyroid and corner smoothing are not looked at.
 
-Tree supports now join into trunks as soon as the reference's do. On
-the `mushroom` with the U1's presets there are as many separate outlines
-as in the reference all the way down (38 against 37 thirty layers up,
-23 against 24 at twenty), where there were a third more; the file has
-1687 retractions against the reference's 1739 (it had 2228) and is
-timed at 19m 26s against 19m 42s (it was 21m 15s). Layer by layer its
-support is within 10% of the reference's from the bed to two thirds of
-the way up, and 15 to 35% under in the last ten layers below the roof,
-where the reference's tips are drawn fatter and lean more than a branch
-may here. With the Centauri Carbon's presets (`tree(auto)`, arcs on)
-the `shelf` fixture is still 30% under (3.08 m against 4.37 m; it was
-2.26 m).
+Tree supports, 2026-11-11, after the port of the organic trees, against
+the C++ slicer (U1 presets unless said; support and dense layers in m,
+from the G-code; "overlap" is the intersection over union of the support
+area, every layer rasterised at 0.1 mm, the part placed alike):
+
+| Part | Reference | Before the port | Now | Dense, ref / now | Overlap |
+| --- | --- | --- | --- | --- | --- |
+| owner's figurine (1.4 M triangles, A1) | 111.09 | 163.4 | 123.74 | 2.18 / 1.38 | 0.42 (0.33 before) |
+| `mushroom` | 22.85 | 21.67 | 23.89 | 1.91 / 1.79 | 0.38 |
+| `mushroom`, Centauri Carbon | 14.18 | 10.90 | 15.16 | 1.83 / 1.72 | 0.32 |
+| `shelf` | 4.00 | 4.16 | 4.57 | 0.62 / 0.57 | 0.25 |
+| `shelf`, Centauri Carbon | 3.83 | 2.68 | 3.85 | 0.54 / 0.52 | 0.26 |
+| `shelf`, build plate only | 6.74 | 0.00 | 6.95 | 0.30 / 0.28 | 0.37 |
+| `shelf`, no interface layers | 3.93 | 9.31 | 3.92 | 0 / 0 | 0.23 |
+| `shelf`, gaps of 0.4 mm | 3.88 | 4.03 | 4.28 | 0.62 / 0.59 | 0.41 |
+| `bridge` | 7.97 | 7.17 | 8.97 | 0.69 / 0.69 | 0.50 |
+| `funnel`, 45 degrees | 11.86 | 15.25 | 11.03 | 0 / 0 | 0.42 |
+| 3DBenchy | 40.57 | 81.07 | 39.92 | 0.65 / 0.56 | 0.28 |
+| `mcbrim_test.3mf` plate 1 | 1.34 | 2.10 | 0.95 | 0 / 0.13 | 0.58 |
+| `ledge` | 6.83 | 1.16 | 1.75 | 0.19 / 0.15 | 0.19 |
+
+On the figurine the number of separate support outlines is the
+reference's within one or two on every layer looked at (9 and 9 on the
+first, 16 and 17 a hundred layers up, 19 and 21 at two hundred), and
+per layer the support is mostly 5 to 20% over it, more near the top
+(175 against 122 mm 360 layers up). No support line lies
+over any of the part's lines in any of these; lines come within 0.25 mm
+of an outer wall less often than the reference's (2776 pixels against
+5143 on the figurine). Support with nothing under it (no support or part
+within 0.3 mm on the layer below) is 63.6 mm2 over the figurine's 381
+layers against the reference's 41.9 (668.5 before the port). The foot of
+a branch on the part is dense on its own layer and the one above, as in
+the reference. With `tree_support_branch_distance_organic` 3 or 5 the
+`shelf` is unchanged in both, as its tips are set along its roof's lines.
+
+The support stage on the figurine takes 784 ms against 1084 ms before
+the port (best of five, the two builds taking turns on a busy machine),
+and 93 against 109 ms on `mcbrim_test.3mf` plate 1 with supports on.
+`EDGE_TREE_TIMES` set prints each step's time.
 
 Arcs, 2026-11-11, on three round parts from `tools/make_fixture.py`
 (`cylinder`, `tube`, `curve`) with the Centauri Carbon's presets, which

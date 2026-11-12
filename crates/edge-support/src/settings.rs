@@ -63,6 +63,21 @@ pub struct SupportSettings {
     pub tree_branch_angle: f64,
     pub tree_top_rate: f64,
     pub tree_wall_count: usize,
+    /// Organic trees: how far apart tips are set where no roof is over
+    /// them (`tree_support_branch_distance_organic`; the plain
+    /// `tree_support_branch_distance` belongs to the older tree styles).
+    pub tree_branch_distance: f64,
+    /// Only cantilevers and parts that start in mid-air are held up.
+    pub critical_regions_only: bool,
+    /// With `top_z_overrides_xy_distance` the gap beside a support is
+    /// held to the gap above it (at least 0.2 mm).
+    pub top_z_overrides_xy: bool,
+    /// The print's `resolution` and the thinnest feature it keeps
+    /// (`min_feature_size`, a share of the nozzle), in mm.
+    pub resolution: f64,
+    pub min_feature_size: FloatOrPercent,
+    /// The bed's outline in bed coordinates, mm; supports are kept on it.
+    pub bed: Vec<(f64, f64)>,
     pub support_line_width: FloatOrPercent,
     pub line_width: FloatOrPercent,
     pub initial_layer_line_width: FloatOrPercent,
@@ -102,6 +117,12 @@ impl Default for SupportSettings {
             tree_branch_angle: 40.0,
             tree_top_rate: 0.3,
             tree_wall_count: 0,
+            tree_branch_distance: 1.0,
+            critical_regions_only: false,
+            top_z_overrides_xy: false,
+            resolution: 0.01,
+            min_feature_size: FloatOrPercent::Percent(25.0),
+            bed: Vec::new(),
             support_line_width: FloatOrPercent::Value(0.0),
             line_width: FloatOrPercent::Value(0.4),
             initial_layer_line_width: FloatOrPercent::Value(0.4),
@@ -160,8 +181,8 @@ impl SupportSettings {
                     "support_style \"{other}\": normal supports are squared off to a grid"
                 )),
                 (Style::Tree, Some(other)) => unsupported.push(format!(
-                    "support_style \"{other}\": tree supports are built one way, as round \
-                     branches"
+                    "support_style \"{other}\": the older tree styles are a generator of \
+                     their own, not yet ported; organic trees are built"
                 )),
             }
         }
@@ -213,11 +234,32 @@ impl SupportSettings {
                     "the dense top of a support is not ironed",
                 ),
             ] {
+                // Organic trees are built on the part's layers whatever
+                // this says, in the reference too; and bridges are left
+                // unsupported by `max_bridge_length` there, not by this.
+                if style == Style::Tree
+                    && matches!(
+                        key,
+                        "independent_support_layer_height" | "bridge_no_support"
+                    )
+                {
+                    continue;
+                }
                 if let Some(value) = text(key)
                     && !plain.contains(&value)
                 {
                     unsupported.push(format!("{key} \"{value}\": {instead}"));
                 }
+            }
+            // The reference's trees leave out the support under bridges
+            // shorter than this, which needs the walls and the bridges the
+            // fill finds, and is not done here.
+            let bridges = settings.float("max_bridge_length")?.unwrap_or(10.0);
+            if style == Style::Tree && bridges > 0.0 {
+                unsupported.push(format!(
+                    "max_bridge_length \"{bridges}\": bridges are held up like any overhang, \
+                     where the reference leaves out the support under one shorter than this"
+                ));
             }
         }
         // A share of full density, written as a percentage.
@@ -288,6 +330,29 @@ impl SupportSettings {
                 None => defaults.tree_top_rate,
             },
             tree_wall_count: count("tree_support_wall_count", defaults.tree_wall_count)?,
+            tree_branch_distance: number(
+                "tree_support_branch_distance_organic",
+                defaults.tree_branch_distance,
+            )?,
+            critical_regions_only: flag(
+                "support_critical_regions_only",
+                defaults.critical_regions_only,
+            )?,
+            top_z_overrides_xy: flag("top_z_overrides_xy_distance", defaults.top_z_overrides_xy)?,
+            resolution: number("resolution", defaults.resolution)?,
+            min_feature_size: width("min_feature_size", defaults.min_feature_size)?,
+            bed: settings
+                .texts("printable_area")
+                .map(|corners| {
+                    corners
+                        .iter()
+                        .filter_map(|corner| {
+                            let (x, y) = corner.trim().split_once('x')?;
+                            Some((x.trim().parse().ok()?, y.trim().parse().ok()?))
+                        })
+                        .collect()
+                })
+                .unwrap_or_default(),
             support_line_width: width("support_line_width", defaults.support_line_width)?,
             line_width: width("line_width", defaults.line_width)?,
             initial_layer_line_width: width(
