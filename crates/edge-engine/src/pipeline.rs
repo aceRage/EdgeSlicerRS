@@ -1462,7 +1462,78 @@ pub fn slice(job: Job, watch: &dyn Watcher) -> Result<Sliced, Failure> {
             })
             .collect()
     };
-    let tower_settings = TowerSettings::from_settings(&settings, plate)?;
+    let mut tower_settings = TowerSettings::from_settings(&settings, plate)?;
+    let mut tower_moved: Option<String> = None;
+    // A tower whose saved place no longer fits it is moved onto the bed
+    // as the reference's command line moves it before slicing
+    // (Snapmaker_Orca.cpp, PartPlate.cpp `estimate_wipe_tower_polygon`).
+    if let Some(bed) = print
+        .bed
+        .filter(|_| tower_settings.enabled && used.len() > 1)
+    {
+        let meshes: Vec<&Mesh> = if objects.is_empty() {
+            bodies.iter().map(|body| &body.solid).collect()
+        } else {
+            objects.iter().collect()
+        };
+        let ground = edge_tower::Ground {
+            bed,
+            filaments: used.iter().map(|filament| filament - 1).collect(),
+            layer_height,
+            first_layer_height,
+            height: f64::from(max[2] - min[2]),
+        };
+        let obstacles = || -> Result<Vec<Polygon>, edge_clip::ClipError> {
+            let mut obstacles = Vec::with_capacity(meshes.len());
+            for (index, mesh) in meshes.iter().enumerate() {
+                let hull = edge_geom::convex_hull(
+                    (mesh.vertices.iter())
+                        .map(|v| Point2::from_mm(f64::from(v[0]), f64::from(v[1]))),
+                );
+                if hull.points.len() < 3 {
+                    continue;
+                }
+                // Its brim, by its own settings where it has them, and a
+                // millimetre (`PartPlate::wipe_tower_obstacles`).
+                let theirs = (own.iter())
+                    .find(|own| own.object == index)
+                    .and_then(|object| crate::regions::object_brim(&settings, object));
+                let brim_of = theirs.as_ref().unwrap_or(&settings);
+                let brim = if brim_of.text("brim_type") == Some("no_brim") {
+                    0.0
+                } else {
+                    brim_of.float("brim_width").ok().flatten().unwrap_or(0.0)
+                };
+                let grown = edge_clip::offset(
+                    &[ExPolygon {
+                        contour: hull,
+                        holes: Vec::new(),
+                    }],
+                    scaled(brim + 1.0),
+                    edge_clip::Join::MITER,
+                )?;
+                obstacles.extend(grown.into_iter().map(|region| region.contour));
+            }
+            Ok(obstacles)
+        };
+        if let Some(moved) = edge_tower::relocate(&settings, &tower_settings, &ground, obstacles)? {
+            tower_moved = Some(format!(
+                "wipe_tower_x, wipe_tower_y: the prime tower no longer fits at {:.3} x {:.3} and is \
+                 moved to {:.3} x {:.3}{}, as the reference moves it",
+                tower_settings.x,
+                tower_settings.y,
+                moved.x,
+                moved.y,
+                if moved.onto_objects {
+                    ", onto an object, as no free space is left"
+                } else {
+                    ""
+                }
+            ));
+            tower_settings.x = moved.x;
+            tower_settings.y = moved.y;
+        }
+    }
     // On the bed, each tool is judged by its smallest piece as cut,
     // pieces too slight to print a line of not counted.
     let mut on_bed = if layers.is_empty() {
@@ -1525,6 +1596,7 @@ pub fn slice(job: Job, watch: &dyn Watcher) -> Result<Sliced, Failure> {
     let plate_pattern = (plate_stages.infill.unsupported_pattern.as_ref())
         .map(|pattern| format!("sparse_infill_pattern \"{pattern}\": grid is used in its place"));
     order_notes.extend(size_notes);
+    order_notes.extend(tower_moved);
     order_notes.extend(quality_notes);
     order_notes.extend(ironing_notes);
     order_notes.extend(crate::unfollowed::notes(&settings));

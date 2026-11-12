@@ -42,12 +42,16 @@
 //! end for end on alternate layers, and leaving out or thinning the
 //! layers no tool change uses.
 
+mod place;
+
 use std::f64::consts::PI;
 
 use edge_clip::{ClipError, Join};
 use edge_config::{ConfigError, FloatOrPercent, Settings};
 use edge_extrusion::{ExtrusionPath, Flow, FlowError, Role, TowerStroke};
 use edge_geom::{ExPolygon, Point2, Polygon, scaled, unscaled};
+
+pub use place::{Ground, Moved, PlaceError, relocate};
 
 /// The tower's lines are this many nozzle diameters wide
 /// (WipeTower2.hpp `Width_To_Nozzle_Ratio`).
@@ -822,7 +826,7 @@ fn next_feed(feed: f32, target: f32) -> f32 {
 /// The least depth a tower as tall as `height` mm should have to stand
 /// (WipeTower.cpp `get_limit_depth_by_height`): 20 mm up to 100 mm tall,
 /// 40 mm from 250 mm, and in proportion between.
-fn least_depth(height: f64) -> f64 {
+pub(crate) fn least_depth(height: f64) -> f64 {
     if height <= 100.0 {
         20.0
     } else if height >= 250.0 {
