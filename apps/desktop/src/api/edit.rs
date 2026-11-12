@@ -302,8 +302,8 @@ fn plate_settings_of(args: &Value) -> Result<PlateSettings, String> {
                             .as_u64()
                             .and_then(|n| u32::try_from(n).ok())
                             .filter(|n| *n <= LAST_LAYER)
-                            .ok_or_else(|| "Please input layer value (>= 2).".to_owned()),
-                        None => Err("Please input layer value (>= 2).".to_owned()),
+                            .ok_or_else(|| super::i18n::tr("Please input layer value (>= 2).")),
+                        None => Err(super::i18n::tr("Please input layer value (>= 2).")),
                     }
                 };
                 Ok(LayerSequence {
@@ -527,7 +527,9 @@ impl Session {
                 // Plater.cpp `split_object`); this says so, in the words
                 // that notice had.
                 if dropped {
-                    outcome.note = Some("All non-solid parts (modifiers) were deleted".into());
+                    outcome.note = Some(super::i18n::tr(
+                        "All non-solid parts (modifiers) were deleted",
+                    ));
                 }
                 outcome.name = "Split to Objects".into();
             }

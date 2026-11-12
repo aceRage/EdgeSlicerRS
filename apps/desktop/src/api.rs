@@ -59,6 +59,8 @@ pub struct Session {
     scene: scene::Cache,
     /// The printers' connections and the files being sent to them.
     hosts: Hosts,
+    /// The language the page is shown in and the calls compose in.
+    language: Mutex<Arc<i18n::Catalog>>,
 }
 
 /// Sending to printers: each printer's connection, kept between runs, and
@@ -315,6 +317,15 @@ fn shown(path: &Path) -> String {
 
 /// The profiles this build was made beside, when they are still there:
 /// the reference's, in the repository.
+/// The system's language from the environment, for when the page gives
+/// none: `LC_ALL`, `LC_MESSAGES`, then `LANG`, as the C library reads them.
+fn system_language() -> Option<String> {
+    ["LC_ALL", "LC_MESSAGES", "LANG"]
+        .iter()
+        .filter_map(|name| std::env::var(name).ok())
+        .find(|value| !value.is_empty() && value != "C" && value != "POSIX")
+}
+
 fn profiles_beside() -> Option<PathBuf> {
     let dir =
         Path::new(env!("CARGO_MANIFEST_DIR")).join("../../reference/EdgeSlicer/resources/profiles");
@@ -365,6 +376,7 @@ fn bed_of(settings: &Settings) -> Option<[f64; 4]> {
     extent
 }
 
+pub mod i18n;
 mod print_host;
 mod printers;
 mod settings;
@@ -941,6 +953,14 @@ impl Session {
     pub fn with_settings(startup: Option<PathBuf>, settings: Option<PathBuf>) -> Self {
         let kept = crate::hosts::kept::Kept::open(settings.clone());
         let store = store::Store::open(settings);
+        // The language kept; until one is (the first run), English, and
+        // the page's first call (`language`) chooses from the system's.
+        let language = store
+            .data
+            .language
+            .as_deref()
+            .and_then(i18n::find)
+            .map_or_else(i18n::english, i18n::catalog);
         let dir = std::env::var_os("EDGE_PROFILES")
             .map(PathBuf::from)
             .or_else(|| {
@@ -968,12 +988,14 @@ impl Session {
                 queue: crate::hosts::queue::Queue::default(),
                 timeouts: crate::hosts::Timeouts::default(),
             },
+            language: Mutex::new(language),
         }
     }
 
     /// Answers the page. An error is a sentence to show as it is.
     pub fn call(self: &Arc<Self>, name: &str, args: &Value) -> Result<Value, String> {
-        let answer = self.answer(name, args);
+        let language = lock(&self.language).clone();
+        let answer = i18n::with(language, || self.answer(name, args));
         if self.traced && !matches!(name, "status" | "projects" | "print_queue") {
             match &answer {
                 Ok(_) => eprintln!("call {name}: ok"),
@@ -987,12 +1009,13 @@ impl Session {
     /// moves, in the layouts [`scene`] writes out. An error is a sentence
     /// to show as it is.
     pub fn call_bytes(self: &Arc<Self>, name: &str, args: &Value) -> Result<Vec<u8>, String> {
-        let answer = match name {
+        let language = lock(&self.language).clone();
+        let answer = i18n::with(language, || match name {
             name if scene::BYTES.contains(&name) => self.scene_bytes(name, args),
             other => Err(format!(
                 "there is no call named {other} that answers in bytes"
             )),
-        };
+        });
         if self.traced {
             match &answer {
                 Ok(bytes) => eprintln!("call {name}: {} bytes", bytes.len()),
@@ -1005,6 +1028,8 @@ impl Session {
     fn answer(self: &Arc<Self>, name: &str, args: &Value) -> Result<Value, String> {
         match name {
             "startup" => Ok(json!({ "model": self.startup.as_deref().map(shown) })),
+            "language" => self.language(args),
+            "language_set" => self.language_set(args),
             "library" => self.library(),
             "set_profiles" => {
                 let dir = PathBuf::from(needed(args, "dir")?);
@@ -1153,6 +1178,74 @@ impl Session {
             }
             other => Err(format!("there is no call named {other}")),
         }
+    }
+
+    /// The language the page is shown in, and its table (`language`).
+    /// At the first run none is kept, and it is chosen as the reference
+    /// chooses it (GUI_App.cpp `load_language`): the system's language,
+    /// which the page gives (`system`, its preferred languages, the first
+    /// of which is the system's), where the reference has a catalog for
+    /// it; else English. It is kept from then on, as the reference keeps
+    /// the system's in `app_config` at once. Unlike the reference, a
+    /// system language with no catalog is not kept: the reference keeps
+    /// it and shows the bare message ids, not even the English catalog's
+    /// wording; here it is English.
+    fn language(&self, args: &Value) -> Result<Value, String> {
+        let mut state = lock(&self.state);
+        let kept = state.store.data.language.as_deref().and_then(i18n::find);
+        let language = match kept {
+            Some(language) => language,
+            None => {
+                let system = args
+                    .get("system")
+                    .and_then(Value::as_array)
+                    .and_then(|tags| tags.first())
+                    .and_then(Value::as_str)
+                    .map(str::to_owned)
+                    .or_else(system_language);
+                let language = system
+                    .as_deref()
+                    .and_then(i18n::of_system)
+                    .or_else(|| i18n::find(i18n::ENGLISH))
+                    .expect("English is in the list");
+                // Kept if it can be; if not, the page is still shown in it.
+                let _ = state
+                    .store
+                    .change(|data| data.language = Some(language.code.to_owned()));
+                language
+            }
+        };
+        drop(state);
+        Ok(self.language_answer(language))
+    }
+
+    /// Changes the language and keeps it (`language_set`), as
+    /// Preferences' "Language" does; the answer is `language`'s.
+    fn language_set(&self, args: &Value) -> Result<Value, String> {
+        let code = needed(args, "language")?;
+        let language = i18n::LANGUAGES
+            .iter()
+            .find(|language| language.code == code)
+            .ok_or_else(|| format!("there is no language {code}"))?;
+        lock(&self.state)
+            .store
+            .change(|data| data.language = Some(language.code.to_owned()))?;
+        Ok(self.language_answer(language))
+    }
+
+    fn language_answer(&self, language: &'static i18n::Language) -> Value {
+        let catalog = i18n::catalog(language);
+        *lock(&self.language) = catalog.clone();
+        let languages: Vec<Value> = i18n::LANGUAGES
+            .iter()
+            .map(|language| json!({ "code": language.code, "name": language.name }))
+            .collect();
+        json!({
+            "language": catalog.code,
+            "catalog": language.catalog,
+            "languages": languages,
+            "table": i18n::table_json(language),
+        })
     }
 
     fn library(&self) -> Result<Value, String> {
@@ -1479,7 +1572,7 @@ impl Session {
             }
             answer.insert(
                 "notice".into(),
-                json!({ "title": "Plate bed types reset", "text": text }),
+                json!({ "title": i18n::tr("Plate bed types reset"), "text": i18n::tr(text) }),
             );
         }
         Ok(answer)
@@ -1725,7 +1818,7 @@ impl Session {
             .filter(|plate| !edit::over_the_edge(&file, bed.as_ref(), *plate))
             .collect();
         if plates.is_empty() {
-            return Err(edit::OVER_THE_EDGE.into());
+            return Err(i18n::tr(edit::OVER_THE_EDGE));
         }
         // The presets are found before anything starts, so a name that
         // is not there is said at once.
@@ -1770,73 +1863,77 @@ impl Session {
         };
 
         let session = self.clone();
+        // What the slice says is said in the call's language.
+        let language = i18n::current();
         std::thread::spawn(move || {
-            let mut errors: Vec<String> = Vec::new();
-            let mut cancelled = false;
-            for (at, plate) in plates.iter().enumerate() {
-                {
-                    let mut progress = lock(&work.progress);
-                    progress.label = "Reading the model";
-                    progress.step = 1;
-                    progress.plate = *plate;
-                    progress.at = at;
-                }
-                let outcome = slice_plate(&file, *plate, &chosen, &overrides, &work);
-                if work.cancel.load(Ordering::Relaxed) {
-                    cancelled = true;
-                    break;
-                }
-                let outcome = match outcome {
-                    Ok(done) => Ok(Arc::new(done)),
-                    Err(error) => {
-                        let error = error.to_string();
-                        errors.push(match (plate, plates.len()) {
-                            (Some(plate), 2..) => format!("Plate {plate}: {error}"),
-                            _ => error.clone(),
-                        });
-                        Err(error)
+            i18n::with(language, || {
+                let mut errors: Vec<String> = Vec::new();
+                let mut cancelled = false;
+                for (at, plate) in plates.iter().enumerate() {
+                    {
+                        let mut progress = lock(&work.progress);
+                        progress.label = "Reading the model";
+                        progress.step = 1;
+                        progress.plate = *plate;
+                        progress.at = at;
                     }
-                };
-                // Kept before it is said to be done, and only while this
-                // is still the project's slice and was not called off (an
-                // edit calls it off with the session locked, so what is
-                // kept here is never of a model that has changed since).
-                // The two locks are never held together.
-                let mut state = lock(&session.state);
-                if work.cancel.load(Ordering::Relaxed) {
-                    cancelled = true;
-                    break;
-                }
-                let project =
-                    state
-                        .index_of(id)
-                        .map(|at| &mut state.projects[at])
-                        .filter(|project| {
-                            project
-                                .work
-                                .as_ref()
-                                .is_some_and(|current| Arc::ptr_eq(current, &work))
-                        });
-                match (project, outcome) {
-                    (Some(project), Ok(done)) => {
-                        project.results.insert(slot(*plate), done);
+                    let outcome = slice_plate(&file, *plate, &chosen, &overrides, &work);
+                    if work.cancel.load(Ordering::Relaxed) {
+                        cancelled = true;
+                        break;
                     }
-                    (Some(project), Err(error)) => {
-                        project.failures.insert(slot(*plate), error);
+                    let outcome = match outcome {
+                        Ok(done) => Ok(Arc::new(done)),
+                        Err(error) => {
+                            let error = error.to_string();
+                            errors.push(match (plate, plates.len()) {
+                                (Some(plate), 2..) => format!("Plate {plate}: {error}"),
+                                _ => error.clone(),
+                            });
+                            Err(error)
+                        }
+                    };
+                    // Kept before it is said to be done, and only while this
+                    // is still the project's slice and was not called off (an
+                    // edit calls it off with the session locked, so what is
+                    // kept here is never of a model that has changed since).
+                    // The two locks are never held together.
+                    let mut state = lock(&session.state);
+                    if work.cancel.load(Ordering::Relaxed) {
+                        cancelled = true;
+                        break;
                     }
-                    (None, _) => {}
+                    let project =
+                        state
+                            .index_of(id)
+                            .map(|at| &mut state.projects[at])
+                            .filter(|project| {
+                                project
+                                    .work
+                                    .as_ref()
+                                    .is_some_and(|current| Arc::ptr_eq(current, &work))
+                            });
+                    match (project, outcome) {
+                        (Some(project), Ok(done)) => {
+                            project.results.insert(slot(*plate), done);
+                        }
+                        (Some(project), Err(error)) => {
+                            project.failures.insert(slot(*plate), error);
+                        }
+                        (None, _) => {}
+                    }
                 }
-            }
-            let mut progress = lock(&work.progress);
-            if cancelled {
-                progress.state = "cancelled";
-            } else if errors.is_empty() {
-                progress.state = "done";
-                progress.at = plates.len();
-            } else {
-                progress.state = "failed";
-                progress.error = Some(errors.join("\n"));
-            }
+                let mut progress = lock(&work.progress);
+                if cancelled {
+                    progress.state = "cancelled";
+                } else if errors.is_empty() {
+                    progress.state = "done";
+                    progress.at = plates.len();
+                } else {
+                    progress.state = "failed";
+                    progress.error = Some(errors.join("\n"));
+                }
+            })
         });
         Ok(json!({ "project": id, "run": run }))
     }
@@ -2159,6 +2256,80 @@ mod tests {
                 "filaments": vec![filament; filaments], "initial": true,
             }),
         )
+    }
+
+    #[test]
+    fn the_language_is_chosen_from_the_systems_kept_and_changed() {
+        let dir = tempfile::tempdir().unwrap();
+        let start = || Arc::new(Session::with_settings(None, Some(dir.path().to_path_buf())));
+        let session = start();
+        // The first run: the system's language, where there is a catalog.
+        let answer = ask(
+            &session,
+            "language",
+            json!({ "system": ["de-AT", "en-US"] }),
+        );
+        assert_eq!(answer["language"], "de_DE");
+        assert_eq!(answer["catalog"], "de");
+        assert_eq!(answer["table"]["messages"]["Advance"], "Erweitert");
+        let names: Vec<&str> = answer["languages"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|language| language["name"].as_str().unwrap())
+            .collect();
+        assert_eq!(names.len(), 20);
+        assert_eq!(&names[..3], ["Catalan", "中文(繁体)", "中文(简体)"]);
+        assert!(names.contains(&"English") && names.contains(&"Deutsch"));
+        // What a call composes is in it.
+        let said = refused(&session, "language_set", json!({ "language": "xx" }));
+        assert_eq!(said, "there is no language xx");
+        let said = refused(&session, "print_send", json!({ "name": "a.gcode" }));
+        assert!(!said.is_empty());
+        // Kept: the next run is in German whatever the system says.
+        drop(session);
+        let session = start();
+        let answer = ask(&session, "language", json!({ "system": ["fr-FR"] }));
+        assert_eq!(answer["language"], "de_DE");
+        // Changed in the app, and kept.
+        let answer = ask(&session, "language_set", json!({ "language": "zh_CN" }));
+        assert_eq!(answer["language"], "zh_CN");
+        assert_eq!(answer["table"]["language"], "zh_CN");
+        drop(session);
+        let session = start();
+        let answer = ask(&session, "language", json!({}));
+        assert_eq!(answer["language"], "zh_CN");
+        // English is a language like the others: its table is the en
+        // catalog's.
+        let answer = ask(&session, "language_set", json!({ "language": "en_GB" }));
+        assert_eq!(answer["table"]["messages"]["Advance"], "Advanced");
+        let kept = std::fs::read_to_string(dir.path().join("settings.json")).unwrap();
+        assert!(kept.contains("\"language\": \"en_GB\""), "{kept}");
+    }
+
+    #[test]
+    fn a_system_language_without_a_catalog_is_english() {
+        let dir = tempfile::tempdir().unwrap();
+        let session = Arc::new(Session::with_settings(None, Some(dir.path().to_path_buf())));
+        let answer = ask(
+            &session,
+            "language",
+            json!({ "system": ["fi-FI", "de-DE"] }),
+        );
+        assert_eq!(answer["language"], "en_GB");
+        // A message composed by a call in German, and the same in English.
+        ask(&session, "language_set", json!({ "language": "de_DE" }));
+        let german = i18n::with(i18n::catalog(i18n::find("de").unwrap()), || {
+            i18n::tr("Plate bed types reset")
+        });
+        assert_eq!(german, "Plate bed types reset", "not in the catalogs yet");
+        let said = session
+            .call(
+                "process_set",
+                &json!({ "key": "layer_height", "value": "thin" }),
+            )
+            .unwrap_err();
+        assert!(said.contains("Ungültige Zahl."), "{said}");
     }
 
     #[test]
@@ -2905,7 +3076,7 @@ mod tests {
         assert_eq!(tested["ok"], false);
         assert_eq!(
             tested["message"],
-            "Could not connect to Moonraker: HTTP 401: Unauthorized"
+            "Could not connect to Moonraker: HTTP 401: Unauthorized\n\nNote: Moonraker version at least 1.1.0 is required."
         );
         let host = ask(
             &session,

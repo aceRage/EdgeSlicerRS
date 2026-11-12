@@ -56,6 +56,9 @@ const HOSTS: [(&str, &str); 2] = [
     ("hosts.js", include_str!("../ui/hosts.js")),
     ("hosts.css", include_str!("../ui/hosts.css")),
 ];
+/// The page's words: the table of the language chosen, and then the
+/// page's other scripts (`i18n.js` loads them).
+const WORDS: [(&str, &str); 1] = [("i18n.js", include_str!("../ui/i18n.js"))];
 /// A file of the page. A debug build reads it from the source folder each
 /// time, so a change to the page shows on reload; any other build serves
 /// what it was built with.
@@ -222,11 +225,13 @@ fn handle(mut request: Request, session: &Arc<Session>, token: &str, port: u16) 
             if EDIT
                 .iter()
                 .chain(&HOSTS)
+                .chain(&WORDS)
                 .any(|(known, _)| path[1..] == **known) =>
         {
             let (name, built_in) = EDIT
                 .iter()
                 .chain(&HOSTS)
+                .chain(&WORDS)
                 .find(|(known, _)| path[1..] == **known)
                 .expect("one of them is it");
             let kind = if name.ends_with(".css") {

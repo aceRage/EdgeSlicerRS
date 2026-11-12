@@ -50,7 +50,11 @@ use edge_config::{Settings, Value as Setting};
 use edge_engine::{Chosen, Overrides};
 use serde_json::{Value, json};
 
-use super::{Choices, File, Session, lock, text};
+use super::{
+    Choices, File, Session,
+    i18n::{fill, tr},
+    lock, text,
+};
 
 /// The pages, as `tools/make_settings_pages.py` writes them.
 const PAGES: &str = include_str!("settings_pages.json");
@@ -333,24 +337,35 @@ fn plain(number: f64) -> String {
 }
 
 /// What is said when a value is outside what an option takes, in the
-/// reference's words (Field.cpp) with the limit after them.
+/// reference's words (Field.cpp): with both limits, the message the
+/// reference gives with them (l.483); with one, "Value is out of range."
+/// (l.498), which here is followed by the limit, "(≥ 0)". The option's
+/// label comes first.
 fn out_of_range(option: &Described, shown: &str, least: Option<f64>, most: Option<f64>) -> String {
-    let label = &option.label;
+    let label = tr(&option.label);
     match (least, most) {
         (Some(least), Some(most)) => format!(
-            "{label}: Value {shown} is out of range. The valid range is from {} to {}.",
-            plain(least),
-            plain(most)
+            "{label}: {}",
+            fill(
+                &tr("Value %s is out of range. The valid range is from %d to %d."),
+                &[&shown, &plain(least), &plain(most)]
+            )
         ),
-        (Some(least), None) => format!(
-            "{label}: Value {shown} is out of range. It cannot be less than {}.",
-            plain(least)
-        ),
-        (None, Some(most)) => format!(
-            "{label}: Value {shown} is out of range. It cannot be more than {}.",
-            plain(most)
-        ),
-        (None, None) => format!("{label}: Value is out of range."),
+        (Some(least), None) => {
+            format!(
+                "{label}: {} (≥ {})",
+                tr("Value is out of range."),
+                plain(least)
+            )
+        }
+        (None, Some(most)) => {
+            format!(
+                "{label}: {} (≤ {})",
+                tr("Value is out of range."),
+                plain(most)
+            )
+        }
+        (None, None) => format!("{label}: {}", tr("Value is out of range.")),
     }
 }
 
@@ -381,7 +396,7 @@ fn checked(option: &Described, value: &Value) -> Result<String, String> {
     let number = |entered: &str| -> Result<f64, String> {
         match entered.trim().parse::<f64>() {
             Ok(number) if number.is_finite() => Ok(number),
-            _ => Err(format!("{label}: Invalid numeric.")),
+            _ => Err(format!("{}: {}", tr(label), tr("Invalid numeric."))),
         }
     };
     let within = |number: f64, shown: &str, most: Option<f64>| -> Result<(), String> {
@@ -401,14 +416,15 @@ fn checked(option: &Described, value: &Value) -> Result<String, String> {
         Kind::Int => {
             let number = number(entered)?;
             if number.fract() != 0.0 {
-                return Err(format!("{label}: Invalid numeric. It is a whole number."));
+                // Field.cpp says no more of a whole number (l.537).
+                return Err(format!("{}: {}", tr(label), tr("Invalid numeric.")));
             }
             within(number, entered, option.max)?;
             Ok(plain(number))
         }
         Kind::Float => {
             if entered.ends_with('%') {
-                return Err(format!("{label} can't be a percentage"));
+                return Err(fill(&tr("%s can't be a percentage"), &[&tr(label)]));
             }
             let number = number(entered)?;
             within(number, entered, option.max)?;

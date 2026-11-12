@@ -110,6 +110,10 @@ textarea.code { font: var(--size-small)/1.5 var(--font-mono); white-space: pre; 
   min-height: var(--control-m);
   border-radius: var(--radius-m);
 }
+/* A list's values run longer than a number, the more so in other
+   languages ("Obere und untere Oberflächen"): its column may take more of
+   the row, the label wrapping beside it. */
+.opt:has(.opt-field > .lb) { grid-template-columns: minmax(0, 1fr) clamp(112px, 58%, 210px) 16px; }
 .opt-head { display: flex; align-items: center; gap: 5px; min-width: 0; }
 .opt-label {
   display: block;

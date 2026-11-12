@@ -17,16 +17,20 @@
 //! - What the engine does with an item's option is said by one function,
 //!   [`item_followed`]; see there.
 //!
-//! The words this work adds that are not the reference's are all in
-//! [`words`], so they can be passed through a translation layer together.
+//! The reference's words (the "Invalid numeric." of a height) go through
+//! the translation layer (`tr`); the steps' names are its message ids,
+//! put in the language where the page shows them, but "Change Option %s",
+//! which the reference composes untranslated (`boost::format`). The words
+//! this work adds that are not the reference's are all in [`words`] and
+//! listed in `src/api/i18n/wording.txt`.
 
 use std::collections::{BTreeMap, BTreeSet};
 
 use edge_config::{Settings, Value as Setting};
-use edge_engine::{Bed, HeightRange, Model, SettingChange};
+use edge_engine::{Bed, HeightRange, Model, PartKind, SettingChange};
 use serde_json::{Value, json};
 
-use super::{Book, Described, address, checked, held, overrides, pages, rules, shown};
+use super::{Book, Described, address, checked, held, overrides, pages, rules, shown, tr};
 use crate::api::{Session, lock, needed, whole};
 
 /// The words of this work that are not the reference's, in one place.
@@ -45,6 +49,8 @@ pub(crate) mod words {
     /// The step of the undo history that edits a range's heights; the
     /// reference takes it unnamed (GUI_ObjectList.cpp `edit_layer_range`).
     pub const EDIT_RANGE: &str = "Edit height range";
+    /// A part that has no settings of its own.
+    pub const HELPER: &str = "A negative part, a support blocker, a support enforcer and a Precise Seam part have no settings of their own.";
 }
 
 /// The `scene_edit` operations made here.
@@ -193,6 +199,10 @@ fn found(model: &Model, named: Named) -> Result<Found, String> {
                 .position(|id| *id == part)
                 .ok_or_else(|| format!("there is no part {part}"))?;
             let held = &object.shape().parts()[at];
+            // GUI_ObjectList.cpp `add_settings_item`: none for these.
+            if !matches!(held.kind, PartKind::Normal | PartKind::Modifier) {
+                return Err(words::HELPER.into());
+            }
             Ok(Found {
                 object_own,
                 own: held.settings(),
@@ -454,7 +464,7 @@ fn height(args: &Value, key: &str) -> Result<Option<f64>, String> {
             };
             match number {
                 Some(number) if number.is_finite() && number >= 0.0 => Ok(Some(number)),
-                _ => Err("Invalid numeric.".into()),
+                _ => Err(tr("Invalid numeric.")),
             }
         }
     }

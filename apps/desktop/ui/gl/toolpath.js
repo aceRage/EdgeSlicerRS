@@ -45,10 +45,10 @@
     { name: 'Line Type', id: 0 },
     { name: 'Filament', id: 1 },
     { name: 'Speed', id: 2, title: 'Speed (mm/s)', decimals: 0, needs: true },
-    { name: 'Layer Height', id: 3, title: 'Layer height (mm)', decimals: 2 },
-    { name: 'Line Width', id: 4, title: 'Line width (mm)', decimals: 2 },
+    { name: 'Layer Height', id: 3, title: 'Layer Height (mm)', decimals: 2 },
+    { name: 'Line Width', id: 4, title: 'Line Width (mm)', decimals: 2 },
     { name: 'Flow', id: 5, title: 'Volumetric flow rate (mm³/s)', decimals: 2, needs: true },
-    { name: 'Fan Speed', id: 6, title: 'Fan speed (%)', decimals: 0, needs: true },
+    { name: 'Fan Speed', id: 6, title: 'Fan Speed (%)', decimals: 0, needs: true },
     { name: 'Temperature', id: 7, title: 'Temperature (℃)', decimals: 0, needs: true },
   ];
 

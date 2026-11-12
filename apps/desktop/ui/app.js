@@ -128,7 +128,7 @@ function pick(what, suggested = '') {
 async function inform(title, text) {
   $('confirm-cancel').hidden = true;
   try {
-    await confirmBox(title, text, 'OK', '');
+    await confirmBox(title, text, t('OK'), '');
   } finally {
     $('confirm-cancel').hidden = false;
   }
@@ -759,7 +759,8 @@ function noteView() {
 
 // ---- sidebar ----
 
-const plateLabels = (types) => [types.choices.map((choice) => choice.value), types.choices.map((choice) => choice.label)];
+// A plate's label is the reference's message id ("Smooth PEI Plate / High Temp Plate"), shown in the language.
+const plateLabels = (types) => [types.choices.map((choice) => choice.value), types.choices.map((choice) => t(choice.label))];
 
 async function showSidebar() {
   const project = state.project;
@@ -810,7 +811,7 @@ async function showSidebar() {
   $('filaments').replaceChildren(...Array.from({ length: count }, (_, index) => {
     let name;
     if (fromPresets) {
-      const list = el('select', { ariaLabel: `Filament ${index + 1}` });
+      const list = el('select', { ariaLabel: fmt(t('Filament %d'), index + 1) });
       list.dataset.filament = index + 1;
       // A filament past the last chosen prints with the last, as the engine has it.
       fill(list, offered, choices.filaments[Math.min(index, choices.filaments.length - 1)]);
@@ -939,7 +940,7 @@ function showButtons() {
       // The plate shown, unless it is sliced already or holds nothing.
       : plates.includes(plateKey()) && !project.sliced;
   }
-  $('slice').textContent = state.sliceAll ? 'Slice all' : 'Slice plate';
+  $('slice').textContent = state.sliceAll ? t('Slice all') : t('Slice plate');
   $('slice').disabled = !can;
   const summary = project && here().summaries.get(plateKey());
   const failed = summary && 'error' in summary.summary.gcode;
@@ -947,7 +948,7 @@ function showButtons() {
   // "Export G-code file", whichever was picked from its menu.
   const sending = typeof printAction === 'function' && printAction() === 'send';
   const ready = Boolean(project && onPlater && project.sliced && !busy && !failed);
-  $('export').textContent = sending ? 'Print' : 'Export G-code file';
+  $('export').textContent = sending ? t('Print') : t('Export G-code file');
   $('export').disabled = !ready;
   $('export').title = sending && hostsState.info ? `Send the plate to ${hostsState.info.printer}` : '';
   $('export-more').disabled = !project;
@@ -977,8 +978,8 @@ $('slice-more').addEventListener('click', (event) => {
   const box = event.currentTarget.getBoundingClientRect();
   const choose = (all) => () => { state.sliceAll = all; showButtons(); };
   showMenu(box.right - 180, box.bottom + 4, [
-    ['Slice all', choose(true), { checked: state.sliceAll }],
-    ['Slice plate', choose(false), { checked: !state.sliceAll }],
+    [t('Slice all'), choose(true), { checked: state.sliceAll }],
+    [t('Slice plate'), choose(false), { checked: !state.sliceAll }],
   ]);
 });
 $('cancel').addEventListener('click', () => call('cancel', { project: activeId() }).catch(() => {}));
@@ -1037,7 +1038,7 @@ function showProgress() {
     box.hidden = false;
   } else if (!box.hidden && !box.classList.contains('settled')) {
     // What became of it, for a moment.
-    const said = { done: 'Slice ok.', cancelled: 'Slicing Canceled', failed: 'Slicing failed.' }[status ? status.state : ''];
+    const said = { done: t('Slice ok.'), cancelled: t('Slicing Canceled'), failed: 'Slicing failed.' }[status ? status.state : ''];
     if (!said) { box.hidden = true; return; }
     $('progress-label').textContent = said;
     box.classList.add('settled');
@@ -1062,7 +1063,7 @@ function showStripShape() {
   const width = strip.collapsed ? 24 : Math.max(strip.width, strip.text ? 120 : 88);
   node.style.setProperty('--strip-width', `${width}px`);
   const fold = $('strip-fold');
-  fold.title = strip.collapsed ? 'Show the project strip' : 'Collapse the project strip';
+  fold.title = strip.collapsed ? t('Show the project strip') : t('Collapse the project strip');
   fold.setAttribute('aria-label', fold.title);
 }
 
@@ -1078,8 +1079,8 @@ function setStrip(change) {
 function tooltipFor(tile) {
   const lines = [tile.name];
   if (tile.path) lines.push(tile.path);
-  if (tile.dirty) lines.push('Unsaved changes');
-  if (tile.slicing) lines.push('Slicing');
+  if (tile.dirty) lines.push(t('Unsaved changes'));
+  if (tile.slicing) lines.push(t('Slicing'));
   return lines.join('\n');
 }
 
@@ -1127,8 +1128,8 @@ function renderStrip(force = false) {
     // something is sliced.
     if (tile.slicing) item.append(el('span', { className: 'badge slicing' }));
     else if (sliced) item.append(el('span', { className: 'badge sliced', textContent: '✓' }));
-    const close = el('button', { className: 'close', type: 'button', title: 'Close project', textContent: '×' });
-    close.setAttribute('aria-label', `Close ${tile.name}`);
+    const close = el('button', { className: 'close', type: 'button', title: t('Close project'), textContent: '×' });
+    close.setAttribute('aria-label', `${t('Close project')}: ${tile.name}`);
     item.append(close);
     return item;
   }));
@@ -1247,9 +1248,9 @@ async function refreshStrip() {
 async function makeRoom(listing) {
   const names = listing.projects.map((project) => project.name + (project.dirty ? ' *' : ''));
   const picked = await confirmBox(
-    'Too many open projects',
+    t('Too many open projects'),
     `${listing.max_open} projects are open, the most this window keeps. Close one to open another:`,
-    'OK', 'Cancel', names,
+    t('OK'), t('Cancel'), names,
   );
   if (picked === null) return false;
   return closeProject(listing.projects[picked].id);
@@ -1311,7 +1312,7 @@ async function closeProject(id) {
       if (!(await saveBeforeClosing(id, answer.name))) return false;
       args.discard = true;
     } else {
-      const sure = await confirmBox('Close project', `"${answer.name}" is slicing. Stop slicing and close it?`, 'Yes', 'No');
+      const sure = await confirmBox(t('Close project'), fmt(t('"%s" is slicing. Stop slicing and close it?'), answer.name), t('Yes'), t('No'));
       if (!sure) return false;
       args.stop = true;
     }
@@ -1401,20 +1402,31 @@ $('strip').addEventListener('contextmenu', (event) => {
   if (tile) {
     const id = Number(tile.dataset.id);
     showMenu(event.clientX, event.clientY, [
-      ['Save', () => attempt(() => saveProject(id))],
-      ['Save as...', () => attempt(() => saveProject(id, true))],
+      [t('Save'), () => attempt(() => saveProject(id))],
+      [t('Save as...'), () => attempt(() => saveProject(id, true))],
       null,
-      ['Close', () => attempt(() => closeProject(id))],
-      ['Close others', () => attempt(() => closeOthers(id)), { disabled: state.listing.projects.length < 2 }],
+      [t('Close'), () => attempt(() => closeProject(id))],
+      [t('Close others'), () => attempt(() => closeOthers(id)), { disabled: state.listing.projects.length < 2 }],
     ]);
     return;
   }
   showMenu(event.clientX, event.clientY, [
-    ['Show thumbnails', () => setStrip({ text: false }), { checked: !strip.text }],
-    ['Show names only', () => setStrip({ text: true }), { checked: strip.text }],
+    [t('Show thumbnails'), () => setStrip({ text: false }), { checked: !strip.text }],
+    [t('Show names only'), () => setStrip({ text: true }), { checked: strip.text }],
     null,
-    ['Default width', () => setStrip({ width: 88 }), { disabled: strip.collapsed || strip.width === 88 }],
-    [strip.collapsed ? 'Show the project strip' : 'Collapse the project strip', () => setStrip({ collapsed: !strip.collapsed })],
+    [t('Default width'), () => setStrip({ width: 88 }), { disabled: strip.collapsed || strip.width === 88 }],
+    [strip.collapsed ? t('Show the project strip') : t('Collapse the project strip'), () => setStrip({ collapsed: !strip.collapsed })],
+    null,
+    // Preferences' "Language" (Preferences.cpp l.1966): the languages by
+    // the names the reference lists them under. The page puts itself in
+    // the new one at once (i18n.js `choose`).
+    [t('Language'), null, {
+      items: I18n.languages.map((language) => [
+        language.name,
+        () => attempt(() => I18n.choose(language.code)),
+        { checked: language.code === I18n.language },
+      ]),
+    }],
   ]);
 });
 
@@ -1472,8 +1484,8 @@ const rangeColours = [[11, 44, 122], [19, 89, 133], [28, 136, 145], [4, 214, 15]
 const viewTypes = {
   'Line Type': { title: 'Line Type' },
   'Filament': { title: 'Filament' },
-  'Layer Height': { title: 'Layer height (mm)', range: (summary) => summary.heights },
-  'Line Width': { title: 'Line width (mm)', range: (summary) => summary.widths },
+  'Layer Height': { title: 'Layer Height (mm)', range: (summary) => summary.heights },
+  'Line Width': { title: 'Line Width (mm)', range: (summary) => summary.widths },
 };
 
 function rangeColour(value, range) {
@@ -1651,13 +1663,13 @@ function showLegend() {
   const own = stage3d.active ? stage3d.legend(mine, summary, filamentColour) : null;
   const types = own ? own.types : Object.keys(viewTypes);
   if (!types.includes(mine.viewType)) mine.viewType = 'Line Type';
-  fill($('view-type'), types, mine.viewType);
+  fill($('view-type'), types, mine.viewType, types.map((type) => t(type)));
   const rows = $('legend-rows');
   const head = (...names) => el('tr', {}, ...names.map((name) => el('th', { textContent: name })));
   const toggle = (key, name, colour) => {
     const off = mine.hidden.has(key);
-    const eye = el('button', { type: 'button', className: 'eye', textContent: off ? '○' : '●', title: off ? 'Show' : 'Hide' });
-    eye.setAttribute('aria-label', `${off ? 'Show' : 'Hide'} ${name}`);
+    const eye = el('button', { type: 'button', className: 'eye', textContent: off ? '○' : '●', title: off ? t('Show') : t('Hide') });
+    eye.setAttribute('aria-label', `${off ? t('Show') : t('Hide')} ${name}`);
     eye.setAttribute('aria-pressed', String(!off));
     const swatch = el('span', { className: 'swatch' });
     swatch.style.background = colour;
@@ -1674,16 +1686,16 @@ function showLegend() {
   if (own) {
     rows.replaceChildren(...own.rows(() => { showLegend(); draw(); noteView(); }));
   } else if (mine.viewType === 'Line Type') {
-    rows.replaceChildren(head('Line Type', 'Display'),
-      ...summary.roles.map((role) => toggle(role, role, featureColours[role] || '#ffffff')));
+    rows.replaceChildren(head(t('Line Type'), t('Display')),
+      ...summary.roles.map((role) => toggle(role, t(role), featureColours[role] || '#ffffff')));
   } else if (mine.viewType === 'Filament') {
-    rows.replaceChildren(head('Filament', 'Display'),
-      ...summary.filaments.map((filament) => toggle(`f${filament}`, `Filament ${filament}`, filamentColour(summary, filament))));
+    rows.replaceChildren(head(t('Filament'), t('Display')),
+      ...summary.filaments.map((filament) => toggle(`f${filament}`, fmt(t('Filament %d'), filament), filamentColour(summary, filament))));
   } else {
     // From most to least, as the reference lists a range.
     const range = type.range(summary) || [0, 0];
     const steps = range[1] - range[0] < 1e-9 ? 1 : 6;
-    rows.replaceChildren(head(type.title), ...Array.from({ length: steps }, (_, index) => {
+    rows.replaceChildren(head(t(type.title)), ...Array.from({ length: steps }, (_, index) => {
       const value = steps === 1 ? range[0] : range[1] - ((range[1] - range[0]) * index) / (steps - 1);
       const swatch = el('span', { className: 'swatch' });
       swatch.style.background = rangeColour(value, range);
@@ -1695,9 +1707,9 @@ function showLegend() {
   const figures = [];
   if (!('error' in gcode)) {
     const weight = gcode.grams === null ? '' : `  ${number(gcode.grams, 2)} g`;
-    figures.push(['Total Filament:', `${number(gcode.filament_m, 2)} m${weight}`]);
-    if (gcode.tool_changes > 0) figures.push(['Filament change times:', String(gcode.tool_changes)]);
-    figures.push(['Total time:', duration(gcode.minutes)]);
+    figures.push([`${t('Total Filament')}:`, `${number(gcode.filament_m, 2)} m${weight}`]);
+    if (gcode.tool_changes > 0) figures.push([`${t('Filament change times')}:`, String(gcode.tool_changes)]);
+    figures.push([`${t('Total time')}:`, duration(gcode.minutes)]);
     const how = { klipper: 'Planned as Klipper plans it; heating is not counted.', acceleration: 'With acceleration; heating is not counted.' };
     $('timed').textContent = how[gcode.timed] || 'At the speeds set, before acceleration.';
   } else {
@@ -1811,7 +1823,7 @@ $('vslider').addEventListener('wheel', (event) => {
 }, { passive: false });
 $('vslider').addEventListener('contextmenu', (event) => {
   event.preventDefault();
-  showMenu(event.clientX, event.clientY, [['Jump to Layer', () => attempt(jumpToLayer)]]);
+  showMenu(event.clientX, event.clientY, [[t('Jump to Layer'), () => attempt(jumpToLayer)]]);
 });
 
 // ---- what is set at layers ----
@@ -1833,11 +1845,11 @@ async function loadCodes() {
 function describeCode(item, codes) {
   const colour = item.kind === 'filament' ? codes.colours[item.extruder - 1] || null : null;
   switch (item.kind) {
-    case 'pause': return { kind: 'pause', label: 'Pause', title: `Pause: "${codes.pause}"`, remove: 'Delete Pause' };
-    case 'template': return { kind: 'template', label: 'Template', title: `Custom Template: "${codes.template}"`, remove: 'Delete Custom Template' };
-    case 'custom': return { kind: 'custom', label: 'Custom', title: `Custom G-code: "${item.extra}"`, remove: 'Delete Custom G-code' };
-    case 'filament': return { kind: 'filament', label: 'Color', title: `Change Filament\nFilament ${item.extruder}`, remove: 'Delete Filament Change', colour };
-    default: return { kind: 'other', label: item.kind === 'color' ? 'Color' : '', title: item.extra ? `Custom G-code: "${item.extra}"` : '', remove: 'Delete' };
+    case 'pause': return { kind: 'pause', label: t('Pause'), title: `${t('Pause:')} "${codes.pause}"`, remove: t('Delete Pause') };
+    case 'template': return { kind: 'template', label: t('Template'), title: `${t('Custom Template:')} "${codes.template}"`, remove: t('Delete Custom Template') };
+    case 'custom': return { kind: 'custom', label: t('Custom'), title: `${t('Custom G-code:')} "${item.extra}"`, remove: t('Delete Custom G-code') };
+    case 'filament': return { kind: 'filament', label: t('Color'), title: `${t('Change Filament')}\n${fmt(t('Filament %d'), item.extruder)}`, remove: t('Delete Filament Change'), colour };
+    default: return { kind: 'other', label: item.kind === 'color' ? t('Color') : '', title: item.extra ? `${t('Custom G-code:')} "${item.extra}"` : '', remove: t('Delete') };
   }
 }
 
@@ -1874,12 +1886,12 @@ async function customGcode(z, text) {
 function layerMenu(x, y) {
   const at = stage3d.selectedLayer();
   const codes = here().codes;
-  const jump = ['Jump to Layer', () => attempt(jumpToLayer)];
+  const jump = [t('Jump to Layer'), () => attempt(jumpToLayer)];
   if (!at || !codes) { showMenu(x, y, [jump]); return; }
   const z = at.z;
-  const filaments = (current) => codes.colours.map((colour, index) => [`Filament ${index + 1}`,
+  const filaments = (current) => codes.colours.map((colour, index) => [fmt(t('Filament %d'), index + 1),
     () => attempt(() => editCode('layer_code_set', { print_z: z, kind: 'filament', extruder: index + 1 })),
-    { swatch: colour, title: 'Change filament at the beginning of this layer.', checked: current === index + 1 }]);
+    { swatch: colour, title: t('Change filament at the beginning of this layer.'), checked: current === index + 1 }]);
   const tick = at.tick;
   if (tick) {
     const item = tick.item;
@@ -1887,9 +1899,9 @@ function layerMenu(x, y) {
     const entries = {
       pause: [remove],
       template: codes.template ? [remove] : [],
-      custom: [['Edit Custom G-code', () => attempt(() => customGcode(z, item.extra))], remove],
+      custom: [[t('Edit Custom G-code'), () => attempt(() => customGcode(z, item.extra))], remove],
       filament: codes.colours.length > 1
-        ? [['Change Filament', null, { items: filaments(item.extruder), disabled: !codes.change_filament }], remove]
+        ? [[t('Change Filament'), null, { items: filaments(item.extruder), disabled: !codes.change_filament }], remove]
         : [],
     }[item.kind] || [];
     // An item the reference's menu offers nothing for still has "Jump to Layer".
@@ -1898,21 +1910,22 @@ function layerMenu(x, y) {
   }
   const off = codes.sequential;
   const entries = [
-    ['Add Pause', () => attempt(() => editCode('layer_code_set', { print_z: z, kind: 'pause' })), { disabled: off, title: 'Insert a pause command at the beginning of this layer.' }],
-    ['Add Custom G-code', () => attempt(() => customGcode(z, '')), { disabled: off, title: 'Insert custom G-code at the beginning of this layer.' }],
+    [t('Add Pause'), () => attempt(() => editCode('layer_code_set', { print_z: z, kind: 'pause' })), { disabled: off, title: t('Insert a pause command at the beginning of this layer.') }],
+    [t('Add Custom G-code'), () => attempt(() => customGcode(z, '')), { disabled: off, title: t('Insert custom G-code at the beginning of this layer.') }],
   ];
   if (codes.template) {
-    entries.push(['Add Custom Template', () => attempt(() => editCode('layer_code_set', { print_z: z, kind: 'template' })), { disabled: off, title: 'Insert template custom G-code at the beginning of this layer.' }]);
+    entries.push([t('Add Custom Template'), () => attempt(() => editCode('layer_code_set', { print_z: z, kind: 'template' })), { disabled: off, title: t('Insert template custom G-code at the beginning of this layer.') }]);
   }
   entries.push(jump);
-  if (codes.colours.length > 1) entries.push(['Change Filament', null, { items: filaments(0).map(([label, action, more]) => [label, action, { swatch: more.swatch, title: more.title }]), disabled: !codes.change_filament }]);
+  if (codes.colours.length > 1) entries.push([t('Change Filament'), null, { items: filaments(0).map(([label, action, more]) => [label, action, { swatch: more.swatch, title: more.title }]), disabled: !codes.change_filament }]);
   showMenu(x, y, entries);
 }
 
 async function jumpToLayer() {
   const mine = here();
   if (state.tab !== 'preview' || !mine.summary) return;
-  const typed = await askText(`Please enter the layer number (1 - ${mine.summary.layers}):`, String((mine.layerAt[plateKey()] ?? 0) + 1));
+  // IMSlider.cpp l.1430: the words, then the range.
+  const typed = await askText(`${t('Please enter the layer number')} (1 - ${mine.summary.layers}):`, String((mine.layerAt[plateKey()] ?? 0) + 1));
   const layer = Number(typed);
   if (typed === null || !Number.isFinite(layer)) return;
   await showLayer(layer - 1);
@@ -1953,8 +1966,8 @@ function showPlates() {
   const holding = sliceable(project);
   const done = holding.filter((plate) => isSliced(project, plate)).length;
   const all = el('button', { type: 'button', className: 'all', disabled: status.state === 'slicing' && done < holding.length },
-    el('span', { textContent: done < holding.length ? 'Slice all' : 'All Plates' }),
-    el('small', { textContent: done < holding.length ? `${done}/${holding.length}` : 'Stats' }));
+    el('span', { textContent: done < holding.length ? t('Slice all') : t('All Plates') }),
+    el('small', { textContent: done < holding.length ? `${done}/${holding.length}` : t('Stats') }));
   all.addEventListener('click', () => attempt(() => (done < holding.length ? slice(true) : showStats())));
   bar.replaceChildren(all, ...buttons);
   bar.hidden = false;
@@ -1994,16 +2007,16 @@ async function showStats() {
     metres += gcode.filament_m;
     minutes += gcode.minutes;
     if (gcode.grams === null) weighed = false; else grams += gcode.grams;
-    rows.push(el('tr', {}, el('td', { textContent: `Plate ${plate}` }),
+    rows.push(el('tr', {}, el('td', { textContent: `${t('Plate')} ${plate}` }),
       el('td', { textContent: `${number(gcode.filament_m, 2)} m` }),
       el('td', { textContent: gcode.grams === null ? '' : `${number(gcode.grams, 2)} g` }),
       el('td', { textContent: duration(gcode.minutes) })));
   }
   const table = $('stats-table');
   table.replaceChildren(
-    el('thead', {}, el('tr', {}, ...['', 'Filament', '', 'Total time'].map((name) => el('th', { textContent: name })))),
+    el('thead', {}, el('tr', {}, ...['', t('Filament'), '', t('Total time')].map((name) => el('th', { textContent: name })))),
     el('tbody', {}, ...rows),
-    el('tfoot', {}, el('tr', {}, el('td', { textContent: 'Total' }),
+    el('tfoot', {}, el('tr', {}, el('td', { textContent: t('Total') }),
       el('td', { textContent: `${number(metres, 2)} m` }),
       el('td', { textContent: weighed ? `${number(grams, 2)} g` : '' }),
       el('td', { textContent: duration(minutes) }))),
@@ -2324,7 +2337,7 @@ function showDevice() {
   const printer = state.settled ? state.settled.printer : null;
   const facts = [];
   if (!printer) {
-    $('device-name').textContent = 'No printer';
+    $('device-name').textContent = t('No printer');
     $('device-source').textContent = 'No printer is chosen for the project shown. Choose one in Prepare.';
     $('device-facts').replaceChildren();
     $('device-connection').textContent = 'Please set up your printer connection to view the device.';
@@ -2332,27 +2345,27 @@ function showDevice() {
     if (typeof showPrinterPage === 'function') showPrinterPage();
     return;
   }
-  $('device-name').textContent = printer.name || printer.model || 'Printer';
+  $('device-name').textContent = printer.name || printer.model || t('Printer');
   $('device-source').textContent = printer.source === 'preset'
     ? `The printer preset chosen for "${state.project.name}".`
     : `The printer "${state.project.name}" was saved with.`;
   const add = (name, value) => { if (value !== null && value !== undefined && value !== '') facts.push([name, String(value)]); };
-  add('Vendor', printer.vendor);
-  add('Model', printer.model);
+  add(t('Vendor'), printer.vendor);
+  add(t('Model'), printer.model);
   const nozzles = printer.nozzle_diameter || [];
-  if (nozzles.length) add(nozzles.length > 1 ? 'Nozzles' : 'Nozzle', nozzles.map((size) => `${size} mm`).join(', '));
-  if (printer.bed) add('Bed', `${number(printer.bed[2] - printer.bed[0], 0)} × ${number(printer.bed[3] - printer.bed[1], 0)} mm`);
-  if (printer.height) add('Height', `${number(printer.height, 0)} mm`);
-  add('G-code flavor', printer.gcode_flavor);
-  add('Bed type', (printer.bed_types.choices.find((choice) => choice.value === printer.bed_types.in_force) || {}).label || printer.bed_types.in_force);
+  if (nozzles.length) add(nozzles.length > 1 ? t('Nozzles') : t('Nozzle'), nozzles.map((size) => `${size} mm`).join(', '));
+  if (printer.bed) add(t('Bed'), `${number(printer.bed[2] - printer.bed[0], 0)} × ${number(printer.bed[3] - printer.bed[1], 0)} mm`);
+  if (printer.height) add(t('Height'), `${number(printer.height, 0)} mm`);
+  add(t('G-code flavor'), printer.gcode_flavor);
+  add(t('Bed type'), t((printer.bed_types.choices.find((choice) => choice.value === printer.bed_types.in_force) || {}).label || printer.bed_types.in_force));
   // The host type by the reference's label ("Octo/Klipper"), not its key.
   const hostType = typeof hostsState !== 'undefined' && hostsState.info
     ? (hostsState.info.host_types.find((type) => type.value === printer.host_type) || {}).label
     : null;
-  add('Host Type', hostType || printer.host_type);
-  add('Hostname, IP or URL', printer.print_host);
-  add('Device UI', printer.print_host_webui);
-  if (printer.print_host || printer.print_host_webui) add('API Key / Password', printer.has_api_key ? 'set in the preset' : 'none');
+  add(t('Host Type'), hostType || printer.host_type);
+  add(t('Hostname, IP or URL'), printer.print_host);
+  add(t('Device UI'), printer.print_host_webui);
+  if (printer.print_host || printer.print_host_webui) add(t('API Key / Password'), printer.has_api_key ? 'set in the preset' : 'none');
   $('device-facts').replaceChildren(...facts.flatMap(([name, value]) => [el('dt', { textContent: name }), el('dd', { textContent: value })]));
   const address = printer.print_host_webui || printer.print_host;
   $('device-connection').textContent = address

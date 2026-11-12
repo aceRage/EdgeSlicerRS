@@ -40,11 +40,11 @@
   const [FACE, FACE_HOT] = [[0.96, 0.93, 0.93, 0.5], [1, 1, 1, 0.75]];
 
   const TOOLS = {
-    move: { name: 'Move', key: 'm', icon: 'M8,1.5v13M1.5,8h13M8,1.5l-2,2M8,1.5l2,2M8,14.5l-2-2M8,14.5l2-2M1.5,8l2-2M1.5,8l2,2M14.5,8l-2-2M14.5,8l-2,2' },
-    rotate: { name: 'Rotate', key: 'r', icon: 'M13.5,8a5.5,5.5,0,1,1-1.6-3.9M13.5,1.5v3h-3' },
-    scale: { name: 'Scale', key: 's', icon: 'M1.5,14.5h6v-6h-6ZM9.5,6.5l5-5M14.5,1.5h-4M14.5,1.5v4' },
+    move: { name: t('Move'), key: 'm', icon: 'M8,1.5v13M1.5,8h13M8,1.5l-2,2M8,1.5l2,2M8,14.5l-2-2M8,14.5l2-2M1.5,8l2-2M1.5,8l2,2M14.5,8l-2-2M14.5,8l-2,2' },
+    rotate: { name: t('Rotate'), key: 'r', icon: 'M13.5,8a5.5,5.5,0,1,1-1.6-3.9M13.5,1.5v3h-3' },
+    scale: { name: t('Scale'), key: 's', icon: 'M1.5,14.5h6v-6h-6ZM9.5,6.5l5-5M14.5,1.5h-4M14.5,1.5v4' },
     // GLGizmoFlatten.cpp: for one object at a time (`is_selection_supported`).
-    flatten: { name: 'Lay on face', key: 'f', one: true, icon: 'M1.5,14.5h13M4.5,11.5l2-8l7,3l-3,5Z' },
+    flatten: { name: t('Lay on face'), key: 'f', one: true, icon: 'M1.5,14.5h13M4.5,11.5l2-8l7,3l-3,5Z' },
   };
   const ICONS = {
     add: 'M1.5,12.5v-9a1,1,0,0,1,1-1h3l1.5,2h6.5a1,1,0,0,1,1,1v7a1,1,0,0,1-1,1h-11A1,1,0,0,1,1.5,12.5ZM8,7v4M6,9h4',
@@ -155,13 +155,13 @@
       };
       const gap = () => el('span', { className: 'toolbar-gap' });
       this.buttons = {
-        add: button('add', 'Add', 'Add [Ctrl+I]', ICONS.add, () => this.add()),
-        addPlate: button('add-plate', 'Add plate', 'Add plate', ICONS.addPlate, () => this.commit({ op: 'add_plate' })),
-        arrange: button('arrange', 'Arrange all objects', 'Arrange all objects [A]\nArrange objects on selected plates [Shift+A]', ICONS.arrange, () => this.arrange(true)),
-        splitObjects: button('split-objects', 'Split to objects', 'Split to objects', ICONS.splitObjects, () => this.split(true)),
-        splitParts: button('split-parts', 'Split to parts', 'Split to parts', ICONS.splitParts, () => this.split(false)),
-        undo: button('undo', 'Undo', 'Undo [Ctrl+Z]', ICONS.undo, () => this.step('undo')),
-        redo: button('redo', 'Redo', 'Redo [Ctrl+Y]', ICONS.redo, () => this.step('redo')),
+        add: button('add', t('Add'), `${t('Add')} [Ctrl+I]`, ICONS.add, () => this.add()),
+        addPlate: button('add-plate', t('Add plate'), t('Add plate'), ICONS.addPlate, () => this.commit({ op: 'add_plate' })),
+        arrange: button('arrange', t('Arrange all objects'), `${t('Arrange all objects')} [A]\n${t('Arrange objects on selected plates')} [Shift+A]`, ICONS.arrange, () => this.arrange(true)),
+        splitObjects: button('split-objects', t('Split to objects'), t('Split to objects'), ICONS.splitObjects, () => this.split(true)),
+        splitParts: button('split-parts', t('Split to parts'), t('Split to parts'), ICONS.splitParts, () => this.split(false)),
+        undo: button('undo', t('Undo'), `${t('Undo')} [Ctrl+Z]`, ICONS.undo, () => this.step('undo')),
+        redo: button('redo', t('Redo'), `${t('Redo')} [Ctrl+Y]`, ICONS.redo, () => this.step('redo')),
       };
       for (const [tool, { name, key, icon }] of Object.entries(TOOLS)) {
         this.buttons[tool] = button(tool, name, `${name} [${key.toUpperCase()}]`, icon, () => this.setTool(this.tool === tool ? null : tool));
@@ -171,7 +171,7 @@
       this.bar = el('div', { className: 'toolbar', id: 'edit-bar' },
         b.add, b.addPlate, gap(), b.arrange, gap(), b.splitObjects, b.splitParts, gap(), b.move, b.rotate, b.scale, b.flatten, gap(), b.undo, b.redo);
       this.bar.setAttribute('role', 'toolbar');
-      this.bar.setAttribute('aria-label', 'Prepare');
+      this.bar.setAttribute('aria-label', t('Prepare'));
       this.panel = el('div', { className: 'edit-panel overlay', id: 'edit-panel', hidden: true });
       this.warning = el('p', { className: 'edit-warning overlay', id: 'edit-warning', hidden: true });
       this.warning.setAttribute('role', 'status');
@@ -436,45 +436,45 @@
       // ("Load...") or a cube. The other shapes wait for the engine to
       // make them.
       const object = one ? data.objects[one.object] : null;
-      const adding = [['Add part', 'part'], ['Add negative part', 'negative'], ['Add modifier', 'modifier'], ['Add support blocker', 'support_blocker'], ['Add support enforcer', 'support_enforcer']]
+      const adding = [[t('Add part'), 'part'], [t('Add negative part'), 'negative'], [t('Add modifier'), 'modifier'], [t('Add support blocker'), 'support_blocker'], [t('Add support enforcer'), 'support_enforcer']]
         .map(([label, kind]) => [label, null, {
           disabled: !object,
           items: [
-            ['Load...', () => this.addPart(object, one, kind)],
+            [t('Load...'), () => this.addPart(object, one, kind)],
             null,
-            ['Cube', () => this.commit({ op: 'part_add', object: object.id, copy: one.id, kind, shape: 'Cube' }, { part: true }), { disabled: !this.host.settled() || !this.host.settled().printer }],
+            [t('Cube'), () => this.commit({ op: 'part_add', object: object.id, copy: one.id, kind, shape: 'Cube' }, { part: true }), { disabled: !this.host.settled() || !this.host.settled().printer }],
           ],
         }]);
       const items = [
-        ['Split', null, {
+        [t('Split'), null, {
           disabled: !target || !target.split.objects,
-          title: 'Split the selected object',
+          title: t('Split the selected object'),
           items: [
-            ['To objects', () => this.split(true), { disabled: !target || !target.split.objects, title: 'Split the selected object into multiple objects' }],
-            ['To parts', () => this.split(false), { disabled: !target || !target.split.parts, title: 'Split the selected object into multiple parts' }],
+            [t('To objects'), () => this.split(true), { disabled: !target || !target.split.objects, title: t('Split the selected object into multiple objects') }],
+            [t('To parts'), () => this.split(false), { disabled: !target || !target.split.parts, title: t('Split the selected object into multiple parts') }],
           ],
         }],
-        ['Mirror', null, {
+        [t('Mirror'), null, {
           disabled: !one,
-          title: 'Mirror object',
+          title: t('Mirror object'),
           items: [
-            ['Along X axis', mirror('x'), { title: 'Mirror along the X axis' }],
-            ['Along Y axis', mirror('y'), { title: 'Mirror along the Y axis' }],
-            ['Along Z axis', mirror('z'), { title: 'Mirror along the Z axis' }],
+            [t('Along X axis'), mirror('x'), { title: t('Mirror along the X axis') }],
+            [t('Along Y axis'), mirror('y'), { title: t('Mirror along the Y axis') }],
+            [t('Along Z axis'), mirror('z'), { title: t('Mirror along the Z axis') }],
           ],
         }],
-        ['Delete Del', () => this.remove()],
+        [`${t('Delete')} Del`, () => this.remove()],
         null,
         ...adding,
         // GUI_Factories.cpp `append_menu_item_layers_editing`, and "Edit
         // Process Settings" (`append_menu_item_edit_process`): objsettings.js.
         [window.ObjectSettings.WORDS.heightRange, () => window.ObjectSettings.heightRange(object.id, copies.filter((copy) => copy.object === one.object).map((copy) => copy.id)), { disabled: !object }],
         null,
-        ['Clone Ctrl+K', () => this.clone([...selection])],
-        ['Printable', () => this.commit({ op: 'printable', copies: [...selection], value: !printable }), { checked: printable }],
+        [`${t('Clone')} Ctrl+K`, () => this.clone([...selection])],
+        [t('Printable'), () => this.commit({ op: 'printable', copies: [...selection], value: !printable }), { checked: printable }],
         [window.ObjectSettings.WORDS.editProcess, () => window.ObjectSettings.editProcess(), { title: window.ObjectSettings.WORDS.editProcess }],
       ];
-      if (copies.length === 1 && GL.objects) items.push(['Rename', () => GL.objects.rename(data.objects[copies[0].object].id)]);
+      if (copies.length === 1 && GL.objects) items.push([t('Rename'), () => GL.objects.rename(data.objects[copies[0].object].id)]);
       this.host.menu(x, y, items);
     },
 
@@ -510,31 +510,31 @@
       const part = this.splitPart();
       // "Change type": the reference asks in a dialog ("Choose part type");
       // here the same choices are a sub-menu.
-      const types = [['Part', 'part'], ['Negative Part', 'negative'], ['Modifier', 'modifier'], ['Support Blocker', 'support_blocker'], ['Support Enforcer', 'support_enforcer'], ['Precise Seam', 'precise_seam']];
+      const types = [[t('Part'), 'part'], [t('Negative Part'), 'negative'], [t('Modifier'), 'modifier'], [t('Support Blocker'), 'support_blocker'], [t('Support Enforcer'), 'support_enforcer'], [t('Precise Seam'), 'precise_seam']];
       const filaments = this.filamentCount();
       const own = items.length === 1 ? items[0].part.own : undefined;
       const menu = [
-        ['Delete Del', () => this.remove(), { title: 'Delete the selected object' }],
-        ['Center', shift(centre && middle ? [middle[0] - centre[0], middle[1] - centre[1], 0] : [0, 0, 0]), { disabled: centred }],
-        ['Drop', shift([0, 0, box ? -box[0][2] : 0]), { disabled: !box || Math.abs(box[0][2]) <= 0.001 }],
-        ['Mirror', null, {
-          title: 'Mirror object',
+        [`${t('Delete')} Del`, () => this.remove(), { title: t('Delete the selected object') }],
+        [t('Center'), shift(centre && middle ? [middle[0] - centre[0], middle[1] - centre[1], 0] : [0, 0, 0]), { disabled: centred }],
+        [t('Drop'), shift([0, 0, box ? -box[0][2] : 0]), { disabled: !box || Math.abs(box[0][2]) <= 0.001 }],
+        [t('Mirror'), null, {
+          title: t('Mirror object'),
           items: [
-            ['Along X axis', mirror('x'), { title: 'Mirror along the X axis' }],
-            ['Along Y axis', mirror('y'), { title: 'Mirror along the Y axis' }],
-            ['Along Z axis', mirror('z'), { title: 'Mirror along the Z axis' }],
+            [t('Along X axis'), mirror('x'), { title: t('Mirror along the X axis') }],
+            [t('Along Y axis'), mirror('y'), { title: t('Mirror along the Y axis') }],
+            [t('Along Z axis'), mirror('z'), { title: t('Mirror along the Z axis') }],
           ],
         }],
-        ['Split', null, {
+        [t('Split'), null, {
           disabled: !part,
-          title: 'Split the selected object',
+          title: t('Split the selected object'),
           items: [
-            ['To objects', null, { disabled: true, title: 'Split the selected object into multiple objects' }],
-            ['To parts', () => this.split(false), { disabled: !part, title: 'Split the selected object into multiple parts' }],
+            [t('To objects'), null, { disabled: true, title: t('Split the selected object into multiple objects') }],
+            [t('To parts'), () => this.split(false), { disabled: !part, title: t('Split the selected object into multiple parts') }],
           ],
         }],
         null,
-        ['Change type', null, {
+        [t('Change type'), null, {
           disabled: items.length !== 1,
           items: types.map(([label, kind]) => [label, () => this.commit({ op: 'part_type', object, parts: ids, kind }), { checked: kinds.size === 1 && kinds.has(kind) }]),
         }],
@@ -544,11 +544,11 @@
       if (filaments > 1 && [...kinds].every((kind) => kind === 'part' || kind === 'modifier')) {
         const names = (project.choices && project.choices.filaments) || [];
         const set = (filament) => () => this.commit({ op: 'part_filament', object, parts: ids, filament });
-        menu.push([items.length === 1 ? 'Change Filament' : 'Set Filament for selected items', null, {
-          title: 'Change Filament',
+        menu.push([items.length === 1 ? t('Change Filament') : t('Set Filament for selected items'), null, {
+          title: t('Change Filament'),
           items: [
-            ['Default', set(0), { checked: own === null }],
-            ...Array.from({ length: filaments }, (_, at) => [names[at] || `Filament ${at + 1}`, set(at + 1), { checked: own === at + 1 }]),
+            [t('Default'), set(0), { checked: own === null }],
+            ...Array.from({ length: filaments }, (_, at) => [names[at] || fmt(t('Filament %d'), at + 1), set(at + 1), { checked: own === at + 1 }]),
           ],
         }]);
       }
@@ -659,8 +659,9 @@
       b.splitParts.disabled = this.busy || !((target && target.split.parts) || this.splitPart());
       b.undo.disabled = this.busy || !history.undo;
       b.redo.disabled = this.busy || !history.redo;
-      b.undo.title = `Undo [Ctrl+Z]${history.undo ? `\n${history.undo}` : ''}`;
-      b.redo.title = `Redo [Ctrl+Y]${history.redo ? `\n${history.redo}` : ''}`;
+      // What would be undone is named by the reference's message id.
+      b.undo.title = `${t('Undo')} [Ctrl+Z]${history.undo ? `\n${t(history.undo)}` : ''}`;
+      b.redo.title = `${t('Redo')} [Ctrl+Y]${history.redo ? `\n${t(history.redo)}` : ''}`;
       for (const tool of Object.keys(TOOLS)) {
         b[tool].disabled = !this.usable(tool, chosen);
         b[tool].setAttribute('aria-pressed', String(this.tool === tool));
@@ -670,7 +671,7 @@
       // (Plater.cpp `validate_current_plate`).
       const over = data && data.placings.some((placing) => placing.over && placing.plate === project.plate);
       if (over) {
-        this.warning.textContent = 'An object is laid over the boundary of plate or exceeds the height limit.\nPlease solve the problem by moving it totally on or off the plate, and confirming that the height is within the build volume.';
+        this.warning.textContent = t('An object is laid over the boundary of plate or exceeds the height limit.\nPlease solve the problem by moving it totally on or off the plate, and confirming that the height is within the build volume.');
         this.warning.hidden = false;
       }
       this.showFields();
@@ -1156,8 +1157,8 @@
       if (this.tool === 'flatten') {
         // GLGizmoFlatten.cpp `on_render_input_window`, its convex hull mode.
         const faces = this.faces && this.faces.list;
-        const hint = !faces ? '…' : faces.length ? 'Click a highlighted face to lay the object on it.' : 'No resting faces found on the convex hull.';
-        this.panel.replaceChildren(el('h3', { textContent: 'Lay on face' }), el('p', { className: 'edit-hint', textContent: hint }));
+        const hint = !faces ? '…' : faces.length ? t('Click a highlighted face to lay the object on it.') : 'No resting faces found on the convex hull.';
+        this.panel.replaceChildren(el('h3', { textContent: t('Lay on face') }), el('p', { className: 'edit-hint', textContent: hint }));
         return;
       }
       const m = this.measured(chosen);
@@ -1187,9 +1188,9 @@
       }
       const head = [el('span'), ...['X', 'Y', 'Z'].map((axis) => el('b', { className: `gl-${axis.toLowerCase()}`, textContent: axis }))];
       const frame = () => {
-        const pick = el('select', { title: 'Coordinate system used for transform actions.' });
-        pick.setAttribute('aria-label', 'Coordinate system used for transform actions.');
-        pick.append(new Option('World', 'world'), new Option('Object', 'object'));
+        const pick = el('select', { title: t('Coordinate system used for transform actions.') });
+        pick.setAttribute('aria-label', t('Coordinate system used for transform actions.'));
+        pick.append(new Option(t('World'), 'world'), new Option(t('Object'), 'object'));
         pick.value = this.fields.frame;
         pick.disabled = !m.one;
         pick.addEventListener('change', () => { this.fields.frame = pick.value; this.fields.of = ''; this.showFields(); });
@@ -1209,14 +1210,14 @@
           // In the object's own coordinates the fields are how far to go
           // along its own axes; Z is the lowest point, which stays on the
           // bed. A part's Z can be typed: it moves within its object.
-          ...row('Position', object ? [0, 0, 0] : m.position, { unit: 'mm', key: object ? 'along' : 'position', off: this.partMode() ? [] : [2] }), el('span'));
+          ...row(t('Position'), object ? [0, 0, 0] : m.position, { unit: 'mm', key: object ? 'along' : 'position', off: this.partMode() ? [] : [2] }), el('span'));
       } else if (this.tool === 'rotate') {
-        grid.append(el('span', { className: 'edit-label', textContent: 'World', title: 'Coordinate system used for transform actions.' }), ...head.slice(1), el('span'),
-          ...row('Relative', this.fields.relative, { unit: '°', key: 'relative' }),
-          reset('Reset current rotation to the value when open the rotation tool.', () => this.typed('relative-reset'), this.fields.relative.some((angle) => Math.abs(angle) > 1e-9)));
+        grid.append(el('span', { className: 'edit-label', textContent: t('World'), title: t('Coordinate system used for transform actions.') }), ...head.slice(1), el('span'),
+          ...row(t('Relative'), this.fields.relative, { unit: '°', key: 'relative' }),
+          reset(t('Reset current rotation to the value when open the rotation tool.'), () => this.typed('relative-reset'), this.fields.relative.some((angle) => Math.abs(angle) > 1e-9)));
         if (m.angles) {
-          grid.append(...row('Absolute', m.angles, { unit: '°', key: 'absolute' }),
-            reset('Reset current rotation to real zeros.', () => this.typed('absolute-reset'), m.turned));
+          grid.append(...row(t('Absolute'), m.angles, { unit: '°', key: 'absolute' }),
+            reset(t('Reset current rotation to real zeros.'), () => this.typed('absolute-reset'), m.turned));
         }
       } else {
         // In the world's coordinates an object that is turned is sized
@@ -1225,14 +1226,14 @@
         const uniform = el('input', { type: 'checkbox', checked: this.fields.uniform || whole, disabled: whole });
         uniform.addEventListener('change', () => { this.fields.uniform = uniform.checked; });
         grid.append(frame(), ...head.slice(1), el('span'),
-          ...row('Scale', m.scale, { unit: '%', key: 'scale', min: 0.01 }),
-          reset('Reset', () => this.typed('scale-reset'), m.one && m.scale.some((value) => Math.abs(value - 100) > 1e-6)),
-          ...row('Size', m.size, { unit: 'mm', key: 'size', min: 0.001 }), el('span'));
-        foot = [el('label', { className: 'edit-check' }, uniform, ' uniform scale')];
+          ...row(t('Scale'), m.scale, { unit: '%', key: 'scale', min: 0.01 }),
+          reset(t('Reset'), () => this.typed('scale-reset'), m.one && m.scale.some((value) => Math.abs(value - 100) > 1e-6)),
+          ...row(t('Size'), m.size, { unit: 'mm', key: 'size', min: 0.001 }), el('span'));
+        foot = [el('label', { className: 'edit-check' }, uniform, ` ${t('uniform scale')}`)];
       }
       // GizmoObjectManipulation.cpp `update_settings_value`: one part is a
       // volume, several a group.
-      const title = !this.partMode() ? 'Object Operations' : chosen.copies.length === 1 ? 'Volume Operations' : 'Group Operations';
+      const title = !this.partMode() ? t('Object Operations') : chosen.copies.length === 1 ? t('Volume Operations') : t('Group Operations');
       this.panel.replaceChildren(el('h3', { textContent: title }), grid, ...foot);
     },
 

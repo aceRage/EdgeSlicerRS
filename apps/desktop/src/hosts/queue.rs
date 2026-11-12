@@ -11,6 +11,8 @@ use std::sync::{
 
 use serde_json::{Value, json};
 
+use crate::api::i18n::tr;
+
 use super::{Failure, Host, Progress, Upload};
 
 /// A job's state, in the queue's words (`PrintHostQueueDialog::set_state`).
@@ -55,7 +57,15 @@ struct Job {
     message: String,
 }
 
-type Work = (u32, Box<dyn Host>, Upload, Arc<Progress>);
+/// A job to send, with the language of the call that queued it, in which
+/// what goes wrong is said.
+type Work = (
+    u32,
+    Box<dyn Host>,
+    Upload,
+    Arc<Progress>,
+    Arc<crate::api::i18n::Catalog>,
+);
 
 #[derive(Default)]
 pub struct Queue {
@@ -96,13 +106,16 @@ impl Queue {
             let (sender, receiver) = channel::<Work>();
             let jobs = self.jobs.clone();
             std::thread::spawn(move || {
-                for (id, host, upload, progress) in receiver {
-                    run(&jobs, id, host.as_ref(), &upload, &progress);
+                for (id, host, upload, progress, language) in receiver {
+                    crate::api::i18n::with(language, || {
+                        run(&jobs, id, host.as_ref(), &upload, &progress);
+                    });
                 }
             });
             sender
         });
-        let _ = sender.send((id, host, upload, progress));
+        let language = crate::api::i18n::current();
+        let _ = sender.send((id, host, upload, progress, language));
         id
     }
 
@@ -154,7 +167,7 @@ impl Queue {
                     "size": job.size,
                     "start": job.start,
                     "state": format!("{:?}", job.state).to_lowercase(),
-                    "said": job.state.said(),
+                    "said": tr(job.state.said()),
                     "progress": percent,
                     "stage": lock(&job.progress.stage).clone(),
                     "message": job.message,
@@ -194,7 +207,8 @@ fn run(jobs: &Mutex<Vec<Job>>, id: u32, host: &dyn Host, upload: &Upload, progre
         Err(Failure::Cancelled) => job.state = State::Canceled,
         Err(Failure::Error(error)) => {
             job.state = State::Error;
-            job.message = format!("Error uploading to print host:\n{error}");
+            // PrintHostDialogs.cpp l.2568: "%1%\n%2%".
+            job.message = format!("{}:\n{error}", tr("Error uploading to print host"));
         }
     }
 }

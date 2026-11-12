@@ -12,31 +12,37 @@
 // Loaded after settings.js and before app.js, whose `call`, `$`, `el`,
 // `state`, `attempt` and the rest are used once the page runs.
 
-// Every word this adds to the page. The reference's are its message ids,
-// as written in its source; the rest are this app's.
+// Every word this adds to the page. The reference's go through the
+// translation layer as its message ids, as written in its source (`t`,
+// i18n.js; this script runs once the language's table is in); the rest
+// are this app's, listed in src/api/i18n/wording.txt and shown in
+// English in every language.
 const OBJECT_WORDS = {
   // ParamsPanel.cpp `create_layout`.
-  global: 'Global',
-  objects: 'Objects',
+  global: t('Global'),
+  objects: t('Objects'),
   // Tab.cpp `m_tt_value_unlock`, on an item's own value.
-  revert: 'Click to reset current value and attach to the global value.',
+  revert: t('Click to reset current value and attach to the global value.'),
   // GUI_ObjectList.cpp, the editing column's tooltip.
-  resetAll: 'Click the icon to reset all settings of the object',
-  // ObjectDataViewModel.cpp: "Layers", and "Range %.2f-%.2f (mm)".
-  layers: 'Layers',
-  range: 'Range',
-  mm: 'mm',
+  resetAll: t('Click the icon to reset all settings of the object'),
+  // Tab.cpp, the global pages' reset of all (as index.html has it).
+  resetPreset: t('Click to reset all settings to the last saved preset.'),
+  // ObjectDataViewModel.cpp: "Layers", and a range's row, which the
+  // reference builds of pieces: _(L("Range")) + " %.2f-%.2f " + "(" + _("mm") + ")".
+  layers: t('Layers'),
+  range: t('Range'),
+  mm: t('mm'),
   // GUI_Factories.cpp: the object menu.
-  heightRange: 'Height range Modifier',
-  editProcess: 'Edit Process Settings',
+  heightRange: t('Height range Modifier'),
+  editProcess: t('Edit Process Settings'),
   // GUI_ObjectLayers.cpp.
-  addRange: 'Add height range',
-  removeRange: 'Remove height range',
-  invalid: 'Invalid numeric.',
+  addRange: t('Add height range'),
+  removeRange: t('Remove height range'),
+  invalid: t('Invalid numeric.'),
   // ObjectDataViewModel.cpp's kinds of row.
-  object: 'Object',
-  part: 'Part',
-  modifier: 'Modifier',
+  object: t('Object'),
+  part: t('Part'),
+  modifier: t('Modifier'),
   // This app's own.
   revertLabel: 'reset to the value over it',
   modeLabel: 'Whose process settings are shown',
@@ -159,7 +165,7 @@ function showModeHead(item) {
   line.hidden = !on;
   line.textContent = on && item && item.object !== undefined ? itemName(item) : '';
   line.title = line.textContent;
-  $('process-reset').title = on ? OBJECT_WORDS.resetAll : 'Click to reset all settings to the last saved preset.';
+  $('process-reset').title = on ? OBJECT_WORDS.resetAll : OBJECT_WORDS.resetPreset;
   markObjectsSwitch();
 }
 
@@ -307,7 +313,7 @@ window.ObjectSettings = {
   selected: itemSelected,
 };
 
-document.addEventListener('DOMContentLoaded', () => {
+document.addEventListener('scripts-loaded', () => {
   const group = $('process-mode-switch');
   group.setAttribute('aria-label', OBJECT_WORDS.modeLabel);
   $('process-global').textContent = OBJECT_WORDS.global;

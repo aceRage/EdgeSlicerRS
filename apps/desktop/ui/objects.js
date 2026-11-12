@@ -8,7 +8,7 @@
 // change goes through scene-edit.js as one `scene_edit` call.
 (function (GL) {
   // What a part is, in the reference's words (ModelVolumeType).
-  const PART_KINDS = { part: 'Part', negative: 'Negative Part', modifier: 'Modifier', support_blocker: 'Support Blocker', support_enforcer: 'Support Enforcer', precise_seam: 'Precise Seam' };
+  const PART_KINDS = { part: t('Part'), negative: t('Negative Part'), modifier: t('Modifier'), support_blocker: t('Support Blocker'), support_enforcer: t('Support Enforcer'), precise_seam: t('Precise Seam') };
   // Each kind's own mark before a part's name, as the reference marks
   // its volumes (`ADD_VOLUME_MENU_ITEMS`' icons): the page's own drawings.
   const KIND_ICONS = {
@@ -20,8 +20,8 @@
     precise_seam: 'M2.5,2.5h11v11h-11ZM8,2.5v2M8,6.5v3M8,11.5v2',
   };
   // GUI_ObjectList.cpp `check_last_selection`: one kind of row at a time.
-  const CONFLICT_OBJECT = 'Selection conflicts\n\nIf the first selected item is an object, the second should also be an object.';
-  const CONFLICT_PART = 'Selection conflicts\n\nIf the first selected item is a part, the second should be a part in the same object.';
+  const CONFLICT_OBJECT = `${t('Selection conflicts')}\n\n${t('If the first selected item is an object, the second should also be an object.')}`;
+  const CONFLICT_PART = `${t('Selection conflicts')}\n\n${t('If the first selected item is a part, the second should be a part in the same object.')}`;
   const icon = (path) => {
     const node = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
     node.setAttribute('viewBox', '0 0 16 16');
@@ -106,11 +106,11 @@
         node.style.background = css(GL.Scene.filamentColour(data.colours, filament));
         return node;
       };
-      const parts = [el('div', { className: 'obj-head' }, el('span', { textContent: 'Name' }), el('span'), el('span', { textContent: 'Fila.', title: 'Filament' }))];
+      const parts = [el('div', { className: 'obj-head' }, el('span', { textContent: t('Name') }), el('span'), el('span', { textContent: t('Fila.'), title: t('Filament') }))];
       for (const group of this.groups(data)) {
         if (group.plate || group.outside) {
           const current = group.plate && group.plate.id === project.plate;
-          const name = group.outside ? 'Outside' : `Plate ${group.plate.id}${group.plate.name ? ` (${group.plate.name})` : ''}`;
+          const name = group.outside ? t('Outside') : `${t('Plate')} ${group.plate.id}${group.plate.name ? ` (${group.plate.name})` : ''}`;
           const title = el('button', { type: 'button', className: 'obj-plate-name', textContent: name, disabled: Boolean(group.outside) });
           const head = el('div', { className: `obj-plate${current ? ' current' : ''}` }, title);
           if (group.plate) {
@@ -119,7 +119,7 @@
             if (GL.plateTools) title.addEventListener('keydown', (event) => GL.plateTools.keyMenu(event, title, group.plate.id));
             // A locked plate says so (`PartPlate::is_locked`).
             if (group.plate.locked) {
-              title.title = `${name}: locked`;
+              title.title = `${name}: ${t('Lock')}`;
               const lock = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
               lock.setAttribute('viewBox', '0 0 16 16');
               lock.setAttribute('class', 'lock-mark');
@@ -130,8 +130,8 @@
               head.append(lock);
             }
             if (data.plates.length > 1) {
-              const remove = el('button', { type: 'button', className: 'icon tool', title: 'Remove current plate (if not last one)', textContent: '✕' });
-              remove.setAttribute('aria-label', `Remove plate ${group.plate.id}`);
+              const remove = el('button', { type: 'button', className: 'icon tool', title: t('Remove current plate (if not last one)'), textContent: '✕' });
+              remove.setAttribute('aria-label', `${t('Remove current plate (if not last one)')}: ${group.plate.id}`);
               remove.addEventListener('click', () => GL.edit.commit({ op: 'delete_plate', plate: group.plate.id }));
               head.append(remove);
             }
@@ -150,10 +150,10 @@
       const ids = row.copies.map((copy) => copy.id);
       if (row.part) return this.partRow(row, ids, swatch);
       if (row.layers || row.range) return this.rangeRow(row, ids);
-      const label = row.child ? `Instance ${row.number}` : (row.object.name || project.file || 'Object');
+      const label = row.child ? `Instance ${row.number}` : (row.object.name || project.file || t('Object'));
       const printable = row.copies.every((copy) => copy.printable);
-      const eye = el('button', { type: 'button', className: 'icon tool obj-print', title: 'Printable', textContent: printable ? '●' : '○' });
-      eye.setAttribute('aria-label', `Printable: ${label}`);
+      const eye = el('button', { type: 'button', className: 'icon tool obj-print', title: t('Printable'), textContent: printable ? '●' : '○' });
+      eye.setAttribute('aria-label', `${t('Printable')}: ${label}`);
       eye.setAttribute('aria-pressed', String(printable));
       eye.addEventListener('click', () => GL.edit.commit({ op: 'printable', copies: ids, value: !printable }));
       const name = el('button', { type: 'button', className: 'obj-name', textContent: label, title: label });
@@ -174,7 +174,7 @@
         // The filament the object prints in; its parts may differ, which
         // the list shows as none chosen.
         const select = el('select');
-        select.setAttribute('aria-label', `Filament of ${label}`);
+        select.setAttribute('aria-label', `${t('Filament')}: ${label}`);
         if (!row.object.filament) select.append(new Option('…', ''));
         for (let filament = 1; filament <= Math.max(filaments, row.object.filament || 0); filament += 1) select.append(new Option(String(filament), String(filament)));
         select.value = row.object.filament ? String(row.object.filament) : '';
@@ -199,7 +199,7 @@
     partRow(row, ids, swatch) {
       const { el, listbox } = this.host;
       const { part } = row;
-      const kind = PART_KINDS[part.kind] || 'Part';
+      const kind = PART_KINDS[part.kind] || t('Part');
       const label = part.name || `${kind} ${row.number}`;
       const name = el('button', { type: 'button', className: 'obj-name', title: `${label}\n${kind}` }, icon(KIND_ICONS[part.kind] || KIND_ICONS.part), el('span', { className: 'obj-label', textContent: label }));
       const node = el('div', { className: `obj-row child part${part.kind === 'part' ? '' : ' helper'}` }, this.named(name, part.settings, { object: row.object.id, part: part.id }), el('span'));
@@ -223,20 +223,20 @@
         const filaments = GL.edit.filamentCount();
         const follows = row.object.own_filament || 1;
         const select = el('select');
-        select.setAttribute('aria-label', `Filament of ${label}`);
+        select.setAttribute('aria-label', `${t('Filament')}: ${label}`);
         // "default" reads in the list; closed, the cell shows the number
         // it then prints in, as the reference's cell shows the object's.
-        const fallback = new Option('default', '');
+        const fallback = new Option(t('default'), '');
         fallback.label = String(follows);
         select.append(fallback);
         for (let filament = 1; filament <= Math.max(filaments, part.own || 0); filament += 1) select.append(new Option(String(filament), String(filament)));
         select.value = part.own ? String(part.own) : '';
-        select.title = part.own ? `Filament ${part.own}` : `default: the object's, filament ${follows}`;
+        select.title = part.own ? fmt(t('Filament %d'), part.own) : `${t('default')}: ${fmt(t('Filament %d'), follows)}`;
         select.addEventListener('change', () => {
           GL.edit.commit({ op: 'part_filament', object: row.object.id, parts: [part.id], filament: Number(select.value) || 0 });
         });
         const list = listbox(select, { bare: true, decorate: (item, option) => {
-          if (!option.value) item.querySelector('.lb-text').textContent = 'default';
+          if (!option.value) item.querySelector('.lb-text').textContent = t('default');
           item.prepend(swatch(option.value ? Number(option.value) : follows));
         } });
         cell.append(swatch(part.own || (part.kind === 'part' ? part.filament : follows)), list);
@@ -300,7 +300,7 @@
       const { el } = this.host;
       const text = name.querySelector('.obj-label').textContent;
       const input = el('input', { type: 'text', className: 'obj-rename', value: text, spellcheck: false });
-      input.setAttribute('aria-label', 'Name');
+      input.setAttribute('aria-label', t('Name'));
       let done = false;
       const end = (take) => {
         if (done) return;
@@ -406,7 +406,7 @@
       if (!name) return;
       const { el } = this.host;
       const input = el('input', { type: 'text', className: 'obj-rename', value: name.textContent, spellcheck: false });
-      input.setAttribute('aria-label', 'Name');
+      input.setAttribute('aria-label', t('Name'));
       let done = false;
       const end = (take) => {
         if (done) return;

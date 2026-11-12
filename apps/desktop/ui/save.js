@@ -52,9 +52,9 @@ async function saveProject(id = activeId(), saveAs = false) {
       answer = await call('project_save', args);
     } catch (error) {
       await askThree({
-        title: 'Save project',
-        text: `Failed to save the project.\nPlease check whether the folder exists online or if other programs open the project file.\n\n${error.message}`,
-        answers: [['ok', 'OK']],
+        title: t('Save project'),
+        text: `${t('Failed to save the project.\nPlease check whether the folder exists online or if other programs open the project file.')}\n\n${error.message}`,
+        answers: [['ok', t('OK')]],
       });
       return false;
     }
@@ -71,9 +71,9 @@ async function saveProject(id = activeId(), saveAs = false) {
     } else if (answer.ask === 'losses') {
       // This app's own question: the reference keeps everything it reads.
       const { answer: sure } = await askThree({
-        title: 'Save project',
+        title: t('Save project'),
         text: `"${answer.name}" would be saved without:\n\n${answer.losses.map((loss) => `• ${loss}`).join('\n')}\n\nSave it all the same?`,
-        answers: [['yes', 'Save'], ['cancel', 'Cancel']],
+        answers: [['yes', t('Save')], ['cancel', t('Cancel')]],
       });
       if (sure !== 'yes') return false;
       args.accept = true;
@@ -87,9 +87,9 @@ async function saveProject(id = activeId(), saveAs = false) {
 // Answers whether to go on closing it (it was saved, or is not to be).
 async function saveBeforeClosing(id, name) {
   const { answer } = await askThree({
-    title: 'Close project',
-    text: `"${name}" has unsaved changes. Save them before closing it?`,
-    answers: [['yes', 'Yes'], ['no', 'No'], ['cancel', 'Cancel']],
+    title: t('Close project'),
+    text: fmt(t('"%s" has unsaved changes. Save them before closing it?'), name),
+    answers: [['yes', t('Yes')], ['no', t('No')], ['cancel', t('Cancel')]],
   });
   if (answer === 'cancel') return false;
   if (answer === 'yes') return saveProject(id);
@@ -104,18 +104,18 @@ async function saveBeforeQuitting() {
   if (!unsaved.length) return true;
   if (projects < 2) {
     const { answer } = await askThree({
-      title: 'EdgeSlicerRS - Save',
-      text: 'The current project has unsaved changes, save it before continue?',
-      answers: [['yes', 'Yes'], ['no', 'No'], ['cancel', 'Cancel']],
+      title: `EdgeSlicerRS - ${t('Save')}`,
+      text: t('The current project has unsaved changes, save it before continue?'),
+      answers: [['yes', t('Yes')], ['no', t('No')], ['cancel', t('Cancel')]],
     });
     if (answer === 'cancel') return false;
     return answer === 'no' || saveProject(unsaved[0].id);
   }
   const { answer, ticked } = await askThree({
-    title: 'Unsaved projects',
-    text: 'These projects have unsaved changes. Save the ticked ones before closing?',
+    title: t('Unsaved projects'),
+    text: t('These projects have unsaved changes. Save the ticked ones before closing?'),
     ticks: unsaved.map((project) => project.name + (project.path ? `  (${project.path})` : '')),
-    answers: [['yes', 'Save'], ['no', "Don't save"], ['cancel', 'Cancel']],
+    answers: [['yes', t('Save')], ['no', t("Don't save")], ['cancel', t('Cancel')]],
   });
   if (answer === 'cancel') return false;
   if (answer === 'yes') {
