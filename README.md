@@ -32,12 +32,12 @@ replaces it until output matches on the printers we care about.
 | `crates/edge-time` | How long a G-code file takes, with acceleration: the file is read as a printer reads it and planned as the reference's estimator plans, or as Klipper does |
 | `crates/edge-tower` | The prime tower a nozzle is primed on after a tool change |
 | `crates/edge-slice` | Mesh to per-layer contours, with the model's corners and not its triangles', then to regions with holes; parallel across layers. Elephant foot compensation of the first layers; round holes made polygons of few sides, and round outlines and holes resized by what the filament prints them off by; the last layers' heights tuned so a part comes out its exact height, and layers grown downward under overhangs so they can be printed |
-| `crates/edge-engine` | The whole pipeline behind one call, for whatever drives it: open a model and list its plates, settle its settings, slice with progress and cancel, G-code, a layer's lines for drawing, a vendor's presets by printer, and its printer models with the presets, picture and sizes of each; and, for a set of settings, which of them a slice reads and what it notes (`followed`) |
+| `crates/edge-engine` | The whole pipeline behind one call, for whatever drives it: open a model and list its plates, settle its settings, slice with progress and cancel, G-code, a layer's lines for drawing, a vendor's presets by printer, and its printer models with the presets, picture and sizes of each; and, for a set of settings, which of them a slice reads and what it notes (`followed`); where a setting may be set for one object, part or height range and whether it is followed there (`settable`), and the regions a plate is shared out among (`regions.rs`) |
 | `crates/edge-cli` | The `edge` command line |
 | `tools/make_defaults.py` | Asks the reference for its default of every setting and writes the table `edge-config` carries; run again when the pin moves |
 | `tools/make_settings_pages.py` | Reads the reference's process, filament and printer pages and option definitions from its source and writes the data the desktop app draws its settings pages from; run again when the pin moves, after `make_defaults.py` |
 | `tools/make_translations.py` | Reads the reference's gettext catalogs (`localization/i18n/<language>/*.po`) and writes the desktop app's table of each language, English included, only the entries gettext would use; run again when the pin moves |
-| `tools/make_fixture.py` | Writes small test 3MFs (parts that need supports or a brim, a plain cube, two blocks in two filaments, a comb with thin teeth on the bed, three tiers with a top surface on each, bars over a base for small bridges over infill, a slab with round holes for the hole options, a slab with holes that narrow on the way up for bridging them, a slab with pockets underneath, three round ones for arc fitting: a post, a post with a hole, a slab with a wide curve and tight ones, a post that widens as it rises for scarf seams, two of two parts for seams where parts meet: a round post cut in two, and a block with a post pushed half into it, and two with seams painted on: a post with a strip painted to have them, and a cube with two sides painted to keep them off, a plate on a frame with walls wholly over air, and for Z contouring a wedge of 4 degrees, a shallow dome, a ramp meeting a flat, and the wedge with a hole down through it) to compare with the reference on |
+| `tools/make_fixture.py` | Writes small test 3MFs (parts that need supports or a brim, a plain cube, two blocks in two filaments, a comb with thin teeth on the bed, three tiers with a top surface on each, bars over a base for small bridges over infill, a slab with round holes for the hole options, a slab with holes that narrow on the way up for bridging them, a slab with pockets underneath, three round ones for arc fitting: a post, a post with a hole, a slab with a wide curve and tight ones, a post that widens as it rises for scarf seams, two of two parts for seams where parts meet: a round post cut in two, and a block with a post pushed half into it, and two with seams painted on: a post with a strip painted to have them, and a cube with two sides painted to keep them off, a plate on a frame with walls wholly over air, and for Z contouring a wedge of 4 degrees, a shallow dome, a ramp meeting a flat, and the wedge with a hole down through it; and for regions, settings set on the object, a part, a height range (`object:`, `partN:`, `range:LOW:HIGH:` before a setting), a cube with a modifier box through its right half and with a second through its front half, a mushroom with a support blocker under half its cap, and a block leaning out 50 degrees with a support enforcer over its leaning side or that side's near half painted to have supports) to compare with the reference on |
 | `tools/make_app.sh` | Builds the desktop app and wraps it in a macOS `.app` that opens with a double click (macOS only) |
 | `tools/make_project.py` | Writes one of those parts as a project whose settings are named presets, with as many filaments as are named, each list holding the value each filament reads at standard flow: how the test prints for a printer are made |
 | `reference/EdgeSlicer` | Pinned submodule of the C++ slicer: profiles, test models, behaviour to match. Read-only here |
@@ -649,8 +649,94 @@ Working:
   of a solid layer keep 57% of their plastic where the reference's
   keep 66% (0.84 mm of filament of 1.47 mm, against 1.06 mm of 1.59).
 
-Known gaps: painted supports and seams, per-object setting overrides, typed settings
-(values are text until a stage needs them), and modifier parts.
+- Regions: settings that belong to one object, one part or one band
+  of an object's height, and the parts that are not printed but change
+  what is (`crates/edge-engine/src/regions.rs`, ported from
+  PrintApply.cpp `generate_print_object_regions`, PrintObject.cpp
+  `region_config_from_model_volume`, PrintObjectSlice.cpp
+  `slices_to_regions`, Layer.cpp `make_perimeters`, Fill.cpp
+  `group_fills`). Everything on a plate is sliced together, and each
+  layer is shared out among keys, one a region: a filament's number for
+  the plate's settings in that filament, as it always was, and a number
+  from 2^20 up for a region with settings of its own: the plate's with
+  the object's laid over them (object-level and region-level keys),
+  then the part's (region-level), then a height range's, then each
+  modifier's in turn. A part that sets back what its object changed is
+  the plate's region again, as the reference finds regions by comparing
+  configs, so a plate that sets nothing of its own slices exactly as
+  before. Walls, surfaces and shells, fill, ironing and the bridges
+  laid over an object's holes read their settings from the region; the
+  G-code writer lays a region's walls and fill at its own speeds,
+  accelerations, flow and wall order (`edge_gcode::Layer::region`).
+  Regions whose walls are alike (`is_perimeter_compatible`'s keys, and
+  fuzzy skin, below) have one set laid round all of them, by the
+  settings of the densest, each keeping its own part of the area inside;
+  regions in one filament whose fill is laid alike and at the same
+  speeds on a layer are filled as one. The single set of walls that
+  tells walls between regions from the shell is as deep as the deepest
+  walls on each layer (`discover_vertical_shells`). Tool order is
+  worked out for tools, each printing its regions in turn.
+  - Modifiers take what of their own object's parts lies inside them on
+    each layer, every region they meet becoming one with the modifier's
+    settings over its own, a later modifier laid over an earlier where
+    they overlap; one that sets nothing new leaves its parent's region,
+    and one with a filament of its own prints what it takes in it.
+    Height ranges (`Metadata/layer_config_ranges.xml`) give the object's
+    parts their settings on the ranges' layers, before the modifiers.
+  - Support blockers and enforcers, and supports painted on or off
+    (`paint_supports`, the downward faces projected onto the layers they
+    hang over): normal supports take blockers out of the overhangs and
+    hold up what of a layer an enforcer covers that the layer below does
+    not; organic trees do the same, an enforced area grown by a tip's
+    diameter, and keep their branches out of blocker volumes
+    (TreeModelVolumes.cpp `m_anti_overhang`). `normal(manual)` and
+    `tree(manual)` hold up only what is enforced. With `enable_support`
+    off nothing is supported, enforcers or not, as in the reference.
+  - An object's own brim (`brim_type`, `brim_width`, `brim_object_gap`).
+  - `edge_engine::settable(key)` says whether the reference reads a
+    setting on an object, a part or modifier, a height range, and
+    whether this engine follows it there; the desktop app builds its
+    object and part settings lists on it.
+
+  What is followed where (anything else set on an object, part,
+  modifier or range that differs from the plate is a note naming it and
+  what set it; a setting the reference itself ignores there is not):
+
+  | Settings | Object | Part | Modifier | Height range |
+  | --- | --- | --- | --- | --- |
+  | wall count, wall order, line widths, wall generator (object), Arachne options (object) | yes | yes | yes | yes |
+  | top and bottom shell layers and thicknesses, solid infill | yes | yes | yes | yes |
+  | sparse infill density and pattern, infill direction, anchors | yes | yes | yes | yes |
+  | speeds, accelerations, flow ratios of walls and fill | yes | yes | yes | yes |
+  | fuzzy skin | yes | yes | yes | yes |
+  | ironing | yes | yes | yes | yes |
+  | the part's filament (`extruder`) | yes | yes | yes | no (as the reference) |
+  | wall, sparse and solid infill filaments | noted | noted | noted | noted |
+  | brim type, width and gap | yes | ignored (as the reference) | ignored | ignored |
+  | `layer_height` | noted | ignored | ignored | noted |
+  | supports on/off and their options, `seam_position`, elephant foot, XY compensation, closing radius | noted | ignored | ignored | ignored |
+  | holes to polyholes, `make_overhang_printable`, Z contouring, scarf seams, bridges over sparse fill, `enable_extra_bridge_layer` | noted | noted | noted | noted |
+  | EdgeSlicer support groups (`support_group` on a part) | | noted | | |
+
+  Not as the reference, each marked in the code: where parts of one
+  object with settings of their own overlap, the region with the
+  higher key keeps the overlap, where the reference gives it to the
+  part later in the object's list; a region keeps one set of fuzzy skin
+  settings, so regions that differ only in fuzzy skin get walls of their
+  own where the reference lays one set and fuzzes each piece by its
+  region; painted triangles that stand upright, which the reference
+  hands tree supports as points to grow a tip from, are not followed;
+  colour painted on an object with settings of its own prints with the
+  plate's settings (a note says so). Not done, and noted: an object's
+  own layer height (everything on a plate is cut at the same heights,
+  so the reference's objects of different layer heights, and what that
+  asks of a prime tower, do not arise), supports on or off for one
+  object, and an object's own seam position.
+
+Known gaps: typed settings (values are text until a stage needs them),
+an object's own layer height, supports and seam position, and the
+feature filaments (`wall_filament`, `sparse_infill_filament`,
+`solid_infill_filament`).
 
 - Infill: each layer's inside is split into top, bottom, bridge, solid
   shell and sparse areas (`top_shell_layers`, `bottom_shell_layers`,
@@ -1468,15 +1554,14 @@ lays walls round the crack, a slit of two loops in the middle of a
 solid area. That is not copied. The bounded depths
 (`paint_depth_mode` at `walls` or `millimeters`), interlocking and
 `top_color_penetration_layers` are noted and not followed. Seams
-painted on or off are followed (G-code, Seams, below). Painted supports
-and fuzzy skin are not read; a project that has either painted on says
-so when it is sliced. Paint is read through one reader of the codes
-(`edge_mesh::selector::code`), and paint made with the desktop app's
-painting tools goes into the model (`Model::set_paint`) and is saved as
-the reference saves it.
+painted on or off are followed (G-code, Seams, below), and so are
+supports painted on or off (Regions, below). Painted fuzzy skin is not
+read; a project that has it painted on says so when it is sliced. Paint
+is read through one reader of the codes (`edge_mesh::selector::code`),
+and paint made with the desktop app's painting tools goes into the model
+(`Model::set_paint`) and is saved as the reference saves it.
 
-Not done in G-code: supports only where painted (none are
-generated, and a note says so), the older tree styles (`tree_slim`,
+Not done in G-code: the older tree styles (`tree_slim`,
 `tree_strong`, `tree_hybrid`: organic-style trees are built, with a note),
 rafts, brims inside holes, draft shields, seams put by Precise Seam
 parts (read as helpers, not printed, with a note), a fan speed of its own for bridges over infill, walls
@@ -3527,6 +3612,51 @@ written in 131 ms before and 137 ms after, of 1.92 s of processor
 time for the whole of it both times; `holes` in 36 ms and 42 ms;
 plate 1 of `mcbrim_test.3mf` in 554 ms and 550 ms. The files are the
 same at 1, 4 and 18 threads.
+
+### Regions
+
+Fixtures from `tools/make_fixture.py` on the U1 presets, against the C++
+slicer: metres of each feature, the reference's, then this engine's
+before regions were followed and after.
+
+| Fixture | Feature | Reference | Before | After |
+| --- | --- | ---: | ---: | ---: |
+| cube, object: 4 walls, 40% | inner wall / sparse | 21.34 / 27.18 | 7.44 / 14.36 | 21.34 / 27.17 |
+| block and post, post: 5 walls, 50% gyroid | inner wall / sparse | 8.72 / 5.94 | 3.72 / 5.42 | 8.75 / 5.93 |
+| block and post, post's speeds | filament mm | 750.0 | 696.9 | 749.4 |
+| cube, object: brim 8 mm | brim | 1.66 | 0 | 1.66 |
+| modifier, right half 50% | sparse / outer wall | 27.03 / 7.82 | 14.36 / 7.82 | 27.03 / 7.82 |
+| modifier, right half 4 walls | inner / outer wall / sparse | 20.85 / 11.65 / 11.93 | 7.44 / 7.82 / 14.36 | 20.85 / 11.65 / 12.34 |
+| two modifiers overlapping | inner wall / sparse | 20.85 / 21.69 | 7.44 / 14.36 | 20.85 / 21.69 |
+| height range 5-10 mm: 3 walls, 60% | inner wall / solid / sparse | 9.23 / 5.10 / 21.99 | 7.44 / 4.68 / 14.36 | 9.23 / 5.11 / 21.86 |
+| modifier, right half speeds | filament mm | 1415.9 | 1206.9 | 1416.3 |
+| mushroom, blocker, normal | support | 24.14 | 23.75 | 23.75 |
+| mushroom, blocker, tree | support / interface | 11.26 / 0.93 | 23.89 / 1.79 | 12.38 / 0.90 |
+| leaning block, enforcer, normal | support | 3.23 | 0 | 3.25 |
+| leaning block, enforcer, tree | support / interface | 2.72 / 1.48 | 0 / 0 | 3.22 / 1.00 |
+| leaning block, painted, normal | support / interface | 4.25 / 1.32 | 0 / 0 | 4.68 / 0 |
+| leaning block, painted, tree | support / interface | 6.08 / 3.25 | 0 / 0 | 5.41 / 2.20 |
+| leaning block, enforcer, `tree(manual)` | support / interface | 2.72 / 1.48 | 0 / 0 | 3.22 / 1.00 |
+
+Walls are the reference's to the metre on every layer of every
+modifier and range fixture; on the height range the solid fill the
+range's deeper walls ask of the layers next to it is there layer by
+layer. Left: with four walls in a narrow modifier region, sparse lines
+there are joined along the region's edge where the reference leaves
+them apart (+3.4% of sparse); travel between regions is up to a fifth
+shorter here, the order of regions within a layer being this engine's;
+painted supports come out within 11% of the reference's, the painted
+faces projected a little differently from `slice_mesh_slabs`. The
+reference's shipped projects with modifiers or part settings either do
+not slice in the reference from the command line (`override_paint_*`,
+`post_process_project`), stop here on a printer template variable not
+yet known (`auto_pa_line_*`), or set nothing this engine follows
+(EdgeSlicer support groups in `support_corpus`, noted; `stabilizer_v1`,
+stabilizers): their output is what it was. One of them,
+`support_corpus/twopart_groups_oversupport.3mf`, has a part that sets
+`over_support_*`, region-level, so the part is a region of its own: its
+walls are now the reference's on every layer (3.82% apart before, 0.00%
+now), filament 615.3 mm against 615.1 (606.5 before).
 
 ### Top surfaces on slopes
 

@@ -397,6 +397,13 @@ impl ModelCopy {
         self.local
     }
 
+    /// Takes the object's coordinates to the project's, in which each
+    /// plate stands where the reference's grid of plates puts it: what an
+    /// export of the model's objects places them by.
+    pub fn world(&self) -> Transform {
+        self.world
+    }
+
     /// The corners of its printed material in the coordinates of
     /// [`ModelCopy::transform`]; none when it has no printed material.
     pub fn reach(&self) -> Option<Reach> {
@@ -1329,7 +1336,7 @@ impl Model {
     /// each part named takes `kind` as its codes say, by the triangle's
     /// place in its mesh (`edge_mesh::selector::Selector::serialize`). Its
     /// slices go, its copies stay where they stand. Paint that is kept but
-    /// not followed by the slice (supports, fuzzy skin) is noted as such.
+    /// not followed by the slice (fuzzy skin) is noted as such.
     /// False when nothing changed.
     pub fn set_paint(
         &mut self,
@@ -1366,11 +1373,11 @@ impl Model {
         }
         self.objects[at].shape = next;
         // What is painted and not followed is said, as it is of a project
-        // read with it (`unread_paint`).
+        // read with it (`unread_paint`): fuzzy skin. Supports painted are
+        // followed (`regions`).
         let name = match kind {
-            PaintKind::Supports => Some("supports"),
             PaintKind::FuzzySkin => Some("fuzzy skin"),
-            PaintKind::Seam | PaintKind::Color => None,
+            PaintKind::Supports | PaintKind::Seam | PaintKind::Color => None,
         };
         if let Some(name) = name {
             let anywhere = self

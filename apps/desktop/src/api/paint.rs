@@ -961,7 +961,6 @@ impl Session {
             .find(|project| project.id == stage.id)
             .and_then(|project| project.file.clone());
         let unread = match painter.kind {
-            PaintKind::Supports => Some("supports"),
             PaintKind::FuzzySkin => Some("fuzzy skin"),
             _ => None,
         };

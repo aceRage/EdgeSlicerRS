@@ -1,0 +1,91 @@
+/* The menu bar in a browser (menu.js); the app's window has the system's.
+   A slim row over the strip and the tab bar, the menus' names as quiet
+   text; a menu opens as the page's other menus do (.menu), with each
+   entry's key at its right. On the tokens only (STYLE.md). */
+
+body.has-menubar {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  grid-template-rows: auto minmax(0, 1fr);
+}
+body.has-menubar #menubar { grid-column: 1 / -1; }
+body.has-menubar #strip, body.has-menubar #frame { min-height: 0; }
+
+#menubar {
+  display: flex;
+  align-items: stretch;
+  gap: 1px;
+  height: var(--menubar-height);
+  padding: 0 var(--space-1);
+  background: var(--surface-app);
+  border-bottom: 1px solid var(--line-1);
+  user-select: none;
+  -webkit-user-select: none;
+}
+#menubar[hidden] { display: none; }
+
+.menubar-top {
+  height: 100%;
+  padding: 0 var(--space-2);
+  border: 0;
+  border-radius: 0;
+  background: none;
+  color: var(--text-2);
+  font-size: var(--size-label);
+  line-height: 1;
+}
+.menubar-top:hover, .menubar-top[aria-expanded="true"] { background: var(--fill-hover); color: var(--text-1); }
+.menubar-top[aria-expanded="true"] { background: var(--fill-active); }
+.menubar-top:focus-visible { outline: 2px solid var(--focus); outline-offset: -2px; }
+
+/* A menu of the bar: the page's menu, under its name, as long as the
+   window lets it be, the keys in a column at the right. */
+.menubar-panel {
+  min-width: 240px;
+  max-width: min(560px, calc(100vw - 8px));
+  overflow-y: auto;
+}
+.menubar-panel .menubar-item {
+  display: flex;
+  align-items: center;
+  gap: var(--space-4);
+  min-height: 26px;
+  padding: 3px 12px 3px 28px;
+  color: var(--text-1);
+}
+.menubar-panel .menubar-label { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.menubar-panel .menubar-key { flex: none; color: var(--text-3); font-size: var(--size-small); font-variant-numeric: tabular-nums; }
+.menubar-panel .has-sub { padding-right: 28px; }
+.menubar-panel .sub-mark { position: absolute; right: 10px; top: 50%; width: 6px; height: 6px; margin-top: -3px; border-top: 1.5px solid currentColor; border-right: 1.5px solid currentColor; transform: rotate(45deg); opacity: 0.7; }
+/* Off (an entry that cannot be used now, or is not built: its tooltip
+   says what it waits for). The pointer still reaches it for the tooltip. */
+.menubar-panel .menubar-item[aria-disabled="true"] { color: var(--text-off); cursor: default; }
+.menubar-panel .menubar-item[aria-disabled="true"]:hover { background: none; }
+.menubar-panel .menubar-item[aria-disabled="true"] .menubar-key { color: var(--text-off); }
+.menubar-panel .menubar-item.waits .menubar-label::after { content: " ·"; }
+/* A recent project whose file is gone. */
+.menubar-panel .menubar-item.missing .menubar-label { color: var(--text-2); text-decoration: line-through; }
+.menubar-panel .menubar-item[aria-checked="true"]::before {
+  content: "";
+  position: absolute;
+  left: 10px;
+  top: 50%;
+  width: 9px;
+  height: 5px;
+  margin-top: -5px;
+  border-left: 1.6px solid var(--accent);
+  border-bottom: 1.6px solid var(--accent);
+  transform: rotate(-45deg);
+}
+
+/* "Keyboard Shortcuts": each of the reference's lists under its name, the
+   keys in a column; what is not built here is dimmed. */
+#shortcuts { width: min(720px, calc(100vw - 32px)); }
+#shortcuts-body { max-height: min(560px, calc(100vh - 160px)); overflow-y: auto; display: flex; flex-direction: column; gap: var(--space-4); padding-right: var(--space-1); }
+#shortcuts-body h3 { margin: 0 0 var(--space-2); }
+#shortcuts-body dl { display: grid; grid-template-columns: minmax(110px, max-content) 1fr; gap: 4px var(--space-4); margin: 0; }
+#shortcuts-body dt { color: var(--text-1); font: var(--size-small)/1.6 var(--font-mono); white-space: nowrap; }
+#shortcuts-body dd { margin: 0; color: var(--text-2); }
+#shortcuts-body .off { color: var(--text-off); }
+
+#prefs .card-row > label { min-width: 120px; color: var(--text-2); }

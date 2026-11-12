@@ -101,10 +101,9 @@ fn paint_is_kept_saved_and_read_back() {
             &[(part, codes(&[(7, "4"), (8, "4")]))],
         )
         .unwrap();
-    assert_eq!(
-        model.place(None).unwrap().unread_paint,
-        ["fuzzy skin", "supports"]
-    );
+    // Supports painted are followed; fuzzy skin is noted as not.
+    let placed = model.place(None).unwrap();
+    assert_eq!(placed.unread_paint, ["fuzzy skin"]);
     // All of them on one triangle, in the reference's order.
     let file = dir.path().join("painted.3mf");
     model.save(&file, &Saving::None, Some(&BED)).unwrap();
@@ -138,10 +137,7 @@ fn paint_is_kept_saved_and_read_back() {
         text.contains(r#" paint_supports="4" paint_fuzzy_skin="4"/>"#),
         "{text}"
     );
-    assert_eq!(
-        back.place(None).unwrap().unread_paint,
-        ["fuzzy skin", "supports"]
-    );
+    assert_eq!(back.place(None).unwrap().unread_paint, ["fuzzy skin"]);
 
     // Erased, it is gone, and so is its note.
     model
@@ -440,4 +436,55 @@ fn timings_on_a_large_model() {
     let clock = Instant::now();
     s.apply_fill(1);
     println!("  applied: {:.1} ms", clock.elapsed().as_secs_f64() * 1e3);
+}
+
+#[test]
+fn supports_painted_through_the_model_are_what_the_slice_reads() {
+    // Painted supports are read from the triangles' kept attributes
+    // (`Part::support_paint`, for `regions`): paint made with
+    // `Model::set_paint` must reach them, in the world where the copy
+    // stands, and an erased part none.
+    let dir = tempfile::tempdir().unwrap();
+    let path = boxes(dir.path(), "cube.stl", &[([0.0; 3], [10.0, 10.0, 10.0])]);
+    let mut model = Model::open(&path).unwrap();
+    let object = model.objects()[0].id();
+    let part = model.objects()[0].shape().part_ids()[0];
+    assert!(model.place(None).unwrap().own.is_empty());
+    model
+        .set_paint(
+            Some(&BED),
+            object,
+            PaintKind::Supports,
+            &[(part, codes(&[(0, "4"), (1, "8"), (2, "80443")]))],
+        )
+        .unwrap();
+    let placed = model.place(None).unwrap();
+    assert_eq!(
+        placed.own.len(),
+        1,
+        "a painted object sets something for itself"
+    );
+    let paint = &placed.own[0].support_paint;
+    // Two whole triangles and the three painted pieces of the third.
+    assert_eq!(paint.len(), 5);
+    let enforcers = paint
+        .iter()
+        .filter(|(_, kind)| *kind == edge_3mf::SeamPaint::Enforcer)
+        .count();
+    assert_eq!(enforcers, 3);
+    // In the world: the copy stands in the middle of the bed.
+    assert!(
+        paint
+            .iter()
+            .all(|(corners, _)| corners.iter().all(|p| p[0] >= 90.0 && p[0] <= 110.0))
+    );
+    model
+        .set_paint(
+            Some(&BED),
+            object,
+            PaintKind::Supports,
+            &[(part, Vec::new())],
+        )
+        .unwrap();
+    assert!(model.place(None).unwrap().own.is_empty());
 }

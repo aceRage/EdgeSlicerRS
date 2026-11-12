@@ -99,9 +99,23 @@ pub fn inside_walls(
     slices: &[&[ExPolygon]],
     walls: Option<WallsAround>,
 ) -> Result<Vec<Vec<ExPolygon>>, ClipError> {
+    inside_walls_by_layer(by_filament, slices, &|_| walls)
+}
+
+/// [`inside_walls`], with the one set of walls round the whole layer as
+/// deep as `walls` says for each layer: as the deepest of the walls of the
+/// regions on it, and their least spacing, as the reference simulates
+/// "single set of perimeters over all merged regions"
+/// (PrintObject.cpp `discover_vertical_shells`).
+pub fn inside_walls_by_layer(
+    by_filament: &[Vec<&[ExPolygon]>],
+    slices: &[&[ExPolygon]],
+    walls: &(dyn Fn(usize) -> Option<WallsAround> + Sync),
+) -> Result<Vec<Vec<ExPolygon>>, ClipError> {
     (0..slices.len())
         .into_par_iter()
         .map(|layer| {
+            let walls = walls(layer);
             let mut all: Vec<ExPolygon> = by_filament
                 .iter()
                 .flat_map(|own| own[layer].iter().cloned())

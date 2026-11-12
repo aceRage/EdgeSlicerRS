@@ -134,8 +134,6 @@
     held: null,
     // An edit that is on its way to the session.
     busy: false,
-    // The copies copied (Ctrl+C), by id.
-    copied: [],
     // What the number fields keep between edits.
     fields: { uniform: true, frame: 'world', relative: [0, 0, 0], of: '' },
     shapes: null,
@@ -595,22 +593,15 @@
       const command = event.ctrlKey || event.metaKey;
       const key = event.key.length === 1 ? event.key.toLowerCase() : event.key;
       const take = (act) => { event.preventDefault(); act(); };
+      // Undo, Redo, Import, Cut, Copy, Paste, Clone and Delete are the menu
+      // bar's keys (menu.js). Shift with Ctrl+Z makes again too, as a Mac
+      // has it.
       // A painting tool's own keys come first (GLGizmosManager.cpp `on_key`).
       if (GL.painter && GL.painter.active() && GL.painter.key(event)) { event.preventDefault(); return; }
       if (command) {
-        if (key === 'z' && !event.shiftKey) take(() => this.step('undo'));
-        else if (key === 'y' || (key === 'z' && event.shiftKey)) take(() => this.step('redo'));
-        else if (event.shiftKey) return;
-        else if (key === 'i') take(() => this.add());
-        // Copying, pasting and cloning are of objects; a part's own wait
-        // for the model to copy parts.
-        else if (this.partMode()) return;
-        else if (key === 'c' && this.stage.selection().size) take(() => { this.copied = [...this.stage.selection()]; });
-        else if (key === 'v' && this.copied.length) take(() => this.clone(this.copied, true));
-        else if (key === 'k' && this.stage.selection().size) take(() => this.clone([...this.stage.selection()]));
+        if (key === 'z' && event.shiftKey) take(() => this.step('redo'));
         return;
       }
-      if (key === 'Delete' || key === 'Backspace') { if (this.stage.selection().size) take(() => this.remove()); return; }
       if (key === 'a') { take(() => this.arrange(!event.shiftKey)); return; }
       for (const [tool, { key: letter }] of Object.entries(TOOLS)) {
         if (key === letter && !event.shiftKey) { take(() => this.setTool(this.tool === tool ? null : tool)); return; }

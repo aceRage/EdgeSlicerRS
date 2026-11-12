@@ -133,6 +133,13 @@ pub struct Layer<'a> {
     /// walls are measured against to find where they overhang. Empty on
     /// the first layer, or to leave overhangs alone.
     pub below: &'a [ExPolygon],
+    /// The settings this part's walls and fill are laid with, where they
+    /// are not the filament's own: an index into the regions' settings
+    /// handed to [`write_timed`] (a region with settings of its own,
+    /// such as an object's or a modifier's speeds). Everything else the
+    /// layer does (its tool change, fan, temperatures, travel between
+    /// parts) goes by the filament's.
+    pub region: Option<usize>,
 }
 
 /// G-code set at a layer by the person (a pause, a custom line, the
@@ -276,7 +283,8 @@ pub fn write_coded(
     codes: &[AtLayer],
     settings: &[PrintSettings],
 ) -> Result<Summary, GcodeError> {
-    write_timed(out, layers, slices, scene, contours, codes, settings).map(|(summary, _)| summary)
+    write_timed(out, layers, slices, scene, contours, codes, settings, &[])
+        .map(|(summary, _)| summary)
 }
 
 /// How long each part of writing a file took.
@@ -298,6 +306,7 @@ pub struct WriteTimings {
 }
 
 /// [`write_coded`], also saying how long each part of it took.
+#[allow(clippy::too_many_arguments)]
 pub fn write_timed(
     out: &mut impl Write,
     layers: &[Layer<'_>],
@@ -306,6 +315,7 @@ pub fn write_timed(
     contours: &Contours<'_>,
     codes: &[AtLayer],
     settings: &[PrintSettings],
+    regions: &[PrintSettings],
 ) -> Result<(Summary, WriteTimings), GcodeError> {
     let mut timings = WriteTimings::default();
     let started = Instant::now();
@@ -377,6 +387,7 @@ pub fn write_timed(
     let mut writer = Writer {
         out: Vec::new(),
         all: settings,
+        regions,
         settings: &settings[first],
         variables,
         filament_area: PI * (settings[first].filament_diameter / 2.0).powi(2),
@@ -714,6 +725,9 @@ struct Writer<'a> {
     codes: &'a [AtLayer],
     /// The settings for each filament, and those of the one in use.
     all: &'a [PrintSettings],
+    /// The settings of the regions that have their own
+    /// ([`Layer::region`]).
+    regions: &'a [PrintSettings],
     settings: &'a PrintSettings,
     /// What templates can refer to; the layer's number and height change as it goes.
     variables: Variables,
@@ -1603,7 +1617,18 @@ impl Writer<'_> {
                 .ironing_fan_speed
                 .filter(|_| index >= self.settings.close_fan_the_first_x_layers)
                 .map(cooling::pwm);
-            self.islands(layer, ironing_fan)?;
+            // A region with settings of its own lays its walls and fill by
+            // them: its speeds, accelerations and flow, as the reference
+            // reads them from the region (GCode.cpp `extrude_entity`
+            // takes the region's config for each extrusion). The tool's
+            // own come back after.
+            let own = self.settings;
+            if let Some(region) = layer.region.and_then(|at| self.regions.get(at)) {
+                self.settings = region;
+            }
+            let laid = self.islands(layer, ironing_fan);
+            self.settings = own;
+            laid?;
         }
         self.fan_over_air(false)?;
         Ok(())

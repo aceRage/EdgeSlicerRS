@@ -151,7 +151,7 @@ fn a_stroke_is_painted_kept_undone_and_redone() {
 }
 
 #[test]
-fn supports_painted_say_what_the_engine_does_with_them() {
+fn supports_painted_are_followed_without_a_note() {
     let session = Arc::new(Session::new(None));
     let project = ask(
         &session,
@@ -191,13 +191,8 @@ fn supports_painted_say_what_the_engine_does_with_them() {
         args(json!({ "op": "commit", "name": "Block supports" })),
     );
     assert_eq!(done["done"], "Block supports");
-    assert!(
-        done["note"]
-            .as_str()
-            .unwrap()
-            .contains("supports painted on it"),
-        "{done}"
-    );
+    // Painted supports are followed by the engine: no note.
+    assert!(done["note"].is_null(), "{done}");
     // A state the tool does not paint is refused.
     assert!(
         session

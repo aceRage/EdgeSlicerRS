@@ -13,6 +13,7 @@
 
 mod clock;
 mod contour;
+pub mod export;
 pub mod flush;
 mod followed;
 mod holes;
@@ -28,6 +29,7 @@ mod pipeline;
 mod presets;
 mod preview;
 mod printable;
+mod regions;
 mod scene;
 mod toolpath;
 mod unfollowed;
@@ -42,7 +44,7 @@ pub use edge_mesh::Transform;
 pub use edge_mesh::{Mesh, raycast, selector};
 pub use followed::{Followed, followed, followed_in, settled};
 pub use job::{BedType, Chosen, Job, Overrides, Sourced, prepare, prepare_noted};
-pub use load::{Loaded, Opened, PlateInfo, open};
+pub use load::{Loaded, Opened, OwnObject, OwnVolume, PlateInfo, open};
 pub use model::{
     Bed, Changed, FIRST_LATER_LAYER, FlushBasis, LAST_LAYER, LONGEST_PLATE_NAME, LayerSequence,
     Look, MAX_FILAMENTS, MAX_PLATES, Model, ModelCopy, ModelObject, ModelPlate, NEXT_COLOURS,
@@ -52,6 +54,7 @@ pub use model::{
 pub use pipeline::{Gcode, Sliced, Timings, slice};
 pub use presets::{Library, ModelPreset, PrinterModel, Shelf};
 pub use preview::Stroke;
+pub use regions::{Scope, Settable, scope, settable};
 pub use scene::{Mark, Placing, Scene, SceneObject, ScenePlate, plate_position};
 pub use toolpath::{Feature, Move, MoveKind, Toolpath, ToolpathLayer, read_toolpath};
 

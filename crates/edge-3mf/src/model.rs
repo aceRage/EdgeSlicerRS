@@ -20,8 +20,9 @@ use crate::{
 pub(crate) struct ModelFile {
     pub objects: Vec<RawObject>,
     pub items: Vec<Reference>,
-    /// What is painted on triangles here other than colour and seams,
-    /// none of which this reader takes in: named so that it can be said.
+    /// What is painted on triangles here other than colour, seams and
+    /// supports, none of which this reader takes in: named so that it can
+    /// be said.
     pub unread_paint: BTreeSet<&'static str>,
 }
 
@@ -156,9 +157,10 @@ pub(crate) fn parse(text: &str, part: &str) -> Result<ModelFile, Error> {
                 attributes(&element, part, |key, value| {
                     // bbs_3mf.cpp: the other things a triangle may be
                     // painted with.
+                    // Supports painted on are read from what the
+                    // triangle keeps (`Part::support_paint`).
                     let other = match key {
                         "paint_fuzzy_skin" | "paint_fuzzy" => Some("fuzzy skin"),
-                        "paint_supports" => Some("supports"),
                         _ => None,
                     };
                     if let Some(other) = other {
@@ -403,7 +405,9 @@ mod tests {
         assert_eq!(unread(r#"paint_fuzzy_skin="4""#), ["fuzzy skin"]);
         assert_eq!(unread(r#"paint_fuzzy="8""#), ["fuzzy skin"]);
         // Seams painted on or off are read.
-        assert_eq!(unread(r#"paint_seam="4" paint_supports="8""#), ["supports"]);
+        // Supports painted on are read (`Part::support_paint`).
+        assert!(unread(r#"paint_seam="4" paint_supports="8""#).is_empty());
+        assert_eq!(unread(r#"paint_fuzzy_skin="4""#), ["fuzzy skin"]);
         // An empty attribute paints nothing.
         assert!(unread(r#"paint_seam="""#).is_empty());
 
