@@ -190,7 +190,7 @@ does with each option.
 | C++ | Where | Here |
 | --- | --- | --- |
 | A 3D view of every plate with the objects on it, orbit / pan / zoom, selection | `View3D`, `GLCanvas3D` | **added**, in 3D: section 9. Where the browser has no WebGL2, the view from above the first pass built is kept: the bed of the printer chosen with its grid and each object's outline (its convex hull), name and size, drag to move, wheel to zoom, "Fit part" [Z] and "Fit bed" |
-| Main toolbar: "Add" [Ctrl+I], "Add plate", "Auto orient all/selected objects" [Q], "Arrange all objects" [A] with its options, "Split to objects", "Split to parts", "Variable layer height", "Assembly View" | `GLCanvas3D::_init_main_toolbar` l.9274 | **added**: "Add", "Add plate", "Arrange all objects" (section 13; the arrangement is a plain one, not the reference's), "Split to objects" and "Split to parts". **not yet**: auto orient (the engine does not do it), variable layer height, the assembly view, the arrangement's options |
+| Main toolbar: "Add" [Ctrl+I], "Add plate", "Auto orient all/selected objects" [Q], "Arrange all objects" [A] with its options, "Split to objects", "Split to parts", "Variable layer height", "Assembly View" | `GLCanvas3D::_init_main_toolbar` l.9274 | **added**: "Add", "Add plate", "Arrange all objects" with its options (section 13, "Arrange": the reference's arranger, ported), "Split to objects" and "Split to parts". **not yet**: auto orient (the engine does not do it), variable layer height, the assembly view |
 | Gizmos: "Move" [M], "Rotate" [R], "Scale" [S], "Lay on face" [F], "Cut" [C], "Mesh Boolean" [B], "Support Painting" [L], "Seam painting" [P], "Paint-on fuzzy skin" [H], "Color Painting" [N], "Texture displacement", "Emboss" [T], "SVG", "Measure" [U], "Assemble" [Y], "Simplify", "Brim Ears" [E], "Sculpt", "Edit", "Fillet / chamfer (CAD)" | `Gizmos/GLGizmosManager.cpp::init` l.224 | **added**: "Move", "Rotate" and "Scale" with their number fields, and "Lay on face" [F] (section 13); "Support Painting" [L], "Seam painting" [P], "Paint-on fuzzy skin" [H] and "Color Painting" [N] (section 13, "The painting tools"). **not yet**: "Cut", "Mesh Boolean", "Texture displacement", "Emboss", "SVG", "Measure", "Assemble", "Simplify", "Brim Ears", "Sculpt", "Edit", "Fillet / chamfer (CAD)": each waits for the engine to do what it does (cutting and joining meshes, displacing a surface, text and pictures made into meshes, measuring and assembling, simplifying, brim ears in the brim) |
 | Object list: plates, objects, parts, instances, layer ranges; columns "Name", printable, "Fila.", paint marks; the object, part and plate menus | `GUI_ObjectList.cpp`, `GUI_Factories.cpp` | **added**: plates, objects, parts and instances with "Name", printable and "Fila.", and the object's, the part's and the plate's menus (section 13); the mark of an item with settings of its own, "Layers" and its height ranges (eighteenth pass, section 13). **not yet**: the paint marks |
 | View options: "Realistic View", "X-Ray", "Center of Mass", "Show 3D Navigator", Ctrl+0..6 views | `GLCanvas3D.cpp` l.8297, View menu | **added**: the navigator and the views (section 9). **not yet**: the three view options |
@@ -1086,7 +1086,7 @@ undo history.
 | `clone` | `copies: [id]`, `plate?`, `name?` | a new object for each, alike in shape, name, turn and size | "Clone", or "Paste From Clipboard" |
 | `add_plate` | — | a plate after the last, which is then the one shown | "add partplate" |
 | `delete_plate` | `plate?` | takes a plate away, not the last one | "delete partplate" |
-| `arrange` | `plate?`, or `all: true` | lays out one plate, or every plate | "Arrange" |
+| `arrange` | `plate?`, or `all: true`, or `copies: [id]` | arranges one plate (the one shown when none is named), every plate, or the copies named around what else stands on their plates, with the options beside the Arrange button and the project's settings (see "Arrange" below); `note` says what fitted no plate ("Arranging is done but there are unpacked items. Reduce spacing and try again.") and what has no size ("Object %s has zero size and can't be arranged.") | "Arrange" |
 | `mirror` | `copies`, `axis` (`x`, `y`, `z`) | mirrors the copies along that axis of the scene, about the middle of the box round them, and stands them on the bed; the mirror is kept in each copy's transform | "Mirror Object" |
 | `split_objects` | `object` | "Split to objects": an object for each piece of the object's one mesh, or for each of its printed parts; each has a copy wherever the object had one, on the same plates, standing where its piece stood (brought down to the bed when it was in the air); `made` is the new copies. `note` says when modifiers or negative parts were left out. Refused, nothing changed: "The selected object couldn't be split." | "Split to Objects" |
 | `split_parts` | `object` | "Split to parts": the object's one part becomes a part for each piece of its mesh. Refused: "The target object contains only one part and can not be split." | "Split to parts" |
@@ -1260,44 +1260,51 @@ used now is off, not hidden.
 | "Add" [Ctrl+I]: a file dialog; the file's geometry joins the project | `_init_main_toolbar` l.9312, `Plater::add_file` l.24872 | **added**: an STL or a 3MF, into an empty project as much as into one with objects; what is added is selected. Each object keeps its turn and size and is stood on the bed at the free place nearest the middle of the plate shown |
 | "Add plate" | l.9321, `PartPlateList::create_plate` l.4378 | **added**: at most 36 (PartPlate.hpp `MAX_PLATE_COUNT`); the new plate is the one shown, and what stood beside the plates where it comes to stand is on it |
 | Removing a plate: its objects are not deleted, they are left beside the plates that remain; the last plate stays | `PartPlateList::delete_plate` l.4531, `compute_origin_for_unprintable` l.3900 | **added**, the same place beside the plates. Which plate is shown afterwards is the reference's rule |
-| "Arrange all objects" [A], "Arrange objects on selected plates" [Shift+A], with a popup of options ("Spacing", "Auto rotate for arrangement", "Allow multiple materials on same plate", "Avoid extrusion calibration region", "Align to Y axis") | l.9352, `ArrangeJob.cpp` | **differs**: both keys and the button (every plate), but **this is not the reference's arrangement**: see below. **not yet**: the options |
+| "Arrange all objects" [A], "Arrange objects on selected plates" [Shift+A], with a popup of options ("Spacing", "Auto rotate for arrangement", "Allow multiple materials on same plate", "Avoid extrusion calibration region", "Align to Y axis") | l.9352, `_render_arrange_menu` l.8057, `ArrangeJob.cpp` | **added**, the reference's arranger (below). A click on the tool opens the options under the toolbar, as the reference's toggled item does (`#arrange-panel`, pressed while open, Escape closes it): "Spacing", a slider 0 to 100 with its number (0.05 a step, never under 0), "0 means auto spacing.", "Auto rotate for arrangement", "Allow multiple materials on same plate", "Avoid extrusion calibration region" (only for a Bambu Lab printer that scans its first layer), "Align to Y axis" (off and greyed while turning is on), then "Arrange" (every plate) and "Reset". Kept at once in the app's settings under the reference's keys of its `arrange` section (`min_object_distance_fff` / `_fff_seq_print`, `enable_rotation_fff` / `_fff_seq_print` by the project's print sequence, `allow_multi_materials_on_same_plate`, `avoid_extrusion_cali_region`); "Align to Y axis" is not kept and follows the printer (an i3's: on), as Plater.cpp sets it; "Reset" takes the kept ones away. A arranges every plate; Shift+A the plate shown, as the reference does. **differs**: Shift+A with objects selected arranges those around what else stands on their plates, which stays where it is (the reference's `prepare_selected`, which no key or menu of its reaches) |
 | "Split to objects", "Split to parts" | l.9376–9395 | **added** (below) |
 | "Auto orient", "Variable layer height", "Assembly View" | l.9331–9400 | **not yet** |
 
-### Arrange: what the reference does, and what a port would take
+### Arrange
 
-The reference arranges with libnest2d (`deps_src/libnest2d`, some 13 000
-lines) driven by `libslic3r/Arrange.cpp` (1 169 lines) and
-`Jobs/ArrangeJob.cpp` (905). Each object is its outline on the bed, grown by
-half the spacing and its brim; an item is placed where the no-fit polygon of
-its outline against what is already placed allows (`_NofitPolyPlacer`), the
-candidates along that polygon's edges scored by an objective of the
-reference's own (`AutoArranger::objfunc` l.452: how near the pile's middle,
-how well it lines up with its neighbours, a bonus for objects of like height
-and filament, penalties for the excluded and the unwanted regions and for the
-prime tower) and refined by a numerical optimiser; items are taken largest
-first (`_FirstFitSelection`) and those that do not fit go on to the next
-plate, a new one being added when needed. `ArrangeJob` gathers the items,
-leaves locked plates alone, takes the spacing from the printer when it is not
-given, keeps the clearances of printing by object, and puts the result back
-as moves of the instances.
+The reference arranges with libnest2d (`deps_src/libnest2d`) driven by
+`libslic3r/Arrange.cpp` and `Jobs/ArrangeJob.cpp`; this is ported in
+`crates/edge-arrange` (no UI) and `crates/edge-engine/src/arrange.rs`
+(`Model::arrange_with`), with the no-fit polygons in `edge-clip`
+(`nfp_convex`, `minkowski_sum_convex`, `inner_fit_rectangle`).
 
-What stands here instead (`Model::arrange`) lays the copies of a plate out in
-rows by the boxes round them, the deepest first, 6 mm apart, the whole set in
-the middle of the bed; nothing is turned; what a plate has no room for is put
-beside the plates and the person is told how many that was. It is the same
-every time and keeps things on the bed and apart, and that is all it is.
+| C++ | Where | Here |
+| --- | --- | --- |
+| Each object is the convex hull of its model parts on the ground; with the spacing at 0 ("auto") it keeps 1 mm round it, 6 mm with normal supports, 24 mm (half each with tree supports anywhere) with tree supports, supports counting only where an overhang or paint would make them; a spacing given is halved onto each; never more than the bed allows | ModelArrange.cpp `get_instance_arrange_poly`, `instance_may_get_support`, Arrange.cpp `update_selected_items_inflation` | **added** (`edge_arrange::outline`, `may_get_support`, `support_allowance`) |
+| The bed shrunk 1 mm (5 printing by object) and by the skirt's distance and loops; by object, grown back by half the clearance and every object kept the extruder's clearance radius apart (a nozzle's width for objects under the nozzle's height); the objects ordered and checked against the rod and lid heights | `update_arrange_params`, `seq_print_min_obj_distance`, `objfunc` l.612 | **added**, compared with the C++ on 8 parts of rising height: the same two plates, every part within 0.00 mm of the C++'s |
+| Items taken largest first (priority, hotter bed, first filament, area; by object shorter first); each tried on every bed open, the best score taken, a bed opened when none takes it; an item no empty bed takes put on none; a large one tried again against the bed's excluded areas alone | libnest2d `firstfit.hpp`, `selection_boilerplate.hpp` | **added**. **differs**: items alike in all of these keep the order they were given in (the C++ sorts unstably); a bed is opened at most once more for an item an empty bed did not take (the C++ can open beds without end: see the errors below) |
+| The first item to the bed's corner; each next where the no-fit polygons of what is on the bed (and the bed's own inner fit) leave room, searched from every corner of the free region along its outline with NLopt's subplex, scored by `objfunc` (distance to the pile's middle and the bed's corner, the pack's density, lining up with a like neighbour, like heights near each other, filament changes few, materials not mixed when not allowed); with fixed items, scored from the bed's middle or the prime tower's (`fixed_overfit`); the four turns 0, 45, 90, 135° tried when turning is on, after the turn of the smallest box (rotating calipers) | `nfpplacer.hpp` `_trypack`, Arrange.cpp `objfunc`, `fill_config`, `rotcalipers.hpp` | **added**: the optimiser is NLopt 2.x's `sbplx`/`nldrmd` on one variable ported step for step (`edge_arrange::minimize`), the searches from the corners run side by side and the first best taken, so any thread count gives the same answer |
+| The pile put in the middle of the bed (or at `best_object_pos`), moved clear of fixed items to the nearest place they leave | `finalAlign` | **added**. **differs**: the box lined up is that of what was placed, and only that moves (the C++ counts fixed objects in it and moves them too: see the errors below) |
+| Every plate: all but the locked plates and those printed in their own sequence pooled; a prime tower's ground on each bed where the print will have one; the bed's excluded areas; plates added for what does not fit; the empty plates at the end taken away; the objects listed in the order placed | `prepare_all`, `prepare_wipe_tower`, `finalize`, `rebuild_plates_after_arrangement` | **added**. **differs**: the prime tower's ground is estimated from its width, the prime volume, the filaments, the layer height and the brim, for a box or rib wall (WipeTowerEstimate.cpp's Type 2 case), where the C++ takes the tower drawn in its scene or its own fuller estimate; a locked plate left empty is kept |
+| One plate: what is on it, every other plate left as it is; refused on a locked plate | `prepare_partplate` | **added**. **differs**: what the plate cannot hold goes on plates added after the last, one for each bed (see the errors below) |
+| Not arranged: what is set not to print, what has no size, what is taller than the printer | `m_unprintable`, `check_unprintable` | **differs**: left where it stands; the C++ moves it past the last bed |
+| What no bed holds: past the last plate | `postprocess_arrange_polygon` | **added**, beside the plates, one after another, and said |
 
-A port would take, in this order: (1) outlines instead of boxes, which the
-engine can already make (`edge_geom::convex_hull` of a copy's vertices on the
-ground); (2) no-fit polygons, for convex outlines a Minkowski sum, which
-belongs in `edge-clip` beside the clipping library; (3) the placer with the
-reference's objective, which is the bulk of `Arrange.cpp` and can be ported
-as it stands; (4) the optimiser along the polygon's edges (libnest2d's own,
-a few hundred lines once the rest is there); (5) several plates as bins and
-the options. Steps 1 to 3 give arrangements that can be compared with the
-reference's on fixtures; the comparison needs the reference run with
-`--arrange`, which `edge-parity` does not do yet.
+Compared with the C++ on fixtures (its `--arrange 1 --export-3mf`, the
+scripts in the PR): cubes of one size, cubes of several sizes, long, round
+and L-shaped parts of distinct sizes, 30 parts for a plate of 25, and
+parts of rising height printed by object come out the same to the
+hundredth of a millimetre, on the same plates. Where parts are alike in
+area (the C++'s order among them is unstable) or with turning on (boxes of
+alike area on an outline grown a nanometre differently by Clipper 6 and
+Clipper2 tip the tie), the order or the turns differ and the piles with
+them; the plates, the pile's box, the gaps (never under the spacing) and
+nothing off the bed agree. 50 parts arrange in about 50 ms.
+
+In the served page (`--serve`, 800 × 600, dark and light), with
+`mcbrim_test.3mf` on the U1's presets: the Arrange tool opened its
+options; "Arrange" laid every plate's 16 objects on plate 1 and took
+plates 2 and 3 away, Undo brought the three plates back; plate 2 locked
+from its tile's menu and A pressed: plate 2's four left where they stood,
+the other twelve on plate 1, plate 3 taken away; an object moved onto
+another and Shift+A with it selected put it back in the free place, the
+others unmoved; "Spacing" 60 typed and "Arrange": plates 3, 4 and 5 added,
+the locked plate left as it was, the 60 kept in the app's settings under
+`min_object_distance_fff`; "Reset" gave 0 back.
 
 ### Parts
 
@@ -1342,7 +1349,7 @@ engine's side is `crates/edge-engine/src/plates.rs`; the page's
 | Icons down the right of every plate, each acting on its plate after showing it | `render_icons` l.1154, `select_plate_by_hover_id` l.30481 | **added** for the plate shown (see section 9, "Plates"): remove, arrange, lock, customize, name, to the front. **not yet**: orient, "Print history" |
 | The plate's menu (the object list's plate row; the right button on a plate): "Select All", "Delete All", "Arrange", "Reload All", "Auto Rotate", "Delete Plate", "Add Primitive", "Add Handy models", "Add Custom Models", "Add Models", then "Lock" / "Unlock", "Edit Plate Name" | `create_plate_menu` l.2831, `plate_menu` l.3149 | **added**, with their help text as tooltips, on the plate's tile (top left of the stage), its row in the object list and the plate in the scene, by the right button or Shift+F10 / the menu key; after them "Customize current plate", "Move plate to the front" (off for plate 1) and "Duplicate Current Plate" ("Duplicate the current plate"), which are the icons' and the Edit menu's in the reference. **not yet**, not shown: "Reload All", "Auto Rotate", the four ways to add a model (one "Add" [Ctrl+I] is in the toolbar) |
 | "Edit Plate Name": "Plate name", at most 250 characters, OK / Cancel; Enter is OK; an empty name is none | `PlateNameEditDialog` PlateSettingsDialog.cpp l.679 | **added**. The name stands at the plate's top left in the scene ("Untitled" without one, **had**), in its tile's tooltip and at its row ("Plate 2 (name)") |
-| Lock: a locked plate's copies are left where they are by "Arrange all", which arranges the rest; arranging a locked plate alone is refused: "This plate is locked.\nCannot auto-arrange on this plate." | `preprocess_arrange_polygon` PartPlate.cpp l.5407, ArrangeJob.cpp l.198, l.407 | **added**. A lock is drawn on the plate's tile and at its row; the lock tool is pressed while it is locked. The reference's arranger itself is not ported (see "Arrange" above) |
+| Lock: a locked plate's copies are left where they are by "Arrange all", which arranges the rest; arranging a locked plate alone is refused: "This plate is locked.\nCannot auto-arrange on this plate." | `preprocess_arrange_polygon` PartPlate.cpp l.5407, ArrangeJob.cpp l.198, l.407 | **added**. A lock is drawn on the plate's tile and at its row; the lock tool is pressed while it is locked |
 | "Plate Settings": "Plate name"; "Bed type" ("Same as Global Plate Type" and the printer's plates; off for a printer without a choice); "Print sequence" ("Same as Global Print Sequence", "By Layer", "By Object"); "Spiral vase" ("Same as Global", "Enable", "Disable"); "First layer filament sequence" ("Auto" / "Customize" with the filaments to drag into order); "Other layer filament sequence" ("Auto" / "Customize": ranges "Layer" [from] "to" [to or "End"], each with its order, added and taken off by + and −); "Please input layer value (>= 2)." | PlateSettingsDialog.cpp l.371–520, `open_platesettings_dialog` Plater.cpp l.30400 | **added**, the same rows and words, the orders as chips of the filaments' colours dragged into place or moved with Left and Right. The ranges are put in order of their first layer, as the reference sorts them. **differs**: "Enable" asks nothing and changes no other setting, where the reference asks first and sets what vase mode needs ("Spiral mode only works when…", the same as the process page's, **not yet** in section 2); a range's end before its start is refused, where the reference moves the end |
 | What each setting does when sliced | BackgroundSlicingProcess.cpp `apply` (`new_config.apply(*plate->config())`) | the plate's own settings are laid over everything else for its slice, a plate read from a file's as much as one set here (`Loaded::plate_settings`). **Bed type**: followed: the plate's bed temperatures and `curr_bed_type`. **Print sequence**: read, but "by object" is not followed: the print says "print_sequence "by object": printing object by object is not followed; every object is printed together, layer by layer" (the same as for the project's own). **Spiral vase**: as the project's own: noted as not followed ("vase mode is not followed…") and turning off what it turns off (arc fitting, scarf seams). **First layer filament sequence**: followed (**had** for a file's). **Other layer filament sequence**: noted as not followed ("other_layers_print_sequence: above the first layer tools are taken in the order that wastes least") |
 | "Move plate to the front": the plate becomes the first with what stands on it, the others one back; it is then the one shown | `move_plate_to_index` l.4879 | **added**. Every plate's slice from the first to the one moved is let go, a plate's number being in what is sliced |
@@ -1591,6 +1598,58 @@ and then gone through with the mouse. The screenshots are under the
 session's scratch folder, `ui_plates/shots/`.
 
 ### Errors found in the C++
+
+Arranging (each left out of the port; none worked around):
+
+- `libslic3r/Arrange.cpp` l.1013 (`_arrange`): with "Auto rotate for
+  arrangement" the turn of the smallest box is measured on the outline as
+  the object is already turned and then set as the item's whole turn,
+  applied to the outline not turned: an object that was turned on the bed
+  is laid at a turn that does not give it its smallest box.
+- `Arrange.cpp` l.835 and l.849 (`AutoArranger::operator()`, `preload`):
+  the count of items to place takes in the fixed items twice (the prime
+  towers of all 36 beds, the excluded areas), so the share left to place,
+  which weighs the pile's density, is far too small whenever a print has
+  a prime tower: piles are laid out less tightly than the objective means.
+- `Arrange.cpp` l.1079 and l.1154 (`process_arrangeable`, `arrange`): an
+  outline of fewer than three corners is dropped from the list, and the
+  results are then written back by position, so every object after it
+  gets the next one's place and plate.
+- `Arrange.cpp` l.816 (`sortfunc`) with `std::sort`: two items with
+  different filament lists starting with the same filament are neither
+  before nor after each other whatever their areas, which is no strict
+  order; items alike in everything land in an order the library chooses,
+  differently on each system.
+- libnest2d `placers/nfpplacer.hpp` l.178 and l.222 (`EdgeCache`): a free
+  region's outline is walked from its first corner to its last and not
+  back, and its last corner is no starting point, so the places along one
+  side of every free region are never tried: an object can miss the gap it
+  would fit.
+- `nfpplacer.hpp` l.1077 and l.1172 (`finalAlign`): fixed objects (not
+  virtual ones) are counted in the box of the pile that is lined up and
+  are moved with it, though their moves are thrown away: with objects
+  that stay (placing loose objects from the hub) the arranged ones are
+  lined up as if those moved too, off the middle.
+- libnest2d `selections/firstfit.hpp` l.120: the item itself is searched
+  on each bed, and each search leaves it at the turn it found best, which
+  the next bed's search starts from: with turning on, the turns tried on a
+  later plate depend on the plate before.
+- `firstfit.hpp` l.169–192: an item that fits an empty bed but not beside
+  the prime tower every new bed carries (the check for what fits no bed,
+  `remove_unpackable_items`, leaves the tower out) opens a new bed, fails,
+  and opens another without end (`best_bed_id == MAX_NUM_PLATES` l.139 is
+  never true): arranging such a print never finishes.
+- libnest2d `utils/rotcalipers.hpp` l.319 (`fitIntoBoxRotation`): the
+  previous box is never moved along as the calipers turn, so the turn is
+  always bisected from no turn at all; an object too long for the bed is
+  not turned to fit when the turn it needs is not between 0 and the first
+  box narrower than the bed.
+- `slic3r/GUI/PartPlate.cpp` l.5647 (`postprocess_bed_index_for_current_plate`):
+  arranging one plate, every bed beyond the first is given the one place
+  after the last plate, so what two or more beds' worth did not fit is put
+  there piled on itself.
+- `PartPlate.cpp` l.6180 (`rebuild_plates_after_arrangement`): an empty
+  plate at the end is taken away even when it is locked.
 
 - `KBShortcutsDialog.cpp` l.260–262: the list of shortcuts names L "Gizmo
   SLA support points", the key that opens "Support Painting" in an FFF
