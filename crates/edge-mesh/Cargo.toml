@@ -6,6 +6,7 @@ license.workspace = true
 publish.workspace = true
 
 [dependencies]
+manifold-rust.workspace = true
 rustc-hash.workspace = true
 thiserror.workspace = true
 

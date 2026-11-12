@@ -73,6 +73,8 @@ to a stage and say in the PR what moved.
 - Only `edge-clip` may depend on the clipping library; every other crate
   goes through its API, so the library can be replaced in one place.
   The same holds for `edge-medial` and the Voronoi library.
+  And for `edge-mesh`'s `boolean` module and the mesh boolean library
+  (`manifold-rust`): everything else goes through `edge_mesh::boolean`.
 - G-code is headed for a real printer. Anything a profile asks for that the
   engine cannot do yet (an unknown template variable, an unsupported
   setting) is an error or a listed note, never a silent default.

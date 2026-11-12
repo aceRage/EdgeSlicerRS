@@ -250,6 +250,13 @@ pub struct PrintSettings {
     pub outer_wall_acceleration: f64,
     pub inner_wall_acceleration: f64,
     pub initial_layer_acceleration: f64,
+    /// What travel goes at on the first layer where that is set apart
+    /// from the first layer's own: Bambu Studio's
+    /// `initial_layer_travel_acceleration`, or failing that
+    /// `first_layer_travel_acceleration`, which may be a share of
+    /// `travel_acceleration` (GCode.cpp
+    /// `first_layer_travel_acceleration_override`); 0 for neither.
+    pub first_layer_travel_acceleration: f64,
     pub top_surface_acceleration: f64,
     /// Fill accelerations may be a percentage of the default.
     pub sparse_infill_acceleration: FloatOrPercent,
@@ -431,6 +438,7 @@ impl Default for PrintSettings {
             outer_wall_acceleration: 0.0,
             inner_wall_acceleration: 0.0,
             initial_layer_acceleration: 0.0,
+            first_layer_travel_acceleration: 0.0,
             top_surface_acceleration: 0.0,
             sparse_infill_acceleration: FloatOrPercent::Percent(100.0),
             internal_solid_infill_acceleration: FloatOrPercent::Percent(100.0),
@@ -926,6 +934,17 @@ impl PrintSettings {
             outer_wall_acceleration: number("outer_wall_acceleration", 0.0)?,
             inner_wall_acceleration: number("inner_wall_acceleration", 0.0)?,
             initial_layer_acceleration: number("initial_layer_acceleration", 0.0)?,
+            first_layer_travel_acceleration: match number("initial_layer_travel_acceleration", 0.0)?
+            {
+                bambu if bambu > 0.0 => bambu,
+                _ => match settings.float_or_percent("first_layer_travel_acceleration")? {
+                    Some(FloatOrPercent::Value(value)) => value,
+                    Some(FloatOrPercent::Percent(percent)) => {
+                        percent / 100.0 * number("travel_acceleration", 0.0)?
+                    }
+                    None => 0.0,
+                },
+            },
             top_surface_acceleration: number("top_surface_acceleration", 0.0)?,
             sparse_infill_acceleration: settings
                 .float_or_percent("sparse_infill_acceleration")?

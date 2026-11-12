@@ -101,6 +101,9 @@ pub struct TowerWipe<'a> {
     pub strokes: &'a [TowerStroke],
     /// What each line lays.
     pub flow: Flow,
+    /// Where the nozzle wipes on its way back to the part, from where the
+    /// strokes leave it; empty for back along the row laid last.
+    pub wipe_path: &'a [Point2],
 }
 
 /// One layer's toolpaths.
@@ -1437,8 +1440,11 @@ impl Writer<'_> {
                 let length = self.state.position.map_or(0.0, |at| distance(at, ram.park));
                 self.go(ram.park, None, RAM_PARK_SPEED, length)?;
             }
+            // Bambu's tower changes filament where the nozzle is, and
+            // goes to the tower after (WipeTower.cpp, GCode.cpp
+            // `append_tcr`).
             None => {
-                if let Some(over) = over.filter(|_| self.state.primed) {
+                if let Some(over) = over.filter(|_| self.state.primed && !s.bambu_tower) {
                     self.travel(over, false, None)?;
                 }
             }
@@ -1447,7 +1453,8 @@ impl Writer<'_> {
         // without waiting, on the first layer and wherever it differs
         // from what it last set (WipeTower2.cpp and WipeTower.cpp
         // `toolchange_Unload`).
-        if s.single_nozzle && s.prime_tower {
+        // Bambu's tower sets none (its `toolchange_Unload` is left out).
+        if s.single_nozzle && s.prime_tower && !s.bambu_tower {
             let wanted = self.temperature(to, layer == 0);
             if wanted > 0.0 && (layer == 0 || self.state.tower_temperature != Some(wanted)) {
                 writeln!(self.out, "M104 S{wanted:.0}")?;
@@ -1506,6 +1513,11 @@ impl Writer<'_> {
         // before the tower, which heats it back up above the first layer
         // (WipeTower.cpp `tool_change`, "Wipe tower reheat before wipe").
         let next = &self.all[to];
+        // Bambu's tower lets the planner's queue run empty once the new
+        // filament is in (WipeTower.cpp `toolchange_Change`).
+        if next.bambu_tower && next.prime_tower {
+            writeln!(self.out, "G4 S0")?;
+        }
         if next.single_nozzle
             && next.bambu_tower
             && next.prime_tower
@@ -2245,26 +2257,78 @@ impl Writer<'_> {
     fn tower_wipe(&mut self, wipe: TowerWipe<'_>) -> io::Result<()> {
         let s = self.settings;
         self.travel(wipe.start, false, Some(Role::PrimeTower))?;
-        let usual = self.motion(Role::PrimeTower, &wipe.flow, self.state.first_layer);
-        let most = if s.filament_max_volumetric_speed > 0.0 {
-            s.filament_max_volumetric_speed / wipe.flow.mm3_per_mm()
-        } else {
-            f64::INFINITY
+        let mut usual = self.motion(Role::PrimeTower, &wipe.flow, self.state.first_layer);
+        // Bambu's tower (WipeTower.cpp) sets no acceleration of its own:
+        // its lines go at whatever is in force.
+        if s.bambu_tower {
+            usual.acceleration = 0.0;
+        }
+        let most = |flow: &Flow| {
+            if s.filament_max_volumetric_speed > 0.0 {
+                s.filament_max_volumetric_speed / flow.mm3_per_mm()
+            } else {
+                f64::INFINITY
+            }
         };
         let mut run: Vec<Point2> = Vec::new();
-        for stroke in wipe.strokes {
+        let mut index = 0;
+        while index < wipe.strokes.len() {
+            let stroke = &wipe.strokes[index];
+            index += 1;
             match *stroke {
-                TowerStroke::Lay(to, speed) => {
+                // A wall: its lines together, thinned to the tower's
+                // resolution or fitted with arcs within it, as the
+                // reference's tower writer lays them (WipeTower.cpp
+                // `WipeTowerWriter::polygon`).
+                TowerStroke::Bend(to, speed, flow) => {
+                    let Some(at) = self.state.position else {
+                        continue;
+                    };
+                    let mut points = vec![at, to];
+                    while let Some(TowerStroke::Bend(next, more, same)) = wipe.strokes.get(index)
+                        && *more == speed
+                        && *same == flow
+                    {
+                        points.push(*next);
+                        index += 1;
+                    }
+                    let within = arc::tolerance(TOWER_RESOLUTION);
+                    let fitted = if s.arc_fitting {
+                        arc::Fitted::new(&points, within)
+                    } else {
+                        arc::Fitted::straight(arc::douglas_peucker(&points, within))
+                    };
+                    let motion = Motion {
+                        speed: speed.min(most(&flow)),
+                        ..usual
+                    };
+                    if run.is_empty() {
+                        run.push(at);
+                    }
+                    self.lay_parts(
+                        &fitted.points,
+                        &fitted.parts,
+                        Role::PrimeTower,
+                        &flow,
+                        motion,
+                    )?;
+                    run.extend_from_slice(&fitted.points[1..]);
+                }
+                TowerStroke::Lay(to, speed) | TowerStroke::LayAs(to, speed, _) => {
+                    let flow = match *stroke {
+                        TowerStroke::LayAs(_, _, flow) => flow,
+                        _ => wipe.flow,
+                    };
                     if run.is_empty()
                         && let Some(at) = self.state.position
                     {
                         run.push(at);
                     }
                     let motion = Motion {
-                        speed: speed.min(most),
+                        speed: speed.min(most(&flow)),
                         ..usual
                     };
-                    self.extrude(to, Role::PrimeTower, &wipe.flow, motion)?;
+                    self.extrude(to, Role::PrimeTower, &flow, motion)?;
                     run.push(to);
                 }
                 TowerStroke::Move(to, speed) => {
@@ -2272,6 +2336,18 @@ impl Writer<'_> {
                     self.go(to, None, speed.unwrap_or(s.travel_speed), length)?;
                     run.clear();
                 }
+                // At the speed in force, which is written again only
+                // where none is known.
+                TowerStroke::Glide(to) => {
+                    let length = self.state.position.map_or(0.0, |at| distance(at, to));
+                    let speed = match self.state.feedrate.abs() {
+                        0.0 => s.travel_speed,
+                        feedrate => feedrate / 60.0,
+                    };
+                    self.go(to, None, speed, length)?;
+                    run.clear();
+                }
+                TowerStroke::Sync => writeln!(self.out, "G4 S0")?,
                 TowerStroke::Retract | TowerStroke::Unretract if s.retraction_length > 0.0 => {
                     let sign = if *stroke == TowerStroke::Retract {
                         "-"
@@ -2286,10 +2362,14 @@ impl Writer<'_> {
                 TowerStroke::Retract | TowerStroke::Unretract => {}
             }
         }
-        // Going back to the part, the nozzle wipes back along the row it
-        // laid last.
-        run.reverse();
-        self.state.wipe_path = run;
+        // Going back to the part, the nozzle wipes where the tower says,
+        // or back along the row it laid last.
+        if wipe.wipe_path.is_empty() {
+            run.reverse();
+            self.state.wipe_path = run;
+        } else {
+            self.state.wipe_path = wipe.wipe_path.to_vec();
+        }
         Ok(())
     }
 
@@ -2980,7 +3060,12 @@ impl Writer<'_> {
         // straight line.
         let straight = from.map_or(f64::INFINITY, |from| distance(from, to));
         let short = straight < s.retraction_minimum_travel;
-        if self.state.first_layer && s.initial_layer_acceleration > 0.0 {
+        if self.state.first_layer
+            && s.first_layer_travel_acceleration > 0.0
+            && s.default_acceleration > 0.0
+        {
+            self.accelerate(s.first_layer_travel_acceleration.round())?;
+        } else if self.state.first_layer && s.initial_layer_acceleration > 0.0 {
             self.accelerate(s.initial_layer_acceleration)?;
         } else if s.default_acceleration > 0.0 {
             let bridge = s.bridge_acceleration.resolve(s.outer_wall_acceleration);
@@ -3988,6 +4073,9 @@ fn find(text: &[u8], needle: &[u8]) -> Option<usize> {
 
 /// Markers a layer is written with where the fan is to change for an
 /// overhang and back, until the layer's own fan speed is known.
+/// How closely the prime tower's walls are followed, in mm, whether
+/// thinned or fitted with arcs (WipeTower.cpp `WIPE_TOWER_RESOLUTION`).
+const TOWER_RESOLUTION: f64 = 0.1;
 const FAN_MARK: &[u8] = b";_FAN_OVER_AIR_";
 const FAN_OVER_AIR: &[u8] = b";_FAN_OVER_AIR_ON\n";
 const FAN_AS_LAYER: &[u8] = b";_FAN_OVER_AIR_OFF\n";

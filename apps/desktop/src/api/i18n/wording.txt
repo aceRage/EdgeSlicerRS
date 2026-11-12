@@ -183,7 +183,10 @@ Back to the sidebar
 Back to the sidebar [Esc]
 Browse ...
 Change…
+Collapse all groups
+Drag to widen or narrow the sidebar; double-click for its usual width
 EdgeSlicerRS
+Expand all groups
 Fit bed
 Fit part
 Fold or unfold the legend
@@ -203,8 +206,10 @@ Reload the printer's page
 Reset all of these settings to the preset
 Reset all process settings to the preset
 Search brand or model
+Search for setting
 Settings found
 Shows the advanced settings with the simple ones
+Sidebar width
 Slice plate or slice all
 The plate
 The plate in 3D

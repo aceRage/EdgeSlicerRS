@@ -54,6 +54,7 @@ needed.
 | `--surface-panel` | The sidebar | `#111418` | `#f4f5f7` |
 | `--surface-raised` | Cards, dialogs, a table's head | `#171b20` | `#ffffff` |
 | `--surface-float` | What floats: lists, menus, filters, tooltips | `#1d2228` | `#ffffff` |
+| `--surface-track` | Sunk under a row of controls: the pages' tabs | `#08090b` | `#e3e6ea` |
 | `--fill-hover` | Laid over any surface under the pointer | white 6% | ink 5.5% |
 | `--fill-active` | Pressed; the row the keys are on | white 11% | ink 10% |
 
@@ -119,6 +120,8 @@ primary: make it plain.
 | `--control-s`, `-m`, `-l` | 22, 28, 32 px | Heights: a chip or an icon button; a field or a button; a table's head |
 | `--bar-height` | 40 px | The tab bar, and the strip's head beside it, whose hairlines meet |
 | `--menubar-height` | 28 px | The menu bar, in a browser only, over both |
+| `--side-min`, `--side-panel-min`, `--stage-min` | 300, 340, 420 px | The sidebar dragged narrowest; the sidebar while a filament's or the printer's pages are open; the stage left beside a sidebar dragged wide (the session's `SIDEBAR_MIN`, `STAGE_MIN`, `src/api/layout.rs`) |
+| `--grip` | 8 px | What is dragged at an edge: the sidebar's |
 | `--font-ui` | The system's | Everything |
 | `--font-mono` | The system's fixed-width | A value that is a number: a field's number, a size in a table, a nozzle, a path |
 | `--size-caps` | 10.5 px | Group labels, in capitals, spaced `--caps-spacing` |
@@ -242,9 +245,41 @@ same row on every kind's pages):
   a tick box before the label turns the filament's own value on; off, the
   field is disabled and shows the value in force in its place.
 - Rows under a `.process-page > h3` group label; several options of one
-  C++ line under an `.opt-line-label`, indented. An extruder's own option
+  C++ line under an `.opt-line-label`, indented. A titled group folds
+  (below, "Groups that fold"). An extruder's own option
   is named `key#n` in `data-key`; field ids are `po-` (process), `fo-`
   (filament), `mo-` (printer) and the name.
+
+### Groups that fold
+
+```html
+<h3 [class="folded"]><button type="button" class="group-fold" aria-expanded="true" aria-controls="process-group-7" title="Click to collapse / expand">Seam</button><span class="group-count" title="1 setting changed">1</span></h3>
+<div class="opt-group [folded]" id="process-group-7">…rows…</div>
+```
+
+Each titled group of a page of settings folds from its title (the owner's
+choice; `settings.js`, "groups that fold"): the title is a button in the
+group label's own small capitals, with the chevron of a section that folds
+(down open, right folded), `--text-2` when folded; Enter or Space folds
+it, `aria-expanded` says which. After the title, `span.group-count`, the
+number of its settings set by hand in the accent, shown open or folded so
+nothing set is hidden. Folded, its rows are gone (`.opt-group.folded`) and
+everything else about them goes on: the rules still show, hide and grey
+them, a reset still puts them back, and its title stays (it is hidden only
+when the rules hide every row, as before).
+
+Beside the search (`.search-row`) two `.tool`s unfold and fold every group
+of the page shown ("Expand all groups", two chevrons down; "Collapse all
+groups", two up), in `--text-2` until pointed at; the row is hidden with
+the search where an item has no pages.
+
+Whether a group is folded is kept by the session (`layout_set`) by kind
+(process, filament, printer, item), page and group, each by the message
+id, so it is the same in every language and the three kinds and an
+item's pages never share it; what was never folded or unfolded by hand is
+as `src/api/layout.rs` `FOLDED_AT_FIRST` has it. A setting searched for
+and gone to opens its folded group for the while; it is folded again when
+the search is next typed in or cleared, or another page is opened.
 
 ### Two states of whose ("Global" / "Objects")
 
@@ -268,28 +303,48 @@ of two.
 ### Tabs
 
 ```html
-<div class="tabs [scrolls]" role="tablist" aria-label="…">
+<div class="tabs" role="tablist" aria-label="…">
   <button type="button" role="tab" aria-selected="true">[<svg …/>] Prepare</button>
 </div>
 ```
 
 Text (with an icon, if it has one) on a hairline, the open one with 2 px
-of the accent under it and its text in bold. One look for the main tabs
-(`#tabs`, 40 px, with the C++ tab icons) and the tabs of the pages of
-settings (`#process-tabs` in the sidebar, `#preset-tabs` in the panel:
-`button.process-tab`, 28 px and smaller type; a `span.process-count` in a
-tab is how many of its settings are set by hand).
+of the accent under it and its text in bold: the main tabs (`#tabs`,
+40 px, with the C++ tab icons) and Device's.
 
-`.scrolls` keeps the tabs on one line: where they do not fit they are
-scrolled sideways, by a trackpad, by the wheel (`app.js` turns it), by the
-keys (Left, Right, Home, End, which give the next tab the keys), and the
-open tab is always scrolled into sight. The tab cut at the edge is what
-says there are more. Every row of pages' tabs is this, the process's, a
-filament's and the printer's alike: six tabs do not fit the sidebar's
-300 px, and two rows of tabs read as two rows of choices, the lower of
-which moves when the upper is picked. An overflow menu was the other way;
-it would hide pages behind a click and need its own keys, and the row is
-short enough that scrolling it is little to ask.
+### The pages' tabs: `.tabs.pages`
+
+```html
+<div id="process-tabs" class="tabs pages" role="tablist" aria-label="…">
+  <button type="button" role="tab" class="process-tab" aria-selected="true">Quality<span class="process-count">2</span></button>
+  …<span class="tab-break" aria-hidden="true"></span>…
+</div>
+```
+
+The tabs of the pages of settings (`#process-tabs` in the sidebar, for the
+project's pages and an item's; `#preset-tabs` in the panel, for a
+filament's and the printer's): each tab a bounded control, so where one
+ends and the next begins is never in doubt, and the open one
+unmistakable. They stand on a sunk track (`--surface-track`, a `--line-1`
+hairline round it, `--radius-l`, 2 px in and between); each tab is
+`--surface-raised` with `--line-2` round it (`--line-3` under the
+pointer), 26 px high, `--size-label`, its words in `--text-2`; the open
+one has the accent round it on `--accent-soft`, its words in `--text-1`
+and bold, as the segmented "Global" / "Objects" has. A `span.process-count`
+in a tab is how many of its settings are set by hand, in the accent.
+
+They wrap (the owner's choice; they were one row that scrolled): on one
+row where they fit, else on as few rows as hold them, the tabs kept in
+order and shared out so the widest row is as narrow as it can be (six on
+two rows are three and three), every row filled to the track's width, its
+tabs growing alike. `settings.js` `layPageTabs` measures each tab as it
+would be open (in bold, so opening another moves none between rows) and
+puts a `.tab-break` between rows, each time the tabs are drawn and when
+the row's width changes (`app.js`). The process's six take two rows at
+the sidebar's 300 px in English, German and French (with counts on two
+of them), one in Chinese; the printer's ten (four extruders) four rows
+at 340 px in German. Left and Right go along them in reading order,
+across the rows, Home and End to the first and the last.
 
 ### The panel: `#preset-panel`
 
@@ -302,7 +357,7 @@ sidebar [Esc]"), the title in `--size-title` with the preset's name under
 it cut with an ellipsis, the reset-all arrow and "Advance". For a filament,
 `#preset-filaments` holds a numbered swatch for each filament
 (`aria-pressed` on the one shown, ringed in the accent). Then the search
-and the tabs (`.tabs.scrolls`, as the Process section's). All of that is
+and the tabs (`.tabs.pages`, as the Process section's). All of that is
 the panel's `.fold-pin`, pinned at the top of its scroll (`#preset-scroll`)
 as the Process head is in the sidebar's (see "Sections that fold"); the
 page, or the search's list in its place, scrolls under it. Escape anywhere
@@ -515,8 +570,8 @@ Right; its `aria-label` says where it stands ("Filament 3, 2 of 7").
 
 ```html
 <div class="filaments-head"><h3>Filaments</h3><button class="icon tool" id="filament-remove" …/><button class="icon tool" id="filament-add" …/></div>
-<div id="filaments" class="card"><div class="filament"><button class="swatch swatch-pick">1</button>…list…<button class="icon tool">…pencil…</button></div>…</div>
 <div id="apply-all" class="card apply-all"><select …></select><button>Apply All</button></div>
+<div id="filaments" class="card"><div class="filament"><button class="swatch swatch-pick">1</button>…list…<button class="icon tool">…pencil…</button></div>…</div>
 ```
 
 The list's head is its group label running into its hairline, then the
@@ -526,7 +581,7 @@ row's number stands on its colour (`button.swatch.swatch-pick`, 22 px,
 the number in white or ink by the colour's brightness), and is the
 button that opens the colour picker; the row's menu is on the right
 button and the menu key, as an object's is in the list. "Apply All"
-is a card of its own under the list: a `bare` listbox and a small plain
+is a card of its own between the head and the list (before what it acts on): a `bare` listbox and a small plain
 button (`--control-s` high), never the accent, there only where presets
 are chosen here.
 
@@ -840,9 +895,8 @@ the primary.
 
 A thin thumb on nothing, `--scroll-thumb`, the same in Chromium (the
 standard `scrollbar-width` and `scrollbar-color`) and in WebKit (the
-window on a Mac, which reads only `::-webkit-scrollbar`). Rows that scroll
-sideways (`.tabs.scrolls`) and the strip's and the plates' columns show
-none.
+window on a Mac, which reads only `::-webkit-scrollbar`). The strip's and
+the plates' columns show none.
 
 ### What floats
 
@@ -958,5 +1012,29 @@ without touching the system's setting.
 
 The sidebar is 300 px wide in a narrow window and up to 380 px in a wide one
 (`clamp(300px, 24vw, 380px)`, in `settings.css`), 340 to 520 px while a
-filament's or the printer's pages are open: look at a form in it at both
-ends, and at a box of G-code at 900 px, the window's minimum.
+filament's or the printer's pages are open, until it is dragged: then it
+is the width dragged to, from 300 to 640 px, never leaving the stage less
+than 420 px (392 px at most in a 900 px window), and at least 340 px while
+those pages are open. Look at a form in it at both ends, and at a box of
+G-code at 900 px, the window's minimum.
+
+### The sidebar's edge
+
+```html
+<div id="side-grip" role="separator" tabindex="0" aria-orientation="vertical" aria-controls="side" aria-label="Sidebar width" title="…"></div>
+```
+
+The sidebar's right edge is dragged to widen or narrow it (`app.js`, "the
+sidebar's width"): a strip of `--grip` over the hairline, half of it on the
+stage, with the resize pointer; a short mark of `--line-3` in its middle
+says it is there, and the whole edge is a 2 px line of the accent while it
+is pointed at, given the keys or dragged. It is a window splitter (ARIA's
+`separator` with its value): Left and Right step it 16 px (64 with Shift),
+Home and End go to the least and the most the window allows, Enter or a
+double-click gives the usual width back. The drag takes the pointer
+(pointer capture) and selects nothing (`body.side-dragging`); the stage
+follows it as it goes (the 3D view is drawn again by its own
+`ResizeObserver`, the same frame). The width is kept by the session
+(`layout_set`, section 8 of `../UI_PARITY.md`), so the window and a
+browser share it, and put on the page by `i18n.js` before it is first
+shown. Not shown where the page is one column (under 761 px).

@@ -266,6 +266,23 @@ pub fn tr(msgid: &str) -> String {
     current().tr(msgid).to_owned()
 }
 
+/// The words of the settings pages' search fields (their placeholder and
+/// accessible name), the owner's choice: in English this app's own
+/// "Search for setting"; in another language the catalog's words for the
+/// reference's "Search in preset" (Tab.cpp), or this app's own where the
+/// catalog has none, rather than the English message id.
+pub const SEARCH_FOR_SETTING: &str = "Search for setting";
+
+pub fn search_words(catalog: Arc<Catalog>) -> String {
+    let english = catalog.code == ENGLISH;
+    let shown = with(catalog, || tr("Search in preset"));
+    if english || shown == "Search in preset" {
+        SEARCH_FOR_SETTING.to_owned()
+    } else {
+        shown
+    }
+}
+
 /// The same for a message id with a context.
 pub fn trc(context: &str, msgid: &str) -> String {
     current().trc(context, msgid)

@@ -574,27 +574,19 @@ if ('popover' in HTMLElement.prototype) {
   document.addEventListener('scroll', hideTip, true);
 }
 
-// Tabs on one line that scrolls (`.tabs.scrolls`): the wheel scrolls them
-// sideways, and the open tab is kept in sight. Only the row scrolls, not
-// what it is in.
-function scrollingTabs(row) {
-  const reveal = () => {
-    const tab = row.querySelector('[aria-selected="true"]');
-    if (!tab || row.scrollWidth <= row.clientWidth) return;
-    const pad = 16;
-    if (tab.offsetLeft - pad < row.scrollLeft) row.scrollLeft = tab.offsetLeft - pad;
-    else if (tab.offsetLeft + tab.offsetWidth + pad > row.scrollLeft + row.clientWidth) row.scrollLeft = tab.offsetLeft + tab.offsetWidth + pad - row.clientWidth;
-  };
-  row.addEventListener('wheel', (event) => {
-    if (row.scrollWidth <= row.clientWidth || Math.abs(event.deltaX) >= Math.abs(event.deltaY)) return;
-    event.preventDefault();
-    row.scrollLeft += event.deltaY;
-  }, { passive: false });
-  new MutationObserver(() => requestAnimationFrame(reveal))
-    .observe(row, { childList: true, subtree: true, attributes: true, attributeFilter: ['aria-selected'] });
-  new ResizeObserver(reveal).observe(row);
+// The pages' tabs (`.tabs.pages`: the process's, a filament's, the
+// printer's, an item's) are laid out by `layPageTabs` (settings.js) each
+// time they are drawn, and again whenever their row's width changes (the
+// sidebar dragged, the window, the panel opened).
+// Only a change of width lays them out again: the rows they take change the height.
+for (const row of document.querySelectorAll('.tabs.pages')) {
+  let width = -1;
+  new ResizeObserver(() => {
+    if (row.clientWidth === width) return;
+    width = row.clientWidth;
+    layPageTabs(row);
+  }).observe(row);
 }
-for (const row of document.querySelectorAll('.tabs.scrolls')) scrollingTabs(row);
 
 // A section's head that stays in sight while its body scrolls under it
 // (`.fold-pin`): the Process section's head in the sidebar's scroll, and
@@ -1494,6 +1486,107 @@ for (const end of ['pointerup', 'pointercancel']) {
     $('strip').classList.remove('dragging');
     setStrip({});
   });
+}
+
+// ---- the sidebar's width ----
+
+// The sidebar's right edge (`#side-grip`) is dragged, or given the keys
+// and stepped, to widen or narrow it; double-click or Enter gives it its
+// usual width back (the style's, which follows the window). The width is
+// kept by the session (`layout_set`) with the other settings, so the
+// window and a browser find it alike; i18n.js put it on the page before
+// it was first shown. The limits are the session's (src/api/layout.rs):
+// never narrower than `sidebar_min`, never wider than `sidebar_max`, and
+// never leaving the stage less than `stage_min`.
+const sideWidth = { width: null, min: 300, max: 640, stage: 420, drag: null };
+{
+  const kept = I18n.layout;
+  if (kept) {
+    sideWidth.width = kept.sidebar_width;
+    sideWidth.min = kept.sidebar_min;
+    sideWidth.max = kept.sidebar_max;
+    sideWidth.stage = kept.stage_min;
+  }
+}
+
+// The least and the most the sidebar can be now, in this window.
+function sideLimits() {
+  const room = $('plater').clientWidth - sideWidth.stage;
+  return [sideWidth.min, Math.max(sideWidth.min, Math.min(sideWidth.max, room))];
+}
+
+// Puts a width on the page (null: the usual one), and says it on the grip.
+function showSideWidth(width) {
+  const plater = $('plater');
+  plater.classList.toggle('side-sized', width !== null);
+  if (width !== null) plater.style.setProperty('--side-width', `${width}px`);
+  else plater.style.removeProperty('--side-width');
+  saySideWidth();
+}
+
+function saySideWidth() {
+  const grip = $('side-grip');
+  const [least, most] = sideLimits();
+  const now = Math.round($('side').getBoundingClientRect().width);
+  grip.setAttribute('aria-valuemin', String(least));
+  grip.setAttribute('aria-valuemax', String(most));
+  grip.setAttribute('aria-valuenow', String(Math.max(least, Math.min(most, now))));
+  grip.setAttribute('aria-valuetext', `${now} px`);
+}
+
+// A width to keep: within the limits as they are now, said to the session.
+function keepSideWidth(width) {
+  const [least, most] = sideLimits();
+  const kept = width === null ? null : Math.round(Math.max(least, Math.min(most, width)));
+  sideWidth.width = kept;
+  showSideWidth(kept);
+  return attempt(() => call('layout_set', { sidebar_width: kept }));
+}
+
+{
+  const grip = $('side-grip');
+  const at = () => Math.round($('side').getBoundingClientRect().width);
+  grip.addEventListener('pointerdown', (event) => {
+    if (event.button !== 0) return;
+    // Without this a drag that leaves the grip selects the page's text
+    // (gl/controls.js has the same for the sliders).
+    event.preventDefault();
+    grip.setPointerCapture(event.pointerId);
+    sideWidth.drag = { from: event.clientX, width: at() };
+    document.body.classList.add('side-dragging');
+  });
+  grip.addEventListener('pointermove', (event) => {
+    const drag = sideWidth.drag;
+    if (!drag) return;
+    const [least, most] = sideLimits();
+    showSideWidth(Math.round(Math.max(least, Math.min(most, drag.width + event.clientX - drag.from))));
+  });
+  const end = () => {
+    if (!sideWidth.drag) return;
+    sideWidth.drag = null;
+    document.body.classList.remove('side-dragging');
+    // What was dragged to is what the page shows; that is what is kept.
+    if ($('plater').classList.contains('side-sized')) keepSideWidth(at());
+  };
+  for (const name of ['pointerup', 'pointercancel', 'lostpointercapture']) grip.addEventListener(name, end);
+  grip.addEventListener('dblclick', () => keepSideWidth(null));
+  grip.addEventListener('keydown', (event) => {
+    const [least, most] = sideLimits();
+    const step = event.shiftKey ? 64 : 16;
+    let to;
+    if (event.key === 'ArrowLeft') to = at() - step;
+    else if (event.key === 'ArrowRight') to = at() + step;
+    else if (event.key === 'Home') to = least;
+    else if (event.key === 'End') to = most;
+    else if (event.key === 'Enter') to = null;
+    else return;
+    event.preventDefault();
+    keepSideWidth(to);
+  });
+  // The limits move with the window; what the grip says follows.
+  new ResizeObserver(saySideWidth).observe($('plater'));
+  new ResizeObserver(saySideWidth).observe($('side'));
+  saySideWidth();
 }
 
 // ---- the stage: what Prepare and Preview show ----

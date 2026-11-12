@@ -1851,6 +1851,11 @@ pub fn slice(job: Job, watch: &dyn Watcher) -> Result<Sliced, Failure> {
                 && let Some(finish) = finish.take()
             {
                 lines.extend(finish.iter().cloned());
+                // A layer the tower lays move by move (WipeTower.cpp's).
+                if !any_change && let Some(sparse) = &tower.layers[index].sparse {
+                    wipe = Some(sparse.clone());
+                    laid = lines.len();
+                }
             }
             entries.push(Entry {
                 layer: index,
@@ -2121,6 +2126,7 @@ impl Sliced {
                         start: wipe.start,
                         strokes: &wipe.strokes,
                         flow: wipe.flow,
+                        wipe_path: &wipe.wipe_path,
                     }),
                     tower: &turn.lines[turn.laid..],
                     around: if starts { &self.around[index] } else { &[] },
@@ -2160,6 +2166,9 @@ impl Sliced {
                         std::iter::once(&wipe.start).chain(wipe.strokes.iter().filter_map(
                             |stroke| match stroke {
                                 edge_extrusion::TowerStroke::Lay(to, _)
+                                | edge_extrusion::TowerStroke::LayAs(to, ..)
+                                | edge_extrusion::TowerStroke::Bend(to, ..)
+                                | edge_extrusion::TowerStroke::Glide(to)
                                 | edge_extrusion::TowerStroke::Move(to, _) => Some(to),
                                 _ => None,
                             },

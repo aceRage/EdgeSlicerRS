@@ -10,7 +10,7 @@ replaces it until output matches on the printers we care about.
 | Path | What it is |
 | --- | --- |
 | `crates/edge-geom` | Fixed-point 2D geometry (nanometre `i64`, same scale as libslic3r): points, polygons, regions, convex hull |
-| `crates/edge-mesh` | Indexed triangle mesh, transforms, STL read/write; the triangle selector (`selector`: paint on a mesh's triangles, split as finely as a stroke needs, and the codes a project stores them as, a port of the reference's `TriangleSelector`) and a tree of boxes for what a line of sight meets (`raycast`), which the desktop app's painting tools work with; a mesh cut in two by a plane (`cut`: both halves closed, each capped over the edges the cut opened by ear cutting that keeps every corner, the reference's `cut_mesh` made watertight), and the shapes of a cut's connectors (`connector`: prisms, frustums, a dowel's two cones, a snap), which the desktop app's "Cut" works with |
+| `crates/edge-mesh` | Indexed triangle mesh, transforms, STL read/write; the triangle selector (`selector`: paint on a mesh's triangles, split as finely as a stroke needs, and the codes a project stores them as, a port of the reference's `TriangleSelector`) and a tree of boxes for what a line of sight meets (`raycast`), which the desktop app's painting tools work with; a mesh cut in two by a plane (`cut`: both halves closed, each capped over the edges the cut opened by ear cutting that keeps every corner, the reference's `cut_mesh` made watertight), and the shapes of a cut's connectors (`connector`: prisms, frustums, a dowel's two cones, a snap), which the desktop app's "Cut" works with; solid booleans (`boolean`: union, difference, intersection of two closed meshes, and `csg` for a model's parts in order, through the Manifold library's pure-Rust port `manifold-rust`, which only this module names). An operand must bound a volume: not empty, finite, closed and consistently wound (welded along open edges first, turned outward if inside out); one that is not is refused ("does not bound a volume"). Shells that cross one another are united first; a shell that crosses itself is taken (or refused, on request) and the result then checked against its complement by volume. A result is always closed, consistently wound and free of zero-area triangles in single precision, or an error; the same input gives the same bytes. Where two parts of a result only touch, or a sliver is thinner than single precision, the library's exact test can still find the result touching itself, by no more than the rounding |
 | `crates/edge-config` | Vendor presets resolved through `inherits`, `include` and `renamed_from`; a person's own presets (`user`), read, written, renamed and deleted in the reference's layout and format (`<data>/user/default/{machine,filament,process}/<name>.json` with `.info`, only what differs from the parent) and resolved through their chain into the vendor's; preset bundles imported and exported as the reference's "Import Configs" and "Export Preset Bundle" do (`bundle`: `.json`, `.zip`, `.orca_printer`, `.orca_filament`); the reference's defaults for every setting, and the text form it writes settings in |
 | `crates/edge-3mf` | 3MF projects: objects, parts and their roles, instances, plates, project settings, and colours painted onto triangles; and writing a project back in the reference's own layout (`write`), keeping what was read and not changed (every kind of paint, per-object and per-part settings, layer ranges and heights, cut information and the recipes of cuts kept editable, a plate's settings and pictures, every other entry) and leaving out print-host addresses and keys; the G-code set at each plate's layers (pauses, custom G-code, filament changes), read and written as the reference does |
 | `crates/edge-fuzzy` | Fuzzy skin: walls roughened by moving their points or changing their width, with the noise it is drawn from (a port of the reference's FuzzySkin and of the libnoise modules it uses) |
@@ -1417,9 +1417,50 @@ feature filaments (`wall_filament`, `sparse_infill_filament`,
     "Flushing volumes" dialog, and a project's own come over a printer
     profile's. Not done, and said in a note: ramming, cooling and
     loading the filament on the tower (`enable_filament_ramming`, which
-    neither printer uses), flushing into infill, objects or support, and
-    the tower Bambu Lab printers get (WipeTower.cpp, Bambu Studio's),
-    which is laid out here as the other one is.
+    neither printer uses), and flushing into infill, objects or support.
+  - Which prime tower a print gets is chosen as the reference chooses it
+    (Print.cpp `wipe_tower_type`): a printer whose `printer_model` (or,
+    failing that, preset name) starts "Bambu Lab", or one set to
+    `wipe_tower_type` `type1`, gets the reference's Type1 tower,
+    WipeTower.cpp, Bambu Studio's; every other printer the Type2 tower,
+    WipeTower2.cpp, described below. The Type1 tower (`edge-tower`'s
+    `bambu.rs`) is laid out as the reference's, in single precision as
+    there: every tool change a block of whole rows across the tower
+    holding `prime_volume` (the change G-code flushes; the tower only
+    primes), in the order the changes come; the first layer's rows 15%
+    fuller, and a row over the open part of the layer below laid as
+    thick as a 0.2 mm layer's; each row faster than the one before up
+    to 80 mm/s (`wipe_tower_max_purge_speed` at most), from a third of
+    it, or of the first layer's speed; the wall laid by a layer's first
+    change before its block, from a corner that goes round the tower a
+    layer at a time, and after the block the frame round the depth no
+    change uses and lines across it 10 mm apart (solid on the first
+    layer); a layer with no change laid whole by the nozzle in hand;
+    a ribbed tower squared to the purge area it had at the width set,
+    and a tower too shallow for its height spread to depth, or with
+    ribs, given longer ribs; the brim round the wall, a loop narrower
+    each layer up to 3 mm, "auto" (-1) by the print's height; the wall
+    and brim thinned to 0.1 mm, or fitted with arcs within it where
+    `enable_arc_fitting` is on. Its moves are written as the reference's
+    tower writer writes them: travel inside the tower at the speed in
+    force, `G4 S0` when the new filament is in and when the block is
+    done, no acceleration and no temperature of its own (the change
+    G-code's, and its "reheat before wipe"), the filament changed where
+    the nozzle is and the tower reached after. Bambu Studio's names
+    (`prime_tower_rib_wall`, `prime_tower_rib_width`,
+    `prime_tower_extra_rib_length`, `prime_tower_fillet_wall`,
+    `prime_tower_max_speed`) are read for it, as the reference reads
+    them from a Bambu project. Not done, each said in a note where set:
+    a smooth timelapse's tower on every layer, sparse layers combined
+    into one (`wipe_tower_sparse_layers_combination`), the tower's own
+    acceleration (`prime_tower_acceleration`) and tower interfaces
+    (`wipe_tower_interface_*`, `enable_tower_interface_features`). Not
+    as the reference, on purpose: a plain (rectangle) wall is laid at the
+    tower's wall speed, where the reference writes it with no speed and
+    it goes at whatever the change G-code left in force (30 mm/s on an
+    A1); and a layer whose every change is to a soluble or support
+    filament lays its frame and wall after its first block, where the
+    reference lays them before the change with the nozzle put away.
   - A prime tower, on every layer up to the last tool change: a wall, a
     block for each change where the new nozzle lays down `prime_volume`,
     a frame and lines across the depth no change uses, a solid first
@@ -1537,8 +1578,8 @@ with the tower purging, placed where it fits (`wipe_tower_y` 150),
 14h 41m → 13h 06m (here 379 changes against 381: the order differs on
 two layers). The gaps left then (rows and the way in, a one-nozzle
 tower 2% too long, the totals, a tower that outgrew its place) are
-closed in the next pass, below; the Bambu Lab tower (WipeTower.cpp) is
-still laid out as WipeTower2's, 6% longer.
+closed in the next pass, below; the Bambu Lab tower (WipeTower.cpp),
+then laid out as WipeTower2's and 6% longer, is its own since (below).
 
 **The prime tower against the C++ slicer** (2026-11-12, `edge-parity`;
 both files timed here, each the way its printer plans it). Before is
@@ -1598,8 +1639,55 @@ tower is now moved from 15 x 220 to 15 x 192.194, as there, and is the
 reference's length (73.77 m). Still not done: `wipe_tower_no_sparse_layers`
 (the reference leaves out the tower's layers with no change, lowers the
 nozzle to the tower and back, and refuses a plate where the toolhead
-would then meet a printed object; noted), the tower turned end for end
-on alternate layers, and the Bambu Lab layout.
+would then meet a printed object; noted) and the tower turned end for
+end on alternate layers.
+
+**Bambu Lab's prime tower against the C++ slicer** (2026-11-12,
+`edge-parity`; both files timed here, each the way its printer plans
+it). Before is `main` at 76a7430, which laid every tower as WipeTower2's;
+after is the Type1 tower (WipeTower.cpp). The A1 fixtures are made with
+`tools/make_fixture.py` from the figurine's settings: `twotone`, and a
+four-block `fourtone` (filaments 1 to 4, 8, 6, 4 and 10 mm tall), once
+with its ribbed wall and once with a plain one; the U1's `twotone` is
+set to `wipe_tower_type` `type1`. Tower length and plastic are the
+tower's lines; tower time is what its moves take, the way in
+included, which the reference counts from the end of the change G-code
+and this engine from the tower's first line, so the two differ there by
+the move from the printer's purge to the tower. Straight lines the same
+is how many of the reference's straight tower lines this file has too,
+end for end, at the same feed rate and plastic a millimetre.
+
+| project | tower m, ref / before / after | tower E mm, ref / before / after | tower s, ref / before / after | print, ref / before / after | straight lines the same |
+| --- | --- | --- | --- | --- | --- |
+| figurine, A1, 380 changes | 296.37 / 313.61 / 296.26 | 11307.2 / 11919.2 / 11307.6 | 5194 / 5721 / 5056 | 14h43m27 / 14h56m10 / 14h39m33 | 19434 of 20138 |
+| `twotone`, A1 | 13.97 / 15.46 / 13.96 | 541.1 / 587.5 / 541.1 | 244 / 286 / 236 | 44m03 / 44m27 / 43m17 | 1190 of 1222 |
+| `fourtone`, A1 | 54.40 / 58.51 / 54.38 | 2082.6 / 2223.6 / 2082.5 | 1057 / 1116 / 989 | 2h57m28 / 2h57m09 / 2h54m12 | 3257 of 3371 |
+| `fourtone`, A1, plain wall | 54.64 / 58.51 / 54.64 | 2085.4 / 2223.6 / 2085.4 | 1198 / 1116 / 1025 | 2h59m49 / 2h57m09 / 2h54m40 | 2714 of 2920 |
+| `twotone`, U1 set to Type1 | 15.69 / 19.74 / 15.69 | 599.4 / 750.1 / 599.4 | 322 / 340 / 304 | 12m44 / 13m21 / 12m45 | 3448 of 4024 |
+
+The rows, frames and lines across the open depth are the reference's
+line for line on every layer of all five; the tower stands where the
+reference's does (the four-filament A1 cube's moved from 15 x 220 to
+15 x 217.415, as there) and takes its ground to the hundredth. What
+differs: the wall's arcs on the A1 (fitted here from the corner the
+nozzle starts at, there from the outline's own first corner, so the
+same wall is cut into arcs a little differently; the brim's arcs bulge
+a few hundredths further out there), a few thinned wall corners on the
+U1 (the outline's first corner is not the same one in the two clipping
+libraries), the plain wall laid at its speed, 90 mm/s, where the
+reference's goes at the 30 mm/s the change G-code leaves in force (most
+of the plain-wall cube's 173 s), and the figurine's first layer, where
+the tower was laid at the first layer's acceleration until travel there
+took `initial_layer_travel_acceleration` (6000 mm/s² on the A1). Taken
+layer by layer, the time on the tower's own lines and the travel round
+it agree to the second; the rest of the tower times above is the move in.
+What is left of the whole print's time is in the change G-code: the
+reference's A1 change pulls the filament back 18 mm before the cut and
+pushes it on again (`M620.11 S1 ... E-18`, its filament's
+`filament_long_retractions_when_cut`), which this engine's leaves out
+(`M620.11 S0`), about 2 s a change. Slicing is no slower: the G-code
+stage of the figurine 0.94 to 1.23 s before, 1.10 to 1.19 s after, on a
+busy machine, and the lettered plates' within the same spread.
 
 **On hardware so far:** a deck across a 30 mm gap printed on an Elegoo
 Centauri Carbon on 2026-11-10 and the bridge held; the wall across the
