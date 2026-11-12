@@ -995,6 +995,17 @@ fn g_code_set_at_layers_is_written_there_and_saved_with_its_plate() {
     model.set_custom_gcode(Some(2), info.clone()).unwrap();
     model.remove_plate(Some(&U1), 1).unwrap();
     assert_eq!(model.custom_gcode(Some(1)), Some(&info));
+    // Moved to the front it goes with its plate, and a duplicate of the
+    // plate has none, as the reference's has.
+    let mut model = twopart();
+    model.add_plate(Some(&U1)).unwrap();
+    model.set_custom_gcode(Some(2), info.clone()).unwrap();
+    model.move_plate_to_front(Some(&U1), 2).unwrap();
+    assert_eq!(model.custom_gcode(Some(1)), Some(&info));
+    assert_eq!(model.custom_gcode(Some(2)), None);
+    let (copy, _) = model.duplicate_plate(Some(&U1), 1).unwrap();
+    assert_eq!(model.custom_gcode(Some(copy)), None);
+    assert_eq!(model.custom_gcode(Some(1)), Some(&info));
     // Emptied, the plate keeps an entry with none, as the reference does.
     let none = CustomGcode {
         mode: Some(CustomMode::SingleExtruder),

@@ -39,8 +39,9 @@ const GL: [(&str, &str); 10] = [
     ("gl.css", include_str!("../ui/gl/gl.css")),
 ];
 /// The files of the tools that change what stands on the plates.
-const EDIT: [(&str, &str); 3] = [
+const EDIT: [(&str, &str); 4] = [
     ("scene-edit.js", include_str!("../ui/scene-edit.js")),
+    ("plates.js", include_str!("../ui/plates.js")),
     ("objects.js", include_str!("../ui/objects.js")),
     ("edit.css", include_str!("../ui/edit.css")),
 ];

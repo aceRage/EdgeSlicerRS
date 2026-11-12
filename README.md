@@ -1373,7 +1373,11 @@ Multi-filament printing is a first working version. Where parts of
 different filaments overlap, the higher-numbered filament has the overlap
 (the reference gives it to the later part). `toolchange_ordering` other
 than the default and `other_layers_print_sequence` are noted and not
-followed. On the first layer two tools whose smallest pieces are the
+followed. A plate's own settings in a project ("Customize current plate":
+its bed type, print sequence, vase mode, later layers' order) are laid over
+the project's for that plate's slice, as the reference lays a plate's
+config over the whole; `print_sequence` "by object" is noted and not
+followed: every object is printed together, layer by layer. On the first layer two tools whose smallest pieces are the
 same to a millionth count as the same, and the lower number goes first;
 the reference compares exactly, so where it has identical parts in
 several filaments its order among them can differ (plate 3 of

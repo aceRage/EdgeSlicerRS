@@ -24,6 +24,15 @@ async function call(name, args = {}) {
 }
 
 async function send(name, args) {
+  const answer = await sendRaw(name, args);
+  // Something the session settled by itself that the person is told of,
+  // as the reference tells it in a box of its own ("Plate bed types
+  // reset", Plater.cpp `normalize_bed_types`).
+  if (answer && answer.notice) inform(answer.notice.title, answer.notice.text);
+  return answer;
+}
+
+async function sendRaw(name, args) {
   if (tauri) return tauri.core.invoke('call', { name, args });
   const response = await fetch(`/api/${name}`, {
     method: 'POST',
@@ -112,6 +121,16 @@ async function askText(label, suggested = '') {
 function pick(what, suggested = '') {
   if (tauri) return tauri.core.invoke('pick', { what, suggested: suggested || null });
   return askText(asking[what], suggested);
+}
+
+// Something to know, with one answer.
+async function inform(title, text) {
+  $('confirm-cancel').hidden = true;
+  try {
+    await confirmBox(title, text, 'OK', '');
+  } finally {
+    $('confirm-cancel').hidden = false;
+  }
 }
 
 // A question with two answers; with `options`, one of them is picked too
@@ -1909,12 +1928,17 @@ function showPlates() {
     const button = el('button', { type: 'button', className: `${how}${plate.id === project.plate ? ' current' : ''}` },
       el('span', { className: 'number', textContent: String(plate.id) }));
     const said = { sliced: 'sliced', failed: `slicing failed: ${plate.failed}`, slicing: 'slicing', unsliced: holds ? 'not sliced' : 'empty' }[how];
-    button.title = `Plate ${plate.id}${plate.name ? ` (${plate.name})` : ''}: ${said}`;
+    button.title = `Plate ${plate.id}${plate.name ? ` (${plate.name})` : ''}: ${said}${plate.locked ? '\nLocked' : ''}`;
     button.setAttribute('aria-pressed', String(plate.id === project.plate));
     const mark = { sliced: '✓', failed: '!', slicing: '…' }[how];
     if (mark) button.append(el('span', { className: 'mark', textContent: mark }));
     if (!holds) button.append(el('small', { textContent: 'empty' }));
+    if (plate.locked) button.append(lockMark());
     button.addEventListener('click', () => attempt(() => selectPlate(plate.id)));
+    // The plate's menu (plates.js): the right button, or the menu key.
+    const tools = window.EdgeGL.plateTools;
+    button.addEventListener('contextmenu', (event) => { event.preventDefault(); tools.menu(event.clientX, event.clientY, plate.id); });
+    button.addEventListener('keydown', (event) => tools.keyMenu(event, button, plate.id));
     return button;
   });
   // All of them at once: slice what is not sliced; once all are, the totals.
@@ -1926,6 +1950,18 @@ function showPlates() {
   all.addEventListener('click', () => attempt(() => (done < holding.length ? slice(true) : showStats())));
   bar.replaceChildren(all, ...buttons);
   bar.hidden = false;
+}
+
+// A small lock drawn on a plate that is locked: a mark, not a control.
+function lockMark() {
+  const node = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
+  node.setAttribute('viewBox', '0 0 16 16');
+  node.setAttribute('class', 'lock-mark');
+  node.setAttribute('aria-hidden', 'true');
+  const line = document.createElementNS('http://www.w3.org/2000/svg', 'path');
+  line.setAttribute('d', 'M3.5,7.5h9v7h-9ZM5.5,7.5v-2.5a2.5,2.5,0,0,1,5,0v2.5');
+  node.append(line);
+  return node;
 }
 
 async function selectPlate(id) {
@@ -2029,6 +2065,18 @@ window.EdgeGL.editor.init({
   tab: () => state.tab,
   settled: () => state.settled,
   applied: editApplied,
+  plate: (id) => attempt(() => selectPlate(id)),
+});
+// A plate's menu, name, lock and own settings, and its tools beside it in
+// the scene (plates.js).
+window.EdgeGL.plateTools.init({
+  stage: stage3d,
+  stageNode: $('stage'),
+  el,
+  listbox,
+  menu: showMenu,
+  project: () => state.project,
+  settled: () => state.settled,
   plate: (id) => attempt(() => selectPlate(id)),
 });
 window.EdgeGL.objectList.init({

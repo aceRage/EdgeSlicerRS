@@ -1,7 +1,7 @@
 use std::path::{Path, PathBuf};
 
-use edge_3mf::{Body, InstanceParts, Painted, PartKind, Project};
-use edge_config::Settings;
+use edge_3mf::{Body, InstanceParts, Painted, PartKind, PlateKept, Project};
+use edge_config::{Settings, Value};
 use edge_gcode::PrintSettings;
 use edge_mesh::Mesh;
 
@@ -52,6 +52,11 @@ pub struct Loaded {
     /// The order the plate sets for filaments on the first layer, as
     /// filament numbers from 1; empty when it sets none.
     pub first_layer_sequence: Vec<u32>,
+    /// What the plate sets for itself over the project's settings ("Customize
+    /// current plate"): its bed type, print sequence, vase mode and later
+    /// layers' filament order, under the settings' own names. Empty for a
+    /// plate that sets none of them.
+    pub plate_settings: Settings,
     /// The least and greatest corners of everything to slice, in mm.
     pub bounds: ([f32; 3], [f32; 3]),
     /// Whether everything stands where it is to print because it was put
@@ -266,6 +271,7 @@ pub(crate) fn lone(path: &Path, solid: Mesh) -> Result<Loaded, Failure> {
         parts: Vec::new(),
         plate: 0,
         first_layer_sequence: Vec::new(),
+        plate_settings: Settings::default(),
         bounds,
         placed: false,
         custom_gcode: None,
@@ -336,6 +342,9 @@ pub(crate) fn placed(
         parts,
         plate: plate.unwrap_or(0),
         first_layer_sequence,
+        plate_settings: plate
+            .map(|index| plate_settings(project.plates[index].kept.as_deref()))
+            .unwrap_or_default(),
         bounds,
         placed: false,
         // Plate 1's for a project without plates, as the reference reads it.
@@ -344,6 +353,69 @@ pub(crate) fn placed(
             .get(&plate.map_or(1, |index| project.plates[index].id))
             .cloned(),
     })
+}
+
+/// The bed types a plate may name, as the reference keys them (PrintConfig.cpp
+/// `s_keys_map_BedType`), but "Default Plate", which is the project's.
+pub(crate) const BED_TYPES: [&str; 7] = [
+    "Cool Plate",
+    "Engineering Plate",
+    "High Temp Plate",
+    "Textured PEI Plate",
+    "Textured Cool Plate",
+    "Graphic Effect Plate",
+    "Supertack Plate",
+];
+
+/// What a plate sets for itself over the project's settings, as its file
+/// keeps it (`Metadata/model_settings.config`, read as bbs_3mf.cpp
+/// `_BBS_3MF_Importer` reads a plate's metadata into its config), under the
+/// settings' own names: `curr_bed_type`, `print_sequence`, `spiral_mode`,
+/// `other_layers_print_sequence` with `other_layers_print_sequence_nums`.
+/// The first layer's order is apart ([`Loaded::first_layer_sequence`]). A
+/// value the reference would not read is left out.
+pub(crate) fn plate_config(kept: Option<&PlateKept>) -> Vec<(&'static str, String)> {
+    let Some(kept) = kept else {
+        return Vec::new();
+    };
+    let mut config = Vec::new();
+    if let Some(bed) = kept.value("bed_type").filter(|bed| BED_TYPES.contains(bed)) {
+        config.push(("curr_bed_type", bed.to_owned()));
+    }
+    if let Some(sequence) = kept
+        .value("print_sequence")
+        .filter(|sequence| matches!(*sequence, "by layer" | "by object"))
+    {
+        config.push(("print_sequence", sequence.to_owned()));
+    }
+    match kept.value("spiral_mode") {
+        Some("true" | "1") => config.push(("spiral_mode", "1".into())),
+        Some("false" | "0") => config.push(("spiral_mode", "0".into())),
+        _ => {}
+    }
+    // Both or neither, as the reference writes them.
+    if let (Some(sequence), Some(count)) = (
+        kept.value("other_layers_print_sequence"),
+        kept.value("other_layers_print_sequence_nums"),
+    ) {
+        config.push(("other_layers_print_sequence", sequence.trim().to_owned()));
+        config.push(("other_layers_print_sequence_nums", count.trim().to_owned()));
+    }
+    config
+}
+
+/// [`plate_config`] as settings to lay over a slice's.
+pub(crate) fn plate_settings(kept: Option<&PlateKept>) -> Settings {
+    let mut settings = Settings::default();
+    for (key, value) in plate_config(kept) {
+        let value = if key == "other_layers_print_sequence" {
+            Value::Many(value.split_whitespace().map(str::to_owned).collect())
+        } else {
+            Value::One(value)
+        };
+        settings.insert(key, value);
+    }
+    settings
 }
 
 /// The least and greatest corners of everything to slice.

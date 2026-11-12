@@ -63,6 +63,7 @@ fn block(project: Option<&Settings>, filament: usize) -> Loaded {
         parts: Vec::new(),
         plate: 0,
         first_layer_sequence: Vec::new(),
+        plate_settings: Default::default(),
         bounds: (min, max),
         placed: false,
     }

@@ -110,3 +110,63 @@ input.obj-rename { height: var(--control-s); min-width: 0; margin: 0 2px; }
   .edit-grid { grid-template-columns: minmax(70px, auto) repeat(3, minmax(0, 78px)) var(--control-s); }
   .edit-warning { bottom: auto; top: 48px; }
 }
+
+/* ---- a plate as a plate (plates.js) ---- */
+
+/* The plate's own tools beside the plate shown, at its far right corner,
+   where the reference draws its icons: placed by plates.js as the scene
+   is drawn. */
+.plate-tools { position: absolute; z-index: var(--z-overlay); }
+.plate-tools[hidden] { display: none; }
+/* A plate with settings of its own: a dot of the accent on its tool, the
+   mark of what is set by hand. */
+.toolbar button.icon.tool.set { position: relative; }
+.toolbar button.icon.tool.set::after {
+  content: "";
+  position: absolute;
+  top: 4px;
+  right: 4px;
+  width: 5px;
+  height: 5px;
+  border-radius: 50%;
+  background: var(--accent);
+}
+/* A locked plate's lock: on its tile, and at its row of the object list. */
+.lock-mark { width: 11px; height: 11px; flex: none; fill: none; stroke: currentColor; stroke-width: 1.5; stroke-linejoin: round; color: var(--text-3); }
+#plates button .lock-mark { position: absolute; bottom: 3px; left: 4px; }
+
+/* "Edit Plate Name" and "Plate Settings". */
+dialog.plate-name form { min-width: min(360px, 80vw); }
+dialog.plate-settings { width: min(560px, calc(100vw - 32px)); max-height: calc(100vh - 32px); }
+dialog.plate-settings .card-row > label { flex: 1; color: var(--text-2); font-size: var(--size-label); }
+dialog.plate-settings .card-row > .lb, dialog.plate-settings .card-row > input { flex: 0 0 240px; max-width: 55%; }
+dialog.plate-settings .row.end .grow { flex: 1; align-self: center; }
+.ps-order-row, .ps-ranges { padding: var(--space-2) var(--space-2) var(--space-2) 10px; }
+.ps-order-row[hidden], .ps-ranges[hidden], .ps-range-tools[hidden] { display: none; }
+.ps-range-tools { display: flex; justify-content: flex-end; gap: 2px; padding: 2px var(--space-1); }
+.ps-ranges { display: flex; flex-direction: column; gap: var(--space-2); }
+.ps-range { display: flex; flex-direction: column; gap: var(--space-1); }
+.ps-range + .ps-range { padding-top: var(--space-2); border-top: 1px solid var(--line-1); }
+.ps-range-head { display: flex; align-items: center; gap: var(--space-2); color: var(--text-2); font-size: var(--size-label); }
+.ps-range-head .lb { width: 120px; }
+.ps-range-head > .ps-layer { flex: 0 0 72px; width: 72px; min-width: 0; font-family: var(--font-mono); }
+.ps-layer[hidden] { display: none; }
+/* An order of filaments: a chip for each, dragged into place. */
+.ps-order { display: flex; flex-wrap: wrap; gap: var(--space-1); }
+.ps-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  height: var(--control-s);
+  padding: 0 var(--space-2);
+  border: 1px solid var(--line-2);
+  border-radius: var(--radius-m);
+  background: var(--surface-well);
+  color: var(--text-1);
+  font: 600 var(--size-small) var(--font-mono);
+  cursor: grab;
+  touch-action: none;
+}
+.ps-chip:hover { border-color: var(--line-3); }
+.ps-chip.held { cursor: grabbing; border-color: var(--accent); background: var(--accent-soft); }
+.ps-chip .swatch { width: 10px; height: 10px; }

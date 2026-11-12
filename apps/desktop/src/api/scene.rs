@@ -658,7 +658,12 @@ impl Session {
             .enumerate()
             .map(|(index, plate)| {
                 let (x, y) = origin(index);
-                json!({ "id": plate.id(), "name": plate.name(), "origin": [mm(x), mm(y)] })
+                json!({
+                    "id": plate.id(),
+                    "name": plate.name(),
+                    "origin": [mm(x), mm(y)],
+                    "locked": plate.locked(),
+                })
             })
             .collect();
         let named = |path: &Option<PathBuf>| {

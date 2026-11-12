@@ -22,7 +22,9 @@ The last column reads:
   "Split to parts", in section 13; eighth pass: saving projects, the
   "Files" rows of section 2, the strip's saving in section 5, and
   section 15; ninth pass: the parts of an object, "Parts" in section 13,
-  and what a saved project holds of them in section 15; tenth pass: the
+  and what a saved project holds of them in section 15; tenth pass: plates
+  as plates, the "Plates" rows of section 2, "Plates" in section 13 and
+  what a saved project holds of them in section 15; eleventh pass: the
   G-code window and what is set at layers, in sections 3, 10 and 15).
 - **differs** — built, but on purpose not as the C++ does it; the cell says how.
 - **not yet** — not built, with what it waits for. Nothing in this column is
@@ -100,7 +102,7 @@ runs, is section 8.
 | The bed type is remembered for each printer preset, by its name (`orca_presets[].curr_bed_type` in the app's config, and once more under `app`): saved when it is picked and whenever the selection is written; read when a printer is selected, unless a project is being loaded, whose own bed type then holds. The first time a printer is used its default is saved at once | l.4508–4554, `on_select_bed_type` l.18515, `PresetBundle::export_selections` l.2718, `load_selections` l.2566 | **added**: kept for each printer preset in the app's settings (section 8), read back when the printer is selected, in this run or a later one; a project opened with its own settings keeps its own. Before: not remembered. **differs**: kept by name ("Cool Plate"), not by the number of the C++ list; no second copy under `app`, which the C++ keeps for what reads it elsewhere; a default is not written until the printer is selected by hand |
 | A bed type remembered for a U1 that is not one of its four is brought to one of them: Cool Plate for the SuperTack, Textured PEI Plate for the rest | l.4531–4537 | **added**. For any other printer a remembered plate that is not in its list gives the printer's default; the C++ shows the first row and slices with the plate that is not listed |
 | Picking a bed type marks the project modified and drops the slices of the plates without one of their own | `Plater::priv::on_select_bed_type` l.18465 | **had** (`project_set`): every slice is dropped, a plate having no bed type of its own here |
-| A bed type for one plate ("Same as Global Plate Type" and the printer's plates), reset with a notice when another printer does not take it ("Plate bed types reset") | `PartPlate::get_bed_type` PartPlate.cpp l.196, PlateSettingsDialog.cpp l.394, `Plater::normalize_bed_types` l.21433 | **not yet**: the engine has one bed type for a slice (see "Plates") |
+| A bed type for one plate ("Same as Global Plate Type" and the printer's plates), reset with a notice when another printer does not take it ("Plate bed types reset") | `PartPlate::get_bed_type` PartPlate.cpp l.196, PlateSettingsDialog.cpp l.394, `Plater::normalize_bed_types` l.21433 | **added** (tenth pass): "Bed type" in "Plate Settings" (section 13, "Plates"), its bed temperatures and `curr_bed_type` the plate's in its slice. Another printer takes away what it does not take (PlateBedTypes.cpp: any type on a Bambu printer or one with `support_multi_bed_types`, a U1's own four on a U1, none on the rest), with the reference's box and words. **differs**: the reset is a step of the undo history ("Plate bed types reset"); the reference takes no snapshot for it |
 | Nozzles. One nozzle: "Nozzle" with "Diameter", a list of the sizes the model has presets for ("0.4mm"), which picks the preset; off with fewer than two. Two: "Left Nozzle" / "Right Nozzle". "Flow": "Standard" / "High Flow". "Rack": "Edit" / "Add", "Sync" | `update_nozzle_settings` l.11606–11959 | **added**: "Nozzle", "Diameter" with the sizes of the model's presets, picking among them (`printer_select` with `variant`); off with fewer than two, and for a project's own printer. Before: the size as text. **not yet**: "Flow", "Rack" |
 | Several nozzles that may differ (a U1's T1 to T4, a Bambu H2D's L and R): "Nozzles", a tile for each with its size and flow ("0.4", "Std"), "Settings ›"; a tile's menu sets that tool's size in the project and the printer preset stays | l.5720–5819, `Widgets/NozzleStrip.cpp` l.336, `libslic3r/NozzleStripModel.cpp` | **added**, read only: "Nozzles", a tile for each nozzle of the preset with its size. **differs**: "Diameter" is there for these printers too and picks the model's preset for that size, all tools alike, the engine having no size of its own for a tool. **not yet**: a size for one tool, flow, "Settings ›", the tile's menu |
 | — | — | The build volume ("270 × 270 × 270 mm") is this app's own line (**had**), now under the printer's name |
@@ -165,8 +167,8 @@ does with each option.
 | C++ | Where | Here |
 | --- | --- | --- |
 | Every plate shown on the canvas; a click selects it | `PartPlateList`, `Plater::select_plate_by_hover_id` l.30481 | **added**: in the 3D scene, every plate where it stands, a click selecting it (section 9); and the column of plate numbers of the first pass (two plates or more), in Prepare and in Preview |
-| Per plate: delete, orient, arrange, lock, "Customize current plate" (bed type, print sequence, spiral vase, filament sequences), name, "Move plate to the front", "Print history" | `PartPlate::render_icons` l.1173, `PlateSettingsDialog.cpp` | **added**: delete and arrange (section 13). **not yet**: the rest. A plate's name is shown in its tooltip; its first-layer filament order is followed by the engine |
-| "Add plate", "Duplicate Current Plate", the plate menu ("Select All", "Delete All", "Arrange", "Reload All", "Auto Rotate", "Delete Plate") | toolbar, `create_plate_menu` l.2831 | **added**: "Add plate", and of the menu "Select All", "Delete All", "Arrange" and "Delete Plate" (section 13). **not yet**: "Duplicate Current Plate", "Reload All", "Auto Rotate" |
+| Per plate: delete, orient, arrange, lock, "Customize current plate" (bed type, print sequence, spiral vase, filament sequences), name, "Move plate to the front", "Print history" | `PartPlate::render_icons` l.1173, `PlateSettingsDialog.cpp` | **added** (tenth pass): delete, arrange, lock, "Customize current plate", the name and "Move plate to the front", as tools beside the plate shown, in its menu (its tile, its row, the plate in the scene) and kept by a save (section 13, "Plates"). **not yet**: orient (the engine has no orientation), "Print history" (nothing is sent to a printer, section 4) |
+| "Add plate", "Duplicate Current Plate", the plate menu ("Select All", "Delete All", "Arrange", "Reload All", "Auto Rotate", "Delete Plate") | toolbar, `create_plate_menu` l.2831 | **added**: "Add plate", "Duplicate Current Plate" (in the plate's menu, there being no Edit menu), and of the menu "Select All", "Delete All", "Arrange", "Delete Plate", "Lock" / "Unlock", "Edit Plate Name". **not yet**: "Reload All" (no edit reads an object's source file again: "Reload from disk" waits for it), "Auto Rotate" (orientation); neither is shown |
 
 ### Slice and export
 
@@ -195,7 +197,7 @@ does with each option.
 | The sliced toolpaths in 3D over transparent shells of the objects | `Preview::load_print_as_fff` (GUI_Preview.cpp l.659), `GCodeViewer` | **added**, in 3D: section 10, from the moves of the G-code (`toolpath`, `toolpath_moves`). Without WebGL2: one layer from above, drawn from the engine's own lines (`layer`), as before |
 | View type list, in this order: "Line Type", "Filament", "Speed", "Actual Speed", "Acceleration", "Jerk", "Layer Height", "Line Width", "Flow", "Actual Flow", "Layer Time", "Layer Time (log)", "Fan Speed", "Temperature", "Pressure Advance" | `GCodeViewer::update_by_mode` l.1272, `get_view_type_string` l.106 | **added**: "Line Type", "Filament", "Layer Height", "Line Width" (first pass), and in 3D "Speed", "Flow", "Fan Speed", "Temperature" where the print was read back from its G-code (section 10). **not yet**: the views that need each move's time or planned speed ("Actual Speed", "Acceleration", "Jerk", "Actual Flow", the layer times, "Pressure Advance") |
 | The view type a print opens in: "Automatic" (Filament with several filaments, else Line Type) or "Last used" ("Default preview view type") | `apply_default_view_type` l.1248, Preferences.cpp l.2038 | **differs**: the last one used in that project, kept with it in the session (`view`); a new project starts in "Line Type". **not yet**: the preference |
-| Legend, top right: fold button, G-code window button, the list | `render_legend` l.4120 | **added**: fold button and list; the G-code window's button (tenth pass), "On/Off G-code window [C]" as its tooltip, the reference's button having none |
+| Legend, top right: fold button, G-code window button, the list | `render_legend` l.4120 | **added**: fold button and list; the G-code window's button (eleventh pass), "On/Off G-code window [C]" as its tooltip, the reference's button having none |
 | "Line Type" rows in the order of the roles, only those in the print, each with the C++ colour; columns "Line Type", "Time", "%", "Usage", "Display"; a click on a row hides or shows it | l.4300–4645, `libvgcode/src/ViewerImpl.cpp` l.302 | **added**: the C++ order and colours (before: this app's own), a "Display" mark on each row, a click on the row toggles it (**had** as checkboxes). **not yet**: "Time", "%" and "Usage" for each feature; the roles the engine never makes ("Ironing", "Custom", "Support transition", "Wall over support", "Bottom surface over support") |
 | "Supported overhangs" / "Unsupported overhangs" overlays | l.4600 | **not yet** |
 | Option rows: "Travel", "Wipe", "Retract", "Unretract", "Seams", "Filament changes" | l.4624, `append_option_item` l.4497 | **added** in 3D (section 10) |
@@ -204,13 +206,13 @@ does with each option.
 | Vertical layer slider at the right: two thumbs (a range of layers), the layer's number over its height beside the thumb, hover shows a layer's time | `IMSlider.cpp` l.890–1230, `get_label` l.1723 | **added** in 3D: two thumbs, the same labels, one layer mode [L] (section 10). Without WebGL2, the first pass's slider: one thumb, always one layer. **not yet**: layer times |
 | Up / Down move a layer; five with Shift or Ctrl; the mouse wheel over the slider likewise | `GLCanvas3D` l.5866, `IMSlider.cpp` l.1636 | **added** (before: arrows by one, PageUp / PageDown by ten; those two keys now go round the projects with Ctrl, as in the C++) |
 | "Jump to Layer" (the slider's menu; Shift+G): "Please enter the layer number (min - max):" | `IMSlider::render_add_menu` l.1512 | **added**: the slider's menu and Shift+G |
-| The slider's other menu entries, for the layer of the thumb taken up: "Add Pause" ("Insert a pause command at the beginning of this layer."), "Add Custom G-code" ("Insert custom G-code at the beginning of this layer."), "Add Custom Template" (only when the printer has `template_custom_gcode`), "Change Filament" with "Filament 1"… in their colours (with more than one filament; off unless the plate prints in one of them and is neither printed by object nor a spiral vase); greyed when printed by object | `render_add_menu` l.1512, GUI_Preview.cpp `update_layers_slider_mode` l.490 | **added** (tenth pass; `layer_codes`, `layer_code_set`), the same entries, conditions and words. The item made is the reference's (`add_code_as_tick`, `add_custom_gcode`): a pause or a template only where nothing is set, custom G-code in place of whatever is there, a filament change over a filament change |
+| The slider's other menu entries, for the layer of the thumb taken up: "Add Pause" ("Insert a pause command at the beginning of this layer."), "Add Custom G-code" ("Insert custom G-code at the beginning of this layer."), "Add Custom Template" (only when the printer has `template_custom_gcode`), "Change Filament" with "Filament 1"… in their colours (with more than one filament; off unless the plate prints in one of them and is neither printed by object nor a spiral vase); greyed when printed by object | `render_add_menu` l.1512, GUI_Preview.cpp `update_layers_slider_mode` l.490 | **added** (eleventh pass; `layer_codes`, `layer_code_set`), the same entries, conditions and words. The item made is the reference's (`add_code_as_tick`, `add_custom_gcode`): a pause or a template only where nothing is set, custom G-code in place of whatever is there, a filament change over a filament change |
 | A tick where something is set: marks across the track, the kind's label beside it ("Pause", "Custom", "Template", "Color"), its tooltip ("Pause: \"M600\"", "Custom G-code: \"…\"", "Custom Template: \"…\"", "Change Filament"), a delete icon at the selected tick; the slider's menu on a tick: "Delete Pause"; "Delete Custom Template"; "Edit Custom G-code", "Delete Custom G-code"; "Change Filament" and "Delete Filament Change" | `draw_ticks` l.703, `draw_custom_label_block`, `show_tooltip` l.817, `render_edit_menu` l.1569 | **added**: the same, with the reference's words. **differs**: a filament change's mark is in the filament's colour where the reference colours the track above it; the estimated time before a tick's tooltip is not shown (no layer times, see "Actual Speed"); a colour change or an unknown item (read from a file; the reference makes none) gets "Jump to Layer" alone where the reference's menu is empty |
 | "Custom G-code": "Enter Custom G-code used on current layer:", a box of six lines, "OK" (off while empty) and "Cancel" | `render_input_custom_gcode` l.1323 | **added**, a dialog of the page's own (`#custom-gcode`); "Edit Custom G-code" opens it with the text that is there |
 | What an edit of the ticks does: the plate's items set as a whole, the project modified, the plate's slice made invalid; not a step of the undo history (the handler takes no snapshot, and the undo stack keeps the objects, not `plates_custom_gcodes`) | Plater.cpp l.13532 (`EVT_CUSTOMEVT_TICKSCHANGED`), Model.hpp l.1727 | **added**: the same (`layer_code_set`, `layer_code_delete`); undo and redo leave the items as they are. **differs**: the plate is sliced again at once, so the change is seen; the reference waits for the slice button |
 | "Compare slices (A/B)" | IMSlider.cpp l.1300 | **not yet** |
 | Horizontal move slider, the tool marker, the position window with its properties | `update_moves_slider` l.2331, GCodeViewer.cpp l.393–760 | **added** in 3D: the slider, the marker (an arrow) and the window's two lines (section 10). **not yet**: the table of a move's properties, a vendor's hotend model |
-| G-code window [C]: the lines round the move the moves slider is on, that line framed, each with its number, the command, its words and the comment in colours of their own, a line over 55 characters cut to 52 and "..."; under the legend at the right; shown to start with and remembered (`show_gcode_window`); not scrolled, the wheel over the moves slider moving it | `GCodeWindow::render` l.877, `load_gcode` l.839, GUI_App.cpp l.1364, AppConfig.cpp l.297 | **added** (tenth pass): the same lines, split and cut the same way, the line found by the move as the reference finds it (the move's own line, `gcode_id`); C and the legend's button; remembered by the page. The colours are the page's (`STYLE.md`). The wheel over the window moves the moves slider as over the slider. **differs**: where the legend leaves too little room under it (fewer than eight lines), the window stands at its left; it stops above "About this print" rather than covering it. How it stays quick: section 11 |
+| G-code window [C]: the lines round the move the moves slider is on, that line framed, each with its number, the command, its words and the comment in colours of their own, a line over 55 characters cut to 52 and "..."; under the legend at the right; shown to start with and remembered (`show_gcode_window`); not scrolled, the wheel over the moves slider moving it | `GCodeWindow::render` l.877, `load_gcode` l.839, GUI_App.cpp l.1364, AppConfig.cpp l.297 | **added** (eleventh pass): the same lines, split and cut the same way, the line found by the move as the reference finds it (the move's own line, `gcode_id`); C and the legend's button; remembered by the page. The colours are the page's (`STYLE.md`). The wheel over the window moves the moves slider as over the slider. **differs**: where the legend leaves too little room under it (fewer than eight lines), the window stands at its left; it stops above "About this print" rather than covering it. How it stays quick: section 11 |
 | "Select Plate" bar at the top left: a tile for each plate with its state (not sliced, slicing, sliced, failed); a click selects the plate and slices it if it is not sliced | `GLCanvas3D::_render_imgui_select_plate_toolbar` l.11656 | **added**: the same column of plates as in Prepare, with a tick for sliced, "…" for slicing and "!" for failed; a click selects and, in Preview, slices |
 | Its first tile: "Slice all" with sliced/total while some are not sliced, then "All Plates" / "Stats", which opens "Statistics of All Plates" (each filament's use, "Total time:", "Total cost") | l.11656–11730, `render_all_plates_stats` l.3295 | **added**: the tile in both states; the statistics list each plate's filament and time and their totals. **not yet**: by filament, cost |
 | Canvas warnings: paths beyond the plate, beyond the height, conflicting paths | GLCanvas3D.cpp l.12998 | **differs**: the engine refuses to write G-code with toolpaths off the bed; the reason is shown under "About this print" |
@@ -330,7 +332,7 @@ Read from `ProjectStrip.cpp/.hpp`, `ProjectSessions.hpp` and their uses in
 | Z: zoom to the objects | **added**: "Fit in all view" in 3D (section 9); "Fit part" from above |
 | Ctrl+S "Save Project", Ctrl+Shift+S "Save Project as..." | **added** (and Cmd on a Mac), anywhere in the page but in a dialog; in a browser they are taken from the browser's own |
 | Ctrl+G, Ctrl+Shift+G, Ctrl+P (Preferences), "?" (the list of shortcuts) | **not yet** (Ctrl+I is "Add", section 13) |
-| Left / Right, Home / End (the move slider), L (one layer mode), C (G-code window) | **added** in 3D, C in the tenth pass |
+| Left / Right, Home / End (the move slider), L (one layer mode), C (G-code window) | **added** in 3D, C in the eleventh pass |
 | A, Shift+A, Q, Shift+Q, the gizmo keys, Ctrl+0..6, Ctrl+A / D / Z / Y / C / V / X, Del, 1–9, arrows to move objects | **added** in 3D: Ctrl+0..7 (the views), Ctrl+A, Esc, I and O, Ctrl+E (section 9); A, Shift+A, M, R, S, F, Ctrl+Z, Ctrl+Y, Ctrl+C, Ctrl+V, Ctrl+K, Ctrl+I, Del and the arrows (section 13). **not yet**: Q and Shift+Q, the other gizmos' keys, Ctrl+D, Ctrl+X, 1–9 (the filament of what is selected) |
 
 ## 7. What the page asks for
@@ -350,11 +352,11 @@ the project is on.
 | `printer_cover` | `vendor`, `model` | `{ data }`: the picture as a `data:` URL, or null |
 | `printers_save` | `project?`, `models: [{ vendor, model }]` | as `printers`, and `added`, `removed` (`[{ vendor, model }]`), `switched: [{ project, name, from, to }]`. An error with none: "At least one printer must be selected." |
 | `printers_default` | `project?` | as `printers_save`: adds the Snapmaker U1 when no printer is added |
-| `printer_select` | `project?` and `vendor` with `model` (one of those added), `variant?`; or `variant` alone (another nozzle of the model the project is on); or neither (the printer a project starts with); `initial?` | as `project` |
+| `printer_select` | `project?` and `vendor` with `model` (one of those added), `variant?`; or `variant` alone (another nozzle of the model the project is on); or neither (the printer a project starts with); `initial?` | as `project`; and `notice { title, text }` when plates' own bed types the printer does not take were taken away ("Plate bed types reset"); so does `project_set` given `source`, `vendor` or `machine` |
 | `machines { vendor }` | | `{ machines }` |
 | `presets { vendor, machine }` | | `{ processes, filaments, usual_process, usual_filament }` |
 | `projects` | — | the strip: `{ active, max_open, projects: [{ id, name, path, dirty, empty, plate, tab, revision, slicing, plates_with_objects, plates_sliced }] }`. `revision` counts the edits to the project's model |
-| `project` | `project?` | a strip entry and `file`, `plates: [{ id, name, filaments, objects, sliced, failed }]`, `sliced`, `failed`, `has_settings`, `used`, `filament_count`, `colours`, `saved { printer, process, filaments }`, `choices { source, vendor, machine, process, filaments, bed_type, over { key: value }, filament_over [{ key: value }], printer_over { key or key#n: value }, layer_height, first_layer_height, wall_loops, closing_radius }` (`over` is every process setting set over the preset, `filament_over` each filament's own from filament 1, `printer_over` the printer's; the four after them are four process settings under their older names), `view`, `edit { revision, undo, redo }` (what there is to take back and to make again, by name, or null), `status`. All of it is of the model as it stands, edits included |
+| `project` | `project?` | a strip entry and `file`, `plates: [{ id, name, filaments, objects, sliced, failed, locked, own { bed_type, print_sequence, spiral_mode, first_layer_sequence, other_layers_sequence: [{ begin, end (null: "End"), order }] } (null or empty: the project's), customized (whether it sets any of them) }]`, `sliced`, `failed`, `has_settings`, `used`, `filament_count`, `colours`, `saved { printer, process, filaments }`, `choices { source, vendor, machine, process, filaments, bed_type, over { key: value }, filament_over [{ key: value }], printer_over { key or key#n: value }, layer_height, first_layer_height, wall_loops, closing_radius }` (`over` is every process setting set over the preset, `filament_over` each filament's own from filament 1, `printer_over` the printer's; the four after them are four process settings under their older names), `view`, `edit { revision, undo, redo }` (what there is to take back and to make again, by name, or null), `status`. All of it is of the model as it stands, edits included |
 | `project_new` | — | the strip and `id`; or the strip and `full: true` |
 | `project_open` | `path` | the strip and `id` (`already: true` when it was open); or `full: true` |
 | `project_select` | `id` | the strip |
@@ -378,7 +380,7 @@ the project is on.
 | `summary` | `project?`, `plate?` | as before, and `plate`, `widths`, `heights`. `gaps` ends with each setting set by hand that the slice did not read |
 | `layer` | `project?`, `plate?`, `index` | as before |
 | `export` | `project?`, `plate?`, `path` | `{ path, bytes }` |
-| `scene` | `project?` | the project for Prepare in 3D: `{ project, key, bare, bed { box, shape, height, model, texture }, plates: [{ id, name, origin }], plate, colours, objects: [{ id, name, mesh, vertices, triangles, bytes, filaments, filament, parts }], placings: [{ id, object, plate, printable, matrix (16 numbers, column by column), box, over }] }`. An object also has `own_filament` (the filament it is set to itself, or null: what its parts set to "default" print in), `part_list: [{ id, name, kind (part, negative, modifier, support_blocker, support_enforcer, precise_seam), filament, own (the part's own filament, or null for "default"), matrix (16 numbers, column by column: the part's own coordinates to the object's), box (round the part's own mesh), triangles ([first, how many] of the object's mesh), split (whether "Split" can be done to the part), settings (how many settings of its own the file gives it) }]` and `split: { objects, parts }` (whether "Split to objects" and "Split to parts" can be done to it). A part's `id` stays its own through every edit that leaves it there. An object's `id` and a copy's (a placing's) `id` stay theirs through every edit; `mesh` is the number of the object's mesh, the same for as long as the mesh is; `filament` is the object's own when its parts agree; `over` says a copy reaches over the edge of its plate |
+| `scene` | `project?` | the project for Prepare in 3D: `{ project, key, bare, bed { box, shape, height, model, texture }, plates: [{ id, name, origin, locked }], plate, colours, objects: [{ id, name, mesh, vertices, triangles, bytes, filaments, filament, parts }], placings: [{ id, object, plate, printable, matrix (16 numbers, column by column), box, over }] }`. An object also has `own_filament` (the filament it is set to itself, or null: what its parts set to "default" print in), `part_list: [{ id, name, kind (part, negative, modifier, support_blocker, support_enforcer, precise_seam), filament, own (the part's own filament, or null for "default"), matrix (16 numbers, column by column: the part's own coordinates to the object's), box (round the part's own mesh), triangles ([first, how many] of the object's mesh), split (whether "Split" can be done to the part), settings (how many settings of its own the file gives it) }]` and `split: { objects, parts }` (whether "Split to objects" and "Split to parts" can be done to it). A part's `id` stays its own through every edit that leaves it there. An object's `id` and a copy's (a placing's) `id` stay theirs through every edit; `mesh` is the number of the object's mesh, the same for as long as the mesh is; `filament` is the object's own when its parts agree; `over` says a copy reaches over the edge of its plate |
 | `scene_edit` | `project?`, `op` and what it takes (section 13) | `{ project, scene, done, made, note, part }`: the project and its scene as they then are, the edit's name in the history, the copies it made, something to tell the person or null, and the part it made (`part_add`) or null |
 | `undo`, `redo` | `project?` | `{ project, scene, done }`; an error when there is nothing to take back or to make again |
 | `scene_faces` | `project?`, `copy` | the faces "Lay on face" offers for a copy, largest first: `{ project, copy, faces: [{ normal, area, drawn }] }`, `normal` outward in the object's own coordinates (what `lay_on_face` takes), `area` in mm² at the printed size, `drawn` the outline to draw over the face (rounded and lifted as the reference draws it), in the object's own coordinates |
@@ -547,7 +549,7 @@ reference's own numbers; each is named in `scene.js` with where it is from.
 | Every plate that is not the one shown is filled (0.82, dark (0.384, 0.384, 0.412)); the one shown is the bed itself | `render_background` l.656 | **added** |
 | A grid from the plate's origin: every 10 mm (20, 50 or 100 on a bed 600, 1200 or 6000 mm across), every fifth line bold, and the bed's outline; (0.89), dark (0.431, 0.431, 0.463); the plate shown (0.5294, 0.5451, 0.5333), dark (0.298, 0.298, 0.3333) | `calc_gridlines` l.476, `render_grid` l.995, 2DBed.cpp l.27 | **added**; the bold lines are two pixels wide, drawn as quads (WebGL has no wide lines) |
 | The plate's number, "01" to "36", at its bottom right, and its name ("Untitled" without one) at its top left, in (242, 117, 78) | `calc_vertex_for_number` l.545, `generate_plate_name_texture` l.2264 | **added** |
-| Icons beside each plate: "Remove current plate (if not last one)", "Auto orient objects on current plate", "Arrange objects on current plate", "Lock current plate", "Customize current plate", "Move plate to the front", "Print history", "Edit current plate name" | `render_icons` l.1154 | **differs**: removing a plate and arranging it are in the object list (the cross at a plate's row) and in the plate's menu, not drawn beside the plate (section 13). **not yet**: the rest |
+| Icons beside each plate: "Remove current plate (if not last one)", "Auto orient objects on current plate", "Arrange objects on current plate", "Lock current plate", "Customize current plate", "Move plate to the front", "Print history", "Edit current plate name" | `render_icons` l.1154 | **added** (tenth pass): a column of the page's own tools at the far right corner of the plate shown, with these tooltips ("Unlock current plate" on a locked one; a dot of the accent on "Customize current plate" when the plate sets anything, as the reference draws its changed icon). **differs**: beside the plate shown only, not every plate; HTML over the scene, placed as the scene is drawn and hidden while the corner is out of sight. **not yet**: orient, "Print history" |
 | Height limits for printing by object, the areas a printer keeps clear, the stripes of a two-nozzle bed | l.858, l.968, `calc_height_limit` | **not yet** |
 
 ### Objects
@@ -773,11 +775,13 @@ no stage reads at all.
 | Speed | 64 | 33 | 0 | 31 | 10 | 31 |
 | Support | 78 | 25 | 0 | 53 | 2 | 43 |
 | Multimaterial | 63 | 21 | 0 | 42 | 18 | 42 |
-| Others | 51 | 27 | 1 (`exclude_object`) | 23 | 14 | 23 |
-| All | 433 | 223 | 1 | 209 | 58 | 182 |
+| Others | 51 | 28 | 1 (`exclude_object`) | 22 | 13 | 22 |
+| All | 433 | 224 | 1 | 208 | 57 | 181 |
 
 Turned on, three more are read with a note: `spiral_mode`, `raft_layers`,
-`draft_shield`. `zaa_enabled` turned on is followed, and its
+`draft_shield`; and `print_sequence` (read since the tenth pass) has one at
+"by object", which is not followed: every object is printed together, layer
+by layer. `zaa_enabled` turned on is followed, and its
 `zaa_speed_scaling` then has a note while layers are slowed to cool.
 
 Nothing is said of an option the reference's rules have greyed out: it is
@@ -852,6 +856,17 @@ undo history.
 | `part_split` | `object`, `part` | "Split" of a part: a part for each piece of its mesh, in its place, each given the filament it printed in as its own. Refused: "The target object contains only one part and can not be split." | "Split to parts" |
 | `part_type` | `object`, `parts: [id]`, `kind` (`part`, `negative`, `modifier`, `support_blocker`, `support_enforcer`, `precise_seam`) | "Change type"; refused for the last printed part: "The type of the last solid object part is not to be changed." | "Change part type" |
 | `part_add` | `object`, `kind`, and `path` (a file, "Load...") or `shape` (`Cube`), `copy?` | adds a part; `part` in the answer is its number | "Load Part" / "Load Modifier", "Add primitive" |
+| `plate_rename` | `plate?`, `name` (empty: none; at most 250 characters) | names a plate; the same name again is no step (`done` null) | "Rename Plate" |
+| `plate_lock` | `plate?`, `value` | locks or unlocks a plate | "lock partplate" |
+| `plate_settings` | `plate?` and, each null or left out for the project's, `bed_type` (one the printer takes), `print_sequence` (`by layer`, `by object`), `spiral_mode` (true, false), `first_layer_sequence` (filament numbers, each once), `other_layers_sequence` (`[{ begin, end (null: "End"), order }]`, layers from 2) | what the plate sets for itself ("Customize current plate"); refused, nothing changed, with "Please input layer value (>= 2)." and the like | "Plate Settings" (the reference takes no snapshot) |
+| `plate_front` | `plate?` | "Move plate to the front": the plate is plate 1 and the one shown, the others one back each | "move plate to the front" |
+| `plate_duplicate` | `plate?` | "Duplicate Current Plate": a plate after the last with a new object for each object with copies on the plate, each copy where it stood on its plate; the new plate is shown; `made` is its copies | "Duplicate Current Plate" (the reference takes no snapshot) |
+
+`arrange` leaves a locked plate as it is when every plate is arranged, and
+refuses one alone: "This plate is locked.\nCannot auto-arrange on this
+plate." Arranging every plate leaves alone too a plate whose own print
+sequence is not the project's, as the reference does (ArrangeJob.cpp
+`prepare_all`).
 
 ### Undo and redo
 
@@ -1054,6 +1069,34 @@ shows; `part_menu`; `append_menu_items_add_volume`;
 | "Split" of a part: a part for each piece, named with `_1`, `_2`…, each given the original's filament (`extruder_id`) | `ModelVolume::split` Model.cpp l.3186 | **added**, the pieces in the part's place, keeping its transform (see the error at l.3014 below) |
 | Modifiers carry settings for the region inside them; support blockers and enforcers say where supports go | `PrintObject`, `SupportMaterial` | **not followed** by the engine: their settings are kept with the part (`Part::settings`) and not read. They are kept through every edit, listed and drawn see-through in their colours, and a print with any of them says so under "About this print" ("the project has modifiers, which are not followed: …", "the project has support blockers, which are not followed: supports go where the settings put them") |
 
+### Plates
+
+Read from `PartPlate.cpp` (`render_icons`, `set_bed_type`, `set_print_seq`,
+`set_spiral_vase_mode`, `set_first_layer_print_sequence`,
+`set_other_layers_print_sequence`, `PartPlateList::move_plate_to_index`,
+`duplicate_plate`, `lock_plate`, `preprocess_arrange_polygon`),
+`PlateSettingsDialog.cpp`, `Plater.cpp` (`select_plate_by_hover_id`,
+`open_platesettings_dialog`, `rename_plate`, `duplicate_plate`,
+`normalize_bed_types`), `GUI_Factories.cpp` (`create_plate_menu`,
+`plate_menu`, `append_menu_item_locked`, `append_menu_item_plate_name`),
+`MainFrame.cpp` (the Edit menu), `Jobs/ArrangeJob.cpp`,
+`libslic3r/PlateBedTypes.cpp` and `libslic3r/Format/bbs_3mf.cpp`. The
+engine's side is `crates/edge-engine/src/plates.rs`; the page's
+`ui/plates.js`.
+
+| C++ | Where | Here |
+| --- | --- | --- |
+| Icons down the right of every plate, each acting on its plate after showing it | `render_icons` l.1154, `select_plate_by_hover_id` l.30481 | **added** for the plate shown (see section 9, "Plates"): remove, arrange, lock, customize, name, to the front. **not yet**: orient, "Print history" |
+| The plate's menu (the object list's plate row; the right button on a plate): "Select All", "Delete All", "Arrange", "Reload All", "Auto Rotate", "Delete Plate", "Add Primitive", "Add Handy models", "Add Custom Models", "Add Models", then "Lock" / "Unlock", "Edit Plate Name" | `create_plate_menu` l.2831, `plate_menu` l.3149 | **added**, with their help text as tooltips, on the plate's tile (top left of the stage), its row in the object list and the plate in the scene, by the right button or Shift+F10 / the menu key; after them "Customize current plate", "Move plate to the front" (off for plate 1) and "Duplicate Current Plate" ("Duplicate the current plate"), which are the icons' and the Edit menu's in the reference. **not yet**, not shown: "Reload All", "Auto Rotate", the four ways to add a model (one "Add" [Ctrl+I] is in the toolbar) |
+| "Edit Plate Name": "Plate name", at most 250 characters, OK / Cancel; Enter is OK; an empty name is none | `PlateNameEditDialog` PlateSettingsDialog.cpp l.679 | **added**. The name stands at the plate's top left in the scene ("Untitled" without one, **had**), in its tile's tooltip and at its row ("Plate 2 (name)") |
+| Lock: a locked plate's copies are left where they are by "Arrange all", which arranges the rest; arranging a locked plate alone is refused: "This plate is locked.\nCannot auto-arrange on this plate." | `preprocess_arrange_polygon` PartPlate.cpp l.5407, ArrangeJob.cpp l.198, l.407 | **added**. A lock is drawn on the plate's tile and at its row; the lock tool is pressed while it is locked. The reference's arranger itself is not ported (see "Arrange" above) |
+| "Plate Settings": "Plate name"; "Bed type" ("Same as Global Plate Type" and the printer's plates; off for a printer without a choice); "Print sequence" ("Same as Global Print Sequence", "By Layer", "By Object"); "Spiral vase" ("Same as Global", "Enable", "Disable"); "First layer filament sequence" ("Auto" / "Customize" with the filaments to drag into order); "Other layer filament sequence" ("Auto" / "Customize": ranges "Layer" [from] "to" [to or "End"], each with its order, added and taken off by + and −); "Please input layer value (>= 2)." | PlateSettingsDialog.cpp l.371–520, `open_platesettings_dialog` Plater.cpp l.30400 | **added**, the same rows and words, the orders as chips of the filaments' colours dragged into place or moved with Left and Right. The ranges are put in order of their first layer, as the reference sorts them. **differs**: "Enable" asks nothing and changes no other setting, where the reference asks first and sets what vase mode needs ("Spiral mode only works when…", the same as the process page's, **not yet** in section 2); a range's end before its start is refused, where the reference moves the end |
+| What each setting does when sliced | BackgroundSlicingProcess.cpp `apply` (`new_config.apply(*plate->config())`) | the plate's own settings are laid over everything else for its slice, a plate read from a file's as much as one set here (`Loaded::plate_settings`). **Bed type**: followed: the plate's bed temperatures and `curr_bed_type`. **Print sequence**: read, but "by object" is not followed: the print says "print_sequence "by object": printing object by object is not followed; every object is printed together, layer by layer" (the same as for the project's own). **Spiral vase**: as the project's own: noted as not followed ("vase mode is not followed…") and turning off what it turns off (arc fitting, scarf seams). **First layer filament sequence**: followed (**had** for a file's). **Other layer filament sequence**: noted as not followed ("other_layers_print_sequence: above the first layer tools are taken in the order that wastes least") |
+| "Move plate to the front": the plate becomes the first with what stands on it, the others one back; it is then the one shown | `move_plate_to_index` l.4879 | **added**. Every plate's slice from the first to the one moved is let go, a plate's number being in what is sliced |
+| "Duplicate Current Plate": a new plate after the last with a copy of each object on the plate, where it stood | `PartPlateList::duplicate_plate` l.4461 | **added**, the plate shown afterwards. **differs**: an object with copies on other plates is copied with its copies on this plate only (see "Errors found in the C++"); one undo step |
+| Another printer that does not take a plate's bed type: it is taken away, "Plate bed types reset" | `normalize_bed_types` l.21433 | **added** (section 2) |
+| Keys for plates | KBShortcutsDialog.cpp | Shift+A "Arrange objects on selected plates" (**had**); the reference has no other key for a plate. A plate is selected by a click on it, its tile or its row (**had**) |
+
 ### Left for later
 
 | C++ | Waits for |
@@ -1069,6 +1112,10 @@ shows; `part_menu`; `append_menu_items_add_volume`;
 | Saving the project with its edits | **added**: section 15 |
 | The glow round what is selected, the red background while something is over the edge, the ticks of the rotate ring | nothing; they are looks, left for a pass on the stage's own drawing |
 | Rectangle selection (Shift with a drag), dragging rows of the list | nothing; not built in this pass |
+| A plate's "Auto orient objects on current plate", "Auto Rotate" | orientation in the engine (`Orient.cpp`) |
+| "Reload All" ("reload all from disk") | reading an object's source file again (`source_file` is kept with it, section 15, but nothing reads it): the part menu's "Reload from disk" first |
+| "Print history" | sending to a printer (section 4); a file's `print_history` is kept with its plate |
+| The plate's tools beside every plate, not only the one shown | nothing; the page shows the plate shown's, where the keys and the pointer are |
 | A printer with another bed moving every object to keep its place | deciding the rule: here a copy keeps its place on its own plate, and what was on no plate stays where it stood beside the first |
 
 ### How it was checked
@@ -1178,8 +1225,66 @@ editor's own `grab`, `drag` and `drop` (the part moved 48.74 mm, "Move
 Object"). The screenshots are under the session's scratch folder,
 `ui_parts/shots/`.
 
+The tenth pass (plates): in the engine, `crates/edge-engine/tests/plates.rs`
+(above, and: a locked plate left alone by arranging every plate and refused
+alone, the others arranged; a plate left alone by `arrange_leaving`; a
+plate's own settings in its slice's settings and its stamp, a name and a
+lock not; bed types another printer does not take taken away; what cannot
+be set refused, nothing changed). In the session
+(`src/api/edit/tests.rs`): `mcbrim_test.3mf` with plates 1 and 2 sliced:
+renamed (both slices kept; the same name again no step), locked (kept),
+arranged alone (refused in the reference's words) and all (the locked
+plate's copies where they were), customized (plate 1's slice let go, plate
+2's kept; a range from layer 1 refused), plate 3 to the front, duplicated,
+and the seven steps taken back by name to an unmodified project; on the
+U1's presets a plate's "Engineering Plate" refused, "Cool Plate" kept by
+another U1 nozzle and taken away by an Elegoo Neptune 4 with the notice,
+one undo step. The CLI's G-code is the starting commit's byte for byte for
+the three plates of `mcbrim_test.3mf`, `twopart_groups.3mf` and the
+`cube`, `tower`, `bridge`, `halves`, `mushroom` fixtures (`twotone` fails
+alike in both).
+
+In the served page (`--serve`, the app's browser pane, 1280 × 820 dark and
+900 × 560 light), with a copy of `mcbrim_test.3mf`: plate 1 renamed "Arms
+front" from its tool beside it (the name on the plate, at its row, the
+unsaved dot); locked from its tool (the lock on its tile and row, the tool
+pressed); "Arrange all objects" from the toolbar (plate 1 where it was,
+plate 2 laid out); its arrange tool (the status line: "This plate is
+locked. Cannot auto-arrange on this plate."); the tile's menu by the right
+button; "Customize current plate" from it: "Smooth Cool Plate", "By Layer",
+the first layer's order with filament 7 dragged and moved by Left to the
+front, the other layers customized, a second range left empty and OK
+refused with "Please input layer value (>= 2).", the range taken off with −
+and OK; sliced: 45 °C bed, `curr_bed_type = Cool Plate`, the
+other-layers note under "About this print"; plate 3 moved to the front
+from its tile's menu, plate 2 duplicated (plate 4, eight copies); the six
+steps undone by name to an unmodified project and redone; saved as, closed
+and opened again: the four plates as left (the C++ slicer re-exporting
+that file shows them the same); switched to an Elegoo Neptune 4: the
+"Plate bed types reset" box, undone. The browser pane's right button does
+not reach the page, so the tile's menu was opened by a `contextmenu` event
+and then gone through with the mouse. The screenshots are under the
+session's scratch folder, `ui_plates/shots/`.
+
 ### Errors found in the C++
 
+- `PartPlate.cpp` l.4461–4487 (`PartPlateList::duplicate_plate`): the
+  objects to copy come from `get_objects_on_this_plate` (l.2423), which
+  pushes the object once for each of its instances on the plate, and each
+  is copied whole (`m_model->add_object(*object)`), every instance with it,
+  and every instance registered on the new plate and moved by the plates'
+  offset. An object with two copies on the plate comes out as two objects
+  of two copies each, two on top of the other two; an object with a copy
+  on another plate too has that copy moved by the offset, off any plate.
+  Here a new object is made for each object, with its copies on the plate
+  only.
+- `Plater.cpp` l.30697 (`duplicate_plate`) and l.30428–30476 (the "Plate
+  Settings" handler) take no snapshot, so neither can be undone, where
+  renaming, locking and moving a plate can.
+- `GUI_Factories.cpp` l.3409–3412 (`append_menu_item_locked`): the menu's
+  "Lock" / "Unlock" calls `plate->lock` directly: no snapshot and the
+  project is not marked modified, where the icon's lock takes "lock
+  partplate" (Plater.cpp l.30617).
 - `3DScene.cpp` l.351: `#ifdef ENABBLE_OUTSIDE_COLOR` (misspelt) opens a
   block whose `else {` is closed under `#ifdef ENABLE_OUTSIDE_COLOR` at
   l.360. Neither name is defined anywhere, so the colour for what is outside
@@ -1429,7 +1534,7 @@ entry, in a fixed order:
 | `[Content_Types].xml`, `_rels/.rels` | written afresh, as the reference writes them; `_rels/.rels` names the cover (`Auxiliaries/.thumbnails/…` when the file had one, else the first plate's picture while that is written) |
 | `3D/3dmodel.model`: the header, an object of components for each object, the build (each copy: transform, printable) | written afresh. The header keeps every `<metadata>` the file had (title, designer, licence, description…), with `Application` "EdgeSlicer-2.4.9.0" (the pinned reference's version, `edge_3mf::REFERENCE_VERSION`, checked against the submodule by a test), `BambuStudio:3mfVersion` 1, the dates and the designer's id empty as the reference writes them. The reference reads a file as a whole project (plates, settings, presets) only when its `Application` names EdgeSlicer, Snapmaker Orca or Bambu Studio, so the reference's own name is the one written. Transforms are written as the shortest text that reads back to the same number (the reference writes 9 digits) |
 | `3D/Objects/<name>_<n>.model`, `3D/_rels/3dmodel.model.rels` | written afresh: a file for each object, each mesh of it that no earlier part has (the same mesh painted alike is written once and named from every part that has it, as `ShareMesh` does); vertices as the shortest text that reads back to the same `f32`; each triangle with every attribute it carried as the file had it (`paint_color`, `paint_seam`, `paint_supports`, `paint_fuzzy_skin`, texture layers, `face_property`). A `/` or another character a path cannot hold in an object's name is written `_` in the file's name (the reference writes the name as it is) |
-| `Metadata/model_settings.config` | written afresh from the model: each object's name and filament (`extruder`), each part's name, `subtype`, own filament (`extruder`, none for "default") and, once it has moved, `matrix` (see "Parts" below). Kept as the file had them, where the part is still what it was read as: every other metadata and setting of each object and part (per-object and per-part settings, modifiers' settings, `matrix`, `source_*`, Precise Seam's type, embossed text and SVG descriptions, `mesh_stat`), each plate's own (`locked`, `bed_type`, `print_sequence`, `first_layer_print_sequence`, `spiral_mode`, `filament_map_mode`, `filament_maps` with one entry for each filament, `print_history`…), each copy's place in the assembly view while its object has all its copies, and each copy's `identify_id` (the number the reference labels it with in G-code) while it has. Plates are numbered as they stand, each with its name and its copies |
+| `Metadata/model_settings.config` | written afresh from the model: each object's name and filament (`extruder`), each part's name, `subtype`, own filament (`extruder`, none for "default") and, once it has moved, `matrix` (see "Parts" below). Kept as the file had them, where the part is still what it was read as: every other metadata and setting of each object and part (per-object and per-part settings, modifiers' settings, `matrix`, `source_*`, Precise Seam's type, embossed text and SVG descriptions, `mesh_stat`), each plate's own (`locked`, `bed_type`, `print_sequence`, `first_layer_print_sequence`, `spiral_mode`, `filament_map_mode`, `filament_maps` with one entry for each filament, `print_history`…), a setting changed here (the lock, "Plate Settings") set in place or added where the reference writes it and one given back to the project taken out (`PlateKept::with`), a plate added here written as the reference writes a new one until something is set on it (`PlateKept::fresh`), each copy's place in the assembly view while its object has all its copies, and each copy's `identify_id` (the number the reference labels it with in G-code) while it has. Plates are numbered as they stand, each with its name and its copies |
 | `Metadata/project_settings.config` | the settings, below |
 | `Metadata/slice_info.config` | written afresh: the header alone, as the reference writes a project saved unsliced |
 | `Metadata/layer_heights_profile.txt` (variable layer height), `layer_config_ranges.xml` (height ranges and their settings), `brim_ear_points.txt`, `cut_information.xml` (cut connectors) | kept, each object's line or block written under its place in the list as it stands, so they follow an object when one before it is deleted; a clone carries its original's, as the reference's clone does. A cut connector names its part by the part's place among the object's parts, which is written as it now stands (a part before it deleted, one added after it); once the connector's part itself is deleted or split, the object's cut information is not written, and that is asked about first |
@@ -1590,7 +1695,31 @@ save` lists the same and writes only with `--accept-losses`.
   changes the filament used as it does here. A file added at a place
   partly off the bed is refused by both slicers alike.
 
-- What is set at layers (tenth pass). `crates/edge-3mf`: the pressure
+- Plates (tenth pass). `crates/edge-engine/tests/plates.rs`: on
+  `mcbrim_test.3mf` a plate renamed (with `&` and `<` in the name),
+  locked, given its own bed type, print sequence, vase mode, first and
+  later layers' order; a plate added and then set; a plate moved to the
+  front; a plate duplicated: each saved, opened again, is as it was left
+  (names, locks, settings, what stands on each plate to a ten-thousandth
+  of a millimetre), saved twice to the same bytes, its metadata in the
+  reference's keys and order; every setting given back to the project
+  saves to the bytes of the unedited project. `src/api/save/tests.rs`: the
+  same through `scene_edit`, saved as and opened in another session. The
+  C++ slicer (headless) on each saved file: re-exported with
+  `--export-3mf`, its `model_settings.config` has the plates as left
+  (names, `locked`, `bed_type`, `print_sequence`,
+  `first_layer_print_sequence`, `other_layers_print_sequence` and its
+  count, `spiral_mode`, each plate's copies); `edge-parity` on the plate
+  moved to the front prints what the original's third plate prints, the
+  first layer's toolpaths over the same box (7.97 to 185.36 by 55.19 to
+  268.23), and on the duplicated plate what the original plate prints;
+  on a plate given "Cool Plate" it heats the bed to 45 °C with
+  `curr_bed_type = Cool Plate`, as this engine does; on a plate given "By
+  Object" it reads the plate's own ("plate print by object, set from plate
+  self") and refuses the plate for objects too close for it, which this
+  engine prints layer by layer with its note.
+
+- What is set at layers (eleventh pass). `crates/edge-3mf`: the pressure
   advance pattern's file written back to the byte, and a pause added to
   another plate written in the reference's layout and read back.
   `crates/edge-engine/tests/save.rs`: a pause and a custom line set on
