@@ -188,9 +188,12 @@ fn finish(
     let island_bottom = (spacing as f64 / bottom_density) as i64;
     let num_top = config.roof_layers.saturating_sub(1);
     // A foot is printed as the first of its dense layers and projected
-    // onto the rest, which is what the reference's output has: its foot
-    // layer is dense (SupportCommon.cpp counts the contact as a layer for
-    // other supports, and the organic trees come out the same).
+    // onto the rest. The reference leaves an organic foot unprinted, as a
+    // seed for the dense layers over it (SupportCommon.cpp
+    // `generate_interface_layers`), having set a branch carried down onto
+    // the part a layer lower (branch.rs, `draw`): with dense bottom layers
+    // its printed layers come where these do, the bottom gap over the
+    // part; without them its foot is printed on the part.
     let num_bottom = config.floor_layers.saturating_sub(1);
     let present: Vec<usize> = (0..count)
         .filter(|layer| !base[*layer].is_empty())

@@ -68,6 +68,11 @@ the middle. The far row has a round 5 mm hole over a hexagonal one 10 mm
 across its flats, a 5 mm square one over a round 10 mm, a hexagonal one
 5 mm across its flats over a 10 mm square, and a plain round 5 mm hole
 straight through, which the option must leave alone.
+
+slopeshelf is for support feet that land on a slope: a block 20 mm square
+whose top rises 15 degrees along x, from 1 mm to 6.4, under a cap 30 x 20
+mm and 3 mm thick from 16 mm up, held by a post at the block's left; the
+supports under the cap stand on the slope.
 """
 import json, math, sys, zipfile
 
@@ -349,6 +354,10 @@ MESHES["dome"] = [dome(135.5, 136, 12, 2, 3)]
 MESHES["ramp"] = [lying(prism([(118, 0), (153, 0), (153, 4), (133, 4), (118, 2)], 0, 20), 126)]
 MESHES["holed"] = [slanted(around(135.5, 136, 15, [2 * math.pi * i / 64 for i in range(64)]), 0, WEDGE,
                            [(135.5 + 4 * math.cos(2 * math.pi * i / 64), 136 + 4 * math.sin(2 * math.pi * i / 64)) for i in range(64)])]
+MESHES["slopeshelf"] = [
+    slanted([(125.5, 126), (145.5, 126), (145.5, 146), (125.5, 146)], 0,
+            lambda x, y: 1 + (x - 125.5) * math.tan(math.radians(15))),
+    box(120.5, 132, 0, 4, 8, 16), box(120.5, 126, 16, 30, 20, 3)]
 
 # Two parts of one object, for seams moved to where parts meet
 # (seam_prefer_part_joints): halves is a round post 20 mm across and 10 mm
