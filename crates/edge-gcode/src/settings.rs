@@ -258,6 +258,13 @@ pub struct PrintSettings {
     /// Klipper also takes a deceleration limit, as a share of the acceleration.
     pub accel_to_decel_factor: Option<f64>,
     pub klipper: bool,
+    /// RepRapFirmware's or Sprinter's G-code (`gcode_flavor` `reprapfirmware`
+    /// or `reprap`), which sets pressure advance with `M572`.
+    pub reprap: bool,
+    /// The pressure advance a filament is pushed out with when it is rammed
+    /// on the prime tower, where the printer is to change it for that
+    /// (`enable_change_pressure_when_wiping`, `ramming_pressure_advance_value`).
+    pub ram_advance: Option<f64>,
     /// What the machine can do, for timing the print; none without a
     /// printer profile.
     pub limits: Option<edge_time::Limits>,
@@ -289,6 +296,9 @@ pub struct PrintSettings {
     /// reference's tower or tool change does (WipeTower2.cpp
     /// `toolchange_Unload`, GCode.cpp `set_extruder`).
     pub single_nozzle: bool,
+    /// An Elegoo printer, whose `M6211` changes filament and purges
+    /// (`printer_model`).
+    pub elegoo: bool,
     /// Whether a prime tower is printed (`enable_prime_tower`).
     pub prime_tower: bool,
     /// The printer gets the reference's Bambu Lab tower (WipeTower.cpp):
@@ -427,6 +437,9 @@ impl Default for PrintSettings {
             travel_acceleration: 0.0,
             accel_to_decel_factor: None,
             klipper: false,
+            reprap: false,
+            // The reference's: on, at 0.
+            ram_advance: Some(0.0),
             limits: None,
             pressure_advance: None,
             machine_start_gcode: None,
@@ -441,6 +454,7 @@ impl Default for PrintSettings {
             preheat_time: 30.0,
             tool_change_temperature_wait: true,
             single_nozzle: true,
+            elegoo: false,
             prime_tower: false,
             bambu_tower: false,
             cooling_before_tower: 0.0,
@@ -930,6 +944,17 @@ impl PrintSettings {
                 _ => None,
             },
             klipper: settings.text("gcode_flavor") == Some("klipper"),
+            reprap: matches!(
+                settings.text("gcode_flavor"),
+                Some("reprapfirmware" | "reprap")
+            ),
+            ram_advance: match settings
+                .flag("enable_change_pressure_when_wiping")?
+                .unwrap_or(true)
+            {
+                true => Some(number("ramming_pressure_advance_value", 0.0)?),
+                false => None,
+            },
             limits: match settings.get("gcode_flavor") {
                 Some(_) => Some(edge_time::Limits::from_settings(settings)?),
                 None => None,
@@ -964,6 +989,9 @@ impl PrintSettings {
                 .flag("tool_change_temprature_wait")?
                 .unwrap_or(defaults.tool_change_temperature_wait),
             // The reference's defaults where the settings are silent.
+            elegoo: settings
+                .text("printer_model")
+                .is_some_and(|model| model.to_ascii_lowercase().starts_with("elegoo")),
             single_nozzle: settings
                 .flag("single_extruder_multi_material")?
                 .unwrap_or(defaults.single_nozzle),

@@ -267,6 +267,25 @@ impl ExtrusionPath {
     }
 }
 
+/// One move of a nozzle on the prime tower, as the reference's tower
+/// writes them (WipeTower2.cpp `WipeTowerWriter2`): each move with a
+/// speed of its own, and the filament pulled back and pushed on again
+/// where the nozzle irons the tower flat, without anything the rest of a
+/// print's moves are given in between.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum TowerStroke {
+    /// A line to here, at so many mm a second.
+    Lay(Point2, f64),
+    /// A move to here without laying anything, at so many mm a second,
+    /// or at the travel speed for none.
+    Move(Point2, Option<f64>),
+    /// The filament pulled back by its retraction length, at its
+    /// retraction speed.
+    Retract,
+    /// The filament pushed on again by as much.
+    Unretract,
+}
+
 /// A closed line: the centre line the nozzle follows and what it extrudes.
 #[derive(Clone, Debug, PartialEq)]
 pub struct ExtrusionLoop {

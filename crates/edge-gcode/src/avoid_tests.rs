@@ -72,6 +72,7 @@ fn layer<'a>(z: f64, paths: &'a [ExtrusionPath], shelter: &'a [ExPolygon]) -> La
         filament: 0,
         ram: None,
         enter: &[],
+        wipe: None,
         tower: &[],
         around: &[],
         support: &[],
