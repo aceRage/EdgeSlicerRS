@@ -253,3 +253,4 @@ dialog.plate-settings .row.end .grow { flex: 1; align-self: center; }
 .cut-panel .pin-drawing .pin-slot { fill: rgb(230, 77, 77); }
 .cut-panel .pin-drawing .pin-cut { stroke: var(--text-3); stroke-width: 1; }
 .cut-panel .pin-drawing .pin-word { fill: var(--text-3); font-size: 10px; }
+.cut-panel .unit.cut-count { width: 64px; }

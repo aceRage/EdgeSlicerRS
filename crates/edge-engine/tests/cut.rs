@@ -1296,3 +1296,101 @@ fn a_pin_is_its_own_object_with_a_hole_in_each_half() {
     });
     assert_eq!(read, pin);
 }
+
+#[test]
+fn a_curved_cut_is_made_by_the_solid_under_its_surface_and_made_again() {
+    use edge_engine::curved::Sheet;
+    let dir = tempfile::tempdir().unwrap();
+    let mut model = block(dir.path(), [30.0, 30.0, 20.0]);
+    let copy = model.objects()[0].copies()[0].id();
+    let (_, reach) = model.in_scene(Some(&BED), copy).unwrap();
+    let [low, high] = reach.unwrap();
+    let mid = [(low[0] + high[0]) / 2.0, (low[1] + high[1]) / 2.0, 10.0];
+    let mut sheet = Sheet::flat(5, 5, 18.0, 18.0);
+    sheet.z[12] = 5.0;
+    sheet.z[6] = -3.0;
+    let options = CutOptions {
+        sheet: Some(sheet.clone()),
+        ..CutOptions::default()
+    };
+    // The preview: what the cut would make, in the scene.
+    let prepared = model.cut_prepared(Some(&BED), copy).unwrap();
+    let [up, down] = model
+        .cut_preview(
+            Some(&BED),
+            copy,
+            &plane(mid, [0.0, 0.0, 1.0]),
+            &options,
+            &prepared,
+            None,
+        )
+        .unwrap();
+    let whole = 30.0 * 30.0 * 20.0;
+    assert!(near(up.signed_volume() + down.signed_volume(), whole, 1e-2));
+    let done = model
+        .cut(Some(&BED), copy, &plane(mid, [0.0, 0.0, 1.0]), &options)
+        .unwrap();
+    assert_eq!(done.empty, Some([false, false]));
+    let volumes: Vec<f64> = model
+        .objects()
+        .iter()
+        .map(|object| {
+            // Its own mesh: placed on the bed, single precision can fold a
+            // sliver of the boolean's flat.
+            let mesh = &object.shape().parts()[0].mesh;
+            sound(mesh);
+            mesh.signed_volume()
+        })
+        .collect();
+    assert!(near(volumes[0] + volumes[1], whole, 1e-2), "{volumes:?}");
+    assert!(near(volumes[0], up.signed_volume(), 1e-2));
+    // Sliced, each half as it stands.
+    let path = dir.path().join("curved.3mf");
+    model
+        .save(&path, &edge_engine::Saving::None, Some(&BED))
+        .unwrap();
+    let sliced = slice_file(&path);
+    assert!(!sliced.outlines().is_empty());
+    // Read back and put back: the surface as it was.
+    let mut back = Model::open(&path).unwrap();
+    let half = back.objects()[0].copies()[0].id();
+    let edit = back.cut_edit(Some(&BED), half).unwrap();
+    let read = edit.recipe.sheet.clone().unwrap();
+    assert_eq!((read.nx, read.ny), (5, 5));
+    assert_eq!(read.values, sheet.z);
+    let again = CutOptions {
+        sheet: Some(Sheet {
+            nx: 5,
+            ny: 5,
+            half_u: read.half_u,
+            half_v: read.half_v,
+            z: read.values,
+        }),
+        ..CutOptions::default()
+    };
+    back.cut(Some(&BED), edit.copy, &edit.plane, &again)
+        .unwrap();
+    assert_eq!(back.objects().len(), 2);
+    // A surface over the whole part leaves the upper side empty: the cut
+    // makes the one half and says so.
+    let mut over = block(dir.path(), [10.0, 10.0, 10.0]);
+    let copy = over.objects()[0].copies()[0].id();
+    let mut high = Sheet::flat(2, 2, 8.0, 8.0);
+    high.z = vec![30.0; 4];
+    let (_, reach) = over.in_scene(Some(&BED), copy).unwrap();
+    let [low, top] = reach.unwrap();
+    let at = [(low[0] + top[0]) / 2.0, (low[1] + top[1]) / 2.0, 5.0];
+    let done = over
+        .cut(
+            Some(&BED),
+            copy,
+            &plane(at, [0.0, 0.0, 1.0]),
+            &CutOptions {
+                sheet: Some(high),
+                ..CutOptions::default()
+            },
+        )
+        .unwrap();
+    assert_eq!(done.empty, Some([true, false]));
+    assert_eq!(over.objects().len(), 1);
+}

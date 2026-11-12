@@ -57,7 +57,8 @@
     connectorsAllowed() {
       const p = this.options;
       const parts = this.open && this.open.parts;
-      return !this.dovetail() && p.keep_upper && p.keep_lower && !p.to_parts
+      // Not on a bent surface: placing them on it is not done here yet.
+      return !this.dovetail() && !this.bent() && p.keep_upper && p.keep_lower && !p.to_parts
         && !(parts && parts.sides.every((side) => side === parts.sides[0]));
     },
 
@@ -450,14 +451,14 @@
       return `${c.type}|${c.style}|${c.shape}|${c.type === 'snap' ? `${this.snap.space}|${this.snap.bulge}` : ''}|${c.type === 'pin' ? JSON.stringify(c.pin) : ''}`;
     },
 
-    async connectorMesh(c) {
-      const key = this.meshKey(c);
+    async connectorMesh(c, hole = null) {
+      const key = `${this.meshKey(c)}|${hole || ''}`;
       const held = this.connectorMeshes.get(key);
       if (held) return held.mesh || null;
       const entry = { mesh: null };
       this.connectorMeshes.set(key, entry);
       try {
-        const bytes = await this.stage.bytes('cut_connector_mesh', { type: c.type, style: c.style, shape: c.shape, snap: this.snap, pin: c.type === 'pin' ? c.pin : null });
+        const bytes = await this.stage.bytes('cut_connector_mesh', { type: c.type, style: c.style, shape: c.shape, snap: this.snap, pin: c.type === 'pin' ? c.pin : null, hole });
         entry.mesh = this.stage.renderer.meshFromBytes(bytes);
         this.stage.frame();
       } catch (error) {
@@ -509,7 +510,7 @@
       const hot = this.editor.hot;
       r.blend(true);
       this.connectorsOf().forEach((c, at) => {
-        const mesh = this.connectorMeshes.get(this.meshKey(c));
+        const mesh = this.connectorMeshes.get(`${this.meshKey(c)}|`);
         if (!mesh || !mesh.mesh) { this.connectorMesh(c); return; }
         const dowel = c.type === 'dowel' || c.type === 'pin';
         const invalid = o.invalid && o.invalid.has(at);
@@ -518,6 +519,17 @@
         else if (hot === `cut-connector-${at}`) colour = invalid ? HOVERED_ERROR : dowel ? HOVERED_DOWEL : HOVERED_PLUG;
         else if (o.selected.has(at)) colour = dowel ? SELECTED_DOWEL : SELECTED_PLUG;
         r.drawMesh(mesh.mesh, frame, this.connectorMatrix(c), { tint: colour, alpha: colour[3] });
+        // A pin being placed shows its holes round it, faint
+        // (`render_pushfit_hole_envelopes`).
+        if (c.type === 'pin' && o.editing) {
+          gl.depthMask(false);
+          for (const side of ['upper', 'lower']) {
+            const hole = this.connectorMeshes.get(`${this.meshKey(c)}|${side}`);
+            if (!hole) { this.connectorMesh(c, side); continue; }
+            if (hole.mesh) r.drawMesh(hole.mesh, frame, this.connectorMatrix(c), { tint: [0.3, 0.65, 1, 0.22], alpha: 0.22 });
+          }
+          gl.depthMask(true);
+        }
       });
       r.blend(false);
     },

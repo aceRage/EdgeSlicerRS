@@ -420,11 +420,23 @@
         const cutting = this.cutting && this.cutting.copy === placing.id ? this.cutting : null;
         if (cutting) {
           const pieces = cutting.pieces;
+          // A bent surface's halves are drawn by the tool in place of
+          // the part (curved.js); its helpers as they are.
+          if (cutting.hidden) {
+            (this.data.objects[placing.object].part_list || []).forEach((part) => {
+              if (part.kind !== 'part' && part.triangles) r.drawMesh(mesh, frame, placing.matrix, { palette: this.palette, pass, volume, range: part.triangles });
+            });
+            return;
+          }
           for (const part of this.data.objects[placing.object].part_list || [{ kind: 'part', triangles: null }]) {
             // With pieces given to sides, the pieces stand in for the
             // printed parts, each in its side's colour (`PartSelection::render`).
             if (pieces && part.kind === 'part') continue;
+            // A half ghosted is see-through (`apply_side_visibility`).
+            const ghost = part.kind === 'part' && cutting.split && cutting.split.alpha && cutting.split.alpha.some((a) => a > 0 && a < 1);
+            if (ghost) r.blend(true);
             r.drawMesh(mesh, frame, placing.matrix, { palette: this.palette, pass, volume, range: part.triangles, split: part.kind === 'part' ? cutting.split : null, clip: cutting.clip || null });
+            if (ghost) r.blend(false);
           }
           if (pieces && pass === 0) {
             const at = M.translation(...pieces.offset);

@@ -107,6 +107,25 @@ pub struct RecipeConnector {
     pub extra: Vec<(String, f64)>,
 }
 
+/// A curved cut's surface (CutRecipe.hpp `CutRecipeSheet`): its grid of
+/// control points across and down, the half sizes it spreads over, and
+/// each point's height over the plane, row by row.
+#[derive(Clone, Debug, PartialEq)]
+pub struct RecipeSheet {
+    pub nx: u32,
+    pub ny: u32,
+    pub half_u: f64,
+    pub half_v: f64,
+    pub values: Vec<f64>,
+}
+
+impl RecipeSheet {
+    /// `valid()`: at least two a side, a value for each.
+    pub fn valid(&self) -> bool {
+        self.nx >= 2 && self.ny >= 2 && self.values.len() == (self.nx * self.ny) as usize
+    }
+}
+
 /// How a cut was made, and what it was made of.
 #[derive(Clone, Debug)]
 pub struct CutRecipe {
@@ -129,6 +148,8 @@ pub struct CutRecipe {
     pub flip_upper: bool,
     pub flip_lower: bool,
     pub groove: Option<RecipeGroove>,
+    /// A curved cut's surface.
+    pub sheet: Option<RecipeSheet>,
     /// The connectors the cut placed, as they were placed.
     pub connectors: Vec<RecipeConnector>,
     /// The object's printed parts as they were before the cut, as one
@@ -163,6 +184,7 @@ impl PartialEq for CutRecipe {
                 other.flip_lower,
             )
             && self.groove == other.groove
+            && self.sheet == other.sheet
             && self.connectors == other.connectors
             && Arc::ptr_eq(&self.mesh, &other.mesh)
     }
@@ -185,6 +207,7 @@ impl CutRecipe {
             flip_upper: false,
             flip_lower: false,
             groove: None,
+            sheet: None,
             connectors: Vec::new(),
             mesh,
             blob: None,
@@ -436,6 +459,7 @@ pub(crate) fn read(
             }),
         };
         let groove = groove_of(inner, part)?;
+        let sheet = sheet_of(inner, part)?;
         let connectors = connectors_of(inner, part)?;
         let thickness_offset = get("thickness_offset")
             .and_then(|v| v.trim().parse().ok())
@@ -455,6 +479,7 @@ pub(crate) fn read(
             flip_upper: flag("rotate_upper", false),
             flip_lower: flag("rotate_lower", false),
             groove,
+            sheet,
             connectors,
             mesh: Arc::new(Mesh::default()),
             blob: Some((blob.clone(), hash.clone())),
@@ -626,6 +651,45 @@ fn connectors_of(inner: &str, part: &str) -> Result<Vec<RecipeConnector>, Error>
     }
 }
 
+/// The `<sheet>` inside a recipe, when there is one and it is whole.
+fn sheet_of(inner: &str, part: &str) -> Result<Option<RecipeSheet>, Error> {
+    let mut reader = Reader::from_str(inner);
+    loop {
+        match reader
+            .read_event()
+            .map_err(|e| malformed(part, e.to_string()))?
+        {
+            Event::Start(element) | Event::Empty(element)
+                if element.local_name().as_ref() == "sheet" =>
+            {
+                let mut values: HashMap<String, String> = HashMap::new();
+                attributes(&element, part, |key, value| {
+                    values.insert(key.to_owned(), value.to_owned());
+                    Ok(())
+                })?;
+                let number = |key: &str| values.get(key).and_then(|v| v.trim().parse::<f64>().ok());
+                let sheet = RecipeSheet {
+                    nx: number("nx").unwrap_or(0.0).max(0.0) as u32,
+                    ny: number("ny").unwrap_or(0.0).max(0.0) as u32,
+                    half_u: number("half_size_u").unwrap_or(0.0),
+                    half_v: number("half_size_v").unwrap_or(0.0),
+                    values: values
+                        .get("values")
+                        .map(|text| {
+                            text.split_whitespace()
+                                .filter_map(|v| v.parse().ok())
+                                .collect()
+                        })
+                        .unwrap_or_default(),
+                };
+                return Ok(sheet.valid().then_some(sheet));
+            }
+            Event::Eof => return Ok(None),
+            _ => {}
+        }
+    }
+}
+
 /// The `<groove>` inside a recipe, when there is one.
 fn groove_of(inner: &str, part: &str) -> Result<Option<RecipeGroove>, Error> {
     let mut reader = Reader::from_str(inner);
@@ -747,6 +811,18 @@ pub(crate) fn element_of(recipe: &CutRecipe, place: usize, hash: &str) -> String
         bit(recipe.flip_upper),
         bit(recipe.flip_lower),
     );
+    if let Some(sheet) = recipe.sheet.as_ref().filter(|sheet| sheet.valid()) {
+        let values: Vec<String> = sheet.values.iter().map(|v| v.to_string()).collect();
+        let _ = write!(
+            out,
+            "\n  <sheet nx=\"{}\" ny=\"{}\" half_size_u=\"{}\" half_size_v=\"{}\" values=\"{}\"/>",
+            sheet.nx,
+            sheet.ny,
+            sheet.half_u,
+            sheet.half_v,
+            values.join(" ")
+        );
+    }
     if !recipe.connectors.is_empty() {
         out.push_str("\n  <connectors>");
         for c in &recipe.connectors {

@@ -743,6 +743,14 @@ tool's panel does, and scrolls). Its rows:
   its pale blue, its slits filled in its red (data, not tokens), the cut
   a `--text-3` line with "lower" and "upper" either side; the pin's other
   rows are ticks and number fields as the rest of the panel.
+- **The surface** (`curved.js`): "Surface" and each half's "Visible" /
+  "Ghost" / "Hidden" as joined buttons under a "Show halves" group
+  heading; the curved sheet's counts as narrow number fields
+  (`.unit.cut-count`), its "Smooth" and "Reset surface" plain buttons at
+  the left (`.cut-foot.cut-start`), "Cut face updating…" a `.cut-note`.
+  In the scene the sheet is drawn in the plane's grey, see-through, its
+  handles the grip's grey balls (yellow under the pointer); the halves the
+  booleans made stand in for the part in cyan and magenta.
 - **A side and what is done with it** (`.cut-side`): a 10 px swatch of
   the side's tint in the scene (cyan, magenta: the reference's, data, not
   tokens) and its name in `--text-1`, then its ticks; a tick never breaks

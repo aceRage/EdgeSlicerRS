@@ -875,9 +875,11 @@
     click(press, event) {
       if (this.model.tab !== 'prepare' || !this.scene.data) return;
       // "Cut" takes the right button with no key held: the piece under it
-      // goes to the other side (GLGizmoCut.cpp `on_mouse`).
-      if (press.button === 2 && GL.cutter && GL.cutter.active() && !event.shiftKey && !event.ctrlKey && !event.metaKey && !event.altKey) {
-        GL.cutter.rightClick(press.x, press.y);
+      // goes to the other side (GLGizmoCut.cpp `on_mouse`); on a curved
+      // surface's handle, with Shift too, it snaps the handle.
+      const handle = GL.cutter && GL.cutter.active() && GL.cutter.controlUnder(press.x, press.y) >= 0;
+      if (press.button === 2 && GL.cutter && GL.cutter.active() && (!event.shiftKey || handle) && !event.ctrlKey && !event.metaKey && !event.altKey) {
+        GL.cutter.rightClick(press.x, press.y, event);
         return;
       }
       const mine = this.mine();

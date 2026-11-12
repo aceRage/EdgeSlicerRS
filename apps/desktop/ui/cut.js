@@ -35,6 +35,7 @@
   // GLGizmoCut.cpp `get_grabber_mean_size` (ENABLE_FIXED_GRABBER: 32 px),
   // `get_half_size` (0.35 of it), larger by a quarter while dragged.
   const GRIP_PX = 32 * 0.35;
+  GL.cutterGripPx = GRIP_PX;
   // `m_cut_plane_radius_koef`: the plane's half side over the object's
   // bounding sphere's radius.
   const PLANE_SIZE = 1.5;
@@ -248,6 +249,14 @@
         stats: null,
         editing: false,
         cap: null,
+        // The surface (curved.js): `flat` or `curved`, the curved one's
+        // grid, how far a drag carries, and the halves its booleans made.
+        surface: 'flat',
+        sheet: null,
+        bendRadius: 10,
+        preview: null,
+        previewStale: false,
+        previewError: null,
       };
       const mean = (box[1][0] - box[0][0] + box[1][1] - box[0][1] + box[1][2] - box[0][2]) / 30;
       const depth = Math.max(1, 0.5 * mean);
@@ -281,6 +290,15 @@
         if (g.plane_radius > 0) o.grooveRadius = g.plane_radius;
       }
       if (recipe.connectors && recipe.connectors.length) this.takeConnectors(recipe.connectors);
+      // A curved cut's surface (`apply_recipe_to_gizmo`, `Curved`).
+      if (recipe.sheet) {
+        o.surface = 'curved';
+        o.sheet = { nx: recipe.sheet.nx, ny: recipe.sheet.ny, half_u: recipe.sheet.half_u, half_v: recipe.sheet.half_v, z: recipe.sheet.z.slice() };
+        this.curvedUi.userGrid = true;
+        // Fitted to this plane already: kept as it was cut.
+        o.fitKey = `${this.frame().join(',')}|`;
+        o.bendRadius = this.defaultBend();
+      }
       if (reedit) o.reedit = { missing: Boolean(recipe.missing) };
     },
 
@@ -319,7 +337,7 @@
     },
 
     close() {
-      if (this.open) { this.dropParts(); this.dropCap(); }
+      if (this.open) { this.dropParts(); this.dropCap(); this.dropPreview(); clearTimeout(this.previewTimer); }
       // Closed without cutting again: the halves come back
       // (`cancel_reedit`), by the step that put them away.
       const reedit = this.open && this.open.reedit;
@@ -384,7 +402,7 @@
     // The plane as it was, for the tool's own undo while it is open.
     remember() {
       const o = this.open;
-      o.history.push({ middle: o.middle.slice(), axes: o.axes.map((axis) => axis.slice()) });
+      o.history.push({ middle: o.middle.slice(), axes: o.axes.map((axis) => axis.slice()), surface: o.surface, sheet: o.sheet && { ...o.sheet, z: o.sheet.z.slice() } });
       if (o.history.length > 200) o.history.shift();
       o.future = [];
     },
@@ -397,9 +415,13 @@
       const [from, onto] = which === 'undo' ? [o.history, o.future] : [o.future, o.history];
       const state = from.pop();
       if (!state) return false;
-      onto.push({ middle: o.middle.slice(), axes: o.axes.map((axis) => axis.slice()) });
+      onto.push({ middle: o.middle.slice(), axes: o.axes.map((axis) => axis.slice()), surface: o.surface, sheet: o.sheet && { ...o.sheet, z: o.sheet.z.slice() } });
       o.middle = state.middle;
       o.axes = state.axes;
+      o.surface = state.surface;
+      o.sheet = state.sheet;
+      o.sheetMesh = null;
+      this.sheetChanged(false);
       this.changed();
       return true;
     },
@@ -439,6 +461,7 @@
       const [u, v, n] = this.open.axes;
       this.open.axes = [u, M.scale(v, -1), M.scale(n, -1)];
       this.connectorsMirrored(false);
+      this.sheetFlipped(true);
       this.changed();
     },
 
@@ -463,6 +486,7 @@
       o.axes = [u, M.cross(n, u), n];
       o.middle = middle;
       this.connectorsMirrored(true);
+      this.sheetFlipped(false);
       this.changed();
     },
 
@@ -489,13 +513,20 @@
         copy: o.copy,
         // A dovetail tints neither side (`apply_color_clip_plane_colors`:
         // both the plane's colour); its result is shown once it is made.
-        split: { plane: [...n, M.dot(n, o.middle)], upper: this.dovetail() ? PLANE.slice(0, 3) : UPPER, lower: this.dovetail() ? PLANE.slice(0, 3) : LOWER },
+        split: { plane: [...n, M.dot(n, o.middle)], upper: this.dovetail() ? PLANE.slice(0, 3) : UPPER, lower: this.dovetail() ? PLANE.slice(0, 3) : LOWER, alpha: [this.sideAlpha('upper'), this.sideAlpha('lower')] },
+        // A bent surface's halves stand in for the part once they are made.
+        hidden: Boolean(this.bent() && o.preview),
         pieces: o.parts ? { mesh: o.parts.mesh, ranges: o.parts.ranges, sides: o.parts.sides, offset: o.parts.offset, upper: UPPER, lower: LOWER } : null,
         // While connectors are placed, what is over the plane is not drawn.
         clip: o.editing ? [...n, M.dot(n, o.middle)] : null,
       };
       // The cut face was of another plane.
       if (o.cap && o.cap.key !== JSON.stringify(this.frame())) this.dropCap();
+      // A bent surface's halves made again where the plane now is.
+      if (this.bent() && (!o.preview || o.preview.key !== JSON.stringify([this.frame(), o.sheet, o.thickness, o.from]))) {
+        clearTimeout(this.previewTimer);
+        this.previewTimer = setTimeout(() => this.askPreview(), 250);
+      }
       this.checkConnectors();
       this.ask(soon);
       this.panel();
@@ -557,6 +588,13 @@
           o.section = answer;
           o.grooveValid = answer.groove === undefined ? null : answer.groove;
           this.setSection(this.dovetail() ? [] : answer.lines);
+          // A curved sheet follows the section where the plane now is
+          // (`fit_curved_sheet_to_section`).
+          if (o.surface === 'curved' && o.sheet && o.fitKey !== asking) {
+            o.fitKey = asking;
+            this.fitSheet(false);
+            o.sheetMesh = null;
+          }
           // The connectors are measured on the cut face where the plane is.
           if (!this.dovetail() && (o.editing || o.connectors.length)) this.fetchCap();
           this.checkConnectors();
@@ -615,6 +653,7 @@
         thickness: o.thickness,
         thickness_from: o.from,
         connectors: this.dovetail() ? [] : this.connectorsArgs(),
+        ...this.curvedArgs(),
         snap: this.snap,
         nozzle: this.nozzle || 0.4,
         // Cut to parts is not offered with pieces given to sides.
@@ -674,6 +713,8 @@
     handleAt(x, y) {
       if (!this.open || this.editor.busy) return null;
       if (this.open.editing) return this.connectorHandle(x, y);
+      const control = this.controlUnder(x, y);
+      if (control >= 0) return { kind: 'cut', part: 'control', index: control, id: `cut-control-${control}` };
       const frame = this.stage.matrices();
       const view = (point) => this.editor.toView(frame, point);
       const { at, size } = this.grip();
@@ -751,6 +792,10 @@
       // Armed, a click lays the plane on the face (`on_mouse`: the press is
       // the pick's and nothing else's).
       if (this.open.editing) return this.connectorGrab(x, y, event);
+      if (!event.shiftKey) {
+        const control = this.curvedGrab(x, y);
+        if (control) return control;
+      }
       if (this.open.picking) return { kind: 'cut', part: 'pick', x, y, tap: () => this.applyPick(x, y) };
       if (event.shiftKey) return { kind: 'cut', part: 'line', x, y, tap: () => {} };
       const handle = this.handleAt(x, y);
@@ -803,6 +848,7 @@
 
     drag(grab, x, y, event) {
       if (grab.part === 'connector' || grab.part === 'add') { this.connectorDrag(grab, x, y); return; }
+      if (grab.part === 'control') { this.curvedDrag(grab, x, y); return; }
       if (grab.part === 'pick') { grab.cancelled = true; return; }
       if (!grab.begun && !this.begin(grab)) { grab.cancelled = true; return; }
       if (grab.cancelled) return;
@@ -850,6 +896,7 @@
 
     drop(grab, done) {
       if (grab.part === 'connector' || grab.part === 'add') { if (grab.begun) this.connectorDrop(grab, done); else this.held = null; return; }
+      if (grab.part === 'control') { this.curvedDrop(grab, done); return; }
       this.held = null;
       const o = this.open;
       if (!o || !grab.begun) return;
@@ -911,12 +958,16 @@
     // The right button on the object (`on_mouse`, RightDown with no key
     // held): the piece under the pointer goes to the other side; the
     // pieces are asked for the first time.
-    async rightClick(x, y) {
+    async rightClick(x, y, event) {
       const o = this.open;
       const project = this.host.project();
       if (!o || !project || this.editor.busy || o.picking) return;
       if (o.editing) { this.connectorRightClick(x, y); return; }
       if (this.dovetail()) return;
+      // On a handle of a curved surface: snapped onto the part.
+      if (await this.curvedSnap(x, y, event)) return;
+      // A bent surface wins over pieces given to sides (`perform_cut`).
+      if (this.bent()) return;
       if (!(await this.fetchParts())) return;
       const piece = this.pieceAt(x, y);
       if (piece !== null) o.parts.sides[piece] = !o.parts.sides[piece];
@@ -1136,6 +1187,9 @@
         return;
       }
       if (!this.dovetail() && o.connectors.length) this.drawConnectors(frame);
+      // A curved surface stands in for the plane (`render_cut_plane`).
+      const curved = !this.dovetail() && o.surface === 'curved' && o.sheet;
+      if (curved) this.drawCurved(frame, M.multiply(frame.projection, frame.view));
       const r = this.stage.renderer;
       const gl = r.gl;
       const shapes = this.parts();
@@ -1156,7 +1210,7 @@
         }
         const valid = o.grooveValid !== false;
         r.drawFlat(this.groovePlane.mesh, M.chain(view, plane), [...(valid ? PLANE : PLANE_ERROR).slice(0, 3), 0.4]);
-      } else {
+      } else if (!curved) {
         for (const at of low === high ? [0] : [low, high]) {
           r.drawFlat(shapes.square, M.chain(view, plane, M.translation(0, 0, at), M.scaling(half, half, 1)), colour);
         }
@@ -1294,6 +1348,7 @@
       });
       rows.push(el('div', { className: 'cut-row' }, el('span', { className: 'edit-label', textContent: t('Mirror cut') }), mirrors));
       if (dovetail) rows.push(...this.grooveRows(busy));
+      else rows.push(...this.surfaceRows(busy));
       // "Thickness": what the cut takes away, and from which side.
       if (!dovetail) {
       const tip = t('Width of the band of material the cut removes, measured along the cut normal. 0 is a zero-width cut - the two halves meet exactly, as they do today.');
@@ -1328,7 +1383,13 @@
       // "Reset cut": the plane, and the connectors there are none of.
       const connected = o.connectors.length > 0;
       const resetCut = el('button', { type: 'button', textContent: t('Reset cut'), title: t('Reset cutting plane and remove connectors'), disabled: busy || (this.atStart() && !connected) });
-      resetCut.addEventListener('click', () => { o.connectors = []; o.selected = new Set(); this.reset(); });
+      resetCut.addEventListener('click', () => {
+        o.connectors = [];
+        o.selected = new Set();
+        this.reset();
+        // The curved surface flattened too.
+        if (o.sheet) { o.sheet.z = o.sheet.z.map(() => 0); this.sheetChanged(false); }
+      });
       // "Add connectors" / "Edit connectors": both parts kept as objects
       // of their own.
       const add = el('button', { type: 'button', textContent: connected ? t('Edit connectors') : t('Add connectors'), disabled: busy || !this.connectorsAllowed() });

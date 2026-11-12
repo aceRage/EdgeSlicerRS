@@ -32,7 +32,7 @@ use super::{
 };
 
 /// The calls answered here.
-pub(super) const JSON: [&str; 9] = [
+pub(super) const JSON: [&str; 11] = [
     "scene_edit",
     "undo",
     "redo",
@@ -42,10 +42,12 @@ pub(super) const JSON: [&str; 9] = [
     "cut_parts",
     "cut_recipe",
     "cut_pin",
+    "cut_preview",
+    "cut_snap",
 ];
 
 /// The calls here answered in bytes (`Session::call_bytes`).
-pub(super) const BYTES: [&str; 2] = ["cut_parts_mesh", "cut_connector_mesh"];
+pub(super) const BYTES: [&str; 3] = ["cut_parts_mesh", "cut_connector_mesh", "cut_preview_mesh"];
 
 /// The most edits a project keeps to take back. The reference keeps as
 /// many as fit in a tenth of the machine's memory (UndoRedo.cpp
@@ -330,6 +332,10 @@ fn cut_options(args: &Value) -> Result<edge_engine::CutOptions, String> {
                 .collect::<Result<Vec<_>, String>>()?,
             Some(_) => return Err("connectors is not a list".into()),
         },
+        sheet: match args.get("sheet") {
+            None | Some(Value::Null) => None,
+            Some(sheet) => Some(sheet_of(sheet)?),
+        },
         nozzle: args
             .get("nozzle")
             .and_then(Value::as_f64)
@@ -477,6 +483,41 @@ pub(super) fn pin_json(pin: &edge_engine::pushfit::Pin) -> Value {
     Value::Object(out)
 }
 
+/// "Cut"'s curved previews ([`Session::cut_preview`]).
+#[derive(Default)]
+pub(super) struct Previews {
+    /// The copy's parts made ready: for the model (its file, by where it is
+    /// in memory) and the copy they were made for.
+    prepared: Option<(usize, u64, Arc<edge_engine::Prepared>)>,
+    /// The preview under way.
+    running: Option<edge_engine::BooleanCancel>,
+    /// How many have been asked for, and the last made.
+    asked: u64,
+    last: Option<(u64, [edge_engine::Mesh; 2])>,
+}
+
+/// A curved surface as the page gives it: `nx`, `ny` (2–15),
+/// `half_u`, `half_v`, `z` (the heights, row by row).
+fn sheet_of(value: &Value) -> Result<edge_engine::curved::Sheet, String> {
+    let whole = |key: &str| value.get(key).and_then(Value::as_u64).map(|v| v as usize);
+    let number = |key: &str| value.get(key).and_then(Value::as_f64);
+    let sheet = edge_engine::curved::Sheet {
+        nx: whole("nx").ok_or("the surface's nx was not given")?,
+        ny: whole("ny").ok_or("the surface's ny was not given")?,
+        half_u: number("half_u").ok_or("the surface's half_u was not given")?,
+        half_v: number("half_v").ok_or("the surface's half_v was not given")?,
+        z: value
+            .get("z")
+            .and_then(Value::as_array)
+            .map(|list| list.iter().filter_map(Value::as_f64).collect())
+            .unwrap_or_default(),
+    };
+    if !sheet.sound() {
+        return Err("that is no surface to cut by".into());
+    }
+    Ok(sheet)
+}
+
 /// What an edit by the gizmos or the number fields may be called in the
 /// history: the reference's own names for them.
 const TRANSFORMS: [&str; 9] = [
@@ -582,6 +623,10 @@ fn recipe_json(recipe: &edge_engine::CutRecipe, plane: &Transform) -> Value {
         "flip_upper": recipe.flip_upper,
         "flip_lower": recipe.flip_lower,
         "connectors": connectors,
+        "sheet": recipe.sheet.as_ref().map(|sheet| json!({
+            "nx": sheet.nx, "ny": sheet.ny, "half_u": sheet.half_u, "half_v": sheet.half_v,
+            "z": sheet.values,
+        })),
         "groove": recipe.groove.map(|g| json!({
             "depth": g.depth, "width": g.width, "flaps_angle": g.flaps_angle, "angle": g.angle,
             "depth_tolerance": g.depth_tolerance, "width_tolerance": g.width_tolerance,
@@ -1065,6 +1110,23 @@ impl Session {
                         &[&done.open.to_string()],
                     ));
                 }
+                // A curved cut with a side the surface leaves empty
+                // (GLGizmoCut.cpp `perform_cut`).
+                if let Some([upper, lower]) = done.empty
+                    && (upper || lower)
+                {
+                    let which = match (upper, lower) {
+                        (true, true) => super::i18n::tr("both sides"),
+                        (true, false) => super::i18n::tr("the upper side"),
+                        _ => super::i18n::tr("the lower side"),
+                    };
+                    outcome.note = Some(super::i18n::fill(
+                        &super::i18n::tr(
+                            "Cut: the surface does not cross the part on %1%, so that half is empty.",
+                        ),
+                        &[&which],
+                    ));
+                }
                 // Where the pins went, and whether any came out without
                 // its slit (GLGizmoCut.cpp `perform_cut`).
                 if done.pins > 0 {
@@ -1143,6 +1205,22 @@ impl Session {
             "cut_parts" => self.cut_parts(args),
             "cut_recipe" => self.cut_recipe(args),
             "cut_pin" => Ok(cut_pin(args)),
+            "cut_preview" => self.cut_preview(args),
+            "cut_snap" => {
+                let stage = self.stage_of(args)?;
+                let file = stage.file.as_ref().ok_or("the project has no model")?;
+                let plane = transform_of(args.get("plane").unwrap_or(&Value::Null))?;
+                let distance = file
+                    .model
+                    .cut_snap(
+                        stage.bed().as_ref(),
+                        whole(args, "copy")?,
+                        &plane,
+                        numbers(args, "point")?,
+                    )
+                    .map_err(|e| e.to_string())?;
+                Ok(json!({ "distance": distance }))
+            }
             other => Err(format!("there is no call named {other}")),
         }
     }
@@ -1259,6 +1337,69 @@ impl Session {
             stage.id,
             json!({ "done": outcome.name, "made": outcome.made, "note": outcome.note, "part": outcome.part, "recipe": outcome.recipe }),
         )
+    }
+
+    /// A curved cut's preview (the reference's cut face while the surface
+    /// is bent): the halves the cut as `args` gives it would make, worked
+    /// out by the booleans, the one asked for before stopped. Answers
+    /// `{ id, triangles: [upper, lower] }`, the meshes then from
+    /// `cut_preview_mesh`; "stopped" when a later one took its place.
+    fn cut_preview(&self, args: &Value) -> Result<Value, String> {
+        let stage = self.stage_of(args)?;
+        let bed = stage.bed();
+        let file = stage.file.as_ref().ok_or("the project has no model")?;
+        let copy = whole(args, "copy")?;
+        let plane = transform_of(args.get("plane").unwrap_or(&Value::Null))?;
+        let options = cut_options(args)?;
+        if options.sheet.is_none() {
+            return Err("there is no surface to cut by".into());
+        }
+        let key = Arc::as_ptr(file) as usize;
+        let cancel = edge_engine::BooleanCancel::new();
+        let (id, prepared) = {
+            let mut previews = lock(&self.cut_preview);
+            if let Some(running) = previews.running.take() {
+                running.cancel();
+            }
+            previews.running = Some(cancel.clone());
+            previews.asked += 1;
+            let prepared = match &previews.prepared {
+                Some((held, held_copy, prepared)) if *held == key && *held_copy == copy => {
+                    Some(prepared.clone())
+                }
+                _ => None,
+            };
+            (previews.asked, prepared)
+        };
+        let prepared = match prepared {
+            Some(prepared) => prepared,
+            None => {
+                let made = Arc::new(
+                    file.model
+                        .cut_prepared(bed.as_ref(), copy)
+                        .map_err(|error| super::i18n::tr(&error.to_string()))?,
+                );
+                lock(&self.cut_preview).prepared = Some((key, copy, made.clone()));
+                made
+            }
+        };
+        let made = file.model.cut_preview(
+            bed.as_ref(),
+            copy,
+            &plane,
+            &options,
+            &prepared,
+            Some(&cancel),
+        );
+        let mut previews = lock(&self.cut_preview);
+        if cancel.is_cancelled() || previews.asked != id {
+            return Err("stopped".into());
+        }
+        previews.running = None;
+        let meshes = made.map_err(|error| super::i18n::tr(&error.to_string()))?;
+        let triangles = [meshes[0].triangles.len(), meshes[1].triangles.len()];
+        previews.last = Some((id, meshes));
+        Ok(json!({ "id": id, "triangles": triangles }))
     }
 
     /// How a copy's object was cut, when the cut was kept editable, set
@@ -1455,7 +1596,18 @@ impl Session {
                 let snap = cut_options(&json!({ "snap": args.get("snap") }))?.snap;
                 // A pin as it will be, in mm, straddling the cut
                 // (`pushfit_preview_body`).
-                let mesh = if c.kind == edge_engine::ConnectorKind::Pin {
+                // `hole`: a pin's hole on that side instead
+                // (`render_pushfit_hole_envelopes`).
+                let hole = match text(args, "hole") {
+                    Some("upper") => Some(edge_engine::pushfit::PinSide::Upper),
+                    Some("lower") => Some(edge_engine::pushfit::PinSide::Lower),
+                    _ => None,
+                };
+                let mesh = if c.kind == edge_engine::ConnectorKind::Pin
+                    && let Some(side) = hole
+                {
+                    c.pin.hole_mesh(side, 0.0)
+                } else if c.kind == edge_engine::ConnectorKind::Pin {
                     c.pin.mesh(0.0, 0.0, false).mesh
                 } else {
                     edge_engine::connector_mesh(c.kind, c.style, c.shape, snap)
@@ -1467,6 +1619,25 @@ impl Session {
                     parts: Vec::new(),
                     vertices: mesh.vertices,
                     triangles: mesh.triangles,
+                };
+                Ok(super::scene::mesh_bytes(&object))
+            }
+            // A side of the last curved preview (`side`: `upper`, `lower`),
+            // by its number (`id`).
+            "cut_preview_mesh" => {
+                let previews = lock(&self.cut_preview);
+                let (id, meshes) = previews.last.as_ref().ok_or("there is no preview")?;
+                if args.get("id").and_then(Value::as_u64) != Some(*id) {
+                    return Err("that preview has been made again".into());
+                }
+                let mesh = &meshes[usize::from(text(args, "side") == Some("lower"))];
+                let object = edge_engine::SceneObject {
+                    name: String::new(),
+                    marks: vec![edge_engine::Mark::Filament(1); mesh.triangles.len()],
+                    bounds: mesh.bounds(),
+                    parts: Vec::new(),
+                    vertices: mesh.vertices.clone(),
+                    triangles: mesh.triangles.clone(),
                 };
                 Ok(super::scene::mesh_bytes(&object))
             }

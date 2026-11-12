@@ -1689,6 +1689,56 @@ fn connectors_are_placed_on_the_cut_face_cut_saved_and_put_back() {
 }
 
 #[test]
+fn a_curved_cut_is_previewed_made_and_put_back_with_its_surface() {
+    let session = Arc::new(Session::new(None));
+    let project = open(&session, BARE);
+    choose_presets(&session, project);
+    let (copy, low, high) = first_copy(&session, project);
+    let plane = across(low, high, (low[2] + high[2]) / 2.0);
+    let mut z = vec![0.0; 25];
+    z[12] = 3.0;
+    let half = (high[0] - low[0]).max(high[1] - low[1]);
+    let sheet = json!({ "nx": 5, "ny": 5, "half_u": half, "half_v": half, "z": z });
+    let preview = ask(
+        &session,
+        "cut_preview",
+        json!({ "project": project, "copy": copy, "plane": plane, "sheet": sheet }),
+    );
+    let triangles = preview["triangles"].as_array().unwrap();
+    assert!(
+        triangles.iter().all(|count| count.as_u64().unwrap() > 0),
+        "{preview}"
+    );
+    let bytes = session
+        .call_bytes(
+            "cut_preview_mesh",
+            &json!({ "id": preview["id"], "side": "lower" }),
+        )
+        .unwrap();
+    assert!(bytes.starts_with(b"EDGM"));
+    // A surface that is no surface is refused.
+    let error = refused(
+        &session,
+        "scene_edit",
+        json!({ "project": project, "op": "cut", "copy": copy, "plane": plane,
+                "sheet": { "nx": 1, "ny": 5, "half_u": 1.0, "half_v": 1.0, "z": [] } }),
+    );
+    assert!(error.contains("surface"), "{error}");
+    let done = edit(
+        &session,
+        json!({ "project": project, "op": "cut", "copy": copy, "plane": plane, "sheet": sheet }),
+    );
+    assert_eq!(done["scene"]["objects"].as_array().unwrap().len(), 2);
+    let half_copy = done["made"][0].as_u64().unwrap();
+    let put = edit(
+        &session,
+        json!({ "project": project, "op": "cut_edit", "copy": half_copy }),
+    );
+    assert_eq!(put["recipe"]["sheet"]["z"][12], 3.0);
+    assert_eq!(put["recipe"]["sheet"]["nx"], 5);
+}
+
+#[test]
 fn a_dovetail_cut_is_checked_then_made_and_sliced() {
     let session = Arc::new(Session::new(None));
     let project = open(&session, "resources/handy_models/3DBenchy.3mf");

@@ -230,6 +230,33 @@ Where the lip sits along each side, from the cut face.	GUI/Gizmos/GLGizmoCut.cpp
 Width of the slit at each end. It lets the lip side flex so the pin goes in by hand.	GUI/Gizmos/GLGizmoCut.cpp:8020
 lower	GUI/Gizmos/GLGizmoCut.cpp:7881
 upper	GUI/Gizmos/GLGizmoCut.cpp:7880
+Bend radius	GUI/Gizmos/GLGizmoCut.cpp:3055
+Control points	GUI/Gizmos/GLGizmoCut.cpp:2994
+Control points across the sheet (along X). 2 makes every row a single straight line.	GUI/Gizmos/GLGizmoCut.cpp:3022
+Control points down the sheet (along Y). 2 makes every column a single straight line, grabbable from either end - a ruled bend.	GUI/Gizmos/GLGizmoCut.cpp:3029
+Curved	GUI/Gizmos/GLGizmoCut.cpp:2902
+Cut face updating…	GUI/Gizmos/GLGizmoCut.cpp:3089
+Cut: the surface does not cross the part on %1%, so that half is empty.	GUI/Gizmos/GLGizmoCut.cpp:10931
+Drag a handle to bend the cut surface. With every handle at zero the cut is exactly the flat plane cut.	GUI/Gizmos/GLGizmoCut.cpp:3081
+Falloff	GUI/Gizmos/GLGizmoCut.cpp:3062
+Flatten the surface back to the cut plane	GUI/Gizmos/GLGizmoCut.cpp:3072
+Ghost	GUI/Gizmos/GLGizmoCut.cpp:9347
+Ghost draws a half translucent so the cut surface and the other half show through; Hidden leaves it out of the preview entirely. Neither changes the cut.	GUI/Gizmos/GLGizmoCut.cpp:2886
+Hidden	GUI/Gizmos/GLGizmoCut.cpp:9347
+Keep the same number of control points across and down. Turn it off for a ruled sheet, e.g. 10 x 2.	GUI/Gizmos/GLGizmoCut.cpp:3049
+Lower	GUI/Gizmos/GLGizmoCut.cpp:2884
+Neighbouring control points within this distance follow a dragged handle, less the further they are. Small: bend one point; large: bend the whole sheet.	GUI/Gizmos/GLGizmoCut.cpp:3060
+One smoothing pass over the control grid	GUI/Gizmos/GLGizmoCut.cpp:3064
+Reset surface	GUI/Gizmos/GLGizmoCut.cpp:3072
+Right-click-drag a handle to snap it onto the model surface; hold Shift to carry its neighbours with it. The surface it finds may be on the far side of the part - set that half to Ghost or Hidden above to see it.	GUI/Gizmos/GLGizmoCut.cpp:3083
+Show halves	GUI/Gizmos/GLGizmoCut.cpp:2882
+The surface does not cross the part on the lower side; that side would be empty.	GUI/Gizmos/GLGizmoCut.cpp:3099
+The surface does not cross the part on the upper side; that side would be empty.	GUI/Gizmos/GLGizmoCut.cpp:3096
+Upper	GUI/Gizmos/GLGizmoCut.cpp:2883
+Visible	GUI/Gizmos/GLGizmoCut.cpp:9347
+both sides	GUI/Gizmos/GLGizmoCut.cpp:10926
+the lower side	GUI/Gizmos/GLGizmoCut.cpp:10928
+the upper side	GUI/Gizmos/GLGizmoCut.cpp:10927
 [own]
 # This app's own words on the static page, with no counterpart in the
 # C++: shown in English in every language.

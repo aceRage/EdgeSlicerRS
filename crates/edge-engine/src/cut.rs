@@ -105,6 +105,9 @@ pub struct CutOptions {
     pub snap: [f64; 2],
     /// The nozzle's diameter, which a pin's slot is measured against.
     pub nozzle: f64,
+    /// "Curved": the surface the cut follows, over the plane
+    /// ([`crate::curved`]). A flat one is the plane cut itself.
+    pub sheet: Option<crate::curved::Sheet>,
 }
 
 /// What a connector is (Model.hpp `CutConnectorType`): a plug on the
@@ -291,6 +294,7 @@ impl Default for CutOptions {
             connectors: Vec::new(),
             snap: [0.3, 0.15],
             nozzle: 0.4,
+            sheet: None,
         }
     }
 }
@@ -313,6 +317,9 @@ impl CutOptions {
 pub struct CutDone {
     /// The copies of the objects made, which the reference selects.
     pub made: Vec<u64>,
+    /// A curved cut's sides with nothing in them (upper, lower): the cut
+    /// still makes what it can (`perform_cut`'s note).
+    pub empty: Option<[bool; 2]>,
     /// The pins made, how many print lying, and how many were made
     /// without the slit asked for (the boolean failed).
     pub pins: usize,
@@ -321,6 +328,15 @@ pub struct CutDone {
     /// How many chains of cut edges were left without a cap, the object
     /// being open where the plane crossed it.
     pub open: usize,
+}
+
+/// A copy's printed parts made ready for a curved cut ([`Model::cut_prepared`]).
+#[derive(Clone)]
+pub struct Prepared {
+    /// Each part's, by its place; none for one that is not printed.
+    solids: Vec<Option<edge_mesh::boolean::Solid>>,
+    /// Where the copy stood when they were made.
+    scene: Transform,
 }
 
 /// A cut put back to be made again ([`Model::cut_edit`]).
@@ -358,6 +374,8 @@ pub struct CutPieces {
 struct Made {
     upper: Vec<Part>,
     lower: Vec<Part>,
+    /// A curved cut's sides that came out empty: upper, lower.
+    empty: [bool; 2],
     helpers: Vec<(Part, bool, bool)>,
     open: usize,
     turned: Transform,
@@ -606,7 +624,14 @@ impl Model {
         scene: &Transform,
         plane: &Transform,
         options: &CutOptions,
+        prepared: Option<&Prepared>,
+        cancel: Option<&edge_mesh::boolean::Cancel>,
     ) -> Result<Made, Failure> {
+        let sheet = options
+            .sheet
+            .as_ref()
+            .filter(|sheet| !sheet.is_flat() && options.groove.is_none());
+        let mut empty = [true, true];
         let to_parts = options.to_parts && options.sides.is_none() && options.groove.is_none();
         let keep_upper = options.keep_upper || to_parts || options.sides.is_some();
         let keep_lower = options.keep_lower || to_parts || options.sides.is_some();
@@ -626,8 +651,58 @@ impl Model {
         let mut lower: Vec<Part> = Vec::new();
         let mut helpers: Vec<(Part, bool, bool)> = Vec::new();
         let mut open = 0;
-        for part in held.shape.parts.iter() {
+        for (number, part) in held.shape.parts.iter().enumerate() {
             let placed = part.transform.then(&turned);
+            // A curved surface: the part cut with the solid under it, in the
+            // halves' coordinates (CurvedCut.cpp `curved_cut_split`).
+            if part.kind == PartKind::Normal
+                && !part.mesh.triangles.is_empty()
+                && let Some(sheet) = sheet
+            {
+                let mut baked = edge_mesh::Mesh::default();
+                baked.append(&part.mesh, &placed);
+                let made_here;
+                let solid = match prepared
+                    .and_then(|prepared| prepared.solids.get(number))
+                    .and_then(Option::as_ref)
+                {
+                    Some(solid) => solid,
+                    None => {
+                        made_here = edge_mesh::boolean::Solid::new(&baked).map_err(|error| {
+                            refused(format!("The cut could not be made. The part {error}."))
+                        })?;
+                        &made_here
+                    }
+                };
+                let (low, high) = crate::curved::slabs(sheet, &back, &baked.vertices, faces);
+                let (up, down) = crate::curved::cut_with_solid(solid, &low, high.as_ref(), cancel)
+                    .map_err(|error| refused(format!("The cut could not be made. {error}")))?;
+                for (mesh, side) in [(up, true), (down, false)] {
+                    if mesh.triangles.is_empty() {
+                        continue;
+                    }
+                    empty[usize::from(!side)] = false;
+                    if (side && !keep_upper) || (!side && !keep_lower) {
+                        continue;
+                    }
+                    // Cut through by a boolean: what was painted is not
+                    // carried.
+                    let made = Part {
+                        mesh: Arc::new(mesh),
+                        paint: None,
+                        seam: None,
+                        transform: Transform::IDENTITY,
+                        kept: part.kept.as_deref().map(|kept| Arc::new(kept.piece())),
+                        ..part.clone()
+                    };
+                    if side {
+                        upper.push(made);
+                    } else {
+                        lower.push(made);
+                    }
+                }
+                continue;
+            }
             if part.kind == PartKind::Normal
                 && !part.mesh.triangles.is_empty()
                 && let Some(groove) = &options.groove
@@ -714,9 +789,13 @@ impl Model {
             }
         }
 
+        if sheet.is_none() {
+            empty = [upper.is_empty(), lower.is_empty()];
+        }
         Ok(Made {
             upper,
             lower,
+            empty,
             helpers,
             open,
             turned,
@@ -750,7 +829,7 @@ impl Model {
             sides: Some(Vec::new()),
             ..options.clone()
         };
-        let made = self.cut_parts(at, &scene, plane, &options)?;
+        let made = self.cut_parts(at, &scene, plane, &options, None, None)?;
         let mut out = CutPieces {
             offset: scene.rows[3],
             ..CutPieces::default()
@@ -874,6 +953,16 @@ impl Model {
         // With connectors both parts are kept, each an object of its own
         // (GLGizmoCut.cpp `perform_cut`: KeepUpper, KeepLower, not
         // KeepAsParts while there are connectors); a dovetail takes none.
+        if options.sheet.as_ref().is_some_and(|sheet| !sheet.sound()) {
+            return Err(refused("that is no surface to cut by"));
+        }
+        if !options.connectors.is_empty()
+            && options.sheet.as_ref().is_some_and(|sheet| !sheet.is_flat())
+        {
+            return Err(refused(
+                "connectors are not placed on a curved cut here yet",
+            ));
+        }
         let connected = !options.connectors.is_empty() && options.groove.is_none();
         // A pin that cannot be made stops the cut (`can_perform_cut`,
         // `pushfit_validate`).
@@ -910,10 +999,13 @@ impl Model {
             .ok_or_else(|| refused(format!("there is no copy {copy}")))?;
         let held = self.objects[at].clone();
         let base = self.name_of(at);
-        let made = self.cut_parts(at, &scene, plane, options)?;
+        let made = self.cut_parts(at, &scene, plane, options, None, None)?;
+        let curved = options.sheet.as_ref().is_some_and(|sheet| !sheet.is_flat())
+            && options.groove.is_none();
         let Made {
             mut upper,
             mut lower,
+            empty,
             helpers,
             open,
             turned,
@@ -936,10 +1028,21 @@ impl Model {
             }
             let kind = if options.groove.is_some() {
                 RecipeKind::Groove
+            } else if curved {
+                RecipeKind::Curved
             } else {
                 RecipeKind::Plane
             };
             let mut recipe = CutRecipe::new(kind, back, Arc::new(mesh));
+            if curved && let Some(sheet) = &options.sheet {
+                recipe.sheet = Some(edge_3mf::RecipeSheet {
+                    nx: sheet.nx as u32,
+                    ny: sheet.ny as u32,
+                    half_u: sheet.half_u,
+                    half_v: sheet.half_v,
+                    values: sheet.z.clone(),
+                });
+            }
             if connected {
                 let frame = linear(&back);
                 recipe.connectors = options
@@ -1320,11 +1423,121 @@ impl Model {
         }
         Ok(CutDone {
             made: new,
+            empty: curved.then_some(empty),
             open,
             pins: pins_made,
             pins_lying,
             pin_slot_failures: slot_failures,
         })
+    }
+
+    /// A copy's printed parts made ready for a curved cut's booleans, in
+    /// the coordinates the halves are made in: kept between the previews
+    /// of one copy so that each does not prepare them again.
+    pub fn cut_prepared(&self, bed: Option<&Bed>, copy: u64) -> Result<Prepared, Failure> {
+        let (at, _) = self.copy_at(copy)?;
+        if self.bare {
+            let mut settled = self.clone();
+            settled.settle(bed);
+            return settled.cut_prepared(bed, copy);
+        }
+        let (scene, _) = self
+            .in_scene(bed, copy)
+            .ok_or_else(|| refused(format!("there is no copy {copy}")))?;
+        let turned = linear(&scene);
+        let solids = self.objects[at]
+            .shape
+            .parts
+            .iter()
+            .map(|part| {
+                if part.kind != PartKind::Normal || part.mesh.triangles.is_empty() {
+                    return Ok(None);
+                }
+                let mut baked = edge_mesh::Mesh::default();
+                baked.append(&part.mesh, &part.transform.then(&turned));
+                edge_mesh::boolean::Solid::new(&baked)
+                    .map(Some)
+                    .map_err(|error| {
+                        refused(format!("The cut could not be made. The part {error}."))
+                    })
+            })
+            .collect::<Result<Vec<_>, Failure>>()?;
+        Ok(Prepared { solids, scene })
+    }
+
+    /// How far a curved cut's control point at `(x, y, z)` in the plane's
+    /// own coordinates must go along the plane's normal to meet the copy's
+    /// printed parts ("Right-click-drag a handle to snap it onto the model
+    /// surface"); None where the line misses them.
+    pub fn cut_snap(
+        &self,
+        bed: Option<&Bed>,
+        copy: u64,
+        plane: &Transform,
+        point: [f64; 3],
+    ) -> Result<Option<f64>, Failure> {
+        let (at, _) = self.copy_at(copy)?;
+        if self.bare {
+            let mut settled = self.clone();
+            settled.settle(bed);
+            return settled.cut_snap(bed, copy, plane, point);
+        }
+        let (scene, _) = self
+            .in_scene(bed, copy)
+            .ok_or_else(|| refused(format!("there is no copy {copy}")))?;
+        let to_plane = plane
+            .inverse()
+            .ok_or_else(|| refused("that is no plane to cut by"))?;
+        let mut mesh = edge_mesh::Mesh::default();
+        for part in self.objects[at].shape.parts.iter() {
+            if part.kind == PartKind::Normal && !is_connector(part) {
+                mesh.append(&part.mesh, &part.transform.then(&scene).then(&to_plane));
+            }
+        }
+        Ok(crate::curved::snap_distance(&mesh, point))
+    }
+
+    /// What a curved cut would make of a copy's printed parts, for the
+    /// tool to show while the surface is bent (the reference's cut face
+    /// preview): the upper half and the lower, each one mesh, in the
+    /// scene. `prepared` is [`Model::cut_prepared`]'s for the copy as it
+    /// stands; `cancel` stops it.
+    pub fn cut_preview(
+        &self,
+        bed: Option<&Bed>,
+        copy: u64,
+        plane: &Transform,
+        options: &CutOptions,
+        prepared: &Prepared,
+        cancel: Option<&edge_mesh::boolean::Cancel>,
+    ) -> Result<[edge_mesh::Mesh; 2], Failure> {
+        let (at, _) = self.copy_at(copy)?;
+        if !sound_plane(plane) {
+            return Err(refused("that is no plane to cut by"));
+        }
+        if self.bare {
+            let mut settled = self.clone();
+            settled.settle(bed);
+            return settled.cut_preview(bed, copy, plane, options, prepared, cancel);
+        }
+        let options = CutOptions {
+            keep_upper: true,
+            keep_lower: true,
+            to_parts: false,
+            sides: None,
+            ..options.clone()
+        };
+        let scene = prepared.scene;
+        let made = self.cut_parts(at, &scene, plane, &options, Some(prepared), cancel)?;
+        let to_scene = Transform::translation(scene.rows[3]);
+        let one = |parts: &[Part]| {
+            let mut mesh = edge_mesh::Mesh::default();
+            for part in parts.iter().filter(|part| part.kind == PartKind::Normal) {
+                mesh.append(&part.mesh, &part.transform.then(&to_scene));
+            }
+            mesh
+        };
+        Ok([one(&made.upper), one(&made.lower)])
     }
 
     /// How the object of a copy was cut, when the cut was kept editable.
@@ -1799,7 +2012,10 @@ fn cuttable(recipe: &CutRecipe, why: &str) -> Result<(), Failure> {
     if !recipe.known() || recipe.mesh.triangles.is_empty() {
         return Err(refused(why));
     }
-    if matches!(recipe.kind, RecipeKind::Curved | RecipeKind::Drawn) {
+    if recipe.kind == RecipeKind::Curved && recipe.sheet.is_none() {
+        return Err(refused(why));
+    }
+    if recipe.kind == RecipeKind::Drawn {
         return Err(refused(
             "This cut was made with a curved or drawn surface, which cannot be made here yet.",
         ));
