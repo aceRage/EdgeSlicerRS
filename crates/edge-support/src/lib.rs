@@ -1,8 +1,10 @@
 //! Supports: scaffolding under whatever would otherwise be printed over air.
 //!
-//! Two styles, both first working versions of the reference's rather than
-//! ports of it: normal supports, here, and tree supports, in `tree.rs`.
-//! They share what decides whether a support works and comes off again:
+//! Two styles: normal supports, here, a first working version of the
+//! reference's rather than a port of it; and tree supports, in `tree/`, a
+//! port of the reference's organic trees.
+//! They share the gaps above, beside and below a support; overhangs are
+//! found each its own way, as in the reference. Normal supports use:
 //!
 //! - what counts as an overhang (`support_threshold_angle`, or by overlap);
 //! - the gap above a support, a whole number of layers, and the dense
