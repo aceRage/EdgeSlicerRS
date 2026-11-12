@@ -23,6 +23,7 @@ fixed-width face for values.
 | `printers.css` | The printer card and Printer Selection: only what is theirs alone |
 | `settings.css` | The pages of settings (`settings.js`; the process's, a filament's, the printer's): the switch and the box of text, which came with them, the option row, the pages' tabs, the search's list, the panel a filament's or the printer's pages open in; and the sidebar's width |
 | `gl/gl.css` | What lies over the 3D views that `gl/` draws: the navigator, the sliders, the position window, the labels |
+| `hosts.css` | Sending to printers (`hosts.js`): "Physical Printer" and "Send G-code to printer host" (`dialog.host-dialog`), the tick with its words (`label.tick`), the upload queue, and Device with a printer's page and its files |
 | `edit.css` | Prepare as an editor: where its toolbar and the number fields stand over the stage, the object list; a plate's own tools, its lock mark and "Plate Settings" (`plates.js`) |
 | `app.js`, "controls" | `listbox` (the page's own list for a `<select>`) and the tooltips |
 
@@ -171,11 +172,24 @@ as they stand: 28 px high, on the well, a hairline round them.
 - A length that may be a percentage is a text field in a `.unit` with
   `class="number"` (the fixed-width face); its unit is filled in as it is
   typed: "mm" after a number, nothing after one that carries its own %.
+- A secret ("API Key / Password") is `input[type=password]`, styled as a text field. It never holds the secret: the page is told only whether one is set, which the placeholder says ("Set (type to change it)"), with a `button.link` "Clear" beside it.
 - A box of text is a `<textarea>`: on the well, a hairline round it, at
   least two lines, pulled taller by its corner. `class="code"` sets it in
   the fixed-width face without wrapping, for G-code and scripts.
 - A field that can also be picked from carries a chevron at its end
   (`button.icon.opt-more`), which opens the values with `showMenu`.
+
+### A tick with its words
+
+```html
+<label class="tick"><input type="checkbox"> Switch to Device tab after upload.</label>
+```
+
+A tick box or a radio button on one line with what it does, in `--text-1`,
+the whole line clickable (`hosts.css`). Options that belong to one thing
+("Time-lapse", "Heated Bed Leveling", the plate's side) stand together in
+`.send-options`, set in by a hairline at the left. A warning about a choice
+is `p.warn` (`--warn`).
 
 ### Switch
 
@@ -571,6 +585,26 @@ before its name (`more.swatch` of `showMenu`'s entries).
 The dialog for custom G-code (`#custom-gcode`) is a small dialog: title,
 the reference's sentence as the label, a `textarea.code` of six lines,
 "OK" (off while the box is empty) and "Cancel".
+
+### A printer's page (Device)
+
+With a connection, Device is a bar on the panel's surface (the `.tabs`
+"Printer page" / "Storage", the address in the fixed-width face at the
+right in `--text-3`, the tool buttons) over the printer's page, which fills
+the rest. The page in the frame is the printer's: the app does not style it
+and puts `--cover-plate` behind it, as a browser puts white behind a page
+that sets no background. "Storage" is a `.data-table` in a well, its row's
+"Print" and "Delete" plain buttons at the right; what is wrong or empty is
+said in the well.
+
+### The upload queue
+
+A large dialog (`#queue-dialog`): a `.data-table` in a well, a row selected
+as a ticked row is (`tr.on`), the progress a thin bar of the accent with
+the percentage beside it, the state in the colour it means (`--ok`
+completed, `--danger` an error with its message, `--text-3` called off).
+"Cancel selected" and "Show error message" at the left of the foot, "Close"
+the primary.
 
 ### Scrollbars
 

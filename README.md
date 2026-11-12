@@ -122,11 +122,21 @@ the controls it is built from are described in `apps/desktop/ui/STYLE.md`.
   it is; what the print comes to; and, kept apart,
   what is wrong with this print, what was settled without being asked,
   and the settings the profile turns on that this engine does not follow
-  yet. "Slice plate" or "Slice all", and "Export G-code file", which
-  writes the file the command line writes.
-- **Device**: the printer of the project shown, as its preset describes
-  it, with its address when the preset has one. Nothing is sent to a
-  printer or read from one yet; the inventory says what that takes.
+  yet. "Slice plate" or "Slice all", and the print button: "Export
+  G-code file", which writes the file the command line writes, or
+  "Print", which sends those same bytes to the printer ("Upload" or
+  "Upload and Print", and the "Print host upload queue").
+- **Sending to a printer**: "Connect to printer" on the Printer card sets
+  where the printer is ("Host Type", "Hostname, IP or URL", "Device UI",
+  "API Key / Password", "HTTPS CA File", "Test"), kept for that printer
+  preset in the app's data folder, the key in a file of its own. Built:
+  OctoPrint's API ("Octo/Klipper"), a Snapmaker U1 over its Moonraker,
+  and the Elegoo Centauri Carbon ("Elegoo Link"); `src/hosts/`, with a
+  mock of each printer in the tests. Nothing is asked of a printer
+  unless the person asks.
+- **Device**: with a connection, the printer's own page in an isolated
+  frame, and for a U1 its files ("Storage": "Print", "Delete"); without
+  one, the printer of the project shown as its preset describes it.
 
 - **Printer Selection** ("Select/Remove printers (system presets)" in
   the printer list, or the gear beside "Printer"): every printer model
