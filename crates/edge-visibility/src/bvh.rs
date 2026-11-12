@@ -463,6 +463,47 @@ impl Bvh {
         best
     }
 
+    /// Whether any triangle is within `reach` of a point: what
+    /// [`Self::closest_within`] finds something for, without looking on
+    /// for the nearest once one is found.
+    pub fn any_within(&self, point: [f64; 3], reach: f64) -> bool {
+        let square = reach * reach;
+        let box_distance = |node: &Node| {
+            (0..3)
+                .map(|axis| {
+                    let away = (node.min[axis] - point[axis])
+                        .max(point[axis] - node.max[axis])
+                        .max(0.0);
+                    away * away
+                })
+                .sum::<f64>()
+        };
+        let mut stack = [0usize; 64];
+        let mut held = usize::from(!self.nodes.is_empty());
+        while held > 0 {
+            held -= 1;
+            let at = stack[held];
+            let node = &self.nodes[at];
+            if box_distance(node) > square {
+                continue;
+            }
+            if node.count == 0 {
+                stack[held] = node.at as usize;
+                stack[held + 1] = at + 1;
+                held += 2;
+                continue;
+            }
+            let from = node.at as usize;
+            for &corners in &self.corners[from..from + node.count as usize] {
+                let away = sub(closest_on_triangle(point, corners), point);
+                if dot(away, away) <= square {
+                    return true;
+                }
+            }
+        }
+        false
+    }
+
     /// Every triangle a ray meets ahead of its origin, nearest first
     /// (`intersect_ray_all_hits`).
     pub fn all_hits(&self, _mesh: &Triangles, origin: [f64; 3], direction: [f64; 3]) -> Vec<Hit> {
