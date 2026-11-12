@@ -89,12 +89,42 @@ textarea.code { font: var(--size-small)/1.5 var(--font-mono); white-space: pre; 
 .range-row .unit input { min-width: 0; }
 
 /* The pages' tabs, the process's in the sidebar and a filament's or the
-   printer's in the panel: the page's tabs (.tabs.scrolls, style.css),
-   smaller, on one line that scrolls sideways where the sidebar is too
-   narrow for all of them; each with the number of its settings set by
-   hand. */
+   printer's in the panel (.tabs.pages): each a bounded control, raised on
+   a sunk track, the open one on the accent's tint with the accent round
+   it and its words in bold; each with the number of its settings set by
+   hand. Where they do not fit on one row they wrap onto more, as few as
+   will hold them and as evenly filled as they can be (settings.js
+   `layPageTabs` puts a .tab-break between rows), every row filled to the
+   track's width. */
 #process-tabs, #preset-tabs { margin-top: var(--space-1); }
-.tabs > .process-tab { gap: 5px; height: 28px; padding: 0 var(--space-2); font-size: var(--size-label); }
+.tabs.pages {
+  flex-wrap: wrap;
+  gap: 2px;
+  padding: 2px;
+  border: 1px solid var(--line-1);
+  border-radius: var(--radius-l);
+  background: var(--surface-track);
+}
+.tabs.pages > .tab-break { flex-basis: 100%; height: 0; }
+.tabs.pages > [role="tab"] {
+  flex: 1 1 auto;
+  justify-content: center;
+  gap: var(--space-1);
+  height: 26px;
+  margin: 0;
+  padding: 0 var(--space-1);
+  border: 1px solid var(--line-2);
+  border-radius: var(--radius-m);
+  background: var(--surface-raised);
+  color: var(--text-2);
+  font-size: var(--size-label);
+  transition: border-color var(--time-fast) var(--ease), background-color var(--time-fast) var(--ease);
+}
+.tabs.pages > [role="tab"]:hover:not(:disabled) { border-color: var(--line-3); background: var(--surface-raised); color: var(--text-1); }
+.tabs.pages > [role="tab"][aria-selected="true"] { border-color: var(--accent); background: var(--accent-soft); color: var(--text-1); font-weight: 600; }
+.tabs.pages > [role="tab"]:focus-visible { outline-offset: 1px; }
+/* Measured as the open one is drawn, so that opening another does not move a tab to another row. */
+.tabs.pages.measuring > [role="tab"] { flex: none; font-weight: 600; }
 .process-count { color: var(--accent); font: 600 var(--size-caps) var(--font-mono); }
 
 #process-page, #preset-page { display: flex; flex-direction: column; gap: var(--space-2); min-width: 0; }

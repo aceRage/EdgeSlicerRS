@@ -54,6 +54,7 @@ needed.
 | `--surface-panel` | The sidebar | `#111418` | `#f4f5f7` |
 | `--surface-raised` | Cards, dialogs, a table's head | `#171b20` | `#ffffff` |
 | `--surface-float` | What floats: lists, menus, filters, tooltips | `#1d2228` | `#ffffff` |
+| `--surface-track` | Sunk under a row of controls: the pages' tabs | `#08090b` | `#e3e6ea` |
 | `--fill-hover` | Laid over any surface under the pointer | white 6% | ink 5.5% |
 | `--fill-active` | Pressed; the row the keys are on | white 11% | ink 10% |
 
@@ -270,28 +271,48 @@ of two.
 ### Tabs
 
 ```html
-<div class="tabs [scrolls]" role="tablist" aria-label="…">
+<div class="tabs" role="tablist" aria-label="…">
   <button type="button" role="tab" aria-selected="true">[<svg …/>] Prepare</button>
 </div>
 ```
 
 Text (with an icon, if it has one) on a hairline, the open one with 2 px
-of the accent under it and its text in bold. One look for the main tabs
-(`#tabs`, 40 px, with the C++ tab icons) and the tabs of the pages of
-settings (`#process-tabs` in the sidebar, `#preset-tabs` in the panel:
-`button.process-tab`, 28 px and smaller type; a `span.process-count` in a
-tab is how many of its settings are set by hand).
+of the accent under it and its text in bold: the main tabs (`#tabs`,
+40 px, with the C++ tab icons) and Device's.
 
-`.scrolls` keeps the tabs on one line: where they do not fit they are
-scrolled sideways, by a trackpad, by the wheel (`app.js` turns it), by the
-keys (Left, Right, Home, End, which give the next tab the keys), and the
-open tab is always scrolled into sight. The tab cut at the edge is what
-says there are more. Every row of pages' tabs is this, the process's, a
-filament's and the printer's alike: six tabs do not fit the sidebar's
-300 px, and two rows of tabs read as two rows of choices, the lower of
-which moves when the upper is picked. An overflow menu was the other way;
-it would hide pages behind a click and need its own keys, and the row is
-short enough that scrolling it is little to ask.
+### The pages' tabs: `.tabs.pages`
+
+```html
+<div id="process-tabs" class="tabs pages" role="tablist" aria-label="…">
+  <button type="button" role="tab" class="process-tab" aria-selected="true">Quality<span class="process-count">2</span></button>
+  …<span class="tab-break" aria-hidden="true"></span>…
+</div>
+```
+
+The tabs of the pages of settings (`#process-tabs` in the sidebar, for the
+project's pages and an item's; `#preset-tabs` in the panel, for a
+filament's and the printer's): each tab a bounded control, so where one
+ends and the next begins is never in doubt, and the open one
+unmistakable. They stand on a sunk track (`--surface-track`, a `--line-1`
+hairline round it, `--radius-l`, 2 px in and between); each tab is
+`--surface-raised` with `--line-2` round it (`--line-3` under the
+pointer), 26 px high, `--size-label`, its words in `--text-2`; the open
+one has the accent round it on `--accent-soft`, its words in `--text-1`
+and bold, as the segmented "Global" / "Objects" has. A `span.process-count`
+in a tab is how many of its settings are set by hand, in the accent.
+
+They wrap (the owner's choice; they were one row that scrolled): on one
+row where they fit, else on as few rows as hold them, the tabs kept in
+order and shared out so the widest row is as narrow as it can be (six on
+two rows are three and three), every row filled to the track's width, its
+tabs growing alike. `settings.js` `layPageTabs` measures each tab as it
+would be open (in bold, so opening another moves none between rows) and
+puts a `.tab-break` between rows, each time the tabs are drawn and when
+the row's width changes (`app.js`). The process's six take two rows at
+the sidebar's 300 px in English, German and French (with counts on two
+of them), one in Chinese; the printer's ten (four extruders) four rows
+at 340 px in German. Left and Right go along them in reading order,
+across the rows, Home and End to the first and the last.
 
 ### The panel: `#preset-panel`
 
@@ -304,7 +325,7 @@ sidebar [Esc]"), the title in `--size-title` with the preset's name under
 it cut with an ellipsis, the reset-all arrow and "Advance". For a filament,
 `#preset-filaments` holds a numbered swatch for each filament
 (`aria-pressed` on the one shown, ringed in the accent). Then the search
-and the tabs (`.tabs.scrolls`, as the Process section's). All of that is
+and the tabs (`.tabs.pages`, as the Process section's). All of that is
 the panel's `.fold-pin`, pinned at the top of its scroll (`#preset-scroll`)
 as the Process head is in the sidebar's (see "Sections that fold"); the
 page, or the search's list in its place, scrolls under it. Escape anywhere
@@ -783,9 +804,8 @@ the primary.
 
 A thin thumb on nothing, `--scroll-thumb`, the same in Chromium (the
 standard `scrollbar-width` and `scrollbar-color`) and in WebKit (the
-window on a Mac, which reads only `::-webkit-scrollbar`). Rows that scroll
-sideways (`.tabs.scrolls`) and the strip's and the plates' columns show
-none.
+window on a Mac, which reads only `::-webkit-scrollbar`). The strip's and
+the plates' columns show none.
 
 ### What floats
 

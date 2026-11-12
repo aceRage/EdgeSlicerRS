@@ -21,6 +21,7 @@
   --surface-panel: #111418;    /* the sidebar */
   --surface-raised: #171b20;   /* cards, dialogs, a table's head */
   --surface-float: #1d2228;    /* what floats: lists, menus, filters, tooltips */
+  --surface-track: #08090b;    /* sunk under a row of controls: the pages' tabs */
   --fill-hover: rgba(255, 255, 255, 0.06);    /* laid over any surface under the pointer */
   --fill-active: rgba(255, 255, 255, 0.11);   /* pressed, or the row the keys are on */
 
@@ -136,6 +137,7 @@
     --surface-panel: #f4f5f7;
     --surface-raised: #ffffff;
     --surface-float: #ffffff;
+    --surface-track: #e3e6ea;
     --fill-hover: rgba(16, 22, 32, 0.055);
     --fill-active: rgba(16, 22, 32, 0.1);
 
@@ -289,8 +291,8 @@ button svg.chevron { display: block; width: 9px; height: 6px; fill: none; stroke
 
 /* -- tabs: <div class="tabs" role="tablist"> of <button role="tab">: text
       (with an icon, if it has one) on a hairline, the open one with the
-      accent under it. .tabs.scrolls keeps them on one line, scrolled
-      sideways (the wheel too) where they do not fit -- */
+      accent under it. The pages' tabs of the settings (.tabs.pages) are
+      drawn otherwise, in settings.css -- */
 
 .tabs { display: flex; min-width: 0; border-bottom: 1px solid var(--line-1); }
 .tabs > [role="tab"] {
@@ -311,8 +313,6 @@ button svg.chevron { display: block; width: 9px; height: 6px; fill: none; stroke
 .tabs > [role="tab"][aria-selected="true"] { color: var(--text-1); font-weight: 600; border-bottom-color: var(--accent); }
 .tabs > [role="tab"]:focus-visible { outline-offset: -2px; }
 .tabs > [role="tab"] svg { flex: none; width: 18px; height: 18px; fill: none; stroke: currentColor; stroke-width: 1.2; stroke-linecap: round; stroke-linejoin: round; }
-.tabs.scrolls { overflow-x: auto; overflow-y: hidden; overscroll-behavior-x: contain; scrollbar-width: none; }
-.tabs.scrolls::-webkit-scrollbar { display: none; }
 
 /* -- what lies over the 3D stage: .overlay is the surface (a toolbar is
       on it too); the scene shows faintly through it -- */

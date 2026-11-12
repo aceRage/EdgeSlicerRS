@@ -574,27 +574,19 @@ if ('popover' in HTMLElement.prototype) {
   document.addEventListener('scroll', hideTip, true);
 }
 
-// Tabs on one line that scrolls (`.tabs.scrolls`): the wheel scrolls them
-// sideways, and the open tab is kept in sight. Only the row scrolls, not
-// what it is in.
-function scrollingTabs(row) {
-  const reveal = () => {
-    const tab = row.querySelector('[aria-selected="true"]');
-    if (!tab || row.scrollWidth <= row.clientWidth) return;
-    const pad = 16;
-    if (tab.offsetLeft - pad < row.scrollLeft) row.scrollLeft = tab.offsetLeft - pad;
-    else if (tab.offsetLeft + tab.offsetWidth + pad > row.scrollLeft + row.clientWidth) row.scrollLeft = tab.offsetLeft + tab.offsetWidth + pad - row.clientWidth;
-  };
-  row.addEventListener('wheel', (event) => {
-    if (row.scrollWidth <= row.clientWidth || Math.abs(event.deltaX) >= Math.abs(event.deltaY)) return;
-    event.preventDefault();
-    row.scrollLeft += event.deltaY;
-  }, { passive: false });
-  new MutationObserver(() => requestAnimationFrame(reveal))
-    .observe(row, { childList: true, subtree: true, attributes: true, attributeFilter: ['aria-selected'] });
-  new ResizeObserver(reveal).observe(row);
+// The pages' tabs (`.tabs.pages`: the process's, a filament's, the
+// printer's, an item's) are laid out by `layPageTabs` (settings.js) each
+// time they are drawn, and again whenever their row's width changes (the
+// sidebar dragged, the window, the panel opened).
+// Only a change of width lays them out again: the rows they take change the height.
+for (const row of document.querySelectorAll('.tabs.pages')) {
+  let width = -1;
+  new ResizeObserver(() => {
+    if (row.clientWidth === width) return;
+    width = row.clientWidth;
+    layPageTabs(row);
+  }).observe(row);
 }
-for (const row of document.querySelectorAll('.tabs.scrolls')) scrollingTabs(row);
 
 // A section's head that stays in sight while its body scrolls under it
 // (`.fold-pin`): the Process section's head in the sidebar's scroll, and

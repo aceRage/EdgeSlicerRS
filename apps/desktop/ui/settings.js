@@ -491,10 +491,55 @@ function showSettingsPage(book) {
     tab.addEventListener('click', () => openSettingsPage(book, each.title));
     return tab;
   }));
+  layPageTabs($(`${prefix}-tabs`));
   $(`${prefix}-reset`).hidden = answer.changed === 0;
   const refused = $(`${prefix}-refused`);
   refused.hidden = !answer.refused;
   refused.textContent = answer.refused ? `The engine will not slice with these settings: ${answer.refused}` : '';
+}
+
+// The pages' tabs on as few rows as hold them (the owner's choice; they
+// were one row that scrolled): one row where they fit, else two, and so
+// on, the tabs kept in their order and shared out between the rows as
+// evenly as they can be (the widest row as narrow as it can be: six on
+// two rows are three and three where that fits), each row filled to the
+// track's width. A row of tabs is measured as the open one is drawn (in
+// bold), so that opening another moves none to another row.
+function layPageTabs(row) {
+  for (const old of row.querySelectorAll('.tab-break')) old.remove();
+  const tabs = [...row.children].filter((each) => each.getAttribute('role') === 'tab');
+  const style = getComputedStyle(row);
+  const room = row.clientWidth - parseFloat(style.paddingLeft) - parseFloat(style.paddingRight);
+  if (tabs.length < 2 || room <= 0) return;
+  row.classList.add('measuring');
+  const widths = tabs.map((tab) => tab.getBoundingClientRect().width);
+  row.classList.remove('measuring');
+  const gap = parseFloat(style.columnGap) || 0;
+  const span = (from, to) => widths.slice(from, to).reduce((sum, width) => sum + width, 0) + gap * (to - from - 1);
+  const count = tabs.length;
+  // widest[k][i]: the narrowest the widest row can be with the first i
+  // tabs on k rows; cut[k][i]: where its last row starts.
+  const widest = [Array.from({ length: count + 1 }, (_, i) => (i === 0 ? 0 : Infinity))];
+  const cut = [[]];
+  for (let rows = 1; rows <= count; rows += 1) {
+    widest.push(Array(count + 1).fill(Infinity));
+    cut.push(Array(count + 1).fill(0));
+    for (let i = 1; i <= count; i += 1) {
+      for (let from = rows - 1; from < i; from += 1) {
+        const worst = Math.max(widest[rows - 1][from], span(from, i));
+        if (worst < widest[rows][i]) { widest[rows][i] = worst; cut[rows][i] = from; }
+      }
+    }
+    if (widest[rows][count] > room + 0.5 && rows < count) continue;
+    const starts = [];
+    for (let k = rows, i = count; k > 1; k -= 1) { i = cut[k][i]; starts.push(i); }
+    for (const at of starts) {
+      const mark = el('span', { className: 'tab-break' });
+      mark.setAttribute('aria-hidden', 'true');
+      tabs[at].before(mark);
+    }
+    return;
+  }
 }
 
 function openSettingsPage(book, title, { focus = false } = {}) {
@@ -502,7 +547,7 @@ function openSettingsPage(book, title, { focus = false } = {}) {
   if (state.project) kept(state.project.id)[`${book.kind}Page`] = title;
   showSettingsPage(book);
   if (focus) {
-    const tab = [...$(`${book.prefix}-tabs`).children].find((each) => each.dataset.page === title);
+    const tab = [...$(`${book.prefix}-tabs`).querySelectorAll('[role="tab"]')].find((each) => each.dataset.page === title);
     if (tab) tab.focus();
   }
 }
@@ -777,7 +822,8 @@ function wireSettings(book) {
   $(`${prefix}-tabs`).addEventListener('keydown', (event) => {
     const each = current();
     if (!each) return;
-    const pages = [...$(`${prefix}-tabs`).children].map((tab) => tab.dataset.page);
+    // In reading order, across the rows.
+    const pages = [...$(`${prefix}-tabs`).querySelectorAll('[role="tab"]')].map((tab) => tab.dataset.page);
     const at = pages.indexOf(each.page);
     let to = -1;
     if (event.key === 'ArrowRight') to = (at + 1) % pages.length;
