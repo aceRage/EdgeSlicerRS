@@ -137,6 +137,10 @@ pub struct TowerSettings {
     /// planned as if one ran down each of its sides
     /// (`ramming_line_width_ratio`).
     pub ram_width: f64,
+    /// On a printer of one nozzle, each filament's own ramming line
+    /// width in tower lines, in place of `ram_width`
+    /// (`filament_ramming_parameters`); empty otherwise.
+    pub ram_widths: Vec<f64>,
     /// How each filament is rammed, in the settings' order; none for one
     /// that is not.
     pub ramming: Vec<Option<Ramming>>,
@@ -194,6 +198,8 @@ pub struct Change {
     pub volume: f64,
     /// The new filament, counting from 0.
     pub filament: usize,
+    /// The filament put away, counting from 0; none for the first.
+    pub old: Option<usize>,
 }
 
 impl Default for TowerSettings {
@@ -212,6 +218,7 @@ impl Default for TowerSettings {
             wall: Wall::Box,
             wall_gap: true,
             ram_width: 2.0,
+            ram_widths: Vec::new(),
             ramming: Vec::new(),
             brim_chamfer: true,
             brim_chamfer_max: 4.0,
@@ -434,6 +441,28 @@ impl TowerSettings {
                 .flag("wipe_tower_wall_gap")?
                 .unwrap_or(defaults.wall_gap),
             ram_width: number("ramming_line_width_ratio", defaults.ram_width)?.max(1.0),
+            ram_widths: if single_nozzle && !bambu_tower {
+                settings
+                    .texts("filament_ramming_parameters")
+                    .unwrap_or_default()
+                    .iter()
+                    .map(|parameters| {
+                        let first = parameters.trim_matches('"').split_whitespace().next();
+                        Ok(match first {
+                            Some(width) => {
+                                width.parse::<f64>().map_err(|_| ConfigError::BadValue {
+                                    key: "filament_ramming_parameters".to_owned(),
+                                    found: parameters.clone(),
+                                    expected: "numbers",
+                                })? / 100.0
+                            }
+                            None => 1.0,
+                        })
+                    })
+                    .collect::<Result<_, ConfigError>>()?
+            } else {
+                Vec::new()
+            },
             ramming,
             brim_chamfer: settings
                 .flag("prime_tower_brim_chamfer")?
@@ -525,6 +554,7 @@ impl TowerSettings {
     /// `set_toolchange`, `get_wipe_depth`): rows enough, across a width a
     /// little less than the tower's, to lay down `volume`, after the rows
     /// the ram takes.
+    #[cfg(test)]
     fn planned(
         &self,
         span: f64,
@@ -533,8 +563,21 @@ impl TowerSettings {
         ram: Option<Ramming>,
         volume: f64,
     ) -> Planned {
+        self.planned_by(span, height, first_layer, ram, volume, self.ram_width)
+    }
+
+    /// [`Self::planned`], with a ramming line `ratio` tower lines wide.
+    fn planned_by(
+        &self,
+        span: f64,
+        height: f64,
+        first_layer: bool,
+        ram: Option<Ramming>,
+        volume: f64,
+        ratio: f64,
+    ) -> Planned {
         let line = WIDTH_TO_NOZZLE * self.nozzle_diameter;
-        let wide = line * self.ram_width;
+        let wide = line * ratio;
         let per_mm = |width: f64| height * (width - height * (1.0 - PI / 4.0));
         let across = (span - line - 2.0 * wide).max(line);
         let (ram_length, ramming, first_wipe) = match ram {
@@ -581,6 +624,17 @@ impl TowerSettings {
         } else {
             purge.min(self.infill_speed as f32 * 60.0)
         }
+    }
+
+    /// How many tower lines wide a ramming line is, and so how much
+    /// narrower than the tower a block's rows are planned, for a change
+    /// from filament `old`: on one nozzle the first figure of that
+    /// filament's `filament_ramming_parameters` (WipeTower2.cpp
+    /// `set_extruder`), otherwise `ramming_line_width_ratio`.
+    fn ram_ratio(&self, old: Option<usize>) -> f64 {
+        old.and_then(|old| self.ram_widths.get(old).or(self.ram_widths.last()))
+            .copied()
+            .unwrap_or(self.ram_width)
     }
 
     /// How far apart a block's rows are, in line widths.
@@ -1041,6 +1095,7 @@ pub fn plan(
                     ram: *ram,
                     volume: settings.prime_volume,
                     filament: 0,
+                    old: None,
                 })
                 .collect()
         })
@@ -1070,14 +1125,20 @@ pub fn plan_changes(
         return Ok(tower);
     }
     let line = WIDTH_TO_NOZZLE * settings.nozzle_diameter;
-    let wide = line * settings.ram_width;
     // What each layer's tool changes take of a tower `span` wide.
     let used_at = |span: f64, layer: usize| -> f64 {
         changes[layer]
             .iter()
             .map(|change| {
                 settings
-                    .planned(span, heights[layer], layer == 0, change.ram, change.volume)
+                    .planned_by(
+                        span,
+                        heights[layer],
+                        layer == 0,
+                        change.ram,
+                        change.volume,
+                        settings.ram_ratio(change.old),
+                    )
                     .depth()
             })
             .sum()
@@ -1153,7 +1214,15 @@ pub fn plan_changes(
         let mut ways_in: Vec<(bool, f64)> = Vec::with_capacity(changes[layer].len());
         for change in &changes[layer] {
             let ram = &change.ram;
-            let planned = settings.planned(span, height, first, *ram, change.volume);
+            let wide = line * settings.ram_ratio(change.old);
+            let planned = settings.planned_by(
+                span,
+                height,
+                first,
+                *ram,
+                change.volume,
+                settings.ram_ratio(change.old),
+            );
             let mut block = Block::default();
             let (mut x, mut y, mut rightward) = (1.5 * line, used + step - row / 2.0, true);
             if let Some(ram) = ram {
@@ -2163,6 +2232,44 @@ mod tests {
     }
 
     #[test]
+    fn one_nozzle_plans_its_rows_by_each_filament_s_own_ramming_width() {
+        let json = r#"{"enable_prime_tower": "1", "single_extruder_multi_material": "1",
+            "filament_ramming_parameters": ["\"120 100 6.6 6.8\"", "\"150 100 7\""],
+            "ramming_line_width_ratio": "2", "prime_tower_width": "35"}"#;
+        let settings =
+            TowerSettings::from_settings(&Settings::from_json(json).unwrap(), 0).unwrap();
+        assert_eq!(settings.ram_widths, [1.2, 1.5]);
+        assert_eq!(settings.ram_ratio(Some(0)), 1.2);
+        assert_eq!(settings.ram_ratio(Some(5)), 1.5);
+        assert_eq!(settings.ram_ratio(None), 2.0);
+        // Rows planned 2 x 0.8 mm wider than with the ratio of 2: on
+        // 45 mm³ and a 35 mm tower that is a row fewer.
+        let change = |old: Option<usize>| Change {
+            ram: None,
+            volume: 45.0,
+            filament: 1,
+            old,
+        };
+        let depth = |old| {
+            let tower = plan_changes(&[vec![change(old)]], &[0.2], &settings).unwrap();
+            let [_, a, _, b] = tower.footprint.unwrap();
+            b - a
+        };
+        assert!(
+            depth(Some(0)) < depth(None),
+            "{} {}",
+            depth(Some(0)),
+            depth(None)
+        );
+        // With a nozzle for each filament the ratio is the printer's.
+        let many = r#"{"single_extruder_multi_material": "0",
+            "filament_ramming_parameters": ["120 100 6.6"]}"#;
+        let settings =
+            TowerSettings::from_settings(&Settings::from_json(many).unwrap(), 0).unwrap();
+        assert!(settings.ram_widths.is_empty());
+    }
+
+    #[test]
     fn settings_are_read_for_the_plate() {
         let read = |json: &str, plate: usize| {
             TowerSettings::from_settings(&Settings::from_json(json).unwrap(), plate).unwrap()
@@ -2357,6 +2464,7 @@ mod tests {
             ram: None,
             volume,
             filament: 0,
+            old: None,
         };
         // Two changes on a layer, one flushing three times what the other does.
         let tower = plan_changes(

@@ -1613,6 +1613,7 @@ pub fn slice(job: Job, watch: &dyn Watcher) -> Result<Sliced, Failure> {
                         None => tower_settings.prime_volume,
                     },
                     filament: tools[*filament] - 1,
+                    old: held.map(|old| tools[old] - 1),
                 });
                 held = Some(*filament);
             }
