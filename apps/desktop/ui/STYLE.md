@@ -751,6 +751,18 @@ tool's panel does, and scrolls). Its rows:
   In the scene the sheet is drawn in the plane's grey, see-through, its
   handles the grip's grey balls (yellow under the pointer); the halves the
   booleans made stand in for the part in cyan and magenta.
+- **The drawn surface** (`drawn.js`): "Direction" a list, "Extension",
+  "Extension angle", "Angle", "Depth" and "Smoothing" each a slider with
+  its number as "Thickness" has them ("Extension angle" under its "Set"
+  tick, off with it), "Edit points" a tick, "Close loop", "Cut along the
+  line" and "Clear line" plain buttons at the left; what to do next an
+  `.edit-hint`, a stroke refused and what the line cannot do
+  `.cut-warning`s. In the scene the plane and its grips are not drawn:
+  the line is an amber ribbon over everything, an open line's ends amber
+  balls (lighter under the pointer, green when letting go would close
+  the loop), the points being edited the grip's grey balls (yellow under
+  the pointer), the surface the plane's grey a quarter there (pink when
+  the cut cannot be made); the reference's colours, data, not tokens.
 - **A side and what is done with it** (`.cut-side`): a 10 px swatch of
   the side's tint in the scene (cyan, magenta: the reference's, data, not
   tokens) and its name in `--text-1`, then its ticks; a tick never breaks

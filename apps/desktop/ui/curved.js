@@ -139,8 +139,24 @@
       return Boolean(o && !this.dovetail() && o.surface === 'curved' && o.sheet && !Sheet.isFlat(o.sheet));
     },
 
+    // The surface the cut is made by, as the session takes it: a bent
+    // sheet, or a drawn line ready to cut with (drawn.js).
     curvedArgs() {
-      return this.bent() ? { sheet: this.open.sheet } : {};
+      if (this.bent()) return { sheet: this.open.sheet };
+      if (this.drawnReady()) return this.drawArgs();
+      return {};
+    },
+
+    // Whether the halves are worked out by the booleans and shown in place
+    // of the part: a bent sheet, or a drawn line ready to cut with.
+    previewing() {
+      return this.bent() || this.drawnReady();
+    },
+
+    // What the halves shown were made for.
+    previewKey() {
+      const o = this.open;
+      return JSON.stringify([this.frame(), this.curvedArgs(), o.thickness, o.from]);
     },
 
     // "Surface": flat or curved.
@@ -149,6 +165,7 @@
       if (!o || surface === o.surface) return;
       this.remember();
       o.surface = surface;
+      if (surface === 'draw') this.startDraw();
       if (surface === 'curved') {
         o.sheet = null;
         this.fitSheet(true);
@@ -296,7 +313,7 @@
       o.sheetMesh = null;
       clearTimeout(this.previewTimer);
       this.previewTimer = setTimeout(() => this.askPreview(), dragging ? 250 : 60);
-      o.previewStale = this.bent();
+      o.previewStale = this.previewing();
       this.panel();
       this.stage.frame();
     },
@@ -306,13 +323,13 @@
     async askPreview() {
       const o = this.open;
       if (!o) return;
-      if (!this.bent()) { this.dropPreview(); o.previewStale = false; this.panel(); this.stage.frame(); return; }
+      if (!this.previewing()) { this.dropPreview(); o.previewStale = false; this.panel(); this.stage.frame(); return; }
       const project = this.host.project();
-      const asked = JSON.stringify([this.frame(), o.sheet, o.thickness, o.from]);
+      const asked = this.previewKey();
       if (o.preview && o.preview.key === asked) { o.previewStale = false; this.panel(); return; }
       o.previewStale = true;
       this.panel();
-      const args = { project: project.id, copy: o.copy, plane: this.frame(), sheet: o.sheet, thickness: o.thickness, thickness_from: o.from };
+      const args = { project: project.id, copy: o.copy, plane: this.frame(), ...this.curvedArgs(), thickness: o.thickness, thickness_from: o.from };
       let answer;
       try {
         answer = await this.host.call('cut_preview', args);
@@ -325,7 +342,7 @@
         }
         return;
       }
-      if (this.open !== o || JSON.stringify([this.frame(), o.sheet, o.thickness, o.from]) !== asked) return;
+      if (this.open !== o || this.previewKey() !== asked) return;
       let upper;
       let lower;
       try {
@@ -360,21 +377,27 @@
       return v === 'hidden' ? -1 : v === 'ghost' ? GHOST : 1;
     },
 
+    // The halves as the booleans made them, in place of the part.
+    drawHalves(frame) {
+      const o = this.open;
+      const r = this.stage.renderer;
+      if (!o.preview || !this.previewing()) return;
+      for (const [side, mesh, colour] of [['upper', o.preview.upper, UPPER], ['lower', o.preview.lower, LOWER]]) {
+        const alpha = this.sideAlpha(side);
+        if (!mesh || alpha < 0) continue;
+        r.blend(alpha < 1);
+        r.drawMesh(mesh, frame, M.identity(), { tint: [...colour, 1], alpha });
+      }
+      r.blend(false);
+    },
+
     // The bent surface, its handles, and the halves as the booleans made
     // them, in place of the part.
     drawCurved(frame, view) {
       const o = this.open;
       const r = this.stage.renderer;
       const gl = r.gl;
-      if (o.preview && this.bent()) {
-        for (const [side, mesh, colour] of [['upper', o.preview.upper, UPPER], ['lower', o.preview.lower, LOWER]]) {
-          const alpha = this.sideAlpha(side);
-          if (!mesh || alpha < 0) continue;
-          r.blend(alpha < 1);
-          r.drawMesh(mesh, frame, M.identity(), { tint: [...colour, 1], alpha });
-        }
-        r.blend(false);
-      }
+      this.drawHalves(frame);
       if (!o.sheetMesh) {
         // The surface, sampled 32 a side (`sample_sheet`), in the plane's
         // own coordinates.
@@ -433,7 +456,7 @@
         }
         return el('div', { className: 'cut-row' }, el('span', { className: 'edit-label', textContent: label }), el('span', { className: 'cut-line' }, group));
       };
-      rows.push(joined(t('Surface'), [['flat', t('Flat')], ['curved', t('Curved')]], o.surface, (value) => this.setSurface(value)));
+      rows.push(joined(t('Surface'), [['flat', t('Flat')], ['curved', t('Curved')], ['draw', t('Draw')]], o.surface, (value) => this.setSurface(value)));
       // "Show halves".
       rows.push(el('span', { className: 'edit-label cut-group', textContent: t('Show halves') }));
       const sides = [['visible', t('Visible')], ['ghost', t('Ghost')], ['hidden', t('Hidden')]];
@@ -441,6 +464,7 @@
         rows.push(joined(word, sides, this.visibility[side], (value) => { this.visibility[side] = value; this.changed(); }));
       }
       rows.push(el('p', { className: 'edit-hint', textContent: t('Ghost draws a half translucent so the cut surface and the other half show through; Hidden leaves it out of the preview entirely. Neither changes the cut.') }));
+      if (this.drawing()) return [...rows, ...this.drawRows(busy)];
       if (o.surface !== 'curved' || !o.sheet) return rows;
       const s = o.sheet;
       const whole = (label, value, min, max, act, tip) => {

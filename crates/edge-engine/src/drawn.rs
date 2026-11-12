@@ -2283,6 +2283,33 @@ impl DrawCutChain {
         at
     }
 
+    /// The first sample's place (`front_pos`).
+    pub fn front_pos(&self) -> Option<V> {
+        self.samples.first().map(|s| s.pos)
+    }
+
+    /// The last sample's place (`back_pos`).
+    pub fn back_pos(&self) -> Option<V> {
+        self.samples.last().map(|s| s.pos)
+    }
+
+    /// The loop closed along a path found from the back end to the front,
+    /// added as one stroke (`close_along_path`); an empty path closes it
+    /// as it is.
+    pub fn close_along_path(&mut self, path: &[DrawCutSample]) -> bool {
+        if self.closed || self.samples.len() + path.len() < MIN_CHAIN_SAMPLES {
+            return false;
+        }
+        if !path.is_empty() {
+            let begin = self.samples.len();
+            self.samples.extend_from_slice(path);
+            self.bounds.push((begin, self.samples.len()));
+        }
+        self.closed = true;
+        self.finished_open = false;
+        true
+    }
+
     /// The panel's "Close loop" (`force_close`).
     pub fn force_close(&mut self) -> bool {
         if self.samples.len() < MIN_CHAIN_SAMPLES {
@@ -2415,6 +2442,215 @@ pub fn recipe_stroke_to_chain(stored: &RecipeStroke) -> DrawCutChain {
     out
 }
 
+// ---------------------------------------------------------------------------
+// What the gizmo works out for a line before it is cut with
+// (GLGizmoCut.cpp `refresh_draw_stroke`): kept here, with the mesh, so a
+// cut made again from its recipe is the cut the tool showed.
+// ---------------------------------------------------------------------------
+
+/// How near the far end a stroke must finish to close the loop, as a
+/// share of the object's diagonal, and the least and most it may be.
+pub const CHAIN_SNAP_FRACTION: f64 = 0.02;
+pub const CHAIN_SNAP_MIN_MM: f64 = 1.0;
+pub const CHAIN_SNAP_MAX_MM: f64 = 6.0;
+
+/// The radius a stroke closes the loop within (`draw_cut_chain_snap_radius`),
+/// from the object's box: the least without one.
+pub fn draw_cut_chain_snap_radius(bounds: Option<Bounds>) -> f64 {
+    match bounds {
+        Some((lo, hi)) => {
+            (CHAIN_SNAP_FRACTION * norm(sub(hi, lo))).clamp(CHAIN_SNAP_MIN_MM, CHAIN_SNAP_MAX_MM)
+        }
+        None => CHAIN_SNAP_MIN_MM,
+    }
+}
+
+/// A stroke's samples less the short runs that skimmed onto a neighbouring
+/// face (`draw_cut_filter_capture_skims`): a run of at most three whose
+/// normals turn away from the samples either side while those two agree.
+pub fn draw_cut_filter_capture_skims(stroke: &[DrawCutSample]) -> Vec<DrawCutSample> {
+    const DIFFER: f64 = std::f64::consts::FRAC_1_SQRT_2;
+    const FLANKS_AGREE: f64 = 0.5;
+    const RUN_AGREE: f64 = 0.5;
+    const MAX_SKIM_RUN: usize = 3;
+    let mut out = stroke.to_vec();
+    if out.len() < 4 {
+        return out;
+    }
+    loop {
+        let n = out.len();
+        let mut remove = None;
+        let mut i = 1;
+        while i + 1 < n {
+            if dot(out[i].normal, out[i - 1].normal) >= DIFFER {
+                i += 1;
+                continue;
+            }
+            let mut j = i;
+            while j + 1 < n
+                && dot(out[j + 1].normal, out[i - 1].normal) < DIFFER
+                && dot(out[j + 1].normal, out[i].normal) > RUN_AGREE
+            {
+                j += 1;
+            }
+            if j - i < MAX_SKIM_RUN
+                && j + 1 < n
+                && dot(out[j + 1].normal, out[i - 1].normal) > FLANKS_AGREE
+                && dot(out[j + 1].normal, out[j].normal) < DIFFER
+            {
+                remove = Some((i, j + 1));
+                break;
+            }
+            i = j + 1;
+        }
+        match remove {
+            Some((begin, end)) => {
+                out.drain(begin..end);
+            }
+            None => return out,
+        }
+    }
+}
+
+/// The finished path put back onto the mesh, each sample to its nearest
+/// point and that face's normal, unless that is further than `limit` or
+/// the face turns against the sample's own (`reproject_draw_stroke_on_mesh`).
+pub fn draw_cut_reproject(stroke: &mut DrawCutStroke, tree: &Tree, limit: f64) {
+    if !stroke.valid() {
+        return;
+    }
+    let mut path = stroke.path().to_vec();
+    let mut moved = false;
+    for s in &mut path {
+        let Some((to, _, n)) = tree.closest_point(s.pos) else {
+            continue;
+        };
+        let has_normal = dot(n, n) > 1e-12;
+        if norm(sub(to, s.pos)) > limit || (has_normal && dot(n, s.normal) < -0.2) {
+            continue;
+        }
+        if dot(sub(to, s.pos), sub(to, s.pos)) > 1e-12 {
+            s.pos = to;
+            moved = true;
+        }
+        if has_normal && dot(sub(n, s.normal), sub(n, s.normal)) > 1e-12 {
+            s.normal = n;
+            moved = true;
+        }
+    }
+    if moved {
+        stroke.set_path(&path);
+    }
+}
+
+/// How far each rail of an open line may reach before it meets the part
+/// again (`compute_draw_extension_clearance`), in the cutter's rail order:
+/// the front end along the tangent, each sample outward, the back end.
+/// Empty, which is no clamp, for a loop or a line that is not valid.
+pub fn draw_cut_extension_clearance(
+    stroke: &DrawCutStroke,
+    params: &DrawCutParams,
+    tree: &Tree,
+) -> Vec<f64> {
+    if !stroke.valid() || stroke.is_closed() {
+        return Vec::new();
+    }
+    // From 0.05 mm along the ray, so the face the line is on is not the
+    // first met; 0.1 mm kept clear of a wall the ray grazes on its way.
+    //
+    // DIFFERS FROM THE REFERENCE, which stops at the first face the ray
+    // meets. A line drawn on a flat face lies in that face's plane, so the
+    // ray off its end runs along the face and meets the face's own edge:
+    // the end's extension is clamped to that edge and never reaches past
+    // the silhouette, which is what it is for. Only a face the ray goes
+    // into, the rest of the part met from outside, stops it here; one it
+    // leaves through is passed.
+    let along = |from: V, dir: V| -> f64 {
+        let d = unit(dir, [0.0, 0.0, -1.0]);
+        let mut start = 0.05;
+        for _ in 0..64 {
+            let Some(hit) = tree.hit(add(from, mul(d, start)), d, (0.0, f64::INFINITY), &|_| true)
+            else {
+                break;
+            };
+            let t = start + hit.t;
+            if dot(tree.normal(hit.triangle), d) < 0.0 {
+                return (t - 0.1).max(0.0);
+            }
+            start = t + 1e-6;
+        }
+        f64::MAX
+    };
+    let p = stroke.path();
+    let n = p.len();
+    let mut out = Vec::with_capacity(n + 2);
+    out.push(along(p[0].pos, mul(stroke.tangent(0), -1.0)));
+    for (i, s) in p.iter().enumerate() {
+        out.push(along(
+            s.pos,
+            mul(draw_cut_inward_dir(stroke, params, i), -1.0),
+        ));
+    }
+    out.push(along(p[n - 1].pos, stroke.tangent(n - 1)));
+    out
+}
+
+/// A line made ready to cut with, and what the panel says of it.
+#[derive(Clone, Debug)]
+pub struct DrawnLine {
+    /// The finished stroke, put back onto the mesh.
+    pub stroke: DrawCutStroke,
+    /// The sweep as it is cut with: the extension's clamp worked out, the
+    /// angle 0 where a loop has no consistent outside.
+    pub params: DrawCutParams,
+    /// Why there is no cut surface (`None` when there is).
+    pub error: DrawCutError,
+    /// A loop with no consistent outside: its angle was ignored.
+    pub flips: bool,
+    /// The surface folds where the line turns tightly.
+    pub folds: bool,
+    /// The extension was clamped somewhere to keep off the rest of the part.
+    pub clipped: bool,
+}
+
+/// A chain made ready to cut with against the object's printed mesh in the
+/// plane's frame (`refresh_draw_stroke`): finished at the default
+/// spacing, smoothed, put back onto the mesh, the angle dropped for a loop
+/// with no consistent outside, and an open line's extension clamped where
+/// it would run into the part.
+pub fn draw_cut_line(
+    mesh: &Mesh,
+    tree: &Tree,
+    chain: &DrawCutChain,
+    smoothing: f64,
+    params: &DrawCutParams,
+) -> DrawnLine {
+    let (mut stroke, error) = chain.finish(DEFAULT_SPACING, smoothing);
+    let mut params = params.clone();
+    params.extension_clearance.clear();
+    let limit = (0.2 * draw_cut_chain_snap_radius(bounds_of(mesh))).max(1.0);
+    draw_cut_reproject(&mut stroke, tree, limit);
+    let valid = stroke.valid();
+    let flips = valid && params.angle_deg != 0.0 && draw_cut_frame_holonomy_flips(&stroke);
+    if flips {
+        params.angle_deg = 0.0;
+    }
+    let folds = valid && draw_cut_band_folds(&stroke, &params).0;
+    params.extension_clearance = draw_cut_extension_clearance(&stroke, &params, tree);
+    let clipped = params
+        .extension_clearance
+        .iter()
+        .any(|c| *c < params.extension - 1e-6);
+    DrawnLine {
+        error: if valid { DrawCutError::None } else { error },
+        stroke,
+        params,
+        flips,
+        folds,
+        clipped,
+    }
+}
+
 /// A chain as a recipe stores it (`cut_recipe_stroke_from_chain`): its
 /// ranges sorted by position.
 pub fn recipe_stroke_from_chain(chain: &DrawCutChain, smoothing: f64) -> RecipeStroke {
@@ -2493,6 +2729,95 @@ mod tests {
         assert!(cutter.signed_volume() > 0.0, "cutter wound inward");
         assert_eq!(edge_mesh::cut::flat_triangles(cutter), 0, "flat triangles");
         assert!(Solid::new(cutter).is_ok());
+    }
+
+    /// An open line across a block's top, 4 mm from a second block past
+    /// its end: the back end's extension is clamped short of the second
+    /// block, the rest left as set, and the second block is not touched.
+    #[test]
+    fn an_open_lines_extension_stops_short_of_the_rest_of_the_part() {
+        let mut soup = cuboid([-10.0, -10.0, -10.0], [10.0, 10.0, 10.0]);
+        soup.extend(cuboid([14.0, -10.0, -10.0], [24.0, 10.0, 10.0]));
+        let mesh = Mesh::from_triangle_soup(soup);
+        let tree = Tree::new(&mesh);
+        let mut chain = DrawCutChain::new();
+        let line: Vec<DrawCutSample> = (0..=18)
+            .map(|k| sample([-9.0 + k as f64, 2.0, 10.0], Z))
+            .collect();
+        assert_eq!(chain.append(&line, 1.0), DrawChainEnd::Back);
+        assert!(chain.finish_open());
+        let params = DrawCutParams {
+            extension: 10.0,
+            through_all: false,
+            ..DrawCutParams::default()
+        };
+        let ready = draw_cut_line(&mesh, &tree, &chain, 0.0, &params);
+        assert_eq!(ready.error, DrawCutError::None);
+        assert!(ready.clipped);
+        let clear = &ready.params.extension_clearance;
+        assert_eq!(clear.len(), ready.stroke.path().len() + 2);
+        // The back end runs along +x from x = 9, out through the block's
+        // own edge at 10, to the second block at 14.
+        let back = clear[clear.len() - 1];
+        assert!((back - 4.9).abs() < 1e-6, "{back}");
+        // Upward off the top nothing is met; the front end leaves the part.
+        assert!(clear[1] > 1e6 && clear[0] > 1e6, "{clear:?}");
+        // Unclamped, the extension's end would reach into the second
+        // block; clamped, the cutter stays out of it.
+        let bbox = bounds_of(&mesh);
+        let cutter = draw_cut_cutter_solid(&ready.stroke, &ready.params, bbox, 0.0, Some(&mesh));
+        let reach = cutter
+            .vertices
+            .iter()
+            .map(|v| f64::from(v[0]))
+            .fold(f64::MIN, f64::max);
+        assert!(reach < 14.0, "{reach}");
+        let mut blind = ready.params.clone();
+        blind.extension_clearance.clear();
+        let cutter = draw_cut_cutter_solid(&ready.stroke, &blind, bbox, 0.0, Some(&mesh));
+        let reach = cutter
+            .vertices
+            .iter()
+            .map(|v| f64::from(v[0]))
+            .fold(f64::MIN, f64::max);
+        assert!(reach > 14.0, "{reach}");
+    }
+
+    #[test]
+    fn a_short_skim_onto_another_face_is_dropped_from_a_stroke() {
+        let mut stroke: Vec<DrawCutSample> =
+            (0..8).map(|k| sample([k as f64, 0.0, 0.0], Z)).collect();
+        stroke[3].normal = X;
+        stroke[4].normal = X;
+        let kept = draw_cut_filter_capture_skims(&stroke);
+        assert_eq!(kept.len(), 6);
+        assert!(kept.iter().all(|s| s.normal == Z));
+        // A long run on the other face is a real turn, and kept.
+        for s in &mut stroke[2..6] {
+            s.normal = X;
+        }
+        assert_eq!(draw_cut_filter_capture_skims(&stroke).len(), 8);
+    }
+
+    #[test]
+    fn a_finished_line_is_put_back_onto_the_surface() {
+        let mesh = block();
+        let tree = Tree::new(&mesh);
+        let mut chain = DrawCutChain::new();
+        // Drawn a little above the top, normals a little off.
+        let line: Vec<DrawCutSample> = (0..=16)
+            .map(|k| sample([-8.0 + k as f64, 1.0, 10.3], [0.1, 0.0, 1.0]))
+            .collect();
+        chain.append(&line, 1.0);
+        chain.finish_open();
+        let ready = draw_cut_line(&mesh, &tree, &chain, 0.0, &DrawCutParams::default());
+        assert!(ready.stroke.valid());
+        for s in ready.stroke.path() {
+            assert!(
+                (s.pos[2] - 10.0).abs() < 1e-9 && (s.normal[2] - 1.0).abs() < 1e-9,
+                "{s:?}"
+            );
+        }
     }
 
     fn halves_sound(upper: &Mesh, lower: &Mesh) {

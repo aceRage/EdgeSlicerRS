@@ -277,6 +277,19 @@
       o.axes = [m.slice(0, 3), m.slice(4, 7), m.slice(8, 11)];
       o.middle = m.slice(12, 15);
       this.mode = recipe.mode === 'dovetail' ? 'dovetail' : 'planar';
+      // A drawn cut's line and sweep (`apply_recipe_to_gizmo`, Draw).
+      // "Through all" is hidden, so off whatever the recipe says.
+      if (recipe.drawn) {
+        const d = recipe.drawn;
+        o.surface = 'draw';
+        o.draw = this.freshDraw();
+        o.draw.chain = { samples: d.samples.map((s) => s.slice()), strokes: (d.strokes || []).map((b) => b.slice()), closed: Boolean(d.closed), finished_open: Boolean(d.finished_open) };
+        Object.assign(this.drawUi, {
+          direction: d.direction, view: d.view, extension: d.extension, angle: d.angle, depth: d.depth, smoothing: d.smoothing,
+          extAngleOn: d.extension_angle !== null && d.extension_angle !== undefined,
+          extAngle: d.extension_angle === null || d.extension_angle === undefined ? this.drawUi.extAngle : d.extension_angle,
+        });
+      }
       for (const key of ['keep_upper', 'keep_lower', 'place_on_cut_upper', 'place_on_cut_lower', 'flip_upper', 'flip_lower', 'to_parts']) this.options[key] = Boolean(recipe[key]);
       o.thickness = Math.min(THICKNESS_MAX, Math.max(0, recipe.thickness || 0));
       o.from = recipe.thickness_from || 'centred';
@@ -413,6 +426,8 @@
     step(which) {
       const o = this.open;
       if (!o) return false;
+      // Drawing, the line's own undo (`draw_undo`, `draw_redo`).
+      if (this.drawing()) return this.drawStep(which);
       const [from, onto] = which === 'undo' ? [o.history, o.future] : [o.future, o.history];
       const state = from.pop();
       if (!state) return false;
@@ -488,6 +503,7 @@
       o.middle = middle;
       this.connectorsMirrored(true);
       this.sheetFlipped(false);
+      this.drawMirrored();
       this.changed();
     },
 
@@ -514,9 +530,9 @@
         copy: o.copy,
         // A dovetail tints neither side (`apply_color_clip_plane_colors`:
         // both the plane's colour); its result is shown once it is made.
-        split: { plane: [...n, M.dot(n, o.middle)], upper: this.dovetail() ? PLANE.slice(0, 3) : UPPER, lower: this.dovetail() ? PLANE.slice(0, 3) : LOWER, alpha: [this.sideAlpha('upper'), this.sideAlpha('lower')] },
+        split: this.drawing() ? null : { plane: [...n, M.dot(n, o.middle)], upper: this.dovetail() ? PLANE.slice(0, 3) : UPPER, lower: this.dovetail() ? PLANE.slice(0, 3) : LOWER, alpha: [this.sideAlpha('upper'), this.sideAlpha('lower')] },
         // A bent surface's halves stand in for the part once they are made.
-        hidden: Boolean(this.bent() && o.preview),
+        hidden: Boolean(this.previewing() && o.preview),
         pieces: o.parts ? { mesh: o.parts.mesh, ranges: o.parts.ranges, sides: o.parts.sides, offset: o.parts.offset, upper: UPPER, lower: LOWER } : null,
         // While connectors are placed, what is over the plane is not drawn.
         clip: o.editing ? [...n, M.dot(n, o.middle)] : null,
@@ -524,9 +540,15 @@
       // The cut face was of another plane.
       if (o.cap && o.cap.key !== JSON.stringify(this.frame())) this.dropCap();
       // A bent surface's halves made again where the plane now is.
-      if (this.bent() && (!o.preview || o.preview.key !== JSON.stringify([this.frame(), o.sheet, o.thickness, o.from]))) {
+      if (this.previewing() && (!o.preview || o.preview.key !== this.previewKey())) {
         clearTimeout(this.previewTimer);
         this.previewTimer = setTimeout(() => this.askPreview(), 250);
+      }
+      // The line rides with the plane, and is checked again where it now
+      // is once the plane stands still.
+      if (this.drawing() && o.draw && !soon && !o.draw.capture && o.draw.planeKey !== JSON.stringify(this.frame())) {
+        o.draw.planeKey = JSON.stringify(this.frame());
+        this.refreshDraw(null);
       }
       this.checkConnectors();
       this.ask(soon);
@@ -625,7 +647,7 @@
     // "Cut plane is placed out of object": the plane meets none of it.
     meets() {
       const o = this.open;
-      return !o.section || o.section.lines.length > 0;
+      return this.drawing() || !o.section || o.section.lines.length > 0;
     },
 
     // `can_perform_cut`: something is kept.
@@ -636,6 +658,11 @@
       const parts = this.open && this.open.parts;
       // A dovetail only where it can be cut (`has_valid_groove`).
       if (this.open && this.dovetail()) return this.open.grooveValid === true && (p.keep_upper || p.keep_lower) && !this.editor.busy;
+      // Drawn, a line ready to cut with that leaves neither side empty.
+      if (this.drawing()) {
+        const a = this.open.draw && this.open.draw.answer;
+        return this.drawnReady() && !a.empty[0] && !a.empty[1] && (p.keep_upper || p.keep_lower || p.to_parts) && !this.editor.busy;
+      }
       // With pieces given to sides, not every piece on one side
       // (`m_part_selection.is_one_object()`).
       if (parts && parts.sides.every((side) => side === parts.sides[0])) return false;
@@ -714,6 +741,7 @@
     handleAt(x, y) {
       if (!this.open || this.editor.busy) return null;
       if (this.open.editing) return this.connectorHandle(x, y);
+      if (this.drawing()) return this.drawHover(x, y);
       const control = this.controlUnder(x, y);
       if (control >= 0) return { kind: 'cut', part: 'control', index: control, id: `cut-control-${control}` };
       const frame = this.stage.matrices();
@@ -793,6 +821,7 @@
       // Armed, a click lays the plane on the face (`on_mouse`: the press is
       // the pick's and nothing else's).
       if (this.open.editing) return this.connectorGrab(x, y, event);
+      if (this.drawing()) return this.drawGrab(x, y, event);
       if (!event.shiftKey) {
         const control = this.curvedGrab(x, y);
         if (control) return control;
@@ -850,7 +879,8 @@
     drag(grab, x, y, event) {
       if (grab.part === 'connector' || grab.part === 'add') { this.connectorDrag(grab, x, y); return; }
       if (grab.part === 'control') { this.curvedDrag(grab, x, y); return; }
-      if (grab.part === 'pick') { grab.cancelled = true; return; }
+      if (grab.part === 'draw' || grab.part === 'draw-point') { this.drawDrag(grab, x, y); return; }
+      if (grab.part === 'pick' || grab.part === 'draw-insert') { grab.cancelled = true; return; }
       if (!grab.begun && !this.begin(grab)) { grab.cancelled = true; return; }
       if (grab.cancelled) return;
       const o = this.open;
@@ -898,6 +928,7 @@
     drop(grab, done) {
       if (grab.part === 'connector' || grab.part === 'add') { if (grab.begun) this.connectorDrop(grab, done); else this.held = null; return; }
       if (grab.part === 'control') { this.curvedDrop(grab, done); return; }
+      if (grab.part === 'draw' || grab.part === 'draw-point') { this.drawDrop(grab, done); return; }
       this.held = null;
       const o = this.open;
       if (!o || !grab.begun) return;
@@ -965,6 +996,8 @@
       if (!o || !project || this.editor.busy || o.picking) return;
       if (o.editing) { this.connectorRightClick(x, y); return; }
       if (this.dovetail()) return;
+      // Drawing: a handle taken away; pieces are not given to sides.
+      if (this.drawing()) { this.drawRightClick(x, y); return; }
       // On a handle of a curved surface: snapped onto the part.
       if (await this.curvedSnap(x, y, event)) return;
       // A bent surface wins over pieces given to sides (`perform_cut`).
@@ -1136,6 +1169,8 @@
       if (this.open && this.open.editing && this.connectorKey(event)) return true;
       if (!this.open || event.ctrlKey || event.metaKey || event.altKey) return false;
       if (event.target.matches('input, select, textarea')) return false;
+      // Drawing, Esc leaves "Edit points" or clears the line.
+      if (event.key === 'Escape' && this.drawing() && this.drawEscape()) return true;
       if (event.key === 'ArrowUp' || event.key === 'ArrowDown') {
         this.shift(event.key === 'ArrowUp' ? 1 : -1);
         return true;
@@ -1188,6 +1223,9 @@
         return;
       }
       if (!this.dovetail() && o.connectors.length) this.drawConnectors(frame);
+      // Drawn, the line and its surface stand in for the plane, and the
+      // plane's grips are not drawn (`on_render`, Draw).
+      if (this.drawing()) { this.drawDrawn(frame); return; }
       // A curved surface stands in for the plane (`render_cut_plane`).
       const curved = !this.dovetail() && o.surface === 'curved' && o.sheet;
       if (curved) this.drawCurved(frame, M.multiply(frame.projection, frame.view));
@@ -1440,9 +1478,12 @@
       editable.addEventListener('change', () => { p.editable = editable.checked; });
       rows.push(el('label', { className: 'edit-check', title: t('Remember this cut so it can be edited later: select either half and choose "Edit cut..." to reopen this panel with the same surface and settings.\n\nThe original, uncut shape is stored in the project file, so a cut object takes about twice the space. Turn this off for a one-off cut.') }, editable, ` ${t('Keep cut editable')}`));
       // What the keys and the pointer do (`m_shortcuts_cut`).
-      const help = el('div', { className: 'paint-help' });
-      help.append(el('span', { className: 'paint-key', textContent: `${t('Shift+')}${t('Drag')}` }), el('span', { textContent: t('Draw cut line') }));
-      rows.push(help);
+      // Not while drawing, where the line is drawn on the model instead.
+      if (!this.drawing()) {
+        const help = el('div', { className: 'paint-help' });
+        help.append(el('span', { className: 'paint-key', textContent: `${t('Shift+')}${t('Drag')}` }), el('span', { textContent: t('Draw cut line') }));
+        rows.push(help);
+      }
       // The warnings (`render_input_window_warning`).
       const warnings = [];
       if (!p.keep_upper && !p.keep_lower && !p.to_parts) warnings.push(t('Select at least one object to keep after cutting.'));

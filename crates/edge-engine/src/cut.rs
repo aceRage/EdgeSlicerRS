@@ -125,6 +125,14 @@ pub struct DrawnCut {
 impl DrawnCut {
     /// The line finished as the reference finishes it for the cut
     /// (`DrawCutChain::finish`, `DefaultSpacing`), or why it cannot be cut.
+    /// The line made ready against the object's printed mesh in the
+    /// plane's frame ([`crate::drawn::draw_cut_line`]).
+    pub fn line(&self, object: &edge_mesh::Mesh) -> crate::drawn::DrawnLine {
+        let tree = edge_mesh::raycast::Tree::new(object);
+        let chain = crate::drawn::recipe_stroke_to_chain(&self.stroke);
+        crate::drawn::draw_cut_line(object, &tree, &chain, self.stroke.smoothing, &self.params)
+    }
+
     pub fn finished(&self) -> Result<crate::drawn::DrawCutStroke, &'static str> {
         let chain = crate::drawn::recipe_stroke_to_chain(&self.stroke);
         let (stroke, error) = chain.finish(crate::drawn::DEFAULT_SPACING, self.stroke.smoothing);
@@ -660,17 +668,6 @@ impl Model {
             .as_ref()
             .filter(|sheet| !sheet.is_flat() && options.groove.is_none() && drawn.is_none());
         let mut empty = [true, true];
-        // The drawn line, finished once for every part.
-        let drawn = match drawn {
-            Some(cut) => {
-                let stroke = cut.finished().map_err(refused)?;
-                let mut params = cut.params.clone();
-                params.thickness = options.thickness;
-                params.thickness_offset = options.thickness_from;
-                Some((stroke, params))
-            }
-            None => None,
-        };
         let to_parts = options.to_parts && options.sides.is_none() && options.groove.is_none();
         let keep_upper = options.keep_upper || to_parts || options.sides.is_some();
         let keep_lower = options.keep_lower || to_parts || options.sides.is_some();
@@ -686,6 +683,27 @@ impl Model {
             .ok_or_else(|| refused("that is no plane to cut by"))?;
         let faces = options.faces();
         let held = &self.objects[at];
+        // The drawn line made ready once for every part, against the
+        // object's printed parts as the tool drew it on them.
+        let drawn = match drawn {
+            Some(cut) => {
+                let mut object = edge_mesh::Mesh::default();
+                for part in &held.shape.parts {
+                    if part.kind == PartKind::Normal && !is_connector(part) {
+                        object.append(&part.mesh, &part.transform.then(&turned).then(&to_plane));
+                    }
+                }
+                let line = cut.line(&object);
+                if line.error != crate::drawn::DrawCutError::None {
+                    return Err(refused(crate::drawn::draw_cut_error_words(line.error)));
+                }
+                let mut params = line.params;
+                params.thickness = options.thickness;
+                params.thickness_offset = options.thickness_from;
+                Some((line.stroke, params))
+            }
+            None => None,
+        };
         let mut upper: Vec<Part> = Vec::new();
         let mut lower: Vec<Part> = Vec::new();
         let mut helpers: Vec<(Part, bool, bool)> = Vec::new();
@@ -1601,11 +1619,24 @@ impl Model {
         plane: &Transform,
         point: [f64; 3],
     ) -> Result<Option<f64>, Failure> {
+        let mesh = self.cut_object_in_plane(bed, copy, plane)?;
+        Ok(crate::curved::snap_distance(&mesh, point))
+    }
+
+    /// A copy's printed parts as one mesh in a cut plane's own frame, as
+    /// the curved and drawn surfaces are worked out against
+    /// (`curved_instance_mesh_in_plane`).
+    pub fn cut_object_in_plane(
+        &self,
+        bed: Option<&Bed>,
+        copy: u64,
+        plane: &Transform,
+    ) -> Result<edge_mesh::Mesh, Failure> {
         let (at, _) = self.copy_at(copy)?;
         if self.bare {
             let mut settled = self.clone();
             settled.settle(bed);
-            return settled.cut_snap(bed, copy, plane, point);
+            return settled.cut_object_in_plane(bed, copy, plane);
         }
         let (scene, _) = self
             .in_scene(bed, copy)
@@ -1619,7 +1650,7 @@ impl Model {
                 mesh.append(&part.mesh, &part.transform.then(&scene).then(&to_plane));
             }
         }
-        Ok(crate::curved::snap_distance(&mesh, point))
+        Ok(mesh)
     }
 
     /// What a curved cut would make of a copy's printed parts, for the

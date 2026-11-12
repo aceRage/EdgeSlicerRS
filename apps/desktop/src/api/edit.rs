@@ -32,7 +32,7 @@ use super::{
 };
 
 /// The calls answered here.
-pub(super) const JSON: [&str; 11] = [
+pub(super) const JSON: [&str; 13] = [
     "scene_edit",
     "undo",
     "redo",
@@ -44,6 +44,8 @@ pub(super) const JSON: [&str; 11] = [
     "cut_pin",
     "cut_preview",
     "cut_snap",
+    "cut_draw",
+    "cut_draw_hits",
 ];
 
 /// The calls here answered in bytes (`Session::call_bytes`).
@@ -498,6 +500,8 @@ pub(super) struct Previews {
     /// How many have been asked for, and the last made.
     asked: u64,
     last: Option<(u64, [edge_engine::Mesh; 2])>,
+    /// The copy's printed parts in the plane's frame, for drawing on.
+    in_plane: Option<Arc<draw::InPlane>>,
 }
 
 /// A curved surface as the page gives it: `nx`, `ny` (2–15),
@@ -602,9 +606,6 @@ fn drawn_of(value: &Value) -> Result<edge_engine::DrawnCut, String> {
             ..defaults
         },
     };
-    // A line that cannot be finished is refused here, in the reference's
-    // words where it has them.
-    cut.finished().map_err(super::i18n::tr)?;
     Ok(cut)
 }
 
@@ -1267,16 +1268,6 @@ impl Session {
                 outcome.name = "Cut by Plane".into();
             }
             "cut_edit" => {
-                // The drawing tool is not here yet: a drawn cut is left as
-                // it is rather than put back to be made as a flat one.
-                if model
-                    .cut_recipe(whole(args, "copy")?)
-                    .is_some_and(|recipe| recipe.drawn.is_some())
-                {
-                    return Err(super::i18n::tr(
-                        "A drawn cut cannot be edited here yet: drawing the line is still to come.",
-                    ));
-                }
                 let edit = model
                     .cut_edit(bed, whole(args, "copy")?)
                     .map_err(|error| super::i18n::tr(&error.to_string()))?;
@@ -1327,6 +1318,8 @@ impl Session {
             "cut_recipe" => self.cut_recipe(args),
             "cut_pin" => Ok(cut_pin(args)),
             "cut_preview" => self.cut_preview(args),
+            "cut_draw" => self.cut_draw(args),
+            "cut_draw_hits" => self.cut_draw_hits(args),
             "cut_snap" => {
                 let stage = self.stage_of(args)?;
                 let file = stage.file.as_ref().ok_or("the project has no model")?;
@@ -1472,7 +1465,7 @@ impl Session {
         let copy = whole(args, "copy")?;
         let plane = transform_of(args.get("plane").unwrap_or(&Value::Null))?;
         let options = cut_options(args)?;
-        if options.sheet.is_none() {
+        if options.sheet.is_none() && options.drawn.is_none() {
             return Err("there is no surface to cut by".into());
         }
         let key = Arc::as_ptr(file) as usize;
@@ -1818,6 +1811,8 @@ impl Session {
         self.edited(id, json!({ "done": name }))
     }
 }
+
+mod draw;
 
 #[cfg(test)]
 mod tests;

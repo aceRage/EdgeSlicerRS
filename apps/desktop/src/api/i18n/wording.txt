@@ -20,15 +20,23 @@ Absolute	GUI/Gizmos/GizmoObjectManipulation.cpp:1561
 Add fuzzy skin	GUI/Gizmos/GLGizmoFuzzySkin.cpp:47
 All non-solid parts (modifiers) were deleted	GUI/Plater.cpp:16185
 Apply All	GUI/Plater.cpp:3688
+Averages the line and its surface normals. A hand-drawn line picks up every facet it crossed; a little of this takes the kinks out of the cut surface.	GUI/Gizmos/GLGizmoCut.cpp:5425
+Axis X	GUI/Gizmos/GLGizmoCut.cpp:5205
+Axis Y	GUI/Gizmos/GLGizmoCut.cpp:5205
+Axis Z	GUI/Gizmos/GLGizmoCut.cpp:5205
 Bambu Lab Printer Help...	GUI/MainFrame.cpp:3188
 Bring back filament presets that a profile update removed from printers they were made for	GUI/MainFrame.cpp:3119
 Check whether Windows Firewall blocks printer discovery, and fix its rules	GUI/MainFrame.cpp:3184
 Check Windows Firewall...	GUI/MainFrame.cpp:3183
 Clear all	GUI/CostsDialog.cpp:555
+Clear line	GUI/Gizmos/GLGizmoCut.cpp:5497
 Click a highlighted face to lay the object on it.	GUI/Gizmos/GLGizmoFlatten.cpp:422
 Click to collapse / expand	GUI/Plater.cpp:2395
+Close loop	GUI/Gizmos/GLGizmoCut.cpp:5455
 Close others	GUI/ProjectStrip.cpp:1422
 Close project	GUI/ProjectStrip.cpp:590
+Closed loop: the cut takes out the piece the line goes around.	GUI/Gizmos/GLGizmoCut.cpp:5572
+Closed. Esc clears the line; Ctrl+Z takes back one stroke and Ctrl+Y puts it back.	GUI/Gizmos/GLGizmoCut.cpp:5519
 Collapse the project strip	GUI/ProjectStrip.cpp:1377
 Colour	GUI/Showcase/ShowcaseView.cpp:652
 Colours	GUI/FilamentColorDialog.cpp:1097
@@ -46,10 +54,18 @@ Cornering calibration	GUI/MainFrame.cpp:4053
 Costs	GUI/MainFrame.cpp:3949
 Could not connect to ElegooLink	Utils/ElegooLink.cpp:387
 Could not connect to Moonraker	Utils/MoonRaker.cpp:434
+Cut along the line	GUI/Gizmos/GLGizmoCut.cpp:5484
 Default width	GUI/ProjectStrip.cpp:1459
 Delete this filament	GUI/GUI_Factories.cpp:2612
 Delete this file from the printer (Delete)	GUI/PrinterStoragePanel.cpp:245
+Depth reaches almost to the middle of the line, so there is no flat left to mate on. Reduce Depth, or raise the Angle.	GUI/Gizmos/GLGizmoCut.cpp:5593
+Direction	GUI/Gizmos/GLGizmoCut.cpp:5208
+Drag a handle to move it; right-click one to delete it; Shift+click a segment to add one.	GUI/Gizmos/GLGizmoCut.cpp:5505
+Drag on the model to start the cut line. You can rotate the view and carry on from either end until the line closes on itself.	GUI/Gizmos/GLGizmoCut.cpp:5507
 Drag to widen the project strip	GUI/ProjectStrip.cpp:1379
+Draw	GUI/Gizmos/GLGizmoCut.cpp:2903
+Draw a line on the model.	GUI/Gizmos/GLGizmoCut.cpp:5543
+Edit points	GUI/Gizmos/GLGizmoCut.cpp:5434
 Error code not found	Utils/ElegooLink.cpp:858
 Export && Open in Bambu Studio	GUI/MainFrame.cpp:3511
 Export a project Bambu Studio opens with its settings (settings Bambu Studio does not have are left out)	GUI/MainFrame.cpp:3508
@@ -59,6 +75,8 @@ Export as STEP	GUI/MainFrame.cpp:3501
 Export Bambu 3MF	GUI/MainFrame.cpp:3508
 Export Logs	GUI/MainFrame.cpp:3122
 Export the selected objects, or all objects on the current plate, as a STEP file of solids	GUI/MainFrame.cpp:3502
+Extension	GUI/Gizmos/GLGizmoCut.cpp:5235
+Extension angle	GUI/Gizmos/GLGizmoCut.cpp:5257
 Extrude	GUI/GCodeViewer.cpp:356
 Filament Management	GUI/Plater.cpp:2882
 Filament preset to apply to all filaments	GUI/Plater.cpp:3625
@@ -66,7 +84,10 @@ Filament slot %d of this project	GUI/PresetManagerDialog.cpp:540
 File/data transfer interrupted. Please check the printer and network, then try it again.	Utils/PrintHost.cpp:255
 Files on the printer	GUI/PrinterStoragePanel.cpp:212
 Fit in all view	GUI/MainFrame.cpp:3258
+How far in the cut travels from the drawn line before it turns onto the flat middle. The deeper it goes, the smaller the flat core - too deep and there is no flat left at all.	GUI/Gizmos/GLGizmoCut.cpp:5410
+How far the cut surface reaches past the line. An open line needs enough of this to reach across the part, or the cut will not separate it.	GUI/Gizmos/GLGizmoCut.cpp:5242
 Hue	GUI/Gizmos/GLGizmoTextureDisplacement.cpp:4081
+Join the two ends of the line along the surface, so the cut surface can be made	GUI/Gizmos/GLGizmoCut.cpp:5456
 Keep them only if you trust where this file came from and know what the scripts do. If you remove them, your own settings are used instead.	GUI/UntrustedSettingsGuard.cpp:134
 Import 3MF/STL/STEP/SVG/OBJ/AMF/GLB	GUI/MainFrame.cpp:3469
 Import Config from G-code	GUI/MainFrame.cpp:3486
@@ -80,6 +101,26 @@ Modified	GUI/PrinterStoragePanel.cpp:221
 New project	GUI/LayerlingPanel.cpp:1266
 Next open project	GUI/KBShortcutsDialog.cpp:204
 Next Project	GUI/MainFrame.cpp:4275
+Off, the skirt outside the line continues the band's own slope, which is the default and keeps the cut surface smooth where it crosses the skin. Tick this to aim the skirt somewhere else instead.	GUI/Gizmos/GLGizmoCut.cpp:5270
+Open line: the cut splits the part along the line.	GUI/Gizmos/GLGizmoCut.cpp:5573
+Remove the drawn line	GUI/Gizmos/GLGizmoCut.cpp:5497
+Start your next stroke at one of the marked ends. Rotate the view freely. Finish a stroke near the other end and the loop closes - or press "Cut along the line" to use it open.	GUI/Gizmos/GLGizmoCut.cpp:5515
+Surface normal	GUI/Gizmos/GLGizmoCut.cpp:5205
+That stroke did not start at either end of the line, so it was not added. Start at one of the marked ends, or clear the line first.	GUI/Gizmos/GLGizmoCut.cpp:5526
+The Extension reaches other parts of the model here, so it has been clipped to keep the cut on the line you drew. Shorten the line's gap to those parts or reduce Extension.	GUI/Gizmos/GLGizmoCut.cpp:5603
+The angle at which the outer shell projects in towards the flat middle of the cut. 0 makes a flat shelf around the core, 45 a chamfered lip the two halves key into, and 90 a straight wall with no lip. The SIGN is which way the lip leans: positive projects it away from the face you drew on, negative back towards you, so the same line can be given a lip on either side.	GUI/Gizmos/GLGizmoCut.cpp:5332
+The line is already closed. Clear it, or press Ctrl+Z, before drawing a different one.	GUI/Gizmos/GLGizmoCut.cpp:5530
+The line is not finished, so there is no cut surface yet. Carry on from an end until it comes within %1% mm of the other, or use it open.	GUI/Gizmos/GLGizmoCut.cpp:5548
+The line turns tighter than the Extension reaches, so the cut surface folds there. Reduce Extension.	GUI/Gizmos/GLGizmoCut.cpp:5596
+The line turns tighter than the cut surface reaches sideways, so the surface folds there. Reduce the Angle, the Extension or the Depth.	GUI/Gizmos/GLGizmoCut.cpp:5595
+The stroke does not separate the part - increase Extension or draw the line right across it.	GUI/Gizmos/GLGizmoCut.cpp:5581
+The two ends cannot be joined across the surface from this view. Turn the model so the gap between them is visible and try again, or draw the remaining part of the line by hand.	GUI/Gizmos/GLGizmoCut.cpp:5538
+This loop has no consistent outside, so the Angle has been ignored. Draw a simpler loop, or use Direction = Axis or View.	GUI/Gizmos/GLGizmoCut.cpp:5609
+Turn the line's points into handles you can move. Drag a handle to move it along the surface, right-click one to delete it, and Shift+click a segment to add one. Each edit is a separate undo step.	GUI/Gizmos/GLGizmoCut.cpp:5443
+Use the line as it is, without closing it: the cut splits the part along it	GUI/Gizmos/GLGizmoCut.cpp:5485
+Using the line as it is. Draw from an end to carry on; Esc clears it; Ctrl+Z takes back one stroke and Ctrl+Y puts it back.	GUI/Gizmos/GLGizmoCut.cpp:5509
+Which way the cut surface reaches into the part. Surface normal follows the face the line was drawn on; the others are a single direction, i.e. a straight extrusion of the line.	GUI/Gizmos/GLGizmoCut.cpp:5228
+Which way the skirt outside the drawn line leaves it. 0 lays it flat, level with the middle of the cut; higher lifts it away from the part; negative tucks it back under. With this off it continues the band, which is what the Angle sets.	GUI/Gizmos/GLGizmoCut.cpp:5289
 none	GUI/CostsDialog.cpp:505
 Noop	GUI/GCodeViewer.cpp:346
 Note: Moonraker version at least 1.1.0 is required.	Utils/MoonRaker.cpp:435
@@ -260,7 +301,6 @@ the upper side	GUI/Gizmos/GLGizmoCut.cpp:10927
 [own]
 # This app's own words on the static page, with no counterpart in the
 # C++: shown in English in every language.
-A drawn cut cannot be edited here yet: drawing the line is still to come.
 About this print
 Back to the sidebar
 Back to the sidebar [Esc]

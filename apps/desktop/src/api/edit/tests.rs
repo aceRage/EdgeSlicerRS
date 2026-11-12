@@ -1793,12 +1793,84 @@ fn a_drawn_cut_is_made_from_its_line_and_not_put_back_as_a_flat_one() {
     assert_eq!(recipe["drawn"]["samples"].as_array().unwrap().len(), 41);
     assert_eq!(recipe["drawn"]["samples"][0][1], 3.0);
     assert_eq!(recipe["drawn"]["through_all"], true);
-    let error = refused(
+    // "Edit cut..." puts it back with its line, to be made again.
+    let put = edit(
         &session,
-        "scene_edit",
         json!({ "project": project, "op": "cut_edit", "copy": half_copy }),
     );
-    assert!(error.contains("drawn cut"), "{error}");
+    assert_eq!(put["recipe"]["mode"], "drawn");
+    assert_eq!(
+        put["recipe"]["drawn"]["samples"].as_array().unwrap().len(),
+        41
+    );
+    let whole_copy = put["made"][0].as_u64().unwrap();
+    // The tool's calls on it: rays down onto the top meet it there, and
+    // the line drawn and used open is checked, its surface made.
+    let plane = across(low, high, high[2]);
+    let mid_x = (low[0] + high[0]) / 2.0;
+    let mid_y = (low[1] + high[1]) / 2.0;
+    let rays: Vec<Value> = (0..=28)
+        .map(|k| {
+            json!([
+                low[0] + 1.0 + k as f64,
+                mid_y + 3.0,
+                high[2] + 50.0,
+                0.0,
+                0.0,
+                -1.0
+            ])
+        })
+        .collect();
+    let hits = ask(
+        &session,
+        "cut_draw_hits",
+        json!({ "project": project, "copy": whole_copy, "plane": plane, "rays": rays }),
+    );
+    let stroke: Vec<Value> = hits["hits"].as_array().unwrap().clone();
+    assert!(stroke.iter().all(|hit| !hit.is_null()), "{hits}");
+    assert!((stroke[0][2].as_f64().unwrap()).abs() < 1e-6, "{hits}");
+    assert!(
+        (stroke[0][5].as_f64().unwrap() - 1.0).abs() < 1e-6,
+        "{hits}"
+    );
+    // A ray from inside the part meets it from inside: no hit.
+    let inside = ask(
+        &session,
+        "cut_draw_hits",
+        json!({ "project": project, "copy": whole_copy, "plane": plane,
+                "rays": [[mid_x, mid_y, high[2] - 5.0, 0.0, 0.0, 1.0]] }),
+    );
+    assert!(inside["hits"][0].is_null(), "{inside}");
+    let drawn = json!({ "samples": [], "through_all": true });
+    let first = ask(
+        &session,
+        "cut_draw",
+        json!({ "project": project, "copy": whole_copy, "plane": plane, "drawn": drawn,
+                "op": "append", "stroke": stroke, "at": "back" }),
+    );
+    assert_eq!(first["done"], true);
+    assert_eq!(first["valid"], false);
+    assert!(first["error"].is_null(), "{first}");
+    let mut chain = first["drawn"].clone();
+    chain["through_all"] = json!(true);
+    let open = ask(
+        &session,
+        "cut_draw",
+        json!({ "project": project, "copy": whole_copy, "plane": plane, "drawn": chain, "op": "finish_open" }),
+    );
+    assert_eq!(open["valid"], true, "{open}");
+    assert_eq!(open["closed"], false);
+    assert!(!open["surface"].as_array().unwrap().is_empty());
+    // "Close loop" across a wide gap with no path is refused.
+    let mut chain = open["drawn"].clone();
+    chain["through_all"] = json!(true);
+    let again = ask(
+        &session,
+        "cut_draw",
+        json!({ "project": project, "copy": whole_copy, "plane": plane, "drawn": chain,
+                "op": "close", "path": [] }),
+    );
+    assert_eq!(again["done"], false);
 }
 
 #[test]

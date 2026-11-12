@@ -58,7 +58,7 @@
       const p = this.options;
       const parts = this.open && this.open.parts;
       // Not on a bent surface: placing them on it is not done here yet.
-      return !this.dovetail() && !this.bent() && p.keep_upper && p.keep_lower && !p.to_parts
+      return !this.dovetail() && !this.bent() && !this.drawing() && p.keep_upper && p.keep_lower && !p.to_parts
         && !(parts && parts.sides.every((side) => side === parts.sides[0]));
     },
 
