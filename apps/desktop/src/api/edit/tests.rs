@@ -1414,3 +1414,374 @@ fn the_arrange_options_are_kept_and_arranging_follows_them() {
         assert!(after.contains(&(*id, matrix.clone())), "{id} moved");
     }
 }
+
+/// The scene's first copy and the middle of the box round it.
+fn first_copy(session: &Arc<Session>, project: u64) -> (u64, [f64; 3], [f64; 3]) {
+    let scene = ask(session, "scene", json!({ "project": project }));
+    let placing = &scene["placings"][0];
+    let low = numbers(&placing["box"][0]);
+    let high = numbers(&placing["box"][1]);
+    (
+        placing["id"].as_u64().unwrap(),
+        [low[0], low[1], low[2]],
+        [high[0], high[1], high[2]],
+    )
+}
+
+/// A plane straight across at `z`, through the middle of a box, as the
+/// page sends it: its frame in the scene, column by column.
+fn across(low: [f64; 3], high: [f64; 3], z: f64) -> Value {
+    json!([
+        1.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        1.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        1.0,
+        0.0,
+        (low[0] + high[0]) / 2.0,
+        (low[1] + high[1]) / 2.0,
+        z,
+        1.0,
+    ])
+}
+
+#[test]
+fn a_cut_is_one_step_selects_its_parts_and_is_saved() {
+    let dir = tempfile::tempdir().unwrap();
+    let session = Arc::new(Session::new(None));
+    let project = open(&session, "resources/handy_models/3DBenchy.3mf");
+    let (copy, low, high) = first_copy(&session, project);
+    // The section while the plane is placed.
+    let section = ask(
+        &session,
+        "cut_section",
+        json!({ "project": project, "copy": copy, "plane": across(low, high, 25.0) }),
+    );
+    assert!(numbers(&section["lines"]).len() > 600);
+    assert!((section["above"].as_f64().unwrap() - (high[2] - 25.0)).abs() < 1e-3);
+    assert!((section["below"].as_f64().unwrap() - 25.0).abs() < 1e-3);
+    // Nothing kept: refused in the reference's words, nothing changed.
+    let error = refused(
+        &session,
+        "scene_edit",
+        json!({ "project": project, "op": "cut", "copy": copy,
+                "plane": across(low, high, 25.0), "keep_upper": false, "keep_lower": false }),
+    );
+    assert_eq!(error, "Select at least one object to keep after cutting.");
+    let done = edit(
+        &session,
+        json!({ "project": project, "op": "cut", "copy": copy,
+                "plane": across(low, high, 25.0), "flip_upper": true }),
+    );
+    assert_eq!(done["done"], "Cut by Plane");
+    assert_eq!(done["made"].as_array().unwrap().len(), 2);
+    assert_eq!(done["scene"]["objects"].as_array().unwrap().len(), 2);
+    assert_eq!(done["project"]["dirty"], true);
+    assert_eq!(done["project"]["edit"]["undo"], "Cut by Plane");
+    // Both stand on the bed; the upper part, flipped, is the Benchy's top
+    // upside down.
+    for placing in done["scene"]["placings"].as_array().unwrap() {
+        assert_eq!(numbers(&placing["box"][0])[2], 0.0);
+    }
+    let undone = ask(&session, "undo", json!({ "project": project }));
+    assert_eq!(undone["scene"]["objects"].as_array().unwrap().len(), 1);
+    let redone = ask(&session, "redo", json!({ "project": project }));
+    assert_eq!(redone["scene"]["objects"].as_array().unwrap().len(), 2);
+    // Saved and read back: two objects of the same triangles.
+    let path = dir.path().join("cut.3mf");
+    let saved = ask(
+        &session,
+        "project_save",
+        json!({ "project": project, "path": path.to_string_lossy(), "accept": true }),
+    );
+    assert_eq!(saved["saved"], true, "{saved}");
+    let triangles = |scene: &Value| -> Vec<u64> {
+        scene["objects"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|object| object["triangles"].as_u64().unwrap())
+            .collect()
+    };
+    let before = triangles(&ask(&session, "scene", json!({ "project": project })));
+    // The project now goes by that file: another session reads it.
+    let other = Arc::new(Session::new(None));
+    let again = ask(
+        &other,
+        "project_open",
+        json!({ "path": path.to_string_lossy() }),
+    );
+    let reopened = again["id"].as_u64().unwrap();
+    let scene = ask(&other, "scene", json!({ "project": reopened }));
+    assert_eq!(triangles(&scene), before);
+    // Cut to parts: one object of two parts.
+    let project = open(&session, "resources/handy_models/3DBenchy.3mf");
+    let (copy, low, high) = first_copy(&session, project);
+    let done = edit(
+        &session,
+        json!({ "project": project, "op": "cut", "copy": copy,
+                "plane": across(low, high, 25.0), "to_parts": true }),
+    );
+    let objects = done["scene"]["objects"].as_array().unwrap();
+    assert_eq!(objects.len(), 1);
+    let parts: Vec<&str> = objects[0]["part_list"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|part| part["name"].as_str().unwrap())
+        .collect();
+    assert_eq!(parts.len(), 2);
+    assert!(
+        parts[0].ends_with("_A") && parts[1].ends_with("_B"),
+        "{parts:?}"
+    );
+}
+
+#[test]
+fn a_cut_kept_editable_is_put_back_cut_again_and_undone_in_one_step() {
+    let session = Arc::new(Session::new(None));
+    let project = open(&session, "resources/handy_models/3DBenchy.3mf");
+    let (copy, low, high) = first_copy(&session, project);
+    let done = edit(
+        &session,
+        json!({ "project": project, "op": "cut", "copy": copy,
+                "plane": across(low, high, 20.0), "groove": null }),
+    );
+    let objects = done["scene"]["objects"].as_array().unwrap();
+    assert!(objects.iter().all(|object| object["cut_recipe"] == true));
+    let made: Vec<u64> = done["made"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|id| id.as_u64().unwrap())
+        .collect();
+    // Copied onto the other half: the plane where that half is.
+    let copied = ask(
+        &session,
+        "cut_recipe",
+        json!({ "project": project, "copy": made[0], "onto": made[1] }),
+    );
+    assert_eq!(copied["mode"], "planar");
+    assert_eq!(numbers(&copied["plane"]).len(), 16);
+    // Put back: one object, the tool's settings as the cut had them.
+    let put = edit(
+        &session,
+        json!({ "project": project, "op": "cut_edit", "copy": made[1] }),
+    );
+    assert_eq!(put["done"], "Edit cut");
+    assert_eq!(put["scene"]["objects"].as_array().unwrap().len(), 1);
+    assert_eq!(put["recipe"]["missing"], false);
+    assert_eq!(put["recipe"]["keep_upper"], true);
+    let stand_in = put["made"][0].as_u64().unwrap();
+    // Cut again: one step with putting it back.
+    let mut plane = numbers(&put["recipe"]["plane"]);
+    plane[14] += 5.0;
+    let again = edit(
+        &session,
+        json!({ "project": project, "op": "cut", "copy": stand_in, "plane": plane,
+                "amend": "Edit cut" }),
+    );
+    assert_eq!(again["done"], "Edit cut");
+    assert_eq!(again["scene"]["objects"].as_array().unwrap().len(), 2);
+    assert_eq!(again["project"]["edit"]["undo"], "Edit cut");
+    let undone = ask(&session, "undo", json!({ "project": project }));
+    assert_eq!(undone["scene"]["objects"].as_array().unwrap().len(), 2);
+    assert_eq!(undone["project"]["edit"]["undo"], "Cut by Plane");
+    // Not kept editable: nothing to put back.
+    let plain = open(&session, BARE);
+    choose_presets(&session, plain);
+    let (copy, low, high) = first_copy(&session, plain);
+    let done = edit(
+        &session,
+        json!({ "project": plain, "op": "cut", "copy": copy,
+                "plane": across(low, high, (low[2] + high[2]) / 2.0), "editable": false }),
+    );
+    assert!(
+        done["scene"]["objects"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|object| object["cut_recipe"] == false)
+    );
+    let half = done["made"][0].as_u64().unwrap();
+    let error = refused(
+        &session,
+        "scene_edit",
+        json!({ "project": plain, "op": "cut_edit", "copy": half }),
+    );
+    assert!(error.starts_with("This cut cannot be edited"), "{error}");
+}
+
+#[test]
+fn connectors_are_placed_on_the_cut_face_cut_saved_and_put_back() {
+    let dir = tempfile::tempdir().unwrap();
+    let session = Arc::new(Session::new(None));
+    let project = open(&session, "resources/handy_models/3DBenchy.3mf");
+    choose_presets(&session, project);
+    let (copy, low, high) = first_copy(&session, project);
+    let plane = across(low, high, 6.0);
+    // The cut face, for the connectors to stand on.
+    let section = ask(
+        &session,
+        "cut_section",
+        json!({ "project": project, "copy": copy, "plane": plane, "cap": true }),
+    );
+    let cap = numbers(&section["cap"]);
+    assert!(cap.len() >= 9 && cap.len().is_multiple_of(9));
+    let at: Vec<f64> = (0..3)
+        .map(|axis| (cap[axis] + cap[3 + axis] + cap[6 + axis]) / 3.0)
+        .collect();
+    let connector = |kind: &str| {
+        json!({ "at": at, "radius": 0.5, "height": 1.5, "radius_tolerance": 0.05,
+                "height_tolerance": 0.1, "z_angle": 0.0, "type": kind, "style": "prism",
+                "shape": "circle" })
+    };
+    let error = refused(
+        &session,
+        "scene_edit",
+        json!({ "project": project, "op": "cut", "copy": copy, "plane": plane,
+                "connectors": [connector("bolt")] }),
+    );
+    assert!(error.contains("connector"), "{error}");
+    let done = edit(
+        &session,
+        json!({ "project": project, "op": "cut", "copy": copy, "plane": plane,
+                "connectors": [connector("dowel")], "keep_lower": false }),
+    );
+    // Both halves and the dowel.
+    let objects = done["scene"]["objects"].as_array().unwrap();
+    assert_eq!(objects.len(), 3);
+    assert!(
+        objects[2]["name"]
+            .as_str()
+            .unwrap()
+            .ends_with("-Dowel-Connector-1")
+    );
+    ask(
+        &session,
+        "scene_edit",
+        json!({ "project": project, "op": "arrange" }),
+    );
+    sliced(&session, project, None);
+    let path = dir.path().join("dowel.3mf");
+    let saved = ask(
+        &session,
+        "project_save",
+        json!({ "project": project, "path": path.to_string_lossy(), "accept": true }),
+    );
+    assert_eq!(saved["saved"], true, "{saved}");
+    // Put back from a half: the tool's connectors as they were placed.
+    let half = done["made"][0].as_u64().unwrap();
+    let put = edit(
+        &session,
+        json!({ "project": project, "op": "cut_edit", "copy": half }),
+    );
+    assert_eq!(put["scene"]["objects"].as_array().unwrap().len(), 1);
+    let connectors = put["recipe"]["connectors"].as_array().unwrap();
+    assert_eq!(connectors.len(), 1);
+    assert_eq!(connectors[0]["type"], "dowel");
+}
+
+#[test]
+fn a_dovetail_cut_is_checked_then_made_and_sliced() {
+    let session = Arc::new(Session::new(None));
+    let project = open(&session, "resources/handy_models/3DBenchy.3mf");
+    choose_presets(&session, project);
+    let (copy, low, high) = first_copy(&session, project);
+    let groove = |depth: f64, width: f64, flaps_angle: f64| {
+        json!({ "depth": depth, "width": width, "flaps_angle": flaps_angle,
+                "angle": 0.0, "depth_tolerance": 0.1, "width_tolerance": 0.1,
+                "count": 1, "gap": 10.0, "plane_radius": 40.0 })
+    };
+    // The section says whether the groove meets the model.
+    let section = ask(
+        &session,
+        "cut_section",
+        json!({ "project": project, "copy": copy, "plane": across(low, high, 4.0),
+                "groove": groove(2.0, 6.0, std::f64::consts::FRAC_PI_3) }),
+    );
+    assert_eq!(section["groove"], true, "{section}");
+    // Flaps opening outwards that meet before the neck: refused in the
+    // reference's words.
+    let error = refused(
+        &session,
+        "scene_edit",
+        json!({ "project": project, "op": "cut", "copy": copy,
+                "plane": across(low, high, 4.0), "groove": groove(10.0, 1.0, 2.0 * std::f64::consts::FRAC_PI_3) }),
+    );
+    assert_eq!(error, "Cut plane with groove is invalid");
+    let done = edit(
+        &session,
+        json!({ "project": project, "op": "cut", "copy": copy,
+                "plane": across(low, high, 4.0), "groove": groove(2.0, 6.0, std::f64::consts::FRAC_PI_3) }),
+    );
+    let names: Vec<&str> = done["scene"]["objects"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|object| object["name"].as_str().unwrap())
+        .collect();
+    assert_eq!(names.len(), 2);
+    assert!(
+        names[0].ends_with("_A") && names[1].ends_with("_B"),
+        "{names:?}"
+    );
+    ask(
+        &session,
+        "scene_edit",
+        json!({ "project": project, "op": "arrange" }),
+    );
+    sliced(&session, project, None);
+}
+
+#[test]
+fn the_halves_of_a_cut_are_sliced() {
+    let session = Arc::new(Session::new(None));
+    let project = open(&session, "resources/handy_models/3DBenchy.3mf");
+    choose_presets(&session, project);
+    sliced(&session, project, None);
+    let (copy, low, high) = first_copy(&session, project);
+    let done = edit(
+        &session,
+        json!({ "project": project, "op": "cut", "copy": copy,
+                "plane": across(low, high, 20.0), "place_on_cut_upper": true }),
+    );
+    // The cut let the plate's slice go.
+    assert_eq!(done["project"]["sliced"], false);
+    // Side by side, the halves slice.
+    ask(
+        &session,
+        "scene_edit",
+        json!({ "project": project, "op": "arrange" }),
+    );
+    sliced(&session, project, None);
+    let summary = ask(&session, "summary", json!({ "project": project }));
+    assert!(summary.to_string().len() > 10);
+}
+
+#[test]
+fn a_bare_model_is_cut_where_it_is_shown() {
+    let session = Arc::new(Session::new(None));
+    let project = open(&session, BARE);
+    choose_presets(&session, project);
+    let (copy, low, high) = first_copy(&session, project);
+    // Shown in the middle of the bed before any edit: the section is of
+    // the model there, not where its file has it.
+    let middle = (low[2] + high[2]) / 2.0;
+    let section = ask(
+        &session,
+        "cut_section",
+        json!({ "project": project, "copy": copy, "plane": across(low, high, middle) }),
+    );
+    assert!(!numbers(&section["lines"]).is_empty());
+    let reach = &section["reach"];
+    let width = numbers(&reach[1])[0] - numbers(&reach[0])[0];
+    assert!((width - (high[0] - low[0])).abs() < 1e-3, "{reach}");
+    assert!(numbers(&reach[0])[0] < 0.0 && numbers(&reach[1])[0] > 0.0);
+}

@@ -17,6 +17,7 @@
 mod arrange;
 mod edit;
 mod filaments;
+mod layout;
 mod menu;
 mod paint;
 mod preset_files;
@@ -1030,6 +1031,7 @@ impl Session {
         let answer = i18n::with(language, || match name {
             name if scene::BYTES.contains(&name) => self.scene_bytes(name, args),
             name if paint::BYTES.contains(&name) => self.paint_bytes(name, args),
+            name if edit::BYTES.contains(&name) => self.edit_bytes(name, args),
             other => Err(format!(
                 "there is no call named {other} that answers in bytes"
             )),
@@ -1048,6 +1050,8 @@ impl Session {
             "startup" => Ok(json!({ "model": self.startup.as_deref().map(shown) })),
             "language" => self.language(args),
             "language_set" => self.language_set(args),
+            "layout" => Ok(self.layout()),
+            "layout_set" => self.layout_set(args),
             "library" => self.library(),
             "set_profiles" => {
                 let dir = PathBuf::from(needed(args, "dir")?);
@@ -1284,6 +1288,7 @@ impl Session {
         json!({
             "language": catalog.code,
             "catalog": language.catalog,
+            "search": i18n::search_words(catalog.clone()),
             "languages": languages,
             "table": i18n::table_json(language),
         })

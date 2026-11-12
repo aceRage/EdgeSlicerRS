@@ -201,3 +201,46 @@ dialog.plate-settings .row.end .grow { flex: 1; align-self: center; }
 .arrange-rule { width: 100%; margin: 0; border: 0; border-top: 1px solid var(--line-2); }
 .arrange-panel .edit-check:has(input:disabled) { color: var(--text-off); }
 .arrange-foot { display: flex; justify-content: flex-end; gap: var(--space-2); }
+
+/* ---- "Cut" (cut.js): its panel under the toolbar, as a tool's is ---- */
+
+/* A label at the left, what it is about at the right. */
+/* At the stage's right, under the toolbar's row: the plane and its grip
+   stand over the middle of the object, which the panel must not hide. */
+.cut-panel { left: auto; right: var(--stage-inset); margin-inline: 0; width: min(360px, calc(100% - var(--stage-left) - var(--stage-inset))); max-height: calc(100% - var(--stage-inset) - 120px); overflow-y: auto; }
+.cut-row { display: grid; grid-template-columns: minmax(84px, auto) minmax(0, 1fr); align-items: center; gap: var(--space-2); }
+.cut-line { display: flex; align-items: center; flex-wrap: wrap; gap: var(--space-2); }
+.cut-line .unit { height: var(--control-s); width: 88px; }
+.cut-line .unit input { width: 100%; min-width: 0; font-size: var(--size-small); }
+.cut-line > b { font: 700 var(--size-small) var(--font-mono); }
+.cut-line.joined { gap: 0; }
+.cut-line.joined button { min-width: 36px; height: var(--control-s); font: 700 var(--size-small) var(--font-mono); }
+/* The object's size in the plane's own axes: a value, in the fixed face. */
+.cut-size { font: var(--size-small) var(--font-mono); color: var(--text-1); }
+.cut-slide { display: grid; grid-template-columns: minmax(0, 1fr) 82px; align-items: center; gap: var(--space-2); }
+.cut-slide .unit { height: var(--control-s); min-width: 0; }
+.cut-slide .unit input { width: 100%; min-width: 0; font-size: var(--size-small); }
+.cut-slide input[type="range"] { width: 100%; min-width: 0; margin: 0; accent-color: var(--accent); background: transparent; }
+/* "After cut": each side's tint (the scene's own colours, as the reference
+   marks them), its name, and what is done with it. */
+/* A choice never breaks inside its words; where the row is too narrow
+   (German, a narrow stage) the choices go on to a second line. */
+.cut-side { display: flex; flex-wrap: wrap; align-items: center; gap: var(--space-1) var(--space-3); }
+.cut-side .edit-check { white-space: nowrap; }
+.cut-part { display: flex; align-items: center; gap: var(--space-2); min-width: 92px; color: var(--text-1); }
+.cut-marker { width: 10px; height: 10px; border: 1px solid var(--line-swatch); border-radius: var(--radius-s); background: var(--swatch); }
+.cut-side .edit-check:has(input:disabled), .cut-panel > .edit-check:has(input:disabled) { color: var(--text-off); }
+.cut-note { max-width: none; color: var(--warn); font-size: var(--size-small); }
+.cut-warning { max-width: none; color: var(--danger); }
+.cut-foot { display: flex; justify-content: flex-end; gap: var(--space-2); }
+.cut-foot.cut-start { justify-content: flex-start; }
+@media (max-width: 760px) {
+  .cut-panel { max-height: calc(100% - 64px); }
+}
+/* "Pick face" while it is armed: pressed, as a toolbar's tool in use. */
+.cut-panel button.cut-armed { color: var(--accent); border-color: var(--accent); background: var(--accent-soft); }
+.cut-foot.cut-start { align-items: center; flex-wrap: wrap; }
+/* A dovetail's group labels ("Groove", "Multiple"), in small capitals
+   as every group label is. */
+.cut-panel .cut-group { font-size: var(--size-caps); letter-spacing: var(--caps-spacing); text-transform: uppercase; color: var(--text-3); }
+.cut-line select { height: var(--control-s); min-width: 0; font-size: var(--size-small); }

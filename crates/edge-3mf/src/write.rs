@@ -926,6 +926,24 @@ pub fn write_to<W: Write + Seek>(save: &Save<'_>, out: W) -> Result<Written, Err
         zip.add(name, text.as_bytes())?;
     }
 
+    // The cuts kept editable, under each object's place now, and the
+    // uncut meshes they name (`_add_cut_recipe_file_to_archive`).
+    let recipes = project
+        .objects
+        .iter()
+        .enumerate()
+        .filter_map(|(at, object)| {
+            let own = object.kept.as_deref()?;
+            let recipe = own.recipe.as_deref()?;
+            Some((at + 1, recipe, own.recipe_element.as_deref()))
+        });
+    if let Some((text, meshes)) = crate::recipe::write(recipes) {
+        zip.add(crate::recipe::RECIPES, text.as_bytes())?;
+        for (name, bytes) in &meshes {
+            zip.add(name, bytes)?;
+        }
+    }
+
     // Custom G-code at layers, by plate number (the engine keeps each
     // plate's with it, so it is under the plate's number as it stands).
     if let Some(text) = custom_gcode(project, kept) {
@@ -1133,7 +1151,36 @@ fn by_place_files(project: &Project, kept: Option<&Kept>) -> Vec<(&'static str, 
 /// into pieces), as the reference would refuse the file ("Invalid cut
 /// connector volume_id") or give the connector to another part.
 fn cut_of(object: &Object) -> Option<Result<String, ()>> {
-    let text = object.kept.as_ref()?.cut.as_ref()?;
+    let own = object.kept.as_ref()?;
+    // A cut made here: written afresh, each connector by its part's place.
+    if own.cut.is_none()
+        && let Some(cut) = own.cut_id
+    {
+        let mut out = format!(
+            "\n  <cut_id id=\"{}\" check_sum=\"{}\" connectors_cnt=\"{}\"/>",
+            cut.id, cut.check_sum, cut.connectors
+        );
+        let connectors: Vec<String> = object
+            .parts
+            .iter()
+            .enumerate()
+            .filter_map(|(at, part)| {
+                let info = part.kept.as_ref()?.connector?;
+                Some(format!(
+                    "\n   <connector volume_id=\"{at}\" type=\"{}\" r_tolerance=\"{}\" h_tolerance=\"{}\"/>",
+                    info.kind, info.radius_tolerance as f32, info.height_tolerance as f32
+                ))
+            })
+            .collect();
+        if !connectors.is_empty() {
+            out.push_str("\n  <connectors>");
+            out.extend(connectors);
+            out.push_str("\n  </connectors>");
+        }
+        out.push_str("\n ");
+        return Some(Ok(out));
+    }
+    let text = own.cut.as_ref()?;
     // Where each part read from the file stands now.
     let mut now: HashMap<usize, usize> = HashMap::new();
     for (at, part) in object.parts.iter().enumerate() {

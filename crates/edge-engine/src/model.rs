@@ -50,7 +50,15 @@ mod item_settings;
 
 #[path = "arrange.rs"]
 mod arrange;
+
+#[path = "cut.rs"]
+mod cut;
 pub use arrange::{ArrangeOptions, ArrangeScope, Arranged};
+pub use cut::{
+    CONNECTOR_HOLE_OVERLAP, CUT_THICKNESS_MAX, Connector, ConnectorKind, ConnectorShape,
+    ConnectorStyle, CutDone, CutEdit, CutOptions, CutPieces, CutSection, CutThickness, FaceHit,
+    Groove, connector_mesh,
+};
 pub use filaments::{FlushBasis, MAX_FILAMENTS, NEXT_COLOURS};
 pub use item_settings::SettingChange;
 pub use plates::{FIRST_LATER_LAYER, LAST_LAYER, LONGEST_PLATE_NAME, LayerSequence, PlateSettings};
@@ -169,6 +177,9 @@ pub struct Shape {
     /// Whether each part's mesh is of several pieces, worked out when
     /// first asked.
     pieces: OnceLock<Vec<bool>>,
+    /// A tree of boxes round each printed part's triangles, for what a
+    /// line of sight meets ("Cut"'s "Pick face"), made when first asked.
+    trees: OnceLock<Vec<Option<edge_mesh::raycast::Tree>>>,
 }
 
 impl Shape {
@@ -187,6 +198,7 @@ impl Shape {
             ids,
             hull: OnceLock::new(),
             pieces: OnceLock::new(),
+            trees: OnceLock::new(),
         })
     }
 
@@ -347,6 +359,11 @@ impl ModelObject {
     /// The name it goes by; empty when it has none.
     pub fn name(&self) -> &str {
         &self.name
+    }
+
+    /// The cut that made it, when it was kept editable ("Edit cut...").
+    pub fn cut_recipe(&self) -> Option<&Arc<edge_3mf::CutRecipe>> {
+        self.kept.as_deref()?.recipe()
     }
 
     pub fn shape(&self) -> &Arc<Shape> {

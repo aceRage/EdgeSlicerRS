@@ -91,6 +91,13 @@ uniform vec3 u_volume_max;
 // dot(normal, p) > offset in the world is cut away (u_clip: normal, offset).
 uniform bool u_clipped;
 uniform vec4 u_clip;
+// The cut tool's two sides (GLGizmoCut.cpp, the canvas's colour clip
+// plane, gouraud.fs): what has dot(normal, p) > offset in the world takes
+// u_split_upper, the rest u_split_lower (u_split_plane: normal, offset).
+uniform bool u_split;
+uniform vec4 u_split_plane;
+uniform vec3 u_split_upper;
+uniform vec3 u_split_lower;
 // What faces down more steeply than this is marked (mm_gouraud.fs, its
 // slope detection: under -2, nothing): what is near the bed light blue, an
 // overhang half red.
@@ -103,6 +110,7 @@ out vec4 out_color;
 void main() {
   if (u_clipped && dot(v_world, u_clip.xyz) > u_clip.w) discard;
   vec3 color = v_color.rgb;
+  if (u_split) color = dot(v_world, u_split_plane.xyz) > u_split_plane.w ? u_split_upper : u_split_lower;
   if (u_slope > -2.0) {
     if (v_world.z < 0.1 && v_world.z > -0.1) color = vec3(0.73, 1.0, 1.0);
     else if (v_world_nz < u_slope - 0.0001) color = color * 0.5 + vec3(0.78, 0.0, 0.0) * 0.5;

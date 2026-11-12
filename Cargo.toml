@@ -40,6 +40,11 @@ edge-tower = { path = "crates/edge-tower" }
 # Voronoi diagrams of line segments, a port of Boost.Polygon's. Only
 # edge-medial may depend on it.
 boostvoronoi = "0.12"
+# Solid booleans of meshes, a pure-Rust port of the Manifold library
+# (Apache-2.0). Only edge-mesh's `boolean` module may name it. Without its
+# `parallel` feature it runs on one thread, so results do not depend on
+# the thread count.
+manifold-rust = { version = "0.19.2", default-features = false }
 clap = { version = "4", features = ["derive", "env"] }
 clipper2-rs = "0.3"
 quick-xml = "0.42"

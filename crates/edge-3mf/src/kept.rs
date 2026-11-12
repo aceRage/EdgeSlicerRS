@@ -78,6 +78,35 @@ pub struct ObjectKept {
     /// Each copy's `identify_id`, by the copy's place: the number the
     /// reference labels it with in G-code (`; model label id`).
     pub(crate) identify: Vec<Option<u32>>,
+    /// The cut that made it, when it was kept editable
+    /// (`Metadata/cut_recipe.xml`); the halves of one cut share it.
+    pub(crate) recipe: Option<Arc<crate::CutRecipe>>,
+    /// Its own `<recipe>` element as read, written back while `recipe` is
+    /// the one read with it.
+    pub(crate) recipe_element: Option<String>,
+    /// The cut it is a result of, for one made here (one read keeps its
+    /// cut information as written, `cut`).
+    pub(crate) cut_id: Option<CutId>,
+}
+
+/// What ties the results of one cut together (ObjectID.hpp
+/// `CutObjectBase`): the cut's number, how many objects it made less one
+/// plus one (`check_sum`), and how many connectors it placed.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct CutId {
+    pub id: u64,
+    pub check_sum: u64,
+    pub connectors: u64,
+}
+
+/// A part a cut's connector made (Model.hpp `ModelVolume::CutInfo`): the
+/// connector's kind (0 plug, 1 dowel, 2 snap, as the reference numbers
+/// `CutConnectorType`) and its tolerances.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct CutConnectorInfo {
+    pub kind: u32,
+    pub radius_tolerance: f64,
+    pub height_tolerance: f64,
 }
 
 /// What a part of a file holds that [`crate::Part`] does not. This is the
@@ -100,6 +129,8 @@ pub struct PartKept {
     /// The mesh `extras` is of, where it was painted here rather than read
     /// with the part ([`crate::Part::with_paint`]).
     pub(crate) painted_on: Option<MeshOf>,
+    /// The connector of a cut it is, when it is one.
+    pub(crate) connector: Option<CutConnectorInfo>,
 }
 
 /// A mesh, two being alike when they are the same mesh in memory.
@@ -220,7 +251,21 @@ impl PartKept {
             extras: None,
             read: None,
             painted_on: None,
+            connector: None,
         }
+    }
+
+    /// A part made as a cut's connector.
+    pub fn of_connector(info: CutConnectorInfo) -> PartKept {
+        PartKept {
+            connector: Some(info),
+            ..PartKept::default()
+        }
+    }
+
+    /// The connector of a cut the part is, when it is one.
+    pub fn connector(&self) -> Option<CutConnectorInfo> {
+        self.connector
     }
 
     /// The part without its settings: what is left of it once they are
@@ -485,6 +530,105 @@ fn is_text(raw: &str) -> bool {
 }
 
 impl ObjectKept {
+    /// What each object a cut makes of this one keeps of it: its settings,
+    /// height ranges, variable layer heights and brim ears, as the
+    /// reference's halves are copies of the object (Model.cpp
+    /// `ModelObject::clone_for_cut`, `assign_copy`). Not its place in the
+    /// file (it is a new object, so what goes by place is not its), its cut
+    /// information (a plain cut's halves are not cut objects to the
+    /// reference: GLGizmoCut.cpp sets `InvalidateCutInfo` for them), nor
+    /// where its copies stood in the assembly view or their labels.
+    pub fn cut_half(&self) -> ObjectKept {
+        ObjectKept {
+            index: 0,
+            cut: None,
+            assembly: Vec::new(),
+            identify: Vec::new(),
+            recipe: None,
+            recipe_element: None,
+            cut_id: None,
+            ..self.clone()
+        }
+    }
+
+    /// The cut it is a result of, when it is a cut object: made here, or
+    /// read from its `<cut_id>`.
+    pub fn cut_id(&self) -> Option<CutId> {
+        if self.cut_id.is_some() {
+            return self.cut_id;
+        }
+        let text = self.cut.as_deref()?;
+        let at = text.find("<cut_id")?;
+        let end = text[at..].find('>')? + at;
+        let tag = &text[at..end];
+        let value = |name: &str| -> Option<u64> {
+            let key = format!("{name}=\"");
+            let from = tag.find(&key)? + key.len();
+            let to = tag[from..].find('"')? + from;
+            tag[from..to].trim().parse().ok()
+        };
+        Some(CutId {
+            id: value("id")?,
+            check_sum: value("check_sum").unwrap_or(1),
+            connectors: value("connectors_cnt").unwrap_or(0),
+        })
+    }
+
+    /// The object as a result of the cut `cut_id`.
+    pub fn with_cut_id(&self, cut_id: Option<CutId>) -> ObjectKept {
+        ObjectKept {
+            cut: None,
+            cut_id,
+            ..self.clone()
+        }
+    }
+
+    /// Each connector its cut information names: the part's place in the
+    /// file and what it is.
+    pub(crate) fn read_connectors(&self) -> Vec<(usize, CutConnectorInfo)> {
+        let Some(text) = self.cut.as_deref() else {
+            return Vec::new();
+        };
+        let mut out = Vec::new();
+        let mut rest = text;
+        while let Some(at) = rest.find("<connector ") {
+            let end = rest[at..].find('>').map_or(rest.len(), |end| end + at);
+            let tag = &rest[at..end];
+            let value = |name: &str| -> Option<f64> {
+                let key = format!(" {name}=\"");
+                let from = tag.find(&key)? + key.len();
+                let to = tag[from..].find('"')? + from;
+                tag[from..to].trim().parse().ok()
+            };
+            if let (Some(volume), Some(kind)) = (value("volume_id"), value("type")) {
+                out.push((
+                    volume as usize,
+                    CutConnectorInfo {
+                        kind: kind as u32,
+                        radius_tolerance: value("r_tolerance").unwrap_or(0.0),
+                        height_tolerance: value("h_tolerance").unwrap_or(0.0),
+                    },
+                ));
+            }
+            rest = &rest[end..];
+        }
+        out
+    }
+
+    /// The cut that made the object, when it was kept editable.
+    pub fn recipe(&self) -> Option<&Arc<crate::CutRecipe>> {
+        self.recipe.as_ref()
+    }
+
+    /// The object as made by the cut `recipe` describes.
+    pub fn with_recipe(&self, recipe: Option<Arc<crate::CutRecipe>>) -> ObjectKept {
+        ObjectKept {
+            recipe,
+            recipe_element: None,
+            ..self.clone()
+        }
+    }
+
     /// The object with a part's settings given to it, each set over what
     /// the object had: what the reference does when one part is left of an
     /// object (GUI_ObjectList.cpp `del_subobject_from_object`,
@@ -1193,9 +1337,11 @@ pub(crate) fn role(name: &str, models: &[String]) -> Role {
             return Role::Carried(Carry::Preset);
         }
     }
+    // The cut recipes and their meshes are read with the objects.
+    if lower == "metadata/cut_recipe.xml" || lower.starts_with("metadata/cut_recipe/") {
+        return Role::Written;
+    }
     for by_place in [
-        "metadata/cut_recipe.xml",
-        "metadata/cut_recipe/",
         "metadata/edgeslicer_height_patterns.json",
         "metadata/showcase/",
     ] {

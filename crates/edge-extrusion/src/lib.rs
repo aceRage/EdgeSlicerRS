@@ -284,6 +284,20 @@ pub enum TowerStroke {
     Retract,
     /// The filament pushed on again by as much.
     Unretract,
+    /// A line to here, at so many mm a second, laying a cross-section of
+    /// its own (WipeTower.cpp's tower, whose first-layer rows carry more
+    /// plastic and whose rows over air are laid thick).
+    LayAs(Point2, f64, Flow),
+    /// A move to here at whatever speed is in force, none written: what
+    /// WipeTower.cpp's writer writes for a travel given no speed.
+    Glide(Point2),
+    /// The planner's queue let run empty (`G4 S0`).
+    Sync,
+    /// A line of a closed wall laid at so many mm a second and its own
+    /// cross-section, which the writer thins, or fits arcs to with the
+    /// lines of the wall next to it where arcs are asked for (WipeTower.cpp
+    /// `WipeTowerWriter::polygon`).
+    Bend(Point2, f64, Flow),
 }
 
 /// A closed line: the centre line the nozzle follows and what it extrudes.

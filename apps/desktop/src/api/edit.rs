@@ -32,7 +32,19 @@ use super::{
 };
 
 /// The calls answered here.
-pub(super) const JSON: [&str; 4] = ["scene_edit", "undo", "redo", "scene_faces"];
+pub(super) const JSON: [&str; 8] = [
+    "scene_edit",
+    "undo",
+    "redo",
+    "scene_faces",
+    "cut_section",
+    "cut_pick",
+    "cut_parts",
+    "cut_recipe",
+];
+
+/// The calls here answered in bytes (`Session::call_bytes`).
+pub(super) const BYTES: [&str; 2] = ["cut_parts_mesh", "cut_connector_mesh"];
 
 /// The most edits a project keeps to take back. The reference keeps as
 /// many as fit in a tenth of the machine's memory (UndoRedo.cpp
@@ -107,6 +119,19 @@ pub(super) struct History {
 }
 
 impl History {
+    /// Takes the last step back off when it is `name` and nothing came
+    /// after it, giving what it was made to: the step to come is then
+    /// one with it.
+    fn amend(&mut self, name: &str, before: &mut Option<Arc<File>>) -> bool {
+        if self.redo.is_empty() && self.undo.last().is_some_and(|step| step.name == name) {
+            let step = self.undo.pop().expect("a last step");
+            *before = step.file;
+            true
+        } else {
+            false
+        }
+    }
+
     /// How many changes the model has seen.
     pub(super) fn revision(&self) -> u64 {
         self.revision
@@ -227,6 +252,155 @@ fn numbers(args: &Value, key: &str) -> Result<[f64; 3], String> {
     <[f64; 3]>::try_from(list).map_err(|_| format!("{key} is not three numbers"))
 }
 
+/// What "Cut" is to keep and how ("After cut", the thickness), as a call
+/// gives it: each left out is as the tool starts (both kept, laid as they
+/// stood, no thickness).
+fn cut_options(args: &Value) -> Result<edge_engine::CutOptions, String> {
+    let flag = |key: &str, default: bool| -> Result<bool, String> {
+        match args.get(key) {
+            None | Some(Value::Null) => Ok(default),
+            Some(value) => value
+                .as_bool()
+                .ok_or_else(|| format!("{key} is not true or false")),
+        }
+    };
+    let thickness = match args.get("thickness") {
+        None | Some(Value::Null) => 0.0,
+        Some(value) => value.as_f64().ok_or("thickness is not a number")?,
+    };
+    let thickness_from = match text(args, "thickness_from") {
+        None | Some("centred") => edge_engine::CutThickness::Centred,
+        Some("above") => edge_engine::CutThickness::Above,
+        Some("below") => edge_engine::CutThickness::Below,
+        Some(other) => return Err(format!("thickness_from cannot be {other}")),
+    };
+    Ok(edge_engine::CutOptions {
+        keep_upper: flag("keep_upper", true)?,
+        keep_lower: flag("keep_lower", true)?,
+        place_on_cut_upper: flag("place_on_cut_upper", false)?,
+        place_on_cut_lower: flag("place_on_cut_lower", false)?,
+        flip_upper: flag("flip_upper", false)?,
+        flip_lower: flag("flip_lower", false)?,
+        to_parts: flag("to_parts", false)?,
+        thickness,
+        thickness_from,
+        groove: match args.get("groove") {
+            None | Some(Value::Null) => None,
+            Some(groove) => {
+                let number = |key: &str| -> Result<f64, String> {
+                    groove
+                        .get(key)
+                        .and_then(Value::as_f64)
+                        .filter(|value| value.is_finite())
+                        .ok_or_else(|| format!("the groove's {key} was not given"))
+                };
+                Some(edge_engine::Groove {
+                    depth: number("depth")?,
+                    width: number("width")?,
+                    flaps_angle: number("flaps_angle")?,
+                    angle: number("angle")?,
+                    depth_tolerance: number("depth_tolerance")?,
+                    width_tolerance: number("width_tolerance")?,
+                    count: number("count")?.clamp(1.0, 20.0) as usize,
+                    gap: number("gap")?,
+                    plane_radius: number("plane_radius")?,
+                })
+            }
+        },
+        groove_init: match args.get("groove").and_then(|groove| groove.get("init")) {
+            None | Some(Value::Null) => None,
+            Some(init) => {
+                let list: Vec<f64> = init
+                    .as_array()
+                    .map(|list| list.iter().filter_map(Value::as_f64).collect())
+                    .unwrap_or_default();
+                Some(
+                    <[f64; 4]>::try_from(list.as_slice())
+                        .map_err(|_| "the groove's init is not four numbers")?,
+                )
+            }
+        },
+        editable: flag("editable", true)?,
+        connectors: match args.get("connectors") {
+            None | Some(Value::Null) => Vec::new(),
+            Some(Value::Array(list)) => list
+                .iter()
+                .map(connector_of)
+                .collect::<Result<Vec<_>, String>>()?,
+            Some(_) => return Err("connectors is not a list".into()),
+        },
+        snap: match args.get("snap") {
+            None | Some(Value::Null) => [0.3, 0.15],
+            Some(snap) => {
+                let number = |key: &str, least: f64, most: f64| -> Result<f64, String> {
+                    snap.get(key)
+                        .and_then(Value::as_f64)
+                        .filter(|value| (least..=most).contains(value))
+                        .ok_or_else(|| format!("the snap's {key} is not from {least} to {most}"))
+                };
+                [number("space", 0.1, 0.5)?, number("bulge", 0.05, 1.0)?]
+            }
+        },
+        sides: match args.get("sides") {
+            None | Some(Value::Null) => None,
+            Some(Value::Array(list)) => Some(
+                list.iter()
+                    .map(|side| side.as_bool().ok_or("sides are true or false"))
+                    .collect::<Result<Vec<bool>, _>>()?,
+            ),
+            Some(_) => return Err("sides is not a list".into()),
+        },
+    })
+}
+
+/// A connector as the page gives it: `at` (on the plane, in the scene),
+/// `radius`, `height`, `radius_tolerance`, `height_tolerance` (mm),
+/// `z_angle` (radians), `type` (`plug`, `dowel`, `snap`), `style`
+/// (`prism`, `frustum`), `shape` (`triangle`, `square`, `hexagon`,
+/// `circle`).
+fn connector_of(value: &Value) -> Result<edge_engine::Connector, String> {
+    use edge_engine::{ConnectorKind, ConnectorShape, ConnectorStyle};
+    let number = |key: &str| -> Result<f64, String> {
+        value
+            .get(key)
+            .and_then(Value::as_f64)
+            .filter(|value| value.is_finite())
+            .ok_or_else(|| format!("a connector's {key} was not given"))
+    };
+    let at = numbers(value, "at")?;
+    let (radius, height) = (number("radius")?, number("height")?);
+    if radius <= 0.0 || height <= 0.0 {
+        return Err("a connector's radius and height are more than 0".into());
+    }
+    let word = |key: &str| value.get(key).and_then(Value::as_str).unwrap_or("");
+    Ok(edge_engine::Connector {
+        at,
+        radius,
+        height,
+        radius_tolerance: number("radius_tolerance")?.max(0.0),
+        height_tolerance: number("height_tolerance")?.max(0.0),
+        z_angle: number("z_angle")?,
+        kind: match word("type") {
+            "plug" => ConnectorKind::Plug,
+            "dowel" => ConnectorKind::Dowel,
+            "snap" => ConnectorKind::Snap,
+            other => return Err(format!("a connector cannot be a {other}")),
+        },
+        style: match word("style") {
+            "prism" => ConnectorStyle::Prism,
+            "frustum" => ConnectorStyle::Frustum,
+            other => return Err(format!("a connector's style cannot be {other}")),
+        },
+        shape: match word("shape") {
+            "triangle" => ConnectorShape::Triangle,
+            "square" => ConnectorShape::Square,
+            "hexagon" => ConnectorShape::Hexagon,
+            "circle" => ConnectorShape::Circle,
+            other => return Err(format!("a connector's shape cannot be {other}")),
+        },
+    })
+}
+
 /// What an edit by the gizmos or the number fields may be called in the
 /// history: the reference's own names for them.
 const TRANSFORMS: [&str; 9] = [
@@ -256,6 +430,78 @@ struct Outcome {
     part: Option<u64>,
     /// Nothing changed (a plate given the name it had): no step is taken.
     unchanged: bool,
+    /// The cut put back to be made again ("Edit cut...").
+    recipe: Option<Value>,
+}
+
+/// A matrix as the page takes it: sixteen numbers, column by column.
+fn matrix_json(transform: &Transform) -> Value {
+    let mut numbers = Vec::with_capacity(16);
+    for (row, values) in transform.rows.iter().enumerate() {
+        numbers.extend_from_slice(values);
+        numbers.push(if row == 3 { 1.0 } else { 0.0 });
+    }
+    json!(numbers)
+}
+
+/// How a cut was made, for the tool to be set up with it: its plane in
+/// the scene and every setting it was made with (GLGizmoCut.cpp
+/// `apply_recipe_to_gizmo`).
+fn recipe_json(recipe: &edge_engine::CutRecipe, plane: &Transform) -> Value {
+    let from = ["centred", "above", "below"][recipe.thickness_offset.min(2) as usize];
+    // Where the recipe's coordinates are in the scene.
+    let shift: [f64; 3] =
+        std::array::from_fn(|axis| plane.rows[3][axis] - recipe.plane.rows[3][axis]);
+    let connectors: Vec<Value> = recipe
+        .connectors
+        .iter()
+        .map(|c| {
+            let at: [f64; 3] = std::array::from_fn(|axis| c.pos[axis] + shift[axis]);
+            let kind = ["plug", "dowel", "snap"]
+                .get(c.kind as usize)
+                .copied()
+                .unwrap_or("plug");
+            let style = ["prism", "frustum"]
+                .get(c.style as usize)
+                .copied()
+                .unwrap_or("prism");
+            let shape = ["triangle", "square", "hexagon", "circle"]
+                .get(c.shape as usize)
+                .copied()
+                .unwrap_or("circle");
+            json!({
+                "at": at,
+                "radius": c.radius,
+                "height": c.height,
+                "radius_tolerance": c.radius_tolerance,
+                "height_tolerance": c.height_tolerance,
+                "z_angle": c.z_angle,
+                "type": kind,
+                "style": style,
+                "shape": shape,
+            })
+        })
+        .collect();
+    json!({
+        "plane": matrix_json(plane),
+        "mode": if recipe.groove.is_some() { "dovetail" } else { "planar" },
+        "thickness": recipe.thickness,
+        "thickness_from": from,
+        "keep_upper": recipe.keep_upper,
+        "keep_lower": recipe.keep_lower,
+        "to_parts": recipe.keep_as_parts,
+        "place_on_cut_upper": recipe.place_on_cut_upper,
+        "place_on_cut_lower": recipe.place_on_cut_lower,
+        "flip_upper": recipe.flip_upper,
+        "flip_lower": recipe.flip_lower,
+        "connectors": connectors,
+        "groove": recipe.groove.map(|g| json!({
+            "depth": g.depth, "width": g.width, "flaps_angle": g.flaps_angle, "angle": g.angle,
+            "depth_tolerance": g.depth_tolerance, "width_tolerance": g.width_tolerance,
+            "count": g.count, "gap": g.gap, "plane_radius": g.plane_radius,
+            "init": [g.depth_init, g.width_init, g.flaps_angle_init, g.angle_init],
+        })),
+    })
 }
 
 /// Filament numbers a call gives under `key`; none given is an empty list.
@@ -717,6 +963,33 @@ impl Session {
                 outcome.made = made;
                 outcome.name = "Duplicate Current Plate".into();
             }
+            "cut" => {
+                let options = cut_options(args)?;
+                let plane = transform_of(args.get("plane").unwrap_or(&Value::Null))?;
+                let done = model
+                    .cut(bed, whole(args, "copy")?, &plane, &options)
+                    .map_err(|error| super::i18n::tr(&error.to_string()))?;
+                outcome.made = done.made;
+                if done.open > 0 {
+                    outcome.note = Some(super::i18n::fill(
+                        &super::i18n::tr(
+                            "The object is open where it was cut: %d of the cut's outlines could not be closed.",
+                        ),
+                        &[&done.open.to_string()],
+                    ));
+                }
+                outcome.name = "Cut by Plane".into();
+            }
+            "cut_edit" => {
+                let edit = model
+                    .cut_edit(bed, whole(args, "copy")?)
+                    .map_err(|error| super::i18n::tr(&error.to_string()))?;
+                outcome.made = vec![edit.copy];
+                let mut recipe = recipe_json(&edit.recipe, &edit.plane);
+                recipe["missing"] = json!(edit.missing);
+                outcome.recipe = Some(recipe);
+                outcome.name = "Edit cut".into();
+            }
             // An object's, a part's or a height range's own settings, and
             // the height ranges (settings/items.rs).
             op if items::OPS.contains(&op) => {
@@ -752,6 +1025,10 @@ impl Session {
             "scene_edit" => self.scene_edit(args),
             "undo" | "redo" => self.step(args, name == "undo"),
             "scene_faces" => self.scene_faces(args),
+            "cut_section" => self.cut_section(args),
+            "cut_pick" => self.cut_pick(args),
+            "cut_parts" => self.cut_parts(args),
+            "cut_recipe" => self.cut_recipe(args),
             other => Err(format!("there is no call named {other}")),
         }
     }
@@ -813,7 +1090,7 @@ impl Session {
         } else {
             (None, None)
         };
-        let outcome = Self::apply(
+        let mut outcome = Self::apply(
             &mut model,
             bed.as_ref(),
             stage.plate,
@@ -845,7 +1122,15 @@ impl Session {
             if !still {
                 return Err("the project changed meanwhile; nothing was done".into());
             }
-            let before = project.file.replace(next);
+            let mut before = project.file.replace(next);
+            // The cut made of a cut put back ("Edit cut...") is one step
+            // with putting it back, so one undo brings the halves back
+            // (GUI_ObjectList.cpp `edit_cut`: one snapshot for the whole).
+            if text(args, "amend") == Some("Edit cut")
+                && project.history.amend("Edit cut", &mut before)
+            {
+                outcome.name = "Edit cut".into();
+            }
             push_step(project, &outcome.name, before, None);
             if let Some(show) = outcome.show
                 && project
@@ -858,8 +1143,23 @@ impl Session {
         }
         self.edited(
             stage.id,
-            json!({ "done": outcome.name, "made": outcome.made, "note": outcome.note, "part": outcome.part }),
+            json!({ "done": outcome.name, "made": outcome.made, "note": outcome.note, "part": outcome.part, "recipe": outcome.recipe }),
         )
+    }
+
+    /// How a copy's object was cut, when the cut was kept editable, set
+    /// up on `onto` ("Copy cut to..."; the copy itself when not given).
+    fn cut_recipe(&self, args: &Value) -> Result<Value, String> {
+        let stage = self.stage_of(args)?;
+        let bed = stage.bed();
+        let file = stage.file.as_ref().ok_or("the project has no model")?;
+        let copy = whole(args, "copy")?;
+        let onto = args.get("onto").and_then(Value::as_u64).unwrap_or(copy);
+        let (recipe, plane) = file
+            .model
+            .cut_copied(bed.as_ref(), copy, onto)
+            .map_err(|error| super::i18n::tr(&error.to_string()))?;
+        Ok(recipe_json(&recipe, &plane))
     }
 
     /// The faces a copy can be laid on ("Lay on face"), largest first: each
@@ -885,6 +1185,175 @@ impl Session {
             })
             .collect();
         Ok(json!({ "project": stage.id, "copy": copy, "faces": faces }))
+    }
+
+    /// Where a plane cuts a copy's object ("Cut", while the plane is
+    /// placed): the lines of its section in the scene, as six numbers
+    /// each, and how far the object reaches over and under the plane.
+    fn cut_section(&self, args: &Value) -> Result<Value, String> {
+        let stage = self.stage_of(args)?;
+        let copy = whole(args, "copy")?;
+        let plane = transform_of(args.get("plane").unwrap_or(&Value::Null))?;
+        let bed = stage.bed();
+        let file = stage
+            .file
+            .ok_or("the project is empty: it has no objects")?;
+        let section = file
+            .model
+            .cut_section(bed.as_ref(), copy, &plane)
+            .map_err(|e| e.to_string())?;
+        // With a dovetail, whether it can be cut there.
+        let groove = match cut_options(args)?.groove {
+            Some(groove) => Some(
+                file.model
+                    .groove_meets(bed.as_ref(), copy, &plane, &groove)
+                    .map_err(|e| e.to_string())?,
+            ),
+            None => None,
+        };
+        let mm = |value: f64| (value * 1e4).round() / 1e4;
+        // The cut face itself, while connectors are placed on it.
+        let cap = match args.get("cap").and_then(Value::as_bool) {
+            Some(true) => Some(
+                file.model
+                    .cut_cap(bed.as_ref(), copy, &plane)
+                    .map_err(|e| e.to_string())?
+                    .iter()
+                    .flatten()
+                    .flatten()
+                    .map(|value| mm(*value))
+                    .collect::<Vec<f64>>(),
+            ),
+            _ => None,
+        };
+        let lines: Vec<f64> = section
+            .lines
+            .iter()
+            .flat_map(|[a, b]| {
+                a.iter()
+                    .chain(b)
+                    .map(|value| mm(*value))
+                    .collect::<Vec<_>>()
+            })
+            .collect();
+        Ok(json!({
+            "project": stage.id,
+            "copy": copy,
+            "lines": lines,
+            "above": mm(section.above),
+            "below": mm(section.below),
+            "reach": section.reach.map(|corners| corners.map(|corner| corner.map(mm))),
+            "groove": groove,
+            "cap": cap,
+        }))
+    }
+
+    /// The face of a copy a line of sight meets ("Cut"'s "Pick face"):
+    /// `{ hit: { point, normal, corners } }`, or `hit` null.
+    fn cut_pick(&self, args: &Value) -> Result<Value, String> {
+        let stage = self.stage_of(args)?;
+        let copy = whole(args, "copy")?;
+        let origin = numbers(args, "origin")?;
+        let direction = numbers(args, "direction")?;
+        let bed = stage.bed();
+        let file = stage
+            .file
+            .ok_or("the project is empty: it has no objects")?;
+        let hit = file
+            .model
+            .face_hit(bed.as_ref(), copy, origin, direction)
+            .map_err(|e| e.to_string())?;
+        Ok(json!({
+            "project": stage.id,
+            "copy": copy,
+            "hit": hit.map(|hit| json!({ "point": hit.point, "normal": hit.normal, "corners": hit.corners })),
+        }))
+    }
+
+    /// The pieces a cut makes of a copy's object, for a piece to be given
+    /// to the other side: the model's [`edge_engine::CutPieces`].
+    fn pieces_of(&self, args: &Value) -> Result<(u32, edge_engine::CutPieces), String> {
+        let stage = self.stage_of(args)?;
+        let copy = whole(args, "copy")?;
+        let plane = transform_of(args.get("plane").unwrap_or(&Value::Null))?;
+        let options = cut_options(args)?;
+        let bed = stage.bed();
+        let file = stage
+            .file
+            .ok_or("the project is empty: it has no objects")?;
+        let pieces = file
+            .model
+            .cut_pieces(bed.as_ref(), copy, &plane, &options)
+            .map_err(|e| e.to_string())?;
+        Ok((stage.id, pieces))
+    }
+
+    /// `cut_parts`: how many pieces, the side each was cut on, the
+    /// triangles of each (`[first, how many]` of `cut_parts_mesh`'s) and
+    /// the copy's move in the scene.
+    fn cut_parts(&self, args: &Value) -> Result<Value, String> {
+        let (id, pieces) = self.pieces_of(args)?;
+        let mut ranges: Vec<[u32; 2]> = vec![[0, 0]; pieces.upper.len()];
+        for (at, piece) in pieces.piece_of.iter().enumerate() {
+            let range = &mut ranges[*piece as usize];
+            if range[1] == 0 {
+                range[0] = at as u32;
+            }
+            range[1] += 1;
+        }
+        Ok(json!({
+            "project": id,
+            "count": pieces.upper.len(),
+            "upper": pieces.upper,
+            "ranges": ranges,
+            "offset": pieces.offset,
+        }))
+    }
+
+    pub(super) fn edit_bytes(&self, name: &str, args: &Value) -> Result<Vec<u8>, String> {
+        match name {
+            "cut_parts_mesh" => {
+                let (_, pieces) = self.pieces_of(args)?;
+                let object = edge_engine::SceneObject {
+                    name: String::new(),
+                    marks: vec![edge_engine::Mark::Filament(1); pieces.mesh.triangles.len()],
+                    bounds: pieces.mesh.bounds(),
+                    parts: Vec::new(),
+                    vertices: pieces.mesh.vertices,
+                    triangles: pieces.mesh.triangles,
+                };
+                Ok(super::scene::mesh_bytes(&object))
+            }
+            // A connector's shape at unit size, as the cut makes it, for the
+            // tool to draw (`type`, `style`, `shape`, `snap` as `cut` takes
+            // them).
+            "cut_connector_mesh" => {
+                let mut asked = args.clone();
+                if let Some(object) = asked.as_object_mut() {
+                    object.insert("at".into(), json!([0.0, 0.0, 0.0]));
+                    object.insert("radius".into(), json!(1.0));
+                    object.insert("height".into(), json!(1.0));
+                    for key in ["radius_tolerance", "height_tolerance", "z_angle"] {
+                        object.insert(key.into(), json!(0.0));
+                    }
+                }
+                let c = connector_of(&asked)?;
+                let snap = cut_options(&json!({ "snap": args.get("snap") }))?.snap;
+                let mesh = edge_engine::connector_mesh(c.kind, c.style, c.shape, snap);
+                let object = edge_engine::SceneObject {
+                    name: String::new(),
+                    marks: vec![edge_engine::Mark::Filament(1); mesh.triangles.len()],
+                    bounds: mesh.bounds(),
+                    parts: Vec::new(),
+                    vertices: mesh.vertices,
+                    triangles: mesh.triangles,
+                };
+                Ok(super::scene::mesh_bytes(&object))
+            }
+            other => Err(format!(
+                "there is no call named {other} that answers in bytes"
+            )),
+        }
     }
 
     /// Takes the last edit back, or makes the last one taken back again.

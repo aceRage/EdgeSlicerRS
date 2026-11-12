@@ -14,6 +14,7 @@ mod model_settings;
 mod own;
 mod package;
 mod paint;
+mod recipe;
 mod write;
 mod xml;
 
@@ -30,11 +31,17 @@ use edge_mesh::{Mesh, Transform};
 use rayon::prelude::*;
 
 pub use custom_gcode::{CustomGcode, CustomItem, CustomKind, CustomMode};
-pub use kept::{Entry, Extras, Kept, LayerRange, Left, ObjectKept, PartKept, PlateKept};
+pub use kept::{
+    CutConnectorInfo, CutId, Entry, Extras, Kept, LayerRange, Left, ObjectKept, PartKept, PlateKept,
+};
 use model::{ModelFile, RawObject, Shape};
 use model_settings::{ModelSettings, ObjectSettings};
 use package::Package;
 pub use paint::{Facet, PaintKind, SeamFacet, SeamPaint};
+pub use recipe::{
+    CutRecipe, RECIPE_VERSION, RecipeConnector, RecipeGroove, RecipeKind, mesh_blob, mesh_of_blob,
+    sha256,
+};
 pub use write::{
     REFERENCE_VERSION, SECRETS, Save, Written, losses, own_settings_text, settings_text, write,
     write_to,
@@ -333,6 +340,8 @@ impl Project {
         let mut kept_files = Vec::new();
         let mut left = Vec::new();
         let mut custom_gcode = None;
+        let mut recipes_text = None;
+        let mut recipe_blobs: HashMap<String, Arc<Vec<u8>>> = HashMap::new();
         for name in package.names() {
             if name.ends_with('/') {
                 continue;
@@ -340,6 +349,22 @@ impl Project {
             match kept::role(&name, &models) {
                 kept::Role::Written => {
                     let lower = name.to_ascii_lowercase();
+                    if lower == recipe::RECIPES.to_ascii_lowercase() {
+                        recipes_text = package.read(&name)?;
+                        continue;
+                    }
+                    if let Some(file) = lower.strip_prefix(&recipe::MESHES.to_ascii_lowercase())
+                        && let Some(hash) = file.strip_suffix(".bin")
+                    {
+                        // Named by what it holds: one that is not is left
+                        // out (`_extract_cut_recipe_mesh_from_archive`).
+                        if let Some(bytes) = package.bytes(&name)?
+                            && recipe::sha256(&bytes) == hash
+                        {
+                            recipe_blobs.insert(hash.to_owned(), Arc::new(bytes));
+                        }
+                        continue;
+                    }
                     let canonical = [
                         kept::LAYER_HEIGHTS,
                         kept::LAYER_RANGES,
@@ -383,6 +408,12 @@ impl Project {
             Some(text) => custom_gcode::read(text, kept::CUSTOM_GCODE)?,
             None => None,
         };
+        let mut recipes = match &recipes_text {
+            // A recipe file that is not one is left out, as the reference
+            // leaves it: the halves still read.
+            Some(text) => recipe::read(text, &recipe_blobs).unwrap_or_default(),
+            None => HashMap::new(),
+        };
         for (at, object) in objects.iter_mut().enumerate() {
             let index = at + 1;
             let mut assembly = vec![None; object.instances.len()];
@@ -406,6 +437,20 @@ impl Project {
                 kept.layer_ranges = by_place.layer_ranges.remove(&index);
                 kept.brim_points = by_place.brim_points.remove(&index);
                 kept.cut = by_place.cut.remove(&index);
+                if let Some(read) = recipes.remove(&index) {
+                    kept.recipe = Some(read.recipe);
+                    kept.recipe_element = Some(read.element);
+                }
+                // The parts that are a cut's connectors.
+                for (volume, info) in kept.read_connectors() {
+                    for part in &mut object.parts {
+                        let read = part.kept.as_ref().and_then(|own| own.read.as_ref());
+                        if read.is_some_and(|read| read.index == volume) {
+                            let own = Arc::make_mut(part.kept.get_or_insert_with(Default::default));
+                            own.connector = Some(info);
+                        }
+                    }
+                }
             }
         }
         let mut kept_plates = std::mem::take(&mut kept_settings.plates).into_iter();
