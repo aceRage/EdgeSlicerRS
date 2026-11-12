@@ -327,6 +327,7 @@
         gl.uniform4fv(u.u_split_plane, split.plane);
         gl.uniform3fv(u.u_split_upper, split.upper);
         gl.uniform3fv(u.u_split_lower, split.lower);
+        gl.uniform2fv(u.u_split_alpha, split.alpha || [1, 1]);
       }
       gl.uniform1f(u.u_slope, slope === null ? -3 : slope);
       if (slope !== null) gl.uniformMatrix3fv(u.u_model_normal, false, M.normalMatrix(model));

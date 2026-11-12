@@ -13,7 +13,10 @@
 
 mod clock;
 mod contour;
+pub mod curved;
+pub mod drawn;
 pub mod export;
+pub mod flexi;
 pub mod flush;
 mod followed;
 mod holes;
@@ -29,8 +32,11 @@ mod pipeline;
 mod presets;
 mod preview;
 mod printable;
+pub mod pushfit;
 mod regions;
 mod scene;
+pub mod tac;
+mod tac_data;
 mod toolpath;
 mod unfollowed;
 
@@ -39,9 +45,11 @@ use std::{error::Error, fmt};
 pub use clock::timestamp;
 pub use edge_3mf::{
     CustomGcode, CustomItem, CustomKind, CustomMode, CutRecipe, LayerRange, PaintKind, PartKind,
-    RecipeGroove, RecipeKind,
+    RecipeDrawn, RecipeGroove, RecipeKind, RecipeSheet,
 };
 pub use edge_mesh::Transform;
+/// Stops a mesh boolean under way (a curved cut's preview).
+pub use edge_mesh::boolean::Cancel as BooleanCancel;
 /// Painting a mesh's triangles, and finding which one a line of sight
 /// meets, for the painting tools of whoever shows a model.
 pub use edge_mesh::{Mesh, raycast, selector};
@@ -52,10 +60,11 @@ pub use model::SettingChange;
 pub use model::{
     ArrangeOptions, ArrangeScope, Arranged, Bed, CONNECTOR_HOLE_OVERLAP, CUT_THICKNESS_MAX,
     Changed, Connector, ConnectorKind, ConnectorShape, ConnectorStyle, CutDone, CutEdit,
-    CutOptions, CutPieces, CutSection, CutThickness, FIRST_LATER_LAYER, FaceHit, FlushBasis,
-    Groove, LAST_LAYER, LONGEST_PLATE_NAME, LayerSequence, Look, MAX_FILAMENTS, MAX_PLATES, Model,
-    ModelCopy, ModelObject, ModelPlate, NEXT_COLOURS, NewPart, PlateSettings, PlateStamp, Reach,
-    Saved, Saving, Shape, connector_mesh, own_settings, project_settings,
+    CutOptions, CutPieces, CutSection, CutThickness, DrawnCut, FIRST_LATER_LAYER, FaceHit,
+    FlushBasis, Groove, LAST_LAYER, LONGEST_PLATE_NAME, LayerSequence, Look, MAX_FILAMENTS,
+    MAX_PLATES, Model, ModelCopy, ModelObject, ModelPlate, NEXT_COLOURS, NewPart, PlateSettings,
+    PlateStamp, Prepared, Reach, Saved, Saving, Shape, connector_mesh, own_settings,
+    project_settings,
 };
 pub use pipeline::{Gcode, Sliced, Timings, slice};
 pub use presets::{Library, ModelPreset, PrinterModel, Shelf};

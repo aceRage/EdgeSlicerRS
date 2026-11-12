@@ -938,6 +938,9 @@ fn connectors_make_plugs_holes_and_dowels_that_fit_by_their_tolerances() {
         kind,
         style,
         shape,
+        pin: Default::default(),
+        flexi: Default::default(),
+        tac: Default::default(),
     };
     let connectors = vec![
         connector(
@@ -1117,6 +1120,9 @@ fn sliced_a_plug_and_its_hole_are_apart_by_the_tolerance() {
             kind: ConnectorKind::Plug,
             style: ConnectorStyle::Prism,
             shape: ConnectorShape::Circle,
+            pin: Default::default(),
+            flexi: Default::default(),
+            tac: Default::default(),
         }],
         ..CutOptions::default()
     };
@@ -1171,4 +1177,618 @@ fn sliced_a_plug_and_its_hole_are_apart_by_the_tolerance() {
     };
     assert_eq!(top(&upper, 6.2), 1);
     assert_eq!(top(&upper, 6.6), 0);
+}
+
+#[test]
+fn a_pin_is_its_own_object_with_a_hole_in_each_half() {
+    use edge_engine::pushfit::Pin;
+    use edge_engine::{Connector, ConnectorKind, ConnectorShape, ConnectorStyle};
+    let dir = tempfile::tempdir().unwrap();
+    let mut model = block(dir.path(), [30.0, 30.0, 30.0]);
+    let copy = model.objects()[0].copies()[0].id();
+    let (_, reach) = model.in_scene(Some(&BED), copy).unwrap();
+    let [low, high] = reach.unwrap();
+    let mid = [(low[0] + high[0]) / 2.0, (low[1] + high[1]) / 2.0, 15.0];
+    let pin = Pin::default();
+    let connector = Connector {
+        at: mid,
+        radius: 0.5 * pin.diameter,
+        height: pin.length_upper + pin.length_lower,
+        radius_tolerance: 0.0,
+        height_tolerance: 0.0,
+        z_angle: 0.0,
+        kind: ConnectorKind::Pin,
+        style: ConnectorStyle::Prism,
+        shape: ConnectorShape::Circle,
+        pin,
+        flexi: Default::default(),
+        tac: Default::default(),
+    };
+    // A pin that cannot be made stops the cut.
+    let mut refused = model.clone();
+    let bad = CutOptions {
+        connectors: vec![Connector {
+            pin: Pin {
+                diameter: 2.0,
+                ..pin
+            },
+            ..connector
+        }],
+        ..CutOptions::default()
+    };
+    assert!(
+        refused
+            .cut(Some(&BED), copy, &plane(mid, [0.0, 0.0, 1.0]), &bad)
+            .is_err()
+    );
+    let options = CutOptions {
+        connectors: vec![connector],
+        ..CutOptions::default()
+    };
+    let done = model
+        .cut(Some(&BED), copy, &plane(mid, [0.0, 0.0, 1.0]), &options)
+        .unwrap();
+    assert_eq!(
+        (done.pins, done.pins_lying, done.pin_slot_failures),
+        (1, 1, 0)
+    );
+    let names: Vec<&str> = model.objects().iter().map(|o| o.name()).collect();
+    assert_eq!(names, ["block", "block", "block-Pin-1"]);
+    let part = |object: usize, at: usize| {
+        let part = &model.objects()[object].shape().parts()[at];
+        let mut mesh = Mesh::default();
+        mesh.append(&part.mesh, &part.transform);
+        (part.kind, mesh)
+    };
+    let (kind, hole_a) = part(0, 1);
+    assert_eq!(kind, PartKind::Negative);
+    let (kind, hole_b) = part(1, 1);
+    assert_eq!(kind, PartKind::Negative);
+    let (_, made) = part(2, 0);
+    for mesh in [&hole_a, &hole_b, &made] {
+        sound(mesh);
+    }
+    // The pin lies on its flat beside the block, on the bed.
+    let pin_at = model.objects()[2].copies()[0].reach().unwrap();
+    let block_at = model.objects()[0].copies()[0].reach().unwrap();
+    assert!(pin_at[0][0] >= block_at[1][0] + 5.0 - 1e-6);
+    assert!(near(pin_at[0][2], 0.0, 1e-6));
+    assert!(near(pin_at[1][2] - pin_at[0][2], 6.0 - 2.0 * 0.9, 1e-3));
+    // Each hole goes into its half, from the cut, deeper than the pin by the
+    // depth clearance and its cone.
+    let (a_low, a_high) = bounds(&hole_a);
+    assert!(near(a_low[2], 15.0 - 0.2, 1e-4) && near(a_high[2], 15.0 + 7.0 + 0.4 + 3.1, 1e-4));
+    let (b_low, b_high) = bounds(&hole_b);
+    assert!(near(b_high[2], 15.2, 1e-4) && near(b_low[2], 15.0 - 10.5, 1e-4));
+    // Sliced, the upper half's hole is the pin's radius and its clearance
+    // (a 96-sided round).
+    let mut upper = model.clone();
+    let others: Vec<u64> = [1, 2]
+        .iter()
+        .map(|&at| upper.objects()[at].copies()[0].id())
+        .collect();
+    upper.remove(Some(&BED), &others).unwrap();
+    let path = dir.path().join("upper.3mf");
+    upper
+        .save(&path, &edge_engine::Saving::None, Some(&BED))
+        .unwrap();
+    let sliced = slice_file(&path);
+    let layer = (0..sliced.outlines().len())
+        .find(|&at| sliced.top_of(at) >= 4.0)
+        .unwrap();
+    let hole = &sliced.outlines()[layer][0].holes[0];
+    let radius = (hole.signed_area_mm2().abs() / std::f64::consts::PI).sqrt();
+    let sides = 96.0_f64;
+    let round = 3.1
+        * (sides / (2.0 * std::f64::consts::PI) * (2.0 * std::f64::consts::PI / sides).sin())
+            .sqrt();
+    assert!(near(radius, round, 0.01), "the hole's radius is {radius}");
+    // Saved and read back: the pin's shape is in the cut information and
+    // the recipe, and putting the cut back takes the pin with the halves.
+    let path = dir.path().join("pin.3mf");
+    model
+        .save(&path, &edge_engine::Saving::None, Some(&BED))
+        .unwrap();
+    let mut back = Model::open(&path).unwrap();
+    let half = back.objects()[0].copies()[0].id();
+    let edit = back.cut_edit(Some(&BED), half).unwrap();
+    assert_eq!(back.objects().len(), 1);
+    let read = Pin::from_attributes(|name| {
+        edit.recipe.connectors[0]
+            .extra
+            .iter()
+            .find(|(key, _)| key == name)
+            .map(|(_, value)| *value)
+    });
+    assert_eq!(read, pin);
+}
+
+#[test]
+fn a_curved_cut_is_made_by_the_solid_under_its_surface_and_made_again() {
+    use edge_engine::curved::Sheet;
+    let dir = tempfile::tempdir().unwrap();
+    let mut model = block(dir.path(), [30.0, 30.0, 20.0]);
+    let copy = model.objects()[0].copies()[0].id();
+    let (_, reach) = model.in_scene(Some(&BED), copy).unwrap();
+    let [low, high] = reach.unwrap();
+    let mid = [(low[0] + high[0]) / 2.0, (low[1] + high[1]) / 2.0, 10.0];
+    let mut sheet = Sheet::flat(5, 5, 18.0, 18.0);
+    sheet.z[12] = 5.0;
+    sheet.z[6] = -3.0;
+    let options = CutOptions {
+        sheet: Some(sheet.clone()),
+        ..CutOptions::default()
+    };
+    // The preview: what the cut would make, in the scene.
+    let prepared = model.cut_prepared(Some(&BED), copy).unwrap();
+    let [up, down] = model
+        .cut_preview(
+            Some(&BED),
+            copy,
+            &plane(mid, [0.0, 0.0, 1.0]),
+            &options,
+            &prepared,
+            None,
+        )
+        .unwrap();
+    let whole = 30.0 * 30.0 * 20.0;
+    assert!(near(up.signed_volume() + down.signed_volume(), whole, 1e-2));
+    let done = model
+        .cut(Some(&BED), copy, &plane(mid, [0.0, 0.0, 1.0]), &options)
+        .unwrap();
+    assert_eq!(done.empty, Some([false, false]));
+    let volumes: Vec<f64> = model
+        .objects()
+        .iter()
+        .map(|object| {
+            // Placed on the bed: no corner the boolean left a hair from
+            // another folds a triangle flat in single precision.
+            let mesh = printed(&model, object, 0);
+            sound(&mesh);
+            mesh.signed_volume()
+        })
+        .collect();
+    assert!(near(volumes[0] + volumes[1], whole, 1e-2), "{volumes:?}");
+    assert!(near(volumes[0], up.signed_volume(), 1e-2));
+    // Sliced, each half as it stands.
+    let path = dir.path().join("curved.3mf");
+    model
+        .save(&path, &edge_engine::Saving::None, Some(&BED))
+        .unwrap();
+    let sliced = slice_file(&path);
+    assert!(!sliced.outlines().is_empty());
+    // Read back and put back: the surface as it was.
+    let mut back = Model::open(&path).unwrap();
+    let half = back.objects()[0].copies()[0].id();
+    let edit = back.cut_edit(Some(&BED), half).unwrap();
+    let read = edit.recipe.sheet.clone().unwrap();
+    assert_eq!((read.nx, read.ny), (5, 5));
+    assert_eq!(read.values, sheet.z);
+    let again = CutOptions {
+        sheet: Some(Sheet {
+            nx: 5,
+            ny: 5,
+            half_u: read.half_u,
+            half_v: read.half_v,
+            z: read.values,
+        }),
+        ..CutOptions::default()
+    };
+    back.cut(Some(&BED), edit.copy, &edit.plane, &again)
+        .unwrap();
+    assert_eq!(back.objects().len(), 2);
+    // A surface over the whole part leaves the upper side empty: the cut
+    // makes the one half and says so.
+    let mut over = block(dir.path(), [10.0, 10.0, 10.0]);
+    let copy = over.objects()[0].copies()[0].id();
+    let mut high = Sheet::flat(2, 2, 8.0, 8.0);
+    high.z = vec![30.0; 4];
+    let (_, reach) = over.in_scene(Some(&BED), copy).unwrap();
+    let [low, top] = reach.unwrap();
+    let at = [(low[0] + top[0]) / 2.0, (low[1] + top[1]) / 2.0, 5.0];
+    let done = over
+        .cut(
+            Some(&BED),
+            copy,
+            &plane(at, [0.0, 0.0, 1.0]),
+            &CutOptions {
+                sheet: Some(high),
+                ..CutOptions::default()
+            },
+        )
+        .unwrap();
+    assert_eq!(done.empty, Some([true, false]));
+    assert_eq!(over.objects().len(), 1);
+}
+
+#[test]
+fn a_drawn_cut_is_made_saved_read_back_and_made_again() {
+    use edge_engine::DrawnCut;
+    use edge_engine::drawn::{DrawCutParams, DrawCutSample, RecipeStroke};
+    let dir = tempfile::tempdir().unwrap();
+    let mut model = block(dir.path(), [30.0, 30.0, 20.0]);
+    let copy = model.objects()[0].copies()[0].id();
+    let (_, reach) = model.in_scene(Some(&BED), copy).unwrap();
+    let [low, high] = reach.unwrap();
+    let mid = [(low[0] + high[0]) / 2.0, (low[1] + high[1]) / 2.0, 10.0];
+    let flat = Transform {
+        rows: [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0], mid],
+    };
+    // A line drawn straight across the top, 3 mm off the middle, in the
+    // plane's own coordinates (the top at z = 10 there).
+    let samples: Vec<DrawCutSample> = (0..=40)
+        .map(|k| DrawCutSample {
+            pos: [-20.0 + k as f64, 3.0, 10.0],
+            normal: [0.0, 0.0, 1.0],
+            facet: 0,
+        })
+        .collect();
+    let drawn = DrawnCut {
+        stroke: RecipeStroke {
+            samples,
+            closed: false,
+            smoothing: 0.0,
+            stroke_bounds: Vec::new(),
+            finished_open: true,
+        },
+        params: DrawCutParams {
+            through_all: true,
+            ..DrawCutParams::default()
+        },
+    };
+    let options = CutOptions {
+        drawn: Some(drawn.clone()),
+        ..CutOptions::default()
+    };
+    let done = model.cut(Some(&BED), copy, &flat, &options).unwrap();
+    assert_eq!(done.made.len(), 2);
+    let volumes: Vec<f64> = model
+        .objects()
+        .iter()
+        .map(|object| {
+            let mesh = printed(&model, object, 0);
+            sound(&mesh);
+            mesh.signed_volume()
+        })
+        .collect();
+    let whole = 30.0 * 30.0 * 20.0;
+    assert!(near(volumes[0] + volumes[1], whole, 1e-2), "{volumes:?}");
+    // Down through the part at y = 3: 18 mm and 12 mm of the block's 30.
+    let mut sorted = volumes.clone();
+    sorted.sort_by(f64::total_cmp);
+    assert!(
+        near(sorted[0], whole * 12.0 / 30.0, 1.0) && near(sorted[1], whole * 18.0 / 30.0, 1.0),
+        "{volumes:?}"
+    );
+    let path = dir.path().join("drawn.3mf");
+    model
+        .save(&path, &edge_engine::Saving::None, Some(&BED))
+        .unwrap();
+    // Kept where asked, for the C++ slicer to read.
+    if let Ok(keep) = std::env::var("EDGE_CUT_KEEP") {
+        std::fs::copy(&path, Path::new(&keep).join("drawn.3mf")).unwrap();
+    }
+    assert!(!slice_file(&path).outlines().is_empty());
+    let mut back = Model::open(&path).unwrap();
+    let half = back.objects()[0].copies()[0].id();
+    let edit = back.cut_edit(Some(&BED), half).unwrap();
+    let read = edit.recipe.drawn.clone().unwrap();
+    assert_eq!(read.samples.len(), 41);
+    assert!(read.finished_open && !read.closed && read.through_all);
+    // Made again from what the file kept.
+    let again = DrawnCut {
+        stroke: RecipeStroke {
+            samples: read
+                .samples
+                .iter()
+                .map(|(pos, normal, facet)| DrawCutSample {
+                    pos: *pos,
+                    normal: *normal,
+                    facet: *facet as usize,
+                })
+                .collect(),
+            closed: read.closed,
+            smoothing: read.smoothing,
+            stroke_bounds: read.strokes.clone(),
+            finished_open: read.finished_open,
+        },
+        params: drawn.params.clone(),
+    };
+    back.cut(
+        Some(&BED),
+        edit.copy,
+        &edit.plane,
+        &CutOptions {
+            drawn: Some(again),
+            ..CutOptions::default()
+        },
+    )
+    .unwrap();
+    assert_eq!(back.objects().len(), 2);
+    // A line too short to cut is refused in the reference's words.
+    let short = DrawnCut {
+        stroke: RecipeStroke {
+            samples: drawn.stroke.samples[..2].to_vec(),
+            ..drawn.stroke.clone()
+        },
+        ..drawn.clone()
+    };
+    let mut refused = block(dir.path(), [10.0, 10.0, 10.0]);
+    let copy = refused.objects()[0].copies()[0].id();
+    let error = refused
+        .cut(
+            Some(&BED),
+            copy,
+            &flat,
+            &CutOptions {
+                drawn: Some(short),
+                ..CutOptions::default()
+            },
+        )
+        .unwrap_err();
+    assert!(!error.to_string().is_empty());
+}
+
+/// A connector of a kind of the fork's own at `at`, plain otherwise.
+fn joint(at: [f64; 3], kind: edge_engine::ConnectorKind) -> edge_engine::Connector {
+    edge_engine::Connector {
+        at,
+        radius: 2.5,
+        height: 5.0,
+        radius_tolerance: 0.0,
+        height_tolerance: 0.0,
+        z_angle: 0.0,
+        kind,
+        style: edge_engine::ConnectorStyle::Prism,
+        shape: edge_engine::ConnectorShape::Circle,
+        pin: Default::default(),
+        flexi: Default::default(),
+        tac: Default::default(),
+    }
+}
+
+#[test]
+fn a_tac_joint_is_its_own_object_or_one_halfs_part_with_a_socket_in_the_other() {
+    use edge_engine::ConnectorKind;
+    use edge_engine::tac::{TacAttachment, TacParams};
+    let dir = tempfile::tempdir().unwrap();
+    let model = block(dir.path(), [30.0, 30.0, 30.0]);
+    let copy = model.objects()[0].copies()[0].id();
+    let (_, reach) = model.in_scene(Some(&BED), copy).unwrap();
+    let [low, high] = reach.unwrap();
+    let mid = [(low[0] + high[0]) / 2.0, (low[1] + high[1]) / 2.0, 15.0];
+    let across = plane(mid, [0.0, 0.0, 1.0]);
+    // Too little clearance stops the cut, in the reference's words.
+    let mut refused = model.clone();
+    let mut tight = joint(mid, ConnectorKind::Tac);
+    tight.tac = TacParams {
+        clearance: 0.0,
+        end_clearance: 0.0,
+        ..TacParams::default()
+    };
+    let error = refused
+        .cut(
+            Some(&BED),
+            copy,
+            &across,
+            &CutOptions {
+                connectors: vec![tight],
+                ..CutOptions::default()
+            },
+        )
+        .unwrap_err();
+    assert!(
+        error
+            .to_string()
+            .contains("Increase the side or end clearance"),
+        "{error}"
+    );
+    // On its own: an object beside the block, laid down; a socket in each
+    // half.
+    let mut separate = model.clone();
+    let done = separate
+        .cut(
+            Some(&BED),
+            copy,
+            &across,
+            &CutOptions {
+                connectors: vec![joint(mid, ConnectorKind::Tac)],
+                ..CutOptions::default()
+            },
+        )
+        .unwrap();
+    // Not counted with the pins in the note.
+    assert_eq!(done.pins, 0);
+    let names: Vec<&str> = separate.objects().iter().map(|o| o.name()).collect();
+    assert_eq!(names, ["block", "block", "block-Pin-1"]);
+    let part = |model: &Model, object: usize, at: usize| {
+        let part = &model.objects()[object].shape().parts()[at];
+        let mut mesh = Mesh::default();
+        mesh.append(&part.mesh, &part.transform);
+        (part.kind, mesh)
+    };
+    for object in [0, 1] {
+        let (kind, socket) = part(&separate, object, 1);
+        assert_eq!(kind, PartKind::Negative);
+        sound(&socket);
+    }
+    let (kind, made) = part(&separate, 2, 0);
+    assert_eq!(kind, PartKind::Normal);
+    sound(&made);
+    // Laid down: 11 mm long across the bed, standing on it.
+    let at = separate.objects()[2].copies()[0].reach().unwrap();
+    assert!(near(at[0][2], 0.0, 1e-6));
+    assert!(near(at[1][1] - at[0][1], 11.0, 0.1), "{at:?}");
+    // The upper half's socket from its face up, the lower's down.
+    let (a_low, a_high) = bounds(&part(&separate, 0, 1).1);
+    assert!(
+        near(a_low[2], 15.0 - 0.02, 1e-4) && a_high[2] > 20.0,
+        "{a_low:?} {a_high:?}"
+    );
+    let (b_low, b_high) = bounds(&part(&separate, 1, 1).1);
+    assert!(
+        near(b_high[2], 15.0 + 0.02, 1e-4) && b_low[2] < 10.0,
+        "{b_low:?} {b_high:?}"
+    );
+    // Attached to A: the connector a part of the upper half, a socket in
+    // the lower alone.
+    let mut attached = model.clone();
+    let mut with_a = joint(mid, ConnectorKind::Tac);
+    with_a.tac.attachment = TacAttachment::Upper;
+    attached
+        .cut(
+            Some(&BED),
+            copy,
+            &across,
+            &CutOptions {
+                connectors: vec![with_a],
+                ..CutOptions::default()
+            },
+        )
+        .unwrap();
+    assert_eq!(attached.objects().len(), 2);
+    let kinds = |object: usize| -> Vec<PartKind> {
+        attached.objects()[object]
+            .shape()
+            .parts()
+            .iter()
+            .map(|p| p.kind)
+            .collect()
+    };
+    assert_eq!(kinds(0), [PartKind::Normal, PartKind::Normal]);
+    assert_eq!(kinds(1), [PartKind::Normal, PartKind::Negative]);
+    // Saved and read back, its settings are in the recipe, and the C++
+    // slicer reads it.
+    let path = dir.path().join("tac.3mf");
+    separate
+        .save(&path, &edge_engine::Saving::None, Some(&BED))
+        .unwrap();
+    if let Ok(keep) = std::env::var("EDGE_CUT_KEEP") {
+        std::fs::copy(&path, Path::new(&keep).join("tac.3mf")).unwrap();
+    }
+    let mut back = Model::open(&path).unwrap();
+    let half = back.objects()[0].copies()[0].id();
+    let edit = back.cut_edit(Some(&BED), half).unwrap();
+    assert_eq!(edit.recipe.connectors[0].kind, 6);
+    let read = TacParams::from_attributes(|name| {
+        edit.recipe.connectors[0]
+            .extra
+            .iter()
+            .find(|(key, _)| key == name)
+            .map(|(_, v)| *v)
+    });
+    assert_eq!(read, TacParams::default());
+    assert!(!slice_file(&path).outlines().is_empty());
+}
+
+#[test]
+fn a_flexi_joint_joins_the_halves_a_gap_apart_in_one_object() {
+    use edge_engine::ConnectorKind;
+    use edge_engine::flexi::{self, FlexiKind, FlexiParams};
+    let dir = tempfile::tempdir().unwrap();
+    // Tall enough that a twist lock's plug stays inside the other half.
+    let model = block(dir.path(), [40.0, 40.0, 80.0]);
+    let copy = model.objects()[0].copies()[0].id();
+    let (_, reach) = model.in_scene(Some(&BED), copy).unwrap();
+    let [low, high] = reach.unwrap();
+    let mid = [(low[0] + high[0]) / 2.0, (low[1] + high[1]) / 2.0, 40.0];
+    let across = plane(mid, [0.0, 0.0, 1.0]);
+    for kind in FlexiKind::ALL {
+        let mut cut = model.clone();
+        let mut c = joint(mid, ConnectorKind::Flexi);
+        c.flexi = FlexiParams {
+            kind,
+            ..FlexiParams::default()
+        };
+        // The joint as the panel makes it for this section (`auto_size`).
+        c.flexi = flexi::auto_size(c.flexi, 20.0);
+        assert_eq!(flexi::validate(&c.flexi), None, "{kind:?}");
+        cut.cut(
+            Some(&BED),
+            copy,
+            &across,
+            &CutOptions {
+                connectors: vec![c],
+                ..CutOptions::default()
+            },
+        )
+        .unwrap_or_else(|error| panic!("{kind:?}: {error}"));
+        assert_eq!(cut.objects().len(), 1, "{kind:?}");
+        let object = &cut.objects()[0];
+        let parts = object.shape().parts();
+        let names: Vec<Option<&str>> = parts.iter().map(|p| p.name.as_deref()).collect();
+        assert_eq!(names, [Some("block_A"), Some("block_B")], "{kind:?}");
+        let gap = flexi::effective_gap(&c.flexi);
+        let whole = 40.0 * 40.0 * 80.0;
+        let mut total = 0.0;
+        for part in parts {
+            let mut mesh = Mesh::default();
+            mesh.append(&part.mesh, &part.transform);
+            sound(&mesh);
+            total += mesh.signed_volume();
+        }
+        // The gap is taken out, and at most what the reliefs take; the
+        // bodies fill some of that again.
+        let slab = 40.0 * 40.0 * gap;
+        let reliefs: f64 = flexi::upper_reliefs(&c.flexi)
+            .iter()
+            .chain(flexi::lower_reliefs(&c.flexi).iter())
+            .map(|mesh| mesh.signed_volume())
+            .sum();
+        assert!(
+            total < whole - slab + 1e-6 && total > whole - slab - reliefs,
+            "{kind:?}: {total}"
+        );
+        // The two parts do not touch: each is apart from the other by
+        // at least the clearance where they meet (their volumes add up
+        // to their union's).
+        let (mut a, mut b) = (Mesh::default(), Mesh::default());
+        a.append(&parts[0].mesh, &parts[0].transform);
+        b.append(&parts[1].mesh, &parts[1].transform);
+        let common = edge_mesh::boolean::boolean_with(
+            &a,
+            &b,
+            edge_mesh::boolean::Op::Intersection,
+            &Default::default(),
+        )
+        .unwrap();
+        assert!(
+            common.signed_volume().abs() < 1e-6,
+            "{kind:?}: {} {:?} at {mid:?}",
+            common.signed_volume(),
+            common.bounds()
+        );
+        // Saved, it slices, and is kept where asked for the C++ slicer.
+        let path = dir.path().join(format!("flexi_{}.3mf", kind.code()));
+        cut.save(&path, &edge_engine::Saving::None, Some(&BED))
+            .unwrap();
+        if let Ok(keep) = std::env::var("EDGE_CUT_KEEP") {
+            std::fs::copy(
+                &path,
+                Path::new(&keep).join(format!("flexi_{}.3mf", kind.code())),
+            )
+            .unwrap();
+        }
+        assert!(!slice_file(&path).outlines().is_empty(), "{kind:?}");
+    }
+    // A TAC Joint with it is refused, in the reference's words.
+    let mut refused = model.clone();
+    let error = refused
+        .cut(
+            Some(&BED),
+            copy,
+            &across,
+            &CutOptions {
+                connectors: vec![
+                    joint(mid, ConnectorKind::Flexi),
+                    joint([mid[0] + 10.0, mid[1], mid[2]], ConnectorKind::Tac),
+                ],
+                ..CutOptions::default()
+            },
+        )
+        .unwrap_err();
+    assert!(
+        error.to_string().contains("TAC Joint cannot be combined"),
+        "{error}"
+    );
 }

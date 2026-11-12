@@ -98,6 +98,9 @@ uniform bool u_split;
 uniform vec4 u_split_plane;
 uniform vec3 u_split_upper;
 uniform vec3 u_split_lower;
+// Each side shown (1), a ghost of itself (less), or not at all (under 0):
+// the cut tool's "Show halves" (gouraud.fs, its alpha a side).
+uniform vec2 u_split_alpha;
 // What faces down more steeply than this is marked (mm_gouraud.fs, its
 // slope detection: under -2, nothing): what is near the bed light blue, an
 // overhang half red.
@@ -110,14 +113,20 @@ out vec4 out_color;
 void main() {
   if (u_clipped && dot(v_world, u_clip.xyz) > u_clip.w) discard;
   vec3 color = v_color.rgb;
-  if (u_split) color = dot(v_world, u_split_plane.xyz) > u_split_plane.w ? u_split_upper : u_split_lower;
+  float side_alpha = 1.0;
+  if (u_split) {
+    bool upper = dot(v_world, u_split_plane.xyz) > u_split_plane.w;
+    color = upper ? u_split_upper : u_split_lower;
+    side_alpha = upper ? u_split_alpha.x : u_split_alpha.y;
+    if (side_alpha < 0.0) discard;
+  }
   if (u_slope > -2.0) {
     if (v_world.z < 0.1 && v_world.z > -0.1) color = vec3(0.73, 1.0, 1.0);
     else if (v_world_nz < u_slope - 0.0001) color = color * 0.5 + vec3(0.78, 0.0, 0.0) * 0.5;
   }
   if (u_volume && (any(lessThan(v_world, u_volume_min)) || any(greaterThan(v_world, u_volume_max))))
     color = mix(color, vec3(0.0), 0.3333);
-  out_color = vec4(vec3(v_intensity.y) + color * (v_intensity.x + u_emission), v_color.a);
+  out_color = vec4(vec3(v_intensity.y) + color * (v_intensity.x + u_emission), v_color.a * side_alpha);
 }`,
   };
 

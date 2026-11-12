@@ -65,6 +65,9 @@ pub struct Session {
     scene: scene::Cache,
     /// The painting tool that is open, and what it keeps of each mesh.
     paint: paint::Cache,
+    /// "Cut"'s curved previews: the copy's parts made ready for them, the
+    /// one under way (to stop), the last made.
+    cut_preview: Mutex<edit::Previews>,
     /// The printers' connections and the files being sent to them.
     hosts: Hosts,
     /// The language the page is shown in and the calls compose in.
@@ -1001,6 +1004,7 @@ impl Session {
             traced: std::env::var_os("EDGE_DESKTOP_TRACE").is_some(),
             scene: scene::Cache::default(),
             paint: paint::Cache::default(),
+            cut_preview: Mutex::default(),
             hosts: Hosts {
                 kept: Mutex::new(kept),
                 queue: crate::hosts::queue::Queue::default(),

@@ -84,14 +84,22 @@ pub const FOLDED_AT_FIRST: &[(&str, &str, &str)] = &[
     ("printer", "Machine G-code", "Change extrusion role G-code"),
     ("printer", "Machine G-code", "Pause G-code"),
     ("printer", "Machine G-code", "Template Custom G-code"),
-    ("printer", "Multimaterial", "Per-nozzle settings (experimental)"),
+    (
+        "printer",
+        "Multimaterial",
+        "Per-nozzle settings (experimental)",
+    ),
     (
         "printer",
         "Multimaterial",
         "Single extruder multi-material parameters",
     ),
     ("printer", "Multimaterial", "Advanced"),
-    ("printer", "Extruder %d", "Retraction when switching material"),
+    (
+        "printer",
+        "Extruder %d",
+        "Retraction when switching material",
+    ),
     ("printer", "Motion ability", "Resonance Compensation"),
     ("printer", "Motion ability", "Jerk limitation"),
     ("printer", "Notes", "Notes"),
@@ -162,7 +170,9 @@ impl Session {
                 let (kind, page, group) = (field("kind")?, field("page")?, field("group")?);
                 let book = book_of(kind).ok_or_else(|| format!("there are no {kind} pages"))?;
                 if !Session::has_group(book, page, group) {
-                    return Err(format!("the {kind} pages have no group {group:?} on {page:?}"));
+                    return Err(format!(
+                        "the {kind} pages have no group {group:?} on {page:?}"
+                    ));
                 }
                 let open = match each.get("open") {
                     None | Some(Value::Null) => None,
@@ -230,7 +240,10 @@ mod tests {
         assert_eq!(answer["sidebar_width"], 452);
         // Another run finds it.
         let again = Arc::new(Session::with_settings(None, Some(dir.path().to_owned())));
-        assert_eq!(again.call("layout", &json!({})).unwrap()["sidebar_width"], 452);
+        assert_eq!(
+            again.call("layout", &json!({})).unwrap()["sidebar_width"],
+            452
+        );
 
         // Outside the limits, or not a whole number: refused, and nothing changes.
         for wrong in [
@@ -245,7 +258,10 @@ mod tests {
                 .unwrap_err();
             assert!(said.contains("sidebar_width"), "{said}");
         }
-        assert_eq!(again.call("layout", &json!({})).unwrap()["sidebar_width"], 452);
+        assert_eq!(
+            again.call("layout", &json!({})).unwrap()["sidebar_width"],
+            452
+        );
 
         // Null is the usual width again, and nothing is kept for it.
         let answer = again
@@ -273,7 +289,10 @@ mod tests {
         }
         let all = folded_at_first();
         assert!(all.contains(&json!({ "kind": "item", "page": "Others", "group": "Notes" })));
-        assert!(!all.iter().any(|each| each["kind"] == "item" && each["page"] == "Notes"));
+        assert!(
+            !all.iter()
+                .any(|each| each["kind"] == "item" && each["page"] == "Notes")
+        );
     }
 
     #[test]
@@ -316,7 +335,10 @@ mod tests {
         assert_eq!(open("process", "Speed", "Advanced"), None);
         assert_eq!(open("process", "Quality", "Seam"), Some(json!(false)));
         assert_eq!(open("item", "Quality", "Seam"), Some(json!(true)));
-        assert_eq!(open("printer", "Extruder %d", "Retraction"), Some(json!(false)));
+        assert_eq!(
+            open("printer", "Extruder %d", "Retraction"),
+            Some(json!(false))
+        );
         assert_eq!(open("filament", "Setting Overrides", "Retraction"), None);
 
         // A group the pages do not have, a kind there is none of, an
@@ -332,7 +354,12 @@ mod tests {
             ]),
             json!({ "kind": "process" }),
         ] {
-            assert!(again.call("layout_set", &json!({ "groups": wrong })).is_err(), "{wrong}");
+            assert!(
+                again
+                    .call("layout_set", &json!({ "groups": wrong }))
+                    .is_err(),
+                "{wrong}"
+            );
         }
         assert_eq!(again.call("layout", &json!({})).unwrap()["groups"], groups);
 

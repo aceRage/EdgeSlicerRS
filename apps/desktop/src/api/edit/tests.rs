@@ -1689,6 +1689,292 @@ fn connectors_are_placed_on_the_cut_face_cut_saved_and_put_back() {
 }
 
 #[test]
+fn a_curved_cut_is_previewed_made_and_put_back_with_its_surface() {
+    let session = Arc::new(Session::new(None));
+    let project = open(&session, BARE);
+    choose_presets(&session, project);
+    let (copy, low, high) = first_copy(&session, project);
+    let plane = across(low, high, (low[2] + high[2]) / 2.0);
+    let mut z = vec![0.0; 25];
+    z[12] = 3.0;
+    let half = (high[0] - low[0]).max(high[1] - low[1]);
+    let sheet = json!({ "nx": 5, "ny": 5, "half_u": half, "half_v": half, "z": z });
+    let preview = ask(
+        &session,
+        "cut_preview",
+        json!({ "project": project, "copy": copy, "plane": plane, "sheet": sheet }),
+    );
+    let triangles = preview["triangles"].as_array().unwrap();
+    assert!(
+        triangles.iter().all(|count| count.as_u64().unwrap() > 0),
+        "{preview}"
+    );
+    let bytes = session
+        .call_bytes(
+            "cut_preview_mesh",
+            &json!({ "id": preview["id"], "side": "lower" }),
+        )
+        .unwrap();
+    assert!(bytes.starts_with(b"EDGM"));
+    // A surface that is no surface is refused.
+    let error = refused(
+        &session,
+        "scene_edit",
+        json!({ "project": project, "op": "cut", "copy": copy, "plane": plane,
+                "sheet": { "nx": 1, "ny": 5, "half_u": 1.0, "half_v": 1.0, "z": [] } }),
+    );
+    assert!(error.contains("surface"), "{error}");
+    let done = edit(
+        &session,
+        json!({ "project": project, "op": "cut", "copy": copy, "plane": plane, "sheet": sheet }),
+    );
+    assert_eq!(done["scene"]["objects"].as_array().unwrap().len(), 2);
+    let half_copy = done["made"][0].as_u64().unwrap();
+    let put = edit(
+        &session,
+        json!({ "project": project, "op": "cut_edit", "copy": half_copy }),
+    );
+    assert_eq!(put["recipe"]["sheet"]["z"][12], 3.0);
+    assert_eq!(put["recipe"]["sheet"]["nx"], 5);
+}
+
+#[test]
+fn a_drawn_cut_is_made_from_its_line_and_not_put_back_as_a_flat_one() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = boxes(
+        &dir.path().join("box.stl"),
+        &[([0.0; 3], [30.0, 30.0, 20.0])],
+    );
+    let session = Arc::new(Session::new(None));
+    let project = stl_project(&session, &path);
+    let (copy, low, high) = first_copy(&session, project);
+    // The plane on the top; the line across it 3 mm off the middle, in the
+    // plane's own coordinates.
+    let plane = across(low, high, high[2]);
+    let line: Vec<Value> = (0..=40)
+        .map(|k| json!([-20.0 + k as f64, 3.0, 0.0, 0.0, 0.0, 1.0, 0]))
+        .collect();
+    let drawn = json!({ "samples": line, "finished_open": true, "through_all": true });
+    // A line too short to cut by is refused in the panel's words.
+    let short: Vec<Value> = (0..6)
+        .map(|k| json!([k as f64 * 0.1, 3.0, 0.0, 0.0, 0.0, 1.0, 0]))
+        .collect();
+    let error = refused(
+        &session,
+        "scene_edit",
+        json!({ "project": project, "op": "cut", "copy": copy, "plane": plane,
+                "drawn": { "samples": short, "finished_open": true } }),
+    );
+    assert_eq!(error, "Draw a longer line on the model.");
+    let done = edit(
+        &session,
+        json!({ "project": project, "op": "cut", "copy": copy, "plane": plane, "drawn": drawn }),
+    );
+    let placings = ask(&session, "scene", json!({ "project": project }))["placings"].clone();
+    let mut widths: Vec<f64> = placings
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|placing| numbers(&placing["box"][1])[1] - numbers(&placing["box"][0])[1])
+        .collect();
+    widths.sort_by(f64::total_cmp);
+    assert_eq!(widths.len(), 2, "{done}");
+    assert!(
+        (widths[0] - 12.0).abs() < 0.1 && (widths[1] - 18.0).abs() < 0.1,
+        "{widths:?}"
+    );
+    let half_copy = done["made"][0].as_u64().unwrap();
+    let recipe = ask(
+        &session,
+        "cut_recipe",
+        json!({ "project": project, "copy": half_copy }),
+    );
+    assert_eq!(recipe["mode"], "drawn");
+    assert_eq!(recipe["drawn"]["samples"].as_array().unwrap().len(), 41);
+    assert_eq!(recipe["drawn"]["samples"][0][1], 3.0);
+    assert_eq!(recipe["drawn"]["through_all"], true);
+    // "Edit cut..." puts it back with its line, to be made again.
+    let put = edit(
+        &session,
+        json!({ "project": project, "op": "cut_edit", "copy": half_copy }),
+    );
+    assert_eq!(put["recipe"]["mode"], "drawn");
+    assert_eq!(
+        put["recipe"]["drawn"]["samples"].as_array().unwrap().len(),
+        41
+    );
+    let whole_copy = put["made"][0].as_u64().unwrap();
+    // The tool's calls on it: rays down onto the top meet it there, and
+    // the line drawn and used open is checked, its surface made.
+    let plane = across(low, high, high[2]);
+    let mid_x = (low[0] + high[0]) / 2.0;
+    let mid_y = (low[1] + high[1]) / 2.0;
+    let rays: Vec<Value> = (0..=28)
+        .map(|k| {
+            json!([
+                low[0] + 1.0 + k as f64,
+                mid_y + 3.0,
+                high[2] + 50.0,
+                0.0,
+                0.0,
+                -1.0
+            ])
+        })
+        .collect();
+    let hits = ask(
+        &session,
+        "cut_draw_hits",
+        json!({ "project": project, "copy": whole_copy, "plane": plane, "rays": rays }),
+    );
+    let stroke: Vec<Value> = hits["hits"].as_array().unwrap().clone();
+    assert!(stroke.iter().all(|hit| !hit.is_null()), "{hits}");
+    assert!((stroke[0][2].as_f64().unwrap()).abs() < 1e-6, "{hits}");
+    assert!(
+        (stroke[0][5].as_f64().unwrap() - 1.0).abs() < 1e-6,
+        "{hits}"
+    );
+    // A ray from inside the part meets it from inside: no hit.
+    let inside = ask(
+        &session,
+        "cut_draw_hits",
+        json!({ "project": project, "copy": whole_copy, "plane": plane,
+                "rays": [[mid_x, mid_y, high[2] - 5.0, 0.0, 0.0, 1.0]] }),
+    );
+    assert!(inside["hits"][0].is_null(), "{inside}");
+    let drawn = json!({ "samples": [], "through_all": true });
+    let first = ask(
+        &session,
+        "cut_draw",
+        json!({ "project": project, "copy": whole_copy, "plane": plane, "drawn": drawn,
+                "op": "append", "stroke": stroke, "at": "back" }),
+    );
+    assert_eq!(first["done"], true);
+    assert_eq!(first["valid"], false);
+    assert!(first["error"].is_null(), "{first}");
+    let mut chain = first["drawn"].clone();
+    chain["through_all"] = json!(true);
+    let open = ask(
+        &session,
+        "cut_draw",
+        json!({ "project": project, "copy": whole_copy, "plane": plane, "drawn": chain, "op": "finish_open" }),
+    );
+    assert_eq!(open["valid"], true, "{open}");
+    assert_eq!(open["closed"], false);
+    assert!(!open["surface"].as_array().unwrap().is_empty());
+    // "Close loop" across a wide gap with no path is refused.
+    let mut chain = open["drawn"].clone();
+    chain["through_all"] = json!(true);
+    let again = ask(
+        &session,
+        "cut_draw",
+        json!({ "project": project, "copy": whole_copy, "plane": plane, "drawn": chain,
+                "op": "close", "path": [] }),
+    );
+    assert_eq!(again["done"], false);
+}
+
+#[test]
+fn a_tac_joint_and_a_flexi_joint_are_checked_made_and_put_back() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = boxes(
+        &dir.path().join("box.stl"),
+        &[([0.0; 3], [40.0, 40.0, 60.0])],
+    );
+    let session = Arc::new(Session::new(None));
+    let project = stl_project(&session, &path);
+    let (copy, low, high) = first_copy(&session, project);
+    let plane = across(low, high, 30.0);
+    let at = [(low[0] + high[0]) / 2.0, (low[1] + high[1]) / 2.0, 30.0];
+    // The panel's answers.
+    let tac = ask(
+        &session,
+        "cut_tac",
+        json!({ "tac": {}, "faces": [0.0, 0.0] }),
+    );
+    assert!(tac["invalid"].is_null(), "{tac}");
+    assert_eq!(tac["tac"]["scale"], 1.0);
+    assert!(tac["outline"].as_array().unwrap().len() > 100);
+    let tight = ask(
+        &session,
+        "cut_tac",
+        json!({ "tac": { "clearance": 0.0, "end_clearance": 0.0 }, "faces": [0.0, 0.0] }),
+    );
+    assert!(
+        tight["invalid"]
+            .as_str()
+            .unwrap()
+            .contains("Increase the side"),
+        "{tight}"
+    );
+    let flexi = ask(
+        &session,
+        "cut_flexi",
+        json!({ "flexi": { "kind": 3 }, "auto": true, "inscribed": 20.0, "nozzle": 0.4 }),
+    );
+    assert!(flexi["invalid"].is_null(), "{flexi}");
+    assert_eq!(flexi["flexi"]["kind"], 3.0);
+    assert!(flexi["radius"].as_f64().unwrap() > 0.0);
+    // A ring's clearance is held to the nozzle's floor.
+    let floored = ask(
+        &session,
+        "cut_flexi",
+        json!({ "flexi": { "clearance": 0.0 }, "nozzle": 0.4 }),
+    );
+    assert_eq!(floored["flexi"]["clearance"], floored["floor"]);
+    let joint = |kind: &str, shape: Value| {
+        json!({ "at": at, "radius": 3.0, "height": 6.0, "radius_tolerance": 0.0,
+                "height_tolerance": 0.0, "z_angle": 0.0, "type": kind, "style": "prism",
+                "shape": "circle", kind: shape })
+    };
+    // A TAC Joint: the halves and the connector on its own.
+    let done = edit(
+        &session,
+        json!({ "project": project, "op": "cut", "copy": copy, "plane": plane,
+                "connectors": [joint("tac", tac["tac"].clone())] }),
+    );
+    assert_eq!(
+        done["scene"]["objects"].as_array().unwrap().len(),
+        3,
+        "{done}"
+    );
+    let half = done["made"][0].as_u64().unwrap();
+    let put = edit(
+        &session,
+        json!({ "project": project, "op": "cut_edit", "copy": half }),
+    );
+    assert_eq!(put["recipe"]["connectors"][0]["type"], "tac");
+    assert_eq!(
+        put["recipe"]["connectors"][0]["tac"]["end_clearance"],
+        0.30000001192092896
+    );
+    // A Flexi joint instead: one object of two parts.
+    let whole_copy = put["made"][0].as_u64().unwrap();
+    let done = edit(
+        &session,
+        json!({ "project": project, "op": "cut", "copy": whole_copy, "plane": plane,
+                "connectors": [joint("flexi", flexi["flexi"].clone())], "amend": "Edit cut" }),
+    );
+    let objects = done["scene"]["objects"].as_array().unwrap();
+    assert_eq!(objects.len(), 1, "{done}");
+    let half = done["made"][0].as_u64().unwrap();
+    let recipe = ask(
+        &session,
+        "cut_recipe",
+        json!({ "project": project, "copy": half }),
+    );
+    assert_eq!(recipe["connectors"][0]["type"], "flexi");
+    assert_eq!(recipe["connectors"][0]["flexi"]["kind"], 3.0);
+    // The joint's shape for drawing.
+    let bytes = session
+        .call_bytes(
+            "cut_connector_mesh",
+            &json!({ "type": "flexi", "style": "prism", "shape": "circle", "flexi": flexi["flexi"] }),
+        )
+        .unwrap();
+    assert!(bytes.starts_with(b"EDGM"));
+}
+
+#[test]
 fn a_dovetail_cut_is_checked_then_made_and_sliced() {
     let session = Arc::new(Session::new(None));
     let project = open(&session, "resources/handy_models/3DBenchy.3mf");

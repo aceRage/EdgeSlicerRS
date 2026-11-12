@@ -102,11 +102,14 @@ pub struct CutId {
 /// A part a cut's connector made (Model.hpp `ModelVolume::CutInfo`): the
 /// connector's kind (0 plug, 1 dowel, 2 snap, as the reference numbers
 /// `CutConnectorType`) and its tolerances.
-#[derive(Clone, Copy, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct CutConnectorInfo {
     pub kind: u32,
     pub radius_tolerance: f64,
     pub height_tolerance: f64,
+    /// What else the reference writes on it (a pin's `processed` and
+    /// `pushfit_*`), by name.
+    pub extra: Vec<(String, f64)>,
 }
 
 /// What a part of a file holds that [`crate::Part`] does not. This is the
@@ -264,8 +267,8 @@ impl PartKept {
     }
 
     /// The connector of a cut the part is, when it is one.
-    pub fn connector(&self) -> Option<CutConnectorInfo> {
-        self.connector
+    pub fn connector(&self) -> Option<&CutConnectorInfo> {
+        self.connector.as_ref()
     }
 
     /// The part without its settings: what is left of it once they are
@@ -600,6 +603,17 @@ impl ObjectKept {
                 let to = tag[from..].find('"')? + from;
                 tag[from..to].trim().parse().ok()
             };
+            // Every other attribute, as a number.
+            let mut extra = Vec::new();
+            for piece in tag.split('"').collect::<Vec<_>>().chunks(2) {
+                if let [name, number] = piece
+                    && let Some(name) = name.trim().strip_suffix('=')
+                    && !["volume_id", "type", "r_tolerance", "h_tolerance"].contains(&name)
+                    && let Ok(number) = number.trim().parse::<f64>()
+                {
+                    extra.push((name.trim().to_owned(), number));
+                }
+            }
             if let (Some(volume), Some(kind)) = (value("volume_id"), value("type")) {
                 out.push((
                     volume as usize,
@@ -607,6 +621,7 @@ impl ObjectKept {
                         kind: kind as u32,
                         radius_tolerance: value("r_tolerance").unwrap_or(0.0),
                         height_tolerance: value("h_tolerance").unwrap_or(0.0),
+                        extra,
                     },
                 ));
             }

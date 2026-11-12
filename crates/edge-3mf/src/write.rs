@@ -1165,9 +1165,14 @@ fn cut_of(object: &Object) -> Option<Result<String, ()>> {
             .iter()
             .enumerate()
             .filter_map(|(at, part)| {
-                let info = part.kept.as_ref()?.connector?;
+                let info = part.kept.as_ref()?.connector.as_ref()?;
+                let extra: String = info
+                    .extra
+                    .iter()
+                    .map(|(name, value)| format!(" {name}=\"{}\"", *value as f32))
+                    .collect();
                 Some(format!(
-                    "\n   <connector volume_id=\"{at}\" type=\"{}\" r_tolerance=\"{}\" h_tolerance=\"{}\"/>",
+                    "\n   <connector volume_id=\"{at}\" type=\"{}\" r_tolerance=\"{}\" h_tolerance=\"{}\"{extra}/>",
                     info.kind, info.radius_tolerance as f32, info.height_tolerance as f32
                 ))
             })

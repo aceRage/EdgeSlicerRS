@@ -103,6 +103,45 @@ pub struct CutOptions {
     /// A snap's slit and bulge, of its radius (`m_snap_space_proportion`,
     /// `m_snap_bulge_proportion`): the tool's, not each connector's.
     pub snap: [f64; 2],
+    /// The nozzle's diameter, which a pin's slot is measured against.
+    pub nozzle: f64,
+    /// "Curved": the surface the cut follows, over the plane
+    /// ([`crate::curved`]). A flat one is the plane cut itself.
+    pub sheet: Option<crate::curved::Sheet>,
+    /// "Draw": the line drawn on the part and how the surface is swept
+    /// from it ([`crate::drawn`]). Wins over a curved sheet.
+    pub drawn: Option<DrawnCut>,
+}
+
+/// A drawn cut: the line as the tool keeps it (the chain's samples, in
+/// the plane's own coordinates) and the sweep. The cut thickness is the
+/// cut's own ([`CutOptions::thickness`]).
+#[derive(Clone, Debug, PartialEq)]
+pub struct DrawnCut {
+    pub stroke: crate::drawn::RecipeStroke,
+    pub params: crate::drawn::DrawCutParams,
+}
+
+impl DrawnCut {
+    /// The line finished as the reference finishes it for the cut
+    /// (`DrawCutChain::finish`, `DefaultSpacing`), or why it cannot be cut.
+    /// The line made ready against the object's printed mesh in the
+    /// plane's frame ([`crate::drawn::draw_cut_line`]).
+    pub fn line(&self, object: &edge_mesh::Mesh) -> crate::drawn::DrawnLine {
+        let tree = edge_mesh::raycast::Tree::new(object);
+        let chain = crate::drawn::recipe_stroke_to_chain(&self.stroke);
+        crate::drawn::draw_cut_line(object, &tree, &chain, self.stroke.smoothing, &self.params)
+    }
+
+    pub fn finished(&self) -> Result<crate::drawn::DrawCutStroke, &'static str> {
+        let chain = crate::drawn::recipe_stroke_to_chain(&self.stroke);
+        let (stroke, error) = chain.finish(crate::drawn::DEFAULT_SPACING, self.stroke.smoothing);
+        if error == crate::drawn::DrawCutError::None {
+            Ok(stroke)
+        } else {
+            Err(crate::drawn::draw_cut_error_words(error))
+        }
+    }
 }
 
 /// What a connector is (Model.hpp `CutConnectorType`): a plug on the
@@ -113,6 +152,15 @@ pub enum ConnectorKind {
     Plug,
     Dowel,
     Snap,
+    /// The fork's push-fit pin: printed on its own, pushed into a hole in
+    /// each half ([`crate::pushfit`]).
+    Pin,
+    /// The fork's print-in-place joint: the halves cut a gap apart and
+    /// joined by it, one object of two parts ([`crate::flexi`]).
+    Flexi,
+    /// The fork's TAC Joint: a connector of a fixed shape, printed on its
+    /// own or with one half, a socket in the other ([`crate::tac`]).
+    Tac,
 }
 
 /// Its sides: straight, or narrowing (a plug's to half its radius at the
@@ -139,13 +187,23 @@ impl ConnectorKind {
             Self::Plug => 0,
             Self::Dowel => 1,
             Self::Snap => 2,
+            // 3 is BambuStudio's Thread.
+            Self::Flexi => 4,
+            Self::Pin => 5,
+            Self::Tac => 6,
         }
     }
 
     pub fn of(code: u32) -> Option<Self> {
-        [Self::Plug, Self::Dowel, Self::Snap]
-            .get(code as usize)
-            .copied()
+        match code {
+            0 => Some(Self::Plug),
+            1 => Some(Self::Dowel),
+            2 => Some(Self::Snap),
+            4 => Some(Self::Flexi),
+            5 => Some(Self::Pin),
+            6 => Some(Self::Tac),
+            _ => None,
+        }
     }
 }
 
@@ -205,6 +263,27 @@ pub struct Connector {
     pub kind: ConnectorKind,
     pub style: ConnectorStyle,
     pub shape: ConnectorShape,
+    /// A pin's shape; its radius and height above are then its own (half
+    /// its diameter, its two lengths).
+    pub pin: crate::pushfit::Pin,
+    /// A Flexi joint's shape.
+    pub flexi: crate::flexi::FlexiParams,
+    /// A TAC Joint's settings.
+    pub tac: crate::tac::TacParams,
+}
+
+impl Connector {
+    /// What is written with it beyond the plain connector's fields: a
+    /// pin's, a Flexi joint's or a TAC Joint's own settings
+    /// (bbs_3mf.cpp, `cut_information.xml` and `cut_recipe.xml`).
+    pub fn attributes(&self) -> Vec<(String, f64)> {
+        match self.kind {
+            ConnectorKind::Pin => self.pin.attributes(),
+            ConnectorKind::Flexi => crate::flexi::attributes(&self.flexi),
+            ConnectorKind::Tac => self.tac.attributes(),
+            _ => Vec::new(),
+        }
+    }
 }
 
 /// How far a connector's hole reaches through the cut face, so that the
@@ -276,6 +355,9 @@ impl Default for CutOptions {
             editable: true,
             connectors: Vec::new(),
             snap: [0.3, 0.15],
+            nozzle: 0.4,
+            sheet: None,
+            drawn: None,
         }
     }
 }
@@ -298,9 +380,26 @@ impl CutOptions {
 pub struct CutDone {
     /// The copies of the objects made, which the reference selects.
     pub made: Vec<u64>,
+    /// A curved cut's sides with nothing in them (upper, lower): the cut
+    /// still makes what it can (`perform_cut`'s note).
+    pub empty: Option<[bool; 2]>,
+    /// The pins made, how many print lying, and how many were made
+    /// without the slit asked for (the boolean failed).
+    pub pins: usize,
+    pub pins_lying: usize,
+    pub pin_slot_failures: usize,
     /// How many chains of cut edges were left without a cap, the object
     /// being open where the plane crossed it.
     pub open: usize,
+}
+
+/// A copy's printed parts made ready for a curved cut ([`Model::cut_prepared`]).
+#[derive(Clone)]
+pub struct Prepared {
+    /// Each part's, by its place; none for one that is not printed.
+    solids: Vec<Option<edge_mesh::boolean::Solid>>,
+    /// Where the copy stood when they were made.
+    scene: Transform,
 }
 
 /// A cut put back to be made again ([`Model::cut_edit`]).
@@ -338,6 +437,8 @@ pub struct CutPieces {
 struct Made {
     upper: Vec<Part>,
     lower: Vec<Part>,
+    /// A curved cut's sides that came out empty: upper, lower.
+    empty: [bool; 2],
     helpers: Vec<(Part, bool, bool)>,
     open: usize,
     turned: Transform,
@@ -586,7 +687,15 @@ impl Model {
         scene: &Transform,
         plane: &Transform,
         options: &CutOptions,
+        prepared: Option<&Prepared>,
+        cancel: Option<&edge_mesh::boolean::Cancel>,
     ) -> Result<Made, Failure> {
+        let drawn = options.drawn.as_ref().filter(|_| options.groove.is_none());
+        let sheet = options
+            .sheet
+            .as_ref()
+            .filter(|sheet| !sheet.is_flat() && options.groove.is_none() && drawn.is_none());
+        let mut empty = [true, true];
         let to_parts = options.to_parts && options.sides.is_none() && options.groove.is_none();
         let keep_upper = options.keep_upper || to_parts || options.sides.is_some();
         let keep_lower = options.keep_lower || to_parts || options.sides.is_some();
@@ -602,12 +711,142 @@ impl Model {
             .ok_or_else(|| refused("that is no plane to cut by"))?;
         let faces = options.faces();
         let held = &self.objects[at];
+        // The drawn line made ready once for every part, against the
+        // object's printed parts as the tool drew it on them.
+        let drawn = match drawn {
+            Some(cut) => {
+                let mut object = edge_mesh::Mesh::default();
+                for part in &held.shape.parts {
+                    if part.kind == PartKind::Normal && !is_connector(part) {
+                        object.append(&part.mesh, &part.transform.then(&turned).then(&to_plane));
+                    }
+                }
+                let line = cut.line(&object);
+                if line.error != crate::drawn::DrawCutError::None {
+                    return Err(refused(crate::drawn::draw_cut_error_words(line.error)));
+                }
+                let mut params = line.params;
+                params.thickness = options.thickness;
+                params.thickness_offset = options.thickness_from;
+                Some((line.stroke, params))
+            }
+            None => None,
+        };
         let mut upper: Vec<Part> = Vec::new();
         let mut lower: Vec<Part> = Vec::new();
         let mut helpers: Vec<(Part, bool, bool)> = Vec::new();
         let mut open = 0;
-        for part in held.shape.parts.iter() {
+        for (number, part) in held.shape.parts.iter().enumerate() {
             let placed = part.transform.then(&turned);
+            // A drawn surface: the part cut with the solid the line sweeps,
+            // in the plane's own coordinates (DrawCut.cpp `draw_cut_split`).
+            if part.kind == PartKind::Normal
+                && !part.mesh.triangles.is_empty()
+                && let Some((stroke, params)) = &drawn
+            {
+                let mut flat = edge_mesh::Mesh::default();
+                flat.append(&part.mesh, &placed.then(&to_plane));
+                let solid = edge_mesh::boolean::Solid::new(&flat).map_err(|error| {
+                    refused(format!("The cut could not be made. The part {error}."))
+                })?;
+                let halves =
+                    match crate::drawn::draw_cut_split(&solid, &flat, stroke, params, cancel) {
+                        Ok(halves) => halves,
+                        // A part the line leaves whole goes whole to its side.
+                        Err(crate::drawn::DrawSplitError::Draw(
+                            crate::drawn::DrawCutError::EmptySide,
+                        )) => {
+                            let [upper_empty, _] =
+                                crate::drawn::draw_cut_empty_sides(&flat, stroke, params);
+                            if upper_empty {
+                                (edge_mesh::Mesh::default(), flat.clone())
+                            } else {
+                                (flat.clone(), edge_mesh::Mesh::default())
+                            }
+                        }
+                        Err(crate::drawn::DrawSplitError::Draw(error)) => {
+                            return Err(refused(crate::drawn::draw_cut_error_words(error)));
+                        }
+                        Err(error) => {
+                            return Err(refused(format!("The cut could not be made. {error}")));
+                        }
+                    };
+                for (plane_mesh, side) in [(halves.0, true), (halves.1, false)] {
+                    if plane_mesh.triangles.is_empty() {
+                        continue;
+                    }
+                    empty[usize::from(!side)] = false;
+                    if (side && !keep_upper) || (!side && !keep_lower) {
+                        continue;
+                    }
+                    let mut mesh = edge_mesh::Mesh::default();
+                    mesh.append(&plane_mesh, &back);
+                    let made = Part {
+                        mesh: Arc::new(crate::curved::tidy(mesh)),
+                        paint: None,
+                        seam: None,
+                        transform: Transform::IDENTITY,
+                        kept: part.kept.as_deref().map(|kept| Arc::new(kept.piece())),
+                        ..part.clone()
+                    };
+                    if side {
+                        upper.push(made);
+                    } else {
+                        lower.push(made);
+                    }
+                }
+                continue;
+            }
+            // A curved surface: the part cut with the solid under it, in the
+            // halves' coordinates (CurvedCut.cpp `curved_cut_split`).
+            if part.kind == PartKind::Normal
+                && !part.mesh.triangles.is_empty()
+                && let Some(sheet) = sheet
+            {
+                let mut baked = edge_mesh::Mesh::default();
+                baked.append(&part.mesh, &placed);
+                let made_here;
+                let solid = match prepared
+                    .and_then(|prepared| prepared.solids.get(number))
+                    .and_then(Option::as_ref)
+                {
+                    Some(solid) => solid,
+                    None => {
+                        made_here = edge_mesh::boolean::Solid::new(&baked).map_err(|error| {
+                            refused(format!("The cut could not be made. The part {error}."))
+                        })?;
+                        &made_here
+                    }
+                };
+                let (low, high) = crate::curved::slabs(sheet, &back, &baked.vertices, faces);
+                let (up, down) = crate::curved::cut_with_solid(solid, &low, high.as_ref(), cancel)
+                    .map_err(|error| refused(format!("The cut could not be made. {error}")))?;
+                for (mesh, side) in [(up, true), (down, false)] {
+                    if mesh.triangles.is_empty() {
+                        continue;
+                    }
+                    empty[usize::from(!side)] = false;
+                    if (side && !keep_upper) || (!side && !keep_lower) {
+                        continue;
+                    }
+                    // Cut through by a boolean: what was painted is not
+                    // carried.
+                    let made = Part {
+                        mesh: Arc::new(mesh),
+                        paint: None,
+                        seam: None,
+                        transform: Transform::IDENTITY,
+                        kept: part.kept.as_deref().map(|kept| Arc::new(kept.piece())),
+                        ..part.clone()
+                    };
+                    if side {
+                        upper.push(made);
+                    } else {
+                        lower.push(made);
+                    }
+                }
+                continue;
+            }
             if part.kind == PartKind::Normal
                 && !part.mesh.triangles.is_empty()
                 && let Some(groove) = &options.groove
@@ -694,9 +933,13 @@ impl Model {
             }
         }
 
+        if sheet.is_none() && drawn.is_none() {
+            empty = [upper.is_empty(), lower.is_empty()];
+        }
         Ok(Made {
             upper,
             lower,
+            empty,
             helpers,
             open,
             turned,
@@ -730,7 +973,7 @@ impl Model {
             sides: Some(Vec::new()),
             ..options.clone()
         };
-        let made = self.cut_parts(at, &scene, plane, &options)?;
+        let made = self.cut_parts(at, &scene, plane, &options, None, None)?;
         let mut out = CutPieces {
             offset: scene.rows[3],
             ..CutPieces::default()
@@ -854,9 +1097,98 @@ impl Model {
         // With connectors both parts are kept, each an object of its own
         // (GLGizmoCut.cpp `perform_cut`: KeepUpper, KeepLower, not
         // KeepAsParts while there are connectors); a dovetail takes none.
-        let connected = !options.connectors.is_empty() && options.groove.is_none();
+        if options.sheet.as_ref().is_some_and(|sheet| !sheet.sound()) {
+            return Err(refused("that is no surface to cut by"));
+        }
+        if !options.connectors.is_empty()
+            && (options.drawn.is_some()
+                || options.sheet.as_ref().is_some_and(|sheet| !sheet.is_flat()))
+        {
+            return Err(refused(
+                "connectors are not placed on a curved cut here yet",
+            ));
+        }
+        // A Flexi joint takes its own way (CutUtils.cpp
+        // `perform_with_flexi_joints`): the halves a gap apart, one object
+        // of two parts.
+        let flexi = (options.groove.is_none())
+            .then(|| {
+                options
+                    .connectors
+                    .iter()
+                    .find(|c| c.kind == ConnectorKind::Flexi)
+            })
+            .flatten()
+            .copied();
+        let connected =
+            !options.connectors.is_empty() && options.groove.is_none() && flexi.is_none();
+        // The thickness the person set, which the recipe keeps.
+        let thickness = options.thickness;
+        if let Some(joint) = &flexi {
+            // DIFFERS FROM THE REFERENCE, which makes the first joint
+            // placed and leaves out any other connector without a word
+            // ("only the first is applied (phase 1)"): here they are
+            // refused, so nothing placed is lost unsaid.
+            if options
+                .connectors
+                .iter()
+                .any(|c| c.kind == ConnectorKind::Tac)
+            {
+                return Err(refused(
+                    "TAC Joint cannot be combined with a Flexi joint in the same cut.",
+                ));
+            }
+            if options.connectors.len() > 1 {
+                return Err(refused(
+                    "Only one Flexi joint can be made in a cut, with no other connectors.",
+                ));
+            }
+            if let Some(why) = crate::flexi::validate(&joint.flexi) {
+                return Err(refused(why));
+            }
+            if options.sides.is_some() {
+                return Err(refused(
+                    "the pieces of the cut cannot be given to sides with a Flexi joint",
+                ));
+            }
+        }
+        // A pin or a TAC Joint that cannot be made stops the cut
+        // (`can_perform_cut`, `pushfit_validate`, `tac_joint_validate`).
+        if connected {
+            let [lo, hi] = options.faces();
+            for c in &options.connectors {
+                if c.kind == ConnectorKind::Pin
+                    && let Some(why) = c.pin.invalid(options.nozzle)
+                {
+                    return Err(refused(why));
+                }
+                if c.kind == ConnectorKind::Tac {
+                    if options.sides.is_some() {
+                        return Err(refused(
+                            "TAC Joint does not support individual part selection. Start a new planar cut without assigning individual parts.",
+                        ));
+                    }
+                    if let Some(why) = crate::tac::validate(&c.tac, lo, hi) {
+                        return Err(refused(why));
+                    }
+                }
+            }
+        }
         let forced;
-        let options = if connected {
+        let options = if let Some(joint) = &flexi {
+            // Both halves, as parts of one object (`has_flexi`: keep as
+            // parts); the gap is the cut's thickness about the plane, a
+            // thickness set added to it.
+            forced = CutOptions {
+                keep_upper: true,
+                keep_lower: true,
+                to_parts: true,
+                thickness: crate::flexi::effective_gap(&joint.flexi) + thickness,
+                thickness_from: CutThickness::Centred,
+                ..options.clone()
+            };
+            &forced
+        } else if connected {
             forced = CutOptions {
                 keep_upper: true,
                 keep_lower: true,
@@ -879,10 +1211,15 @@ impl Model {
             .ok_or_else(|| refused(format!("there is no copy {copy}")))?;
         let held = self.objects[at].clone();
         let base = self.name_of(at);
-        let made = self.cut_parts(at, &scene, plane, options)?;
+        let made = self.cut_parts(at, &scene, plane, options, None, None)?;
+        let drawn = options.drawn.is_some() && options.groove.is_none();
+        let curved = !drawn
+            && options.sheet.as_ref().is_some_and(|sheet| !sheet.is_flat())
+            && options.groove.is_none();
         let Made {
             mut upper,
             mut lower,
+            empty,
             helpers,
             open,
             turned,
@@ -905,11 +1242,46 @@ impl Model {
             }
             let kind = if options.groove.is_some() {
                 RecipeKind::Groove
+            } else if drawn {
+                RecipeKind::Drawn
+            } else if curved {
+                RecipeKind::Curved
             } else {
                 RecipeKind::Plane
             };
             let mut recipe = CutRecipe::new(kind, back, Arc::new(mesh));
-            if connected {
+            if drawn && let Some(cut) = &options.drawn {
+                let p = &cut.params;
+                recipe.drawn = Some(edge_3mf::RecipeDrawn {
+                    samples: cut
+                        .stroke
+                        .samples
+                        .iter()
+                        .map(|s| (s.pos, s.normal, s.facet as u64))
+                        .collect(),
+                    closed: cut.stroke.closed,
+                    smoothing: cut.stroke.smoothing,
+                    strokes: cut.stroke.stroke_bounds.clone(),
+                    finished_open: cut.stroke.finished_open,
+                    direction: p.direction.index(),
+                    view: p.view_dir,
+                    extension: p.extension,
+                    angle: p.angle_deg,
+                    extension_angle: p.extension_angle_deg,
+                    through_all: p.through_all,
+                    depth: p.depth,
+                });
+            }
+            if curved && let Some(sheet) = &options.sheet {
+                recipe.sheet = Some(edge_3mf::RecipeSheet {
+                    nx: sheet.nx as u32,
+                    ny: sheet.ny as u32,
+                    half_u: sheet.half_u,
+                    half_v: sheet.half_v,
+                    values: sheet.z.clone(),
+                });
+            }
+            if connected || flexi.is_some() {
                 let frame = linear(&back);
                 recipe.connectors = options
                     .connectors
@@ -925,13 +1297,14 @@ impl Model {
                         kind: c.kind.code(),
                         style: c.style.code(),
                         shape: c.shape.code(),
+                        extra: c.attributes(),
                     })
                     .collect();
             }
             recipe.thickness = if options.groove.is_some() {
                 0.0
             } else {
-                options.thickness
+                thickness
             };
             recipe.thickness_offset = match options.thickness_from {
                 CutThickness::Centred => 0,
@@ -1035,7 +1408,34 @@ impl Model {
             .iter()
             .find(|part| part.kind == PartKind::Normal && !is_connector(part))
             .cloned();
+        // A Flexi joint: its bodies joined to each half and its reliefs
+        // taken out (`perform_with_flexi_joints`).
+        if let Some(joint) = &flexi
+            && !upper.is_empty()
+            && !lower.is_empty()
+        {
+            let at: [f64; 3] = std::array::from_fn(|axis| joint.at[axis] - offset[axis]);
+            let there = rotation_xyz(0.0, 0.0, -joint.z_angle)
+                .then(&linear(&back))
+                .then(&Transform::translation(at));
+            let p = &joint.flexi;
+            upper = vec![flexi_half(
+                &upper,
+                &crate::flexi::upper_bodies(p),
+                &crate::flexi::upper_reliefs(p),
+                &there,
+                format!("{base}_A"),
+            )?];
+            lower = vec![flexi_half(
+                &lower,
+                &crate::flexi::lower_bodies(p),
+                &crate::flexi::lower_reliefs(p),
+                &there,
+                format!("{base}_B"),
+            )?];
+        }
         let mut dowels: Vec<Part> = Vec::new();
+        let mut pins: Vec<(Part, bool, bool, bool)> = Vec::new();
         if connected
             && !upper.is_empty()
             && !lower.is_empty()
@@ -1045,6 +1445,7 @@ impl Model {
             upper.extend(made.upper);
             lower.extend(made.lower);
             dowels = made.dowels;
+            pins = made.pins;
         }
         let mut made_objects: Vec<(Vec<Part>, Option<bool>)> = Vec::new();
         if to_parts {
@@ -1086,7 +1487,7 @@ impl Model {
             .count();
         let cut_id = ((connected || options.groove.is_some()) && halves == 2).then(|| CutId {
             id: fresh(),
-            check_sum: 2 + dowel_count as u64,
+            check_sum: 2 + (dowel_count + pins.len()) as u64,
             connectors: if connected {
                 options.connectors.len() as u64
             } else {
@@ -1203,6 +1604,58 @@ impl Model {
                 },
             });
         }
+        // The pins: each an object in its print pose, in a row along +x five
+        // millimetres past its copy, eight to a row (`add_separate_parts`).
+        // A TAC Joint printed on its own is placed with them, but is not
+        // a pin the note counts.
+        let (pins_made, pins_lying, slot_failures) = (
+            pins.iter().filter(|(_, _, _, counted)| *counted).count(),
+            pins.iter()
+                .filter(|(_, lying, _, counted)| *lying && *counted)
+                .count(),
+            pins.iter().filter(|(_, _, failed, _)| *failed).count(),
+        );
+        for (number, (pin, _, _, _)) in pins.into_iter().enumerate() {
+            let (low, high) = pin.mesh.bounds().unwrap_or(([0.0; 3], [5.0; 3]));
+            let size = [f64::from(high[0] - low[0]), f64::from(high[1] - low[1])];
+            let (column, row) = ((number % 8) as f64, (number / 8) as f64);
+            let shape = Shape::new(vec![pin]);
+            let copies: Vec<ModelCopy> = held
+                .copies
+                .iter()
+                .zip(&mut instead)
+                .map(|(old, (_, made))| {
+                    let id = fresh();
+                    made.push(id);
+                    let [from, _] = old.reach.unwrap_or([[0.0; 3]; 2]);
+                    let to = old.reach.map_or([0.0; 3], |[_, to]| to);
+                    let x = to[0] + 5.0 + column * (size[0] + 3.0) + 0.5 * size[0];
+                    let y = from[1] + row * (size[1] + 3.0) + 0.5 * size[1];
+                    let local = Transform::translation([x, y, 0.0]);
+                    ModelCopy {
+                        id,
+                        reach: shape.reach(&local),
+                        local,
+                        world: local,
+                        printable: old.printable,
+                    }
+                })
+                .collect();
+            objects.push(ModelObject {
+                id: fresh(),
+                name: format!("{base}-Pin-{}", number + 1),
+                filament: held.filament,
+                shape,
+                copies,
+                kept: Some(Arc::new(
+                    held.kept
+                        .as_deref()
+                        .map(ObjectKept::cut_half)
+                        .unwrap_or_default()
+                        .with_cut_id(cut_id),
+                )),
+            });
+        }
         self.objects.remove(at);
         let count = objects.len();
         self.objects.splice(at..at, objects);
@@ -1232,7 +1685,143 @@ impl Model {
                 self.stand_in_scene(bed, *copy, scene);
             }
         }
-        Ok(CutDone { made: new, open })
+        Ok(CutDone {
+            made: new,
+            empty: (curved || drawn).then_some(empty),
+            open,
+            pins: pins_made,
+            pins_lying,
+            pin_slot_failures: slot_failures,
+        })
+    }
+
+    /// A copy's printed parts made ready for a curved cut's booleans, in
+    /// the coordinates the halves are made in: kept between the previews
+    /// of one copy so that each does not prepare them again.
+    pub fn cut_prepared(&self, bed: Option<&Bed>, copy: u64) -> Result<Prepared, Failure> {
+        let (at, _) = self.copy_at(copy)?;
+        if self.bare {
+            let mut settled = self.clone();
+            settled.settle(bed);
+            return settled.cut_prepared(bed, copy);
+        }
+        let (scene, _) = self
+            .in_scene(bed, copy)
+            .ok_or_else(|| refused(format!("there is no copy {copy}")))?;
+        let turned = linear(&scene);
+        let solids = self.objects[at]
+            .shape
+            .parts
+            .iter()
+            .map(|part| {
+                if part.kind != PartKind::Normal || part.mesh.triangles.is_empty() {
+                    return Ok(None);
+                }
+                let mut baked = edge_mesh::Mesh::default();
+                baked.append(&part.mesh, &part.transform.then(&turned));
+                edge_mesh::boolean::Solid::new(&baked)
+                    .map(Some)
+                    .map_err(|error| {
+                        refused(format!("The cut could not be made. The part {error}."))
+                    })
+            })
+            .collect::<Result<Vec<_>, Failure>>()?;
+        Ok(Prepared { solids, scene })
+    }
+
+    /// How far a curved cut's control point at `(x, y, z)` in the plane's
+    /// own coordinates must go along the plane's normal to meet the copy's
+    /// printed parts ("Right-click-drag a handle to snap it onto the model
+    /// surface"); None where the line misses them.
+    pub fn cut_snap(
+        &self,
+        bed: Option<&Bed>,
+        copy: u64,
+        plane: &Transform,
+        point: [f64; 3],
+    ) -> Result<Option<f64>, Failure> {
+        let mesh = self.cut_object_in_plane(bed, copy, plane)?;
+        Ok(crate::curved::snap_distance(&mesh, point))
+    }
+
+    /// A copy's printed parts as one mesh in a cut plane's own frame, as
+    /// the curved and drawn surfaces are worked out against
+    /// (`curved_instance_mesh_in_plane`).
+    pub fn cut_object_in_plane(
+        &self,
+        bed: Option<&Bed>,
+        copy: u64,
+        plane: &Transform,
+    ) -> Result<edge_mesh::Mesh, Failure> {
+        let (at, _) = self.copy_at(copy)?;
+        if self.bare {
+            let mut settled = self.clone();
+            settled.settle(bed);
+            return settled.cut_object_in_plane(bed, copy, plane);
+        }
+        let (scene, _) = self
+            .in_scene(bed, copy)
+            .ok_or_else(|| refused(format!("there is no copy {copy}")))?;
+        let to_plane = plane
+            .inverse()
+            .ok_or_else(|| refused("that is no plane to cut by"))?;
+        let mut mesh = edge_mesh::Mesh::default();
+        for part in self.objects[at].shape.parts.iter() {
+            if part.kind == PartKind::Normal && !is_connector(part) {
+                mesh.append(&part.mesh, &part.transform.then(&scene).then(&to_plane));
+            }
+        }
+        Ok(mesh)
+    }
+
+    /// What a curved cut would make of a copy's printed parts, for the
+    /// tool to show while the surface is bent (the reference's cut face
+    /// preview): the upper half and the lower, each one mesh, in the
+    /// scene. `prepared` is [`Model::cut_prepared`]'s for the copy as it
+    /// stands; `cancel` stops it.
+    pub fn cut_preview(
+        &self,
+        bed: Option<&Bed>,
+        copy: u64,
+        plane: &Transform,
+        options: &CutOptions,
+        prepared: &Prepared,
+        cancel: Option<&edge_mesh::boolean::Cancel>,
+    ) -> Result<[edge_mesh::Mesh; 2], Failure> {
+        let (at, _) = self.copy_at(copy)?;
+        if !sound_plane(plane) {
+            return Err(refused("that is no plane to cut by"));
+        }
+        if self.bare {
+            let mut settled = self.clone();
+            settled.settle(bed);
+            return settled.cut_preview(bed, copy, plane, options, prepared, cancel);
+        }
+        let options = CutOptions {
+            keep_upper: true,
+            keep_lower: true,
+            to_parts: false,
+            sides: None,
+            ..options.clone()
+        };
+        let scene = prepared.scene;
+        // A drawn cut works in the plane's own frame: the parts kept ready
+        // in the halves' are not its.
+        let ready = if options.drawn.is_some() {
+            None
+        } else {
+            Some(prepared)
+        };
+        let made = self.cut_parts(at, &scene, plane, &options, ready, cancel)?;
+        let to_scene = Transform::translation(scene.rows[3]);
+        let one = |parts: &[Part]| {
+            let mut mesh = edge_mesh::Mesh::default();
+            for part in parts.iter().filter(|part| part.kind == PartKind::Normal) {
+                mesh.append(&part.mesh, &part.transform.then(&to_scene));
+            }
+            mesh
+        };
+        Ok([one(&made.upper), one(&made.lower)])
     }
 
     /// How the object of a copy was cut, when the cut was kept editable.
@@ -1465,10 +2054,71 @@ pub fn connector_mesh(
     let sides = shape.sides();
     match (kind, style) {
         (ConnectorKind::Snap, _) => centred(connector::snap(snap[0], snap[1])),
+        // A pin is made from its own shape ([`crate::pushfit::Pin::mesh`]).
+        // So are a Flexi joint and a TAC Joint ([`crate::flexi`],
+        // [`crate::tac`]).
+        (ConnectorKind::Pin | ConnectorKind::Flexi | ConnectorKind::Tac, _) => {
+            centred(connector::prism(sides, 1.0))
+        }
         (_, ConnectorStyle::Prism) => centred(connector::prism(sides, 1.0)),
         (ConnectorKind::Plug, ConnectorStyle::Frustum) => centred(connector::prism(sides, 0.5)),
         (ConnectorKind::Dowel, ConnectorStyle::Frustum) => connector::bicone(sides),
     }
+}
+
+/// One half of a Flexi cut (CutUtils.cpp `perform_with_flexi_joints`):
+/// its printed parts as one, the joint's bodies on that side joined to it
+/// and its reliefs taken out, `there` placing the joint's own frame in the
+/// halves' coordinates; one part named `name`, the first part's settings.
+///
+/// DIFFERS FROM THE REFERENCE, which, when a boolean fails, logs it and
+/// makes two plain halves with no joint ("the cut falls back to two plain
+/// halves"), so the person gets a cut they did not ask for without being
+/// told. Here the cut is refused and the object left as it was.
+fn flexi_half(
+    parts: &[Part],
+    bodies: &[edge_mesh::Mesh],
+    reliefs: &[edge_mesh::Mesh],
+    there: &Transform,
+    name: String,
+) -> Result<Part, Failure> {
+    use edge_mesh::boolean::{Op, Options, Solid};
+    let printed: Vec<&Part> = parts
+        .iter()
+        .filter(|part| part.kind == PartKind::Normal)
+        .collect();
+    let Some(first) = printed.first() else {
+        return Err(refused("Cut plane is placed out of object"));
+    };
+    let mut mesh = edge_mesh::Mesh::default();
+    for part in &printed {
+        mesh.append(&part.mesh, &part.transform);
+    }
+    let failed = |error: edge_mesh::boolean::BooleanError| {
+        refused(format!("The cut could not be made. {error}"))
+    };
+    let mut solid = Solid::new(&mesh)
+        .map_err(|error| refused(format!("The cut could not be made. The part {error}.")))?;
+    let options = Options::default();
+    for (shapes, op) in [(bodies, Op::Union), (reliefs, Op::Difference)] {
+        for shape in shapes {
+            let mut placed = edge_mesh::Mesh::default();
+            placed.append(shape, there);
+            let with = Solid::new(&placed).map_err(|error| {
+                refused(format!("The cut could not be made. The joint {error}."))
+            })?;
+            solid = solid.boolean_with(&with, op, &options).map_err(failed)?;
+        }
+    }
+    let made = crate::curved::tidy(solid.mesh().map_err(failed)?);
+    Ok(Part {
+        name: Some(name),
+        mesh: Arc::new(made),
+        transform: Transform::IDENTITY,
+        paint: None,
+        seam: None,
+        ..(*first).clone()
+    })
 }
 
 /// Whether a part is a connector a cut made.
@@ -1481,6 +2131,10 @@ struct ConnectorParts {
     upper: Vec<Part>,
     lower: Vec<Part>,
     dowels: Vec<Part>,
+    /// Each pin, whether it prints lying, whether its slit failed.
+    /// Each pin (and TAC Joint printed on its own), whether it prints
+    /// lying, whether its slit failed, whether it is a pin.
+    pins: Vec<(Part, bool, bool, bool)>,
 }
 
 /// The parts the connectors make, in the halves' coordinates, `back`
@@ -1505,6 +2159,7 @@ fn connector_parts(
         upper: Vec::new(),
         lower: Vec::new(),
         dowels: Vec::new(),
+        pins: Vec::new(),
     };
     let frame = linear(back);
     let normal = back.rows[2];
@@ -1532,6 +2187,18 @@ fn connector_parts(
             kind: c.kind.code(),
             radius_tolerance: c.radius_tolerance,
             height_tolerance: c.height_tolerance,
+            // A pin's shape is written with it, and whether it was cut
+            // (bbs_3mf.cpp `_add_cut_information_file_to_archive`).
+            extra: if matches!(
+                c.kind,
+                ConnectorKind::Pin | ConnectorKind::Flexi | ConnectorKind::Tac
+            ) {
+                let mut extra = vec![("processed".to_owned(), 1.0)];
+                extra.extend(c.attributes());
+                extra
+            } else {
+                Vec::new()
+            },
         };
         let mesh = Arc::new(connector_mesh(c.kind, c.style, c.shape, options.snap));
         // On the plane, in the halves' coordinates.
@@ -1563,7 +2230,7 @@ fn connector_parts(
                     PartKind::Normal,
                     mesh.clone(),
                     placed(c.radius, height, middle),
-                    info,
+                    info.clone(),
                 ));
                 // Its hole: wider and deeper by the tolerances, through the
                 // face; a snap's a plain round one.
@@ -1610,7 +2277,7 @@ fn connector_parts(
                     PartKind::Normal,
                     mesh.clone(),
                     upright,
-                    info,
+                    info.clone(),
                 ));
                 // Its holes: the dowel with the tolerances, cut just past
                 // the plane each way so that each breaks through its face.
@@ -1637,11 +2304,131 @@ fn connector_parts(
                             PartKind::Negative,
                             Arc::new(half.mesh),
                             Transform::IDENTITY,
-                            info,
+                            info.clone(),
                         ));
                     }
                 }
             }
+            ConnectorKind::Pin => {
+                // The pin straddles the cut, each end across a cut's
+                // thickness, and is an object of its own; a hole each side
+                // from its face (CutUtils.cpp `process_pushfit_cut`).
+                let (kerf_lo, kerf_hi) = ((-lo).max(0.0), hi.max(0.0));
+                let made = c.pin.mesh(kerf_lo, kerf_hi, true);
+                let failed = made.slot_requested && !made.slot_made;
+                out.pins.push((
+                    part(
+                        name.clone(),
+                        PartKind::Normal,
+                        Arc::new(made.mesh),
+                        Transform::IDENTITY,
+                        info.clone(),
+                    ),
+                    made.lying,
+                    failed,
+                    true,
+                ));
+                let there = rotation_xyz(0.0, 0.0, -c.z_angle)
+                    .then(&frame)
+                    .then(&Transform::translation(at));
+                for (side, suffix, face) in [
+                    (crate::pushfit::PinSide::Upper, "_A", kerf_hi),
+                    (crate::pushfit::PinSide::Lower, "_B", kerf_lo),
+                ] {
+                    let hole = part(
+                        format!("{name}{suffix}"),
+                        PartKind::Negative,
+                        Arc::new(c.pin.hole_mesh(side, face)),
+                        there,
+                        info.clone(),
+                    );
+                    if side == crate::pushfit::PinSide::Upper {
+                        out.upper.push(hole);
+                    } else {
+                        out.lower.push(hole);
+                    }
+                }
+            }
+            ConnectorKind::Tac => {
+                // CutUtils.cpp `process_tac_joint_cut`: the connector on
+                // its own, laid down, or a part of one half; a socket in
+                // each other half from its face.
+                let p = &c.tac;
+                let there = rotation_xyz(0.0, 0.0, -c.z_angle)
+                    .then(&frame)
+                    .then(&Transform::translation(at));
+                let Some(connector) = crate::tac::connector_mesh(p) else {
+                    continue;
+                };
+                let connector = Arc::new(connector);
+                match p.attachment {
+                    crate::tac::TacAttachment::Upper | crate::tac::TacAttachment::Lower => {
+                        let upper = p.attachment == crate::tac::TacAttachment::Upper;
+                        let made = part(
+                            format!("{name}{}", if upper { "_A" } else { "_B" }),
+                            PartKind::Normal,
+                            connector,
+                            there,
+                            info.clone(),
+                        );
+                        if upper {
+                            out.upper.push(made);
+                        } else {
+                            out.lower.push(made);
+                        }
+                    }
+                    _ => {
+                        // Its long axis on the bed, the broad reference
+                        // face down.
+                        let mut laid = edge_mesh::Mesh::default();
+                        laid.append(
+                            &connector,
+                            &rotation_xyz(0.5 * std::f64::consts::PI, 0.0, 0.0),
+                        );
+                        let low = laid.bounds().map_or(0.0, |(low, _)| f64::from(low[2]));
+                        let mut placed = edge_mesh::Mesh::default();
+                        placed.append(&laid, &Transform::translation([0.0, 0.0, -low]));
+                        out.pins.push((
+                            part(
+                                name.clone(),
+                                PartKind::Normal,
+                                Arc::new(placed),
+                                Transform::IDENTITY,
+                                info.clone(),
+                            ),
+                            true,
+                            false,
+                            false,
+                        ));
+                    }
+                }
+                for (upper, suffix) in [(true, "_A"), (false, "_B")] {
+                    let attached = if upper {
+                        crate::tac::TacAttachment::Upper
+                    } else {
+                        crate::tac::TacAttachment::Lower
+                    };
+                    if p.attachment == attached {
+                        continue;
+                    }
+                    let Some(socket) = crate::tac::socket_mesh(p, upper, lo, hi) else {
+                        continue;
+                    };
+                    let hole = part(
+                        format!("{name}{suffix}"),
+                        PartKind::Negative,
+                        Arc::new(socket),
+                        there,
+                        info.clone(),
+                    );
+                    if upper {
+                        out.upper.push(hole);
+                    } else {
+                        out.lower.push(hole);
+                    }
+                }
+            }
+            ConnectorKind::Flexi => {}
         }
     }
     out
@@ -1654,7 +2441,10 @@ fn cuttable(recipe: &CutRecipe, why: &str) -> Result<(), Failure> {
     if !recipe.known() || recipe.mesh.triangles.is_empty() {
         return Err(refused(why));
     }
-    if matches!(recipe.kind, RecipeKind::Curved | RecipeKind::Drawn) {
+    if recipe.kind == RecipeKind::Curved && recipe.sheet.is_none() {
+        return Err(refused(why));
+    }
+    if recipe.kind == RecipeKind::Drawn && recipe.drawn.is_none() {
         return Err(refused(
             "This cut was made with a curved or drawn surface, which cannot be made here yet.",
         ));

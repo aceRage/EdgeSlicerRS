@@ -140,6 +140,104 @@ pub fn snap(space: f64, bulge: f64) -> Mesh {
     mesh
 }
 
+/// A solid of revolution about z (TriangleMesh.cpp `its_make_revolved`):
+/// `profile` is a closed outline in (radius, z), its ends on the axis, cut
+/// into `sectors` around. Wound outward whichever way the outline runs.
+pub fn revolved(profile: &[[f64; 2]], sectors: usize) -> Mesh {
+    let mut mesh = Mesh::default();
+    let n = profile.len();
+    if n < 3 || sectors < 3 {
+        return mesh;
+    }
+    let mut prof = profile.to_vec();
+    let twice: f64 = (0..n)
+        .map(|i| {
+            let (a, b) = (prof[i], prof[(i + 1) % n]);
+            a[0] * b[1] - b[0] * a[1]
+        })
+        .sum();
+    if twice < 0.0 {
+        prof.reverse();
+    }
+    let on_axis: Vec<bool> = prof.iter().map(|p| p[0] <= 1e-9).collect();
+    let mut base = Vec::with_capacity(n);
+    for (i, p) in prof.iter().enumerate() {
+        base.push(mesh.vertices.len() as u32);
+        if on_axis[i] {
+            mesh.vertices.push([0.0, 0.0, p[1] as f32]);
+        } else {
+            for j in 0..sectors {
+                let a = std::f64::consts::TAU * j as f64 / sectors as f64;
+                mesh.vertices.push([
+                    (p[0] * a.cos()) as f32,
+                    (p[0] * a.sin()) as f32,
+                    p[1] as f32,
+                ]);
+            }
+        }
+    }
+    let id = |i: usize, j: usize| {
+        if on_axis[i] {
+            base[i]
+        } else {
+            base[i] + j as u32
+        }
+    };
+    for i in 0..n {
+        let i2 = (i + 1) % n;
+        if on_axis[i] && on_axis[i2] {
+            continue;
+        }
+        for j in 0..sectors {
+            let j2 = (j + 1) % sectors;
+            let (a, b, c, d) = (id(i, j), id(i, j2), id(i2, j2), id(i2, j));
+            if !on_axis[i] {
+                mesh.triangles.push([a, b, c]);
+            }
+            if !on_axis[i2] {
+                mesh.triangles.push([a, c, d]);
+            }
+        }
+    }
+    if mesh.signed_volume() < 0.0 {
+        for triangle in &mut mesh.triangles {
+            triangle.swap(1, 2);
+        }
+    }
+    mesh
+}
+
+/// A prism over a convex outline in (x, y), from `z0` to `z1` (PushFit.cpp
+/// `extrude_convex`), wound outward.
+pub fn extruded(outline: &[[f64; 2]], z0: f64, z1: f64) -> Mesh {
+    let mut mesh = Mesh::default();
+    let n = outline.len();
+    if n < 3 {
+        return mesh;
+    }
+    for z in [z0, z1] {
+        for p in outline {
+            mesh.vertices.push([p[0] as f32, p[1] as f32, z as f32]);
+        }
+    }
+    let n32 = n as u32;
+    for i in 0..n32 {
+        let i2 = (i + 1) % n32;
+        mesh.triangles.push([i, i2, n32 + i2]);
+        mesh.triangles.push([i, n32 + i2, n32 + i]);
+    }
+    for i in 1..n32 - 1 {
+        mesh.triangles.push([0, i + 1, i]);
+        mesh.triangles.push([n32, n32 + i, n32 + i + 1]);
+    }
+    if mesh.signed_volume() < 0.0 {
+        for triangle in &mut mesh.triangles {
+            triangle.swap(1, 2);
+        }
+    }
+    mesh
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -186,6 +284,14 @@ mod tests {
                 )
             });
         assert_eq!((low[2], high[2]), (0.0, 1.0));
+        // A revolved cylinder and a prism over a square.
+        let cylinder = revolved(&[[0.0, 0.0], [1.0, 0.0], [1.0, 2.0], [0.0, 2.0]], 96);
+        sound(&cylinder);
+        let area = 0.5 * 96.0 * (std::f64::consts::TAU / 96.0).sin();
+        assert!((cylinder.signed_volume() - 2.0 * area).abs() < 1e-4);
+        let square = extruded(&[[0.0, 0.0], [0.0, 1.0], [1.0, 1.0], [1.0, 0.0]], -1.0, 1.0);
+        sound(&square);
+        assert!((square.signed_volume() - 2.0).abs() < 1e-6);
         // The bulge reaches past the radius; the slit splits it in two.
         assert!(high[0] > 1.1 && high[0] < 1.16, "{high:?}");
         assert!(!snap.vertices.iter().any(|v| v[0].abs() < 0.29));

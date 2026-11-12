@@ -165,6 +165,29 @@ impl Tree {
         }
         best.map(|(_, at)| at)
     }
+
+    /// The point of the mesh nearest `point`, the triangle it is on and
+    /// that triangle's normal (unit, by its winding); `get_closest_point`.
+    pub fn closest_point(&self, point: [f64; 3]) -> Option<([f64; 3], usize, [f64; 3])> {
+        let at = self.closest(point)?;
+        Some((
+            closest_on_triangle(point, &self.corners[at]),
+            at,
+            self.normal(at),
+        ))
+    }
+
+    /// A triangle's normal (unit, by its winding; zero for one of no area).
+    pub fn normal(&self, triangle: usize) -> [f64; 3] {
+        let corners = &self.corners[triangle];
+        let n = cross(sub(corners[1], corners[0]), sub(corners[2], corners[0]));
+        let length = dot(n, n).sqrt();
+        if length > 0.0 {
+            n.map(|v| v / length)
+        } else {
+            [0.0; 3]
+        }
+    }
 }
 
 fn build(
@@ -289,8 +312,15 @@ fn box_distance_sqr(node: &Node, p: [f64; 3]) -> f64 {
 
 /// The square of the distance from a point to a triangle (Ericson,
 /// Real-Time Collision Detection, 5.1.5).
-fn point_triangle_distance_sqr(p: [f64; 3], [a, b, c]: &[[f64; 3]; 3]) -> f64 {
-    let closest = {
+fn point_triangle_distance_sqr(p: [f64; 3], corners: &[[f64; 3]; 3]) -> f64 {
+    let d = sub(p, closest_on_triangle(p, corners));
+    dot(d, d)
+}
+
+/// The point of a triangle nearest `p` (Ericson, "Real-Time Collision
+/// Detection", 5.1.5).
+fn closest_on_triangle(p: [f64; 3], [a, b, c]: &[[f64; 3]; 3]) -> [f64; 3] {
+    {
         let ab = sub(*b, *a);
         let ac = sub(*c, *a);
         let ap = sub(p, *a);
@@ -336,9 +366,7 @@ fn point_triangle_distance_sqr(p: [f64; 3], [a, b, c]: &[[f64; 3]; 3]) -> f64 {
                 }
             }
         }
-    };
-    let d = sub(p, closest);
-    dot(d, d)
+    }
 }
 
 #[cfg(test)]

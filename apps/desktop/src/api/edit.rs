@@ -32,7 +32,7 @@ use super::{
 };
 
 /// The calls answered here.
-pub(super) const JSON: [&str; 8] = [
+pub(super) const JSON: [&str; 15] = [
     "scene_edit",
     "undo",
     "redo",
@@ -41,10 +41,17 @@ pub(super) const JSON: [&str; 8] = [
     "cut_pick",
     "cut_parts",
     "cut_recipe",
+    "cut_pin",
+    "cut_flexi",
+    "cut_tac",
+    "cut_preview",
+    "cut_snap",
+    "cut_draw",
+    "cut_draw_hits",
 ];
 
 /// The calls here answered in bytes (`Session::call_bytes`).
-pub(super) const BYTES: [&str; 2] = ["cut_parts_mesh", "cut_connector_mesh"];
+pub(super) const BYTES: [&str; 3] = ["cut_parts_mesh", "cut_connector_mesh", "cut_preview_mesh"];
 
 /// The most edits a project keeps to take back. The reference keeps as
 /// many as fit in a tenth of the machine's memory (UndoRedo.cpp
@@ -329,6 +336,19 @@ fn cut_options(args: &Value) -> Result<edge_engine::CutOptions, String> {
                 .collect::<Result<Vec<_>, String>>()?,
             Some(_) => return Err("connectors is not a list".into()),
         },
+        sheet: match args.get("sheet") {
+            None | Some(Value::Null) => None,
+            Some(sheet) => Some(sheet_of(sheet)?),
+        },
+        drawn: match args.get("drawn") {
+            None | Some(Value::Null) => None,
+            Some(drawn) => Some(drawn_of(drawn)?),
+        },
+        nozzle: args
+            .get("nozzle")
+            .and_then(Value::as_f64)
+            .filter(|value| *value > 0.0)
+            .unwrap_or(0.4),
         snap: match args.get("snap") {
             None | Some(Value::Null) => [0.3, 0.15],
             Some(snap) => {
@@ -380,10 +400,25 @@ fn connector_of(value: &Value) -> Result<edge_engine::Connector, String> {
         radius_tolerance: number("radius_tolerance")?.max(0.0),
         height_tolerance: number("height_tolerance")?.max(0.0),
         z_angle: number("z_angle")?,
+        pin: match value.get("pin") {
+            None | Some(Value::Null) => edge_engine::pushfit::Pin::default(),
+            Some(pin) => pin_of(pin),
+        },
+        flexi: match value.get("flexi") {
+            None | Some(Value::Null) => edge_engine::flexi::FlexiParams::default(),
+            Some(flexi) => flexi_of(flexi),
+        },
+        tac: match value.get("tac") {
+            None | Some(Value::Null) => edge_engine::tac::TacParams::default(),
+            Some(tac) => tac_of(tac),
+        },
         kind: match word("type") {
             "plug" => ConnectorKind::Plug,
             "dowel" => ConnectorKind::Dowel,
             "snap" => ConnectorKind::Snap,
+            "pin" => ConnectorKind::Pin,
+            "flexi" => ConnectorKind::Flexi,
+            "tac" => ConnectorKind::Tac,
             other => return Err(format!("a connector cannot be a {other}")),
         },
         style: match word("style") {
@@ -398,6 +433,395 @@ fn connector_of(value: &Value) -> Result<edge_engine::Connector, String> {
             "circle" => ConnectorShape::Circle,
             other => return Err(format!("a connector's shape cannot be {other}")),
         },
+    })
+}
+
+/// A pin's shape as the page gives it: the reference's names without
+/// their `pushfit_` (`diameter`, `length_upper`, …, `cutout` 0–3, `pose`
+/// 0 or 1, the flags true or false), each left out at its default.
+pub(super) fn pin_of(value: &Value) -> edge_engine::pushfit::Pin {
+    edge_engine::pushfit::Pin::from_attributes(|name| {
+        let key = name.strip_prefix("pushfit_").unwrap_or(name);
+        match value.get(key)? {
+            Value::Bool(flag) => Some(if *flag { 1.0 } else { 0.0 }),
+            other => other.as_f64(),
+        }
+    })
+}
+
+/// A pin for the panel (GLGizmoCut.cpp `render_pushfit_inputs`): `pin`
+/// as given, or a preset's (`preset` 0 S, 1 M, 2 L, or `auto`: the
+/// largest the section takes, its inscribed radius `inscribed`); why it
+/// cannot be made, what may go wrong, how it prints, and its outline for
+/// the drawing of it.
+fn cut_pin(args: &Value) -> Value {
+    let mut pin = pin_of(args.get("pin").unwrap_or(&Value::Null));
+    let nozzle = args.get("nozzle").and_then(Value::as_f64).unwrap_or(0.4);
+    let mut fits = true;
+    match args.get("preset") {
+        Some(Value::String(word)) if word == "auto" => {
+            let inscribed = args.get("inscribed").and_then(Value::as_f64).unwrap_or(0.0);
+            (pin, fits) = pin.auto_size(inscribed, 0.0, 0.0);
+        }
+        Some(preset) if preset.as_u64().is_some_and(|preset| preset < 3) => {
+            pin = pin.with_preset(preset.as_u64().unwrap_or(1) as u32);
+        }
+        _ => {}
+    }
+    let profile: Vec<[f64; 2]> = pin.profile(0.0, 0.0);
+    json!({
+        "pin": pin_json(&pin),
+        "fits": fits,
+        "invalid": pin.invalid(nozzle),
+        "warnings": pin.warnings(nozzle, 0.0, 0.0),
+        "lies": pin.lies(),
+        "why": pin.can_lie().err(),
+        "profile": profile,
+    })
+}
+
+/// A Flexi joint's shape as the page gives it: the reference's names
+/// without their `flexi_` (`kind` 0-5, `outer_radius`, …, the flags true or
+/// false), each left out at its default.
+pub(super) fn flexi_of(value: &Value) -> edge_engine::flexi::FlexiParams {
+    edge_engine::flexi::from_attributes(|name| {
+        let key = name.strip_prefix("flexi_").unwrap_or(name);
+        match value.get(key)? {
+            Value::Bool(flag) => Some(if *flag { 1.0 } else { 0.0 }),
+            other => other.as_f64(),
+        }
+    })
+}
+
+/// A Flexi joint as the page takes it: [`flexi_of`]'s names.
+pub(super) fn flexi_json(p: &edge_engine::flexi::FlexiParams) -> Value {
+    let mut out = serde_json::Map::new();
+    for (name, value) in edge_engine::flexi::attributes(p) {
+        let key = name.trim_start_matches("flexi_").to_owned();
+        let flag = matches!(
+            key.as_str(),
+            "hinge_fold_upper" | "thread_lid_upper" | "thread_left_hand"
+        );
+        out.insert(
+            key,
+            if flag {
+                json!(value != 0.0)
+            } else {
+                json!(value)
+            },
+        );
+    }
+    Value::Object(out)
+}
+
+/// A TAC Joint's settings as the page gives them: the reference's names
+/// without their `tac_joint_` (`scale`, `clearance`, `end_clearance`,
+/// `offset`, `version`, `attachment` 0-2).
+pub(super) fn tac_of(value: &Value) -> edge_engine::tac::TacParams {
+    edge_engine::tac::TacParams::from_attributes(|name| {
+        value
+            .get(name.strip_prefix("tac_joint_").unwrap_or(name))?
+            .as_f64()
+    })
+}
+
+/// A TAC Joint as the page takes it: [`tac_of`]'s names.
+pub(super) fn tac_json(p: &edge_engine::tac::TacParams) -> Value {
+    let mut out = serde_json::Map::new();
+    for (name, value) in p.attributes() {
+        out.insert(
+            name.trim_start_matches("tac_joint_").to_owned(),
+            json!(value),
+        );
+    }
+    Value::Object(out)
+}
+
+/// A Flexi joint for the panel (GLGizmoCut.cpp `render_flexi_joint_inputs`,
+/// `sync_flexi_params`): `flexi` as given, its clearance held to the
+/// nozzle's floor and its gap to the clearance, sized from the section's
+/// inscribed radius (`inscribed`) when `auto`; why it cannot be made, how
+/// far it reaches across the cut and out of it, and the panel's warnings
+/// (the hinge's or the twist lock's axis, `normal` the cut's in the scene,
+/// and the slice's gap closing radius `closing`).
+fn cut_flexi(args: &Value) -> Value {
+    use edge_engine::flexi::{self, FlexiKind};
+    let mut p = flexi_of(args.get("flexi").unwrap_or(&Value::Null));
+    let nozzle = args.get("nozzle").and_then(Value::as_f64).unwrap_or(0.4);
+    let floor = flexi::clearance_floor(nozzle);
+    if p.clearance < floor {
+        p.clearance = floor;
+    }
+    if p.gap <= 0.0 {
+        p.gap = flexi::default_gap(p.kind);
+    }
+    if p.gap < p.clearance {
+        p.gap = p.clearance;
+    }
+    if args.get("auto").and_then(Value::as_bool).unwrap_or(false) {
+        let inscribed = args.get("inscribed").and_then(Value::as_f64).unwrap_or(0.0);
+        p = flexi::auto_size(p, inscribed);
+    }
+    let normal = numbers(args, "normal").unwrap_or([0.0, 0.0, 1.0]);
+    let axes: Vec<[f64; 3]> = ["x", "y"]
+        .iter()
+        .map(|key| numbers(args, key).unwrap_or([1.0, 0.0, 0.0]))
+        .collect();
+    let mut warnings: Vec<String> = Vec::new();
+    if p.kind == FlexiKind::Hinge {
+        let a = p.rotation.to_radians();
+        let axis: [f64; 3] = std::array::from_fn(|i| axes[0][i] * a.cos() + axes[1][i] * a.sin());
+        if flexi::hinge_axis_needs_care(axis) {
+            warnings.push(super::i18n::tr("This hinge's pin axis is not horizontal. A vertical or steeply tilted pin axis needs support inside the bore; rotate the part, or change Rotation so the axis lies flat, or expect to support the bore by hand."));
+        }
+    }
+    if p.kind.is_twist() && flexi::twist_axis_needs_care(normal) {
+        warnings.push(super::i18n::tr(if p.kind == FlexiKind::Thread {
+            "This cut's axis is not vertical. A thread printed on its side has every turn's upper flank hanging in the air, which sags into the clearance and jams the lid; rotate the part so the cut normal points up, or expect a poor fit."
+        } else {
+            "This cut's axis is not vertical. A bayonet printed on its side has its lugs and slots overhanging; rotate the part so the cut normal points up for the best fit."
+        }));
+    }
+    let closing = args.get("closing").and_then(Value::as_f64).unwrap_or(0.049);
+    if flexi::gap_closing_conflict(&p, closing) {
+        warnings.push(format!(
+            "{} ({closing:.3} mm) {} {:.3} mm, {}",
+            super::i18n::tr("Slice gap closing radius"),
+            super::i18n::tr("will fuse this clearance shut. Keep it below"),
+            flexi::max_safe_gap_closing_radius(&p),
+            super::i18n::tr("or raise the clearance."),
+        ));
+    }
+    json!({
+        "flexi": flexi_json(&p),
+        "floor": floor,
+        "invalid": flexi::validate(&p),
+        "warnings": warnings,
+        "radius": flexi::outer_extent(&p),
+        "height": flexi::protrusion_height(&p),
+        "hinge_knuckles": flexi::hinge_knuckle_count(&p),
+        "thread_starts": flexi::thread_start_count(&p),
+        "bayonet_lugs": flexi::bayonet_lug_count(&p),
+        // Its outline across the cut, padded by the clearance, its edges
+        // sampled (`is_outside_of_cut_contour`, Flexi).
+        "outline": sampled(&flexi::footprint_corners(&p, 0.0)),
+    })
+}
+
+/// A TAC Joint for the panel (`render_tac_joint_inputs`): `tac` as given,
+/// checked with the cut's faces at `faces`; its size and how far it goes
+/// into each half.
+fn cut_tac(args: &Value) -> Value {
+    let p = tac_of(args.get("tac").unwrap_or(&Value::Null));
+    let faces: Vec<f64> = args
+        .get("faces")
+        .and_then(Value::as_array)
+        .map(|list| list.iter().filter_map(Value::as_f64).collect())
+        .unwrap_or_default();
+    let (lo, hi) = (
+        faces.first().copied().unwrap_or(0.0),
+        faces.get(1).copied().unwrap_or(0.0),
+    );
+    let scale = f64::from(p.scale);
+    let half = 5.5 * scale;
+    json!({
+        "tac": tac_json(&p),
+        "invalid": edge_engine::tac::validate(&p, lo, hi),
+        "size": [4.09 * scale, 3.34 * scale, 11.0 * scale],
+        "insertion": [half + f64::from(p.offset) - hi, half - f64::from(p.offset) + lo],
+        "radius": edge_engine::tac::footprint_radius(&p),
+        // The socket's outline across the cut: its corners and its faces'
+        // middles (`is_outside_of_cut_contour`, TAC Joint).
+        "outline": edge_engine::tac::cutter_mesh(&p).map_or_else(Vec::new, |mesh| {
+            let mut out: Vec<[f64; 2]> = mesh
+                .vertices
+                .iter()
+                .map(|v| [f64::from(v[0]), f64::from(v[1])])
+                .collect();
+            for at in 0..mesh.triangles.len() {
+                let [a, b, c] = mesh.triangle(at);
+                out.push([
+                    f64::from(a[0] + b[0] + c[0]) / 3.0,
+                    f64::from(a[1] + b[1] + c[1]) / 3.0,
+                ]);
+            }
+            out
+        }),
+    })
+}
+
+/// A closed outline with each edge sampled eight times.
+fn sampled(corners: &[[f64; 2]]) -> Vec<[f64; 2]> {
+    let n = corners.len();
+    let mut out = Vec::with_capacity(8 * n);
+    for (at, a) in corners.iter().enumerate() {
+        let b = corners[(at + 1) % n];
+        for k in 0..8 {
+            let t = f64::from(k) / 8.0;
+            out.push([a[0] + (b[0] - a[0]) * t, a[1] + (b[1] - a[1]) * t]);
+        }
+    }
+    out
+}
+
+/// A pin as the page takes it: [`pin_of`]'s names.
+pub(super) fn pin_json(pin: &edge_engine::pushfit::Pin) -> Value {
+    let mut out = serde_json::Map::new();
+    for (name, value) in pin.attributes() {
+        let key = name.trim_start_matches("pushfit_").to_owned();
+        let flag = matches!(
+            key.as_str(),
+            "lip" | "flat_both_sides" | "hole_groove" | "pointed_end"
+        );
+        out.insert(
+            key,
+            if flag {
+                json!(value != 0.0)
+            } else {
+                json!(value)
+            },
+        );
+    }
+    Value::Object(out)
+}
+
+/// "Cut"'s curved previews ([`Session::cut_preview`]).
+#[derive(Default)]
+pub(super) struct Previews {
+    /// The copy's parts made ready: for the model (its file, by where it is
+    /// in memory) and the copy they were made for.
+    prepared: Option<(usize, u64, Arc<edge_engine::Prepared>)>,
+    /// The preview under way.
+    running: Option<edge_engine::BooleanCancel>,
+    /// How many have been asked for, and the last made.
+    asked: u64,
+    last: Option<(u64, [edge_engine::Mesh; 2])>,
+    /// The copy's printed parts in the plane's frame, for drawing on.
+    in_plane: Option<Arc<draw::InPlane>>,
+}
+
+/// A curved surface as the page gives it: `nx`, `ny` (2–15),
+/// `half_u`, `half_v`, `z` (the heights, row by row).
+fn sheet_of(value: &Value) -> Result<edge_engine::curved::Sheet, String> {
+    let whole = |key: &str| value.get(key).and_then(Value::as_u64).map(|v| v as usize);
+    let number = |key: &str| value.get(key).and_then(Value::as_f64);
+    let sheet = edge_engine::curved::Sheet {
+        nx: whole("nx").ok_or("the surface's nx was not given")?,
+        ny: whole("ny").ok_or("the surface's ny was not given")?,
+        half_u: number("half_u").ok_or("the surface's half_u was not given")?,
+        half_v: number("half_v").ok_or("the surface's half_v was not given")?,
+        z: value
+            .get("z")
+            .and_then(Value::as_array)
+            .map(|list| list.iter().filter_map(Value::as_f64).collect())
+            .unwrap_or_default(),
+    };
+    if !sheet.sound() {
+        return Err("that is no surface to cut by".into());
+    }
+    Ok(sheet)
+}
+
+/// A drawn cut as the page gives it, in the plane's frame (DrawCut.cpp,
+/// `DrawCutRecipe`): `samples` (each `[x, y, z, nx, ny, nz, facet]`),
+/// `closed`, `smoothing` (0–1), `strokes` (each stroke's `[first, end)` in
+/// `samples`), `finished_open`, `direction` (0 surface normal, 1 view,
+/// 2–4 x, y, z), `view`, `extension`, `angle`, `extension_angle` (none:
+/// as `angle`), `through_all`, `depth`.
+fn drawn_of(value: &Value) -> Result<edge_engine::DrawnCut, String> {
+    use edge_engine::drawn::{DrawCutDirection, DrawCutParams, DrawCutSample, RecipeStroke};
+    let number = |key: &str| {
+        value
+            .get(key)
+            .and_then(Value::as_f64)
+            .filter(|value| value.is_finite())
+    };
+    let flag = |key: &str| value.get(key).and_then(Value::as_bool).unwrap_or(false);
+    let samples = value
+        .get("samples")
+        .and_then(Value::as_array)
+        .ok_or("the drawn cut has no line")?
+        .iter()
+        .map(|sample| {
+            let list: Vec<f64> = sample
+                .as_array()
+                .map(|list| list.iter().filter_map(Value::as_f64).collect())
+                .unwrap_or_default();
+            if list.len() != 7 || list.iter().any(|value| !value.is_finite()) {
+                return Err("a drawn cut's point is not seven numbers".to_string());
+            }
+            Ok(DrawCutSample {
+                pos: [list[0], list[1], list[2]],
+                normal: [list[3], list[4], list[5]],
+                facet: list[6].max(0.0) as usize,
+            })
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    let strokes = match value.get("strokes") {
+        None | Some(Value::Null) => Vec::new(),
+        Some(Value::Array(list)) => list
+            .iter()
+            .map(|pair| {
+                let pair: Vec<u64> = pair
+                    .as_array()
+                    .map(|pair| pair.iter().filter_map(Value::as_u64).collect())
+                    .unwrap_or_default();
+                match pair.as_slice() {
+                    [first, end] if first <= end && *end as usize <= samples.len() => {
+                        Ok((*first as u32, *end as u32))
+                    }
+                    _ => Err("a drawn cut's stroke is not two places in its line"),
+                }
+            })
+            .collect::<Result<Vec<_>, _>>()?,
+        Some(_) => return Err("strokes is not a list".into()),
+    };
+    let defaults = DrawCutParams::default();
+    let view = numbers(value, "view").unwrap_or(defaults.view_dir);
+    let cut = edge_engine::DrawnCut {
+        stroke: RecipeStroke {
+            samples,
+            closed: flag("closed"),
+            smoothing: number("smoothing").unwrap_or(0.0).clamp(0.0, 1.0),
+            stroke_bounds: strokes,
+            finished_open: flag("finished_open"),
+        },
+        params: DrawCutParams {
+            direction: DrawCutDirection::from_index(
+                value.get("direction").and_then(Value::as_i64).unwrap_or(0) as i32,
+            ),
+            view_dir: view,
+            extension: number("extension").unwrap_or(defaults.extension).max(0.0),
+            angle_deg: number("angle").unwrap_or(0.0).clamp(-90.0, 90.0),
+            extension_angle_deg: number("extension_angle").map(|angle| angle.clamp(-90.0, 90.0)),
+            through_all: value
+                .get("through_all")
+                .and_then(Value::as_bool)
+                .unwrap_or(defaults.through_all),
+            depth: number("depth").unwrap_or(defaults.depth).max(0.0),
+            ..defaults
+        },
+    };
+    Ok(cut)
+}
+
+/// A drawn cut for the page: [`drawn_of`]'s names.
+fn drawn_json(drawn: &edge_engine::RecipeDrawn) -> Value {
+    json!({
+        "samples": drawn.samples.iter().map(|(pos, normal, facet)| {
+            json!([pos[0], pos[1], pos[2], normal[0], normal[1], normal[2], facet])
+        }).collect::<Vec<_>>(),
+        "closed": drawn.closed,
+        "smoothing": drawn.smoothing,
+        "strokes": drawn.strokes.iter().map(|(first, end)| json!([first, end])).collect::<Vec<_>>(),
+        "finished_open": drawn.finished_open,
+        "direction": drawn.direction,
+        "view": drawn.view,
+        "extension": drawn.extension,
+        "angle": drawn.angle,
+        "extension_angle": drawn.extension_angle,
+        "through_all": drawn.through_all,
+        "depth": drawn.depth,
     })
 }
 
@@ -457,10 +881,32 @@ fn recipe_json(recipe: &edge_engine::CutRecipe, plane: &Transform) -> Value {
         .iter()
         .map(|c| {
             let at: [f64; 3] = std::array::from_fn(|axis| c.pos[axis] + shift[axis]);
-            let kind = ["plug", "dowel", "snap"]
-                .get(c.kind as usize)
-                .copied()
-                .unwrap_or("plug");
+            let kind = match c.kind {
+                1 => "dowel",
+                2 => "snap",
+                4 => "flexi",
+                5 => "pin",
+                6 => "tac",
+                _ => "plug",
+            };
+            let extra = |name: &str| {
+                c.extra
+                    .iter()
+                    .find(|(key, _)| key == name)
+                    .map(|(_, value)| *value)
+            };
+            let flexi =
+                (c.kind == 4).then(|| flexi_json(&edge_engine::flexi::from_attributes(extra)));
+            let tac = (c.kind == 6)
+                .then(|| tac_json(&edge_engine::tac::TacParams::from_attributes(extra)));
+            let pin = (c.kind == 5).then(|| {
+                pin_json(&edge_engine::pushfit::Pin::from_attributes(|name| {
+                    c.extra
+                        .iter()
+                        .find(|(key, _)| key == name)
+                        .map(|(_, value)| *value)
+                }))
+            });
             let style = ["prism", "frustum"]
                 .get(c.style as usize)
                 .copied()
@@ -479,12 +925,15 @@ fn recipe_json(recipe: &edge_engine::CutRecipe, plane: &Transform) -> Value {
                 "type": kind,
                 "style": style,
                 "shape": shape,
+                "pin": pin,
+                "flexi": flexi,
+                "tac": tac,
             })
         })
         .collect();
     json!({
         "plane": matrix_json(plane),
-        "mode": if recipe.groove.is_some() { "dovetail" } else { "planar" },
+        "mode": if recipe.groove.is_some() { "dovetail" } else if recipe.drawn.is_some() { "drawn" } else { "planar" },
         "thickness": recipe.thickness,
         "thickness_from": from,
         "keep_upper": recipe.keep_upper,
@@ -495,6 +944,11 @@ fn recipe_json(recipe: &edge_engine::CutRecipe, plane: &Transform) -> Value {
         "flip_upper": recipe.flip_upper,
         "flip_lower": recipe.flip_lower,
         "connectors": connectors,
+        "sheet": recipe.sheet.as_ref().map(|sheet| json!({
+            "nx": sheet.nx, "ny": sheet.ny, "half_u": sheet.half_u, "half_v": sheet.half_v,
+            "z": sheet.values,
+        })),
+        "drawn": recipe.drawn.as_ref().map(drawn_json),
         "groove": recipe.groove.map(|g| json!({
             "depth": g.depth, "width": g.width, "flaps_angle": g.flaps_angle, "angle": g.angle,
             "depth_tolerance": g.depth_tolerance, "width_tolerance": g.width_tolerance,
@@ -978,6 +1432,49 @@ impl Session {
                         &[&done.open.to_string()],
                     ));
                 }
+                // A curved cut with a side the surface leaves empty
+                // (GLGizmoCut.cpp `perform_cut`).
+                if let Some([upper, lower]) = done.empty
+                    && (upper || lower)
+                {
+                    let which = match (upper, lower) {
+                        (true, true) => super::i18n::tr("both sides"),
+                        (true, false) => super::i18n::tr("the upper side"),
+                        _ => super::i18n::tr("the lower side"),
+                    };
+                    outcome.note = Some(super::i18n::fill(
+                        &super::i18n::tr(
+                            "Cut: the surface does not cross the part on %1%, so that half is empty.",
+                        ),
+                        &[&which],
+                    ));
+                }
+                // Where the pins went, and whether any came out without
+                // its slit (GLGizmoCut.cpp `perform_cut`).
+                if done.pins > 0 {
+                    let words = if done.pins == done.pins_lying {
+                        "%1% pin(s) added beside the object (print lying flat)."
+                    } else if done.pins_lying == 0 {
+                        "%1% pin(s) added beside the object (print upright)."
+                    } else {
+                        "%1% pin(s) added beside the object."
+                    };
+                    let mut note =
+                        super::i18n::fill(&super::i18n::tr(words), &[&done.pins.to_string()]);
+                    if done.pin_slot_failures > 0 {
+                        note.push(' ');
+                        note.push_str(&super::i18n::fill(
+                            &super::i18n::tr(
+                                "%1% pin(s) could not be slit and were made without a slot.",
+                            ),
+                            &[&done.pin_slot_failures.to_string()],
+                        ));
+                    }
+                    outcome.note = Some(match outcome.note.take() {
+                        Some(before) => format!("{before} {note}"),
+                        None => note,
+                    });
+                }
                 outcome.name = "Cut by Plane".into();
             }
             "cut_edit" => {
@@ -1029,6 +1526,27 @@ impl Session {
             "cut_pick" => self.cut_pick(args),
             "cut_parts" => self.cut_parts(args),
             "cut_recipe" => self.cut_recipe(args),
+            "cut_pin" => Ok(cut_pin(args)),
+            "cut_flexi" => Ok(cut_flexi(args)),
+            "cut_tac" => Ok(cut_tac(args)),
+            "cut_preview" => self.cut_preview(args),
+            "cut_draw" => self.cut_draw(args),
+            "cut_draw_hits" => self.cut_draw_hits(args),
+            "cut_snap" => {
+                let stage = self.stage_of(args)?;
+                let file = stage.file.as_ref().ok_or("the project has no model")?;
+                let plane = transform_of(args.get("plane").unwrap_or(&Value::Null))?;
+                let distance = file
+                    .model
+                    .cut_snap(
+                        stage.bed().as_ref(),
+                        whole(args, "copy")?,
+                        &plane,
+                        numbers(args, "point")?,
+                    )
+                    .map_err(|e| e.to_string())?;
+                Ok(json!({ "distance": distance }))
+            }
             other => Err(format!("there is no call named {other}")),
         }
     }
@@ -1145,6 +1663,69 @@ impl Session {
             stage.id,
             json!({ "done": outcome.name, "made": outcome.made, "note": outcome.note, "part": outcome.part, "recipe": outcome.recipe }),
         )
+    }
+
+    /// A curved cut's preview (the reference's cut face while the surface
+    /// is bent): the halves the cut as `args` gives it would make, worked
+    /// out by the booleans, the one asked for before stopped. Answers
+    /// `{ id, triangles: [upper, lower] }`, the meshes then from
+    /// `cut_preview_mesh`; "stopped" when a later one took its place.
+    fn cut_preview(&self, args: &Value) -> Result<Value, String> {
+        let stage = self.stage_of(args)?;
+        let bed = stage.bed();
+        let file = stage.file.as_ref().ok_or("the project has no model")?;
+        let copy = whole(args, "copy")?;
+        let plane = transform_of(args.get("plane").unwrap_or(&Value::Null))?;
+        let options = cut_options(args)?;
+        if options.sheet.is_none() && options.drawn.is_none() {
+            return Err("there is no surface to cut by".into());
+        }
+        let key = Arc::as_ptr(file) as usize;
+        let cancel = edge_engine::BooleanCancel::new();
+        let (id, prepared) = {
+            let mut previews = lock(&self.cut_preview);
+            if let Some(running) = previews.running.take() {
+                running.cancel();
+            }
+            previews.running = Some(cancel.clone());
+            previews.asked += 1;
+            let prepared = match &previews.prepared {
+                Some((held, held_copy, prepared)) if *held == key && *held_copy == copy => {
+                    Some(prepared.clone())
+                }
+                _ => None,
+            };
+            (previews.asked, prepared)
+        };
+        let prepared = match prepared {
+            Some(prepared) => prepared,
+            None => {
+                let made = Arc::new(
+                    file.model
+                        .cut_prepared(bed.as_ref(), copy)
+                        .map_err(|error| super::i18n::tr(&error.to_string()))?,
+                );
+                lock(&self.cut_preview).prepared = Some((key, copy, made.clone()));
+                made
+            }
+        };
+        let made = file.model.cut_preview(
+            bed.as_ref(),
+            copy,
+            &plane,
+            &options,
+            &prepared,
+            Some(&cancel),
+        );
+        let mut previews = lock(&self.cut_preview);
+        if cancel.is_cancelled() || previews.asked != id {
+            return Err("stopped".into());
+        }
+        previews.running = None;
+        let meshes = made.map_err(|error| super::i18n::tr(&error.to_string()))?;
+        let triangles = [meshes[0].triangles.len(), meshes[1].triangles.len()];
+        previews.last = Some((id, meshes));
+        Ok(json!({ "id": id, "triangles": triangles }))
     }
 
     /// How a copy's object was cut, when the cut was kept editable, set
@@ -1339,7 +1920,36 @@ impl Session {
                 }
                 let c = connector_of(&asked)?;
                 let snap = cut_options(&json!({ "snap": args.get("snap") }))?.snap;
-                let mesh = edge_engine::connector_mesh(c.kind, c.style, c.shape, snap);
+                // A pin as it will be, in mm, straddling the cut
+                // (`pushfit_preview_body`).
+                // `hole`: a pin's hole on that side instead
+                // (`render_pushfit_hole_envelopes`).
+                let hole = match text(args, "hole") {
+                    Some("upper") => Some(edge_engine::pushfit::PinSide::Upper),
+                    Some("lower") => Some(edge_engine::pushfit::PinSide::Lower),
+                    _ => None,
+                };
+                let mesh = if c.kind == edge_engine::ConnectorKind::Pin
+                    && let Some(side) = hole
+                {
+                    c.pin.hole_mesh(side, 0.0)
+                } else if c.kind == edge_engine::ConnectorKind::Pin {
+                    c.pin.mesh(0.0, 0.0, false).mesh
+                } else if c.kind == edge_engine::ConnectorKind::Flexi {
+                    // The joint as it will be (`flexi_preview_body`).
+                    edge_engine::flexi::preview_body(&c.flexi)
+                } else if c.kind == edge_engine::ConnectorKind::Tac {
+                    // The connector, or with `hole` its socket, the outline
+                    // drawn round it (`update_tac_joint_models`).
+                    let made = if hole.is_some() {
+                        edge_engine::tac::cutter_mesh(&c.tac)
+                    } else {
+                        edge_engine::tac::connector_mesh(&c.tac)
+                    };
+                    made.unwrap_or_default()
+                } else {
+                    edge_engine::connector_mesh(c.kind, c.style, c.shape, snap)
+                };
                 let object = edge_engine::SceneObject {
                     name: String::new(),
                     marks: vec![edge_engine::Mark::Filament(1); mesh.triangles.len()],
@@ -1347,6 +1957,25 @@ impl Session {
                     parts: Vec::new(),
                     vertices: mesh.vertices,
                     triangles: mesh.triangles,
+                };
+                Ok(super::scene::mesh_bytes(&object))
+            }
+            // A side of the last curved preview (`side`: `upper`, `lower`),
+            // by its number (`id`).
+            "cut_preview_mesh" => {
+                let previews = lock(&self.cut_preview);
+                let (id, meshes) = previews.last.as_ref().ok_or("there is no preview")?;
+                if args.get("id").and_then(Value::as_u64) != Some(*id) {
+                    return Err("that preview has been made again".into());
+                }
+                let mesh = &meshes[usize::from(text(args, "side") == Some("lower"))];
+                let object = edge_engine::SceneObject {
+                    name: String::new(),
+                    marks: vec![edge_engine::Mark::Filament(1); mesh.triangles.len()],
+                    bounds: mesh.bounds(),
+                    parts: Vec::new(),
+                    vertices: mesh.vertices.clone(),
+                    triangles: mesh.triangles.clone(),
                 };
                 Ok(super::scene::mesh_bytes(&object))
             }
@@ -1406,6 +2035,8 @@ impl Session {
         self.edited(id, json!({ "done": name }))
     }
 }
+
+mod draw;
 
 #[cfg(test)]
 mod tests;

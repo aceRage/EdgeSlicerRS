@@ -56,8 +56,8 @@ mod cut;
 pub use arrange::{ArrangeOptions, ArrangeScope, Arranged};
 pub use cut::{
     CONNECTOR_HOLE_OVERLAP, CUT_THICKNESS_MAX, Connector, ConnectorKind, ConnectorShape,
-    ConnectorStyle, CutDone, CutEdit, CutOptions, CutPieces, CutSection, CutThickness, FaceHit,
-    Groove, connector_mesh,
+    ConnectorStyle, CutDone, CutEdit, CutOptions, CutPieces, CutSection, CutThickness, DrawnCut,
+    FaceHit, Groove, Prepared, connector_mesh,
 };
 pub use filaments::{FlushBasis, MAX_FILAMENTS, NEXT_COLOURS};
 pub use item_settings::SettingChange;
