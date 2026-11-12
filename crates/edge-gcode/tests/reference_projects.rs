@@ -135,6 +135,7 @@ fn every_reference_project_exports_well_formed_gcode_that_adds_up() {
             .collect();
         let plan: Vec<Layer<'_>> = (0..layers.len())
             .map(|index| Layer {
+                region: None,
                 z: 0.2 * (index + 1) as f64,
                 height: 0.2,
                 filament: 0,
@@ -330,6 +331,7 @@ fn the_u1s_own_tool_change_gcode_runs() {
     assert!(tools[0].change_filament_gcode.is_some());
 
     let layer = |z: f64, filament: usize| Layer {
+        region: None,
         z,
         height: 0.2,
         filament,

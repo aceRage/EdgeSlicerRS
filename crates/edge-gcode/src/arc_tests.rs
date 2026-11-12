@@ -79,6 +79,7 @@ fn layer<'a>(
     paths: &'a [ExtrusionPath],
 ) -> Layer<'a> {
     Layer {
+        region: None,
         z,
         height: 0.2,
         filament: 0,
