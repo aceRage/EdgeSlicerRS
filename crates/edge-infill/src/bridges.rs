@@ -99,12 +99,27 @@ impl Waves {
     }
 }
 
+/// How far a point of a wave's front may lie from the line through its
+/// neighbours and still be dropped, in scaled units: a tenth of a micron.
+///
+/// Rounding a corner that hardly turns, the clipping library here puts
+/// the two ends of its arc on separate points of the grid a nanometre or
+/// two apart, where the reference's (ClipperLib `OffsetPoint`) puts one
+/// point; the next wave rounds the nanometre edge between them, which
+/// can point any way, into an arc of its own, and so on. A front with
+/// such scraps in it can have tens of thousands of points, and an offset
+/// of the surface it makes then costs seconds: on the 3DBenchy's second
+/// layer, 61,000 points in six surfaces, and 6.8 s for one offset in the
+/// search for internal bridges, where the front thinned has a few
+/// thousand. Nothing a tenth of a micron off a line is shape.
+const WAVE_THINNING: Coord = 100;
+
 /// What `source` gains of `boundary`, one piece of the area beside it,
 /// grown into it in `waves` (RegionExpansion.cpp `wave_seeds` and
 /// `propagate_wave_from_boundary`): the source's outline, moved out a
 /// little, is kept where it runs inside the piece, thickened by one step,
 /// and what that covers of the piece is grown a step at a time, cut to
-/// the piece after each.
+/// the piece after each, and each front thinned by [`WAVE_THINNING`].
 pub(crate) fn wave(
     source: &ExPolygon,
     boundary: &ExPolygon,
@@ -139,16 +154,22 @@ pub(crate) fn wave(
         &edge_clip::thicken_round(seeds.iter().map(Vec::as_slice), step, tolerance)?,
         inside,
     )?;
+    // Each front is thinned of points that are no shape before it is
+    // grown again, and the last before it is handed back.
     for _ in 1..waves.steps {
         if reached.is_empty() {
             break;
         }
         reached = edge_clip::intersection(
-            &edge_clip::offset(&reached, step, Join::Round { tolerance })?,
+            &edge_clip::offset(
+                &edge_clip::simplify(&reached, WAVE_THINNING)?,
+                step,
+                Join::Round { tolerance },
+            )?,
             inside,
         )?;
     }
-    Ok(reached)
+    edge_clip::simplify(&reached, WAVE_THINNING)
 }
 
 /// One kind of fill beside a layer's bridges, and how far a bridge
@@ -369,6 +390,61 @@ mod tests {
         assert!((reach - 13.0).abs() < 1e-3, "{reach}");
         // Nothing of the fill it does not touch, however near.
         assert!(wave(&bridge, &apart, &waves).unwrap().is_empty());
+    }
+
+    #[test]
+    fn a_wave_round_a_curve_stays_as_light_as_its_curve() {
+        // A round bridge of 400 points in a square of solid fill, grown
+        // the way the Benchy's are, in five waves. Unthinned, each wave
+        // nearly doubled the points of the last, with edges a nanometre
+        // long among them: 12,659 points from these 400, and on the
+        // Benchy surfaces whose every offset took seconds.
+        let circle = |radius: f64, count: usize| Polygon {
+            points: (0..count)
+                .map(|at| {
+                    let turn = std::f64::consts::TAU * at as f64 / count as f64;
+                    Point2::from_mm(20.0 + radius * turn.cos(), 20.0 + radius * turn.sin())
+                })
+                .collect(),
+        };
+        let bridge = ExPolygon {
+            contour: circle(8.0, 400),
+            holes: Vec::new(),
+        };
+        let mut hole = circle(8.0, 400);
+        hole.points.reverse();
+        let fill = ExPolygon {
+            contour: block(0.0, 0.0, 40.0, 40.0).contour,
+            holes: vec![hole],
+        };
+        let waves = Waves::of(scaled(1.35));
+        assert_eq!(waves.steps, 5);
+        let gained = wave(&bridge, &fill, &waves).unwrap();
+        // A ring 1.35 mm wide all round.
+        let ring = std::f64::consts::PI * (9.35f64.powi(2) - 64.0);
+        assert!(
+            (area(&gained) - ring).abs() < 0.02 * ring,
+            "{}",
+            area(&gained)
+        );
+        let points: usize = gained
+            .iter()
+            .flat_map(ExPolygon::rings)
+            .map(|ring| ring.points.len())
+            .sum();
+        assert!(points < 2000, "{points} points");
+        let shortest = gained
+            .iter()
+            .flat_map(ExPolygon::rings)
+            .flat_map(|ring| {
+                let p = &ring.points;
+                (0..p.len()).map(move |at| {
+                    let (a, b) = (p[at], p[(at + 1) % p.len()]);
+                    ((b.x - a.x) as f64).hypot((b.y - a.y) as f64)
+                })
+            })
+            .fold(f64::MAX, f64::min);
+        assert!(shortest > 10.0, "an edge {shortest} nm long");
     }
 
     #[test]
