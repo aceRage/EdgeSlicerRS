@@ -1762,9 +1762,12 @@ its foot printed, where the reference cuts the first layer down by the
 collision of the layer above and leaves the foot unprinted: the same
 with dense bottom layers, while without them the reference's feet sit on
 the part (the bottom gap is held here in both, 0.2 mm on the 3DBenchy
-and on a slope); and the reference's smoothing push applied twice over
-is not copied, nor its mistake in its overhang clusters (a second
-overhang on a layer joining a cluster is never supported). On `ledge` the reference holds up a 0.37 mm overhang round
+and on a slope); and one of the reference's mistakes is not copied, in
+its overhang clusters (a second overhang on a layer joining a cluster is
+never supported). The smoothing pushes a ball clear of the part by the
+square of the distance, as the reference does (it reads like a slip,
+but moved the distance itself the balls swing back and forth instead of
+settling, and the support comes no further from the part). On `ledge` the reference holds up a 0.37 mm overhang round
 the frame that its own small-overhang rule drops on a plain block
 (`lip`, nothing in either); why was not found, and here it is dropped.
 
@@ -2932,9 +2935,9 @@ first, 16 and 17 a hundred layers up, 19 and 21 at two hundred), and
 per layer the support is mostly 5 to 20% over it, more near the top
 (175 against 122 mm 360 layers up). No support line lies
 over any of the part's lines in any of these; lines come within 0.25 mm
-of an outer wall less often than the reference's (2776 pixels against
-5143 on the figurine). Support with nothing under it (no support or part
-within 0.3 mm on the layer below) is 63.6 mm2 over the figurine's 381
+of an outer wall less often than the reference's (3260 pixels against
+5143 on the figurine, 2026-11-12). Support with nothing under it (no support or part
+within 0.3 mm on the layer below) is 62.8 mm2 over the figurine's 381
 layers against the reference's 41.9 (668.5 before the port). The foot of
 a branch on the part is dense on its own layer and the one above; the
 reference prints the same two layers, its foot a layer lower and left

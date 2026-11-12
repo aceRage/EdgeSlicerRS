@@ -388,13 +388,31 @@ fn smooth(volumes: &Volumes, config: &TreeConfig, heights: &Heights, layers: &mu
                     let away = [position[0] - hit[0], position[1] - hit[1]];
                     let length = away[0].hypot(away[1]);
                     if length > 0.0 {
-                        // The reference multiplies by the nudge twice here
-                        // (`nudge_vector * nudge_dist` of a vector already
-                        // that long), moving a ball the square of the
-                        // distance meant; it is moved the distance.
+                        // As the reference (TreeSupport3D.cpp
+                        // `organic_smooth_branches_avoid_collisions`):
+                        // `nudge_vector * nudge_dist` of a vector already
+                        // `nudge_dist` long, so a ball moves the square of
+                        // the distance (0.09 mm for 0.3). It looks like a
+                        // slip, but it is what settles. Measured 2026-11-12
+                        // (colliding balls in the last of the 100 rounds,
+                        // and summed movement per round at the end), on
+                        // the 3DBenchy and the owner's figurine: moved the
+                        // distance itself, 86 and 3389 colliding, the
+                        // counts swinging from round to round (80 to 96),
+                        // 6.8 and 67.4 mm a round; squared, 162 and 4459,
+                        // steady, 3.3 and 13.6 mm; half the distance, in
+                        // between (103 and 3720, 4.8 and 32.8 mm). The
+                        // single step oscillates rather than settles, and
+                        // the support it gives is no clearer of the part
+                        // (lines within 0.25 mm of an outer wall: 391 and
+                        // 2776 pixels against 434 and 3260 squared; the
+                        // reference's own 254 and 5143). The C++ fix to a
+                        // single step was closed for the same (EdgeSlicer
+                        // PR #985).
+                        let step = nudge * nudge;
                         let candidate = [
-                            position[0] + away[0] / length * nudge,
-                            position[1] + away[1] / length * nudge,
+                            position[0] + away[0] / length * step,
+                            position[1] + away[1] / length * step,
                         ];
                         position = limit(candidate, position);
                     }
