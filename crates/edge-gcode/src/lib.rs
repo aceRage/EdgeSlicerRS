@@ -897,6 +897,14 @@ struct State {
     tool: usize,
     parked: Vec<(bool, f64)>,
     tool_changes: usize,
+    /// The top of the highest layer begun so far, which a printer's
+    /// change G-code is given as `max_layer_z` (GCode.cpp
+    /// `m_max_layer_z`).
+    max_z: f64,
+    /// The temperature a one-nozzle printer's tower last set, which it
+    /// does not set again above the first layer (WipeTower2.cpp
+    /// `m_old_temperature`).
+    tower_temperature: Option<f64>,
     /// What each filament has had extruded so far, in mm and in mm³.
     used: Vec<(f64, f64)>,
     retracted: bool,
@@ -1132,6 +1140,7 @@ impl Writer<'_> {
             .map_or((0.0, 0.0), |at| (unscaled(at.x), unscaled(at.y)));
         let height = self.state.height.unwrap_or(z);
         let count = self.state.tool_changes as i64 + 1;
+        let top = (self.variables.value("max_layer_z")).unwrap_or(Value::Float(0.0));
         let v = &mut self.variables;
         v.set("previous_extruder", Value::Int(from.unwrap_or(-1)));
         v.set("next_extruder", Value::Int(to as i64));
@@ -1176,6 +1185,9 @@ impl Writer<'_> {
             whole(old_settings.map_or(0.0, temperature)),
         );
         v.set("new_filament_temp", whole(temperature(new_settings)));
+        // The highest layer printed so far, not the print's top, which
+        // the end G-code is given (GCode.cpp `append_tcr`, `set_extruder`).
+        v.set("max_layer_z", Value::Float(self.state.max_z));
         v.set("x_after_toolchange", Value::Float(position.0));
         v.set("y_after_toolchange", Value::Float(position.1));
         v.set("z_after_toolchange", Value::Float(height));
@@ -1269,6 +1281,7 @@ impl Writer<'_> {
             }
             None => writeln!(self.out, "T{to}")?,
         }
+        self.variables.set("max_layer_z", top);
         self.variables
             .set("current_extruder", Value::Int(to as i64));
         // The template moves the head as it likes: nothing is assumed
@@ -1292,7 +1305,14 @@ impl Writer<'_> {
             self.custom("filament_start_gcode", template)?;
         }
         let temperature = self.temperature(tool, first_layer);
-        if s.tool_change_temperature_wait {
+        if s.single_nozzle {
+            // One nozzle: the tower set the temperature before the change,
+            // without waiting; with no tower it is set here, again without
+            // waiting and naming no tool (GCode.cpp `set_extruder`).
+            if !s.prime_tower {
+                writeln!(self.out, "M104 S{temperature:.0} ; set nozzle temperature")?;
+            }
+        } else if s.tool_change_temperature_wait {
             writeln!(
                 self.out,
                 "M109 S{temperature:.0} T{tool} ; set nozzle temperature and wait for it to be reached"
@@ -1348,6 +1368,17 @@ impl Writer<'_> {
                 }
             }
         }
+        // On one nozzle the tower sets the new filament's temperature
+        // without waiting, on the first layer and wherever it differs
+        // from what it last set (WipeTower2.cpp and WipeTower.cpp
+        // `toolchange_Unload`).
+        if s.single_nozzle && s.prime_tower {
+            let wanted = self.temperature(to, layer == 0);
+            if wanted > 0.0 && (layer == 0 || self.state.tower_temperature != Some(wanted)) {
+                writeln!(self.out, "M104 S{wanted:.0}")?;
+                self.state.tower_temperature = Some(wanted);
+            }
+        }
         // Pull the filament well back, wiping first as for any retraction.
         if self.state.primed && s.retract_length_toolchange > 0.0 {
             self.retract(false)?;
@@ -1394,7 +1425,24 @@ impl Writer<'_> {
         if let Some(speed) = self.state.fan {
             writeln!(self.out, "M106 S{speed}")?;
         }
-        self.announce(to, layer == 0)
+        self.announce(to, layer == 0)?;
+        // A Bambu Lab printer's change G-code leaves the nozzle cooler
+        // before the tower, which heats it back up above the first layer
+        // (WipeTower.cpp `tool_change`, "Wipe tower reheat before wipe").
+        let next = &self.all[to];
+        if next.single_nozzle
+            && next.bambu_tower
+            && next.prime_tower
+            && layer > 0
+            && next.cooling_before_tower > 0.0
+        {
+            writeln!(
+                self.out,
+                "M104 T0 S{:.0} N0 ;Wipe tower reheat before wipe",
+                next.nozzle_temperature
+            )?;
+        }
+        Ok(())
     }
 
     /// One physical layer: `parts` is what each filament prints on it, in
@@ -1430,8 +1478,9 @@ impl Writer<'_> {
         if index == 1 {
             if s.nozzle_temperature != s.nozzle_temperature_initial_layer {
                 // With several tools the one in use is named; the others
-                // get their temperature when their turn comes.
-                if self.all.len() > 1 {
+                // get their temperature when their turn comes. One nozzle
+                // is never named (GCodeWriter.cpp `set_temperature`).
+                if self.all.len() > 1 && !s.single_nozzle {
                     writeln!(
                         self.out,
                         "M104 S{:.0} T{}",
@@ -1459,6 +1508,7 @@ impl Writer<'_> {
         self.shelters.clear();
         // The nozzle itself moves up with the layer's first travel.
         self.state.z = layer.z;
+        self.state.max_z = self.state.max_z.max(layer.z);
         self.below = if index == 0 {
             None
         } else {

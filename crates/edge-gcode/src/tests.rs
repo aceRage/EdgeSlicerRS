@@ -1693,8 +1693,9 @@ fn supports_go_down_before_the_part_at_their_own_speeds() {
     assert!((summary.filament_mm3 - volume).abs() < 1e-9);
 }
 
-/// Two filaments' settings for a printer whose profile has a tool-change
-/// template, and keeps an idle tool 150 °C cooler.
+/// Two filaments' settings for a printer with a nozzle for each whose
+/// profile has a tool-change template, and keeps an idle tool 150 °C
+/// cooler.
 fn two_tools(change: Option<&str>) -> [PrintSettings; 2] {
     let tool = |temperature: f64, flow_ratio: f64| PrintSettings {
         machine_start_gcode: Some("PRINT_START\nT0".into()),
@@ -1709,6 +1710,7 @@ fn two_tools(change: Option<&str>) -> [PrintSettings; 2] {
         tool_change_temperature_wait: false,
         preheat_time: 30.0,
         tools: 2,
+        single_nozzle: false,
         ..basic()
     };
     [tool(210.0, 1.0), tool(240.0, 0.9)]
@@ -3112,5 +3114,95 @@ fn a_printer_of_one_nozzle_is_told_how_much_to_flush() {
         text.lines()
             .filter(|line| line.starts_with("; flush "))
             .all(|line| line == "; flush 0")
+    );
+}
+
+/// Two filaments through one nozzle (`single_extruder_multi_material`),
+/// with a prime tower or not, whose change G-code lifts by
+/// `max_layer_z`.
+fn one_nozzle(tower: bool, bambu: bool) -> [PrintSettings; 2] {
+    let tool = |temperature: f64| PrintSettings {
+        machine_start_gcode: Some("PRINT_START\nT0".into()),
+        change_filament_gcode: Some("G1 Z{max_layer_z + 3}\nT[next_extruder]".into()),
+        nozzle_temperature: temperature,
+        nozzle_temperature_initial_layer: temperature + 10.0,
+        retract_length_toolchange: 0.0,
+        single_nozzle: true,
+        prime_tower: tower,
+        bambu_tower: bambu,
+        cooling_before_tower: 10.0,
+        ..basic()
+    };
+    [tool(210.0), tool(240.0)]
+}
+
+#[test]
+fn one_nozzle_sets_the_new_temperature_without_waiting() {
+    let temperatures = |text: &str| -> Vec<String> {
+        text.lines()
+            .filter(|line| line.starts_with("M104") || line.starts_with("M109"))
+            .map(str::to_owned)
+            .collect()
+    };
+    // With a tower: on the first layer every change sets the new
+    // filament's temperature, before the change; above it only one that
+    // differs from what the tower set last. Nothing is waited for and no
+    // tool is named (WipeTower2.cpp `toolchange_Unload`).
+    let layers: &[&[usize]] = &[&[0, 1], &[1, 0], &[0, 1], &[1]];
+    let (text, summary) = in_filaments(layers, &one_nozzle(true, false));
+    assert_eq!(summary.tool_changes, 3);
+    // (The second layer's own temperature is the filament in hand's,
+    // which the tower does not know of.)
+    assert_eq!(
+        temperatures(&text),
+        [
+            "M104 S250",
+            "M104 S240",
+            "M104 S210",
+            "M104 S240",
+            "M104 S0"
+        ]
+    );
+    let first = text.split(";LAYER_CHANGE").nth(1).unwrap();
+    let set = first.find("M104 S250").unwrap();
+    assert!(set < first.find("T1").unwrap());
+    // The change G-code is given the top of the highest layer begun, not
+    // the print's: 0 before the first layer, then each layer's.
+    let lifts: Vec<&str> = text
+        .lines()
+        // The writer's own moves have three decimals; the template's do not.
+        .filter(|line| {
+            line.strip_prefix("G1 Z").is_some_and(|z| {
+                z.split('.')
+                    .nth(1)
+                    .is_none_or(|decimals| decimals.len() == 1)
+            })
+        })
+        .collect();
+    assert_eq!(lifts, ["G1 Z3", "G1 Z3.2", "G1 Z3.4", "G1 Z3.6"]);
+    // Without a tower the temperature is set after the change, still
+    // without waiting (GCode.cpp `set_extruder`).
+    let (text, _) = in_filaments(layers, &one_nozzle(false, false));
+    assert_eq!(
+        temperatures(&text),
+        [
+            "M104 S220 ; set nozzle temperature",
+            "M104 S250 ; set nozzle temperature",
+            "M104 S240",
+            "M104 S210 ; set nozzle temperature",
+            "M104 S240 ; set nozzle temperature",
+            "M104 S0",
+        ]
+    );
+    // A Bambu Lab printer's tower heats the nozzle back up after its
+    // change G-code cooled it, above the first layer.
+    let (text, _) = in_filaments(layers, &one_nozzle(true, true));
+    let reheats: Vec<&str> = text.lines().filter(|l| l.contains("reheat")).collect();
+    assert_eq!(
+        reheats,
+        [
+            "M104 T0 S210 N0 ;Wipe tower reheat before wipe",
+            "M104 T0 S240 N0 ;Wipe tower reheat before wipe",
+        ]
     );
 }

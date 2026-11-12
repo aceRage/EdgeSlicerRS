@@ -23,6 +23,20 @@
 //! which the new nozzle's first line then runs on from. The wall is left
 //! open where the new nozzle comes in (`wipe_tower_wall_gap`).
 //!
+//! A printer of one nozzle (`single_extruder_multi_material`) is changed
+//! as WipeTower2.cpp changes it there: where the project purges in the
+//! tower (`purge_in_prime_tower`), each change lays down the flushing
+//! volume from the filament put away to the new one
+//! (`flush_volumes_matrix` times `flush_multiplier`), each block is
+//! planned from its own volume, and the tools on a layer are taken in
+//! the order that flushes least; otherwise the printer's own change
+//! G-code flushes and the tower takes `prime_volume` (`Print.cpp`
+//! `_make_wipe_tower`). Not done there: ramming, cooling and loading the
+//! filament on the tower (`enable_filament_ramming`), flushing into
+//! infill, objects or support, and the tower Bambu Lab printers get
+//! (WipeTower.cpp), which is laid out here as the other one is; each is
+//! said in a note.
+//!
 //! Not done: the cone wall, wiping the nozzle flat on the tower as it
 //! comes in, starting each block at a different place, turning the tower
 //! end for end on alternate layers, and leaving out or thinning the
@@ -121,9 +135,42 @@ pub struct TowerSettings {
     /// each layer (`prime_tower_brim_chamfer`), and from how wide at most.
     pub brim_chamfer: bool,
     pub brim_chamfer_max: f64,
+    /// One nozzle takes every filament in turn
+    /// (`single_extruder_multi_material`).
+    pub single_nozzle: bool,
+    /// The printer gets the reference's other tower, WipeTower.cpp's: a
+    /// Bambu Lab printer, or one set to it (`wipe_tower_type` `type1`;
+    /// Print.cpp `wipe_tower_type`).
+    pub bambu_tower: bool,
+    /// A change lays down the flushing volume from the filament put away
+    /// to the new one, not `prime_volume`: one nozzle, purging in the
+    /// tower (`purge_in_prime_tower`), and WipeTower2's tower
+    /// (Print.cpp `_make_wipe_tower`).
+    pub purge_in_tower: bool,
+    /// The tools on a layer are taken in the order that flushes least,
+    /// by `flush_volumes_matrix`, and not as if every change cost
+    /// `prime_volume` (ToolOrdering.cpp
+    /// `reorder_extruders_for_minimum_flush_volume`).
+    pub order_by_flush: bool,
+    /// `flush_volumes_matrix` as given: mm³ from filament i to filament
+    /// j at `i * n + j`.
+    pub flush_matrix: Vec<f64>,
+    pub flush_multiplier: f64,
+    /// The least each filament lays on the tower when it is flushed in
+    /// it, in mm³ (`filament_minimal_purge_on_wipe_tower`).
+    pub minimal_purge: Vec<f64>,
     /// Settings present in the input that are not honoured, each with what
     /// is done instead.
     pub unsupported: Vec<String>,
+}
+
+/// One tool change for the tower to plan.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Change {
+    /// How the filament put away is rammed, when it is.
+    pub ram: Option<Ramming>,
+    /// What the new filament lays down, in mm³.
+    pub volume: f64,
 }
 
 impl Default for TowerSettings {
@@ -145,6 +192,13 @@ impl Default for TowerSettings {
             ramming: Vec::new(),
             brim_chamfer: true,
             brim_chamfer_max: 4.0,
+            single_nozzle: true,
+            bambu_tower: false,
+            purge_in_tower: true,
+            order_by_flush: true,
+            flush_matrix: Vec::new(),
+            flush_multiplier: 0.3,
+            minimal_purge: Vec::new(),
             unsupported: Vec::new(),
         }
     }
@@ -227,7 +281,7 @@ impl TowerSettings {
             list("filament_multitool_ramming_volume")?,
             list("filament_multitool_ramming_flow")?,
         );
-        let ramming = settings
+        let ramming: Vec<Option<Ramming>> = settings
             .texts("filament_multitool_ramming")
             .map(|rammed| {
                 rammed
@@ -249,6 +303,81 @@ impl TowerSettings {
                     .collect()
             })
             .unwrap_or_default();
+        // Pressure advance is only touched while a filament is rammed
+        // (WipeTower2.cpp `toolchange_Unload`), so with nothing rammed
+        // nothing is left undone.
+        if ramming.iter().all(Option::is_none) {
+            unsupported.retain(|note| !note.starts_with("enable_change_pressure_when_wiping"));
+        }
+        // A printer of one nozzle (Print.cpp `_make_wipe_tower`,
+        // ToolOrdering.cpp `reorder_extruders_for_minimum_flush_volume`).
+        let single_nozzle = settings
+            .flag("single_extruder_multi_material")?
+            .unwrap_or(defaults.single_nozzle);
+        let purge_in = settings.flag("purge_in_prime_tower")?.unwrap_or(true);
+        // Print.cpp `is_BBL_printer`, as the command line sets it: the
+        // printer model's name, or failing that the preset's.
+        let bambu = settings
+            .text("printer_model")
+            .filter(|model| !model.is_empty())
+            .or(settings.text("printer_settings_id"))
+            .is_some_and(|name| name.starts_with("Bambu Lab"));
+        let bambu_tower = bambu || settings.text("wipe_tower_type") == Some("type1");
+        let purge_in_tower = single_nozzle && purge_in && !bambu_tower;
+        let flush_matrix: Vec<f64> = settings
+            .floats("flush_volumes_matrix")
+            .ok()
+            .flatten()
+            .unwrap_or_default()
+            .into_iter()
+            .map(|volume| volume.unwrap_or(0.0))
+            .collect();
+        // Some projects write the multiplier as a list of one.
+        let flush_multiplier = settings
+            .floats("flush_multiplier")
+            .ok()
+            .flatten()
+            .and_then(|values| values.first().copied().flatten())
+            .unwrap_or(defaults.flush_multiplier);
+        if enabled && single_nozzle {
+            if bambu_tower {
+                unsupported.push(
+                    "wipe_tower_type: a Bambu Lab printer's prime tower is the reference's \
+                     WipeTower.cpp, Bambu Studio's; it is laid out here as the reference lays out \
+                     its other tower (WipeTower2.cpp), with prime_volume at each change: its wall, \
+                     the spacing of its rows and its depth are not the reference's"
+                        .to_owned(),
+                );
+            } else if settings.flag("enable_filament_ramming")?.unwrap_or(true) {
+                unsupported.push(
+                    "enable_filament_ramming \"1\": on a printer of one nozzle the filament is \
+                     not rammed, cooled or loaded on the prime tower; the swap is left to the \
+                     printer's change_filament_gcode"
+                        .to_owned(),
+                );
+            }
+            // Where the reference would flush into the print instead
+            // (ToolOrdering.cpp `mark_wiping_extrusions`).
+            if purge_in_tower || bambu_tower {
+                let into = if bambu_tower {
+                    "the printer's own purge"
+                } else {
+                    "the prime tower"
+                };
+                for (key, what) in [
+                    ("flush_into_infill", "infill"),
+                    ("flush_into_objects", "objects"),
+                    ("flush_into_support", "support"),
+                ] {
+                    if settings.flag(key)?.unwrap_or(key == "flush_into_support") {
+                        unsupported.push(format!(
+                            "{key} \"1\": nothing is flushed into {what}; the whole flushing \
+                             volume goes into {into}"
+                        ));
+                    }
+                }
+            }
+        }
         Ok(Self {
             enabled,
             x: placed("wipe_tower_x", defaults.x)?,
@@ -285,8 +414,58 @@ impl TowerSettings {
                 defaults.brim_chamfer_max,
             )?
             .max(0.0),
+            single_nozzle,
+            bambu_tower,
+            purge_in_tower,
+            order_by_flush: (single_nozzle && purge_in) || bambu_tower,
+            flush_matrix,
+            flush_multiplier,
+            minimal_purge: list("filament_minimal_purge_on_wipe_tower")?
+                .into_iter()
+                .map(|volume| volume.unwrap_or(15.0))
+                .collect(),
             unsupported,
         })
+    }
+
+    /// `flush_volumes_matrix` from filament `old` to filament `new`
+    /// (counting from 0), as given; none where the matrix does not reach.
+    fn flush(&self, old: usize, new: usize) -> Option<f64> {
+        let count = ((self.flush_matrix.len() as f64).sqrt() + 1e-9) as usize;
+        (old < count && new < count).then(|| self.flush_matrix[old * count + new])
+    }
+
+    /// What a change from filament `old` to filament `new` (counting from
+    /// 0) lays down on the tower, in mm³: the flushing volume times the
+    /// multiplier where the project purges in the tower, `prime_volume`
+    /// otherwise (Print.cpp `_make_wipe_tower`), and never less than the
+    /// new filament's `filament_minimal_purge_on_wipe_tower`. A pair the
+    /// matrix does not reach takes `prime_volume`. Worked in single
+    /// precision, as there.
+    pub fn wipe_volume(&self, old: usize, new: usize) -> f64 {
+        match self.flush(old, new).filter(|_| self.purge_in_tower) {
+            Some(volume) => {
+                let least = (self.minimal_purge.get(new))
+                    .or(self.minimal_purge.last())
+                    .copied()
+                    .unwrap_or(15.0) as f32;
+                let flushed = volume as f32 * self.flush_multiplier as f32 - least;
+                f64::from(flushed.max(0.0) + least)
+            }
+            None => self.prime_volume,
+        }
+    }
+
+    /// What going from filament `old` to filament `new` (counting from 0)
+    /// costs when the tools on a layer are put in order: the flushing
+    /// volume as given where the order goes by it, `prime_volume`
+    /// otherwise (ToolOrdering.cpp
+    /// `reorder_extruders_for_minimum_flush_volume`).
+    pub fn change_cost(&self, old: usize, new: usize) -> f32 {
+        match self.flush(old, new).filter(|_| self.order_by_flush) {
+            Some(volume) => volume as f32,
+            None => self.prime_volume as f32,
+        }
     }
 
     /// A tower line on a layer `height` mm thick.
@@ -300,10 +479,18 @@ impl TowerSettings {
 
     /// What one tool change takes of a tower `span` mm wide on a layer
     /// `height` mm thick, when the filament put away is rammed as `ram`
-    /// says (WipeTower2.cpp `set_toolchange`, `get_wipe_depth`): rows
-    /// enough, across a width a little less than the tower's, to lay
-    /// down `prime_volume`, after the rows the ram takes.
-    fn planned(&self, span: f64, height: f64, first_layer: bool, ram: Option<Ramming>) -> Planned {
+    /// says and the new one lays down `volume` mm³ (WipeTower2.cpp
+    /// `set_toolchange`, `get_wipe_depth`): rows enough, across a width a
+    /// little less than the tower's, to lay down `volume`, after the rows
+    /// the ram takes.
+    fn planned(
+        &self,
+        span: f64,
+        height: f64,
+        first_layer: bool,
+        ram: Option<Ramming>,
+        volume: f64,
+    ) -> Planned {
         let line = WIDTH_TO_NOZZLE * self.nozzle_diameter;
         let wide = line * self.ram_width;
         let per_mm = |width: f64| height * (width - height * (1.0 - PI / 4.0));
@@ -319,7 +506,7 @@ impl TowerSettings {
             None => (0.0, 0.0, 0.0),
         };
         let already = first_wipe * per_mm(line * self.extra_flow);
-        let length = ((self.prime_volume - already) / per_mm(line) / self.extra_flow).max(0.0);
+        let length = ((volume - already) / per_mm(line) / self.extra_flow).max(0.0);
         let rows = (length / across).floor() + 1.0;
         Planned {
             ram_length,
@@ -332,7 +519,8 @@ impl TowerSettings {
     /// How much of the tower's depth a tool change with no ramming takes.
     #[cfg(test)]
     fn block_depth(&self, span: f64, height: f64, first_layer: bool) -> f64 {
-        self.planned(span, height, first_layer, None).depth()
+        self.planned(span, height, first_layer, None, self.prime_volume)
+            .depth()
     }
 
     /// How far apart a block's rows are, in line widths.
@@ -681,9 +869,35 @@ impl Shape {
 
 /// Plans the tower for a print whose layers are `heights` mm thick.
 /// `changes` has, for each layer, its tool changes in order: for each,
-/// how the filament put away is rammed, or none when it is not.
+/// how the filament put away is rammed, or none when it is not. Every
+/// change lays down `prime_volume`.
 pub fn plan(
     changes: &[Vec<Option<Ramming>>],
+    heights: &[f64],
+    settings: &TowerSettings,
+) -> Result<Tower, TowerError> {
+    let changes: Vec<Vec<Change>> = changes
+        .iter()
+        .map(|layer| {
+            layer
+                .iter()
+                .map(|ram| Change {
+                    ram: *ram,
+                    volume: settings.prime_volume,
+                })
+                .collect()
+        })
+        .collect();
+    plan_changes(&changes, heights, settings)
+}
+
+/// [`plan`], with what each change lays down given with it: on a
+/// printer of one nozzle, the flushing volume between the two filaments
+/// ([`TowerSettings::wipe_volume`]). Blocks are planned each from its own
+/// volume (WipeTower2.cpp `plan_toolchange`), so a layer whose changes
+/// flush more takes more of the tower's depth.
+pub fn plan_changes(
+    changes: &[Vec<Change>],
     heights: &[f64],
     settings: &TowerSettings,
 ) -> Result<Tower, TowerError> {
@@ -704,9 +918,9 @@ pub fn plan(
     let used_at = |span: f64, layer: usize| -> f64 {
         changes[layer]
             .iter()
-            .map(|ram| {
+            .map(|change| {
                 settings
-                    .planned(span, heights[layer], layer == 0, *ram)
+                    .planned(span, heights[layer], layer == 0, change.ram, change.volume)
                     .depth()
             })
             .sum()
@@ -774,8 +988,9 @@ pub fn plan(
         let mut used = 0.0;
         // Where each new nozzle comes in: which side, and how far back.
         let mut ways_in: Vec<(bool, f64)> = Vec::with_capacity(changes[layer].len());
-        for ram in &changes[layer] {
-            let planned = settings.planned(span, height, first, *ram);
+        for change in &changes[layer] {
+            let ram = &change.ram;
+            let planned = settings.planned(span, height, first, *ram, change.volume);
             let mut block = Block::default();
             let (mut x, mut y, mut rightward) = (1.5 * line, used + step - row / 2.0, true);
             if let Some(ram) = ram {
@@ -868,7 +1083,7 @@ pub fn plan(
             // plastic asked for is down.
             let (left, right) = (line / 2.0, span - line / 2.0);
             let whole = ram.is_none();
-            let mut owed = settings.prime_volume / per_mm(line) / settings.extra_flow;
+            let mut owed = change.volume / per_mm(line) / settings.extra_flow;
             let full = used + planned.depth();
             if (if rightward { right - x } else { x - left }) < 2.5 * row {
                 x = if rightward { right - row } else { left + row };
@@ -1467,8 +1682,8 @@ mod tests {
         let volume: f64 = block.lines.iter().map(ExtrusionPath::volume_mm3).sum();
         assert!((45.0..45.0 * 1.1).contains(&volume), "{volume} mm³");
         let (with, without) = (
-            settings.planned(30.0, 0.2, false, Some(ram)),
-            settings.planned(30.0, 0.2, false, None),
+            settings.planned(30.0, 0.2, false, Some(ram), 45.0),
+            settings.planned(30.0, 0.2, false, None, 45.0),
         );
         assert!((with.ramming - 1.2).abs() < 1e-9 && without.ramming == 0.0);
         assert!(
@@ -1507,7 +1722,7 @@ mod tests {
         assert!(ends[2] > 100.75 && ends[2] < 129.25);
         // The room planned for it is three rows, and the new nozzle's
         // lines start above them.
-        let planned = settings.planned(30.0, 0.2, false, Some(ram));
+        let planned = settings.planned(30.0, 0.2, false, Some(ram), 45.0);
         assert!((planned.ramming - 3.0 * 1.2).abs() < 1e-9);
         assert!(unscaled(block.lines[0].points[0].y) > rows[2]);
     }
@@ -1658,7 +1873,8 @@ mod tests {
             "prime_tower_brim_width": "5", "wipe_tower_x": ["13", "40", "13"],
             "wipe_tower_y": ["214.5", "200", "214.5"], "wipe_tower_extra_spacing": "120%",
             "wipe_tower_extra_flow": "100%", "wipe_tower_wall_type": "rib",
-            "nozzle_diameter": ["0.4", "0.4"], "filament_multitool_ramming": ["0", "1"]}"#;
+            "nozzle_diameter": ["0.4", "0.4"], "filament_multitool_ramming": ["0", "1"],
+            "single_extruder_multi_material": "0"}"#;
         let second = read(json, 1);
         assert!(second.enabled);
         assert_eq!(
@@ -1707,7 +1923,8 @@ mod tests {
         // A wall of a kind not made is said, and so is what goes with
         // the gap and is not done.
         let cone = read(
-            r#"{"enable_prime_tower": "1", "wipe_tower_wall_type": "cone", "wipe_tower_wall_gap": "1"}"#,
+            r#"{"enable_prime_tower": "1", "wipe_tower_wall_type": "cone", "wipe_tower_wall_gap": "1",
+                "single_extruder_multi_material": "0"}"#,
             0,
         );
         assert_eq!(cone.wall, Wall::Box);
@@ -1747,5 +1964,126 @@ mod tests {
             let volume: f64 = block.lines.iter().map(ExtrusionPath::volume_mm3).sum();
             assert!((45.0..45.0 * 1.2).contains(&volume), "{volume} mm³");
         }
+    }
+
+    #[test]
+    fn one_nozzle_purges_the_flushing_volume_in_the_tower_where_asked() {
+        let read = |json: &str| {
+            TowerSettings::from_settings(&Settings::from_json(json).unwrap(), 0).unwrap()
+        };
+        let base = r#""enable_prime_tower": "1", "prime_volume": "45",
+            "flush_volumes_matrix": ["0", "418", "228", "0"], "flush_multiplier": "0.3",
+            "filament_minimal_purge_on_wipe_tower": ["15", "70"], "enable_filament_ramming": "0",
+            "flush_into_support": "0""#;
+        // The Centauri Carbon's own setting: its change G-code flushes, and
+        // the tower takes prime_volume, whatever the pair; the order of
+        // tools goes by that too.
+        let printer = read(&format!(r#"{{{base}, "purge_in_prime_tower": "0"}}"#));
+        assert!(!printer.purge_in_tower && !printer.order_by_flush);
+        assert_eq!(
+            (printer.wipe_volume(0, 1), printer.wipe_volume(1, 0)),
+            (45.0, 45.0)
+        );
+        assert_eq!(printer.change_cost(0, 1), 45.0);
+        assert!(printer.unsupported.is_empty(), "{:?}", printer.unsupported);
+        // Purging in the tower: the flushing volume times the multiplier,
+        // and never less than the new filament's least.
+        let tower = read(&format!(r#"{{{base}, "purge_in_prime_tower": "1"}}"#));
+        assert!(tower.purge_in_tower && tower.order_by_flush);
+        assert!((tower.wipe_volume(0, 1) - 125.4).abs() < 1e-4);
+        assert!((tower.wipe_volume(1, 0) - 68.4).abs() < 1e-4);
+        assert_eq!(tower.wipe_volume(1, 1), 70.0);
+        assert_eq!(tower.wipe_volume(0, 0), 15.0);
+        // A pair past the matrix takes prime_volume.
+        assert_eq!(tower.wipe_volume(2, 0), 45.0);
+        // The order goes by the volumes as given.
+        assert_eq!(
+            (tower.change_cost(0, 1), tower.change_cost(1, 0)),
+            (418.0, 228.0)
+        );
+        // A printer with a nozzle for each filament is not changed.
+        let tools = read(&format!(
+            r#"{{{base}, "purge_in_prime_tower": "1", "single_extruder_multi_material": "0"}}"#
+        ));
+        assert!(!tools.purge_in_tower && !tools.order_by_flush);
+        assert_eq!(tools.wipe_volume(0, 1), 45.0);
+        // A Bambu Lab printer's change G-code flushes; its tools are put in
+        // order by the flush all the same, and its tower is said not to be
+        // the reference's.
+        let bambu = read(&format!(
+            r#"{{{base}, "purge_in_prime_tower": "1", "printer_model": "Bambu Lab A1"}}"#
+        ));
+        assert!(bambu.bambu_tower && !bambu.purge_in_tower && bambu.order_by_flush);
+        assert_eq!(bambu.wipe_volume(0, 1), 45.0);
+        assert_eq!(bambu.change_cost(0, 1), 418.0);
+        assert_eq!(bambu.unsupported.len(), 1);
+        assert!(bambu.unsupported[0].starts_with("wipe_tower_type"));
+        // Ramming on one nozzle, and flushing into the print, are not done
+        // and are said.
+        let rammed = read(
+            r#"{"enable_prime_tower": "1", "enable_filament_ramming": "1", "flush_into_infill": "1"}"#,
+        );
+        let said: Vec<&str> = rammed
+            .unsupported
+            .iter()
+            .map(|note| note.split(' ').next().unwrap())
+            .collect();
+        assert_eq!(
+            said,
+            [
+                "enable_filament_ramming",
+                "flush_into_infill",
+                "flush_into_support"
+            ]
+        );
+        // With nothing rammed, pressure advance is left alone as it is there.
+        let pressure = read(
+            r#"{"enable_prime_tower": "1", "enable_change_pressure_when_wiping": "1",
+            "single_extruder_multi_material": "0"}"#,
+        );
+        assert!(
+            pressure.unsupported.is_empty(),
+            "{:?}",
+            pressure.unsupported
+        );
+    }
+
+    #[test]
+    fn each_block_is_planned_from_its_own_volume() {
+        let settings = TowerSettings {
+            wall_gap: false,
+            brim_chamfer: false,
+            ..on()
+        };
+        let change = |volume: f64| Change { ram: None, volume };
+        // Two changes on a layer, one flushing three times what the other does.
+        let tower = plan_changes(
+            &[vec![], vec![change(45.0), change(135.0)]],
+            &[0.2; 2],
+            &settings,
+        )
+        .unwrap();
+        let laid = |index: usize| -> f64 {
+            tower.layers[1].changes[index]
+                .lines
+                .iter()
+                .map(ExtrusionPath::volume_mm3)
+                .sum()
+        };
+        assert!((45.0..45.0 * 1.2).contains(&laid(0)), "{}", laid(0));
+        assert!((135.0..135.0 * 1.1).contains(&laid(1)), "{}", laid(1));
+        // The layer is as deep as the two blocks, each planned from its own.
+        let depth = |volume: f64| settings.planned(30.0, 0.2, false, None, volume).depth();
+        let [_, front, _, back] = extent([wall_of(&tower, 1)]);
+        assert!((back - front - depth(45.0) - depth(135.0) - 0.5).abs() < 1e-6);
+        assert!(depth(135.0) > 2.5 * depth(45.0));
+        // Given prime_volume each, it is the tower plan() makes.
+        let same = plan_changes(&[vec![], vec![change(45.0); 2]], &[0.2; 2], &settings).unwrap();
+        let old = plan(&counts(&[0, 2]), &[0.2; 2], &settings).unwrap();
+        assert_eq!(same.footprint, old.footprint);
+        assert_eq!(
+            same.layers[1].changes[1].lines[1].points,
+            old.layers[1].changes[1].lines[1].points
+        );
     }
 }
