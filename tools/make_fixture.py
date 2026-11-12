@@ -210,6 +210,25 @@ SHAPES["twocomb"] = SHAPES["comb"]
 # The filament each box of a shape is printed in, where it is not all the first.
 FILAMENTS = {"twotone": [1, 2], "twocomb": [1] + [2] * 7}
 
+# Shapes with parts that are not printed, each box's kind as the reference
+# writes it (`subtype`): the cube with a modifier box through its right
+# half; with a second through its front half, overlapping the first in the
+# right front quarter; the cube alone, for a height range; the mushroom with
+# a support blocker under the left half of its cap; and a block whose right
+# side leans out 50 degrees from upright, too steep to need support at a 30
+# degree threshold, with a support enforcer over that side.
+SHAPES["halfmod"] = [(125.5, 126, 0, 20, 20, 20), (135.5, 121, -1, 15, 30, 22)]
+SHAPES["twomod"] = SHAPES["halfmod"] + [(120.5, 121, -1, 30, 15, 22)]
+SHAPES["rangecube"] = [(125.5, 126, 0, 20, 20, 20)]
+SHAPES["blocker"] = SHAPES["mushroom"] + [(110.5, 111, 0, 25, 50, 9.9)]
+KINDS = {
+    "halfmod": ["normal_part", "modifier_part"],
+    "twomod": ["normal_part", "modifier_part", "modifier_part"],
+    "blocker": ["normal_part", "normal_part", "support_blocker"],
+    "enforcer": ["normal_part", "support_enforcer"],
+    "painted": ["normal_part"],
+}
+
 def around(cx, cy, half, angles):
     """Where rays from the middle of a square at these angles leave it: the
     square's outline, with a point for each point of a hole in its middle."""
@@ -340,6 +359,17 @@ MESHES["halves"] = [
     prism(circle(135.5, 136, 10, 64, math.pi / 2, math.pi, closed=False), 0, 10),
     prism(circle(135.5, 136, 10, 64, -math.pi / 2, math.pi, closed=False), 0, 10),
 ]
+def lean(x0, y0, dx, dy, dz, angle):
+    """A block dx by dy whose right side leans out angle degrees from upright as it rises dz."""
+    out = dz * math.tan(math.radians(angle))
+    v = [(x0, y0, 0), (x0 + dx, y0, 0), (x0 + dx, y0 + dy, 0), (x0, y0 + dy, 0),
+         (x0, y0, dz), (x0 + dx + out, y0, dz), (x0 + dx + out, y0 + dy, dz), (x0, y0 + dy, dz)]
+    return v, box(0, 0, 0, 1, 1, 1)[1]
+
+MESHES["enforcer"] = [lean(125.5, 126, 10, 20, 10, 50), box(134.5, 130, 2, 14, 12, 7)]
+# The leaning block painted instead: the near half of its leaning side
+# enforced ("4"), the far half of the mushroom's cap underside blocked ("8").
+MESHES["painted"] = [lean(125.5, 126, 10, 20, 10, 50)]
 MESHES["inset"] = [box(120.5, 126, 0, 20, 20, 8), prism(circle(140.5, 136, 5, 64), 0, 12)]
 
 # Seams painted on (paint_seam, as the reference stores it: "4" a triangle
@@ -358,13 +388,33 @@ def side_angle(v, tri):
     y = sum(v[i][1] for i in tri) / 3 - 136
     return math.degrees(math.atan2(y, x)) % 360
 
+SUPPORT_PAINT = {
+    "painted": lambda v, tri: "4" if max(v[i][0] for i in tri) > 135.6 and max(v[i][1] for i in tri) <= 146 and min(v[i][1] for i in tri) >= 126 and len({v[i][2] for i in tri}) > 1 else "",
+}
+
 SEAM_PAINT = {
     "enforced": lambda v, tri: "4" if (side_angle(v, tri) or 0) and 200 <= side_angle(v, tri) <= 220 else "",
     "blocked": lambda v, tri: "8" if all(v[i][0] == 145.5 for i in tri) or all(v[i][1] == 146 for i in tri) else "",
 }
 
 out, source, shape = sys.argv[1:4]
-changes = dict(arg.split("=", 1) for arg in sys.argv[4:])
+# A change is a setting of the project's; "object:key=value" one of the
+# object's own; "partN:key=value" one of box N's own (from 1), a modifier's
+# among them; "range:LOW:HIGH:key=value" one of a height range of the object
+# from LOW to HIGH mm (Metadata/layer_config_ranges.xml).
+changes, own, ranges = {}, {}, {}
+for arg in sys.argv[4:]:
+    head, _, value = arg.partition("=")
+    if head.startswith("object:"):
+        own.setdefault("object", {})[head[7:]] = value
+    elif head.startswith("part") and ":" in head:
+        number, key = head[4:].split(":", 1)
+        own.setdefault(int(number), {})[key] = value
+    elif head.startswith("range:"):
+        _, low, high, key = head.split(":", 3)
+        ranges.setdefault((low, high), {})[key] = value
+    else:
+        changes[head] = value
 objects = []
 solids = MESHES[shape] if shape in MESHES else [box(*dims) for dims in SHAPES[shape]]
 for index, (v, t) in enumerate(solids):
@@ -372,8 +422,10 @@ for index, (v, t) in enumerate(solids):
     xml += ['   <vertex x="%.9g" y="%.9g" z="%.9g"/>' % p for p in v]
     xml.append('  </vertices><triangles>')
     paint = SEAM_PAINT.get(shape, lambda v, tri: "")
-    xml += ['   <triangle v1="%d" v2="%d" v3="%d"%s/>' % (tri + (
-        ' paint_seam="%s"' % paint(v, tri) if paint(v, tri) else "",)) for tri in t]
+    supports = SUPPORT_PAINT.get(shape, lambda v, tri: "")
+    xml += ['   <triangle v1="%d" v2="%d" v3="%d"%s%s/>' % (tri + (
+        ' paint_seam="%s"' % paint(v, tri) if paint(v, tri) else "",
+        ' paint_supports="%s"' % supports(v, tri) if supports(v, tri) else "")) for tri in t]
     xml.append('  </triangles></mesh></object>')
     objects.append("\n".join(xml))
 parent = len(solids) + 1
@@ -394,7 +446,22 @@ with zipfile.ZipFile(out, "w", zipfile.ZIP_DEFLATED) as z:
     z.writestr("[Content_Types].xml", '<?xml version="1.0" encoding="UTF-8"?>\n<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">\n <Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/>\n <Default Extension="model" ContentType="application/vnd.ms-package.3dmanufacturing-3dmodel+xml"/>\n</Types>\n')
     z.writestr("_rels/.rels", '<?xml version="1.0" encoding="UTF-8"?>\n<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">\n <Relationship Target="/3D/3dmodel.model" Id="rel-1" Type="http://schemas.microsoft.com/3dmanufacturing/2013/01/3dmodel"/>\n</Relationships>\n')
     z.writestr("3D/3dmodel.model", model)
-    if shape in FILAMENTS:
+    if shape in KINDS or own:
+        # As the reference saves it: the object's name, filament and own
+        # settings, then each part's kind, name, filament and settings.
+        def metadata(values, indent):
+            return "".join(f'\n{indent}<metadata key="{k}" value="{v}"/>' for k, v in values.items())
+        kinds = KINDS.get(shape, ["normal_part"] * len(solids))
+        parts = "".join(
+            f'\n    <part id="{i + 1}" subtype="{kind}">\n      <metadata key="name" value="{shape} {i + 1}"/>'
+            + metadata({"extruder": (FILAMENTS.get(shape) or [0] * len(solids))[i], **own.get(i + 1, {})}, "      ")
+            + '\n    </part>'
+            for i, kind in enumerate(kinds))
+        z.writestr("Metadata/model_settings.config",
+                   f'<?xml version="1.0" encoding="UTF-8"?>\n<config>\n  <object id="{parent}">\n'
+                   f'    <metadata key="name" value="{shape}"/>\n    <metadata key="extruder" value="1"/>'
+                   + metadata(own.get("object", {}), "    ") + f'{parts}\n  </object>\n</config>\n')
+    elif shape in FILAMENTS:
         # As the reference saves it: the object's filament, then each part's own.
         parts = "".join(
             f'\n    <part id="{i + 1}" subtype="normal_part">\n      <metadata key="name" value="{shape} {i + 1}"/>\n'
@@ -404,4 +471,12 @@ with zipfile.ZipFile(out, "w", zipfile.ZIP_DEFLATED) as z:
                    f'<?xml version="1.0" encoding="UTF-8"?>\n<config>\n  <object id="{parent}">\n'
                    f'    <metadata key="name" value="{shape}"/>\n    <metadata key="extruder" value="1"/>{parts}\n'
                    f'  </object>\n</config>\n')
+    if ranges:
+        body = "".join(
+            f'\n  <range min_z="{low}" max_z="{high}">'
+            + "".join(f'\n   <option opt_key="{k}">{v}</option>' for k, v in values.items())
+            + '\n  </range>'
+            for (low, high), values in ranges.items())
+        z.writestr("Metadata/layer_config_ranges.xml",
+                   f'<?xml version="1.0" encoding="utf-8"?>\n<objects>\n <object id="1">{body}\n </object>\n</objects>\n')
     z.writestr("Metadata/project_settings.config", json.dumps(settings, indent=4))

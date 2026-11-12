@@ -69,6 +69,10 @@ pub struct SupportSettings {
     pub tree_branch_distance: f64,
     /// Only cantilevers and parts that start in mid-air are held up.
     pub critical_regions_only: bool,
+    /// Whether overhangs are found by themselves (`support_type` ends in
+    /// "(auto)"); with "(manual)" only what support enforcers and paint
+    /// ask for is held up.
+    pub auto: bool,
     /// With `top_z_overrides_xy_distance` the gap beside a support is
     /// held to the gap above it (at least 0.2 mm).
     pub top_z_overrides_xy: bool,
@@ -119,6 +123,7 @@ impl Default for SupportSettings {
             tree_wall_count: 0,
             tree_branch_distance: 1.0,
             critical_regions_only: false,
+            auto: true,
             top_z_overrides_xy: false,
             resolution: 0.01,
             min_feature_size: FloatOrPercent::Percent(25.0),
@@ -158,14 +163,22 @@ impl SupportSettings {
         let wanted = flag("enable_support", defaults.enabled)?;
         let mut enabled = wanted;
         let mut style = defaults.style;
+        let mut auto = defaults.auto;
         if wanted {
             match settings.text("support_type") {
                 None | Some("normal(auto)") => {}
                 Some("tree(auto)") => style = Style::Tree,
+                // Only where enforcers and paint ask (TreeSupport.cpp and
+                // SupportMaterial.cpp: `is_auto(stype)`).
+                Some("normal(manual)") => auto = false,
+                Some("tree(manual)") => {
+                    style = Style::Tree;
+                    auto = false;
+                }
                 Some(other) => {
                     unsupported.push(format!(
-                        "support_type \"{other}\": supports only where painted are not \
-                         implemented; NO supports are generated"
+                        "support_type \"{other}\": not a support type this engine knows; \
+                         NO supports are generated"
                     ));
                     enabled = false;
                 }
@@ -338,6 +351,7 @@ impl SupportSettings {
                 "support_critical_regions_only",
                 defaults.critical_regions_only,
             )?,
+            auto,
             top_z_overrides_xy: flag("top_z_overrides_xy_distance", defaults.top_z_overrides_xy)?,
             resolution: number("resolution", defaults.resolution)?,
             min_feature_size: width("min_feature_size", defaults.min_feature_size)?,

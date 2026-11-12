@@ -409,6 +409,7 @@ mod tests {
             ..crate::PrintSettings::default()
         };
         let layers = [crate::Layer {
+            region: None,
             z: 0.2,
             height: 0.2,
             filament: 0,

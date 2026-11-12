@@ -28,7 +28,7 @@ impl Sliced {
         let mut strokes = Vec::new();
         for (turn, entry) in turns.enumerate() {
             let (filament, tower) = (&entry.filament, &entry.lines);
-            let number = self.used[*filament];
+            let number = self.slots[*filament];
             // A ram is laid by the tool that had the turn before.
             if let (Some(ram), Some(before)) = (
                 &entry.ram,
@@ -37,7 +37,7 @@ impl Sliced {
                 strokes.extend(ram.lines.iter().map(|line| Stroke {
                     role: line.role,
                     width: line.flow.width,
-                    filament: self.used[before.filament],
+                    filament: self.slots[before.filament],
                     closed: false,
                     points: line.points.clone(),
                 }));
