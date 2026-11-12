@@ -50,7 +50,10 @@ fn same(a: &Loaded, b: &Loaded) {
     }
     assert_eq!(a.painted.len(), b.painted.len());
     for (one, other) in a.painted.iter().zip(&b.painted) {
-        assert_eq!(bits(&one.solid), bits(&other.solid));
+        assert_eq!(one.parts.len(), other.parts.len());
+        for (one, other) in one.parts.iter().zip(&other.parts) {
+            assert_eq!(bits(one), bits(other));
+        }
         assert_eq!(
             one.negative.as_ref().map(bits),
             other.negative.as_ref().map(bits)
