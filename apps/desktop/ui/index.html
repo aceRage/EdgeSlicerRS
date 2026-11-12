@@ -129,12 +129,13 @@
               <button type="button" id="filament-remove" class="icon tool" title="Remove last filament" aria-label="Remove last filament" hidden></button>
               <button type="button" id="filament-add" class="icon tool" title="Add one filament" aria-label="Add one filament"></button>
             </div>
-            <div id="filaments" class="card"></div>
-            <!-- One preset for every filament ("Apply All"), where presets are chosen here. -->
+            <!-- One preset for every filament ("Apply All"), where presets are chosen here: before the
+                 list it acts on (the owner's choice; the reference has it after). -->
             <div id="apply-all" class="card apply-all" hidden>
               <select id="apply-all-preset" title="Filament preset to apply to all filaments" aria-label="Filament preset to apply to all filaments"></select>
               <button type="button" id="apply-all-button" title="Set all filaments to the selected preset">Apply All</button>
             </div>
+            <div id="filaments" class="card"></div>
           </div>
         </section>
 

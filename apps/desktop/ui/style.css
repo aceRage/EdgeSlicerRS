@@ -1079,8 +1079,8 @@ dialog .row button { min-width: 84px; }
 .flush-under p.out { color: var(--danger); }
 .flush-multiplier { grid-column: 1 / -1; justify-self: start; flex-direction: row; align-items: center; gap: var(--space-2); color: var(--text-1); font-size: var(--size-body); }
 .flush-multiplier input { width: 72px; }
-/* "Apply All": one preset for every filament, under the list. */
-.apply-all { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: center; gap: var(--space-2); margin-top: var(--space-2); padding: 2px 2px 2px var(--space-1); }
+/* "Apply All": one preset for every filament, over the list it acts on. */
+.apply-all { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: center; gap: var(--space-2); padding: 2px 2px 2px var(--space-1); }
 .apply-all > button { height: var(--control-s); padding: 0 var(--space-2); font-size: var(--size-label); }
 
 /* Process: the settings set over the preset, a label and its number. */

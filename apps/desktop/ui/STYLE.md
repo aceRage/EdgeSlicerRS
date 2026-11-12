@@ -515,8 +515,8 @@ Right; its `aria-label` says where it stands ("Filament 3, 2 of 7").
 
 ```html
 <div class="filaments-head"><h3>Filaments</h3><button class="icon tool" id="filament-remove" …/><button class="icon tool" id="filament-add" …/></div>
-<div id="filaments" class="card"><div class="filament"><button class="swatch swatch-pick">1</button>…list…<button class="icon tool">…pencil…</button></div>…</div>
 <div id="apply-all" class="card apply-all"><select …></select><button>Apply All</button></div>
+<div id="filaments" class="card"><div class="filament"><button class="swatch swatch-pick">1</button>…list…<button class="icon tool">…pencil…</button></div>…</div>
 ```
 
 The list's head is its group label running into its hairline, then the
@@ -526,7 +526,7 @@ row's number stands on its colour (`button.swatch.swatch-pick`, 22 px,
 the number in white or ink by the colour's brightness), and is the
 button that opens the colour picker; the row's menu is on the right
 button and the menu key, as an object's is in the list. "Apply All"
-is a card of its own under the list: a `bare` listbox and a small plain
+is a card of its own between the head and the list (before what it acts on): a `bare` listbox and a small plain
 button (`--control-s` high), never the accent, there only where presets
 are chosen here.
 
