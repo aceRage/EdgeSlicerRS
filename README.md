@@ -3609,6 +3609,51 @@ time for the whole of it both times; `holes` in 36 ms and 42 ms;
 plate 1 of `mcbrim_test.3mf` in 554 ms and 550 ms. The files are the
 same at 1, 4 and 18 threads.
 
+### Regions
+
+Fixtures from `tools/make_fixture.py` on the U1 presets, against the C++
+slicer: metres of each feature, the reference's, then this engine's
+before regions were followed and after.
+
+| Fixture | Feature | Reference | Before | After |
+| --- | --- | ---: | ---: | ---: |
+| cube, object: 4 walls, 40% | inner wall / sparse | 21.34 / 27.18 | 7.44 / 14.36 | 21.34 / 27.17 |
+| block and post, post: 5 walls, 50% gyroid | inner wall / sparse | 8.72 / 5.94 | 3.72 / 5.42 | 8.75 / 5.93 |
+| block and post, post's speeds | filament mm | 750.0 | 696.9 | 749.4 |
+| cube, object: brim 8 mm | brim | 1.66 | 0 | 1.66 |
+| modifier, right half 50% | sparse / outer wall | 27.03 / 7.82 | 14.36 / 7.82 | 27.03 / 7.82 |
+| modifier, right half 4 walls | inner / outer wall / sparse | 20.85 / 11.65 / 11.93 | 7.44 / 7.82 / 14.36 | 20.85 / 11.65 / 12.34 |
+| two modifiers overlapping | inner wall / sparse | 20.85 / 21.69 | 7.44 / 14.36 | 20.85 / 21.69 |
+| height range 5-10 mm: 3 walls, 60% | inner wall / solid / sparse | 9.23 / 5.10 / 21.99 | 7.44 / 4.68 / 14.36 | 9.23 / 5.11 / 21.86 |
+| modifier, right half speeds | filament mm | 1415.9 | 1206.9 | 1416.3 |
+| mushroom, blocker, normal | support | 24.14 | 23.75 | 23.75 |
+| mushroom, blocker, tree | support / interface | 11.26 / 0.93 | 23.89 / 1.79 | 12.38 / 0.90 |
+| leaning block, enforcer, normal | support | 3.23 | 0 | 3.25 |
+| leaning block, enforcer, tree | support / interface | 2.72 / 1.48 | 0 / 0 | 3.22 / 1.00 |
+| leaning block, painted, normal | support / interface | 4.25 / 1.32 | 0 / 0 | 4.68 / 0 |
+| leaning block, painted, tree | support / interface | 6.08 / 3.25 | 0 / 0 | 5.41 / 2.20 |
+| leaning block, enforcer, `tree(manual)` | support / interface | 2.72 / 1.48 | 0 / 0 | 3.22 / 1.00 |
+
+Walls are the reference's to the metre on every layer of every
+modifier and range fixture; on the height range the solid fill the
+range's deeper walls ask of the layers next to it is there layer by
+layer. Left: with four walls in a narrow modifier region, sparse lines
+there are joined along the region's edge where the reference leaves
+them apart (+3.4% of sparse); travel between regions is up to a fifth
+shorter here, the order of regions within a layer being this engine's;
+painted supports come out within 11% of the reference's, the painted
+faces projected a little differently from `slice_mesh_slabs`. The
+reference's shipped projects with modifiers or part settings either do
+not slice in the reference from the command line (`override_paint_*`,
+`post_process_project`), stop here on a printer template variable not
+yet known (`auto_pa_line_*`), or set nothing this engine follows
+(EdgeSlicer support groups in `support_corpus`, noted; `stabilizer_v1`,
+stabilizers): their output is what it was. One of them,
+`support_corpus/twopart_groups_oversupport.3mf`, has a part that sets
+`over_support_*`, region-level, so the part is a region of its own: its
+walls are now the reference's on every layer (3.82% apart before, 0.00%
+now), filament 615.3 mm against 615.1 (606.5 before).
+
 ### Top surfaces on slopes
 
 2026-11-11, on parts from `tools/make_fixture.py` with the U1's presets
