@@ -26,7 +26,10 @@ use edge_config::Settings;
 use edge_engine::{Bed, Feature, Mark, MoveKind, SceneObject, Shape, Toolpath};
 use serde_json::{Value, json};
 
-use super::{Done, File, Session, bed_of, lock};
+use super::{
+    Done, File, Session, bed_of, lock,
+    settings::items::{self, ItemKind},
+};
 
 /// The calls answered here as JSON.
 pub(super) const JSON: [&str; 3] = ["scene", "toolpath", "gcode_lines"];
@@ -641,7 +644,23 @@ impl Session {
                             "box": part.mesh.bounds().map(|(low, high)| [low, high]),
                             "triangles": mesh.parts.get(at),
                             "split": object.shape().part_splits(at),
-                            "settings": part.settings().len(),
+                            "settings": own_count(&part.settings(), ItemKind::Part),
+                        })
+                    }).collect::<Vec<_>>(),
+                    // How many settings of its own it has that its pages
+                    // offer, and its height ranges, lowest first, each with
+                    // its heights, its layer height and how many settings
+                    // of its own it has besides its layer height, which
+                    // every range carries (GUI_ObjectList.cpp
+                    // `get_default_layer_config`).
+                    "settings": own_count(&object.settings(), ItemKind::Object),
+                    "ranges": object.height_ranges().iter().map(|range| {
+                        let besides: Vec<(String, String)> = range.settings.iter().filter(|(key, _)| key != "layer_height").cloned().collect();
+                        json!({
+                            "min_z": range.min_z,
+                            "max_z": range.max_z,
+                            "layer_height": range.settings.iter().find(|(key, _)| key == "layer_height").map(|(_, value)| value),
+                            "settings": own_count(&besides, ItemKind::Range),
                         })
                     }).collect::<Vec<_>>(),
                     // What "Split to objects" and "Split to parts" can be
@@ -910,6 +929,14 @@ impl Stage {
     pub(super) fn bed(&self) -> Option<Bed> {
         self.printer.as_deref().and_then(bed_of).map(Bed::of)
     }
+}
+
+/// How many of `own` an item of `kind` may set.
+fn own_count(own: &[(String, String)], kind: ItemKind) -> usize {
+    let allowed = items::allowed(kind);
+    own.iter()
+        .filter(|(key, _)| allowed.iter().any(|offered| offered == key))
+        .count()
 }
 
 #[cfg(test)]

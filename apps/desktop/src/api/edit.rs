@@ -27,6 +27,7 @@ use super::{
     filaments::FilamentChoices,
     lock, needed,
     scene::{Stage, kind_of},
+    settings::items,
     text, whole,
 };
 
@@ -377,6 +378,7 @@ impl Session {
         args: &Value,
         added: Option<&Model>,
         leave: &[u32],
+        global: Option<&edge_config::Settings>,
     ) -> Result<Outcome, String> {
         let failed = |error: edge_engine::Failure| error.to_string();
         let plate = |args: &Value| -> Option<u32> {
@@ -684,6 +686,15 @@ impl Session {
                 outcome.made = made;
                 outcome.name = "Duplicate Current Plate".into();
             }
+            // An object's, a part's or a height range's own settings, and
+            // the height ranges (settings/items.rs).
+            op if items::OPS.contains(&op) => {
+                let global = global.ok_or("the project's settings were not given")?;
+                match items::apply(model, bed, op, args, global)? {
+                    Some(name) => outcome.name = name,
+                    None => outcome.unchanged = true,
+                }
+            }
             other => return Err(format!("there is no edit named {other}")),
         }
         Ok(outcome)
@@ -763,6 +774,11 @@ impl Session {
         } else {
             Vec::new()
         };
+        let global = if items::OPS.contains(&needed(args, "op")?) {
+            Some(self.items_global(stage.id)?)
+        } else {
+            None
+        };
         let outcome = Self::apply(
             &mut model,
             bed.as_ref(),
@@ -770,6 +786,7 @@ impl Session {
             args,
             added.as_ref(),
             &leave,
+            global.as_ref(),
         )?;
         if outcome.unchanged {
             return self.edited(
