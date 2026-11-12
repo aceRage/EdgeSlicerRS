@@ -36,8 +36,9 @@ async function showCover(box, vendor, model) {
 
 // The list: the project's own printer when it carries one
 // ("Project-inside presets"), one row for each printer model added
-// ("System presets"), and the entry that opens the printer selection.
-// "User presets" would come between; there are none yet.
+// ("System presets"), and the entry that opens the printer selection;
+// the person's own printer presets between ("User presets"), each by its
+// name, "* " before the one in force with something set over it.
 function showPrinterBlock() {
   const project = state.project;
   const listing = state.printers;
@@ -72,6 +73,19 @@ function showPrinterBlock() {
   if (onPreset && !selected.added) {
     rows.push(pictured(new Option(selected.model || selected.machine, 'current'), selected));
     value = 'current';
+  }
+  const modified = Presets.on('printer').modified;
+  const mine = (listing.user || []).map((preset, index) => {
+    const option = pictured(new Option(Presets.label(preset.name, onPreset && selected.machine === preset.name && modified), `u${index}`), preset);
+    option.title = preset.name;
+    if (onPreset && selected.machine === preset.name) value = option.value;
+    return option;
+  });
+  if (mine.length) groups.push(group(t('User presets'), mine));
+  // A system printer in force with something set over it has the mark too.
+  if (modified && onPreset && !selected.user) {
+    const row = rows.find((option) => option.value === value);
+    if (row) row.text = Presets.label(row.text, true);
   }
   if (rows.length) groups.push(group(t('System presets'), rows));
   const none = new Option(listing.installed.length ? 'No printer selected' : 'No printer added', '');
@@ -140,9 +154,20 @@ async function printerPicked() {
   } else if (value === 'project') {
     // Its own settings, the bed type among them.
     await setProject({ source: 'project', bed_type: null });
-  } else if (value.startsWith('m')) {
-    const model = state.printers.installed[Number(value.slice(1))];
-    await selectPrinter({ vendor: model.vendor, model: model.model });
+  } else if (value.startsWith('m') || value.startsWith('u')) {
+    // What is set over the printer it leaves is asked about first.
+    const answer = await Presets.beforeLeaving('printer', 1, select.selectedOptions[0] ? select.selectedOptions[0].label : '');
+    if (answer === null) {
+      select.value = select.dataset.shown;
+      return;
+    }
+    if (value.startsWith('u')) {
+      const preset = state.printers.user[Number(value.slice(1))];
+      await selectPrinter({ vendor: preset.vendor, machine: preset.name });
+    } else {
+      const model = state.printers.installed[Number(value.slice(1))];
+      await selectPrinter({ vendor: model.vendor, model: model.model });
+    }
   }
 }
 

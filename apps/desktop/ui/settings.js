@@ -558,6 +558,8 @@ async function setSettings(book, args) {
     if (book !== processPages) showPresetHead();
   }
   state.project = await call('project', { project: project.id });
+  // The lists' "* " follows what is now set over each preset.
+  Presets.refreshMarks();
   await showStage();
   await refreshStrip();
 }
@@ -710,6 +712,17 @@ async function showPresetPanel() {
   await showSettings(book);
   showPresetHead();
 }
+
+// The panel's cog: the preset its pages are of, saved, renamed, deleted
+// or compared (presets.js).
+document.addEventListener('scripts-loaded', () => {
+  const cog = Presets.cogButton(() => ({
+    kind: presetPanel.book ? presetPanel.book.kind : 'printer',
+    filament: presetPanel.book ? presetPanel.book.filament : 1,
+  }));
+  cog.id = 'preset-cog';
+  $('preset-reset').before(cog);
+});
 
 // ---- wiring, once the page stands ----
 

@@ -578,8 +578,26 @@ fn an_obj_is_added_to_a_project() {
 }
 
 #[test]
-fn no_preset_calls_are_found_on_this_branch() {
+fn the_user_presets_calls_are_found_and_their_entries_on() {
     let dir = tempfile::tempdir().unwrap();
     let session = session_in(dir.path());
-    assert_eq!(ask(&session, "menu", json!({}))["preset_calls"], json!([]));
+    let menus = ask(&session, "menu", json!({}));
+    assert_eq!(
+        menus["preset_calls"],
+        json!(["preset_import", "preset_export"])
+    );
+    assert_eq!(find(&menus, "import.configs")["enabled"], true);
+    assert_eq!(find(&menus, "export.preset_bundle")["enabled"], true);
+    // Asked whether it is there, a call does nothing.
+    assert_eq!(
+        ask(&session, "preset_import", json!({ "probe": true })),
+        json!({ "probe": true })
+    );
+    assert!(
+        !dir.path()
+            .join("user")
+            .join("default")
+            .join("process")
+            .exists()
+    );
 }

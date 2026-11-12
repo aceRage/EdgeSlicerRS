@@ -1026,7 +1026,10 @@ fn parts_are_renamed_deleted_retyped_split_and_added() {
     sliced(&session, project, None);
     let summary = ask(&session, "summary", json!({}));
     let said = summary["remarks"].to_string();
-    assert!(!said.contains("modifiers, which are not followed"), "{said}");
+    assert!(
+        !said.contains("modifiers, which are not followed"),
+        "{said}"
+    );
 
     // A part from a file of two shells: "Load Part", named after it.
     let answer = edit(
