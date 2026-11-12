@@ -1165,25 +1165,29 @@ pub fn slice(job: Job, watch: &dyn Watcher) -> Result<Sliced, Failure> {
     } else {
         objects.iter().collect()
     };
-    let mut footprints: Vec<(Vec<ExPolygon>, f64)> = Vec::new();
-    if adhesion.brim != BrimKind::None {
+    let footprints: Vec<(Vec<ExPolygon>, f64)> = if adhesion.brim == BrimKind::None {
+        Vec::new()
+    } else {
         let alone = own.len() == 1 && bodies.iter().all(|body| body.negative.is_none());
-        for mesh in own {
-            let Some((low, high)) = mesh.bounds() else {
-                continue;
-            };
-            let body = [edge_slice::Body {
-                solid: mesh,
-                negative: None,
-                filament: 1,
-            }];
-            // The object's own first layer, grown as the plate's was
-            // where overhangs were made printable down to the bed.
-            let first =
-                printable.first_layer(&body, alone, &planes, scaled(closing_radius), &heights)?;
-            footprints.push((first, f64::from(high[2] - low[2])));
-        }
-    }
+        // Object by object side by side, kept in their order.
+        own.par_iter()
+            .filter_map(|mesh| {
+                let (low, high) = mesh.bounds()?;
+                let body = [edge_slice::Body {
+                    solid: mesh,
+                    negative: None,
+                    filament: 1,
+                }];
+                // The object's own first layer, grown as the plate's was
+                // where overhangs were made printable down to the bed.
+                Some(
+                    printable
+                        .first_layer(&body, alone, &planes, scaled(closing_radius), &heights)
+                        .map(|first| (first, f64::from(high[2] - low[2]))),
+                )
+            })
+            .collect::<Result<_, _>>()?
+    };
     let footings: Vec<Footing<'_>> = footprints
         .iter()
         .map(|(footprint, height)| Footing {
