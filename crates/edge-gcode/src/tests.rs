@@ -2250,15 +2250,22 @@ fn a_rammed_filament_is_laid_by_the_tool_being_put_away() {
     assert!(!text.contains("G1 X43.350 Y40.850 E") && !text.contains(";WIDTH:1.000"));
 
     // Asked to, the ram is pushed out at the ramming pressure advance, set
-    // once the nozzle is at its start, in the firmware's own words; it is
-    // not set back after (WipeTower2.cpp `toolchange_Unload`).
-    for (klipper, reprap, wanted) in [
-        (true, false, "SET_PRESSURE_ADVANCE ADVANCE=0.0200"),
-        (false, true, "M572 D0 S0.020000"),
-        (false, false, "M900 K0.020000"),
+    // once the nozzle is at its start, in the firmware's own words, and
+    // the filament's own is set back once the ram is done (the reference
+    // never sets it back: WipeTower2.cpp `toolchange_Unload`).
+    for (klipper, reprap, wanted, back) in [
+        (
+            true,
+            false,
+            "SET_PRESSURE_ADVANCE ADVANCE=0.0200",
+            "SET_PRESSURE_ADVANCE ADVANCE=0.0450",
+        ),
+        (false, true, "M572 D0 S0.020000", "M572 D0 S0.045000"),
+        (false, false, "M900 K0.020000", "M900 K0.045000"),
     ] {
         let advanced = settings.clone().map(|tool| PrintSettings {
             ram_advance: Some(0.02),
+            pressure_advance: Some(0.045),
             klipper,
             reprap,
             ..tool
@@ -2276,7 +2283,41 @@ fn a_rammed_filament_is_laid_by_the_tool_being_put_away() {
         assert!(set < ram, "{:?}", &lines[set..=ram]);
         assert!(lines[set + 1..ram].iter().all(|line| !line.contains(" X")));
         assert_eq!(lines.iter().filter(|line| **line == wanted).count(), 1);
+        // And back to the filament's own straight after the ram.
+        let restored = lines.iter().position(|line| *line == back).unwrap();
+        assert!(restored > ram, "{:?}", &lines[ram..=restored]);
+        assert_eq!(lines.iter().filter(|line| **line == back).count(), 1);
     }
+    // Where the filament's start G-code sets pressure advance, the ram's
+    // is sent and that G-code is left to set it back.
+    let scripted = settings.clone().map(|tool| PrintSettings {
+        ram_advance: Some(0.02),
+        pressure_advance: None,
+        klipper: true,
+        filament_start_gcode: Some("SET_PRESSURE_ADVANCE ADVANCE=0.03".into()),
+        ..tool
+    });
+    let mut out = Vec::new();
+    write_tools(&mut out, &plan, &scripted).unwrap();
+    let text = String::from_utf8(out).unwrap();
+    assert!(text.contains("SET_PRESSURE_ADVANCE ADVANCE=0.0200\n"));
+    // Where nothing in the file sets it, the printer's own is left alone:
+    // a Snapmaker U1's is found by its flow calibration and no profile
+    // carries it, so a value sent for the ram would stay for good.
+    let calibrated = settings.clone().map(|tool| PrintSettings {
+        ram_advance: Some(0.02),
+        pressure_advance: None,
+        klipper: true,
+        ..tool
+    });
+    let mut out = Vec::new();
+    write_tools(&mut out, &plan, &calibrated).unwrap();
+    let text = String::from_utf8(out).unwrap();
+    assert!(!text.contains("PRESSURE_ADVANCE") && !text.contains("M900"));
+    assert!(
+        text.contains("G1 X43.350 Y40.850 E"),
+        "the ram itself stays"
+    );
     // Not where the profile does not ask.
     let left = settings.clone().map(|tool| PrintSettings {
         ram_advance: None,

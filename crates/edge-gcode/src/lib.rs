@@ -728,6 +728,14 @@ fn extent(layer: &Layer<'_>) -> Option<[f64; 4]> {
         })
 }
 
+/// Whether a piece of G-code sets pressure advance itself, in any of the
+/// ways the firmwares take it.
+fn sets_pressure_advance(text: &str) -> bool {
+    ["SET_PRESSURE_ADVANCE", "M900", "M572", "M233"]
+        .iter()
+        .any(|command| text.contains(command))
+}
+
 /// How fast a line is laid and how hard the printer may accelerate into it.
 #[derive(Clone, Copy)]
 struct Motion {
@@ -1371,6 +1379,24 @@ impl Writer<'_> {
             // A rammed filament is pushed out fast on the tower, and its
             // tool then waits just clear of what it laid.
             Some(ram) => {
+                // The ram's pressure advance is sent only where something
+                // will set the filament's own again: the profile's value
+                // (set back below, once the ram is done), or the
+                // filament's start or the printer's change G-code. Where
+                // nothing in the file sets it, the printer keeps its own:
+                // a Snapmaker U1 finds each tool's value by its dynamic
+                // flow calibration and no profile carries it, so a value
+                // sent for the ram would stand for the rest of the print.
+                // The reference sends it regardless and never sets it
+                // back (WipeTower2.cpp `toolchange_Unload`); the fix
+                // there is aceRage/EdgeSlicer#1002.
+                let scripted = [&s.filament_start_gcode, &s.change_filament_gcode]
+                    .into_iter()
+                    .flatten()
+                    .any(|text| sets_pressure_advance(text));
+                let ram_advance = s
+                    .ram_advance
+                    .filter(|_| s.pressure_advance.is_some() || scripted);
                 for (index, line) in (ram.lines.iter())
                     .filter(|line| line.points.len() >= 2)
                     .enumerate()
@@ -1384,11 +1410,9 @@ impl Writer<'_> {
                     self.travel(line.points[0], false, None)?;
                     // Pressure advance is set for the ram once the nozzle
                     // is at its start (WipeTower2.cpp `toolchange_Unload`,
-                    // `disable_linear_advance_value`). The tower does not
-                    // set it back: the filament's own is set again when
-                    // its tool is next taken up, where it has one.
+                    // `disable_linear_advance_value`).
                     if index == 0
-                        && let Some(advance) = s.ram_advance
+                        && let Some(advance) = ram_advance
                     {
                         if s.klipper {
                             writeln!(self.out, "SET_PRESSURE_ADVANCE ADVANCE={advance:.4}")?;
@@ -1400,6 +1424,17 @@ impl Writer<'_> {
                     }
                     for point in &line.points[1..] {
                         self.extrude(*point, line.role, &line.flow, motion)?;
+                    }
+                }
+                // The filament's own value back, where the profile has
+                // one and the ram changed it.
+                if let (Some(_), Some(own)) = (ram_advance, s.pressure_advance) {
+                    if s.klipper {
+                        writeln!(self.out, "SET_PRESSURE_ADVANCE ADVANCE={own:.4}")?;
+                    } else if s.reprap {
+                        writeln!(self.out, "M572 D{from} S{own:.6}")?;
+                    } else {
+                        writeln!(self.out, "M900 K{own:.6}")?;
                     }
                 }
                 let length = self.state.position.map_or(0.0, |at| distance(at, ram.park));
