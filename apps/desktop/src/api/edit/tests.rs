@@ -1339,3 +1339,78 @@ fn plate_bed_types_another_printer_does_not_take_are_reset() {
     assert_eq!(answer["plates"][1]["own"]["bed_type"], Value::Null);
     assert_eq!(answer["edit"]["undo"], "Plate bed types reset");
 }
+
+#[test]
+fn the_arrange_options_are_kept_and_arranging_follows_them() {
+    let session = Arc::new(Session::new(None));
+    let project = open(&session, THREE_PLATES);
+    // As the reference starts: auto spacing, no turning, several
+    // materials on a plate; the U1 neither scans its first layer nor is
+    // an i3.
+    let options = ask(&session, "arrange_options", json!({ "project": project }));
+    assert_eq!(options["spacing"], 0.0);
+    assert_eq!(options["rotate"], false);
+    assert_eq!(options["multi_materials"], true);
+    assert_eq!(options["calibration"], false);
+    assert_eq!(options["align_to_y"], false);
+    assert_eq!(options["seq_print"], false);
+    let options = ask(
+        &session,
+        "arrange_options_set",
+        json!({ "project": project, "spacing": 60.0, "rotate": true }),
+    );
+    assert_eq!(options["spacing"], 60.0);
+    assert_eq!(options["rotate"], true);
+    // Kept under the reference's keys, for printing by layer.
+    {
+        let state = lock(&session.state);
+        assert_eq!(
+            state.store.data.arrange.get("min_object_distance_fff"),
+            Some(&"60".to_owned())
+        );
+        assert_eq!(
+            state.store.data.arrange.get("enable_rotation_fff"),
+            Some(&"1".to_owned())
+        );
+    }
+    // "Align to Y axis" is off while turning is on.
+    let options = ask(
+        &session,
+        "arrange_options_set",
+        json!({ "project": project, "align_to_y": true }),
+    );
+    assert_eq!(options["align_to_y"], false);
+
+    // Every plate with 60 mm between objects takes more plates than the
+    // three the file has; one step takes it all back.
+    let before = ask(&session, "project", json!({}))["plates"]
+        .as_array()
+        .unwrap()
+        .len();
+    let answer = edit(&session, json!({ "op": "arrange", "all": true }));
+    assert_eq!(answer["done"], "Arrange");
+    assert!(answer["project"]["plates"].as_array().unwrap().len() > before);
+    let back = ask(&session, "undo", json!({}));
+    assert_eq!(back["project"]["plates"].as_array().unwrap().len(), before);
+
+    // "Reset" gives the options back as they were.
+    let options = ask(
+        &session,
+        "arrange_options_reset",
+        json!({ "project": project }),
+    );
+    assert_eq!(options["spacing"], 0.0);
+    assert_eq!(options["rotate"], false);
+    assert!(lock(&session.state).store.data.arrange.is_empty());
+
+    // Some of a plate's objects: the rest stay where they stand.
+    let scene = ask(&session, "scene", json!({ "project": project }));
+    let on_first = placings_on(&scene, 1);
+    let chosen: Vec<u64> = on_first.iter().take(2).map(|(id, _)| *id).collect();
+    let answer = edit(&session, json!({ "op": "arrange", "copies": chosen }));
+    assert_eq!(answer["done"], "Arrange");
+    let after = placings_on(&answer["scene"], 1);
+    for (id, matrix) in on_first.iter().skip(2) {
+        assert!(after.contains(&(*id, matrix.clone())), "{id} moved");
+    }
+}

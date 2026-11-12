@@ -371,6 +371,9 @@ fn part_places(args: &Value) -> Result<Vec<(u64, Transform)>, String> {
 impl Session {
     /// Makes the edit `args` names to a model. `shown` is the plate the
     /// project is on.
+    // What an edit needs beside the model differs from op to op; each is
+    // given on its own rather than gathered for one op's sake.
+    #[allow(clippy::too_many_arguments)]
     fn apply(
         model: &mut Model,
         bed: Option<&Bed>,
@@ -379,6 +382,7 @@ impl Session {
         added: Option<&Model>,
         leave: &[u32],
         global: Option<&edge_config::Settings>,
+        arrange: Option<&edge_engine::ArrangeOptions>,
     ) -> Result<Outcome, String> {
         let failed = |error: edge_engine::Failure| error.to_string();
         let plate = |args: &Value| -> Option<u32> {
@@ -495,14 +499,39 @@ impl Session {
                 outcome.name = "delete partplate".into();
             }
             "arrange" => {
+                // Every plate (`all`), the copies named (`copies`), or a
+                // plate (the one shown when none is named), with the
+                // options beside the Arrange button and the settings the
+                // project is sliced with (ArrangeJob.cpp).
                 let all = args.get("all").and_then(Value::as_bool).unwrap_or(false);
-                let on = if all { None } else { plate(args).or(shown) };
-                let left = model.arrange_leaving(bed, on, leave).map_err(failed)?;
-                if left > 0 {
-                    outcome.note = Some(format!(
-                        "{left} of the objects did not fit on the plate and stand beside the plates."
+                let chosen = match args.get("copies") {
+                    Some(Value::Array(_)) => Some(ids(args, "copies")?),
+                    _ => None,
+                };
+                let scope = match (&chosen, all) {
+                    (Some(copies), _) => edge_engine::ArrangeScope::Copies(copies),
+                    (None, true) => edge_engine::ArrangeScope::All { leave },
+                    (None, false) => edge_engine::ArrangeScope::Plate(
+                        plate(args).or(shown).ok_or("plate was not given")?,
+                    ),
+                };
+                let options = arrange.cloned().unwrap_or_default();
+                let arranged = model
+                    .arrange_with(bed, global, &options, scope)
+                    .map_err(|error| super::i18n::tr(&error.to_string()))?;
+                let mut notes = Vec::new();
+                for name in &arranged.zero_size {
+                    notes.push(super::i18n::fill(
+                        &super::i18n::tr("Object %s has zero size and can't be arranged."),
+                        &[name],
                     ));
                 }
+                if !arranged.unplaced.is_empty() {
+                    notes.push(super::i18n::tr(
+                        "Arranging is done but there are unpacked items. Reduce spacing and try again.",
+                    ));
+                }
+                outcome.note = (!notes.is_empty()).then(|| notes.join("\n"));
                 outcome.name = "Arrange".into();
             }
             "mirror" => {
@@ -776,10 +805,13 @@ impl Session {
         } else {
             Vec::new()
         };
-        let global = if items::OPS.contains(&needed(args, "op")?) {
-            Some(self.items_global(stage.id)?)
+        let (global, arrange) = if needed(args, "op")? == "arrange" {
+            let (options, global) = self.arrange_choice(stage.id)?;
+            (Some(global), Some(options))
+        } else if items::OPS.contains(&needed(args, "op")?) {
+            (Some(self.items_global(stage.id)?), None)
         } else {
-            None
+            (None, None)
         };
         let outcome = Self::apply(
             &mut model,
@@ -789,6 +821,7 @@ impl Session {
             added.as_ref(),
             &leave,
             global.as_ref(),
+            arrange.as_ref(),
         )?;
         if outcome.unchanged {
             return self.edited(

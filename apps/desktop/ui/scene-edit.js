@@ -172,7 +172,10 @@
       this.buttons = {
         add: button('add', t('Add'), `${t('Add')} [Ctrl+I]`, ICONS.add, () => this.add()),
         addPlate: button('add-plate', t('Add plate'), t('Add plate'), ICONS.addPlate, () => this.commit({ op: 'add_plate' })),
-        arrange: button('arrange', t('Arrange all objects'), `${t('Arrange all objects')} [A]\n${t('Arrange objects on selected plates')} [Shift+A]`, ICONS.arrange, () => this.arrange(true)),
+        // A click opens the options beside it, as the reference's toolbar
+        // item does (GLCanvas3D.cpp `_render_arrange_menu`); their
+        // "Arrange" and the A key arrange.
+        arrange: button('arrange', t('Arrange all objects'), `${t('Arrange all objects')} [A]\n${t('Arrange objects on selected plates')} [Shift+A]`, ICONS.arrange, () => this.toggleArrangeMenu()),
         splitObjects: button('split-objects', t('Split to objects'), t('Split to objects'), ICONS.splitObjects, () => this.split(true)),
         splitParts: button('split-parts', t('Split to parts'), t('Split to parts'), ICONS.splitParts, () => this.split(false)),
         undo: button('undo', t('Undo'), `${t('Undo')} [Ctrl+Z]`, ICONS.undo, () => this.step('undo')),
@@ -188,10 +191,14 @@
         b.supports, b.seam, b.fuzzy_skin, b.color, gap(), b.undo, b.redo);
       this.bar.setAttribute('role', 'toolbar');
       this.bar.setAttribute('aria-label', t('Prepare'));
+      this.buttons.arrange.setAttribute('aria-pressed', 'false');
       this.panel = el('div', { className: 'edit-panel overlay', id: 'edit-panel', hidden: true });
+      this.arrangeNode = el('div', { className: 'edit-panel overlay arrange-panel', id: 'arrange-panel', hidden: true });
+      this.arrangeNode.setAttribute('role', 'group');
+      this.arrangeNode.setAttribute('aria-label', t('Arrange options'));
       this.warning = el('p', { className: 'edit-warning overlay', id: 'edit-warning', hidden: true });
       this.warning.setAttribute('role', 'status');
-      this.host.stageNode.append(this.bar, this.panel, this.warning);
+      this.host.stageNode.append(this.bar, this.panel, this.arrangeNode, this.warning);
     },
 
     // ---- what there is ----
@@ -378,9 +385,89 @@
       return items.length === 1 && items[0].part.split ? items[0] : null;
     },
 
+    // A arranges every plate. Shift+A arranges the plate shown, as the
+    // reference does; with objects selected, those, around what else
+    // stands on their plates (the reference's `prepare_selected`, which
+    // its keys do not reach).
     arrange(all) {
       if (!this.editing() || !this.data() || !this.data().placings.length) return;
-      this.commit(all ? { op: 'arrange', all: true } : { op: 'arrange' });
+      if (all) { this.commit({ op: 'arrange', all: true }); return; }
+      const chosen = this.partMode() ? [] : [...this.stage.selection()];
+      this.commit(chosen.length ? { op: 'arrange', copies: chosen } : { op: 'arrange' });
+    },
+
+    // ---- the options beside the Arrange button ----
+
+    toggleArrangeMenu() {
+      if (this.arrangeOpen) { this.closeArrangeMenu(); return; }
+      if (this.tool) this.setTool(null);
+      this.arrangeOpen = true;
+      this.buttons.arrange.setAttribute('aria-pressed', 'true');
+      this.arrangeCall('arrange_options');
+    },
+
+    closeArrangeMenu() {
+      this.arrangeOpen = false;
+      this.buttons.arrange.setAttribute('aria-pressed', 'false');
+      this.arrangeNode.hidden = true;
+    },
+
+    async arrangeCall(name, args = {}) {
+      const project = this.host.project();
+      if (!project) return;
+      try {
+        this.arrangeOptions = await this.host.call(name, { project: project.id, ...args });
+        if (this.arrangeOpen) this.arrangeMenu();
+      } catch (error) {
+        this.host.say(error.message, true);
+      }
+    },
+
+    // Drawn from what the session answers: "Spacing" with "0 means auto
+    // spacing.", the four switches, then "Arrange" and "Reset".
+    arrangeMenu() {
+      const { el } = this.host;
+      const o = this.arrangeOptions;
+      const node = this.arrangeNode;
+      if (!o || !this.arrangeOpen) { node.hidden = true; return; }
+      node.replaceChildren();
+      node.hidden = false;
+      const spacing = t('Spacing');
+      const range = el('input', { type: 'range', min: '0', max: '100', step: '0.05', value: String(o.spacing) });
+      range.setAttribute('aria-label', spacing);
+      const number = el('input', { type: 'number', min: '0', step: '0.05', value: o.spacing.toFixed(2) });
+      number.setAttribute('aria-label', spacing);
+      const set = (value) => {
+        if (!Number.isFinite(value)) return;
+        this.arrangeCall('arrange_options_set', { spacing: Math.max(0, value) });
+      };
+      range.addEventListener('input', () => { number.value = Number(range.value).toFixed(2); });
+      range.addEventListener('change', () => set(Number(range.value)));
+      number.addEventListener('change', () => set(Number(number.value)));
+      const row = el('div', { className: 'arrange-row' },
+        el('span', { className: 'edit-label', textContent: spacing }),
+        el('span', { className: 'arrange-slide' }, range, el('span', { className: 'unit' }, number, ' mm')));
+      const check = (label, key, { disabled = false } = {}) => {
+        const box = el('input', { type: 'checkbox', checked: Boolean(o[key]), disabled });
+        box.addEventListener('change', () => this.arrangeCall('arrange_options_set', { [key]: box.checked }));
+        return el('label', { className: 'edit-check' }, box, ` ${label}`);
+      };
+      const checks = [
+        check(t('Auto rotate for arrangement'), 'rotate'),
+        check(t('Allow multiple materials on same plate'), 'multi_materials'),
+      ];
+      // Only for a printer that scans its first layer.
+      if (o.calibration) checks.push(check(t('Avoid extrusion calibration region'), 'avoid_calibration'));
+      // Not while turning is on.
+      checks.push(check(t('Align to Y axis'), 'align_to_y', { disabled: o.rotate }));
+      const arrange = el('button', { type: 'button', className: 'primary', textContent: t('Arrange') });
+      arrange.disabled = this.busy || !this.data() || !this.data().placings.length;
+      arrange.addEventListener('click', () => this.arrange(true));
+      const reset = el('button', { type: 'button', textContent: t('Reset') });
+      reset.addEventListener('click', () => this.arrangeCall('arrange_options_reset'));
+      node.append(row, el('p', { className: 'edit-hint', textContent: t('0 means auto spacing.') }),
+        el('hr', { className: 'arrange-rule' }), ...checks, el('hr', { className: 'arrange-rule' }),
+        el('div', { className: 'arrange-foot' }, arrange, reset));
     },
 
     remove() {
@@ -413,6 +500,7 @@
 
     setTool(tool) {
       if (tool && !this.usable(tool)) return;
+      if (tool && this.arrangeOpen) this.closeArrangeMenu();
       // A painting tool opens on the copy selected and closes with the
       // tool (paint.js).
       const painter = GL.painter;
@@ -439,6 +527,10 @@
       }
       if (this.tool) {
         this.setTool(null);
+        return true;
+      }
+      if (this.arrangeOpen) {
+        this.closeArrangeMenu();
         return true;
       }
       return false;

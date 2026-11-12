@@ -57,6 +57,13 @@ pub struct Data {
     /// reference's `recent_projects` (AppConfig.cpp
     /// `set_recent_projects`), kept the same way, by number from "01".
     pub recent_projects: Vec<String>,
+    /// The options beside the Arrange button, under the reference's own
+    /// keys in its `arrange` section (GLCanvas3D.cpp
+    /// `load_arrange_settings`, `_render_arrange_menu`):
+    /// `min_object_distance_fff` and `_fff_seq_print`,
+    /// `enable_rotation_fff` and `_fff_seq_print`,
+    /// `allow_multi_materials_on_same_plate`, `avoid_extrusion_cali_region`.
+    pub arrange: BTreeMap<String, String>,
     /// What the file held that this build does not know: written back
     /// as it was.
     other: Map<String, Value>,
@@ -182,6 +189,12 @@ impl Data {
             numbered.sort_by_key(|(at, _)| *at);
             data.recent_projects = numbered.into_iter().map(|(_, path)| path).collect();
         }
+        if let Some(arrange) = root.get("arrange").and_then(Value::as_object) {
+            data.arrange = arrange
+                .iter()
+                .filter_map(|(key, value)| Some((key.clone(), value.as_str()?.to_owned())))
+                .collect();
+        }
         for known in [
             "version",
             "app",
@@ -189,6 +202,7 @@ impl Data {
             "presets",
             "printers",
             "recent_projects",
+            "arrange",
         ] {
             root.remove(known);
         }
@@ -242,6 +256,9 @@ impl Data {
             .map(|(at, path)| (format!("{:02}", at + 1), json!(path)))
             .collect();
         root.insert("recent_projects".into(), Value::Object(recent));
+        if !self.arrange.is_empty() {
+            root.insert("arrange".into(), json!(self.arrange));
+        }
         Value::Object(root)
     }
 }
@@ -341,6 +358,10 @@ mod tests {
                 bed_type: Some("Cool Plate".into()),
             },
         );
+        data.arrange
+            .insert("min_object_distance_fff".into(), "12.5".into());
+        data.arrange
+            .insert("enable_rotation_fff".into(), "1".into());
     }
 
     #[test]
@@ -372,6 +393,8 @@ mod tests {
         );
         assert_eq!(written["presets"]["machine"], "Snapmaker U1 (0.4 nozzle)");
         assert_eq!(written["printers"][0]["curr_bed_type"], "Cool Plate");
+        // The arrange options under the reference's keys.
+        assert_eq!(written["arrange"]["min_object_distance_fff"], "12.5");
         // Nothing is left beside it.
         let names: Vec<_> = std::fs::read_dir(&folder)
             .unwrap()
