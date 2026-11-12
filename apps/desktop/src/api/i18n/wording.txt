@@ -155,8 +155,10 @@ Back to the sidebar
 Back to the sidebar [Esc]
 Browse ...
 Change…
+Collapse all groups
 Drag to widen or narrow the sidebar; double-click for its usual width
 EdgeSlicerRS
+Expand all groups
 Fit bed
 Fit part
 Fold or unfold the legend

@@ -134,6 +134,55 @@ textarea.code { font: var(--size-small)/1.5 var(--font-mono); white-space: pre; 
 .process-page > h3::after { content: ""; flex: 1; height: 1px; background: var(--line-1); }
 .process-page > h3:first-child { margin-top: var(--space-1); }
 .opt-group { display: flex; flex-direction: column; gap: 3px; min-width: 0; }
+/* A group folds from its title (settings.js): the title is a button with
+   the chevron of a section that folds, then the number of its settings
+   set by hand (open or folded), then the hairline. Folded, its rows are
+   gone and its title stays. */
+.process-page > h3 > .group-fold {
+  display: flex;
+  align-items: center;
+  gap: var(--space-1);
+  min-width: 0;
+  min-height: var(--control-s);
+  margin-left: calc(-1 * var(--space-1));
+  padding: 0 var(--space-1);
+  border: 0;
+  border-radius: var(--radius-s);
+  background: none;
+  color: inherit;
+  font: inherit;
+  letter-spacing: inherit;
+  text-transform: inherit;
+  text-align: left;
+}
+.process-page > h3 > .group-fold:hover { background: var(--fill-hover); color: var(--text-1); }
+.process-page > h3 > .group-fold::before {
+  content: "";
+  flex: none;
+  width: 4px;
+  height: 4px;
+  margin: -2px 2px 0 1px;
+  border-right: 1.5px solid currentColor;
+  border-bottom: 1.5px solid currentColor;
+  transform: rotate(45deg);
+  transition: transform var(--time) var(--ease);
+}
+.process-page > h3 > .group-fold[aria-expanded="false"]::before { margin-top: 0; transform: rotate(-45deg); }
+.process-page > h3.folded > .group-fold { color: var(--text-2); }
+.group-count { flex: none; color: var(--accent); font: 600 var(--size-caps) var(--font-mono); letter-spacing: 0; }
+.group-count[hidden] { display: none; }
+.opt-group.folded { display: none; }
+@media (prefers-reduced-motion: reduce) {
+  .process-page > h3 > .group-fold::before { transition: none; }
+}
+
+/* The search with "Expand all groups" and "Collapse all groups" after it. */
+.search-row { display: flex; align-items: center; gap: 2px; }
+/* Where an item's section has no pages to search (nothing selected, "Layers"), neither. */
+.search-row:has(> input[type="search"][hidden]) { display: none; }
+.search-row > input[type="search"] { flex: 1; min-width: 0; margin-right: 2px; }
+.search-row > button.tool { flex: none; color: var(--text-2); }
+.search-row > button.tool:hover:not(:disabled) { color: var(--text-1); }
 
 /* One option: its label with what the engine does with it, its control,
    and the way back to the preset's value. The controls stand in one

@@ -245,9 +245,41 @@ same row on every kind's pages):
   a tick box before the label turns the filament's own value on; off, the
   field is disabled and shows the value in force in its place.
 - Rows under a `.process-page > h3` group label; several options of one
-  C++ line under an `.opt-line-label`, indented. An extruder's own option
+  C++ line under an `.opt-line-label`, indented. A titled group folds
+  (below, "Groups that fold"). An extruder's own option
   is named `key#n` in `data-key`; field ids are `po-` (process), `fo-`
   (filament), `mo-` (printer) and the name.
+
+### Groups that fold
+
+```html
+<h3 [class="folded"]><button type="button" class="group-fold" aria-expanded="true" aria-controls="process-group-7" title="Click to collapse / expand">Seam</button><span class="group-count" title="1 setting changed">1</span></h3>
+<div class="opt-group [folded]" id="process-group-7">…rows…</div>
+```
+
+Each titled group of a page of settings folds from its title (the owner's
+choice; `settings.js`, "groups that fold"): the title is a button in the
+group label's own small capitals, with the chevron of a section that folds
+(down open, right folded), `--text-2` when folded; Enter or Space folds
+it, `aria-expanded` says which. After the title, `span.group-count`, the
+number of its settings set by hand in the accent, shown open or folded so
+nothing set is hidden. Folded, its rows are gone (`.opt-group.folded`) and
+everything else about them goes on: the rules still show, hide and grey
+them, a reset still puts them back, and its title stays (it is hidden only
+when the rules hide every row, as before).
+
+Beside the search (`.search-row`) two `.tool`s unfold and fold every group
+of the page shown ("Expand all groups", two chevrons down; "Collapse all
+groups", two up), in `--text-2` until pointed at; the row is hidden with
+the search where an item has no pages.
+
+Whether a group is folded is kept by the session (`layout_set`) by kind
+(process, filament, printer, item), page and group, each by the message
+id, so it is the same in every language and the three kinds and an
+item's pages never share it; what was never folded or unfolded by hand is
+as `src/api/layout.rs` `FOLDED_AT_FIRST` has it. A setting searched for
+and gone to opens its folded group for the while; it is folded again when
+the search is next typed in or cleared, or another page is opened.
 
 ### Two states of whose ("Global" / "Objects")
 

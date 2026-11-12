@@ -170,7 +170,12 @@
               <p id="saved-process" class="value" hidden></p>
               <label id="process-row">Preset <select id="process"></select></label>
               <!-- The reference's pages of process settings, drawn from data by settings.js. -->
-              <input type="search" id="process-search" data-search-words placeholder="Search for setting" aria-label="Search for setting" role="combobox" aria-controls="process-found" aria-expanded="false" aria-autocomplete="list" autocomplete="off" spellcheck="false">
+              <!-- The search, and every group of the page shown unfolded or folded (settings.js). -->
+              <div class="search-row">
+                <input type="search" id="process-search" data-search-words placeholder="Search for setting" aria-label="Search for setting" role="combobox" aria-controls="process-found" aria-expanded="false" aria-autocomplete="list" autocomplete="off" spellcheck="false">
+                <button type="button" id="process-expand" class="icon tool" title="Expand all groups" aria-label="Expand all groups"><svg viewBox="0 0 16 16" aria-hidden="true"><path d="M4.5,4L8,7.5L11.5,4M4.5,8.5L8,12L11.5,8.5"/></svg></button>
+                <button type="button" id="process-collapse" class="icon tool" title="Collapse all groups" aria-label="Collapse all groups"><svg viewBox="0 0 16 16" aria-hidden="true"><path d="M4.5,7.5L8,4L11.5,7.5M4.5,12L8,8.5L11.5,12"/></svg></button>
+              </div>
               <div id="process-tabs" class="tabs pages" role="tablist" aria-label="Process settings"></div>
             </div>
           </div>
@@ -205,7 +210,12 @@
             </header>
             <div id="preset-filaments" role="group" aria-label="Filaments" hidden></div>
             <div id="preset-tools" class="fold-body">
-              <input type="search" id="preset-search" data-search-words placeholder="Search for setting" aria-label="Search for setting" role="combobox" aria-controls="preset-found" aria-expanded="false" aria-autocomplete="list" autocomplete="off" spellcheck="false">
+              <!-- The search, and every group of the page shown unfolded or folded (settings.js). -->
+              <div class="search-row">
+                <input type="search" id="preset-search" data-search-words placeholder="Search for setting" aria-label="Search for setting" role="combobox" aria-controls="preset-found" aria-expanded="false" aria-autocomplete="list" autocomplete="off" spellcheck="false">
+                <button type="button" id="preset-expand" class="icon tool" title="Expand all groups" aria-label="Expand all groups"><svg viewBox="0 0 16 16" aria-hidden="true"><path d="M4.5,4L8,7.5L11.5,4M4.5,8.5L8,12L11.5,8.5"/></svg></button>
+                <button type="button" id="preset-collapse" class="icon tool" title="Collapse all groups" aria-label="Collapse all groups"><svg viewBox="0 0 16 16" aria-hidden="true"><path d="M4.5,7.5L8,4L11.5,7.5M4.5,12L8,8.5L11.5,12"/></svg></button>
+              </div>
               <div id="preset-tabs" class="tabs pages" role="tablist" aria-label="Preset settings"></div>
             </div>
           </div>
