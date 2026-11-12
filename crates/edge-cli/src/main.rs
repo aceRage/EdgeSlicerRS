@@ -129,6 +129,9 @@ struct SliceArgs {
     /// generic preamble is written and the file is only good for viewing.
     #[arg(long)]
     gcode: Option<PathBuf>,
+    /// Say how long each stage took, in more detail than the summary.
+    #[arg(long)]
+    timings: bool,
 }
 
 #[derive(Args)]
@@ -362,6 +365,7 @@ fn slice(args: SliceArgs) -> Result<(), Failure> {
     }
 
     let started = Instant::now();
+    let began = started;
     let opened = edge_engine::open(&args.model, args.plate)?;
     if let Some((id, count)) = opened.plate() {
         println!("plate {id} of {count}");
@@ -369,6 +373,7 @@ fn slice(args: SliceArgs) -> Result<(), Failure> {
     let loaded = opened.place()?;
     let load_time = started.elapsed();
 
+    let preparing = Instant::now();
     let chosen = presets(&args)?;
     let overrides = Overrides {
         layer_height: args.layer_height,
@@ -393,7 +398,11 @@ fn slice(args: SliceArgs) -> Result<(), Failure> {
         (first_layer_height, first_source),
         (closing_radius, closing_source),
     ) = (job.layer_height, job.first_layer_height, job.closing_radius);
+    let prepare_time = preparing.elapsed();
+    let slicing = Instant::now();
     let sliced = edge_engine::slice(job, &Unwatched)?;
+    let slice_time = slicing.elapsed();
+    let combining = Instant::now();
     let (min, max) = sliced.bounds;
     let (bodies, layers) = (&sliced.bodies, &sliced.layers);
     let (walls, infill, support, adhesion) = (
@@ -405,6 +414,7 @@ fn slice(args: SliceArgs) -> Result<(), Failure> {
     let (perimeters, fills) = sliced.combined();
     let surfaces: Vec<&edge_infill::Surface> =
         sliced.surfaces_by.iter().flatten().flatten().collect();
+    let combine_time = combining.elapsed();
 
     let carved = bodies.iter().filter(|body| body.negative.is_some()).count();
     println!(
@@ -589,6 +599,7 @@ fn slice(args: SliceArgs) -> Result<(), Failure> {
 
     if let Some(path) = &args.gcode {
         let started = Instant::now();
+        let started_gcode = started;
         let print = &sliced.print;
         if let Some([a, b, c, d]) = sliced.tower.footprint {
             println!(
@@ -606,7 +617,43 @@ fn slice(args: SliceArgs) -> Result<(), Failure> {
         // never be left where it could be sent to a printer.
         let gcode = sliced.gcode(&edge_engine::timestamp())?;
         let summary = gcode.summary;
+        let writing = Instant::now();
         fs::write(path, &gcode.text)?;
+        let write_time = writing.elapsed();
+        if args.timings {
+            let ms = |time: std::time::Duration| time.as_secs_f64() * 1e3;
+            let (t, w) = (&sliced.timings, &gcode.timings);
+            println!(
+                "timings in ms on {} threads: load {:.1}, presets {:.1}, slice {:.1} (cut {:.1}, paint {:.1}, \
+                 compensations {:.1}, walls {:.1}, supports {:.1}, surfaces {:.1}, fill {:.1}, around {:.1}, \
+                 seams wait {:.1}), combine {:.1}, G-code {:.1} (thin walls {:.1}, seams {:.1}; \
+                 visibility {:.1}, joints {:.1} measured beside the slicing; \
+                 layers {:.1}, estimate {:.1}), file {:.1}; in all {:.1}",
+                rayon::current_num_threads(),
+                ms(load_time),
+                ms(prepare_time),
+                ms(slice_time),
+                ms(t.cut),
+                ms(t.paint),
+                ms(t.slice.saturating_sub(t.cut + t.paint)),
+                ms(t.perimeters),
+                ms(t.supports),
+                ms(t.surfaces),
+                ms(t.fill),
+                ms(t.around),
+                ms(t.seams_wait),
+                ms(combine_time),
+                ms(writing.duration_since(started_gcode)),
+                ms(w.thin),
+                ms(w.seams),
+                ms(w.visibility),
+                ms(w.joints),
+                ms(w.layers),
+                ms(w.estimate),
+                ms(write_time),
+                ms(began.elapsed()),
+            );
+        }
         let weight = match print.filament_density {
             Some(density) => format!(", {:.1} g", summary.filament_mm3 / 1000.0 * density),
             None => String::new(),

@@ -187,11 +187,16 @@ struct Split {
 /// Divides the area inside the outer wall into what has nothing above it
 /// and the rest (PerimeterGenerator.cpp `split_top_surfaces`). None when
 /// nothing of it is exposed, which leaves the layer as it was.
+///
+/// `covered` holds the layer above grown by the narrowest strip worth a
+/// top surface, which is the same for every island of the layer: it is
+/// worked out by the first island that needs it and kept for the rest.
 fn split_top_surfaces(
     inside: &[ExPolygon],
     around: &Around<'_>,
     params: &Params,
     top: &OneWallTop,
+    covered: &mut Option<Vec<ExPolygon>>,
 ) -> Result<Option<Split>, Error> {
     let ext_width = params.outer.scaled_width();
     let ext_spacing = params.outer.scaled_spacing();
@@ -211,7 +216,10 @@ fn split_top_surfaces(
     };
     // Too thin an exposed strip is not worth a top surface.
     let min_width = top.min_width.max(ext_spacing / 2 + 10);
-    let covered = edge_clip::offset(around.upper, min_width, Join::MITER)?;
+    let covered = match covered {
+        Some(covered) => covered,
+        None => covered.insert(edge_clip::offset(around.upper, min_width, Join::MITER)?),
+    };
     // No nearer the outline than a second wall would be.
     let second_wall = edge_clip::offset(inside, -ext_spacing, Join::MITER)?;
     // What hangs over air, and a margin round it, keeps its walls.
@@ -223,7 +231,7 @@ fn split_top_surfaces(
         }
         None => inside.to_vec(),
     };
-    let exposed = edge_clip::difference(&supported, &covered)?;
+    let exposed = edge_clip::difference(&supported, covered)?;
     if exposed.is_empty() {
         return Ok(None);
     }
@@ -402,6 +410,8 @@ pub fn classic_between(
 
     let fuzzed = Fuzzed::new(params, around.as_ref())?;
     let mut result = Perimeters::default();
+    // The layer above as top surfaces are told by, for all the islands.
+    let mut covered_above = None;
     for island in regions {
         let first_loop = result.loops.len();
         // Index of the innermost wall, or -1 for none.
@@ -515,7 +525,8 @@ pub fn classic_between(
             if depth == 0
                 && loop_number != 0
                 && let (Some(top), Some(around)) = (&params.one_wall_top, &around)
-                && let Some(split) = split_top_surfaces(&last, around, params, top)?
+                && let Some(split) =
+                    split_top_surfaces(&last, around, params, top, &mut covered_above)?
             {
                 (top_fills, fill_clip, last) = (split.top, split.clip, split.rest);
             }
