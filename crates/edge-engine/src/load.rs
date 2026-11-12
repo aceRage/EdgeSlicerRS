@@ -34,10 +34,6 @@ pub struct Loaded {
     /// Whether anything to slice has a Precise Seam part, which is not
     /// followed.
     pub precise_seams: bool,
-    /// The other kinds of part that anything to slice has and that are
-    /// not followed, as a person would name them: "support blockers",
-    /// "support enforcers".
-    pub unfollowed_parts: Vec<&'static str>,
     /// For a project, each object on the plate by itself, for what depends
     /// on which object is which. Empty for a bare model, which is one object.
     pub objects: Vec<Mesh>,
@@ -86,6 +82,10 @@ pub struct OwnObject {
     pub volumes: Vec<OwnVolume>,
     /// Its height ranges, with their heights measured from the bed.
     pub ranges: Vec<edge_3mf::LayerRange>,
+    /// The pieces of its printed parts' triangles painted to have
+    /// supports or to keep them off, in world coordinates, each facing
+    /// out of the part.
+    pub support_paint: Vec<(edge_mesh::Triangle, edge_3mf::SeamPaint)>,
 }
 
 /// One part of an [`OwnObject`].
@@ -111,7 +111,7 @@ pub struct OwnVolume {
 fn sets_own(object: &edge_3mf::Object) -> bool {
     !object.settings().is_empty()
         || (object.parts.iter()).any(|part| match part.kind {
-            PartKind::Normal => !part.settings().is_empty(),
+            PartKind::Normal => !part.settings().is_empty() || !part.support_paint().is_empty(),
             PartKind::Modifier | PartKind::SupportBlocker | PartKind::SupportEnforcer => true,
             PartKind::Negative | PartKind::PreciseSeam => false,
         })
@@ -143,6 +143,22 @@ fn own_objects(project: &Project, plate: Option<usize>) -> (Vec<OwnObject>, Vec<
         }
         let at = own.len();
         let mut volumes = Vec::new();
+        let mut support_paint = Vec::new();
+        for part in object
+            .parts
+            .iter()
+            .filter(|part| part.kind == PartKind::Normal)
+        {
+            let placed = part.transform.then(&instance.transform);
+            let mirrored = placed.is_mirrored();
+            for facet in part.support_paint() {
+                let [a, b, c] = facet
+                    .corners
+                    .map(|corner| placed.apply(corner.map(f64::from)).map(|c| c as f32));
+                // Mirrored, a triangle faces the other way round.
+                support_paint.push((if mirrored { [a, c, b] } else { [a, b, c] }, facet.kind));
+            }
+        }
         for part in &object.parts {
             let (filament, mesh) = match part.kind {
                 PartKind::Normal => {
@@ -187,6 +203,7 @@ fn own_objects(project: &Project, plate: Option<usize>) -> (Vec<OwnObject>, Vec<
             name: object.name.clone().unwrap_or_default(),
             settings: object.settings(),
             volumes,
+            support_paint,
             ranges: (object.layer_ranges().into_iter())
                 .map(|range| edge_3mf::LayerRange {
                     min_z: range.min_z + bottom,
@@ -398,7 +415,6 @@ pub(crate) fn lone(path: &Path, solid: Mesh) -> Result<Loaded, Failure> {
         settings: None,
         unread_paint: Vec::new(),
         precise_seams: false,
-        unfollowed_parts: Vec::new(),
         objects: Vec::new(),
         negatives: Vec::new(),
         parts: Vec::new(),
@@ -473,14 +489,6 @@ pub(crate) fn placed(
         settings,
         unread_paint: project.unread_paint.clone(),
         precise_seams: project.has_precise_seams(plate),
-        unfollowed_parts: [
-            (PartKind::SupportBlocker, "support blockers"),
-            (PartKind::SupportEnforcer, "support enforcers"),
-        ]
-        .into_iter()
-        .filter(|(kind, _)| project.has_parts_of(plate, *kind))
-        .map(|(_, name)| name)
-        .collect(),
         objects,
         negatives,
         parts,

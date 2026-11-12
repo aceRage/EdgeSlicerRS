@@ -90,7 +90,6 @@ mod tests {
             settings: None,
             unread_paint: Vec::new(),
             precise_seams: false,
-            unfollowed_parts: Vec::new(),
             own: Vec::new(),
             objects: Vec::new(),
             negatives: Vec::new(),

@@ -65,9 +65,8 @@ pub struct Project {
     pub plates: Vec<Plate>,
     /// The full settings the project was saved with, when it carries them.
     pub settings: Option<Settings>,
-    /// What is painted on the project's models other than colour and
-    /// seams (fuzzy skin, supports), in order of name. None of it is
-    /// read.
+    /// What is painted on the project's models other than colour, seams
+    /// and supports (fuzzy skin), in order of name. None of it is read.
     pub unread_paint: Vec<&'static str>,
     /// The G-code set at layers (pauses, custom G-code, filament
     /// changes), by plate number, as the reference keeps them
@@ -151,6 +150,29 @@ impl Part {
         let mut mesh = Mesh::default();
         mesh.append(&self.mesh, &self.transform.then(&instance.transform));
         mesh
+    }
+
+    /// The pieces of the part's triangles painted to have supports (an
+    /// enforcer) or to keep them off (a blocker), in the part's own
+    /// coordinates: its triangles' `paint_supports`, as the reference
+    /// keeps them in `supported_facets`, coded as seams are.
+    pub fn support_paint(&self) -> Vec<SeamFacet> {
+        let mut facets = Vec::new();
+        let Some(extras) = self.kept.as_deref().and_then(PartKept::extras) else {
+            return facets;
+        };
+        const KEY: &str = " paint_supports=\"";
+        for (triangle, attributes) in extras.iter() {
+            let Some(at) = attributes.find(KEY) else {
+                continue;
+            };
+            let rest = &attributes[at + KEY.len()..];
+            let code = &rest[..rest.find('"').unwrap_or(rest.len())];
+            if (*triangle as usize) < self.mesh.triangles.len() && !code.is_empty() {
+                paint::decode_seam(code, self.mesh.triangle(*triangle as usize), &mut facets);
+            }
+        }
+        facets
     }
 
     /// The part's own settings as its file carries them, in the file's

@@ -1026,12 +1026,28 @@ pub fn slice(job: Job, watch: &dyn Watcher) -> Result<Sliced, Failure> {
     step(watch, Stage::Supports)?;
     let started = Instant::now();
     let support = SupportSettings::from_settings(&settings)?;
-    let mut supports = edge_support::generate(
+    // Support enforcers and blockers, and supports painted on.
+    let annotations = if support.enabled
+        && own.iter().any(|object| {
+            !object.support_paint.is_empty()
+                || (object.volumes.iter()).any(|volume| {
+                    matches!(
+                        volume.kind,
+                        edge_3mf::PartKind::SupportEnforcer | edge_3mf::PartKind::SupportBlocker
+                    )
+                })
+        }) {
+        crate::regions::support_annotations(&own, &bodies, &planes, scaled(closing_radius))?
+    } else {
+        edge_support::Annotations::default()
+    };
+    let mut supports = edge_support::generate_with(
         &outlines,
         middle,
         first_layer_height,
         layer_height,
         &support,
+        &annotations,
     )?;
     heights.fit(&mut supports)?;
     let support_time = started.elapsed();

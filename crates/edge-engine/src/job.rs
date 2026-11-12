@@ -197,11 +197,6 @@ pub fn prepare(mut loaded: Loaded, chosen: &Chosen, overrides: &Overrides) -> Re
                 .to_owned(),
         );
     }
-    for kind in &loaded.unfollowed_parts {
-        remarks.push(format!(
-            "the project has {kind}, which are not followed: supports go where the settings put them"
-        ));
-    }
     let named = chosen.filaments.len();
     // As many filaments as the model prints in or presets were named for.
     let described = filaments.max(named);

@@ -324,6 +324,15 @@ pub(crate) fn detect(job: &Job<'_>) -> Result<Vec<Polys>, SupportError> {
         }
     }
     let mut kept: Vec<Polys> = vec![Vec::new(); count];
+    // With "(manual)" supports nothing is held up but what is enforced
+    // (`if (!is_auto(stype) && layer_nr > enforce_support_layers)`), nor
+    // are sharp tails looked for.
+    let clusters = if settings.auto { clusters } else { Vec::new() };
+    let sharp_tails = if settings.auto {
+        sharp_tails
+    } else {
+        vec![Vec::new(); count]
+    };
     for cluster in &clusters {
         let mut small = false;
         if settings.remove_small_overhang {
@@ -352,9 +361,40 @@ pub(crate) fn detect(job: &Job<'_>) -> Result<Vec<Polys>, SupportError> {
         .into_par_iter()
         .enumerate()
         .map(|(layer, mut out)| -> Result<Polys, SupportError> {
-            if settings.critical_regions_only {
+            // Blockers take away what they cover, grown by the collision
+            // resolution (`radius_sample_resolution`, 0.2 mm), from the
+            // overhangs, the cantilevers and the sharp tails.
+            let blocker = job.annotations.blocker(layer);
+            let blocker = if blocker.is_empty() {
+                Vec::new()
+            } else {
+                offset(&union(blocker)?, scaled(0.2), Join::MITER)?
+            };
+            let mut cantilevers = if settings.auto {
+                found[layer].cantilevers.clone()
+            } else {
+                Vec::new()
+            };
+            if !blocker.is_empty() {
+                out = diff(&out, &blocker)?;
+                cantilevers = diff(&cantilevers, &blocker)?;
+            }
+            if settings.critical_regions_only && settings.auto {
                 // Only cantilevers, and sharp tails below.
-                out = found[layer].cantilevers.clone();
+                out = cantilevers;
+            }
+            // Enforcers hold up what of the layer within them the layer
+            // below does not, grown by a tip's diameter (TreeSupport.cpp
+            // `detect_overhangs`: "a hack to make enforcers work on steep
+            // overhangs", STUDIO-7538).
+            let enforcer = job.annotations.enforcer(layer);
+            if layer > 0 && !enforcer.is_empty() {
+                let enforced =
+                    intersection(&diff(&printable[layer], &printable[layer - 1])?, enforcer)?;
+                if !enforced.is_empty() {
+                    let grown = offset(&enforced, scaled(settings.tree_tip_diameter), Join::MITER)?;
+                    out.extend(diff(&grown, &printable[layer - 1])?);
+                }
             }
             // Sharp tails get a tip every half millimetre of height.
             let tails: Polys = if layer == 0 {
@@ -373,6 +413,11 @@ pub(crate) fn detect(job: &Job<'_>) -> Result<Vec<Polys>, SupportError> {
                     }
                 }
                 tails
+            };
+            let tails = if blocker.is_empty() {
+                tails
+            } else {
+                diff(&tails, &blocker)?
             };
             if !tails.is_empty() {
                 out.extend(offset(&tails, scaled(0.2), Join::MITER)?);

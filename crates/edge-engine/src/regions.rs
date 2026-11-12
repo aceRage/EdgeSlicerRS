@@ -1155,6 +1155,180 @@ pub(crate) fn lay_over_parts(
     Ok(())
 }
 
+/// The pieces of `triangles` that face downward, each cut to the slab
+/// of every layer it passes through and laid flat: what is painted under
+/// a part, projected up onto the layers it hangs over (PrintObject.cpp
+/// `project_and_append_custom_facets`: "Project downward facing painted
+/// areas upwards to their respective slicing plane", by
+/// `slice_mesh_slabs`). A layer's slab runs from the plane the layer
+/// below is cut at to its own. Not as the reference: painted triangles
+/// that stand upright, which it hands tree supports as points to grow a
+/// tip from, are not followed.
+pub(crate) fn project_down(
+    triangles: &[edge_mesh::Triangle],
+    planes: &[f64],
+) -> Result<Vec<Vec<edge_geom::ExPolygon>>, edge_clip::ClipError> {
+    use edge_geom::{Point2, Polygon};
+    let mut by_layer: Vec<Vec<Polygon>> = vec![Vec::new(); planes.len()];
+    for triangle in triangles {
+        let [a, b, c] = triangle.map(|corner| corner.map(f64::from));
+        let normal_z = (b[0] - a[0]) * (c[1] - a[1]) - (b[1] - a[1]) * (c[0] - a[0]);
+        if normal_z >= 0.0 {
+            continue;
+        }
+        let low = a[2].min(b[2]).min(c[2]);
+        let high = a[2].max(b[2]).max(c[2]);
+        let first = planes.partition_point(|plane| *plane < low);
+        for index in first..planes.len() {
+            let floor = if index == 0 {
+                f64::NEG_INFINITY
+            } else {
+                planes[index - 1]
+            };
+            if floor > high {
+                break;
+            }
+            // The triangle cut to floor < z <= plane.
+            let mut piece = vec![a, b, c];
+            for (level, keep_above) in [(floor, true), (planes[index], false)] {
+                if !level.is_finite() {
+                    continue;
+                }
+                let inside = |p: &[f64; 3]| {
+                    if keep_above {
+                        p[2] >= level
+                    } else {
+                        p[2] <= level
+                    }
+                };
+                let mut cut = Vec::with_capacity(piece.len() + 1);
+                for at in 0..piece.len() {
+                    let (p, q) = (piece[at], piece[(at + 1) % piece.len()]);
+                    if inside(&p) {
+                        cut.push(p);
+                    }
+                    if inside(&p) != inside(&q) {
+                        let t = (level - p[2]) / (q[2] - p[2]);
+                        cut.push([p[0] + t * (q[0] - p[0]), p[1] + t * (q[1] - p[1]), level]);
+                    }
+                }
+                piece = cut;
+                if piece.len() < 3 {
+                    break;
+                }
+            }
+            if piece.len() < 3 {
+                continue;
+            }
+            // Facing down, it runs clockwise seen from above.
+            let mut points: Vec<Point2> =
+                piece.iter().map(|p| Point2::from_mm(p[0], p[1])).collect();
+            points.reverse();
+            by_layer[index].push(Polygon { points });
+        }
+    }
+    by_layer
+        .into_iter()
+        .map(|polygons| {
+            if polygons.is_empty() {
+                Ok(Vec::new())
+            } else {
+                edge_clip::union(&polygons)
+            }
+        })
+        .collect()
+}
+
+/// Where supports are asked for and kept off on every layer: each
+/// object's support enforcers and blockers cut at the layer
+/// (PrintObjectSlice.cpp `slice_support_volumes`), an enforcer only where
+/// it lies over its own object, and what is painted under its parts.
+pub(crate) fn support_annotations(
+    own: &[crate::OwnObject],
+    bodies: &[edge_3mf::Body],
+    planes: &[f64],
+    closing_radius: i64,
+) -> Result<edge_support::Annotations, crate::Failure> {
+    use crate::PartKind;
+    use rayon::prelude::*;
+    let mut annotations = edge_support::Annotations {
+        enforcers: vec![Vec::new(); planes.len()],
+        blockers: vec![Vec::new(); planes.len()],
+        blocking_volumes: vec![Vec::new(); planes.len()],
+    };
+    for (at, object) in own.iter().enumerate() {
+        let volumes: Vec<&crate::OwnVolume> = (object.volumes.iter())
+            .filter(|volume| {
+                matches!(
+                    volume.kind,
+                    PartKind::SupportEnforcer | PartKind::SupportBlocker
+                )
+            })
+            .collect();
+        if !volumes.is_empty() {
+            let parts: Vec<edge_slice::Body<'_>> = (bodies.iter())
+                .filter(|body| body.part.is_some_and(|(of, _)| of == at))
+                .map(|body| edge_slice::Body {
+                    solid: &body.solid,
+                    negative: body.negative.as_ref(),
+                    filament: 1,
+                })
+                .collect();
+            let outline = edge_slice::slice_regions(&parts, planes, closing_radius)?;
+            for volume in volumes {
+                let cut: Vec<Vec<edge_geom::ExPolygon>> = edge_slice::slice(&volume.mesh, planes)
+                    .into_par_iter()
+                    .zip(&outline)
+                    .map(|(layer, outline)| {
+                        if layer.polygons.is_empty() {
+                            return Ok(Vec::new());
+                        }
+                        let cut = edge_clip::union(&layer.polygons)?;
+                        // A blocker is taken whole: tree branches keep out
+                        // of all of it. An enforcer asks for supports under
+                        // its own object alone (`intersection(layer.lslices,
+                        // enforcers)`).
+                        if volume.kind == PartKind::SupportBlocker {
+                            Ok(cut)
+                        } else {
+                            edge_clip::intersection(&cut, &outline.regions)
+                        }
+                    })
+                    .collect::<Result<_, edge_clip::ClipError>>()?;
+                if volume.kind == PartKind::SupportEnforcer {
+                    for (layer, areas) in annotations.enforcers.iter_mut().zip(cut) {
+                        layer.extend(areas);
+                    }
+                } else {
+                    for ((layer, volumes), areas) in (annotations.blockers.iter_mut())
+                        .zip(annotations.blocking_volumes.iter_mut())
+                        .zip(cut)
+                    {
+                        volumes.extend(areas.iter().cloned());
+                        layer.extend(areas);
+                    }
+                }
+            }
+        }
+        for (kind, into) in [
+            (edge_3mf::SeamPaint::Enforcer, &mut annotations.enforcers),
+            (edge_3mf::SeamPaint::Blocker, &mut annotations.blockers),
+        ] {
+            let painted: Vec<edge_mesh::Triangle> = (object.support_paint.iter())
+                .filter(|(_, of)| *of == kind)
+                .map(|(triangle, _)| *triangle)
+                .collect();
+            if painted.is_empty() {
+                continue;
+            }
+            for (layer, areas) in into.iter_mut().zip(project_down(&painted, planes)?) {
+                layer.extend(areas);
+            }
+        }
+    }
+    Ok(annotations)
+}
+
 #[cfg(test)]
 pub(crate) mod tests {
     use super::*;
@@ -1207,13 +1381,13 @@ pub(crate) mod tests {
             settings: None,
             unread_paint: Vec::new(),
             precise_seams: false,
-            unfollowed_parts: Vec::new(),
             own: vec![OwnObject {
                 object: 1,
                 name: "second".into(),
                 settings: pairs(object),
                 volumes,
                 ranges,
+                support_paint: Vec::new(),
             }],
             objects: vec![cube(0.0), cube(15.0)],
             negatives: vec![Mesh::default(), Mesh::default()],
@@ -1418,6 +1592,45 @@ pub(crate) mod tests {
                 .any(|gap| gap.starts_with("layer_height: set on height range 4-6 mm")),
             "{gaps:?}"
         );
+    }
+
+    #[test]
+    fn what_is_painted_underneath_is_laid_on_the_layers_it_hangs_over() {
+        // A square face 1 mm up, facing down; and one facing up.
+        let down: Vec<edge_mesh::Triangle> = vec![
+            [[0.0, 0.0, 1.0], [0.0, 2.0, 1.0], [2.0, 2.0, 1.0]],
+            [[0.0, 0.0, 1.0], [2.0, 2.0, 1.0], [2.0, 0.0, 1.0]],
+        ];
+        let up: Vec<edge_mesh::Triangle> = down.iter().map(|[a, b, c]| [*a, *c, *b]).collect();
+        let planes = [0.1, 0.3, 0.5, 0.7, 0.9, 1.1, 1.3];
+        let laid = project_down(&down, &planes).unwrap();
+        let area = |layer: &[edge_geom::ExPolygon]| -> f64 {
+            layer.iter().map(edge_geom::ExPolygon::area_mm2).sum()
+        };
+        for (index, layer) in laid.iter().enumerate() {
+            let expected = if index == 5 { 4.0 } else { 0.0 };
+            assert!(
+                (area(layer) - expected).abs() < 1e-6,
+                "{index}: {}",
+                area(layer)
+            );
+        }
+        assert!(
+            project_down(&up, &planes)
+                .unwrap()
+                .iter()
+                .all(Vec::is_empty)
+        );
+        // A face leaning out as it goes down is laid out in strips, one
+        // a layer, each as wide as the face is in the layer's slab.
+        let leaning: Vec<edge_mesh::Triangle> = vec![
+            [[0.0, 0.0, 0.0], [1.0, 2.0, 1.0], [1.0, 0.0, 1.0]],
+            [[0.0, 0.0, 0.0], [0.0, 2.0, 0.0], [1.0, 2.0, 1.0]],
+        ];
+        let laid = project_down(&leaning, &planes).unwrap();
+        assert!((area(&laid[1]) - 0.4).abs() < 1e-6, "{}", area(&laid[1]));
+        let all: f64 = laid.iter().map(|layer| area(layer)).sum();
+        assert!((all - 2.0).abs() < 1e-6, "{all}");
     }
 
     #[test]
