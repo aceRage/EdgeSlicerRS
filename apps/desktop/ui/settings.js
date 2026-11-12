@@ -107,6 +107,8 @@ function translatedBook(data) {
   }
   for (const page of data.pages) {
     for (const group of page.groups) {
+      // The message id stays as the group's own name, which its folding is kept by.
+      group.id = group.title;
       if (group.title) group.title = t(group.title);
       for (const line of group.lines) {
         if (line.label) line.label = t(line.label);
@@ -136,14 +138,15 @@ function bookPages(book) {
   if (!data) return [];
   if (book.kind === 'item') return itemBookPages(book);
   const answer = book.answer;
-  if (!answer || !answer.pages) return data.pages.map((page) => ({ title: page.title, groups: page.groups, extruder: null }));
+  if (!answer || !answer.pages) return data.pages.map((page) => ({ title: page.title, id: page.title, groups: page.groups, extruder: null }));
   const away = new Set(answer.away || []);
   return answer.pages.filter((title) => !away.has(title)).map((title) => {
     const own = data.pages.find((page) => page.title === title);
-    if (own) return { title, groups: own.groups, extruder: null };
+    if (own) return { title, id: title, groups: own.groups, extruder: null };
     const template = data.pages.find((page) => page.per === 'extruder' && new RegExp(`^${page.title.replace('%d', '(\\d+)')}$`).test(title));
     const number = Number(new RegExp(template.title.replace('%d', '(\\d+)')).exec(title)[1]);
-    return { title, groups: template.groups, extruder: number - 1 };
+    // Every extruder's page folds its groups alike: kept by "Extruder %d".
+    return { title, id: template.title, groups: template.groups, extruder: number - 1 };
   });
 }
 
@@ -400,13 +403,83 @@ function showSettingsRow(book, name, { force = false, row: given = null } = {}) 
 
 // ---- a page ----
 
+// ---- groups that fold ----
+
+// Each titled group of options folds from its title (the owner's choice;
+// the reference's do not). Kept by the session (`layout_set`, with the
+// sidebar's width) for each kind, page and group by their message ids, so
+// the process's, a filament's, the printer's and an item's pages each
+// have their own and a change of language changes nothing; a group never
+// folded or unfolded by hand is as `folded_at_first` has it (the rarely
+// touched: src/api/layout.rs). A group searched for and gone to is opened
+// for the while (`book.peek`) and put back as it was once the search is
+// used again or another page is opened.
+const groupFolds = { kept: new Map(), first: new Set() };
+const foldKey = (kind, page, group) => `${kind}\u0001${page}\u0001${group}`;
+let groupSerial = 0;
+
+function takeFolds(layout) {
+  if (!layout) return;
+  groupFolds.kept = new Map((layout.groups || []).map((each) => [foldKey(each.kind, each.page, each.group), each.open]));
+  groupFolds.first = new Set((layout.folded_at_first || []).map((each) => foldKey(each.kind, each.page, each.group)));
+}
+takeFolds(I18n.layout);
+
+function groupOpen(book, group) {
+  if (book.peek === group.key) return true;
+  const kept = groupFolds.kept.get(group.key);
+  return kept !== undefined ? kept : !groupFolds.first.has(group.key);
+}
+
+// Folds or unfolds groups of the page shown, keeping it.
+async function foldGroups(book, groups, open) {
+  if (!groups.length) return;
+  for (const group of groups) {
+    groupFolds.kept.set(group.key, open);
+    if (book.peek === group.key) book.peek = null;
+  }
+  showSettingsPage(book);
+  const answer = await attempt(() => call('layout_set', { groups: groups.map((group) => ({ ...group.named, open })) }));
+  if (answer) takeFolds(answer);
+}
+
+// The titled groups of the page shown that are in sight.
+const shownGroups = (book) => {
+  const built = book.built.get(book.page);
+  return built ? built.groups.filter((group) => group.fold && !group.head.hidden) : [];
+};
+
+// What a group's title shows: whether it is open, and how many of its
+// settings are set by hand, open or folded, so nothing set is hidden.
+function showGroupHead(book, group) {
+  if (!group.fold) return;
+  const open = groupOpen(book, group);
+  group.fold.setAttribute('aria-expanded', String(open));
+  group.head.classList.toggle('folded', !open);
+  group.body.classList.toggle('folded', !open);
+  const set = book.answer ? group.lines.reduce((sum, line) => sum + line.rows.filter((row) => Object.prototype.hasOwnProperty.call(book.answer.set, row.key)).length, 0) : 0;
+  group.count.hidden = set === 0;
+  group.count.textContent = String(set);
+  group.count.title = set === 1 ? '1 setting changed' : `${set} settings changed`;
+}
+
 // A page's groups and rows, built when the page is first opened.
 function buildSettingsPage(book, page) {
   const options = book.data.options;
   const node = el('div', { className: 'process-page' });
   const groups = page.groups.map((group) => {
-    const head = el('h3', { textContent: group.title });
-    const body = el('div', { className: 'opt-group' });
+    const body = el('div', { className: 'opt-group', id: `${book.prefix}-group-${groupSerial += 1}` });
+    const head = el('h3');
+    const named = { kind: book.kind, page: page.id || page.title, group: group.id };
+    let fold = null;
+    let count = null;
+    if (group.title) {
+      fold = el('button', { type: 'button', className: 'group-fold', textContent: group.title, title: t('Click to collapse / expand') });
+      fold.setAttribute('aria-expanded', 'true');
+      fold.setAttribute('aria-controls', body.id);
+      count = el('span', { className: 'group-count', hidden: true });
+      head.append(fold, count);
+    }
     const lines = group.lines.map((line) => {
       const rows = line.keys.map((key) => {
         const option = options[key];
@@ -428,7 +501,9 @@ function buildSettingsPage(book, page) {
       return { node: box, rows, title, label: line.label, first: line.keys[0] };
     });
     node.append(head, body);
-    return { head, body, lines };
+    const built = { head, body, lines, fold, count, named, key: foldKey(named.kind, named.page, named.group) };
+    if (fold) fold.addEventListener('click', () => foldGroups(book, [built], !groupOpen(book, built)));
+    return built;
   });
   return { node, groups };
 }
@@ -469,6 +544,7 @@ function showSettingsPage(book) {
     }
     group.head.hidden = !any;
     group.body.hidden = !any;
+    showGroupHead(book, group);
   }
   $(`${prefix}-none`).hidden = shown !== 0;
   // Put in only when it is another page's turn: taking a page out and in
@@ -491,18 +567,64 @@ function showSettingsPage(book) {
     tab.addEventListener('click', () => openSettingsPage(book, each.title));
     return tab;
   }));
+  layPageTabs($(`${prefix}-tabs`));
   $(`${prefix}-reset`).hidden = answer.changed === 0;
   const refused = $(`${prefix}-refused`);
   refused.hidden = !answer.refused;
   refused.textContent = answer.refused ? `The engine will not slice with these settings: ${answer.refused}` : '';
 }
 
+// The pages' tabs on as few rows as hold them (the owner's choice; they
+// were one row that scrolled): one row where they fit, else two, and so
+// on, the tabs kept in their order and shared out between the rows as
+// evenly as they can be (the widest row as narrow as it can be: six on
+// two rows are three and three where that fits), each row filled to the
+// track's width. A row of tabs is measured as the open one is drawn (in
+// bold), so that opening another moves none to another row.
+function layPageTabs(row) {
+  for (const old of row.querySelectorAll('.tab-break')) old.remove();
+  const tabs = [...row.children].filter((each) => each.getAttribute('role') === 'tab');
+  const style = getComputedStyle(row);
+  const room = row.clientWidth - parseFloat(style.paddingLeft) - parseFloat(style.paddingRight);
+  if (tabs.length < 2 || room <= 0) return;
+  row.classList.add('measuring');
+  const widths = tabs.map((tab) => tab.getBoundingClientRect().width);
+  row.classList.remove('measuring');
+  const gap = parseFloat(style.columnGap) || 0;
+  const span = (from, to) => widths.slice(from, to).reduce((sum, width) => sum + width, 0) + gap * (to - from - 1);
+  const count = tabs.length;
+  // widest[k][i]: the narrowest the widest row can be with the first i
+  // tabs on k rows; cut[k][i]: where its last row starts.
+  const widest = [Array.from({ length: count + 1 }, (_, i) => (i === 0 ? 0 : Infinity))];
+  const cut = [[]];
+  for (let rows = 1; rows <= count; rows += 1) {
+    widest.push(Array(count + 1).fill(Infinity));
+    cut.push(Array(count + 1).fill(0));
+    for (let i = 1; i <= count; i += 1) {
+      for (let from = rows - 1; from < i; from += 1) {
+        const worst = Math.max(widest[rows - 1][from], span(from, i));
+        if (worst < widest[rows][i]) { widest[rows][i] = worst; cut[rows][i] = from; }
+      }
+    }
+    if (widest[rows][count] > room + 0.5 && rows < count) continue;
+    const starts = [];
+    for (let k = rows, i = count; k > 1; k -= 1) { i = cut[k][i]; starts.push(i); }
+    for (const at of starts) {
+      const mark = el('span', { className: 'tab-break' });
+      mark.setAttribute('aria-hidden', 'true');
+      tabs[at].before(mark);
+    }
+    return;
+  }
+}
+
 function openSettingsPage(book, title, { focus = false } = {}) {
+  if (title !== book.page) book.peek = null;
   book.page = title;
   if (state.project) kept(state.project.id)[`${book.kind}Page`] = title;
   showSettingsPage(book);
   if (focus) {
-    const tab = [...$(`${book.prefix}-tabs`).children].find((each) => each.dataset.page === title);
+    const tab = [...$(`${book.prefix}-tabs`).querySelectorAll('[role="tab"]')].find((each) => each.dataset.page === title);
     if (tab) tab.focus();
   }
 }
@@ -648,6 +770,12 @@ function jumpToSetting(book, hit) {
   openSettingsPage(book, hit.page);
   const row = book.rows.get(hit.key);
   if (!row) return;
+  // Its group opened for the while, if it is folded.
+  const group = (book.built.get(book.page) || { groups: [] }).groups.find((each) => each.lines.some((line) => line.rows.includes(row)));
+  if (group && group.fold && !groupOpen(book, group)) {
+    book.peek = group.key;
+    showSettingsPage(book);
+  }
   // An option the rules hide has no row to show: its group is gone to.
   const target = row.node.hidden ? row.node.closest('.opt-group') : row.node;
   const shownTarget = target && !target.hidden ? target : $(`${book.prefix}-page`);
@@ -751,13 +879,20 @@ function wireSettings(book) {
   const prefix = book.prefix;
   const search = $(`${prefix}-search`);
   const current = () => (prefix === 'preset' ? presetPanel.book : (book === processPages ? processBook() : book));
-  search.addEventListener('input', () => { const each = current(); if (!each) return; each.at = 0; showSettingsSearch(each); });
+  // A group opened by the last search is put back as it was.
+  const unpeek = (each) => {
+    if (!each.peek) return;
+    each.peek = null;
+    showSettingsPage(each);
+  };
+  search.addEventListener('input', () => { const each = current(); if (!each) return; each.at = 0; unpeek(each); showSettingsSearch(each); });
   search.addEventListener('keydown', (event) => {
     const each = current();
     if (!each) return;
     const found = each.found;
     if (event.key === 'Escape' && search.value) {
       search.value = '';
+      unpeek(each);
       showSettingsSearch(each);
       event.preventDefault();
       event.stopPropagation();
@@ -777,7 +912,8 @@ function wireSettings(book) {
   $(`${prefix}-tabs`).addEventListener('keydown', (event) => {
     const each = current();
     if (!each) return;
-    const pages = [...$(`${prefix}-tabs`).children].map((tab) => tab.dataset.page);
+    // In reading order, across the rows.
+    const pages = [...$(`${prefix}-tabs`).querySelectorAll('[role="tab"]')].map((tab) => tab.dataset.page);
     const at = pages.indexOf(each.page);
     let to = -1;
     if (event.key === 'ArrowRight') to = (at + 1) % pages.length;
@@ -788,6 +924,9 @@ function wireSettings(book) {
     event.preventDefault();
     openSettingsPage(each, pages[to], { focus: true });
   });
+  // "Expand all" / "Collapse all": the groups of the page shown.
+  $(`${prefix}-expand`).addEventListener('click', () => { const each = current(); if (each) foldGroups(each, shownGroups(each), true); });
+  $(`${prefix}-collapse`).addEventListener('click', () => { const each = current(); if (each) foldGroups(each, shownGroups(each), false); });
   $(`${prefix}-reset`).addEventListener('click', () => attempt(async () => {
     const each = current();
     if (!each) return;

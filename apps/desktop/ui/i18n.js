@@ -38,7 +38,7 @@ const I18n = (() => {
 
   function take(answer) {
     table = answer.table;
-    current = { language: answer.language, languages: answer.languages };
+    current = { language: answer.language, languages: answer.languages, search: answer.search };
     // The page's own language, for the system's choice of fonts (CJK)
     // and of hyphenation.
     const tag = answer.language.replace('_', '-');
@@ -77,6 +77,18 @@ const I18n = (() => {
     }
   }
 
+  // The settings pages' search fields (`data-search-words`): "Search for
+  // setting" in English, the catalog's words for "Search in preset"
+  // elsewhere, as the session picks them (`search_words`, src/api/i18n.rs).
+  // A change of language loads the page again, which puts them in anew.
+  const searchWords = () => current.search || 'Search for setting';
+  function wordSearches(root = document.body) {
+    for (const field of root.querySelectorAll('[data-search-words]')) {
+      field.placeholder = searchWords();
+      field.setAttribute('aria-label', searchWords());
+    }
+  }
+
   const SCRIPTS = [
     'gl/math.js', 'gl/camera.js', 'gl/shaders.js', 'gl/renderer.js', 'gl/scene.js',
     'gl/toolpath.js', 'gl/controls.js', 'gl/gcode.js', 'gl/stage.js',
@@ -98,12 +110,24 @@ const I18n = (() => {
     }
   }
 
+  // The page's layout as it was left (`layout`, src/api/layout.rs): asked
+  // for beside the words, and the sidebar's width put on the page before
+  // it is first shown, so it does not jump once app.js has run.
+  let layout = null;
+  function takeLayout() {
+    const plater = document.getElementById('plater');
+    if (!layout || !plater || layout.sidebar_width === null) return;
+    plater.classList.add('side-sized');
+    plater.style.setProperty('--side-width', `${layout.sidebar_width}px`);
+  }
+
   async function start() {
     // Nothing is shown until it is in the language (style.css).
     document.documentElement.classList.add('words-wait');
     const parsed = document.readyState === 'loading'
       ? new Promise((done) => document.addEventListener('DOMContentLoaded', done, { once: true }))
       : null;
+    const laidOut = ask('layout', {}).then((answer) => { layout = answer; }, (error) => console.error(error));
     try {
       // The system's languages, the first of which is the system's; the
       // session chooses from it at the first run and keeps the choice.
@@ -113,7 +137,10 @@ const I18n = (() => {
       console.error(error);
     }
     await parsed;
+    await laidOut;
+    takeLayout();
     translatePage();
+    wordSearches();
     document.documentElement.classList.remove('words-wait');
     loadScripts();
   }
@@ -131,6 +158,8 @@ const I18n = (() => {
     get table() { return table; },
     get language() { return current.language; },
     get languages() { return current.languages; },
+    get layout() { return layout; },
+    searchWords,
     translatePage,
     choose,
     start,
