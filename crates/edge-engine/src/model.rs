@@ -38,6 +38,10 @@ use edge_mesh::{Transform, hull::Hull};
 mod save;
 pub use save::{Changed, Saved, Saving, own_settings, project_settings};
 
+#[path = "plates.rs"]
+mod plates;
+pub use plates::{FIRST_LATER_LAYER, LAST_LAYER, LONGEST_PLATE_NAME, LayerSequence, PlateSettings};
+
 use crate::{
     Failure, Loaded, PlateInfo,
     lay_on_face::{self, Face, Filter},
@@ -412,6 +416,9 @@ pub struct PlateStamp {
     /// Where the plate is among the others, and its first layer's order.
     index: usize,
     first_layer_sequence: Vec<u32>,
+    /// What else it sets for itself (its bed type, print sequence, vase
+    /// mode, later layers' order), as a slice reads it.
+    own: Vec<(&'static str, String)>,
     origin: Option<[u64; 2]>,
     /// Each printable copy on it: its shape and where it stands.
     copies: Vec<(u64, [u64; 12])>,
@@ -613,6 +620,7 @@ impl Model {
                 PlateStamp {
                     index,
                     first_layer_sequence: plate.first_layer_sequence.clone(),
+                    own: load::plate_config(plate.kept.as_deref()),
                     origin: plate.origin.map(|(x, y)| [x.to_bits(), y.to_bits()]),
                     copies: plate
                         .order
@@ -2057,7 +2065,25 @@ impl Model {
     /// This is not the reference's arrangement (libslic3r/Arrange, which
     /// nests the outlines of the objects and may turn them); it is a plain
     /// one by the boxes round the copies.
+    ///
+    /// A locked plate is left as it is, as the reference leaves it
+    /// (ArrangeJob.cpp: `preprocess_arrange_polygon` makes what stands on
+    /// it a fixed item); arranging it alone is refused in the reference's
+    /// words (`prepare_partplate`). So are the plates in `leave`.
     pub fn arrange(&mut self, bed: Option<&Bed>, plate: Option<u32>) -> Result<usize, Failure> {
+        self.arrange_leaving(bed, plate, &[])
+    }
+
+    /// [`Model::arrange`], leaving the plates in `leave` as they are too:
+    /// the reference leaves a plate whose own print sequence is not the
+    /// project's alone while it arranges every plate (ArrangeJob.cpp
+    /// `prepare_all`, `m_uncompatible_plates`).
+    pub fn arrange_leaving(
+        &mut self,
+        bed: Option<&Bed>,
+        plate: Option<u32>,
+        leave: &[u32],
+    ) -> Result<usize, Failure> {
         let bed =
             bed.ok_or_else(|| refused("no printer is chosen: there is no bed to arrange on"))?;
         let only = match plate {
@@ -2067,11 +2093,22 @@ impl Model {
             ),
             None => None,
         };
+        if let Some(only) = only
+            && self.plates[only].locked()
+        {
+            return Err(refused(
+                "This plate is locked.\nCannot auto-arrange on this plate.",
+            ));
+        }
         self.settle(Some(bed));
         let (width, depth) = (bed.max[0] - bed.min[0], bed.max[1] - bed.min[1]);
         let mut left_out = 0;
         for plate in 0..self.plates.len() {
             if only.is_some_and(|only| only != plate) {
+                continue;
+            }
+            let held = &self.plates[plate];
+            if only.is_none() && (held.locked() || leave.contains(&held.id)) {
                 continue;
             }
             // The copies with the ground each takes, the deepest first; as
