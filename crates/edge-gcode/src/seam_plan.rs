@@ -56,6 +56,7 @@
 use std::{
     collections::HashMap,
     ops::{Not, Range},
+    time::{Duration, Instant},
 };
 
 use edge_extrusion::ExtrusionLoop;
@@ -81,6 +82,10 @@ pub struct SeamScene<'a> {
     /// the positions that line seams up by their score
     /// (`seam_prefer_part_joints`).
     pub part_joints: bool,
+    /// The objects measured ahead ([`measure_seams`]), with the setup
+    /// and the parts' joints as here; measured as the seams are planned
+    /// where there is none, or where it was for another setup.
+    pub measured: Option<&'a SeamMeasures>,
 }
 
 /// One object on the plate.
@@ -618,41 +623,34 @@ fn polygon_angles(points: &[(i64, i64)], lengths: &[f32], arm: f32) -> Vec<f32> 
 impl Plan {
     /// Settles the seams of `layers`, of which `groups` says which are
     /// at one height. `settings` has an entry for each filament.
+    #[cfg(test)]
     pub(crate) fn new(
         layers: &[Layer<'_>],
         groups: &[Range<usize>],
         settings: &[PrintSettings],
         scene: &SeamScene<'_>,
     ) -> Self {
+        Self::timed(layers, groups, settings, scene).0
+    }
+
+    /// [`Plan::new`], with how long measuring how visible the objects
+    /// are and finding where their parts meet took.
+    pub(crate) fn timed(
+        layers: &[Layer<'_>],
+        groups: &[Range<usize>],
+        settings: &[PrintSettings],
+        scene: &SeamScene<'_>,
+    ) -> (Self, (Duration, Duration)) {
         let setup = layers
             .first()
             .and_then(|layer| settings.get(layer.filament))
             .map_or(Seam::Aligned, |settings| settings.seam);
-        let mut frames: Vec<Frame> = (scene.objects.iter())
-            .map(|object| Frame {
-                min: object.min,
-                max: object.max,
-                centre: object.centre,
-            })
-            .collect();
-        if frames.is_empty() {
-            let corner = Point2 { x: 0, y: 0 };
-            frames.push(Frame {
-                min: corner,
-                max: corner,
-                centre: corner,
-            });
-        }
+        let frames = frames_of(scene);
         let outlines = if scene.outlines.len() == groups.len() {
             scene.outlines
         } else {
             &[]
         };
-        // How visible each object's surface is, for the setups that go
-        // by it: the reference measures it for the aligned ones and for
-        // the nearest corner (`init_object`); and where each object's
-        // parts meet, only with `seam_prefer_part_joints` and an aligned
-        // setup. The two are worked out side by side.
         // What of each object is painted to have seams or to keep them
         // off, at every position (`gather_enforcers_blockers`).
         let painted: Vec<[Option<Painted>; 2]> = (0..frames.len())
@@ -676,28 +674,18 @@ impl Plan {
                 })
             })
             .collect();
-        let (seen, joints): (Vec<Option<Visibility>>, Vec<Option<Joints>>) = rayon::join(
-            || {
-                (0..frames.len())
-                    .map(|object| {
-                        let mesh = scene.objects.get(object)?.mesh?;
-                        matches!(setup, Seam::Back | Seam::Random)
-                            .not()
-                            .then(|| visibility(&mesh, frames[object].centre, scene.floor, setup))
-                    })
-                    .collect()
-            },
-            || {
-                if scene.part_joints && aligned(setup) {
-                    (0..frames.len())
-                        .into_par_iter()
-                        .map(|object| part_joints_of(scene, object, frames[object].centre))
-                        .collect()
-                } else {
-                    vec![None; frames.len()]
-                }
-            },
-        );
+        // How visible each object's surface is and where its parts meet,
+        // as measured ahead where it was (`measure_seams`).
+        let fresh;
+        let measured = match scene.measured {
+            Some(measured) if measured.fits(scene, setup) => measured,
+            _ => {
+                fresh = measure_seams(scene, setup);
+                &fresh
+            }
+        };
+        let (seen, joints) = (&measured.seen, &measured.joints);
+        let (seen_time, joints_time) = (measured.visibility_time, measured.joints_time);
         let objects = &frames;
         // By layer, then by object.
         let gathered: Vec<Vec<(LayerSeams, Vec<usize>)>> = groups
@@ -712,8 +700,8 @@ impl Plan {
                     outlines.get(index).copied(),
                     setup,
                     &Known {
-                        seen: &seen,
-                        joints: &joints,
+                        seen,
+                        joints,
                         painted: &painted,
                     },
                 )
@@ -765,7 +753,7 @@ impl Plan {
                 }
             }
         }
-        plan
+        (plan, (seen_time, joints_time))
     }
 
     /// Where a wall of physical layer `layer` starts: an outermost wall
@@ -1107,6 +1095,95 @@ pub(crate) fn find_next_seam_in_layer(
     comparator
         .is_first_not_much_worse(&layer.points[best], own, width)
         .then_some(best)
+}
+
+/// The objects as seams are reckoned by: each one's bounds and middle;
+/// with none, everything is one object measured from the bed's corner.
+fn frames_of(scene: &SeamScene<'_>) -> Vec<Frame> {
+    let mut frames: Vec<Frame> = (scene.objects.iter())
+        .map(|object| Frame {
+            min: object.min,
+            max: object.max,
+            centre: object.centre,
+        })
+        .collect();
+    if frames.is_empty() {
+        let corner = Point2 { x: 0, y: 0 };
+        frames.push(Frame {
+            min: corner,
+            max: corner,
+            centre: corner,
+        });
+    }
+    frames
+}
+
+/// How visible each object's surface is and where its parts meet, which
+/// the seams of a setup go by: worked out from the meshes alone, so that
+/// it can be done before the layers are, beside slicing them.
+#[derive(Clone, Debug)]
+pub struct SeamMeasures {
+    setup: Seam,
+    part_joints: bool,
+    seen: Vec<Option<Visibility>>,
+    joints: Vec<Option<Joints>>,
+    visibility_time: Duration,
+    joints_time: Duration,
+}
+
+impl SeamMeasures {
+    /// Whether these were measured for `scene` (as far as can be told:
+    /// its objects are taken to be those measured) with `setup`.
+    fn fits(&self, scene: &SeamScene<'_>, setup: Seam) -> bool {
+        self.setup == setup
+            && self.part_joints == scene.part_joints
+            && self.seen.len() == frames_of(scene).len()
+    }
+}
+
+/// Measures the objects of `scene` for the seams of `setup`: how visible
+/// each one's surface is, for the setups that go by it (the reference
+/// measures it for the aligned ones and for the nearest corner,
+/// `init_object`); and where each object's parts meet, only with
+/// `seam_prefer_part_joints` and an aligned setup. The two are worked
+/// out side by side, and each object beside the others.
+pub fn measure_seams(scene: &SeamScene<'_>, setup: Seam) -> SeamMeasures {
+    let frames = frames_of(scene);
+    let ((seen, visibility_time), (joints, joints_time)) = rayon::join(
+        || {
+            let started = Instant::now();
+            let seen: Vec<Option<Visibility>> = (0..frames.len())
+                .into_par_iter()
+                .map(|object| {
+                    let mesh = scene.objects.get(object)?.mesh?;
+                    matches!(setup, Seam::Back | Seam::Random)
+                        .not()
+                        .then(|| visibility(&mesh, frames[object].centre, scene.floor, setup))
+                })
+                .collect();
+            (seen, started.elapsed())
+        },
+        || {
+            let started = Instant::now();
+            let joints: Vec<Option<Joints>> = if scene.part_joints && aligned(setup) {
+                (0..frames.len())
+                    .into_par_iter()
+                    .map(|object| part_joints_of(scene, object, frames[object].centre))
+                    .collect()
+            } else {
+                vec![None; frames.len()]
+            };
+            (joints, started.elapsed())
+        },
+    );
+    SeamMeasures {
+        setup,
+        part_joints: scene.part_joints,
+        seen,
+        joints,
+        visibility_time,
+        joints_time,
+    }
 }
 
 /// Where the parts of object `object` meet each other, or meet another

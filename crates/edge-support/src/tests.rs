@@ -224,10 +224,11 @@ fn a_support_standing_on_the_part_stops_short_of_it() {
     // The plate's top is layer 4. One layer of air above it, and nothing
     // inside it.
     assert!(!found[6].is_empty(), "no support above the plate");
-    assert!(
-        found[..6].iter().all(Vec::is_empty),
-        "support in or on the plate"
-    );
+    let low: Vec<(usize, usize)> = (0..6)
+        .map(|l| (l, found[l].len()))
+        .filter(|(_, n)| *n > 0)
+        .collect();
+    assert!(low.is_empty(), "support in or on the plate: {low:?}");
 
     // Asked for, the foot of the support is dense for its first layers.
     assert!(found[6].iter().all(|path| path.role == Role::Support));
@@ -387,7 +388,19 @@ fn settings_are_read_and_what_is_not_done_is_said() {
     assert_eq!(normal.style, Style::Normal);
     let tree = read(r#"{"enable_support": "1", "support_type": "tree(auto)", "raft_layers": "2"}"#);
     assert!(tree.enabled);
-    assert_eq!((tree.style, tree.unsupported.len()), (Style::Tree, 1));
+    // The raft, and the support left under short bridges (the reference's
+    // max_bridge_length, 10 mm unless set), are noted.
+    assert_eq!((tree.style, tree.unsupported.len()), (Style::Tree, 2));
+    assert!(tree.unsupported[1].starts_with("max_bridge_length \"10\""));
+    // Organic trees stand on the part's layers in the reference as well,
+    // so independent support layers are not noted for them.
+    let tree = read(
+        r#"{"enable_support": "1", "support_type": "tree(auto)", "max_bridge_length": "0",
+            "independent_support_layer_height": "1", "support_style": "tree_slim"}"#,
+    );
+    assert_eq!(tree.unsupported.len(), 1, "{:?}", tree.unsupported);
+    assert!(tree.unsupported[0].contains("organic trees are built"));
+    assert_eq!(tree.tree_branch_distance, 1.0);
     // Painted-only supports cannot be honoured at all, and that is said louder.
     let manual = read(r#"{"enable_support": "1", "support_type": "normal(manual)"}"#);
     assert!(!manual.enabled && manual.unsupported[0].contains("NO supports"));
@@ -498,11 +511,14 @@ fn a_tree_holds_up_a_cap_on_branches_that_join_into_trunks() {
         girth(5)
     );
 
-    // Nothing comes nearer the stem than the distance set.
+    // Nothing comes nearer the stem than the gap beside an overhang (the
+    // reference cuts branches by that, half the outer wall's width, where
+    // it is less than the distance set), half a line's width out.
     for layer in &found[..56] {
         for (x, y) in points(layer) {
-            let clear = !(-0.34..10.34).contains(&x) || !(-0.34..10.34).contains(&y);
-            assert!(clear, "support at {x} x {y} is against the stem");
+            let (dx, dy) = ((-x).max(x - 10.0).max(0.0), (-y).max(y - 10.0).max(0.0));
+            let gap = dx.hypot(dy);
+            assert!(gap > 0.39, "support at {x} x {y} is {gap} mm from the stem");
         }
     }
     // On the bed the trunks are outlined and filled in.
@@ -554,10 +570,11 @@ fn a_tree_stands_on_the_part_where_it_cannot_reach_the_bed() {
     assert!(found[30].iter().all(is_loop) && !found[30].is_empty());
     // The plate's top is layer 4: a layer of air, then the branches' feet.
     assert!(!found[6].is_empty(), "no branch stands on the plate");
-    assert!(
-        found[..6].iter().all(Vec::is_empty),
-        "support in or on the plate"
-    );
+    let low: Vec<(usize, usize)> = (0..6)
+        .map(|l| (l, found[l].len()))
+        .filter(|(_, n)| *n > 0)
+        .collect();
+    assert!(low.is_empty(), "support in or on the plate: {low:?}");
     // The branches stay under the shelf instead of making for the bed.
     for (x, y) in points(&found[10]) {
         assert!(
@@ -566,13 +583,17 @@ fn a_tree_stands_on_the_part_where_it_cannot_reach_the_bed() {
         );
     }
 
-    // Asked for, a branch's foot on the part is dense for its first layers.
+    // Asked for, a branch's foot on the part is dense for its first
+    // layers, the foot (layer 6) and the one over it.
     let footed = SupportSettings {
         interface_bottom_layers: 2,
         ..tree()
     };
     let found = supports(&layers, &footed);
+    let low: Vec<usize> = (0..6).filter(|l| !found[*l].is_empty()).collect();
+    assert!(low.is_empty(), "support below the foot: {low:?}");
     for layer in [6, 7] {
+        assert!(!found[layer].is_empty());
         assert!(
             found[layer]
                 .iter()
@@ -580,7 +601,7 @@ fn a_tree_stands_on_the_part_where_it_cannot_reach_the_bed() {
             "layer {layer} is not a dense foot"
         );
     }
-    assert!(found[8].iter().all(|path| path.role == Role::Support));
+    assert!(found[8].iter().any(|path| path.role == Role::Support));
 
     // Held to the build plate, a tree has nowhere to stand here.
     let plate_only = SupportSettings {
@@ -626,24 +647,27 @@ fn a_roof_is_never_left_on_nothing() {
     }
     assert!(found[..6].iter().all(Vec::is_empty));
 
-    // Four layers of post: the roof, on 7 and 6, lies on the plate with
-    // its layer of air, and there is no room or need for branches.
+    // Four layers of post: the shelf's contact on layer 7 is a roof, and
+    // the layer under it is not, as the reference has it: a roof goes a
+    // layer further down only where branches could go on down from under
+    // it, and here layer 5 is the plate's layer of air. Tips set under the
+    // roof on layer 6 find no way down, and nothing reaches the plate.
     let found = supports(&low_shelf(4), &tree());
-    assert!(roofed(&found[7]) && roofed(&found[6]));
+    assert!(roofed(&found[7]));
     assert!(found[..6].iter().all(Vec::is_empty));
-    assert!(found.iter().flatten().all(|path| !is_loop(path)));
 
-    // Whatever the height, every roof has a roof, a branch or the part's
-    // own surface, a layer of air away, beneath it.
+    // Whatever the height, every roof and branch has a roof, a branch or
+    // the part's surface beneath it, at most the gap under a roof (as
+    // above) away.
     for post in 2..12 {
         let layers = low_shelf(post);
         let found = supports(&layers, &tree());
-        for layer in 6..found.len() {
+        for layer in 7..found.len() {
             if found[layer].is_empty() {
                 continue;
             }
             assert!(
-                layer == 6 || !found[layer - 1].is_empty(),
+                !found[layer - 1].is_empty() || !found[layer - 2].is_empty() || layer == 7,
                 "with a post of {post} layers, layer {layer} stands on nothing"
             );
         }

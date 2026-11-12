@@ -1,8 +1,14 @@
-use edge_geom::{ExPolygon, Point2, Polygon};
+#[cfg(test)]
+use edge_geom::ExPolygon;
+use edge_geom::{Point2, Polygon};
 
 /// Whether the straight move from `a` to `b` stays within `areas`: it
 /// crosses none of their outlines and its midpoint is inside one of them.
 /// A move that only touches an outline counts as staying inside.
+///
+/// Every edge is tried: the writer asks `edge_avoid::Shelter`, which has
+/// the areas sorted into cells, and this is what it is checked against.
+#[cfg(test)]
 pub(crate) fn stays_inside(areas: &[ExPolygon], a: Point2, b: Point2) -> bool {
     let edges = || {
         areas.iter().flat_map(ExPolygon::rings).flat_map(|ring| {
@@ -56,6 +62,7 @@ pub(crate) fn within(outline: &Polygon, point: Point2) -> bool {
 }
 
 /// Whether segments `ab` and `cd` cross at a point interior to both.
+#[cfg(test)]
 fn crosses(a: Point2, b: Point2, c: Point2, d: Point2) -> bool {
     let side = |p: Point2, q: Point2, r: Point2| {
         let cross = i128::from(q.x - p.x) * i128::from(r.y - p.y)

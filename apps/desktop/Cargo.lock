@@ -1078,7 +1078,9 @@ dependencies = [
  "edge-extrusion",
  "edge-geom",
  "edge-infill",
+ "edge-mesh",
  "rayon",
+ "rustc-hash",
  "thiserror 2.0.21",
 ]
 

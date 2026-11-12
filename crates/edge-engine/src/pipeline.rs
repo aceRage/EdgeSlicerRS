@@ -1,5 +1,6 @@
 use std::{
     borrow::Cow,
+    sync::Arc,
     time::{Duration, Instant},
 };
 
@@ -22,11 +23,87 @@ use crate::{Failure, Job, Stage, Watcher, load::shift};
 /// How long each stage took.
 #[derive(Clone, Copy, Debug, Default)]
 pub struct Timings {
+    /// Every stage before the walls: cutting, paint and the compensations.
     pub slice: Duration,
+    /// Of `slice`, cutting the meshes into layers and making overhangs
+    /// printable; and sharing the layers out by painted colour.
+    pub cut: Duration,
+    pub paint: Duration,
     pub perimeters: Duration,
     pub supports: Duration,
     pub surfaces: Duration,
     pub fill: Duration,
+    /// Tool order, prime tower, skirt and brim.
+    pub around: Duration,
+    /// Waiting at the end for the seams' measure, made beside the rest.
+    pub seams_wait: Duration,
+}
+
+/// The objects on the plate as seams are placed by them: each one's
+/// bounds across the bed and their middle; its surface, with where in it
+/// the triangles of what is cut out of it start (a bare model's surface
+/// is its one body); its printed parts by themselves, for where they
+/// meet; and the height the print stands on.
+struct Seams {
+    frames: Vec<(Point2, Point2, Point2)>,
+    meshes: Vec<(Mesh, usize)>,
+    parts: Vec<edge_3mf::InstanceParts>,
+    bare: Option<Mesh>,
+    floor: f64,
+}
+
+impl Seams {
+    /// Hands `then` the scene the seams are placed in, with each
+    /// physical layer's outline and what was measured of the objects.
+    fn scene<R>(
+        &self,
+        outlines: &[&[ExPolygon]],
+        part_joints: bool,
+        measured: Option<&edge_gcode::SeamMeasures>,
+        then: impl FnOnce(&edge_gcode::SeamScene<'_>) -> R,
+    ) -> R {
+        let surface = |object: usize| -> Option<(&Mesh, usize)> {
+            match self.meshes.get(object) {
+                Some((mesh, cut_from)) => Some((mesh, *cut_from)),
+                None => self.bare.as_ref().map(|mesh| (mesh, mesh.triangles.len())),
+            }
+        };
+        // Each object's parts, for where they meet.
+        let parts: Vec<Vec<edge_gcode::SeamPart<'_>>> = (0..self.frames.len())
+            .map(|object| {
+                (self.parts.get(object).into_iter())
+                    .flat_map(|object| &object.parts)
+                    .map(|mesh| edge_gcode::SeamPart {
+                        vertices: &mesh.vertices,
+                        triangles: &mesh.triangles,
+                    })
+                    .collect()
+            })
+            .collect();
+        let objects: Vec<edge_gcode::SeamObject<'_>> = (self.frames.iter().enumerate())
+            .map(|(object, &(min, max, centre))| edge_gcode::SeamObject {
+                min,
+                max,
+                centre,
+                mesh: surface(object).map(|(mesh, negative_from)| edge_gcode::SeamMesh {
+                    vertices: &mesh.vertices,
+                    triangles: &mesh.triangles,
+                    negative_from,
+                }),
+                parts: &parts[object],
+                alone: self.parts.get(object).is_some_and(|object| object.alone),
+                enforcers: (self.parts.get(object)).map_or(&[], |object| &object.enforcers),
+                blockers: (self.parts.get(object)).map_or(&[], |object| &object.blockers),
+            })
+            .collect();
+        then(&edge_gcode::SeamScene {
+            outlines,
+            objects: &objects,
+            floor: self.floor,
+            part_joints,
+            measured,
+        })
+    }
 }
 
 /// One tool's turn on a layer.
@@ -76,11 +153,9 @@ pub struct Sliced {
     /// in it the triangles of what is cut out of it start (none for a
     /// bare model, whose surface is its one body's); and the height the
     /// print stands on.
-    seam_frames: Vec<(Point2, Point2, Point2)>,
-    seam_meshes: Vec<(Mesh, usize)>,
-    /// Each object's printed parts by themselves, for where they meet.
-    seam_parts: Vec<edge_3mf::InstanceParts>,
-    floor: f64,
+    seams: Arc<Seams>,
+    /// How visible each object's surface is and where its parts meet.
+    measured: Option<edge_gcode::SeamMeasures>,
     /// The filaments in use, by number from 1.
     pub used: Vec<usize>,
     /// Each filament's share of every layer; empty with one filament,
@@ -272,6 +347,8 @@ fn kept_inside(
 pub struct Gcode {
     pub text: Vec<u8>,
     pub summary: Summary,
+    /// How long each part of writing it took.
+    pub timings: edge_gcode::WriteTimings,
 }
 
 fn step(watch: &dyn Watcher, stage: Stage) -> Result<(), Failure> {
@@ -317,6 +394,98 @@ pub fn slice(job: Job, watch: &dyn Watcher) -> Result<Sliced, Failure> {
         shift(&mut bodies, x, y);
         centred = Some(((min_x + max_x) / 2.0, (min_y + max_y) / 2.0));
     }
+    // Laid out from the middle of what is being printed, where it stands
+    // now (a bare model has been moved to the middle of the bed).
+    let extent =
+        bodies
+            .iter()
+            .filter_map(|body| body.solid.bounds())
+            .reduce(|(lo, hi), (min, max)| {
+                (
+                    std::array::from_fn(|i| lo[i].min(min[i])),
+                    std::array::from_fn(|i| hi[i].max(max[i])),
+                )
+            });
+    let middle = extent.map_or(Point2::from_mm(0.0, 0.0), |(lo, hi)| {
+        Point2::from_mm(
+            f64::from(lo[0] + hi[0]) / 2.0,
+            f64::from(lo[1] + hi[1]) / 2.0,
+        )
+    });
+    // Each object's bounds across the bed and its middle, for laying its
+    // sparse pattern. A bare model is one object, with the one middle.
+    let middles: Vec<(Point2, Point2, Point2)> = objects
+        .iter()
+        .filter_map(Mesh::bounds)
+        .map(|(lo, hi)| {
+            (
+                Point2::from_mm(lo[0].into(), lo[1].into()),
+                Point2::from_mm(hi[0].into(), hi[1].into()),
+                Point2::from_mm(
+                    f64::from(lo[0] + hi[0]) / 2.0,
+                    f64::from(lo[1] + hi[1]) / 2.0,
+                ),
+            )
+        })
+        .collect();
+    // The same of each object for its seams, which the reference
+    // reckons from the middle of each object's bounds; a bare model is
+    // one object.
+    let seam_frames: Vec<(Point2, Point2, Point2)> = if middles.is_empty() {
+        let (lo, hi) = extent.unwrap_or((min, max));
+        vec![(
+            Point2::from_mm(lo[0].into(), lo[1].into()),
+            Point2::from_mm(hi[0].into(), hi[1].into()),
+            middle,
+        )]
+    } else {
+        middles.clone()
+    };
+    // Each object's whole surface, what is cut out of it last: what its
+    // seams are hidden by; a bare model is its one body.
+    let seam_meshes: Vec<(Mesh, usize)> = (objects.iter().enumerate())
+        .map(|(object, solid)| {
+            let mut solid = solid.clone();
+            let cut_from = solid.triangles.len();
+            if let Some(negative) = negatives.get(object) {
+                solid.append(negative, &edge_mesh::Transform::IDENTITY);
+            }
+            (solid, cut_from)
+        })
+        .collect();
+    let bare = (seam_meshes.is_empty() && bodies.len() == 1).then(|| bodies[0].solid.clone());
+    let seams = Arc::new(Seams {
+        frames: seam_frames,
+        meshes: seam_meshes,
+        parts: seam_parts,
+        bare,
+        floor: min[2].into(),
+    });
+    // How visible each object's surface is and where its parts meet go
+    // by the meshes alone: they are measured beside the slicing and
+    // waited for at the end. On one thread there is nothing beside it,
+    // and they are measured with the seams, as the G-code is written.
+    let (setup, part_joints) = (
+        print.seam,
+        settings.flag("seam_prefer_part_joints")?.unwrap_or(true),
+    );
+    let measuring = (rayon::current_num_threads() > 1).then(|| {
+        let seams = Arc::clone(&seams);
+        // On threads of its own, half as many as slicing has, so that
+        // neither waits on the other's work queued ahead of its own.
+        let threads = rayon::current_num_threads() / 2;
+        std::thread::spawn(move || {
+            let measure = || {
+                seams.scene(&[], part_joints, None, |scene| {
+                    edge_gcode::measure_seams(scene, setup)
+                })
+            };
+            match rayon::ThreadPoolBuilder::new().num_threads(threads).build() {
+                Ok(pool) => pool.install(measure),
+                Err(_) => measure(),
+            }
+        })
+    });
     let mut walls = WallSettings::from_settings(&settings)?;
     if let Some(count) = wall_loops {
         walls.wall_loops = count;
@@ -373,6 +542,8 @@ pub fn slice(job: Job, watch: &dyn Watcher) -> Result<Sliced, Failure> {
     // layers as cut; `crate::printable` has the rest.
     let mut printable = crate::printable::Printable::from_settings(&settings)?;
     quality_notes.extend(printable.apply(&mut layers, &heights, !painted.is_empty())?);
+    let cut_time = started.elapsed();
+    let painting = Instant::now();
 
     // Colours painted onto a part move what they cover from the filament
     // the part is made of to the one painted. Each painted object is
@@ -422,6 +593,8 @@ pub fn slice(job: Job, watch: &dyn Watcher) -> Result<Sliced, Failure> {
                 crate::paint::apply(layer, &painted, base)
             })?;
     }
+
+    let paint_time = painting.elapsed();
 
     // Outlines and holes are made larger or smaller by what the profile
     // sets, to make up for a printer that prints them off size
@@ -614,112 +787,70 @@ pub fn slice(job: Job, watch: &dyn Watcher) -> Result<Sliced, Failure> {
     // With each layer's walls, what of it is left to be bridged without
     // any: the roof of a hole that narrows from the layer below
     // (`counterbore_hole_bridging`), which `edge_perimeter`'s
-    // `counterbore` has the rest of.
-    let (mut walls_by, bored_by): (Vec<Vec<Perimeters>>, Vec<Vec<Vec<ExPolygon>>>) = (0..used
-        .len())
-        .map(|filament| {
-            (0..layers.len())
-                .into_par_iter()
-                .map(|index| {
-                    let height = heights.height_of(index);
-                    let mut params = walls
-                        .params_at(height, index, layers.len())
-                        .map_err(|e| e.to_string())?;
-                    if let Some(fuzzy) = &mut params.fuzzy {
-                        // The middle of the layer, where it was sliced;
-                        // with Z contouring, where that was instead.
-                        fuzzy.slice_z = match zaa.zaa {
-                            Some(_) => planes[index] - f64::from(min[2]),
-                            None => heights.top_of(index) - height / 2.0,
-                        };
-                    }
-                    // A top surface is told from the part as a whole, on
-                    // the layer above and the one below.
-                    let around = Some(edge_perimeter::Around {
-                        upper: outlines.get(index + 1).copied().unwrap_or(&[]),
-                        lower: index.checked_sub(1).map(|below| outlines[below]),
-                    });
-                    let regions = share(filament, index);
-                    let bores = match (&walls.counterbore, index.checked_sub(1)) {
-                        (Some(bore), Some(below)) => Some(
-                            edge_perimeter::split_counterbores(
-                                regions,
-                                outlines[below],
-                                &params,
-                                bore,
-                            )
-                            .map_err(|e| e.to_string())?,
-                        ),
-                        _ => None,
-                    };
-                    let (walled, bridged) = match bores {
-                        Some(split) => (Cow::Owned(split.walled), split.bridged),
-                        None => (Cow::Borrowed(regions), Vec::new()),
-                    };
-                    let mut made = edge_perimeter::classic_between(&walled, &params, around)
-                        .map_err(|e| e.to_string())?;
-                    // The walls round a compensated circle are told apart,
-                    // by the regions as they were cut.
-                    circle_marks
-                        .flag(filament, index, regions, &params, &mut made)
-                        .map_err(|e| e.to_string())?;
-                    Ok((made, bridged))
-                })
-                .collect::<Result<(Vec<Perimeters>, Vec<Vec<ExPolygon>>), String>>()
+    // `counterbore` has the rest of. Every filament's layers side by
+    // side: a plate of few layers and many filaments has too few layers
+    // alone to keep every thread busy.
+    let count = layers.len();
+    let walled: Vec<(Perimeters, Vec<ExPolygon>)> = (0..used.len() * count)
+        .into_par_iter()
+        .map(|at| {
+            let (filament, index) = (at / count, at % count);
+            let height = heights.height_of(index);
+            let mut params = walls
+                .params_at(height, index, layers.len())
+                .map_err(|e| e.to_string())?;
+            if let Some(fuzzy) = &mut params.fuzzy {
+                // The middle of the layer, where it was sliced;
+                // with Z contouring, where that was instead.
+                fuzzy.slice_z = match zaa.zaa {
+                    Some(_) => planes[index] - f64::from(min[2]),
+                    None => heights.top_of(index) - height / 2.0,
+                };
+            }
+            // A top surface is told from the part as a whole, on
+            // the layer above and the one below.
+            let around = Some(edge_perimeter::Around {
+                upper: outlines.get(index + 1).copied().unwrap_or(&[]),
+                lower: index.checked_sub(1).map(|below| outlines[below]),
+            });
+            let regions = share(filament, index);
+            let bores = match (&walls.counterbore, index.checked_sub(1)) {
+                (Some(bore), Some(below)) => Some(
+                    edge_perimeter::split_counterbores(regions, outlines[below], &params, bore)
+                        .map_err(|e| e.to_string())?,
+                ),
+                _ => None,
+            };
+            let (walled, bridged) = match bores {
+                Some(split) => (Cow::Owned(split.walled), split.bridged),
+                None => (Cow::Borrowed(regions), Vec::new()),
+            };
+            let mut made = edge_perimeter::classic_between(&walled, &params, around)
+                .map_err(|e| e.to_string())?;
+            // The walls round a compensated circle are told apart,
+            // by the regions as they were cut.
+            circle_marks
+                .flag(filament, index, regions, &params, &mut made)
+                .map_err(|e| e.to_string())?;
+            Ok((made, bridged))
         })
         .collect::<Result<_, String>>()?;
+    let (mut walls_by, mut bored_by): (Vec<Vec<Perimeters>>, Vec<Vec<Vec<ExPolygon>>>) = (
+        Vec::with_capacity(used.len()),
+        Vec::with_capacity(used.len()),
+    );
+    let mut walled = walled.into_iter();
+    for _ in 0..used.len() {
+        let (walls, bored): (Vec<Perimeters>, Vec<Vec<ExPolygon>>) =
+            walled.by_ref().take(count).unzip();
+        walls_by.push(walls);
+        bored_by.push(bored);
+    }
     let perimeter_time = started.elapsed();
 
     step(watch, Stage::Supports)?;
     let started = Instant::now();
     let support = SupportSettings::from_settings(&settings)?;
-    // Laid out from the middle of what is being printed, where it stands
-    // now (a bare model has been moved to the middle of the bed).
-    let extent =
-        bodies
-            .iter()
-            .filter_map(|body| body.solid.bounds())
-            .reduce(|(lo, hi), (min, max)| {
-                (
-                    std::array::from_fn(|i| lo[i].min(min[i])),
-                    std::array::from_fn(|i| hi[i].max(max[i])),
-                )
-            });
-    let middle = extent.map_or(Point2::from_mm(0.0, 0.0), |(lo, hi)| {
-        Point2::from_mm(
-            f64::from(lo[0] + hi[0]) / 2.0,
-            f64::from(lo[1] + hi[1]) / 2.0,
-        )
-    });
-    // Each object's bounds across the bed and its middle, for laying its
-    // sparse pattern. A bare model is one object, with the one middle.
-    let middles: Vec<(Point2, Point2, Point2)> = objects
-        .iter()
-        .filter_map(Mesh::bounds)
-        .map(|(lo, hi)| {
-            (
-                Point2::from_mm(lo[0].into(), lo[1].into()),
-                Point2::from_mm(hi[0].into(), hi[1].into()),
-                Point2::from_mm(
-                    f64::from(lo[0] + hi[0]) / 2.0,
-                    f64::from(lo[1] + hi[1]) / 2.0,
-                ),
-            )
-        })
-        .collect();
-    // The same of each object for its seams, which the reference
-    // reckons from the middle of each object's bounds; a bare model is
-    // one object.
-    let seam_frames: Vec<(Point2, Point2, Point2)> = if middles.is_empty() {
-        let (lo, hi) = extent.unwrap_or((min, max));
-        vec![(
-            Point2::from_mm(lo[0].into(), lo[1].into()),
-            Point2::from_mm(hi[0].into(), hi[1].into()),
-            middle,
-        )]
-    } else {
-        middles.clone()
-    };
     let mut supports = edge_support::generate(
         &outlines,
         middle,
@@ -764,48 +895,59 @@ pub fn slice(job: Job, watch: &dyn Watcher) -> Result<Sliced, Failure> {
     // A shell is as thick as `top_shell_thickness` and
     // `bottom_shell_thickness` ask, measured in the layers as they lie.
     let thick = heights.all();
-    for (filament, inside_walls) in inside_by.iter().enumerate() {
-        let slices: Vec<&[ExPolygon]> = (0..layers.len())
-            .map(|index| share(filament, index))
-            .collect();
-        // Each filament's pieces are kept apart, as the reference keeps
-        // its regions': a move from one into another is not sheltered.
-        for (all, own) in shelter.iter_mut().zip(edge_infill::internal(
-            &slices,
-            &outlines,
-            &infill.shells(layer_height)?,
-        )?) {
-            all.extend(own);
-        }
-        // Whatever the filament, a surface is a top or a bottom by what
-        // the whole part has above and below it.
-        let surfaces = edge_infill::classify(
-            &slices,
-            &outlines,
-            inside_walls,
-            &inside_all,
-            &thick,
-            &infill.shells(layer_height)?,
-        )?;
-        // Bridges, bottoms and tops reach into the fill beside them, and
-        // each bridge is turned to run from support to support.
-        let mut anchored = edge_infill::anchor(&surfaces, &infill.anchoring(layer_height)?)?;
-        // What the walls left to be bridged over a hole that narrows is
-        // a bridge as it stands, walls between it and the rest.
-        if let Some(bore) = &walls.counterbore {
-            let opening = infill.shells(layer_height)?.opening;
-            for (index, bridged) in bored_by[filament].iter().enumerate().skip(1) {
-                if !bridged.is_empty() {
-                    edge_infill::bridge_counterbores(
-                        &mut anchored[index],
-                        bridged,
-                        outlines[index - 1],
-                        opening,
-                        bore.fixed_angle,
-                        bore.added_angle,
-                    )?;
+    let shells = infill.shells(layer_height)?;
+    let anchoring = infill.anchoring(layer_height)?;
+    // Filament by filament side by side, each over its layers.
+    type Classified = (Vec<Vec<ExPolygon>>, Vec<Vec<Surface>>);
+    let classified: Vec<Classified> = inside_by
+        .par_iter()
+        .enumerate()
+        .map(|(filament, inside_walls)| -> Result<Classified, String> {
+            let slices: Vec<&[ExPolygon]> = (0..layers.len())
+                .map(|index| share(filament, index))
+                .collect();
+            let sheltered =
+                edge_infill::internal(&slices, &outlines, &shells).map_err(|e| e.to_string())?;
+            // Whatever the filament, a surface is a top or a bottom by
+            // what the whole part has above and below it.
+            let surfaces = edge_infill::classify(
+                &slices,
+                &outlines,
+                inside_walls,
+                &inside_all,
+                &thick,
+                &shells,
+            )
+            .map_err(|e| e.to_string())?;
+            // Bridges, bottoms and tops reach into the fill beside them,
+            // and each bridge is turned to run from support to support.
+            let mut anchored =
+                edge_infill::anchor(&surfaces, &anchoring).map_err(|e| e.to_string())?;
+            // What the walls left to be bridged over a hole that narrows
+            // is a bridge as it stands, walls between it and the rest.
+            if let Some(bore) = &walls.counterbore {
+                for (index, bridged) in bored_by[filament].iter().enumerate().skip(1) {
+                    if !bridged.is_empty() {
+                        edge_infill::bridge_counterbores(
+                            &mut anchored[index],
+                            bridged,
+                            outlines[index - 1],
+                            shells.opening,
+                            bore.fixed_angle,
+                            bore.added_angle,
+                        )
+                        .map_err(|e| e.to_string())?;
+                    }
                 }
             }
+            Ok((sheltered, anchored))
+        })
+        .collect::<Result<_, String>>()?;
+    for (sheltered, anchored) in classified {
+        // Each filament's pieces are kept apart, as the reference keeps
+        // its regions': a move from one into another is not sheltered.
+        for (all, own) in shelter.iter_mut().zip(sheltered) {
+            all.extend(own);
         }
         anchored_by.push(anchored);
     }
@@ -887,27 +1029,30 @@ pub fn slice(job: Job, watch: &dyn Watcher) -> Result<Sliced, Failure> {
         bridged_by
     };
     classify_time += classifying.elapsed();
+    // Every filament's layers side by side, as the walls are.
+    let count = layers.len();
+    let filled: Vec<Vec<ExtrusionPath>> = (0..bridged_by.len() * count)
+        .into_par_iter()
+        .map(|at| {
+            let (filament, index) = (at / count, at % count);
+            let params = params_of(index).map_err(|e| e.to_string())?;
+            edge_infill::fill_within(
+                &bridged_by[filament][index],
+                index,
+                &params,
+                &frame,
+                // What is inside this filament's walls on the layer,
+                // for the fill's own gap fill.
+                &walls_by[filament][index].infill_no_overlap,
+            )
+            .map_err(|e| e.to_string())
+        })
+        .collect::<Result<_, String>>()?;
+    let mut filled = filled.into_iter();
     for (surfaces, perimeters) in bridged_by.into_iter().zip(&walls_by) {
-        let fills = surfaces
-            .par_iter()
-            .enumerate()
-            .map(|(index, surfaces)| {
-                let params = params_of(index).map_err(|e| e.to_string())?;
-                edge_infill::fill_within(
-                    surfaces,
-                    index,
-                    &params,
-                    &frame,
-                    // What is inside this filament's walls on the layer,
-                    // for the fill's own gap fill.
-                    &perimeters[index].infill_no_overlap,
-                )
-                .map_err(|e| e.to_string())
-            })
-            .collect::<Result<Vec<Vec<ExtrusionPath>>, String>>()?;
+        let mut fills: Vec<Vec<ExtrusionPath>> = filled.by_ref().take(count).collect();
         // The lines that fill gaps between walls go with the fill, and
         // before it: the reference lays them with the walls.
-        let mut fills = fills;
         for (layer, walls) in fills.iter_mut().zip(perimeters) {
             layer.splice(0..0, walls.gap_fill.iter().cloned());
             // So do walls over fill that hangs over air; the writer
@@ -1027,6 +1172,7 @@ pub fn slice(job: Job, watch: &dyn Watcher) -> Result<Sliced, Failure> {
     let infill_time = started.elapsed();
 
     step(watch, Stage::Around)?;
+    let started = Instant::now();
     // Which filaments print on each layer, and in what order
     // (ToolOrdering.cpp). The first layer takes them by the size of
     // the smallest piece each prints, smaller first; every later layer
@@ -1168,25 +1314,29 @@ pub fn slice(job: Job, watch: &dyn Watcher) -> Result<Sliced, Failure> {
     } else {
         objects.iter().collect()
     };
-    let mut footprints: Vec<(Vec<ExPolygon>, f64)> = Vec::new();
-    if adhesion.brim != BrimKind::None {
+    let footprints: Vec<(Vec<ExPolygon>, f64)> = if adhesion.brim == BrimKind::None {
+        Vec::new()
+    } else {
         let alone = own.len() == 1 && bodies.iter().all(|body| body.negative.is_none());
-        for mesh in own {
-            let Some((low, high)) = mesh.bounds() else {
-                continue;
-            };
-            let body = [edge_slice::Body {
-                solid: mesh,
-                negative: None,
-                filament: 1,
-            }];
-            // The object's own first layer, grown as the plate's was
-            // where overhangs were made printable down to the bed.
-            let first =
-                printable.first_layer(&body, alone, &planes, scaled(closing_radius), &heights)?;
-            footprints.push((first, f64::from(high[2] - low[2])));
-        }
-    }
+        // Object by object side by side, kept in their order.
+        own.par_iter()
+            .filter_map(|mesh| {
+                let (low, high) = mesh.bounds()?;
+                let body = [edge_slice::Body {
+                    solid: mesh,
+                    negative: None,
+                    filament: 1,
+                }];
+                // The object's own first layer, grown as the plate's was
+                // where overhangs were made printable down to the bed.
+                Some(
+                    printable
+                        .first_layer(&body, alone, &planes, scaled(closing_radius), &heights)
+                        .map(|first| (first, f64::from(high[2] - low[2]))),
+                )
+            })
+            .collect::<Result<_, _>>()?
+    };
     let footings: Vec<Footing<'_>> = footprints
         .iter()
         .map(|(footprint, height)| Footing {
@@ -1292,17 +1442,14 @@ pub fn slice(job: Job, watch: &dyn Watcher) -> Result<Sliced, Failure> {
     )?;
     code_notes.extend(assign_notes);
 
-    // Each object's whole surface, what is cut out of it last: what its
-    // seams are hidden by.
-    let seam_meshes: Vec<(Mesh, usize)> = (objects.into_iter().enumerate())
-        .map(|(object, mut solid)| {
-            let cut_from = solid.triangles.len();
-            if let Some(negative) = negatives.get(object) {
-                solid.append(negative, &edge_mesh::Transform::IDENTITY);
-            }
-            (solid, cut_from)
-        })
-        .collect();
+    let around_time = started.elapsed();
+    let waiting = Instant::now();
+    let measured = measuring.map(|measuring| {
+        measuring
+            .join()
+            .unwrap_or_else(|panic| std::panic::resume_unwind(panic))
+    });
+    let seams_wait = waiting.elapsed();
     Ok(Sliced {
         bodies,
         bounds: (min, max),
@@ -1321,10 +1468,8 @@ pub fn slice(job: Job, watch: &dyn Watcher) -> Result<Sliced, Failure> {
         elephant_layers,
         layers,
         modelled,
-        seam_frames,
-        seam_meshes,
-        seam_parts,
-        floor: min[2].into(),
+        seams,
+        measured,
         used,
         shares,
         walls_by,
@@ -1345,10 +1490,14 @@ pub fn slice(job: Job, watch: &dyn Watcher) -> Result<Sliced, Failure> {
         remarks,
         timings: Timings {
             slice: slice_time,
+            cut: cut_time,
+            paint: paint_time,
             perimeters: perimeter_time,
             supports: support_time,
             surfaces: classify_time,
             fill: infill_time - classify_time,
+            around: around_time,
+            seams_wait,
         },
         codes,
         code_notes,
@@ -1594,52 +1743,6 @@ impl Sliced {
                 printed.push(outlines[turn.layer]);
             }
         }
-        let surface = |object: usize| -> Option<(&Mesh, usize)> {
-            match self.seam_meshes.get(object) {
-                Some((mesh, cut_from)) => Some((mesh, *cut_from)),
-                // A bare model is its one body.
-                None => (self.seam_meshes.is_empty() && self.bodies.len() == 1)
-                    .then(|| &self.bodies[0].solid)
-                    .map(|mesh| (mesh, mesh.triangles.len())),
-            }
-        };
-        // Each object's parts, for where they meet.
-        let parts: Vec<Vec<edge_gcode::SeamPart<'_>>> = (0..self.seam_frames.len())
-            .map(|object| {
-                (self.seam_parts.get(object).into_iter())
-                    .flat_map(|object| &object.parts)
-                    .map(|mesh| edge_gcode::SeamPart {
-                        vertices: &mesh.vertices,
-                        triangles: &mesh.triangles,
-                    })
-                    .collect()
-            })
-            .collect();
-        let seam_objects: Vec<edge_gcode::SeamObject<'_>> = (self.seam_frames.iter().enumerate())
-            .map(|(object, &(min, max, centre))| edge_gcode::SeamObject {
-                min,
-                max,
-                centre,
-                mesh: surface(object).map(|(mesh, negative_from)| edge_gcode::SeamMesh {
-                    vertices: &mesh.vertices,
-                    triangles: &mesh.triangles,
-                    negative_from,
-                }),
-                parts: &parts[object],
-                alone: self
-                    .seam_parts
-                    .get(object)
-                    .is_some_and(|object| object.alone),
-                enforcers: (self.seam_parts.get(object)).map_or(&[], |object| &object.enforcers),
-                blockers: (self.seam_parts.get(object)).map_or(&[], |object| &object.blockers),
-            })
-            .collect();
-        let scene = edge_gcode::SeamScene {
-            outlines: &printed,
-            objects: &seam_objects,
-            floor: self.floor,
-            part_joints: (self.settings.flag("seam_prefer_part_joints")?).unwrap_or(true),
-        };
         // Each entry's contoured lines, where there are any.
         let none = edge_contour::LayerProfiles::default();
         let profiles: Vec<&edge_contour::LayerProfiles> = (self.entries.iter())
@@ -1654,16 +1757,25 @@ impl Sliced {
             layers: &profiles,
             speed_scaling: self.contour_speed,
         };
-        let summary = edge_gcode::write_coded(
-            &mut text,
-            &plan,
-            &slices,
-            &scene,
-            &contours,
-            &self.codes,
-            &prints,
-        )?;
-        Ok(Gcode { text, summary })
+        let part_joints = (self.settings.flag("seam_prefer_part_joints")?).unwrap_or(true);
+        let (summary, timings) =
+            self.seams
+                .scene(&printed, part_joints, self.measured.as_ref(), |scene| {
+                    edge_gcode::write_timed(
+                        &mut text,
+                        &plan,
+                        &slices,
+                        scene,
+                        &contours,
+                        &self.codes,
+                        &prints,
+                    )
+                })?;
+        Ok(Gcode {
+            text,
+            summary,
+            timings,
+        })
     }
 }
 

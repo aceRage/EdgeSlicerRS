@@ -1,8 +1,10 @@
 //! Supports: scaffolding under whatever would otherwise be printed over air.
 //!
-//! Two styles, both first working versions of the reference's rather than
-//! ports of it: normal supports, here, and tree supports, in `tree.rs`.
-//! They share what decides whether a support works and comes off again:
+//! Two styles: normal supports, here, a first working version of the
+//! reference's rather than a port of it; and tree supports, in `tree/`, a
+//! port of the reference's organic trees.
+//! They share the gaps above, beside and below a support; overhangs are
+//! found each its own way, as in the reference. Normal supports use:
 //!
 //! - what counts as an overhang (`support_threshold_angle`, or by overlap);
 //! - the gap above a support, a whole number of layers, and the dense
@@ -350,7 +352,17 @@ pub fn generate(
         })
         .collect();
     let local: Vec<&[ExPolygon]> = local.iter().map(Vec::as_slice).collect();
-    let mut supports = about_origin(&local, first_layer_height, layer_height, settings)?;
+    let bed = (settings.bed.len() >= 3).then(|| ExPolygon {
+        contour: moved(&Polygon {
+            points: settings
+                .bed
+                .iter()
+                .map(|(x, y)| Point2::from_mm(*x, *y))
+                .collect(),
+        }),
+        holes: Vec::new(),
+    });
+    let mut supports = about_origin(&local, first_layer_height, layer_height, settings, bed)?;
     for point in supports
         .iter_mut()
         .flatten()
@@ -372,6 +384,8 @@ pub(crate) struct Job<'a> {
     /// the part: `top_z_distance` and `bottom_z_distance` in whole layers.
     pub gap_above: usize,
     pub gap_below: usize,
+    /// The bed's outline, the part's middle at the origin, when known.
+    pub bed: Option<ExPolygon>,
 }
 
 impl Job<'_> {
@@ -411,6 +425,7 @@ fn about_origin(
     first_layer_height: f64,
     layer_height: f64,
     settings: &SupportSettings,
+    bed: Option<ExPolygon>,
 ) -> Result<Vec<Vec<ExtrusionPath>>, SupportError> {
     // A support's top sits a whole number of layers under what it holds
     // up, leaving `top_z_distance` of air: an overhang on layer L is met by
@@ -423,11 +438,11 @@ fn about_origin(
         settings,
         gap_above: layers_in(settings.top_z_distance),
         gap_below: layers_in(settings.bottom_z_distance),
+        bed,
     };
-    let overhangs = overhangs(&job)?;
     match settings.style {
-        Style::Normal => normal(&job, overhangs),
-        Style::Tree => tree::build(&job, overhangs),
+        Style::Normal => normal(&job, overhangs(&job)?),
+        Style::Tree => tree::build(&job),
     }
 }
 
