@@ -77,6 +77,7 @@ fn print(
         filament: 0,
         ram: None,
         enter: &[],
+        wipe: None,
         tower: &[],
         around: &[],
         support: &[],

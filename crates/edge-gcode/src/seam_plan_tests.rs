@@ -72,6 +72,7 @@ fn layer<'a>(z: f64, loops: &'a [ExtrusionLoop], below: &'a [ExPolygon]) -> Laye
         filament: 0,
         ram: None,
         enter: &[],
+        wipe: None,
         tower: &[],
         around: &[],
         support: &[],

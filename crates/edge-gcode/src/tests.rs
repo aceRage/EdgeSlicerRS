@@ -74,6 +74,7 @@ fn one_layer<'a>(
         filament: 0,
         ram: None,
         enter: &[],
+        wipe: None,
         tower: &[],
         around: &[],
         support: &[],
@@ -574,6 +575,7 @@ fn speeds_follow_role_layer_and_the_melt_limit() {
             filament: 0,
             ram: None,
             enter: &[],
+            wipe: None,
             tower: &[],
             around: &[],
             support: &[],
@@ -590,6 +592,7 @@ fn speeds_follow_role_layer_and_the_melt_limit() {
             filament: 0,
             ram: None,
             enter: &[],
+            wipe: None,
             tower: &[],
             around: &[],
             support: &[],
@@ -656,6 +659,7 @@ fn temperatures_change_after_the_first_layer() {
         filament: 0,
         ram: None,
         enter: &[],
+        wipe: None,
         tower: &[],
         around: &[],
         support: &[],
@@ -745,6 +749,7 @@ fn moves_inside_the_shelter_can_skip_retraction() {
         filament: 0,
         ram: None,
         enter: &[],
+        wipe: None,
         tower: &[],
         around: &[],
         support: &[],
@@ -1088,6 +1093,7 @@ fn printed(count: usize, settings: &PrintSettings) -> String {
             filament: 0,
             ram: None,
             enter: &[],
+            wipe: None,
             tower: &[],
             around: &[],
             support: &[],
@@ -1919,6 +1925,7 @@ fn the_prime_tower_is_printed_first_and_its_first_line_slowly() {
             z,
             ram: None,
             enter: &[],
+            wipe: None,
             tower: &tower,
             ..one_layer(&part, &[0..1], &[])[0]
         })
@@ -1942,6 +1949,67 @@ fn the_prime_tower_is_printed_first_and_its_first_line_slowly() {
         feed_of(&text, "Prime tower"),
         Some((0.33 * 30.0 * 60.0_f64).round())
     );
+}
+
+#[test]
+fn a_new_nozzle_lays_its_block_on_the_tower_move_by_move() {
+    let part = [wall(0.0, 0.0, 10.0, 0)];
+    let at = |x: f64, y: f64| Point2::from_mm(x, y);
+    let strokes = [
+        TowerStroke::Lay(at(43.0, 40.0), 29.7),
+        TowerStroke::Retract,
+        TowerStroke::Move(at(38.5, 40.0), Some(10.0)),
+        TowerStroke::Move(at(40.0, 40.0), None),
+        TowerStroke::Unretract,
+        TowerStroke::Lay(at(60.0, 40.0), 29.7),
+        TowerStroke::Lay(at(60.0, 40.6), 29.7),
+        TowerStroke::Lay(at(40.0, 40.6), 33.75),
+    ];
+    let flow = Flow::new(0.5, 0.2, 0.4).unwrap();
+    let layer = Layer {
+        wipe: Some(TowerWipe {
+            start: at(40.0, 40.0),
+            strokes: &strokes,
+            flow,
+        }),
+        ..one_layer(&part, &[0..1], &[])[0]
+    };
+    let settings = PrintSettings {
+        retraction_length: 0.8,
+        retraction_speed: 30.0,
+        filament_flow_ratio: 0.95,
+        ..basic()
+    };
+    let (text, _) = print(&[layer], &settings);
+    let lines: Vec<&str> = text.lines().collect();
+    let first = lines
+        .iter()
+        .position(|line| line.starts_with("G1 X43.000 Y40.000 E"))
+        .unwrap();
+    // Each line at its own speed, with as much plastic as its own
+    // cross-section holds: no flow ratio, as the reference's tower writes it.
+    let area = std::f64::consts::PI * 1.75 * 1.75 / 4.0;
+    let e = word(lines[first], 'E').unwrap();
+    assert!(
+        (e - 3.0 * flow.mm3_per_mm() / area).abs() < 1e-5,
+        "{}",
+        lines[first]
+    );
+    assert_eq!(word(lines[first], 'F'), Some(1782.0));
+    // The filament pulled back and pushed on by its retraction length at
+    // its speed, with the moves between at theirs and nothing else.
+    assert_eq!(
+        lines[first + 1..first + 6],
+        [
+            "G1 E-0.80000 F1800",
+            "G1 X38.500 Y40.000 F600",
+            &format!("G1 X40.000 Y40.000 F{:.0}", settings.travel_speed * 60.0),
+            "G1 E0.80000 F1800",
+            "G1 X60.000 Y40.000 E0.76013 F1782",
+        ]
+    );
+    assert_eq!(word(lines[first + 6], 'F'), None);
+    assert_eq!(word(lines[first + 7], 'F'), Some(2025.0));
 }
 
 #[test]
@@ -2008,6 +2076,7 @@ fn a_rammed_filament_is_laid_by_the_tool_being_put_away() {
                 park: Point2::from_mm(43.35, 41.85),
             }),
             enter: &enter,
+            wipe: None,
             tower: &tower,
             ..one_layer(&loops, &[0..1], &[])[0]
         },
@@ -2060,6 +2129,44 @@ fn a_rammed_filament_is_laid_by_the_tool_being_put_away() {
     write_tools(&mut out, &plain, &settings).unwrap();
     let text = String::from_utf8(out).unwrap();
     assert!(!text.contains("G1 X43.350 Y40.850 E") && !text.contains(";WIDTH:1.000"));
+
+    // Asked to, the ram is pushed out at the ramming pressure advance, set
+    // once the nozzle is at its start, in the firmware's own words; it is
+    // not set back after (WipeTower2.cpp `toolchange_Unload`).
+    for (klipper, reprap, wanted) in [
+        (true, false, "SET_PRESSURE_ADVANCE ADVANCE=0.0200"),
+        (false, true, "M572 D0 S0.020000"),
+        (false, false, "M900 K0.020000"),
+    ] {
+        let advanced = settings.clone().map(|tool| PrintSettings {
+            ram_advance: Some(0.02),
+            klipper,
+            reprap,
+            ..tool
+        });
+        let mut out = Vec::new();
+        write_tools(&mut out, &plan, &advanced).unwrap();
+        let text = String::from_utf8(out).unwrap();
+        let lines: Vec<&str> = text.lines().collect();
+        let set = lines.iter().position(|line| *line == wanted).unwrap();
+        assert!(lines[set - 1].starts_with("G1 X40.750 Y40.850"));
+        // Before the ram, after the nozzle has come down to it.
+        let ram = (lines.iter())
+            .position(|line| line.starts_with("G1 X43.350 Y40.850 E"))
+            .unwrap();
+        assert!(set < ram, "{:?}", &lines[set..=ram]);
+        assert!(lines[set + 1..ram].iter().all(|line| !line.contains(" X")));
+        assert_eq!(lines.iter().filter(|line| **line == wanted).count(), 1);
+    }
+    // Not where the profile does not ask.
+    let left = settings.clone().map(|tool| PrintSettings {
+        ram_advance: None,
+        ..tool
+    });
+    let mut out = Vec::new();
+    write_tools(&mut out, &plan, &left).unwrap();
+    let text = String::from_utf8(out).unwrap();
+    assert!(!text.contains("PRESSURE_ADVANCE") && !text.contains("M900"));
 }
 
 /// A 10 mm plate with a 20 mm wall on the layer above it: the wall is over
@@ -2080,6 +2187,7 @@ fn wall_over_a_smaller_plate(settings: &PrintSettings, measured: bool) -> String
         filament: 0,
         ram: None,
         enter: &[],
+        wipe: None,
         tower: &[],
         around: &[],
         support: &[],
@@ -2824,6 +2932,7 @@ fn round_wall_over_a_round_plate(settings: &PrintSettings, out: f64) -> (usize, 
         filament: 0,
         ram: None,
         enter: &[],
+        wipe: None,
         tower: &[],
         around: &[],
         support: &[],
@@ -2907,6 +3016,7 @@ fn a_speed_within_one_mm_a_second_of_the_last_is_not_written() {
         filament: 0,
         ram: None,
         enter: &[],
+        wipe: None,
         tower: &[],
         around: &[],
         support: &[],
