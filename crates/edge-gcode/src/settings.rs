@@ -945,9 +945,18 @@ impl PrintSettings {
                 .flag("tool_change_temprature_wait")?
                 .unwrap_or(defaults.tool_change_temperature_wait),
             flush_volumes: {
-                let multiplier = settings.float("flush_multiplier")?.unwrap_or(1.0);
+                // Some projects write the multiplier as a list of one;
+                // what cannot be read flushes nothing, as an empty matrix.
+                let multiplier = settings
+                    .floats("flush_multiplier")
+                    .ok()
+                    .flatten()
+                    .and_then(|values| values.first().copied().flatten())
+                    .unwrap_or(1.0);
                 settings
-                    .floats("flush_volumes_matrix")?
+                    .floats("flush_volumes_matrix")
+                    .ok()
+                    .flatten()
                     .unwrap_or_default()
                     .into_iter()
                     .map(|volume| volume.unwrap_or(0.0) * multiplier)
