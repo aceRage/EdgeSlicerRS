@@ -17,7 +17,8 @@ replaces it until output matches on the printers we care about.
 | `crates/edge-avoid` | Travel routed round the inside of a part's walls where a straight move would cross them: what a layer's moves are routed by, and the way round for each (a port of the reference's AvoidCrossingPerimeters) |
 | `crates/edge-arachne` | Walls of changing width: a region's skeleton, how many lines fit along it and where that number changes, and the lines themselves (a port of the reference's Arachne) |
 | `crates/edge-paint` | Which filament prints what where colours are painted on: each layer shared out from its painted outline, and paint on top and bottom faces carried through the shell |
-| `crates/edge-clip` | Polygon union, difference, intersection, offset, an inner offset with a distance of its own for every vertex, and gap closing (wraps clipper2-rs) |
+| `crates/edge-clip` | Polygon union, difference, intersection, offset, an inner offset with a distance of its own for every vertex, and gap closing (wraps clipper2-rs); Minkowski sums and no-fit polygons of convex outlines, for arranging |
+| `crates/edge-arrange` | Arranging objects on the bed as the reference does: each object's outline and the room kept round it, libnest2d's no-fit-polygon placer and first-fit selection over several beds with the objective of the reference's `Arrange.cpp`, and NLopt's subplex on one variable, ported step for step |
 | `crates/edge-extrusion` | Extruded line cross-section (flow) and extrusion loops |
 | `crates/edge-parity` | `edge-parity`: runs the reference slicer and this engine on one project and compares time and G-code |
 | `crates/edge-perimeter` | Walls, the lines that fill the gaps between them, and the infill area inside (classic constant-width generator) |
@@ -32,7 +33,7 @@ replaces it until output matches on the printers we care about.
 | `crates/edge-time` | How long a G-code file takes, with acceleration: the file is read as a printer reads it and planned as the reference's estimator plans, or as Klipper does |
 | `crates/edge-tower` | The prime tower a nozzle is primed on after a tool change |
 | `crates/edge-slice` | Mesh to per-layer contours, with the model's corners and not its triangles', then to regions with holes; parallel across layers. Elephant foot compensation of the first layers; round holes made polygons of few sides, and round outlines and holes resized by what the filament prints them off by; the last layers' heights tuned so a part comes out its exact height, and layers grown downward under overhangs so they can be printed |
-| `crates/edge-engine` | The whole pipeline behind one call, for whatever drives it: open a model and list its plates, settle its settings, slice with progress and cancel, G-code, a layer's lines for drawing, a vendor's presets by printer, and its printer models with the presets, picture and sizes of each; and, for a set of settings, which of them a slice reads and what it notes (`followed`); where a setting may be set for one object, part or height range and whether it is followed there (`settable`), and the regions a plate is shared out among (`regions.rs`) |
+| `crates/edge-engine` | The whole pipeline behind one call, for whatever drives it: open a model and list its plates, settle its settings, slice with progress and cancel, G-code, a layer's lines for drawing, a vendor's presets by printer, arranging the plates (`arrange.rs`), and its printer models with the presets, picture and sizes of each; and, for a set of settings, which of them a slice reads and what it notes (`followed`); where a setting may be set for one object, part or height range and whether it is followed there (`settable`), and the regions a plate is shared out among (`regions.rs`) |
 | `crates/edge-cli` | The `edge` command line |
 | `tools/make_defaults.py` | Asks the reference for its default of every setting and writes the table `edge-config` carries; run again when the pin moves |
 | `tools/make_settings_pages.py` | Reads the reference's process, filament and printer pages and option definitions from its source and writes the data the desktop app draws its settings pages from; run again when the pin moves, after `make_defaults.py` |
@@ -56,6 +57,9 @@ cargo run --release -p edge-cli -- slice reference/EdgeSlicer/resources/handy_mo
 cargo run --release -p edge-cli -- slice model.stl --vendor Snapmaker --machine "Snapmaker U1 (0.4 nozzle)" \
   --process "0.20mm Standard @Snapmaker U1 (0.4 nozzle)" --filament "Snapmaker PLA @U1" --bed-type "Textured PEI Plate" --gcode model.gcode
 cargo run --release -p edge-cli -- preset Snapmaker process "0.20mm Standard @Snapmaker U1 (0.4 nozzle)"
+# A project arranged as the reference's Arrange does (every plate, or --plate N), saved, and where
+# everything stands written as JSON, to compare with the reference's --arrange 1 --export-3mf
+cargo run --release -p edge-cli -- arrange reference/EdgeSlicer/tests/mcbrim_test.3mf --out arranged.3mf --layout arranged.json
 # A model or project saved as a project file the reference opens as its own: a 3MF keeps its own
 # settings, an STL is saved without any; --vendor/--machine/--process/--filament save it with presets.
 # What the file holds that would not be kept is listed and nothing is written, unless --accept-losses.

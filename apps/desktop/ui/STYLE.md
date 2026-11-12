@@ -602,6 +602,13 @@ the one toolbar that stands in the scene rather than at the stage's edge:
 the scene is drawn, and hides it while that corner is out of sight. Only
 the plate shown has it.
 
+The options beside "Arrange" (`#arrange-panel`, `.edit-panel` with
+`.arrange-panel`) stand in the same place while the Arrange tool is
+pressed, and only one of the two panels is open at a time: "Spacing" as a
+slider with its number in a `.unit`, a quiet line, the switches as
+`.edit-check`s between hairlines (`.arrange-rule`), and at the foot
+"Arrange" (`.primary`) and "Reset".
+
 A tool with nothing to type ("Lay on face") has the same panel with its
 title and one line of what to do (`p.edit-hint`, `--text-2`). What a tool
 draws in the scene over an object (the faces of "Lay on face") keeps the

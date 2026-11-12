@@ -14,6 +14,7 @@
 //! large for JSON and are answered as bytes, through
 //! [`Session::call_bytes`], which is `call` in every other way.
 
+mod arrange;
 mod edit;
 mod filaments;
 mod menu;
@@ -96,6 +97,10 @@ struct State {
     /// the reference's counter runs for the whole window (Plater.cpp
     /// `get_next_color_for_filament`).
     next_colour: usize,
+    /// "Align to Y axis" as set beside the Arrange button, with the
+    /// printer it was set for; none for the printer's own
+    /// ([`arrange`]).
+    arrange_align: Option<(String, bool)>,
 }
 
 /// One open project.
@@ -989,6 +994,7 @@ impl Session {
                 active: 1,
                 next_id: 2,
                 next_colour: 0,
+                arrange_align: None,
             }),
             startup,
             traced: std::env::var_os("EDGE_DESKTOP_TRACE").is_some(),
@@ -1170,6 +1176,9 @@ impl Session {
             "settled" => self.settled(args),
             "plate_view" => self.plate_view(args),
             "slice" => self.slice(args),
+            "arrange_options" => self.arrange_options(args),
+            "arrange_options_set" => self.arrange_options_set(args),
+            "arrange_options_reset" => self.arrange_options_reset(args),
             "cancel" => {
                 let state = lock(&self.state);
                 if let Some(work) = &state.projects[state.target(args)?].work {

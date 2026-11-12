@@ -882,6 +882,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "edge-arrange"
+version = "0.0.0"
+dependencies = [
+ "edge-clip",
+ "edge-geom",
+ "rayon",
+]
+
+[[package]]
 name = "edge-avoid"
 version = "0.0.0"
 dependencies = [
@@ -945,6 +954,7 @@ version = "0.0.0"
 dependencies = [
  "edge-3mf",
  "edge-adhesion",
+ "edge-arrange",
  "edge-clip",
  "edge-config",
  "edge-contour",

@@ -11,6 +11,9 @@ use clipper2_rs::{
 };
 use edge_geom::{Coord, ExPolygon, Point2, Polygon};
 
+mod nfp;
+pub use nfp::{inner_fit_rectangle, minkowski_sum_convex, nfp_convex, reference_vertex};
+
 #[derive(Debug, thiserror::Error)]
 pub enum ClipError {
     /// Coordinates beyond about ±2.3e18, far outside any printer.

@@ -33,6 +33,49 @@ enum Command {
     /// Save a model or a project as a project file (3MF) the reference
     /// opens as its own.
     Save(Box<SaveArgs>),
+    /// Arrange a project's objects as the reference's Arrange does (every
+    /// plate, or one) and save it as a project file.
+    Arrange(Box<ArrangeArgs>),
+    /// Write where each object of a project stands, plate by plate, as
+    /// JSON: its outline on the bed and its transform.
+    Layout {
+        /// 3MF file.
+        project: PathBuf,
+        /// The JSON file to write.
+        #[arg(long)]
+        json: PathBuf,
+    },
+}
+
+#[derive(Args)]
+struct ArrangeArgs {
+    /// STL (binary or ASCII) or 3MF file.
+    model: PathBuf,
+    /// The project file to write.
+    #[arg(long)]
+    out: Option<PathBuf>,
+    /// Arrange only this plate; every plate when left out.
+    #[arg(long)]
+    plate: Option<u32>,
+    /// "Spacing" in mm; 0 is "auto".
+    #[arg(long, default_value_t = 0.0)]
+    spacing: f64,
+    /// "Auto rotate for arrangement".
+    #[arg(long)]
+    rotate: bool,
+    /// Turn "Allow multiple materials on same plate" off.
+    #[arg(long)]
+    single_material: bool,
+    /// "Align to Y axis" on or off; the printer's own when left out.
+    #[arg(long)]
+    align_y: Option<bool>,
+    /// Also write where everything stands, as `layout` does.
+    #[arg(long)]
+    layout: Option<PathBuf>,
+    /// Arrange this many times over (from the same start) and report the
+    /// fastest, to time it.
+    #[arg(long, default_value_t = 1)]
+    runs: usize,
 }
 
 #[derive(Args)]
@@ -155,6 +198,10 @@ fn main() -> ExitCode {
         Command::Inspect { project } => inspect(project),
         Command::Preset(args) => preset(args),
         Command::Save(args) => save(*args),
+        Command::Arrange(args) => arrange(*args),
+        Command::Layout { project, json } => {
+            edge_engine::Model::open(&project).and_then(|model| write_layout(&model, &json))
+        }
     };
     match result {
         Ok(()) => ExitCode::SUCCESS,
@@ -300,6 +347,115 @@ fn save(args: SaveArgs) -> Result<(), Failure> {
         saved.bytes,
         saved.entries.len()
     );
+    Ok(())
+}
+
+/// The bed of a model's printer: the box round the corners of
+/// `printable_area`, each "XxY".
+fn bed_of(model: &edge_engine::Model) -> Option<edge_engine::Bed> {
+    let settings = model.settings()?;
+    let mut extent: Option<[f64; 4]> = None;
+    for corner in settings.texts("printable_area")? {
+        let (x, y) = corner.split_once('x')?;
+        let (x, y): (f64, f64) = (x.trim().parse().ok()?, y.trim().parse().ok()?);
+        let [min_x, min_y, max_x, max_y] = extent.unwrap_or([x, y, x, y]);
+        extent = Some([min_x.min(x), min_y.min(y), max_x.max(x), max_y.max(y)]);
+    }
+    extent.map(edge_engine::Bed::of)
+}
+
+/// Arranges a project with its own settings and saves it.
+fn arrange(args: ArrangeArgs) -> Result<(), Failure> {
+    let opened = edge_engine::Model::open(&args.model)?;
+    let bed = bed_of(&opened).ok_or("the project does not say how large its printer's bed is")?;
+    let options = edge_engine::ArrangeOptions {
+        spacing: args.spacing,
+        rotate: args.rotate,
+        multi_materials: !args.single_material,
+        align_to_y: args.align_y,
+        ..edge_engine::ArrangeOptions::default()
+    };
+    let scope = match args.plate {
+        Some(plate) => edge_engine::ArrangeScope::Plate(plate),
+        None => edge_engine::ArrangeScope::All { leave: &[] },
+    };
+    let mut best: Option<(
+        std::time::Duration,
+        edge_engine::Model,
+        edge_engine::Arranged,
+    )> = None;
+    for _ in 0..args.runs.max(1) {
+        let mut model = opened.clone();
+        let start = Instant::now();
+        let arranged = model.arrange_with(Some(&bed), None, &options, scope)?;
+        let took = start.elapsed();
+        if best.as_ref().is_none_or(|(fastest, ..)| took < *fastest) {
+            best = Some((took, model, arranged));
+        }
+    }
+    let (took, model, arranged) = best.expect("arranged at least once");
+    let copies: usize = model.objects().iter().map(|o| o.copies().len()).sum();
+    println!(
+        "arranged {copies} copies on {} plates in {:.1} ms",
+        model.plates().len(),
+        took.as_secs_f64() * 1000.0
+    );
+    for name in &arranged.unplaced {
+        println!("  fits no plate: {name}");
+    }
+    if let Some(out) = &args.out {
+        let saving = if model.settings().is_some() {
+            edge_engine::Saving::Own
+        } else {
+            edge_engine::Saving::None
+        };
+        model.save(out, &saving, Some(&bed))?;
+    }
+    if let Some(json) = &args.layout {
+        write_layout(&model, json)?;
+    }
+    Ok(())
+}
+
+/// Writes where each copy of a model stands, plate by plate.
+fn write_layout(model: &edge_engine::Model, path: &std::path::Path) -> Result<(), Failure> {
+    let copy_json = |object: &edge_engine::ModelObject, at: usize| {
+        let copy = &object.copies()[at];
+        serde_json::json!({
+            "name": object.name(),
+            "outline": model.outline(copy.id()),
+            "transform": copy.transform().rows,
+            "printable": copy.printable(),
+        })
+    };
+    let mut plates = Vec::new();
+    for plate in model.plates() {
+        let copies: Vec<serde_json::Value> = plate
+            .copies()
+            .iter()
+            .filter_map(|id| {
+                model.objects().iter().find_map(|object| {
+                    let at = object.copies().iter().position(|c| c.id() == *id)?;
+                    Some(copy_json(object, at))
+                })
+            })
+            .collect();
+        plates.push(serde_json::json!({
+            "id": plate.id(),
+            "locked": plate.locked(),
+            "copies": copies,
+        }));
+    }
+    let loose: Vec<serde_json::Value> = model
+        .objects()
+        .iter()
+        .flat_map(|object| (0..object.copies().len()).map(move |at| (object, at)))
+        .filter(|(object, at)| model.plate_of(object.copies()[*at].id()).is_none())
+        .map(|(object, at)| copy_json(object, at))
+        .collect();
+    let bed = bed_of(model).map(|bed| [bed.min[0], bed.min[1], bed.max[0], bed.max[1]]);
+    let layout = serde_json::json!({ "bed": bed, "plates": plates, "loose": loose });
+    fs::write(path, serde_json::to_string_pretty(&layout)?)?;
     Ok(())
 }
 

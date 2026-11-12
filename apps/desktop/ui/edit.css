@@ -188,3 +188,16 @@ dialog.plate-settings .row.end .grow { flex: 1; align-self: center; }
 @container stage (max-width: 760px) {
   .edit-panel { top: calc(var(--stage-inset) + 2 * (var(--control-m) + 8px) + var(--space-2)); }
 }
+
+/* The options beside the Arrange button (`#arrange-panel`, scene-edit.js):
+   under the toolbar as a tool's panel is, "Spacing" with its slider and
+   number, the switches, then "Arrange" and "Reset". */
+.arrange-panel { width: 300px; }
+.arrange-row { display: grid; grid-template-columns: minmax(64px, auto) minmax(0, 1fr); align-items: center; gap: var(--space-2); }
+.arrange-slide { display: grid; grid-template-columns: minmax(0, 1fr) 82px; align-items: center; gap: var(--space-2); }
+.arrange-slide .unit { height: var(--control-s); min-width: 0; }
+.arrange-slide .unit input { width: 100%; min-width: 0; font-size: var(--size-small); }
+.arrange-slide input[type="range"] { width: 100%; min-width: 0; margin: 0; accent-color: var(--accent); background: transparent; }
+.arrange-rule { width: 100%; margin: 0; border: 0; border-top: 1px solid var(--line-2); }
+.arrange-panel .edit-check:has(input:disabled) { color: var(--text-off); }
+.arrange-foot { display: flex; justify-content: flex-end; gap: var(--space-2); }

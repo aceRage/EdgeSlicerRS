@@ -84,6 +84,7 @@ none	GUI/CostsDialog.cpp:505
 Noop	GUI/GCodeViewer.cpp:346
 Note: Moonraker version at least 1.1.0 is required.	Utils/MoonRaker.cpp:435
 Nozzles	GUI/Widgets/NozzleStrip.cpp:336
+Object %s has zero size and can't be arranged.	GUI/Jobs/ArrangeJob.cpp:581
 Open project	GUI/ProjectStrip.cpp:140
 Output file name that leaves the output folder:	GUI/UntrustedSettingsGuard.cpp:125
 Please select at least one filament preset.	GUI/CreatePresetsDialog.cpp:4419

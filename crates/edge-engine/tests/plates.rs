@@ -289,9 +289,14 @@ fn a_locked_plate_is_left_alone_by_arrange() {
         model.arrange(Some(&U1), Some(1)).unwrap_err().to_string(),
         "This plate is locked.\nCannot auto-arrange on this plate."
     );
-    // The others were arranged (plate 2's copies stand elsewhere now).
-    let after: Vec<_> = [2, 3].map(|plate| standing(&model, plate)).into();
-    assert_ne!(after, others);
+    // The others were arranged: the reference's arranger pools what was on
+    // plates 2 and 3, which fits on plate 2, and takes away the empty plate
+    // at the end (`rebuild_plates_after_arrangement`; this checked before
+    // that the old rows laid each plate out on its own).
+    let pooled = others.iter().map(Vec::len).sum::<usize>();
+    assert_eq!(model.plates().len(), 2);
+    assert_eq!(standing(&model, 2).len(), pooled);
+    assert_ne!(standing(&model, 2), others[0]);
     // Unlocked, it is arranged.
     model.lock_plate(1, false).unwrap();
     model.arrange(Some(&U1), Some(1)).unwrap();
