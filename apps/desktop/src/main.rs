@@ -11,6 +11,7 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 mod api;
+mod hosts;
 mod serve;
 
 use std::sync::Arc;
@@ -73,6 +74,11 @@ fn pick(app: tauri::AppHandle, what: String, suggested: Option<String>) -> Optio
             }
             dialog.blocking_save_file()
         }
+        // "HTTPS CA File"'s "Browse ..." (PhysicalPrinterDialog.cpp l.357).
+        "cafile" => dialog
+            .set_title("Open CA certificate file")
+            .add_filter("Certificate files (*.crt, *.pem)", &["crt", "pem"])
+            .blocking_pick_file(),
         _ => None,
     };
     let path = picked?.into_path().ok()?;
