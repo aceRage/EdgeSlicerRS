@@ -30,7 +30,9 @@
   // `validate_connector_settings`: what each setting starts at.
   const START = { depth: 3, depthTolerance: 0.1, size: 2.5, sizeTolerance: 0, angle: 0 };
   const SNAP_START = { space: 0.3, bulge: 0.15 };
-  const TYPES = ['plug', 'dowel', 'snap', 'pin'];
+  const TYPES = ['plug', 'dowel', 'snap', 'pin', 'flexi', 'tac'];
+  // The kinds of the fork's own, each with its own shape and panel.
+  const OWN = ['pin', 'flexi', 'tac'];
   const STYLES = ['prism', 'frustum'];
   const SHAPES = ['triangle', 'square', 'hexagon', 'circle'];
   const SIDES = { triangle: 3, square: 4, hexagon: 6, circle: 60 };
@@ -74,6 +76,8 @@
         at: this.connectorAt(c), radius: c.radius, height: c.height, radius_tolerance: c.radius_tolerance,
         height_tolerance: c.height_tolerance, z_angle: c.z_angle, type: c.type, style: c.style, shape: c.shape,
         pin: c.type === 'pin' ? c.pin : null,
+        flexi: c.type === 'flexi' ? c.flexi : null,
+        tac: c.type === 'tac' ? c.tac : null,
       }));
     },
 
@@ -227,13 +231,22 @@
       const [lo, hi] = this.faces();
       list.forEach((c, at) => {
         // Its outline on the cut face (`is_outside_of_cut_contour`; the
-        // reference leaves its turn out, this measures it as drawn).
+        // reference leaves its turn out, this measures it as drawn). A
+        // Flexi joint's and a TAC Joint's are their own shapes' outlines.
         if (o.cap) {
-          const sides = SIDES[c.shape];
           let outside = !this.onCap(c.x, c.y);
-          for (let k = 0; k < sides && !outside; k += 1) {
-            const a = (2 * Math.PI * k) / sides - c.z_angle;
-            outside = !this.onCap(c.x - c.radius * Math.sin(a), c.y + c.radius * Math.cos(a));
+          if (c.outline && (c.type === 'flexi' || c.type === 'tac')) {
+            const [cs, sn] = [Math.cos(-c.z_angle), Math.sin(-c.z_angle)];
+            for (const [px, py] of c.outline) {
+              if (outside) break;
+              outside = !this.onCap(c.x + cs * px - sn * py, c.y + sn * px + cs * py);
+            }
+          } else {
+            const sides = SIDES[c.shape];
+            for (let k = 0; k < sides && !outside; k += 1) {
+              const a = (2 * Math.PI * k) / sides - c.z_angle;
+              outside = !this.onCap(c.x - c.radius * Math.sin(a), c.y + c.radius * Math.cos(a));
+            }
           }
           if (outside) { stats.outside += 1; bad.add(at); return; }
         }
@@ -244,11 +257,23 @@
           // its two lengths.
           const [from, to] = c.type === 'pin'
             ? [-c.pin.length_lower + Math.min(lo, 0), c.pin.length_upper + Math.max(hi, 0)]
+            : c.type === 'flexi' || c.type === 'tac'
+            ? this.jointReach(c)
             : c.type === 'dowel'
             ? [-c.height - (hi - lo) / 2, c.height + (hi - lo) / 2]
             : [lo, lo + c.height + (hi - lo)];
-          const inside = c.x - c.radius >= reach[0][0] - 1e-6 && c.x + c.radius <= reach[1][0] + 1e-6
-            && c.y - c.radius >= reach[0][1] - 1e-6 && c.y + c.radius <= reach[1][1] + 1e-6
+          // A Flexi joint's or a TAC Joint's box is its own outline's
+          // (`is_conflict_for_connector`: the cutter's corners), not a
+          // round one of its farthest reach.
+          let xy = [[c.x - c.radius, c.y - c.radius], [c.x + c.radius, c.y + c.radius]];
+          if (c.outline && (c.type === 'flexi' || c.type === 'tac')) {
+            const [cs, sn] = [Math.cos(-c.z_angle), Math.sin(-c.z_angle)];
+            const xs = c.outline.map(([px, py]) => c.x + cs * px - sn * py);
+            const ys = c.outline.map(([px, py]) => c.y + sn * px + cs * py);
+            xy = [[Math.min(...xs), Math.min(...ys)], [Math.max(...xs), Math.max(...ys)]];
+          }
+          const inside = xy[0][0] >= reach[0][0] - 1e-6 && xy[1][0] <= reach[1][0] + 1e-6
+            && xy[0][1] >= reach[0][1] - 1e-6 && xy[1][1] <= reach[1][1] + 1e-6
             && from >= reach[0][2] - 1e-6 && to <= reach[1][2] + 1e-6;
           if (!inside) { stats.outsideBox += 1; bad.add(at); return; }
         }
@@ -264,6 +289,9 @@
       // A pin that cannot be made (`can_perform_cut`: `pushfit_validate`).
       list.forEach((c, at) => {
         if (c.type === 'pin' && c.pinInvalid) { bad.add(at); stats.badPin = c.pinInvalid; }
+        // A Flexi joint or a TAC Joint that cannot be made
+        // (`flexi_validate`, `tac_joint_validate`).
+        if ((c.type === 'flexi' || c.type === 'tac') && c.jointInvalid) { bad.add(at); stats.badPin = c.type === 'tac' ? t(c.jointInvalid) : c.jointInvalid; }
       });
       o.invalid = bad;
       o.stats = stats;
@@ -295,6 +323,7 @@
         type: s.type, style: pin ? 'prism' : s.style, shape: pin ? 'circle' : s.shape, pin,
         pinInvalid: pin && this.pinInfo ? this.pinInfo.invalid : null,
       });
+      if (s.type === 'flexi' || s.type === 'tac') this.jointOnto(o.connectors[o.connectors.length - 1]);
       o.selected = new Set([o.connectors.length - 1]);
       this.connectorsChanged();
       return true;
@@ -325,6 +354,7 @@
       if (key === 'type' && value === 'dowel') s.style = 'prism';
       if (key === 'type' && value === 'snap') s.shape = 'circle';
       if (key === 'type' && value === 'pin' && !this.pin) this.askPin({});
+      if (key === 'type' && (value === 'flexi' || value === 'tac')) this.jointReady(value);
       if (s.type === 'snap' && s.depth < s.size) s.depth = s.size;
       for (const at of o.selected) {
         const c = o.connectors[at];
@@ -332,6 +362,7 @@
         if (key === 'type') {
           c.type = s.type; c.style = s.style; c.shape = s.shape;
           if (c.type === 'pin') this.pinOnto(c);
+          if (c.type === 'flexi' || c.type === 'tac') this.jointOnto(c);
         }
         else if (key === 'style') c.style = s.style;
         else if (key === 'shape') c.shape = s.shape;
@@ -362,6 +393,8 @@
         this.pinUi.same_clearance = c.pin.clearance_upper === c.pin.clearance_lower;
         this.askPin({});
       }
+      if (c.type === 'flexi' && c.flexi) { this.flexi = { ...c.flexi }; this.askFlexi(); }
+      if (c.type === 'tac' && c.tac) { this.tac = { ...c.tac }; this.askTac(); }
     },
 
     // ---- the pointer while editing ----
@@ -448,7 +481,7 @@
     // ---- drawing ----
 
     meshKey(c) {
-      return `${c.type}|${c.style}|${c.shape}|${c.type === 'snap' ? `${this.snap.space}|${this.snap.bulge}` : ''}|${c.type === 'pin' ? JSON.stringify(c.pin) : ''}`;
+      return `${c.type}|${c.style}|${c.shape}|${c.type === 'snap' ? `${this.snap.space}|${this.snap.bulge}` : ''}|${c.type === 'pin' ? JSON.stringify(c.pin) : ''}|${c.type === 'flexi' ? JSON.stringify(c.flexi) : ''}|${c.type === 'tac' ? JSON.stringify(c.tac) : ''}`;
     },
 
     async connectorMesh(c, hole = null) {
@@ -458,7 +491,7 @@
       const entry = { mesh: null };
       this.connectorMeshes.set(key, entry);
       try {
-        const bytes = await this.stage.bytes('cut_connector_mesh', { type: c.type, style: c.style, shape: c.shape, snap: this.snap, pin: c.type === 'pin' ? c.pin : null, hole });
+        const bytes = await this.stage.bytes('cut_connector_mesh', { type: c.type, style: c.style, shape: c.shape, snap: this.snap, pin: c.type === 'pin' ? c.pin : null, flexi: c.type === 'flexi' ? c.flexi : null, tac: c.type === 'tac' ? c.tac : null, hole });
         entry.mesh = this.stage.renderer.meshFromBytes(bytes);
         this.stage.frame();
       } catch (error) {
@@ -476,8 +509,9 @@
       const kerf = hi - lo;
       let height;
       let middle;
-      // A pin's shape is in mm, straddling the cut.
-      if (c.type === 'pin') {
+      // A pin's shape is in mm, straddling the cut; so is a Flexi joint's
+      // and a TAC Joint's.
+      if (OWN.includes(c.type)) {
         const turn = -c.z_angle;
         const [cs, sn] = [Math.cos(turn), Math.sin(turn)];
         const x = M.add(M.scale(u, cs), M.scale(v, sn));
@@ -512,7 +546,9 @@
       this.connectorsOf().forEach((c, at) => {
         const mesh = this.connectorMeshes.get(`${this.meshKey(c)}|`);
         if (!mesh || !mesh.mesh) { this.connectorMesh(c); return; }
-        const dowel = c.type === 'dowel' || c.type === 'pin';
+        // The kinds printed on their own take a dowel's colours
+        // (`is_separate_pin_connector_type`), a Flexi joint a plug's.
+        const dowel = c.type === 'dowel' || c.type === 'pin' || c.type === 'tac';
         const invalid = o.invalid && o.invalid.has(at);
         let colour = invalid ? ERROR : dowel ? DOWEL : PLUG;
         if (!o.editing) colour = ERROR;
@@ -521,9 +557,11 @@
         r.drawMesh(mesh.mesh, frame, this.connectorMatrix(c), { tint: colour, alpha: colour[3] });
         // A pin being placed shows its holes round it, faint
         // (`render_pushfit_hole_envelopes`).
-        if (c.type === 'pin' && o.editing) {
+        // A TAC Joint's socket likewise, in the reference's blue
+        // (`update_tac_joint_models`).
+        if ((c.type === 'pin' || c.type === 'tac') && o.editing) {
           gl.depthMask(false);
-          for (const side of ['upper', 'lower']) {
+          for (const side of c.type === 'tac' ? ['upper'] : ['upper', 'lower']) {
             const hole = this.connectorMeshes.get(`${this.meshKey(c)}|${side}`);
             if (!hole) { this.connectorMesh(c, side); continue; }
             if (hole.mesh) r.drawMesh(hole.mesh, frame, this.connectorMatrix(c), { tint: [0.3, 0.65, 1, 0.22], alpha: 0.22 });
@@ -547,22 +585,23 @@
       remove.setAttribute('aria-label', t('Remove connectors'));
       remove.addEventListener('click', () => this.removeConnectors());
       rows.push(el('div', { className: 'cut-row' }, el('span', { className: 'edit-label cut-group', textContent: t('Connectors') }), el('span', { className: 'cut-line' }, remove)));
-      // "Type": one of three, as joined buttons.
-      const choose = (label, key, list, words, disabled) => {
-        const group = el('div', { className: 'joined segmented' });
-        group.setAttribute('role', 'group');
-        group.setAttribute('aria-label', label);
-        list.forEach((value, at) => {
-          const button = el('button', { type: 'button', textContent: words[at], disabled: busy || disabled });
-          button.setAttribute('aria-pressed', String(s[key] === value));
-          button.addEventListener('click', () => this.setConnector(key, value));
-          group.append(button);
-        });
-        return row(label, group);
-      };
-      rows.push(choose(t('Type'), 'type', TYPES, [t('Plug'), t('Dowel'), t('Snap'), t('Pin')], false));
+      // "Type": six of them, a list (STYLE.md: joined buttons for two or
+      // three).
+      const type = el('select', { disabled: busy });
+      type.setAttribute('aria-label', t('Type'));
+      TYPES.forEach((value, at) => type.append(new Option([t('Plug'), t('Dowel'), t('Snap'), t('Pin'), t('Flexi'), t('TAC Joint')][at], value, false, s.type === value)));
+      type.addEventListener('change', () => this.setConnector('type', type.value));
+      rows.push(row(t('Type'), type));
       if (s.type === 'pin') {
         rows.push(...this.pinRows(busy, row));
+        return this.connectorFoot(rows, busy);
+      }
+      if (s.type === 'flexi') {
+        rows.push(...this.flexiRows(busy, row));
+        return this.connectorFoot(rows, busy);
+      }
+      if (s.type === 'tac') {
+        rows.push(...this.tacRows(busy, row));
         return this.connectorFoot(rows, busy);
       }
       const select = (label, key, list, words, disabled) => {

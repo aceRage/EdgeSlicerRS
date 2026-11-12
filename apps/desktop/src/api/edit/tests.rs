@@ -1874,6 +1874,107 @@ fn a_drawn_cut_is_made_from_its_line_and_not_put_back_as_a_flat_one() {
 }
 
 #[test]
+fn a_tac_joint_and_a_flexi_joint_are_checked_made_and_put_back() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = boxes(
+        &dir.path().join("box.stl"),
+        &[([0.0; 3], [40.0, 40.0, 60.0])],
+    );
+    let session = Arc::new(Session::new(None));
+    let project = stl_project(&session, &path);
+    let (copy, low, high) = first_copy(&session, project);
+    let plane = across(low, high, 30.0);
+    let at = [(low[0] + high[0]) / 2.0, (low[1] + high[1]) / 2.0, 30.0];
+    // The panel's answers.
+    let tac = ask(
+        &session,
+        "cut_tac",
+        json!({ "tac": {}, "faces": [0.0, 0.0] }),
+    );
+    assert!(tac["invalid"].is_null(), "{tac}");
+    assert_eq!(tac["tac"]["scale"], 1.0);
+    assert!(tac["outline"].as_array().unwrap().len() > 100);
+    let tight = ask(
+        &session,
+        "cut_tac",
+        json!({ "tac": { "clearance": 0.0, "end_clearance": 0.0 }, "faces": [0.0, 0.0] }),
+    );
+    assert!(
+        tight["invalid"]
+            .as_str()
+            .unwrap()
+            .contains("Increase the side"),
+        "{tight}"
+    );
+    let flexi = ask(
+        &session,
+        "cut_flexi",
+        json!({ "flexi": { "kind": 3 }, "auto": true, "inscribed": 20.0, "nozzle": 0.4 }),
+    );
+    assert!(flexi["invalid"].is_null(), "{flexi}");
+    assert_eq!(flexi["flexi"]["kind"], 3.0);
+    assert!(flexi["radius"].as_f64().unwrap() > 0.0);
+    // A ring's clearance is held to the nozzle's floor.
+    let floored = ask(
+        &session,
+        "cut_flexi",
+        json!({ "flexi": { "clearance": 0.0 }, "nozzle": 0.4 }),
+    );
+    assert_eq!(floored["flexi"]["clearance"], floored["floor"]);
+    let joint = |kind: &str, shape: Value| {
+        json!({ "at": at, "radius": 3.0, "height": 6.0, "radius_tolerance": 0.0,
+                "height_tolerance": 0.0, "z_angle": 0.0, "type": kind, "style": "prism",
+                "shape": "circle", kind: shape })
+    };
+    // A TAC Joint: the halves and the connector on its own.
+    let done = edit(
+        &session,
+        json!({ "project": project, "op": "cut", "copy": copy, "plane": plane,
+                "connectors": [joint("tac", tac["tac"].clone())] }),
+    );
+    assert_eq!(
+        done["scene"]["objects"].as_array().unwrap().len(),
+        3,
+        "{done}"
+    );
+    let half = done["made"][0].as_u64().unwrap();
+    let put = edit(
+        &session,
+        json!({ "project": project, "op": "cut_edit", "copy": half }),
+    );
+    assert_eq!(put["recipe"]["connectors"][0]["type"], "tac");
+    assert_eq!(
+        put["recipe"]["connectors"][0]["tac"]["end_clearance"],
+        0.30000001192092896
+    );
+    // A Flexi joint instead: one object of two parts.
+    let whole_copy = put["made"][0].as_u64().unwrap();
+    let done = edit(
+        &session,
+        json!({ "project": project, "op": "cut", "copy": whole_copy, "plane": plane,
+                "connectors": [joint("flexi", flexi["flexi"].clone())], "amend": "Edit cut" }),
+    );
+    let objects = done["scene"]["objects"].as_array().unwrap();
+    assert_eq!(objects.len(), 1, "{done}");
+    let half = done["made"][0].as_u64().unwrap();
+    let recipe = ask(
+        &session,
+        "cut_recipe",
+        json!({ "project": project, "copy": half }),
+    );
+    assert_eq!(recipe["connectors"][0]["type"], "flexi");
+    assert_eq!(recipe["connectors"][0]["flexi"]["kind"], 3.0);
+    // The joint's shape for drawing.
+    let bytes = session
+        .call_bytes(
+            "cut_connector_mesh",
+            &json!({ "type": "flexi", "style": "prism", "shape": "circle", "flexi": flexi["flexi"] }),
+        )
+        .unwrap();
+    assert!(bytes.starts_with(b"EDGM"));
+}
+
+#[test]
 fn a_dovetail_cut_is_checked_then_made_and_sliced() {
     let session = Arc::new(Session::new(None));
     let project = open(&session, "resources/handy_models/3DBenchy.3mf");

@@ -32,7 +32,7 @@ use super::{
 };
 
 /// The calls answered here.
-pub(super) const JSON: [&str; 13] = [
+pub(super) const JSON: [&str; 15] = [
     "scene_edit",
     "undo",
     "redo",
@@ -42,6 +42,8 @@ pub(super) const JSON: [&str; 13] = [
     "cut_parts",
     "cut_recipe",
     "cut_pin",
+    "cut_flexi",
+    "cut_tac",
     "cut_preview",
     "cut_snap",
     "cut_draw",
@@ -402,11 +404,21 @@ fn connector_of(value: &Value) -> Result<edge_engine::Connector, String> {
             None | Some(Value::Null) => edge_engine::pushfit::Pin::default(),
             Some(pin) => pin_of(pin),
         },
+        flexi: match value.get("flexi") {
+            None | Some(Value::Null) => edge_engine::flexi::FlexiParams::default(),
+            Some(flexi) => flexi_of(flexi),
+        },
+        tac: match value.get("tac") {
+            None | Some(Value::Null) => edge_engine::tac::TacParams::default(),
+            Some(tac) => tac_of(tac),
+        },
         kind: match word("type") {
             "plug" => ConnectorKind::Plug,
             "dowel" => ConnectorKind::Dowel,
             "snap" => ConnectorKind::Snap,
             "pin" => ConnectorKind::Pin,
+            "flexi" => ConnectorKind::Flexi,
+            "tac" => ConnectorKind::Tac,
             other => return Err(format!("a connector cannot be a {other}")),
         },
         style: match word("style") {
@@ -466,6 +478,190 @@ fn cut_pin(args: &Value) -> Value {
         "why": pin.can_lie().err(),
         "profile": profile,
     })
+}
+
+/// A Flexi joint's shape as the page gives it: the reference's names
+/// without their `flexi_` (`kind` 0-5, `outer_radius`, …, the flags true or
+/// false), each left out at its default.
+pub(super) fn flexi_of(value: &Value) -> edge_engine::flexi::FlexiParams {
+    edge_engine::flexi::from_attributes(|name| {
+        let key = name.strip_prefix("flexi_").unwrap_or(name);
+        match value.get(key)? {
+            Value::Bool(flag) => Some(if *flag { 1.0 } else { 0.0 }),
+            other => other.as_f64(),
+        }
+    })
+}
+
+/// A Flexi joint as the page takes it: [`flexi_of`]'s names.
+pub(super) fn flexi_json(p: &edge_engine::flexi::FlexiParams) -> Value {
+    let mut out = serde_json::Map::new();
+    for (name, value) in edge_engine::flexi::attributes(p) {
+        let key = name.trim_start_matches("flexi_").to_owned();
+        let flag = matches!(
+            key.as_str(),
+            "hinge_fold_upper" | "thread_lid_upper" | "thread_left_hand"
+        );
+        out.insert(
+            key,
+            if flag {
+                json!(value != 0.0)
+            } else {
+                json!(value)
+            },
+        );
+    }
+    Value::Object(out)
+}
+
+/// A TAC Joint's settings as the page gives them: the reference's names
+/// without their `tac_joint_` (`scale`, `clearance`, `end_clearance`,
+/// `offset`, `version`, `attachment` 0-2).
+pub(super) fn tac_of(value: &Value) -> edge_engine::tac::TacParams {
+    edge_engine::tac::TacParams::from_attributes(|name| {
+        value
+            .get(name.strip_prefix("tac_joint_").unwrap_or(name))?
+            .as_f64()
+    })
+}
+
+/// A TAC Joint as the page takes it: [`tac_of`]'s names.
+pub(super) fn tac_json(p: &edge_engine::tac::TacParams) -> Value {
+    let mut out = serde_json::Map::new();
+    for (name, value) in p.attributes() {
+        out.insert(
+            name.trim_start_matches("tac_joint_").to_owned(),
+            json!(value),
+        );
+    }
+    Value::Object(out)
+}
+
+/// A Flexi joint for the panel (GLGizmoCut.cpp `render_flexi_joint_inputs`,
+/// `sync_flexi_params`): `flexi` as given, its clearance held to the
+/// nozzle's floor and its gap to the clearance, sized from the section's
+/// inscribed radius (`inscribed`) when `auto`; why it cannot be made, how
+/// far it reaches across the cut and out of it, and the panel's warnings
+/// (the hinge's or the twist lock's axis, `normal` the cut's in the scene,
+/// and the slice's gap closing radius `closing`).
+fn cut_flexi(args: &Value) -> Value {
+    use edge_engine::flexi::{self, FlexiKind};
+    let mut p = flexi_of(args.get("flexi").unwrap_or(&Value::Null));
+    let nozzle = args.get("nozzle").and_then(Value::as_f64).unwrap_or(0.4);
+    let floor = flexi::clearance_floor(nozzle);
+    if p.clearance < floor {
+        p.clearance = floor;
+    }
+    if p.gap <= 0.0 {
+        p.gap = flexi::default_gap(p.kind);
+    }
+    if p.gap < p.clearance {
+        p.gap = p.clearance;
+    }
+    if args.get("auto").and_then(Value::as_bool).unwrap_or(false) {
+        let inscribed = args.get("inscribed").and_then(Value::as_f64).unwrap_or(0.0);
+        p = flexi::auto_size(p, inscribed);
+    }
+    let normal = numbers(args, "normal").unwrap_or([0.0, 0.0, 1.0]);
+    let axes: Vec<[f64; 3]> = ["x", "y"]
+        .iter()
+        .map(|key| numbers(args, key).unwrap_or([1.0, 0.0, 0.0]))
+        .collect();
+    let mut warnings: Vec<String> = Vec::new();
+    if p.kind == FlexiKind::Hinge {
+        let a = p.rotation.to_radians();
+        let axis: [f64; 3] = std::array::from_fn(|i| axes[0][i] * a.cos() + axes[1][i] * a.sin());
+        if flexi::hinge_axis_needs_care(axis) {
+            warnings.push(super::i18n::tr("This hinge's pin axis is not horizontal. A vertical or steeply tilted pin axis needs support inside the bore; rotate the part, or change Rotation so the axis lies flat, or expect to support the bore by hand."));
+        }
+    }
+    if p.kind.is_twist() && flexi::twist_axis_needs_care(normal) {
+        warnings.push(super::i18n::tr(if p.kind == FlexiKind::Thread {
+            "This cut's axis is not vertical. A thread printed on its side has every turn's upper flank hanging in the air, which sags into the clearance and jams the lid; rotate the part so the cut normal points up, or expect a poor fit."
+        } else {
+            "This cut's axis is not vertical. A bayonet printed on its side has its lugs and slots overhanging; rotate the part so the cut normal points up for the best fit."
+        }));
+    }
+    let closing = args.get("closing").and_then(Value::as_f64).unwrap_or(0.049);
+    if flexi::gap_closing_conflict(&p, closing) {
+        warnings.push(format!(
+            "{} ({closing:.3} mm) {} {:.3} mm, {}",
+            super::i18n::tr("Slice gap closing radius"),
+            super::i18n::tr("will fuse this clearance shut. Keep it below"),
+            flexi::max_safe_gap_closing_radius(&p),
+            super::i18n::tr("or raise the clearance."),
+        ));
+    }
+    json!({
+        "flexi": flexi_json(&p),
+        "floor": floor,
+        "invalid": flexi::validate(&p),
+        "warnings": warnings,
+        "radius": flexi::outer_extent(&p),
+        "height": flexi::protrusion_height(&p),
+        "hinge_knuckles": flexi::hinge_knuckle_count(&p),
+        "thread_starts": flexi::thread_start_count(&p),
+        "bayonet_lugs": flexi::bayonet_lug_count(&p),
+        // Its outline across the cut, padded by the clearance, its edges
+        // sampled (`is_outside_of_cut_contour`, Flexi).
+        "outline": sampled(&flexi::footprint_corners(&p, 0.0)),
+    })
+}
+
+/// A TAC Joint for the panel (`render_tac_joint_inputs`): `tac` as given,
+/// checked with the cut's faces at `faces`; its size and how far it goes
+/// into each half.
+fn cut_tac(args: &Value) -> Value {
+    let p = tac_of(args.get("tac").unwrap_or(&Value::Null));
+    let faces: Vec<f64> = args
+        .get("faces")
+        .and_then(Value::as_array)
+        .map(|list| list.iter().filter_map(Value::as_f64).collect())
+        .unwrap_or_default();
+    let (lo, hi) = (
+        faces.first().copied().unwrap_or(0.0),
+        faces.get(1).copied().unwrap_or(0.0),
+    );
+    let scale = f64::from(p.scale);
+    let half = 5.5 * scale;
+    json!({
+        "tac": tac_json(&p),
+        "invalid": edge_engine::tac::validate(&p, lo, hi),
+        "size": [4.09 * scale, 3.34 * scale, 11.0 * scale],
+        "insertion": [half + f64::from(p.offset) - hi, half - f64::from(p.offset) + lo],
+        "radius": edge_engine::tac::footprint_radius(&p),
+        // The socket's outline across the cut: its corners and its faces'
+        // middles (`is_outside_of_cut_contour`, TAC Joint).
+        "outline": edge_engine::tac::cutter_mesh(&p).map_or_else(Vec::new, |mesh| {
+            let mut out: Vec<[f64; 2]> = mesh
+                .vertices
+                .iter()
+                .map(|v| [f64::from(v[0]), f64::from(v[1])])
+                .collect();
+            for at in 0..mesh.triangles.len() {
+                let [a, b, c] = mesh.triangle(at);
+                out.push([
+                    f64::from(a[0] + b[0] + c[0]) / 3.0,
+                    f64::from(a[1] + b[1] + c[1]) / 3.0,
+                ]);
+            }
+            out
+        }),
+    })
+}
+
+/// A closed outline with each edge sampled eight times.
+fn sampled(corners: &[[f64; 2]]) -> Vec<[f64; 2]> {
+    let n = corners.len();
+    let mut out = Vec::with_capacity(8 * n);
+    for (at, a) in corners.iter().enumerate() {
+        let b = corners[(at + 1) % n];
+        for k in 0..8 {
+            let t = f64::from(k) / 8.0;
+            out.push([a[0] + (b[0] - a[0]) * t, a[1] + (b[1] - a[1]) * t]);
+        }
+    }
+    out
 }
 
 /// A pin as the page takes it: [`pin_of`]'s names.
@@ -688,9 +884,21 @@ fn recipe_json(recipe: &edge_engine::CutRecipe, plane: &Transform) -> Value {
             let kind = match c.kind {
                 1 => "dowel",
                 2 => "snap",
+                4 => "flexi",
                 5 => "pin",
+                6 => "tac",
                 _ => "plug",
             };
+            let extra = |name: &str| {
+                c.extra
+                    .iter()
+                    .find(|(key, _)| key == name)
+                    .map(|(_, value)| *value)
+            };
+            let flexi =
+                (c.kind == 4).then(|| flexi_json(&edge_engine::flexi::from_attributes(extra)));
+            let tac = (c.kind == 6)
+                .then(|| tac_json(&edge_engine::tac::TacParams::from_attributes(extra)));
             let pin = (c.kind == 5).then(|| {
                 pin_json(&edge_engine::pushfit::Pin::from_attributes(|name| {
                     c.extra
@@ -718,6 +926,8 @@ fn recipe_json(recipe: &edge_engine::CutRecipe, plane: &Transform) -> Value {
                 "style": style,
                 "shape": shape,
                 "pin": pin,
+                "flexi": flexi,
+                "tac": tac,
             })
         })
         .collect();
@@ -1317,6 +1527,8 @@ impl Session {
             "cut_parts" => self.cut_parts(args),
             "cut_recipe" => self.cut_recipe(args),
             "cut_pin" => Ok(cut_pin(args)),
+            "cut_flexi" => Ok(cut_flexi(args)),
+            "cut_tac" => Ok(cut_tac(args)),
             "cut_preview" => self.cut_preview(args),
             "cut_draw" => self.cut_draw(args),
             "cut_draw_hits" => self.cut_draw_hits(args),
@@ -1723,6 +1935,18 @@ impl Session {
                     c.pin.hole_mesh(side, 0.0)
                 } else if c.kind == edge_engine::ConnectorKind::Pin {
                     c.pin.mesh(0.0, 0.0, false).mesh
+                } else if c.kind == edge_engine::ConnectorKind::Flexi {
+                    // The joint as it will be (`flexi_preview_body`).
+                    edge_engine::flexi::preview_body(&c.flexi)
+                } else if c.kind == edge_engine::ConnectorKind::Tac {
+                    // The connector, or with `hole` its socket, the outline
+                    // drawn round it (`update_tac_joint_models`).
+                    let made = if hole.is_some() {
+                        edge_engine::tac::cutter_mesh(&c.tac)
+                    } else {
+                        edge_engine::tac::connector_mesh(&c.tac)
+                    };
+                    made.unwrap_or_default()
                 } else {
                     edge_engine::connector_mesh(c.kind, c.style, c.shape, snap)
                 };

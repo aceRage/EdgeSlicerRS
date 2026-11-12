@@ -751,6 +751,13 @@ tool's panel does, and scrolls). Its rows:
   In the scene the sheet is drawn in the plane's grey, see-through, its
   handles the grip's grey balls (yellow under the pointer); the halves the
   booleans made stand in for the part in cyan and magenta.
+- **The fork's joints** (`joints.js`): "Type" a list of the six kinds;
+  a Flexi joint's "Joint", a TAC Joint's "Placement" lists; their numbers
+  narrow fields with their unit, those "Auto size" sets off while it is
+  on; counts as `.unit.cut-count`; ticks as the pin's; what cannot be
+  made and the warnings `.cut-note`, the notes `.edit-hint`; "Reset TAC
+  Joint" a plain button at the left. A TAC Joint's socket is drawn round
+  it while placed in the reference's faint blue (data, not tokens).
 - **The drawn surface** (`drawn.js`): "Direction" a list, "Extension",
   "Extension angle", "Angle", "Depth" and "Smoothing" each a slider with
   its number as "Thickness" has them ("Extension angle" under its "Set"

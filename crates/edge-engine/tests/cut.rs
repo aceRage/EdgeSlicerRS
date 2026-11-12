@@ -939,6 +939,8 @@ fn connectors_make_plugs_holes_and_dowels_that_fit_by_their_tolerances() {
         style,
         shape,
         pin: Default::default(),
+        flexi: Default::default(),
+        tac: Default::default(),
     };
     let connectors = vec![
         connector(
@@ -1119,6 +1121,8 @@ fn sliced_a_plug_and_its_hole_are_apart_by_the_tolerance() {
             style: ConnectorStyle::Prism,
             shape: ConnectorShape::Circle,
             pin: Default::default(),
+            flexi: Default::default(),
+            tac: Default::default(),
         }],
         ..CutOptions::default()
     };
@@ -1197,6 +1201,8 @@ fn a_pin_is_its_own_object_with_a_hole_in_each_half() {
         style: ConnectorStyle::Prism,
         shape: ConnectorShape::Circle,
         pin,
+        flexi: Default::default(),
+        tac: Default::default(),
     };
     // A pin that cannot be made stops the cut.
     let mut refused = model.clone();
@@ -1521,4 +1527,268 @@ fn a_drawn_cut_is_made_saved_read_back_and_made_again() {
         )
         .unwrap_err();
     assert!(!error.to_string().is_empty());
+}
+
+/// A connector of a kind of the fork's own at `at`, plain otherwise.
+fn joint(at: [f64; 3], kind: edge_engine::ConnectorKind) -> edge_engine::Connector {
+    edge_engine::Connector {
+        at,
+        radius: 2.5,
+        height: 5.0,
+        radius_tolerance: 0.0,
+        height_tolerance: 0.0,
+        z_angle: 0.0,
+        kind,
+        style: edge_engine::ConnectorStyle::Prism,
+        shape: edge_engine::ConnectorShape::Circle,
+        pin: Default::default(),
+        flexi: Default::default(),
+        tac: Default::default(),
+    }
+}
+
+#[test]
+fn a_tac_joint_is_its_own_object_or_one_halfs_part_with_a_socket_in_the_other() {
+    use edge_engine::ConnectorKind;
+    use edge_engine::tac::{TacAttachment, TacParams};
+    let dir = tempfile::tempdir().unwrap();
+    let model = block(dir.path(), [30.0, 30.0, 30.0]);
+    let copy = model.objects()[0].copies()[0].id();
+    let (_, reach) = model.in_scene(Some(&BED), copy).unwrap();
+    let [low, high] = reach.unwrap();
+    let mid = [(low[0] + high[0]) / 2.0, (low[1] + high[1]) / 2.0, 15.0];
+    let across = plane(mid, [0.0, 0.0, 1.0]);
+    // Too little clearance stops the cut, in the reference's words.
+    let mut refused = model.clone();
+    let mut tight = joint(mid, ConnectorKind::Tac);
+    tight.tac = TacParams {
+        clearance: 0.0,
+        end_clearance: 0.0,
+        ..TacParams::default()
+    };
+    let error = refused
+        .cut(
+            Some(&BED),
+            copy,
+            &across,
+            &CutOptions {
+                connectors: vec![tight],
+                ..CutOptions::default()
+            },
+        )
+        .unwrap_err();
+    assert!(
+        error
+            .to_string()
+            .contains("Increase the side or end clearance"),
+        "{error}"
+    );
+    // On its own: an object beside the block, laid down; a socket in each
+    // half.
+    let mut separate = model.clone();
+    let done = separate
+        .cut(
+            Some(&BED),
+            copy,
+            &across,
+            &CutOptions {
+                connectors: vec![joint(mid, ConnectorKind::Tac)],
+                ..CutOptions::default()
+            },
+        )
+        .unwrap();
+    // Not counted with the pins in the note.
+    assert_eq!(done.pins, 0);
+    let names: Vec<&str> = separate.objects().iter().map(|o| o.name()).collect();
+    assert_eq!(names, ["block", "block", "block-Pin-1"]);
+    let part = |model: &Model, object: usize, at: usize| {
+        let part = &model.objects()[object].shape().parts()[at];
+        let mut mesh = Mesh::default();
+        mesh.append(&part.mesh, &part.transform);
+        (part.kind, mesh)
+    };
+    for object in [0, 1] {
+        let (kind, socket) = part(&separate, object, 1);
+        assert_eq!(kind, PartKind::Negative);
+        sound(&socket);
+    }
+    let (kind, made) = part(&separate, 2, 0);
+    assert_eq!(kind, PartKind::Normal);
+    sound(&made);
+    // Laid down: 11 mm long across the bed, standing on it.
+    let at = separate.objects()[2].copies()[0].reach().unwrap();
+    assert!(near(at[0][2], 0.0, 1e-6));
+    assert!(near(at[1][1] - at[0][1], 11.0, 0.1), "{at:?}");
+    // The upper half's socket from its face up, the lower's down.
+    let (a_low, a_high) = bounds(&part(&separate, 0, 1).1);
+    assert!(
+        near(a_low[2], 15.0 - 0.02, 1e-4) && a_high[2] > 20.0,
+        "{a_low:?} {a_high:?}"
+    );
+    let (b_low, b_high) = bounds(&part(&separate, 1, 1).1);
+    assert!(
+        near(b_high[2], 15.0 + 0.02, 1e-4) && b_low[2] < 10.0,
+        "{b_low:?} {b_high:?}"
+    );
+    // Attached to A: the connector a part of the upper half, a socket in
+    // the lower alone.
+    let mut attached = model.clone();
+    let mut with_a = joint(mid, ConnectorKind::Tac);
+    with_a.tac.attachment = TacAttachment::Upper;
+    attached
+        .cut(
+            Some(&BED),
+            copy,
+            &across,
+            &CutOptions {
+                connectors: vec![with_a],
+                ..CutOptions::default()
+            },
+        )
+        .unwrap();
+    assert_eq!(attached.objects().len(), 2);
+    let kinds = |object: usize| -> Vec<PartKind> {
+        attached.objects()[object]
+            .shape()
+            .parts()
+            .iter()
+            .map(|p| p.kind)
+            .collect()
+    };
+    assert_eq!(kinds(0), [PartKind::Normal, PartKind::Normal]);
+    assert_eq!(kinds(1), [PartKind::Normal, PartKind::Negative]);
+    // Saved and read back, its settings are in the recipe, and the C++
+    // slicer reads it.
+    let path = dir.path().join("tac.3mf");
+    separate
+        .save(&path, &edge_engine::Saving::None, Some(&BED))
+        .unwrap();
+    if let Ok(keep) = std::env::var("EDGE_CUT_KEEP") {
+        std::fs::copy(&path, Path::new(&keep).join("tac.3mf")).unwrap();
+    }
+    let mut back = Model::open(&path).unwrap();
+    let half = back.objects()[0].copies()[0].id();
+    let edit = back.cut_edit(Some(&BED), half).unwrap();
+    assert_eq!(edit.recipe.connectors[0].kind, 6);
+    let read = TacParams::from_attributes(|name| {
+        edit.recipe.connectors[0]
+            .extra
+            .iter()
+            .find(|(key, _)| key == name)
+            .map(|(_, v)| *v)
+    });
+    assert_eq!(read, TacParams::default());
+    assert!(!slice_file(&path).outlines().is_empty());
+}
+
+#[test]
+fn a_flexi_joint_joins_the_halves_a_gap_apart_in_one_object() {
+    use edge_engine::ConnectorKind;
+    use edge_engine::flexi::{self, FlexiKind, FlexiParams};
+    let dir = tempfile::tempdir().unwrap();
+    // Tall enough that a twist lock's plug stays inside the other half.
+    let model = block(dir.path(), [40.0, 40.0, 80.0]);
+    let copy = model.objects()[0].copies()[0].id();
+    let (_, reach) = model.in_scene(Some(&BED), copy).unwrap();
+    let [low, high] = reach.unwrap();
+    let mid = [(low[0] + high[0]) / 2.0, (low[1] + high[1]) / 2.0, 40.0];
+    let across = plane(mid, [0.0, 0.0, 1.0]);
+    for kind in FlexiKind::ALL {
+        let mut cut = model.clone();
+        let mut c = joint(mid, ConnectorKind::Flexi);
+        c.flexi = FlexiParams {
+            kind,
+            ..FlexiParams::default()
+        };
+        // The joint as the panel makes it for this section (`auto_size`).
+        c.flexi = flexi::auto_size(c.flexi, 20.0);
+        assert_eq!(flexi::validate(&c.flexi), None, "{kind:?}");
+        cut.cut(
+            Some(&BED),
+            copy,
+            &across,
+            &CutOptions {
+                connectors: vec![c],
+                ..CutOptions::default()
+            },
+        )
+        .unwrap_or_else(|error| panic!("{kind:?}: {error}"));
+        assert_eq!(cut.objects().len(), 1, "{kind:?}");
+        let object = &cut.objects()[0];
+        let parts = object.shape().parts();
+        let names: Vec<Option<&str>> = parts.iter().map(|p| p.name.as_deref()).collect();
+        assert_eq!(names, [Some("block_A"), Some("block_B")], "{kind:?}");
+        let gap = flexi::effective_gap(&c.flexi);
+        let whole = 40.0 * 40.0 * 80.0;
+        let mut total = 0.0;
+        for part in parts {
+            let mut mesh = Mesh::default();
+            mesh.append(&part.mesh, &part.transform);
+            sound(&mesh);
+            total += mesh.signed_volume();
+        }
+        // The gap is taken out, and at most what the reliefs take; the
+        // bodies fill some of that again.
+        let slab = 40.0 * 40.0 * gap;
+        let reliefs: f64 = flexi::upper_reliefs(&c.flexi)
+            .iter()
+            .chain(flexi::lower_reliefs(&c.flexi).iter())
+            .map(|mesh| mesh.signed_volume())
+            .sum();
+        assert!(
+            total < whole - slab + 1e-6 && total > whole - slab - reliefs,
+            "{kind:?}: {total}"
+        );
+        // The two parts do not touch: each is apart from the other by
+        // at least the clearance where they meet (their volumes add up
+        // to their union's).
+        let (mut a, mut b) = (Mesh::default(), Mesh::default());
+        a.append(&parts[0].mesh, &parts[0].transform);
+        b.append(&parts[1].mesh, &parts[1].transform);
+        let common = edge_mesh::boolean::boolean_with(
+            &a,
+            &b,
+            edge_mesh::boolean::Op::Intersection,
+            &Default::default(),
+        )
+        .unwrap();
+        assert!(
+            common.signed_volume().abs() < 1e-6,
+            "{kind:?}: {} {:?} at {mid:?}",
+            common.signed_volume(),
+            common.bounds()
+        );
+        // Saved, it slices, and is kept where asked for the C++ slicer.
+        let path = dir.path().join(format!("flexi_{}.3mf", kind.code()));
+        cut.save(&path, &edge_engine::Saving::None, Some(&BED))
+            .unwrap();
+        if let Ok(keep) = std::env::var("EDGE_CUT_KEEP") {
+            std::fs::copy(
+                &path,
+                Path::new(&keep).join(format!("flexi_{}.3mf", kind.code())),
+            )
+            .unwrap();
+        }
+        assert!(!slice_file(&path).outlines().is_empty(), "{kind:?}");
+    }
+    // A TAC Joint with it is refused, in the reference's words.
+    let mut refused = model.clone();
+    let error = refused
+        .cut(
+            Some(&BED),
+            copy,
+            &across,
+            &CutOptions {
+                connectors: vec![
+                    joint(mid, ConnectorKind::Flexi),
+                    joint([mid[0] + 10.0, mid[1], mid[2]], ConnectorKind::Tac),
+                ],
+                ..CutOptions::default()
+            },
+        )
+        .unwrap_err();
+    assert!(
+        error.to_string().contains("TAC Joint cannot be combined"),
+        "{error}"
+    );
 }

@@ -16,6 +16,7 @@ mod contour;
 pub mod curved;
 pub mod drawn;
 pub mod export;
+pub mod flexi;
 pub mod flush;
 mod followed;
 mod holes;
@@ -34,6 +35,8 @@ mod printable;
 pub mod pushfit;
 mod regions;
 mod scene;
+pub mod tac;
+mod tac_data;
 mod toolpath;
 mod unfollowed;
 

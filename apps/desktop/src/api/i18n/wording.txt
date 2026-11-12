@@ -19,17 +19,29 @@
 Absolute	GUI/Gizmos/GizmoObjectManipulation.cpp:1561
 Add fuzzy skin	GUI/Gizmos/GLGizmoFuzzySkin.cpp:47
 All non-solid parts (modifiers) were deleted	GUI/Plater.cpp:16185
+Angular width of one lug, in degrees. It has to share its slice of the bore with the entry channel and the track.	GUI/Gizmos/GLGizmoCut.cpp:7551
 Apply All	GUI/Plater.cpp:3688
+Attached to A	GUI/Gizmos/GLGizmoCut.cpp:8158
+Attached to B	GUI/Gizmos/GLGizmoCut.cpp:8158
+Auto edge placement	GUI/Gizmos/GLGizmoCut.cpp:7618
+Auto size from the cut cross-section	GUI/Gizmos/GLGizmoCut.cpp:7475
 Averages the line and its surface normals. A hand-drawn line picks up every facet it crossed; a little of this takes the kinks out of the cut surface.	GUI/Gizmos/GLGizmoCut.cpp:5425
 Axis X	GUI/Gizmos/GLGizmoCut.cpp:5205
 Axis Y	GUI/Gizmos/GLGizmoCut.cpp:5205
 Axis Z	GUI/Gizmos/GLGizmoCut.cpp:5205
+Ball & socket	GUI/Gizmos/GLGizmoCut.cpp:216
+Ball radius	GUI/Gizmos/GLGizmoCut.cpp:258
 Bambu Lab Printer Help...	GUI/MainFrame.cpp:3188
+Barrel diameter	GUI/Gizmos/GLGizmoCut.cpp:268
+Bayonet	GUI/Gizmos/GLGizmoCut.cpp:217
+Both halves stay parts of one object so the joint prints in place.	GUI/Gizmos/GLGizmoCut.cpp:7751
 Bring back filament presets that a profile update removed from printers they were made for	GUI/MainFrame.cpp:3119
+Chain link	GUI/Gizmos/GLGizmoCut.cpp:216
 Check whether Windows Firewall blocks printer discovery, and fix its rules	GUI/MainFrame.cpp:3184
 Check Windows Firewall...	GUI/MainFrame.cpp:3183
 Clear all	GUI/CostsDialog.cpp:555
 Clear line	GUI/Gizmos/GLGizmoCut.cpp:5497
+Clearance per end. The 0.30 mm default preserves the original cutter.	GUI/Gizmos/GLGizmoCut.cpp:8180
 Click a highlighted face to lay the object on it.	GUI/Gizmos/GLGizmoFlatten.cpp:422
 Click to collapse / expand	GUI/Plater.cpp:2395
 Close loop	GUI/Gizmos/GLGizmoCut.cpp:5455
@@ -49,23 +61,31 @@ Compare with Previous Slice	GUI/MainFrame.cpp:3906
 Connect to printer	GUI/Plater.cpp:2685
 Connection to ElegooLink is working correctly.	Utils/ElegooLink.cpp:382
 Connection to Moonraker works correctly.	Utils/MoonRaker.cpp:429
+Connector: %1$.2f x %2$.2f x %3$.2f mm	GUI/Gizmos/GLGizmoCut.cpp:8172
 Coordinate system used for transform actions.	GUI/Gizmos/GizmoObjectManipulation.cpp:911
 Cornering calibration	GUI/MainFrame.cpp:4053
 Costs	GUI/MainFrame.cpp:3949
 Could not connect to ElegooLink	Utils/ElegooLink.cpp:387
 Could not connect to Moonraker	Utils/MoonRaker.cpp:434
 Cut along the line	GUI/Gizmos/GLGizmoCut.cpp:5484
+Cut offset	GUI/Gizmos/GLGizmoCut.cpp:8183
 Default width	GUI/ProjectStrip.cpp:1459
 Delete this filament	GUI/GUI_Factories.cpp:2612
 Delete this file from the printer (Delete)	GUI/PrinterStoragePanel.cpp:245
 Depth reaches almost to the middle of the line, so there is no flat left to mate on. Reduce Depth, or raise the Angle.	GUI/Gizmos/GLGizmoCut.cpp:5593
+Detent	GUI/Gizmos/GLGizmoCut.cpp:282
+Diameter of the pin that runs through every knuckle. The pin is one continuous solid, integral to whichever half the Fold side names.	GUI/Gizmos/GLGizmoCut.cpp:7608
 Direction	GUI/Gizmos/GLGizmoCut.cpp:5208
+Double ring	GUI/Gizmos/GLGizmoCut.cpp:216
 Drag a handle to move it; right-click one to delete it; Shift+click a segment to add one.	GUI/Gizmos/GLGizmoCut.cpp:5505
 Drag on the model to start the cut line. You can rotate the view and carry on from either end until the line closes on itself.	GUI/Gizmos/GLGizmoCut.cpp:5507
 Drag to widen the project strip	GUI/ProjectStrip.cpp:1379
 Draw	GUI/Gizmos/GLGizmoCut.cpp:2903
 Draw a line on the model.	GUI/Gizmos/GLGizmoCut.cpp:5543
+Edge offset	GUI/Gizmos/GLGizmoCut.cpp:270
 Edit points	GUI/Gizmos/GLGizmoCut.cpp:5434
+End clearance	GUI/Gizmos/GLGizmoCut.cpp:8179
+Entry depth	GUI/Gizmos/GLGizmoCut.cpp:281
 Error code not found	Utils/ElegooLink.cpp:858
 Export && Open in Bambu Studio	GUI/MainFrame.cpp:3511
 Export a project Bambu Studio opens with its settings (settings Bambu Studio does not have are left out)	GUI/MainFrame.cpp:3508
@@ -77,6 +97,7 @@ Export Logs	GUI/MainFrame.cpp:3122
 Export the selected objects, or all objects on the current plate, as a STEP file of solids	GUI/MainFrame.cpp:3502
 Extension	GUI/Gizmos/GLGizmoCut.cpp:5235
 Extension angle	GUI/Gizmos/GLGizmoCut.cpp:5257
+Extra headroom carved into the groove so the segment can rock.	GUI/Gizmos/GLGizmoCut.cpp:7691
 Extrude	GUI/GCodeViewer.cpp:356
 Filament Management	GUI/Plater.cpp:2882
 Filament preset to apply to all filaments	GUI/Plater.cpp:3625
@@ -84,43 +105,124 @@ Filament slot %d of this project	GUI/PresetManagerDialog.cpp:540
 File/data transfer interrupted. Please check the printer and network, then try it again.	Utils/PrintHost.cpp:255
 Files on the printer	GUI/PrinterStoragePanel.cpp:212
 Fit in all view	GUI/MainFrame.cpp:3258
+Flexi	GUI/Gizmos/GLGizmoCut.cpp:208
+Fold side: the upper half carries the pin	GUI/Gizmos/GLGizmoCut.cpp:7632
+Half angle of the socket mouth, in degrees. Smaller keeps the ball captive, larger gives more movement.	GUI/Gizmos/GLGizmoCut.cpp:7671
+Height of the bump at the end of the track that the lug clicks over, so the lid stops where it locks instead of turning back. 0 leaves the track plain.	GUI/Gizmos/GLGizmoCut.cpp:7557
+Hinge	GUI/Gizmos/GLGizmoCut.cpp:216
+Hinge length	GUI/Gizmos/GLGizmoCut.cpp:269
+How deep each loop's far end is embedded in its own segment.	GUI/Gizmos/GLGizmoCut.cpp:7651
+How far each lug stands out of the plug wall.	GUI/Gizmos/GLGizmoCut.cpp:7546
 How far in the cut travels from the drawn line before it turns onto the flat middle. The deeper it goes, the smaller the flat core - too deep and there is no flat left at all.	GUI/Gizmos/GLGizmoCut.cpp:5410
+How far the barrel sits out from the cut plane's centre, towards the edge of the cut face. The halves can only fold shut when the barrel is at (or past) that edge.	GUI/Gizmos/GLGizmoCut.cpp:7624
 How far the cut surface reaches past the line. An open line needs enough of this to reach across the part, or the cut will not separate it.	GUI/Gizmos/GLGizmoCut.cpp:5242
+How far the lid pushes straight in before it can be turned. It has to be at least the lug's own thickness.	GUI/Gizmos/GLGizmoCut.cpp:7555
+How far the lid turns to lock, in degrees. 60 to 90 is the usual quarter-turn range; it is clamped so the track cannot run into the next lug's channel.	GUI/Gizmos/GLGizmoCut.cpp:7553
+How far the ring lip reaches into the groove.	GUI/Gizmos/GLGizmoCut.cpp:7668
+How far the thread rises per turn. A coarse pitch prints far better than a fine one: 2 mm is the floor on a 0.4 mm nozzle, 3 to 4 mm is the comfortable range.	GUI/Gizmos/GLGizmoCut.cpp:7489
+How far the upper ring is tipped inside its own plane, in degrees, so its free end leans clear of the lower ring.	GUI/Gizmos/GLGizmoCut.cpp:7654
+How many full revolutions of thread there are. 1.25 is the usual jar and pill-bottle range: enough to seat without winding it on forever.	GUI/Gizmos/GLGizmoCut.cpp:7514
+How many knuckles the hinge is split into, alternating between the two halves. An odd count centres the hinge on the point you clicked; an even one shifts it by half a knuckle.	GUI/Gizmos/GLGizmoCut.cpp:7603
+How many lugs ride in the bayonet's slots, evenly spaced around the plug. Three is the usual compromise between holding power and having wall left between the slots.	GUI/Gizmos/GLGizmoCut.cpp:7542
+How many thread strands run side by side. An N-start thread does up in 360/N degrees of turn: 2 starts gives a half-turn lid, 4 a quarter-turn one.	GUI/Gizmos/GLGizmoCut.cpp:7510
+How much of a turn, at each end, the thread fades to nothing over. This is the lead-in chamfer: it is what lets the two halves catch at any relative angle instead of having to be lined up.	GUI/Gizmos/GLGizmoCut.cpp:7516
+How tall each lug is along the axis. This is what carries the pull-out load, so it wants at least a few layers.	GUI/Gizmos/GLGizmoCut.cpp:7548
+Hub radius	GUI/Gizmos/GLGizmoCut.cpp:256
 Hue	GUI/Gizmos/GLGizmoTextureDisplacement.cpp:4081
+Insertion A: %1$.2f mm; B: %2$.2f mm	GUI/Gizmos/GLGizmoCut.cpp:8188
 Join the two ends of the line along the surface, so the cut surface can be made	GUI/Gizmos/GLGizmoCut.cpp:5456
+Joint	GUI/Gizmos/GLGizmoCut.cpp:251
 Keep them only if you trust where this file came from and know what the scripts do. If you remove them, your own settings are used instead.	GUI/UntrustedSettingsGuard.cpp:134
 Import 3MF/STL/STEP/SVG/OBJ/AMF/GLB	GUI/MainFrame.cpp:3469
 Import Config from G-code	GUI/MainFrame.cpp:3486
 Ironing flow calibration	GUI/MainFrame.cpp:4093
+Knuckles	GUI/Gizmos/GLGizmoCut.cpp:266
+Lead-in turns	GUI/Gizmos/GLGizmoCut.cpp:275
+Left-hand thread	GUI/Gizmos/GLGizmoCut.cpp:7519
+Lid side: the upper half screws on	GUI/Gizmos/GLGizmoCut.cpp:7570
+Link length	GUI/Gizmos/GLGizmoCut.cpp:261
+Link width	GUI/Gizmos/GLGizmoCut.cpp:262
 List the printer's files again (F5)	GUI/PrinterStoragePanel.cpp:199
 Load print/filament/printer settings embedded in a sliced G-code file	GUI/MainFrame.cpp:3486
+Lock angle	GUI/Gizmos/GLGizmoCut.cpp:280
+Loop tilt	GUI/Gizmos/GLGizmoCut.cpp:264
+Lug height	GUI/Gizmos/GLGizmoCut.cpp:277
+Lug thickness	GUI/Gizmos/GLGizmoCut.cpp:278
+Lug width	GUI/Gizmos/GLGizmoCut.cpp:279
+Lugs	GUI/Gizmos/GLGizmoCut.cpp:276
+Major diameter	GUI/Gizmos/GLGizmoCut.cpp:271
 Migrate Filament Presets	GUI/MainFrame.cpp:3118
 Minimize	GUI/MainFrame.cpp:4272
+Mirroring is unavailable with TAC Joint. Use connector rotation instead.	GUI/Gizmos/GLGizmoCut.cpp:8670
 Mobile Hub	GUI/MainFrame.cpp:4117
 Modified	GUI/PrinterStoragePanel.cpp:221
+Move the connector along the cut normal. Both halves must retain a positive insertion depth.	GUI/Gizmos/GLGizmoCut.cpp:8184
 New project	GUI/LayerlingPanel.cpp:1266
 Next open project	GUI/KBShortcutsDialog.cpp:204
 Next Project	GUI/MainFrame.cpp:4275
+Nominal clearance per side. Adjusts the cutter dimensions; it is not a constant surface offset around every curve. The 0.12 mm default preserves the original cutter.	GUI/Gizmos/GLGizmoCut.cpp:8176
 Off, the skirt outside the line continues the band's own slope, which is the default and keeps the cut surface smooth where it crosses the skin. Tick this to aim the skirt somewhere else instead.	GUI/Gizmos/GLGizmoCut.cpp:5270
+On build plate	GUI/Gizmos/GLGizmoCut.cpp:8158
 Open line: the cut splits the part along the line.	GUI/Gizmos/GLGizmoCut.cpp:5573
+Opening angle	GUI/Gizmos/GLGizmoCut.cpp:259
+Outer diameter of each knuckle. It has to clear the pin, the clearance on both sides and a wall on each side.	GUI/Gizmos/GLGizmoCut.cpp:7610
+Outer radius	GUI/Gizmos/GLGizmoCut.cpp:252
+Outer radius of the joint. Auto = 0.4 x the inscribed radius of the cut cross-section.	GUI/Gizmos/GLGizmoCut.cpp:7661
+Outside diameter of the thread, or of the bayonet's lug circle. Auto = 0.7 x the inscribed radius of the cut cross-section.	GUI/Gizmos/GLGizmoCut.cpp:7483
+Overall length of each loop, along the loop's long axis.	GUI/Gizmos/GLGizmoCut.cpp:7645
+Overall length of the knuckle run along the hinge axis. Each knuckle gets an equal share of it, less the gap at each end face.	GUI/Gizmos/GLGizmoCut.cpp:7612
+Overall width of each loop, across the loop. The loop's opening has to pass the other loop's wire.	GUI/Gizmos/GLGizmoCut.cpp:7647
+Pin diameter	GUI/Gizmos/GLGizmoCut.cpp:267
+Pitch	GUI/Gizmos/GLGizmoCut.cpp:272
+Placement	GUI/Gizmos/GLGizmoCut.cpp:8160
+Radial thickness of the ring lip.	GUI/Gizmos/GLGizmoCut.cpp:7666
+Radius of the solid central hub that keeps the joint from collapsing. 0 disables it.	GUI/Gizmos/GLGizmoCut.cpp:7696
 Remove the drawn line	GUI/Gizmos/GLGizmoCut.cpp:5497
+Reset TAC Joint	GUI/Gizmos/GLGizmoCut.cpp:8199
+Ring height	GUI/Gizmos/GLGizmoCut.cpp:254
+Ring width	GUI/Gizmos/GLGizmoCut.cpp:253
+Rotate the asymmetric profile about the cut normal.	GUI/Gizmos/GLGizmoCut.cpp:8192
+Scale the connector. Clearances remain in millimetres.	GUI/Gizmos/GLGizmoCut.cpp:8167
+Side clearance	GUI/Gizmos/GLGizmoCut.cpp:8175
+Size (%)	GUI/Gizmos/GLGizmoCut.cpp:8167
+Space left between the joint's moving surfaces so they do not fuse. The floor comes from the nozzle diameter of the active printer preset.	GUI/Gizmos/GLGizmoCut.cpp:7677
 Start your next stroke at one of the marked ends. Rotate the view freely. Finish a stroke near the other end and the loop closes - or press "Cut along the line" to use it open.	GUI/Gizmos/GLGizmoCut.cpp:5515
+Starts	GUI/Gizmos/GLGizmoCut.cpp:273
+Stem depth	GUI/Gizmos/GLGizmoCut.cpp:265
 Surface normal	GUI/Gizmos/GLGizmoCut.cpp:5205
+TAC Joint	GUI/Gizmos/GLGizmoCut.cpp:208
 That stroke did not start at either end of the line, so it was not added. Start at one of the marked ends, or clear the line first.	GUI/Gizmos/GLGizmoCut.cpp:5526
 The Extension reaches other parts of the model here, so it has been clipped to keep the cut on the line you drew. Shorten the line's gap to those parts or reduce Extension.	GUI/Gizmos/GLGizmoCut.cpp:5603
 The angle at which the outer shell projects in towards the flat middle of the cut. 0 makes a flat shelf around the core, 45 a chamfered lip the two halves key into, and 90 a straight wall with no lip. The SIGN is which way the lip leans: positive projects it away from the face you drew on, negative back towards you, so the same line can be given a lip on either side.	GUI/Gizmos/GLGizmoCut.cpp:5332
+The connector belongs to the selected half. Only the opposite half gets a socket. Use Mesh Boolean after cutting to merge the connector into the body.	GUI/Gizmos/GLGizmoCut.cpp:8225
+The connector is printed as a separate object. The blue outline shows its matching cutter.	GUI/Gizmos/GLGizmoCut.cpp:8223
+The lid pushes in and turns to lock. The two halves print in place as one object.	GUI/Gizmos/GLGizmoCut.cpp:7748
+The lid screws on. The two halves print in place as one object; unscrew them after printing.	GUI/Gizmos/GLGizmoCut.cpp:7745
 The line is already closed. Clear it, or press Ctrl+Z, before drawing a different one.	GUI/Gizmos/GLGizmoCut.cpp:5530
 The line is not finished, so there is no cut surface yet. Carry on from an end until it comes within %1% mm of the other, or use it open.	GUI/Gizmos/GLGizmoCut.cpp:5548
 The line turns tighter than the Extension reaches, so the cut surface folds there. Reduce Extension.	GUI/Gizmos/GLGizmoCut.cpp:5596
 The line turns tighter than the cut surface reaches sideways, so the surface folds there. Reduce the Angle, the Extension or the Depth.	GUI/Gizmos/GLGizmoCut.cpp:5595
 The stroke does not separate the part - increase Extension or draw the line right across it.	GUI/Gizmos/GLGizmoCut.cpp:5581
+The thread's start angle: where the first strand begins around the axis. Turning it turns where the lid ends up pointing when it is screwed down.	GUI/Gizmos/GLGizmoCut.cpp:7582
 The two ends cannot be joined across the surface from this view. Turn the model so the gap between them is visible and try again, or draw the remaining part of the line by hand.	GUI/Gizmos/GLGizmoCut.cpp:5538
+Thickness of the cut: how far apart the two segments' faces end up. Each face is set back from the cut plane by half of it, and the joint bridges the gap. A larger gap makes the joint visibly more flexible; it can never be smaller than the clearance.	GUI/Gizmos/GLGizmoCut.cpp:7686
+This hinge's pin axis is not horizontal. A vertical or steeply tilted pin axis needs support inside the bore; rotate the part, or change Rotation so the axis lies flat, or expect to support the bore by hand.	GUI/Gizmos/GLGizmoCut.cpp:7718
 This loop has no consistent outside, so the Angle has been ignored. Draw a simpler loop, or use Direction = Axis or View.	GUI/Gizmos/GLGizmoCut.cpp:5609
+Thread	GUI/Gizmos/GLGizmoCut.cpp:217
+Tilt allowance	GUI/Gizmos/GLGizmoCut.cpp:257
+Tube radius of the wire each loop is made of.	GUI/Gizmos/GLGizmoCut.cpp:7649
 Turn the line's points into handles you can move. Drag a handle to move it along the surface, right-click one to delete it, and Shift+click a segment to add one. Each edit is a separate undo step.	GUI/Gizmos/GLGizmoCut.cpp:5443
+Turn the other way to lock	GUI/Gizmos/GLGizmoCut.cpp:7560
+Turns	GUI/Gizmos/GLGizmoCut.cpp:274
+Turns the hinge about the cut normal. This angle IS the pin axis: it decides which way the part folds, and whether the pin ends up lying flat on the bed (easy to print) or standing up (needs care).	GUI/Gizmos/GLGizmoCut.cpp:7641
+Turns the whole link about the cut normal. Both rings turn together, so their planes stay perpendicular to each other; this only chooses where in the cut plane the pair sits - use it to line the rings up with the part, or with the way it prints.	GUI/Gizmos/GLGizmoCut.cpp:7656
 Use the line as it is, without closing it: the cut splits the part along it	GUI/Gizmos/GLGizmoCut.cpp:5485
 Using the line as it is. Draw from an end to carry on; Esc clears it; Ctrl+Z takes back one stroke and Ctrl+Y puts it back.	GUI/Gizmos/GLGizmoCut.cpp:5509
+Where the first lug sits around the axis. Turning it turns where the lid ends up pointing when it is locked.	GUI/Gizmos/GLGizmoCut.cpp:7583
+Which half carries the male thread or the lugged plug - i.e. which one is the cap. The other half gets the bore.	GUI/Gizmos/GLGizmoCut.cpp:7575
 Which way the cut surface reaches into the part. Surface normal follows the face the line was drawn on; the others are a single direction, i.e. a straight extrusion of the line.	GUI/Gizmos/GLGizmoCut.cpp:5228
 Which way the skirt outside the drawn line leaves it. 0 lays it flat, level with the middle of the cut; higher lifts it away from the part; negative tucks it back under. With this off it continues the band, which is what the Angle sets.	GUI/Gizmos/GLGizmoCut.cpp:5289
+Wire thickness	GUI/Gizmos/GLGizmoCut.cpp:263
 none	GUI/CostsDialog.cpp:505
 Noop	GUI/GCodeViewer.cpp:346
 Note: Moonraker version at least 1.1.0 is required.	Utils/MoonRaker.cpp:435
@@ -148,6 +250,7 @@ Render objects with Phong shading, and optionally ambient occlusion and cast sha
 Save as...	GUI/ProjectStrip.cpp:1415
 Selected filament	GUI/Gizmos/GLGizmoMmuSegmentation.cpp:722
 Set all filaments to the selected preset	GUI/Plater.cpp:3690
+or raise the clearance.	GUI/Gizmos/GLGizmoCut.cpp:7741
 settings	GUI/Plater.cpp:2588
 Show 3Dconnexion Settings	GUI/MainFrame.cpp:3841
 Show Center of Mass	GUI/MainFrame.cpp:3884
@@ -184,6 +287,7 @@ Window	GUI/MainFrame.cpp:4321 (wxWidgets' own title of macOS's Window menu)
 World	GUI/Gizmos/GizmoObjectManipulation.cpp:849
 X-Ray	GUI/MainFrame.cpp:3864
 Your own filament prices and machine rates, over the presets' values	GUI/MainFrame.cpp:3949
+will fuse this clearance shut. Keep it below	GUI/Gizmos/GLGizmoCut.cpp:7739
 
 Enable painted fuzzy skin for this object	GUI/Gizmos/GLGizmoFuzzySkin.cpp:346
 Warning: Fuzzy skin is disabled, painted fuzzy skin will not take effect!	GUI/Gizmos/GLGizmoFuzzySkin.cpp:341

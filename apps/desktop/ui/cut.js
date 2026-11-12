@@ -1380,12 +1380,15 @@
         t("Mirror the whole cut - plane, surface and connectors - about the object's centre on the world Y axis"),
         t("Mirror the whole cut - plane, surface and connectors - about the object's centre on the world Z axis"),
       ];
+      // Not with a TAC Joint (`render_mirror_buttons`).
+      const tac = o.connectors.some((c) => c.type === 'tac');
       [t('X'), t('Y'), t('Z')].forEach((label, axis) => {
-        const button = el('button', { type: 'button', textContent: label, title: mirrorTips[axis], disabled: busy });
+        const button = el('button', { type: 'button', textContent: label, title: mirrorTips[axis], disabled: busy || tac });
         button.addEventListener('click', () => this.mirror(axis));
         mirrors.append(button);
       });
       rows.push(el('div', { className: 'cut-row' }, el('span', { className: 'edit-label', textContent: t('Mirror cut') }), mirrors));
+      if (tac) rows.push(el('p', { className: 'edit-hint', textContent: t('Mirroring is unavailable with TAC Joint. Use connector rotation instead.') }));
       if (dovetail) rows.push(...this.grooveRows(busy));
       else rows.push(...this.surfaceRows(busy));
       // "Thickness": what the cut takes away, and from which side.
@@ -1463,8 +1466,11 @@
       };
       rows.push(side(t('Upper part'), UPPER, 'keep_upper', 'place_on_cut_upper', 'flip_upper'));
       rows.push(side(t('Lower part'), LOWER, 'keep_lower', 'place_on_cut_lower', 'flip_lower'));
-      // Not with pieces given to sides, nor with a dovetail.
-      const parts = el('input', { type: 'checkbox', checked: p.to_parts && !o.parts && !dovetail, disabled: busy || Boolean(o.parts) || dovetail || o.connectors.length > 0 });
+      // Not with pieces given to sides, nor with a dovetail; shown on and
+      // fixed with a Flexi joint, which keeps both halves parts of one
+      // object (`flexi_placed`), the person's own choice kept.
+      const flexiPlaced = o.connectors.some((c) => c.type === 'flexi');
+      const parts = el('input', { type: 'checkbox', checked: flexiPlaced || (p.to_parts && !o.parts && !dovetail), disabled: busy || Boolean(o.parts) || dovetail || o.connectors.length > 0 });
       parts.addEventListener('change', () => {
         p.to_parts = parts.checked;
         // Both parts are kept, as they stood (`m_keep_as_parts`).
