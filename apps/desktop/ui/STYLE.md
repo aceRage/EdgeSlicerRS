@@ -583,7 +583,7 @@ Icon tools in a row on the overlay surface: over the 3D stage, where a row
 of the page would not be at home. `.toolbar.vertical` is a column (the
 plates); a text tool in one is a `button.quiet` ("View", "Fit part"). A tool is 28 px square with a 16 px icon;
 `.toolbar-gap` is the hairline between groups. A tool that stays on while
-it is in use (Move, Rotate, Scale, Lay on face) carries `aria-pressed`, and the one that
+it is in use (Move, Rotate, Scale, Lay on face, Cut) carries `aria-pressed`, and the one that
 is on is the accent on its tint. That is the toolbar's one use of the
 accent: what was done (undo) and what can be added are plain. The keys of a
 tool are in its tooltip, in the reference's own wording ("Move [M]"); a
@@ -645,6 +645,39 @@ The panel scrolls when the stage is low. The circle cursor
 model; it lets the pointer through. The colours of the paint in the
 scene are the reference's (enforcers, blockers, the filaments'), drawn
 with the scene's own shading, never the page's accent.
+
+### "Cut"'s panel (`cut.js`, `edit.css`)
+
+An `.edit-panel` with `.cut-panel`, like a painting tool's, but standing
+at the stage's right under the toolbar's row rather than in the middle:
+the plane and its grip are over the middle of the object, which the
+panel must not hide (under 760 px it goes to the stage's foot as every
+tool's panel does, and scrolls). Its rows:
+
+- **A label and what it is about** (`.cut-row`): the label in
+  `--text-2` at the left, then a value ("Build Volume", `.cut-size` in
+  the fixed-width face), a `.cut-line` (the axis letter in its colour, a
+  `.unit` number field, the reset as an icon tool), or a slider with its
+  number (`.cut-slide`, as `.paint-slide`).
+- **Three letters to press** ("Mirror cut"): plain buttons joined
+  (`.cut-line.joined`), the letters in the fixed-width face.
+- **A side and what is done with it** (`.cut-side`): a 10 px swatch of
+  the side's tint in the scene (cyan, magenta: the reference's, data, not
+  tokens) and its name in `--text-1`, then its ticks; a tick never breaks
+  in its words, and the ticks go to a second line where the row is too
+  narrow (German at 900 px). A tick that is off is `--text-off`.
+- **A note about a value** (`.cut-note`, "Remove from"): `--warn`, at
+  `--size-small`, as the reference colours it.
+- **A warning** (`.cut-warning`): `--danger`, "Warning: …".
+- The help is the painting tools' (`.paint-help`); "Perform cut" the one
+  primary button, at the foot (`.cut-foot`), off while nothing is kept;
+  "Reset cut" a plain button at the left (`.cut-foot.cut-start`).
+
+What the tool draws in the scene keeps the reference's colours: the plane
+(light grey, pink when the cut cannot be made), the section in white, the
+grip's stalk yellow, its ball grey (lit yellow or in an axis's colour
+under the pointer), its cones in the axes' red and green, the two sides
+cyan and magenta through the mesh shader's colour plane.
 
 ### Trees: `.tree`
 
@@ -709,7 +742,7 @@ Where each stands (`#stage` sets the margins, `--stage-inset` all round):
 | --- | --- |
 | Top left | The plates (`#plates`, a vertical toolbar): "Slice all" (or "All Plates", the statistics) over a hairline, then each plate's number; the one shown is the accent on its tint, ✓ in `--ok` for sliced, ! in `--danger` for failed, a lock at the bottom left of a locked one. The right button or the menu key on a tile opens the plate's menu |
 | By the plate shown | Its own tools (`#plate-tools`), at its far right corner |
-| Top, from `--stage-left` | Prepare's toolbar, centred; under it "Object Operations" (`.edit-panel`) or a painting tool's panel (`.paint-panel`). Where the stage is narrower than 760 px the toolbar takes two rows and the panel stands under both |
+| Top, from `--stage-left` | Prepare's toolbar, centred; under it "Object Operations" (`.edit-panel`) or a painting tool's panel (`.paint-panel`); "Cut"'s (`.cut-panel`) under it at the right. Where the stage is narrower than 760 px the toolbar takes two rows and the panel stands under both |
 | Top right, `--stage-right` in | The legend (`--legend-width`); the layer slider's labels keep the band right of it |
 | Right | The layers slider and its one-layer button; on the slider, what is set at layers (below) |
 | Right, under the legend | The G-code window (below); beside the legend, at its left, where the legend leaves too little room under it |
