@@ -208,3 +208,88 @@ fn supports_painted_say_what_the_engine_does_with_them() {
             .is_err()
     );
 }
+
+#[test]
+fn colours_by_height_triangle_and_gap_fill() {
+    let session = Arc::new(Session::new(None));
+    let project = ask(
+        &session,
+        "project_open",
+        json!({ "path": reference(SMALL) }),
+    )["id"]
+        .as_u64()
+        .unwrap();
+    let (copy, matrix, [low, high]) = first_copy(&session, project);
+    ask(
+        &session,
+        "paint_open",
+        json!({ "project": project, "copy": copy, "kind": "color", "filaments": 3 }),
+    );
+    let middle = [(low[0] + high[0]) / 2.0, (low[1] + high[1]) / 2.0];
+    let args = |op: Value| {
+        let mut args = json!({ "project": project, "matrix": matrix, "eye": [middle[0], middle[1], high[2] + 100.0] });
+        args.as_object_mut()
+            .unwrap()
+            .extend(op.as_object().unwrap().clone());
+        args
+    };
+    let down = json!([middle[0], middle[1], high[2] + 50.0, 0.0, 0.0, -1.0]);
+    // A band of heights up from where the pointer is on the side, on
+    // every part.
+    let side = json!([
+        middle[0],
+        low[1] - 50.0,
+        (low[2] + high[2]) / 2.0,
+        0.0,
+        1.0,
+        0.0
+    ]);
+    let (band, _) = event(
+        &session,
+        args(json!({ "op": "hover", "ray": side, "tool": "height", "height": 1.0 })),
+    );
+    assert!(!band["band"].as_array().unwrap().is_empty(), "{band}");
+    let (painted, _) = event(
+        &session,
+        args(json!({ "op": "paint", "rays": [side], "state": 2, "tool": "height", "height": 1.0 })),
+    );
+    assert_eq!(painted["states"], json!([2]));
+    event(
+        &session,
+        args(json!({ "op": "commit", "name": "Painted using: Filament 2", "tool": "height" })),
+    );
+    // "Triangle": the piece under the pointer, painted with the step.
+    event(
+        &session,
+        args(json!({ "op": "hover", "ray": down, "tool": "triangle" })),
+    );
+    let (marked, _) = event(
+        &session,
+        args(json!({ "op": "paint", "rays": [down], "state": 3, "tool": "triangle" })),
+    );
+    assert_eq!(marked["marked"], true);
+    let (done, _) = event(
+        &session,
+        args(
+            json!({ "op": "commit", "name": "Painted using: Filament 3", "tool": "triangle", "state": 3 }),
+        ),
+    );
+    assert_eq!(done["states"], json!([2, 3]), "{done}");
+    // "Gap fill": the preview sends every block; "Perform" is one step.
+    let (preview, _) = event(&session, args(json!({ "op": "gap", "area": 5.0 })));
+    assert_eq!(preview["all"], true);
+    let (filled, _) = event(
+        &session,
+        args(json!({ "op": "gap_fill", "area": 5.0, "name": "Gap fill" })),
+    );
+    assert!(filled["done"].is_null() || filled["done"] == "Gap fill");
+    // A state above the filaments is refused.
+    assert!(
+        session
+            .call_bytes(
+                "paint_event",
+                &args(json!({ "op": "paint", "rays": [down], "state": 4 }))
+            )
+            .is_err()
+    );
+}
