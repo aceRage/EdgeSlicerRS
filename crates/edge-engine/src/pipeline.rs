@@ -1,5 +1,6 @@
 use std::{
     borrow::Cow,
+    sync::Arc,
     time::{Duration, Instant},
 };
 
@@ -32,8 +33,77 @@ pub struct Timings {
     pub supports: Duration,
     pub surfaces: Duration,
     pub fill: Duration,
-    /// Tool order, prime tower, skirt and brim, and the seams' meshes.
+    /// Tool order, prime tower, skirt and brim.
     pub around: Duration,
+    /// Waiting at the end for the seams' measure, made beside the rest.
+    pub seams_wait: Duration,
+}
+
+/// The objects on the plate as seams are placed by them: each one's
+/// bounds across the bed and their middle; its surface, with where in it
+/// the triangles of what is cut out of it start (a bare model's surface
+/// is its one body); its printed parts by themselves, for where they
+/// meet; and the height the print stands on.
+struct Seams {
+    frames: Vec<(Point2, Point2, Point2)>,
+    meshes: Vec<(Mesh, usize)>,
+    parts: Vec<edge_3mf::InstanceParts>,
+    bare: Option<Mesh>,
+    floor: f64,
+}
+
+impl Seams {
+    /// Hands `then` the scene the seams are placed in, with each
+    /// physical layer's outline and what was measured of the objects.
+    fn scene<R>(
+        &self,
+        outlines: &[&[ExPolygon]],
+        part_joints: bool,
+        measured: Option<&edge_gcode::SeamMeasures>,
+        then: impl FnOnce(&edge_gcode::SeamScene<'_>) -> R,
+    ) -> R {
+        let surface = |object: usize| -> Option<(&Mesh, usize)> {
+            match self.meshes.get(object) {
+                Some((mesh, cut_from)) => Some((mesh, *cut_from)),
+                None => self.bare.as_ref().map(|mesh| (mesh, mesh.triangles.len())),
+            }
+        };
+        // Each object's parts, for where they meet.
+        let parts: Vec<Vec<edge_gcode::SeamPart<'_>>> = (0..self.frames.len())
+            .map(|object| {
+                (self.parts.get(object).into_iter())
+                    .flat_map(|object| &object.parts)
+                    .map(|mesh| edge_gcode::SeamPart {
+                        vertices: &mesh.vertices,
+                        triangles: &mesh.triangles,
+                    })
+                    .collect()
+            })
+            .collect();
+        let objects: Vec<edge_gcode::SeamObject<'_>> = (self.frames.iter().enumerate())
+            .map(|(object, &(min, max, centre))| edge_gcode::SeamObject {
+                min,
+                max,
+                centre,
+                mesh: surface(object).map(|(mesh, negative_from)| edge_gcode::SeamMesh {
+                    vertices: &mesh.vertices,
+                    triangles: &mesh.triangles,
+                    negative_from,
+                }),
+                parts: &parts[object],
+                alone: self.parts.get(object).is_some_and(|object| object.alone),
+                enforcers: (self.parts.get(object)).map_or(&[], |object| &object.enforcers),
+                blockers: (self.parts.get(object)).map_or(&[], |object| &object.blockers),
+            })
+            .collect();
+        then(&edge_gcode::SeamScene {
+            outlines,
+            objects: &objects,
+            floor: self.floor,
+            part_joints,
+            measured,
+        })
+    }
 }
 
 /// One tool's turn on a layer.
@@ -83,11 +153,9 @@ pub struct Sliced {
     /// in it the triangles of what is cut out of it start (none for a
     /// bare model, whose surface is its one body's); and the height the
     /// print stands on.
-    seam_frames: Vec<(Point2, Point2, Point2)>,
-    seam_meshes: Vec<(Mesh, usize)>,
-    /// Each object's printed parts by themselves, for where they meet.
-    seam_parts: Vec<edge_3mf::InstanceParts>,
-    floor: f64,
+    seams: Arc<Seams>,
+    /// How visible each object's surface is and where its parts meet.
+    measured: Option<edge_gcode::SeamMeasures>,
     /// The filaments in use, by number from 1.
     pub used: Vec<usize>,
     /// Each filament's share of every layer; empty with one filament,
@@ -321,6 +389,98 @@ pub fn slice(job: Job, watch: &dyn Watcher) -> Result<Sliced, Failure> {
         shift(&mut bodies, x, y);
         centred = Some(((min_x + max_x) / 2.0, (min_y + max_y) / 2.0));
     }
+    // Laid out from the middle of what is being printed, where it stands
+    // now (a bare model has been moved to the middle of the bed).
+    let extent =
+        bodies
+            .iter()
+            .filter_map(|body| body.solid.bounds())
+            .reduce(|(lo, hi), (min, max)| {
+                (
+                    std::array::from_fn(|i| lo[i].min(min[i])),
+                    std::array::from_fn(|i| hi[i].max(max[i])),
+                )
+            });
+    let middle = extent.map_or(Point2::from_mm(0.0, 0.0), |(lo, hi)| {
+        Point2::from_mm(
+            f64::from(lo[0] + hi[0]) / 2.0,
+            f64::from(lo[1] + hi[1]) / 2.0,
+        )
+    });
+    // Each object's bounds across the bed and its middle, for laying its
+    // sparse pattern. A bare model is one object, with the one middle.
+    let middles: Vec<(Point2, Point2, Point2)> = objects
+        .iter()
+        .filter_map(Mesh::bounds)
+        .map(|(lo, hi)| {
+            (
+                Point2::from_mm(lo[0].into(), lo[1].into()),
+                Point2::from_mm(hi[0].into(), hi[1].into()),
+                Point2::from_mm(
+                    f64::from(lo[0] + hi[0]) / 2.0,
+                    f64::from(lo[1] + hi[1]) / 2.0,
+                ),
+            )
+        })
+        .collect();
+    // The same of each object for its seams, which the reference
+    // reckons from the middle of each object's bounds; a bare model is
+    // one object.
+    let seam_frames: Vec<(Point2, Point2, Point2)> = if middles.is_empty() {
+        let (lo, hi) = extent.unwrap_or((min, max));
+        vec![(
+            Point2::from_mm(lo[0].into(), lo[1].into()),
+            Point2::from_mm(hi[0].into(), hi[1].into()),
+            middle,
+        )]
+    } else {
+        middles.clone()
+    };
+    // Each object's whole surface, what is cut out of it last: what its
+    // seams are hidden by; a bare model is its one body.
+    let seam_meshes: Vec<(Mesh, usize)> = (objects.iter().enumerate())
+        .map(|(object, solid)| {
+            let mut solid = solid.clone();
+            let cut_from = solid.triangles.len();
+            if let Some(negative) = negatives.get(object) {
+                solid.append(negative, &edge_mesh::Transform::IDENTITY);
+            }
+            (solid, cut_from)
+        })
+        .collect();
+    let bare = (seam_meshes.is_empty() && bodies.len() == 1).then(|| bodies[0].solid.clone());
+    let seams = Arc::new(Seams {
+        frames: seam_frames,
+        meshes: seam_meshes,
+        parts: seam_parts,
+        bare,
+        floor: min[2].into(),
+    });
+    // How visible each object's surface is and where its parts meet go
+    // by the meshes alone: they are measured beside the slicing and
+    // waited for at the end. On one thread there is nothing beside it,
+    // and they are measured with the seams, as the G-code is written.
+    let (setup, part_joints) = (
+        print.seam,
+        settings.flag("seam_prefer_part_joints")?.unwrap_or(true),
+    );
+    let measuring = (rayon::current_num_threads() > 1).then(|| {
+        let seams = Arc::clone(&seams);
+        // On threads of its own, half as many as slicing has, so that
+        // neither waits on the other's work queued ahead of its own.
+        let threads = rayon::current_num_threads() / 2;
+        std::thread::spawn(move || {
+            let measure = || {
+                seams.scene(&[], part_joints, None, |scene| {
+                    edge_gcode::measure_seams(scene, setup)
+                })
+            };
+            match rayon::ThreadPoolBuilder::new().num_threads(threads).build() {
+                Ok(pool) => pool.install(measure),
+                Err(_) => measure(),
+            }
+        })
+    });
     let mut walls = WallSettings::from_settings(&settings)?;
     if let Some(count) = wall_loops {
         walls.wall_loops = count;
@@ -655,53 +815,6 @@ pub fn slice(job: Job, watch: &dyn Watcher) -> Result<Sliced, Failure> {
     step(watch, Stage::Supports)?;
     let started = Instant::now();
     let support = SupportSettings::from_settings(&settings)?;
-    // Laid out from the middle of what is being printed, where it stands
-    // now (a bare model has been moved to the middle of the bed).
-    let extent =
-        bodies
-            .iter()
-            .filter_map(|body| body.solid.bounds())
-            .reduce(|(lo, hi), (min, max)| {
-                (
-                    std::array::from_fn(|i| lo[i].min(min[i])),
-                    std::array::from_fn(|i| hi[i].max(max[i])),
-                )
-            });
-    let middle = extent.map_or(Point2::from_mm(0.0, 0.0), |(lo, hi)| {
-        Point2::from_mm(
-            f64::from(lo[0] + hi[0]) / 2.0,
-            f64::from(lo[1] + hi[1]) / 2.0,
-        )
-    });
-    // Each object's bounds across the bed and its middle, for laying its
-    // sparse pattern. A bare model is one object, with the one middle.
-    let middles: Vec<(Point2, Point2, Point2)> = objects
-        .iter()
-        .filter_map(Mesh::bounds)
-        .map(|(lo, hi)| {
-            (
-                Point2::from_mm(lo[0].into(), lo[1].into()),
-                Point2::from_mm(hi[0].into(), hi[1].into()),
-                Point2::from_mm(
-                    f64::from(lo[0] + hi[0]) / 2.0,
-                    f64::from(lo[1] + hi[1]) / 2.0,
-                ),
-            )
-        })
-        .collect();
-    // The same of each object for its seams, which the reference
-    // reckons from the middle of each object's bounds; a bare model is
-    // one object.
-    let seam_frames: Vec<(Point2, Point2, Point2)> = if middles.is_empty() {
-        let (lo, hi) = extent.unwrap_or((min, max));
-        vec![(
-            Point2::from_mm(lo[0].into(), lo[1].into()),
-            Point2::from_mm(hi[0].into(), hi[1].into()),
-            middle,
-        )]
-    } else {
-        middles.clone()
-    };
     let mut supports = edge_support::generate(
         &outlines,
         middle,
@@ -1274,18 +1387,14 @@ pub fn slice(job: Job, watch: &dyn Watcher) -> Result<Sliced, Failure> {
         }
     }
 
-    // Each object's whole surface, what is cut out of it last: what its
-    // seams are hidden by.
-    let seam_meshes: Vec<(Mesh, usize)> = (objects.into_iter().enumerate())
-        .map(|(object, mut solid)| {
-            let cut_from = solid.triangles.len();
-            if let Some(negative) = negatives.get(object) {
-                solid.append(negative, &edge_mesh::Transform::IDENTITY);
-            }
-            (solid, cut_from)
-        })
-        .collect();
     let around_time = started.elapsed();
+    let waiting = Instant::now();
+    let measured = measuring.map(|measuring| {
+        measuring
+            .join()
+            .unwrap_or_else(|panic| std::panic::resume_unwind(panic))
+    });
+    let seams_wait = waiting.elapsed();
     Ok(Sliced {
         bodies,
         bounds: (min, max),
@@ -1304,10 +1413,8 @@ pub fn slice(job: Job, watch: &dyn Watcher) -> Result<Sliced, Failure> {
         elephant_layers,
         layers,
         modelled,
-        seam_frames,
-        seam_meshes,
-        seam_parts,
-        floor: min[2].into(),
+        seams,
+        measured,
         used,
         shares,
         walls_by,
@@ -1335,6 +1442,7 @@ pub fn slice(job: Job, watch: &dyn Watcher) -> Result<Sliced, Failure> {
             surfaces: classify_time,
             fill: infill_time - classify_time,
             around: around_time,
+            seams_wait,
         },
     })
 }
@@ -1577,52 +1685,6 @@ impl Sliced {
                 printed.push(outlines[turn.layer]);
             }
         }
-        let surface = |object: usize| -> Option<(&Mesh, usize)> {
-            match self.seam_meshes.get(object) {
-                Some((mesh, cut_from)) => Some((mesh, *cut_from)),
-                // A bare model is its one body.
-                None => (self.seam_meshes.is_empty() && self.bodies.len() == 1)
-                    .then(|| &self.bodies[0].solid)
-                    .map(|mesh| (mesh, mesh.triangles.len())),
-            }
-        };
-        // Each object's parts, for where they meet.
-        let parts: Vec<Vec<edge_gcode::SeamPart<'_>>> = (0..self.seam_frames.len())
-            .map(|object| {
-                (self.seam_parts.get(object).into_iter())
-                    .flat_map(|object| &object.parts)
-                    .map(|mesh| edge_gcode::SeamPart {
-                        vertices: &mesh.vertices,
-                        triangles: &mesh.triangles,
-                    })
-                    .collect()
-            })
-            .collect();
-        let seam_objects: Vec<edge_gcode::SeamObject<'_>> = (self.seam_frames.iter().enumerate())
-            .map(|(object, &(min, max, centre))| edge_gcode::SeamObject {
-                min,
-                max,
-                centre,
-                mesh: surface(object).map(|(mesh, negative_from)| edge_gcode::SeamMesh {
-                    vertices: &mesh.vertices,
-                    triangles: &mesh.triangles,
-                    negative_from,
-                }),
-                parts: &parts[object],
-                alone: self
-                    .seam_parts
-                    .get(object)
-                    .is_some_and(|object| object.alone),
-                enforcers: (self.seam_parts.get(object)).map_or(&[], |object| &object.enforcers),
-                blockers: (self.seam_parts.get(object)).map_or(&[], |object| &object.blockers),
-            })
-            .collect();
-        let scene = edge_gcode::SeamScene {
-            outlines: &printed,
-            objects: &seam_objects,
-            floor: self.floor,
-            part_joints: (self.settings.flag("seam_prefer_part_joints")?).unwrap_or(true),
-        };
         // Each entry's contoured lines, where there are any.
         let none = edge_contour::LayerProfiles::default();
         let profiles: Vec<&edge_contour::LayerProfiles> = (self.entries.iter())
@@ -1637,8 +1699,12 @@ impl Sliced {
             layers: &profiles,
             speed_scaling: self.contour_speed,
         };
+        let part_joints = (self.settings.flag("seam_prefer_part_joints")?).unwrap_or(true);
         let (summary, timings) =
-            edge_gcode::write_timed(&mut text, &plan, &slices, &scene, &contours, &prints)?;
+            self.seams
+                .scene(&printed, part_joints, self.measured.as_ref(), |scene| {
+                    edge_gcode::write_timed(&mut text, &plan, &slices, scene, &contours, &prints)
+                })?;
         Ok(Gcode {
             text,
             summary,

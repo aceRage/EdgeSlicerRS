@@ -48,7 +48,7 @@ pub use contour::Contours;
 pub use edge_avoid::{Detour, Slices};
 pub use scarf::{Scarf, ScarfSeam};
 pub use seam::Seam;
-pub use seam_plan::{SeamMesh, SeamObject, SeamPart, SeamScene};
+pub use seam_plan::{SeamMeasures, SeamMesh, SeamObject, SeamPart, SeamScene, measure_seams};
 
 pub use settings::{Lift, OverhangFan, PrintSettings, WallDirection, WallOrder};
 
@@ -248,9 +248,10 @@ pub fn write_contoured(
 pub struct WriteTimings {
     /// Thinning the walls of the whole print.
     pub thin: Duration,
-    /// Planning the seams, all told; and of that, measuring how visible
-    /// each object's surface is and finding where its parts meet, which
-    /// are done side by side.
+    /// Planning the seams, all told; and measuring how visible each
+    /// object's surface is and finding where its parts meet, which are
+    /// done side by side, and before the rest where they were measured
+    /// ahead (`SeamScene::measured`).
     pub seams: Duration,
     pub visibility: Duration,
     pub joints: Duration,

@@ -625,8 +625,9 @@ fn slice(args: SliceArgs) -> Result<(), Failure> {
             let (t, w) = (&sliced.timings, &gcode.timings);
             println!(
                 "timings in ms on {} threads: load {:.1}, presets {:.1}, slice {:.1} (cut {:.1}, paint {:.1}, \
-                 compensations {:.1}, walls {:.1}, supports {:.1}, surfaces {:.1}, fill {:.1}, around {:.1}), \
-                 combine {:.1}, G-code {:.1} (thin walls {:.1}, seams {:.1}: visibility {:.1}, joints {:.1}; \
+                 compensations {:.1}, walls {:.1}, supports {:.1}, surfaces {:.1}, fill {:.1}, around {:.1}, \
+                 seams wait {:.1}), combine {:.1}, G-code {:.1} (thin walls {:.1}, seams {:.1}; \
+                 visibility {:.1}, joints {:.1} measured beside the slicing; \
                  layers {:.1}, estimate {:.1}), file {:.1}; in all {:.1}",
                 rayon::current_num_threads(),
                 ms(load_time),
@@ -640,6 +641,7 @@ fn slice(args: SliceArgs) -> Result<(), Failure> {
                 ms(t.surfaces),
                 ms(t.fill),
                 ms(t.around),
+                ms(t.seams_wait),
                 ms(combine_time),
                 ms(writing.duration_since(started_gcode)),
                 ms(w.thin),
