@@ -1117,3 +1117,222 @@ fn parts_are_renamed_deleted_retyped_split_and_added() {
     );
     assert_eq!(part_list(&ask(&session, "scene", json!({}))).len(), 1);
 }
+
+/// Each plate's number, name, lock and own settings, as the page has them.
+fn plates_listed(detail: &Value) -> Vec<(u64, String, bool, Value)> {
+    detail["plates"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|plate| {
+            (
+                plate["id"].as_u64().unwrap(),
+                plate["name"].as_str().unwrap().to_owned(),
+                plate["locked"] == true,
+                plate["own"].clone(),
+            )
+        })
+        .collect()
+}
+
+/// Where each copy on a plate stands, by its id.
+fn placings_on(scene: &Value, plate: u64) -> Vec<(u64, Vec<f64>)> {
+    scene["placings"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|placing| placing["plate"] == plate)
+        .map(|placing| (placing["id"].as_u64().unwrap(), numbers(&placing["matrix"])))
+        .collect()
+}
+
+#[test]
+fn a_plate_is_renamed_locked_customized_moved_and_duplicated_one_step_each() {
+    let session = Arc::new(Session::new(None));
+    let project = open(&session, THREE_PLATES);
+    let unedited = ask(&session, "project", json!({}));
+    sliced(&session, project, Some(1));
+    sliced(&session, project, Some(2));
+    let sliced_plates = |detail: &Value| -> Vec<bool> {
+        detail["plates"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|plate| plate["sliced"] == true)
+            .collect()
+    };
+
+    // A name: shown, kept with the plate, and no slice is let go.
+    let answer = edit(
+        &session,
+        json!({ "op": "plate_rename", "plate": 2, "name": "Arms" }),
+    );
+    assert_eq!(answer["done"], "Rename Plate");
+    assert_eq!(answer["project"]["plates"][1]["name"], "Arms");
+    assert_eq!(answer["scene"]["plates"][1]["name"], "Arms");
+    assert_eq!(sliced_plates(&answer["project"]), [true, true, false]);
+    // The same name again is no step.
+    let answer = edit(
+        &session,
+        json!({ "op": "plate_rename", "plate": 2, "name": "Arms" }),
+    );
+    assert_eq!(answer["done"], Value::Null);
+    assert_eq!(answer["project"]["edit"]["undo"], "Rename Plate");
+
+    // Locked: arranging it alone is refused in the reference's words,
+    // arranging every plate leaves it as it is.
+    let answer = edit(
+        &session,
+        json!({ "op": "plate_lock", "plate": 2, "value": true }),
+    );
+    assert_eq!(answer["done"], "lock partplate");
+    assert_eq!(answer["project"]["plates"][1]["locked"], true);
+    assert_eq!(answer["scene"]["plates"][1]["locked"], true);
+    assert_eq!(sliced_plates(&answer["project"]), [true, true, false]);
+    assert_eq!(
+        refused(
+            &session,
+            "scene_edit",
+            json!({ "op": "arrange", "plate": 2 })
+        ),
+        "This plate is locked.\nCannot auto-arrange on this plate."
+    );
+    let before = placings_on(&answer["scene"], 2);
+    let answer = edit(&session, json!({ "op": "arrange", "all": true }));
+    assert_eq!(placings_on(&answer["scene"], 2), before);
+    assert!(sliced_plates(&answer["project"])[1]);
+
+    // Its own settings: plate 1's slice is let go, plate 2's is not.
+    let answer = edit(&session, json!({ "op": "arrange", "plate": 1 }));
+    sliced(&session, project, Some(1));
+    let answer_before = answer;
+    let answer = edit(
+        &session,
+        json!({
+            "op": "plate_settings", "plate": 1, "bed_type": "Cool Plate",
+            "print_sequence": "by object", "spiral_mode": false,
+            "first_layer_sequence": [2, 1, 3, 4, 5, 6, 7],
+            "other_layers_sequence": [{ "begin": 2, "end": null, "order": [1, 2] }],
+        }),
+    );
+    assert_eq!(answer["done"], "Plate Settings");
+    let own = &answer["project"]["plates"][0]["own"];
+    assert_eq!(own["bed_type"], "Cool Plate");
+    assert_eq!(own["print_sequence"], "by object");
+    assert_eq!(own["spiral_mode"], false);
+    assert_eq!(own["other_layers_sequence"][0]["end"], Value::Null);
+    assert_eq!(answer["project"]["plates"][0]["customized"], true);
+    // Plate 2 sets its first layer's order in the file: that is a
+    // setting of its own too (PartPlate.cpp `has_plate_settings`).
+    assert_eq!(answer["project"]["plates"][1]["customized"], true);
+    assert_eq!(answer["project"]["plates"][2]["customized"], false);
+    assert_eq!(sliced_plates(&answer["project"]), [false, true, false]);
+    assert!(answer_before["project"]["plates"][0]["customized"] == false);
+    // A layer under 2 is refused.
+    assert_eq!(
+        refused(
+            &session,
+            "scene_edit",
+            json!({ "op": "plate_settings", "plate": 1,
+                    "other_layers_sequence": [{ "begin": 1, "order": [1] }] }),
+        ),
+        "Please input layer value (>= 2)."
+    );
+
+    // Plate 3 to the front: it is plate 1 and the one shown.
+    let third = placings_on(&answer["scene"], 3);
+    let answer = edit(&session, json!({ "op": "plate_front", "plate": 3 }));
+    assert_eq!(answer["done"], "move plate to the front");
+    assert_eq!(answer["project"]["plate"], 1);
+    let ids: Vec<u64> = placings_on(&answer["scene"], 1)
+        .iter()
+        .map(|(id, _)| *id)
+        .collect();
+    assert_eq!(ids, third.iter().map(|(id, _)| *id).collect::<Vec<_>>());
+    assert_eq!(answer["project"]["plates"][2]["name"], "Arms");
+    assert_eq!(answer["project"]["plates"][2]["locked"], true);
+    assert_eq!(answer["project"]["plates"][1]["customized"], true);
+
+    // Duplicated: a fourth plate, shown, with a copy of each object.
+    let answer = edit(&session, json!({ "op": "plate_duplicate", "plate": 3 }));
+    assert_eq!(answer["done"], "Duplicate Current Plate");
+    assert_eq!(answer["project"]["plate"], 4);
+    assert_eq!(
+        answer["made"].as_array().unwrap().len(),
+        placings_on(&answer["scene"], 3).len()
+    );
+    assert_eq!(
+        placings_on(&answer["scene"], 4).len(),
+        placings_on(&answer["scene"], 3).len()
+    );
+    assert_eq!(answer["project"]["plates"][3]["locked"], false);
+    assert_eq!(answer["project"]["plates"][3]["name"], "");
+
+    // Each taken back by name, to the project as it was opened.
+    for name in [
+        "Duplicate Current Plate",
+        "move plate to the front",
+        "Plate Settings",
+        "Arrange",
+        "Arrange",
+        "lock partplate",
+        "Rename Plate",
+    ] {
+        assert_eq!(ask(&session, "undo", json!({}))["done"], name);
+    }
+    let back = ask(&session, "project", json!({}));
+    assert_eq!(back["dirty"], false);
+    assert_eq!(plates_listed(&back), plates_listed(&unedited));
+}
+
+#[test]
+fn plate_bed_types_another_printer_does_not_take_are_reset() {
+    let session = Arc::new(Session::new(None));
+    let project = open(&session, THREE_PLATES);
+    choose_presets(&session, project);
+    // A bed type the U1 has no plate of is refused (the file's own U1
+    // takes every plate; the preset's does not).
+    assert!(
+        refused(
+            &session,
+            "scene_edit",
+            json!({ "op": "plate_settings", "plate": 2, "bed_type": "Engineering Plate" }),
+        )
+        .contains("Engineering Plate")
+    );
+    edit(
+        &session,
+        json!({ "op": "plate_settings", "plate": 2, "bed_type": "Cool Plate" }),
+    );
+    // Another nozzle of the same printer takes it: nothing is said.
+    let machines = ask(&session, "machines", json!({ "vendor": "Snapmaker" }));
+    let other_u1 = machines["machines"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter_map(Value::as_str)
+        .find(|name| name.starts_with("Snapmaker U1") && *name != MACHINE)
+        .unwrap()
+        .to_owned();
+    let answer = ask(
+        &session,
+        "project_set",
+        json!({ "vendor": "Snapmaker", "machine": other_u1 }),
+    );
+    assert_eq!(answer["notice"], Value::Null);
+    assert_eq!(answer["plates"][1]["own"]["bed_type"], "Cool Plate");
+    // A printer with one bed type does not: the plate's is taken away,
+    // in the reference's words, as a step of its own.
+    let answer = ask(
+        &session,
+        "project_set",
+        json!({ "vendor": "Elegoo", "machine": "Elegoo Neptune 4 (0.4 nozzle)" }),
+    );
+    assert_eq!(answer["notice"]["title"], "Plate bed types reset");
+    assert_eq!(
+        answer["notice"]["text"],
+        "The selected printer does not support multiple bed types.\nBed type overrides were reset to the global bed type."
+    );
+    assert_eq!(answer["plates"][1]["own"]["bed_type"], Value::Null);
+    assert_eq!(answer["edit"]["undo"], "Plate bed types reset");
+}

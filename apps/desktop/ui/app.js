@@ -24,6 +24,15 @@ async function call(name, args = {}) {
 }
 
 async function send(name, args) {
+  const answer = await sendRaw(name, args);
+  // Something the session settled by itself that the person is told of,
+  // as the reference tells it in a box of its own ("Plate bed types
+  // reset", Plater.cpp `normalize_bed_types`).
+  if (answer && answer.notice) inform(answer.notice.title, answer.notice.text);
+  return answer;
+}
+
+async function sendRaw(name, args) {
   if (tauri) return tauri.core.invoke('call', { name, args });
   const response = await fetch(`/api/${name}`, {
     method: 'POST',
@@ -114,6 +123,16 @@ function pick(what, suggested = '') {
   return askText(asking[what], suggested);
 }
 
+// Something to know, with one answer.
+async function inform(title, text) {
+  $('confirm-cancel').hidden = true;
+  try {
+    await confirmBox(title, text, 'OK', '');
+  } finally {
+    $('confirm-cancel').hidden = false;
+  }
+}
+
 // A question with two answers; with `options`, one of them is picked too
 // (its index comes back, or null).
 async function confirmBox(title, text, ok, cancel, options = null) {
@@ -140,6 +159,8 @@ function menuButtons(items, sub) {
     if (!item) return el('hr');
     const [label, action, more = {}] = item;
     const button = el('button', { type: 'button', textContent: label, disabled: Boolean(more.disabled) });
+    // A colour that means something (a filament's), before the words.
+    if (more.swatch) button.prepend(el('span', { className: 'swatch', style: `background:${more.swatch}` }));
     if (more.title) button.title = more.title;
     button.setAttribute('role', 'checked' in more ? 'menuitemradio' : 'menuitem');
     if ('checked' in more) button.setAttribute('aria-checked', String(more.checked));
@@ -637,6 +658,7 @@ function kept(id) {
       summaries: new Map(),    // plate -> { run, summary }
       layers: new Map(),       // "run:plate:index" -> the layer's lines
       layerAt: {},             // plate -> the layer its Preview is on
+      codes: null,             // what is set at the shown plate's layers (`layer_codes`)
       viewType: 'Line Type',
       hidden: new Set(),
       camera: { prepare: null, preview: null },
@@ -1514,6 +1536,7 @@ async function showStage({ entering = false } = {}) {
   if (summary) {
     showLegend();
     showNotes(summary);
+    attempt(loadCodes);
     showButtons();
     const last = summary.layers - 1;
     // In 3D every layer is shown, up to the one the slider is on.
@@ -1783,6 +1806,101 @@ $('vslider').addEventListener('contextmenu', (event) => {
   showMenu(event.clientX, event.clientY, [['Jump to Layer', () => attempt(jumpToLayer)]]);
 });
 
+// ---- what is set at layers ----
+
+// The items set at the plate's layers from the layers slider (pauses,
+// custom G-code, the printer's template, filament changes) and what it
+// offers, asked for each slice shown; the 3D view draws them on the slider.
+async function loadCodes() {
+  const project = state.project;
+  if (!project || !stage3d.active) return;
+  const codes = await call('layer_codes', { project: project.id, plate: project.plate ?? undefined });
+  here().codes = codes;
+  stage3d.setCodes(codes);
+}
+
+// What an item is called on the slider, its tooltip, and the words of
+// the entry that deletes it (IMSlider.cpp `draw_custom_label_block`,
+// `show_tooltip`, `render_edit_menu`).
+function describeCode(item, codes) {
+  const colour = item.kind === 'filament' ? codes.colours[item.extruder - 1] || null : null;
+  switch (item.kind) {
+    case 'pause': return { kind: 'pause', label: 'Pause', title: `Pause: "${codes.pause}"`, remove: 'Delete Pause' };
+    case 'template': return { kind: 'template', label: 'Template', title: `Custom Template: "${codes.template}"`, remove: 'Delete Custom Template' };
+    case 'custom': return { kind: 'custom', label: 'Custom', title: `Custom G-code: "${item.extra}"`, remove: 'Delete Custom G-code' };
+    case 'filament': return { kind: 'filament', label: 'Color', title: `Change Filament\nFilament ${item.extruder}`, remove: 'Delete Filament Change', colour };
+    default: return { kind: 'other', label: item.kind === 'color' ? 'Color' : '', title: item.extra ? `Custom G-code: "${item.extra}"` : '', remove: 'Delete' };
+  }
+}
+
+// An edit of the items: the project is then unsaved and the plate's
+// slice let go; the plate is sliced again at once to show it.
+async function editCode(name, args) {
+  const project = state.project;
+  const answer = await call(name, { project: project.id, plate: project.plate ?? undefined, ...args });
+  here().codes = answer;
+  stage3d.setCodes(answer);
+  if (answer.detail) state.project = answer.detail;
+  await refreshStrip();
+  await slice(false);
+}
+
+// "Add Custom G-code" and "Edit Custom G-code": the text, in a box of
+// text, OK only with something in it.
+async function customGcode(z, text) {
+  const box = $('custom-gcode-text');
+  box.value = text;
+  const ok = $('custom-gcode-ok');
+  const check = () => { ok.disabled = !box.value.length; };
+  box.oninput = check;
+  check();
+  const promise = modal($('custom-gcode'));
+  box.focus();
+  if (!(await promise) || !box.value.length) return;
+  await editCode('layer_code_set', { print_z: z, kind: 'custom', extra: box.value });
+}
+
+// The layers slider's menu, for the layer of the thumb taken up: what can
+// be added there, or what can be done to the item that is there
+// (IMSlider.cpp `render_add_menu`, `render_edit_menu`).
+function layerMenu(x, y) {
+  const at = stage3d.selectedLayer();
+  const codes = here().codes;
+  const jump = ['Jump to Layer', () => attempt(jumpToLayer)];
+  if (!at || !codes) { showMenu(x, y, [jump]); return; }
+  const z = at.z;
+  const filaments = (current) => codes.colours.map((colour, index) => [`Filament ${index + 1}`,
+    () => attempt(() => editCode('layer_code_set', { print_z: z, kind: 'filament', extruder: index + 1 })),
+    { swatch: colour, title: 'Change filament at the beginning of this layer.', checked: current === index + 1 }]);
+  const tick = at.tick;
+  if (tick) {
+    const item = tick.item;
+    const remove = [tick.remove, () => attempt(() => editCode('layer_code_delete', { print_z: item.print_z }))];
+    const entries = {
+      pause: [remove],
+      template: codes.template ? [remove] : [],
+      custom: [['Edit Custom G-code', () => attempt(() => customGcode(z, item.extra))], remove],
+      filament: codes.colours.length > 1
+        ? [['Change Filament', null, { items: filaments(item.extruder), disabled: !codes.change_filament }], remove]
+        : [],
+    }[item.kind] || [];
+    // An item the reference's menu offers nothing for still has "Jump to Layer".
+    showMenu(x, y, entries.length ? entries : [jump]);
+    return;
+  }
+  const off = codes.sequential;
+  const entries = [
+    ['Add Pause', () => attempt(() => editCode('layer_code_set', { print_z: z, kind: 'pause' })), { disabled: off, title: 'Insert a pause command at the beginning of this layer.' }],
+    ['Add Custom G-code', () => attempt(() => customGcode(z, '')), { disabled: off, title: 'Insert custom G-code at the beginning of this layer.' }],
+  ];
+  if (codes.template) {
+    entries.push(['Add Custom Template', () => attempt(() => editCode('layer_code_set', { print_z: z, kind: 'template' })), { disabled: off, title: 'Insert template custom G-code at the beginning of this layer.' }]);
+  }
+  entries.push(jump);
+  if (codes.colours.length > 1) entries.push(['Change Filament', null, { items: filaments(0).map(([label, action, more]) => [label, action, { swatch: more.swatch, title: more.title }]), disabled: !codes.change_filament }]);
+  showMenu(x, y, entries);
+}
+
 async function jumpToLayer() {
   const mine = here();
   if (state.tab !== 'preview' || !mine.summary) return;
@@ -1810,12 +1928,17 @@ function showPlates() {
     const button = el('button', { type: 'button', className: `${how}${plate.id === project.plate ? ' current' : ''}` },
       el('span', { className: 'number', textContent: String(plate.id) }));
     const said = { sliced: 'sliced', failed: `slicing failed: ${plate.failed}`, slicing: 'slicing', unsliced: holds ? 'not sliced' : 'empty' }[how];
-    button.title = `Plate ${plate.id}${plate.name ? ` (${plate.name})` : ''}: ${said}`;
+    button.title = `Plate ${plate.id}${plate.name ? ` (${plate.name})` : ''}: ${said}${plate.locked ? '\nLocked' : ''}`;
     button.setAttribute('aria-pressed', String(plate.id === project.plate));
     const mark = { sliced: '✓', failed: '!', slicing: '…' }[how];
     if (mark) button.append(el('span', { className: 'mark', textContent: mark }));
     if (!holds) button.append(el('small', { textContent: 'empty' }));
+    if (plate.locked) button.append(lockMark());
     button.addEventListener('click', () => attempt(() => selectPlate(plate.id)));
+    // The plate's menu (plates.js): the right button, or the menu key.
+    const tools = window.EdgeGL.plateTools;
+    button.addEventListener('contextmenu', (event) => { event.preventDefault(); tools.menu(event.clientX, event.clientY, plate.id); });
+    button.addEventListener('keydown', (event) => tools.keyMenu(event, button, plate.id));
     return button;
   });
   // All of them at once: slice what is not sliced; once all are, the totals.
@@ -1827,6 +1950,18 @@ function showPlates() {
   all.addEventListener('click', () => attempt(() => (done < holding.length ? slice(true) : showStats())));
   bar.replaceChildren(all, ...buttons);
   bar.hidden = false;
+}
+
+// A small lock drawn on a plate that is locked: a mark, not a control.
+function lockMark() {
+  const node = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
+  node.setAttribute('viewBox', '0 0 16 16');
+  node.setAttribute('class', 'lock-mark');
+  node.setAttribute('aria-hidden', 'true');
+  const line = document.createElementNS('http://www.w3.org/2000/svg', 'path');
+  line.setAttribute('d', 'M3.5,7.5h9v7h-9ZM5.5,7.5v-2.5a2.5,2.5,0,0,1,5,0v2.5');
+  node.append(line);
+  return node;
 }
 
 async function selectPlate(id) {
@@ -1886,6 +2021,9 @@ stage3d.init({
   open: () => state.listing.projects.map((project) => project.id),
   plate: (id) => attempt(() => selectPlate(id)),
   jump: () => attempt(jumpToLayer),
+  layerMenu: (x, y) => layerMenu(x, y),
+  describeCode: (item, codes) => describeCode(item, codes),
+  deleteCode: (item) => attempt(() => editCode('layer_code_delete', { print_z: item.print_z })),
   legend: () => { if (state.tab === 'preview' && state.project && here().summary) showLegend(); },
   noted: () => noteView(),
   filamentColour: (summary, filament) => filamentColour(summary, filament),
@@ -1927,6 +2065,18 @@ window.EdgeGL.editor.init({
   tab: () => state.tab,
   settled: () => state.settled,
   applied: editApplied,
+  plate: (id) => attempt(() => selectPlate(id)),
+});
+// A plate's menu, name, lock and own settings, and its tools beside it in
+// the scene (plates.js).
+window.EdgeGL.plateTools.init({
+  stage: stage3d,
+  stageNode: $('stage'),
+  el,
+  listbox,
+  menu: showMenu,
+  project: () => state.project,
+  settled: () => state.settled,
   plate: (id) => attempt(() => selectPlate(id)),
 });
 window.EdgeGL.objectList.init({

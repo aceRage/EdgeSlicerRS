@@ -446,6 +446,7 @@ pub fn exposed(
             minimum_sparse_area: 0.0,
             opening,
             ensure: None,
+            outer_spacing: 0,
             second_bridge: None,
         },
     )

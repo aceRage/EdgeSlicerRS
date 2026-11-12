@@ -383,6 +383,12 @@ pub(crate) fn read<P: Planner>(
         lines = line + 1;
         let code = raw.split(';').next().unwrap_or_default().trim();
         if code.is_empty() {
+            // A pause set at a layer: the printer finishes its moves and
+            // stops, for as long as no file can say (GCodeProcessor.cpp,
+            // the `PAUSE_PRINT` tag: `simulate_st_synchronize`).
+            if raw.trim_end() == ";PAUSE_PRINT" {
+                planner.rest(line, 0.0);
+            }
             continue;
         }
         let mut parts = code.split_whitespace();

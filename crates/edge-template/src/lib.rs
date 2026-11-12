@@ -46,7 +46,11 @@ pub(crate) enum Variable {
 impl Variable {
     /// The value; `index` picks an entry of a list. A list read without an
     /// index gives its first entry, as the reference does for the older
-    /// `[variable]` form.
+    /// `[variable]` form, and so does one read past its end or before its
+    /// start (PlaceholderParser.cpp, `vector_element_to_expr`): Bambu's
+    /// filament change asks for `long_retractions_when_cut[previous_extruder]`
+    /// of a one-nozzle machine with any filament, and with -1 before the
+    /// first is loaded. An empty list has nothing to give.
     pub(crate) fn read(&self, name: &str, index: Option<i64>) -> Result<Value, String> {
         match (self, index) {
             (Variable::One(value), None) => Ok(value.clone()),
@@ -54,17 +58,14 @@ impl Variable {
                 "\"{name}\" is a single value and cannot be indexed"
             )),
             (Variable::Many(values), index) => {
-                let index = index.unwrap_or(0);
-                usize::try_from(index)
+                let index = usize::try_from(index.unwrap_or(0))
                     .ok()
-                    .and_then(|index| values.get(index))
+                    .filter(|index| *index < values.len())
+                    .unwrap_or(0);
+                values
+                    .get(index)
                     .cloned()
-                    .ok_or_else(|| {
-                        format!(
-                            "\"{name}\" has {} entries; there is no entry {index}",
-                            values.len()
-                        )
-                    })
+                    .ok_or_else(|| format!("\"{name}\" is an empty list and cannot be indexed"))
             }
         }
     }
@@ -77,6 +78,11 @@ impl Variables {
 
     pub fn set_list(&mut self, name: impl Into<String>, values: Vec<Value>) {
         self.values.insert(name.into(), Variable::Many(values));
+    }
+
+    /// Takes a variable away, so that a template naming it is refused.
+    pub fn remove(&mut self, name: &str) {
+        self.values.remove(name);
     }
 
     pub fn contains(&self, name: &str) -> bool {
@@ -352,14 +358,22 @@ mod tests {
         assert!(error("G1 X{layer_num").message.contains("never closed"));
         assert!(error("[layer z]").message.contains("not a variable name"));
         assert!(
-            error("{nozzle_temperature[5]}")
-                .message
-                .contains("no entry 5")
-        );
-        assert!(
             error("{layer_num[0]}")
                 .message
                 .contains("cannot be indexed")
+        );
+    }
+
+    /// PlaceholderParser.cpp reads entry 0 of a list asked for an entry it
+    /// does not have, which Bambu's filament change counts on.
+    #[test]
+    fn a_list_read_past_its_end_gives_its_first_entry() {
+        assert_eq!(expanded("{nozzle_temperature[5]}"), "220");
+        assert_eq!(expanded("{nozzle_temperature[0 - 1]}"), "220");
+        assert_eq!(expanded("{nozzle_temperature[1]}"), "240");
+        assert_eq!(
+            expanded("{if nozzle_temperature[layer_num] > 230}a{else}b{endif}"),
+            "b"
         );
     }
 

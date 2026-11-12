@@ -19,7 +19,7 @@ use std::{
     sync::{Arc, atomic::Ordering},
 };
 
-use edge_engine::{Bed, Model, PartKind, Transform};
+use edge_engine::{Bed, LAST_LAYER, LayerSequence, Model, PartKind, PlateSettings, Transform};
 use serde_json::{Value, json};
 
 use super::{
@@ -139,6 +139,32 @@ fn settle(project: &mut Project, before: Option<&File>) {
     }
 }
 
+/// Takes away each plate's own bed type that `allowed` does not take, as
+/// one step of the history, and answers whether there was one (Plater.cpp
+/// `normalize_bed_types`, which runs when another printer is chosen).
+pub(super) fn reset_bed_types(project: &mut Project, allowed: impl Fn(&str) -> bool) -> bool {
+    let Some(file) = project.file.clone() else {
+        return false;
+    };
+    let mut model = file.model.clone();
+    if !model.reset_bed_types(allowed) {
+        return false;
+    }
+    let before = project.file.replace(Arc::new(File::of(model)));
+    let history = &mut project.history;
+    history.undo.push(Step {
+        name: "Plate bed types reset".into(),
+        file: before.clone(),
+    });
+    if history.undo.len() > DEPTH {
+        history.undo.remove(0);
+    }
+    history.redo.clear();
+    history.revision += 1;
+    settle(project, before.as_deref());
+    true
+}
+
 /// A matrix as the page has it (sixteen numbers, column by column) as
 /// the transform it stands for.
 fn transform_of(value: &Value) -> Result<Transform, String> {
@@ -200,6 +226,97 @@ struct Outcome {
     note: Option<String>,
     /// The part it made, for the page to select.
     part: Option<u64>,
+    /// Nothing changed (a plate given the name it had): no step is taken.
+    unchanged: bool,
+}
+
+/// Filament numbers a call gives under `key`; none given is an empty list.
+fn filament_order(value: Option<&Value>, key: &str) -> Result<Vec<u32>, String> {
+    match value {
+        None | Some(Value::Null) => Ok(Vec::new()),
+        Some(value) => value
+            .as_array()
+            .and_then(|list| {
+                list.iter()
+                    .map(|item| item.as_u64().and_then(|n| u32::try_from(n).ok()))
+                    .collect::<Option<Vec<u32>>>()
+            })
+            .ok_or_else(|| format!("{key} is not a list of filament numbers")),
+    }
+}
+
+/// What a plate sets for itself, as `plate_settings` gives it: each left
+/// out, or null, is the project's.
+fn plate_settings_of(args: &Value) -> Result<PlateSettings, String> {
+    let named = |key: &str| -> Result<Option<String>, String> {
+        match args.get(key) {
+            None | Some(Value::Null) => Ok(None),
+            Some(Value::String(text)) if text.is_empty() => Ok(None),
+            Some(Value::String(text)) => Ok(Some(text.clone())),
+            Some(other) => Err(format!("{key} cannot be {other}")),
+        }
+    };
+    let spiral_mode = match args.get("spiral_mode") {
+        None | Some(Value::Null) => None,
+        Some(Value::Bool(on)) => Some(*on),
+        Some(other) => return Err(format!("spiral_mode cannot be {other}")),
+    };
+    let other_layers_sequence = match args.get("other_layers_sequence") {
+        None | Some(Value::Null) => Vec::new(),
+        Some(Value::Array(ranges)) => ranges
+            .iter()
+            .map(|range| {
+                let layer = |key: &str| -> Result<u32, String> {
+                    match range.get(key) {
+                        // "End": to the last layer.
+                        None | Some(Value::Null) if key == "end" => Ok(LAST_LAYER),
+                        Some(value) => value
+                            .as_u64()
+                            .and_then(|n| u32::try_from(n).ok())
+                            .filter(|n| *n <= LAST_LAYER)
+                            .ok_or_else(|| "Please input layer value (>= 2).".to_owned()),
+                        None => Err("Please input layer value (>= 2).".to_owned()),
+                    }
+                };
+                Ok(LayerSequence {
+                    begin: layer("begin")?,
+                    end: layer("end")?,
+                    order: filament_order(range.get("order"), "order")?,
+                })
+            })
+            .collect::<Result<_, String>>()?,
+        Some(other) => return Err(format!("other_layers_sequence cannot be {other}")),
+    };
+    Ok(PlateSettings {
+        bed_type: named("bed_type")?,
+        print_sequence: named("print_sequence")?,
+        spiral_mode,
+        first_layer_sequence: filament_order(
+            args.get("first_layer_sequence"),
+            "first_layer_sequence",
+        )?,
+        other_layers_sequence,
+    })
+}
+
+/// A plate's own settings as the page reads them.
+pub(super) fn plate_settings_json(own: &PlateSettings) -> Value {
+    json!({
+        "bed_type": own.bed_type,
+        "print_sequence": own.print_sequence,
+        "spiral_mode": own.spiral_mode,
+        "first_layer_sequence": own.first_layer_sequence,
+        "other_layers_sequence": own
+            .other_layers_sequence
+            .iter()
+            .map(|range| json!({
+                "begin": range.begin,
+                // "End" is no number to the page.
+                "end": (range.end != LAST_LAYER).then_some(range.end),
+                "order": range.order,
+            }))
+            .collect::<Vec<_>>(),
+    })
 }
 
 /// The parts a call names under `parts`: each a number, or for
@@ -232,6 +349,7 @@ impl Session {
         shown: Option<u32>,
         args: &Value,
         added: Option<&Model>,
+        leave: &[u32],
     ) -> Result<Outcome, String> {
         let failed = |error: edge_engine::Failure| error.to_string();
         let plate = |args: &Value| -> Option<u32> {
@@ -350,7 +468,7 @@ impl Session {
             "arrange" => {
                 let all = args.get("all").and_then(Value::as_bool).unwrap_or(false);
                 let on = if all { None } else { plate(args).or(shown) };
-                let left = model.arrange(bed, on).map_err(failed)?;
+                let left = model.arrange_leaving(bed, on, leave).map_err(failed)?;
                 if left > 0 {
                     outcome.note = Some(format!(
                         "{left} of the objects did not fit on the plate and stand beside the plates."
@@ -489,6 +607,56 @@ impl Session {
                 };
                 outcome.part = Some(part.map_err(failed)?);
             }
+            // What is done to a plate as a plate. The steps' names are the
+            // reference's where it takes a snapshot (Plater.cpp
+            // `rename_plate`, `select_plate_by_hover_id`); it takes none
+            // for the plate's own settings or for duplicating a plate,
+            // which are named here for the dialog and the menu.
+            "plate_rename" => {
+                let id = plate(args).or(shown).ok_or("plate was not given")?;
+                let name = args
+                    .get("name")
+                    .and_then(Value::as_str)
+                    .ok_or("name was not given")?;
+                let was = model.plates().iter().find(|held| held.id() == id);
+                outcome.unchanged = was.is_some_and(|held| held.name() == name);
+                model.rename_plate(id, name).map_err(failed)?;
+                outcome.name = "Rename Plate".into();
+            }
+            "plate_lock" => {
+                let id = plate(args).or(shown).ok_or("plate was not given")?;
+                let value = args
+                    .get("value")
+                    .and_then(Value::as_bool)
+                    .ok_or("value was not given")?;
+                let was = model.plates().iter().find(|held| held.id() == id);
+                outcome.unchanged = was.is_some_and(|held| held.locked() == value);
+                model.lock_plate(id, value).map_err(failed)?;
+                outcome.name = "lock partplate".into();
+            }
+            "plate_settings" => {
+                let id = plate(args).or(shown).ok_or("plate was not given")?;
+                let own = plate_settings_of(args)?;
+                let was = model.plates().iter().find(|held| held.id() == id);
+                outcome.unchanged = was.is_some_and(|held| held.settings() == own);
+                model.set_plate_settings(id, &own).map_err(failed)?;
+                outcome.name = "Plate Settings".into();
+            }
+            "plate_front" => {
+                let id = plate(args).or(shown).ok_or("plate was not given")?;
+                model.move_plate_to_front(bed, id).map_err(failed)?;
+                // The plate moved is the one shown (Plater.cpp
+                // `select_plate_by_hover_id`, `select_plate(0)`).
+                outcome.show = Some(1);
+                outcome.name = "move plate to the front".into();
+            }
+            "plate_duplicate" => {
+                let id = plate(args).or(shown).ok_or("plate was not given")?;
+                let (new, made) = model.duplicate_plate(bed, id).map_err(failed)?;
+                outcome.show = Some(new);
+                outcome.made = made;
+                outcome.name = "Duplicate Current Plate".into();
+            }
             other => return Err(format!("there is no edit named {other}")),
         }
         Ok(outcome)
@@ -536,7 +704,52 @@ impl Session {
             Some(file) => file.model.clone(),
             None => Model::new(),
         };
-        let outcome = Self::apply(&mut model, bed.as_ref(), stage.plate, args, added.as_ref())?;
+        // A plate's own bed type is one the printer takes (the dialog
+        // offers no other: PlateSettingsDialog.cpp, `allowed_bed_types`).
+        if needed(args, "op")? == "plate_settings"
+            && let Some(bed) = text(args, "bed_type")
+            && let Some(printer) = stage.printer.as_deref()
+            && !super::plates_for(printer, None).takes(bed)
+        {
+            return Err(format!(
+                "the printer chosen does not take a {bed} of a plate's own"
+            ));
+        }
+        // Arranging every plate leaves alone, besides the locked ones, a
+        // plate whose own print sequence is not the project's
+        // (ArrangeJob.cpp `prepare_all`).
+        let leave: Vec<u32> = if needed(args, "op")? == "arrange"
+            && args.get("all").and_then(Value::as_bool) == Some(true)
+        {
+            let global = self.print_sequence(stage.id)?;
+            model
+                .plates()
+                .iter()
+                .filter(|plate| {
+                    plate
+                        .settings()
+                        .print_sequence
+                        .is_some_and(|own| own != global)
+                })
+                .map(|plate| plate.id())
+                .collect()
+        } else {
+            Vec::new()
+        };
+        let outcome = Self::apply(
+            &mut model,
+            bed.as_ref(),
+            stage.plate,
+            args,
+            added.as_ref(),
+            &leave,
+        )?;
+        if outcome.unchanged {
+            return self.edited(
+                stage.id,
+                json!({ "done": null, "made": [], "note": null, "part": null }),
+            );
+        }
         let next = Arc::new(File::of(model));
         {
             let mut state = lock(&self.state);
@@ -622,7 +835,15 @@ impl Session {
             } else {
                 "there is nothing to redo"
             })?;
-            let before = std::mem::replace(&mut project.file, step.file);
+            // What is set at the layers is not in the history, as in the
+            // reference: it stays as it is (`ticks`).
+            let file = match (&project.file, step.file) {
+                (Some(now), Some(then)) => {
+                    Some(super::ticks::carried(now, &then).map_or(then, Arc::new))
+                }
+                (_, then) => then,
+            };
+            let before = std::mem::replace(&mut project.file, file);
             onto.push(Step {
                 name: step.name.clone(),
                 file: before.clone(),

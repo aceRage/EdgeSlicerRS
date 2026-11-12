@@ -443,13 +443,16 @@ impl InfillSettings {
             (defaults.solid_joined, defaults.solid_ordered),
         );
         // The reference has a different way of laying shells for each
-        // other value; only this one is ported.
+        // other value; only this one is ported. Bambu Studio's projects
+        // say "enabled" for it, and older ones "1", which the reference
+        // reads as `ensure_all` (Format/BambuKeyAliases.cpp
+        // `make_enum_aliases`, PrintConfig.cpp `handle_legacy`).
         let ensure_vertical_shells = match settings
             .texts("ensure_vertical_shell_thickness")
             .and_then(|found| found.first())
             .map(String::as_str)
         {
-            None | Some("ensure_all") => true,
+            None | Some("ensure_all" | "enabled" | "1") => true,
             Some(other) => {
                 unsupported.push(format!(
                     "ensure_vertical_shell_thickness \"{other}\": shells are the layers under a top and over a bottom, and no more"
@@ -655,6 +658,7 @@ impl InfillSettings {
             minimum_sparse_area: self.minimum_sparse_infill_area,
             opening: scaled(outer.width / 10.0),
             ensure: self.ensure_vertical_shells.then(|| scaled(solid.spacing)),
+            outer_spacing: outer.scaled_spacing(),
             // The width of the walls: the outer one's and every inner
             // one's (`offset_distance` in `detect_surfaces_type`).
             second_bridge: if self.extra_bridge_layer.external() {
@@ -866,6 +870,22 @@ mod tests {
         let moderate = read(r#"{"ensure_vertical_shell_thickness": "ensure_moderate"}"#).unwrap();
         assert_eq!(moderate.shells(0.2).unwrap().ensure, None);
         assert!(moderate.unsupported[0].starts_with("ensure_vertical_shell_thickness"));
+        // Bambu Studio's word for it, and the old switch, are the same.
+        for same in ["enabled", "1"] {
+            let found = read(&format!(
+                r#"{{"ensure_vertical_shell_thickness": "{same}"}}"#
+            ))
+            .unwrap();
+            assert!(found.shells(0.2).unwrap().ensure.is_some(), "{same}");
+            assert!(found.unsupported.is_empty(), "{same}");
+        }
+        for other in ["partial", "disabled", "0"] {
+            let found = read(&format!(
+                r#"{{"ensure_vertical_shell_thickness": "{other}"}}"#
+            ))
+            .unwrap();
+            assert_eq!(found.shells(0.2).unwrap().ensure, None, "{other}");
+        }
         // Absent, it is the reference's default.
         let absent = InfillSettings::from_settings(&Settings::default()).unwrap();
         assert!(absent.shells(0.2).unwrap().ensure.is_some());
