@@ -33,6 +33,7 @@ use std::{
     f64::consts::{PI, TAU},
     io::{self, Write},
     ops::Range,
+    time::{Duration, Instant},
 };
 
 use cooling::{Slowdown, Timing};
@@ -47,7 +48,7 @@ pub use contour::Contours;
 pub use edge_avoid::{Detour, Slices};
 pub use scarf::{Scarf, ScarfSeam};
 pub use seam::Seam;
-pub use seam_plan::{SeamMesh, SeamObject, SeamPart, SeamScene};
+pub use seam_plan::{SeamMeasures, SeamMesh, SeamObject, SeamPart, SeamScene, measure_seams};
 pub use settings::{Lift, OverhangFan, PrintSettings, WallDirection, WallOrder, gcode_template};
 
 #[derive(Debug, thiserror::Error)]
@@ -275,6 +276,39 @@ pub fn write_coded(
     codes: &[AtLayer],
     settings: &[PrintSettings],
 ) -> Result<Summary, GcodeError> {
+    write_timed(out, layers, slices, scene, contours, codes, settings).map(|(summary, _)| summary)
+}
+
+/// How long each part of writing a file took.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct WriteTimings {
+    /// Thinning the walls of the whole print.
+    pub thin: Duration,
+    /// Planning the seams, all told; and measuring how visible each
+    /// object's surface is and finding where its parts meet, which are
+    /// done side by side, and before the rest where they were measured
+    /// ahead (`SeamScene::measured`).
+    pub seams: Duration,
+    pub visibility: Duration,
+    pub joints: Duration,
+    /// Laying the layers: arcs or thinning, travel routes and the text.
+    pub layers: Duration,
+    /// Timing the finished file and slipping in what goes by its time.
+    pub estimate: Duration,
+}
+
+/// [`write_coded`], also saying how long each part of it took.
+pub fn write_timed(
+    out: &mut impl Write,
+    layers: &[Layer<'_>],
+    slices: &[Slices<'_>],
+    scene: &SeamScene<'_>,
+    contours: &Contours<'_>,
+    codes: &[AtLayer],
+    settings: &[PrintSettings],
+) -> Result<(Summary, WriteTimings), GcodeError> {
+    let mut timings = WriteTimings::default();
+    let started = Instant::now();
     let profiles = if contours.layers.len() == layers.len() {
         contours.layers
     } else {
@@ -299,6 +333,7 @@ pub fn write_coded(
     // loops, which the plan knows by where they are kept.
     let walls = simplify::Thinned::walls(layers, settings, profiles);
     let layers = &walls.layers(layers, 0)[..];
+    timings.thin = started.elapsed();
     // One physical layer is every entry at the same height.
     let mut groups: Vec<Range<usize>> = Vec::new();
     for (index, layer) in layers.iter().enumerate() {
@@ -402,7 +437,13 @@ pub fn write_coded(
             },
         },
         below: None,
-        seams: seam_plan::Plan::new(layers, &groups, settings, scene),
+        seams: {
+            let started = Instant::now();
+            let (plan, measured) = seam_plan::Plan::timed(layers, &groups, settings, scene);
+            (timings.visibility, timings.joints) = measured;
+            timings.seams = started.elapsed();
+            plan
+        },
         inner_wall: None,
         measured: Vec::new(),
         measured_used: 0,
@@ -434,6 +475,7 @@ pub fn write_coded(
     // entry it starts at.
     let mut thinned = simplify::Thinned::default();
     let mut thinned_from = 0;
+    let started = Instant::now();
     for (index, group) in groups.iter().enumerate() {
         writer.out.clear();
         reached.push((whole.len(), writer.state.summary.seconds));
@@ -488,6 +530,8 @@ pub fn write_coded(
             }
         }
     }
+    timings.layers = started.elapsed();
+    let started = Instant::now();
     let printed = whole.len();
     writer.out.clear();
     let mut summary = writer.finish()?;
@@ -628,7 +672,8 @@ pub fn write_coded(
         "; time at commanded speeds, without acceleration [s] = {:.0}",
         summary.seconds_at_speeds
     )?;
-    Ok(summary)
+    timings.estimate = started.elapsed();
+    Ok((summary, timings))
 }
 
 /// The box around everything a layer extrudes, in mm: min x, min y, max x, max y.
@@ -1944,11 +1989,12 @@ impl Writer<'_> {
                     if self.settings.reduce_infill_retraction
                         && let Some(at) = self.state.position
                     {
+                        // A straight move as a way round: the areas
+                        // sorted into cells answer as the plain test
+                        // does, without going over every edge of the
+                        // layer for each line.
                         let way = self.way(points[0]);
-                        sheltered = match way[..] {
-                            [to] => inside::stays_inside(shelter, at, to),
-                            _ => self.way_sheltered(shelter, at, &way),
-                        };
+                        sheltered = self.way_sheltered(shelter, at, &way);
                     }
                     // A short move of solid fill gets less plastic
                     // (`small_area_infill_flow_compensation`).

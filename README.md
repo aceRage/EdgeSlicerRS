@@ -58,6 +58,7 @@ cargo run --release -p edge-cli -- preset Snapmaker process "0.20mm Standard @Sn
 # A model or project saved as a project file the reference opens as its own: a 3MF keeps its own
 # settings, an STL is saved without any; --vendor/--machine/--process/--filament save it with presets.
 # What the file holds that would not be kept is listed and nothing is written, unless --accept-losses.
+# --timings says how long each stage of a slice took (on stdout, never in the G-code).
 cargo run --release -p edge-cli -- save model.stl --out model.3mf --vendor Snapmaker --machine "Snapmaker U1 (0.4 nozzle)" \
   --process "0.20mm Standard @Snapmaker U1 (0.4 nozzle)" --filament "Snapmaker PLA @U1"
 ```
@@ -1583,6 +1584,21 @@ Results, 2026-11-10, Mac mini, reference build 2.4.9.0, best of 3:
 | `stabilizer_v1.3mf` (499 layers) | 0.87 s | 0.163 s | 0.85% apart | -43% (no supports) |
 | `twopart_groups.3mf` (60 layers) | 0.18 s | 0.010 s | under 0.01% apart | -2.7% |
 
+Time from loading to the G-code written, best of 5 on all 18 cores,
+2026-11-11, against the reference's own work as its log has it: the
+3DBenchy (`benchy_u1.3mf`) 0.63 s against 2.77 s; `mcbrim_test.3mf`
+plate 1 (16 layers, eight painted objects of 85,000 triangles, seven
+filaments, supports, a prime tower) 1.65 s against 2.66 s, plates 2
+and 3 0.57 s and 0.55 s against 1.31 s each. Plate 1 took 2.8 s before
+a pass for speed, which measures in its stages (`edge slice --timings`)
+the first island's offset of the layer above kept for the rest, travel
+inside the part asked of the cells it is sorted into, every filament's
+layers and every object's visibility worked out side by side, the
+triangles' corners kept in the leaves of the ray tree, and the seams'
+visibility measure made beside the slicing; none of it moves the
+G-code. On one thread plate 1 takes 15.2 s (16.7 s before): painting
+6 s, the visibility measure 3.4 s, finding where parts meet 1.2 s.
+
 By feature, in metres of extruded path, reference against this engine:
 
 | Project | Overhang wall | Internal bridge | Internal solid fill | Gap fill |
@@ -1652,8 +1668,9 @@ on the border between two parts, they are there only with the paint
 start above the bottom shell, where the bottom face's paint keeps the
 two sides different colours. And the reference fills narrow parts of
 the top surface with gap fill (405 mm against 310 mm for the inlays'
-tool on their top layer). The plate takes 0.9 s to slice, most of it the painting:
-eight objects of 85,000 triangles each.
+tool on their top layer). The plate takes 1.4 s to slice on 18 threads (0.7 s of it
+the painting: eight objects of 85,000 triangles each), and 1.65 s with
+its G-code.
 
 Top and bottom surfaces now come to the reference's length within 0.1%,
 at the same pitch and width, on the cube, the deck, the tower and the
@@ -3460,7 +3477,7 @@ plans it, above).
 | wedge | 1567 / 1836 / 1567 | 1135 / 1135 / 1135 | 7431 / 7090 / 7420 | 2407 / 2431 / 2428 |  | 1667 / 1678 / 1679 | 611.5 / 610.9 / 612.4 | 5m 10s / 5m 31s / 5m 20s |
 | holed | 2185 / 2566 / 2184 | 1582 / 1575 / 1575 | 10561 / 10008 / 10480 | 3709 / 3753 / 3753 |  | 2269 / 2341 / 2306 | 882.1 / 881.6 / 882.5 | 6m 31s / 7m 3s / 6m 46s |
 | ramp | 1810 / 2110 / 1810 | 1339 / 1339 / 1339 | 8334 / 7957 / 8333 | 2440 / 2444 / 2444 |  | 1819 / 1828 / 1824 | 653.8 / 653.3 / 654.2 | 4m 41s / 4m 59s / 4m 48s |
-| dome | 398 / 427 / 399 | 851 / 850 / 850 | 5929 / 5869 / 5913 | 1607 / 1608 / 1607 |  | 210 / 216 / 211 | 390.7 / 392.4 / 392.3 | 4m 9s / 4m 21s / 4m 20s |
+| dome | 398 / 427 / 399 | 851 / 850 / 850 | 5929 / 5869 / 5914 | 1607 / 1608 / 1607 |  | 210 / 216 / 211 | 390.7 / 392.4 / 392.3 | 4m 9s / 4m 21s / 4m 20s |
 | mushroom | 2280 / 2280 / 2280 | 143 / 143 / 143 | 10930 / 10932 / 10935 | 5972 / 5776 / 5775 | 1970 / 1970 / 1970 | 1993 / 1993 / 1993 | 1002.2 / 995.8 / 995.8 | 10m 32s / 10m 34s / 10m 34s |
 | steps | 2874 / 2874 / 2874 | 2159 / 2159 / 2159 | 13832 / 13839 / 13840 | 7345 / 7345 / 7345 |  | 2740 / 2740 / 2745 | 1300.5 / 1300.8 / 1301.0 | 10m 11s / 10m 29s / 10m 29s |
 | holes | 5962 / 5966 / 5962 | 4316 / 4297 / 4297 | 29671 / 29649 / 29651 | 22162 / 22164 / 22160 | 162 / 162 / 162 | 5407 / 5397 / 5407 | 3314.1 / 3311.5 / 3311.9 | 23m 32s / 24m 22s / 24m 22s |
@@ -3489,7 +3506,7 @@ plans it, above).
 | steps_tsl1_t0 | 2874 / 2867 / 2874 | 2159 / 2159 / 2159 | 5329 / 5342 / 5330 | 9025 / 9001 / 9025 |  | 0 / 167 / 0 | 983.5 / 989.8 / 983.5 | 9m 8s / 9m 29s / 9m 24s |
 | wedge_zaa | 1567 / 1866 / 1567 | 1135 / 1135 / 1135 | 7481 / 7048 / 7383 | 2492 / 2481 / 2472 |  | 1517 / 1551 / 1561 | 598.3 / 595.5 / 596.8 | 5m 6s / 5m 31s / 5m 19s |
 | dome_zaa | 427 / 467 / 426 | 851 / 850 / 850 | 5749 / 5670 / 5758 | 1677 / 1677 / 1653 |  | 146 / 152 / 216 | 381.0 / 382.4 / 385.5 | 4m 21s / 4m 24s / 4m 22s |
-| benchy | 3453 / 3867 / 3445 | 460 / 517 / 517 | 21347 / 20801 / 21422 | 16244 / 16233 / 16181 | 1599 / 1611 / 1608 | 3480 / 3630 / 3490 | 3767.6 / 3773.3 / 3772.1 | 38m 43s / 40m 50s / 40m 26s |
+| benchy | 3453 / 3867 / 3445 | 460 / 517 / 517 | 21347 / 20801 / 21423 | 16244 / 16233 / 16181 | 1599 / 1611 / 1608 | 3480 / 3630 / 3490 | 3767.6 / 3773.3 / 3772.1 | 38m 43s / 40m 50s / 40m 26s |
 | mc1 | 8965 / 9025 / 9016 | 8776 / 8773 / 8773 | 50507 / 48846 / 48872 | 5623 / 6891 / 6891 | 220 / 362 / 354 | 3020 / 3586 / 3586 | 6886.5 / 6814.2 / 6814.4 | 1h 5m 1s / 1h 2m 54s / 1h 2m 54s |
 | mc2 | 4450 / 4507 / 4507 | 4389 / 4415 / 4415 | 24290 / 24524 / 24525 | 2721 / 2718 / 2718 | 190 / 191 / 190 | 2598 / 2657 / 2657 | 4462.7 / 4463.3 / 4463.3 | 42m 32s / 41m 18s / 41m 18s |
 | owner's figurine, m | 0.48 / 0.39 / 0.46 | 2.88 / 2.88 / 2.88 | 69.35 / 26.95 / 69.33 | 111.24 / 114.16 / 111.32 | 1.06 / 0.97 / 1.09 | 0.67 / 1.10 / 0.72 | | |
@@ -3510,6 +3527,16 @@ What moved, in the order it was found:
   a hair apart, were opened away as strips, and the solid under a
   sloped top began a layer higher (3DBenchy's deck at z 14.05).
 - A face that is its own whole shell is held at its edges.
+- Each front of a wave is thinned of points within a tenth of a micron
+  of the line through their neighbours before it grows again. The
+  clipping library here leaves the two ends of a corner that hardly
+  turns a nanometre apart where the reference's leaves one point, and
+  each wave rounded those scraps again: the Benchy's second layer came
+  to 61,000 points and the whole Benchy took 11 s instead of 0.6 s.
+  Lengths move by under a millimetre (the Benchy's internal solid
+  21422 to 21423 mm, the dome's 5913 to 5914). A test in
+  `edge-infill` fails if a round bridge grown in waves comes back
+  heavier than its curve; `edge slice --timings` shows the stages.
 
 The wedge's contoured top (`zaa_enabled`) is now the reference's move
 for move: 3783 top surface moves in both files where there were 4113

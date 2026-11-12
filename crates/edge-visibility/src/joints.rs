@@ -220,7 +220,9 @@ pub fn part_joints(bodies: &[JointBody]) -> Option<Joints> {
                         .into_iter()
                         .fold(0.0f32, f32::max)
                         .sqrt();
-                    closest_within(them, centroid, radius + REACH).is_some()
+                    them.tree.as_ref().is_some_and(|tree| {
+                        tree.any_within(centroid.map(f64::from), f64::from(radius + REACH))
+                    })
                 })
                 .collect();
             candidates.extend(
@@ -493,6 +495,7 @@ mod tests {
                 .fold(f64::INFINITY, f64::min);
             for reach in [0.5, 2.0, 50.0] {
                 let found = tree.closest_within(&mesh, point, reach);
+                assert_eq!(tree.any_within(point, reach), found.is_some());
                 if brute <= reach * reach {
                     let (_, _, distance) = found.expect("within reach");
                     assert!(
