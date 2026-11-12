@@ -309,6 +309,13 @@ def placeholders(text, flags):
 
 # --- The tables ----------------------------------------------------------
 
+# Translations that are plainly of another string, left out as the broken
+# ones are (the message id is shown): (language, message id) -> why.
+WRONG = {
+    # "Plate" names a plate ("Plate 2"); this is "Print current plate".
+    ("de", "Plate"): "the translation of \"Print current plate\"",
+}
+
 def table(language, path):
     found = entries(path)
     fields = header(found)
@@ -356,6 +363,10 @@ def table(language, path):
             continue
         if text == msgid:
             counted["same"] += 1
+            continue
+        if (language, key) in WRONG:
+            counted["broken"] += 1
+            broken.append((entry["line"], msgid, f"{text} ({WRONG[(language, key)]})"))
             continue
         if placeholders(text, entry["flags"]) != placeholders(msgid, entry["flags"]):
             counted["broken"] += 1

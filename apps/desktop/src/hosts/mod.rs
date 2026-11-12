@@ -217,9 +217,7 @@ pub trait Host: Send + Sync {
 /// The host for a connection, or why there is none.
 pub fn make(connection: &Connection, timeouts: Timeouts) -> Result<Box<dyn Host>, String> {
     if connection.print_host.trim().is_empty() {
-        return Err(tr(
-            "Please set up your printer connection to view the device.",
-        ));
+        return Err("Please set up your printer connection to view the device.".into());
     }
     match connection.host_type.as_str() {
         // The fork sends to a U1 with Snapmaker's own page, not through

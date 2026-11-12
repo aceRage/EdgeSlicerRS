@@ -109,7 +109,7 @@ impl ElegooLink {
         if answer.body.to_lowercase().contains("elegoo") {
             Ok(())
         } else {
-            Err(tr("ElegooLink not detected"))
+            Err("ElegooLink not detected".into())
         }
     }
 
@@ -144,7 +144,7 @@ impl ElegooLink {
                 return Err(Failure::Error(http_error(&answer)));
             }
             let Some(json) = answer.json() else {
-                return Err(Failure::Error(tr("Error parsing response")));
+                return Err(Failure::Error("Error parsing response".into()));
             };
             if json["code"].as_str() != Some("000000") {
                 let mut said = format!("ErrorCode : {}", json["code"].as_str().unwrap_or("?"));

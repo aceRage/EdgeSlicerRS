@@ -2491,7 +2491,6 @@
 "Pin Code":"Pin-Code",
 "Place on cut":"auf den Schnitt legen",
 "Plane":"Ebene",
-"Plate":"Aktuelle Platte drucken",
 "Plate %d: %s does not support filament %s":"Druckplatte %d: %s unterstützt kein Filament %s",
 "Plate %d: %s is not suggested to be used to print filament %s (%s). If you still want to do this print job, please set this filament's bed temperature to non-zero.":"Plate %d: %s wird nicht empfohlen, um Filament %s (%s) zu drucken. Wenn Sie dennoch diesen Druck durchführen möchten, stellen Sie bitte die Betttemperatur dieses Filaments auf einen Wert größer als Null.",
 "Plate Settings":"Druck-Platteneinstellungen",

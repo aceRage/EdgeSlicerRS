@@ -29,7 +29,8 @@ pub fn version(http: &Http) -> Result<(), String> {
         return Err(http_error(&answer));
     }
     let Some(json) = answer.json() else {
-        return Err(tr("Could not parse server response"));
+        // The reference does not translate it (OctoPrint.cpp l.277).
+        return Err("Could not parse server response".into());
     };
     if json.get("api").is_none() {
         return Err("The printer's answer is not OctoPrint's.".into());

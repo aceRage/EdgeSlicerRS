@@ -141,3 +141,294 @@ fn values_go_into_the_placeholders_as_the_cpp_puts_them() {
     assert_eq!(fill("50 % done %s", &[]), "50 % done %s");
     assert_eq!(fill("{layer_num} %d", &[&1]), "{layer_num} 1");
 }
+
+// ---- every word shown: a message id, or listed ----
+
+/// The message ids of the reference's template
+/// (`localization/i18n/Snapmaker_Orca.pot`), read as far as this needs:
+/// each `msgid`, its lines joined and its escapes read. A string the
+/// template never closes (it has one) is taken as it stands.
+fn message_ids() -> std::collections::HashSet<String> {
+    let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../../reference/EdgeSlicer/localization/i18n/Snapmaker_Orca.pot");
+    let text = std::fs::read_to_string(&path)
+        .unwrap_or_else(|error| panic!("{}: {error}", path.display()));
+    let unquote = |line: &str| -> String {
+        let inner = line.trim().strip_prefix('"').unwrap_or(line);
+        let inner = inner.strip_suffix('"').unwrap_or(inner);
+        let mut out = String::new();
+        let mut chars = inner.chars();
+        while let Some(c) = chars.next() {
+            if c != '\\' {
+                out.push(c);
+                continue;
+            }
+            match chars.next() {
+                Some('n') => out.push('\n'),
+                Some('t') => out.push('\t'),
+                Some('r') => out.push('\r'),
+                Some(other) => out.push(other),
+                None => {}
+            }
+        }
+        out
+    };
+    let mut ids = std::collections::HashSet::new();
+    let mut current: Option<String> = None;
+    for line in text.lines() {
+        let line = line.trim();
+        if let Some(rest) = line.strip_prefix("msgid ") {
+            current = Some(unquote(rest));
+        } else if line.starts_with('"') {
+            if let Some(id) = current.as_mut() {
+                id.push_str(&unquote(line));
+            }
+        } else if let Some(id) = current.take()
+            && !id.is_empty()
+        {
+            ids.insert(id);
+        }
+    }
+    ids
+}
+
+/// A JavaScript string literal at the start of `text` (after its quote),
+/// read: its text, or None for a template with a `${…}` in it.
+fn js_literal(text: &str) -> Option<String> {
+    let mut chars = text.chars();
+    let quote = chars.next()?;
+    let mut out = String::new();
+    while let Some(c) = chars.next() {
+        match c {
+            '\\' => match chars.next()? {
+                'n' => out.push('\n'),
+                't' => out.push('\t'),
+                'u' => {
+                    let code: String = chars.by_ref().take(4).collect();
+                    out.push(char::from_u32(u32::from_str_radix(&code, 16).ok()?)?);
+                }
+                other => out.push(other),
+            },
+            '$' if quote == '`' && chars.clone().next() == Some('{') => return None,
+            c if c == quote => return Some(out),
+            c => out.push(c),
+        }
+    }
+    None
+}
+
+/// What `call(` is given first wherever it is called as a function in
+/// `source` (not as a method, nor as part of a longer name): the literal
+/// texts, by line.
+fn literals_of(source: &str, call: &str, rust: bool) -> Vec<(usize, String)> {
+    let mut found = Vec::new();
+    let opening = format!("{call}(");
+    let mut from = 0;
+    while let Some(at) = source[from..].find(&opening) {
+        let start = from + at;
+        from = start + opening.len();
+        let before = source[..start].chars().next_back();
+        if before.is_some_and(|c| c.is_alphanumeric() || c == '_' || c == '.' || c == '$') {
+            continue;
+        }
+        let rest = source[from..].trim_start();
+        let literal = if rust {
+            rest.strip_prefix('"')
+                .and_then(|rest| js_literal(&format!("\"{rest}")))
+        } else if rest.starts_with(['\'', '"', '`']) {
+            js_literal(rest)
+        } else {
+            None
+        };
+        if let Some(text) = literal {
+            found.push((source[..start].lines().count(), text));
+        }
+    }
+    found
+}
+
+/// The words of a static page: the text between its tags (not in a
+/// script, a style or a drawing) and its titles, labels and placeholders,
+/// spaces made one.
+fn html_words(page: &str) -> Vec<(usize, String)> {
+    let mut found = Vec::new();
+    let tidy = |text: &str| text.split_whitespace().collect::<Vec<_>>().join(" ");
+    let line_of = |at: usize| page[..at].lines().count();
+    let mut at = 0;
+    let mut skipping: Option<&str> = None;
+    while let Some(open) = page[at..].find('<') {
+        let open = at + open;
+        let text = tidy(&decode(&page[at..open]));
+        if skipping.is_none() && text.chars().any(char::is_alphabetic) {
+            found.push((line_of(at), text));
+        }
+        let close = open + page[open..].find('>').expect("a tag that ends");
+        let tag = &page[open + 1..close];
+        let name: String = tag
+            .chars()
+            .take_while(|c| c.is_alphanumeric() || *c == '/' || *c == '!')
+            .collect();
+        match name.as_str() {
+            "script" | "style" | "svg" => {
+                skipping = Some(if name == "svg" {
+                    "/svg"
+                } else if name == "script" {
+                    "/script"
+                } else {
+                    "/style"
+                })
+            }
+            closing if Some(closing) == skipping => skipping = None,
+            _ => {}
+        }
+        if skipping.is_none() && !name.starts_with('!') {
+            for attribute in ["title", "aria-label", "placeholder"] {
+                let key = format!(" {attribute}=\"");
+                if let Some(start) = tag.find(&key) {
+                    let value = &tag[start + key.len()..];
+                    let value = &value[..value.find('"').unwrap_or(value.len())];
+                    let value = tidy(&decode(value));
+                    if value.chars().any(char::is_alphabetic) {
+                        found.push((line_of(open), value));
+                    }
+                }
+            }
+        }
+        at = close + 1;
+    }
+    found
+}
+
+fn decode(text: &str) -> String {
+    text.replace("&quot;", "\"")
+        .replace("&lt;", "<")
+        .replace("&gt;", ">")
+        .replace("&#39;", "'")
+        .replace("&amp;", "&")
+}
+
+/// The list of what is shown and is not a message id (`wording.txt`):
+/// the C++'s words newer than its catalog, and this app's own.
+fn listed() -> (Vec<String>, Vec<String>) {
+    let text = include_str!("wording.txt");
+    let (mut newer, mut own) = (Vec::new(), Vec::new());
+    let mut section = "";
+    for line in text.lines() {
+        if line.starts_with('#') || line.trim().is_empty() {
+            continue;
+        }
+        if line == "[newer]" || line == "[own]" {
+            section = if line == "[newer]" { "newer" } else { "own" };
+            continue;
+        }
+        // The words, then a tab and where the reference has them.
+        let words = line.split('\t').next().unwrap_or(line).replace("\\n", "\n");
+        match section {
+            "newer" => newer.push(words),
+            "own" => own.push(words),
+            _ => panic!("wording.txt: {line} is in no section"),
+        }
+    }
+    (newer, own)
+}
+
+/// Every string the page passes through `t` (and `tc`, `tn`), every one
+/// the session passes through `tr`, and every word of the static page
+/// (`index.html`, which i18n.js puts in the language) is a message id of
+/// the reference's catalog, as the C++ source writes it; or it is listed
+/// in `wording.txt`, as words of the C++ newer than its catalog or as this
+/// app's own. A form that someone typed as the English reads (the en
+/// catalog's "Advanced" for "Advance") is neither, and fails here: other
+/// languages would not find it.
+#[test]
+fn every_word_shown_is_a_message_id_or_listed() {
+    let ids = message_ids();
+    assert!(ids.len() > 4000, "{} message ids", ids.len());
+    assert!(ids.contains("Advance") && ids.contains("Lay on face"));
+    let (newer, own) = listed();
+    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+    let mut sources: Vec<(String, String)> = Vec::new();
+    let mut read_dir = |dir: &std::path::Path, extension: &str| {
+        let mut stack = vec![dir.to_path_buf()];
+        while let Some(dir) = stack.pop() {
+            for entry in std::fs::read_dir(&dir).unwrap() {
+                let path = entry.unwrap().path();
+                if path.is_dir() {
+                    stack.push(path);
+                } else if path.extension().is_some_and(|e| e == extension) {
+                    let name = path
+                        .strip_prefix(root)
+                        .unwrap()
+                        .to_string_lossy()
+                        .replace('\\', "/");
+                    sources.push((name, std::fs::read_to_string(&path).unwrap()));
+                }
+            }
+        }
+    };
+    read_dir(&root.join("ui"), "js");
+    read_dir(&root.join("ui"), "html");
+    read_dir(&root.join("src"), "rs");
+    let mut shown: Vec<(String, usize, String)> = Vec::new();
+    for (name, source) in &sources {
+        if name.ends_with(".js") {
+            for call in ["t", "tc", "tn"] {
+                for (line, text) in literals_of(source, call, false) {
+                    shown.push((name.clone(), line, text));
+                }
+            }
+            // tc's message id is its second: none is used yet.
+            assert!(
+                literals_of(source, "tc", false).is_empty(),
+                "{name}: tc is read as t here"
+            );
+        } else if name.ends_with(".html") {
+            for (line, text) in html_words(source) {
+                shown.push((name.clone(), line, text));
+            }
+        } else if !name.ends_with("tests.rs") && !name.contains("/tests/") {
+            for (line, text) in literals_of(source, "tr", true) {
+                shown.push((name.clone(), line, text));
+            }
+        }
+    }
+    assert!(shown.len() > 400, "{} strings found", shown.len());
+    let mut unknown = Vec::new();
+    for (name, line, text) in &shown {
+        // "Words [Key]": the words are the message id, as a tooltip with
+        // its key is built.
+        let words = text
+            .rsplit_once(" [")
+            .filter(|(_, key)| key.ends_with(']'))
+            .map_or(text.as_str(), |(words, _)| words);
+        if ids.contains(text) || ids.contains(words) || newer.contains(text) || own.contains(text) {
+            continue;
+        }
+        unknown.push(format!("{name}:{line}: {text:?}"));
+    }
+    unknown.sort();
+    unknown.dedup();
+    assert!(
+        unknown.is_empty(),
+        "not a message id of Snapmaker_Orca.pot, nor in wording.txt:\n{}",
+        unknown.join("\n")
+    );
+    // The lists hold only what is still so.
+    let everything: String = sources.iter().map(|(_, source)| source.as_str()).collect();
+    for words in newer.iter().chain(&own) {
+        assert!(
+            !ids.contains(words),
+            "wording.txt: {words:?} is a message id now; pass it through t or tr"
+        );
+        // As a script or the session may write it: a new line as `\n`, an
+        // apostrophe as `\'`.
+        let written = words.replace('\n', "\\n");
+        let quoted = written.replace('\'', "\\'");
+        assert!(
+            [words.as_str(), &written, &quoted]
+                .iter()
+                .any(|form| everything.contains(form)),
+            "wording.txt: {words:?} is shown nowhere any more"
+        );
+    }
+}
