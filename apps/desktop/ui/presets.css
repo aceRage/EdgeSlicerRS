@@ -1,0 +1,46 @@
+/* A person's own presets (presets.js): the preset row with its cog, the
+   dialog that asks for a name, "Transfer or discard changes" and "Compare
+   presets". Only what is theirs alone; everything else is the components
+   of style.css. No colour or size here that is not a token. */
+
+/* -- a list with its cog beside it -- */
+
+.preset-row { display: flex; align-items: flex-end; gap: var(--space-1); }
+.preset-row > label { flex: 1; min-width: 0; }
+.preset-row[hidden], .preset-row > [hidden] { display: none; }
+button.preset-cog { flex: none; color: var(--text-2); }
+button.preset-cog:hover { color: var(--text-1); }
+#preset-head button.preset-cog { align-self: center; }
+
+/* -- the dialogs -- */
+
+dialog.preset-dialog { width: min(440px, calc(100vw - 32px)); }
+dialog.preset-dialog form { display: flex; flex-direction: column; gap: var(--space-2); }
+dialog.preset-dialog h2 { font-size: var(--size-title); margin: 0; }
+dialog.preset-dialog label { color: var(--text-2); font-size: var(--size-label); }
+.pn-message { margin: 0; min-height: 2.6em; white-space: pre-line; font-size: var(--size-label); color: var(--text-3); }
+.pn-message.warn { color: var(--warn); }
+.pn-message.invalid { color: var(--danger); }
+
+/* The two large ones: a head, a table in a well that scrolls, the foot. */
+dialog.preset-dialog.wide { width: min(820px, calc(100vw - 32px)); max-height: calc(100vh - 32px); padding: var(--space-4); }
+dialog.preset-dialog.wide form { max-height: calc(100vh - 64px); }
+.pc-head { display: flex; flex-direction: column; gap: var(--space-2); }
+.pc-text { margin: 0; white-space: pre-line; color: var(--text-2); }
+.pc-scroll { flex: 1; min-height: 80px; max-height: 56vh; overflow: auto; border: 1px solid var(--line-2); border-radius: var(--radius-l); background: var(--surface-well); }
+.pc-scroll:empty { display: none; }
+table.pc-table { width: 100%; table-layout: fixed; }
+table.pc-table th:first-child { width: 40%; }
+table.pc-table { min-width: 0; }
+table.pc-table th, table.pc-table td { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+table.pc-table td.pc-value { font-family: var(--font-mono); font-size: var(--size-label); }
+tr.pc-page th { text-align: left; font-size: var(--size-label); color: var(--text-1); background: var(--surface-raised); }
+tr.pc-group th { text-align: left; font-size: var(--size-caps); letter-spacing: var(--caps-spacing); text-transform: uppercase; color: var(--text-3); font-weight: normal; }
+.cmp-pick { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1.6fr) minmax(0, 1.6fr); gap: var(--space-2); }
+#cmp-info { margin: 0; }
+
+/* "Export Preset Bundle": the kinds of bundle, the presets to put in it. */
+.ex-types { display: flex; flex-direction: column; gap: var(--space-1); }
+.ex-note { margin: 0 0 0 var(--space-5); font-size: var(--size-small); }
+.ex-names { display: flex; flex-direction: column; gap: var(--space-1); padding: var(--space-2) var(--space-3); }
+.ex-names label.tick { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }

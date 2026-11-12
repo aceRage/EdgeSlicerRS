@@ -95,6 +95,8 @@ const INCLUDE_SKIPPED_KEYS: [&str; 12] = [
 #[derive(Debug)]
 pub struct Vendor {
     name: String,
+    /// The index's `version` ("02.03.03.14").
+    version: Option<String>,
     presets: [Section; 4],
     /// The shared filament library other vendors' filaments inherit from.
     library: Option<Box<Vendor>>,
@@ -209,6 +211,10 @@ impl Vendor {
         };
         Ok(Self {
             name: name.to_owned(),
+            version: index
+                .get("version")
+                .and_then(|version| version.as_str())
+                .map(str::to_owned),
             presets,
             library,
         })
@@ -216,6 +222,33 @@ impl Vendor {
 
     pub fn name(&self) -> &str {
         &self.name
+    }
+
+    /// The version of the vendor's profiles as a preset made from them
+    /// is stamped with: the index's, each part as a number ("02.03.03.14"
+    /// is "2.3.3.14", as the reference's `Semver::to_string` writes it).
+    pub fn preset_version(&self) -> String {
+        let version = self.version.as_deref().unwrap_or_default();
+        let parts: Vec<String> = version
+            .split('.')
+            .map(|part| {
+                part.trim()
+                    .parse::<u64>()
+                    .map_or_else(|_| part.trim().to_owned(), |n| n.to_string())
+            })
+            .collect();
+        if version.is_empty() {
+            "0.0.0.0".to_owned()
+        } else {
+            parts.join(".")
+        }
+    }
+
+    /// Whether the vendor (or, for filaments, the shared library) has a
+    /// preset of this name, current or former; one only there to inherit
+    /// from included.
+    pub fn has(&self, kind: Kind, name: &str) -> bool {
+        self.locate(kind, name).is_some()
     }
 
     /// Preset names of one kind, in the vendor index's order. Includes

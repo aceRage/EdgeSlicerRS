@@ -229,7 +229,7 @@ const NO_GENERIC: &str = "not yet: the project file is written in the reference'
 const NO_BAMBU: &str = "not yet: no Bambu Studio export";
 const NO_SLICED_FILE: &str =
     "not yet: the sliced file (.gcode.3mf) is not written; Export G-code is";
-const NO_PRESETS: &str = "not yet: waits for user presets";
+const NO_PRESETS: &str = "not yet: a vendor's system profile is not imported";
 const NO_3DCONNEXION: &str = "not yet: 3D mice are not read";
 const NO_OVERHANG: &str = "not yet: overhangs are not marked in the scene";
 const NO_XRAY: &str = "not yet: the scene has no X-ray view";
@@ -248,7 +248,8 @@ const NO_UPDATES: &str = "not yet: there are no releases to check for";
 const NO_NETWORK_TEST: &str = "not yet: no network test";
 const NO_FIREWALL: &str = "not yet: the firewall is not checked";
 const NO_BAMBU_HELP: &str = "not yet: Bambu Lab printers are not sent to";
-const NO_MIGRATE: &str = "not yet: waits for user presets";
+const NO_MIGRATE: &str =
+    "not yet: filament presets a profile update took away are not brought back";
 
 /// What the presets' import and export may be called (the user presets
 /// are built on another branch): the first of these the session has is
