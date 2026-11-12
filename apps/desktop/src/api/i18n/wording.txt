@@ -167,7 +167,7 @@ Zoom to the objects [Z]
 # This app's own words in its scripts (ui/*.js), with no counterpart in
 # the C++, left as they are (not passed through t): shown in English in
 # every language. Where a value goes in, the source's template is given.
-Path of an STL or 3MF file on this machine
+Path of an STL, OBJ or 3MF file on this machine
 Path of the folder of vendor profiles
 Save the G-code as (a full path)
 Save the project as (a full path)
@@ -295,3 +295,12 @@ not yet: there are no tips
 not yet: there is no Home tab
 not yet: there is no Mobile Hub
 not yet: waits for user presets
+# The menu bar in a browser (index.html, menu.js), and "About".
+Menu bar
+EdgeSlicerRS: a slicer for EdgeSlicer, written anew in Rust. It follows the C++ EdgeSlicer it is built beside, 2.4.9.0.
+Licence: AGPL-3.0.
+Export the STL as (a full path)
+Path of the folder to export the STL files to
+Path of the configs to import
+Saved ${answer.path} (${answer.triangles} triangles).
+Saved ${answer.files.length} STL files in ${dir}.

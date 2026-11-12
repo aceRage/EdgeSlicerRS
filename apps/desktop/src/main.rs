@@ -100,6 +100,10 @@ fn pick(app: tauri::AppHandle, what: String, suggested: Option<String>) -> Optio
             }
             dialog.blocking_save_file()
         }
+        // "Import Configs..." (MainFrame.cpp `load_config_file`).
+        "presets" => dialog
+            .add_filter("Config files", &["json", "ini", "zip", "bbscfg", "bbsflmt"])
+            .blocking_pick_file(),
         // "HTTPS CA File"'s "Browse ..." (PhysicalPrinterDialog.cpp l.357).
         "cafile" => dialog
             .set_title("Open CA certificate file")

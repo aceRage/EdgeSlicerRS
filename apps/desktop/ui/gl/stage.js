@@ -926,28 +926,18 @@
       const key = event.key.length === 1 ? event.key.toLowerCase() : event.key;
       const done = () => { event.preventDefault(); this.frame(); };
       if (command && !event.shiftKey) {
-        // Ctrl+0 to Ctrl+7: the views, as the reference binds them.
-        const views = { 0: 'default', 1: 'top', 2: 'bottom', 3: 'front', 4: 'rear', 5: 'left', 6: 'right', 7: 'this plate' };
-        const digit = /^(Digit|Numpad)([0-7])$/.exec(event.code);
-        if (digit) { this.view(views[digit[2]]); done(); return; }
-        if (key === 'a' && this.model.tab === 'prepare' && this.scene.data) {
-          // Select all objects: those on the plate shown.
-          const id = this.plateId();
-          this.select(this.scene.data.placings.filter((placing) => placing.plate === id || this.scene.plates.length === 1).map((placing) => placing.id));
-          done();
-          return;
-        }
-        if (key === 'e') { this.setPref('labels', 'labels', !this.prefs.labels); done(); return; }
+        // Ctrl+7: the plate shown from above. Ctrl+0 to Ctrl+6 (the View
+        // menu's), Ctrl+A and Ctrl+E are the menu bar's keys (menu.js).
+        if (/^(Digit|Numpad)7$/.test(event.code)) { this.view('this plate'); done(); }
         return;
       }
       if (command) return;
       if (key === 'i' || key === 'o') { this.camera.updateZoom(key === 'i' ? 1 : -1); done(); return; }
-      if (key === 'Escape' && this.model.tab === 'prepare' && GL.edit && GL.edit.escape()) { done(); return; }
-      if (key === 'Escape' && this.model.tab === 'prepare' && this.mine().selection.size) { this.select([]); done(); return; }
+      // Escape ("Deselect all") is the menu bar's key (menu.js).
       if (this.model.tab !== 'preview' || !this.path()) return;
       const fast = event.shiftKey ? 5 : 1;
       if (key === 'l' && !event.shiftKey) { this.layerSlider.setOne(!this.layerSlider.one); done(); return; }
-      if (key === 'c' && !event.shiftKey) { this.toggleGcode(); done(); return; }
+      // C ("Show G-code Window") is the menu bar's key (menu.js).
       if (key === 'ArrowLeft' || key === 'ArrowRight') { this.moveSlider.step((key === 'ArrowRight' ? 1 : -1) * fast); done(); return; }
       if (key === 'Home') { this.moveSlider.move(this.moveSlider.least); done(); return; }
       if (key === 'End') { this.moveSlider.move(this.moveSlider.most); done(); }
