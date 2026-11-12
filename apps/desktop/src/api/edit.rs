@@ -23,7 +23,9 @@ use edge_engine::{Bed, LAST_LAYER, LayerSequence, Model, PartKind, PlateSettings
 use serde_json::{Value, json};
 
 use super::{
-    File, Project, Session, lock, needed,
+    File, Project, Session,
+    filaments::FilamentChoices,
+    lock, needed,
     scene::{Stage, kind_of},
     text, whole,
 };
@@ -60,10 +62,36 @@ pub(super) fn over_the_edge(file: &File, bed: Option<&Bed>, plate: Option<u32>) 
         .any(|copy| copy.printable() && on.contains(&copy.id()) && model.overhangs(bed, copy.id()))
 }
 
-/// One step of the history: what was done, and the model on its far side.
+/// One step of the history: what was done, and the model on its far side;
+/// for an edit of the filament list, the presets and what was set over
+/// them on its far side too (`filaments`).
 struct Step {
     name: String,
     file: Option<Arc<File>>,
+    filaments: Option<FilamentChoices>,
+}
+
+/// Puts an edit made to a project on its undo history, `before` being the
+/// model it was made to (and, for one of the filament list, the choices
+/// it was made to), and lets go of what it made stale.
+pub(super) fn push_step(
+    project: &mut Project,
+    name: &str,
+    before: Option<Arc<File>>,
+    filaments: Option<FilamentChoices>,
+) {
+    let history = &mut project.history;
+    history.undo.push(Step {
+        name: name.to_owned(),
+        file: before.clone(),
+        filaments,
+    });
+    if history.undo.len() > DEPTH {
+        history.undo.remove(0);
+    }
+    history.redo.clear();
+    history.revision += 1;
+    settle(project, before.as_deref());
 }
 
 /// The edits made to a project's model, to take back, and those taken
@@ -99,6 +127,15 @@ impl History {
 /// slice that is running, the views from above, and a plate shown that is
 /// no longer there.
 fn settle(project: &mut Project, before: Option<&File>) {
+    // The model's settings (its filaments) are in every plate's slice.
+    let settings_of = |file: Option<&File>| file.and_then(|file| file.model.settings().cloned());
+    if !match (settings_of(before), settings_of(project.file.as_deref())) {
+        (Some(was), Some(now)) => Arc::ptr_eq(&was, &now),
+        (None, None) => true,
+        _ => false,
+    } {
+        project.forget();
+    }
     let after = project.file.as_deref();
     // A plate's slot, and what its slice depends on, in a model.
     let stamps = |file: Option<&File>| -> Vec<(u32, edge_engine::PlateStamp)> {
@@ -151,17 +188,7 @@ pub(super) fn reset_bed_types(project: &mut Project, allowed: impl Fn(&str) -> b
         return false;
     }
     let before = project.file.replace(Arc::new(File::of(model)));
-    let history = &mut project.history;
-    history.undo.push(Step {
-        name: "Plate bed types reset".into(),
-        file: before.clone(),
-    });
-    if history.undo.len() > DEPTH {
-        history.undo.remove(0);
-    }
-    history.redo.clear();
-    history.revision += 1;
-    settle(project, before.as_deref());
+    push_step(project, "Plate bed types reset", before, None);
     true
 }
 
@@ -664,7 +691,7 @@ impl Session {
 
     /// The project and its scene as they are, which is what every call
     /// here answers.
-    fn edited(&self, id: u32, more: Value) -> Result<Value, String> {
+    pub(super) fn edited(&self, id: u32, more: Value) -> Result<Value, String> {
         let stage = self.stage_of(&json!({ "project": id }))?;
         let scene = self.scene_for(&stage);
         let state = lock(&self.state);
@@ -767,17 +794,7 @@ impl Session {
                 return Err("the project changed meanwhile; nothing was done".into());
             }
             let before = project.file.replace(next);
-            let history = &mut project.history;
-            history.undo.push(Step {
-                name: outcome.name.clone(),
-                file: before.clone(),
-            });
-            if history.undo.len() > DEPTH {
-                history.undo.remove(0);
-            }
-            history.redo.clear();
-            history.revision += 1;
-            settle(project, before.as_deref());
+            push_step(project, &outcome.name, before, None);
             if let Some(show) = outcome.show
                 && project
                     .file
@@ -825,10 +842,10 @@ impl Session {
             let at = state.target(args)?;
             let project = &mut state.projects[at];
             let history = &mut project.history;
-            let (from, onto) = if back {
-                (&mut history.undo, &mut history.redo)
+            let from = if back {
+                &mut history.undo
             } else {
-                (&mut history.redo, &mut history.undo)
+                &mut history.redo
             };
             let step = from.pop().ok_or(if back {
                 "there is nothing to undo"
@@ -836,19 +853,32 @@ impl Session {
                 "there is nothing to redo"
             })?;
             // What is set at the layers is not in the history, as in the
-            // reference: it stays as it is (`ticks`).
+            // reference: it stays as it is (`ticks`). A step of the
+            // filament list renumbers it, and takes it back with it.
             let file = match (&project.file, step.file) {
-                (Some(now), Some(then)) => {
+                (Some(now), Some(then)) if step.filaments.is_none() => {
                     Some(super::ticks::carried(now, &then).map_or(then, Arc::new))
                 }
                 (_, then) => then,
             };
             let before = std::mem::replace(&mut project.file, file);
+            // The filament list's presets go back with it.
+            let filaments = step.filaments.map(|choices| choices.swap_into(project));
+            let history = &mut project.history;
+            let onto = if back {
+                &mut history.redo
+            } else {
+                &mut history.undo
+            };
             onto.push(Step {
                 name: step.name.clone(),
                 file: before.clone(),
+                filaments: filaments.clone(),
             });
             history.revision += 1;
+            if filaments.is_some() {
+                project.forget();
+            }
             settle(project, before.as_deref());
             (project.id, step.name)
         };

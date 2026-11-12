@@ -799,17 +799,12 @@ async function showSidebar() {
   }
   $('printer-info').textContent = facts.join(' · ');
 
-  // Filaments: one for each the file prints in, by number.
+  // Filaments: one for each the project has (filaments.js).
   const count = project.filament_count;
   const offered = fromPresets && choices.machine ? (await presetsOf(choices.vendor, choices.machine)).filaments : [];
-  const colours = project.colours || [];
+  Filaments.closePicker();
+  Filaments.head(project);
   $('filaments').replaceChildren(...Array.from({ length: count }, (_, index) => {
-    const swatch = el('span', { className: 'swatch', textContent: String(index + 1) });
-    const colour = /^#[0-9a-f]{6}/i.test(colours[index] || '') ? colours[index].slice(0, 7) : null;
-    if (colour) {
-      swatch.style.background = colour;
-      swatch.style.color = brightness(colour) > 0.55 ? '#1c2026' : '#ffffff';
-    }
     let name;
     if (fromPresets) {
       const list = el('select', { ariaLabel: `Filament ${index + 1}` });
@@ -823,11 +818,9 @@ async function showSidebar() {
       const saved = (project.saved.filaments || [])[index] || 'not named';
       name = el('span', { className: 'value', textContent: saved, title: saved });
     }
-    // Its own pages of settings ("Edit" in the reference's row menu).
-    const edit = el('button', { type: 'button', className: 'icon tool', title: 'Click to edit preset', ariaLabel: `Filament ${index + 1} settings` }, svg(EDIT_ICON));
-    edit.addEventListener('click', () => attempt(() => openPresetPanel('filament', index + 1)));
-    return el('div', { className: 'filament' }, swatch, name, edit);
+    return Filaments.row(project, index, name);
   }));
+  Filaments.applyAll(project, offered);
 
   // Process.
   $('process-row').hidden = !fromPresets;
@@ -859,6 +852,7 @@ async function filamentChanged() {
 // The sidebar's lists are the page's own (listbox); the printer's is set up with its card, in printers.js.
 listbox($('process'));
 listbox($('bed'), { bare: true });
+Filaments.init();
 $('process').addEventListener('change', () => attempt(() => setProject({ process: $('process').value })));
 $('bed').addEventListener('change', () => attempt(() => setProject({ bed_type: $('bed').value })));
 for (const title of document.querySelectorAll('.fold-title')) {
@@ -2045,8 +2039,12 @@ function editApplied(project) {
   $('empty').textContent = emptyText(project, state.tab === 'preview');
   // More or fewer filaments, or a project that is no longer empty: the
   // sidebar lists them.
-  const listed = (shown) => (shown ? `${shown.empty}|${shown.filament_count}|${shown.used}` : '');
-  if (listed(before) !== listed(project)) attempt(showSidebar);
+  const listed = (shown) => (shown ? JSON.stringify([shown.empty, shown.filament_count, shown.used, shown.colours, shown.choices.filaments]) : '');
+  if (listed(before) !== listed(project)) {
+    attempt(showSidebar);
+    // The object list's lists of filaments, drawn before the project came.
+    if (window.EdgeGL.objects) window.EdgeGL.objects.render();
+  }
   // In Preview the plate is shown as it now is: not sliced.
   if (state.tab === 'preview') attempt(() => showStage());
   attempt(refreshStrip);

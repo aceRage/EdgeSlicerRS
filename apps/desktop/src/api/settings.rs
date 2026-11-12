@@ -692,7 +692,9 @@ impl Session {
         };
         Ok(Basis {
             chosen,
-            project: file.and_then(|file| file.settings.clone()),
+            // What the presets are laid over: the file's own settings, or
+            // what says what its filaments are once they were changed.
+            project: file.and_then(|file| file.model.underlying().cloned()),
         })
     }
 

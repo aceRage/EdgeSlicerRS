@@ -685,11 +685,9 @@ impl Session {
             },
             "plates": plates,
             "plate": stage.plate,
-            "colours": stage
-                .file
-                .as_ref()
-                .and_then(|file| file.settings.as_ref())
-                .and_then(|settings| settings.texts("filament_colour")),
+            "colours": stage.file.as_ref().and_then(|file| {
+                file.model.underlying().map(|_| file.model.filament_colours())
+            }),
             "objects": listed,
             "placings": placings,
         })

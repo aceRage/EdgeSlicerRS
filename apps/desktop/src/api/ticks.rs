@@ -122,10 +122,9 @@ impl Session {
             .and_then(|settings| settings.texts("filament_colour"))
             .map(<[String]>::to_vec)
             .or_else(|| {
-                file.settings
-                    .as_deref()
-                    .and_then(|settings| settings.texts("filament_colour"))
-                    .map(<[String]>::to_vec)
+                file.model
+                    .underlying()
+                    .map(|_| file.model.filament_colours())
             })
             .unwrap_or_else(|| vec!["#FFFFFF".into()]);
         let flag = |key: &str| {
