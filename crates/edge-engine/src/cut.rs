@@ -84,6 +84,56 @@ pub struct CutOptions {
     /// (GLGizmoCut.cpp `PartSelection`, CutUtils.cpp `perform_by_contour`).
     /// None: each piece on its own side.
     pub sides: Option<Vec<bool>>,
+    /// "Dovetail": a tongue on the upper part and its groove in the lower
+    /// (the reference's tongue-and-groove cut, `Cut::perform_with_groove`).
+    pub groove: Option<Groove>,
+}
+
+/// A dovetail's shape (the reference's `Cut::Groove`, with its count and
+/// gap): in mm and radians, in the plane's own axes.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Groove {
+    /// How deep the tongue is, along the normal.
+    pub depth: f64,
+    /// How wide its neck is, along the plane's x.
+    pub width: f64,
+    /// The angle of its sides to the plane.
+    pub flaps_angle: f64,
+    /// How much its sides lean towards each other along the plane's y.
+    pub angle: f64,
+    /// Taken off the tongue's depth and width, so that it fits its groove.
+    pub depth_tolerance: f64,
+    pub width_tolerance: f64,
+    /// How many side by side, and how far apart.
+    pub count: usize,
+    pub gap: f64,
+    /// The radius the dovetails are spaced by (`groove_radius`).
+    pub plane_radius: f64,
+}
+
+impl Groove {
+    /// The width a dovetail takes along the plane's x, its sides' lean
+    /// included (`Cut::calculate_groove_width`).
+    pub fn outer_width(&self) -> f64 {
+        let flap = if self.flaps_angle.abs() < 1e-12 {
+            self.depth
+        } else {
+            self.depth / self.flaps_angle.sin()
+        };
+        let flaps = 2.0 * flap * self.flaps_angle.cos();
+        let neck = 0.5 * self.width;
+        let mouth = 0.5 * (self.width + flaps);
+        let half_height = 0.5 * (1.5 * (1.5 * self.plane_radius));
+        let taper = half_height * self.angle.tan();
+        2.0 * (mouth + taper).max(neck + taper)
+    }
+
+    /// Whether the shape can be cut (`has_valid_groove`, its first test):
+    /// the flaps do not meet before the neck.
+    pub fn sound(&self) -> bool {
+        let flaps = -2.0 * self.depth / self.flaps_angle.tan();
+        self.depth > 0.0 && self.width > 0.0 && self.count >= 1 && flaps <= self.width
+    }
 }
 
 impl Default for CutOptions {
@@ -99,6 +149,7 @@ impl Default for CutOptions {
             thickness: 0.0,
             thickness_from: CutThickness::Centred,
             sides: None,
+            groove: None,
         }
     }
 }
@@ -355,7 +406,7 @@ impl Model {
         plane: &Transform,
         options: &CutOptions,
     ) -> Result<Made, Failure> {
-        let to_parts = options.to_parts && options.sides.is_none();
+        let to_parts = options.to_parts && options.sides.is_none() && options.groove.is_none();
         let keep_upper = options.keep_upper || to_parts || options.sides.is_some();
         let keep_lower = options.keep_lower || to_parts || options.sides.is_some();
         let base = self.name_of(at);
@@ -376,6 +427,39 @@ impl Model {
         let mut open = 0;
         for part in held.shape.parts.iter() {
             let placed = part.transform.then(&turned);
+            if part.kind == PartKind::Normal
+                && !part.mesh.triangles.is_empty()
+                && let Some(groove) = &options.groove
+            {
+                let mut baked = edge_mesh::Mesh::default();
+                baked.append(&part.mesh, &placed);
+                let (up, down) = groove_cut(&baked, &back, groove);
+                for (meshes, side) in [(up, true), (down, false)] {
+                    if meshes.is_empty() || (side && !keep_upper) || (!side && !keep_lower) {
+                        continue;
+                    }
+                    let mut mesh = edge_mesh::Mesh::default();
+                    for piece in &meshes {
+                        mesh.append(piece, &Transform::IDENTITY);
+                    }
+                    // The pieces are cut many times over: what was
+                    // painted is not carried (see the module's words).
+                    let made = Part {
+                        mesh: Arc::new(mesh),
+                        paint: None,
+                        seam: None,
+                        transform: Transform::IDENTITY,
+                        kept: part.kept.as_deref().map(|kept| Arc::new(kept.piece())),
+                        ..part.clone()
+                    };
+                    if side {
+                        upper.push(made);
+                    } else {
+                        lower.push(made);
+                    }
+                }
+                continue;
+            }
             if part.kind == PartKind::Normal {
                 if part.mesh.triangles.is_empty() {
                     continue;
@@ -418,7 +502,9 @@ impl Model {
                     low = low.min(z);
                     high = high.max(z);
                 }
-                let crossed = low <= 0.0 && high >= 0.0;
+                // A dovetail's helpers go to each part they meet
+                // (`distribute_modifiers_from_object`).
+                let crossed = (low <= 0.0 && high >= 0.0) || options.groove.is_some();
                 let moved = Part {
                     transform: placed,
                     ..part.clone()
@@ -474,7 +560,12 @@ impl Model {
             .map(|part| (part, true))
             .chain(made.lower.iter().map(|part| (part, false)))
         {
-            for piece in split_part(part) {
+            let pieces = if options.groove.is_some() {
+                vec![part.clone()]
+            } else {
+                split_part(part)
+            };
+            for piece in pieces {
                 let number = out.upper.len() as u32;
                 out.upper.push(side);
                 let first = out.mesh.vertices.len() as u32;
@@ -489,6 +580,73 @@ impl Model {
             }
         }
         Ok(out)
+    }
+
+    /// Whether every side of each dovetail meets the copy's printed parts
+    /// (`has_valid_groove`: each of `m_groove_vertices`' lines has to
+    /// cross the object), as well as its shape being sound.
+    pub fn groove_meets(
+        &self,
+        bed: Option<&Bed>,
+        copy: u64,
+        plane: &Transform,
+        groove: &Groove,
+    ) -> Result<bool, Failure> {
+        if !groove.sound() {
+            return Ok(false);
+        }
+        let g = groove;
+        let neck = 0.5 * g.width;
+        let flap = if g.flaps_angle.abs() < 1e-12 {
+            g.depth
+        } else {
+            g.depth / g.flaps_angle.sin()
+        };
+        let mouth = 0.5 * (g.width + 2.0 * flap * g.flaps_angle.cos());
+        let half_height = 0.5 * (1.5 * (1.5 * g.plane_radius));
+        let taper = half_height * g.angle.tan();
+        let (mouth_outer, neck_outer) = (neck + taper, mouth + taper);
+        let mouth_inner = mouth - taper;
+        let (front, back) = (0.5 * g.depth, -0.5 * g.depth);
+        let width = g.outer_width();
+        let count = g.count.max(1);
+        for i in 0..count {
+            let x = (i as f64 - 0.5 * (count as f64 - 1.0)) * (g.gap + width);
+            let lines = [
+                (
+                    [-neck_outer + x, -half_height, front],
+                    [-mouth_inner + x, half_height, front],
+                ),
+                (
+                    [-mouth_outer + x, -half_height, back],
+                    [-neck_outer + x, half_height, back],
+                ),
+                (
+                    [neck_outer + x, -half_height, front],
+                    [mouth_inner + x, half_height, front],
+                ),
+                (
+                    [mouth_outer + x, -half_height, back],
+                    [neck_outer + x, half_height, back],
+                ),
+            ];
+            for (from, to) in lines {
+                let (a, b) = (plane.apply(from), plane.apply(to));
+                let direction: [f64; 3] = std::array::from_fn(|axis| b[axis] - a[axis]);
+                let hit = self.face_hit(bed, copy, a, direction)?;
+                let crosses = hit.is_some_and(|hit| {
+                    let along: f64 = (0..3)
+                        .map(|axis| (hit.point[axis] - a[axis]) * direction[axis])
+                        .sum();
+                    let length: f64 = direction.iter().map(|d| d * d).sum();
+                    along <= length
+                });
+                if !crosses {
+                    return Ok(false);
+                }
+            }
+        }
+        Ok(true)
     }
 
     /// Cuts a copy's object by `plane` (its frame in the scene: rows x, y,
@@ -536,8 +694,14 @@ impl Model {
         // into one part, the objects named `_A` and `_B`, as
         // `perform_by_contour` and `merge_solid_parts_inside_object` make
         // them.
-        let to_parts = to_parts && options.sides.is_none();
+        let to_parts = to_parts && options.sides.is_none() && options.groove.is_none();
         let mut renamed: Option<(String, String)> = None;
+        if let Some(groove) = &options.groove {
+            if !groove.sound() {
+                return Err(refused("Cut plane with groove is invalid"));
+            }
+            renamed = Some((format!("{base}_A"), format!("{base}_B")));
+        }
         if let Some(sides) = &options.sides {
             let pieces: Vec<(Part, bool)> = upper
                 .iter()
@@ -780,6 +944,106 @@ fn meets(reach: &[[f64; 3]; 2], part: &Part) -> bool {
         return false;
     };
     (0..3).all(|axis| theirs[0][axis] <= reach[1][axis] && theirs[1][axis] >= reach[0][axis])
+}
+
+/// A turn about z, then y, then x by these angles, as a transform of row
+/// vectors (Geometry.cpp `rotation_transform`: `Rz * Ry * Rx` applied to
+/// column vectors).
+fn rotation_xyz(x: f64, y: f64, z: f64) -> Transform {
+    let (sx, cx) = x.sin_cos();
+    let (sy, cy) = y.sin_cos();
+    let (sz, cz) = z.sin_cos();
+    // Rz * Ry * Rx, as columns; its transpose as rows.
+    let m = [
+        [cz * cy, cz * sy * sx - sz * cx, cz * sy * cx + sz * sx],
+        [sz * cy, sz * sy * sx + cz * cx, sz * sy * cx - cz * sx],
+        [-sy, cy * sx, cy * cx],
+    ];
+    Transform {
+        rows: [
+            [m[0][0], m[1][0], m[2][0]],
+            [m[0][1], m[1][1], m[2][1]],
+            [m[0][2], m[1][2], m[2][2]],
+            [0.0; 3],
+        ],
+    }
+}
+
+/// Meshes cut by a plane given in the cut's own coordinates (`local`,
+/// then `base` to the meshes'): what is above it and what is under it,
+/// each a closed mesh for each one cut (empty ones left out).
+fn halve(
+    meshes: &[edge_mesh::Mesh],
+    local: &Transform,
+    base: &Transform,
+) -> (Vec<edge_mesh::Mesh>, Vec<edge_mesh::Mesh>) {
+    let frame = local.then(base);
+    let Some(to) = frame.inverse() else {
+        return (Vec::new(), meshes.to_vec());
+    };
+    let (mut above, mut below) = (Vec::new(), Vec::new());
+    for mesh in meshes {
+        let made = cut::cut(mesh, &to, [0.0, 0.0], &frame);
+        if !made.upper.is_empty() {
+            above.push(made.upper.mesh);
+        }
+        if !made.lower.is_empty() {
+            below.push(made.lower.mesh);
+        }
+    }
+    (above, below)
+}
+
+/// A dovetail cut of a mesh (CutUtils.cpp `Cut::perform_with_groove`, by
+/// the same planes in the same order): the slab above the groove and each
+/// tongue for the upper part, the slab under it and what is beside each
+/// tongue for the lower; what each tolerance takes off the tongue goes.
+/// `base` takes the cut's coordinates to the mesh's.
+fn groove_cut(
+    mesh: &edge_mesh::Mesh,
+    base: &Transform,
+    g: &Groove,
+) -> (Vec<edge_mesh::Mesh>, Vec<edge_mesh::Mesh>) {
+    let mut upper = Vec::new();
+    let mut lower = Vec::new();
+    let half = 0.5 * g.depth;
+    let at = |x: f64, z: f64| Transform::translation([x, 0.0, z]);
+    // The slab between the planes at -depth/2 and +depth/2.
+    let (above, slab) = halve(std::slice::from_ref(mesh), &at(0.0, half), base);
+    upper.extend(above);
+    let (slab, below) = halve(&slab, &at(0.0, -half), base);
+    lower.extend(below);
+    let width = g.outer_width();
+    let count = g.count.max(1);
+    let shift = 0.5 * (g.width + g.depth / g.flaps_angle.tan());
+    let across = rotation_xyz(0.0, std::f64::consts::FRAC_PI_2, 0.0);
+    for i in 0..count {
+        let offset = (i as f64 - 0.5 * (count as f64 - 1.0)) * (g.gap + width);
+        let mut piece = slab.clone();
+        if i > 0 {
+            let left = -0.5 * g.gap - 0.5 * width + offset;
+            piece = halve(&piece, &across.then(&at(left, 0.0)), base).0;
+        }
+        if i + 1 < count {
+            let right = 0.5 * g.gap + 0.5 * width + offset;
+            piece = halve(&piece, &across.then(&at(right, 0.0)), base).1;
+        }
+        let flap = |sign: f64, by: f64| {
+            rotation_xyz(0.0, sign * g.flaps_angle, sign * g.angle)
+                .then(&at(offset + sign * by, 0.0))
+        };
+        let (beside, inside) = halve(&piece, &flap(-1.0, shift), base);
+        lower.extend(beside);
+        let (beside, inside) = halve(&inside, &flap(1.0, shift), base);
+        lower.extend(beside);
+        // The tolerances: off the tongue's foot and its sides.
+        let (inside, _) = halve(&inside, &at(offset, -(half - g.depth_tolerance)), base);
+        let by = shift - 0.5 * g.width_tolerance;
+        let (_, inside) = halve(&inside, &flap(-1.0, by), base);
+        let (_, inside) = halve(&inside, &flap(1.0, by), base);
+        upper.extend(inside);
+    }
+    (upper, lower)
 }
 
 /// The triangles of a mesh by the shells they are of (two triangles are of

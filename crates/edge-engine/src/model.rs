@@ -55,7 +55,7 @@ mod arrange;
 mod cut;
 pub use arrange::{ArrangeOptions, ArrangeScope, Arranged};
 pub use cut::{
-    CUT_THICKNESS_MAX, CutDone, CutOptions, CutPieces, CutSection, CutThickness, FaceHit,
+    CUT_THICKNESS_MAX, CutDone, CutOptions, CutPieces, CutSection, CutThickness, FaceHit, Groove,
 };
 pub use filaments::{FlushBasis, MAX_FILAMENTS, NEXT_COLOURS};
 pub use item_settings::SettingChange;

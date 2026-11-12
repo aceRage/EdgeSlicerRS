@@ -708,3 +708,108 @@ fn a_piece_given_to_the_other_side() {
     };
     assert!(again.cut(Some(&BED), copy, &cut_plane, &options).is_err());
 }
+
+#[test]
+fn a_dovetail_gives_the_upper_part_a_tongue_and_the_lower_its_groove() {
+    use edge_engine::Groove;
+    let dir = tempfile::tempdir().unwrap();
+    let base = block(dir.path(), [40.0, 20.0, 20.0]);
+    let copy = base.objects()[0].copies()[0].id();
+    let (_, reach) = base.in_scene(Some(&BED), copy).unwrap();
+    let [low, high] = reach.unwrap();
+    let at = [(low[0] + high[0]) / 2.0, (low[1] + high[1]) / 2.0, 10.0];
+    let whole = 40.0 * 20.0 * 20.0;
+    for (count, angle, tolerance) in [(1, 0.0, 0.0), (1, 0.0, 0.1), (2, 0.0, 0.1), (1, 0.1, 0.0)] {
+        let mut model = base.clone();
+        let groove = Groove {
+            depth: 4.0,
+            width: 6.0,
+            flaps_angle: std::f64::consts::PI / 3.0,
+            angle,
+            depth_tolerance: tolerance,
+            width_tolerance: tolerance,
+            count,
+            gap: 4.0,
+            plane_radius: 10.0,
+        };
+        assert!(groove.sound());
+        let options = CutOptions {
+            groove: Some(groove),
+            ..CutOptions::default()
+        };
+        model
+            .cut(Some(&BED), copy, &plane(at, [0.0, 0.0, 1.0]), &options)
+            .unwrap();
+        let names: Vec<&str> = model.objects().iter().map(|o| o.name()).collect();
+        assert_eq!(names, ["block_A", "block_B"]);
+        let mut total = 0.0;
+        for object in model.objects() {
+            let mesh = &object.shape().parts()[0].mesh;
+            // Shells side by side, each closed.
+            assert!(cut::is_closed(mesh));
+            assert_eq!(cut::flat_triangles(mesh), 0);
+            total += mesh.signed_volume();
+        }
+        // Without tolerance the parts make up the block; with it, a little
+        // less (what is taken off the tongue).
+        if tolerance == 0.0 {
+            assert!(near(total, whole, 1e-6 * whole), "{count} {angle}: {total}");
+        } else {
+            assert!(
+                total < whole && total > whole - 60.0 * count as f64,
+                "{count}: {total}"
+            );
+        }
+        // Sliced across the tongue (half way down it), the tongue and its
+        // groove leave the width tolerance between them: the two outlines
+        // together are short of the block's by it, along the tongue's 40 mm
+        // (the test's plane has its x along the world's -y, so the tongue
+        // runs along the world's x).
+        let (a, b) = (
+            &model.objects()[0].shape().parts()[0].mesh,
+            &model.objects()[1].shape().parts()[0].mesh,
+        );
+        let z = 10.0 - 1.0;
+        let area = |mesh: &Mesh| -> f64 {
+            edge_slice::slice(mesh, &[z])[0]
+                .polygons
+                .iter()
+                .map(|p| p.signed_area_mm2())
+                .sum()
+        };
+        if count == 1 && angle == 0.0 {
+            let gap = (800.0 - area(a) - area(b)) / 40.0;
+            assert!(near(gap, tolerance, 1e-4), "the gap is {gap} mm");
+        }
+        // The upper part reaches down past the plane by the tongue.
+        let upper = printed(&model, &model.objects()[0], 0);
+        let (lo, hi) = bounds(&upper);
+        assert!(
+            near(hi[2] - lo[2], 10.0 + 2.0 - tolerance, 1e-5),
+            "{lo:?} {hi:?}"
+        );
+    }
+    // A shape whose flaps meet before its neck is refused.
+    let mut model = base.clone();
+    let bad = Groove {
+        depth: 10.0,
+        width: 2.0,
+        flaps_angle: 2.5,
+        angle: 0.0,
+        depth_tolerance: 0.1,
+        width_tolerance: 0.1,
+        count: 1,
+        gap: 4.0,
+        plane_radius: 10.0,
+    };
+    assert!(!bad.sound());
+    let options = CutOptions {
+        groove: Some(bad),
+        ..CutOptions::default()
+    };
+    assert!(
+        model
+            .cut(Some(&BED), copy, &plane(at, [0.0, 0.0, 1.0]), &options)
+            .is_err()
+    );
+}

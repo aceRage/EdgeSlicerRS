@@ -1544,6 +1544,58 @@ fn a_cut_is_one_step_selects_its_parts_and_is_saved() {
 }
 
 #[test]
+fn a_dovetail_cut_is_checked_then_made_and_sliced() {
+    let session = Arc::new(Session::new(None));
+    let project = open(&session, "resources/handy_models/3DBenchy.3mf");
+    choose_presets(&session, project);
+    let (copy, low, high) = first_copy(&session, project);
+    let groove = |depth: f64, width: f64, flaps_angle: f64| {
+        json!({ "depth": depth, "width": width, "flaps_angle": flaps_angle,
+                "angle": 0.0, "depth_tolerance": 0.1, "width_tolerance": 0.1,
+                "count": 1, "gap": 10.0, "plane_radius": 40.0 })
+    };
+    // The section says whether the groove meets the model.
+    let section = ask(
+        &session,
+        "cut_section",
+        json!({ "project": project, "copy": copy, "plane": across(low, high, 4.0),
+                "groove": groove(2.0, 6.0, std::f64::consts::FRAC_PI_3) }),
+    );
+    assert_eq!(section["groove"], true, "{section}");
+    // Flaps opening outwards that meet before the neck: refused in the
+    // reference's words.
+    let error = refused(
+        &session,
+        "scene_edit",
+        json!({ "project": project, "op": "cut", "copy": copy,
+                "plane": across(low, high, 4.0), "groove": groove(10.0, 1.0, 2.0 * std::f64::consts::FRAC_PI_3) }),
+    );
+    assert_eq!(error, "Cut plane with groove is invalid");
+    let done = edit(
+        &session,
+        json!({ "project": project, "op": "cut", "copy": copy,
+                "plane": across(low, high, 4.0), "groove": groove(2.0, 6.0, std::f64::consts::FRAC_PI_3) }),
+    );
+    let names: Vec<&str> = done["scene"]["objects"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|object| object["name"].as_str().unwrap())
+        .collect();
+    assert_eq!(names.len(), 2);
+    assert!(
+        names[0].ends_with("_A") && names[1].ends_with("_B"),
+        "{names:?}"
+    );
+    ask(
+        &session,
+        "scene_edit",
+        json!({ "project": project, "op": "arrange" }),
+    );
+    sliced(&session, project, None);
+}
+
+#[test]
 fn the_halves_of_a_cut_are_sliced() {
     let session = Arc::new(Session::new(None));
     let project = open(&session, "resources/handy_models/3DBenchy.3mf");

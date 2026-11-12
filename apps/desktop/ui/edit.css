@@ -210,7 +210,7 @@ dialog.plate-settings .row.end .grow { flex: 1; align-self: center; }
 .cut-panel { left: auto; right: var(--stage-inset); margin-inline: 0; width: min(360px, calc(100% - var(--stage-left) - var(--stage-inset))); max-height: calc(100% - var(--stage-inset) - 120px); overflow-y: auto; }
 .cut-row { display: grid; grid-template-columns: minmax(84px, auto) minmax(0, 1fr); align-items: center; gap: var(--space-2); }
 .cut-line { display: flex; align-items: center; flex-wrap: wrap; gap: var(--space-2); }
-.cut-line .unit { height: var(--control-s); width: 104px; }
+.cut-line .unit { height: var(--control-s); width: 88px; }
 .cut-line .unit input { width: 100%; min-width: 0; font-size: var(--size-small); }
 .cut-line > b { font: 700 var(--size-small) var(--font-mono); }
 .cut-line.joined { gap: 0; }
@@ -240,3 +240,7 @@ dialog.plate-settings .row.end .grow { flex: 1; align-self: center; }
 /* "Pick face" while it is armed: pressed, as a toolbar's tool in use. */
 .cut-panel button.cut-armed { color: var(--accent); border-color: var(--accent); background: var(--accent-soft); }
 .cut-foot.cut-start { align-items: center; flex-wrap: wrap; }
+/* A dovetail's group labels ("Groove", "Multiple"), in small capitals
+   as every group label is. */
+.cut-panel .cut-group { font-size: var(--size-caps); letter-spacing: var(--caps-spacing); text-transform: uppercase; color: var(--text-3); }
+.cut-line select { height: var(--control-s); min-width: 0; font-size: var(--size-small); }

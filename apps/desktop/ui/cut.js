@@ -56,6 +56,112 @@
     return Object.is(rounded, -0) ? 0 : rounded;
   };
   const fixed = (value) => round(value).toFixed(2);
+  const degrees = (radians) => (radians * 180) / Math.PI;
+  const radians = (value) => (value * Math.PI) / 180;
+  // GLGizmoCut.hpp `GrooveCountMax`.
+  const GROOVE_COUNT_MAX = 20;
+
+  // The dovetail's plane, as triangles in the plane's own coordinates
+  // (GLGizmoCut.cpp `its_make_groove_plane`: a slot seen from above, its
+  // mouth, neck and flaps, a thin wall of it for each dovetail).
+  function groovePlane(g, radius) {
+    const flapTaper = Math.abs(g.flaps_angle) < 1e-9 ? g.depth : g.depth / Math.sin(g.flaps_angle);
+    const totalFlap = 2 * flapTaper * Math.cos(g.flaps_angle);
+    const neckHalf = 0.5 * g.width;
+    const mouthHalf = 0.5 * (g.width + totalFlap);
+    const planeRadius = 1.5 * radius;
+    const halfWidth = 0.5 * planeRadius;
+    const halfHeight = 0.5 * 1.5 * planeRadius;
+    const taper = halfHeight * Math.tan(g.angle);
+    const outerMax = 0.5 * grooveWidth(g, radius);
+    const wall = 0.02;
+    const out = [];
+    const count = Math.max(1, g.count);
+    for (let i = 0; i < count; i += 1) {
+      const first = i === 0;
+      const last = i === count - 1;
+      const offset = (i - 0.5 * (count - 1)) * (g.gap + 2 * outerMax);
+      const leftX = first ? -halfWidth + offset : -(g.gap / 2) - outerMax + offset;
+      const rightX = last ? halfWidth + offset : g.gap / 2 + outerMax + offset;
+      let front = 0.5 * g.depth;
+      let back = -0.5 * g.depth;
+      let mouthOuter = neckHalf + taper;
+      let neckOuter = mouthHalf + taper;
+      let neckInner = neckHalf - taper;
+      let mouthInner = mouthHalf - taper;
+      const shift = wall / Math.tan(0.5 * g.flaps_angle);
+      let v;
+      let idx;
+      if (neckHalf > taper && mouthHalf > taper) {
+        const make = () => [
+          [leftX, -halfHeight, front], [leftX, halfHeight, front], [-neckInner + offset, halfHeight, front], [-mouthOuter + offset, -halfHeight, front],
+          [-neckOuter + offset, -halfHeight, back], [-mouthInner + offset, halfHeight, back], [mouthInner + offset, halfHeight, back], [neckOuter + offset, -halfHeight, back],
+          [mouthOuter + offset, -halfHeight, front], [neckInner + offset, halfHeight, front], [rightX, halfHeight, front], [rightX, -halfHeight, front],
+        ];
+        v = make();
+        front -= wall; back -= wall;
+        neckInner += shift; mouthInner += shift; mouthOuter += shift; neckOuter += shift;
+        v = v.concat(make());
+        idx = [[5, 4, 7], [5, 7, 6], [3, 4, 5], [3, 5, 2], [9, 6, 8], [8, 6, 7], [1, 0, 2], [2, 0, 3], [9, 8, 10], [10, 8, 11],
+          [20, 21, 22], [20, 22, 23], [12, 13, 14], [12, 14, 15], [18, 21, 20], [18, 20, 19], [16, 15, 14], [16, 14, 17], [16, 17, 18], [16, 18, 19],
+          [1, 13, 0], [0, 13, 12],
+          [0, 12, 3], [3, 12, 15], [3, 15, 4], [4, 15, 16], [4, 16, 7], [7, 16, 19], [7, 19, 20], [7, 20, 8], [8, 20, 11], [11, 20, 23],
+          [11, 23, 10], [10, 23, 22],
+          [1, 13, 2], [2, 13, 14], [2, 14, 17], [2, 17, 5], [5, 17, 6], [6, 17, 18], [6, 18, 9], [9, 18, 21], [9, 21, 10], [10, 21, 22]];
+      } else if (neckHalf < taper && mouthHalf < taper) {
+        let neckApex = neckHalf / Math.tan(g.angle);
+        let mouthApex = mouthHalf / Math.tan(g.angle);
+        const make = () => [
+          [leftX, -halfHeight, front], [leftX, halfHeight, front], [rightX, halfHeight, front], [rightX, -halfHeight, front],
+          [mouthOuter + offset, -halfHeight, front], [offset, neckApex, front], [-mouthOuter + offset, -halfHeight, front],
+          [-neckOuter + offset, -halfHeight, back], [offset, mouthApex, back], [neckOuter + offset, -halfHeight, back],
+        ];
+        v = make();
+        front -= wall; back -= wall; neckApex += wall; mouthApex += wall;
+        mouthOuter += shift; neckOuter += shift;
+        v = v.concat(make());
+        idx = [[8, 7, 9], [5, 8, 6], [6, 8, 7], [4, 9, 8], [4, 8, 5], [1, 0, 6], [1, 6, 5], [1, 5, 2], [2, 5, 4], [2, 4, 3],
+          [10, 11, 16], [16, 11, 15], [15, 11, 12], [15, 12, 14], [14, 12, 13], [18, 15, 14], [14, 18, 19], [17, 16, 15], [17, 15, 18], [17, 18, 19],
+          [1, 11, 0], [0, 11, 10],
+          [0, 10, 6], [6, 10, 16], [6, 17, 16], [6, 7, 17], [7, 17, 19], [7, 19, 9], [4, 14, 19], [4, 19, 9], [4, 14, 13], [4, 13, 3],
+          [3, 13, 12], [3, 12, 2],
+          [2, 12, 11], [2, 11, 1]];
+      } else {
+        const neckApex = neckHalf / Math.tan(g.angle);
+        v = [
+          [leftX, -halfHeight, front], [leftX, halfHeight, front], [rightX, halfHeight, front], [rightX, -halfHeight, front],
+          [mouthOuter + offset, -halfHeight, front], [offset, neckApex, front], [-mouthOuter + offset, -halfHeight, front],
+          [-neckOuter + offset, -halfHeight, back], [-mouthInner + offset, halfHeight, back], [mouthInner + offset, halfHeight, back], [neckOuter + offset, -halfHeight, back],
+        ];
+        front -= wall; back -= wall;
+        mouthInner += shift; mouthOuter += shift; neckOuter += shift;
+        v = v.concat([
+          [leftX, -halfHeight, front], [leftX, halfHeight, front], [rightX, halfHeight, front], [rightX, -halfHeight, front],
+          [mouthOuter + offset, -halfHeight, front], [shift + offset, neckApex, front], [-shift + offset, neckApex, front], [-mouthOuter + offset, -halfHeight, front],
+          [-neckOuter + offset, -halfHeight, back], [-mouthInner + offset, halfHeight, back], [mouthInner + offset, halfHeight, back], [neckOuter + offset, -halfHeight, back],
+        ]);
+        idx = [[8, 7, 10], [8, 10, 9], [5, 8, 7], [5, 7, 6], [4, 10, 9], [4, 9, 5], [1, 0, 6], [1, 6, 5], [1, 5, 2], [2, 5, 4], [2, 4, 3],
+          [11, 12, 18], [18, 12, 17], [17, 12, 16], [16, 12, 13], [16, 13, 15], [15, 13, 14], [21, 16, 15], [21, 15, 22], [19, 18, 17], [19, 17, 20], [19, 20, 21], [19, 21, 22],
+          [1, 12, 11], [1, 11, 0],
+          [0, 11, 18], [0, 18, 6], [7, 19, 18], [7, 18, 6], [7, 19, 22], [7, 22, 10], [10, 22, 15], [10, 15, 4], [4, 15, 14], [4, 14, 3],
+          [3, 14, 13], [3, 14, 2],
+          [2, 13, 12], [2, 12, 1], [5, 16, 21], [5, 21, 9], [9, 21, 20], [9, 20, 8], [5, 17, 20], [5, 20, 8]];
+      }
+      for (const tri of idx) for (const at of tri) out.push(...v[at]);
+    }
+    return out;
+  }
+
+  // The width a dovetail takes (CutUtils.cpp `Cut::calculate_groove_width`).
+  function grooveWidth(g, radius) {
+    const flap = Math.abs(g.flaps_angle) < 1e-9 ? g.depth : g.depth / Math.sin(g.flaps_angle);
+    const flaps = 2 * flap * Math.cos(g.flaps_angle);
+    const neck = 0.5 * g.width;
+    const mouth = 0.5 * (g.width + flaps);
+    const halfHeight = 0.5 * (1.5 * (1.5 * radius));
+    const taper = halfHeight * Math.tan(g.angle);
+    return 2 * Math.max(mouth + taper, neck + taper);
+  }
 
   const cutter = {
     host: null,
@@ -78,6 +184,9 @@
     },
     panelNode: null,
     shapes: null,
+    // "Mode": 'planar' or 'dovetail', kept from one cut to the next as the
+    // reference's gizmo keeps `m_mode`.
+    mode: 'planar',
 
     init(host, editor) {
       this.host = host;
@@ -113,9 +222,21 @@
         picking: false,
         picked: null,
         // The cut's pieces once one is given to the other side (the
-        // reference's part selection), for the plane they were made for.
+        // reference's part selection), for the plane they were made for;
+        // with a dovetail, what it would make.
         parts: null,
+        // The dovetail (`m_groove`, set up in `update_bb`), and what it
+        // started at, for each field's reset. Its depth goes by the box's
+        // size (`get_grabber_mean_size` before the grips were drawn at a
+        // fixed size on the screen, which made it go by the camera's zoom).
+        groove: null,
+        grooveStart: null,
+        grooveValid: null,
       };
+      const mean = (box[1][0] - box[0][0] + box[1][1] - box[0][1] + box[1][2] - box[0][2]) / 30;
+      const depth = Math.max(1, 0.5 * mean);
+      this.open.groove = { depth, width: 4 * depth, flaps_angle: Math.PI / 3, angle: 0, depth_tolerance: 0.1, width_tolerance: 0.1, count: 1, gap: 10 };
+      this.open.grooveStart = { ...this.open.groove };
       this.changed(false);
     },
 
@@ -273,12 +394,42 @@
       if (o.parts && o.parts.key !== this.partsKey()) this.dropParts();
       this.stage.scene.cutting = {
         copy: o.copy,
-        split: { plane: [...n, M.dot(n, o.middle)], upper: UPPER, lower: LOWER },
+        // A dovetail tints neither side (`apply_color_clip_plane_colors`:
+        // both the plane's colour); its result is shown once it is made.
+        split: { plane: [...n, M.dot(n, o.middle)], upper: this.dovetail() ? PLANE.slice(0, 3) : UPPER, lower: this.dovetail() ? PLANE.slice(0, 3) : LOWER },
         pieces: o.parts ? { mesh: o.parts.mesh, ranges: o.parts.ranges, sides: o.parts.sides, offset: o.parts.offset, upper: UPPER, lower: LOWER } : null,
       };
       this.ask(soon);
       this.panel();
       this.stage.frame();
+    },
+
+    dovetail() {
+      return this.mode === 'dovetail';
+    },
+
+    // The dovetail as the session takes it.
+    grooveArgs() {
+      return { ...this.open.groove, plane_radius: this.open.radius };
+    },
+
+    // "Mode": "Planar" or "Dovetail" ("Change cut mode", `switch_to_mode`).
+    setMode(mode) {
+      if (!this.open || mode === this.mode) return;
+      this.mode = mode;
+      this.dropParts();
+      this.open.grooveValid = null;
+      this.open.asked = null;
+      this.changed();
+    },
+
+    // A field of the dovetail changed ("Groove change").
+    setGroove(key, value) {
+      const o = this.open;
+      if (!Number.isFinite(value)) { this.panel(); return; }
+      o.groove = { ...o.groove, [key]: value };
+      o.asked = null;
+      this.changed();
     },
 
     // ---- what the session says of the plane ----
@@ -290,7 +441,7 @@
       const project = this.host.project();
       if (!o || !project) return;
       const plane = this.frame();
-      const key = plane.join(',');
+      const key = `${plane.join(',')}|${this.dovetail() ? JSON.stringify(o.groove) : ''}`;
       if (o.asked === key) return;
       o.wanted = key;
       if (o.busy) return;
@@ -298,11 +449,17 @@
       try {
         while (o.wanted && o.wanted !== o.asked && this.open === o) {
           const asking = o.wanted;
-          const answer = await this.host.call('cut_section', { project: project.id, copy: o.copy, plane: asking.split(',').map(Number) });
+          const args = { project: project.id, copy: o.copy, plane: asking.split('|')[0].split(',').map(Number) };
+          if (this.dovetail()) args.groove = this.grooveArgs();
+          const answer = await this.host.call('cut_section', args);
           if (this.open !== o) return;
           o.asked = asking;
           o.section = answer;
-          this.setSection(answer.lines);
+          o.grooveValid = answer.groove === undefined ? null : answer.groove;
+          this.setSection(this.dovetail() ? [] : answer.lines);
+          // The dovetail's result shown while the plane stands still
+          // (`reset_cut_by_contours`, `process_contours`).
+          if (this.dovetail() && o.grooveValid && !this.held) this.previewGroove();
           this.panel();
           this.stage.frame();
         }
@@ -333,6 +490,8 @@
     canPerform() {
       const p = this.options;
       const parts = this.open && this.open.parts;
+      // A dovetail only where it can be cut (`has_valid_groove`).
+      if (this.open && this.dovetail()) return this.open.grooveValid === true && (p.keep_upper || p.keep_lower) && !this.editor.busy;
       // With pieces given to sides, not every piece on one side
       // (`m_part_selection.is_one_object()`).
       if (parts && parts.sides.every((side) => side === parts.sides[0])) return false;
@@ -351,7 +510,8 @@
         thickness: o.thickness,
         thickness_from: o.from,
         // Cut to parts is not offered with pieces given to sides.
-        ...(o.parts ? { sides: o.parts.sides, to_parts: false } : {}),
+        ...(o.parts && !this.dovetail() ? { sides: o.parts.sides, to_parts: false } : {}),
+        ...(this.dovetail() ? { groove: this.grooveArgs(), to_parts: false, thickness: 0, sides: null } : {}),
       };
       // The tool closes before the cut is made, as the reference resets
       // its gizmos first (`perform_cut`); what the cut made is selected.
@@ -386,6 +546,19 @@
       ];
     },
 
+    // A dovetail's own grips, where they stand.
+    grooveGrips() {
+      const o = this.open;
+      const [u, v] = o.axes;
+      const reach = 0.5 * o.radius;
+      const grips = [
+        { part: 'turn-z', axis: 2, at: M.along(o.middle, v, -1.75 * reach) },
+        { part: 'move-x', axis: 0, at: M.along(o.middle, u, 0.75 * reach) },
+      ];
+      if (o.groove.angle > 0) grips.push({ part: 'move-y', axis: 1, at: M.along(o.middle, v, 0.75 * reach) });
+      return grips;
+    },
+
     // What is under a pixel: the grip, a cone, the plane, or null.
     handleAt(x, y) {
       if (!this.open || this.editor.busy) return null;
@@ -393,6 +566,15 @@
       const view = (point) => this.editor.toView(frame, point);
       const { at, size } = this.grip();
       const px = size / this.mm();
+      // A dovetail's own grips (`render_cut_plane_grabbers`, its
+      // tongue-and-groove part): a ball to turn it about its normal, a
+      // cube to move it along its x, and along its y once its sides lean.
+      if (this.dovetail()) {
+        for (const extra of this.grooveGrips()) {
+          const p = view(extra.at);
+          if (Math.hypot(x - p[0], y - p[1]) < px) return { kind: 'cut', part: extra.part, axis: extra.axis, id: `cut-${extra.part}` };
+        }
+      }
       // The ball first, then the cones round it, each by what is drawn of it.
       const g = view(at);
       if (Math.hypot(x - g[0], y - g[1]) < px) return { kind: 'cut', part: 'grip', id: 'cut-grip' };
@@ -483,6 +665,10 @@
         const origin = grab.part === 'grip' ? this.grip().at : grab.handle.point;
         grab.origin = origin;
         grab.start = this.editor.along(origin, this.normal(), grab.x, grab.y);
+      } else if (grab.part === 'move-x' || grab.part === 'move-y') {
+        grab.along = grab.axes[grab.part === 'move-x' ? 0 : 1];
+        grab.origin = o.middle.slice();
+        grab.start = this.editor.along(grab.origin, grab.along, grab.x, grab.y);
       } else {
         const axis = grab.axes[grab.handle.axis];
         grab.pivotAxis = axis;
@@ -512,6 +698,14 @@
         this.stage.frame();
         return;
       }
+      if (grab.part === 'move-x' || grab.part === 'move-y') {
+        // Along the plane's own x or y (`CutPlaneXMove`, `CutPlaneYMove`).
+        let far = this.editor.along(grab.origin, grab.along, x, y) - grab.start;
+        if (event.shiftKey) far = SNAP * Math.round(far / SNAP);
+        o.middle = M.along(grab.middle, grab.along, far);
+        this.changed(true);
+        return;
+      }
       if (grab.part === 'grip' || grab.part === 'plane') {
         // GLGizmoCut.cpp `dragging_grabber_move`: along the normal, by
         // whole millimetres with Shift.
@@ -536,7 +730,7 @@
       const axes = grab.axes.map((axis) => turn(axis, grab.pivotAxis, angle));
       o.axes = M.rows.tidy(axes);
       grab.angle = angle;
-      this.stage.canvas.title = `${'XY'[grab.handle.axis]}: ${round((angle * 180) / Math.PI, 1).toFixed(1)}°`;
+      this.stage.canvas.title = `${'XYZ'[grab.handle.axis]}: ${round((angle * 180) / Math.PI, 1).toFixed(1)}°`;
       this.changed(true);
     },
 
@@ -556,6 +750,7 @@
         o.axes = grab.axes;
         o.history.pop();
       }
+      o.asked = null;
       this.changed();
     },
 
@@ -589,7 +784,7 @@
     // What the pieces are made for: the plane and the thickness.
     partsKey() {
       const o = this.open;
-      return `${this.frame().join(',')}|${o.thickness}|${o.from}`;
+      return `${this.frame().join(',')}|${o.thickness}|${o.from}|${this.dovetail() ? JSON.stringify(o.groove) : ''}`;
     },
 
     dropParts() {
@@ -605,38 +800,53 @@
       const o = this.open;
       const project = this.host.project();
       if (!o || !project || this.editor.busy || o.picking) return;
-      const key = this.partsKey();
-      if (!o.parts || o.parts.key !== key) {
-        const args = { project: project.id, copy: o.copy, plane: this.frame(), thickness: o.thickness, thickness_from: o.from };
-        let info;
-        let bytes;
-        try {
-          info = await this.host.call('cut_parts', args);
-          bytes = await this.stage.bytes('cut_parts_mesh', args);
-        } catch (error) {
-          this.host.say(error.message, true);
-          return;
-        }
-        if (this.open !== o || this.partsKey() !== key) return;
-        this.dropParts();
-        const view = new DataView(bytes);
-        const vertices = view.getUint32(8, true);
-        const triangles = view.getUint32(12, true);
-        o.parts = {
-          key,
-          ranges: info.ranges,
-          sides: info.upper.slice(),
-          offset: info.offset,
-          mesh: this.stage.renderer.meshFromBytes(bytes),
-          points: new Float32Array(bytes, 24, vertices * 3),
-          corners: new Uint32Array(bytes, 24 + 12 * vertices, triangles * 3),
-        };
-      }
+      if (this.dovetail()) return;
+      if (!(await this.fetchParts())) return;
       const piece = this.pieceAt(x, y);
       if (piece !== null) o.parts.sides[piece] = !o.parts.sides[piece];
       // Cut to parts is not offered with pieces given to sides.
       this.options.to_parts = false;
       this.changed();
+    },
+
+    // The pieces for the plane as it stands, asked for when they are not
+    // here. False when they could not be had.
+    async fetchParts() {
+      const o = this.open;
+      const project = this.host.project();
+      const key = this.partsKey();
+      if (o.parts && o.parts.key === key) return true;
+      const args = { project: project.id, copy: o.copy, plane: this.frame(), thickness: o.thickness, thickness_from: o.from };
+      if (this.dovetail()) args.groove = this.grooveArgs();
+      let info;
+      let bytes;
+      try {
+        info = await this.host.call('cut_parts', args);
+        bytes = await this.stage.bytes('cut_parts_mesh', args);
+      } catch (error) {
+        this.host.say(error.message, true);
+        return false;
+      }
+      if (this.open !== o || this.partsKey() !== key) return false;
+      this.dropParts();
+      const view = new DataView(bytes);
+      const vertices = view.getUint32(8, true);
+      const triangles = view.getUint32(12, true);
+      o.parts = {
+        key,
+        ranges: info.ranges,
+        sides: info.upper.slice(),
+        offset: info.offset,
+        mesh: this.stage.renderer.meshFromBytes(bytes),
+        points: new Float32Array(bytes, 24, vertices * 3),
+        corners: new Uint32Array(bytes, 24 + 12 * vertices, triangles * 3),
+      };
+      return true;
+    },
+
+    // What a dovetail would make, each side in its colour.
+    async previewGroove() {
+      if (await this.fetchParts()) this.changed();
     },
 
     // The piece a line of sight meets first (`toggle_selection`).
@@ -808,8 +1018,20 @@
       const colour = this.canPerform() || this.editor.busy ? PLANE : PLANE_ERROR;
       r.blend(true);
       const [low, high] = this.faces();
-      for (const at of low === high ? [0] : [low, high]) {
-        r.drawFlat(shapes.square, M.chain(view, plane, M.translation(0, 0, at), M.scaling(half, half, 1)), colour);
+      if (this.dovetail()) {
+        // The dovetail's plane (`its_make_groove_plane`), a tenth more
+        // see-through (`render_cut_plane`).
+        const key = `${JSON.stringify(o.groove)}|${o.radius}`;
+        if (!this.groovePlane || this.groovePlane.key !== key) {
+          if (this.groovePlane) r.drop(this.groovePlane.mesh);
+          this.groovePlane = { key, mesh: r.triangles(groovePlane(o.groove, o.radius)) };
+        }
+        const valid = o.grooveValid !== false;
+        r.drawFlat(this.groovePlane.mesh, M.chain(view, plane), [...(valid ? PLANE : PLANE_ERROR).slice(0, 3), 0.4]);
+      } else {
+        for (const at of low === high ? [0] : [low, high]) {
+          r.drawFlat(shapes.square, M.chain(view, plane, M.translation(0, 0, at), M.scaling(half, half, 1)), colour);
+        }
       }
       // The section, over everything.
       gl.disable(gl.DEPTH_TEST);
@@ -827,6 +1049,18 @@
       gl.clear(gl.DEPTH_BUFFER_BIT);
       const gripColour = lit('cut-turn-0') ? AXES[0] : lit('cut-turn-1') ? AXES[1] : lit('cut-grip') ? GRABBER : GRAY;
       r.drawMesh(shapes.sphere, frame, M.chain(M.translation(...at), M.scaling(size, size, size)), { tint: gripColour });
+      // A dovetail's own grips: the ball to turn it about its normal in the
+      // plane's colour (blue under the pointer), the cubes in the plane's
+      // colour (the axis's under the pointer).
+      if (this.dovetail()) {
+        for (const extra of this.grooveGrips()) {
+          const id = `cut-${extra.part}`;
+          const tint = lit(id) ? [[1, 60 / 255, 91 / 255, 1], [100 / 255, 200 / 255, 24 / 255, 1], [47 / 255, 136 / 255, 233 / 255, 1]][extra.axis] : [...PLANE.slice(0, 3), 1];
+          r.drawLines(shapes.line, M.chain(view, M.translation(...o.middle), this.pointing([0, 0, 0], unit(sub(extra.at, o.middle)), [1, 1, 1]), M.scaling(1, 1, M.length(sub(extra.at, o.middle)))), GRABBER, 1.5);
+          if (extra.part === 'turn-z') r.drawMesh(shapes.sphere, frame, M.chain(M.translation(...extra.at), M.scaling(0.75 * size, 0.75 * size, 0.75 * size)), { tint });
+          else r.drawFlat(this.editor.parts().cube, M.chain(view, M.translation(...extra.at), M.scaling(size, size, size)), tint);
+        }
+      }
       const turning = held === 'cut-turn-0' || held === 'cut-turn-1';
       for (const cone of this.cones()) {
         const id = `cut-turn-${cone.axis}`;
@@ -877,6 +1111,19 @@
       const p = this.options;
       const busy = this.editor.busy;
       const rows = [el('h3', { textContent: t('Cut') })];
+      const dovetail = this.dovetail();
+      // "Mode": "Planar" or "Dovetail" (`render_cut_mode_combo`).
+      // Two joined buttons, as STYLE.md has a choice of which of two.
+      const mode = el('div', { className: 'joined segmented' });
+      mode.setAttribute('role', 'group');
+      mode.setAttribute('aria-label', t('Mode'));
+      for (const [value, label] of [['planar', t('Planar')], ['dovetail', t('Dovetail')]]) {
+        const button = el('button', { type: 'button', textContent: label, disabled: busy });
+        button.setAttribute('aria-pressed', String(this.mode === value));
+        button.addEventListener('click', () => this.setMode(value));
+        mode.append(button);
+      }
+      rows.push(el('div', { className: 'cut-row' }, el('span', { className: 'edit-label', textContent: t('Mode') }), el('span', { className: 'cut-line' }, mode)));
       // "Build Volume": the object's size in the plane's own axes.
       const reach = o.section && o.section.reach;
       const size = reach ? [0, 1, 2].map((axis) => reach[1][axis] - reach[0][axis]) : null;
@@ -908,7 +1155,9 @@
         mirrors.append(button);
       });
       rows.push(el('div', { className: 'cut-row' }, el('span', { className: 'edit-label', textContent: t('Mirror cut') }), mirrors));
+      if (dovetail) rows.push(...this.grooveRows(busy));
       // "Thickness": what the cut takes away, and from which side.
+      if (!dovetail) {
       const tip = t('Width of the band of material the cut removes, measured along the cut normal. 0 is a zero-width cut - the two halves meet exactly, as they do today.');
       const range = el('input', { type: 'range', min: '0', max: String(THICKNESS_MAX), step: '0.05', value: String(o.thickness), title: tip, disabled: busy });
       range.setAttribute('aria-label', t('Thickness'));
@@ -949,6 +1198,7 @@
       pick.addEventListener('click', () => this.setPicking(!o.picking));
       const picking = o.picking ? [el('span', { className: 'edit-hint', textContent: t('Click a face of the model.') })] : [];
       rows.push(el('div', { className: 'cut-foot cut-start' }, resetCut, pick, ...picking));
+      }
       rows.push(el('hr', { className: 'arrange-rule' }));
       // "After cut".
       rows.push(el('span', { className: 'edit-label', textContent: t('After cut') }));
@@ -968,7 +1218,8 @@
       };
       rows.push(side(t('Upper part'), UPPER, 'keep_upper', 'place_on_cut_upper', 'flip_upper'));
       rows.push(side(t('Lower part'), LOWER, 'keep_lower', 'place_on_cut_lower', 'flip_lower'));
-      const parts = el('input', { type: 'checkbox', checked: p.to_parts && !o.parts, disabled: busy || Boolean(o.parts) });
+      // Not with pieces given to sides, nor with a dovetail.
+      const parts = el('input', { type: 'checkbox', checked: p.to_parts && !o.parts && !dovetail, disabled: busy || Boolean(o.parts) || dovetail });
       parts.addEventListener('change', () => {
         p.to_parts = parts.checked;
         // Both parts are kept, as they stood (`m_keep_as_parts`).
@@ -985,11 +1236,65 @@
       const warnings = [];
       if (!p.keep_upper && !p.keep_lower && !p.to_parts) warnings.push(t('Select at least one object to keep after cutting.'));
       if (!this.meets()) warnings.push(t('Cut plane is placed out of object'));
+      else if (dovetail && o.grooveValid === false) warnings.push(t('Cut plane with groove is invalid'));
       for (const warning of warnings) rows.push(el('p', { className: 'edit-hint cut-warning', role: 'status', textContent: `${t('Warning')}: ${warning}` }));
       const perform = el('button', { type: 'button', className: 'primary', textContent: t('Perform cut'), disabled: !this.canPerform() });
       perform.addEventListener('click', () => this.perform());
       rows.push(el('div', { className: 'cut-foot' }, perform));
       node.replaceChildren(...rows);
+    },
+
+    // The dovetail's fields (`render_cut_plane_input_window`, its
+    // tongue-and-groove part): "Groove" with "Depth" and "Width", each with
+    // its tolerance, "Flap Angle", "Groove Angle"; "Multiple" with "Count",
+    // "Gap" and the "Spacing" they come to. Each with its reset.
+    grooveRows(busy) {
+      const { el } = this.host;
+      const o = this.open;
+      const g = o.groove;
+      const start = o.grooveStart;
+      const mm = t('mm');
+      const reset = (label, keys) => {
+        const changed = keys.some((key) => Math.abs(g[key] - start[key]) > 1e-9);
+        const node = el('button', { type: 'button', className: 'icon tool', title: `${t('Reset')}: ${label}`, disabled: busy || !changed, textContent: '↺' });
+        node.setAttribute('aria-label', `${t('Reset')}: ${label}`);
+        node.addEventListener('click', () => {
+          const back = {};
+          for (const key of keys) back[key] = start[key];
+          o.groove = { ...o.groove, ...back };
+          o.asked = null;
+          this.changed();
+        });
+        return node;
+      };
+      const number = (label, key, { min, max, step = 0.1, unit = mm, angle = false, disabled = false, title = label }) => {
+        const shown = angle ? degrees(g[key]) : g[key];
+        const text = key === 'count' ? String(shown) : angle ? round(shown, 1).toFixed(1) : fixed(shown);
+        const input = el('input', { type: 'number', min: String(min), max: String(max), step: String(step), value: text, title, disabled: busy || disabled });
+        input.dataset.field = `groove-${key}`;
+        input.setAttribute('aria-label', title);
+        input.addEventListener('change', () => {
+          const value = Math.min(max, Math.max(min, Number(input.value)));
+          this.setGroove(key, angle ? radians(value) : (key === 'count' ? Math.round(value) : value));
+        });
+        return el('span', { className: 'unit' }, input, unit ? ` ${unit}` : '');
+      };
+      const row = (label, ...cells) => el('div', { className: 'cut-row' }, el('span', { className: 'edit-label', textContent: label }), el('span', { className: 'cut-line' }, ...cells));
+      const tolerance = t('Tolerance');
+      const width = grooveWidth(g, o.radius);
+      const bed = this.host.settled() && this.host.settled().printer && this.host.settled().printer.bed;
+      const plate = bed ? Math.max(bed[2] - bed[0], bed[3] - bed[1]) : 300;
+      return [
+        el('span', { className: 'edit-label cut-group', textContent: t('Groove') }),
+        row(t('Depth'), number(t('Depth'), 'depth', { min: 0.1, max: 100 }), number(tolerance, 'depth_tolerance', { min: 0, max: Math.min(0.3 * g.depth, 1.5), step: 0.05, title: `${t('Depth')}: ${tolerance}` }), reset(t('Depth'), ['depth', 'depth_tolerance'])),
+        row(t('Width'), number(t('Width'), 'width', { min: 0.1, max: 200 }), number(tolerance, 'width_tolerance', { min: 0, max: Math.min(0.3 * g.width, 1.5), step: 0.05, title: `${t('Width')}: ${tolerance}` }), reset(t('Width'), ['width', 'width_tolerance'])),
+        row(t('Flap Angle'), number(t('Flap Angle'), 'flaps_angle', { min: 30, max: 120, step: 1, unit: '°', angle: true }), reset(t('Flap Angle'), ['flaps_angle'])),
+        row(t('Groove Angle'), number(t('Groove Angle'), 'angle', { min: 0, max: 15, step: 0.5, unit: '°', angle: true }), reset(t('Groove Angle'), ['angle'])),
+        el('span', { className: 'edit-label cut-group', textContent: t('Multiple') }),
+        row(t('Count'), number(t('Count'), 'count', { min: 1, max: GROOVE_COUNT_MAX, step: 1, unit: '' }), reset(t('Count'), ['count'])),
+        row(t('Gap'), number(t('Gap'), 'gap', { min: 0, max: plate / Math.max(g.count - 1, 1), disabled: g.count === 1 }), reset(t('Gap'), ['gap'])),
+        row(t('Spacing'), el('span', { className: 'cut-size', textContent: `${fixed(g.gap + width)} ${mm}` })),
+      ];
     },
 
     // Only the numbers, while a field has the keys.

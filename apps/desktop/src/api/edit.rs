@@ -270,6 +270,29 @@ fn cut_options(args: &Value) -> Result<edge_engine::CutOptions, String> {
         to_parts: flag("to_parts", false)?,
         thickness,
         thickness_from,
+        groove: match args.get("groove") {
+            None | Some(Value::Null) => None,
+            Some(groove) => {
+                let number = |key: &str| -> Result<f64, String> {
+                    groove
+                        .get(key)
+                        .and_then(Value::as_f64)
+                        .filter(|value| value.is_finite())
+                        .ok_or_else(|| format!("the groove's {key} was not given"))
+                };
+                Some(edge_engine::Groove {
+                    depth: number("depth")?,
+                    width: number("width")?,
+                    flaps_angle: number("flaps_angle")?,
+                    angle: number("angle")?,
+                    depth_tolerance: number("depth_tolerance")?,
+                    width_tolerance: number("width_tolerance")?,
+                    count: number("count")?.clamp(1.0, 20.0) as usize,
+                    gap: number("gap")?,
+                    plane_radius: number("plane_radius")?,
+                })
+            }
+        },
         sides: match args.get("sides") {
             None | Some(Value::Null) => None,
             Some(Value::Array(list)) => Some(
@@ -977,6 +1000,15 @@ impl Session {
             .model
             .cut_section(bed.as_ref(), copy, &plane)
             .map_err(|e| e.to_string())?;
+        // With a dovetail, whether it can be cut there.
+        let groove = match cut_options(args)?.groove {
+            Some(groove) => Some(
+                file.model
+                    .groove_meets(bed.as_ref(), copy, &plane, &groove)
+                    .map_err(|e| e.to_string())?,
+            ),
+            None => None,
+        };
         let mm = |value: f64| (value * 1e4).round() / 1e4;
         let lines: Vec<f64> = section
             .lines
@@ -995,6 +1027,7 @@ impl Session {
             "above": mm(section.above),
             "below": mm(section.below),
             "reach": section.reach.map(|corners| corners.map(|corner| corner.map(mm))),
+            "groove": groove,
         }))
     }
 
