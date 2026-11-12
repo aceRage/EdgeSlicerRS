@@ -1785,8 +1785,8 @@ save` lists the same and writes only with `--accept-losses`.
   nothing. Here the same is done and said in a note.
 - GCode.cpp l.6900–6928: what a colour change (`M600`, `color_change_gcode`)
   writes is behind `#if 0`, so a colour change read from a project is
-  written as an empty `;CUSTOM_GCODE` block. Here the same is written,
-  with a note.
+  written as an empty `;CUSTOM_GCODE` block. Here nothing is written, with
+  a note; the empty block is not copied (aceRage/EdgeSlicer#979).
 - GCode.cpp l.2689–2697: the custom G-code set at layers is not checked
   for reserved tags (`validate_custom_gcode`), though the reference's
   G-code viewer and estimator read its own tags back from the file.

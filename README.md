@@ -1322,7 +1322,8 @@ Known gaps: painted supports and seams, per-object setting overrides, typed sett
   the reference's layer with the reference's `change_filament_gcode`.
   What the reference leaves out is left out and said in a note: a filament
   change on a plate of several filaments or a project of one, a colour
-  change (the reference writes its mark and no `M600`), an item below the
+  change (the reference writes no `M600` and an empty `;CUSTOM_GCODE` in
+  its place, which is not copied), an item below the
   first layer or beaten to a layer by a higher one; a pause on a printer
   with no pause G-code is written as the reference writes it and said.
   The time estimate stops the head at a pause, as the reference's does
