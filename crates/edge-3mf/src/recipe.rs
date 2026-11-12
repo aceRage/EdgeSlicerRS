@@ -126,6 +126,29 @@ impl RecipeSheet {
     }
 }
 
+/// A drawn cut's line and how its surface is swept (CutRecipe.hpp
+/// `CutRecipeStroke` and the recipe's `draw_*`): the raw samples (where,
+/// the surface's normal there, the facet), whether the line is a loop, the
+/// panel's smoothing, each stroke's range, whether it was finished open;
+/// the direction (0 surface normal, 1 view, 2–4 axis x, y, z), the view's
+/// direction, the extension, the lip angle, the extension angle when set,
+/// through all and the depth.
+#[derive(Clone, Debug, PartialEq)]
+pub struct RecipeDrawn {
+    pub samples: Vec<([f64; 3], [f64; 3], u64)>,
+    pub closed: bool,
+    pub smoothing: f64,
+    pub strokes: Vec<(u32, u32)>,
+    pub finished_open: bool,
+    pub direction: i32,
+    pub view: [f64; 3],
+    pub extension: f64,
+    pub angle: f64,
+    pub extension_angle: Option<f64>,
+    pub through_all: bool,
+    pub depth: f64,
+}
+
 /// How a cut was made, and what it was made of.
 #[derive(Clone, Debug)]
 pub struct CutRecipe {
@@ -150,6 +173,8 @@ pub struct CutRecipe {
     pub groove: Option<RecipeGroove>,
     /// A curved cut's surface.
     pub sheet: Option<RecipeSheet>,
+    /// A drawn cut's line and sweep.
+    pub drawn: Option<RecipeDrawn>,
     /// The connectors the cut placed, as they were placed.
     pub connectors: Vec<RecipeConnector>,
     /// The object's printed parts as they were before the cut, as one
@@ -185,6 +210,7 @@ impl PartialEq for CutRecipe {
             )
             && self.groove == other.groove
             && self.sheet == other.sheet
+            && self.drawn == other.drawn
             && self.connectors == other.connectors
             && Arc::ptr_eq(&self.mesh, &other.mesh)
     }
@@ -208,6 +234,7 @@ impl CutRecipe {
             flip_lower: false,
             groove: None,
             sheet: None,
+            drawn: None,
             connectors: Vec::new(),
             mesh,
             blob: None,
@@ -460,6 +487,30 @@ pub(crate) fn read(
         };
         let groove = groove_of(inner, part)?;
         let sheet = sheet_of(inner, part)?;
+        // The drawn line's sweep. A file of version 2 or less meant the
+        // old defaults by a missing attribute (through all, 10 mm deep),
+        // which the engine's migration then reads (`migrate_draw_v2`).
+        let legacy = version <= 2;
+        let drawn = match stroke_of(inner, part)? {
+            Some(mut drawn) => {
+                drawn.direction = get("draw_direction")
+                    .and_then(|v| v.trim().parse().ok())
+                    .filter(|v| (0..=4).contains(v))
+                    .unwrap_or(0);
+                drawn.view = [
+                    float("draw_view_x", 0.0),
+                    float("draw_view_y", 0.0),
+                    float("draw_view_z", -1.0),
+                ];
+                drawn.extension = float("draw_extension", 5.0);
+                drawn.angle = float("draw_angle", 0.0);
+                drawn.extension_angle = get("draw_ext_angle").and_then(|v| v.trim().parse().ok());
+                drawn.through_all = flag("draw_through_all", legacy);
+                drawn.depth = float("draw_depth", if legacy { 10.0 } else { 3.0 });
+                Some(drawn)
+            }
+            None => None,
+        };
         let connectors = connectors_of(inner, part)?;
         let thickness_offset = get("thickness_offset")
             .and_then(|v| v.trim().parse().ok())
@@ -480,6 +531,7 @@ pub(crate) fn read(
             flip_lower: flag("rotate_lower", false),
             groove,
             sheet,
+            drawn,
             connectors,
             mesh: Arc::new(Mesh::default()),
             blob: Some((blob.clone(), hash.clone())),
@@ -690,6 +742,75 @@ fn sheet_of(inner: &str, part: &str) -> Result<Option<RecipeSheet>, Error> {
     }
 }
 
+/// The `<stroke>` inside a recipe, when there is one with samples: its
+/// own part (the sweep comes from the recipe's attributes).
+fn stroke_of(inner: &str, part: &str) -> Result<Option<RecipeDrawn>, Error> {
+    let mut reader = Reader::from_str(inner);
+    let mut drawn: Option<RecipeDrawn> = None;
+    loop {
+        match reader
+            .read_event()
+            .map_err(|e| malformed(part, e.to_string()))?
+        {
+            Event::Start(element) | Event::Empty(element)
+                if element.local_name().as_ref() == "stroke" =>
+            {
+                let mut values: HashMap<String, String> = HashMap::new();
+                attributes(&element, part, |key, value| {
+                    values.insert(key.to_owned(), value.to_owned());
+                    Ok(())
+                })?;
+                let number = |key: &str| values.get(key).and_then(|v| v.trim().parse::<f64>().ok());
+                drawn = Some(RecipeDrawn {
+                    samples: Vec::new(),
+                    closed: number("closed").unwrap_or(0.0) != 0.0,
+                    smoothing: number("smoothing").unwrap_or(0.2),
+                    strokes: values
+                        .get("strokes")
+                        .map(|text| {
+                            text.split_whitespace()
+                                .filter_map(|pair| {
+                                    let (a, b) = pair.split_once(',')?;
+                                    Some((a.trim().parse().ok()?, b.trim().parse().ok()?))
+                                })
+                                .collect()
+                        })
+                        .unwrap_or_default(),
+                    finished_open: number("finished_open").unwrap_or(0.0) != 0.0,
+                    direction: 0,
+                    view: [0.0, 0.0, -1.0],
+                    extension: 5.0,
+                    angle: 0.0,
+                    extension_angle: None,
+                    through_all: false,
+                    depth: 3.0,
+                });
+            }
+            Event::Start(element) | Event::Empty(element)
+                if element.local_name().as_ref() == "s" =>
+            {
+                let mut values: HashMap<String, f64> = HashMap::new();
+                attributes(&element, part, |key, value| {
+                    if let Ok(number) = value.trim().parse() {
+                        values.insert(key.to_owned(), number);
+                    }
+                    Ok(())
+                })?;
+                let get = |key: &str, default: f64| values.get(key).copied().unwrap_or(default);
+                if let Some(drawn) = &mut drawn {
+                    drawn.samples.push((
+                        [get("px", 0.0), get("py", 0.0), get("pz", 0.0)],
+                        [get("nx", 0.0), get("ny", 0.0), get("nz", 1.0)],
+                        get("f", 0.0).max(0.0) as u64,
+                    ));
+                }
+            }
+            Event::Eof => return Ok(drawn.filter(|drawn| !drawn.samples.is_empty())),
+            _ => {}
+        }
+    }
+}
+
 /// The `<groove>` inside a recipe, when there is one.
 fn groove_of(inner: &str, part: &str) -> Result<Option<RecipeGroove>, Error> {
     let mut reader = Reader::from_str(inner);
@@ -761,6 +882,7 @@ pub(crate) fn element_for(element: &str, place: usize) -> String {
 /// A recipe's element as the reference writes it, of the object at
 /// `place`.
 pub(crate) fn element_of(recipe: &CutRecipe, place: usize, hash: &str) -> String {
+    let drawn = recipe.drawn.as_ref().filter(|d| !d.samples.is_empty());
     let mut out = String::new();
     let p = &recipe.plane;
     let mut rotation = Vec::with_capacity(16);
@@ -789,8 +911,8 @@ pub(crate) fn element_of(recipe: &CutRecipe, place: usize, hash: &str) -> String
             " center_x=\"{}\" center_y=\"{}\" center_z=\"{}\" rotation=\"{}\" instance_linear=\"{}\"",
             " thickness=\"{}\" thickness_offset=\"{}\" keep_upper=\"{}\" keep_lower=\"{}\" keep_as_parts=\"{}\"",
             " place_on_cut_upper=\"{}\" place_on_cut_lower=\"{}\" rotate_upper=\"{}\" rotate_lower=\"{}\"",
-            " upper_visibility=\"0\" lower_visibility=\"0\" draw_direction=\"0\" draw_view_x=\"0\" draw_view_y=\"0\"",
-            " draw_view_z=\"-1\" draw_extension=\"5\" draw_angle=\"0\" draw_through_all=\"0\" draw_depth=\"3\">"
+            " upper_visibility=\"0\" lower_visibility=\"0\" draw_direction=\"{}\" draw_view_x=\"{}\" draw_view_y=\"{}\"",
+            " draw_view_z=\"{}\" draw_extension=\"{}\" draw_angle=\"{}\" draw_through_all=\"{}\" draw_depth=\"{}\"{}>"
         ),
         place,
         recipe.version,
@@ -810,7 +932,42 @@ pub(crate) fn element_of(recipe: &CutRecipe, place: usize, hash: &str) -> String
         bit(recipe.place_on_cut_lower),
         bit(recipe.flip_upper),
         bit(recipe.flip_lower),
+        drawn.map_or(0, |d| d.direction),
+        drawn.map_or(0.0, |d| d.view[0]),
+        drawn.map_or(0.0, |d| d.view[1]),
+        drawn.map_or(-1.0, |d| d.view[2]),
+        drawn.map_or(5.0, |d| d.extension),
+        drawn.map_or(0.0, |d| d.angle),
+        bit(drawn.is_some_and(|d| d.through_all)),
+        drawn.map_or(3.0, |d| d.depth),
+        // Only when set: a missing one is "continue the band".
+        drawn
+            .and_then(|d| d.extension_angle)
+            .map(|angle| format!(" draw_ext_angle=\"{angle}\""))
+            .unwrap_or_default(),
     );
+    if let Some(d) = drawn {
+        let strokes: Vec<String> = d.strokes.iter().map(|(a, b)| format!("{a},{b}")).collect();
+        let _ = write!(
+            out,
+            "\n  <stroke closed=\"{}\" smoothing=\"{}\" finished_open=\"{}\"",
+            bit(d.closed),
+            d.smoothing,
+            bit(d.finished_open)
+        );
+        if !strokes.is_empty() {
+            let _ = write!(out, " strokes=\"{}\"", strokes.join(" "));
+        }
+        out.push('>');
+        for (p, n, f) in &d.samples {
+            let _ = write!(
+                out,
+                "\n   <s px=\"{}\" py=\"{}\" pz=\"{}\" nx=\"{}\" ny=\"{}\" nz=\"{}\" f=\"{f}\"/>",
+                p[0], p[1], p[2], n[0], n[1], n[2]
+            );
+        }
+        out.push_str("\n  </stroke>");
+    }
     if let Some(sheet) = recipe.sheet.as_ref().filter(|sheet| sheet.valid()) {
         let values: Vec<String> = sheet.values.iter().map(|v| v.to_string()).collect();
         let _ = write!(

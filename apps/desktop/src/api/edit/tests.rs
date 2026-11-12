@@ -1739,6 +1739,69 @@ fn a_curved_cut_is_previewed_made_and_put_back_with_its_surface() {
 }
 
 #[test]
+fn a_drawn_cut_is_made_from_its_line_and_not_put_back_as_a_flat_one() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = boxes(
+        &dir.path().join("box.stl"),
+        &[([0.0; 3], [30.0, 30.0, 20.0])],
+    );
+    let session = Arc::new(Session::new(None));
+    let project = stl_project(&session, &path);
+    let (copy, low, high) = first_copy(&session, project);
+    // The plane on the top; the line across it 3 mm off the middle, in the
+    // plane's own coordinates.
+    let plane = across(low, high, high[2]);
+    let line: Vec<Value> = (0..=40)
+        .map(|k| json!([-20.0 + k as f64, 3.0, 0.0, 0.0, 0.0, 1.0, 0]))
+        .collect();
+    let drawn = json!({ "samples": line, "finished_open": true, "through_all": true });
+    // A line too short to cut by is refused in the panel's words.
+    let short: Vec<Value> = (0..6)
+        .map(|k| json!([k as f64 * 0.1, 3.0, 0.0, 0.0, 0.0, 1.0, 0]))
+        .collect();
+    let error = refused(
+        &session,
+        "scene_edit",
+        json!({ "project": project, "op": "cut", "copy": copy, "plane": plane,
+                "drawn": { "samples": short, "finished_open": true } }),
+    );
+    assert_eq!(error, "Draw a longer line on the model.");
+    let done = edit(
+        &session,
+        json!({ "project": project, "op": "cut", "copy": copy, "plane": plane, "drawn": drawn }),
+    );
+    let placings = ask(&session, "scene", json!({ "project": project }))["placings"].clone();
+    let mut widths: Vec<f64> = placings
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|placing| numbers(&placing["box"][1])[1] - numbers(&placing["box"][0])[1])
+        .collect();
+    widths.sort_by(f64::total_cmp);
+    assert_eq!(widths.len(), 2, "{done}");
+    assert!(
+        (widths[0] - 12.0).abs() < 0.1 && (widths[1] - 18.0).abs() < 0.1,
+        "{widths:?}"
+    );
+    let half_copy = done["made"][0].as_u64().unwrap();
+    let recipe = ask(
+        &session,
+        "cut_recipe",
+        json!({ "project": project, "copy": half_copy }),
+    );
+    assert_eq!(recipe["mode"], "drawn");
+    assert_eq!(recipe["drawn"]["samples"].as_array().unwrap().len(), 41);
+    assert_eq!(recipe["drawn"]["samples"][0][1], 3.0);
+    assert_eq!(recipe["drawn"]["through_all"], true);
+    let error = refused(
+        &session,
+        "scene_edit",
+        json!({ "project": project, "op": "cut_edit", "copy": half_copy }),
+    );
+    assert!(error.contains("drawn cut"), "{error}");
+}
+
+#[test]
 fn a_dovetail_cut_is_checked_then_made_and_sliced() {
     let session = Arc::new(Session::new(None));
     let project = open(&session, "resources/handy_models/3DBenchy.3mf");

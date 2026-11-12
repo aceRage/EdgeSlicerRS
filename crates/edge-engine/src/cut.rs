@@ -108,6 +108,32 @@ pub struct CutOptions {
     /// "Curved": the surface the cut follows, over the plane
     /// ([`crate::curved`]). A flat one is the plane cut itself.
     pub sheet: Option<crate::curved::Sheet>,
+    /// "Draw": the line drawn on the part and how the surface is swept
+    /// from it ([`crate::drawn`]). Wins over a curved sheet.
+    pub drawn: Option<DrawnCut>,
+}
+
+/// A drawn cut: the line as the tool keeps it (the chain's samples, in
+/// the plane's own coordinates) and the sweep. The cut thickness is the
+/// cut's own ([`CutOptions::thickness`]).
+#[derive(Clone, Debug, PartialEq)]
+pub struct DrawnCut {
+    pub stroke: crate::drawn::RecipeStroke,
+    pub params: crate::drawn::DrawCutParams,
+}
+
+impl DrawnCut {
+    /// The line finished as the reference finishes it for the cut
+    /// (`DrawCutChain::finish`, `DefaultSpacing`), or why it cannot be cut.
+    pub fn finished(&self) -> Result<crate::drawn::DrawCutStroke, &'static str> {
+        let chain = crate::drawn::recipe_stroke_to_chain(&self.stroke);
+        let (stroke, error) = chain.finish(crate::drawn::DEFAULT_SPACING, self.stroke.smoothing);
+        if error == crate::drawn::DrawCutError::None {
+            Ok(stroke)
+        } else {
+            Err(crate::drawn::draw_cut_error_words(error))
+        }
+    }
 }
 
 /// What a connector is (Model.hpp `CutConnectorType`): a plug on the
@@ -295,6 +321,7 @@ impl Default for CutOptions {
             snap: [0.3, 0.15],
             nozzle: 0.4,
             sheet: None,
+            drawn: None,
         }
     }
 }
@@ -627,11 +654,23 @@ impl Model {
         prepared: Option<&Prepared>,
         cancel: Option<&edge_mesh::boolean::Cancel>,
     ) -> Result<Made, Failure> {
+        let drawn = options.drawn.as_ref().filter(|_| options.groove.is_none());
         let sheet = options
             .sheet
             .as_ref()
-            .filter(|sheet| !sheet.is_flat() && options.groove.is_none());
+            .filter(|sheet| !sheet.is_flat() && options.groove.is_none() && drawn.is_none());
         let mut empty = [true, true];
+        // The drawn line, finished once for every part.
+        let drawn = match drawn {
+            Some(cut) => {
+                let stroke = cut.finished().map_err(refused)?;
+                let mut params = cut.params.clone();
+                params.thickness = options.thickness;
+                params.thickness_offset = options.thickness_from;
+                Some((stroke, params))
+            }
+            None => None,
+        };
         let to_parts = options.to_parts && options.sides.is_none() && options.groove.is_none();
         let keep_upper = options.keep_upper || to_parts || options.sides.is_some();
         let keep_lower = options.keep_lower || to_parts || options.sides.is_some();
@@ -653,6 +692,65 @@ impl Model {
         let mut open = 0;
         for (number, part) in held.shape.parts.iter().enumerate() {
             let placed = part.transform.then(&turned);
+            // A drawn surface: the part cut with the solid the line sweeps,
+            // in the plane's own coordinates (DrawCut.cpp `draw_cut_split`).
+            if part.kind == PartKind::Normal
+                && !part.mesh.triangles.is_empty()
+                && let Some((stroke, params)) = &drawn
+            {
+                let mut flat = edge_mesh::Mesh::default();
+                flat.append(&part.mesh, &placed.then(&to_plane));
+                let solid = edge_mesh::boolean::Solid::new(&flat).map_err(|error| {
+                    refused(format!("The cut could not be made. The part {error}."))
+                })?;
+                let halves =
+                    match crate::drawn::draw_cut_split(&solid, &flat, stroke, params, cancel) {
+                        Ok(halves) => halves,
+                        // A part the line leaves whole goes whole to its side.
+                        Err(crate::drawn::DrawSplitError::Draw(
+                            crate::drawn::DrawCutError::EmptySide,
+                        )) => {
+                            let [upper_empty, _] =
+                                crate::drawn::draw_cut_empty_sides(&flat, stroke, params);
+                            if upper_empty {
+                                (edge_mesh::Mesh::default(), flat.clone())
+                            } else {
+                                (flat.clone(), edge_mesh::Mesh::default())
+                            }
+                        }
+                        Err(crate::drawn::DrawSplitError::Draw(error)) => {
+                            return Err(refused(crate::drawn::draw_cut_error_words(error)));
+                        }
+                        Err(error) => {
+                            return Err(refused(format!("The cut could not be made. {error}")));
+                        }
+                    };
+                for (plane_mesh, side) in [(halves.0, true), (halves.1, false)] {
+                    if plane_mesh.triangles.is_empty() {
+                        continue;
+                    }
+                    empty[usize::from(!side)] = false;
+                    if (side && !keep_upper) || (!side && !keep_lower) {
+                        continue;
+                    }
+                    let mut mesh = edge_mesh::Mesh::default();
+                    mesh.append(&plane_mesh, &back);
+                    let made = Part {
+                        mesh: Arc::new(crate::curved::tidy(mesh)),
+                        paint: None,
+                        seam: None,
+                        transform: Transform::IDENTITY,
+                        kept: part.kept.as_deref().map(|kept| Arc::new(kept.piece())),
+                        ..part.clone()
+                    };
+                    if side {
+                        upper.push(made);
+                    } else {
+                        lower.push(made);
+                    }
+                }
+                continue;
+            }
             // A curved surface: the part cut with the solid under it, in the
             // halves' coordinates (CurvedCut.cpp `curved_cut_split`).
             if part.kind == PartKind::Normal
@@ -789,7 +887,7 @@ impl Model {
             }
         }
 
-        if sheet.is_none() {
+        if sheet.is_none() && drawn.is_none() {
             empty = [upper.is_empty(), lower.is_empty()];
         }
         Ok(Made {
@@ -957,7 +1055,8 @@ impl Model {
             return Err(refused("that is no surface to cut by"));
         }
         if !options.connectors.is_empty()
-            && options.sheet.as_ref().is_some_and(|sheet| !sheet.is_flat())
+            && (options.drawn.is_some()
+                || options.sheet.as_ref().is_some_and(|sheet| !sheet.is_flat()))
         {
             return Err(refused(
                 "connectors are not placed on a curved cut here yet",
@@ -1000,7 +1099,9 @@ impl Model {
         let held = self.objects[at].clone();
         let base = self.name_of(at);
         let made = self.cut_parts(at, &scene, plane, options, None, None)?;
-        let curved = options.sheet.as_ref().is_some_and(|sheet| !sheet.is_flat())
+        let drawn = options.drawn.is_some() && options.groove.is_none();
+        let curved = !drawn
+            && options.sheet.as_ref().is_some_and(|sheet| !sheet.is_flat())
             && options.groove.is_none();
         let Made {
             mut upper,
@@ -1028,12 +1129,36 @@ impl Model {
             }
             let kind = if options.groove.is_some() {
                 RecipeKind::Groove
+            } else if drawn {
+                RecipeKind::Drawn
             } else if curved {
                 RecipeKind::Curved
             } else {
                 RecipeKind::Plane
             };
             let mut recipe = CutRecipe::new(kind, back, Arc::new(mesh));
+            if drawn && let Some(cut) = &options.drawn {
+                let p = &cut.params;
+                recipe.drawn = Some(edge_3mf::RecipeDrawn {
+                    samples: cut
+                        .stroke
+                        .samples
+                        .iter()
+                        .map(|s| (s.pos, s.normal, s.facet as u64))
+                        .collect(),
+                    closed: cut.stroke.closed,
+                    smoothing: cut.stroke.smoothing,
+                    strokes: cut.stroke.stroke_bounds.clone(),
+                    finished_open: cut.stroke.finished_open,
+                    direction: p.direction.index(),
+                    view: p.view_dir,
+                    extension: p.extension,
+                    angle: p.angle_deg,
+                    extension_angle: p.extension_angle_deg,
+                    through_all: p.through_all,
+                    depth: p.depth,
+                });
+            }
             if curved && let Some(sheet) = &options.sheet {
                 recipe.sheet = Some(edge_3mf::RecipeSheet {
                     nx: sheet.nx as u32,
@@ -1423,7 +1548,7 @@ impl Model {
         }
         Ok(CutDone {
             made: new,
-            empty: curved.then_some(empty),
+            empty: (curved || drawn).then_some(empty),
             open,
             pins: pins_made,
             pins_lying,
@@ -1528,7 +1653,14 @@ impl Model {
             ..options.clone()
         };
         let scene = prepared.scene;
-        let made = self.cut_parts(at, &scene, plane, &options, Some(prepared), cancel)?;
+        // A drawn cut works in the plane's own frame: the parts kept ready
+        // in the halves' are not its.
+        let ready = if options.drawn.is_some() {
+            None
+        } else {
+            Some(prepared)
+        };
+        let made = self.cut_parts(at, &scene, plane, &options, ready, cancel)?;
         let to_scene = Transform::translation(scene.rows[3]);
         let one = |parts: &[Part]| {
             let mut mesh = edge_mesh::Mesh::default();
@@ -2015,7 +2147,7 @@ fn cuttable(recipe: &CutRecipe, why: &str) -> Result<(), Failure> {
     if recipe.kind == RecipeKind::Curved && recipe.sheet.is_none() {
         return Err(refused(why));
     }
-    if recipe.kind == RecipeKind::Drawn {
+    if recipe.kind == RecipeKind::Drawn && recipe.drawn.is_none() {
         return Err(refused(
             "This cut was made with a curved or drawn surface, which cannot be made here yet.",
         ));

@@ -336,6 +336,10 @@ fn cut_options(args: &Value) -> Result<edge_engine::CutOptions, String> {
             None | Some(Value::Null) => None,
             Some(sheet) => Some(sheet_of(sheet)?),
         },
+        drawn: match args.get("drawn") {
+            None | Some(Value::Null) => None,
+            Some(drawn) => Some(drawn_of(drawn)?),
+        },
         nozzle: args
             .get("nozzle")
             .and_then(Value::as_f64)
@@ -518,6 +522,112 @@ fn sheet_of(value: &Value) -> Result<edge_engine::curved::Sheet, String> {
     Ok(sheet)
 }
 
+/// A drawn cut as the page gives it, in the plane's frame (DrawCut.cpp,
+/// `DrawCutRecipe`): `samples` (each `[x, y, z, nx, ny, nz, facet]`),
+/// `closed`, `smoothing` (0–1), `strokes` (each stroke's `[first, end)` in
+/// `samples`), `finished_open`, `direction` (0 surface normal, 1 view,
+/// 2–4 x, y, z), `view`, `extension`, `angle`, `extension_angle` (none:
+/// as `angle`), `through_all`, `depth`.
+fn drawn_of(value: &Value) -> Result<edge_engine::DrawnCut, String> {
+    use edge_engine::drawn::{DrawCutDirection, DrawCutParams, DrawCutSample, RecipeStroke};
+    let number = |key: &str| {
+        value
+            .get(key)
+            .and_then(Value::as_f64)
+            .filter(|value| value.is_finite())
+    };
+    let flag = |key: &str| value.get(key).and_then(Value::as_bool).unwrap_or(false);
+    let samples = value
+        .get("samples")
+        .and_then(Value::as_array)
+        .ok_or("the drawn cut has no line")?
+        .iter()
+        .map(|sample| {
+            let list: Vec<f64> = sample
+                .as_array()
+                .map(|list| list.iter().filter_map(Value::as_f64).collect())
+                .unwrap_or_default();
+            if list.len() != 7 || list.iter().any(|value| !value.is_finite()) {
+                return Err("a drawn cut's point is not seven numbers".to_string());
+            }
+            Ok(DrawCutSample {
+                pos: [list[0], list[1], list[2]],
+                normal: [list[3], list[4], list[5]],
+                facet: list[6].max(0.0) as usize,
+            })
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    let strokes = match value.get("strokes") {
+        None | Some(Value::Null) => Vec::new(),
+        Some(Value::Array(list)) => list
+            .iter()
+            .map(|pair| {
+                let pair: Vec<u64> = pair
+                    .as_array()
+                    .map(|pair| pair.iter().filter_map(Value::as_u64).collect())
+                    .unwrap_or_default();
+                match pair.as_slice() {
+                    [first, end] if first <= end && *end as usize <= samples.len() => {
+                        Ok((*first as u32, *end as u32))
+                    }
+                    _ => Err("a drawn cut's stroke is not two places in its line"),
+                }
+            })
+            .collect::<Result<Vec<_>, _>>()?,
+        Some(_) => return Err("strokes is not a list".into()),
+    };
+    let defaults = DrawCutParams::default();
+    let view = numbers(value, "view").unwrap_or(defaults.view_dir);
+    let cut = edge_engine::DrawnCut {
+        stroke: RecipeStroke {
+            samples,
+            closed: flag("closed"),
+            smoothing: number("smoothing").unwrap_or(0.0).clamp(0.0, 1.0),
+            stroke_bounds: strokes,
+            finished_open: flag("finished_open"),
+        },
+        params: DrawCutParams {
+            direction: DrawCutDirection::from_index(
+                value.get("direction").and_then(Value::as_i64).unwrap_or(0) as i32,
+            ),
+            view_dir: view,
+            extension: number("extension").unwrap_or(defaults.extension).max(0.0),
+            angle_deg: number("angle").unwrap_or(0.0).clamp(-90.0, 90.0),
+            extension_angle_deg: number("extension_angle").map(|angle| angle.clamp(-90.0, 90.0)),
+            through_all: value
+                .get("through_all")
+                .and_then(Value::as_bool)
+                .unwrap_or(defaults.through_all),
+            depth: number("depth").unwrap_or(defaults.depth).max(0.0),
+            ..defaults
+        },
+    };
+    // A line that cannot be finished is refused here, in the reference's
+    // words where it has them.
+    cut.finished().map_err(super::i18n::tr)?;
+    Ok(cut)
+}
+
+/// A drawn cut for the page: [`drawn_of`]'s names.
+fn drawn_json(drawn: &edge_engine::RecipeDrawn) -> Value {
+    json!({
+        "samples": drawn.samples.iter().map(|(pos, normal, facet)| {
+            json!([pos[0], pos[1], pos[2], normal[0], normal[1], normal[2], facet])
+        }).collect::<Vec<_>>(),
+        "closed": drawn.closed,
+        "smoothing": drawn.smoothing,
+        "strokes": drawn.strokes.iter().map(|(first, end)| json!([first, end])).collect::<Vec<_>>(),
+        "finished_open": drawn.finished_open,
+        "direction": drawn.direction,
+        "view": drawn.view,
+        "extension": drawn.extension,
+        "angle": drawn.angle,
+        "extension_angle": drawn.extension_angle,
+        "through_all": drawn.through_all,
+        "depth": drawn.depth,
+    })
+}
+
 /// What an edit by the gizmos or the number fields may be called in the
 /// history: the reference's own names for them.
 const TRANSFORMS: [&str; 9] = [
@@ -612,7 +722,7 @@ fn recipe_json(recipe: &edge_engine::CutRecipe, plane: &Transform) -> Value {
         .collect();
     json!({
         "plane": matrix_json(plane),
-        "mode": if recipe.groove.is_some() { "dovetail" } else { "planar" },
+        "mode": if recipe.groove.is_some() { "dovetail" } else if recipe.drawn.is_some() { "drawn" } else { "planar" },
         "thickness": recipe.thickness,
         "thickness_from": from,
         "keep_upper": recipe.keep_upper,
@@ -627,6 +737,7 @@ fn recipe_json(recipe: &edge_engine::CutRecipe, plane: &Transform) -> Value {
             "nx": sheet.nx, "ny": sheet.ny, "half_u": sheet.half_u, "half_v": sheet.half_v,
             "z": sheet.values,
         })),
+        "drawn": recipe.drawn.as_ref().map(drawn_json),
         "groove": recipe.groove.map(|g| json!({
             "depth": g.depth, "width": g.width, "flaps_angle": g.flaps_angle, "angle": g.angle,
             "depth_tolerance": g.depth_tolerance, "width_tolerance": g.width_tolerance,
@@ -1156,6 +1267,16 @@ impl Session {
                 outcome.name = "Cut by Plane".into();
             }
             "cut_edit" => {
+                // The drawing tool is not here yet: a drawn cut is left as
+                // it is rather than put back to be made as a flat one.
+                if model
+                    .cut_recipe(whole(args, "copy")?)
+                    .is_some_and(|recipe| recipe.drawn.is_some())
+                {
+                    return Err(super::i18n::tr(
+                        "A drawn cut cannot be edited here yet: drawing the line is still to come.",
+                    ));
+                }
                 let edit = model
                     .cut_edit(bed, whole(args, "copy")?)
                     .map_err(|error| super::i18n::tr(&error.to_string()))?;

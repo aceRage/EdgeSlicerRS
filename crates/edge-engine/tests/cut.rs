@@ -1394,3 +1394,131 @@ fn a_curved_cut_is_made_by_the_solid_under_its_surface_and_made_again() {
     assert_eq!(done.empty, Some([true, false]));
     assert_eq!(over.objects().len(), 1);
 }
+
+#[test]
+fn a_drawn_cut_is_made_saved_read_back_and_made_again() {
+    use edge_engine::DrawnCut;
+    use edge_engine::drawn::{DrawCutParams, DrawCutSample, RecipeStroke};
+    let dir = tempfile::tempdir().unwrap();
+    let mut model = block(dir.path(), [30.0, 30.0, 20.0]);
+    let copy = model.objects()[0].copies()[0].id();
+    let (_, reach) = model.in_scene(Some(&BED), copy).unwrap();
+    let [low, high] = reach.unwrap();
+    let mid = [(low[0] + high[0]) / 2.0, (low[1] + high[1]) / 2.0, 10.0];
+    let flat = Transform {
+        rows: [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0], mid],
+    };
+    // A line drawn straight across the top, 3 mm off the middle, in the
+    // plane's own coordinates (the top at z = 10 there).
+    let samples: Vec<DrawCutSample> = (0..=40)
+        .map(|k| DrawCutSample {
+            pos: [-20.0 + k as f64, 3.0, 10.0],
+            normal: [0.0, 0.0, 1.0],
+            facet: 0,
+        })
+        .collect();
+    let drawn = DrawnCut {
+        stroke: RecipeStroke {
+            samples,
+            closed: false,
+            smoothing: 0.0,
+            stroke_bounds: Vec::new(),
+            finished_open: true,
+        },
+        params: DrawCutParams {
+            through_all: true,
+            ..DrawCutParams::default()
+        },
+    };
+    let options = CutOptions {
+        drawn: Some(drawn.clone()),
+        ..CutOptions::default()
+    };
+    let done = model.cut(Some(&BED), copy, &flat, &options).unwrap();
+    assert_eq!(done.made.len(), 2);
+    let volumes: Vec<f64> = model
+        .objects()
+        .iter()
+        .map(|object| {
+            let mesh = printed(&model, object, 0);
+            sound(&mesh);
+            mesh.signed_volume()
+        })
+        .collect();
+    let whole = 30.0 * 30.0 * 20.0;
+    assert!(near(volumes[0] + volumes[1], whole, 1e-2), "{volumes:?}");
+    // Down through the part at y = 3: 18 mm and 12 mm of the block's 30.
+    let mut sorted = volumes.clone();
+    sorted.sort_by(f64::total_cmp);
+    assert!(
+        near(sorted[0], whole * 12.0 / 30.0, 1.0) && near(sorted[1], whole * 18.0 / 30.0, 1.0),
+        "{volumes:?}"
+    );
+    let path = dir.path().join("drawn.3mf");
+    model
+        .save(&path, &edge_engine::Saving::None, Some(&BED))
+        .unwrap();
+    // Kept where asked, for the C++ slicer to read.
+    if let Ok(keep) = std::env::var("EDGE_CUT_KEEP") {
+        std::fs::copy(&path, Path::new(&keep).join("drawn.3mf")).unwrap();
+    }
+    assert!(!slice_file(&path).outlines().is_empty());
+    let mut back = Model::open(&path).unwrap();
+    let half = back.objects()[0].copies()[0].id();
+    let edit = back.cut_edit(Some(&BED), half).unwrap();
+    let read = edit.recipe.drawn.clone().unwrap();
+    assert_eq!(read.samples.len(), 41);
+    assert!(read.finished_open && !read.closed && read.through_all);
+    // Made again from what the file kept.
+    let again = DrawnCut {
+        stroke: RecipeStroke {
+            samples: read
+                .samples
+                .iter()
+                .map(|(pos, normal, facet)| DrawCutSample {
+                    pos: *pos,
+                    normal: *normal,
+                    facet: *facet as usize,
+                })
+                .collect(),
+            closed: read.closed,
+            smoothing: read.smoothing,
+            stroke_bounds: read.strokes.clone(),
+            finished_open: read.finished_open,
+        },
+        params: drawn.params.clone(),
+    };
+    back.cut(
+        Some(&BED),
+        edit.copy,
+        &edit.plane,
+        &CutOptions {
+            drawn: Some(again),
+            ..CutOptions::default()
+        },
+    )
+    .unwrap();
+    assert_eq!(back.objects().len(), 2);
+    // A line too short to cut is refused in the reference's words.
+    let short = DrawnCut {
+        stroke: RecipeStroke {
+            samples: drawn.stroke.samples[..2].to_vec(),
+            ..drawn.stroke.clone()
+        },
+        ..drawn.clone()
+    };
+    let mut refused = block(dir.path(), [10.0, 10.0, 10.0]);
+    let copy = refused.objects()[0].copies()[0].id();
+    let error = refused
+        .cut(
+            Some(&BED),
+            copy,
+            &flat,
+            &CutOptions {
+                drawn: Some(short),
+                ..CutOptions::default()
+            },
+        )
+        .unwrap_err();
+    assert!(!error.to_string().is_empty());
+}

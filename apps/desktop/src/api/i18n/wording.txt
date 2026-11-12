@@ -260,6 +260,7 @@ the upper side	GUI/Gizmos/GLGizmoCut.cpp:10927
 [own]
 # This app's own words on the static page, with no counterpart in the
 # C++: shown in English in every language.
+A drawn cut cannot be edited here yet: drawing the line is still to come.
 About this print
 Back to the sidebar
 Back to the sidebar [Esc]

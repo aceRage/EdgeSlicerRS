@@ -39,8 +39,8 @@ use model_settings::{ModelSettings, ObjectSettings};
 use package::Package;
 pub use paint::{Facet, PaintKind, SeamFacet, SeamPaint};
 pub use recipe::{
-    CutRecipe, RECIPE_VERSION, RecipeConnector, RecipeGroove, RecipeKind, RecipeSheet, mesh_blob,
-    mesh_of_blob, sha256,
+    CutRecipe, RECIPE_VERSION, RecipeConnector, RecipeDrawn, RecipeGroove, RecipeKind, RecipeSheet,
+    mesh_blob, mesh_of_blob, sha256,
 };
 pub use write::{
     REFERENCE_VERSION, SECRETS, Save, Written, losses, own_settings_text, settings_text, write,
