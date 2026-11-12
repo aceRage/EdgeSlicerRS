@@ -441,12 +441,18 @@ fn union_of_shells(mesh: &Mesh) -> Option<Manifold> {
     if (sum - whole).abs() > VOLUME_SLACK * whole {
         return None;
     }
-    let mut union: Option<Manifold> = None;
+    // Every shell checked before any is united, so a mesh that cannot be
+    // put right this way costs no booleans.
+    let mut solids = Vec::with_capacity(shells.len());
     for shell in &shells {
         let shell = import(shell).ok()?;
         if shell.is_empty() || shell.has_self_intersections() {
             return None;
         }
+        solids.push(shell);
+    }
+    let mut union: Option<Manifold> = None;
+    for shell in solids {
         union = Some(match union {
             None => shell,
             Some(union) => {
