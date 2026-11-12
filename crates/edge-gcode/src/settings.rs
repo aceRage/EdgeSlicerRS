@@ -296,6 +296,9 @@ pub struct PrintSettings {
     /// reference's tower or tool change does (WipeTower2.cpp
     /// `toolchange_Unload`, GCode.cpp `set_extruder`).
     pub single_nozzle: bool,
+    /// An Elegoo printer, whose `M6211` changes filament and purges
+    /// (`printer_model`).
+    pub elegoo: bool,
     /// Whether a prime tower is printed (`enable_prime_tower`).
     pub prime_tower: bool,
     /// The printer gets the reference's Bambu Lab tower (WipeTower.cpp):
@@ -451,6 +454,7 @@ impl Default for PrintSettings {
             preheat_time: 30.0,
             tool_change_temperature_wait: true,
             single_nozzle: true,
+            elegoo: false,
             prime_tower: false,
             bambu_tower: false,
             cooling_before_tower: 0.0,
@@ -985,6 +989,9 @@ impl PrintSettings {
                 .flag("tool_change_temprature_wait")?
                 .unwrap_or(defaults.tool_change_temperature_wait),
             // The reference's defaults where the settings are silent.
+            elegoo: settings
+                .text("printer_model")
+                .is_some_and(|model| model.to_ascii_lowercase().starts_with("elegoo")),
             single_nozzle: settings
                 .flag("single_extruder_multi_material")?
                 .unwrap_or(defaults.single_nozzle),

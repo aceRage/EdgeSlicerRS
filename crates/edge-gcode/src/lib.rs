@@ -16,6 +16,7 @@ mod chain;
 mod circle;
 mod contour;
 mod cooling;
+mod flush;
 mod inside;
 mod overhang;
 mod scarf;
@@ -409,6 +410,7 @@ pub fn write_timed(
             tool: first,
             parked: vec![(false, 0.0); settings.len()],
             used: vec![(0.0, 0.0); settings.len()],
+            flushed: flush::Flushed::new(settings.len()),
             ..State::default()
         },
         timing: Timing::default(),
@@ -921,6 +923,9 @@ struct State {
     tower_temperature: Option<f64>,
     /// What each filament has had extruded so far, in mm and in mm³.
     used: Vec<(f64, f64)>,
+    /// What the printer's own G-code has flushed of each filament, as
+    /// the reference's G-code processor counts it.
+    flushed: flush::Flushed,
     retracted: bool,
     /// How far the filament is pulled back while `retracted`.
     retracted_length: f64,
@@ -1072,6 +1077,7 @@ impl Writer<'_> {
     fn custom(&mut self, name: &'static str, template: &str) -> Result<String, GcodeError> {
         let text = edge_template::expand(template, &self.variables)
             .map_err(|source| GcodeError::Template { name, source })?;
+        self.state.flushed.read(&text, self.all);
         self.out.write_all(text.as_bytes())?;
         if !text.ends_with('\n') {
             writeln!(self.out)?;
@@ -1277,6 +1283,7 @@ impl Writer<'_> {
                         }
                     })?;
                 writeln!(self.out, "; custom gcode start")?;
+                self.state.flushed.read(&text, self.all);
                 self.out.write_all(text.as_bytes())?;
                 if !text.ends_with('\n') {
                     writeln!(self.out)?;
@@ -1446,6 +1453,7 @@ impl Writer<'_> {
         self.out.extend_from_slice(CHANGE_MARK);
         writeln!(self.out, "T{to} S{:.0}", self.temperature(to, layer == 0))?;
         self.swap(Some(from as i64), to, Some(layer), z)?;
+        self.state.flushed.select(to, self.all);
         self.state.parked[from] = (self.state.retracted, self.state.retracted_length);
         (self.state.retracted, self.state.retracted_length) = self.state.parked[to];
         self.state.tool = to;
@@ -3528,7 +3536,25 @@ impl Writer<'_> {
                 .collect::<Vec<_>>()
                 .join(", ")
         };
-        let used = &self.state.used;
+        // With what the printer's own G-code flushed of each counted in,
+        // as the reference counts it (GCode.cpp
+        // `update_print_stats_and_format_filament_stats`, its processor's
+        // `flush_per_filament`). Not done yet for a print that never
+        // changes filament, whose file is left as it was: the reference
+        // counts the start G-code's purge there too (the Centauri
+        // Carbon's 200 mm).
+        let changes = self.state.tool_changes > 0;
+        let area = |filament: usize| PI * (self.all[filament].filament_diameter / 2.0).powi(2);
+        let used: Vec<(f64, f64)> = (self.state.used.iter().enumerate())
+            .map(|(filament, (mm, mm3))| {
+                let flushed = if changes {
+                    self.state.flushed.volume(filament)
+                } else {
+                    0.0
+                };
+                (mm + flushed / area(filament), mm3 + flushed)
+            })
+            .collect();
         writeln!(
             self.out,
             "; filament used [mm] = {}",
