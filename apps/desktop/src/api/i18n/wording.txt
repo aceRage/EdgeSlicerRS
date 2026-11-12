@@ -67,6 +67,7 @@ Save as...	GUI/ProjectStrip.cpp:1415
 Set all filaments to the selected preset	GUI/Plater.cpp:3690
 settings	GUI/Plater.cpp:2588
 Show names only	GUI/ProjectStrip.cpp:1456
+Rename preset	GUI/PresetManagerDialog.cpp:466
 Show the project strip	GUI/ProjectStrip.cpp:1377
 Show thumbnails	GUI/ProjectStrip.cpp:1455
 Start print timeout	Utils/ElegooLink.cpp:911
@@ -151,6 +152,8 @@ At the speeds set, before acceleration.
 Layer ${index + 1} of ${summary.layers}, top at ${layer.z} mm
 slicing failed: ${plate.failed}
 No printer is chosen for the project shown. Choose one in Prepare.
+These two presets are the same.
+The project is sliced with its own settings: there is no preset of it to save.
 Please set up your printer connection to view the device.
 The printer preset chosen for "${state.project.name}".
 The printer "${state.project.name}" was saved with.

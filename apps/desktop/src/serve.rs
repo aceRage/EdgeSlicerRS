@@ -55,6 +55,11 @@ const HOSTS: [(&str, &str); 2] = [
     ("hosts.js", include_str!("../ui/hosts.js")),
     ("hosts.css", include_str!("../ui/hosts.css")),
 ];
+/// A person's own presets: the lists' cog menus and their dialogs.
+const PRESETS: [(&str, &str); 2] = [
+    ("presets.js", include_str!("../ui/presets.js")),
+    ("presets.css", include_str!("../ui/presets.css")),
+];
 /// The page's words: the table of the language chosen, and then the
 /// page's other scripts (`i18n.js` loads them).
 const WORDS: [(&str, &str); 1] = [("i18n.js", include_str!("../ui/i18n.js"))];
@@ -224,12 +229,14 @@ fn handle(mut request: Request, session: &Arc<Session>, token: &str, port: u16) 
             if EDIT
                 .iter()
                 .chain(&HOSTS)
+                .chain(&PRESETS)
                 .chain(&WORDS)
                 .any(|(known, _)| path[1..] == **known) =>
         {
             let (name, built_in) = EDIT
                 .iter()
                 .chain(&HOSTS)
+                .chain(&PRESETS)
                 .chain(&WORDS)
                 .find(|(known, _)| path[1..] == **known)
                 .expect("one of them is it");

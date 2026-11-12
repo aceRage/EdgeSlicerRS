@@ -805,7 +805,8 @@ async function showSidebar() {
 
   // Filaments: one for each the project has (filaments.js).
   const count = project.filament_count;
-  const offered = fromPresets && choices.machine ? (await presetsOf(choices.vendor, choices.machine)).filaments : [];
+  const lists = fromPresets && choices.machine ? await presetsOf(choices.vendor, choices.machine) : null;
+  const offered = lists ? lists.filaments : [];
   Filaments.closePicker();
   Filaments.head(project);
   $('filaments').replaceChildren(...Array.from({ length: count }, (_, index) => {
@@ -813,8 +814,14 @@ async function showSidebar() {
     if (fromPresets) {
       const list = el('select', { ariaLabel: fmt(t('Filament %d'), index + 1) });
       list.dataset.filament = index + 1;
-      // A filament past the last chosen prints with the last, as the engine has it.
-      fill(list, offered, choices.filaments[Math.min(index, choices.filaments.length - 1)]);
+      // A filament past the last chosen prints with the last, as the engine has it;
+      // the person's own presets first, "* " before one with something set over it.
+      Presets.fillList(list, {
+        user: lists ? lists.user_filaments : [],
+        system: offered,
+        value: choices.filaments[Math.min(index, choices.filaments.length - 1)],
+        modified: Presets.on('filament', index + 1).modified,
+      });
       list.addEventListener('change', filamentChanged);
       name = listbox(list, { bare: true });
     } else {
@@ -824,15 +831,20 @@ async function showSidebar() {
     }
     return Filaments.row(project, index, name);
   }));
-  Filaments.applyAll(project, offered);
+  Filaments.applyAll(project, lists ? [...lists.user_filaments, ...offered] : []);
 
   // Process.
   $('process-row').hidden = !fromPresets;
   $('saved-process').hidden = fromPresets;
   $('saved-process').textContent = project.saved.process || 'The project names no process.';
+  $('process-cog').hidden = !fromPresets;
   if (fromPresets) {
-    const processes = choices.machine ? (await presetsOf(choices.vendor, choices.machine)).processes : [];
-    fill($('process'), processes, choices.process);
+    Presets.fillList($('process'), {
+      user: lists ? lists.user_processes : [],
+      system: lists ? lists.processes : [],
+      value: choices.process,
+      modified: Presets.on('process').modified,
+    });
   }
   // The pages of process settings, and what is set over the preset; a
   // filament's or the printer's when they are open (settings.js).
@@ -848,7 +860,20 @@ function brightness(colour) {
 
 // What is chosen for a printer (filaments, process, bed type) is kept
 // with that printer by the session, for the next time it is selected.
-async function filamentChanged() {
+async function filamentChanged(event) {
+  const select = event && event.target;
+  if (select && select.dataset.filament) {
+    // What is set over the preset it leaves is asked about first.
+    const slot = Number(select.dataset.filament);
+    const choices = state.project.choices;
+    const was = choices.filaments[Math.min(slot - 1, choices.filaments.length - 1)];
+    const answer = await Presets.beforeLeaving('filament', slot, select.value);
+    if (answer === null) {
+      select.value = was;
+      return;
+    }
+    if (answer === 'saved' || answer === 'discard') state.project = await call('project', { project: activeId() });
+  }
   const filaments = [...$('filaments').querySelectorAll('select')].map((select) => select.value);
   await setProject({ filaments });
 }
@@ -857,7 +882,26 @@ async function filamentChanged() {
 listbox($('process'));
 listbox($('bed'), { bare: true });
 Filaments.init();
-$('process').addEventListener('change', () => attempt(() => setProject({ process: $('process').value })));
+$('process').addEventListener('change', () => attempt(async () => {
+  const to = $('process').value;
+  // What is set over the preset it leaves is asked about first
+  // ("Transfer or discard changes").
+  const answer = await Presets.beforeLeaving('process', 1, to);
+  if (answer === null) {
+    $('process').value = state.project.choices.process;
+    return;
+  }
+  await setProject({ process: to });
+}));
+{
+  // The process list's cog: "Save current %s", "Rename preset", "Delete this preset", "Compare presets".
+  const label = $('process-row');
+  const row = el('div', { className: 'preset-row' });
+  label.replaceWith(row);
+  const cog = Presets.cogButton('process');
+  cog.id = 'process-cog';
+  row.append(label, cog);
+}
 $('bed').addEventListener('change', () => attempt(() => setProject({ bed_type: $('bed').value })));
 for (const title of document.querySelectorAll('.fold-title')) {
   title.addEventListener('click', () => {
