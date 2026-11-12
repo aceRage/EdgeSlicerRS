@@ -302,7 +302,9 @@
     // A shaded mesh. `model` takes it into the scene; `pass` is 0 for
     // what is opaque, 1 for what is not, 2 for all of it. `range`: only
     // these triangles, [first, how many].
-    drawMesh(mesh, frame, model, { palette = null, tint = [0, 0, 0, -1], alpha = 1, ghost = false, pass = 2, emission = 0, volume = null, range = null } = {}) {
+    // `clip`: [normal x, y, z, offset], what is beyond the plane cut away;
+    // `slope`: what faces down more steeply than this normal's z is marked.
+    drawMesh(mesh, frame, model, { palette = null, tint = [0, 0, 0, -1], alpha = 1, ghost = false, pass = 2, emission = 0, volume = null, range = null, clip = null, slope = null } = {}) {
       const gl = this.gl;
       const u = this.use('mesh');
       const viewModel = M.multiply(frame.view, model);
@@ -316,6 +318,10 @@
       gl.uniform1i(u.u_pass, pass);
       gl.uniform1f(u.u_emission, emission);
       gl.uniform1i(u.u_volume, volume ? 1 : 0);
+      gl.uniform1i(u.u_clipped, clip ? 1 : 0);
+      if (clip) gl.uniform4fv(u.u_clip, clip);
+      gl.uniform1f(u.u_slope, slope === null ? -3 : slope);
+      if (slope !== null) gl.uniformMatrix3fv(u.u_model_normal, false, M.normalMatrix(model));
       if (volume) {
         gl.uniform3fv(u.u_volume_min, volume[0]);
         gl.uniform3fv(u.u_volume_max, volume[1]);

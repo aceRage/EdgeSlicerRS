@@ -16,6 +16,7 @@
 
 mod edit;
 mod filaments;
+mod paint;
 mod save;
 mod scene;
 mod ticks;
@@ -57,6 +58,8 @@ pub struct Session {
     traced: bool,
     /// What the 3D views' calls keep between them.
     scene: scene::Cache,
+    /// The painting tool that is open, and what it keeps of each mesh.
+    paint: paint::Cache,
     /// The printers' connections and the files being sent to them.
     hosts: Hosts,
     /// The language the page is shown in and the calls compose in.
@@ -983,6 +986,7 @@ impl Session {
             startup,
             traced: std::env::var_os("EDGE_DESKTOP_TRACE").is_some(),
             scene: scene::Cache::default(),
+            paint: paint::Cache::default(),
             hosts: Hosts {
                 kept: Mutex::new(kept),
                 queue: crate::hosts::queue::Queue::default(),
@@ -1012,6 +1016,7 @@ impl Session {
         let language = lock(&self.language).clone();
         let answer = i18n::with(language, || match name {
             name if scene::BYTES.contains(&name) => self.scene_bytes(name, args),
+            name if paint::BYTES.contains(&name) => self.paint_bytes(name, args),
             other => Err(format!(
                 "there is no call named {other} that answers in bytes"
             )),
@@ -1172,6 +1177,7 @@ impl Session {
             name if filaments::JSON.contains(&name) => self.filaments_json(name, args),
             name if print_host::JSON.contains(&name) => self.print_host_json(name, args),
             name if scene::JSON.contains(&name) => self.scene_json(name, args),
+            name if paint::JSON.contains(&name) => self.paint_json(name, args),
             name if scene::BYTES.contains(&name) => {
                 Err(format!("{name} answers in bytes, not in JSON"))
             }

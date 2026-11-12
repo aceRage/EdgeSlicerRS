@@ -34,7 +34,9 @@ The last column reads:
   thirteenth pass: the list of filaments, "Sidebar: Filament" in section 2,
   `filament_edit` in section 7, the undo history in section 13 and what
   a saved project holds of them in section 15; fourteenth pass: wording
-  and languages, section 16, and the rows that point to it).
+  and languages, section 16, and the rows that point to it; fifteenth
+  pass: the painting tools, "The painting tools" in section 13, with the
+  rows of sections 2, 6, 7, 9, 11 and 15 that point to it).
 - **differs** — built, but on purpose not as the C++ does it; the cell says how.
 - **not yet** — not built, with what it waits for. Nothing in this column is
   shown in the page as a control that does nothing.
@@ -169,7 +171,7 @@ does with each option.
 | --- | --- | --- |
 | A 3D view of every plate with the objects on it, orbit / pan / zoom, selection | `View3D`, `GLCanvas3D` | **added**, in 3D: section 9. Where the browser has no WebGL2, the view from above the first pass built is kept: the bed of the printer chosen with its grid and each object's outline (its convex hull), name and size, drag to move, wheel to zoom, "Fit part" [Z] and "Fit bed" |
 | Main toolbar: "Add" [Ctrl+I], "Add plate", "Auto orient all/selected objects" [Q], "Arrange all objects" [A] with its options, "Split to objects", "Split to parts", "Variable layer height", "Assembly View" | `GLCanvas3D::_init_main_toolbar` l.9274 | **added**: "Add", "Add plate", "Arrange all objects" (section 13; the arrangement is a plain one, not the reference's), "Split to objects" and "Split to parts". **not yet**: auto orient (the engine does not do it), variable layer height, the assembly view, the arrangement's options |
-| Gizmos: "Move" [M], "Rotate" [R], "Scale" [S], "Lay on face" [F], "Cut" [C], "Mesh Boolean" [B], "Support Painting" [L], "Seam painting" [P], "Paint-on fuzzy skin" [H], "Color Painting" [N], "Texture displacement", "Emboss" [T], "SVG", "Measure" [U], "Assemble" [Y], "Simplify", "Brim Ears" [E], "Sculpt", "Edit", "Fillet / chamfer (CAD)" | `Gizmos/GLGizmosManager.cpp::init` l.224 | **added**: "Move", "Rotate" and "Scale" with their number fields, and "Lay on face" [F] (section 13). **not yet**: the rest |
+| Gizmos: "Move" [M], "Rotate" [R], "Scale" [S], "Lay on face" [F], "Cut" [C], "Mesh Boolean" [B], "Support Painting" [L], "Seam painting" [P], "Paint-on fuzzy skin" [H], "Color Painting" [N], "Texture displacement", "Emboss" [T], "SVG", "Measure" [U], "Assemble" [Y], "Simplify", "Brim Ears" [E], "Sculpt", "Edit", "Fillet / chamfer (CAD)" | `Gizmos/GLGizmosManager.cpp::init` l.224 | **added**: "Move", "Rotate" and "Scale" with their number fields, and "Lay on face" [F] (section 13); "Support Painting" [L], "Seam painting" [P], "Paint-on fuzzy skin" [H] and "Color Painting" [N] (section 13, "The painting tools"). **not yet**: "Cut", "Mesh Boolean", "Texture displacement", "Emboss", "SVG", "Measure", "Assemble", "Simplify", "Brim Ears", "Sculpt", "Edit", "Fillet / chamfer (CAD)": each waits for the engine to do what it does (cutting and joining meshes, displacing a surface, text and pictures made into meshes, measuring and assembling, simplifying, brim ears in the brim) |
 | Object list: plates, objects, parts, instances, layer ranges; columns "Name", printable, "Fila.", paint marks; the object, part and plate menus | `GUI_ObjectList.cpp`, `GUI_Factories.cpp` | **added**: plates, objects, parts and instances with "Name", printable and "Fila.", and the object's, the part's and the plate's menus (section 13). **not yet**: layer ranges, the paint marks, settings of an object or a part |
 | View options: "Realistic View", "X-Ray", "Center of Mass", "Show 3D Navigator", Ctrl+0..6 views | `GLCanvas3D.cpp` l.8297, View menu | **added**: the navigator and the views (section 9). **not yet**: the three view options |
 
@@ -356,11 +358,11 @@ Read from `ProjectStrip.cpp/.hpp`, `ProjectSessions.hpp` and their uses in
 | Ctrl+S "Save Project", Ctrl+Shift+S "Save Project as..." | **added** (and Cmd on a Mac), anywhere in the page but in a dialog; in a browser they are taken from the browser's own |
 | Ctrl+G, Ctrl+Shift+G, Ctrl+P (Preferences), "?" (the list of shortcuts) | **not yet** (Ctrl+I is "Add", section 13) |
 | Left / Right, Home / End (the move slider), L (one layer mode), C (G-code window) | **added** in 3D, C in the eleventh pass |
-| A, Shift+A, Q, Shift+Q, the gizmo keys, Ctrl+0..6, Ctrl+A / D / Z / Y / C / V / X, Del, 1–9, arrows to move objects | **added** in 3D: Ctrl+0..7 (the views), Ctrl+A, Esc, I and O, Ctrl+E (section 9); A, Shift+A, M, R, S, F, Ctrl+Z, Ctrl+Y, Ctrl+C, Ctrl+V, Ctrl+K, Ctrl+I, Del and the arrows (section 13). **not yet**: Q and Shift+Q, the other gizmos' keys, Ctrl+D, Ctrl+X, 1–9 (the filament of what is selected) |
+| A, Shift+A, Q, Shift+Q, the gizmo keys, Ctrl+0..6, Ctrl+A / D / Z / Y / C / V / X, Del, 1–9, arrows to move objects | **added** in 3D: Ctrl+0..7 (the views), Ctrl+A, Esc, I and O, Ctrl+E (section 9); A, Shift+A, M, R, S, F, Ctrl+Z, Ctrl+Y, Ctrl+C, Ctrl+V, Ctrl+K, Ctrl+I, Del and the arrows (section 13); L, P, H, N (the painting tools), and while one is open its own keys: C, S, F, T, H, G for its tools, 1–9 and 1 then 0–6 for the colour tool's filaments, Ctrl and Alt with the wheel (section 13, "The painting tools"). **not yet**: Q and Shift+Q, the other gizmos' keys, Ctrl+D, Ctrl+X, 1–9 (the filament of what is selected, with no painting tool open) |
 
 ## 7. What the page asks for
 
-Every call takes JSON and answers JSON, but the five at the end of the table,
+Every call takes JSON and answers JSON, but the seven at the end of the table,
 which answer bytes (`Session::call_bytes`; section 11); an error is a sentence
 to show. A call about a project takes `project` (its id) and means the one
 shown when it is left out; one about a plate takes `plate` and means the plate
@@ -426,11 +428,15 @@ the project is on.
 | `layer_codes` | `project?`, `plate?` | what is set at the plate's layers and what the slider offers there: `{ project, plate, items: [{ print_z, kind (pause, custom, template, filament, color, unknown), extruder, color, extra }], pause, template (the printer's `machine_pause_gcode` and `template_custom_gcode`, as text), colours (each filament's), change_filament (null with one filament, else whether it can be picked), sequential }` |
 | `layer_code_set` | `project?`, `plate?`, `print_z` (a layer's top, as `toolpath` gives it), `kind` (`pause`, `custom` with `extra`, `template`, `filament` with `extruder`) | as `layer_codes`, and `detail` (as `project`). An item added or changed as the reference's slider does it; the project unsaved; the plate's slice let go. Refused, nothing changed: a layer the slice has none at, a pause or a template where something is set, custom G-code with no text, a template the printer has none of, a filament change not offered, a plate printed by object |
 | `layer_code_delete` | `project?`, `plate?`, `print_z` | as `layer_code_set`; an error when nothing is set there |
+| `paint_open` | `project?`, `copy`, `kind` (`supports`, `seam`, `fuzzy_skin`, `color`), `filaments` (how many, for `color`) | opens a painting tool on the copy's object, its printed parts' paint read into the session's selectors: `{ project, object, parts: [{ id, triangles, filament }], max_state, ms }`. One tool at a time; an object with no printed part is refused |
+| `paint_close` | — | `{}`: the tool's selectors let go |
 | `scene_mesh` (bytes) | `project?`, `mesh` (its number in `scene`) or `object` (its place in the list) | an object's mesh, `EDGM`: 24 bytes of header, vertices (`f32` × 3), triangles (`u32` × 3), a mark byte for each triangle when they differ |
 | `bed_model` (bytes) | `project?` | the vendor's model of the printer's bed, as `scene_mesh` |
 | `bed_texture` (bytes) | `project?` | the vendor's picture of the bed: the SVG or PNG file as it is |
 | `toolpath_moves` (bytes) | `project?`, `plate?`, `from`, `count` | a stretch of moves, `EDGT`: 24 bytes of header, then 32 bytes a move (where it ends, speed, height, width, turn, temperature, layer, what it is, feature, filament, fan) |
 | `toolpath_lines` (bytes) | `project?`, `plate?`, `from`, `count` | the line of the G-code each of a stretch of moves was read from, `EDGL`: 24 bytes of header as `toolpath_moves`', then a `u32` a move (from 1) |
+| `paint_mesh` (bytes) | — | the painted parts' own triangles, unpainted, in the object's coordinates: a `u32` count and a `u32` number of parts, then 48 bytes a triangle (three vertices of `renderer.js`'s 16 bytes: `f32` x, y, z, the normal as three `i8`, a mark: the part's filament) |
+| `paint_event` (bytes) | `project?`, `matrix` (the copy's), `eye`, `clip` (null or `{ normal, offset }`), `op` (`hover`, `paint`, `commit`, `erase_all`, `gap`, `gap_fill`, `unmark`, `refresh`) and what it takes (`api/paint.rs`): `ray` / `rays` (origin and direction in the world, the newest first), `state`, `tool`, `radius`, `height`, `angle`, `highlight`, `area`, `name` | a `u32` length and that much JSON (`{ hit { part, facet, point, normal }, all, states, marked, note, done, edited, band, blocks, ms }`, padded to 4), then blocks of painted pieces: for each a `u32` part, a `u32` block (1024 of the part's triangles), a `u32` count and that many triangles of 48 bytes, their mark the state (128 more for what a fill has marked). A block sent replaces the page's; with `all` every block is sent. `commit` and the panel's buttons make the step of the history and answer `edited` (as `scene_edit` does) |
 
 Replaced by these: `open` (now `project_open` and `project`), and the model,
 plate and presets that `slice` used to take with each call (now the project's,
@@ -554,6 +560,7 @@ reference's own numbers; each is named in `scene.js` with where it is from.
 | Alt: "Select a part"; Shift: "Select objects by rectangle"; a double click opens the object's settings; the right button's menus | l.6423–6551, l.6871 | **added**: Alt with a click selects the part under the pointer, Alt with Shift adds it to the parts of that copy selected or takes it away, and Alt with a drag moves the part within its object (section 13, "Parts"); the right button's menu on an object, on the parts selected and on a plate. **differs**: Shift with a click adds to what is selected, as Ctrl does. **not yet**: the rectangle, object settings |
 | Dragging an object moves it on the bed | l.6553–6608 | **added** (section 13) |
 | Hovering changes no colour (the hover colours are commented out) | 3DScene.cpp l.362 | the same |
+| With a painting tool open, the buttons paint on the object (the left, the right, Shift with the left to erase), Ctrl with a button turns or moves the view, off the object the buttons turn and move the view; no object is dragged; the wheel with Ctrl sizes the brush, with Alt moves the section view | `GLGizmoPainterBase::on_mouse`, `gizmo_event` | **added** (section 13, "The painting tools") |
 | What is under the pointer is found by casting a ray at the meshes | `_picking_pass` l.9819, `SceneRaycaster` | **differs**: the one pixel under the pointer is drawn with every object and plate in a colour of its own, and read back (`renderer.js` `pick`) |
 
 ### Keys
@@ -722,6 +729,19 @@ bytes, little-endian, in layouts written out byte for byte in
 - **Nothing is rebuilt to change what is seen**: the layers shown and the
   moves slider are a range of moves; the view type, the colour range and what
   is hidden are numbers given to the shader.
+- **Paint is the session's.** While a painting tool is open the session
+  holds a selector for each printed part (`edge_mesh::selector`, the
+  reference's `TriangleSelector`) and a tree of boxes round its triangles
+  (`edge_mesh::raycast`). The page sends the lines of sight under the
+  pointer (`paint_event`, a pixel apart along a drag) and gets back, in
+  bytes, the painted pieces of the blocks of 1024 triangles whose paint
+  changed, which replace what it drew for those blocks; the object's own
+  triangles come once (`paint_mesh`). The alternative was the selector in
+  the page: the same port in JavaScript, a second tree of boxes built in
+  the page from the mesh it already has, and the codes sent to the
+  session to be saved. It was not taken, by what was measured: the work
+  per event is small enough that the round trip is the cost, and the
+  codes stay where they are saved. See the table below.
 - **Not built**: coarser meshes for far-away objects. The largest project
   tried (1.36 million triangles) draws in about a millisecond.
 
@@ -741,6 +761,28 @@ build of the app with the engine optimised:
 | Moves sent | 0.25 MB | 4.21 MB | 6.72 MB |
 | On screen after `toolpath` is asked for | 10 ms | 0.09 s | 0.02–0.18 s |
 | Frame while turning, Prepare / Preview | 16.7 ms (the screen's own) | 16.7 ms | 16.7 ms; drawn 16 times a frame, 19.8 ms / 16.7 ms: about 1.2 ms a draw in Prepare, under 1 ms in Preview |
+
+Painting the figurine (`jolteon_cmp.3mf`: one object of five parts,
+1 411 438 triangles; the largest part 696 152), the same machine. In the
+engine, release build (`EDGE_PAINT_BENCH=… cargo test --release -p
+edge-engine --test paint -- --ignored`), on the largest part: its
+neighbours and normals 30 ms, its tree of boxes 96 ms, a selector 5 ms;
+a line of sight 1 µs (400 cast); a dragged stroke's step (a capsule
+between two hits) 0.15 ms on average and 1.0 ms at most with a 1 mm
+brush, 0.66 ms and 1.8 ms with a 5 mm one; writing the part's codes
+0.7 ms; a smart fill 6 ms and putting it on 1.2 ms. Through the page
+(`--serve`, the app's own crate in a debug build, the engine optimised):
+
+| | Figurine |
+| --- | --- |
+| Opening "Color Painting" (`paint_open`: five selectors and trees) | 0.60 s |
+| The object's own triangles (`paint_mesh`) | 67.7 MB, 0.95 s; the tool is open 2.1 s after the key |
+| A step of a stroke, three lines of sight (`paint_event` `paint`): in the session / round trip | 5–6 ms / 6–8 ms (20 steps); 6 to 10 blocks of 1024 triangles sent again |
+| The button let go (`commit`: the codes written into the model, a step of the history, the scene answered) | 0.16 s, after the stroke |
+
+A step takes less than a frame of the screen, so a stroke follows the
+pointer; pointer moves that come while one is on its way go together in the
+next (a line of sight a pixel apart from where the last ended).
 
 ## 12. The process pages: the options, and what the engine does with them
 
@@ -1138,6 +1180,68 @@ engine's side is `crates/edge-engine/src/plates.rs`; the page's
 | Another printer that does not take a plate's bed type: it is taken away, "Plate bed types reset" | `normalize_bed_types` l.21433 | **added** (section 2) |
 | Keys for plates | KBShortcutsDialog.cpp | Shift+A "Arrange objects on selected plates" (**had**); the reference has no other key for a plate. A plate is selected by a click on it, its tile or its row (**had**) |
 
+### The painting tools
+
+Read from `Gizmos/GLGizmoPainterBase.cpp/.hpp`, `GLGizmoFdmSupports.cpp`,
+`GLGizmoSeam.cpp`, `GLGizmoFuzzySkin.cpp`, `GLGizmoMmuSegmentation.cpp`,
+`GLGizmosManager.cpp` and `libslic3r/TriangleSelector.cpp/.hpp`. The page's
+side is `ui/paint.js` (and `paint.css`), the session's `src/api/paint.rs`,
+the selector `crates/edge-mesh/src/selector/` and the model's paint
+`Model::set_paint` (section 13 above, and section 15).
+
+| C++ | Where | Here |
+| --- | --- | --- |
+| The selector: each triangle of a part split as finely as the stroke needs (sides longer than the edge limit halved, the limit a fifth of the brush's radius and at most 0.05 mm, 0.1 mm for a height range), a state for each piece, pieces put back whole where all of a triangle's are alike, the free ones collected when half the list is free | `TriangleSelector::select_patch`, `split_triangle`, `remove_useless_children`, `garbage_collect` | **added**: `edge_mesh::selector::Selector`, the same tree, corners shared with the neighbours across a split side, the same limits. Codes the C++ wrote read back the same (174 386 in the reference's projects, `edge-3mf/tests/paint_codes.rs`), and codes written here are written back the same by the C++ |
+| The cursors: "Circle" (what is under a disc as the camera sees it, only faces turned to the camera), "Sphere" (a ball), a drag a capsule of either between two points, "Height range" (a band of the world's heights), what the section view cuts away left out; a mesh scaled unevenly tested in the world | `Cursor`, `Circle`, `Sphere`, `Capsule2D`, `Capsule3D`, `HeightRange` | **added** (`selector::Cursor`) |
+| Smart fill: from the triangle under the pointer across edges where the faces turn by no more than "Smart fill angle"; on hover the faces it would take are marked lighter, the press paints them | `seed_fill_select_triangles`, `seed_fill_apply_on_triangles`, `get_seed_fill_color` | **added** |
+| Bucket fill (the colour tool's "Fill", with "Edge detection" its angle, else any angle), "Triangle" (the piece under the pointer) | `bucket_fill_select_triangles` | **added**. **differs**: a "Triangle" dragged paints the triangle it is let go on; the reference leaves it marked (listed below) |
+| "Gap fill": groups of pieces of one state smaller than "Gap area" shown in the least state round them; "Perform" paints them so | `TriangleSelectorPatch::update_triangles_per_patch`, `update_selector_triangles` | **added** (`Selector::gaps`, `fill_gaps`) |
+| A stroke: the pointer's way since the last event sampled a pixel apart, the hits cut into runs on one part, a run on one triangle reduced to its ends, a longer one simplified to a tenth of the brush's radius, capsules between the points kept | `get_projected_mouse_positions` | **added**. **differs**: the points kept are the hits; the reference moves them onto a plane through three of them and looks for the nearest triangle again |
+| What the pointer is on: a ray cast at each printed part, the nearest hit not cut away by the section view | `update_raycast_cache`, `MeshRaycaster` | **added**: in the session, a tree of boxes for each part (`edge_mesh::raycast`) |
+| The buttons: left paints the tool's state, right its other one ("Block …"; the colour tool has none and the right button moves the view; fuzzy skin's right erases), Shift with the left erases; Ctrl with a button is the view's; a press off the object is the view's | `gizmo_event`, `on_mouse`, `get_left_button_state_type`, `get_right_button_state_type` | **added** |
+| One step of the history when the button is let go, named as each tool names it ("Enforce supports", "Block supports", "Unselect all"; "Enforce seam", "Block seam", "Remove selection"; "Add fuzzy skin", "Remove fuzzy skin"; "Painted using: Filament %1%", "Remove painted color"); "Erase all painting" and "Perform" one step each ("Reset selection"; the colour tool's "Perform" "Gap fill") | `gizmo_event` (`LeftUp`), `handle_snapshot_action_name`, the panels | **added**. **differs**: a stroke that changed nothing is no step (the reference takes one each time) |
+| Undo and redo while a tool is open: the tool reads the paint back from the model | `on_load`, `update_from_model_object` | **added** |
+| The ring of the brush round the pointer ("Circle"), a ball at the point under the pointer ("Sphere", blue with the left button, red with the right), the band's outlines on the object ("Height range") | `render_cursor_circle`, `render_cursor_sphere`, `render_cursor_height_range` | **added** |
+| The object while painting: its own triangles in the neutral grey (supports, seam, fuzzy skin) or each part in its filament's colour (colours), the paint over them: enforcers green {0.5, 1, 0.5}, blockers red {1, 0.5, 0.5}, stabilizer points purple, filaments in their colours; what a fill marks 1.25 times lighter. The object's other copies hidden | `TriangleSelectorGUI::enforcers_color`, `blockers_color`, `TriangleSelectorPatch`, `InstancesHider` | **added**, drawn with the page's own shading. The reference's enforcers are green in this fork (its ball cursor is blue), and so they are here |
+| "Section view": a plane square to the line of sight cutting the object from the camera's side, its place from 0 to 1 across the copy's bounding sphere, kept square to where the camera looked when it began; "Reset direction"; Alt with the wheel by 0.01 | `ObjectClipper::set_position_by_ratio`, `get_clipping_plane_in_volume_coordinates` | **added**: the scene's shader cuts the object at the plane (one dot product a pixel), and painting and the pointer's hits leave what it cuts away. **differs**: the sphere's middle is the copy's box's, not the instance's origin (an object read here may have its origin anywhere). **not yet**: the cut face drawn over the cut (`render_cut`) |
+| **"Support Painting" [L]**: "Tool type" "Circle", "Sphere", "Fill", "Gap Fill" (keys C, S, F, G); "Pen size" (0.4 to 8 mm, Ctrl with the wheel by 0.2); "Smart fill angle"; "Gap area" and "Perform"; "On overhangs only" (paints only what faces down more steeply than the threshold); "Threshold Angle", whose overhangs are shaded red, what touches the bed light blue; "Vertical" / "Horizontal" (a drag held to the line it began on); "Section view"; "Erase all painting"; what the buttons do | `GLGizmoFdmSupports::on_render_input_window` | **added**. **not yet**: "Paint stabilizer points" (the engine has no stabilizers), "Threshold Overlap", "Simulate Auto Supports" and "By layer (before slicing)" (they need the support generator's own rule and its preview of the layers; "Threshold Angle" here is the one the panel sets, starting at 30°) |
+| **"Seam painting" [P]**: "Brush shape" "Circle", "Sphere" (C, S); "Brush size"; "Vertical"; "Section view"; "Erase all painting" | `GLGizmoSeam::on_render_input_window` | **added**. **not yet**: "Auto-paint seam" (it slices the object's walls to find where the seam would go, which waits for the walls to be asked for alone) |
+| **"Paint-on fuzzy skin" [H]**: "Circle", "Sphere", "Triangle", "Fill" (smart fill); "Brush size"; "Smart fill angle"; "Section view"; "Erase all painting"; "Warning: Fuzzy skin is disabled, painted fuzzy skin will not take effect!" with "Enable painted fuzzy skin for this object" | `GLGizmoFuzzySkin::on_render_input_window` | **added**: the tools. **not yet**: the warning and its link, which set the object's own `fuzzy_skin`, waiting for the per-object settings (another branch) |
+| **"Color Painting" [N]**: "Filaments" (a button of each filament's colour with its number, "Shortcut Key 1"…; keys 1 to 9, and 1 then 0 to 6 for 10 to 16), "Selected filament n / count"; "Circle", "Sphere", "Triangle", "Height Range", "Fill", "Gap Fill" (C, S, T, H, F, G); "Pen size", "Height range" (0.1 to 8 mm), "Edge detection" with "Smart fill angle", "Gap area" with "Perform"; "Vertical" / "Horizontal"; "Section view"; "Erase all painting" | `GLGizmoMmuSegmentation::on_render_input_window`, `on_number_key_down` | **added**. **not yet**: "Spread" and "Airbrush" (EdgeSlicer's own brushes, with their own fields), "Remap filaments", "Color Pattern...", "Toggle Wireframe" |
+| The panel's list of what the buttons and keys do | `show_tooltip_information` | **added**, under the fields, in the reference's words |
+
+What the engine does with paint made here, checked against the C++ slicer
+(`edge-parity` on the file saved from the page, the reference's build of the
+pinned commit):
+
+- **Seams**: a strip painted down `cylinder` (`tools/make_fixture.py`)
+  with "Seam painting": the C++ re-exports the file with the same 19 codes,
+  and both slicers put every layer's seam in the strip, 229.6° to 231.5°
+  round the post, the same on every layer (unpainted, both put it at 346°).
+- **Colours**: a cube in filament 1 of a seven-filament project
+  (`cube` with `mcbrim_test.3mf`'s settings), its top filled with filament 4
+  and a stroke of filament 3 over it: both slicers make 13 tool changes; on
+  the top millimetre the C++ lays 116 / 116 / 343 mm of filament 1 / 3 / 4,
+  this engine 116 / 112 / 336 (what remains is the engine's own sharing out
+  of colours, `edge-paint`, not the paint).
+- **Supports and fuzzy skin**: kept and saved (the C++ reads them back),
+  not followed by this engine yet; the tool's panel says so in the engine's
+  words ("the project has supports painted on it, which is not followed: the
+  settings alone decide"), as a slice does, while the model has it.
+  Painted supports are being made to be followed on another branch
+  (`feat/modifiers`); once there, the note goes by itself.
+
+What an edit does to paint (Model.cpp, followed): a mirror, a scale, a
+turn, a move and "Lay on face" keep it (only the transformation changes:
+`ModelVolume::mirror`, `scale`); "Split to parts" and "Split" of a part
+start every piece unpainted (`ModelVolume::split` resets the facets of the
+first and makes the others without them); "Split to objects" of an object
+of several parts keeps each part's (`ModelObject::split` assigns them); a
+part deleted takes its paint with it; a filament deleted renumbers the
+colours painted after it and leaves those of the one deleted unpainted
+(as before). `convert_from_imperial` (which scales the mesh and keeps the
+paint) has no counterpart here yet.
+
 ### Left for later
 
 | C++ | Waits for |
@@ -1308,6 +1412,29 @@ and then gone through with the mouse. The screenshots are under the
 session's scratch folder, `ui_plates/shots/`.
 
 ### Errors found in the C++
+
+- `Gizmos/GLGizmoPainterBase.cpp` l.1080–1095 (`gizmo_event`, `LeftUp`): the
+  colour tool's "Triangle" (and any pointer tool) paints at each position
+  what was marked at the one before, and the release takes its snapshot
+  without painting what is marked last. Drag "Triangle" across a model and
+  the triangle the button is let go on stays marked, lighter, and is not
+  painted. Here it is painted with the step.
+- `Gizmos/GLGizmoPainterBase.cpp` l.1088–1091: a snapshot is taken on every
+  release, whether or not the stroke changed anything, so painting over
+  paint already there, or a click that paints nothing new, leaves a step in
+  the undo history that undoes nothing. Here no step is made.
+- `Gizmos/GLGizmoFdmSupports.cpp` l.1326–1341: the support tool's step names
+  ("Enforce supports", "Block supports", "Unselect all") are written without
+  `_L` ("BBS remove _L()"), so the undo history shows them in English in
+  every language; "Unselect all" is not in the catalog at all. Here they are
+  passed through the catalog like the other tools'.
+- `libslic3r/MeshSplitImpl.hpp` l.238–268 (`create_face_neighbors_index`),
+  which the selector's neighbours come from: run on several threads, with
+  BBS's check of whether the other triangle's side is taken, so on a mesh
+  with sides shared by more than two triangles which pairs are made depends
+  on the threads' timing, and paint can spread (or a split side be shared)
+  differently from one opening of a tool to the next. Here the pairs are
+  made in one pass, in order (as `edge_mesh::split` already did).
 
 - `PartPlate.cpp` l.4461–4487 (`PartPlateList::duplicate_plate`): the
   objects to copy come from `get_objects_on_this_plate` (l.2423), which
@@ -1614,8 +1741,14 @@ written as the file had it, so an unedited project is written as before.
 | A part added (a file's, or a cube) | a `<part>` with its name, kind, `matrix`, filament when it has its own, and `mesh_stat` | the added volume |
 
 What each triangle carries (paint) is written only with the mesh it was
-read with: a split part's pieces are new meshes and carry none, as in the
-C++.
+read with, or painted on (`PartKept::painted_on`): a split part's pieces are
+new meshes and carry none, as in the C++.
+
+| Paint made here | What the saved project holds | Read back by the reference as |
+| --- | --- | --- |
+| A part painted with a tool (section 13, "The painting tools") | each triangle's code for that kind (`paint_supports`, `paint_seam`, `paint_color`, `paint_fuzzy_skin`), in the reference's order on the triangle, what else it carries as it was; a triangle with nothing left carries nothing; the older `paint_fuzzy` is written as `paint_fuzzy_skin` once fuzzy skin is painted again | the same paint: re-exported with `--export-3mf`, the C++ writes the same codes back (19 seam codes of a strip painted on `cylinder`, 3 colour codes of a cube, byte for byte), and slices with them (section 13) |
+| A part painted on that had no file (an STL's) | a `PartKept` made for it, with the codes and the mesh they are of | as above |
+| Paint given back as it was read | the file's bytes: every painted project of the reference's written with its parts repainted from their own codes is the file written without (`edge-3mf/tests/paint_codes.rs`) | |
 
 ### The settings
 

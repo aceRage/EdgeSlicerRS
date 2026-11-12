@@ -135,6 +135,11 @@
       // object's index, and for each part's index a matrix that takes the
       // object's coordinates to where the part now is in them.
       this.moving = null;
+      // The copy a painting tool is open on, which the tool draws:
+      // { object (its index), copy (its id) }. The object's other copies are
+      // not drawn meanwhile (GLGizmosCommon.cpp `InstancesHider`), and of
+      // the copy only what is not printed (modifiers and the rest).
+      this.painting = null;
     }
 
     get background() { return themed(BACKGROUND); }
@@ -401,6 +406,14 @@
         const mesh = this.meshOf(placing.object);
         if (!mesh) return;
         const volume = placing.plate !== null || this.plates.length === 1 ? this.plateVolume(placing.plate) : null;
+        const painting = this.painting && this.painting.object === placing.object;
+        if (painting) {
+          if (placing.id !== this.painting.copy) return;
+          (this.data.objects[placing.object].part_list || []).forEach((part) => {
+            if (part.kind !== 'part' && part.triangles) r.drawMesh(mesh, frame, placing.matrix, { palette: this.palette, pass, volume, range: part.triangles });
+          });
+          return;
+        }
         for (const piece of this.pieces(placing)) {
           r.drawMesh(mesh, frame, piece.matrix, {
             palette: this.palette,
@@ -439,7 +452,8 @@
       if (!this.data || !selection.size) return;
       const r = this.renderer;
       const matrix = M.multiply(frame.projection, frame.view);
-      const chosen = this.data.placings.filter((placing) => selection.has(placing.id) && this.meshOf(placing.object));
+      // A copy being painted is not outlined: its tool draws it.
+      const chosen = this.data.placings.filter((placing) => selection.has(placing.id) && this.meshOf(placing.object) && !(this.painting && this.painting.object === placing.object));
       if (!chosen.length) return;
       const byPart = Boolean(parts && parts.size);
       r.outline(() => {

@@ -66,6 +66,8 @@ The strip and the tab bar stand on `--surface-app`, the sidebar on
 | `--surface-overlay` | What lies over the stage (`.overlay`, `.toolbar`): the float surface, a little see-through | 96 % | 95 % |
 | `--overlay-blur` | The scene blurred behind an overlay (`backdrop-filter`) | | |
 | `--line-swatch` | The edge of a swatch of colour, which has to show on any colour | | |
+| `--ink-on-light`, `--ink-on-dark` | A figure on a swatch of colour, by the colour's lightness, whatever the theme | `#000`, `#fff` | the same |
+| `--paint-ring`, `--paint-ring-edge` | The painting tools' ring round the pointer, and its edge | white 90 %, black 35 % | the same |
 | `--scroll-thumb`, `--scroll-thumb-hover` | A scrollbar's thumb | | |
 
 The overlay is opaque enough that `--text-3` keeps 4.5 : 1 on it over the
@@ -509,7 +511,9 @@ it is in use (Move, Rotate, Scale, Lay on face) carries `aria-pressed`, and the 
 is on is the accent on its tint. That is the toolbar's one use of the
 accent: what was done (undo) and what can be added are plain. The keys of a
 tool are in its tooltip, in the reference's own wording ("Move [M]"); a
-tool that cannot be used now is `disabled`, never hidden. A panel that
+tool that cannot be used now is `disabled`, never hidden. The painting
+tools (L, P, H, N) stand in their own group after "Lay on face", as the
+reference orders its gizmos. A panel that
 belongs to the tool that is on (`.edit-panel`: the number fields) stands
 under the toolbar on the same surface, and is the only thing that does.
 A tool whose thing is set by hand ("Customize current plate" on a plate
@@ -526,6 +530,38 @@ A tool with nothing to type ("Lay on face") has the same panel with its
 title and one line of what to do (`p.edit-hint`, `--text-2`). What a tool
 draws in the scene over an object (the faces of "Lay on face") keeps the
 reference's own colours, as the handles do; it is not the page's accent.
+
+### A painting tool's panel (`paint.js`, `paint.css`)
+
+The painting tools' panel is an `.edit-panel` with `.paint-panel`: the
+tool's name, then rows of a label at the left and its control
+(`.paint-row`), the help, and the buttons at its foot (`.paint-foot`,
+plain buttons; "Erase all painting" is never the accent). Its own
+components:
+
+- **The tools** (`.paint-tools`): icon buttons of a control's height in a
+  row, the one in use `aria-pressed` with the accent on its tint, as a
+  toolbar's tool. Each has its name as `title` and `aria-label`.
+- **A value with its slider** (`.paint-slide`): a range input (the accent
+  as its colour) taking the room left, then the number in a `.unit` of
+  82 px. Both set the value; the number is typed or stepped with the
+  arrow keys, the wheel with Ctrl steps it on the stage.
+- **Filaments to paint with** (`.paint-filaments`): a square of each
+  filament's colour with its number in the fixed-width face, black or
+  white (`--ink-on-light`, `--ink-on-dark`) by the colour's lightness; the
+  one painted with ringed in the accent. Its tooltip is the reference's
+  ("Shortcut Key 1", "Filament 10").
+- **What the buttons do** (`.paint-help`): two columns at `--size-small`,
+  the keys in `--text-3`, under a hairline.
+- **The engine's note** (`.paint-note`): a quiet line in `--text-3` with
+  what the engine does not follow of the paint.
+
+The panel scrolls when the stage is low. The circle cursor
+(`.paint-cursor`) is a ring round the pointer, drawn over the stage in
+`--paint-ring` with a `--paint-ring-edge` hairline so it shows on any
+model; it lets the pointer through. The colours of the paint in the
+scene are the reference's (enforcers, blockers, the filaments'), drawn
+with the scene's own shading, never the page's accent.
 
 ### Trees: `.tree`
 
@@ -574,7 +610,7 @@ Where each stands (`#stage` sets the margins, `--stage-inset` all round):
 | --- | --- |
 | Top left | The plates (`#plates`, a vertical toolbar): "Slice all" (or "All Plates", the statistics) over a hairline, then each plate's number; the one shown is the accent on its tint, ✓ in `--ok` for sliced, ! in `--danger` for failed, a lock at the bottom left of a locked one. The right button or the menu key on a tile opens the plate's menu |
 | By the plate shown | Its own tools (`#plate-tools`), at its far right corner |
-| Top, from `--stage-left` | Prepare's toolbar, centred; under it "Object Operations" (`.edit-panel`) |
+| Top, from `--stage-left` | Prepare's toolbar, centred; under it "Object Operations" (`.edit-panel`) or a painting tool's panel (`.paint-panel`). Where the stage is narrower than 760 px the toolbar takes two rows and the panel stands under both |
 | Top right, `--stage-right` in | The legend (`--legend-width`); the layer slider's labels keep the band right of it |
 | Right | The layers slider and its one-layer button; on the slider, what is set at layers (below) |
 | Right, under the legend | The G-code window (below); beside the legend, at its left, where the legend leaves too little room under it |

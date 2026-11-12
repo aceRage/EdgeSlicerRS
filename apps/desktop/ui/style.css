@@ -108,6 +108,13 @@
   --overlay-blur: blur(12px) saturate(1.2);
   /* The edge of a swatch of colour, which has to show on any colour. */
   --line-swatch: rgba(128, 128, 128, 0.5);
+  /* A figure on a swatch of colour: black on a light one, white on a dark
+     one, whatever the page's theme; and the painting tools' ring round the
+     pointer, white with a dark edge, as the reference draws it. */
+  --ink-on-light: #000;
+  --ink-on-dark: #fff;
+  --paint-ring: rgba(255, 255, 255, 0.9);
+  --paint-ring-edge: rgba(0, 0, 0, 0.35);
 
   /* A scrollbar: a thumb on nothing. */
   --scroll-thumb: #3a424c;

@@ -1,0 +1,50 @@
+/* The painting tools' panel and cursor (paint.js). The panel is an
+   `.edit-panel` (edit.css), where the other tools' fields stand; only what
+   is its own is here, every colour and size a token of style.css's part 1.
+   STYLE.md has "A value with its slider" and "Filaments to paint with". */
+
+.paint-panel { width: 300px; max-width: calc(100% - var(--stage-left) - var(--stage-inset)); max-height: calc(100% - var(--stage-inset) - 120px); overflow-y: auto; }
+
+/* A label at the left, its control filling the rest. */
+.paint-row { display: grid; grid-template-columns: minmax(84px, auto) minmax(0, 1fr); align-items: center; gap: var(--space-2); }
+
+/* The tools: icon buttons in a row; the one in use pressed, as a toolbar's. */
+.paint-tools { display: flex; flex-wrap: wrap; gap: 2px; }
+.paint-tools .tool { width: var(--control-m); height: var(--control-m); }
+.paint-tools .tool[aria-pressed="true"] { color: var(--accent); background: var(--accent-soft); }
+
+/* A value with its slider: the track takes what the number leaves. */
+.paint-slide { display: grid; grid-template-columns: minmax(0, 1fr) 82px; align-items: center; gap: var(--space-2); }
+.paint-slide .unit { height: var(--control-s); min-width: 0; }
+.paint-slide .unit input { width: 100%; min-width: 0; font-size: var(--size-small); }
+.paint-slide input[type="range"] { width: 100%; min-width: 0; margin: 0; accent-color: var(--accent); background: transparent; }
+
+.paint-checks { display: flex; gap: var(--space-4); }
+
+/* Filaments to paint with: a square of each one's colour with its number;
+   the one painted with ringed in the accent. */
+.paint-filaments { display: flex; flex-wrap: wrap; gap: var(--space-1); }
+.paint-filament {
+  width: var(--control-s);
+  height: var(--control-s);
+  min-width: 0;
+  padding: 0;
+  border: 1px solid var(--line-swatch);
+  border-radius: var(--radius-s);
+  background: var(--swatch);
+  color: var(--ink-on-dark);
+  font: 700 var(--size-small) var(--font-mono);
+}
+.paint-filament.on-light { color: var(--ink-on-light); }
+.paint-filament[aria-pressed="true"] { outline: 2px solid var(--accent); outline-offset: 1px; }
+
+/* What the buttons and keys do: two columns, the keys quiet. */
+.paint-help { display: grid; grid-template-columns: auto 1fr; gap: 2px var(--space-3); font-size: var(--size-small); color: var(--text-2); padding-top: var(--space-1); border-top: 1px solid var(--line-1); }
+.paint-key { color: var(--text-3); }
+
+.paint-foot { display: flex; justify-content: flex-end; gap: var(--space-2); }
+.paint-note { max-width: none; color: var(--text-3); font-size: var(--size-small); }
+
+/* The circle cursor: a ring round the pointer, as the reference draws it
+   over the scene in white; it lets the pointer through. */
+.paint-cursor { position: absolute; z-index: var(--z-overlay); border: 1.5px solid var(--paint-ring); border-radius: 50%; box-shadow: 0 0 0 1px var(--paint-ring-edge); pointer-events: none; }
