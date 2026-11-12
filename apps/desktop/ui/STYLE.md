@@ -530,6 +530,23 @@ is a card of its own under the list: a `bare` listbox and a small plain
 button (`--control-s` high), never the accent, there only where presets
 are chosen here.
 
+### Flushing volumes
+
+```html
+<button id="flush-open" class="flush-open">Flushing volumes</button>   <!-- in .filaments-head, with more than one filament -->
+<dialog id="flush-dialog"><h2>…</h2><div class="flush-scroll"><table class="flush-table">…</table></div><div class="flush-under">…</div><div class="dialog-foot">…</div></dialog>
+```
+
+The reference's "Flushing volumes for filament change" (`filaments.js`):
+a well holding a table of boxes, a row for each filament flushed out and
+a column for each flushed in, each head a numbered swatch in the
+filament's colour; the corner reads "To" over "From" across a hairline.
+Rows alternate with `--fill-hover`; a box from a filament to itself is
+read-only and plain. A box under the least its filament flushes, or over
+the most, and with it the "Suggestion" line, are in `--danger`. Under
+the well: "Re-calculate" beside the two lines of text, then
+"Multiplier" with its field. The well scrolls both ways and its heads
+stay put, so seven filaments and more fit at 900 × 560.
 ### A colour to pick: `.colour-picker`
 
 `filaments.js`: a panel that floats beside the swatch that opened it (the

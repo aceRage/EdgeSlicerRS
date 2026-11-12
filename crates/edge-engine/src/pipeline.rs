@@ -1500,9 +1500,12 @@ pub fn slice(job: Job, watch: &dyn Watcher) -> Result<Sliced, Failure> {
             crate::order::first_layer(&pieces, &first_layer_sequence, |tool| tools[tool] as u32);
     }
     let later: Vec<Vec<usize>> = (1..layers.len()).map(tools_on).collect();
-    // A nozzle for each filament: every change costs the tower the same.
-    let price = tower_settings.prime_volume as f32;
-    let mut orders = crate::order::layers(on_bed, &later, |_, _| price);
+    // What a change costs: on a printer with a nozzle for each filament
+    // every change costs the tower the same; on one of one nozzle that
+    // flushes in the tower, and on a Bambu Lab printer, what it flushes.
+    let mut orders = crate::order::layers(on_bed, &later, |from, to| {
+        tower_settings.change_cost(tools[from] - 1, tools[to] - 1)
+    });
     // A layer with nothing of the part on it still has its place, for
     // the tool in hand.
     let mut in_hand: Option<usize> = None;
@@ -1583,25 +1586,34 @@ pub fn slice(job: Job, watch: &dyn Watcher) -> Result<Sliced, Failure> {
     // Tool changes on each layer: every switch, counting one at the
     // start of a layer that begins with a tool not in hand.
     let mut changes = vec![0usize; layers.len()];
-    // And for each, how the filament put away is rammed on the tower.
-    let mut rams: Vec<Vec<Option<edge_tower::Ramming>>> = vec![Vec::new(); layers.len()];
+    // And for each, how the filament put away is rammed on the tower and
+    // what the new one lays down there.
+    let mut rams: Vec<Vec<edge_tower::Change>> = vec![Vec::new(); layers.len()];
     let mut held = orders.first().and_then(|order| order.first().copied());
     for (index, order) in orders.iter().enumerate() {
         for filament in order {
             if Some(*filament) != held {
                 changes[index] += 1;
-                rams[index].push(held.and_then(|old| {
-                    tower_settings
-                        .ramming
-                        .get(tools[old] - 1)
-                        .copied()
-                        .flatten()
-                }));
+                rams[index].push(edge_tower::Change {
+                    ram: held.and_then(|old| {
+                        tower_settings
+                            .ramming
+                            .get(tools[old] - 1)
+                            .copied()
+                            .flatten()
+                    }),
+                    volume: match held {
+                        Some(old) => {
+                            tower_settings.wipe_volume(tools[old] - 1, tools[*filament] - 1)
+                        }
+                        None => tower_settings.prime_volume,
+                    },
+                });
                 held = Some(*filament);
             }
         }
     }
-    let tower = edge_tower::plan(&rams, &heights.all(), &tower_settings)?;
+    let tower = edge_tower::plan_changes(&rams, &heights.all(), &tower_settings)?;
     // Each tool's turn on a layer, as its regions there, in order.
     let tool_orders = orders;
     let orders: Vec<Vec<usize>> = (tool_orders.iter().enumerate())
@@ -1949,11 +1961,14 @@ impl Sliced {
     }
 
     /// The filaments in use that the printer has no tool for.
+    /// A printer of one nozzle that takes every filament in turn
+    /// (`single_extruder_multi_material`) has a tool number for each of
+    /// them, and none is listed.
     pub fn without_a_tool(&self) -> impl Iterator<Item = usize> + '_ {
         self.used
             .iter()
             .copied()
-            .filter(|filament| *filament > self.print.tools)
+            .filter(|filament| !self.print.single_nozzle && *filament > self.print.tools)
     }
 
     /// The print as G-code, with `produced_at` as the time in its first

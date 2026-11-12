@@ -1392,15 +1392,34 @@ feature filaments (`wall_filament`, `sparse_infill_filament`,
     the colours (`edge_engine::flush`, FlushVolCalc.cpp). Whether there is
     a prime tower is the process's `enable_prime_tower`, as there: the
     reference turns nothing on when a second filament arrives.
-  - A printer of one nozzle (the Centauri Carbon) is given the flushing
-    volume from the filament put away to the new one at each change
-    (`flush_length`, `first_flush_volume`, `flush_length_1` to `_4`,
-    GCode.cpp `set_extruder`), so its own G-code purges what the
-    reference's does (`M6211 … L28.4374`). Not as the reference: the
-    reference also purges that volume into the prime tower and sets the
-    new temperature without waiting; here the tower takes `prime_volume`
-    at each change and the temperature is waited for, so such a print
-    takes longer and lays less on the tower.
+  - A printer of one nozzle (`single_extruder_multi_material`: the
+    Centauri Carbon, Bambu Lab's A1) is given the flushing volume from
+    the filament put away to the new one at each change (`flush_length`,
+    `first_flush_volume`, `flush_length_1` to `_4`, GCode.cpp
+    `set_extruder`), so its own G-code purges what the reference's does
+    (`M6211 … L28.4374`, `M620.10 A1 … L137.614`), and changes filament
+    as the reference's tower does there (WipeTower2.cpp, Print.cpp
+    `_make_wipe_tower`): where the project purges in the tower
+    (`purge_in_prime_tower`, off in the Centauri Carbon's profile and
+    ignored on a Bambu Lab printer) each change lays down that volume
+    times `flush_multiplier` (at least `filament_minimal_purge_on_wipe_tower`)
+    and each block is planned from its own volume; otherwise the tower
+    takes `prime_volume`, the printer's own G-code purging the flush. The
+    tools on a layer are taken in the order that flushes least where the
+    reference orders them so (purging in the tower, or a Bambu Lab
+    printer). The new filament's temperature is set with `M104` and not
+    waited for: in the tower before the change, on the first layer and
+    wherever it differs from the last (`toolchange_Unload`), or after the
+    change with no tower; a Bambu Lab printer's tower heats the nozzle
+    back after its change G-code cooled it (`M104 T0 S220 N0`). The
+    change G-code is given `max_layer_z` as the highest layer begun.
+    The flushing volumes and multiplier are set in the desktop app's
+    "Flushing volumes" dialog, and a project's own come over a printer
+    profile's. Not done, and said in a note: ramming, cooling and
+    loading the filament on the tower (`enable_filament_ramming`, which
+    neither printer uses), flushing into infill, objects or support, and
+    the tower Bambu Lab printers get (WipeTower.cpp, Bambu Studio's),
+    which is laid out here as the other one is.
   - A prime tower, on every layer up to the last tool change: a wall, a
     block for each change where the new nozzle lays down `prime_volume`,
     a frame and lines across the depth no change uses, a solid first
@@ -1479,6 +1498,37 @@ feature filaments (`wall_filament`, `sparse_infill_filament`,
   comes out as the same model in a project would. A print host's address and keys are left
   out of the settings. `SOURCE_DATE_EPOCH`
   fixes the date in the first line, for comparing two runs byte for byte.
+
+**Changing filament on one nozzle, against the C++ slicer** (2026-11-12,
+`edge-parity`, the reference's file read the same way). Before is the
+engine as it was; after, this pass. Tower length is the prime tower's
+path; flushed is the purge each file asks of the printer
+(`M6211`/`M620.10 … L`, mm of filament per filament).
+
+| project | tower m, reference / before / after | flushed mm, reference / after | temperatures at changes, before / after | time, reference / before / after |
+| --- | --- | --- | --- | --- |
+| `twotone` 2 filaments, Centauri Carbon (its own profile: the printer purges) | 15.39 / 15.72 / 15.72 | 284.4 + 521.4 / the same | `M109 S210 T1` at every change / `M104 S210` on the first layer only, as the reference | 23m 13s / 22m 29s / 22m 21s |
+| the same, `purge_in_prime_tower` on | 29.76 / 15.72 / 30.23 | the same | as above | 26m 21s / 22m 29s / 25m 31s |
+| cube grown to 2 filaments, Centauri Carbon | 34.27 / 35.10 / 35.10 | 710.9 + 1303.4 / the same | as above | 46m 56s / 45m 04s / 44m 39s |
+| figurine, 4 filaments (3 used), Bambu Lab A1 | 296.37 / 313.04 / 313.61 | 30297.5 + 11422.0 + 7473.6 / the same (before: 29109.2 + 12688.8 + 8005.7) | 380 waits `M109 S220 Tn` / none; 380 `M104 T0 S220 N0` reheats, as the reference | 14h 45m / 15h 08m / 14h 41m |
+
+The changes are now the reference's in number and order on all four
+(the figurine had 380 against 381 and another order from the 190th on).
+With the matrix changed in the "Flushing volumes" dialog (filament 1 to
+2 doubled, the multiplier at 0.5) both slicers move together: `twotone`
+with the tower purging, placed where it fits (`wipe_tower_y` 150),
+29.76 → 73.77 m in the reference and 30.23 → 75.03 m here, 26m 04s →
+41m 19s against 25m 12s → 40m 13s; the figurine's flush of filament 1
+30297.5 → 14260.7 mm against → 14157.2, 14h 45m → 13h 16m against
+14h 41m → 13h 06m (here 379 changes against 381: the order differs on
+two layers). Still not as the reference: the Bambu Lab tower
+(WipeTower.cpp) is laid out as WipeTower2's, 6% longer; the nozzle is
+not wiped flat as it comes into the tower and the rows are not laid at
+the reference's rising speeds, which leaves a print 2 to 5% short in
+time; the filament totals at the end of the file leave the flush out,
+where the reference counts it; a tower made deeper by its flush that no
+longer fits where it was placed is refused ("off the bed") where the
+reference moves it (`estimate_wipe_tower_polygon`, Orca #16728).
 
 **On hardware so far:** a deck across a 30 mm gap printed on an Elegoo
 Centauri Carbon on 2026-11-10 and the bridge held; the wall across the

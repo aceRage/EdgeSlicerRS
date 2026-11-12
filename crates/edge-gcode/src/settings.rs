@@ -283,6 +283,21 @@ pub struct PrintSettings {
     pub preheat_time: f64,
     /// Whether the tool's temperature is waited for after a change.
     pub tool_change_temperature_wait: bool,
+    /// One nozzle takes every filament in turn
+    /// (`single_extruder_multi_material`): a change sets the new
+    /// filament's temperature without waiting for it, and only where the
+    /// reference's tower or tool change does (WipeTower2.cpp
+    /// `toolchange_Unload`, GCode.cpp `set_extruder`).
+    pub single_nozzle: bool,
+    /// Whether a prime tower is printed (`enable_prime_tower`).
+    pub prime_tower: bool,
+    /// The printer gets the reference's Bambu Lab tower (WipeTower.cpp):
+    /// a Bambu Lab printer, or `wipe_tower_type` `type1`.
+    pub bambu_tower: bool,
+    /// How far below its temperature the printer's change G-code leaves
+    /// this filament before the tower, which that tower heats it back up
+    /// from (`filament_cooling_before_tower`).
+    pub cooling_before_tower: f64,
     /// How many tools the printer has.
     pub tools: usize,
     /// What is flushed going from filament i to filament j, in mm³
@@ -425,6 +440,10 @@ impl Default for PrintSettings {
             standby_temperature_delta: None,
             preheat_time: 30.0,
             tool_change_temperature_wait: true,
+            single_nozzle: true,
+            prime_tower: false,
+            bambu_tower: false,
+            cooling_before_tower: 0.0,
             tools: 1,
             flush_volumes: Vec::new(),
             filaments: 1,
@@ -944,6 +963,18 @@ impl PrintSettings {
             tool_change_temperature_wait: settings
                 .flag("tool_change_temprature_wait")?
                 .unwrap_or(defaults.tool_change_temperature_wait),
+            // The reference's defaults where the settings are silent.
+            single_nozzle: settings
+                .flag("single_extruder_multi_material")?
+                .unwrap_or(defaults.single_nozzle),
+            prime_tower: settings.flag("enable_prime_tower")?.unwrap_or(false),
+            bambu_tower: settings
+                .text("printer_model")
+                .filter(|model| !model.is_empty())
+                .or(settings.text("printer_settings_id"))
+                .is_some_and(|name| name.starts_with("Bambu Lab"))
+                || settings.text("wipe_tower_type") == Some("type1"),
+            cooling_before_tower: number("filament_cooling_before_tower", 0.0)?,
             flush_volumes: {
                 // Some projects write the multiplier as a list of one;
                 // what cannot be read flushes nothing, as an empty matrix.
