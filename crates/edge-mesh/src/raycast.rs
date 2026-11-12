@@ -235,8 +235,17 @@ fn box_hit(node: &Node, origin: [f64; 3], inverse: [f64; 3], near: f64, far: f64
             }
             continue;
         }
-        t0 = t0.max(a - 1e-9 * a.abs());
-        t1 = t1.min(b + 1e-9 * b.abs());
+        // A little slack for a ray along a side of the box; an infinite
+        // bound (a ray square to this axis) stays as it is.
+        let slack = |value: f64| {
+            if value.is_finite() {
+                1e-9 * value.abs()
+            } else {
+                0.0
+            }
+        };
+        t0 = t0.max(a - slack(a));
+        t1 = t1.min(b + slack(b));
         if t0 > t1 {
             return false;
         }
