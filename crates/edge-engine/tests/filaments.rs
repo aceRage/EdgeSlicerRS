@@ -236,3 +236,48 @@ fn a_model_without_settings_is_given_the_lists_of_its_filaments() {
     assert_eq!(model.filament_count(), 1);
     assert!(model.remove_filament(Some(&U1), 1, None).is_err());
 }
+
+#[test]
+fn the_flushing_volumes_set_are_kept_and_come_over_a_printers_own() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut model = Model::open(&reference("tests/mcbrim_test.3mf")).unwrap();
+    let count = model.filament_count();
+    let (matrix, vector) = model.flush_volumes();
+    let mut set = matrix.clone();
+    // One pair doubled, and something on the diagonal, which is not kept.
+    set[1] *= 2.0;
+    set[count + 1] = 50.0;
+    model.set_flush_volumes(Some(&U1), &set, 0.5).unwrap();
+    let (now, kept) = model.flush_volumes();
+    assert_eq!(now[1], matrix[1] * 2.0);
+    assert_eq!(now[count + 1], 0.0);
+    assert_eq!(kept, vector);
+    assert_eq!(model.flush_multiplier(), Some(0.5));
+    // What cannot be: the wrong number of volumes, a negative one, a
+    // multiplier past 3.
+    assert!(model.set_flush_volumes(None, &set[1..], 1.0).is_err());
+    let mut negative = set.clone();
+    negative[2] = -1.0;
+    assert!(model.set_flush_volumes(None, &negative, 1.0).is_err());
+    assert!(model.set_flush_volumes(None, &set, 3.5).is_err());
+    // Kept through a save.
+    let path = dir.path().join("flushed.3mf");
+    model.save(&path, &Saving::Own, Some(&U1)).unwrap();
+    let again = Model::open(&path).unwrap();
+    assert_eq!(again.flush_volumes(), model.flush_volumes());
+    assert_eq!(again.flush_multiplier(), Some(0.5));
+    // A printer's profile that gives a multiplier of its own does not
+    // change the project's (the reference's project_config).
+    let printer = edge_config::Settings::from_json(r#"{"flush_multiplier": "1.5"}"#).unwrap();
+    let chosen = Chosen {
+        machine: Some(("printer".into(), printer)),
+        ..Chosen::default()
+    };
+    let job = edge_engine::prepare(
+        again.place(Some(1)).unwrap(),
+        &chosen,
+        &Overrides::default(),
+    )
+    .unwrap();
+    assert_eq!(job.settings.text("flush_multiplier"), Some("0.5"));
+}

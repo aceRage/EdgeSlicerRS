@@ -74,7 +74,8 @@ function showPrinterBlock() {
     rows.push(pictured(new Option(selected.model || selected.machine, 'current'), selected));
     value = 'current';
   }
-  const modified = Presets.on('printer').modified;
+  // A project on its own settings has no printer preset in force.
+  const modified = Presets.on('printer')?.modified ?? false;
   const mine = (listing.user || []).map((preset, index) => {
     const option = pictured(new Option(Presets.label(preset.name, onPreset && selected.machine === preset.name && modified), `u${index}`), preset);
     option.title = preset.name;
