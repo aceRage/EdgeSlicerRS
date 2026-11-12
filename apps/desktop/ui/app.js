@@ -95,11 +95,14 @@ async function attempt(work) {
 // A file or folder from the person: the system's own dialog in the app,
 // a typed path in a browser, which may not see the disk for itself.
 const asking = {
-  model: 'Path of an STL or 3MF file on this machine',
+  model: 'Path of an STL, OBJ or 3MF file on this machine',
   folder: 'Path of the folder of vendor profiles',
   gcode: 'Save the G-code as (a full path)',
   project: 'Save the project as (a full path)',
   cafile: 'Path of the CA certificate file (crt or pem)',
+  stl: 'Export the STL as (a full path)',
+  stl_folder: 'Path of the folder to export the STL files to',
+  presets: 'Path of the configs to import',
 };
 
 function modal(dialog) {
@@ -989,7 +992,14 @@ $('export').addEventListener('click', () => attempt(async () => {
     await openSend();
     return;
   }
+  await exportGcode();
+}));
+
+// "Export G-code file" (the print button's) and File > Export > "Export
+// G-code..." (menu.js): the plate shown's G-code, where the save dialog says.
+async function exportGcode() {
   const project = state.project;
+  if (!project || !project.sliced) return;
   const summary = here().summaries.get(plateKey());
   const stem = (summary && summary.summary.stem) || project.name || 'print';
   const name = project.plates.length > 1 ? `${stem}_plate_${project.plate}` : stem;
@@ -1005,7 +1015,7 @@ $('export').addEventListener('click', () => attempt(async () => {
     exported.className = 'error';
   }
   tidyNotes();
-}));
+}
 
 // The project shown, fetched again without touching the sidebar.
 async function refreshProject() {
@@ -1416,17 +1426,6 @@ $('strip').addEventListener('contextmenu', (event) => {
     null,
     [t('Default width'), () => setStrip({ width: 88 }), { disabled: strip.collapsed || strip.width === 88 }],
     [strip.collapsed ? t('Show the project strip') : t('Collapse the project strip'), () => setStrip({ collapsed: !strip.collapsed })],
-    null,
-    // Preferences' "Language" (Preferences.cpp l.1966): the languages by
-    // the names the reference lists them under. The page puts itself in
-    // the new one at once (i18n.js `choose`).
-    [t('Language'), null, {
-      items: I18n.languages.map((language) => [
-        language.name,
-        () => attempt(() => I18n.choose(language.code)),
-        { checked: language.code === I18n.language },
-      ]),
-    }],
   ]);
 });
 
@@ -2423,6 +2422,8 @@ async function tick() {
   } catch (error) {
     say(error.message, true);
   }
+  // The menu bar follows (menu.js).
+  if (typeof Menu !== 'undefined') Menu.refresh().catch(() => {});
   schedule(busy ? 150 : 500);
 }
 
@@ -2434,17 +2435,12 @@ document.addEventListener('keydown', (event) => {
   const command = event.ctrlKey || event.metaKey;
   const key = event.key.length === 1 ? event.key.toLowerCase() : event.key;
   const typing = event.target.matches('input, select, textarea');
-  // New and Open, and round the open projects, as the reference binds them.
-  if (command && !event.shiftKey && !event.altKey && key === 'n') { event.preventDefault(); attempt(newProject); return; }
-  if (command && !event.shiftKey && !event.altKey && key === 'o') { event.preventDefault(); attempt(() => openProject()); return; }
+  // The menu bar's keys (New, Open, Save, the next project on a Mac,
+  // "Fit in all view" and the rest) are its table's, in menu.js. Round
+  // the open projects, as the reference binds it.
   if (event.ctrlKey && !event.altKey && (key === 'PageDown' || key === 'PageUp')) {
     event.preventDefault();
     attempt(() => cycleProject(key === 'PageDown' ? 1 : -1));
-    return;
-  }
-  if (event.metaKey && event.shiftKey && ['[', ']', '{', '}'].includes(event.key)) {
-    event.preventDefault();
-    attempt(() => cycleProject(event.key === ']' || event.key === '}' ? 1 : -1));
     return;
   }
   // Slice plate.
@@ -2461,7 +2457,6 @@ document.addEventListener('keydown', (event) => {
     attempt(() => selectTab(state.tab === 'prepare' ? 'preview' : 'prepare'));
     return;
   }
-  if (key === 'z') { fit('part'); return; }
   if (state.tab !== 'preview' || !here().summary) return;
   if (key === 'ArrowUp' || key === 'ArrowDown') {
     event.preventDefault();

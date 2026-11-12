@@ -105,17 +105,25 @@ fn each_kind_of_item_offers_the_references_options() {
     assert!(!has(&on_part["keys"], "enable_support"));
     assert!(has(&on_part["keys"], "support_interface_top_layers"));
     assert!(has(&on_part["keys"], "sparse_infill_density"));
-    // Every option not followed per item yet, said once.
+    // What the engine does with each (regions.rs): walls and infill
+    // followed on an object and a part; a layer height on an object noted
+    // as not followed, in the words a slice gives.
+    for (answer, key) in [
+        (&on_object, "wall_loops"),
+        (&on_part, "sparse_infill_density"),
+        (&on_part, "wall_loops"),
+    ] {
+        assert!(!has(&answer["unread"], key), "{key} followed");
+    }
+    assert!(has(&on_object["unread"], "layer_height"));
+    let note = on_object["why"]["layer_height"].as_str().unwrap();
     assert!(
-        on_object["unread_note"]
-            .as_str()
-            .unwrap()
-            .starts_with("Not followed on an object")
+        note.starts_with("layer_height: set on an object, not followed"),
+        "{note}"
     );
-    assert_eq!(
-        on_object["unread"].as_array().unwrap().len(),
-        on_object["keys"].as_array().unwrap().len()
-    );
+    // A part's support interface is the reference's to set on a part
+    // (`part_support_keys`), not followed per part here: said.
+    assert!(has(&on_part["unread"], "support_interface_top_layers"));
 }
 
 #[test]
@@ -394,4 +402,95 @@ fn only_the_plate_the_object_is_on_loses_its_slice() {
         json!({ "op": "item_set", "object": object, "key": "wall_loops", "value": 5 }),
     );
     assert!(again["done"].is_null());
+}
+
+/// How much filament each feature takes in a G-code file, by `;TYPE:`.
+fn extruded(gcode: &str) -> std::collections::BTreeMap<String, f64> {
+    let mut by = std::collections::BTreeMap::new();
+    let mut feature = String::new();
+    for line in gcode.lines() {
+        if let Some(name) = line.strip_prefix(";TYPE:") {
+            feature = name.trim().to_owned();
+        } else if line.starts_with("G1 ")
+            && let Some(at) = line.find(" E")
+        {
+            let amount: f64 = line[at + 2..]
+                .split_whitespace()
+                .next()
+                .and_then(|text| text.parse().ok())
+                .unwrap_or(0.0);
+            if amount > 0.0 {
+                *by.entry(feature.clone()).or_insert(0.0) += amount;
+            }
+        }
+    }
+    by
+}
+
+fn exported(session: &Arc<Session>, project: u64, dir: &Path, name: &str) -> String {
+    let path = dir.join(name);
+    ask(
+        session,
+        "export",
+        json!({ "project": project, "path": path.to_string_lossy() }),
+    );
+    std::fs::read_to_string(path).unwrap()
+}
+
+/// The whole path: an object's walls, a part's infill and a height
+/// range's layer height set through `scene_edit`, sliced: the walls and
+/// the infill in the G-code, and the range's layer height said in a note,
+/// as the engine does not follow it.
+#[test]
+fn what_an_object_a_part_and_a_range_set_reaches_the_slice() {
+    let dir = tempfile::tempdir().unwrap();
+    let session = Arc::new(Session::new(None));
+    let project = open(&session, &reference(SMALL));
+    choose_presets(&session, project);
+    let detail = ask(&session, "project", json!({ "project": project }));
+    let plate = detail["plates"][0]["id"].as_u64().unwrap();
+    sliced(&session, project, plate);
+    let before = extruded(&exported(&session, project, dir.path(), "before.gcode"));
+    let scene = ask(&session, "scene", json!({ "project": project }));
+    let object = scene["objects"][0]["id"].clone();
+    let part = scene["objects"][0]["part_list"][0]["id"].clone();
+    edit(
+        &session,
+        json!({ "op": "item_set", "object": object, "key": "wall_loops", "value": 5 }),
+    );
+    edit(
+        &session,
+        json!({ "op": "item_set", "object": object, "part": part, "key": "sparse_infill_density", "value": "60%" }),
+    );
+    edit(&session, json!({ "op": "range_add", "object": object }));
+    edit(
+        &session,
+        json!({ "op": "item_set", "object": object, "range": 0, "key": "layer_height", "value": 0.1 }),
+    );
+    sliced(&session, project, plate);
+    let after = extruded(&exported(&session, project, dir.path(), "after.gcode"));
+    let more = |feature: &str| {
+        after.get(feature).copied().unwrap_or(0.0) / before.get(feature).copied().unwrap_or(1.0)
+    };
+    assert!(more("Inner wall") > 1.5, "inner walls {before:?} {after:?}");
+    assert!(
+        more("Sparse infill") > 1.2,
+        "sparse infill {before:?} {after:?}"
+    );
+    let summary = ask(
+        &session,
+        "summary",
+        json!({ "project": project, "plate": plate }),
+    );
+    let gaps: Vec<&str> = summary["gaps"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter_map(Value::as_str)
+        .collect();
+    assert!(
+        gaps.iter()
+            .any(|gap| gap.starts_with("layer_height: set on height range 0-2 mm")),
+        "{gaps:?}"
+    );
 }

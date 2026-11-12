@@ -221,6 +221,7 @@ mod tests {
             gap_above: 1,
             gap_below: 1,
             bed: None,
+            annotations: &crate::NO_ANNOTATIONS,
         };
         let config = TreeConfig::new(&job).unwrap();
         // The reference's worked example at 0.2 mm layers, 0.42 mm lines.

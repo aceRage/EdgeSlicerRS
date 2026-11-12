@@ -364,6 +364,106 @@ impl ObjectKept {
     }
 }
 
+impl ObjectKept {
+    /// The object's own settings as the file carries them: every key and
+    /// value of its metadata but its name and filament, in the file's
+    /// order, as [`PartKept::settings`] has a part's.
+    pub fn settings(&self) -> Vec<(String, String)> {
+        self.entries
+            .iter()
+            .filter_map(|entry| match entry {
+                Entry::Meta { key, value } if is_setting(key) => Some((key.clone(), value.clone())),
+                _ => None,
+            })
+            .collect()
+    }
+
+    /// The object's height ranges (`Metadata/layer_config_ranges.xml`,
+    /// read as bbs_3mf.cpp `_extract_layer_config_ranges_from_archive`
+    /// reads them): each range's bottom and top in the object's own
+    /// heights, and what it sets, in the file's order. A range whose
+    /// heights cannot be read is left out, as the reference leaves it.
+    pub fn layer_ranges(&self) -> Vec<LayerRange> {
+        self.layer_ranges
+            .as_deref()
+            .map(parse_ranges)
+            .unwrap_or_default()
+    }
+}
+
+/// One height range of an object: a band of its height with settings of
+/// its own (the reference's `t_layer_config_ranges`, "height range" in
+/// its object list).
+#[derive(Clone, Debug, PartialEq)]
+pub struct LayerRange {
+    /// Bottom and top, in mm, measured in the object's own heights.
+    pub min_z: f64,
+    pub max_z: f64,
+    /// What it sets, key and value as written.
+    pub settings: Vec<(String, String)>,
+}
+
+/// The ranges inside one `<object>` of `Metadata/layer_config_ranges.xml`.
+fn parse_ranges(text: &str) -> Vec<LayerRange> {
+    let attribute = |tag: &str, name: &str| -> Option<String> {
+        let at = tag.find(&format!("{name}=\""))? + name.len() + 2;
+        let rest = &tag[at..];
+        Some(rest[..rest.find('"')?].to_owned())
+    };
+    let unescape = |value: &str| -> String {
+        quick_xml::escape::unescape(value)
+            .map(|text| text.into_owned())
+            .unwrap_or_else(|_| value.to_owned())
+    };
+    let mut ranges = Vec::new();
+    let mut rest = text;
+    while let Some(start) = rest.find("<range") {
+        let tail = &rest[start..];
+        let Some(head_end) = tail.find('>') else {
+            break;
+        };
+        let head = &tail[..head_end];
+        let (body, next) = if head.ends_with('/') {
+            ("", &tail[head_end + 1..])
+        } else {
+            match tail.find("</range>") {
+                Some(close) => (
+                    &tail[head_end + 1..close],
+                    &tail[close + "</range>".len()..],
+                ),
+                None => (&tail[head_end + 1..], ""),
+            }
+        };
+        rest = next;
+        let height =
+            |name| attribute(head, name).and_then(|value| value.trim().parse::<f64>().ok());
+        let (Some(min_z), Some(max_z)) = (height("min_z"), height("max_z")) else {
+            continue;
+        };
+        let mut settings = Vec::new();
+        let mut options = body;
+        while let Some(at) = options.find("<option") {
+            let element = &options[at..];
+            let Some(open_end) = element.find('>') else {
+                break;
+            };
+            let key = attribute(&element[..open_end], "opt_key").unwrap_or_default();
+            let after = &element[open_end + 1..];
+            let close = after.find("</option>").unwrap_or(after.len());
+            if !key.is_empty() {
+                settings.push((unescape(&key), unescape(after[..close].trim())));
+            }
+            options = &after[close..];
+        }
+        ranges.push(LayerRange {
+            min_z,
+            max_z,
+            settings,
+        });
+    }
+    ranges
+}
+
 /// Whether an entry of a part is its text's description (bbs_3mf.cpp
 /// `TEXT_TAG`).
 fn is_text(raw: &str) -> bool {

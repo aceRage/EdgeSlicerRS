@@ -151,6 +151,7 @@ mod tests {
     ) -> (String, Summary) {
         let islands: Vec<Range<usize>> = (0..loops.len()).map(|at| at..at + 1).collect();
         let layer = |z: f64, below| Layer {
+            region: None,
             z,
             height: 0.2,
             filament: 0,

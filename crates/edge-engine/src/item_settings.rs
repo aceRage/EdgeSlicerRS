@@ -11,7 +11,7 @@
 
 use std::{path::Path, sync::Arc};
 
-use edge_3mf::{HeightRange, ObjectKept, PartKept, PartKind};
+use edge_3mf::{LayerRange, ObjectKept, PartKept, PartKind};
 
 use super::{Model, ModelObject, Shape, refused};
 use crate::{Bed, Failure};
@@ -26,15 +26,15 @@ impl ModelObject {
     pub fn settings(&self) -> Vec<(String, String)> {
         self.kept
             .as_deref()
-            .map(ObjectKept::own_settings)
+            .map(ObjectKept::settings)
             .unwrap_or_default()
     }
 
     /// The object's height ranges, lowest first.
-    pub fn height_ranges(&self) -> Vec<HeightRange> {
+    pub fn layer_ranges(&self) -> Vec<LayerRange> {
         self.kept
             .as_deref()
-            .map(ObjectKept::height_ranges)
+            .map(ObjectKept::layer_ranges)
             .unwrap_or_default()
     }
 }
@@ -133,7 +133,7 @@ impl Model {
         &mut self,
         bed: Option<&Bed>,
         object: u64,
-        mut ranges: Vec<HeightRange>,
+        mut ranges: Vec<LayerRange>,
     ) -> Result<(), Failure> {
         let at = self.object_at(object)?;
         if self

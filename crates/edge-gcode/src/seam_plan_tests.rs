@@ -66,6 +66,7 @@ fn wall(polygon: Polygon, depth: usize, is_hole: bool) -> ExtrusionLoop {
 
 fn layer<'a>(z: f64, loops: &'a [ExtrusionLoop], below: &'a [ExPolygon]) -> Layer<'a> {
     Layer {
+        region: None,
         z,
         height: 0.2,
         filament: 0,

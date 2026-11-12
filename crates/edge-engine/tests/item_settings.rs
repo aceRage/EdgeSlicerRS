@@ -3,7 +3,7 @@
 
 use std::{io::Read, path::Path};
 
-use edge_engine::{Bed, HeightRange, Model, Saving};
+use edge_engine::{Bed, LayerRange, Model, Saving};
 
 fn reference(path: &str) -> std::path::PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR"))
@@ -35,8 +35,8 @@ fn entry(path: &Path, name: &str) -> Option<String> {
     Some(text)
 }
 
-fn range(min_z: f64, max_z: f64, settings: &[(&str, &str)]) -> HeightRange {
-    HeightRange {
+fn range(min_z: f64, max_z: f64, settings: &[(&str, &str)]) -> LayerRange {
+    LayerRange {
         min_z,
         max_z,
         settings: settings
@@ -80,7 +80,7 @@ fn an_objects_a_parts_and_a_ranges_settings_are_saved_and_read_back() {
     model
         .set_height_ranges(bed, object, ranges.iter().rev().cloned().collect())
         .unwrap();
-    assert_eq!(model.objects()[0].height_ranges(), ranges, "put in order");
+    assert_eq!(model.objects()[0].layer_ranges(), ranges, "put in order");
 
     let dir = tempfile::tempdir().unwrap();
     let file = dir.path().join("set.3mf");
@@ -97,7 +97,7 @@ fn an_objects_a_parts_and_a_ranges_settings_are_saved_and_read_back() {
             .settings()
             .contains(&("sparse_infill_density".to_owned(), "60%".to_owned()))
     );
-    assert_eq!(object_again.height_ranges(), ranges);
+    assert_eq!(object_again.layer_ranges(), ranges);
     let xml = entry(&file, "Metadata/layer_config_ranges.xml").unwrap();
     assert_eq!(
         xml,

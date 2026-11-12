@@ -368,6 +368,7 @@ fn settings() -> PrintSettings {
 fn printed(loops: &[ExtrusionLoop], below: &[ExPolygon], settings: &PrintSettings) -> String {
     let islands: Vec<Range<usize>> = (0..loops.len()).map(|at| at..at + 1).collect();
     let layer = |z: f64, below| Layer {
+        region: None,
         z,
         height: 0.2,
         filament: 0,
@@ -873,6 +874,7 @@ fn a_conditional_scarf_wants_a_smooth_loop_resting_on_the_layer_beneath() {
     let islands = [0..2];
     let print = |below: &[ExPolygon]| {
         let layer = |z: f64, below| Layer {
+            region: None,
             z,
             height: 0.2,
             filament: 0,

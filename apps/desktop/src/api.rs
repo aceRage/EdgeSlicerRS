@@ -16,6 +16,7 @@
 
 mod edit;
 mod filaments;
+mod menu;
 mod save;
 mod scene;
 mod ticks;
@@ -1081,7 +1082,15 @@ impl Session {
                 Ok(state.projects[state.target(args)?].detail())
             }
             "project_new" => Ok(self.project_new()),
-            "project_open" => self.project_open(Path::new(needed(args, "path")?)),
+            "project_open" => {
+                let path = Path::new(needed(args, "path")?);
+                let answer = self.project_open(path)?;
+                // A project file opened is the latest of the recent ones.
+                if answer.get("id").is_some() && answer.get("already").is_none() {
+                    self.note_recent(path);
+                }
+                Ok(answer)
+            }
             "project_select" => {
                 let mut state = lock(&self.state);
                 let at = state.target(&json!({ "project": whole(args, "id")? }))?;
@@ -1116,7 +1125,15 @@ impl Session {
                 Ok(state.listing())
             }
             "project_close" => self.project_close(args),
-            "project_save" => self.project_save(args),
+            "project_save" => {
+                let answer = self.project_save(args)?;
+                if let Some(path) = answer.get("path").and_then(Value::as_str)
+                    && answer["saved"] == json!(true)
+                {
+                    self.note_recent(Path::new(path));
+                }
+                Ok(answer)
+            }
             "unsaved" => Ok(self.unsaved()),
             "project_set" => {
                 let answer = self.project_set(args)?;
@@ -1163,10 +1180,11 @@ impl Session {
                 let (done, _) = self.done(args)?;
                 let gcode = done.gcode.as_ref().map_err(String::clone)?;
                 let path = Path::new(needed(args, "path")?);
-                std::fs::write(path, &gcode.text)
-                    .map_err(|e| format!("{}: {e}", path.display()))?;
+                // Whole or not at all.
+                menu::write_whole(path, &gcode.text)?;
                 Ok(json!({ "path": shown(path), "bytes": gcode.text.len() }))
             }
+            name if menu::JSON.contains(&name) => self.menu_json(name, args),
             name if edit::JSON.contains(&name) => self.edit_json(name, args),
             "item_settings" => self.items_json(name, args),
             name if ticks::JSON.contains(&name) => self.ticks_json(name, args),

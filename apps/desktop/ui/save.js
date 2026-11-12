@@ -126,14 +126,6 @@ async function saveBeforeQuitting() {
   return true;
 }
 
-document.addEventListener('keydown', (event) => {
-  if (document.querySelector('dialog[open]')) return;
-  const command = event.ctrlKey || event.metaKey;
-  if (!command || event.altKey || event.key.toLowerCase() !== 's') return;
-  event.preventDefault();
-  attempt(() => saveProject(activeId(), event.shiftKey));
-});
-
 // The window asks before it closes (main.rs holds the close back while a
 // project has unsaved changes).
 if (tauri) {

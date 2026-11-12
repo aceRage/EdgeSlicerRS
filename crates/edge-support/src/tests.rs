@@ -401,9 +401,14 @@ fn settings_are_read_and_what_is_not_done_is_said() {
     assert_eq!(tree.unsupported.len(), 1, "{:?}", tree.unsupported);
     assert!(tree.unsupported[0].contains("organic trees are built"));
     assert_eq!(tree.tree_branch_distance, 1.0);
-    // Painted-only supports cannot be honoured at all, and that is said louder.
+    // Supports only where enforcers and paint ask are followed.
     let manual = read(r#"{"enable_support": "1", "support_type": "normal(manual)"}"#);
-    assert!(!manual.enabled && manual.unsupported[0].contains("NO supports"));
+    assert!(manual.enabled && !manual.auto && manual.unsupported.is_empty());
+    let manual = read(r#"{"enable_support": "1", "support_type": "tree(manual)"}"#);
+    assert!(manual.enabled && !manual.auto && manual.style == Style::Tree);
+    // A type there is no answer for is said louder.
+    let odd = read(r#"{"enable_support": "1", "support_type": "hybrid(auto)"}"#);
+    assert!(!odd.enabled && odd.unsupported[0].contains("NO supports"));
     // With supports off nothing is noted.
     let off = read(r#"{"enable_support": "0", "support_type": "tree(auto)", "raft_layers": "2"}"#);
     assert!(!off.enabled && off.unsupported.is_empty());
@@ -690,4 +695,104 @@ fn ironing_a_supports_top_is_said_not_to_be_done() {
     assert!(plain.unsupported.is_empty());
     let none = read(r#"{"enable_support": "0", "support_ironing": "1"}"#);
     assert!(none.unsupported.is_empty());
+}
+
+/// What `generate_with` lays with blockers and enforcers on some layers.
+fn annotated(
+    layers: &[Vec<ExPolygon>],
+    settings: &SupportSettings,
+    annotations: &Annotations,
+) -> Vec<Vec<ExtrusionPath>> {
+    let slices: Vec<&[ExPolygon]> = layers.iter().map(Vec::as_slice).collect();
+    generate_with(
+        &slices,
+        Point2::from_mm(0.0, 0.0),
+        0.2,
+        0.2,
+        settings,
+        annotations,
+    )
+    .unwrap()
+}
+
+#[test]
+fn a_blocker_keeps_supports_off_what_it_covers() {
+    for settings in [on(), tree()] {
+        let free = annotated(&mushroom(), &settings, &Annotations::default());
+        let left_of = |found: &[Vec<ExtrusionPath>]| {
+            found
+                .iter()
+                .flat_map(|layer| points(layer))
+                .filter(|(x, _)| *x < -6.0)
+                .count()
+        };
+        assert!(left_of(&free) > 0);
+        // A blocker over the cap's left part, on the cap's first layer
+        // and the stem's beneath: x below -1 mm.
+        let blocker = vec![rect(-12.0, -12.0, -1.0, 22.0)];
+        let mut blockers = vec![Vec::new(); 15];
+        for layer in &mut blockers[8..=10] {
+            layer.clone_from(&blocker);
+        }
+        let blocked = annotated(
+            &mushroom(),
+            &settings,
+            &Annotations {
+                blocking_volumes: blockers.clone(),
+                blockers,
+                ..Annotations::default()
+            },
+        );
+        // Squared off to the grid, a support may reach a cell past the
+        // blocker's edge, but no further.
+        assert_eq!(left_of(&blocked), 0, "{:?}", settings.style);
+        // The right of the cap is still held up.
+        assert!(
+            blocked
+                .iter()
+                .any(|layer| points(layer).any(|(x, _)| x > 12.0))
+        );
+    }
+}
+
+#[test]
+fn an_enforcer_holds_up_what_needs_no_support() {
+    // A block whose right side leans out a little on every layer, too
+    // little to need support.
+    let layers: Vec<Vec<ExPolygon>> = (0..20)
+        .map(|layer| vec![rect(0.0, 0.0, 10.0 + 0.05 * f64::from(layer), 10.0)])
+        .collect();
+    for settings in [on(), tree()] {
+        assert!(
+            annotated(&layers, &settings, &Annotations::default())
+                .iter()
+                .all(Vec::is_empty)
+        );
+        let enforcers = vec![vec![rect(8.0, -1.0, 20.0, 11.0)]; 20];
+        let enforced = Annotations {
+            enforcers,
+            ..Annotations::default()
+        };
+        let found = annotated(&layers, &settings, &enforced);
+        assert!(
+            found.iter().any(|layer| !layer.is_empty()),
+            "{:?}",
+            settings.style
+        );
+        // And with supports only where asked, only there.
+        let manual = SupportSettings {
+            auto: false,
+            ..settings.clone()
+        };
+        assert!(
+            annotated(&mushroom(), &manual, &Annotations::default())
+                .iter()
+                .all(Vec::is_empty)
+        );
+        assert!(
+            annotated(&layers, &manual, &enforced)
+                .iter()
+                .any(|layer| !layer.is_empty())
+        );
+    }
 }

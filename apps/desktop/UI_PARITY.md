@@ -35,12 +35,22 @@ The last column reads:
   `filament_edit` in section 7, the undo history in section 13 and what
   a saved project holds of them in section 15; fourteenth pass: wording
   and languages, section 16, and the rows that point to it; fifteenth
-  pass: settings of an object, a part and a height range, "Sidebar:
-  Process" in section 2, sections 7, 12 ("On an object, a part, a height
-  range"), 13 (`scene_edit`, undo, "The object list", "Parts"), 15 and 16).
+  pass: the menu bar, section 17, recent projects, importing OBJ and
+  exporting STL in section 2 "Files", and the keys of section 6;
+  sixteenth pass: settings of an object, a part and a height range,
+  "Sidebar: Process" in section 2, sections 7, 12 ("On an object, a part,
+  a height range"), 13 (`scene_edit`, undo, "The object list", "Parts"),
+  15 and 16).
 - **differs** — built, but on purpose not as the C++ does it; the cell says how.
 - **not yet** — not built, with what it waits for. Nothing in this column is
   shown in the page as a control that does nothing.
+
+  **The menu bar's exception.** The menu bar (section 17) holds every
+  entry of the reference's menus, as the entry points the features will
+  be reached by. An entry whose feature is not built is **shown, off**:
+  it can never be chosen (nor its key used), its tooltip in the page's own
+  bar says "not yet: " and what it waits for, and it is listed in section
+  17. It is never on and doing nothing. Anywhere else the rule stands.
 
 Parity here is of function: what can be done, with which options, and in
 which words. It is not of looks. The app is designed dark mode first, with
@@ -74,6 +84,7 @@ calls are listed in section 7.
 | In a G-code-only or exported-file session Prepare is refused with a warning | `MainFrame::preview_only_hint` | **not yet**: G-code files are not opened |
 | Entering and leaving Device tells the device web view "active" / "inactive"; entering Home refreshes it | `init_tabpanel` page-changed handler | **differs**: the printer's page is a frame (section 4) that is first pointed at the printer when Device is looked at, and then left as it is; there is nothing to tell it |
 | Right of the tabs: the slice button with its menu, and the print button with its menu | `MainFrame::create_side_tools` l.2482 | **added**: see section 2, "Slice and export" |
+| The menu bar: on macOS the system's, at the top of the screen; on Windows and Linux a dropdown in the custom title bar ("File", "Edit", "View", "Preferences", "Help", calibration's menu) | `init_menubar_as_editor` l.3385, `BBLTopbar` | **added** (fifteenth pass): the system's own in the window, on every system; in a browser (`--serve`) a slim bar of the page's over the strip and the tab bar. Section 17 |
 | Ctrl+1..4 for Home, Prepare, Preview, Device | `MainTabs::tab_for_field_shortcut` (no longer bound in the C++ either) | not built, as in the C++ |
 | What each tab keeps: the project's own view (Prepare or Preview) is remembered per project; Home, Device and the rest are the window's | `ProjectSlot::main_tab`, `ProjectStrip::after_switch` | **added**: `tab` is kept with each project in the session; Device is the window's |
 
@@ -162,7 +173,7 @@ does with each option.
 | Search ("Search in preset"): finds options by label, jumps to the page and the option | Tab.cpp l.382–420, `Search.cpp` | **added**: every word typed must be in the label, the name (`seam_slope_type`), the group or the page; the list shows label, page › group and name; Enter or a click opens the page, goes to the row and marks it for a moment; Escape clears. An option the rules hide is listed greyed, and its group is gone to |
 | What the slicer does with an option | — | this app's own (**added**): a quiet ring beside an option the engine does not read with the settings as they are, a dot beside one it follows with a note, each said in the label's tooltip; nothing is hidden for it and every option can still be set (section 12) |
 | The support sets row ("Support set": apply, save, delete) | Tab.cpp l.3776, `support_set_create_widget` | **not yet**: it writes files of user presets |
-| "Global" / "Objects" switch (`SwitchButton`, `_L("Global")`, `_L("Objects")`); in "Objects" the pages of what the object list has selected: an object (`TabPrintObject`), a part or a modifier (`TabPrintPart`), a height range (`TabPrintLayer`); nothing selected, the panel is hidden | ParamsPanel.cpp l.222, `set_active_tab` l.581, Tab.cpp l.5027–5579, GUI_ObjectSettings.cpp `update_settings_list` l.189 | **added** (fifteenth pass, `ui/objsettings.js`, `src/api/settings/items.rs`): the switch at the head of the section, the pages of the item selected, its name beside the switch. The options an item may set are the reference's (section 12, "On an object, a part, a height range"), the reference's "Frequent" page first; the value shown is the item's own, else its parent's (part and range: the object's; object: the project's); its own is marked as a value set by hand (`.set`), with the arrow "Click to reset current value and attach to the global value."; a change makes it the item's own even when it equals the parent's (Tab.cpp l.5217, `set = true`); the rules are the global pages' (`rules.rs`) on the item's settings. Each change is one step of the history ("Change Option wall_loops", untranslated as the reference's `boost::format`); the reset of all "Reset Options". "Objects" carries the dot of what is set by hand while anything has settings of its own, as the reference colours its word. **differs**: with nothing selected, or several objects or parts, the section says so ("Select an object, a part or a height range…") where the reference hides it; several items at once (the reference's blank fields for values that differ) are not offered; the switch starts on "Global" for every project, where the reference turns to "Objects" by itself after opening a project with settings of objects (`switch_to_object_if_has_object_configs`); the preset row is hidden in "Objects". **not yet**: what the engine does with an item's option is "not followed per item yet" for all of them (section 12), until the engine follows them; the tool selector |
+| "Global" / "Objects" switch (`SwitchButton`, `_L("Global")`, `_L("Objects")`); in "Objects" the pages of what the object list has selected: an object (`TabPrintObject`), a part or a modifier (`TabPrintPart`), a height range (`TabPrintLayer`); nothing selected, the panel is hidden | ParamsPanel.cpp l.222, `set_active_tab` l.581, Tab.cpp l.5027–5579, GUI_ObjectSettings.cpp `update_settings_list` l.189 | **added** (sixteenth pass, `ui/objsettings.js`, `src/api/settings/items.rs`): the switch at the head of the section, the pages of the item selected, its name beside the switch. The options an item may set are the reference's (section 12, "On an object, a part, a height range"), the reference's "Frequent" page first; the value shown is the item's own, else its parent's (part and range: the object's; object: the project's); its own is marked as a value set by hand (`.set`), with the arrow "Click to reset current value and attach to the global value."; a change makes it the item's own even when it equals the parent's (Tab.cpp l.5217, `set = true`); the rules are the global pages' (`rules.rs`) on the item's settings. Each change is one step of the history ("Change Option wall_loops", untranslated as the reference's `boost::format`); the reset of all "Reset Options". "Objects" carries the dot of what is set by hand while anything has settings of its own, as the reference colours its word. **differs**: with nothing selected, or several objects or parts, the section says so ("Select an object, a part or a height range…") where the reference hides it; several items at once (the reference's blank fields for values that differ) are not offered; the switch starts on "Global" for every project, where the reference turns to "Objects" by itself after opening a project with settings of objects (`switch_to_object_if_has_object_configs`); the preset row is hidden in "Objects". What the engine does with each option set there is shown as on the global pages, from the engine's own answer (section 12): walls, shells, infill, speeds and the rest followed on an object, a part, a modifier and a height range; a layer height on an object or a range, an object's supports and seam, the feature filaments noted as not followed, with the engine's note. **not yet**: the tool selector |
 | "View all object's settings" (the table icon, `ObjectTableDialog` "Object/Part Setting": a grid of every object and part with "Plate", "Name", "Printable", "Filament", "Layer height", "Perimeter", "Infill density(%)", "Support", "Brim", "Perimeter speed", each with a reset), and the menus' "Edit in Parameter Table" | ParamsPanel.cpp l.248, GUI_ObjectTable.cpp (3 350 lines), GUI_Factories.cpp l.3280 | **not yet**: a grid editor of its own size (GUI_ObjectTable.cpp is 3 350 lines, with a side window of settings); every one of its columns can be set from the item's pages now. Not shown |
 | The tool selector at the top of the tab ([Plate] [T1 0.4] …) | `create_tool_selector` | **not yet** |
 | "Compare presets", save ("Save current …") and delete preset, favourites, "Manage process presets" | ParamsPanel.cpp l.238, Tab.cpp l.300–420 | **not yet**: there are no user presets (`edge-config` reads vendor profiles only); what is changed is kept with the project while it is open |
@@ -175,7 +186,7 @@ does with each option.
 | A 3D view of every plate with the objects on it, orbit / pan / zoom, selection | `View3D`, `GLCanvas3D` | **added**, in 3D: section 9. Where the browser has no WebGL2, the view from above the first pass built is kept: the bed of the printer chosen with its grid and each object's outline (its convex hull), name and size, drag to move, wheel to zoom, "Fit part" [Z] and "Fit bed" |
 | Main toolbar: "Add" [Ctrl+I], "Add plate", "Auto orient all/selected objects" [Q], "Arrange all objects" [A] with its options, "Split to objects", "Split to parts", "Variable layer height", "Assembly View" | `GLCanvas3D::_init_main_toolbar` l.9274 | **added**: "Add", "Add plate", "Arrange all objects" (section 13; the arrangement is a plain one, not the reference's), "Split to objects" and "Split to parts". **not yet**: auto orient (the engine does not do it), variable layer height, the assembly view, the arrangement's options |
 | Gizmos: "Move" [M], "Rotate" [R], "Scale" [S], "Lay on face" [F], "Cut" [C], "Mesh Boolean" [B], "Support Painting" [L], "Seam painting" [P], "Paint-on fuzzy skin" [H], "Color Painting" [N], "Texture displacement", "Emboss" [T], "SVG", "Measure" [U], "Assemble" [Y], "Simplify", "Brim Ears" [E], "Sculpt", "Edit", "Fillet / chamfer (CAD)" | `Gizmos/GLGizmosManager.cpp::init` l.224 | **added**: "Move", "Rotate" and "Scale" with their number fields, and "Lay on face" [F] (section 13). **not yet**: the rest |
-| Object list: plates, objects, parts, instances, layer ranges; columns "Name", printable, "Fila.", paint marks; the object, part and plate menus | `GUI_ObjectList.cpp`, `GUI_Factories.cpp` | **added**: plates, objects, parts and instances with "Name", printable and "Fila.", and the object's, the part's and the plate's menus (section 13); the mark of an item with settings of its own, "Layers" and its height ranges (fifteenth pass, section 13). **not yet**: the paint marks |
+| Object list: plates, objects, parts, instances, layer ranges; columns "Name", printable, "Fila.", paint marks; the object, part and plate menus | `GUI_ObjectList.cpp`, `GUI_Factories.cpp` | **added**: plates, objects, parts and instances with "Name", printable and "Fila.", and the object's, the part's and the plate's menus (section 13); the mark of an item with settings of its own, "Layers" and its height ranges (sixteenth pass, section 13). **not yet**: the paint marks |
 | View options: "Realistic View", "X-Ray", "Center of Mass", "Show 3D Navigator", Ctrl+0..6 views | `GLCanvas3D.cpp` l.8297, View menu | **added**: the navigator and the views (section 9). **not yet**: the three view options |
 
 ### Plates
@@ -193,7 +204,7 @@ does with each option.
 | "Slice plate", with a menu: "Slice all", "Slice plate" (and "Filament arrangement..." on dual-nozzle Bambu printers); the button keeps the mode picked | `create_side_tools` l.2482 | **added**: the button and its menu, in the tab bar. Before: one "Slice" button in the sidebar. "Slice all" slices every plate that holds something and is not sliced yet, one after another (`slice` with `all`) |
 | "Slice plate" is off while slicing, when the plate's result is valid, or when the plate cannot be sliced; "Slice all" when no plate can be | `MainFrame::get_enable_slice_status` l.2672 | **added**: the same three rules. **not yet**: the blocks for mixed filament temperatures, a cold plate and zero flow ratio |
 | Progress as a notification on the canvas with the stage's text, a percentage and a cancel; "Slice ok." when done, "Slicing Canceled" when called off | `SlicingProgressNotification.cpp`, Plater.cpp l.18718, l.19108 | **added**: a note on the stage with the engine's stage, a bar, "Cancel", then "Slice ok." or "Slicing Canceled" (before: a bar in the sidebar). Cancel takes effect between stages, as before |
-| The print button and its menu: "Print plate", "Print all", "Print" (send to a print host), "Send", "Send all", "Export plate sliced file" [Ctrl+G], "Export all sliced file", "Export G-code file", "Send to Multi-device", "Send to Bambu Connect"; the last one used is remembered | `print_select_type_label` l.2378, `available_print_actions` l.2397 | **added**: "Export G-code file" for the plate shown (**had** as "Export G-code…"), on when the plate is sliced and its G-code was written. **added** (twelfth pass): the button with its menu, as the reference offers it for a printer that is not Bambu's: "Print" (send to the printer's host, section 4) and "Export G-code file"; the last one picked is remembered (by the page), "Print" not brought back for a printer that cannot be sent to (as the fork's `get_remembered_print_select`). "Print" opens "Send G-code to printer host" for the plate shown. **differs**: "Print host upload queue" is in the button's menu as well, the app having no menu bar. **not yet**: the sliced-file (3MF) exports; "Print plate", "Send" and the rest are Bambu's or not offered by the fork for other printers |
+| The print button and its menu: "Print plate", "Print all", "Print" (send to a print host), "Send", "Send all", "Export plate sliced file" [Ctrl+G], "Export all sliced file", "Export G-code file", "Send to Multi-device", "Send to Bambu Connect"; the last one used is remembered | `print_select_type_label` l.2378, `available_print_actions` l.2397 | **added**: "Export G-code file" for the plate shown (**had** as "Export G-code…"), on when the plate is sliced and its G-code was written. **added** (twelfth pass): the button with its menu, as the reference offers it for a printer that is not Bambu's: "Print" (send to the printer's host, section 4) and "Export G-code file"; the last one picked is remembered (by the page), "Print" not brought back for a printer that cannot be sent to (as the fork's `get_remembered_print_select`). "Print" opens "Send G-code to printer host" for the plate shown. **differs**: "Print host upload queue" is in the button's menu as well (the reference has it nowhere else either for a non-Bambu printer). File > Export > "Export G-code..." is the same export (section 17). **not yet**: the sliced-file (3MF) exports; "Print plate", "Send" and the rest are Bambu's or not offered by the fork for other printers |
 | Ctrl+R slices the plate | `MainFrame` char hook l.771 | **added** |
 | Warnings and errors of a slice as notifications | `NotificationManager` | **had**, moved to Preview: "About this print" on the stage keeps the three kinds apart (what is wrong with this print; what was settled without being asked; the settings this engine does not follow yet) |
 
@@ -201,10 +212,13 @@ does with each option.
 
 | C++ | Where | Here |
 | --- | --- | --- |
-| "New Project" [Ctrl+N], "Open Project..." [Ctrl+O], "Recent projects" | `MainFrame::init_menubar_as_editor` l.3385 | **added** through the strip (section 5). **not yet**: a menu bar, recent projects |
-| "Save Project" [Ctrl+S] ("Save current project to file"), "Save Project as..." [Ctrl+Shift+S] ("Save current project as"): to the project file it was opened from, else (an STL, a new project, a project opened from a ZIP) through the save dialog, "Save file as:", "3MF files", "Untitled.3mf"; written as `SplitModel \| ShareMesh \| FullPathSources`; the project is then that file and saved; "Failed to save the project.\nPlease check whether the folder exists online or if other programs open the project file." | MainFrame.cpp l.3444–3458, Plater.cpp `save_project` l.21961, `get_export_file` l.15728 | **added** (`project_save`, `ui/save.js`): the keys and a project tile's "Save" / "Save as..." (below, section 5), the same rules and words; the file is the reference's project file (section 15). An STL opened as a project is saved as a 3MF beside it, its name offered. **differs**: no menu bar was added: the keys and the tile's menu are where the C++ has them too, and a File menu of two entries would be a bar for little; in `--serve` the dialog is the page's own (a path is typed). What the file held that the save would not keep is listed and asked about first (this app's own question, the reference keeping all it reads) |
-| "Import 3MF/STL/STEP/SVG/OBJ/AMF/GLB..." [Ctrl+I] adds geometry to the project shown; dropping files on the window; "Open as project" / "Import geometry only" | l.3385, `PlaterDropTarget::OnDropFiles` l.13122 | **added**: "Add" [Ctrl+I] puts an STL's or a 3MF's geometry in the project shown, a 3MF always as "Import geometry only" (section 13). The strip's Open still opens a file as a project of its own, an STL as much as a 3MF (**had**). **not yet**: the other formats, dropping files, the question which of the two is meant |
-| Export: STL, STEP, generic and Bambu 3MF, preset bundles | the same | **not yet**. `edge save` (the command line) writes the same project file as "Save Project" |
+| "New Project" [Ctrl+N], "Open Project..." [Ctrl+O], "Recent projects" | `MainFrame::init_menubar_as_editor` l.3385 | **added** through the strip (section 5) and the File menu (section 17) |
+| "Recent projects": wxFileHistory's list in the File menu, the full path of each ("1 /path/file.3mf"), the latest first; at most `max_recent_count` (18 unless set; MainFrame.cpp l.268, AppConfig.cpp l.533); kept as `recent_projects` in `app_config`, numbered "01", "02", …; a project file goes in when it is opened or saved (`set_project_filename`), a model only with the "recent_models" preference; off while the project slices or when it is empty; a file no longer there: "The project is no longer available." ("Error") | MainFrame.cpp l.3416–3434, `add_to_recent_projects` l.5024, `open_recent_project` l.5169 | **added**: kept in `settings.json` (section 8) as `recent_projects`, laid out as the reference lays it out; 18, the latest first, two spellings of one path one entry; a 3MF opened (not one open already) or saved goes first; an STL opened as a project does not (there is no "recent_models" preference). The submenu shows each path, cut at its start where it is long so its file name shows, whole in its tooltip; a file no longer there is struck through and, chosen, says "The project is no longer available." and, the box answered, is taken off the list. **differs**: the reference's box has one button, OK, but removes the entry only on Yes, so it never removes it (section 17, errors). No "Clear": the reference's menu has none (its Home page removes entries one at a time, there being no Home here) |
+| "Save Project" [Ctrl+S] ("Save current project to file"), "Save Project as..." [Ctrl+Shift+S] ("Save current project as"): to the project file it was opened from, else (an STL, a new project, a project opened from a ZIP) through the save dialog, "Save file as:", "3MF files", "Untitled.3mf"; written as `SplitModel \| ShareMesh \| FullPathSources`; the project is then that file and saved; "Failed to save the project.\nPlease check whether the folder exists online or if other programs open the project file." | MainFrame.cpp l.3444–3458, Plater.cpp `save_project` l.21961, `get_export_file` l.15728 | **added** (`project_save`, `ui/save.js`): the keys and a project tile's "Save" / "Save as..." (below, section 5), the same rules and words; the file is the reference's project file (section 15). An STL opened as a project is saved as a 3MF beside it, its name offered. And (fifteenth pass) File > "Save Project" / "Save Project as..." (section 17). **differs**: in `--serve` the dialog is the page's own (a path is typed). What the file held that the save would not keep is listed and asked about first (this app's own question, the reference keeping all it reads) |
+| "Import 3MF/STL/STEP/SVG/OBJ/AMF/GLB..." [Ctrl+I] adds geometry to the project shown; dropping files on the window; "Open as project" / "Import geometry only" | l.3385, `PlaterDropTarget::OnDropFiles` l.13122 | **added**: File > Import > "Import 3MF/STL/STEP/SVG/OBJ/AMF/GLB..." and "Add" [Ctrl+I] put a 3MF's, an STL's or (fifteenth pass) an OBJ's geometry in the project shown, a 3MF always as "Import geometry only" (section 13). The dialog's filter offers 3MF, STL and OBJ, what the engine reads. The strip's Open still opens a file as a project of its own (**had**), an OBJ too. **not yet**: STEP (a CAD kernel), SVG (an emboss feature), AMF (XML, rarely used), GLB; dropping files; the question which of the two is meant |
+| OBJ: `v` and `f` (texture and normal numbers read past, a negative number counted back), a quad cut in two along its first corner, a face of five corners or more refused ("The file contains polygons with more than 4 vertices."), a solid wound inside out turned round; colours from `usemtl`/`mtllib` and vertex colours | `Format/OBJ.cpp` `load_obj`, `objparser.cpp` | **added** (`edge-mesh::obj`): the geometry, as the reference reads it; checked against the C++ slicer's `--info` on all 21 OBJs of its own tests (triangles and bounds, `crates/edge-mesh/tests/reference_obj.rs`). **differs**: a convex face of five corners or more is cut into a fan, as the quad is (only a concave one is refused); a face naming vertex 0 is refused (the reference takes it as its end-of-face mark and reads the faces after it wrongly). **not yet**: colours and materials |
+| Export: "Export all objects as one STL...", "Export all objects as STLs...": every object, every copy, its printed parts (no modifier, blocker, enforcer), placed in the project's coordinates, in mm, binary; negative parts cut out (CGAL), else the printed parts alone with "Unable to perform boolean operation on model meshes. Only positive parts will be exported."; "as STLs": into a folder ("Choose a directory"), a file for each object named by it, "(1)", "(2)" after a name taken | Plater.cpp `export_stl` l.25936, `get_export_file` (FT_STL, "Export STL file:") | **added** (`export_stl`, `export_stls`, `edge-engine::export`): the same meshes; written whole or not at all, never over a file without being told (the window's save dialog asks; in a browser the page asks, "Confirm Save As" / "The file %s already exists\nDo you want to replace it?"); a failure says why. Checked against the C++ slicer: its `--export-stl` of `mcbrim_test.3mf` and our "as STLs" give the same 16 objects, each with the same triangle count (85,046) and bounds to 0.001 mm, and its `--info` reads our one STL as 1,360,736 triangles, the sum. **differs**: negative parts are never cut out (no solid boolean here): the objects that have them are named, with the reference's sentence; an object's name is made a file name (what a file system refuses put as `_`), where the reference writes `name` as it is and fails silently on "a/b" (section 17, errors); the copies stand where the project has them, the reference also taking each object's `origin_translation` off in "as STLs" |
+| Export: STEP, generic and Bambu 3MF, sliced files (.gcode.3mf), preset bundles | the same | **not yet** (section 17 says what each waits for). `edge save` (the command line) writes the same project file as "Save Project" |
 
 ## 3. Preview
 
@@ -326,7 +340,7 @@ Read from `ProjectStrip.cpp/.hpp`, `ProjectSessions.hpp` and their uses in
 | "Open project" (File menu, Ctrl+O, the strip's folder button): a file open already is shown instead (two spellings of a path are one file); an empty untouched project takes the file itself; otherwise a new project right after the one shown; lands in Prepare | `open_project`, `find_by_origin`, `normalized_path` | **added** (`project_open`). An STL opens the same way, the C++ taking only project files there |
 | A click shows a project. On Prepare or Preview the window goes to the tab that project was on; on Home or Device it stays | `select_project`, `after_switch` | **added** (`project_select`) |
 | A switch is refused, with a notice, while a job or an open tool holds the project shown ("The project cannot be switched now.") | `can_leave_active`, `Plater::project_swap_blocker` | not needed: nothing here holds a project |
-| Ctrl+PgDn / Ctrl+PgUp go to the next / previous project, round the ends; on macOS also Cmd+Shift+] / [ and the Window menu ("Next Project", "Previous Project", the projects by name) | `cycle`, `neighbour_id`, MainFrame.cpp l.799, l.4268 | **added**: the keys (`project_cycle`). **not yet**: the Window menu. In a browser (`--serve`) Ctrl+N, Ctrl+O and Ctrl+PgDn belong to the browser; in the app's window they are the page's |
+| Ctrl+PgDn / Ctrl+PgUp go to the next / previous project, round the ends; on macOS also Cmd+Shift+] / [ and the Window menu ("Next Project", "Previous Project", the projects by name) | `cycle`, `neighbour_id`, MainFrame.cpp l.799, l.4268 | **added**: the keys (`project_cycle`) and, on macOS, the Window menu (section 17). In a browser (`--serve`) Ctrl+N, Ctrl+O and Ctrl+PgDn belong to the browser; in the app's window they are the page's |
 | At most 8 projects (2 to 16, "Maximum open projects" under Preferences > Project): at the limit, "Too many open projects" asks which to close | `make_room`, `ProjectSessions::default_max_open` | **added**: 8, with the same question (`full` in the answer of `project_new` / `project_open`). **not yet**: the preference |
 | Tiles: a thumbnail of the plate the project is on, rendered again a moment after it changes; an empty bed for an empty plate; a page with a folded corner until there is a picture | `render_active_thumbnail`, `on_paint`, `classify_tile_render` | **added**: the plate from above (bed and outlines), drawn again when the plate or the printer changes; the empty bed and the page likewise |
 | The name under the thumbnail on at most two lines, broken only after a space, `_`, `-` or `.`, cut short with an ellipsis; the name is the file's without folder and extension | `wrap_name_two_lines`, `name_from_path` | **added**, the rule ported |
@@ -340,7 +354,7 @@ Read from `ProjectStrip.cpp/.hpp`, `ProjectSessions.hpp` and their uses in
 | A tile dragged up or down moves to where the line shows | `on_motion`, `drop_index_at`, `ProjectSessions::move` | **added** (`project_move`) |
 | More tiles than fit: the wheel scrolls the strip | `on_wheel` | **added** |
 | Tile menu: "Save", "Save as...", "Send...", "Close", "Close others", "Reveal in Finder" / "Show in Explorer", "Open in new window" | `show_item_menu` | **added**: "Save", "Save as...", "Close", "Close others". **not yet**: sending, showing the file, a second window |
-| Strip menu: "Show thumbnails" / "Show names only", "Default width", "Collapse the project strip" / "Show the project strip" | `show_strip_menu` | **added**; and, after a line, "Language" (the C++ has it in Preferences, which this app has not: section 16) |
+| Strip menu: "Show thumbnails" / "Show names only", "Default width", "Collapse the project strip" / "Show the project strip" | `show_strip_menu` | **added**. "Language", which the strip's menu held while there was no Preferences, is now in Preferences (section 16, 17) |
 | The right edge is dragged to widen the strip: 88 to 200, names alone at least 120; remembered | `StripLayout`, `on_motion`, `project_strip_width` | **added**, remembered by the page |
 | The chevron folds the strip to a 24 wide rail: New and Open stacked, a mark for each project (filled for the active one, a ring when sliced, the unsaved dot); remembered | `set_collapsed`, `on_paint` | **added** |
 | Closing the window with several projects open: one dialog, "Unsaved projects", "These projects have unsaved changes. Save the ticked ones before closing?", every unsaved one ticked, "Save" / "Don't save" / "Cancel"; with one project, "EdgeSlicer - Save": "The current project has unsaved changes, save it before continue?" (Yes / No / Cancel) | `confirm_close_all`, MainFrame.cpp l.604, Plater.cpp `close_with_confirm` l.25050 | **added** in the window: it is held open while a project is unsaved (`unsaved`), the page asks in these words ("EdgeSlicerRS - Save"), saves what is ticked and then closes it. **not yet**: "Remember my choice."; in a browser (`--serve`) nothing is asked, the session outliving the page |
@@ -351,6 +365,7 @@ Read from `ProjectStrip.cpp/.hpp`, `ProjectSessions.hpp` and their uses in
 
 | C++ | Here |
 | --- | --- |
+| The keys are one table, the menu bar's (`src/api/menu.rs`), bound once (`ui/menu.js`): in the window the system's menu bar holds every key with Ctrl (Cmd on a Mac) but Cut, Copy and Paste, and sends its id; the page reads the rest, and in a browser all of them. A key typed into a text field is the field's, but New, Open, Save, Save as, Quit and the next and previous project; Cut, Copy and Paste are the field's, or the text's when text is selected. The bindings that were in `app.js`, `save.js`, `scene-edit.js` and `gl/stage.js` (N, O, S, Shift+S, Cmd+Shift+] / [, Z, Ctrl+Z, Y, I, C, V, K, Del, Ctrl+0..6, Ctrl+A, Ctrl+E, Esc, C) moved there. "Keyboard Shortcuts" [?] lists them (section 17) | **added** (fifteenth pass) |
 | Ctrl+N "New Project", Ctrl+O "Open Project" | **added** |
 | Ctrl+PgDn / Ctrl+PgUp, Cmd+Shift+] / [: next / previous project | **added** |
 | Ctrl+R "Slice plate" | **added** |
@@ -359,9 +374,10 @@ Read from `ProjectStrip.cpp/.hpp`, `ProjectSessions.hpp` and their uses in
 | Shift+G: "Jump to Layer" | **added** |
 | Z: zoom to the objects | **added**: "Fit in all view" in 3D (section 9); "Fit part" from above |
 | Ctrl+S "Save Project", Ctrl+Shift+S "Save Project as..." | **added** (and Cmd on a Mac), anywhere in the page but in a dialog; in a browser they are taken from the browser's own |
-| Ctrl+G, Ctrl+Shift+G, Ctrl+P (Preferences), "?" (the list of shortcuts) | **not yet** (Ctrl+I is "Add", section 13) |
+| Ctrl+P (Cmd+, on a Mac): Preferences; "?": the list of shortcuts; Ctrl+D: "Delete all"; Ctrl+X: "Cut"; Ctrl+Q: Quit (Windows and Linux; Cmd+Q in the application menu on a Mac) | **added** (fifteenth pass) |
+| Ctrl+G ("Export plate sliced file"), Ctrl+Shift+G ("Print plate") | **not yet**: the sliced file is not written; "Print plate" is Bambu's. Ctrl+G's entry is shown, off |
 | Left / Right, Home / End (the move slider), L (one layer mode), C (G-code window) | **added** in 3D, C in the eleventh pass |
-| A, Shift+A, Q, Shift+Q, the gizmo keys, Ctrl+0..6, Ctrl+A / D / Z / Y / C / V / X, Del, 1–9, arrows to move objects | **added** in 3D: Ctrl+0..7 (the views), Ctrl+A, Esc, I and O, Ctrl+E (section 9); A, Shift+A, M, R, S, F, Ctrl+Z, Ctrl+Y, Ctrl+C, Ctrl+V, Ctrl+K, Ctrl+I, Del and the arrows (section 13). **not yet**: Q and Shift+Q, the other gizmos' keys, Ctrl+D, Ctrl+X, 1–9 (the filament of what is selected) |
+| A, Shift+A, Q, Shift+Q, the gizmo keys, Ctrl+0..6, Ctrl+A / D / Z / Y / C / V / X, Del, 1–9, arrows to move objects | **added** in 3D: Ctrl+0..7 (the views), Ctrl+A, Esc, I and O, Ctrl+E (section 9); A, Shift+A, M, R, S, F, Ctrl+Z, Ctrl+Y, Ctrl+C, Ctrl+V, Ctrl+K, Ctrl+I, Del and the arrows (section 13). **not yet**: Q and Shift+Q, the other gizmos' keys, 1–9 (the filament of what is selected) |
 
 ## 7. What the page asks for
 
@@ -409,7 +425,7 @@ the project is on.
 | `status` | `project?` | `{ project, run, state, label, step, steps, plate, at, of, error }`, `state` being idle, slicing, done, failed or cancelled |
 | `summary` | `project?`, `plate?` | as before, and `plate`, `widths`, `heights`. `gaps` ends with each setting set by hand that the slice did not read |
 | `layer` | `project?`, `plate?`, `index` | as before |
-| `export` | `project?`, `plate?`, `path` | `{ path, bytes }` |
+| `export` | `project?`, `plate?`, `path` | `{ path, bytes }`; written whole or not at all (fifteenth pass; it was written in place) |
 | `print_host` | `project?` | the connection of the project's printer: `{ printer (the preset's name), model, from ("kept", "preset"), connection { host_type, print_host, print_host_webui, printhost_cafile, has_api_key }, host_types [{ value, label, built }], built, can_send, why_not, can_start, storage, device_url, route ("octoprint", "snapmaker", "elegoolink", …), offers { elegoo, unload { default } \| null }, problem }`; `{ printer: null, host_types }` without a printer. Never the key |
 | `print_host_set` | `project?`, `host_type`, `print_host`, `print_host_webui`, `printhost_cafile`, `apikey?` (a new key; "" or null clears it; left out keeps it); or `forget: true` (back to the preset's) | as `print_host`. Refused, nothing kept: a host type that is not one, an address that cannot be read |
 | `print_host_test` | `project?` and the fields of `print_host_set` (as typed; what is left out is as kept) | `{ ok, message }`: the host's own sentence ("Connection to OctoPrint is working correctly.", "Could not connect to Moonraker: HTTP 401: Unauthorized") |
@@ -432,6 +448,11 @@ the project is on.
 | `layer_codes` | `project?`, `plate?` | what is set at the plate's layers and what the slider offers there: `{ project, plate, items: [{ print_z, kind (pause, custom, template, filament, color, unknown), extruder, color, extra }], pause, template (the printer's `machine_pause_gcode` and `template_custom_gcode`, as text), colours (each filament's), change_filament (null with one filament, else whether it can be picked), sequential }` |
 | `layer_code_set` | `project?`, `plate?`, `print_z` (a layer's top, as `toolpath` gives it), `kind` (`pause`, `custom` with `extra`, `template`, `filament` with `extruder`) | as `layer_codes`, and `detail` (as `project`). An item added or changed as the reference's slider does it; the project unsaved; the plate's slice let go. Refused, nothing changed: a layer the slice has none at, a pause or a template where something is set, custom G-code with no text, a template the printer has none of, a filament change not offered, a plate printed by object |
 | `layer_code_delete` | `project?`, `plate?`, `print_z` | as `layer_code_set`; an error when nothing is set there |
+| `menu` | what the page knows: `tab`, `selected`, `pasteable`, `window` (the app's window, not a browser), and the scene's `perspective`, `auto_perspective`, `gcode_window`, `navigator`, `labels` | the menu bar as it stands, in the language (section 17): `{ mac, menus: [{ id, label, enabled, items: [{ id, label, key (as shown), bind { command, shift, key }, accelerator (the window bar's, or null where the page binds the key), enabled, checked (null for none), radio, tip, waits } \| { line: true } \| a menu]}], recent: [{ path, missing }], preset_calls }`. In the window `call` also makes the system's menu bar of it (`src/menubar.rs`) |
+| `shortcuts` | — | `{ title, sections: [{ title, rows: [{ key, does, built }] }] }`: "Keyboard Shortcuts", the reference's lists with the keys as this system shows them |
+| `recent_remove` | `path` | `{ recent }`: the recent projects without it, kept |
+| `export_stl` | `project?`, `path` (".stl" added), `replace?`; or `suggest: true` | `{ path, bytes, triangles, uncut }`; `{ exists: true, path }` when a file is there and `replace` was not given; with `suggest`, `{ suggested }`. An error with no objects: "There are no objects in the project." |
+| `export_stls` | `project?`, `dir` | `{ files, uncut }`: a file for each object, named by it, none written over |
 | `scene_mesh` (bytes) | `project?`, `mesh` (its number in `scene`) or `object` (its place in the list) | an object's mesh, `EDGM`: 24 bytes of header, vertices (`f32` × 3), triangles (`u32` × 3), a mark byte for each triangle when they differ |
 | `bed_model` (bytes) | `project?` | the vendor's model of the printer's bed, as `scene_mesh` |
 | `bed_texture` (bytes) | `project?` | the vendor's picture of the bed: the SVG or PNG file as it is |
@@ -503,6 +524,7 @@ Read from `WebGuideDialog.cpp/.hpp` (`GuideFrame`), the pages under
 | A printer's connection: in its physical printer preset (`print_host`, `print_host_webui`, `printhost_apikey`, `printhost_cafile`, …), and several printers of one model in `<datadir>/hub/print_host_devices.json`, keys and passwords there in plain text (PrintHostDevices.cpp l.173) | `PhysicalPrinterDialog::OnOK`, `Utils/PrintHostDevices.cpp` | **differs**: this app has no user presets, so a connection is kept for each printer preset by its name, in `print_hosts.json` beside `settings.json` (`src/hosts/kept.rs`), under the reference's keys so a later pass that adds user presets can take each entry over as a physical printer of that preset. The key is kept apart, in `print_host_secrets.json`, made readable by this user alone (0600; on Windows the folder is the user's own `%APPDATA%`), and is never answered to the page, logged, put in an error or in a project. Not the system's keychain: a build of this app is not signed, so macOS would ask each new build for leave to read its own entry, and the keychain would not follow `EDGE_DESKTOP_DATA`; it can take the file's place behind `Kept::key` and `Kept::set` |
 | The language: `app.language`, the canonical name of the one chosen ("de_DE"); at the first run the system's, written at once | GUI_App.cpp `load_language` l.8279, Preferences.cpp l.274 | **added**: `app.language` in `settings.json`, the same name. **differs**: a system language with no catalog is not kept (the reference keeps it and then shows the bare message ids); English is |
 | The send dialog's choices: `recent` (`open_device_tab_post_upload`, `elegoolink_timelapse`, `elegoolink_heated_bed_leveling`, …) | `PrintHostDialogs.cpp` l.2998 | **differs**: kept by the page (`localStorage`), as the print button's last action |
+| The recent projects: `recent_projects` | AppConfig.cpp `set_recent_projects` l.1642 | **added**: `recent_projects` in `settings.json`, `{ "01": path, "02": path, … }` as the reference keeps them, read back in the order of their numbers (section 2, "Files") |
 | The page's own: the strip's width and folding, the last file opened | — | **had**, kept by the page (`localStorage`). The printer, process and filaments last used were kept there too; they are in `settings.json` now, and the old entries are no longer read |
 
 ### Not built: filaments, creating and deleting printers
@@ -866,19 +888,37 @@ none (GUI_ObjectList.cpp `add_settings_item`). Simple and advanced are the
 global pages' mode.
 
 What the engine does with an item's option is said by one function of the
-session, `items::item_followed` (`src/api/settings/items.rs`). The engine
-slices every object with the project's settings today: modifiers, a part's,
-an object's and a range's settings are kept and saved, and the C++ slicer
-follows them (section 15), but this engine does not, so the function
-answers every option "Not followed on an object, a part or a height range
-yet…" and each row carries the ring of section 12 with that sentence. When
-the engine follows them, the function is to ask `edge-engine` two things
-for a kind of item (object, part or modifier, range) and an option: whether
-it may be set there, and whether, with the item's settings as a slice has
-them (the function is given them), the engine follows it there (read, with
-a note, or not); it then answers `Followed`, `Noted` or `NotFollowed` as
-the global page's three marks. Nothing else in the session or the page
-changes for it.
+session, `items::item_followed` (`src/api/settings/items.rs`), from the
+engine's own answer (`edge_engine::settable`, `edge_engine::unfollowed_note`,
+`crates/edge-engine/src/regions.rs`): where the engine notes the option
+set on that kind of item as not followed, its note, in the words "About
+this print" gives after a slice ("layer_height: set on an object, not
+followed there; the plate's value is used"), as the ring of section 12;
+where it follows it there, nothing (followed); else a ring with "not read
+by the engine set on" that kind. The engine's answer, by family (README,
+"Regions"):
+
+| Options | Object | Part, modifier | Height range |
+| --- | --- | --- | --- |
+| walls, shells, solid and sparse infill, their patterns, speeds, accelerations, flows, line widths, fuzzy skin, ironing | followed | followed | followed |
+| `layer_height` | noted, not followed (everything on a plate is cut at the same heights) | not offered | noted, not followed |
+| brim type, width, gap | followed | not offered | not offered |
+| supports on or off and their options, `seam_position`, elephant foot, XY compensation, closing radius | noted, not followed | not offered (the part support keys: noted) | not offered |
+| wall, sparse and solid infill filaments | noted (each prints in the region's own filament) | noted | noted |
+| holes to polyholes, `make_overhang_printable`, Z contouring, scarf seams, bridges over sparse fill | noted | noted | noted |
+
+The two lists of what may be set where, the pages' (the reference's tabs,
+`settings_pages.json`) and the engine's (`PrintObjectConfig` and
+`PrintRegionConfig`), agree but in two ways. `fuzzy_skin_skip_overhangs`
+(object, part, range) and `independent_support_layer_height` (object) are
+in the engine's and not the pages': they are not in
+`Preset::print_options()`, so the reference's tabs do not offer them,
+while its slicer reads them from a file that sets them; the pages follow
+the reference's tabs and offer neither. The 13 part support keys of
+`part_support_keys()` on the pages (`support_interface_top_layers` and the
+rest; EdgeSlicer's support groups) are object-level in the engine's list:
+the reference's tab offers them on a part, so the pages do, and the engine
+notes them set there as not followed, which is what it does.
 
 ## 13. Prepare as an editor
 
@@ -1000,7 +1040,7 @@ section, where the C++ shows it too (at the head of Process).
 | A double click on the name, or F2, renames in place; an empty name leaves the name as it was; `<>:/\|?*"` are not allowed | `ObjectList::rename_item` l.6307, `update_name_in_model` l.1233 | **added**: Enter takes the name, Escape or an empty name leaves it. **not yet**: the characters that are not allowed (nothing is written under an object's name yet) |
 | The plate's row: a click shows the plate; its menu | `ObjectList::OnContextMenu`, `create_plate_menu` | **added**: a click shows the plate; the right button opens "Select All", "Delete All", "Arrange", "Delete Plate"; a cross at the row is "Remove current plate (if not last one)" |
 | Dragging rows to reorder, or onto another plate | `ObjectList::OnDrop` | **not yet** |
-| An item's settings: the reference's settings rows under an item are gone (`NEW_OBJECT_SETTING`, GUI_ObjectSettings.hpp l.9); an item with settings of its own has an icon in the editing column ("Click the icon to reset all settings of the object"), a click on which takes them all away without asking ("Reset Options") | GUI_ObjectList.cpp `add_settings_item` l.4180, l.699, l.1582; ObjectDataViewModel.cpp l.219 | **added** (fifteenth pass): the mark after the name of an object, a part or a range with settings of its own that its pages offer, the same tooltip, a click taking them away (one step). A range's layer height, which every range carries, does not count |
+| An item's settings: the reference's settings rows under an item are gone (`NEW_OBJECT_SETTING`, GUI_ObjectSettings.hpp l.9); an item with settings of its own has an icon in the editing column ("Click the icon to reset all settings of the object"), a click on which takes them all away without asking ("Reset Options") | GUI_ObjectList.cpp `add_settings_item` l.4180, l.699, l.1582; ObjectDataViewModel.cpp l.219 | **added** (sixteenth pass): the mark after the name of an object, a part or a range with settings of its own that its pages offer, the same tooltip, a click taking them away (one step). A range's layer height, which every range carries, does not count |
 | Copying an item's settings (Ctrl+C / Ctrl+V on a settings row, `copy_settings_to_clipboard`) | GUI_ObjectList.cpp l.1379–1418 | not built, as in the reference: the rows they need are no longer made, so nothing reaches it (listed with the errors found) |
 | "Layers" under an object, and a row for each height range: "Range 0.00-2.00 (mm)"; a click on "Layers" shows the ranges' heights, on a range its settings; a range's "Fila." | ObjectDataViewModel.cpp l.133, l.161; GUI_ObjectList.cpp `add_layer_root_item`, `add_layer_item` | **added**: "Layers" after the parts, each range under it a step in; a click selects the object in the scene and the row in the list. **not yet**: a range's filament in "Fila." (it is kept: filament 0, "default"), the range drawn on the object in the scene, the right button's menu on a range (the reference has none) |
 
@@ -1155,13 +1195,13 @@ shows; `part_menu`; `append_menu_items_add_volume`;
 | C++ | Where | Here |
 | --- | --- | --- |
 | The part menu: "Delete", "Edit text", "Repair", "Simplify", "Center", "Drop", "Mirror", "Hide"/"Show", "Separate", "Split" ("To objects", "To parts", "By painted colour"), "Edit in Parameter Table", "Change type", "Reload from disk", "Replace with STL", "Edit in Blender", "Edit in FreeCAD", "Fillet / chamfer", "Export as one STL", then "Change Filament", "Override paint", the support groups, "Precise Seam Type" | GUI_Factories.cpp l.2539–2585, l.2998 | **added**: "Delete", "Center", "Drop" (both "Move Object" steps), "Mirror" ▸ "Along X axis"…, "Split" ▸ "To objects" (off, as the C++ has it for a part) and "To parts", "Change type", "Change Filament" ("Default" and each filament by its preset's name; "Set Filament for selected items" for several; only with more than one filament, for parts and modifiers). **differs**: "Change type" is a sub-menu of the six kinds, where the C++ asks in a dialog ("Choose part type", "Type:"); "Split" is on whenever "To parts" can be done (see "Errors found in the C++"). **not yet**: the rest (each needs something the model does not have: text and SVG parts, mesh repair and simplifying, hiding, a part made an object of its own, the table of "Edit in Parameter Table", reloading from a file, exporting). "Rename" is not in the C++'s shown part menu either; a double click or F2 renames |
-| "Height range Modifier" (no tooltip) after them, and "Edit Process Settings" after "Printable" | GUI_Factories.cpp l.967, l.3262 | **added** (fifteenth pass): "Height range Modifier" gives an object without ranges one from 0 to 2 mm, selects "Layers" and turns the Process section to "Objects"; "Edit Process Settings" turns it to "Objects" for what is selected. **not yet**: "Color Pattern...", "Edit in Parameter Table" (the table, section 2) |
+| "Height range Modifier" (no tooltip) after them, and "Edit Process Settings" after "Printable" | GUI_Factories.cpp l.967, l.3262 | **added** (sixteenth pass): "Height range Modifier" gives an object without ranges one from 0 to 2 mm, selects "Layers" and turns the Process section to "Objects"; "Edit Process Settings" turns it to "Objects" for what is selected. **not yet**: "Color Pattern...", "Edit in Parameter Table" (the table, section 2) |
 | "Add part", "Add negative part", "Add modifier", "Add support blocker", "Add support enforcer", "Add precise seam" in the object's menu, each "Load..." and the generic shapes "Cube", "Cylinder", "Sphere", "Cone", "Disc", "Torus", text, SVG… | GUI_Factories.cpp l.426, l.659, l.922 | **added**: the first five, each with "Load..." (an STL's or a 3MF's printed geometry, as it stands in its file, named after it: "Load Part" / "Load Modifier") and "Cube" (a tenth of the bed's greater side, square to the bed, beside the right front corner of the object's box at its foot: "Add primitive", named "Generic-Cube"). The part made is selected. **not yet**: "Add precise seam", "Height range Modifier", "Color Pattern...", and "Cylinder", "Sphere", "Cone", "Disc", "Torus" and the rest, which wait for `edge_mesh::primitives` to make them (it makes boxes only) |
 | A new model part takes the object's `extruder` as its own; any other kind none | GUI_ObjectList.cpp l.2416–2421, l.2529–2534 | **added** |
 | Deleting a part: not the last solid one ("Deleting the last solid part is not allowed."); when one volume is left, its config goes to the object | l.2856–2913 | **added**, the filament going to the object; a part's other settings stay with the part (the model keeps no settings of an object's) |
 | Changing a part's type: the last solid part keeps its type ("The type of the last solid object part is not to be changed."); the volumes are sorted by type after | `change_part_type` l.5819, `set_volume_type` l.5930 | **added**. **differs**: a part keeps its place in the list; the reference sorts the volumes by type |
 | "Split" of a part: a part for each piece, named with `_1`, `_2`…, each given the original's filament (`extruder_id`) | `ModelVolume::split` Model.cpp l.3186 | **added**, the pieces in the part's place, keeping its transform (see the error at l.3014 below) |
-| Modifiers carry settings for the region inside them; support blockers and enforcers say where supports go | `PrintObject`, `SupportMaterial` | **not followed** by the engine: their settings are kept with the part (`Part::settings`), set on the item's pages since the fifteenth pass, and not read. They are kept through every edit, listed and drawn see-through in their colours, and a print with any of them says so under "About this print" ("the project has modifiers, which are not followed: …", "the project has support blockers, which are not followed: supports go where the settings put them") |
+| Modifiers carry settings for the region inside them; support blockers and enforcers say where supports go | `PrintObject`, `SupportMaterial` | **added** (the engine's regions, `crates/edge-engine/src/regions.rs`, aceRage/EdgeSlicerRS#79): a modifier's settings are laid over what of its object's parts lies inside it, a blocker takes supports out, an enforcer adds them; what is not followed is said in a note. A modifier's settings are set on its pages ("Objects", a part or modifier selected) since the sixteenth pass, and they are kept through every edit, listed and drawn see-through in their colours |
 
 ### Plates
 
@@ -1201,7 +1241,7 @@ engine's side is `crates/edge-engine/src/plates.rs`; the page's
 | "Auto orient", "Cut", "Mesh Boolean", "Simplify" | mesh operations the engine does not have |
 | "Split" > "By painted colour" ("Convert the part's colour painting into separate parts, one per filament") | cutting a mesh along its painted borders, which the engine does only layer by layer while slicing |
 | The other instances of an object taking a mirror or a turn of the object too | instances kept alike, which no tool here does yet (a part's edits are every instance's, as in the C++) |
-| "Edit in Parameter Table" (the table of section 2), "Separate" / "Set as an individual object", copying and pasting parts | the table is a piece of work of its own; copying parts in the model. A modifier's and a part's own settings are set on their pages (fifteenth pass) |
+| "Edit in Parameter Table" (the table of section 2), "Separate" / "Set as an individual object", copying and pasting parts | the table is a piece of work of its own; copying parts in the model. A modifier's and a part's own settings are set on their pages (sixteenth pass) |
 | "Center" and "Drop" for an object; "Hide" / "Show" of a part | nothing; not built in this pass |
 | Saving the project with its edits | **added**: section 15 |
 | The glow round what is selected, the red background while something is over the edge, the ticks of the rotate ring | nothing; they are looks, left for a pass on the stage's own drawing |
@@ -1677,7 +1717,7 @@ entry, in a fixed order:
 | `Metadata/model_settings.config` | written afresh from the model: each object's name and filament (`extruder`), each part's name, `subtype`, own filament (`extruder`, none for "default") and, once it has moved, `matrix` (see "Parts" below). Kept as the file had them, where the part is still what it was read as: every other metadata and setting of each object and part (per-object and per-part settings, modifiers' settings, `matrix`, `source_*`, Precise Seam's type, embossed text and SVG descriptions, `mesh_stat`), each plate's own (`locked`, `bed_type`, `print_sequence`, `first_layer_print_sequence`, `spiral_mode`, `filament_map_mode`, `filament_maps` with one entry for each filament, `print_history`…), a setting changed here (the lock, "Plate Settings") set in place or added where the reference writes it and one given back to the project taken out (`PlateKept::with`), a plate added here written as the reference writes a new one until something is set on it (`PlateKept::fresh`), each copy's place in the assembly view while its object has all its copies, and each copy's `identify_id` (the number the reference labels it with in G-code) while it has. Plates are numbered as they stand, each with its name and its copies |
 | `Metadata/project_settings.config` | the settings, below |
 | `Metadata/slice_info.config` | written afresh: the header alone, as the reference writes a project saved unsliced |
-| `Metadata/layer_config_ranges.xml` (height ranges and their settings) | an object's ranges kept as the file has them until they are edited here; then written as the reference writes them (`_add_layer_config_ranges_file_to_archive`: Boost's XML with each tag on a line, a range's `min_z` and `max_z`, an `<option opt_key>` for each of its settings in order of key), under the object's place as it stands (fifteenth pass). **differs**: the file ends with a new line, which the reference's does not have, as before this pass (the writer's own, for kept ranges too) |
+| `Metadata/layer_config_ranges.xml` (height ranges and their settings) | an object's ranges kept as the file has them until they are edited here; then written as the reference writes them (`_add_layer_config_ranges_file_to_archive`: Boost's XML with each tag on a line, a range's `min_z` and `max_z`, an `<option opt_key>` for each of its settings in order of key), under the object's place as it stands (sixteenth pass). **differs**: the file ends with a new line, which the reference's does not have, as before this pass (the writer's own, for kept ranges too) |
 | `Metadata/layer_heights_profile.txt` (variable layer height), `brim_ear_points.txt`, `cut_information.xml` (cut connectors) | kept, each object's line or block written under its place in the list as it stands, so they follow an object when one before it is deleted; a clone carries its original's, as the reference's clone does. A cut connector names its part by the part's place among the object's parts, which is written as it now stands (a part before it deleted, one added after it); once the connector's part itself is deleted or split, the object's cut information is not written, and that is asked about first |
 | `Metadata/custom_gcode_per_layer.xml` (pauses, custom G-code, templates, filament changes at layers) | read (`edge_3mf::CustomGcode`, by plate, plate 1's for a file without plates as the reference reads it) and written afresh in the reference's layout: Boost's XML with a new line between tags, `top_z` to 17 digits, values escaped as Boost escapes them (new lines kept), a plate with no items still written when it has an entry, an undefined mode written `MultiExtruder`; the pressure advance pattern's file is written back to the byte. Each plate's go with it (deleting a plate before it renumbers them with it). Edited from the slider (section 3). A file laid out otherwise (PrusaSlicer's `custom_gcodes_per_print_z`), which the reference does not read, is kept as it was while nothing is set here |
 | `Metadata/plate_<n>.png`, `_small`, `plate_no_light_<n>`, `top_<n>`, `pick_<n>` | kept for each plate while it is as it was read (`PlateStamp`: what is on it and where, its filaments and first-layer order), under its number now; a plate that has changed is saved without pictures, which would show it as it was. **not yet**: drawing new ones |
@@ -1861,7 +1901,7 @@ save` lists the same and writes only with `--accept-losses`.
   self") and refuses the plate for objects too close for it, which this
   engine prints layer by layer with its note.
 
-- Settings of an object, a part and a height range (fifteenth pass).
+- Settings of an object, a part and a height range (sixteenth pass).
   `crates/edge-3mf/src/own.rs`: ranges written as the reference lays them
   out and read back, a setting set in place, added after the metadata and
   taken away. `crates/edge-engine/tests/item_settings.rs`: on
@@ -1899,8 +1939,24 @@ save` lists the same and writes only with `--accept-losses`.
   the 60% part is. The CLI's G-code and `edge save` are the starting
   commit's byte for byte for the three plates of `mcbrim_test.3mf`,
   `twopart_groups.3mf` and the `cube`, `tower`, `bridge`, `inset`,
-  `halves` fixtures (`twotone` refused alike), and for the file saved in
-  the page, whose settings this engine does not read.
+  `halves` fixtures (`twotone` refused alike). With the engine's regions
+  (merged since): `edge-parity` on that file, this engine and the C++
+  slicer print the same inner walls above the range (7.315 mm of filament
+  a layer each, at 4.45, 6.45 and 8.45 mm; 1.96 for the file without the
+  object's 5 walls) and nearly the same sparse infill (9.563 here, 9.581
+  there; 5.37 without the part's 60%); the C++ prints 64 layers, the first
+  3 mm at the range's 0.1 mm, and this engine 50, noting "layer_height: set
+  on height range 0-3 mm of \"Object_1\", not followed there; the plate's
+  value is used". `src/api/settings/items/tests.rs` slices
+  `twopart_groups.3mf` through `scene_edit` with the three set and finds
+  more inner wall, more sparse infill and that note. In the served page:
+  an object's wall loops 5 (no ring: followed), its layer height and
+  supports with the engine's note; Part 1's infill 60%; "Add Modifier" ›
+  "Cube", moved over Part 2, given 1 wall on its own pages; "Height Range
+  Modifier", the range's layer height 0.1 with its note; sliced from the
+  button: 50 layers, the inner walls a layer 4.28 mm (the modifier's one
+  wall over half the object), "About this print" listing the range's
+  layer height as not followed.
 
 - What is set at layers (eleventh pass). `crates/edge-3mf`: the pressure
   advance pattern's file written back to the byte, and a pause added to
@@ -2053,7 +2109,7 @@ was offered. Now it shows them as the C++ does.
 | C++ | Where | Here |
 | --- | --- | --- |
 | At the first run (no `language` in `app_config`): the system's language (`wxLocale::GetSystemLanguage`, on Windows the user's locale), kept at once as `language`; a language with no catalog shows the bare message ids | GUI_App.cpp l.8285–8340 | **added**: the page sends the system's preferred languages (`navigator.languages`, which the window's web view takes from the system; the session falls back on `LC_ALL`, `LC_MESSAGES`, `LANG`), and the first of them is taken where the reference has a catalog for it (`de-AT` finds German, `zh-Hant`, `zh-TW`, `zh-HK` Traditional Chinese, `pt-BR` Portuguese; `pt-PT` none, as in the reference), and kept. **differs**: a system language with no catalog is English, and nothing is kept, so a catalog that comes later is found; the reference keeps `fi_FI` and shows message ids, not even the English catalog's words |
-| Preferences > General > "Language": English and the languages with a catalog, sorted by their English names, shown by the names Preferences gives them ("Deutsch", "Français", "日本語", "中文(简体)", "中文(繁体)", "Português (Brasil)", "Czech", "Turkish", "Ukrainian", "Catalan" …) | Preferences.cpp l.164–242, l.1925–1966 | **added**: "Language" at the end of the project strip's menu (a right click on the strip), a menu beside it of the same 20 names in the same order, the one in force ticked. This app has no Preferences window; the strip's menu is where the app's own settings are |
+| Preferences > General > "Language": English and the languages with a catalog, sorted by their English names, shown by the names Preferences gives them ("Deutsch", "Français", "日本語", "中文(简体)", "中文(繁体)", "Português (Brasil)", "Czech", "Turkish", "Ukrainian", "Catalan" …) | Preferences.cpp l.164–242, l.1925–1966 | **added**: Preferences (the menu bar's, section 17: the application menu on a Mac [Cmd+,], File on Windows and Linux [Ctrl+P]), "General", "Language": a list of the same 20 names in the same order, the one in force chosen; OK keeps another. Until the fifteenth pass it was at the end of the project strip's menu, the app having no Preferences then |
 | A change asks about an unsaved project, then "Switching the language requires application restart.\n\nDo you want to continue?" ("Language selection"), keeps the language and rebuilds the whole window | Preferences.cpp l.274–310 | **differs**: the language is kept (`language_set`) and the page loads itself again in it at once; the projects stay open in the session as they are, so nothing is asked and nothing is lost |
 | `language` kept in `app_config` (`EdgeSlicer.conf`) | Preferences.cpp l.304 | **added**: `app.language` in `settings.json` (section 8), the same canonical name ("de_DE"); found again at the next start |
 
@@ -2111,7 +2167,7 @@ listed one by one. Words the C++ shows without translating them
 ("ElegooLink not detected", "Could not parse server response", "Instance
 %d", a `_devL` string) are left as they are.
 
-The fifteenth pass's words (settings of an object, a part and a height
+The sixteenth pass's words (settings of an object, a part and a height
 range): the switch's "Global" / "Objects", "Frequent" (a page title, put
 in the language as the others are), "Layers", "Range", "mm", "Height
 range Modifier", "Edit Process Settings", "Add height range", "Remove
@@ -2126,7 +2182,7 @@ reads as the C++'s does in every language (German: "Reichweite
 0.00-3.00 (mm)", the catalog's word). The undo steps' names are message
 ids put in the language where the page shows them; "Change Option %s"
 stays English, as the C++ composes it with `boost::format`. This pass's
-own words (the hints, the not-followed sentence, the session's refusals
+own words (the hints, the "not read by the engine set on" of an option the engine gives no note of, the session's refusals
 of heights and keys) are listed under `[own]`. The engine's refusals in
 `edge-engine` (`item_settings.rs`) are English, as the engine's are, and
 the session checks first in its own listed words but for one: a project
@@ -2237,3 +2293,178 @@ it did.
 - No entry of any catalog has placeholders that differ from its message
   id's but for the plurals above (`--report`).
 
+
+## 17. The menu bar
+
+Read from `MainFrame.cpp` (`init_menubar_as_editor` l.3385–4345,
+`generate_help_menu` l.3104, `add_common_view_menu_items` l.3233, the
+`can_*` rules l.2142–2355, `open_recent_project` l.5169),
+`KBShortcutsDialog.cpp` and `GUI_Factories.cpp`. `init_menubar_as_gcodeviewer`
+(the G-code viewer's own menus) is not this app's.
+
+### How it is made
+
+The menus are described once, in the session (`src/api/menu.rs`): each
+entry's id, its message id as the C++ source writes it (with its `&`
+marks; shown without them, "&&" as "&", as wxWidgets shows them, with
+"..." where the reference adds `dots`), its key, when it can be used (the
+reference's `can_*`, from the session's state and the page's), whether it
+is ticked, its help text (the tooltip), and for an entry that is not built
+what it waits for. `menu` answers it in the session's language. In the
+app's window `main.rs` makes the system's menu bar of that answer
+(`src/menubar.rs`, Tauri's menu API: at the top of the screen on macOS, in
+the window elsewhere), made again when its make-up changes (another
+language, the recent or the open projects) and otherwise only set where an
+entry changed; an entry chosen sends its id to the page (the event
+`menu`). In a browser (`--serve`) the page draws the same answer as a bar
+of its own (`ui/menu.js`, `ui/menu.css`). Either way the page does what
+the id stands for (`Menu.run`). The page asks for the menu again whenever
+what decides it may have changed, at most every half second.
+
+The keys: section 6. Cut, Copy and Paste in the window's Edit menu are the
+system's own entries, so a text field keeps them (the page reads the
+clipboard's events they send for objects); on macOS the application
+menu's Services, Hide, Hide Others and Show All, and Minimize and Zoom,
+are the system's too.
+
+The menus follow the reference's per system: macOS has the application
+menu (About, Preferences [Cmd+,], Themes, Costs, Quit) and the Window
+menu; Windows and Linux have Preferences [Ctrl+P], Themes and Costs (the
+reference's title-bar menu, beside File) in File before Quit [Ctrl+Q], and
+"About" in Help. "Delete selected" [Del] is Windows' and Linux's only, as
+in the reference (`#if 0` on macOS).
+
+### Every entry
+
+"wired" is an entry that does what the reference's does, with what the
+app had; "built" is one built in this pass; "off" is shown, never usable,
+its tooltip "not yet: …" saying what it waits for.
+
+| Menu | Entry (message id) | Key | Here |
+| --- | --- | --- | --- |
+| EdgeSlicerRS (macOS) | "&About %s" | | built: "About EdgeSlicerRS", a box with the app's name, what it follows and its licence |
+| | "Preferences" | Cmd+, | built: "Preferences", General, "Language" (section 16) |
+| | "Themes..." | | off: the app follows the system's dark or light |
+| | "Costs..." | | off: no prices or rates of your own are kept |
+| | "Quit" | Cmd+Q | wired: asks about unsaved projects as closing the window does (section 5), then closes it; off in a browser |
+| File | "New Window" (macOS) | | off: the app has one window |
+| | "New Project" | Ctrl+N | wired (`project_new`); off while the project slices |
+| | "Open Project..." | Ctrl+O | wired (`project_open`); off while slicing |
+| | "Recent projects" ▸ | | built (section 2, "Files"); off with none, or while slicing |
+| | "Start page" | | off: there is no Home tab |
+| | "Save Project" | Ctrl+S | wired (`project_save`); on when the project has unsaved changes and does not slice (`can_save`) |
+| | "Save Project as..." | Ctrl+Shift+S | wired |
+| | Import ▸ "Import 3MF/STL/STEP/SVG/OBJ/AMF/GLB..." | Ctrl+I | wired to "Add" (section 13), Prepare, not while slicing; reads 3MF, STL and OBJ (built: OBJ). STEP, SVG, AMF, GLB: not yet, and not in the dialog's filter |
+| | Import ▸ "Import Zip Archive..." | | off: models are not read from a ZIP archive |
+| | Import ▸ "Import Configs..." | | on only when the session has one of the user presets' calls (below); off on this branch |
+| | Import ▸ "Import Config from G-code..." | | off: settings are not read from a G-code file |
+| | Export ▸ "Export all objects as one STL..." | | built (section 2, "Files"); on with objects |
+| | Export ▸ "Export all objects as STLs..." | | built; on with objects |
+| | Export ▸ "Export as STEP..." | | off: STEP needs a CAD kernel |
+| | Export ▸ "Export Generic 3MF..." | | off: the project file is written in the reference's own layout only. The reference's "generic" 3MF is its project file with every mesh in the one model file (`export_3mf` without `SplitModel`), which `edge-3mf::write` does not write; that is its own change to the writer |
+| | Export ▸ "Export Bambu 3MF...", "Export && Open in Bambu Studio..." | | off: no Bambu Studio export |
+| | Export ▸ "Export plate sliced file..." | Ctrl+G | off: the sliced file (.gcode.3mf) is not written |
+| | Export ▸ "Export all plate sliced file..." | | off: the same |
+| | Export ▸ "Send plate to Bambu Connect", "Send all plates to Bambu Connect" | | not shown: the reference takes them out for a printer not Bambu's, and sending to Bambu is not this app's |
+| | Export ▸ "Export G-code..." | | wired: the print button's "Export G-code file" (section 2); on when the plate shown is sliced and its G-code written |
+| | Export ▸ "Export Preset Bundle..." | | on only with the user presets' call (below) |
+| | "Preferences", "Themes...", "Costs..." (Windows, Linux) | Ctrl+P | as in the application menu |
+| | "Quit" (Windows, Linux) | Ctrl+Q | as above |
+| Edit | "Undo", "Redo" | Ctrl+Z, Ctrl+Y | wired (section 13), with the step's name: "Undo: Delete", "Redo: Import Object" (the step's message id, through the layer); Prepare. Cmd+Shift+Z makes again as well (`scene-edit.js`) |
+| | "Cut", "Copy", "Paste" | Ctrl+X, C, V | wired: copies of objects, as Ctrl+C / Ctrl+V and the object's menu did; Cut is Copy then delete. Pasted into the project they were copied from (section 13: on the plate shown). **not yet**: copying between projects (it needs the model to take another model's objects with their own settings) |
+| | "Delete selected" (Windows, Linux) | Del | wired |
+| | "Delete all" | Ctrl+D | built: every object of the project, one step to undo, as the reference's `delete_all_objects_from_model` |
+| | "Clone selected" | Ctrl+K | wired. **differs**: the key is shown on every system; the reference shows it on macOS only (the binding is everywhere) |
+| | "Duplicate Current Plate" | | wired (section 13, "Plates") |
+| | "Select all" | Ctrl+A | wired: the objects on the plate shown |
+| | "Deselect all" | Esc | wired: a tool that is open is closed first, as Esc did |
+| View | "Default View", "Top", "Bottom", "Front", "Rear", "Left", "Right" | Ctrl+0..6 | wired (section 9); Prepare and Preview. Ctrl+7 (the plate from above) stays the scene's own, being in no menu |
+| | "Fit in all view" | Z | wired |
+| | "Use Perspective View", "Use Orthogonal View" | | wired: the scene's camera (it was in the scene's View menu, where it stays) |
+| | "Auto Perspective" | | wired |
+| | "Show &G-code Window" | C | wired; Preview |
+| | "Show 3D Navigator" | | wired |
+| | "Reset Window Layout" | | off: the sidebar's layout is not reset |
+| | "Show 3Dconnexion Settings" | | off: 3D mice are not read |
+| | "Show &Labels" | Ctrl+E | wired |
+| | "Show &Overhang", "X-Ray", "Realistic View", "Show Center of Mass" | | off: each waits for the scene to draw it |
+| | "Compare Slices...", "Compare with Previous Slice" | | off: slices are not compared |
+| | "Mobile Hub..." (macOS) | | off: there is no Mobile Hub |
+| Calibration | "Temperature", "Flow rate" ▸ ("Pass 1", "Pass 2", "YOLO (Recommended)", "YOLO (perfectionist version)"), "Pressure advance", "Retraction test", "Stringing (temp × retraction)", "Max flowrate", "Cornering", "Input Shaping" ▸ ("Input Shaping Frequency", "Input Shaping Damping/zeta factor"), "VFA", "Ironing flow", "Tutorial" | | off: calibration models are not built (the reference has the menu in the macOS bar and a title-bar menu elsewhere) |
+| Account (macOS) | sign-in for Snapmaker, Bambu Lab, Flashforge | | not shown: the cloud is not this task |
+| Window (macOS) | "Minimize" [Cmd+M], "Zoom" | | the system's own, in the window; off in a browser |
+| | "Next Project", "Previous Project" | Cmd+Shift+] / [ | wired (`project_cycle`); on with two projects |
+| | the open projects, the one shown ticked | | built: choosing one shows it |
+| Help | "Keyboard Shortcuts" | ? | built: the reference's lists (KBShortcutsDialog.cpp: "Global shortcuts", "Plater", "Gizmo", "Objects List", "Preview"; its "Sculpt Gizmo" list is left out, there being no sculpting), each key as this system shows it, the menu bar's keys taken from its table; what this app does not do is dimmed |
+| | "Setup Wizard" | | wired: Printer Selection (section 8; the app's guide is that page alone) |
+| | "Show Configuration Folder" | | off: folders are not shown in the system's file manager |
+| | "Migrate Filament Presets", "Import Profile" | | off: they wait for user presets |
+| | "Export Logs" | | off: the app keeps no logs |
+| | "Show Tip of the Day", "Check for Update", "Open Network Test", "Check Windows Firewall..." (Windows), "Bambu Lab Printer Help..." | | off, each with its reason |
+| | "&About %s" (Windows, Linux) | | built, as above |
+| Publish ("3D Models") | | | not shown: commented out in the reference |
+
+### The user presets' calls
+
+The user presets are built on another branch. "Import Configs..." and
+"Export Preset Bundle..." are on only when the session has one of these
+calls, looked up by name when the menu is first asked for (each is sent
+`{ "probe": true }`, and one the session does not have answers "there is
+no call named …"; a call that is there should answer a probe without
+acting): for import `preset_import`, `presets_import`, `import_presets`;
+for export `preset_export`, `presets_export`, `export_presets`,
+`preset_bundle_export`. The entry then calls the page's own `presetImport()`
+/ `presetExport()` where that branch defines one, else the call with
+`{ path }` (a configs file picked) or `{ dir }` (a folder picked).
+
+### How it was checked
+
+In a browser (`--serve`, dark and light, 1280 × 820 and 900 × 560, English
+and German): every menu opened by the pointer and the keys; File's New,
+Open, Save as, the next and previous project; a project opened from
+"Recent projects" after the server was started again; a recent file that
+was gone said so and was taken off; an OBJ imported (96 triangles, 24 × 24
+× 20 mm, as the C++ reads it); the objects exported as one STL (written,
+asked about when there, a missing folder said) and as STLs; G-code
+exported from File > Export after a slice; Edit's Copy, then Paste by
+Cmd+V, Undo by Cmd+Z, the entries reading "Undo: Paste From Clipboard",
+"Redo: Import Object"; the views by Cmd+1 and Cmd+3; "Keyboard
+Shortcuts" by "?"; Preferences to Deutsch and back; a tooltip of an entry
+that is off; letters, "?", Delete and Escape typed in a text field reached
+it and nothing else. The window: built (`tools/make_app.sh`), the menu's
+description and the window bar's make-up unit-tested; the system's bar
+itself was not clicked through.
+
+### Errors found in the C++
+
+- MainFrame.cpp l.5187–5188, `open_recent_project`: the box for a recent
+  project that is gone has one button (`wxOK | wxYES_DEFAULT`) but the
+  entry is removed only when it answers `wxID_YES`, which it never does.
+  The person is told "The project is no longer available." each time they
+  choose it, and it stays in the list for good.
+- AppConfig.cpp l.1642–1655 and l.1628: the recent projects are kept
+  under "01", "02", … in a `std::map` of strings and read back in that
+  map's order, so with `max_recent_count` over 99 (it takes up to 10000,
+  MainFrame.cpp l.4349) entry "100" is read between "10" and "11": after a
+  restart the list is out of order.
+- Plater.cpp l.26100–26105 and l.26150 ("Export all objects as STLs"):
+  the file is named by the object's name as it is, though the same file
+  sanitises it for "Export part as STL" (l.26160); an object named
+  "bracket / v2" (or with ":" on Windows) is written nowhere, and
+  `store_stl` (Format/STL.cpp l.42–50, "FIXME returning false even if
+  write failed") returns true whatever happened, so nothing is said: the
+  person finds files missing. `stl_write_binary` (admesh stl_io.cpp l.130)
+  also writes in place, so a failed write leaves a part of a file.
+- objparser.cpp l.238–241: a face naming vertex 0 (OBJ counts from 1)
+  becomes index -1, which OBJ.cpp l.78 and l.121 take as the end of a
+  face; such a file is read with its faces cut in the wrong places rather
+  than refused as "The file contains invalid vertex index.".
+- Snapmaker_Orca.cpp l.8236 (the command line's `--export-stl` /
+  `--export-stls`): `find_last_of(".stl")` looks for any one of the
+  characters '.', 's', 't', 'l', not for the extension, so an object whose
+  name ends in s, t or l ("MC Arms") is written as `obj_1_MC Arms` with no
+  extension, which the reference's own `--info` then refuses ("Unknown
+  file format").
+- MainFrame.cpp l.3708–3713 (macOS): "Clone selected" shows Ctrl+K but
+  hands the 3D view the key M; on Windows and Linux (l.3612) the entry
+  shows no key, while the shortcuts window lists Ctrl+K for it.

@@ -13,11 +13,15 @@
 <link rel="stylesheet" href="gl/gl.css">
 <link rel="stylesheet" href="edit.css">
 <link rel="stylesheet" href="hosts.css">
+<link rel="stylesheet" href="menu.css">
 <!-- The words first: it asks for the language's table, puts this page in it,
      then loads the page's scripts (i18n.js). -->
 <script src="i18n.js"></script>
 </head>
 <body>
+
+<!-- The menu bar, drawn here in a browser only: the app's window has the system's (menu.js, src/menubar.rs). -->
+<nav id="menubar" role="menubar" aria-label="Menu bar" hidden></nav>
 
 <!-- The project strip: the open projects, at the far left of every tab. -->
 <nav id="strip" aria-label="Open projects">
@@ -468,6 +472,40 @@
     </div>
     <button type="button" id="queue-close" class="primary">Close</button>
   </div>
+</dialog>
+
+<!-- "Keyboard Shortcuts" (KBShortcutsDialog.cpp), from the menu bar's table and the reference's lists (menu.js). -->
+<dialog id="shortcuts" aria-labelledby="shortcuts-title">
+  <form method="dialog">
+    <h2 id="shortcuts-title">Keyboard Shortcuts</h2>
+    <div id="shortcuts-body"></div>
+    <div class="row end"><button type="submit" value="ok" class="primary">Close</button></div>
+  </form>
+</dialog>
+
+<!-- "About EdgeSlicerRS". -->
+<dialog id="about" aria-labelledby="about-title">
+  <form method="dialog">
+    <h2 id="about-title"></h2>
+    <p data-no-t>EdgeSlicerRS: a slicer for EdgeSlicer, written anew in Rust. It follows the C++ EdgeSlicer it is built beside, 2.4.9.0.</p>
+    <p data-no-t class="quiet">Licence: AGPL-3.0.</p>
+    <div class="row end"><button type="submit" value="ok" class="primary">OK</button></div>
+  </form>
+</dialog>
+
+<!-- "Preferences": of the reference's (Preferences.cpp), what this app has. -->
+<dialog id="prefs" aria-labelledby="prefs-title">
+  <form method="dialog">
+    <h2 id="prefs-title">Preferences</h2>
+    <h3 class="caps">General</h3>
+    <div class="card">
+      <div class="card-row"><label for="prefs-language">Language</label><select id="prefs-language"></select></div>
+    </div>
+    <div class="row end">
+      <button type="submit" value="ok" class="primary">OK</button>
+      <button type="submit" value="cancel" formnovalidate>Cancel</button>
+    </div>
+  </form>
 </dialog>
 
 <div id="menu" role="menu" hidden></div>

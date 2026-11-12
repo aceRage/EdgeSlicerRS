@@ -27,7 +27,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use edge_config::{Settings, Value as Setting};
-use edge_engine::{Bed, HeightRange, Model, PartKind, SettingChange};
+use edge_engine::{Bed, LayerRange, Model, PartKind, SettingChange};
 use serde_json::{Value, json};
 
 use super::{Book, Described, address, checked, held, overrides, pages, rules, shown, tr};
@@ -35,9 +35,9 @@ use crate::api::{Session, lock, needed, whole};
 
 /// The words of this work that are not the reference's, in one place.
 pub(crate) mod words {
-    /// What the engine says of an item's option until it follows per-item
-    /// settings (see [`super::item_followed`]).
-    pub const NOT_PER_ITEM_YET: &str = "Not followed on an object, a part or a height range yet: the engine slices every object with the project's settings. What is set here is kept and saved with the project, and the C++ slicer follows it.";
+    /// An option the engine does not read set on that kind of item, where
+    /// it gives no note of its own (see [`super::item_followed`]).
+    pub const NOT_READ_THERE: &str = "not read by the engine set on";
     /// A key an item cannot set.
     pub const NOT_ON_THIS_ITEM: &str = "cannot be set on";
     /// A height range's top at or under its bottom.
@@ -91,8 +91,8 @@ impl ItemKind {
 
 /// What the engine does with an option set on an item.
 #[derive(Clone, Debug, PartialEq, Eq)]
-// Followed and Noted are what `item_followed` answers once the engine
-// follows an item's settings.
+// Noted: followed with a note of the engine's, which it gives none of on an
+// item yet (its notes on items are of what it does not follow).
 #[allow(dead_code)]
 pub(crate) enum Following {
     /// Followed, as the global page shows nothing.
@@ -103,18 +103,33 @@ pub(crate) enum Following {
     NotFollowed(String),
 }
 
-/// What the engine does with option `key` set on an item of `kind`. This
-/// is the one place the engine's answer plugs in: today the engine slices
-/// every object with the project's settings (the branch that makes it
-/// follow an object's, a part's and a height range's is apart from this
-/// one), so every option is "not followed per item yet". When the engine
-/// has it, this asks `edge_engine` whether `key` may be set on that kind
-/// of item and whether it follows it there, with `effective` (the item's
-/// settings as a slice would have them), and answers as the global page's
-/// marks do (section 12 of UI_PARITY.md).
+/// What the engine does with option `key` set on an item of `kind`: the
+/// one place the engine's answer plugs in (`edge_engine::settable`,
+/// `edge_engine::unfollowed_note`, regions.rs). Where the engine notes
+/// the option set there as not followed (a layer height on an object or a
+/// range, an object's supports and seam, the feature filaments, an
+/// object's option on a part), that note, the words "About this print"
+/// gives after a slice; else, where it follows it on that kind of item,
+/// followed; else not read there. `effective` is the item's settings as a
+/// slice has them: whether a slice reads an option with these values is
+/// the global page's mark (section 12), which the rules mostly hide or
+/// grey for these pages too.
 pub(crate) fn item_followed(kind: ItemKind, key: &str, effective: &Settings) -> Following {
-    let _ = (kind, key, effective);
-    Following::NotFollowed(words::NOT_PER_ITEM_YET.to_owned())
+    let _ = effective;
+    let settable = edge_engine::settable(key);
+    let followed = match kind {
+        ItemKind::Object => settable.followed_on_object,
+        ItemKind::Part => settable.followed_on_part,
+        ItemKind::Range => settable.followed_on_range,
+    };
+    if let Some(note) = edge_engine::unfollowed_note(key, kind.said()) {
+        return Following::NotFollowed(note);
+    }
+    if followed {
+        Following::Followed
+    } else {
+        Following::NotFollowed(format!("{key}: {} {}", words::NOT_READ_THERE, kind.said()))
+    }
 }
 
 /// The options an item of a kind may set, in the order of the pages.
@@ -180,7 +195,7 @@ struct Found {
     object_own: Vec<(String, String)>,
     own: Vec<(String, String)>,
     name: String,
-    range: Option<HeightRange>,
+    range: Option<LayerRange>,
 }
 
 fn found(model: &Model, named: Named) -> Result<Found, String> {
@@ -211,7 +226,7 @@ fn found(model: &Model, named: Named) -> Result<Found, String> {
             })
         }
         (_, Some(range)) => {
-            let ranges = object.height_ranges();
+            let ranges = object.layer_ranges();
             let held = ranges
                 .get(range)
                 .ok_or_else(|| format!("the object has no height range {}", range + 1))?;
@@ -421,14 +436,14 @@ fn new_range(
     max_z: f64,
     object_own: &[(String, String)],
     global: &Settings,
-) -> HeightRange {
+) -> LayerRange {
     let layer_height = object_own
         .iter()
         .find(|(key, _)| key == "layer_height")
         .map(|(_, value)| value.clone())
         .or_else(|| global.text("layer_height").map(str::to_owned))
         .unwrap_or_else(|| "0.2".into());
-    HeightRange {
+    LayerRange {
         min_z,
         max_z,
         settings: vec![
@@ -568,7 +583,7 @@ pub(crate) fn apply(
                 .objects()
                 .iter()
                 .find(|held| held.id() == object)
-                .map(|held| held.height_ranges())
+                .map(|held| held.layer_ranges())
                 .unwrap_or_default();
             let at = args
                 .get("range")
@@ -643,7 +658,7 @@ pub(crate) fn apply(
                 .objects()
                 .iter()
                 .find(|held| held.id() == object)
-                .map(|held| held.height_ranges())
+                .map(|held| held.layer_ranges())
                 .unwrap_or_default();
             let held = ranges
                 .get_mut(range)
@@ -664,8 +679,8 @@ pub(crate) fn apply(
 
 /// Ranges as they are to be kept: above the bed, each with its top over
 /// its bottom, none over another.
-fn check_ranges(ranges: &[HeightRange]) -> Result<(), String> {
-    let mut sorted: Vec<&HeightRange> = ranges.iter().collect();
+fn check_ranges(ranges: &[LayerRange]) -> Result<(), String> {
+    let mut sorted: Vec<&LayerRange> = ranges.iter().collect();
     sorted.sort_by(|a, b| a.min_z.total_cmp(&b.min_z));
     for range in &sorted {
         if range.max_z <= range.min_z {
@@ -693,7 +708,7 @@ fn check_ranges(ranges: &[HeightRange]) -> Result<(), String> {
 /// top of it; where the next starts at its top, the next split in two, the
 /// new one under; where there is a gap of a layer or more, the gap.
 fn add_after(
-    ranges: &mut Vec<HeightRange>,
+    ranges: &mut Vec<LayerRange>,
     at: usize,
     object_own: &[(String, String)],
     global: &Settings,

@@ -654,7 +654,7 @@ impl Session {
                     // every range carries (GUI_ObjectList.cpp
                     // `get_default_layer_config`).
                     "settings": own_count(&object.settings(), ItemKind::Object),
-                    "ranges": object.height_ranges().iter().map(|range| {
+                    "ranges": object.layer_ranges().iter().map(|range| {
                         let besides: Vec<(String, String)> = range.settings.iter().filter(|(key, _)| key != "layer_height").cloned().collect();
                         json!({
                             "min_z": range.min_z,

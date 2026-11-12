@@ -79,6 +79,7 @@ fn written(settings: &PrintSettings, speed_scaling: bool) -> String {
     let loops = [wall];
     let islands = [0..1];
     let layer = |z: f64| Layer {
+        region: None,
         z,
         height: 0.2,
         filament: 0,
@@ -253,6 +254,7 @@ fn without_contours_the_writer_lays_what_it_always_has() {
     let loops = [wall];
     let islands = [0..1];
     let layer = |z: f64| Layer {
+        region: None,
         z,
         height: 0.2,
         filament: 0,

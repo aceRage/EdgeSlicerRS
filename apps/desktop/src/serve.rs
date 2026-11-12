@@ -56,6 +56,12 @@ const HOSTS: [(&str, &str); 2] = [
     ("hosts.js", include_str!("../ui/hosts.js")),
     ("hosts.css", include_str!("../ui/hosts.css")),
 ];
+/// The menu bar: what its entries do and its keys, and the bar itself in
+/// a browser.
+const MENU: [(&str, &str); 2] = [
+    ("menu.js", include_str!("../ui/menu.js")),
+    ("menu.css", include_str!("../ui/menu.css")),
+];
 /// The page's words: the table of the language chosen, and then the
 /// page's other scripts (`i18n.js` loads them).
 const WORDS: [(&str, &str); 1] = [("i18n.js", include_str!("../ui/i18n.js"))];
@@ -226,12 +232,14 @@ fn handle(mut request: Request, session: &Arc<Session>, token: &str, port: u16) 
                 .iter()
                 .chain(&HOSTS)
                 .chain(&WORDS)
+                .chain(&MENU)
                 .any(|(known, _)| path[1..] == **known) =>
         {
             let (name, built_in) = EDIT
                 .iter()
                 .chain(&HOSTS)
                 .chain(&WORDS)
+                .chain(&MENU)
                 .find(|(known, _)| path[1..] == **known)
                 .expect("one of them is it");
             let kind = if name.ends_with(".css") {
