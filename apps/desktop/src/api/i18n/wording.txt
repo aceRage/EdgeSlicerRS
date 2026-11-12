@@ -143,6 +143,9 @@ World	GUI/Gizmos/GizmoObjectManipulation.cpp:849
 X-Ray	GUI/MainFrame.cpp:3864
 Your own filament prices and machine rates, over the presets' values	GUI/MainFrame.cpp:3949
 
+Enable painted fuzzy skin for this object	GUI/Gizmos/GLGizmoFuzzySkin.cpp:346
+Warning: Fuzzy skin is disabled, painted fuzzy skin will not take effect!	GUI/Gizmos/GLGizmoFuzzySkin.cpp:341
+
 [own]
 # This app's own words on the static page, with no counterpart in the
 # C++: shown in English in every language.
@@ -275,7 +278,7 @@ Followed with a note
 Off: the printer's value for this filament's extruder is used.
 Off: the process's value is used.
 ${option.label}: values to pick from
-${option.label}: reset to the preset's value
+reset to the preset's value
 ${option.label}: the filament's own value
 1 setting changed
 ${count} settings changed
@@ -287,6 +290,29 @@ No setting matches.
 The project names no filament preset.
 The project names no printer.
 ${name} (the project's own settings)
+# Settings of an object, a part and a height range (ui/objsettings.js,
+# objects.js).
+reset to the value over it
+Whose process settings are shown
+Select an object, a part or a height range in the object list to set settings of its own.
+Several items are selected: select one to set its settings.
+A negative part, a support blocker, a support enforcer and a Precise Seam part have no settings of their own.
+The object has no height ranges.
+Objects have settings of their own
+Bottom of the range
+Top of the range
+# The same work's own sentences in the session
+# (src/api/settings/items.rs, `words`), English in every language as
+# the session's own sentences are.
+not read by the engine set on
+cannot be set on
+The top of a height range must be above its bottom.
+Height ranges cannot overlap:
+There is no room for another height range after this one.
+Edit height range
+an object
+a part
+a height range
 
 # The menu bar's entries that are not built: what each waits for
 # (src/api/menu.rs), shown as the entry's tooltip.

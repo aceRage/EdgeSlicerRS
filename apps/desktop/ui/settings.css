@@ -62,6 +62,26 @@ textarea.code { font: var(--size-small)/1.5 var(--font-mono); white-space: pre; 
 
 /* ---- the Process section ---- */
 
+/* "Global" / "Objects" (objsettings.js): two joined buttons, the one in
+   force on the accent's tint, as a tool that is on; "Objects" carries the
+   dot of what is set by hand while anything has settings of its own. To
+   its right, what the pages are of, cut with an ellipsis. */
+.process-mode { display: flex; align-items: center; gap: var(--space-2); min-width: 0; margin-bottom: var(--space-1); }
+.segmented { flex: none; }
+.segmented > button { position: relative; height: var(--control-s); padding: 0 var(--space-2); color: var(--text-2); font-size: var(--size-small); line-height: 1; }
+.segmented > button[aria-pressed="true"] { z-index: var(--z-raised); border-color: var(--accent); background: var(--accent-soft); color: var(--text-1); font-weight: 600; }
+.segmented > button.set::after { content: ""; position: absolute; top: 3px; right: 3px; width: 5px; height: 5px; border-radius: 50%; background: var(--accent); }
+.process-item { flex: 1; min-width: 0; overflow: hidden; color: var(--text-1); font-size: var(--size-label); white-space: nowrap; text-overflow: ellipsis; }
+.process-item[hidden] { display: none; }
+.item-hint { margin: var(--space-2) 0; }
+/* An object's height ranges, "Layers" selected: "Range", bottom - top,
+   remove, add. */
+.range-page { gap: var(--space-1); }
+.range-row { display: grid; grid-template-columns: auto minmax(0, 1fr) auto minmax(0, 1fr) var(--control-s) var(--control-s); align-items: center; gap: var(--space-1); }
+.range-label { color: var(--text-2); font-size: var(--size-label); }
+.range-dash { color: var(--text-3); }
+.range-row .unit input { min-width: 0; }
+
 /* The pages' tabs, the process's in the sidebar and a filament's or the
    printer's in the panel: the page's tabs (.tabs.scrolls, style.css),
    smaller, on one line that scrolls sideways where the sidebar is too

@@ -162,9 +162,41 @@
         if (this.open === open) this.close();
         return false;
       }
+      if (kind === 'fuzzy_skin') await this.fuzzyState(open);
       this.panel();
       this.stage.frame();
       return true;
+    },
+
+    // Whether fuzzy skin is off for the object as its settings stand (its
+    // own `fuzzy_skin`, else the project's: GLGizmoFuzzySkin.cpp
+    // `on_render_input_window`), for the panel's warning.
+    async fuzzyState(open) {
+      try {
+        const answer = await this.host.call('item_settings', { project: open.project, object: open.objectId });
+        const value = (answer.set && answer.set.fuzzy_skin) || (answer.values && answer.values.fuzzy_skin);
+        open.fuzzyOff = value === 'disabled_fuzzy';
+      } catch (error) {
+        open.fuzzyOff = false;
+      }
+    },
+
+    // "Enable painted fuzzy skin for this object": the object's own
+    // `fuzzy_skin` set to "None (allow paint)", as the reference sets it;
+    // here one step of the history (the reference takes none).
+    async enableFuzzy() {
+      const open = this.open;
+      if (!open) return;
+      try {
+        const answer = await this.host.call('scene_edit', { project: open.project, op: 'item_set', object: open.objectId, key: 'fuzzy_skin', value: 'none' });
+        GL.editor.take(answer);
+      } catch (error) {
+        this.host.say(error.message, true);
+      }
+      if (this.open === open) {
+        await this.fuzzyState(open);
+        this.panel();
+      }
     },
 
     // Closes the tool open, if any.
@@ -217,7 +249,11 @@
       const revision = shown.edit ? shown.edit.revision : null;
       if (open.ready && revision !== open.revision) {
         open.revision = revision;
-        this.queue(() => this.send({ op: 'refresh' }).then(() => this.panel()));
+        this.queue(() => this.send({ op: 'refresh' }).then(async () => {
+          // An object's own fuzzy skin may have been set or taken back.
+          if (open.kind === 'fuzzy_skin') await this.fuzzyState(open);
+          this.panel();
+        }));
       }
     },
 
@@ -657,6 +693,13 @@
       // gives them).
       const note = this.note();
       if (note) rows.push(el('p', { className: 'edit-hint paint-note', textContent: note }));
+      // Fuzzy skin off for the object: what is painted will not take
+      // effect, and the link turns it on for the object alone.
+      if (open.kind === 'fuzzy_skin' && open.fuzzyOff) {
+        const enable = el('button', { type: 'button', className: 'link', textContent: t('Enable painted fuzzy skin for this object') });
+        enable.addEventListener('click', () => this.queue(() => this.enableFuzzy()));
+        rows.push(el('p', { className: 'warn', textContent: t('Warning: Fuzzy skin is disabled, painted fuzzy skin will not take effect!') }), enable);
+      }
       const focused = node.contains(document.activeElement) ? document.activeElement.getAttribute('aria-label') : null;
       node.replaceChildren(...rows);
       if (focused) {

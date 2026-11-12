@@ -36,6 +36,7 @@
 //!   `TabPrinter::toggle_options` in [`printer_rules`]).
 
 mod filament_rules;
+pub(super) mod items;
 pub(super) mod kept;
 mod printer_rules;
 mod rules;

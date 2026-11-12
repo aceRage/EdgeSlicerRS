@@ -695,8 +695,8 @@ Working:
   - An object's own brim (`brim_type`, `brim_width`, `brim_object_gap`).
   - `edge_engine::settable(key)` says whether the reference reads a
     setting on an object, a part or modifier, a height range, and
-    whether this engine follows it there; the desktop app builds its
-    object and part settings lists on it.
+    whether this engine follows it there; the desktop app's pages of an
+    object's, a part's and a range's settings show it for each option.
 
   What is followed where (anything else set on an object, part,
   modifier or range that differs from the plate is a note naming it and

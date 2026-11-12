@@ -37,7 +37,9 @@ mod unfollowed;
 use std::{error::Error, fmt};
 
 pub use clock::timestamp;
-pub use edge_3mf::{CustomGcode, CustomItem, CustomKind, CustomMode, PaintKind, PartKind};
+pub use edge_3mf::{
+    CustomGcode, CustomItem, CustomKind, CustomMode, LayerRange, PaintKind, PartKind,
+};
 pub use edge_mesh::Transform;
 /// Painting a mesh's triangles, and finding which one a line of sight
 /// meets, for the painting tools of whoever shows a model.
@@ -45,6 +47,7 @@ pub use edge_mesh::{Mesh, raycast, selector};
 pub use followed::{Followed, followed, followed_in, settled};
 pub use job::{BedType, Chosen, Job, Overrides, Sourced, prepare, prepare_noted};
 pub use load::{Loaded, Opened, OwnObject, OwnVolume, PlateInfo, open};
+pub use model::SettingChange;
 pub use model::{
     Bed, Changed, FIRST_LATER_LAYER, FlushBasis, LAST_LAYER, LONGEST_PLATE_NAME, LayerSequence,
     Look, MAX_FILAMENTS, MAX_PLATES, Model, ModelCopy, ModelObject, ModelPlate, NEXT_COLOURS,
@@ -54,7 +57,7 @@ pub use model::{
 pub use pipeline::{Gcode, Sliced, Timings, slice};
 pub use presets::{Library, ModelPreset, PrinterModel, Shelf};
 pub use preview::Stroke;
-pub use regions::{Scope, Settable, scope, settable};
+pub use regions::{Scope, Settable, scope, settable, unfollowed_note};
 pub use scene::{Mark, Placing, Scene, SceneObject, ScenePlate, plate_position};
 pub use toolpath::{Feature, Move, MoveKind, Toolpath, ToolpathLayer, read_toolpath};
 

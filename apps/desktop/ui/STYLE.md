@@ -26,6 +26,7 @@ fixed-width face for values.
 | `hosts.css` | Sending to printers (`hosts.js`): "Physical Printer" and "Send G-code to printer host" (`dialog.host-dialog`), the tick with its words (`label.tick`), the upload queue, and Device with a printer's page and its files |
 | `presets.css` | A person's own presets (`presets.js`): the preset row with its cog, the dialog that asks for a name, "Transfer or discard changes" and "Compare presets" |
 | `edit.css` | Prepare as an editor: where its toolbar and the number fields stand over the stage, the object list; a plate's own tools, its lock mark and "Plate Settings" (`plates.js`) |
+| `objsettings.js` | The Process section's "Global" / "Objects" and an item's pages (drawn by `settings.js`); its rules are in `settings.css` and `edit.css` |
 | `app.js`, "controls" | `listbox` (the page's own list for a `<select>`) and the tooltips |
 | `menu.css` | The menu bar in a browser (`#menubar`, its menus `.menubar-panel`), "Keyboard Shortcuts" (`#shortcuts`) and Preferences (`#prefs`) |
 
@@ -244,6 +245,25 @@ same row on every kind's pages):
   C++ line under an `.opt-line-label`, indented. An extruder's own option
   is named `key#n` in `data-key`; field ids are `po-` (process), `fo-`
   (filament), `mo-` (printer) and the name.
+
+### Two states of whose ("Global" / "Objects")
+
+```html
+<div class="joined segmented" role="group" aria-label="…">
+  <button type="button" aria-pressed="true">Global</button><button type="button" aria-pressed="false">Objects</button>
+</div>
+```
+
+Two joined buttons (`.joined.segmented`, `settings.css`) where a choice
+changes what a whole section is about rather than one setting: the one in
+force has the accent's line round it on the accent's tint and its word in
+`--text-1` and bold, the other is plain in `--text-2`; `--control-s` high,
+`--size-small`. A `.set` on a button puts the dot of what is set by hand
+at its corner (as a toolbar tool's), here "Objects" while anything has
+settings of its own. Beside it, what the section is now about
+(`.process-item`: `--text-1`, cut with an ellipsis, whole in its title).
+A switch (above) stays for a thing that is on or off; this is for which
+of two.
 
 ### Tabs
 
@@ -624,6 +644,22 @@ and bar), and only parts of one object are selected at once. A part that
 is not printed (`.helper`: a modifier, a negative part, a support blocker
 or enforcer) has its name in `--text-3`, slanted; what it is is in the
 name's tooltip.
+
+An item with settings of its own (an object, a part, a height range)
+has after its name a `button.icon.tool.obj-own` (in `.obj-name-cell`,
+which lays the name and it in a row): three sliders in strokes of the
+accent, the mark of what is set by hand, its tooltip the reference's
+("Click the icon to reset all settings of the object"); a click takes them
+away, one step. "Layers" (`.obj-row.child.layers`) and each height range
+(`.obj-row.child.range`, a further 16 px in) are child rows at
+`--size-label`, selected as any row is.
+
+When "Layers" is selected the Process section lists the ranges' heights
+(`.range-page`): a `.range-row` each, "Range" in `--text-2`, two `.unit`
+text fields in the fixed-width face with "mm", a dash in `--text-3`, and
+the two `.tool`s "Remove height range" (a minus) and "Add height range"
+(a plus). What there is not to show ("Select an object, a part or a height
+range…") is a `p.quiet.item-hint` in the page's place.
 
 A plate that is locked has a lock drawn after its name at its row and in
 the corner of its tile (`svg.lock-mark`, 11 px, `--text-3`): a mark, not

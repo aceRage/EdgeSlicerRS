@@ -71,12 +71,18 @@ const EDIT_ICON = 'M10.6,2.4l3,3l-8.1,8.1H2.5v-3ZM9,4l3,3';
 
 // The process's fields keep the names they had (po-…); a filament's are
 // fo-…, the printer's mo-… (a machine's).
-const bookId = (book, name) => `${{ process: 'po', filament: 'fo', printer: 'mo' }[book.kind]}-${name.replace('#', '-')}`;
+const bookId = (book, name) => `${{ process: 'po', filament: 'fo', printer: 'mo', item: 'io' }[book.kind]}-${name.replace('#', '-')}`;
 const baseKey = (name) => name.split('#')[0];
 const extruderOf = (name) => (name.includes('#') ? Number(name.split('#')[1]) : null);
 
 async function loadPages(book) {
   if (book.data) return book.data;
+  // An object's, a part's or a height range's pages are the process's,
+  // fewer (objsettings.js).
+  if (book.kind === 'item') {
+    book.data = await loadPages(processPages);
+    return book.data;
+  }
   const data = book.kind === 'process' ? await call('process_pages') : await call('settings_pages', { kind: book.kind });
   if (!settingsMode.loaded) {
     settingsMode.loaded = true;
@@ -128,6 +134,7 @@ function pageTitle(book, title) {
 function bookPages(book) {
   const data = book.data;
   if (!data) return [];
+  if (book.kind === 'item') return itemBookPages(book);
   const answer = book.answer;
   if (!answer || !answer.pages) return data.pages.map((page) => ({ title: page.title, groups: page.groups, extruder: null }));
   const away = new Set(answer.away || []);
@@ -296,7 +303,7 @@ function settingsRow(book, name, option, label = null) {
   const labelNode = el('label', { className: 'opt-label', htmlFor: id, textContent: label || option.label });
   const follow = el('span', { className: 'opt-follow', hidden: true });
   follow.setAttribute('role', 'img');
-  const reset = el('button', { type: 'button', className: 'icon opt-reset', title: REVERT, ariaLabel: `${option.label}: reset to the preset's value` }, svg(REVERT_ICON));
+  const reset = el('button', { type: 'button', className: 'icon opt-reset', title: book.revert || REVERT, ariaLabel: `${option.label}: ${book.revertLabel || 'reset to the preset\'s value'}` }, svg(REVERT_ICON));
   const commit = (value, error) => attempt(async () => {
     if (error) {
       // Refused here, with the reason: nothing is sent, and the field
@@ -343,8 +350,8 @@ function settingsRow(book, name, option, label = null) {
 // set by hand, hidden or greyed out, and what the engine does with it.
 // A field that is being typed in is left as it is, unless `force`d back
 // to what holds (a value that was refused).
-function showSettingsRow(book, name, { force = false } = {}) {
-  const row = book.rows.get(name);
+function showSettingsRow(book, name, { force = false, row: given = null } = {}) {
+  const row = given || book.rows.get(name);
   const answer = book.answer;
   if (!row || !answer) return;
   const option = row.option;
@@ -381,7 +388,9 @@ function showSettingsRow(book, name, { force = false } = {}) {
   const unread = !off && answer.unread.has(name);
   row.node.classList.toggle('unread', unread);
   row.node.classList.toggle('noted', Boolean(notes));
-  const said = notes ? `${WITH_A_NOTE}: ${notes.join('\n')}` : (unread ? NOT_FOLLOWED : '');
+  // An item's pages say why for themselves (`unread_note`, `why`).
+  const notFollowed = answer.unread_note || (answer.why && answer.why[name]) || NOT_FOLLOWED;
+  const said = notes ? `${WITH_A_NOTE}: ${notes.join('\n')}` : (unread ? notFollowed : '');
   row.follow.hidden = !said;
   row.follow.title = said;
   row.follow.setAttribute('aria-label', said);
@@ -450,7 +459,7 @@ function showSettingsPage(book) {
       for (const row of line.rows) {
         const visible = inMode(row.option) && !answer.hidden.has(row.key);
         row.node.hidden = !visible;
-        if (visible) { showSettingsRow(book, row.key); lineShown = true; }
+        if (visible) { showSettingsRow(book, row.key, { row }); lineShown = true; }
       }
       // The rules may name a line their own way ("Cool Steel Plate").
       if (line.title) line.title.textContent = (answer.labels && answer.labels[line.first] && t(answer.labels[line.first])) || line.label;
@@ -510,13 +519,18 @@ function takeAnswer(book, answer, asked) {
   return true;
 }
 
-const askFor = (book) => (book.kind === 'process' ? {} : { kind: book.kind, ...(book.kind === 'filament' ? { filament: book.filament } : {}) });
+const askFor = (book) => {
+  if (book.kind === 'process') return {};
+  if (book.kind === 'item') return itemArgs(book.item);
+  return { kind: book.kind, ...(book.kind === 'filament' ? { filament: book.filament } : {}) };
+};
+const askCall = (book) => ({ process: 'process', item: 'item_settings' }[book.kind] || 'settings');
 
 // Asks what holds for the project shown and shows the page it was on.
 async function showSettings(book) {
   const project = state.project;
   const asked = ++book.asked;
-  const [, answer] = await Promise.all([loadPages(book), call(book.kind === 'process' ? 'process' : 'settings', { project: project.id, ...askFor(book) })]);
+  const [, answer] = await Promise.all([loadPages(book), call(askCall(book), { project: project.id, ...askFor(book) })]);
   if (project.id !== activeId() || !takeAnswer(book, answer, asked)) return;
   book.page = kept(project.id)[`${book.kind}Page`] || book.page;
   // Another preset under what was set by hand: said as the reference says
@@ -538,7 +552,13 @@ async function showSettings(book) {
 // The sidebar's process pages, with the rest of the sidebar; and the
 // panel, when one is open, with them.
 async function showProcess() {
-  await showSettings(processPages);
+  // "Objects": the settings of what is selected (objsettings.js).
+  if (objectsMode.on) await showItemSettings();
+  else {
+    showModeHead(null);
+    $('process-search').hidden = false;
+    await showSettings(processPages);
+  }
   if (presetPanel.book) await showPresetPanel();
 }
 
@@ -546,6 +566,7 @@ async function showProcess() {
 // all of them back (`reset`); then shows what came of it. The slices made
 // before go, as with anything else the project is sliced with.
 async function setSettings(book, args) {
+  if (book.kind === 'item') { await itemSet(book, args); return; }
   const project = state.project;
   const asked = ++book.asked;
   const answer = book.kind === 'process'
@@ -729,7 +750,7 @@ document.addEventListener('scripts-loaded', () => {
 function wireSettings(book) {
   const prefix = book.prefix;
   const search = $(`${prefix}-search`);
-  const current = () => (prefix === 'preset' ? presetPanel.book : book);
+  const current = () => (prefix === 'preset' ? presetPanel.book : (book === processPages ? processBook() : book));
   search.addEventListener('input', () => { const each = current(); if (!each) return; each.at = 0; showSettingsSearch(each); });
   search.addEventListener('keydown', (event) => {
     const each = current();
@@ -782,7 +803,7 @@ document.addEventListener('scripts-loaded', () => {
       settingsMode.advanced = $(id).checked;
       for (const other of ['process-advanced', 'preset-advanced']) $(other).checked = settingsMode.advanced;
       remembered.set('process.advanced', settingsMode.advanced ? '1' : '0');
-      for (const book of [processPages, presetPanel.book]) {
+      for (const book of [processBook(), presetPanel.book]) {
         if (!book) continue;
         showSettingsPage(book);
         showSettingsSearch(book);

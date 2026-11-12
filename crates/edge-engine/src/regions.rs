@@ -455,6 +455,17 @@ pub fn settable(key: &str) -> Settable {
     }
 }
 
+/// The note a slice gives for `key` set on `on` (an object, a part, a
+/// modifier or a height range, as the note names it) where it is not
+/// followed there, in the words [`Sliced::gaps`](crate::Sliced) uses; none
+/// where it is followed, or where the reference takes no notice of it
+/// either. For the desktop app's pages of an object's settings.
+pub fn unfollowed_note(key: &str, on: &str) -> Option<String> {
+    let mut set = BTreeMap::new();
+    set.insert(key.to_owned(), BTreeSet::from([on.to_owned()]));
+    unfollowed(&set).into_iter().next()
+}
+
 /// The settings every stage that is worked out region by region reads:
 /// what a region's own settings change. Found by doing that work's
 /// reading with defaults and with each kind of fill, wall and skin, as

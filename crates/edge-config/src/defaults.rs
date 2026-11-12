@@ -140,7 +140,7 @@ pub fn serialized(key: &str, value: &Value) -> String {
 /// quotes, or with semicolons and no spaces, is a list of texts; two or
 /// more numbers between commas are a list of numbers; anything else is
 /// one value.
-fn deserialized(text: &str) -> Value {
+pub fn deserialized(text: &str) -> Value {
     let texts = text.starts_with('"') || (text.contains(';') && !text.contains(' '));
     if texts {
         let mut items = Vec::new();
