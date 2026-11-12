@@ -29,10 +29,16 @@ use serde_json::{Value, json};
 use super::{Done, File, Session, bed_of, lock};
 
 /// The calls answered here as JSON.
-pub(super) const JSON: [&str; 2] = ["scene", "toolpath"];
+pub(super) const JSON: [&str; 3] = ["scene", "toolpath", "gcode_lines"];
 
 /// The calls answered here as bytes.
-pub(super) const BYTES: [&str; 4] = ["scene_mesh", "bed_model", "bed_texture", "toolpath_moves"];
+pub(super) const BYTES: [&str; 5] = [
+    "scene_mesh",
+    "bed_model",
+    "bed_texture",
+    "toolpath_moves",
+    "toolpath_lines",
+];
 
 /// What is kept between calls so that a file is read once and a G-code
 /// file turned into moves once. An entry goes when what it was made from
@@ -188,11 +194,26 @@ fn move_bytes(out: &mut Vec<u8>, step: &edge_engine::Move) {
 }
 
 /// A sliced plate as moves: what `toolpath` says of them, and every move
-/// as [`move_bytes`] writes it, one after another.
+/// as [`move_bytes`] writes it, one after another. For a print read back
+/// from its G-code, the line of the file each move was read from, and
+/// where each line of the file ends (GCodeProcessor's `lines_ends`): made
+/// once for each slice, with the moves, for the G-code window.
 pub(super) struct Paths {
     index: Value,
     records: Vec<u8>,
+    lines: Vec<u32>,
+    line_ends: Vec<usize>,
 }
+
+/// The first four bytes of a stretch of moves' lines.
+pub const LINES_MAGIC: &[u8; 4] = b"EDGL";
+
+/// The most lines of G-code one answer of `gcode_lines` carries.
+pub const GCODE_LINES_AT_ONCE: usize = 2048;
+
+/// The most characters of a line the G-code window shows: a longer one is
+/// cut to 52 and given "..." (GCodeViewer.cpp `GCodeWindow::render`).
+const LINE_SHOWN: usize = 55;
 
 fn paths_of(done: &Done) -> Paths {
     let (source, path) = match &done.gcode {
@@ -203,10 +224,42 @@ fn paths_of(done: &Done) -> Paths {
     for step in &path.moves {
         move_bytes(&mut records, step);
     }
+    let mut index = index_of(source, &path);
+    let line_ends: Vec<usize> = match &done.gcode {
+        Ok(gcode) => {
+            let text = &gcode.text;
+            let mut ends: Vec<usize> = text
+                .iter()
+                .enumerate()
+                .filter(|(_, byte)| **byte == b'\n')
+                .map(|(at, _)| at + 1)
+                .collect();
+            if ends.last().copied().unwrap_or(0) < text.len() {
+                ends.push(text.len());
+            }
+            ends
+        }
+        Err(_) => Vec::new(),
+    };
+    index["gcode_lines"] = json!(line_ends.len());
     Paths {
-        index: index_of(source, &path),
+        index,
         records,
+        lines: path.lines,
+        line_ends,
     }
+}
+
+/// A line of G-code as the G-code window shows it: no new line, and cut
+/// short with "..." past 55 characters.
+fn shown_line(raw: &[u8]) -> String {
+    let text = String::from_utf8_lossy(raw);
+    let text = text.trim_end_matches(['\n', '\r']);
+    if text.chars().count() <= LINE_SHOWN {
+        return text.to_owned();
+    }
+    let cut: String = text.chars().take(LINE_SHOWN - 3).collect();
+    format!("{cut}...")
 }
 
 /// What the page needs to know of a toolpath before it asks for moves.
@@ -605,7 +658,12 @@ impl Session {
             .enumerate()
             .map(|(index, plate)| {
                 let (x, y) = origin(index);
-                json!({ "id": plate.id(), "name": plate.name(), "origin": [mm(x), mm(y)] })
+                json!({
+                    "id": plate.id(),
+                    "name": plate.name(),
+                    "origin": [mm(x), mm(y)],
+                    "locked": plate.locked(),
+                })
             })
             .collect();
         let named = |path: &Option<PathBuf>| {
@@ -650,10 +708,39 @@ impl Session {
         Ok(index)
     }
 
+    /// Lines of a sliced plate's G-code, for the G-code window: from line
+    /// `from` (counting from 1) on, `count` of them, at most
+    /// [`GCODE_LINES_AT_ONCE`], each as the window shows it.
+    fn gcode_lines(&self, args: &Value) -> Result<Value, String> {
+        let (done, _) = self.done(args)?;
+        let paths = self.paths(&done);
+        let gcode = done.gcode.as_ref().map_err(String::clone)?;
+        let total = paths.line_ends.len();
+        let from = (super::whole(args, "from")? as usize).max(1);
+        if from > total + 1 {
+            return Err(format!("there is no line {from}; there are {total}"));
+        }
+        let count = (super::whole(args, "count")? as usize)
+            .min(GCODE_LINES_AT_ONCE)
+            .min(total + 1 - from);
+        let lines: Vec<String> = (from..from + count)
+            .map(|line| {
+                let start = if line == 1 {
+                    0
+                } else {
+                    paths.line_ends[line - 2]
+                };
+                shown_line(&gcode.text[start..paths.line_ends[line - 1]])
+            })
+            .collect();
+        Ok(json!({ "total": total, "from": from, "lines": lines }))
+    }
+
     pub(super) fn scene_json(&self, name: &str, args: &Value) -> Result<Value, String> {
         match name {
             "scene" => self.scene(args),
             "toolpath" => self.toolpath(args),
+            "gcode_lines" => self.gcode_lines(args),
             other => Err(format!("there is no call named {other}")),
         }
     }
@@ -716,9 +803,48 @@ impl Session {
                     .min(MOVES_AT_ONCE);
                 Ok(moves_bytes(&paths.records, from, count))
             }
+            "toolpath_lines" => {
+                let (done, _) = self.done(args)?;
+                let paths = self.paths(&done);
+                let total = paths.lines.len();
+                let from = super::whole(args, "from")? as usize;
+                if from > total {
+                    return Err(format!("there is no move {from}; there are {total}"));
+                }
+                let count = (super::whole(args, "count")? as usize)
+                    .min(total - from)
+                    .min(MOVES_AT_ONCE);
+                Ok(lines_bytes(&paths.lines, from, count))
+            }
             other => Err(format!("there is no call named {other}")),
         }
     }
+}
+
+/// The line of the G-code each of a stretch of moves was read from, as
+/// bytes. All numbers little-endian:
+///
+/// | at | size | what |
+/// | --- | --- | --- |
+/// | 0 | 4 | the letters `EDGL` |
+/// | 4 | 4 | `u32` version, 1 |
+/// | 8 | 4 | `u32` the index of the first move here |
+/// | 12 | 4 | `u32` N, how many moves are here: what was asked for, less at the end, and never more than 262144 |
+/// | 16 | 4 | `u32` how many moves have a line in all (none for a print that has no G-code) |
+/// | 20 | 4 | `u32` the size of one entry, 4 |
+/// | 24 | 4·N | `u32` each move's line, counting from 1 |
+fn lines_bytes(lines: &[u32], from: usize, count: usize) -> Vec<u8> {
+    let mut out = Vec::with_capacity(MOVES_HEADER + count * 4);
+    out.extend_from_slice(LINES_MAGIC);
+    out.extend_from_slice(&1u32.to_le_bytes());
+    out.extend_from_slice(&(from as u32).to_le_bytes());
+    out.extend_from_slice(&(count as u32).to_le_bytes());
+    out.extend_from_slice(&(lines.len() as u32).to_le_bytes());
+    out.extend_from_slice(&4u32.to_le_bytes());
+    for line in &lines[from..from + count] {
+        out.extend_from_slice(&line.to_le_bytes());
+    }
+    out
 }
 
 /// A stretch of moves as bytes. All numbers little-endian:

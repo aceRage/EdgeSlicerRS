@@ -28,6 +28,15 @@ pub(crate) fn notes(settings: &Settings) -> Vec<String> {
                 .to_owned(),
         );
     }
+    // Printing one object after another is not done yet: every object
+    // is printed together, a layer at a time.
+    if settings.text("print_sequence") == Some("by object") {
+        notes.push(
+            "print_sequence \"by object\": printing object by object is not followed; \
+             every object is printed together, layer by layer"
+                .to_owned(),
+        );
+    }
     notes
 }
 
@@ -87,5 +96,15 @@ mod tests {
         assert!(said[0].starts_with("spiral_mode \"1\": vase mode is not followed"));
         let plain = Settings::from_json(r#"{"spiral_mode": "0"}"#).unwrap();
         assert!(notes(&plain).is_empty());
+    }
+
+    #[test]
+    fn printing_object_by_object_is_said_not_to_be_followed() {
+        let by_object = Settings::from_json(r#"{"print_sequence": "by object"}"#).unwrap();
+        let said = notes(&by_object);
+        assert_eq!(said.len(), 1);
+        assert!(said[0].starts_with("print_sequence \"by object\": printing object by object"));
+        let by_layer = Settings::from_json(r#"{"print_sequence": "by layer"}"#).unwrap();
+        assert!(notes(&by_layer).is_empty());
     }
 }

@@ -106,6 +106,19 @@
           if (group.plate) {
             title.addEventListener('click', () => this.host.plate(group.plate.id));
             title.addEventListener('contextmenu', (event) => { event.preventDefault(); GL.edit.plateMenu(event.clientX, event.clientY, group.plate.id); });
+            if (GL.plateTools) title.addEventListener('keydown', (event) => GL.plateTools.keyMenu(event, title, group.plate.id));
+            // A locked plate says so (`PartPlate::is_locked`).
+            if (group.plate.locked) {
+              title.title = `${name}: locked`;
+              const lock = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
+              lock.setAttribute('viewBox', '0 0 16 16');
+              lock.setAttribute('class', 'lock-mark');
+              lock.setAttribute('aria-hidden', 'true');
+              const line = document.createElementNS('http://www.w3.org/2000/svg', 'path');
+              line.setAttribute('d', 'M3.5,7.5h9v7h-9ZM5.5,7.5v-2.5a2.5,2.5,0,0,1,5,0v2.5');
+              lock.append(line);
+              head.append(lock);
+            }
             if (data.plates.length > 1) {
               const remove = el('button', { type: 'button', className: 'icon tool', title: 'Remove current plate (if not last one)', textContent: '✕' });
               remove.setAttribute('aria-label', `Remove plate ${group.plate.id}`);

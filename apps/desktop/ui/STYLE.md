@@ -23,7 +23,7 @@ fixed-width face for values.
 | `printers.css` | The printer card and Printer Selection: only what is theirs alone |
 | `settings.css` | The pages of settings (`settings.js`; the process's, a filament's, the printer's): the switch and the box of text, which came with them, the option row, the pages' tabs, the search's list, the panel a filament's or the printer's pages open in; and the sidebar's width |
 | `gl/gl.css` | What lies over the 3D views that `gl/` draws: the navigator, the sliders, the position window, the labels |
-| `edit.css` | Prepare as an editor: where its toolbar and the number fields stand over the stage, the object list |
+| `edit.css` | Prepare as an editor: where its toolbar and the number fields stand over the stage, the object list; a plate's own tools, its lock mark and "Plate Settings" (`plates.js`) |
 | `app.js`, "controls" | `listbox` (the page's own list for a `<select>`) and the tooltips |
 
 The theme follows the system (`prefers-color-scheme`); there is no switch in
@@ -79,6 +79,7 @@ no thinner.
 | `--text-2` | Labels, what explains | 8.4 : 1 | 7.1 : 1 |
 | `--text-3` | Hints, units, placeholders, group labels | 5.9 : 1 | 4.7 : 1 |
 | `--text-off` | What is off (not held to a contrast) | 2.8 : 1 | 2.2 : 1 |
+| `--code-command` | A G-code line's command, in the G-code window | 9.6 : 1 on the overlay | 6.9 : 1 on white |
 
 Every level but the last keeps 4.5 : 1 on every surface it is used on.
 Check a new pairing before using it.
@@ -409,6 +410,29 @@ and lays itself out in parts, ending in
 Open with `showModal()` so the keys stay inside it. Escape closes the
 innermost thing first.
 
+A dialog of settings in rows ("Plate Settings") is a `.card` of
+`.card-row`s inside the form: the label on the left in `--text-2`, the
+control on the right 240 px wide (a `bare` listbox, a text field); what a
+row opens (an order, ranges of layers) is a row of its own under it, and
+what is wrong stands in `--danger` at the left of the buttons. A list that
+is set by the code is set with its value and a `data-value` attribute, so
+that its closed face (which follows the `<select>`'s attributes) shows it.
+A box that only tells something ("Plate bed types reset") is `#confirm`
+with its second button hidden (`inform` in `app.js`).
+
+### An order of filaments
+
+```html
+<div class="ps-order" role="list"><button class="ps-chip" role="listitem" data-filament="3"><span class="swatch"></span>3</button>…</div>
+```
+
+What the reference draws as a row of colours to drag ("First layer
+filament sequence", a range of later layers): a chip for each filament,
+its swatch and its number in the fixed-width face, on the well with a
+hairline round it. A chip is dragged into place by the pointer (the one
+held is ringed in the accent), or given the keys and moved with Left and
+Right; its `aria-label` says where it stands ("Filament 3, 2 of 7").
+
 ### Swatches
 
 `span.swatch`: a small square of a colour that means something (a
@@ -438,6 +462,16 @@ tool are in its tooltip, in the reference's own wording ("Move [M]"); a
 tool that cannot be used now is `disabled`, never hidden. A panel that
 belongs to the tool that is on (`.edit-panel`: the number fields) stands
 under the toolbar on the same surface, and is the only thing that does.
+A tool whose thing is set by hand ("Customize current plate" on a plate
+that sets anything of its own) carries `.set`: a dot of the accent at its
+corner, the mark of what is yours, not a pressed state.
+
+A plate's own tools (`#plate-tools`, `.toolbar.vertical.plate-tools`) are
+the one toolbar that stands in the scene rather than at the stage's edge:
+`plates.js` places it at the far right corner of the plate shown each time
+the scene is drawn, and hides it while that corner is out of sight. Only
+the plate shown has it.
+
 A tool with nothing to type ("Lay on face") has the same panel with its
 title and one line of what to do (`p.edit-hint`, `--text-2`). What a tool
 draws in the scene over an object (the faces of "Lay on face") keeps the
@@ -466,6 +500,10 @@ is not printed (`.helper`: a modifier, a negative part, a support blocker
 or enforcer) has its name in `--text-3`, slanted; what it is is in the
 name's tooltip.
 
+A plate that is locked has a lock drawn after its name at its row and in
+the corner of its tile (`svg.lock-mark`, 11 px, `--text-3`): a mark, not
+a control; the lock is changed from the plate's tools or its menu.
+
 What is said when a click is refused ("Selection conflicts" and why) goes
 in the status line, which keeps a `\n` as a new line (`white-space:
 pre-line`); no dialog is opened for it.
@@ -484,10 +522,12 @@ Where each stands (`#stage` sets the margins, `--stage-inset` all round):
 
 | Where | What |
 | --- | --- |
-| Top left | The plates (`#plates`, a vertical toolbar): "Slice all" (or "All Plates", the statistics) over a hairline, then each plate's number; the one shown is the accent on its tint, ✓ in `--ok` for sliced, ! in `--danger` for failed |
+| Top left | The plates (`#plates`, a vertical toolbar): "Slice all" (or "All Plates", the statistics) over a hairline, then each plate's number; the one shown is the accent on its tint, ✓ in `--ok` for sliced, ! in `--danger` for failed, a lock at the bottom left of a locked one. The right button or the menu key on a tile opens the plate's menu |
+| By the plate shown | Its own tools (`#plate-tools`), at its far right corner |
 | Top, from `--stage-left` | Prepare's toolbar, centred; under it "Object Operations" (`.edit-panel`) |
 | Top right, `--stage-right` in | The legend (`--legend-width`); the layer slider's labels keep the band right of it |
-| Right | The layers slider and its one-layer button |
+| Right | The layers slider and its one-layer button; on the slider, what is set at layers (below) |
+| Right, under the legend | The G-code window (below); beside the legend, at its left, where the legend leaves too little room under it |
 | Bottom left | The navigator cube, and Fit / View (a toolbar) under it; "About this print" beside them |
 | Bottom | The moves slider; the position window over its right end; the progress at the right |
 | Middle | What there is to say where there is nothing to show (`#empty`) |
@@ -499,6 +539,38 @@ shown in the accent, thumbs of the accent ringed in `--surface-float`; the
 one the keys move is ringed in the accent, and the focus ring is a second
 ring of `--focus` outside it. The navigator's faces, the labels' frames
 over the objects and the axes' letters keep the reference's colours.
+
+### The G-code window
+
+`.gl-gcode` (`gl/gcode.js`): an `.overlay` panel of lines of G-code in the
+fixed-width face at `--size-small`, 17 px a line, as wide as 55
+characters and a line number, so it keeps its width as the slider moves.
+Each line's number and comment in `--text-3`, its command in
+`--code-command` (the one colour the page has for code: a muted yellow on
+dark, a dark ochre on light), its words in `--text-1`. The line of the
+move shown is marked as a selected row is: the accent's tint and a bar of
+the accent at its head. It does not scroll; the wheel over it moves the
+moves slider. Its button in the legend's head (`#legend-gcode`, a `.tool`
+with `aria-pressed`) has the accent's tint while the window is on.
+
+### What is set at layers (the layers slider's ticks)
+
+A mark across the slider's track at each layer something is set at
+(`.gl-tick-mark`: `--text-1`, or the filament's colour for a filament
+change, ringed in the float surface so it shows on the track's fill), and
+its kind in a small label at the track's left (`.gl-tick-label`: the
+overlay surface, `--line-2`, `--size-caps`, the reference's word: "Pause",
+"Custom", "Template", "Color"). Its tooltip says what it writes. At the
+layer the thumb taken up is on, the label drops under the thumb's own
+label and is framed in the accent, and a 18 px `.icon` button with a
+cross (`.gl-tick-delete`, titled "Delete Pause" and the rest) stands at
+the track's right. The slider's menu (`#menu`) lists what can be added
+there or done to what is there; a filament in a menu has its swatch
+before its name (`more.swatch` of `showMenu`'s entries).
+
+The dialog for custom G-code (`#custom-gcode`) is a small dialog: title,
+the reference's sentence as the label, a `textarea.code` of six lines,
+"OK" (off while the box is empty) and "Cancel".
 
 ### Scrollbars
 

@@ -7,6 +7,7 @@
 //! Not read yet: painted supports and seams, per-object setting overrides,
 //! and everything about a plate except which instances are on it.
 
+mod custom_gcode;
 mod kept;
 mod model;
 mod model_settings;
@@ -27,6 +28,7 @@ use edge_config::Settings;
 use edge_mesh::{Mesh, Transform};
 use rayon::prelude::*;
 
+pub use custom_gcode::{CustomGcode, CustomItem, CustomKind, CustomMode};
 pub use kept::{Entry, Extras, Kept, Left, ObjectKept, PartKept, PlateKept};
 use model::{ModelFile, RawObject, Shape};
 use model_settings::{ModelSettings, ObjectSettings};
@@ -67,6 +69,12 @@ pub struct Project {
     /// seams (fuzzy skin, supports), in order of name. None of it is
     /// read.
     pub unread_paint: Vec<&'static str>,
+    /// The G-code set at layers (pauses, custom G-code, filament
+    /// changes), by plate number, as the reference keeps them
+    /// (`Model::plates_custom_gcodes`): a plate may have an entry with no
+    /// items, which is written as one. A project without plates has its
+    /// items under plate 1, as the reference reads them.
+    pub custom_gcode: std::collections::BTreeMap<u32, CustomGcode>,
     /// What the file holds beyond all this, kept to be written back; none
     /// for a project that was not read from a file.
     pub kept: Option<Arc<Kept>>,
@@ -328,7 +336,7 @@ impl Project {
             }
         }
         let gcode_by_plate = match &custom_gcode {
-            Some(text) => kept::custom_gcode_by_plate(text, kept::CUSTOM_GCODE)?,
+            Some(text) => custom_gcode::read(text, kept::CUSTOM_GCODE)?,
             None => None,
         };
         for (at, object) in objects.iter_mut().enumerate() {
@@ -367,9 +375,6 @@ impl Project {
                     let mut own = pictures.remove(&plate.id).unwrap_or_default();
                     own.sort_by_key(|(picture, _)| *picture);
                     kept.pictures = own;
-                    kept.custom_gcode = gcode_by_plate
-                        .as_ref()
-                        .and_then(|plates| plates.get(&plate.id).cloned());
                     Arc::new(kept)
                 }),
                 id: plate.id,
@@ -398,7 +403,8 @@ impl Project {
             objects: objects.len(),
             settings: project_text,
             brim_version: by_place.brim_version,
-            // A file of custom G-code not laid out by plate is kept whole.
+            // A file of custom G-code not laid out as the reference lays
+            // it is kept whole.
             custom_gcode: custom_gcode.filter(|_| gcode_by_plate.is_none()),
             settings_extra: kept_settings.extra,
             files: kept_files,
@@ -409,6 +415,7 @@ impl Project {
             plates,
             settings,
             unread_paint: unread_paint.into_iter().collect(),
+            custom_gcode: gcode_by_plate.unwrap_or_default(),
             kept: Some(Arc::new(kept)),
         })
     }

@@ -12,7 +12,7 @@ replaces it until output matches on the printers we care about.
 | `crates/edge-geom` | Fixed-point 2D geometry (nanometre `i64`, same scale as libslic3r): points, polygons, regions, convex hull |
 | `crates/edge-mesh` | Indexed triangle mesh, transforms, STL read/write |
 | `crates/edge-config` | Vendor presets resolved through `inherits`, `include` and `renamed_from`; the reference's defaults for every setting, and the text form it writes settings in |
-| `crates/edge-3mf` | 3MF projects: objects, parts and their roles, instances, plates, project settings, and colours painted onto triangles; and writing a project back in the reference's own layout (`write`), keeping what was read and not changed (every kind of paint, per-object and per-part settings, layer ranges and heights, cut information, custom G-code, a plate's settings and pictures, every other entry) and leaving out print-host addresses and keys |
+| `crates/edge-3mf` | 3MF projects: objects, parts and their roles, instances, plates, project settings, and colours painted onto triangles; and writing a project back in the reference's own layout (`write`), keeping what was read and not changed (every kind of paint, per-object and per-part settings, layer ranges and heights, cut information, a plate's settings and pictures, every other entry) and leaving out print-host addresses and keys; the G-code set at each plate's layers (pauses, custom G-code, filament changes), read and written as the reference does |
 | `crates/edge-fuzzy` | Fuzzy skin: walls roughened by moving their points or changing their width, with the noise it is drawn from (a port of the reference's FuzzySkin and of the libnoise modules it uses) |
 | `crates/edge-avoid` | Travel routed round the inside of a part's walls where a straight move would cross them: what a layer's moves are routed by, and the way round for each (a port of the reference's AvoidCrossingPerimeters) |
 | `crates/edge-arachne` | Walls of changing width: a region's skeleton, how many lines fit along it and where that number changes, and the lines themselves (a port of the reference's Arachne) |
@@ -1300,6 +1300,42 @@ Known gaps: painted supports and seams, per-object setting overrides, typed sett
   in the reference, the expanded start G-code is identical to the
   reference's on every line. A bare model exports with a printer's own
   G-code when `--machine`, `--process` and `--filament` name its presets.
+- G-code set at layers (the layers slider's "Add Pause", "Add Custom
+  G-code", "Add Custom Template" and "Change Filament", kept per plate in
+  `Metadata/custom_gcode_per_layer.xml`): read, kept with the plate
+  through edits, and written back in the reference's own layout, numbers
+  at 17 digits as it writes them (the pressure advance pattern's file is
+  written back to the byte). At the layer an item is set at (the layer
+  whose top is nearest, the highest item where several are; ToolOrdering.cpp
+  `assign_custom_gcodes`), after the layer change, the second layer's
+  temperatures and before anything is printed, a pause writes
+  `;PAUSE_PRINT` and the printer's `machine_pause_gcode`, a template
+  `;CUSTOM_GCODE` and the printer's `template_custom_gcode`, both expanded
+  with what the reference gives them (not the layer's own number or
+  height, which a template is refused for naming, as there), and custom
+  G-code `;CUSTOM_GCODE` and its text as it is (GCode.cpp
+  `emit_custom_gcode_per_print_z`). A filament change, on a project of
+  several filaments whose plate prints in one of them, prints every layer
+  from it up in the filament named, with the tool change, temperatures
+  and prime tower any change of filament has here (ToolOrdering.cpp's
+  `extruder_override`); on a U1 and a Centauri Carbon the change comes at
+  the reference's layer with the reference's `change_filament_gcode`.
+  What the reference leaves out is left out and said in a note: a filament
+  change on a plate of several filaments or a project of one, a colour
+  change (the reference writes its mark and no `M600`), an item below the
+  first layer or beaten to a layer by a higher one; a pause on a printer
+  with no pause G-code is written as the reference writes it and said.
+  The time estimate stops the head at a pause, as the reference's does
+  (`simulate_st_synchronize`); the pause itself takes no time a file can
+  know. On a 20 mm cube with a pause, a custom line, a template and a
+  filament change, on the U1 and on the Centauri Carbon, the lines written
+  at each layer are the reference's; the reference's own files with them,
+  timed here, come to its own time. Not as the reference: its G-code
+  writer rewrites the feed rates inside a custom block (a `G1 F1800`
+  already in force taken out, leaving an empty line); here custom G-code
+  is written exactly as given. A Bambu printer's tags (`; PAUSE_PRINTING`,
+  `; CUSTOM_GCODE`) are written in the form the engine writes every tag
+  in (`;PAUSE_PRINT`), as for its layer changes.
 - File layout: the G-code file is laid out as the reference lays its own
   out, because printers and their hosts read it by that layout: a header
   block, the line widths, the G-code between `EXECUTABLE_BLOCK` markers
@@ -1351,7 +1387,11 @@ Multi-filament printing is a first working version. Where parts of
 different filaments overlap, the higher-numbered filament has the overlap
 (the reference gives it to the later part). `toolchange_ordering` other
 than the default and `other_layers_print_sequence` are noted and not
-followed. On the first layer two tools whose smallest pieces are the
+followed. A plate's own settings in a project ("Customize current plate":
+its bed type, print sequence, vase mode, later layers' order) are laid over
+the project's for that plate's slice, as the reference lays a plate's
+config over the whole; `print_sequence` "by object" is noted and not
+followed: every object is printed together, layer by layer. On the first layer two tools whose smallest pieces are the
 same to a millionth count as the same, and the lower number goes first;
 the reference compares exactly, so where it has identical parts in
 several filaments its order among them can differ (plate 3 of

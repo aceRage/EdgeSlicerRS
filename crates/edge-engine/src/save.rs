@@ -297,6 +297,7 @@ impl Model {
             plates,
             settings: settings.cloned(),
             unread_paint: model.unread_paint.clone(),
+            custom_gcode: model.custom_gcode_by_plate(),
             kept: model.kept.clone(),
         }
     }

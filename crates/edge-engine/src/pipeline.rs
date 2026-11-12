@@ -116,6 +116,10 @@ pub struct Sliced {
     /// Things settled before slicing that the person should know of.
     pub remarks: Vec<String>,
     pub timings: Timings,
+    /// The G-code the person set at layers, by the layer's top, and what
+    /// of what was set there is not done (`crate::layer_codes`).
+    pub(crate) codes: Vec<edge_gcode::AtLayer>,
+    pub(crate) code_notes: Vec<String>,
 }
 
 /// The object a point belongs to, for laying its sparse pattern: of the
@@ -299,6 +303,7 @@ pub fn slice(job: Job, watch: &dyn Watcher) -> Result<Sliced, Failure> {
     let seam_parts = loaded.parts;
     let painted = loaded.painted;
     let first_layer_sequence = loaded.first_layer_sequence;
+    let custom_gcode = loaded.custom_gcode;
     let (min, max) = loaded.bounds;
 
     let print = PrintSettings::from_settings(&settings)?;
@@ -513,6 +518,37 @@ pub fn slice(job: Job, watch: &dyn Watcher) -> Result<Sliced, Failure> {
         modelled.push(whole);
     }
     let slice_time = started.elapsed();
+
+    // What the plate prints in, and the filament changes set at its
+    // layers: from a change up every layer is printed in the filament it
+    // names, as the reference overrides the extruder of every region of a
+    // layer (ToolOrdering.cpp `collect_extruders`, `extruder_override`).
+    let object_filaments: Vec<usize> = {
+        let mut own: Vec<usize> = layers
+            .iter()
+            .flat_map(|layer| layer.by_filament.iter().map(|(filament, _)| *filament))
+            .collect();
+        if own.is_empty() {
+            own = bodies.iter().map(|body| body.filament).take(1).collect();
+        }
+        own.sort_unstable();
+        own.dedup();
+        own
+    };
+    let (switches, mut code_notes) =
+        crate::layer_codes::switches(custom_gcode.as_ref(), &settings, &object_filaments);
+    if let ([own], false) = (object_filaments.as_slice(), switches.is_empty()) {
+        let tops: Vec<f64> = (0..layers.len())
+            .map(|index| heights.top_of(index))
+            .collect();
+        let by_layer = crate::layer_codes::filament_by_layer(&switches, *own, &tops);
+        if by_layer.iter().any(|filament| filament != own) {
+            for (layer, filament) in layers.iter_mut().zip(by_layer) {
+                layer.by_filament = vec![(filament, layer.regions.clone())];
+                layer.cut_by_filament = vec![(filament, layer.regions.clone())];
+            }
+        }
+    }
 
     // The filaments in use, and each one's share of every layer. With one
     // filament its share is the layer itself.
@@ -1237,6 +1273,25 @@ pub fn slice(job: Job, watch: &dyn Watcher) -> Result<Sliced, Failure> {
         }
     }
 
+    // What is written at each printed layer, from the items set there.
+    let mut printed: Vec<(f64, Vec<usize>)> = Vec::new();
+    for entry in &entries {
+        let top = heights.top_of(entry.layer);
+        if printed.last().is_none_or(|(z, _)| *z != top) {
+            printed.push((top, Vec::new()));
+        }
+        if let Some((_, filaments)) = printed.last_mut() {
+            filaments.push(used[entry.filament] - 1);
+        }
+    }
+    let (codes, assign_notes) = crate::layer_codes::assign(
+        custom_gcode.as_ref(),
+        &settings,
+        &printed,
+        &object_filaments,
+    )?;
+    code_notes.extend(assign_notes);
+
     // Each object's whole surface, what is cut out of it last: what its
     // seams are hidden by.
     let seam_meshes: Vec<(Mesh, usize)> = (objects.into_iter().enumerate())
@@ -1295,6 +1350,8 @@ pub fn slice(job: Job, watch: &dyn Watcher) -> Result<Sliced, Failure> {
             surfaces: classify_time,
             fill: infill_time - classify_time,
         },
+        codes,
+        code_notes,
     })
 }
 
@@ -1374,6 +1431,7 @@ impl Sliced {
             .chain(&self.infill.unsupported)
             .chain(&self.order_notes)
             .chain(&self.paint_notes)
+            .chain(&self.code_notes)
             // What the tower does not do matters only where there is one.
             .chain(
                 self.tower_settings
@@ -1596,8 +1654,15 @@ impl Sliced {
             layers: &profiles,
             speed_scaling: self.contour_speed,
         };
-        let summary =
-            edge_gcode::write_contoured(&mut text, &plan, &slices, &scene, &contours, &prints)?;
+        let summary = edge_gcode::write_coded(
+            &mut text,
+            &plan,
+            &slices,
+            &scene,
+            &contours,
+            &self.codes,
+            &prints,
+        )?;
         Ok(Gcode { text, summary })
     }
 }

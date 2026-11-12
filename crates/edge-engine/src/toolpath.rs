@@ -193,6 +193,12 @@ pub struct Toolpath {
     /// Never empty when there are moves: the first layer starts at move 0
     /// and takes what the start G-code does.
     pub layers: Vec<ToolpathLayer>,
+    /// For a toolpath read from G-code, the line of the file each move
+    /// was read from, counting from 1: what the reference's G-code window
+    /// shows for the move the slider is on (`gcode_id`). A mark is the
+    /// line of the move that made it. Empty for one that was not read
+    /// from a file.
+    pub lines: Vec<u32>,
 }
 
 /// The value of a letter among a command's words: `X12.5` for `b'X'`.
@@ -237,6 +243,8 @@ struct Reader {
     /// While an outer wall is being laid: where its loop began.
     seam_armed: bool,
     seam_first: Option<[f64; 3]>,
+    /// The line being read, counting from 1.
+    line: u32,
 }
 
 impl Reader {
@@ -263,6 +271,7 @@ impl Reader {
             filament_area: std::f64::consts::PI * 1.75 * 1.75 / 4.0,
             seam_armed: false,
             seam_first: None,
+            line: 0,
         }
     }
 
@@ -290,6 +299,7 @@ impl Reader {
             layer: (self.out.layers.len() - 1) as u32,
             turn: 0.0,
         });
+        self.out.lines.push(self.line);
     }
 
     fn comment(&mut self, text: &str) {
@@ -570,6 +580,7 @@ fn turns(moves: &mut [Move]) {
 pub fn read_toolpath(gcode: &[u8]) -> Toolpath {
     let mut reader = Reader::new();
     for line in gcode.split(|byte| *byte == b'\n') {
+        reader.line += 1;
         let line = String::from_utf8_lossy(line);
         let line = line.trim();
         let (code, comment) = match line.split_once(';') {
@@ -731,6 +742,28 @@ mod tests {
         assert_eq!(path.moves[6].to, [30.0, 30.0, 0.6]);
         assert_eq!(path.moves[6].feedrate, 150.0);
         assert_eq!(path.layers.len(), 1);
+    }
+
+    /// Each move knows the line of the file it was read from, as the
+    /// reference's G-code window finds the line of the move shown.
+    #[test]
+    fn each_move_knows_its_line() {
+        let path = read_toolpath(
+            b"M83\nG1 X0 Y0 Z0.3\n;LAYER_CHANGE\n;Z:0.3\n;HEIGHT:0.3\n\
+              ;TYPE:Outer wall\n;WIDTH:0.42\nG1 X10 E1\nG1 E-1\nT1\nG1 X0 F600\n",
+        );
+        let kinds: Vec<MoveKind> = path.moves.iter().map(|step| step.kind).collect();
+        assert_eq!(
+            kinds,
+            [
+                MoveKind::Start,
+                MoveKind::Extrude,
+                MoveKind::Retract,
+                MoveKind::ToolChange,
+                MoveKind::Travel
+            ]
+        );
+        assert_eq!(path.lines, [2, 8, 9, 10, 11]);
     }
 
     #[test]

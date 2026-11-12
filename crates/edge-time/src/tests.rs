@@ -468,3 +468,31 @@ fn an_arc_takes_the_time_of_its_length() {
         arc.by_line[1]
     );
 }
+
+/// A pause set at a layer stops the head (GCodeProcessor.cpp, the
+/// `PAUSE_PRINT` tag): the move before it slows to a stop, so a straight
+/// line cut by a pause takes longer than the same line uncut. The pause
+/// itself, and whatever the printer's macro for it does, takes no time
+/// that a file can know.
+#[test]
+fn a_pause_set_at_a_layer_stops_the_head_there() {
+    let limits = Limits {
+        flavor: Flavor::Klipper,
+        max_acceleration: [500.0; 4],
+        jerk: [5.0; 4],
+        ..Limits::default()
+    };
+    let through = "G1 X5 F6000\nG1 X10\nG1 X20\n";
+    let paused = "G1 X5 F6000\nG1 X10\n;PAUSE_PRINT\nM600\n\nG1 X20\n";
+    // A custom block is only its own moves.
+    let custom = "G1 X5 F6000\nG1 X10\n;CUSTOM_GCODE\nM117 hi\nG1 X20\n";
+    for model in [Model::Reference, Model::Klipper] {
+        let plain = estimate(through, &limits, model).seconds;
+        let stopped = estimate(paused, &limits, model).seconds;
+        assert!(
+            stopped > plain + 0.01,
+            "{model:?}: {stopped} against {plain}"
+        );
+        assert!(close(estimate(custom, &limits, model).seconds, plain));
+    }
+}

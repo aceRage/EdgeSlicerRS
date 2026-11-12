@@ -17,6 +17,7 @@
 mod edit;
 mod save;
 mod scene;
+mod ticks;
 
 use std::{
     collections::{BTreeMap, HashMap},
@@ -428,6 +429,22 @@ struct Plates {
     offered: &'static [(&'static str, &'static str)],
 }
 
+impl Plates {
+    /// Whether a plate may have this bed type of its own on the printer
+    /// (PlateBedTypes.cpp `allowed_bed_types`): any, on a Bambu printer or
+    /// one that takes several; a U1's own four on a U1; none on the rest.
+    fn takes(&self, bed: &str) -> bool {
+        match (self.enabled, self.u1 && !self.several) {
+            (false, _) => false,
+            (true, true) => matches!(
+                bed,
+                "Textured PEI Plate" | "High Temp Plate" | "Graphic Effect Plate" | "Cool Plate"
+            ),
+            (true, false) => true,
+        }
+    }
+}
+
 fn plates_for(printer: &Settings, vendor: Option<&str>) -> Plates {
     let model = printer.text("printer_model").unwrap_or_default();
     let name = printer.text("printer_settings_id").unwrap_or_default();
@@ -591,6 +608,12 @@ impl Project {
                 file.plates
                     .iter()
                     .map(|plate| {
+                        let held = file
+                            .model
+                            .plates()
+                            .iter()
+                            .find(|held| held.id() == plate.id);
+                        let own = held.map(|held| held.settings()).unwrap_or_default();
                         json!({
                             "id": plate.id,
                             "name": plate.name,
@@ -598,6 +621,13 @@ impl Project {
                             "objects": plate.objects,
                             "sliced": self.results.contains_key(&plate.id),
                             "failed": self.failures.get(&plate.id),
+                            "locked": held.is_some_and(|held| held.locked()),
+                            // What it sets for itself ("Customize current
+                            // plate"), and whether it sets anything
+                            // (PartPlate.cpp `render_icons`,
+                            // `has_plate_settings`).
+                            "own": edit::plate_settings_json(&own),
+                            "customized": own != edge_engine::PlateSettings::default(),
                         })
                     })
                     .collect()
@@ -971,7 +1001,10 @@ impl Session {
             "printer_cover" => self.printer_cover(args),
             "printers_save" => self.printers_save(args),
             "printers_default" => self.printers_default(args),
-            "printer_select" => self.printer_select(args),
+            "printer_select" => {
+                let answer = self.printer_select(args)?;
+                self.with_notice(args, answer)
+            }
             "machines" => {
                 let shelf = self.shelf(needed(args, "vendor")?)?;
                 Ok(json!({ "machines": shelf.machines() }))
@@ -1032,7 +1065,18 @@ impl Session {
             "project_close" => self.project_close(args),
             "project_save" => self.project_save(args),
             "unsaved" => Ok(self.unsaved()),
-            "project_set" => self.project_set(args),
+            "project_set" => {
+                let answer = self.project_set(args)?;
+                // Another printer may not take a plate's own bed type.
+                if ["source", "vendor", "machine"]
+                    .iter()
+                    .any(|key| args.get(key).is_some())
+                {
+                    self.with_notice(args, answer)
+                } else {
+                    Ok(answer)
+                }
+            }
 
             "process_pages" => Ok(Self::settings_pages(settings::Book::Process)),
             "process" => self.settings(args, settings::Book::Process),
@@ -1071,6 +1115,7 @@ impl Session {
                 Ok(json!({ "path": shown(path), "bytes": gcode.text.len() }))
             }
             name if edit::JSON.contains(&name) => self.edit_json(name, args),
+            name if ticks::JSON.contains(&name) => self.ticks_json(name, args),
             name if scene::JSON.contains(&name) => self.scene_json(name, args),
             name if scene::BYTES.contains(&name) => {
                 Err(format!("{name} answers in bytes, not in JSON"))
@@ -1342,6 +1387,71 @@ impl Session {
         let detail = project.detail();
         printers::remember(&mut state, at, args);
         Ok(detail)
+    }
+
+    /// The print sequence a project's plates follow unless they set their
+    /// own: set by hand, else the process preset's, else the project's
+    /// own, else the reference's default.
+    fn print_sequence(&self, id: u32) -> Result<String, String> {
+        let (choices, file) = {
+            let state = lock(&self.state);
+            let project = &state.projects[state.target(&json!({ "project": id }))?];
+            (project.choices.clone(), project.file.clone())
+        };
+        if let Some(own) = choices.over.get("print_sequence") {
+            return Ok(own.clone());
+        }
+        let basis = self.basis(&choices, file.as_deref()).ok();
+        let preset = basis
+            .as_ref()
+            .and_then(|basis| basis.chosen.process.as_ref())
+            .and_then(|(_, process)| process.text("print_sequence").map(str::to_owned));
+        let project = file
+            .as_ref()
+            .and_then(|file| file.settings.as_ref())
+            .and_then(|settings| settings.text("print_sequence").map(str::to_owned));
+        Ok(preset.or(project).unwrap_or_else(|| "by layer".into()))
+    }
+
+    /// After another printer is chosen for a project: each plate's own bed
+    /// type the printer does not take is taken away, and the answer says
+    /// so in the reference's words (Plater.cpp `normalize_bed_types`).
+    fn with_notice(&self, args: &Value, mut answer: Value) -> Result<Value, String> {
+        let (id, choices, file) = {
+            let state = lock(&self.state);
+            let project = &state.projects[state.target(args)?];
+            (project.id, project.choices.clone(), project.file.clone())
+        };
+        let Some((_, printer)) = self.printer_of(&choices, file.as_deref())? else {
+            return Ok(answer);
+        };
+        let vendor = choices.vendor.as_deref().filter(|_| choices.from_presets);
+        let plates = plates_for(&printer, vendor);
+        let mut state = lock(&self.state);
+        let Some(at) = state.index_of(id) else {
+            return Ok(answer);
+        };
+        let project = &mut state.projects[at];
+        if !edit::reset_bed_types(project, |bed| plates.takes(bed)) {
+            return Ok(answer);
+        }
+        let text = if plates.enabled {
+            "The selected printer does not have some of the plates' bed types.\nThose bed type overrides were reset to the global bed type."
+        } else {
+            "The selected printer does not support multiple bed types.\nBed type overrides were reset to the global bed type."
+        };
+        let detail = project.detail();
+        if let (Some(answer), Some(detail)) = (answer.as_object_mut(), detail.as_object()) {
+            // An answer that is a project's is that project as it now is.
+            if answer.contains_key("choices") {
+                answer.extend(detail.clone());
+            }
+            answer.insert(
+                "notice".into(),
+                json!({ "title": "Plate bed types reset", "text": text }),
+            );
+        }
+        Ok(answer)
     }
 
     /// The printer's settings a project would be sliced with and where

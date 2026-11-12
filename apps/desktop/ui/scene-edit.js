@@ -557,18 +557,10 @@
       return Math.max(project.filament_count || 1, (project.colours || []).length, ((project.choices || {}).filaments || []).length, 1);
     },
 
-    // The menu of a plate (GUI_Factories.cpp `create_plate_menu`).
+    // The menu of a plate (GUI_Factories.cpp `create_plate_menu`): see
+    // plates.js.
     plateMenu(x, y, plate) {
-      const data = this.data();
-      if (!data) return;
-      const on = data.placings.filter((placing) => placing.plate === plate).map((placing) => placing.id);
-      this.host.menu(x, y, [
-        ['Select All', () => this.stage.select(on), { disabled: !on.length }],
-        ['Delete All', () => this.commit({ op: 'delete', copies: on }), { disabled: !on.length }],
-        ['Arrange', () => this.commit({ op: 'arrange', plate }), { disabled: !on.length }],
-        null,
-        ['Delete Plate', () => this.commit({ op: 'delete_plate', plate }), { disabled: data.plates.length < 2 }],
-      ]);
+      if (GL.plateTools) GL.plateTools.menu(x, y, plate);
     },
 
     key(event) {
@@ -640,6 +632,7 @@
 
     // The toolbar, the number fields and the warning, as things are now.
     refresh() {
+      if (GL.plateTools) GL.plateTools.refresh();
       if (!this.bar) return;
       const project = this.host.project();
       const on = this.editing();
@@ -1014,6 +1007,8 @@
 
     // The handles of the tool that is open, over everything else.
     draw(frame) {
+      // The plate's own tools stand beside the plate shown.
+      if (GL.plateTools) GL.plateTools.place(frame);
       const chosen = this.tool && this.editing() ? this.chosen() : null;
       if (!chosen) return;
       const r = this.stage.renderer;
