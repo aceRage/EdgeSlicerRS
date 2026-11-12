@@ -226,6 +226,36 @@ pub fn classify(
     let count = slices.len();
 
     let faces = faces(slices, outlines, shells)?;
+    // With walls kept thick, the faces a shell is made from are each
+    // grown by a twentieth of a solid line's spacing first, so that the
+    // faces of neighbouring layers on a slope, which meet edge to edge,
+    // are made one (`top_bottom_expansion_coeff` in
+    // `discover_vertical_shells`, PrintObject.cpp): a shell is then
+    // opened as a whole and not as so many strips each too narrow to keep.
+    let grown_faces: Vec<Faces> = match shells.ensure {
+        Some(spacing) => {
+            let by = (0.05 * spacing as f64) as Coord;
+            faces
+                .par_iter()
+                .map(|(top, bottom)| {
+                    let grown = |face: &[ExPolygon]| {
+                        if face.is_empty() {
+                            Ok(Vec::new())
+                        } else {
+                            edge_clip::offset(face, by, Join::MITER)
+                        }
+                    };
+                    Ok((grown(top)?, grown(bottom)?))
+                })
+                .collect::<Result<_, ClipError>>()?
+        }
+        None => Vec::new(),
+    };
+    let shell_faces = if shells.ensure.is_some() {
+        &grown_faces
+    } else {
+        &faces
+    };
     let reach = Reach::new(
         heights,
         (shells.top_layers, shells.bottom_layers),
@@ -274,8 +304,8 @@ pub fn classify(
             let (above, below) = (reach.above(layer), reach.below(layer));
             let mut shell: Vec<ExPolygon> = above
                 .clone()
-                .flat_map(|other| &faces[other].0)
-                .chain(below.clone().flat_map(|other| &faces[other].1))
+                .flat_map(|other| &shell_faces[other].0)
+                .chain(below.clone().flat_map(|other| &shell_faces[other].1))
                 .cloned()
                 .collect();
             // With walls kept thick, a face with no shell layers beyond
@@ -285,7 +315,7 @@ pub fn classify(
             // (`discover_vertical_shells`, PrintObject.cpp, where no
             // layer's faces are projected onto this one).
             if shells.ensure.is_some() {
-                let (top, bottom) = &faces[layer];
+                let (top, bottom) = &shell_faces[layer];
                 let mut held = |face: &[ExPolygon], next: usize| -> Result<(), ClipError> {
                     if !face.is_empty() {
                         shell.extend(edge_clip::intersection(
@@ -1166,6 +1196,47 @@ mod tests {
         // beyond the face.
         assert_eq!(solid_under_the_foot(&shells(1, 1)), 0.0);
         assert_eq!(solid_under_the_foot(&ensuring(2)), 0.0);
+    }
+
+    #[test]
+    fn faces_a_hair_apart_on_a_slope_make_one_shell() {
+        // A slope stepping in 0.25 mm a layer, its outlines as modelled a
+        // hundredth of a millimetre wider than printed: each layer's top
+        // face is a strip 0.24 mm wide, a hair from the next one's, and
+        // too narrow alone for a line of solid fill.
+        let count = 12;
+        let side = |layer: usize| 20.0 - 0.25 * layer as f64;
+        let slices: Vec<Vec<ExPolygon>> = (0..count)
+            .map(|layer| block(0.0, 0.0, side(layer), 20.0))
+            .collect();
+        let outlines: Vec<Vec<ExPolygon>> = (0..count)
+            .map(|layer| block(0.0, 0.0, side(layer) + 0.01, 20.0))
+            .collect();
+        let slices: Vec<&[ExPolygon]> = slices.iter().map(Vec::as_slice).collect();
+        let outlines: Vec<&[ExPolygon]> = outlines.iter().map(Vec::as_slice).collect();
+        // The fill of every layer taken to cover the whole slope, so that
+        // the shell is the faces' alone.
+        let inside = vec![block(0.0, 0.0, 20.0, 20.0); count];
+        let ensuring = Shells {
+            ensure: Some(scaled(0.4)),
+            ..shells(5, 1)
+        };
+        let found = classify(
+            &slices,
+            &outlines,
+            &slices,
+            &inside,
+            &flat(count),
+            &ensuring,
+        )
+        .unwrap();
+        // Under four layers' faces, a band about a millimetre wide.
+        let solid: f64 = found[4]
+            .iter()
+            .filter(|s| s.kind == InternalSolid)
+            .map(|s| s.area.area_mm2())
+            .sum();
+        assert!((18.0..24.0).contains(&solid), "{solid} mm²");
     }
 
     #[test]
