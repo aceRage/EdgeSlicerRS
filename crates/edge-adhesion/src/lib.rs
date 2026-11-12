@@ -37,6 +37,9 @@ pub struct Footing<'a> {
     pub footprint: &'a [ExPolygon],
     /// How tall the object is, in mm.
     pub height: f64,
+    /// Its own brim (`brim_type`, `brim_width`, `brim_object_gap` set for
+    /// the object alone), where it has one; none takes the plate's.
+    pub own: Option<&'a AdhesionSettings>,
 }
 
 /// The settings skirt and brim depend on. Defaults are the reference's
@@ -386,11 +389,18 @@ pub fn brim(
     settings: &AdhesionSettings,
     height: f64,
 ) -> Result<Vec<ExtrusionLoop>, AdhesionError> {
-    if settings.brim == BrimKind::None {
+    // Each object's brim is its own where it sets one (Brim.cpp: the
+    // brim type, width and gap are read from each object's config).
+    fn of<'s>(object: &Footing<'s>, settings: &'s AdhesionSettings) -> &'s AdhesionSettings {
+        object.own.unwrap_or(settings)
+    }
+    if objects
+        .iter()
+        .all(|object| of(object, settings).brim == BrimKind::None)
+    {
         return Ok(Vec::new());
     }
     let flow = settings.brim_flow(height)?;
-    let automatic = settings.brim == BrimKind::Auto;
     let join = Join::Round {
         tolerance: scaled(0.0125),
     };
@@ -398,13 +408,18 @@ pub fn brim(
         contour: island.contour.clone(),
         holes: Vec::new(),
     };
-    let gap = scaled(settings.brim_object_gap);
     let mut bands = Vec::new();
     for object in objects {
+        let own = of(object, settings);
+        if own.brim == BrimKind::None {
+            continue;
+        }
+        let automatic = own.brim == BrimKind::Auto;
+        let gap = scaled(own.brim_object_gap);
         let width = if automatic {
-            auto_width(object, settings)
+            auto_width(object, own)
         } else {
-            settings.brim_width
+            own.brim_width
         };
         for island in object.footprint {
             let width = island_width(island, width, object.height, automatic, flow.spacing);
@@ -419,13 +434,21 @@ pub fn brim(
     if bands.is_empty() {
         return Ok(Vec::new());
     }
-    // No brim runs over a part, or closer to one than the gap.
-    let islands: Vec<ExPolygon> = objects
-        .iter()
-        .flat_map(|object| object.footprint)
-        .map(filled)
-        .collect();
-    let mut keep_off = edge_clip::offset(&islands, gap, join)?;
+    // No brim runs over a part, or closer to one than its gap.
+    // The objects' islands by the gap they keep, each gap's at once.
+    let mut by_gap: Vec<(f64, Vec<ExPolygon>)> = Vec::new();
+    for object in objects {
+        let gap = of(object, settings).brim_object_gap;
+        let islands = object.footprint.iter().map(filled);
+        match by_gap.iter_mut().find(|(own, _)| *own == gap) {
+            Some((_, all)) => all.extend(islands),
+            None => by_gap.push((gap, islands.collect())),
+        }
+    }
+    let mut keep_off = Vec::new();
+    for (gap, islands) in &by_gap {
+        keep_off.extend(edge_clip::offset(islands, scaled(*gap), join)?);
+    }
     keep_off.extend(taken.iter().cloned());
     let area = edge_clip::difference(&edge_clip::union_ex(&bands)?, &keep_off)?;
 
@@ -676,6 +699,7 @@ mod tests {
     fn the_brim_fills_its_width_with_whole_pairs_of_lines() {
         let part = [square(0.0, 0.0, 10.0)];
         let on_bed = [Footing {
+            own: None,
             footprint: &part,
             height: 5.0,
         }];
@@ -724,6 +748,7 @@ mod tests {
     fn two_parts_close_together_share_a_brim_that_stays_off_both() {
         let parts = [square(0.0, 0.0, 10.0), square(11.0, 0.0, 10.0)];
         let on_bed = [Footing {
+            own: None,
             footprint: &parts,
             height: 5.0,
         }];
@@ -768,7 +793,14 @@ mod tests {
             ..settings()
         };
         let width = |footprint: &[ExPolygon], height: f64, settings: &AdhesionSettings| {
-            auto_width(&Footing { footprint, height }, settings)
+            auto_width(
+                &Footing {
+                    footprint,
+                    height,
+                    own: None,
+                },
+                settings,
+            )
         };
         // A low, wide plate holds itself down.
         assert_eq!(width(&[square(0.0, 0.0, 100.0)], 2.0, &pla), 0.0);
@@ -808,10 +840,12 @@ mod tests {
         let plate = [square(50.0, 50.0, 60.0)];
         let on_bed = [
             Footing {
+                own: None,
                 footprint: &tower,
                 height: 100.0,
             },
             Footing {
+                own: None,
                 footprint: &plate,
                 height: 2.0,
             },
@@ -879,10 +913,12 @@ mod tests {
         let (left, right) = ([square(0.0, 0.0, 20.0)], [square(60.0, 0.0, 20.0)]);
         let on_bed = [
             Footing {
+                own: None,
                 footprint: &left,
                 height: 10.0,
             },
             Footing {
+                own: None,
                 footprint: &right,
                 height: 10.0,
             },
@@ -917,6 +953,7 @@ mod tests {
     fn brim_and_skirt_give_way_to_what_else_is_on_the_bed() {
         let part = [square(0.0, 0.0, 20.0)];
         let on_bed = [Footing {
+            own: None,
             footprint: &part,
             height: 10.0,
         }];

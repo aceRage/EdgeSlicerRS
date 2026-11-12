@@ -1629,18 +1629,34 @@ pub fn slice(job: Job, watch: &dyn Watcher) -> Result<Sliced, Failure> {
         .collect();
     // The brim is worked out object by object: each one's first layer and
     // how tall it stands. A bare model is the one object.
-    let own: Vec<&Mesh> = if objects.is_empty() {
+    let meshes: Vec<&Mesh> = if objects.is_empty() {
         bodies.iter().map(|body| &body.solid).collect()
     } else {
         objects.iter().collect()
     };
-    let footprints: Vec<(Vec<ExPolygon>, f64)> = if adhesion.brim == BrimKind::None {
+    // An object's own brim, where it sets one.
+    let own_brims: Vec<Option<AdhesionSettings>> = (0..meshes.len())
+        .map(|object| {
+            let Some(object) = own.iter().find(|own| own.object == object) else {
+                return Ok(None);
+            };
+            match crate::regions::object_brim(&settings, object) {
+                Some(theirs) => AdhesionSettings::from_settings(&theirs).map(Some),
+                None => Ok(None),
+            }
+        })
+        .collect::<Result<_, _>>()?;
+    let any_brim = adhesion.brim != BrimKind::None
+        || (own_brims.iter().flatten()).any(|theirs| theirs.brim != BrimKind::None);
+    let footprints: Vec<(usize, Vec<ExPolygon>, f64)> = if !any_brim {
         Vec::new()
     } else {
-        let alone = own.len() == 1 && bodies.iter().all(|body| body.negative.is_none());
+        let alone = meshes.len() == 1 && bodies.iter().all(|body| body.negative.is_none());
         // Object by object side by side, kept in their order.
-        own.par_iter()
-            .filter_map(|mesh| {
+        meshes
+            .par_iter()
+            .enumerate()
+            .filter_map(|(object, mesh)| {
                 let (low, high) = mesh.bounds()?;
                 let body = [edge_slice::Body {
                     solid: mesh,
@@ -1652,16 +1668,17 @@ pub fn slice(job: Job, watch: &dyn Watcher) -> Result<Sliced, Failure> {
                 Some(
                     printable
                         .first_layer(&body, alone, &planes, scaled(closing_radius), &heights)
-                        .map(|first| (first, f64::from(high[2] - low[2]))),
+                        .map(|first| (object, first, f64::from(high[2] - low[2]))),
                 )
             })
             .collect::<Result<_, _>>()?
     };
     let footings: Vec<Footing<'_>> = footprints
         .iter()
-        .map(|(footprint, height)| Footing {
+        .map(|(object, footprint, height)| Footing {
             footprint,
             height: *height,
+            own: own_brims.get(*object).and_then(Option::as_ref),
         })
         .collect();
     // The prime tower's ground, brim included: no brim is laid on it,

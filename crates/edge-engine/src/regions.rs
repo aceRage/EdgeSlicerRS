@@ -449,7 +449,7 @@ pub fn settable(key: &str) -> Settable {
         // config is (`region_config_from_model_volume`), and its
         // `layer_height` sets the range's layers' height.
         on_range: region || key == "layer_height",
-        followed_on_object: scope != Scope::Plate && followed,
+        followed_on_object: scope != Scope::Plate && (followed || OBJECT_FOLLOWED.contains(&key)),
         followed_on_part: region && followed,
         followed_on_range: region && followed,
     }
@@ -785,6 +785,29 @@ pub(crate) fn note_set(
     }
 }
 
+/// What an object may set for itself that is followed for the object as a
+/// whole rather than region by region: its brim (Brim.cpp reads
+/// `brim_type`, `brim_width` and `brim_object_gap` from each object's
+/// config).
+const OBJECT_FOLLOWED: [&str; 3] = ["brim_type", "brim_width", "brim_object_gap"];
+
+/// The plate's settings with an object's own brim laid over them, when it
+/// sets one that differs.
+pub(crate) fn object_brim(plate: &Settings, object: &crate::OwnObject) -> Option<Settings> {
+    let mut overrides = BTreeMap::new();
+    lay_over(&mut overrides, plate, &object.settings, |key| {
+        OBJECT_FOLLOWED.contains(&key)
+    });
+    if overrides.is_empty() {
+        return None;
+    }
+    let mut theirs = plate.clone();
+    for (key, value) in overrides {
+        theirs.insert(key, Value::One(value));
+    }
+    Some(theirs)
+}
+
 /// What an object, a part or a modifier sets that is not followed there,
 /// each as a note that starts with the setting's name: `set` is each
 /// setting with what it was set on, already reduced to what differs from
@@ -803,6 +826,9 @@ pub(crate) fn unfollowed(set: &BTreeMap<String, BTreeSet<String>>) -> Vec<String
                 // The reference takes no notice of it there either.
                 Scope::Plate => None,
                 _ if per_region(key) => None,
+                // Set on a part, a modifier or a range it is not the
+                // reference's either; set on an object it is followed.
+                Scope::Object if OBJECT_FOLLOWED.contains(&key.as_str()) => None,
                 _ => Some(format!(
                     "{key}: set on {on}, not followed there; the plate's value is used"
                 )),
@@ -1631,6 +1657,40 @@ pub(crate) mod tests {
         assert!((area(&laid[1]) - 0.4).abs() < 1e-6, "{}", area(&laid[1]));
         let all: f64 = laid.iter().map(|layer| area(layer)).sum();
         assert!((all - 2.0).abs() < 1e-6, "{all}");
+    }
+
+    #[test]
+    fn an_object_sets_its_own_brim() {
+        let first_layer_brim = |sliced: &Sliced| -> usize {
+            (sliced.around[0].iter())
+                .filter(|line| line.role == edge_extrusion::Role::Brim)
+                .count()
+        };
+        let none = two_cubes(
+            &[],
+            &[],
+            Vec::new(),
+            Vec::new(),
+            r#"{"brim_type": "no_brim"}"#,
+        );
+        assert_eq!(first_layer_brim(&none), 0);
+        let own = two_cubes(
+            &[("brim_type", "outer_only"), ("brim_width", "3")],
+            &[],
+            Vec::new(),
+            Vec::new(),
+            r#"{"brim_type": "no_brim"}"#,
+        );
+        // Round the second cube alone, and said nowhere as not followed.
+        assert!(first_layer_brim(&own) > 0);
+        assert!(
+            (own.around[0].iter())
+                .filter(|line| line.role == edge_extrusion::Role::Brim)
+                .flat_map(|line| &line.polygon.points)
+                .all(|point| edge_geom::unscaled(point.x) > 11.0)
+        );
+        assert!(!own.gaps().iter().any(|gap| gap.starts_with("brim")));
+        assert!(settable("brim_width").followed_on_object);
     }
 
     #[test]
