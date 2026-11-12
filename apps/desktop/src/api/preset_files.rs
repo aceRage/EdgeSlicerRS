@@ -368,6 +368,11 @@ impl Session {
     /// `overwrite` the one on presets of theirs of the same name (true:
     /// "Yes to All", false: "No to All").
     pub(super) fn preset_import(&self, args: &Value) -> Result<Value, String> {
+        // The menu bar asks whether the call is there (`menu.rs`
+        // `preset_calls`): answered without acting.
+        if is_probe(args) {
+            return Ok(json!({ "probe": true }));
+        }
         let dir = self.presets_dir()?;
         let paths = paths_of(args)?;
         let mut found = Found::default();
@@ -802,6 +807,9 @@ impl Session {
     /// first: `replace` true clears it, false adds the time to the new
     /// one's name (`initial_file_name`).
     pub(super) fn preset_export(&self, args: &Value) -> Result<Value, String> {
+        if is_probe(args) {
+            return Ok(json!({ "probe": true }));
+        }
         self.presets_dir()?;
         let shelves = self.installed_shelves();
         let exportable = self.exportable(&shelves);
@@ -1024,6 +1032,11 @@ impl Session {
             "message": tr("Export successful"),
         }))
     }
+}
+
+/// Whether a call is the menu bar's question whether it is there.
+fn is_probe(args: &Value) -> bool {
+    args.get("probe").and_then(Value::as_bool) == Some(true)
 }
 
 #[cfg(test)]

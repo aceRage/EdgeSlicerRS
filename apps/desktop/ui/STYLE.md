@@ -27,6 +27,7 @@ fixed-width face for values.
 | `presets.css` | A person's own presets (`presets.js`): the preset row with its cog, the dialog that asks for a name, "Transfer or discard changes" and "Compare presets" |
 | `edit.css` | Prepare as an editor: where its toolbar and the number fields stand over the stage, the object list; a plate's own tools, its lock mark and "Plate Settings" (`plates.js`) |
 | `app.js`, "controls" | `listbox` (the page's own list for a `<select>`) and the tooltips |
+| `menu.css` | The menu bar in a browser (`#menubar`, its menus `.menubar-panel`), "Keyboard Shortcuts" (`#shortcuts`) and Preferences (`#prefs`) |
 
 The theme follows the system (`prefers-color-scheme`); there is no switch in
 the page. A switch, when there is one, sets the light block's values under a
@@ -114,6 +115,7 @@ primary: make it plain.
 | `--space-1` … `--space-6` | 4, 8, 12, 16, 24, 32 px | Gaps and padding |
 | `--control-s`, `-m`, `-l` | 22, 28, 32 px | Heights: a chip or an icon button; a field or a button; a table's head |
 | `--bar-height` | 40 px | The tab bar, and the strip's head beside it, whose hairlines meet |
+| `--menubar-height` | 28 px | The menu bar, in a browser only, over both |
 | `--font-ui` | The system's | Everything |
 | `--font-mono` | The system's fixed-width | A value that is a number: a field's number, a size in a table, a nozzle, a path |
 | `--size-caps` | 10.5 px | Group labels, in capitals, spaced `--caps-spacing` |
@@ -698,6 +700,23 @@ none.
   tooltip (the C++ help text). An entry that is one of several choices
   (`checked`) carries the accent's tick when it is the one in force, in
   the menu beside as in the first.
+- The menu bar (`menu.js`, `menu.css`): in the app's window it is the
+  system's, and the page draws nothing. In a browser it is a row of
+  `--menubar-height` across the top of the page, over the strip and the
+  tab bar (the body becomes a grid of two rows when `body.has-menubar`, so
+  the strip's head and the tab bar still meet), on `--surface-app` with
+  one hairline under it; the menus' names are quiet text (`--text-2`,
+  `--size-label`), a fill under the one open. A menu is `.menu` (as
+  above) under its name: each entry's words at the left and its key in a
+  column at the right (`--text-3`, `--size-small`), a chevron for a menu
+  beside it, the accent's tick for what is on. An entry that is off is in
+  `--text-off` and keeps its tooltip (it is `aria-disabled`, not
+  `disabled`, so the pointer still reaches it): for one not built the
+  tooltip is what it waits for, and its words end in a faint " ·". A
+  recent project whose file is gone is struck through. A menu that is
+  open is not drawn again under the pointer while the session's answer
+  changes; it is, once it closes. Left and Right go along the bar, Up and
+  Down in a menu, Right into a menu beside, Escape back.
 - Tooltips: write a `title`. The page shows it in its own look, after a
   moment under the pointer and beside what the keys are on, and puts the
   attribute aside while it does (it is back when the tooltip goes). Nothing
@@ -709,12 +728,11 @@ The page's words are the C++'s message ids put through `t()` (`i18n.js`),
 or the page's own, left as they are; `../UI_PARITY.md` section 16 says
 which and why, and a test keeps them so. For the look:
 
-- **The language control** is the last entry of the project strip's menu
-  (a right click on the strip, after a line): "Language", with the
-  languages beside it in a menu of its own, by the names the reference
-  gives them, the one in force ticked. Picking one reloads the page in
-  it; there is no dialog, no flag and no icon for it, the app having no
-  Preferences window to hold it.
+- **The language control** is in Preferences (the menu bar: the
+  application menu on a Mac, File elsewhere), "General", "Language": the
+  page's own list, by the names the reference gives the languages; OK
+  with another reloads the page in it. No flag and no icon for it. (It
+  was the last entry of the strip's menu until there was a Preferences.)
 - **Nothing is shown before it is in its language**: `html.words-wait`
   hides the page (`visibility`) until `i18n.js` has the table and has put
   the static page in it.
@@ -769,7 +787,7 @@ which and why, and a test keeps them so. For the look:
 `cargo run -- --serve <port>` (with `EDGE_DESKTOP_DATA` naming a scratch
 folder) and a browser: dark and light, the window's least size (900 × 560)
 and its first (1280 × 820) and a wide one, a very long preset name, the
-page in German and in Chinese (the strip's menu, "Language"), the
+page in German and in Chinese (Preferences, "Language"), the
 keys alone (Tab through it; the focus ring must always be in sight), and
 the contrast of any new pairing of text and surface.
 

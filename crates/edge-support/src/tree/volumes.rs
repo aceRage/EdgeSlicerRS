@@ -63,6 +63,9 @@ pub(crate) struct Volumes {
     walls: BTreeMap<(Coord, bool), Column>,
     /// Requests for a radius or layer that was not worked out.
     pub misses: AtomicUsize,
+    /// Where branches may not go, by layer: the support blockers
+    /// (TreeModelVolumes.cpp `m_anti_overhang`).
+    pub anti_overhang: Vec<Polys>,
 }
 
 impl Volumes {
@@ -92,6 +95,7 @@ impl Volumes {
             placeable: BTreeMap::new(),
             walls: BTreeMap::new(),
             misses: AtomicUsize::new(0),
+            anti_overhang: Vec::new(),
         })
     }
 
@@ -399,6 +403,15 @@ impl Volumes {
                         as Coord;
                     all.extend(offset(&self.outlines[at], radius + range, MITER)?);
                 }
+                // No branch through a support blocker (calculateCollision:
+                // `anti_overhang` grown by the radius).
+                if let Some(anti) = self
+                    .anti_overhang
+                    .get(layer)
+                    .filter(|anti| !anti.is_empty())
+                {
+                    all.extend(offset(&union(anti)?, radius, MITER)?);
+                }
                 simplify(&union(&all)?, self.resolution)
             })
             .collect::<Result<Column, SupportError>>()?;
@@ -412,7 +425,16 @@ impl Volumes {
                         }
                         let below = layer - self.z_bottom - 1;
                         let surface = offset(&self.outlines[below], self.min_xy_dist, Join::MITER)?;
-                        simplify(&diff(&surface, &grown[layer])?, self.resolution)
+                        // Nor does one stand on a blocker.
+                        let taken = match self
+                            .anti_overhang
+                            .get(below)
+                            .filter(|anti| !anti.is_empty())
+                        {
+                            Some(anti) => union(&[grown[layer].clone(), anti.clone()].concat())?,
+                            None => grown[layer].clone(),
+                        };
+                        simplify(&diff(&surface, &taken)?, self.resolution)
                     })
                     .collect::<Result<Column, SupportError>>()?,
             )
@@ -627,6 +649,7 @@ mod tests {
             gap_above: 1,
             gap_below: 1,
             bed: None,
+            annotations: &crate::NO_ANNOTATIONS,
         };
         let config = TreeConfig::new(&job).unwrap();
         let volumes = Volumes::new(&[], &config).unwrap();
@@ -672,6 +695,7 @@ mod tests {
             gap_above: 1,
             gap_below: 1,
             bed: None,
+            annotations: &crate::NO_ANNOTATIONS,
         };
         let config = TreeConfig::new(&job).unwrap();
         let mut volumes = Volumes::new(&slices, &config).unwrap();

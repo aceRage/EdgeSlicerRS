@@ -404,5 +404,99 @@ const Presets = (() => {
     nodes.dialog.showModal();
   }
 
+
+  // ---- "Import Configs..." and "Export Preset Bundle..." (the menu bar) ----
+
+  // After presets came or went: the lists and what they show, anew.
+  async function reread() {
+    presetsByMachine.clear();
+    if (state.project) {
+      state.project = await call('project', { project: activeId() });
+      await showSidebar();
+    }
+  }
+
+  // MainFrame.cpp `load_config_file`: a file picked, then the reference's
+  // questions ("Untrusted settings in file", "Overwrite config") as the
+  // session asks them, then what came of it.
+  async function importConfigs() {
+    const path = await pick('presets');
+    if (!path) return;
+    const args = { path };
+    for (;;) {
+      const answer = await call('preset_import', args);
+      if (answer.imported) {
+        await reread();
+        await inform(answer.title, answer.message);
+        return;
+      }
+      if (answer.untrusted) {
+        args.keep_untrusted = !(await confirmBox(answer.title, answer.ask, answer.remove, answer.keep));
+      } else if (answer.conflicts) {
+        args.overwrite = await confirmBox(answer.title, answer.ask, t('Yes to All'), t('No to All'));
+      } else {
+        return;
+      }
+    }
+  }
+
+  let exportDialog = null;
+  function exportNodes() {
+    if (exportDialog) return exportDialog;
+    const types = el('div', { className: 'ex-types', role: 'radiogroup' });
+    const names = el('div', { className: 'ex-names pc-scroll' });
+    const message = el('p', { className: 'pn-message invalid', role: 'status' });
+    const ok = el('button', { type: 'submit', className: 'primary', value: 'ok', textContent: t('Export') });
+    const cancel = el('button', { type: 'submit', value: 'cancel', textContent: t('Cancel'), formNoValidate: true });
+    const title = el('h2', { id: 'ex-title', textContent: t('Export Preset Bundle') });
+    const form = el('form', { method: 'dialog' }, title, types, names, message, el('div', { className: 'dialog-foot' }, el('div', { className: 'grow' }), ok, cancel));
+    const dialog = el('dialog', { id: 'preset-export', className: 'preset-dialog wide' }, form);
+    dialog.setAttribute('aria-labelledby', 'ex-title');
+    form.addEventListener('submit', (event) => { dialog.returnValue = event.submitter ? event.submitter.value : 'cancel'; });
+    document.body.append(dialog);
+    exportDialog = { dialog, types, names, message, ok };
+    return exportDialog;
+  }
+
+  // ExportConfigsDialog: the kind of bundle, the presets of that kind to
+  // put in it (all ticked), a folder, then the archive(s) written.
+  async function exportBundle() {
+    const choices = await call('preset_export', {});
+    const nodes = exportNodes();
+    let type = choices.types[0].type;
+    const showNames = () => {
+      const listed = choices[type] || [];
+      nodes.names.replaceChildren(...listed.map((name) => el('label', { className: 'tick', title: name },
+        el('input', { type: 'checkbox', value: name, checked: true }), ` ${name}`)));
+      nodes.ok.disabled = listed.length === 0;
+      nodes.message.textContent = '';
+    };
+    nodes.types.replaceChildren(...choices.types.map((one) => {
+      const input = el('input', { type: 'radio', name: 'ex-type', value: one.type, checked: one.type === type });
+      input.addEventListener('change', () => { type = one.type; showNames(); });
+      const label = el('label', { className: 'tick' }, input, ` ${one.title}`);
+      return one.note ? el('div', {}, label, el('p', { className: 'quiet ex-note', textContent: one.note })) : label;
+    }));
+    showNames();
+    if (!(await modal(nodes.dialog))) return;
+    const ticked = [...nodes.names.querySelectorAll('input:checked')].map((input) => input.value);
+    const dir = await pick('preset_folder');
+    if (!dir) return;
+    const args = { path: dir, type, names: ticked };
+    for (;;) {
+      const answer = await call('preset_export', args);
+      if (answer.exported) {
+        await inform(t('Export Preset Bundle'), `${answer.message}\n\n${answer.files.join('\n')}`);
+        return;
+      }
+      if (!answer.ask) return;
+      args.replace = await confirmBox(t('Export Preset Bundle'), answer.ask, t('Yes'), t('No'));
+    }
+  }
+
+  // The menu bar's entries call these when they are there (menu.js).
+  window.presetImport = () => attempt(importConfigs);
+  window.presetExport = () => attempt(exportBundle);
+
   return { fillList, label, on, refreshMarks, cogButton, beforeLeaving, save, rename, remove, compare };
 })();

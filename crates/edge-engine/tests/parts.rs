@@ -227,10 +227,12 @@ fn a_part_made_a_modifier_is_kept_and_not_printed() {
     let shape = model.objects()[0].shape().clone();
     assert_eq!(shape.parts()[1].kind, PartKind::Modifier);
     assert_eq!(shape.part_ids(), parts.as_slice());
-    // Only the short box is printed, and the print says what is not followed.
+    // Only the short box is printed, and the modifier is followed: kept
+    // with its object for what it sets.
     let placed = model.place(Some(1)).unwrap();
     assert!((placed.bounds.1[2] - 10.0).abs() < 1e-4);
-    assert_eq!(placed.unfollowed_parts, ["modifiers"]);
+    assert_eq!(placed.own.len(), 1);
+    assert_eq!(placed.own[0].volumes[1].kind, PartKind::Modifier);
     assert_eq!(round(reach(&model, copy)[1][2]), 10.0);
     // A negative part takes away from it: the reader's own bodies.
     model
@@ -238,7 +240,6 @@ fn a_part_made_a_modifier_is_kept_and_not_printed() {
         .unwrap();
     let placed = model.place(Some(1)).unwrap();
     assert!(placed.bodies.iter().any(|body| body.negative.is_some()));
-    assert!(placed.unfollowed_parts.is_empty());
     // And back.
     model
         .set_part_kind(Some(&BED), object, &[parts[1]], PartKind::Normal)

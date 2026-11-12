@@ -365,4 +365,4 @@ fn placeholder(tail: &str) -> Option<(usize, Option<usize>, Option<usize>)> {
 }
 
 #[cfg(test)]
-mod tests;
+pub(crate) mod tests;

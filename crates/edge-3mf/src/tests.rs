@@ -515,3 +515,30 @@ fn each_instances_parts_are_given_one_by_one_for_where_they_meet() {
         [false, false, true]
     );
 }
+
+#[test]
+fn height_ranges_are_read_with_what_they_set() {
+    let kept = crate::ObjectKept {
+        layer_ranges: Some(
+            "\n  <range min_z=\"2\" max_z=\"5.5\">\n   <option opt_key=\"layer_height\">0.1</option>\n   \
+             <option opt_key=\"sparse_infill_pattern\">gyroid</option>\n  </range>\n  \
+             <range min_z=\"x\" max_z=\"9\"/>\n  <range min_z=\"7\" max_z=\"9\"/>"
+                .to_owned(),
+        ),
+        ..Default::default()
+    };
+    let ranges = kept.layer_ranges();
+    assert_eq!(ranges.len(), 2);
+    assert_eq!((ranges[0].min_z, ranges[0].max_z), (2.0, 5.5));
+    assert_eq!(
+        ranges[0].settings,
+        vec![
+            ("layer_height".to_owned(), "0.1".to_owned()),
+            ("sparse_infill_pattern".to_owned(), "gyroid".to_owned())
+        ]
+    );
+    assert_eq!(
+        (ranges[1].min_z, ranges[1].max_z, ranges[1].settings.len()),
+        (7.0, 9.0, 0)
+    );
+}

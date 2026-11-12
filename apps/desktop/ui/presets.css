@@ -38,3 +38,9 @@ tr.pc-page th { text-align: left; font-size: var(--size-label); color: var(--tex
 tr.pc-group th { text-align: left; font-size: var(--size-caps); letter-spacing: var(--caps-spacing); text-transform: uppercase; color: var(--text-3); font-weight: normal; }
 .cmp-pick { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1.6fr) minmax(0, 1.6fr); gap: var(--space-2); }
 #cmp-info { margin: 0; }
+
+/* "Export Preset Bundle": the kinds of bundle, the presets to put in it. */
+.ex-types { display: flex; flex-direction: column; gap: var(--space-1); }
+.ex-note { margin: 0 0 0 var(--space-5); font-size: var(--size-small); }
+.ex-names { display: flex; flex-direction: column; gap: var(--space-1); padding: var(--space-2) var(--space-3); }
+.ex-names label.tick { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }

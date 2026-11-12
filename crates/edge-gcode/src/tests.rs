@@ -68,6 +68,7 @@ fn one_layer<'a>(
     paths: &'a [ExtrusionPath],
 ) -> [Layer<'a>; 1] {
     [Layer {
+        region: None,
         z: 0.2,
         height: 0.2,
         filament: 0,
@@ -567,6 +568,7 @@ fn speeds_follow_role_layer_and_the_melt_limit() {
     let fill = [line((2.0, 2.0), (8.0, 2.0), Role::SparseInfill)];
     let layers = [
         Layer {
+            region: None,
             z: 0.2,
             height: 0.2,
             filament: 0,
@@ -582,6 +584,7 @@ fn speeds_follow_role_layer_and_the_melt_limit() {
             below: &[],
         },
         Layer {
+            region: None,
             z: 0.4,
             height: 0.2,
             filament: 0,
@@ -647,6 +650,7 @@ fn speeds_follow_role_layer_and_the_melt_limit() {
 fn temperatures_change_after_the_first_layer() {
     let loops = [wall(0.0, 0.0, 10.0, 0)];
     let layer = |z| Layer {
+        region: None,
         z,
         height: 0.2,
         filament: 0,
@@ -735,6 +739,7 @@ fn moves_inside_the_shelter_can_skip_retraction() {
         holes: Vec::new(),
     }];
     let layer = [Layer {
+        region: None,
         z: 0.2,
         height: 0.2,
         filament: 0,
@@ -1077,6 +1082,7 @@ fn printed(count: usize, settings: &PrintSettings) -> String {
     let fill = [line((2.0, 2.0), (8.0, 2.0), Role::SparseInfill)];
     let layers: Vec<Layer<'_>> = (0..count)
         .map(|index| Layer {
+            region: None,
             z: 0.2 * (index + 1) as f64,
             height: 0.2,
             filament: 0,
@@ -2066,6 +2072,7 @@ fn wall_over_a_smaller_plate(settings: &PrintSettings, measured: bool) -> String
         holes: Vec::new(),
     }];
     let layer = |z: f64, loops, below| Layer {
+        region: None,
         z,
         height: 0.2,
         filament: 0,
@@ -2809,6 +2816,7 @@ fn round_wall_over_a_round_plate(settings: &PrintSettings, out: f64) -> (usize, 
     }];
     let (plate, above) = ([plate], [above]);
     let layer = |z: f64, loops, below| Layer {
+        region: None,
         z,
         height: 0.2,
         filament: 0,
@@ -2891,6 +2899,7 @@ fn a_speed_within_one_mm_a_second_of_the_last_is_not_written() {
     }];
     let above = [above];
     let layer = |z: f64, loops, below| Layer {
+        region: None,
         z,
         height: 0.2,
         filament: 0,

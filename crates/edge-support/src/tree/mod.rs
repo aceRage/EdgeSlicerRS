@@ -78,6 +78,9 @@ pub(crate) fn build(job: &Job<'_>) -> Result<Vec<Vec<ExtrusionPath>>, SupportErr
         return Ok(none());
     }
     let mut volumes = volumes::Volumes::new(job.slices, &config)?;
+    volumes.anti_overhang = (0..count)
+        .map(|layer| job.annotations.blocking_volume(layer).to_vec())
+        .collect();
     volumes.precalculate(&config, max_layer)?;
     clock.lap("volumes");
     let tips = tips::place(

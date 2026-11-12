@@ -9,7 +9,10 @@
 //! - what counts as an overhang (`support_threshold_angle`, or by overlap);
 //! - the gap above a support, a whole number of layers, and the dense
 //!   interface layers under it;
-//! - the gaps beside and below a support wherever it passes the part.
+//! - the gaps beside and below a support wherever it passes the part;
+//! - support enforcers and blockers, and supports painted on or off
+//!   ([`Annotations`]), with the "(manual)" types that hold up nothing
+//!   else.
 //!
 //! Normal supports are columns that stop where they meet the part on the
 //! way down. Their areas are squared off to a grid one line spacing wide,
@@ -18,7 +21,7 @@
 //! stand on. The grid here is always square to the bed, whatever
 //! `support_angle`.
 //!
-//! Not done: supports only where painted, the "snug" and the older tree
+//! Not done: the "snug" and the older tree
 //! styles, bridges left unsupported, rafts, an outline round each normal
 //! support, and support in a filament of its own.
 
@@ -326,6 +329,71 @@ pub fn generate(
     layer_height: f64,
     settings: &SupportSettings,
 ) -> Result<Vec<Vec<ExtrusionPath>>, SupportError> {
+    generate_with(
+        slices,
+        centre,
+        first_layer_height,
+        layer_height,
+        settings,
+        &Annotations::default(),
+    )
+}
+
+/// Where supports are asked for and kept off, layer by layer, whatever
+/// the overhangs: the support enforcers and blockers cut at each layer,
+/// with what is painted to have supports or keep them off projected onto
+/// it (PrintObject.cpp `slice_support_enforcers`,
+/// `slice_support_blockers`, `project_and_append_custom_facets`). A list
+/// shorter than the layers has nothing on the rest.
+#[derive(Clone, Debug, Default)]
+pub struct Annotations {
+    pub enforcers: Vec<Vec<ExPolygon>>,
+    pub blockers: Vec<Vec<ExPolygon>>,
+    /// Of the blockers, the volumes alone, without what is painted: what
+    /// tree branches may not pass through (TreeModelVolumes.cpp
+    /// `m_anti_overhang`, `slice_support_blockers()` alone).
+    pub blocking_volumes: Vec<Vec<ExPolygon>>,
+}
+
+impl Annotations {
+    /// What is asked for on layer `index`, and what is kept off it.
+    pub(crate) fn enforcer(&self, index: usize) -> &[ExPolygon] {
+        self.enforcers.get(index).map_or(&[], Vec::as_slice)
+    }
+
+    pub(crate) fn blocker(&self, index: usize) -> &[ExPolygon] {
+        self.blockers.get(index).map_or(&[], Vec::as_slice)
+    }
+
+    pub(crate) fn blocking_volume(&self, index: usize) -> &[ExPolygon] {
+        self.blocking_volumes.get(index).map_or(&[], Vec::as_slice)
+    }
+
+    fn is_empty(&self) -> bool {
+        (self.enforcers.iter())
+            .chain(&self.blockers)
+            .chain(&self.blocking_volumes)
+            .all(Vec::is_empty)
+    }
+}
+
+/// No annotations, for a [`Job`] made without any.
+#[cfg(test)]
+pub(crate) static NO_ANNOTATIONS: Annotations = Annotations {
+    enforcers: Vec::new(),
+    blockers: Vec::new(),
+    blocking_volumes: Vec::new(),
+};
+
+/// [`generate`], with support enforcers and blockers.
+pub fn generate_with(
+    slices: &[&[ExPolygon]],
+    centre: Point2,
+    first_layer_height: f64,
+    layer_height: f64,
+    settings: &SupportSettings,
+    annotations: &Annotations,
+) -> Result<Vec<Vec<ExtrusionPath>>, SupportError> {
     if !settings.enabled || slices.len() < 2 {
         return Ok(vec![Vec::new(); slices.len()]);
     }
@@ -352,6 +420,29 @@ pub fn generate(
         })
         .collect();
     let local: Vec<&[ExPolygon]> = local.iter().map(Vec::as_slice).collect();
+    let shift = |layers: &Vec<Vec<ExPolygon>>| -> Vec<Vec<ExPolygon>> {
+        layers
+            .iter()
+            .map(|layer| {
+                layer
+                    .iter()
+                    .map(|region| ExPolygon {
+                        contour: moved(&region.contour),
+                        holes: region.holes.iter().map(moved).collect(),
+                    })
+                    .collect()
+            })
+            .collect()
+    };
+    let annotations = if annotations.is_empty() {
+        Annotations::default()
+    } else {
+        Annotations {
+            enforcers: shift(&annotations.enforcers),
+            blockers: shift(&annotations.blockers),
+            blocking_volumes: shift(&annotations.blocking_volumes),
+        }
+    };
     let bed = (settings.bed.len() >= 3).then(|| ExPolygon {
         contour: moved(&Polygon {
             points: settings
@@ -362,7 +453,14 @@ pub fn generate(
         }),
         holes: Vec::new(),
     });
-    let mut supports = about_origin(&local, first_layer_height, layer_height, settings, bed)?;
+    let mut supports = about_origin(
+        &local,
+        first_layer_height,
+        layer_height,
+        settings,
+        bed,
+        &annotations,
+    )?;
     for point in supports
         .iter_mut()
         .flatten()
@@ -386,6 +484,8 @@ pub(crate) struct Job<'a> {
     pub gap_below: usize,
     /// The bed's outline, the part's middle at the origin, when known.
     pub bed: Option<ExPolygon>,
+    /// Where supports are asked for and kept off.
+    pub annotations: &'a Annotations,
 }
 
 impl Job<'_> {
@@ -426,6 +526,7 @@ fn about_origin(
     layer_height: f64,
     settings: &SupportSettings,
     bed: Option<ExPolygon>,
+    annotations: &Annotations,
 ) -> Result<Vec<Vec<ExtrusionPath>>, SupportError> {
     // A support's top sits a whole number of layers under what it holds
     // up, leaving `top_z_distance` of air: an overhang on layer L is met by
@@ -439,6 +540,7 @@ fn about_origin(
         gap_above: layers_in(settings.top_z_distance),
         gap_below: layers_in(settings.bottom_z_distance),
         bed,
+        annotations,
     };
     match settings.style {
         Style::Normal => normal(&job, overhangs(&job)?),
@@ -453,7 +555,8 @@ fn overhangs(job: &Job<'_>) -> Result<Vec<Overhang>, SupportError> {
     let wall_width = settings.wall_width(job.layer_height)?;
 
     let detect = |index: usize, covered: Option<&[ExPolygon]>| {
-        if index == 0 {
+        // With "(manual)" supports, only what is enforced.
+        if index == 0 || !settings.auto {
             return Ok(Overhang::default());
         }
         overhang(
@@ -493,6 +596,59 @@ fn overhangs(job: &Job<'_>) -> Result<Vec<Overhang>, SupportError> {
     if settings.remove_small_overhang {
         drop_small(&mut overhangs, wall_width)?;
     }
+    // Blockers take away what they cover; enforcers hold up whatever of
+    // the layer within them the layer below does not, as if at 90 degrees
+    // (SupportMaterial.cpp `detect_overhangs`: "Apply the support
+    // blockers", "Enforce supports").
+    let annotations = job.annotations;
+    overhangs.par_iter_mut().enumerate().try_for_each(
+        |(index, overhang)| -> Result<(), SupportError> {
+            // Grown a little: painted blockers come as thin strips
+            // (SupportMaterial.cpp `SupportAnnotations`: "Expand the
+            // blocker a bit", by 1000 times SCALED_EPSILON).
+            let blocker = annotations.blocker(index);
+            let blocker = if blocker.is_empty() || overhang.whole.is_empty() {
+                Vec::new()
+            } else {
+                edge_clip::offset(&edge_clip::union_ex(blocker)?, 100_000, Join::MITER)?
+            };
+            if !blocker.is_empty() {
+                overhang.whole = edge_clip::difference(&overhang.whole, &blocker)?;
+                overhang.dense = edge_clip::difference(&overhang.dense, &blocker)?;
+            }
+            let enforcer = annotations.enforcer(index);
+            if index > 0 && !enforcer.is_empty() {
+                let lower = edge_clip::offset(slices[index - 1], scaled(0.01), Join::MITER)?;
+                let enforced = edge_clip::difference(
+                    &edge_clip::intersection(slices[index], enforcer)?,
+                    &lower,
+                )?;
+                if !enforced.is_empty() {
+                    // The dense top as for any overhang: where it lies
+                    // further out than the walls below carry
+                    // (`lower_layer_polygons_for_dense_interface`).
+                    let near = edge_clip::offset2(
+                        slices[index - 1],
+                        scaled(-0.5 * wall_width),
+                        scaled(1.1 * wall_width),
+                        Join::MITER,
+                    )?;
+                    let far = edge_clip::difference(&enforced, &near)?;
+                    let dense = edge_clip::intersection(
+                        &edge_clip::offset(&far, scaled(0.1 * wall_width), Join::MITER)?,
+                        &enforced,
+                    )?;
+                    overhang.whole.extend(enforced);
+                    overhang.whole = edge_clip::union_ex(&overhang.whole)?;
+                    if !dense.is_empty() {
+                        overhang.dense.extend(dense);
+                        overhang.dense = edge_clip::union_ex(&overhang.dense)?;
+                    }
+                }
+            }
+            Ok(())
+        },
+    )?;
     Ok(overhangs)
 }
 

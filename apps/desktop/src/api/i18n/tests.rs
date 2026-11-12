@@ -148,7 +148,7 @@ fn values_go_into_the_placeholders_as_the_cpp_puts_them() {
 /// (`localization/i18n/Snapmaker_Orca.pot`), read as far as this needs:
 /// each `msgid`, its lines joined and its escapes read. A string the
 /// template never closes (it has one) is taken as it stands.
-fn message_ids() -> std::collections::HashSet<String> {
+pub(crate) fn message_ids() -> std::collections::HashSet<String> {
     let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
         .join("../../reference/EdgeSlicer/localization/i18n/Snapmaker_Orca.pot");
     let text = std::fs::read_to_string(&path)
@@ -309,7 +309,7 @@ fn decode(text: &str) -> String {
 
 /// The list of what is shown and is not a message id (`wording.txt`):
 /// the C++'s words newer than its catalog, and this app's own.
-fn listed() -> (Vec<String>, Vec<String>) {
+pub(crate) fn listed() -> (Vec<String>, Vec<String>) {
     let text = include_str!("wording.txt");
     let (mut newer, mut own) = (Vec::new(), Vec::new());
     let mut section = "";
