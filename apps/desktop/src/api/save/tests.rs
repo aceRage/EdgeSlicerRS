@@ -276,7 +276,9 @@ fn parts_edited_are_saved_and_opened_again_as_they_were_left() {
         .unwrap();
     assert_eq!(parts_shown(&other, again), left);
     assert_eq!(left[0]["own"], 2);
-    assert_eq!(left[0]["settings"], 5);
+    // Of its five settings, four are on a part's pages (`support_group`
+    // is set by the reference's support sets, not on a page).
+    assert_eq!(left[0]["settings"], 4);
     assert_eq!(left[2]["kind"], "modifier");
 
     // Undone after the save: the project differs from its file again, and

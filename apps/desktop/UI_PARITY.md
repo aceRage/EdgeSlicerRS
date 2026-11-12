@@ -30,7 +30,10 @@ The last column reads:
   Device tab with the printer's own page, in sections 2, 4, 7 and 8;
   thirteenth pass: the list of filaments, "Sidebar: Filament" in section 2,
   `filament_edit` in section 7, the undo history in section 13 and what
-  a saved project holds of them in section 15).
+  a saved project holds of them in section 15; fourteenth pass: settings of
+  an object, a part and a height range, "Sidebar: Process" in section 2,
+  sections 7, 12 ("On an object, a part, a height range"), 13 (`scene_edit`,
+  undo, "The object list", "Parts") and 15).
 - **differs** — built, but on purpose not as the C++ does it; the cell says how.
 - **not yet** — not built, with what it waits for. Nothing in this column is
   shown in the page as a control that does nothing.
@@ -155,7 +158,9 @@ does with each option.
 | Search ("Search in preset"): finds options by label, jumps to the page and the option | Tab.cpp l.382–420, `Search.cpp` | **added**: every word typed must be in the label, the name (`seam_slope_type`), the group or the page; the list shows label, page › group and name; Enter or a click opens the page, goes to the row and marks it for a moment; Escape clears. An option the rules hide is listed greyed, and its group is gone to |
 | What the slicer does with an option | — | this app's own (**added**): a quiet ring beside an option the engine does not read with the settings as they are, a dot beside one it follows with a note, each said in the label's tooltip; nothing is hidden for it and every option can still be set (section 12) |
 | The support sets row ("Support set": apply, save, delete) | Tab.cpp l.3776, `support_set_create_widget` | **not yet**: it writes files of user presets |
-| "Global" / "Objects" switch, per-object, per-part and per-layer settings, "View all object's settings"; the tool selector at the top of the tab ([Plate] [T1 0.4] …) | `ParamsPanel::create_layout` l.364, `TabPrintModel` l.5035, `create_tool_selector` | **not yet**: the engine reads one set of settings for a plate |
+| "Global" / "Objects" switch (`SwitchButton`, `_L("Global")`, `_L("Objects")`); in "Objects" the pages of what the object list has selected: an object (`TabPrintObject`), a part or a modifier (`TabPrintPart`), a height range (`TabPrintLayer`); nothing selected, the panel is hidden | ParamsPanel.cpp l.222, `set_active_tab` l.581, Tab.cpp l.5027–5579, GUI_ObjectSettings.cpp `update_settings_list` l.189 | **added** (fourteenth pass, `ui/objsettings.js`, `src/api/settings/items.rs`): the switch at the head of the section, the pages of the item selected, its name beside the switch. The options an item may set are the reference's (section 12, "On an object, a part, a height range"), the reference's "Frequent" page first; the value shown is the item's own, else its parent's (part and range: the object's; object: the project's); its own is marked as a value set by hand (`.set`), with the arrow "Click to reset current value and attach to the global value."; a change makes it the item's own even when it equals the parent's (Tab.cpp l.5217, `set = true`); the rules are the global pages' (`rules.rs`) on the item's settings. Each change is one step of the history ("Change Option wall_loops", untranslated as the reference's `boost::format`); the reset of all "Reset Options". "Objects" carries the dot of what is set by hand while anything has settings of its own, as the reference colours its word. **differs**: with nothing selected, or several objects or parts, the section says so ("Select an object, a part or a height range…") where the reference hides it; several items at once (the reference's blank fields for values that differ) are not offered; the switch starts on "Global" for every project, where the reference turns to "Objects" by itself after opening a project with settings of objects (`switch_to_object_if_has_object_configs`); the preset row is hidden in "Objects". **not yet**: what the engine does with an item's option is "not followed per item yet" for all of them (section 12), until the engine follows them; the tool selector |
+| "View all object's settings" (the table icon, `ObjectTableDialog` "Object/Part Setting": a grid of every object and part with "Plate", "Name", "Printable", "Filament", "Layer height", "Perimeter", "Infill density(%)", "Support", "Brim", "Perimeter speed", each with a reset), and the menus' "Edit in Parameter Table" | ParamsPanel.cpp l.248, GUI_ObjectTable.cpp (3 350 lines), GUI_Factories.cpp l.3280 | **not yet**: a grid editor of its own size (GUI_ObjectTable.cpp is 3 350 lines, with a side window of settings); every one of its columns can be set from the item's pages now. Not shown |
+| The tool selector at the top of the tab ([Plate] [T1 0.4] …) | `create_tool_selector` | **not yet** |
 | "Compare presets", save ("Save current …") and delete preset, favourites, "Manage process presets" | ParamsPanel.cpp l.238, Tab.cpp l.300–420 | **not yet**: there are no user presets (`edge-config` reads vendor profiles only); what is changed is kept with the project while it is open |
 | The filament's and the printer's own pages of settings | `TabFilament::build`, `TabPrinter::build` | **added**: section 14, from the same tool, drawn by the same code |
 
@@ -166,7 +171,7 @@ does with each option.
 | A 3D view of every plate with the objects on it, orbit / pan / zoom, selection | `View3D`, `GLCanvas3D` | **added**, in 3D: section 9. Where the browser has no WebGL2, the view from above the first pass built is kept: the bed of the printer chosen with its grid and each object's outline (its convex hull), name and size, drag to move, wheel to zoom, "Fit part" [Z] and "Fit bed" |
 | Main toolbar: "Add" [Ctrl+I], "Add plate", "Auto orient all/selected objects" [Q], "Arrange all objects" [A] with its options, "Split to objects", "Split to parts", "Variable layer height", "Assembly View" | `GLCanvas3D::_init_main_toolbar` l.9274 | **added**: "Add", "Add plate", "Arrange all objects" (section 13; the arrangement is a plain one, not the reference's), "Split to objects" and "Split to parts". **not yet**: auto orient (the engine does not do it), variable layer height, the assembly view, the arrangement's options |
 | Gizmos: "Move" [M], "Rotate" [R], "Scale" [S], "Lay on face" [F], "Cut" [C], "Mesh Boolean" [B], "Support Painting" [L], "Seam painting" [P], "Paint-on fuzzy skin" [H], "Color Painting" [N], "Texture displacement", "Emboss" [T], "SVG", "Measure" [U], "Assemble" [Y], "Simplify", "Brim Ears" [E], "Sculpt", "Edit", "Fillet / chamfer (CAD)" | `Gizmos/GLGizmosManager.cpp::init` l.224 | **added**: "Move", "Rotate" and "Scale" with their number fields, and "Lay on face" [F] (section 13). **not yet**: the rest |
-| Object list: plates, objects, parts, instances, layer ranges; columns "Name", printable, "Fila.", paint marks; the object, part and plate menus | `GUI_ObjectList.cpp`, `GUI_Factories.cpp` | **added**: plates, objects, parts and instances with "Name", printable and "Fila.", and the object's, the part's and the plate's menus (section 13). **not yet**: layer ranges, the paint marks, settings of an object or a part |
+| Object list: plates, objects, parts, instances, layer ranges; columns "Name", printable, "Fila.", paint marks; the object, part and plate menus | `GUI_ObjectList.cpp`, `GUI_Factories.cpp` | **added**: plates, objects, parts and instances with "Name", printable and "Fila.", and the object's, the part's and the plate's menus (section 13); the mark of an item with settings of its own, "Layers" and its height ranges (fourteenth pass, section 13). **not yet**: the paint marks |
 | View options: "Realistic View", "X-Ray", "Center of Mass", "Show 3D Navigator", Ctrl+0..6 views | `GLCanvas3D.cpp` l.8297, View menu | **added**: the navigator and the views (section 9). **not yet**: the three view options |
 
 ### Plates
@@ -410,8 +415,9 @@ the project is on.
 | `printer_files` | `project?` | `{ files: [{ name, size, modified }] }`, newest first; an error for a printer whose files cannot be listed here |
 | `printer_file_delete` | `project?`, `name` | as `printer_files` |
 | `printer_file_print` | `project?`, `name` | `{ started: true }`; refused while the printer prints |
-| `scene` | `project?` | the project for Prepare in 3D: `{ project, key, bare, bed { box, shape, height, model, texture }, plates: [{ id, name, origin, locked }], plate, colours, objects: [{ id, name, mesh, vertices, triangles, bytes, filaments, filament, parts }], placings: [{ id, object, plate, printable, matrix (16 numbers, column by column), box, over }] }`. An object also has `own_filament` (the filament it is set to itself, or null: what its parts set to "default" print in), `part_list: [{ id, name, kind (part, negative, modifier, support_blocker, support_enforcer, precise_seam), filament, own (the part's own filament, or null for "default"), matrix (16 numbers, column by column: the part's own coordinates to the object's), box (round the part's own mesh), triangles ([first, how many] of the object's mesh), split (whether "Split" can be done to the part), settings (how many settings of its own the file gives it) }]` and `split: { objects, parts }` (whether "Split to objects" and "Split to parts" can be done to it). A part's `id` stays its own through every edit that leaves it there. An object's `id` and a copy's (a placing's) `id` stay theirs through every edit; `mesh` is the number of the object's mesh, the same for as long as the mesh is; `filament` is the object's own when its parts agree; `over` says a copy reaches over the edge of its plate |
+| `scene` | `project?` | the project for Prepare in 3D: `{ project, key, bare, bed { box, shape, height, model, texture }, plates: [{ id, name, origin, locked }], plate, colours, objects: [{ id, name, mesh, vertices, triangles, bytes, filaments, filament, parts }], placings: [{ id, object, plate, printable, matrix (16 numbers, column by column), box, over }] }`. An object also has `own_filament` (the filament it is set to itself, or null: what its parts set to "default" print in), `part_list: [{ id, name, kind (part, negative, modifier, support_blocker, support_enforcer, precise_seam), filament, own (the part's own filament, or null for "default"), matrix (16 numbers, column by column: the part's own coordinates to the object's), box (round the part's own mesh), triangles ([first, how many] of the object's mesh), split (whether "Split" can be done to the part), settings (how many settings of its own it has that a part's pages offer) }]`, `settings` (as many of the object's own that an object's pages offer), `ranges: [{ min_z, max_z, layer_height, settings (its own besides its layer height) }]` (its height ranges, lowest first) and `split: { objects, parts }` (whether "Split to objects" and "Split to parts" can be done to it). A part's `id` stays its own through every edit that leaves it there. An object's `id` and a copy's (a placing's) `id` stay theirs through every edit; `mesh` is the number of the object's mesh, the same for as long as the mesh is; `filament` is the object's own when its parts agree; `over` says a copy reaches over the edge of its plate |
 | `scene_edit` | `project?`, `op` and what it takes (section 13) | `{ project, scene, done, made, note, part }`: the project and its scene as they then are, the edit's name in the history, the copies it made, something to tell the person or null, and the part it made (`part_add`) or null |
+| `item_settings` | `project?`, `object`, and `part` (a part's or a modifier's id) or `range` (a height range's place among the object's, from 0) | the settings of that object, part or height range: `{ project, kind: "process", item { kind (object, part, range), object, part, range, name, heights { min_z, max_z } \| null }, keys (what it may set, in the pages' order), values { key: value } (in force from over it: the object's for a part or a range, the project's for an object), set { key: value } (its own), changed, hidden, off (the rules, on its own settings), unread, unread_note (one sentence for all: what the engine does with them), why { key: sentence } (when they differ), notes, counts { page: number set } ("Frequent" among them), refused }`. Its own are changed by `scene_edit` (`item_set` and the rest, section 13) |
 | `undo`, `redo` | `project?` | `{ project, scene, done }`; an error when there is nothing to take back or to make again |
 | `filament_edit` | `project?`, `op`: `add` (`colour?`, "#RRGGBB"; else the next of the reference's palette), `remove_last`, `delete` (`filament`), `merge` (`filament`, `into`), `colour` (`filament`, `colour`), `apply_all` (`preset`) | as `scene_edit`: `{ project, scene, done }`, `done` the step's name ("Add one filament", "Remove last filament", "Delete this filament", "Merge with", "Change Filament Color", "Apply All"), or null when nothing changed. Refused, nothing changed: the last filament, a 65th, a filament the project has not got, a merge into itself, a colour that is not `#RRGGBB`, "Apply All" on a project on its own settings |
 | `scene_faces` | `project?`, `copy` | the faces "Lay on face" offers for a copy, largest first: `{ project, copy, faces: [{ normal, area, drawn }] }`, `normal` outward in the object's own coordinates (what `lay_on_face` takes), `area` in mm² at the printed size, `drawn` the outline to draw over the face (rounded and lifted as the reference draws it), in the object's own coordinates |
@@ -828,6 +834,44 @@ The same is said with the print. A real slice notes what it reads too
 each setting set by hand that nothing read: `hollow_interior "1": not read by
 the engine; it changes nothing in this print`.
 
+### On an object, a part, a height range
+
+What an item may set is the reference's per-item tabs' (Tab.cpp
+`TabPrintObject`, `TabPrintPart`, `TabPrintLayer`):
+`Preset::print_options()` met with `PrintObjectConfig` and
+`PrintRegionConfig` for an object, with `PrintRegionConfig` and
+`part_support_keys()` for a part or a modifier, with `layer_height` and
+`PrintRegionConfig` for a height range; of those, what the process pages
+show. `tools/make_settings_pages.py` reads the lists from PrintConfig.hpp
+(the two `PRINT_CONFIG_CLASS_DEFINE`s), Preset.cpp
+(`s_Preset_print_options`) and PrintConfig.cpp (`part_support_keys`), and
+the "Frequent" page from `TabPrintModel::build`, into
+`settings_pages.json` (`process.items`):
+
+| Item | Options | Among them |
+| --- | --- | --- |
+| Object | 333 | every option of a region and the object's own: layer height, line widths, seam, supports, brim, raft, the walls, shells, infill, speeds |
+| Part, modifier | 187 | a region's (walls, shells, infill, speeds…) and 13 of the 17 part support keys on the pages; no layer height, no supports on or off |
+| Height range | 175 | a region's and `layer_height` |
+
+A negative part, a support blocker or enforcer and a Precise Seam part have
+none (GUI_ObjectList.cpp `add_settings_item`). Simple and advanced are the
+global pages' mode.
+
+What the engine does with an item's option is said by one function of the
+session, `items::item_followed` (`src/api/settings/items.rs`). The engine
+slices every object with the project's settings today: modifiers, a part's,
+an object's and a range's settings are kept and saved, and the C++ slicer
+follows them (section 15), but this engine does not, so the function
+answers every option "Not followed on an object, a part or a height range
+yet…" and each row carries the ring of section 12 with that sentence. When
+the engine follows them, the function is to ask `edge-engine` two things
+for a kind of item (object, part or modifier, range) and an option: whether
+it may be set there, and whether, with the item's settings as a slice has
+them (the function is given them), the engine follows it there (read, with
+a note, or not); it then answers `Followed`, `Noted` or `NotFollowed` as
+the global page's three marks. Nothing else in the session or the page
+changes for it.
 
 ## 13. Prepare as an editor
 
@@ -894,6 +938,11 @@ undo history.
 | `plate_settings` | `plate?` and, each null or left out for the project's, `bed_type` (one the printer takes), `print_sequence` (`by layer`, `by object`), `spiral_mode` (true, false), `first_layer_sequence` (filament numbers, each once), `other_layers_sequence` (`[{ begin, end (null: "End"), order }]`, layers from 2) | what the plate sets for itself ("Customize current plate"); refused, nothing changed, with "Please input layer value (>= 2)." and the like | "Plate Settings" (the reference takes no snapshot) |
 | `plate_front` | `plate?` | "Move plate to the front": the plate is plate 1 and the one shown, the others one back each | "move plate to the front" |
 | `plate_duplicate` | `plate?` | "Duplicate Current Plate": a plate after the last with a new object for each object with copies on the plate, each copy where it stood on its plate; the new plate is shown; `made` is its copies | "Duplicate Current Plate" (the reference takes no snapshot) |
+| `item_set` | `object`, `part?` or `range?`, `key`, `value` (null: given back to what is over it) | an object's, a part's or a height range's own setting (Tab.cpp `TabPrintModel::on_value_change`): checked as the global pages check it, kept in the shape the value over it has (a list for each nozzle flow stays one), written as the reference serializes it. Refused, nothing changed: a key that kind of item may not set (`layer_height` on a part: "layer_height cannot be set on a part"), a value the option does not take, a negative part, a support blocker or enforcer or a Precise Seam part. The same value again is no step | "Change Option `key`" |
+| `item_reset` | `object`, `part?` or `range?` | takes away every setting of the item's own that its pages offer (`reset_model_config`; the list's mark) | "Reset Options" |
+| `range_add` | `object`, `range?` | without `range`, "Height range Modifier" on an object without ranges: 0 to 2 mm, the object's layer height (else the project's) and filament 0 (`get_default_layer_config`); one with ranges is left as it is. With `range`, "Add height range" after that range (`add_layer_range_after_current`): after the last, 2 mm on its top; into a range starting at its top, that range split as the reference splits it; into a gap of a layer or more, the gap. Refused where there is no room ("There is no room for another height range after this one.", the reference doing nothing without a word) | "Add layers"; "Add height range" (the reference's snapshot is unnamed) |
+| `range_set` | `object`, `range`, `min_z?`, `max_z?` | a range's heights (`edit_layer_range`): a bottom at or over the top takes the top half a millimetre over it, as GUI_ObjectLayers.cpp does; a top at or under the bottom, a range over another's heights, a height that is not a number or is under the bed are refused | "Edit height range" (the reference's is unnamed) |
+| `range_delete` | `object`, `range` | | "Remove height range" |
 
 `arrange` leaves a locked plate as it is when every plate is arranged, and
 refuses one alone: "This plate is locked.\nCannot auto-arrange on this
@@ -909,7 +958,7 @@ sequence is not the project's, as the reference does (ArrangeJob.cpp
 | The history is kept while it fits in a tenth of the machine's memory, at most 1 GB | UndoRedo.cpp `StackImpl` l.551 | **differs**: the last 200 steps |
 | A new change forgets what was undone | `Stack::take_snapshot` | **added** |
 | Selecting is a step too ("Selection-Add Object") | Selection.cpp | **differs**: only edits are steps; what is selected stays selected while it is still there |
-| The settings are not in the history: a preset or a setting changed is not undone by Ctrl+Z | `Plater::priv::take_snapshot` (the model, the plates, the gizmos; the presets are not serialized) | the same: the history holds the model only. A process setting set by hand, a preset or a bed type is neither a step nor taken back by one, and an edit does not touch it (tested) |
+| The settings are not in the history: a preset or a setting changed is not undone by Ctrl+Z | `Plater::priv::take_snapshot` (the model, the plates, the gizmos; the presets are not serialized) | the same: the history holds the model only. A process setting set by hand, a preset or a bed type is neither a step nor taken back by one, and an edit does not touch it (tested). An object's, a part's and a height range's own settings are the model's, and each change of them is a step, as the reference snapshots them ("Change Option %s", "Reset Options", "Add layers", "Remove height range") |
 | The filament list is not in the history either: adding, removing, deleting, merging, a colour and "Apply All" take no snapshot, while what a deletion renumbers in the model is in the model the history holds | Plater.cpp `on_filaments_change`, `on_filaments_delete`, `Sidebar::delete_filament`, `on_filament_color_changed` | **differs**: each is one step ("Add one filament", "Remove last filament", "Delete this filament", "Merge with", "Change Filament Color", "Apply All"), the model and the filaments' presets and what is set over them taken back together, and the filament changes at layers with them. Undoing a deletion in the reference gives the objects their old numbers against the shorter list, which is what keeping them apart comes to. Picking one row's preset stays as before, no step, as in the reference |
 | Undoing back to the state that was saved leaves the project unmodified | `Plater::is_project_dirty` | **added**: the project is unsaved while its model is not the one it was opened with |
 
@@ -929,9 +978,9 @@ sequence is not the project's, as the reference does (ArrangeJob.cpp
 
 In the sidebar, under "Objects" (`ui/objects.js`). In the C++ the list is
 what the Process section shows when its switch is on "Objects"; here it has a
-section of its own, the per-object settings that go with that switch not
-being built. It stands before the Process section, where the C++ shows it
-too (at the head of Process).
+section of its own, always shown, and its selection is what the Process
+section's "Objects" shows the settings of. It stands before the Process
+section, where the C++ shows it too (at the head of Process).
 
 | C++ | Where | Here |
 | --- | --- | --- |
@@ -944,6 +993,9 @@ too (at the head of Process).
 | A double click on the name, or F2, renames in place; an empty name leaves the name as it was; `<>:/\|?*"` are not allowed | `ObjectList::rename_item` l.6307, `update_name_in_model` l.1233 | **added**: Enter takes the name, Escape or an empty name leaves it. **not yet**: the characters that are not allowed (nothing is written under an object's name yet) |
 | The plate's row: a click shows the plate; its menu | `ObjectList::OnContextMenu`, `create_plate_menu` | **added**: a click shows the plate; the right button opens "Select All", "Delete All", "Arrange", "Delete Plate"; a cross at the row is "Remove current plate (if not last one)" |
 | Dragging rows to reorder, or onto another plate | `ObjectList::OnDrop` | **not yet** |
+| An item's settings: the reference's settings rows under an item are gone (`NEW_OBJECT_SETTING`, GUI_ObjectSettings.hpp l.9); an item with settings of its own has an icon in the editing column ("Click the icon to reset all settings of the object"), a click on which takes them all away without asking ("Reset Options") | GUI_ObjectList.cpp `add_settings_item` l.4180, l.699, l.1582; ObjectDataViewModel.cpp l.219 | **added** (fourteenth pass): the mark after the name of an object, a part or a range with settings of its own that its pages offer, the same tooltip, a click taking them away (one step). A range's layer height, which every range carries, does not count |
+| Copying an item's settings (Ctrl+C / Ctrl+V on a settings row, `copy_settings_to_clipboard`) | GUI_ObjectList.cpp l.1379–1418 | not built, as in the reference: the rows they need are no longer made, so nothing reaches it (listed with the errors found) |
+| "Layers" under an object, and a row for each height range: "Range 0.00-2.00 (mm)"; a click on "Layers" shows the ranges' heights, on a range its settings; a range's "Fila." | ObjectDataViewModel.cpp l.133, l.161; GUI_ObjectList.cpp `add_layer_root_item`, `add_layer_item` | **added**: "Layers" after the parts, each range under it a step in; a click selects the object in the scene and the row in the list. **not yet**: a range's filament in "Fila." (it is kept: filament 0, "default"), the range drawn on the object in the scene, the right button's menu on a range (the reference has none) |
 
 ### Move, Rotate, Scale
 
@@ -1095,13 +1147,14 @@ shows; `part_menu`; `append_menu_items_add_volume`;
 
 | C++ | Where | Here |
 | --- | --- | --- |
-| The part menu: "Delete", "Edit text", "Repair", "Simplify", "Center", "Drop", "Mirror", "Hide"/"Show", "Separate", "Split" ("To objects", "To parts", "By painted colour"), "Edit in Parameter Table", "Change type", "Reload from disk", "Replace with STL", "Edit in Blender", "Edit in FreeCAD", "Fillet / chamfer", "Export as one STL", then "Change Filament", "Override paint", the support groups, "Precise Seam Type" | GUI_Factories.cpp l.2539–2585, l.2998 | **added**: "Delete", "Center", "Drop" (both "Move Object" steps), "Mirror" ▸ "Along X axis"…, "Split" ▸ "To objects" (off, as the C++ has it for a part) and "To parts", "Change type", "Change Filament" ("Default" and each filament by its preset's name; "Set Filament for selected items" for several; only with more than one filament, for parts and modifiers). **differs**: "Change type" is a sub-menu of the six kinds, where the C++ asks in a dialog ("Choose part type", "Type:"); "Split" is on whenever "To parts" can be done (see "Errors found in the C++"). **not yet**: the rest (each needs something the model does not have: text and SVG parts, mesh repair and simplifying, hiding, a part made an object of its own, per-part settings, reloading from a file, exporting). "Rename" is not in the C++'s shown part menu either; a double click or F2 renames |
+| The part menu: "Delete", "Edit text", "Repair", "Simplify", "Center", "Drop", "Mirror", "Hide"/"Show", "Separate", "Split" ("To objects", "To parts", "By painted colour"), "Edit in Parameter Table", "Change type", "Reload from disk", "Replace with STL", "Edit in Blender", "Edit in FreeCAD", "Fillet / chamfer", "Export as one STL", then "Change Filament", "Override paint", the support groups, "Precise Seam Type" | GUI_Factories.cpp l.2539–2585, l.2998 | **added**: "Delete", "Center", "Drop" (both "Move Object" steps), "Mirror" ▸ "Along X axis"…, "Split" ▸ "To objects" (off, as the C++ has it for a part) and "To parts", "Change type", "Change Filament" ("Default" and each filament by its preset's name; "Set Filament for selected items" for several; only with more than one filament, for parts and modifiers). **differs**: "Change type" is a sub-menu of the six kinds, where the C++ asks in a dialog ("Choose part type", "Type:"); "Split" is on whenever "To parts" can be done (see "Errors found in the C++"). **not yet**: the rest (each needs something the model does not have: text and SVG parts, mesh repair and simplifying, hiding, a part made an object of its own, the table of "Edit in Parameter Table", reloading from a file, exporting). "Rename" is not in the C++'s shown part menu either; a double click or F2 renames |
+| "Height range Modifier" (no tooltip) after them, and "Edit Process Settings" after "Printable" | GUI_Factories.cpp l.967, l.3262 | **added** (fourteenth pass): "Height range Modifier" gives an object without ranges one from 0 to 2 mm, selects "Layers" and turns the Process section to "Objects"; "Edit Process Settings" turns it to "Objects" for what is selected. **not yet**: "Color Pattern...", "Edit in Parameter Table" (the table, section 2) |
 | "Add part", "Add negative part", "Add modifier", "Add support blocker", "Add support enforcer", "Add precise seam" in the object's menu, each "Load..." and the generic shapes "Cube", "Cylinder", "Sphere", "Cone", "Disc", "Torus", text, SVG… | GUI_Factories.cpp l.426, l.659, l.922 | **added**: the first five, each with "Load..." (an STL's or a 3MF's printed geometry, as it stands in its file, named after it: "Load Part" / "Load Modifier") and "Cube" (a tenth of the bed's greater side, square to the bed, beside the right front corner of the object's box at its foot: "Add primitive", named "Generic-Cube"). The part made is selected. **not yet**: "Add precise seam", "Height range Modifier", "Color Pattern...", and "Cylinder", "Sphere", "Cone", "Disc", "Torus" and the rest, which wait for `edge_mesh::primitives` to make them (it makes boxes only) |
 | A new model part takes the object's `extruder` as its own; any other kind none | GUI_ObjectList.cpp l.2416–2421, l.2529–2534 | **added** |
 | Deleting a part: not the last solid one ("Deleting the last solid part is not allowed."); when one volume is left, its config goes to the object | l.2856–2913 | **added**, the filament going to the object; a part's other settings stay with the part (the model keeps no settings of an object's) |
 | Changing a part's type: the last solid part keeps its type ("The type of the last solid object part is not to be changed."); the volumes are sorted by type after | `change_part_type` l.5819, `set_volume_type` l.5930 | **added**. **differs**: a part keeps its place in the list; the reference sorts the volumes by type |
 | "Split" of a part: a part for each piece, named with `_1`, `_2`…, each given the original's filament (`extruder_id`) | `ModelVolume::split` Model.cpp l.3186 | **added**, the pieces in the part's place, keeping its transform (see the error at l.3014 below) |
-| Modifiers carry settings for the region inside them; support blockers and enforcers say where supports go | `PrintObject`, `SupportMaterial` | **not followed** by the engine: their settings are kept with the part (`Part::settings`) and not read. They are kept through every edit, listed and drawn see-through in their colours, and a print with any of them says so under "About this print" ("the project has modifiers, which are not followed: …", "the project has support blockers, which are not followed: supports go where the settings put them") |
+| Modifiers carry settings for the region inside them; support blockers and enforcers say where supports go | `PrintObject`, `SupportMaterial` | **not followed** by the engine: their settings are kept with the part (`Part::settings`), set on the item's pages since the fourteenth pass, and not read. They are kept through every edit, listed and drawn see-through in their colours, and a print with any of them says so under "About this print" ("the project has modifiers, which are not followed: …", "the project has support blockers, which are not followed: supports go where the settings put them") |
 
 ### Plates
 
@@ -1141,7 +1194,7 @@ engine's side is `crates/edge-engine/src/plates.rs`; the page's
 | "Auto orient", "Cut", "Mesh Boolean", "Simplify" | mesh operations the engine does not have |
 | "Split" > "By painted colour" ("Convert the part's colour painting into separate parts, one per filament") | cutting a mesh along its painted borders, which the engine does only layer by layer while slicing |
 | The other instances of an object taking a mirror or a turn of the object too | instances kept alike, which no tool here does yet (a part's edits are every instance's, as in the C++) |
-| A modifier's and a part's own settings ("Edit in Parameter Table", "Add settings"), "Separate" / "Set as an individual object", copying and pasting parts | per-object and per-part settings, which the engine does not read (section 12); copying parts in the model |
+| "Edit in Parameter Table" (the table of section 2), "Separate" / "Set as an individual object", copying and pasting parts | the table is a piece of work of its own; copying parts in the model. A modifier's and a part's own settings are set on their pages (fourteenth pass) |
 | "Center" and "Drop" for an object; "Hide" / "Show" of a part | nothing; not built in this pass |
 | Saving the project with its edits | **added**: section 15 |
 | The glow round what is selected, the red background while something is over the edge, the ticks of the rotate ring | nothing; they are looks, left for a pass on the stage's own drawing |
@@ -1364,6 +1417,52 @@ session's scratch folder, `ui_plates/shots/`.
   has a turn or a size of its own in the wrong place; a part as loaded
   (no turn of its own) is not affected. Here a part's pieces keep the
   part's transform and their own coordinates, so they stay where they were.
+- `MainFrame.cpp` l.1407–1409: going to another project calls
+  `reset_model_config()` on the object, part and range tabs to let go of
+  the last project's selection, but that function (Tab.cpp l.5171) erases
+  every option of the tab's keys from the configs it holds, which are the
+  previous project's items: whatever object, part or range was selected
+  there loses all its settings of its own, with a "Reset Options" step
+  taken on the wrong project. The comment says only the pointers were
+  meant to go.
+- `GUI_ObjectList.cpp` l.7455–7461 (macOS, `OnEditingStarted`): a click on
+  the editing column's icon always resets `get_model_tab(vol_idx >= 0)`,
+  without the plate and range cases the other platforms have (l.1588–1593):
+  on a range's row it takes away all the settings of the object the range
+  is of, and leaves the range's.
+- `GUI_ObjectList.cpp` l.5030–5073 (`edit_layer_range`) and
+  GUI_ObjectLayers.cpp l.129: heights typed are taken with no check
+  against the other ranges (`ranges[new_range] = config`): a range typed
+  onto another's heights replaces it, ranges may overlap (the slicer trims
+  them without a word), and a top equal to the bottom is taken (only a
+  top under the bottom is refused), a range of no height. Here they are
+  refused with the reason.
+- `GUI_ObjectLayers.cpp` l.460–466 (`LayerRangeEditor::get_value`): a
+  negative height says "Invalid numeric." and is then returned and applied
+  all the same: a range starting under the bed. Here it is refused.
+- `libslic3r/Slicing.cpp` l.259 (`layer_height_profile_from_ranges`):
+  `option("layer_height")->getFloat()` with no check, and the 3MF reader
+  (bbs_3mf.cpp l.3864–3920) gives a range only what its file says: a
+  range written without a layer height (by another program, or by hand)
+  is a null pointer when sliced. Here every range is made with one, as the
+  reference makes them (`get_default_layer_config`).
+- `GUI_ObjectList.cpp` l.3459–3461 (`get_default_layer_config`): the
+  object's `extruder`, else the print preset's `opt_float("extruder")`
+  (a process preset has none: a null pointer), is worked out and never
+  used, the range being given 0.
+- `ParamsPanel.cpp` l.713–736 (`notify_object_config_changed`): only
+  objects and parts are looked at, so a project whose only settings of
+  their own are a height range's does not mark "Objects", and is not
+  turned to "Objects" when opened. Here a range counts.
+- `GUI_ObjectList.cpp` l.1379–1418 and l.1735–1765: copying and pasting an
+  item's settings works on settings rows (`itSettings`), which are no
+  longer made (`NEW_OBJECT_SETTING`): the code cannot be reached. Pasting
+  height ranges (l.1349–1371) takes no snapshot, and `emplace` leaves a
+  range already at those heights as it was.
+- `Tab.cpp` l.5552–5579 (`TabPrintLayer::notify_changed`,
+  `update_custom_dirty`): showing a range's pages writes the object's
+  layer height into a range without one, a change to the model with no
+  step of the history and no unsaved mark.
 
 ## 14. The filament's and the printer's pages
 
@@ -1571,7 +1670,8 @@ entry, in a fixed order:
 | `Metadata/model_settings.config` | written afresh from the model: each object's name and filament (`extruder`), each part's name, `subtype`, own filament (`extruder`, none for "default") and, once it has moved, `matrix` (see "Parts" below). Kept as the file had them, where the part is still what it was read as: every other metadata and setting of each object and part (per-object and per-part settings, modifiers' settings, `matrix`, `source_*`, Precise Seam's type, embossed text and SVG descriptions, `mesh_stat`), each plate's own (`locked`, `bed_type`, `print_sequence`, `first_layer_print_sequence`, `spiral_mode`, `filament_map_mode`, `filament_maps` with one entry for each filament, `print_history`…), a setting changed here (the lock, "Plate Settings") set in place or added where the reference writes it and one given back to the project taken out (`PlateKept::with`), a plate added here written as the reference writes a new one until something is set on it (`PlateKept::fresh`), each copy's place in the assembly view while its object has all its copies, and each copy's `identify_id` (the number the reference labels it with in G-code) while it has. Plates are numbered as they stand, each with its name and its copies |
 | `Metadata/project_settings.config` | the settings, below |
 | `Metadata/slice_info.config` | written afresh: the header alone, as the reference writes a project saved unsliced |
-| `Metadata/layer_heights_profile.txt` (variable layer height), `layer_config_ranges.xml` (height ranges and their settings), `brim_ear_points.txt`, `cut_information.xml` (cut connectors) | kept, each object's line or block written under its place in the list as it stands, so they follow an object when one before it is deleted; a clone carries its original's, as the reference's clone does. A cut connector names its part by the part's place among the object's parts, which is written as it now stands (a part before it deleted, one added after it); once the connector's part itself is deleted or split, the object's cut information is not written, and that is asked about first |
+| `Metadata/layer_config_ranges.xml` (height ranges and their settings) | an object's ranges kept as the file has them until they are edited here; then written as the reference writes them (`_add_layer_config_ranges_file_to_archive`: Boost's XML with each tag on a line, a range's `min_z` and `max_z`, an `<option opt_key>` for each of its settings in order of key), under the object's place as it stands (fourteenth pass). **differs**: the file ends with a new line, which the reference's does not have, as before this pass (the writer's own, for kept ranges too) |
+| `Metadata/layer_heights_profile.txt` (variable layer height), `brim_ear_points.txt`, `cut_information.xml` (cut connectors) | kept, each object's line or block written under its place in the list as it stands, so they follow an object when one before it is deleted; a clone carries its original's, as the reference's clone does. A cut connector names its part by the part's place among the object's parts, which is written as it now stands (a part before it deleted, one added after it); once the connector's part itself is deleted or split, the object's cut information is not written, and that is asked about first |
 | `Metadata/custom_gcode_per_layer.xml` (pauses, custom G-code, templates, filament changes at layers) | read (`edge_3mf::CustomGcode`, by plate, plate 1's for a file without plates as the reference reads it) and written afresh in the reference's layout: Boost's XML with a new line between tags, `top_z` to 17 digits, values escaped as Boost escapes them (new lines kept), a plate with no items still written when it has an entry, an undefined mode written `MultiExtruder`; the pressure advance pattern's file is written back to the byte. Each plate's go with it (deleting a plate before it renumbers them with it). Edited from the slider (section 3). A file laid out otherwise (PrusaSlicer's `custom_gcodes_per_print_z`), which the reference does not read, is kept as it was while nothing is set here |
 | `Metadata/plate_<n>.png`, `_small`, `plate_no_light_<n>`, `top_<n>`, `pick_<n>` | kept for each plate while it is as it was read (`PlateStamp`: what is on it and where, its filaments and first-layer order), under its number now; a plate that has changed is saved without pictures, which would show it as it was. **not yet**: drawing new ones |
 | `Metadata/process_settings_<n>.config`, `filament_settings_<n>.config`, `machine_settings_<n>.config` (presets the file carries) | kept while the project is saved with its file's own settings; with presets chosen here they are not, and that is asked about first |
@@ -1753,6 +1853,47 @@ save` lists the same and writes only with `--accept-losses`.
   Object" it reads the plate's own ("plate print by object, set from plate
   self") and refuses the plate for objects too close for it, which this
   engine prints layer by layer with its note.
+
+- Settings of an object, a part and a height range (fourteenth pass).
+  `crates/edge-3mf/src/own.rs`: ranges written as the reference lays them
+  out and read back, a setting set in place, added after the metadata and
+  taken away. `crates/edge-engine/tests/item_settings.rs`: on
+  `twopart_groups.3mf` an object's `wall_loops`, a part's
+  `sparse_infill_density` and two ranges (given out of order) saved and
+  opened again as set, `layer_config_ranges.xml` to the byte, saved twice
+  the same bytes, and all of it given back saves to the bytes of the
+  untouched file; a bare STL's object given a setting keeps its name;
+  overlapping ranges, a range ending where it starts, under the bed or not
+  a number, and settings on a helper part refused. `src/api/settings/items/tests.rs`:
+  the options each kind offers; an object, a part and a range each given
+  their own through `scene_edit` (the global value untouched, the rules on
+  the item's settings, out-of-range and wrong-kind refusals), saved as and
+  opened in another session as left, the ten steps undone by name;
+  `mcbrim_test.3mf` with plates 1 and 2 sliced, an object of plate 2 given
+  5 walls: plate 1 keeps its slice. In the served page (1280 × 820 and
+  900 × 560 dark, 1280 × 820 light) on the `halves` fixture: "Objects",
+  the object selected, wall loops typed to 5 (marked, "Frequent 1" and
+  "Strength 1" on the tabs, the list's mark, the dot on "Objects", the
+  unsaved dot), "Global" showing 2 unmarked; the arrow (back to 2, "Change
+  Option wall_loops" to undo) and the toolbar's undo (5 again); Part 1
+  selected, its pages without layer height or supports, its infill typed
+  to 60%; "Height range Modifier" from the object's menu (0 to 2 mm,
+  "Layers" selected), its top typed to 3, "Add height range" (3 to 5),
+  the first range selected, its layer height typed to 0.1; saved as,
+  closed, opened again: the marks, the ranges and each value as left.
+  The C++ slicer, re-exporting that file headless (`--export-3mf`), writes
+  `layer_config_ranges.xml` as this app wrote it (but the last new line)
+  and the object's `wall_loops` 5 and the part's `sparse_infill_density`
+  60% in `model_settings.config`; slicing it (`--slice 1`), its project
+  header still says `wall_loops = 2`, `sparse_infill_density = 15%`, but
+  it prints the first 3 mm in 0.1 mm layers (64 layers, 50 before),
+  3.7 times the inner wall (7.35 mm of filament a layer, 1.98 before: four
+  inner walls) and more sparse infill (9.57 mm a layer, 5.37 before) where
+  the 60% part is. The CLI's G-code and `edge save` are the starting
+  commit's byte for byte for the three plates of `mcbrim_test.3mf`,
+  `twopart_groups.3mf` and the `cube`, `tower`, `bridge`, `inset`,
+  `halves` fixtures (`twotone` refused alike), and for the file saved in
+  the page, whose settings this engine does not read.
 
 - What is set at layers (eleventh pass). `crates/edge-3mf`: the pressure
   advance pattern's file written back to the byte, and a pause added to
