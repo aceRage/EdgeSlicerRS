@@ -67,6 +67,10 @@ pub struct Shells {
     /// layer's fill is not over and under the fill of the layers within
     /// a shell of it is then made solid.
     pub ensure: Option<Coord>,
+    /// The outer wall's line spacing. With `ensure` set and a shell of
+    /// one layer, the face itself, the fill this far round a face on its
+    /// own layer is made solid, so that the face is held at its edges.
+    pub outer_spacing: Coord,
     /// Set where a bridge gets a second layer of bridge over it
     /// (`enable_extra_bridge_layer` for bridges over air): the least
     /// half-width of bridge worth a second layer, which the reference
@@ -268,12 +272,36 @@ pub fn classify(
             // next `bottom_layers - 1` layers down, and in as many more
             // as the thickness asked of a shell takes.
             let (above, below) = (reach.above(layer), reach.below(layer));
-            let shell: Vec<ExPolygon> = above
+            let mut shell: Vec<ExPolygon> = above
                 .clone()
                 .flat_map(|other| &faces[other].0)
                 .chain(below.clone().flat_map(|other| &faces[other].1))
                 .cloned()
                 .collect();
+            // With walls kept thick, a face with no shell layers beyond
+            // itself is held at its edges: the fill an outer wall's
+            // spacing round it, under the layer over a top or on the
+            // layer under a bottom, is shell too
+            // (`discover_vertical_shells`, PrintObject.cpp, where no
+            // layer's faces are projected onto this one).
+            if shells.ensure.is_some() {
+                let (top, bottom) = &faces[layer];
+                let mut held = |face: &[ExPolygon], next: usize| -> Result<(), ClipError> {
+                    if !face.is_empty() {
+                        shell.extend(edge_clip::intersection(
+                            &edge_clip::offset(face, shells.outer_spacing, Join::MITER)?,
+                            outlines[next],
+                        )?);
+                    }
+                    Ok(())
+                };
+                if shells.top_layers > 0 && above.is_empty() && layer + 1 < count {
+                    held(top, layer + 1)?;
+                }
+                if shells.bottom_layers > 0 && below.is_empty() && layer > 0 {
+                    held(bottom, layer - 1)?;
+                }
+            }
 
             let (mut solid, mut sparse) = if shells.sparse_density >= 1.0 {
                 (internal, Vec::new())
@@ -882,6 +910,7 @@ mod tests {
             minimum_sparse_area: 15.0,
             opening: scaled(0.045),
             ensure: None,
+            outer_spacing: scaled(0.42),
             second_bridge: None,
         }
     }
@@ -1107,6 +1136,36 @@ mod tests {
             solid_on(&ensuring, 10).round(),
             solid_on(&plain, 10).round()
         );
+    }
+
+    #[test]
+    fn a_face_that_is_its_own_whole_shell_is_held_at_its_edges() {
+        // A 20 mm base four layers tall carrying a 10 mm tower: the
+        // base's last layer is a ledge round the tower's foot.
+        let mut layers = vec![block(0.0, 0.0, 20.0, 20.0); 4];
+        layers.extend(vec![block(0.0, 0.0, 10.0, 10.0); 4]);
+        let slices: Vec<&[ExPolygon]> = layers.iter().map(Vec::as_slice).collect();
+        let inside = inside_walls(std::slice::from_ref(&slices), &slices, None).unwrap();
+        let solid_under_the_foot = |shells: &Shells| -> f64 {
+            classify(&slices, &slices, &slices, &inside, &flat(8), shells).unwrap()[3]
+                .iter()
+                .filter(|s| s.kind == InternalSolid)
+                .map(|s| s.area.area_mm2())
+                .sum()
+        };
+        let ensuring = |top_layers: usize| Shells {
+            ensure: Some(scaled(0.4)),
+            ..shells(top_layers, 1)
+        };
+        // With a top shell of one layer, a strip an outer wall's spacing
+        // wide inside the foot, along its two sides on the ledge, and
+        // the little the shell is grown by.
+        let held = solid_under_the_foot(&ensuring(1));
+        assert!((8.4..10.5).contains(&held), "{held} mm²");
+        // Not without walls kept thick, nor where the shell has a layer
+        // beyond the face.
+        assert_eq!(solid_under_the_foot(&shells(1, 1)), 0.0);
+        assert_eq!(solid_under_the_foot(&ensuring(2)), 0.0);
     }
 
     #[test]

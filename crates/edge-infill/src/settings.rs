@@ -658,6 +658,7 @@ impl InfillSettings {
             minimum_sparse_area: self.minimum_sparse_infill_area,
             opening: scaled(outer.width / 10.0),
             ensure: self.ensure_vertical_shells.then(|| scaled(solid.spacing)),
+            outer_spacing: outer.scaled_spacing(),
             // The width of the walls: the outer one's and every inner
             // one's (`offset_distance` in `detect_surfaces_type`).
             second_bridge: if self.extra_bridge_layer.external() {
