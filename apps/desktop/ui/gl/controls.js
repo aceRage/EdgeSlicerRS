@@ -30,7 +30,7 @@
       this.half = 26;
       this.cube = el('div', { className: 'gl-cube' });
       for (const [name, view, right, down, out] of FACES) {
-        const face = el('button', { type: 'button', className: 'gl-face', textContent: name, title: `${name} view` });
+        const face = el('button', { type: 'button', className: 'gl-face', textContent: t(name), title: t(name) });
         const h = this.half;
         // The face's own axes and where its middle is, in the scene's.
         face.style.transform = `matrix3d(${right.join(',')},0,${down.join(',')},0,${out.join(',')},0,${out.map((part) => part * h).join(',')},1)`;
@@ -80,8 +80,8 @@
       this.track = el('div', { className: 'gl-track', tabIndex: 0 }, this.fill, this.thumbs.low, this.thumbs.high);
       this.track.setAttribute('role', 'slider');
       this.track.setAttribute('aria-orientation', 'vertical');
-      this.track.setAttribute('aria-label', 'Layers');
-      this.oneButton = el('button', { type: 'button', className: 'gl-one overlay', textContent: '1', title: 'On/Off one layer mode of the vertical slider [L]' });
+      this.track.setAttribute('aria-label', t('Layers'));
+      this.oneButton = el('button', { type: 'button', className: 'gl-one overlay', textContent: '1', title: `${t('On/Off one layer mode of the vertical slider')} [L]` });
       this.oneButton.setAttribute('aria-pressed', 'false');
       this.oneButton.addEventListener('click', () => this.setOne(!this.one));
       // What is set at layers: a mark across the track at each, its kind
@@ -99,6 +99,10 @@
       };
       this.track.addEventListener('pointerdown', (event) => {
         if (event.button !== 0 || !this.count) return;
+        // A drag that leaves the track would otherwise select the page's
+        // text from here on, painting the legend in the selection's colour.
+        event.preventDefault();
+        this.track.focus({ preventScroll: true });
         dragging = true;
         this.track.setPointerCapture(event.pointerId);
         const layer = at(event);
@@ -249,6 +253,9 @@
       };
       this.track.addEventListener('pointerdown', (event) => {
         if (event.button !== 0) return;
+        // As for the layers slider: no text selection from a drag.
+        event.preventDefault();
+        this.track.focus({ preventScroll: true });
         dragging = true;
         this.track.setPointerCapture(event.pointerId);
         this.move(at(event));

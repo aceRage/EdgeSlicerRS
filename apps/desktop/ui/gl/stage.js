@@ -78,11 +78,11 @@
 
     build(parent) {
       this.navigator = new GL.controls.Navigator(parent, (view) => this.view(view));
-      const fit = el('button', { type: 'button', className: 'icon tool gl-fit', title: 'Fit in all view [Z]' });
+      const fit = el('button', { type: 'button', className: 'icon tool gl-fit', title: `${t('Fit in all view')} [Z]` });
       fit.innerHTML = '<svg viewBox="0 0 16 16" aria-hidden="true"><path d="M2.5,6V2.5H6M10,2.5h3.5V6M13.5,10v3.5H10M6,13.5H2.5V10"/><rect x="5.5" y="5.5" width="5" height="5" rx="0.5"/></svg>';
-      fit.setAttribute('aria-label', 'Fit in all view');
+      fit.setAttribute('aria-label', t('Fit in all view'));
       fit.addEventListener('click', () => this.fit('part'));
-      const menu = el('button', { type: 'button', className: 'quiet gl-view', textContent: 'View' });
+      const menu = el('button', { type: 'button', className: 'quiet gl-view', textContent: t('View') });
       menu.insertAdjacentHTML('beforeend', '<svg class="chevron" viewBox="0 0 10 6" aria-hidden="true"><path d="M1 5l4-4 4 4"/></svg>');
       menu.setAttribute('aria-haspopup', 'menu');
       menu.addEventListener('click', () => {
@@ -126,23 +126,23 @@
     viewMenu() {
       const p = this.prefs;
       return [
-        ['Default View', () => this.view('default')],
-        ['Top', () => this.view('top')],
-        ['Bottom', () => this.view('bottom')],
-        ['Front', () => this.view('front')],
-        ['Rear', () => this.view('rear')],
-        ['Left', () => this.view('left')],
-        ['Right', () => this.view('right')],
+        [t('Default View'), () => this.view('default')],
+        [t('Top'), () => this.view('top')],
+        [t('Bottom'), () => this.view('bottom')],
+        [t('Front'), () => this.view('front')],
+        [t('Rear'), () => this.view('rear')],
+        [t('Left'), () => this.view('left')],
+        [t('Right'), () => this.view('right')],
         null,
-        ['Use Perspective View', () => this.setPref('perspective', 'perspective', true), { checked: p.perspective }],
-        ['Use Orthogonal View', () => this.setPref('perspective', 'perspective', false), { checked: !p.perspective }],
-        ['Auto Perspective', () => this.setPref('autoPerspective', 'auto_perspective', !p.autoPerspective), { checked: p.autoPerspective }],
+        [t('Use Perspective View'), () => this.setPref('perspective', 'perspective', true), { checked: p.perspective }],
+        [t('Use Orthogonal View'), () => this.setPref('perspective', 'perspective', false), { checked: !p.perspective }],
+        [t('Auto Perspective'), () => this.setPref('autoPerspective', 'auto_perspective', !p.autoPerspective), { checked: p.autoPerspective }],
         null,
-        ['Zoom to mouse position', () => this.setPref('zoomToMouse', 'zoom_to_mouse', !p.zoomToMouse), { checked: p.zoomToMouse }],
-        ['Reverse mouse zoom', () => this.setPref('reverseZoom', 'reverse_zoom', !p.reverseZoom), { checked: p.reverseZoom }],
+        [t('Zoom to mouse position'), () => this.setPref('zoomToMouse', 'zoom_to_mouse', !p.zoomToMouse), { checked: p.zoomToMouse }],
+        [t('Reverse mouse zoom'), () => this.setPref('reverseZoom', 'reverse_zoom', !p.reverseZoom), { checked: p.reverseZoom }],
         null,
-        ['Show 3D Navigator', () => this.setPref('navigator', 'navigator', !p.navigator), { checked: p.navigator }],
-        ['Show Labels', () => this.setPref('labels', 'labels', !p.labels), { checked: p.labels }],
+        [t('Show 3D Navigator'), () => this.setPref('navigator', 'navigator', !p.navigator), { checked: p.navigator }],
+        [t('Show Labels'), () => this.setPref('labels', 'labels', !p.labels), { checked: p.labels }],
       ];
     },
 
@@ -577,18 +577,19 @@
       this.readout.hidden = !stopped;
       if (!stopped) return;
       const move = path.move(range.to - 1);
-      const kinds = ['Noop', 'Travel', 'Extrude', 'Wipe', 'Retract', 'Unretract', 'Seam', 'Tool Change'];
+      const kinds = [t('Noop'), t('Travel'), t('Extrude'), t('Wipe'), t('Retract'), t('Unretract'), t('Seam'), t('Tool Change')];
       const view = T.VIEWS.find((known) => known.name === this.model.kept.viewType) || T.VIEWS[0];
       const digits = (value) => (Math.abs(value) > 9999 ? 1 : Math.abs(value) > 999 ? 2 : 3);
-      const what = move.kind === T.KIND.line ? T.FEATURES[move.feature][0] : kinds[move.kind];
+      const what = move.kind === T.KIND.line ? t(T.FEATURES[move.feature][0]) : kinds[move.kind];
+      // GCodeViewer.cpp l.440–467: the label, then the value.
       const detail = {
-        0: what, 1: `Tool: ${move.filament}`, 2: what, 3: `Height: ${move.height.toFixed(2)}`, 4: `Width: ${move.width.toFixed(2)}`,
-        5: `Flow: ${move.flow.toFixed(2)}`, 6: `Fan: ${move.fan.toFixed(0)}`, 7: `Temperature: ${move.temperature.toFixed(0)}`,
+        0: what, 1: `${t('Tool: ')}${move.filament}`, 2: what, 3: `${t('Height: ')}${move.height.toFixed(2)}`, 4: `${t('Width: ')}${move.width.toFixed(2)}`,
+        5: `${t('Flow: ')}${move.flow.toFixed(2)}`, 6: `${t('Fan: ')}${move.fan.toFixed(0)}`, 7: `${t('Temperature: ')}${move.temperature.toFixed(0)}`,
       }[view.id];
       this.readout.replaceChildren(
         ...['X', 'Y', 'Z'].flatMap((axis, at) => [el('b', { className: `gl-${axis.toLowerCase()}`, textContent: `${axis} ` }), `${move.at[at].toFixed(digits(move.at[at]))}  `]),
         el('br'),
-        `Speed: ${move.feedrate.toFixed(0)}  ${detail}`,
+        `${t('Speed: ')}${move.feedrate.toFixed(0)}  ${detail}`,
       );
     },
 
@@ -637,8 +638,8 @@
       const rows = (changed) => {
         const toggle = (set, key, name, colour, on) => {
           const off = set.has(key) !== on;
-          const eye = el('button', { type: 'button', className: 'eye', textContent: off ? '○' : '●', title: off ? 'Show' : 'Hide' });
-          eye.setAttribute('aria-label', `${off ? 'Show' : 'Hide'} ${name}`);
+          const eye = el('button', { type: 'button', className: 'eye', textContent: off ? '○' : '●', title: off ? t('Show') : t('Hide') });
+          eye.setAttribute('aria-label', `${off ? t('Show') : t('Hide')} ${name}`);
           eye.setAttribute('aria-pressed', String(!off));
           const swatch = el('span', { className: 'swatch' });
           swatch.style.background = colour;
@@ -653,20 +654,20 @@
         const options = (only = null) => {
           const present = T.OPTIONS.filter((option) => index && index.counts[option.count] > 0 && (!only || only.includes(option.name)));
           if (!present.length) return [];
-          return [head('Options', 'Display'), ...present.map((option) => toggle(kept.options, option.name, option.name, css(option.colour), true))];
+          return [head(t('Options'), t('Display')), ...present.map((option) => toggle(kept.options, option.name, t(option.name), css(option.colour), true))];
         };
         if (view.id === 0) {
           // Before the moves are in, the features the slice is known to have.
           const features = index ? index.features.map((feature) => T.FEATURES[feature]) : summary.roles.map((name) => T.FEATURES.find(([known]) => known === name) || [name, [255, 255, 255]]);
-          return [head('Line Type', 'Display'), ...features.map(([name, colour]) => toggle(kept.hidden, name, name, css(colour), false)), ...options()];
+          return [head(t('Line Type'), t('Display')), ...features.map(([name, colour]) => toggle(kept.hidden, name, t(name), css(colour), false)), ...options()];
         }
         if (view.id === 1) {
           const filaments = index ? index.filaments : summary.filaments;
-          return [head('Filament', 'Display'), ...filaments.map((filament) => toggle(kept.hidden, `f${filament}`, `Filament ${filament}`, filamentColour(summary, filament), false)), ...options()];
+          return [head(t('Filament'), t('Display')), ...filaments.map((filament) => toggle(kept.hidden, `f${filament}`, fmt(t('Filament %d'), filament), filamentColour(summary, filament), false)), ...options()];
         }
         const range = path ? path.range(view.id, this.hiddenFeatures(kept), kept.options.has('Travel'), kept.options.has('Wipe')) : [0, 0, 0];
         const steps = T.steps(range).reverse();
-        return [head(view.title), ...steps.map((value) => {
+        return [head(t(view.title)), ...steps.map((value) => {
           const swatch = el('span', { className: 'swatch' });
           swatch.style.background = css(T.rangeColour(value, range));
           return el('tr', {}, el('td', {}, swatch, value.toFixed(view.decimals)));

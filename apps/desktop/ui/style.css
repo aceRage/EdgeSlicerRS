@@ -178,6 +178,8 @@
 ::-webkit-scrollbar-corner, ::-webkit-scrollbar-track { background: transparent; }
 
 html, body { height: 100%; margin: 0; }
+/* Until the page is in its language (i18n.js), nothing of it is shown. */
+html.words-wait body { visibility: hidden; }
 
 body {
   display: flex;
@@ -769,7 +771,8 @@ dialog .row button { min-width: 84px; }
 /* An entry that opens a menu of its own: a chevron at its end. */
 #menu button.has-sub { padding-right: 28px; }
 #menu .sub-mark { position: absolute; right: 10px; top: 50%; width: 6px; height: 6px; margin-top: -3px; border-top: 1.5px solid currentColor; border-right: 1.5px solid currentColor; transform: rotate(45deg); opacity: 0.7; }
-#menu button[aria-checked="true"]::before {
+/* The tick of the entry in force, in a menu and in the menu beside it. */
+#menu button[aria-checked="true"]::before, .menu button[aria-checked="true"]::before {
   content: "";
   position: absolute;
   left: 10px;

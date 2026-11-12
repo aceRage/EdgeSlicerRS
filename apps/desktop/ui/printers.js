@@ -57,7 +57,7 @@ function showPrinterBlock() {
   };
   if (project.has_settings) {
     const own = selected && selected.source === 'project';
-    groups.push(group('Project-inside presets', [pictured(new Option(listing.project_printer || 'The project names no printer', 'project'), own ? selected : null)]));
+    groups.push(group(t('Project-inside presets'), [pictured(new Option(listing.project_printer || 'The project names no printer', 'project'), own ? selected : null)]));
     if (own) value = 'project';
   }
   const onPreset = selected && selected.source === 'preset';
@@ -73,11 +73,11 @@ function showPrinterBlock() {
     rows.push(pictured(new Option(selected.model || selected.machine, 'current'), selected));
     value = 'current';
   }
-  if (rows.length) groups.push(group('System presets', rows));
+  if (rows.length) groups.push(group(t('System presets'), rows));
   const none = new Option(listing.installed.length ? 'No printer selected' : 'No printer added', '');
   none.disabled = true;
   none.hidden = true;
-  select.replaceChildren(none, ...groups, el('hr'), new Option('Select/Remove printers (system presets)', 'wizard'));
+  select.replaceChildren(none, ...groups, el('hr'), new Option(t('Select/Remove printers (system presets)'), 'wizard'));
   select.value = value;
   select.dataset.shown = value;
   // The reference's tooltip: the preset's own name.
@@ -98,7 +98,7 @@ function showPrinterBlock() {
   diameter.disabled = !onPreset || variants.length < 2;
   const sizes = printer ? printer.nozzle_diameter || [] : [];
   const several = sizes.length > 1;
-  $('nozzle-title').textContent = several ? 'Nozzles' : 'Nozzle';
+  $('nozzle-title').textContent = several ? t('Nozzles') : t('Nozzle');
   const bambu = printer && (printer.vendor === 'BBL' || (printer.model || '').startsWith('Bambu Lab'));
   $('nozzle-tiles').hidden = !several;
   $('nozzle-tiles').replaceChildren(...(several ? sizes : []).map((size, index) => {
@@ -381,7 +381,7 @@ function ptOpenPop(column, anchor) {
     const no = el('button', { type: 'button', className: 'link', textContent: 'Select none' });
     all.addEventListener('click', every(true));
     no.addEventListener('click', every(false));
-    const ok = el('button', { type: 'button', className: 'primary', textContent: 'OK' });
+    const ok = el('button', { type: 'button', className: 'primary', textContent: t('OK') });
     ok.addEventListener('click', take);
     parts.push(el('div', { className: 'row' }, all, no), list, el('div', { className: 'row end' }, ok));
   } else if (column.filter === 'text') {
@@ -389,7 +389,7 @@ function ptOpenPop(column, anchor) {
     input.setAttribute('aria-label', `${column.label} contains`);
     const take = () => apply(input.value.trim() === '' ? null : input.value.trim());
     input.addEventListener('keydown', (event) => { if (event.key === 'Enter') { event.preventDefault(); take(); } });
-    const ok = el('button', { type: 'button', className: 'primary', textContent: 'OK' });
+    const ok = el('button', { type: 'button', className: 'primary', textContent: t('OK') });
     ok.addEventListener('click', take);
     parts.push(input, el('div', { className: 'row end' }, ok));
   } else {
@@ -404,7 +404,7 @@ function ptOpenPop(column, anchor) {
     for (const input of [least, most]) {
       input.addEventListener('keydown', (event) => { if (event.key === 'Enter') { event.preventDefault(); take(); } });
     }
-    const ok = el('button', { type: 'button', className: 'primary', textContent: 'OK' });
+    const ok = el('button', { type: 'button', className: 'primary', textContent: t('OK') });
     ok.addEventListener('click', take);
     parts.push(el('label', {}, 'At least', least), el('label', {}, 'At most', most),
       el('p', { className: 'quiet', textContent: 'In mm. Printers without this value are hidden while a limit is set.' }),

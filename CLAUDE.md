@@ -44,6 +44,17 @@ to a stage and say in the PR what moved.
   table of the reference's defaults in `edge-config`, and then
   `tools/make_settings_pages.py`, which rewrites the data the desktop
   app draws its process, filament and printer settings pages from.
+  Then run `tools/make_translations.py`, which rewrites the desktop
+  app's table of each language (`apps/desktop/src/api/i18n/*.json`)
+  from the reference's catalogs (`localization/i18n`), and run the
+  desktop app's tests, whose wording test reads the reference's
+  `Snapmaker_Orca.pot` and `apps/desktop/src/api/i18n/wording.txt`.
+- The C++ application shows its strings through gettext, English
+  included: its English catalog changes hundreds of them ("Advance" is
+  shown as "Advanced"). In the desktop app a string that comes from the
+  C++ is written as its message id, exactly as in the C++ source, and
+  passed through the layer (`t()` in the page, `tr()` in the session);
+  wording of the app's own is listed in `wording.txt`.
 - The reference slicer defines correct output. Where this engine differs on
   purpose, say so in the code and in the PR.
 - That does not extend to the reference's own mistakes. A workaround it

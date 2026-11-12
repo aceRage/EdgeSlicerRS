@@ -69,8 +69,8 @@ const Filaments = (() => {
       type: 'button',
       className: 'swatch swatch-pick',
       textContent: String(index + 1),
-      title: 'Click to select filament color',
-      ariaLabel: `Filament ${index + 1} color${colour ? ` ${colour}` : ''}`,
+      title: t('Click to select filament color'),
+      ariaLabel: `${fmt(t('Filament %d'), index + 1)}: ${t('Color')}${colour ? ` ${colour}` : ''}`,
     });
     if (colour) {
       swatch.style.background = colour;
@@ -78,7 +78,7 @@ const Filaments = (() => {
     }
     swatch.addEventListener('click', () => openPicker(swatch, index, colour || '#F2754E'));
     // Its own pages of settings ("Edit" in the reference's row menu).
-    const editButton = el('button', { type: 'button', className: 'icon tool', title: 'Click to edit preset', ariaLabel: `Filament ${index + 1} settings` }, svg(EDIT_ICON));
+    const editButton = el('button', { type: 'button', className: 'icon tool', title: t('Click to edit preset'), ariaLabel: `${fmt(t('Filament %d'), index + 1)}: ${t('Filament settings')}` }, svg(EDIT_ICON));
     editButton.addEventListener('click', () => attempt(() => openPresetPanel('filament', index + 1)));
     const node = el('div', { className: 'filament' }, swatch, name, editButton);
     node.addEventListener('contextmenu', (event) => {
@@ -102,14 +102,14 @@ const Filaments = (() => {
     const targets = [];
     for (let other = 0; other < count; other += 1) {
       if (other === index) continue;
-      const label = presetName(project, other) || `Filament ${other + 1}`;
+      const label = presetName(project, other) || fmt(t('Filament %d'), other + 1);
       targets.push([`${other + 1}  ${label}`, () => attempt(() => edit({ op: 'merge', filament: index + 1, into: other + 1 })),
         { swatch: plain(colours[other]) || 'transparent' }]);
     }
     showMenu(x, y, [
-      ['Edit', () => attempt(() => openPresetPanel('filament', index + 1))],
-      ['Delete', () => attempt(() => edit({ op: 'delete', filament: index + 1 })), { title: 'Delete this filament', disabled: count <= 1 }],
-      ['Merge with', null, { items: targets, disabled: targets.length === 0 }],
+      [t('Edit'), () => attempt(() => openPresetPanel('filament', index + 1))],
+      [t('Delete'), () => attempt(() => edit({ op: 'delete', filament: index + 1 })), { title: t('Delete this filament'), disabled: count <= 1 }],
+      [t('Merge with'), null, { items: targets, disabled: targets.length === 0 }],
     ]);
   }
 
@@ -160,9 +160,9 @@ const Filaments = (() => {
     if (node) return node;
     node = el('div', { id: 'colour-picker', className: 'colour-picker', hidden: true });
     node.setAttribute('role', 'dialog');
-    node.setAttribute('aria-label', 'Click to select filament color');
+    node.setAttribute('aria-label', t('Click to select filament color'));
     const title = el('h3', { id: 'cp-title' });
-    const chips = el('div', { className: 'cp-chips', role: 'group', ariaLabel: 'Colours' },
+    const chips = el('div', { className: 'cp-chips', role: 'group', ariaLabel: t('Colours') },
       ...PALETTE.map((colour) => {
         const chip = el('button', { type: 'button', className: 'swatch cp-chip', title: colour, ariaLabel: colour });
         chip.style.background = colour;
@@ -174,12 +174,12 @@ const Filaments = (() => {
     area.setAttribute('role', 'slider');
     const knob = el('span', { className: 'cp-knob' });
     area.append(knob);
-    const hue = el('input', { type: 'range', min: 0, max: 359, step: 1, className: 'cp-hue', ariaLabel: 'Hue' });
+    const hue = el('input', { type: 'range', min: 0, max: 359, step: 1, className: 'cp-hue', ariaLabel: t('Hue') });
     hue.style.background = `linear-gradient(to right, ${[0, 60, 120, 180, 240, 300, 360].map((at) => fromHsv(at % 360, 1, 1)).join(', ')})`;
-    const field = el('input', { type: 'text', className: 'cp-hex', maxLength: 7, spellcheck: false, ariaLabel: 'Colour', autocomplete: 'off' });
+    const field = el('input', { type: 'text', className: 'cp-hex', maxLength: 7, spellcheck: false, ariaLabel: t('Colour'), autocomplete: 'off' });
     const sample = el('span', { className: 'swatch cp-sample' });
-    const ok = el('button', { type: 'button', className: 'primary', textContent: 'OK' });
-    const cancel = el('button', { type: 'button', textContent: 'Cancel' });
+    const ok = el('button', { type: 'button', className: 'primary', textContent: t('OK') });
+    const cancel = el('button', { type: 'button', textContent: t('Cancel') });
     node.append(title, chips, area, hue, el('div', { className: 'cp-line' }, sample, field), el('div', { className: 'row end' }, ok, cancel));
 
     const drag = (event) => {
@@ -253,7 +253,7 @@ const Filaments = (() => {
   function openPicker(button, index, colour) {
     const node = picker();
     picking = { index, from: colour, button, ...toHsv(colour) };
-    node.querySelector('#cp-title').textContent = `Filament ${index + 1}`;
+    node.querySelector('#cp-title').textContent = fmt(t('Filament %d'), index + 1);
     node.hidden = false;
     draw();
     const at = button.getBoundingClientRect();

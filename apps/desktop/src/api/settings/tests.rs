@@ -306,7 +306,7 @@ fn a_value_an_option_does_not_take_is_refused_with_the_reason() {
     for (bad, why) in [
         (
             json!({ "key": "layer_height", "value": -1 }),
-            "Value -1 is out of range",
+            "Layer height: Value is out of range. (≥ 0)",
         ),
         (
             json!({ "key": "elefant_foot_layers_density", "value": "20%" }),
@@ -316,14 +316,18 @@ fn a_value_an_option_does_not_take_is_refused_with_the_reason() {
             json!({ "key": "seam_slope_type", "value": "some" }),
             "it is one of none, external, all",
         ),
-        (json!({ "key": "wall_loops", "value": 1.5 }), "whole number"),
+        (
+            json!({ "key": "wall_loops", "value": 1.5 }),
+            "Wall loops: Invalid numeric.",
+        ),
         (
             json!({ "key": "layer_height", "value": "thin" }),
             "Invalid numeric.",
         ),
         (
             json!({ "key": "layer_height", "value": "50%" }),
-            "can't be a percentage",
+            // The en catalog's apostrophe.
+            "Layer height can’t be a percentage",
         ),
         (
             json!({ "key": "enable_arc_fitting", "value": "perhaps" }),

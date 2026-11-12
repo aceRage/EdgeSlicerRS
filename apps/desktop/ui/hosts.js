@@ -74,7 +74,7 @@ function hostTypes(info) {
   // The types this app can send to, and the one in force if it is not
   // one of them (said under the fields).
   const offered = info.host_types.filter((type) => type.built || type.value === current);
-  fill(select, offered.map((type) => type.value), current, offered.map((type) => type.built ? type.label : `${type.label} (not yet)`));
+  fill(select, offered.map((type) => type.value), current, offered.map((type) => type.built ? t(type.label) : `${t(type.label)} (not yet)`));
   select.dataset.value = current;
 }
 
@@ -139,7 +139,7 @@ function hostResult(ok, text) {
   const result = $('host-result');
   result.hidden = false;
   result.className = ok ? 'ok' : 'error';
-  result.textContent = ok ? `Success!\n${text}` : text;
+  result.textContent = ok ? `${t('Success!')}\n${text}` : text;
 }
 
 $('printer-connect').addEventListener('click', () => attempt(openConnection));
@@ -224,10 +224,10 @@ $('export-more').addEventListener('click', (event) => {
   const choose = (what) => () => { remembered.set('print_action', what); showButtons(); };
   const [can, why] = canSend();
   showMenu(box.right - 220, box.bottom + 4, [
-    ['Print', choose('send'), { checked: action === 'send', title: can ? 'Send the plate to the printer' : why }],
-    ['Export G-code file', choose('export'), { checked: action === 'export' }],
+    [t('Print'), choose('send'), { checked: action === 'send', title: can ? 'Send the plate to the printer' : why }],
+    [t('Export G-code file'), choose('export'), { checked: action === 'export' }],
     null,
-    ['Print host upload queue', () => attempt(openQueue)],
+    [t('Print host upload queue'), () => attempt(openQueue)],
   ]);
 });
 
@@ -288,11 +288,11 @@ async function openSend() {
 // The reference's two questions about the name, asked before it is sent.
 async function nameAccepted(name) {
   if (SPECIAL.test(name)) {
-    const yes = await confirmBox('EdgeSlicerRS', `The filename '${name}' contains special characters (#, *, ;, \\, /, :, ", <, >, or |) which may cause issues.Do you wish to continue?`, 'Yes', 'No');
+    const yes = await confirmBox('EdgeSlicerRS', fmt(t('The filename \'%s\' contains special characters (#, *, ;, \\, /, :, ", <, >, or |) which may cause issues.Do you wish to continue?'), name), t('Yes'), t('No'));
     if (!yes) return false;
   }
   if (!name.toLowerCase().endsWith('.gcode')) {
-    return confirmBox('EdgeSlicerRS', 'Upload filename doesn\'t end with ".gcode". Do you wish to continue?', 'Yes', 'No');
+    return confirmBox('EdgeSlicerRS', fmt(t('Upload filename doesn\'t end with "%s". Do you wish to continue?'), '.gcode'), t('Yes'), t('No'));
   }
   return true;
 }
@@ -391,7 +391,7 @@ function watchQueue() {
       if (job.state === 'canceled') say(`The upload of ${job.name} was canceled.`);
       if (job.state === 'error') {
         say(job.message.replace(/\n/g, ' '), true);
-        if (!$('queue-dialog').open) inform('Error', job.message);
+        if (!$('queue-dialog').open) inform(t('Error'), job.message);
       }
       if (state.tab === 'device' && hostsState.deviceTab === 'storage') showStorage();
     }
@@ -408,7 +408,7 @@ $('queue-cancel').addEventListener('click', () => attempt(async () => {
 }));
 $('queue-error').addEventListener('click', () => {
   const job = hostsState.queue.jobs.find((entry) => entry.id === hostsState.selected);
-  if (job) inform('Error', job.message);
+  if (job) inform(t('Error'), job.message);
 });
 
 // ---- Device: the printer's page, and its files ----
@@ -471,7 +471,7 @@ async function showStorage() {
   const note = $('storage-note');
   note.className = 'quiet';
   note.textContent = 'Reading the printer\'s files...';
-  $('storage-title').textContent = hostsState.info ? `Files on ${hostsState.info.printer}` : 'Files on the printer';
+  $('storage-title').textContent = hostsState.info ? `Files on ${hostsState.info.printer}` : t('Files on the printer');
   let files;
   try {
     ({ files } = await call('printer_files', { project: activeId() }));
@@ -483,18 +483,18 @@ async function showStorage() {
     return;
   }
   if (turn !== storageTurn) return;
-  note.textContent = files.length ? '' : 'There are no G-code files on the printer.';
+  note.textContent = files.length ? '' : t('There are no G-code files on the printer.');
   $('storage-body').replaceChildren(...files.map((file) => {
-    const print = el('button', { type: 'button', textContent: 'Print', title: 'Start printing this file on the printer (Enter)' });
-    const remove = el('button', { type: 'button', textContent: 'Delete', title: 'Delete this file from the printer (Delete)' });
+    const print = el('button', { type: 'button', textContent: t('Print'), title: t('Start printing this file on the printer (Enter)') });
+    const remove = el('button', { type: 'button', textContent: t('Delete'), title: t('Delete this file from the printer (Delete)') });
     print.addEventListener('click', () => attempt(async () => {
-      const yes = await confirmBox('Print', `Start printing "${file.name}" on ${hostsState.info.printer}?`, 'Print', 'Cancel');
+      const yes = await confirmBox(t('Print'), `Start printing "${file.name}" on ${hostsState.info.printer}?`, t('Print'), t('Cancel'));
       if (!yes) return;
       await call('printer_file_print', { project: activeId(), name: file.name });
       say(`${file.name} was started on ${hostsState.info.printer}.`);
     }));
     remove.addEventListener('click', () => attempt(async () => {
-      const yes = await confirmBox('Delete', `Delete "${file.name}" from ${hostsState.info.printer}?\nThis cannot be undone.`, 'Delete', 'Cancel');
+      const yes = await confirmBox(t('Delete'), `Delete "${file.name}" from ${hostsState.info.printer}?\nThis cannot be undone.`, t('Delete'), t('Cancel'));
       if (!yes) return;
       await call('printer_file_delete', { project: activeId(), name: file.name });
       await showStorage();

@@ -70,7 +70,7 @@
     },
     // What the plate is called where it is named: "Plate 2", its name after it.
     label(plate) {
-      return plate.name ? `Plate ${plate.id} (${plate.name})` : `Plate ${plate.id}`;
+      return plate.name ? `${t('Plate')} ${plate.id} (${plate.name})` : `${t('Plate')} ${plate.id}`;
     },
     commit(args, more) { return this.edit().commit(args, more); },
     usable() {
@@ -91,16 +91,16 @@
       const on = this.copiesOn(id);
       const count = project.plates.length;
       this.host.menu(x, y, [
-        ['Select All', () => this.host.stage.select(on), { disabled: !on.length, title: 'select all objects on current plate' }],
-        ['Delete All', () => this.commit({ op: 'delete', copies: on }), { disabled: !on.length, title: 'delete all objects on current plate' }],
-        ['Arrange', () => this.commit({ op: 'arrange', plate: id }), { disabled: !on.length, title: 'arrange current plate' }],
-        ['Delete Plate', () => this.commit({ op: 'delete_plate', plate: id }), { disabled: count < 2, title: 'Remove the selected plate' }],
+        [t('Select All'), () => this.host.stage.select(on), { disabled: !on.length, title: t('select all objects on current plate') }],
+        [t('Delete All'), () => this.commit({ op: 'delete', copies: on }), { disabled: !on.length, title: t('delete all objects on current plate') }],
+        [t('Arrange'), () => this.commit({ op: 'arrange', plate: id }), { disabled: !on.length, title: t('arrange current plate') }],
+        [t('Delete Plate'), () => this.commit({ op: 'delete_plate', plate: id }), { disabled: count < 2, title: t('Remove the selected plate') }],
         null,
-        [plate.locked ? 'Unlock' : 'Lock', () => this.commit({ op: 'plate_lock', plate: id, value: !plate.locked })],
-        ['Edit Plate Name', () => this.rename(id)],
-        ['Customize current plate', () => this.customize(id)],
-        ['Move plate to the front', () => this.commit({ op: 'plate_front', plate: id }), { disabled: id === 1 }],
-        ['Duplicate Current Plate', () => this.commit({ op: 'plate_duplicate', plate: id }, { select: true }), { title: 'Duplicate the current plate' }],
+        [plate.locked ? t('Unlock') : t('Lock'), () => this.commit({ op: 'plate_lock', plate: id, value: !plate.locked })],
+        [t('Edit Plate Name'), () => this.rename(id)],
+        [t('Customize current plate'), () => this.customize(id)],
+        [t('Move plate to the front'), () => this.commit({ op: 'plate_front', plate: id }), { disabled: id === 1 }],
+        [t('Duplicate Current Plate'), () => this.commit({ op: 'plate_duplicate', plate: id }, { select: true }), { title: t('Duplicate the current plate') }],
       ]);
     },
 
@@ -125,21 +125,21 @@
         return node;
       };
       this.tools = {
-        remove: tool('remove', 'Remove current plate (if not last one)', ICONS.remove, (id) => this.commit({ op: 'delete_plate', plate: id })),
-        arrange: tool('arrange', 'Arrange objects on current plate', ICONS.arrange, (id) => this.commit({ op: 'arrange', plate: id })),
-        lock: tool('lock', 'Lock current plate', ICONS.unlocked, (id) => {
+        remove: tool('remove', t('Remove current plate (if not last one)'), ICONS.remove, (id) => this.commit({ op: 'delete_plate', plate: id })),
+        arrange: tool('arrange', t('Arrange objects on current plate'), ICONS.arrange, (id) => this.commit({ op: 'arrange', plate: id })),
+        lock: tool('lock', t('Lock current plate'), ICONS.unlocked, (id) => {
           const plate = this.listed(id);
           if (plate) this.commit({ op: 'plate_lock', plate: id, value: !plate.locked });
         }),
-        settings: tool('settings', 'Customize current plate', ICONS.settings, (id) => this.customize(id)),
-        name: tool('name', 'Edit current plate name', ICONS.name, (id) => this.rename(id)),
-        front: tool('front', 'Move plate to the front', ICONS.front, (id) => this.commit({ op: 'plate_front', plate: id })),
+        settings: tool('settings', t('Customize current plate'), ICONS.settings, (id) => this.customize(id)),
+        name: tool('name', t('Edit current plate name'), ICONS.name, (id) => this.rename(id)),
+        front: tool('front', t('Move plate to the front'), ICONS.front, (id) => this.commit({ op: 'plate_front', plate: id })),
       };
-      const t = this.tools;
+      const tools = this.tools;
       this.bar = el('div', { className: 'toolbar vertical plate-tools', id: 'plate-tools', hidden: true },
-        t.remove, t.arrange, t.lock, t.settings, t.name, t.front);
+        tools.remove, tools.arrange, tools.lock, tools.settings, tools.name, tools.front);
       this.bar.setAttribute('role', 'toolbar');
-      this.bar.setAttribute('aria-label', 'Plate');
+      this.bar.setAttribute('aria-label', t('Plate'));
       this.host.stageNode.append(this.bar);
     },
 
@@ -151,22 +151,22 @@
       const plate = project && this.edit() && this.edit().editing() && project.plates.length ? this.listed(project.plate) : null;
       this.shown = plate ? plate.id : null;
       if (!plate) { this.bar.hidden = true; return; }
-      const t = this.tools;
+      const tools = this.tools;
       const busy = !this.usable();
-      t.remove.disabled = busy || project.plates.length < 2;
-      t.arrange.disabled = busy || !this.copiesOn(plate.id).length;
-      t.lock.disabled = busy;
-      t.settings.disabled = busy;
-      t.name.disabled = busy;
-      t.front.disabled = busy || plate.id === 1;
-      const lockLabel = plate.locked ? 'Unlock current plate' : 'Lock current plate';
-      t.lock.title = lockLabel;
-      t.lock.setAttribute('aria-label', lockLabel);
-      t.lock.setAttribute('aria-pressed', String(Boolean(plate.locked)));
-      t.lock.replaceChildren(svg(plate.locked ? ICONS.locked : ICONS.unlocked));
+      tools.remove.disabled = busy || project.plates.length < 2;
+      tools.arrange.disabled = busy || !this.copiesOn(plate.id).length;
+      tools.lock.disabled = busy;
+      tools.settings.disabled = busy;
+      tools.name.disabled = busy;
+      tools.front.disabled = busy || plate.id === 1;
+      const lockLabel = plate.locked ? t('Unlock current plate') : t('Lock current plate');
+      tools.lock.title = lockLabel;
+      tools.lock.setAttribute('aria-label', lockLabel);
+      tools.lock.setAttribute('aria-pressed', String(Boolean(plate.locked)));
+      tools.lock.replaceChildren(svg(plate.locked ? ICONS.locked : ICONS.unlocked));
       // A plate with settings of its own shows it on its tool, as the
       // reference draws its "changed" icon.
-      t.settings.classList.toggle('set', Boolean(plate.customized));
+      tools.settings.classList.toggle('set', Boolean(plate.customized));
       this.bar.dataset.plate = String(plate.id);
     },
 
@@ -202,12 +202,12 @@
       this.nameField = el('input', { type: 'text', id: 'plate-name-text', maxLength: LONGEST_NAME, autocomplete: 'off', spellcheck: false });
       this.nameDialog = el('dialog', { id: 'plate-name', className: 'plate-name' },
         el('form', { method: 'dialog' },
-          el('h2', { textContent: 'Edit Plate Name' }),
-          el('label', { htmlFor: 'plate-name-text', textContent: 'Plate name' }),
+          el('h2', { textContent: t('Edit Plate Name') }),
+          el('label', { htmlFor: 'plate-name-text', textContent: t('Plate name') }),
           this.nameField,
           el('div', { className: 'row end' },
-            el('button', { type: 'submit', value: 'ok', className: 'primary', textContent: 'OK' }),
-            el('button', { type: 'submit', value: 'cancel', textContent: 'Cancel' }))));
+            el('button', { type: 'submit', value: 'ok', className: 'primary', textContent: t('OK') }),
+            el('button', { type: 'submit', value: 'cancel', textContent: t('Cancel') }))));
       document.body.append(this.nameDialog);
     },
 
@@ -244,20 +244,20 @@
       };
       const s = this.settingsFields = {
         name: el('input', { type: 'text', id: 'ps-name', maxLength: LONGEST_NAME, autocomplete: 'off', spellcheck: false }),
-        bed: choice('ps-bed', [['', 'Same as Global Plate Type']]),
-        sequence: choice('ps-sequence', [['', 'Same as Global Print Sequence'], ['by layer', 'By Layer'], ['by object', 'By Object']]),
-        spiral: choice('ps-spiral', [['', 'Same as Global'], ['on', 'Enable'], ['off', 'Disable']]),
-        first: choice('ps-first', [['auto', 'Auto'], ['custom', 'Customize']]),
-        other: choice('ps-other', [['auto', 'Auto'], ['custom', 'Customize']]),
+        bed: choice('ps-bed', [['', t('Same as Global Plate Type')]]),
+        sequence: choice('ps-sequence', [['', t('Same as Global Print Sequence')], ['by layer', t('By Layer')], ['by object', t('By Object')]]),
+        spiral: choice('ps-spiral', [['', t('Same as Global')], ['on', t('Enable')], ['off', t('Disable')]]),
+        first: choice('ps-first', [['auto', t('Auto')], ['custom', t('Customize')]]),
+        other: choice('ps-other', [['auto', t('Auto')], ['custom', t('Customize')]]),
       };
       const row = (label, id, field) => el('div', { className: 'card-row' }, el('label', { htmlFor: id, textContent: label }), field);
       this.firstOrder = el('div', { className: 'ps-order-row' });
       this.ranges = el('div', { className: 'ps-ranges' });
-      const add = el('button', { type: 'button', className: 'icon tool', title: 'Add' });
+      const add = el('button', { type: 'button', className: 'icon tool', title: t('Add') });
       add.setAttribute('aria-label', 'Add a range of layers');
       add.append(svg(ICONS.add));
       add.addEventListener('click', () => this.addRange());
-      const drop = el('button', { type: 'button', className: 'icon tool', title: 'Delete' });
+      const drop = el('button', { type: 'button', className: 'icon tool', title: t('Delete') });
       drop.setAttribute('aria-label', 'Delete the last range of layers');
       drop.append(svg(ICONS.remove_row));
       drop.addEventListener('click', () => { if (this.ranges.children.length > 1) this.ranges.lastChild.remove(); });
@@ -265,21 +265,21 @@
       this.settingsProblem = el('p', { className: 'error grow', id: 'ps-problem' });
       this.settingsDialog = el('dialog', { id: 'plate-settings', className: 'plate-settings' },
         el('form', { method: 'dialog' },
-          el('h2', { id: 'ps-title', textContent: 'Plate Settings' }),
+          el('h2', { id: 'ps-title', textContent: t('Plate Settings') }),
           el('div', { className: 'card' },
-            row('Plate name', 'ps-name', s.name),
-            row('Bed type', 'ps-bed', listbox(s.bed, { bare: true })),
-            row('Print sequence', 'ps-sequence', listbox(s.sequence, { bare: true })),
-            row('Spiral vase', 'ps-spiral', listbox(s.spiral, { bare: true })),
-            row('First layer filament sequence', 'ps-first', listbox(s.first, { bare: true })),
+            row(t('Plate name'), 'ps-name', s.name),
+            row(t('Bed type'), 'ps-bed', listbox(s.bed, { bare: true })),
+            row(t('Print sequence'), 'ps-sequence', listbox(s.sequence, { bare: true })),
+            row(t('Spiral vase'), 'ps-spiral', listbox(s.spiral, { bare: true })),
+            row(t('First layer filament sequence'), 'ps-first', listbox(s.first, { bare: true })),
             this.firstOrder,
-            row('Other layer filament sequence', 'ps-other', listbox(s.other, { bare: true })),
+            row(t('Other layer filament sequence'), 'ps-other', listbox(s.other, { bare: true })),
             this.rangeTools,
             this.ranges),
           el('div', { className: 'row end' },
             this.settingsProblem,
-            el('button', { type: 'submit', value: 'ok', className: 'primary', textContent: 'OK' }),
-            el('button', { type: 'submit', value: 'cancel', textContent: 'Cancel' }))));
+            el('button', { type: 'submit', value: 'ok', className: 'primary', textContent: t('OK') }),
+            el('button', { type: 'submit', value: 'cancel', textContent: t('Cancel') }))));
       this.settingsDialog.setAttribute('aria-labelledby', 'ps-title');
       s.first.addEventListener('change', () => this.showOrders());
       s.other.addEventListener('change', () => {
@@ -378,7 +378,7 @@
       const at = this.ranges.children.length;
       const begin = el('input', { type: 'number', min: '2', step: '1', className: 'ps-layer', id: `ps-begin-${at}` });
       begin.value = range ? String(range.begin) : at ? '' : '2';
-      const endKind = el('select', { id: `ps-end-kind-${at}` }, el('option', { value: 'end', textContent: 'End' }), el('option', { value: 'custom', textContent: 'Customize' }));
+      const endKind = el('select', { id: `ps-end-kind-${at}` }, el('option', { value: 'end', textContent: t('End') }), el('option', { value: 'custom', textContent: t('Customize') }));
       const end = el('input', { type: 'number', min: '2', step: '1', className: 'ps-layer', id: `ps-end-${at}` });
       const custom = range && range.end !== null && range.end !== undefined;
       setValue(endKind, custom ? 'custom' : 'end');
@@ -390,8 +390,8 @@
       const order = this.orderStrip(range ? range.order : this.filaments().map((filament) => filament.number));
       const node = el('div', { className: 'ps-range' },
         el('span', { className: 'ps-range-head' },
-          el('label', { htmlFor: begin.id, textContent: 'Layer' }), begin,
-          el('span', { textContent: 'to' }), listbox(endKind, { bare: true }), end),
+          el('label', { htmlFor: begin.id, textContent: t('Layer') }), begin,
+          el('span', { textContent: t('to') }), listbox(endKind, { bare: true }), end),
         order);
       node.fields = { begin, endKind, end, order };
       this.ranges.append(node);
@@ -403,10 +403,10 @@
       for (const range of this.ranges.children) {
         const { begin, endKind, end } = range.fields;
         const low = Number(begin.value);
-        if (!begin.value || !Number.isInteger(low) || low < 2) return 'Please input layer value (>= 2).';
+        if (!begin.value || !Number.isInteger(low) || low < 2) return t('Please input layer value (>= 2).');
         if (endKind.value === 'custom') {
           const high = Number(end.value);
-          if (!end.value || !Number.isInteger(high) || high < 2) return 'Please input layer value (>= 2).';
+          if (!end.value || !Number.isInteger(high) || high < 2) return t('Please input layer value (>= 2).');
         }
       }
       return '';
@@ -436,9 +436,9 @@
       // shown as it is named.
       const settled = this.host.settled();
       const types = settled && settled.printer && settled.printer.bed_types;
-      const choices = types ? types.choices.map((choice) => [choice.value, choice.label]) : [];
+      const choices = types ? types.choices.map((choice) => [choice.value, t(choice.label)]) : [];
       if (own.bed_type && !choices.some(([value]) => value === own.bed_type)) choices.push([own.bed_type, own.bed_type]);
-      s.bed.replaceChildren(el('option', { value: '', textContent: 'Same as Global Plate Type' }),
+      s.bed.replaceChildren(el('option', { value: '', textContent: t('Same as Global Plate Type') }),
         ...choices.map(([value, label]) => el('option', { value, textContent: label })));
       setValue(s.bed, own.bed_type || '');
       s.bed.disabled = !(types && types.enabled);

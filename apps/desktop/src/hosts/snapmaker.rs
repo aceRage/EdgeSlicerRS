@@ -39,6 +39,8 @@ use std::{sync::atomic::Ordering, time::Duration};
 
 use serde_json::Value;
 
+use crate::api::i18n::tr;
+
 use super::{
     Connection, Failure, Form, Host, Http, Progress, Stored, Timeouts, Upload, http_error,
 };
@@ -95,7 +97,7 @@ impl SnapmakerLan {
     /// `Status::printing`).
     fn idle(&self) -> Result<(), String> {
         match self.state()?.as_str() {
-            "printing" | "paused" => Err(BUSY.into()),
+            "printing" | "paused" => Err(tr(BUSY)),
             _ => Ok(()),
         }
     }
@@ -196,11 +198,16 @@ impl Host for SnapmakerLan {
     }
 
     fn test_ok(&self) -> String {
-        "Connection to Moonraker works correctly.".into()
+        tr("Connection to Moonraker works correctly.")
     }
 
     fn test_failed(&self, reason: &str) -> String {
-        format!("Could not connect to Moonraker: {reason}")
+        // MoonRaker.cpp l.434, which adds the note on Moonraker's version.
+        format!(
+            "{}: {reason}\n\n{}",
+            tr("Could not connect to Moonraker"),
+            tr("Note: Moonraker version at least 1.1.0 is required.")
+        )
     }
 
     fn upload(&self, upload: &Upload, progress: &Progress) -> Result<(), Failure> {

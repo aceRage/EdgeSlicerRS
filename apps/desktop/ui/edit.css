@@ -137,9 +137,11 @@ input.obj-rename { height: var(--control-s); min-width: 0; margin: 0 2px; }
 
 /* "Edit Plate Name" and "Plate Settings". */
 dialog.plate-name form { min-width: min(360px, 80vw); }
-dialog.plate-settings { width: min(560px, calc(100vw - 32px)); max-height: calc(100vh - 32px); }
+dialog.plate-settings { width: min(640px, calc(100vw - 32px)); max-height: calc(100vh - 32px); }
 dialog.plate-settings .card-row > label { flex: 1; color: var(--text-2); font-size: var(--size-label); }
-dialog.plate-settings .card-row > .lb, dialog.plate-settings .card-row > input { flex: 0 0 240px; max-width: 55%; }
+/* 310 px: the longest choice in other languages ("Identique à la séquence
+   d'impression globale") is read whole; the label wraps beside it. */
+dialog.plate-settings .card-row > .lb, dialog.plate-settings .card-row > input { flex: 0 0 310px; max-width: 60%; }
 dialog.plate-settings .row.end .grow { flex: 1; align-self: center; }
 .ps-order-row, .ps-ranges { padding: var(--space-2) var(--space-2) var(--space-2) 10px; }
 .ps-order-row[hidden], .ps-ranges[hidden], .ps-range-tools[hidden] { display: none; }

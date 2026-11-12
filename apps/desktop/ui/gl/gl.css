@@ -81,6 +81,7 @@
 /* The sliders: a track on the overlay surface, the part shown filled
    with the accent, a thumb of the accent ringed in the float surface;
    their values in small labels beside the thumbs. */
+.gl-layers, .gl-moves { user-select: none; -webkit-user-select: none; }
 .gl-track { position: absolute; border: 1px solid var(--line-2); border-radius: 4px; background: var(--surface-overlay); cursor: pointer; touch-action: none; outline: none; }
 .gl-fill { position: absolute; border-radius: 3px; background: var(--accent); }
 .gl-thumb { position: absolute; width: 18px; height: 18px; border: 2px solid var(--surface-float); border-radius: 50%; background: var(--accent); box-shadow: 0 0 0 1px var(--line-2); cursor: grab; }

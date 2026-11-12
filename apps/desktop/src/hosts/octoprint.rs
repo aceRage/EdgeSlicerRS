@@ -3,6 +3,8 @@
 //! (`OctoPrint::test`, `upload_inner_with_host`, `validate_version_text`,
 //! `get_test_ok_msg`, `get_test_failed_msg`).
 
+use crate::api::i18n::{fill, tr};
+
 use super::{Connection, Failure, Form, Host, Http, Progress, Timeouts, Upload, http_error};
 
 pub struct OctoPrint {
@@ -27,6 +29,7 @@ pub fn version(http: &Http) -> Result<(), String> {
         return Err(http_error(&answer));
     }
     let Some(json) = answer.json() else {
+        // The reference does not translate it (OctoPrint.cpp l.277).
         return Err("Could not parse server response".into());
     };
     if json.get("api").is_none() {
@@ -34,7 +37,7 @@ pub fn version(http: &Http) -> Result<(), String> {
     }
     match json.get("text").and_then(|text| text.as_str()) {
         Some(text) if !text.starts_with("OctoPrint") => {
-            Err(format!("Mismatched type of print host: {text}"))
+            Err(fill(&tr("Mismatched type of print host: %s"), &[&text]))
         }
         _ => Ok(()),
     }
@@ -68,12 +71,14 @@ impl Host for OctoPrint {
     }
 
     fn test_ok(&self) -> String {
-        "Connection to OctoPrint is working correctly.".into()
+        tr("Connection to OctoPrint is working correctly.")
     }
 
     fn test_failed(&self, reason: &str) -> String {
         format!(
-            "Could not connect to OctoPrint: {reason}\n\nNote: OctoPrint version 1.1.0 or higher is required."
+            "{}: {reason}\n\n{}",
+            tr("Could not connect to OctoPrint"),
+            tr("Note: OctoPrint version 1.1.0 or higher is required.")
         )
     }
 
