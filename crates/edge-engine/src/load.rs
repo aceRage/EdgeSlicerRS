@@ -35,8 +35,8 @@ pub struct Loaded {
     /// followed.
     pub precise_seams: bool,
     /// The other kinds of part that anything to slice has and that are
-    /// not followed, as a person would name them: "modifiers", "support
-    /// blockers", "support enforcers".
+    /// not followed, as a person would name them: "support blockers",
+    /// "support enforcers".
     pub unfollowed_parts: Vec<&'static str>,
     /// For a project, each object on the plate by itself, for what depends
     /// on which object is which. Empty for a bare model, which is one object.
@@ -474,7 +474,6 @@ pub(crate) fn placed(
         unread_paint: project.unread_paint.clone(),
         precise_seams: project.has_precise_seams(plate),
         unfollowed_parts: [
-            (PartKind::Modifier, "modifiers"),
             (PartKind::SupportBlocker, "support blockers"),
             (PartKind::SupportEnforcer, "support enforcers"),
         ]

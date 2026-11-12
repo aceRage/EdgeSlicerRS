@@ -1009,8 +1009,8 @@ fn parts_are_renamed_deleted_retyped_split_and_added() {
     let object = scene["objects"][0]["id"].clone();
 
     // A cube added as a modifier, beside the object: a tenth of the U1's
-    // 270 mm bed; nothing printed moves, and the slice says it is not
-    // followed.
+    // 270 mm bed; nothing printed moves, and the slice follows it, saying
+    // nothing of it.
     let answer = edit(
         &session,
         json!({ "op": "part_add", "object": object, "kind": "modifier", "shape": "Cube" }),
@@ -1026,7 +1026,7 @@ fn parts_are_renamed_deleted_retyped_split_and_added() {
     sliced(&session, project, None);
     let summary = ask(&session, "summary", json!({}));
     let said = summary["remarks"].to_string();
-    assert!(said.contains("modifiers, which are not followed"), "{said}");
+    assert!(!said.contains("modifiers, which are not followed"), "{said}");
 
     // A part from a file of two shells: "Load Part", named after it.
     let answer = edit(

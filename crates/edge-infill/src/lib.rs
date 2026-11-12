@@ -35,5 +35,5 @@ pub use narrow::NarrowFill;
 pub use settings::{ExtraBridgeLayer, InfillSettings, Pattern, steady_direction};
 pub use surfaces::{
     Anchoring, Beneath, Shells, Surface, SurfaceKind, WallsAround, anchor, classify, inside_walls,
-    internal, shell_depths,
+    inside_walls_by_layer, internal, shell_depths,
 };

@@ -811,6 +811,350 @@ pub(crate) fn unfollowed(set: &BTreeMap<String, BTreeSet<String>>) -> Vec<String
         .collect()
 }
 
+/// What decides whether two regions' walls are alike enough to be laid
+/// round both at once (Layer.cpp `Layer::is_perimeter_compatible`), with
+/// fuzzy skin: the reference merges regions that differ only in fuzzy
+/// skin and then fuzzes each piece of the walls by its own region's
+/// settings (PerimeterGenerator.cpp); walls here are fuzzed by one set of
+/// settings, so regions that differ in it keep walls of their own.
+const PERIMETER_KEYS: [&str; 47] = [
+    "wall_filament",
+    "outer_wall_filament",
+    "wall_loops",
+    "wall_sequence",
+    "is_infill_first",
+    "inner_wall_speed",
+    "outer_wall_speed",
+    "over_support_surfaces",
+    "over_support_flow",
+    "over_support_speed",
+    "small_perimeter_speed",
+    "gap_infill_speed",
+    "filter_out_gap_fill",
+    "detect_overhang_wall",
+    "unsupported_wall_last",
+    "overhang_reverse",
+    "overhang_reverse_threshold",
+    "wall_direction",
+    "inner_wall_line_width",
+    "outer_wall_line_width",
+    "detect_thin_wall",
+    "infill_wall_overlap",
+    "top_bottom_infill_wall_overlap",
+    "only_one_wall_first_layer",
+    "only_one_wall_top",
+    "min_width_top_surface",
+    "seam_slope_type",
+    "seam_slope_conditional",
+    "scarf_angle_threshold",
+    "scarf_overhang_threshold",
+    "scarf_joint_speed",
+    "scarf_joint_flow_ratio",
+    "seam_slope_start_height",
+    "seam_slope_entire_loop",
+    "seam_slope_min_length",
+    "seam_slope_steps",
+    "seam_slope_inner_walls",
+    "fuzzy_skin",
+    "fuzzy_skin_thickness",
+    "fuzzy_skin_point_distance",
+    "fuzzy_skin_first_layer",
+    "fuzzy_skin_noise_type",
+    "fuzzy_skin_mode",
+    "fuzzy_skin_scale",
+    "fuzzy_skin_octaves",
+    "fuzzy_skin_persistence",
+    "fuzzy_skin_ripples_per_layer",
+];
+
+/// For each region of `keys` (printed in `used`), the first region whose
+/// walls are alike enough to be laid with its own: itself where none
+/// before it is. Regions of the plate's settings, one to a filament, are
+/// never alike.
+pub(crate) fn wall_groups(
+    keys: &[usize],
+    used: &[usize],
+    regions: &Regions,
+    plate: &Settings,
+) -> Vec<usize> {
+    let settings_of = |slot: usize| -> &Settings {
+        regions
+            .own(keys[slot])
+            .map_or(plate, |region| &region.settings)
+    };
+    let alike = |a: usize, b: usize| {
+        used[a] == used[b]
+            && PERIMETER_KEYS.iter().all(|key| {
+                let (x, y) = (
+                    plate_text(settings_of(a), key),
+                    plate_text(settings_of(b), key),
+                );
+                match (x, y) {
+                    (Some(x), Some(y)) => same_value(&x, &y),
+                    (x, y) => x == y,
+                }
+            })
+    };
+    let mut groups: Vec<usize> = Vec::with_capacity(keys.len());
+    for slot in 0..keys.len() {
+        let leader = (0..slot).find(|other| groups[*other] == *other && alike(*other, slot));
+        groups.push(leader.unwrap_or(slot));
+    }
+    groups
+}
+
+/// The surfaces of several regions filled as one: those of a kind and a
+/// direction united across them, in the order each first comes; and
+/// what is inside all of their walls.
+pub(crate) fn merge_surfaces<'a>(
+    surfaces: impl Iterator<Item = &'a [edge_infill::Surface]>,
+    no_overlap: impl Iterator<Item = &'a [edge_geom::ExPolygon]>,
+) -> Result<(Vec<edge_infill::Surface>, Vec<edge_geom::ExPolygon>), edge_clip::ClipError> {
+    let mut kinds: Vec<(
+        edge_infill::SurfaceKind,
+        Option<u64>,
+        Vec<edge_geom::ExPolygon>,
+    )> = Vec::new();
+    for surface in surfaces.flatten() {
+        let angle = surface.angle.map(f64::to_bits);
+        match (kinds.iter_mut()).find(|(kind, at, _)| *kind == surface.kind && *at == angle) {
+            Some((_, _, areas)) => areas.push(surface.area.clone()),
+            None => kinds.push((surface.kind, angle, vec![surface.area.clone()])),
+        }
+    }
+    let mut merged = Vec::new();
+    for (kind, angle, areas) in kinds {
+        let united = if areas.len() > 1 {
+            // Pieces that meet along a region's edge are made one, the
+            // seam between them closed (Fill.cpp `group_fills`:
+            // `union_safety_offset_ex`).
+            edge_clip::union_ex(&edge_clip::offset(&areas, 10, edge_clip::Join::MITER)?)
+                .and_then(|grown| edge_clip::offset(&grown, -10, edge_clip::Join::MITER))?
+        } else {
+            areas
+        };
+        merged.extend(united.into_iter().map(|area| edge_infill::Surface {
+            kind,
+            area,
+            angle: angle.map(f64::from_bits),
+        }));
+    }
+    let all: Vec<edge_geom::ExPolygon> =
+        no_overlap.flat_map(|areas| areas.iter().cloned()).collect();
+    Ok((merged, edge_clip::union_ex(&all)?))
+}
+
+/// One step of what is laid over an object's parts on a layer, in order:
+/// a height range, then each modifier.
+struct Step {
+    /// The layers it applies to by their cutting height, from and below.
+    span: (f64, f64),
+    /// Its mesh cut at every layer, as regions; none for a range, which
+    /// takes the whole of the object on its layers.
+    cut: Option<Vec<Vec<edge_geom::ExPolygon>>>,
+    /// The key each key it may meet becomes.
+    becomes: BTreeMap<usize, usize>,
+}
+
+/// Lays an object's height ranges and modifiers over its parts' regions
+/// on every layer, as the reference shares an object's layer out among
+/// its regions (PrintObjectSlice.cpp `slices_to_regions`): on the layers
+/// of a height range each part's area takes the range's settings over its
+/// own (`region_config_from_model_volume` with the range's config); then
+/// each modifier in the object's order takes what of the object's areas
+/// lies inside it, every region it meets becoming one with the modifier's
+/// settings over that region's (`modifier_region_config`), a modifier's
+/// region among them, so that a later modifier is laid over an earlier.
+/// What a modifier sets that changes nothing leaves its parent's region
+/// as it is, as the reference gives such a modifier its parent's region.
+///
+/// Not as the reference: a range's `layer_height` is not followed (every
+/// object on a plate is cut at the same heights here), and is said in a
+/// note.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn lay_over_parts(
+    layers: &mut [edge_slice::LayerRegions],
+    planes: &[f64],
+    closing_radius: i64,
+    own: &[crate::OwnObject],
+    bodies: &[edge_3mf::Body],
+    body_keys: &[usize],
+    regions: &mut Regions,
+    plate: &Settings,
+    set: &mut BTreeMap<String, BTreeSet<String>>,
+) -> Result<(), crate::Failure> {
+    use crate::PartKind;
+    use rayon::prelude::*;
+    for (at, object) in own.iter().enumerate() {
+        let modifiers: Vec<&crate::OwnVolume> = (object.volumes.iter())
+            .filter(|volume| volume.kind == PartKind::Modifier)
+            .collect();
+        if modifiers.is_empty() && object.ranges.is_empty() {
+            continue;
+        }
+        // The keys the object's parts are under, and what each step
+        // makes of every key it may meet.
+        let mut met: BTreeSet<usize> = (bodies.iter().zip(body_keys))
+            .filter(|(body, _)| body.part.is_some_and(|(of, _)| of == at))
+            .map(|(_, key)| *key)
+            .collect();
+        let mut steps: Vec<Step> = Vec::new();
+        let mut range_children = BTreeSet::new();
+        for range in &object.ranges {
+            let label = format!(
+                "height range {}-{} mm of \"{}\"",
+                range.min_z, range.max_z, object.name
+            );
+            note_set(
+                set,
+                plate,
+                &range.settings,
+                |key| scope(key) == Scope::Region,
+                &label,
+            );
+            let height = (range.settings.iter()).find(|(key, _)| key == "layer_height");
+            if let Some((_, height)) = height
+                && !plate_text(plate, "layer_height").is_some_and(|own| same_value(&own, height))
+            {
+                set.entry("layer_height".to_owned())
+                    .or_default()
+                    .insert(label.clone());
+            }
+            let mut becomes = BTreeMap::new();
+            for key in &met {
+                let mut overrides = regions.overrides(*key);
+                lay_over(&mut overrides, plate, &range.settings, |key| {
+                    scope(key) == Scope::Region
+                });
+                let child = regions.key(plate, regions.filament(*key), &overrides);
+                becomes.insert(*key, child);
+                range_children.insert(child);
+            }
+            steps.push(Step {
+                span: (range.min_z, range.max_z),
+                cut: None,
+                becomes,
+            });
+        }
+        met.extend(range_children);
+        for modifier in &modifiers {
+            note_set(
+                set,
+                plate,
+                &modifier.settings,
+                |key| scope(key) == Scope::Region,
+                &format!("modifier \"{}\" of \"{}\"", modifier.name, object.name),
+            );
+            let mut becomes = BTreeMap::new();
+            for key in &met {
+                let mut overrides = regions.overrides(*key);
+                lay_over(&mut overrides, plate, &modifier.settings, |key| {
+                    scope(key) == Scope::Region
+                });
+                let filament = modifier.filament.unwrap_or_else(|| regions.filament(*key));
+                becomes.insert(*key, regions.key(plate, filament, &overrides));
+            }
+            met.extend(becomes.values().copied());
+            let cut: Vec<Vec<edge_geom::ExPolygon>> = edge_slice::slice(&modifier.mesh, planes)
+                .into_par_iter()
+                .map(|layer| edge_clip::union(&layer.polygons))
+                .collect::<Result<_, _>>()?;
+            steps.push(Step {
+                span: (f64::NEG_INFINITY, f64::INFINITY),
+                cut: Some(cut),
+                becomes,
+            });
+        }
+        if steps
+            .iter()
+            .all(|step| step.becomes.iter().all(|(from, to)| from == to))
+        {
+            continue;
+        }
+        // The object's own outline on every layer: what a step may take.
+        let parts: Vec<edge_slice::Body<'_>> = (bodies.iter())
+            .filter(|body| body.part.is_some_and(|(of, _)| of == at))
+            .map(|body| edge_slice::Body {
+                solid: &body.solid,
+                negative: body.negative.as_ref(),
+                filament: 1,
+            })
+            .collect();
+        let outline = edge_slice::slice_regions(&parts, planes, closing_radius)?;
+        let single = body_keys.first().copied().unwrap_or(1);
+        layers
+            .par_iter_mut()
+            .zip(outline)
+            .enumerate()
+            .try_for_each(
+                |(index, (layer, outline))| -> Result<(), edge_clip::ClipError> {
+                    if outline.regions.is_empty() {
+                        return Ok(());
+                    }
+                    for step in &steps {
+                        let z = planes[index];
+                        if z < step.span.0 || z >= step.span.1 {
+                            continue;
+                        }
+                        let within = match &step.cut {
+                            Some(cut) if cut[index].is_empty() => continue,
+                            Some(cut) => edge_clip::intersection(&cut[index], &outline.regions)?,
+                            None => outline.regions.clone(),
+                        };
+                        if within.is_empty() {
+                            continue;
+                        }
+                        let whole = layer.regions.clone();
+                        for shares in [&mut layer.by_filament, &mut layer.cut_by_filament] {
+                            if shares.is_empty() {
+                                *shares = vec![(single, whole.clone())];
+                            }
+                            let mut moved: Vec<(usize, Vec<edge_geom::ExPolygon>)> = Vec::new();
+                            for (key, area) in shares.iter_mut() {
+                                let Some(child) =
+                                    step.becomes.get(key).filter(|child| *child != key)
+                                else {
+                                    continue;
+                                };
+                                let inside = edge_clip::intersection(area, &within)?;
+                                if inside.is_empty() {
+                                    continue;
+                                }
+                                *area = edge_clip::difference(area, &within)?;
+                                moved.push((*child, inside));
+                            }
+                            for (child, inside) in moved {
+                                match shares.iter_mut().find(|(key, _)| *key == child) {
+                                    Some((_, area)) => {
+                                        area.extend(inside);
+                                        *area = edge_clip::union_ex(area)?;
+                                    }
+                                    None => shares.push((child, inside)),
+                                }
+                            }
+                            shares.retain(|(_, area)| !area.is_empty());
+                            shares.sort_by_key(|(key, _)| *key);
+                        }
+                    }
+                    Ok(())
+                },
+            )?;
+    }
+    // A layer left all one key's while others were shared out is set down
+    // as that key's, as slicing sets down a layer of several keys.
+    if layers.iter().any(|layer| !layer.by_filament.is_empty()) {
+        let single = body_keys.first().copied().unwrap_or(1);
+        for layer in layers.iter_mut() {
+            for shares in [&mut layer.by_filament, &mut layer.cut_by_filament] {
+                if shares.is_empty() && !layer.regions.is_empty() {
+                    *shares = vec![(single, layer.regions.clone())];
+                }
+            }
+        }
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 pub(crate) mod tests {
     use super::*;
@@ -984,6 +1328,96 @@ pub(crate) mod tests {
         assert!(!layer.followed_on_object);
         let travel = settable("travel_speed");
         assert!(!travel.on_object && !travel.on_part);
+    }
+
+    /// A box from `low` to `high` as a modifier setting `settings`.
+    fn modifier(low: [f32; 3], high: [f32; 3], settings: &[(&str, &str)]) -> OwnVolume {
+        OwnVolume {
+            kind: PartKind::Modifier,
+            name: "box".into(),
+            filament: None,
+            settings: (settings.iter())
+                .map(|(k, v)| ((*k).to_owned(), (*v).to_owned()))
+                .collect(),
+            mesh: Mesh::from_triangle_soup(primitives::cuboid(low, high)),
+        }
+    }
+
+    #[test]
+    fn a_modifier_takes_what_it_overlaps_of_its_object_alone() {
+        // A box through the right half of the second cube and on into the
+        // first's place is not: it reaches over to x = -5, but only its
+        // own object is modified.
+        let walls = modifier(
+            [20.0, -1.0, -1.0],
+            [30.0, 11.0, 11.0],
+            &[("wall_loops", "4")],
+        );
+        let sliced = two_cubes(&[], &[], vec![walls], Vec::new(), r#"{"wall_loops": "2"}"#);
+        assert_eq!(sliced.slots.len(), 2);
+        // The first cube keeps its two walls; the right half of the second
+        // has four of its own, the left half two.
+        assert_eq!(loops_within(&sliced, 20, -1.0, 11.0), 2);
+        assert_eq!(loops_within(&sliced, 20, 14.0, 20.5), 2);
+        assert_eq!(loops_within(&sliced, 20, 19.5, 26.0), 4);
+        // A modifier that changes only the fill leaves the walls laid round
+        // the whole of the object (Layer.cpp `make_perimeters`).
+        let density = modifier(
+            [20.0, -1.0, -1.0],
+            [30.0, 11.0, 11.0],
+            &[("sparse_infill_density", "50%")],
+        );
+        let sliced = two_cubes(
+            &[],
+            &[],
+            vec![density],
+            Vec::new(),
+            r#"{"wall_loops": "2"}"#,
+        );
+        assert_eq!(loops_within(&sliced, 20, 14.0, 26.0), 2);
+        // Two modifiers: the later is laid over the earlier where they
+        // overlap, so the overlap has both.
+        let first = modifier(
+            [20.0, -1.0, -1.0],
+            [30.0, 11.0, 11.0],
+            &[("wall_loops", "4")],
+        );
+        let second = modifier(
+            [10.0, -1.0, -1.0],
+            [30.0, 5.0, 11.0],
+            &[("sparse_infill_density", "50%")],
+        );
+        let sliced = two_cubes(&[], &[], vec![first, second], Vec::new(), "{}");
+        let both = (0..sliced.slots.len()).find(|slot| {
+            let own = sliced.regions.overrides(sliced.keys[*slot]);
+            own.len() == 2
+        });
+        assert!(both.is_some(), "{:?}", sliced.keys);
+    }
+
+    #[test]
+    fn a_height_range_sets_its_own_layers() {
+        let range = edge_3mf::LayerRange {
+            min_z: 4.0,
+            max_z: 6.0,
+            settings: vec![
+                ("wall_loops".into(), "3".into()),
+                ("layer_height".into(), "0.1".into()),
+            ],
+        };
+        let sliced = two_cubes(&[], &[], Vec::new(), vec![range], r#"{"wall_loops": "2"}"#);
+        // Below, within and above the range.
+        assert_eq!(loops_within(&sliced, 10, 14.0, 26.0), 2);
+        assert_eq!(loops_within(&sliced, 25, 14.0, 26.0), 3);
+        assert_eq!(loops_within(&sliced, 40, 14.0, 26.0), 2);
+        assert_eq!(loops_within(&sliced, 25, -1.0, 11.0), 2);
+        // Its layer height is said not to be followed.
+        let gaps = sliced.gaps();
+        assert!(
+            gaps.iter()
+                .any(|gap| gap.starts_with("layer_height: set on height range 4-6 mm")),
+            "{gaps:?}"
+        );
     }
 
     #[test]
