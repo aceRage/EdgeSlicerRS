@@ -85,6 +85,35 @@ pub(crate) fn diff(a: &[ExPolygon], b: &[ExPolygon]) -> Result<Polys, SupportErr
     Ok(edge_clip::difference(a, b)?)
 }
 
+/// `diff` with the clip cut down to the box round `a` first
+/// (`diff_clipped`).
+pub(crate) fn diff_near(a: &[ExPolygon], b: &[ExPolygon]) -> Result<Polys, SupportError> {
+    if a.is_empty() {
+        return Ok(Vec::new());
+    }
+    if b.is_empty() {
+        return union(a);
+    }
+    Ok(edge_clip::difference_near(
+        a,
+        b,
+        crate::tree::config::SCALED_EPSILON,
+    )?)
+}
+
+/// `intersection` with `b` cut down to the box round `a` first
+/// (`intersection_clipped`).
+pub(crate) fn intersection_near(a: &[ExPolygon], b: &[ExPolygon]) -> Result<Polys, SupportError> {
+    if a.is_empty() || b.is_empty() {
+        return Ok(Vec::new());
+    }
+    Ok(edge_clip::intersection_near(
+        a,
+        b,
+        crate::tree::config::SCALED_EPSILON,
+    )?)
+}
+
 /// `diff` with the clip grown by the safety offset.
 pub(crate) fn diff_safe(a: &[ExPolygon], b: &[ExPolygon]) -> Result<Polys, SupportError> {
     if a.is_empty() || b.is_empty() {
@@ -111,12 +140,13 @@ pub(crate) fn offset(
     Ok(edge_clip::offset(regions, delta, join)?)
 }
 
-/// `polygons_simplify`: Douglas-Peucker to `tolerance` on every ring.
+/// `polygons_simplify`: Douglas-Peucker to `tolerance` on every ring, the
+/// rings not united again (as the reference, `strictly_simple` off).
 pub(crate) fn simplify(regions: &[ExPolygon], tolerance: Coord) -> Result<Polys, SupportError> {
     if regions.is_empty() || tolerance <= 0 {
         return Ok(regions.to_vec());
     }
-    Ok(edge_clip::simplify(regions, tolerance)?)
+    Ok(edge_clip::simplify_rings(regions, tolerance))
 }
 
 /// Drops islands smaller than `threshold` (`remove_small`).
@@ -130,6 +160,11 @@ pub(crate) fn remove_small(regions: &mut Polys, threshold: f64) {
 pub(crate) fn safe_union(a: &[ExPolygon], b: &[ExPolygon]) -> Result<Polys, SupportError> {
     if a.is_empty() && b.is_empty() {
         return Ok(Vec::new());
+    }
+    // What is passed here alone is always the result of a boolean or an
+    // offset, already united; the reference unites it again.
+    if b.is_empty() {
+        return Ok(a.to_vec());
     }
     let result = union2(a, b)?;
     if !result.is_empty() {
@@ -164,41 +199,15 @@ pub(crate) fn safe_offset_inc(
 ) -> Result<Polys, SupportError> {
     let mut do_final_difference = last_step_offset_without_check == 0;
     let mut ret = safe_union(me, &[])?;
-    // The collision trimmed to where it can matter.
-    let trimmed = |ret: &[ExPolygon]| -> Result<Polys, SupportError> {
-        let Some([x0, y0, x1, y1]) = extent(ret) else {
-            return Ok(Vec::new());
-        };
-        let grow = distance.max(0) + crate::tree::config::SCALED_EPSILON;
-        let window = rectangle(x0 - grow, y0 - grow, x1 + grow, y1 + grow);
-        let near: Polys = collision
-            .iter()
-            .filter(|region| {
-                extent(std::slice::from_ref(region)).is_some_and(|[a, b, c, d]| {
-                    a <= x1 + grow && c >= x0 - grow && b <= y1 + grow && d >= y0 - grow
-                })
-            })
-            .cloned()
-            .collect();
-        intersection(&near, &[window])
-    };
-    if distance == 0 {
+    // Each difference takes only the collision near what it cuts, as the
+    // reference trims the collision to the area's box once.
+    if distance == 0 || safe_step < 0 || last_step_offset_without_check < 0 {
         return if do_final_difference {
-            let clip = trimmed(&ret)?;
-            diff(&ret, &clip)
+            diff_near(&ret, collision)
         } else {
             union(&ret)
         };
     }
-    if safe_step < 0 || last_step_offset_without_check < 0 {
-        let clip = trimmed(&ret)?;
-        return if do_final_difference {
-            diff(&ret, &clip)
-        } else {
-            union(&ret)
-        };
-    }
-    let clip = trimmed(&ret)?;
     let mut step_size = safe_step.max(1);
     let mut steps = if distance > last_step_offset_without_check {
         (distance - last_step_offset_without_check) / step_size
@@ -225,7 +234,7 @@ pub(crate) fn safe_offset_inc(
     }
     let arc = round(scaled(0.01));
     for step in 0..steps {
-        ret = diff(&offset(&ret, step_size, arc)?, &clip)?;
+        ret = diff_near(&offset(&ret, step_size, arc)?, collision)?;
         // Round offsets add vertices; thin them now and then.
         if step % 10 == 7 {
             ret = simplify(&ret, scaled(0.015))?;
@@ -237,11 +246,12 @@ pub(crate) fn safe_offset_inc(
     }
     ret = simplify(&ret, scaled(0.015))?;
     if do_final_difference {
-        ret = diff(&ret, &clip)?;
+        ret = diff_near(&ret, collision)?;
     }
     union(&ret)
 }
 
+#[cfg(test)]
 pub(crate) fn rectangle(x0: Coord, y0: Coord, x1: Coord, y1: Coord) -> ExPolygon {
     ExPolygon {
         contour: Polygon {

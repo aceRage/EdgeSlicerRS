@@ -29,26 +29,27 @@ fn size(regions: &[ExPolygon]) -> (Coord, Coord) {
     extent(regions).map_or((0, 0), |[a, b, c, d]| (c - a, d - b))
 }
 
-/// Distance from a point to the nearest edge of some regions.
-fn distance_to(regions: &[ExPolygon], point: Point2) -> f64 {
-    let mut least = f64::INFINITY;
-    for ring in regions.iter().flat_map(ExPolygon::rings) {
-        let points = &ring.points;
-        for index in 0..points.len() {
-            let (a, b) = (points[index], points[(index + 1) % points.len()]);
-            let (dx, dy) = ((b.x - a.x) as f64, (b.y - a.y) as f64);
-            let (px, py) = ((point.x - a.x) as f64, (point.y - a.y) as f64);
-            let length2 = dx * dx + dy * dy;
-            let t = if length2 > 0.0 {
-                ((px * dx + py * dy) / length2).clamp(0.0, 1.0)
-            } else {
-                0.0
-            };
-            least = least.min((px - t * dx).hypot(py - t * dy));
-        }
-    }
-    least
+/// Whether some point lies further than `limit` from every corner of
+/// some regions. The reference measures a cantilever this way, to the
+/// nearest corner (`MultiPoint::distance_to`), not to the nearest edge.
+fn reaches_beyond(points: &[Point2], regions: &[ExPolygon], limit: f64) -> bool {
+    let corners: Vec<Point2> = regions
+        .iter()
+        .flat_map(ExPolygon::rings)
+        .flat_map(|ring| ring.points.iter().copied())
+        .collect();
+    let limit2 = limit * limit;
+    points.iter().any(|p| {
+        !corners.iter().any(|c| {
+            let (dx, dy) = ((c.x - p.x) as f64, (c.y - p.y) as f64);
+            dx * dx + dy * dy <= limit2
+        })
+    })
 }
+
+/// For each slice of a layer, the slices of the layer below it meets and
+/// the box round where they meet.
+type Meets = Vec<Vec<(usize, [Coord; 4])>>;
 
 /// A group of overhangs that touch from layer to layer.
 struct Cluster {
@@ -87,7 +88,6 @@ pub(crate) fn detect(job: &Job<'_>) -> Result<Vec<Polys>, SupportError> {
         .par_iter()
         .map(|layer| extrudable(layer, width_scaled))
         .collect::<Result<_, _>>()?;
-
     struct Found {
         overhangs: Polys,
         cantilevers: Polys,
@@ -119,10 +119,12 @@ pub(crate) fn detect(job: &Job<'_>) -> Result<Vec<Polys>, SupportError> {
             let overhangs = diff(current, &lower_grown)?;
             let mut sharp_tails = Vec::new();
             {
+                // Within a tenth of a line of the layer below: the layer
+                // below grown, once, rather than each slice.
+                let lower_near = offset(lower, scaled(0.1 * width), Join::MITER)?;
                 for slice in current {
                     let one = std::slice::from_ref(slice);
-                    let near = offset(one, scaled(0.1 * width), Join::MITER)?;
-                    if !overlaps(&near, lower)?
+                    if super::geometry::intersection_near(one, &lower_near)?.is_empty()
                         && !offset(one, -scaled(0.1 * width), Join::MITER)?.is_empty()
                     {
                         sharp_tails.push((slice.clone(), 0.0));
@@ -130,24 +132,25 @@ pub(crate) fn detect(job: &Job<'_>) -> Result<Vec<Polys>, SupportError> {
                 }
             }
             // A cantilever reaches more than 3 mm from what it hangs from.
-            let boundary_area = offset(
-                &lower_grown,
-                scaled((width - reach).max(0.0) + 0.1),
-                Join::MITER,
-            )?;
+            let boundary_area = if overhangs.is_empty() {
+                Vec::new()
+            } else {
+                offset(
+                    &lower_grown,
+                    scaled((width - reach).max(0.0) + 0.1),
+                    Join::MITER,
+                )?
+            };
             let mut cantilevers = Vec::new();
             for overhang in &overhangs {
-                let boundary = intersection(std::slice::from_ref(overhang), &boundary_area)?;
+                let boundary = super::geometry::intersection_near(
+                    std::slice::from_ref(overhang),
+                    &boundary_area,
+                )?;
                 if boundary.is_empty() {
                     continue;
                 }
-                let furthest = overhang
-                    .contour
-                    .points
-                    .iter()
-                    .map(|p| distance_to(&boundary, *p))
-                    .fold(0.0, f64::max);
-                if furthest > scaled(3.0) as f64 {
+                if reaches_beyond(&overhang.contour.points, &boundary, scaled(3.0) as f64) {
                     cantilevers.push(overhang.clone());
                 }
             }
@@ -158,46 +161,110 @@ pub(crate) fn detect(job: &Job<'_>) -> Result<Vec<Polys>, SupportError> {
             })
         })
         .collect::<Result<_, _>>()?;
-
-    // Sharp tails carry on up while they stay narrow, to 16 mm.
-    let mut sharp_tails: Vec<Vec<(ExPolygon, f64)>> =
-        found.iter().map(|f| f.sharp_tails.clone()).collect();
+    // Sharp tails carry on up while they stay narrow, to 16 mm. Which
+    // slices meet which on the layer below is worked out for every layer
+    // at once; going up the layers is then only bookkeeping, with a
+    // difference now and then.
+    let meets: Vec<Meets> = (0..count)
+        .into_par_iter()
+        .map(|layer| -> Result<Meets, SupportError> {
+            if layer == 0 {
+                return Ok(Vec::new());
+            }
+            let lower = &printable[layer - 1];
+            let lower_boxes: Vec<Option<[Coord; 4]>> = lower
+                .iter()
+                .map(|region| extent(std::slice::from_ref(region)))
+                .collect();
+            printable[layer]
+                .iter()
+                .map(|slice| {
+                    let one = std::slice::from_ref(slice);
+                    let Some([x0, y0, x1, y1]) = extent(one) else {
+                        return Ok(Vec::new());
+                    };
+                    let mut out = Vec::new();
+                    for (j, region) in lower.iter().enumerate() {
+                        let Some([a, b, c, d]) = lower_boxes[j] else {
+                            continue;
+                        };
+                        if a > x1 || c < x0 || b > y1 || d < y0 {
+                            continue;
+                        }
+                        let met = intersection(one, std::slice::from_ref(region))?;
+                        if let Some(bounds) = extent(&met) {
+                            out.push((j, bounds));
+                        }
+                    }
+                    Ok(out)
+                })
+                .collect()
+        })
+        .collect::<Result<_, _>>()?;
+    // Tails by layer, as the slices they are and their heights.
+    let mut tails_at: Vec<Vec<(usize, f64)>> = vec![Vec::new(); count];
+    for (layer, layer_found) in found.iter().enumerate() {
+        for (tail, height) in &layer_found.sharp_tails {
+            if let Some(index) = printable[layer].iter().position(|slice| slice == tail) {
+                tails_at[layer].push((index, *height));
+            }
+        }
+    }
     for layer in 1..count {
-        let below: Vec<ExPolygon> = sharp_tails[layer - 1].iter().map(|t| t.0.clone()).collect();
-        if below.is_empty() {
+        if tails_at[layer - 1].is_empty() {
             continue;
         }
+        let below: Vec<ExPolygon> = tails_at[layer - 1]
+            .iter()
+            .map(|(j, _)| printable[layer - 1][*j].clone())
+            .collect();
         let below_size = size(&below);
-        for slice in &printable[layer] {
-            let one = std::slice::from_ref(slice);
-            let supported = intersection(one, &below)?;
-            if supported.is_empty() {
+        let mut fresh_tails = Vec::new();
+        for (i, slice) in printable[layer].iter().enumerate() {
+            let met: Vec<&(usize, [Coord; 4])> = meets[layer][i]
+                .iter()
+                .filter(|(j, _)| tails_at[layer - 1].iter().any(|(t, _)| t == j))
+                .collect();
+            if met.is_empty() {
                 continue;
             }
-            let (x, y) = size(&supported);
-            if x > length_well_supported && y > length_well_supported {
+            let [x0, y0, x1, y1] = met.iter().fold(
+                [Coord::MAX, Coord::MAX, Coord::MIN, Coord::MIN],
+                |[a, b, c, d], (_, [e, f, g, h])| [a.min(*e), b.min(*f), c.max(*g), d.max(*h)],
+            );
+            if x1 - x0 > length_well_supported && y1 - y0 > length_well_supported {
                 continue;
             }
             let mut height = job.height_of(layer);
-            for (tail, tail_height) in &sharp_tails[layer - 1] {
-                if overlaps(std::slice::from_ref(tail), one)? {
-                    height += tail_height;
-                    break;
-                }
+            if let Some((_, tail_height)) = tails_at[layer - 1]
+                .iter()
+                .find(|(t, _)| met.iter().any(|(j, _)| j == t))
+            {
+                height += tail_height;
             }
             if height > sharp_tail_max_height {
                 continue;
             }
-            let fresh = diff(one, &below)?;
+            let fresh = diff(std::slice::from_ref(slice), &below)?;
             let (fx, fy) = size(&fresh);
             let grows = fx - below_size.0 > scaled(5.0) && fy - below_size.1 > scaled(5.0);
             if grows || !offset(&fresh, -scaled(5.0 * width), Join::MITER)?.is_empty() {
                 continue;
             }
-            sharp_tails[layer].push((slice.clone(), height));
+            fresh_tails.push((i, height));
         }
+        tails_at[layer].extend(fresh_tails);
     }
-
+    let sharp_tails: Vec<Vec<(ExPolygon, f64)>> = tails_at
+        .iter()
+        .enumerate()
+        .map(|(layer, tails)| {
+            tails
+                .iter()
+                .map(|(i, height)| (printable[layer][*i].clone(), *height))
+                .collect()
+        })
+        .collect();
     // Clusters of overhangs that touch from layer to layer.
     let mut clusters: Vec<Cluster> = Vec::new();
     for (layer, layer_found) in found.iter().enumerate() {
@@ -256,7 +323,6 @@ pub(crate) fn detect(job: &Job<'_>) -> Result<Vec<Polys>, SupportError> {
             }
         }
     }
-
     let mut kept: Vec<Polys> = vec![Vec::new(); count];
     for cluster in &clusters {
         let mut small = false;
@@ -282,31 +348,37 @@ pub(crate) fn detect(job: &Job<'_>) -> Result<Vec<Polys>, SupportError> {
         }
     }
 
-    let mut overhangs = Vec::with_capacity(count);
-    for layer in 0..count {
-        let mut out = std::mem::take(&mut kept[layer]);
-        if settings.critical_regions_only {
-            // Only cantilevers, and sharp tails below.
-            out = found[layer].cantilevers.clone();
-        }
-        // Sharp tails get a tip every half millimetre of height.
-        let tails: Polys = if layer == 0 {
-            sharp_tails[0].iter().map(|t| t.0.clone()).collect()
-        } else {
-            let lower = offset(&printable[layer - 1], scaled(0.0125), Join::MITER)?;
-            let mut tails = Vec::new();
-            for (tail, height) in &sharp_tails[layer] {
-                let areas = diff(std::slice::from_ref(tail), &lower)?;
-                if !areas.is_empty() && ((height * 10.0) as i64) % 5 == 0 {
-                    tails.extend(areas);
-                }
+    let overhangs: Vec<Polys> = kept
+        .into_par_iter()
+        .enumerate()
+        .map(|(layer, mut out)| -> Result<Polys, SupportError> {
+            if settings.critical_regions_only {
+                // Only cantilevers, and sharp tails below.
+                out = found[layer].cantilevers.clone();
             }
-            tails
-        };
-        if !tails.is_empty() {
-            out.extend(offset(&tails, scaled(0.2), Join::MITER)?);
-        }
-        overhangs.push(out);
-    }
+            // Sharp tails get a tip every half millimetre of height.
+            let tails: Polys = if layer == 0 {
+                sharp_tails[0].iter().map(|t| t.0.clone()).collect()
+            } else {
+                let due: Vec<&ExPolygon> = sharp_tails[layer]
+                    .iter()
+                    .filter(|(_, height)| ((height * 10.0) as i64) % 5 == 0)
+                    .map(|(tail, _)| tail)
+                    .collect();
+                let mut tails = Vec::new();
+                if !due.is_empty() {
+                    let lower = offset(&printable[layer - 1], scaled(0.0125), Join::MITER)?;
+                    for tail in due {
+                        tails.extend(diff(std::slice::from_ref(tail), &lower)?);
+                    }
+                }
+                tails
+            };
+            if !tails.is_empty() {
+                out.extend(offset(&tails, scaled(0.2), Join::MITER)?);
+            }
+            Ok(out)
+        })
+        .collect::<Result<_, _>>()?;
     Ok(overhangs)
 }

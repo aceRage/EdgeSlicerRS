@@ -1015,8 +1015,8 @@ dependencies = [
  "edge-geom",
  "edge-infill",
  "edge-mesh",
- "edge-slice",
  "rayon",
+ "rustc-hash",
  "thiserror 2.0.21",
 ]
 

@@ -16,7 +16,9 @@ use rayon::prelude::*;
 
 use super::config::{EPSILON, TreeConfig};
 use super::element::Element;
-use super::geometry::{Polys, area, diff_safe, intersection, remove_small, tiny_area, union};
+use super::geometry::{
+    Polys, area, diff_safe, extent, intersection, remove_small, tiny_area, union,
+};
 use super::volumes::Volumes;
 use crate::{Job, SupportError};
 
@@ -135,50 +137,55 @@ impl Lines {
         }
     }
 
-    /// The nearest point of a segment to `p` closer than `sqrt(limit2)`,
-    /// with its squared distance.
-    fn nearest(&self, p: [f64; 2], limit2: f64) -> Option<(f64, [f64; 2])> {
+    /// The segments that may come within `reach` of `p`, each once.
+    fn candidates(&self, p: [f64; 2], reach: f64) -> Vec<u32> {
         if self.segments.is_empty() {
-            return None;
+            return Vec::new();
         }
-        let reach = limit2.sqrt();
         let lo_x = ((p[0] - reach - self.origin[0]) / self.cell).floor();
         let hi_x = ((p[0] + reach - self.origin[0]) / self.cell).floor();
         let lo_y = ((p[1] - reach - self.origin[1]) / self.cell).floor();
         let hi_y = ((p[1] + reach - self.origin[1]) / self.cell).floor();
         if hi_x < 0.0 || hi_y < 0.0 || lo_x >= self.columns as f64 || lo_y >= self.rows as f64 {
-            return None;
+            return Vec::new();
         }
         let (cx0, cx1) = (
             lo_x.max(0.0) as usize,
             (hi_x as usize).min(self.columns - 1),
         );
         let (cy0, cy1) = (lo_y.max(0.0) as usize, (hi_y as usize).min(self.rows - 1));
-        let mut best: Option<(f64, [f64; 2], u32)> = None;
+        let mut out = Vec::new();
         for cy in cy0..=cy1 {
             for cx in cx0..=cx1 {
-                for &index in &self.bins[cy * self.columns + cx] {
-                    let (a, b) = self.segments[index as usize];
-                    let (vx, vy) = (b[0] - a[0], b[1] - a[1]);
-                    let l2 = vx * vx + vy * vy;
-                    let t = if l2 > 0.0 {
-                        (((p[0] - a[0]) * vx + (p[1] - a[1]) * vy) / l2).clamp(0.0, 1.0)
-                    } else {
-                        0.0
-                    };
-                    let q = [a[0] + vx * t, a[1] + vy * t];
-                    let d2 = (q[0] - p[0]).powi(2) + (q[1] - p[1]).powi(2);
-                    // Lowest index on ties, whichever bin it was met in.
-                    if d2 < limit2
-                        && best
-                            .is_none_or(|(least, _, at)| d2 < least || (d2 == least && index < at))
-                    {
-                        best = Some((d2, q, index));
-                    }
-                }
+                out.extend_from_slice(&self.bins[cy * self.columns + cx]);
             }
         }
-        best.map(|(d2, q, _)| (d2, q))
+        out.sort_unstable();
+        out.dedup();
+        out
+    }
+
+    /// The nearest point to `p` of some of the segments, closer than
+    /// `sqrt(limit2)`, with its squared distance.
+    fn nearest_among(&self, ids: &[u32], p: [f64; 2], limit2: f64) -> Option<(f64, [f64; 2])> {
+        let mut best: Option<(f64, [f64; 2])> = None;
+        for &index in ids {
+            let (a, b) = self.segments[index as usize];
+            let (vx, vy) = (b[0] - a[0], b[1] - a[1]);
+            let l2 = vx * vx + vy * vy;
+            let t = if l2 > 0.0 {
+                (((p[0] - a[0]) * vx + (p[1] - a[1]) * vy) / l2).clamp(0.0, 1.0)
+            } else {
+                0.0
+            };
+            let q = [a[0] + vx * t, a[1] + vy * t];
+            let d2 = (q[0] - p[0]).powi(2) + (q[1] - p[1]).powi(2);
+            // Lowest index on ties, as ids are in order.
+            if d2 < limit2 && best.is_none_or(|(least, _)| d2 < least) {
+                best = Some((d2, q));
+            }
+        }
+        best
     }
 }
 
@@ -275,6 +282,17 @@ fn smooth(volumes: &Volumes, config: &TreeConfig, heights: &Heights, layers: &mu
     const COLLISION_EXTRA_GAP: f64 = 0.1;
     const MAX_NUDGE_COLLISION_AVOIDANCE: f64 = 0.5;
     const MAX_NUDGE_SMOOTHING: f64 = 0.2;
+    // Segments near each ball, and where it was when they were gathered.
+    #[derive(Default)]
+    struct Cache {
+        anchor: Option<[f64; 2]>,
+        layers: Vec<Vec<u32>>,
+    }
+    const CACHE_MARGIN: f64 = 1.0;
+    let mut caches: Vec<Cache> = spheres.iter().map(|_| Cache::default()).collect();
+    // Moves smaller than this count as none.
+    const STILL: f64 = 1e-9;
+    let mut active = vec![true; spheres.len()];
     for _ in 0..100 {
         for sphere in &mut spheres {
             sphere.previous = sphere.position;
@@ -285,8 +303,10 @@ fn smooth(volumes: &Volumes, config: &TreeConfig, heights: &Heights, layers: &mu
             .collect();
         let moved: Vec<(Option<[f64; 2]>, bool)> = spheres
             .par_iter()
-            .map(|sphere| {
-                if sphere.locked {
+            .zip(caches.par_iter_mut())
+            .zip(active.par_iter())
+            .map(|((sphere, cache), active)| {
+                if sphere.locked || !active {
                     return (None, false);
                 }
                 // Keeps a step within reach of the neighbours above and
@@ -323,6 +343,22 @@ fn smooth(volumes: &Volumes, config: &TreeConfig, heights: &Heights, layers: &mu
                 let mut position = [sphere.position[0], sphere.position[1]];
                 let mut depth = f64::MIN;
                 let mut hit = [0.0, 0.0];
+                // The segments near the ball, gathered again once it has
+                // moved far enough that one it now reaches might be missing.
+                if cache
+                    .anchor
+                    .is_none_or(|a| (a[0] - position[0]).hypot(a[1] - position[1]) > CACHE_MARGIN)
+                {
+                    cache.anchor = Some(position);
+                    cache.layers = (sphere.layer_begin..sphere.layer_end)
+                        .map(|layer| match lines.get(layer) {
+                            Some(Some(lines)) => {
+                                lines.candidates(position, sphere.radius + CACHE_MARGIN)
+                            }
+                            _ => Vec::new(),
+                        })
+                        .collect();
+                }
                 for layer in sphere.layer_begin..sphere.layer_end {
                     let dz = (layer as f64 - sphere.layer as f64) * layer_height;
                     let r2 = sphere.radius * sphere.radius - dz * dz;
@@ -332,7 +368,11 @@ fn smooth(volumes: &Volumes, config: &TreeConfig, heights: &Heights, layers: &mu
                     let Some(Some(lines)) = lines.get(layer) else {
                         continue;
                     };
-                    if let Some((d2, q)) = lines.nearest(position, r2) {
+                    let ids = &cache.layers[layer - sphere.layer_begin];
+                    if ids.is_empty() {
+                        continue;
+                    }
+                    if let Some((d2, q)) = lines.nearest_among(ids, position, r2) {
                         let collision_depth = r2.sqrt() - d2.sqrt();
                         if collision_depth > depth {
                             depth = collision_depth;
@@ -393,12 +433,25 @@ fn smooth(volumes: &Volumes, config: &TreeConfig, heights: &Heights, layers: &mu
             })
             .collect();
         let mut any = false;
-        for (sphere, (position, colliding)) in spheres.iter_mut().zip(moved) {
+        let mut stirred = vec![false; spheres.len()];
+        for (id, (sphere, (position, colliding))) in spheres.iter_mut().zip(moved).enumerate() {
             if let Some(p) = position {
+                let step = (p[0] - sphere.position[0]).hypot(p[1] - sphere.position[1]);
+                stirred[id] = step > STILL;
                 sphere.position[0] = p[0];
                 sphere.position[1] = p[1];
             }
+            stirred[id] |= colliding;
             any |= colliding;
+        }
+        // A ball goes on being worked out while it or a neighbour still
+        // moves; one whose neighbourhood has come to rest would only be
+        // set where it is again. The reference works every ball out every
+        // round, to the same positions.
+        for (id, sphere) in spheres.iter().enumerate() {
+            active[id] = stirred[id]
+                || sphere.below.is_some_and(|below| stirred[below])
+                || sphere.parents.iter().any(|parent| stirred[*parent]);
         }
         if !any {
             break;
@@ -673,11 +726,115 @@ pub(crate) struct Drawn {
     pub bottom_contacts: Vec<Polys>,
 }
 
-/// What one tree puts on its layers.
-#[derive(Default, Clone)]
-struct Slice {
-    polygons: Polys,
-    bottom_contacts: Polys,
+/// Cuts a branch's closed tube at each plane (`slice_mesh`): every
+/// triangle the plane crosses gives a segment from the edge it enters by
+/// to the edge it leaves by, solid on the left, and segments chain into
+/// loops by the edges they share. A lean version of `edge_slice::slice`
+/// for these small meshes, which have no flat faces at a plane.
+fn slice_tube(mesh: &Mesh, planes: &[f64]) -> Vec<Vec<edge_geom::Polygon>> {
+    let vertex = |i: u32| {
+        let p = mesh.vertices[i as usize];
+        [f64::from(p[0]), f64::from(p[1]), f64::from(p[2])]
+    };
+    let crossing = |a: u32, b: u32, z: f64| {
+        let (low, high) = if a < b { (a, b) } else { (b, a) };
+        let (pl, ph) = (vertex(low), vertex(high));
+        let t = (z - pl[2]) / (ph[2] - pl[2]);
+        (
+            u64::from(low) << 32 | u64::from(high),
+            Point2::from_mm(pl[0] + t * (ph[0] - pl[0]), pl[1] + t * (ph[1] - pl[1])),
+        )
+    };
+    // Triangles by the planes they cross.
+    let mut by_plane: Vec<Vec<u32>> = vec![Vec::new(); planes.len()];
+    for (index, ids) in mesh.triangles.iter().enumerate() {
+        let zs = ids.map(|v| vertex(v)[2]);
+        let (lo, hi) = (zs[0].min(zs[1]).min(zs[2]), zs[0].max(zs[1]).max(zs[2]));
+        let first = planes.partition_point(|&p| p <= lo);
+        let end = planes.partition_point(|&p| p <= hi);
+        for plane in &mut by_plane[first..end] {
+            plane.push(index as u32);
+        }
+    }
+    let mut out = Vec::with_capacity(planes.len());
+    let mut next: rustc_hash::FxHashMap<u64, usize> = Default::default();
+    for (plane, triangles) in by_plane.iter().enumerate() {
+        let z = planes[plane];
+        next.clear();
+        // From edge, to edge, point at the from edge.
+        let mut segments: Vec<(u64, u64, Point2)> = Vec::with_capacity(triangles.len());
+        for &triangle in triangles {
+            let ids = mesh.triangles[triangle as usize];
+            let above = ids.map(|v| vertex(v)[2] >= z);
+            let lone = if above[0] == above[1] {
+                2
+            } else if above[0] == above[2] {
+                1
+            } else {
+                0
+            };
+            let (after, before) = ((lone + 1) % 3, (lone + 2) % 3);
+            let leaving = crossing(ids[lone], ids[after], z);
+            let entering = crossing(ids[before], ids[lone], z);
+            let ((from, point), (to, _)) = if above[lone] {
+                (leaving, entering)
+            } else {
+                (entering, leaving)
+            };
+            next.insert(from, segments.len());
+            segments.push((from, to, point));
+        }
+        let mut used = vec![false; segments.len()];
+        let mut polygons = Vec::new();
+        for start in 0..segments.len() {
+            if used[start] {
+                continue;
+            }
+            let mut points = Vec::new();
+            let mut at = start;
+            loop {
+                used[at] = true;
+                let (_, to, point) = segments[at];
+                points.push(point);
+                match next.get(&to) {
+                    Some(&following) if !used[following] => at = following,
+                    _ => break,
+                }
+            }
+            if points.len() >= 3 {
+                polygons.push(edge_geom::Polygon { points });
+            }
+        }
+        out.push(polygons);
+    }
+    out
+}
+
+/// Whether a box lies wholly inside a convex outline (and so needs no
+/// clipping to it); `false` for an outline that is not convex.
+fn inside_convex(outline: &ExPolygon, [x0, y0, x1, y1]: [Coord; 4]) -> bool {
+    let points = &outline.contour.points;
+    if points.len() < 3 || !outline.holes.is_empty() {
+        return false;
+    }
+    let cross = |a: Point2, b: Point2, p: Point2| {
+        i128::from(b.x - a.x) * i128::from(p.y - a.y)
+            - i128::from(b.y - a.y) * i128::from(p.x - a.x)
+    };
+    let n = points.len();
+    let sign = (0..n)
+        .map(|i| cross(points[i], points[(i + 1) % n], points[(i + 2) % n]).signum())
+        .find(|s| *s != 0)
+        .unwrap_or(0);
+    if sign == 0 {
+        return false;
+    }
+    let corners = [(x0, y0), (x1, y0), (x1, y1), (x0, y1)].map(|(x, y)| Point2 { x, y });
+    (0..n).all(|i| {
+        let (a, b) = (points[i], points[(i + 1) % n]);
+        cross(a, b, points[(i + 2) % n]).signum() * sign >= 0
+            && corners.iter().all(|c| cross(a, b, *c).signum() * sign > 0)
+    })
 }
 
 /// Draws every branch (`organic_draw_branches`).
@@ -696,110 +853,153 @@ pub(crate) fn draw(
     let trees = trees(layers);
     let tiny = tiny_area();
     let bed = job.bed.as_ref();
-    let drawn_trees: Vec<(usize, Vec<Slice>)> = trees
+    // Each layer's collision as islands with their extents, so that a
+    // branch's slice is cut only by what is near it.
+    let top_layer = trees
+        .iter()
+        .flatten()
+        .map(|branch| branch.path[branch.path.len() - 1].0 + 1)
+        .max()
+        .unwrap_or(0)
+        + (config.branch_radius / config.layer_height.max(1)) as usize * 4
+        + 8;
+    let near_index: Vec<Vec<([Coord; 4], &ExPolygon)>> = (0..top_layer)
+        .into_par_iter()
+        .map(|l| {
+            volumes
+                .collision(0, l, true)
+                .iter()
+                .filter_map(|region| extent(std::slice::from_ref(region)).map(|e| (e, region)))
+                .collect()
+        })
+        .collect();
+    let cut_clear = |polys: Polys, l: usize| -> Result<Polys, SupportError> {
+        let Some([x0, y0, x1, y1]) = extent(&polys) else {
+            return Ok(polys);
+        };
+        let m = 4 * super::geometry::SAFETY;
+        let near: Polys = match near_index.get(l) {
+            Some(index) => index
+                .iter()
+                .filter(|([a, b, c, d], _)| {
+                    *a <= x1 + m && *c >= x0 - m && *b <= y1 + m && *d >= y0 - m
+                })
+                .map(|(_, region)| (*region).clone())
+                .collect(),
+            None => volumes.collision(0, l, true).to_vec(),
+        };
+        let mut polys = diff_safe(&polys, &near)?;
+        if let Some(bed) = bed
+            && !inside_convex(bed, [x0, y0, x1, y1])
+        {
+            polys = intersection(&polys, std::slice::from_ref(bed))?;
+        }
+        Ok(polys)
+    };
+    // Every branch on its own, in parallel; the reference goes tree by
+    // tree, which leaves a few large trees to a few threads.
+    let all: Vec<&Branch> = trees.iter().flatten().collect();
+    let drawn_branches: Vec<Option<(usize, Vec<Polys>, Polys)>> = all
         .par_iter()
-        .map(|branches| -> Result<(usize, Vec<Slice>), SupportError> {
-            let mut first_layer: Option<usize> = None;
-            let mut slices_out: Vec<Slice> = Vec::new();
-            for branch in branches {
-                let (mesh, zmin, zmax) =
-                    extrude_branch(&branch.path, layers, config, &heights, branch.has_root);
-                let (front, back) = (branch.path[0].0, branch.path[branch.path.len() - 1].0);
-                let mut layer_begin = if branch.has_root {
-                    front
-                } else {
-                    front.min(heights.ceil(zmin))
-                };
-                let layer_end = if branch.has_tip {
-                    back
-                } else {
-                    back.max(heights.floor(zmax))
-                } + 1;
-                let planes: Vec<f64> = (layer_begin..layer_end)
-                    .map(|l| 0.5 * (heights.bottom(l) + heights.top(l)))
-                    .collect();
-                let cut = edge_slice::slice(&mesh, &planes);
-                let mut slices: Vec<Polys> = Vec::with_capacity(cut.len());
-                for (i, layer) in cut.iter().enumerate() {
-                    let mut polys = edge_clip::union_positive(&layer.polygons)?;
-                    let l = layer_begin + i;
-                    polys = diff_safe(&polys, volumes.collision(0, l, true))?;
-                    if let Some(bed) = bed {
-                        polys = intersection(&polys, std::slice::from_ref(bed))?;
+        .map(
+            |branch| -> Result<Option<(usize, Vec<Polys>, Polys)>, SupportError> {
+                {
+                    let (mesh, zmin, zmax) =
+                        extrude_branch(&branch.path, layers, config, &heights, branch.has_root);
+                    let (front, back) = (branch.path[0].0, branch.path[branch.path.len() - 1].0);
+                    let mut layer_begin = if branch.has_root {
+                        front
+                    } else {
+                        front.min(heights.ceil(zmin))
+                    };
+                    let layer_end = if branch.has_tip {
+                        back
+                    } else {
+                        back.max(heights.floor(zmax))
+                    } + 1;
+                    let planes: Vec<f64> = (layer_begin..layer_end)
+                        .map(|l| 0.5 * (heights.bottom(l) + heights.top(l)))
+                        .collect();
+                    let cut = slice_tube(&mesh, &planes);
+                    let mut slices: Vec<Polys> = Vec::with_capacity(cut.len());
+                    for (i, layer) in cut.iter().enumerate() {
+                        let polys = edge_clip::union_positive(layer)?;
+                        let mut polys = cut_clear(polys, layer_begin + i)?;
+                        remove_small(&mut polys, tiny);
+                        slices.push(polys);
                     }
-                    remove_small(&mut polys, tiny);
-                    slices.push(polys);
-                }
-                let empty = slices.iter().take_while(|s| s.is_empty()).count();
-                if empty >= slices.len() {
-                    continue;
-                }
-                slices.drain(..empty);
-                layer_begin += empty;
-                let front_contact = slices[0].clone();
-                let mut bottom_contacts: Vec<Polys> = Vec::new();
-                if branch.has_root {
-                    let root = &layers[branch.path[0].0][branch.path[0].1];
-                    if root.state.to_model_gracious {
-                        if config.floor_layers > 0 {
-                            let mut contacts = if config.rests_on_model
-                                && config.z_distance_bottom_layers > 0
-                                && layer_begin > 0
-                            {
-                                front_contact.clone()
-                            } else {
-                                intersection(&front_contact, volumes.placeable(0, layer_begin))?
-                            };
-                            remove_small(&mut contacts, tiny);
-                            if contacts.is_empty() && config.rests_on_model && layer_begin > 0 {
-                                contacts = front_contact.clone();
-                            }
-                            if !contacts.is_empty() {
-                                bottom_contacts.push(contacts);
-                            }
-                        }
-                    } else if layer_begin > 0 {
-                        // Resting on the part where there is no flat top:
-                        // carried on down until it meets the part, or less
-                        // of it is left than is worth it.
-                        let bottom_radius = root.state.radius(config);
-                        let propagate = (5 * bottom_radius / config.layer_height) as usize;
-                        let bottommost = if root.state.verylost {
-                            0
-                        } else {
-                            layer_begin.saturating_sub(propagate)
-                        };
-                        let min_area = PI * (config.branch_radius as f64).powi(2);
-                        let stop = (0.2 * PI * (bottom_radius as f64).powi(2)).max(0.5 * min_area);
-                        let mut extra: Vec<Polys> = Vec::new();
-                        let mut rest: Polys = Vec::new();
-                        let mut l = layer_begin;
-                        while l > bottommost {
-                            l -= 1;
-                            // The reference cuts the first layer down by
-                            // the collision of the layer above it, which
-                            // leaves out the part inside the gap under a
-                            // support, so that layer can sit right on the
-                            // part; each is cut by its own here.
-                            let collision = volumes.collision(0, l, false);
-                            rest = diff_safe(
-                                if rest.is_empty() {
-                                    &front_contact
+                    let empty = slices.iter().take_while(|s| s.is_empty()).count();
+                    if empty >= slices.len() {
+                        return Ok(None);
+                    }
+                    slices.drain(..empty);
+                    layer_begin += empty;
+                    let front_contact = slices[0].clone();
+                    let mut bottom_contacts: Vec<Polys> = Vec::new();
+                    if branch.has_root {
+                        let root = &layers[branch.path[0].0][branch.path[0].1];
+                        if root.state.to_model_gracious {
+                            if config.floor_layers > 0 {
+                                let mut contacts = if config.rests_on_model
+                                    && config.z_distance_bottom_layers > 0
+                                    && layer_begin > 0
+                                {
+                                    front_contact.clone()
                                 } else {
-                                    &rest
-                                },
-                                collision,
-                            )?;
-                            remove_small(&mut rest, tiny);
-                            if area(&rest) < stop {
-                                break;
+                                    intersection(&front_contact, volumes.placeable(0, layer_begin))?
+                                };
+                                remove_small(&mut contacts, tiny);
+                                if contacts.is_empty() && config.rests_on_model && layer_begin > 0 {
+                                    contacts = front_contact.clone();
+                                }
+                                if !contacts.is_empty() {
+                                    bottom_contacts.push(contacts);
+                                }
                             }
-                            extra.push(rest.clone());
-                        }
-                        if config.floor_layers > 0 {
-                            let source = extra.last().unwrap_or(&front_contact);
-                            let mut contacts =
-                                if config.rests_on_model && config.z_distance_bottom_layers > 0 {
+                        } else if layer_begin > 0 {
+                            // Resting on the part where there is no flat top:
+                            // carried on down until it meets the part, or less
+                            // of it is left than is worth it.
+                            let bottom_radius = root.state.radius(config);
+                            let propagate = (5 * bottom_radius / config.layer_height) as usize;
+                            let bottommost = if root.state.verylost {
+                                0
+                            } else {
+                                layer_begin.saturating_sub(propagate)
+                            };
+                            let min_area = PI * (config.branch_radius as f64).powi(2);
+                            let stop =
+                                (0.2 * PI * (bottom_radius as f64).powi(2)).max(0.5 * min_area);
+                            let mut extra: Vec<Polys> = Vec::new();
+                            let mut rest: Polys = Vec::new();
+                            let mut l = layer_begin;
+                            while l > bottommost {
+                                l -= 1;
+                                // The reference cuts the first layer down by
+                                // the collision of the layer above it, which
+                                // leaves out the part inside the gap under a
+                                // support, so that layer can sit right on the
+                                // part; each is cut by its own here.
+                                let collision = volumes.collision(0, l, false);
+                                rest = diff_safe(
+                                    if rest.is_empty() {
+                                        &front_contact
+                                    } else {
+                                        &rest
+                                    },
+                                    collision,
+                                )?;
+                                remove_small(&mut rest, tiny);
+                                if area(&rest) < stop {
+                                    break;
+                                }
+                                extra.push(rest.clone());
+                            }
+                            if config.floor_layers > 0 {
+                                let source = extra.last().unwrap_or(&front_contact);
+                                let mut contacts = if config.rests_on_model
+                                    && config.z_distance_bottom_layers > 0
+                                {
                                     match (extra.last(), bed) {
                                         (Some(last), Some(bed)) => {
                                             intersection(last, std::slice::from_ref(bed))?
@@ -809,71 +1009,53 @@ pub(crate) fn draw(
                                 } else {
                                     intersection(source, volumes.placeable(0, layer_begin))?
                                 };
-                            remove_small(&mut contacts, tiny);
-                            if !contacts.is_empty() {
-                                bottom_contacts.push(contacts);
+                                remove_small(&mut contacts, tiny);
+                                if !contacts.is_empty() {
+                                    bottom_contacts.push(contacts);
+                                }
+                                if bottom_contacts.is_empty() && config.rests_on_model {
+                                    bottom_contacts.push(front_contact.clone());
+                                }
                             }
-                            if bottom_contacts.is_empty() && config.rests_on_model {
-                                bottom_contacts.push(front_contact.clone());
-                            }
+                            layer_begin -= extra.len();
+                            let mut moved: Vec<Polys> = extra.into_iter().rev().collect();
+                            moved.extend(slices);
+                            slices = moved;
                         }
-                        layer_begin -= extra.len();
-                        let mut moved: Vec<Polys> = extra.into_iter().rev().collect();
-                        moved.extend(slices);
-                        slices = moved;
+                        if config.rests_on_model
+                            && branch.path[0].0 > 0
+                            && config.floor_layers > 0
+                            && config.z_distance_bottom_layers > 0
+                            && bottom_contacts.is_empty()
+                            && !front_contact.is_empty()
+                        {
+                            bottom_contacts.push(front_contact.clone());
+                        }
                     }
-                    if config.rests_on_model
-                        && branch.path[0].0 > 0
-                        && config.floor_layers > 0
-                        && config.z_distance_bottom_layers > 0
-                        && bottom_contacts.is_empty()
-                        && !front_contact.is_empty()
-                    {
-                        bottom_contacts.push(front_contact.clone());
+                    while slices.last().is_some_and(Vec::is_empty) {
+                        slices.pop();
                     }
-                }
-                while slices.last().is_some_and(Vec::is_empty) {
-                    slices.pop();
-                }
-                if slices.is_empty() {
-                    continue;
-                }
-                let layer_end = layer_begin + slices.len();
-                let begin = first_layer.map_or(layer_begin, |f| f.min(layer_begin));
-                let end = first_layer.map_or(layer_end, |f| (f + slices_out.len()).max(layer_end));
-                if let Some(f) = first_layer
-                    && f > begin
-                {
-                    let mut grown = vec![Slice::default(); f - begin];
-                    grown.append(&mut slices_out);
-                    slices_out = grown;
-                }
-                slices_out.resize(end - begin, Slice::default());
-                for (j, polys) in slices.into_iter().enumerate() {
-                    let dst = &mut slices_out[layer_begin + j - begin];
-                    dst.polygons.extend(polys);
-                    if j == 0
-                        && let Some(contacts) = bottom_contacts.first()
-                    {
-                        dst.bottom_contacts.extend(contacts.iter().cloned());
+                    if slices.is_empty() {
+                        return Ok(None);
                     }
+                    let foot = bottom_contacts.into_iter().next().unwrap_or_default();
+                    Ok(Some((layer_begin, slices, foot)))
                 }
-                first_layer = Some(begin);
-            }
-            Ok((first_layer.unwrap_or(0), slices_out))
-        })
+            },
+        )
         .collect::<Result<_, _>>()?;
-    let count = drawn_trees
+    let count = drawn_branches
         .iter()
-        .map(|(first, slices)| first + slices.len())
+        .flatten()
+        .map(|(first, slices, _)| first + slices.len())
         .max()
         .unwrap_or(0);
     let mut base: Vec<Polys> = vec![Vec::new(); count];
     let mut bottom_contacts: Vec<Polys> = vec![Vec::new(); count];
-    for (first, slices) in drawn_trees {
-        for (j, slice) in slices.into_iter().enumerate() {
-            base[first + j].extend(slice.polygons);
-            bottom_contacts[first + j].extend(slice.bottom_contacts);
+    for (first, slices, foot) in drawn_branches.into_iter().flatten() {
+        bottom_contacts[first].extend(foot);
+        for (j, polys) in slices.into_iter().enumerate() {
+            base[first + j].extend(polys);
         }
     }
     let base = base
@@ -929,12 +1111,22 @@ mod tests {
         let planes: Vec<f64> = (8..12)
             .map(|l| 0.5 * (config_heights.bottom(l) + config_heights.top(l)))
             .collect();
-        for layer in edge_slice::slice(&mesh, &planes) {
-            let polys = edge_clip::union_positive(&layer.polygons).unwrap();
+        for (layer, theirs) in slice_tube(&mesh, &planes)
+            .iter()
+            .zip(edge_slice::slice(&mesh, &planes))
+        {
+            let polys = edge_clip::union_positive(layer).unwrap();
+            // The same as the general slicer's.
+            let general = edge_clip::union_positive(&theirs.polygons).unwrap();
+            let area_general: f64 = general.iter().map(ExPolygon::area_mm2).sum();
             // A full circle, wound the right way.
             let area_mm2: f64 = polys.iter().map(ExPolygon::area_mm2).sum();
             // Within 0.015 mm of round, so a little short of pi.
             assert!((area_mm2 - PI).abs() < 0.1, "{area_mm2}");
+            assert!(
+                (area_mm2 - area_general).abs() < 1e-4,
+                "{area_mm2} {area_general}"
+            );
         }
     }
 }

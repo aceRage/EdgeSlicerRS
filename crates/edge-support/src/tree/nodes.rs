@@ -4,7 +4,7 @@
 
 use super::config::TreeConfig;
 use super::element::Element;
-use super::geometry::{intersection, move_inside_if_outside};
+use super::geometry::{intersection_near, move_inside_if_outside};
 use super::volumes::Volumes;
 use crate::SupportError;
 
@@ -43,7 +43,7 @@ fn set_to_model_gracious(
     loop {
         let element = &layers[l][i];
         let radius = element.state.collision_radius(config);
-        if intersection(&element.area, volumes.placeable(radius, l))?.is_empty() {
+        if intersection_near(&element.area, volumes.placeable(radius, l))?.is_empty() {
             break;
         }
         last_success = Some((l, i));

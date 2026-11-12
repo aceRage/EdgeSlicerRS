@@ -12,9 +12,12 @@ edge-extrusion.workspace = true
 edge-geom.workspace = true
 edge-infill.workspace = true
 edge-mesh.workspace = true
-edge-slice.workspace = true
 rayon.workspace = true
+rustc-hash.workspace = true
 thiserror.workspace = true
+
+[dev-dependencies]
+edge-slice.workspace = true
 
 [lints]
 workspace = true

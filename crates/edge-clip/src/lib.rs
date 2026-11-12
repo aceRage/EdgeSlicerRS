@@ -7,7 +7,7 @@
 
 use clipper2_rs::{
     ClipType, Clipper64, ClipperOffset, EndType, FillRule, JoinType, Path64, Paths64, Point64,
-    PolyTree64,
+    PolyTree64, Rect64, rect_clip,
 };
 use edge_geom::{Coord, ExPolygon, Point2, Polygon};
 
@@ -92,6 +92,93 @@ pub fn difference(subject: &[ExPolygon], clip: &[ExPolygon]) -> Result<Vec<ExPol
 /// The area covered by both `a` and `b`.
 pub fn intersection(a: &[ExPolygon], b: &[ExPolygon]) -> Result<Vec<ExPolygon>, ClipError> {
     boolean(ClipType::Intersection, rings(a), rings(b))
+}
+
+/// [`difference`] with `clip` first cut down to the box round `subject`
+/// grown by `margin`, which gives the same regions inside that box and is
+/// much quicker when `clip` is large and `subject` small (the reference's
+/// `diff_clipped`).
+pub fn difference_near(
+    subject: &[ExPolygon],
+    clip: &[ExPolygon],
+    margin: Coord,
+) -> Result<Vec<ExPolygon>, ClipError> {
+    let Some(window) = window(subject, margin) else {
+        return Ok(Vec::new());
+    };
+    let near = near(clip, &window);
+    let mut clipper = Clipper64::new();
+    clipper.set_preserve_collinear(false);
+    clipper.add_subject(&paths(rings(subject)));
+    clipper.add_clip(&near);
+    let (tree, _open) = clipper.execute_tree(ClipType::Difference, FillRule::NonZero)?;
+    Ok(regions_of(&tree))
+}
+
+/// [`intersection`] with `b` cut down to the box round `a` grown by
+/// `margin` (the reference's `intersection_clipped`).
+pub fn intersection_near(
+    a: &[ExPolygon],
+    b: &[ExPolygon],
+    margin: Coord,
+) -> Result<Vec<ExPolygon>, ClipError> {
+    let Some(window) = window(a, margin) else {
+        return Ok(Vec::new());
+    };
+    let near = near(b, &window);
+    if near.is_empty() {
+        return Ok(Vec::new());
+    }
+    let mut clipper = Clipper64::new();
+    clipper.set_preserve_collinear(false);
+    clipper.add_subject(&paths(rings(a)));
+    clipper.add_clip(&near);
+    let (tree, _open) = clipper.execute_tree(ClipType::Intersection, FillRule::NonZero)?;
+    Ok(regions_of(&tree))
+}
+
+/// The box round the outer rings of `regions`, grown by `margin`.
+fn window(regions: &[ExPolygon], margin: Coord) -> Option<Rect64> {
+    let mut points = regions.iter().flat_map(|region| &region.contour.points);
+    let first = points.next()?;
+    let (mut x0, mut y0, mut x1, mut y1) = (first.x, first.y, first.x, first.y);
+    for p in points {
+        (x0, y0, x1, y1) = (x0.min(p.x), y0.min(p.y), x1.max(p.x), y1.max(p.y));
+    }
+    Some(Rect64::new(
+        x0 - margin,
+        y0 - margin,
+        x1 + margin,
+        y1 + margin,
+    ))
+}
+
+/// The rings of the regions that reach into `window`, cut to it; a region
+/// wholly inside is taken as it is.
+fn near(regions: &[ExPolygon], window: &Rect64) -> Paths64 {
+    let mut out = Paths64::new();
+    for region in regions {
+        let points = &region.contour.points;
+        let Some(first) = points.first() else {
+            continue;
+        };
+        let (mut x0, mut y0, mut x1, mut y1) = (first.x, first.y, first.x, first.y);
+        for p in points {
+            (x0, y0, x1, y1) = (x0.min(p.x), y0.min(p.y), x1.max(p.x), y1.max(p.y));
+        }
+        if x0 > window.right || x1 < window.left || y0 > window.bottom || y1 < window.top {
+            continue;
+        }
+        let inside =
+            x0 >= window.left && x1 <= window.right && y0 >= window.top && y1 <= window.bottom;
+        let rings = paths(region.rings());
+        if inside {
+            out.extend(rings);
+        } else {
+            out.extend(rect_clip(window, &rings));
+        }
+    }
+    out
 }
 
 /// Grows regions by `delta` (or shrinks them when it is negative), merging
@@ -477,6 +564,36 @@ pub fn simplify(regions: &[ExPolygon], tolerance: Coord) -> Result<Vec<ExPolygon
     union(&simplified)
 }
 
+/// Douglas-Peucker on every ring as in [`simplify`], without uniting the
+/// rings again afterwards (the reference's `polygons_simplify` with
+/// `strictly_simple` off): a ring may then cross itself or another by up
+/// to `tolerance`, which the next boolean or offset sorts out. A contour
+/// left with under three points drops its region, a hole only itself.
+pub fn simplify_rings(regions: &[ExPolygon], tolerance: Coord) -> Vec<ExPolygon> {
+    let ring = |ring: &Polygon| {
+        let mut closed = ring.points.clone();
+        closed.extend(ring.points.first().copied());
+        let mut points = douglas_peucker(&closed, tolerance as f64);
+        points.pop();
+        Polygon { points }
+    };
+    regions
+        .iter()
+        .filter_map(|region| {
+            let contour = ring(&region.contour);
+            (contour.points.len() >= 3).then(|| ExPolygon {
+                contour,
+                holes: region
+                    .holes
+                    .iter()
+                    .map(ring)
+                    .filter(|hole| hole.points.len() >= 3)
+                    .collect(),
+            })
+        })
+        .collect()
+}
+
 /// Simplifies an open path, keeping both ends. A port of the reference's
 /// `MultiPoint::_douglas_peucker`, including measuring to the segment rather
 /// than to the infinite line through it.
@@ -643,6 +760,25 @@ mod tests {
             contour: rect(x0, y0, x1, y1),
             holes: Vec::new(),
         }]
+    }
+
+    #[test]
+    fn a_clipped_difference_is_the_difference() {
+        // A large frame with a hole, and small squares over its edge, in
+        // its hole, and far from it.
+        let frame = vec![ExPolygon {
+            contour: rect(0.0, 0.0, 100.0, 100.0),
+            holes: vec![hole(20.0, 20.0, 80.0, 80.0)],
+        }];
+        for (x, y) in [(15.0, 50.0), (50.0, 50.0), (150.0, 50.0), (78.0, 78.0)] {
+            let small = solid(x, y, x + 5.0, y + 5.0);
+            let near = difference_near(&small, &frame, 10).unwrap();
+            let full = difference(&small, &frame).unwrap();
+            assert!((area(&near) - area(&full)).abs() < 1e-9, "{x} {y}");
+            let near = intersection_near(&small, &frame, 10).unwrap();
+            let full = intersection(&small, &frame).unwrap();
+            assert!((area(&near) - area(&full)).abs() < 1e-9, "{x} {y}");
+        }
     }
 
     fn area(regions: &[ExPolygon]) -> f64 {

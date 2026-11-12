@@ -11,8 +11,8 @@ use rayon::prelude::*;
 use super::config::TreeConfig;
 use super::element::{AreaIncrease, Element, State};
 use super::geometry::{
-    MITER, Polys, area, diff, extent, intersection, move_inside_if_outside, offset,
-    safe_offset_inc, safe_union, simplify, tiny_area, union2,
+    MITER, Polys, area, diff_near, extent, intersection, intersection_near, move_inside_if_outside,
+    offset, safe_offset_inc, safe_union, simplify, tiny_area, union2,
 };
 use super::volumes::{Avoidance, Volumes};
 use crate::SupportError;
@@ -116,7 +116,7 @@ fn increase_single_area(
     let mut to_model = Vec::new();
     if mergelayer || current.to_buildplate {
         to_bp = safe_union(
-            &diff(
+            &diff_near(
                 &increased,
                 volumes.avoidance(radius, below, settings.kind, false, min),
             )?,
@@ -130,7 +130,7 @@ fn increase_single_area(
     if config.rests_on_model {
         if mergelayer || current.to_model_gracious {
             to_model = safe_union(
-                &diff(
+                &diff_near(
                     &increased,
                     volumes.avoidance(radius, below, settings.kind, true, min),
                 )?,
@@ -144,7 +144,7 @@ fn increase_single_area(
                 // It cannot get to a place to stand: it goes down beside
                 // the part anyway, clear of it.
                 to_model = safe_union(
-                    &diff(&increased, volumes.collision(radius, below, min))?,
+                    &diff_near(&increased, volumes.collision(radius, below, min))?,
                     &[],
                 )?;
             }
@@ -162,12 +162,12 @@ fn increase_single_area(
                     return Ok(true);
                 }
                 let check = if current.to_buildplate {
-                    diff(
+                    diff_near(
                         &increased,
                         volumes.avoidance(next_radius, below, settings.kind, false, min),
                     )?
                 } else if config.rests_on_model {
-                    diff(
+                    diff_near(
                         &increased,
                         if current.to_model_gracious {
                             volumes.avoidance(next_radius, below, settings.kind, true, min)
@@ -236,7 +236,7 @@ fn increase_single_area(
         if ceil_before != volumes.ceil_radius_xy(radius, min) {
             if current.to_buildplate {
                 to_bp = safe_union(
-                    &diff(
+                    &diff_near(
                         &increased,
                         volumes.avoidance(radius, below, settings.kind, false, min),
                     )?,
@@ -245,7 +245,7 @@ fn increase_single_area(
             }
             if config.rests_on_model && (!current.to_buildplate || mergelayer) {
                 to_model = safe_union(
-                    &diff(
+                    &diff_near(
                         &increased,
                         if current.to_model_gracious {
                             volumes.avoidance(radius, below, settings.kind, true, min)
@@ -469,7 +469,7 @@ fn increase_one(
     }
     let error_case = elem.to_buildplate
         || (elem.to_model_gracious
-            && intersection(&parent.area, volumes.placeable(radius, layer))?.is_empty());
+            && intersection_near(&parent.area, volumes.placeable(radius, layer))?.is_empty());
     if error_case {
         insert(
             s(
@@ -612,7 +612,7 @@ fn increase_one(
         elem.use_min_xy_dist = false;
     }
     let influence = safe_union(
-        &diff(
+        &diff_near(
             &grown.increased,
             volumes.collision(radius, layer - 1, elem.use_min_xy_dist),
         )?,

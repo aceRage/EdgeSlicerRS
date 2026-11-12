@@ -211,7 +211,6 @@ impl Volumes {
                 self.placeable.insert(0, placeable);
             }
         }
-
         // Collisions with holes closed, for radii below the one from which
         // a branch is wide enough not to fit any hole it would have to.
         let hole_limit = self.increase_until_radius + self.min_xy_dist_delta;
@@ -249,28 +248,47 @@ impl Volumes {
             .map(|(radius, top)| (radius, top.min(max_layer)))
             .collect();
         if self.rests_on_model {
-            let columns = avoidance_radii
-                .par_iter()
+            // Larger radii stand on less: once a layer has nowhere for one
+            // radius, it has nowhere for the larger ones either.
+            let mut radii: Vec<(Coord, usize)> = avoidance_radii
+                .iter()
+                .copied()
                 .filter(|(radius, _)| *radius != 0)
-                .map(|&(radius, top)| {
-                    let shrink = -(radius + self.min_xy_dist + self.min_xy_dist_delta);
-                    let column = (0..=top)
-                        .into_par_iter()
-                        .map(|layer| {
-                            if layer == 0 {
-                                return Ok(Vec::new());
-                            }
-                            offset(self.placeable(0, layer), shrink, MITER)
-                        })
-                        .collect::<Result<Column, SupportError>>()?;
-                    Ok((radius, column))
+                .collect();
+            radii.sort_unstable();
+            let top = radii.iter().map(|(_, top)| *top).max().unwrap_or(0);
+            let per_layer: Vec<Vec<Polys>> = (0..=top.min(max_layer))
+                .into_par_iter()
+                .map(|layer| -> Result<Vec<Polys>, SupportError> {
+                    let mut out = Vec::with_capacity(radii.len());
+                    let source = if layer == 0 {
+                        &[][..]
+                    } else {
+                        self.placeable(0, layer)
+                    };
+                    for &(radius, until) in &radii {
+                        if layer > until
+                            || source.is_empty()
+                            || out.last().is_some_and(Vec::is_empty)
+                        {
+                            out.push(Vec::new());
+                            continue;
+                        }
+                        let shrink = -(radius + self.min_xy_dist + self.min_xy_dist_delta);
+                        out.push(offset(source, shrink, MITER)?);
+                    }
+                    Ok(out)
                 })
-                .collect::<Result<Vec<_>, SupportError>>()?;
-            for (radius, column) in columns {
+                .collect::<Result<_, _>>()?;
+            for (index, &(radius, until)) in radii.iter().enumerate() {
+                let column: Column = per_layer
+                    .iter()
+                    .take(until.min(max_layer) + 1)
+                    .map(|layer| layer[index].clone())
+                    .collect();
                 self.placeable.insert(radius, column);
             }
         }
-
         // Avoidances, each a serial pass up the layers, run side by side.
         let mut tasks = Vec::new();
         for &(radius, top) in &avoidance_radii {
@@ -449,7 +467,10 @@ impl Volumes {
                 latest = union(&all)?;
             }
             if to_model {
-                latest = diff(&latest, self.placeable(radius, layer))?;
+                let placeable = self.placeable(radius, layer);
+                if !placeable.is_empty() {
+                    latest = diff(&latest, placeable)?;
+                }
             }
             latest = simplify(&latest, self.resolution)?;
             column.push(latest.clone());

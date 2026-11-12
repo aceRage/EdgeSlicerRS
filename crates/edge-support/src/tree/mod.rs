@@ -58,8 +58,10 @@ struct Layers {
 pub(crate) fn build(job: &Job<'_>) -> Result<Vec<Vec<ExtrusionPath>>, SupportError> {
     let count = job.slices.len();
     let none = || vec![Vec::new(); count];
+    let mut clock = Clock::new();
     let config = TreeConfig::new(job)?;
     let overhangs = overhangs::detect(job)?;
+    clock.lap("overhangs");
     // The highest layer a tip can be on (`precalculate`).
     let Some(highest) = overhangs
         .iter()
@@ -77,21 +79,53 @@ pub(crate) fn build(job: &Job<'_>) -> Result<Vec<Vec<ExtrusionPath>>, SupportErr
     }
     let mut volumes = volumes::Volumes::new(job.slices, &config)?;
     volumes.precalculate(&config, max_layer)?;
+    clock.lap("volumes");
     let tips = tips::place(
         &volumes,
         &config,
         &overhangs,
         job.settings.angle.to_radians(),
     )?;
+    clock.lap("tips");
     let mut elements = tips.layers;
     elements.resize(max_layer, Vec::new());
     pathing::create_layer_pathing(&volumes, &config, &mut elements)?;
+    clock.lap("pathing");
     nodes::create_nodes_from_area(&volumes, &config, &mut elements)?;
+    clock.lap("nodes");
     let drawn = branch::draw(job, &volumes, &config, &mut elements)?;
+    clock.lap("draw");
     let layers = finish(job, &config, drawn, tips.roofs)?;
+    clock.lap("interfaces");
     let mut out = toolpaths(job, &config, &layers)?;
+    clock.lap("toolpaths");
     out.resize(count, Vec::new());
     Ok(out)
+}
+
+/// Times each step when `EDGE_TREE_TIMES` is set, to stderr.
+struct Clock {
+    on: bool,
+    last: std::time::Instant,
+}
+
+impl Clock {
+    fn new() -> Self {
+        Self {
+            on: std::env::var_os("EDGE_TREE_TIMES").is_some(),
+            last: std::time::Instant::now(),
+        }
+    }
+
+    fn lap(&mut self, step: &str) {
+        if self.on {
+            eprintln!(
+                "tree supports: {step} {:.1} ms",
+                self.last.elapsed().as_secs_f64() * 1e3
+            );
+            self.last = std::time::Instant::now();
+        }
+    }
 }
 
 /// `organic_draw_branches`' last step and `generate_interface_layers`:
@@ -121,11 +155,9 @@ fn finish(
     let pieces: Vec<(Polys, Polys)> = (0..count)
         .into_par_iter()
         .map(|layer| -> Result<(Polys, Polys), SupportError> {
-            let mut base = union(&at(&drawn.base, layer))?;
-            if !base.is_empty() {
-                base = simplify(&base, simplify_to)?;
-            }
-            let mut feet = union(&at(&drawn.bottom_contacts, layer))?;
+            // Both come united from the drawing.
+            let mut base = simplify(&at(&drawn.base, layer), simplify_to)?;
+            let mut feet = at(&drawn.bottom_contacts, layer);
             if !contacts[layer].is_empty() && !base.is_empty() {
                 base = diff(&base, &contacts[layer])?;
                 feet = diff(&feet, &contacts[layer])?;
