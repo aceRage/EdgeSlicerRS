@@ -618,6 +618,155 @@ fn a_tree_stands_on_the_part_where_it_cannot_reach_the_bed() {
     assert!(!supports(&tall_mushroom(), &plate_only)[20].is_empty());
 }
 
+/// A ramp whose top climbs 15 degrees towards -x, a layer every 0.75 mm,
+/// from the bed at x = 40 to 25 layers at x = 21.25, and over it a cap
+/// from layer 60 held by a post at the ramp's high end.
+fn cap_over_a_slope() -> (Vec<Vec<ExPolygon>>, impl Fn(usize, f64, f64) -> bool) {
+    let ramp = |layer: usize| 40.0 - 0.75 * layer as f64;
+    let post = (0.0, 0.0, 4.0, 4.0);
+    let layers = (0..65)
+        .map(|layer| {
+            let mut regions = Vec::new();
+            if layer < 25 {
+                regions.push(rect(-10.0, -10.0, ramp(layer), 20.0));
+            } else if layer < 60 {
+                regions.push(rect(post.0, post.1, post.2, post.3));
+            } else {
+                regions.push(rect(-10.0, -10.0, 40.0, 20.0));
+            }
+            regions
+        })
+        .collect();
+    let part = move |layer: usize, x: f64, y: f64| {
+        (-10.0..20.0).contains(&y)
+            && match layer {
+                0..25 => (-10.0..ramp(layer)).contains(&x),
+                25..60 => (post.0..post.2).contains(&x) && (post.1..post.3).contains(&y),
+                _ => x < 40.0,
+            }
+    };
+    (layers, part)
+}
+
+#[test]
+fn a_foot_on_a_slope_keeps_the_gap_under_it_with_a_dense_foot_and_without() {
+    // Every support layer is cut by its own layer's collision, which takes
+    // in the part on the layers within the bottom gap under it, and the
+    // foot is printed: so no foot comes nearer the part than the gap, and
+    // each has some of its line at just the gap over it. The reference
+    // (TreeSupport3D.cpp `organic_draw_branches`) cuts a branch carried
+    // down onto a slope by the collision of the layer above, and leaves
+    // its foot unprinted (SupportCommon.cpp: organic bottom contacts are
+    // projection seeds), which comes to the same gap with a dense foot and
+    // to none (the foot fused to the part) without one.
+    let (layers, part) = cap_over_a_slope();
+    for (bottom_layers, gap) in [(0, 0.2), (2, 0.2), (0, 0.4), (2, 0.4)] {
+        let settings = SupportSettings {
+            interface_bottom_layers: bottom_layers,
+            bottom_z_distance: gap,
+            ..tree()
+        };
+        let gap_layers = (gap / 0.2_f64).round() as usize;
+        let found = supports(&layers, &settings);
+        // Along every line, every 0.1 mm.
+        let samples = |paths: &[ExtrusionPath]| -> Vec<(f64, f64)> {
+            let mut out = Vec::new();
+            for path in paths {
+                for pair in path.points.windows(2) {
+                    let (a, b) = (
+                        (unscaled(pair[0].x), unscaled(pair[0].y)),
+                        (unscaled(pair[1].x), unscaled(pair[1].y)),
+                    );
+                    let steps = ((b.0 - a.0).hypot(b.1 - a.1) / 0.1).ceil().max(1.0) as usize;
+                    for i in 0..=steps {
+                        let t = i as f64 / steps as f64;
+                        out.push((a.0 + (b.0 - a.0) * t, a.1 + (b.1 - a.1) * t));
+                    }
+                }
+            }
+            out
+        };
+        // Points binned by the millimetre, to find those near one quickly.
+        let cell = |(x, y): (f64, f64)| (x.floor() as i64, y.floor() as i64);
+        let near = |grid: &std::collections::HashMap<(i64, i64), Vec<(f64, f64)>>,
+                    p: (f64, f64),
+                    reach: f64| {
+            let (cx, cy) = cell(p);
+            (cx - 2..=cx + 2)
+                .flat_map(|i| (cy - 2..=cy + 2).map(move |j| (i, j)))
+                .any(|key| {
+                    grid.get(&key).is_some_and(|points| {
+                        points.iter().any(|q| (q.0 - p.0).hypot(q.1 - p.1) < reach)
+                    })
+                })
+        };
+        let mut feet = 0;
+        for layer in 1..60 {
+            let here = samples(&found[layer]);
+            let mut below: std::collections::HashMap<(i64, i64), Vec<(f64, f64)>> =
+                Default::default();
+            for p in samples(&found[layer - 1]) {
+                below.entry(cell(p)).or_default().push(p);
+            }
+            // Lines with no support within a millimetre under them, at
+            // most twice the gap and a layer over the ramp, by the layers
+            // of air between them and its top (higher up, a leaning
+            // branch's side is not a foot).
+            let mut over: Vec<((f64, f64), usize)> = Vec::new();
+            for &(x, y) in &here {
+                if near(&below, (x, y), 1.0) {
+                    continue;
+                }
+                if let Some(top) = (0..layer).rev().find(|&k| part(k, x, y))
+                    && layer - 1 - top <= 2 * gap_layers + 1
+                {
+                    over.push(((x, y), layer - 1 - top));
+                }
+            }
+            // Feet: the points over the ramp, gathered where they are
+            // within 2 mm of one another.
+            let mut foot = vec![usize::MAX; over.len()];
+            for start in 0..over.len() {
+                if foot[start] != usize::MAX {
+                    continue;
+                }
+                foot[start] = start;
+                let mut stack = vec![start];
+                while let Some(i) = stack.pop() {
+                    for j in 0..over.len() {
+                        if foot[j] == usize::MAX
+                            && (over[i].0.0 - over[j].0.0).hypot(over[i].0.1 - over[j].0.1) < 2.0
+                        {
+                            foot[j] = start;
+                            stack.push(j);
+                        }
+                    }
+                }
+            }
+            for start in 0..over.len() {
+                if foot[start] != start {
+                    continue;
+                }
+                let least = (0..over.len())
+                    .filter(|&i| foot[i] == start)
+                    .map(|i| over[i].1)
+                    .min()
+                    .unwrap();
+                assert_eq!(
+                    least, gap_layers,
+                    "{bottom_layers} dense layers, a {gap} mm gap: a foot on layer {layer} at {:?} is {least} layers over the ramp",
+                    over[start].0
+                );
+                feet += 1;
+            }
+        }
+        assert!(
+            feet > 0,
+            "{bottom_layers} dense layers, a {gap} mm gap: no foot on the ramp"
+        );
+    }
+}
+
 #[test]
 fn trees_are_the_same_every_time_and_move_with_the_part() {
     let once = supports(&tall_mushroom(), &tree());
