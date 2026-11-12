@@ -354,3 +354,4 @@ Path of the folder to export the STL files to
 Path of the configs to import
 Saved ${answer.path} (${answer.triangles} triangles).
 Saved ${answer.files.length} STL files in ${dir}.
+The object is open where it was cut: %d of the cut's outlines could not be closed.

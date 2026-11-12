@@ -32,7 +32,7 @@ use super::{
 };
 
 /// The calls answered here.
-pub(super) const JSON: [&str; 4] = ["scene_edit", "undo", "redo", "scene_faces"];
+pub(super) const JSON: [&str; 5] = ["scene_edit", "undo", "redo", "scene_faces", "cut_section"];
 
 /// The most edits a project keeps to take back. The reference keeps as
 /// many as fit in a tenth of the machine's memory (UndoRedo.cpp
@@ -225,6 +225,41 @@ fn numbers(args: &Value, key: &str) -> Result<[f64; 3], String> {
         .map(|list| list.iter().filter_map(Value::as_f64).collect())
         .unwrap_or_default();
     <[f64; 3]>::try_from(list).map_err(|_| format!("{key} is not three numbers"))
+}
+
+/// What "Cut" is to keep and how ("After cut", the thickness), as a call
+/// gives it: each left out is as the tool starts (both kept, laid as they
+/// stood, no thickness).
+fn cut_options(args: &Value) -> Result<edge_engine::CutOptions, String> {
+    let flag = |key: &str, default: bool| -> Result<bool, String> {
+        match args.get(key) {
+            None | Some(Value::Null) => Ok(default),
+            Some(value) => value
+                .as_bool()
+                .ok_or_else(|| format!("{key} is not true or false")),
+        }
+    };
+    let thickness = match args.get("thickness") {
+        None | Some(Value::Null) => 0.0,
+        Some(value) => value.as_f64().ok_or("thickness is not a number")?,
+    };
+    let thickness_from = match text(args, "thickness_from") {
+        None | Some("centred") => edge_engine::CutThickness::Centred,
+        Some("above") => edge_engine::CutThickness::Above,
+        Some("below") => edge_engine::CutThickness::Below,
+        Some(other) => return Err(format!("thickness_from cannot be {other}")),
+    };
+    Ok(edge_engine::CutOptions {
+        keep_upper: flag("keep_upper", true)?,
+        keep_lower: flag("keep_lower", true)?,
+        place_on_cut_upper: flag("place_on_cut_upper", false)?,
+        place_on_cut_lower: flag("place_on_cut_lower", false)?,
+        flip_upper: flag("flip_upper", false)?,
+        flip_lower: flag("flip_lower", false)?,
+        to_parts: flag("to_parts", false)?,
+        thickness,
+        thickness_from,
+    })
 }
 
 /// What an edit by the gizmos or the number fields may be called in the
@@ -717,6 +752,23 @@ impl Session {
                 outcome.made = made;
                 outcome.name = "Duplicate Current Plate".into();
             }
+            "cut" => {
+                let options = cut_options(args)?;
+                let plane = transform_of(args.get("plane").unwrap_or(&Value::Null))?;
+                let done = model
+                    .cut(bed, whole(args, "copy")?, &plane, &options)
+                    .map_err(|error| super::i18n::tr(&error.to_string()))?;
+                outcome.made = done.made;
+                if done.open > 0 {
+                    outcome.note = Some(super::i18n::fill(
+                        &super::i18n::tr(
+                            "The object is open where it was cut: %d of the cut's outlines could not be closed.",
+                        ),
+                        &[&done.open.to_string()],
+                    ));
+                }
+                outcome.name = "Cut by Plane".into();
+            }
             // An object's, a part's or a height range's own settings, and
             // the height ranges (settings/items.rs).
             op if items::OPS.contains(&op) => {
@@ -752,6 +804,7 @@ impl Session {
             "scene_edit" => self.scene_edit(args),
             "undo" | "redo" => self.step(args, name == "undo"),
             "scene_faces" => self.scene_faces(args),
+            "cut_section" => self.cut_section(args),
             other => Err(format!("there is no call named {other}")),
         }
     }
@@ -885,6 +938,41 @@ impl Session {
             })
             .collect();
         Ok(json!({ "project": stage.id, "copy": copy, "faces": faces }))
+    }
+
+    /// Where a plane cuts a copy's object ("Cut", while the plane is
+    /// placed): the lines of its section in the scene, as six numbers
+    /// each, and how far the object reaches over and under the plane.
+    fn cut_section(&self, args: &Value) -> Result<Value, String> {
+        let stage = self.stage_of(args)?;
+        let copy = whole(args, "copy")?;
+        let plane = transform_of(args.get("plane").unwrap_or(&Value::Null))?;
+        let bed = stage.bed();
+        let file = stage
+            .file
+            .ok_or("the project is empty: it has no objects")?;
+        let section = file
+            .model
+            .cut_section(bed.as_ref(), copy, &plane)
+            .map_err(|e| e.to_string())?;
+        let mm = |value: f64| (value * 1e4).round() / 1e4;
+        let lines: Vec<f64> = section
+            .lines
+            .iter()
+            .flat_map(|[a, b]| {
+                a.iter()
+                    .chain(b)
+                    .map(|value| mm(*value))
+                    .collect::<Vec<_>>()
+            })
+            .collect();
+        Ok(json!({
+            "project": stage.id,
+            "copy": copy,
+            "lines": lines,
+            "above": mm(section.above),
+            "below": mm(section.below),
+        }))
     }
 
     /// Takes the last edit back, or makes the last one taken back again.
