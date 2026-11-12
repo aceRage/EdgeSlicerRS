@@ -197,9 +197,9 @@ is `p.warn` (`--warn`).
 <label class="switch">Advance <input type="checkbox" role="switch"></label>
 ```
 
-Two states of one thing that take effect at once ("Advance"): a tick box
-drawn as a track with a knob, the accent when on. Its word comes first, as
-the C++ has it. A tick box stays a tick box wherever a setting is on or off.
+Two states of one thing that take effect at once ("Advance", which the
+`en` catalog shows as "Advanced"): a tick box drawn as a track with a
+knob, the accent when on. Its word comes first, as the C++ has it. A tick box stays a tick box wherever a setting is on or off.
 
 ### Option rows
 
@@ -215,8 +215,10 @@ same row on every kind's pages):
 ```
 
 - The controls stand in one column (112 px, up to 150 px where the sidebar
-  is wider); a label that does not fit goes on to a second line, and is
-  never cut. A tick box stands at the head of the column.
+  is wider); a list's column takes up to 58 % of the row (210 px at most),
+  its values running longer, the more so in other languages. A label that
+  does not fit goes on to a second line, and is never cut. A tick box
+  stands at the head of the column.
 - `.set`: set by hand. A bar of the accent at the head of the control, the
   label in bold, and the reset arrow (hidden otherwise). This is what the
   accent means in a form: yours, not the preset's.
@@ -426,7 +428,8 @@ innermost thing first.
 
 A dialog of settings in rows ("Plate Settings") is a `.card` of
 `.card-row`s inside the form: the label on the left in `--text-2`, the
-control on the right 240 px wide (a `bare` listbox, a text field); what a
+control on the right 310 px wide, at most 60 % of the row (a `bare`
+listbox, a text field: the longest choice in French is read whole); what a
 row opens (an order, ranges of layers) is a row of its own under it, and
 what is wrong stands in `--danger` at the left of the buttons. A list that
 is set by the code is set with its value and a `data-value` attribute, so
@@ -655,11 +658,40 @@ none.
   `items` opens a menu of its own beside it (`#submenu`, the same look as
   `.menu`), marked with a chevron at its end; it opens by the pointer, a
   click or Right, and Left or Escape closes it. An entry's `title` is its
-  tooltip (the C++ help text).
+  tooltip (the C++ help text). An entry that is one of several choices
+  (`checked`) carries the accent's tick when it is the one in force, in
+  the menu beside as in the first.
 - Tooltips: write a `title`. The page shows it in its own look, after a
   moment under the pointer and beside what the keys are on, and puts the
   attribute aside while it does (it is back when the tooltip goes). Nothing
   else is needed; `\n` in a title is a new line.
+
+## Words and languages
+
+The page's words are the C++'s message ids put through `t()` (`i18n.js`),
+or the page's own, left as they are; `../UI_PARITY.md` section 16 says
+which and why, and a test keeps them so. For the look:
+
+- **The language control** is the last entry of the project strip's menu
+  (a right click on the strip, after a line): "Language", with the
+  languages beside it in a menu of its own, by the names the reference
+  gives them, the one in force ticked. Picking one reloads the page in
+  it; there is no dialog, no flag and no icon for it, the app having no
+  Preferences window to hold it.
+- **Nothing is shown before it is in its language**: `html.words-wait`
+  hides the page (`visibility`) until `i18n.js` has the table and has put
+  the static page in it.
+- **Fonts**: `--font-ui` is the system's, and `<html lang>` is the
+  language chosen, which is how the system picks its CJK face (PingFang,
+  Hiragino on a Mac). No font is loaded.
+- **Room for longer words**: German and French run a third longer than
+  English, and a few lists much more. Design a row so that its label can
+  take a second line and its value is cut with an ellipsis (whole in its
+  tooltip) only where it is a name of the person's (a preset, a file); a
+  word of the reference's should fit. `text-transform: uppercase` is safe
+  (the group labels): CJK has no case.
+- A tooltip with keys is the message id, then the keys in brackets
+  ("Undo [Ctrl+Z]"); write it as `` `${t('Undo')} [Ctrl+Z]` ``.
 
 ## Do
 
@@ -700,6 +732,7 @@ none.
 `cargo run -- --serve <port>` (with `EDGE_DESKTOP_DATA` naming a scratch
 folder) and a browser: dark and light, the window's least size (900 × 560)
 and its first (1280 × 820) and a wide one, a very long preset name, the
+page in German and in Chinese (the strip's menu, "Language"), the
 keys alone (Tab through it; the focus ring must always be in sight), and
 the contrast of any new pairing of text and surface.
 
