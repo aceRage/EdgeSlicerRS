@@ -21,7 +21,12 @@
 //! A filament set to be rammed (`filament_multitool_ramming`) is, by the
 //! nozzle being put away: a short wide line at the front of the block,
 //! which the new nozzle's first line then runs on from. The wall is left
-//! open where the new nozzle comes in (`wipe_tower_wall_gap`).
+//! open where the new nozzle comes in (`wipe_tower_wall_gap`), and the
+//! nozzle irons the tower flat round where it comes in before it lays its
+//! first row. A block is laid move by move ([`Wipe`]), each row faster
+//! than the one before up to the speed the tower is laid at, and with
+//! `wipe_tower_stagger_toolchange_start` each change starts so many rows
+//! further in, in turn (`toolchange_Wipe`).
 //!
 //! A printer of one nozzle (`single_extruder_multi_material`) is changed
 //! as WipeTower2.cpp changes it there: where the project purges in the
@@ -31,16 +36,19 @@
 //! planned from its own volume, and the tools on a layer are taken in
 //! the order that flushes least; otherwise the printer's own change
 //! G-code flushes and the tower takes `prime_volume` (`Print.cpp`
-//! `_make_wipe_tower`). Not done there: ramming, cooling and loading the
+//! `_make_wipe_tower`). A block's rows are planned by the ramming line
+//! width of the filament put away (`filament_ramming_parameters`). Not
+//! done there: ramming, cooling and loading the
 //! filament on the tower (`enable_filament_ramming`), flushing into
 //! infill, objects or support, and the tower Bambu Lab printers get
 //! (WipeTower.cpp), which is laid out here as the other one is; each is
 //! said in a note.
 //!
-//! Not done: the cone wall, wiping the nozzle flat on the tower as it
-//! comes in, starting each block at a different place, turning the tower
-//! end for end on alternate layers, and leaving out or thinning the
-//! layers no tool change uses.
+//! A tower whose saved place no longer fits it is moved onto the bed
+//! before it is planned (`place.rs`).
+//!
+//! Not done: the cone wall, turning the tower end for end on alternate
+//! layers, and leaving out the layers no tool change uses.
 
 mod place;
 
@@ -296,7 +304,9 @@ impl TowerSettings {
                 (
                     "wipe_tower_no_sparse_layers",
                     "0",
-                    "the tower is printed on every layer up to the last tool change",
+                    "the tower is printed on every layer up to the last tool change, where the \
+                     reference leaves out those with none, lowers the nozzle to the tower and \
+                     refuses a plate where the toolhead would then meet a printed object",
                 ),
             ] {
                 if let Some(value) = settings.text(key)
@@ -379,8 +389,10 @@ impl TowerSettings {
                 unsupported.push(
                     "wipe_tower_type: a Bambu Lab printer's prime tower is the reference's \
                      WipeTower.cpp, Bambu Studio's; it is laid out here as the reference lays out \
-                     its other tower (WipeTower2.cpp), with prime_volume at each change: its wall, \
-                     the spacing of its rows and its depth are not the reference's"
+                     its other tower (WipeTower2.cpp), with prime_volume at each change and the \
+                     rows at WipeTower.cpp's speeds: its wall, its blocks (one a filament, by \
+                     prime_volume and adhesion), the spacing of its rows and its depth are not \
+                     the reference's"
                         .to_owned(),
                 );
             } else if settings.flag("enable_filament_ramming")?.unwrap_or(true) {

@@ -1440,9 +1440,23 @@ feature filaments (`wall_filament`, `sparse_infill_filament`,
     `filament_multitool_ramming_volume`, laid at
     `filament_multitool_ramming_flow`, after which that tool waits just
     clear of it and the new tool's first line carries on from where it
-    stopped (`toolchange_Unload`, `set_toolchange`). The wall is left
+    stopped (`toolchange_Unload`, `set_toolchange`), pushed out at
+    `ramming_pressure_advance_value` where `enable_change_pressure_when_wiping`
+    asks (`SET_PRESSURE_ADVANCE`, `M572` or `M900` by the firmware, not
+    set back by the tower, as there). The wall is left
     open for 2.5 mm where each new tool comes in, and the tool comes in
-    that way (`wipe_tower_wall_gap`).
+    that way (`wipe_tower_wall_gap`), lays 3 mm, is pulled back and irons
+    the tower flat in a square spiral round where it is
+    (`filament_tower_ironing_area`) before it lays its first row. Each
+    row of a block goes down faster than the one before, from a third of
+    the speed the tower is laid at (the first layer's, or
+    `wipe_tower_max_purge_speed` held to the infill's) up to all of it
+    (`toolchange_Wipe`); with `wipe_tower_stagger_toolchange_start` each
+    change starts its rows somewhere else in its block, in turn. The
+    tower's lines lay their own cross-section, no flow ratio applied, as
+    the reference's tower writes them. A tower whose saved place no
+    longer fits it is moved onto the bed as the reference's command line
+    moves it (`estimate_wipe_tower_polygon`), and said in a note.
 - Printer profiles: the machine's start, end and layer-change G-code and the
   filament's start and end G-code are expanded from their templates, with
   filament-level retraction overrides applied. For the Snapmaker U1 projects
@@ -1521,14 +1535,71 @@ with the tower purging, placed where it fits (`wipe_tower_y` 150),
 41m 19s against 25m 12s → 40m 13s; the figurine's flush of filament 1
 30297.5 → 14260.7 mm against → 14157.2, 14h 45m → 13h 16m against
 14h 41m → 13h 06m (here 379 changes against 381: the order differs on
-two layers). Still not as the reference: the Bambu Lab tower
-(WipeTower.cpp) is laid out as WipeTower2's, 6% longer; the nozzle is
-not wiped flat as it comes into the tower and the rows are not laid at
-the reference's rising speeds, which leaves a print 2 to 5% short in
-time; the filament totals at the end of the file leave the flush out,
-where the reference counts it; a tower made deeper by its flush that no
-longer fits where it was placed is refused ("off the bed") where the
-reference moves it (`estimate_wipe_tower_polygon`, Orca #16728).
+two layers). The gaps left then (rows and the way in, a one-nozzle
+tower 2% too long, the totals, a tower that outgrew its place) are
+closed in the next pass, below; the Bambu Lab tower (WipeTower.cpp) is
+still laid out as WipeTower2's, 6% longer.
+
+**The prime tower against the C++ slicer** (2026-11-12, `edge-parity`;
+both files timed here, each the way its printer plans it). Before is
+`main` at a6d0c69, after is this pass. Tower length and extrusion are
+the tower's lines; tower time is what its moves take, the way in
+included. The U1 fixtures are made with `tools/make_fixture.py` from
+`mcbrim_test.3mf`'s settings (`halves`, `inset` with their second part in
+filament 2; `twotone` again with the stagger on, and with every filament
+rammed).
+
+| project | tower m, ref / before / after | tower E mm, ref / before / after | tower time s, ref / before / after | print, ref / before / after |
+| --- | --- | --- | --- | --- |
+| lettered plate 1, U1 | 25.89 / 25.89 / 25.89 | 983.9 / 964.2 / 983.9 | 539 / 417 / 516 | 1h07m42 / 1h02m22 / 1h04m00 |
+| lettered plate 2, U1 | 39.87 / 39.87 / 39.87 | 1515.5 / 1485.2 / 1515.5 | 892 / 646 / 840 | 43m38 / 41m03 / 44m17 |
+| lettered plate 3, U1 | 39.87 / 39.87 / 39.87 | 1515.5 / 1485.2 / 1515.5 | 898 / 653 / 847 | 43m43 / 41m10 / 44m24 |
+| `twotone`, U1 | 19.74 / 19.74 / 19.74 | 750.2 / 735.1 / 750.1 | 384 / 304 / 362 | 13m46 / 12m45 / 13m44 |
+| `halves`, U1 | 41.84 / 41.84 / 41.84 | 1590.3 / 1558.3 / 1590.1 | 818 / 614 / 759 | 23m30 / 20m49 / 23m14 |
+| `inset`, U1 | 35.23 / 35.23 / 35.23 | 1338.9 / 1312.0 / 1338.8 | 687 / 522 / 641 | 21m51 / 19m48 / 21m47 |
+| `twotone`, U1, staggered | 19.71 / 19.74 / 19.71 | 749.1 / 735.1 / 749.0 | 395 / 304 / 368 | 13m57 / 12m45 / 13m51 |
+| `twotone`, U1, rammed | 18.65 / 18.65 / 18.65 | 772.7 / 757.1 / 772.6 | 374 / 323 / 381 | 13m49 / 12m50 / 13m48 |
+| `twotone`, Centauri Carbon | 15.39 / 15.72 / 15.39 | 584.8 / 567.8 / 584.8 | 293 / 234 / 286 | 23m25 / 22m21 / 23m13 |
+| the same, purging in the tower | 29.76 / 30.23 / 29.76 | 1131.0 / 1092.3 / 1130.9 | 481 / 422 / 480 | 26m15 / 25m12 / 26m10 |
+| cube grown to 2 filaments, CC | 34.27 / 35.10 / 34.27 | 1302.5 / 1268.0 / 1302.4 | 647 / 506 / 635 | 47m10 / 44m39 / 46m47 |
+| figurine, Bambu Lab A1 | 296.37 / 313.61 / 313.61 | 11307.2 / 11680.8 / 11919.2 | 5194 / 4810 / 5721 | 14h43m / 14h41m / 14h56m |
+
+Where the tower's time went, in order of size: the ironing as a nozzle
+comes in through the gap (about 2.2 s a change: 58 s of lettered plate
+1's 122 s, 102 s of plate 2's 246 s), the rows at the reference's rising
+speeds (a third, three eighths, eleven twenty-fourths, seven eighths of
+the speed, then 50 mm/min a row more: 41 s and 92 s), the one-nozzle ramming width
+(the Centauri Carbon's tower a line wider and 2% longer), the flow ratio
+the tower's lines were laid with (2% of the U1's tower plastic, 5% of
+the Centauri Carbon's), and the staggered start where it is asked for.
+On the three lettered plates nothing but the tower moves: every other
+feature's lines are the same, line for line; travel grows 0.8 to 1.4 m
+(the ironing and the way in), and the totals at the end of the file
+with the tower's plastic. What is left of the time between the files on
+those plates is outside the tower. The figurine's tower is now 10% slower
+than the reference's: its rows are at Bambu Lab's speeds, but on
+WipeTower2's layout, which is 6% longer (WipeTower.cpp lays a block a
+filament, by each filament's `filament_prime_volume` and adhesion
+category, with a perimeter round each, its rows into the wall by
+`wipe_tower_wall_infill_overlap` and spaced by `prime_tower_infill_gap`,
+first-layer rows 15% fuller and rows over the open part of the layer
+below laid as a thick bridge; not ported, and said in a note).
+
+The file's filament totals now count what the printer's own G-code
+flushes, as the reference's do: the Centauri Carbon's `M6211` purges
+and Bambu Lab's flush between `; FLUSH_START` and `; FLUSH_END`, each
+the new filament's (`twotone` on the Centauri Carbon, filament 1:
+1290.65 mm there, 763.40 before, 1247.78 now; the rest is the part).
+A print that never changes filament is left as it was, the start
+G-code's 200 mm purge on the Centauri Carbon not counted, where the
+reference counts it. The twotone cube purging in the tower with one
+flush doubled and the multiplier at 0.5 was refused as off the bed; the
+tower is now moved from 15 x 220 to 15 x 192.194, as there, and is the
+reference's length (73.77 m). Still not done: `wipe_tower_no_sparse_layers`
+(the reference leaves out the tower's layers with no change, lowers the
+nozzle to the tower and back, and refuses a plate where the toolhead
+would then meet a printed object; noted), the tower turned end for end
+on alternate layers, and the Bambu Lab layout.
 
 **On hardware so far:** a deck across a 30 mm gap printed on an Elegoo
 Centauri Carbon on 2026-11-10 and the bridge held; the wall across the
@@ -1577,12 +1648,8 @@ same to a millionth count as the same, and the lower number goes first;
 the reference compares exactly, so where it has identical parts in
 several filaments its order among them can differ (plate 3 of
 `mcbrim_test.3mf` starts 1, 5, 4, 3, 2 there and 1, 3, 4, 5, 2 here). The tower has no
-cone wall; a nozzle coming in is not wiped flat on it first, tool changes
-all start at the same place in their blocks
-(`wipe_tower_stagger_toolchange_start`), and pressure advance is not
-changed for a ram (`enable_change_pressure_when_wiping`); each is noted
-when the profile asks for it. The tower is not turned end for end on
-alternate layers. A filament with no tool of its own (the fifth on a
+cone wall, which is noted when the profile asks for it. The tower is not
+turned end for end on alternate layers. A filament with no tool of its own (the fifth on a
 four-tool printer) is written as the reference writes it, with a warning.
 Filaments mixed from others are not read.
 
