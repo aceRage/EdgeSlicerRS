@@ -21,6 +21,7 @@
   --surface-panel: #111418;    /* the sidebar */
   --surface-raised: #171b20;   /* cards, dialogs, a table's head */
   --surface-float: #1d2228;    /* what floats: lists, menus, filters, tooltips */
+  --surface-track: #08090b;    /* sunk under a row of controls: the pages' tabs */
   --fill-hover: rgba(255, 255, 255, 0.06);    /* laid over any surface under the pointer */
   --fill-active: rgba(255, 255, 255, 0.11);   /* pressed, or the row the keys are on */
 
@@ -83,6 +84,10 @@
   --control-l: 32px;
   --bar-height: 40px;          /* the tab bar, and the strip's head beside it */
   --menubar-height: 28px;      /* the menu bar, in a browser only (menu.css) */
+  --side-min: 300px;           /* the sidebar dragged narrowest (src/api/layout.rs SIDEBAR_MIN) */
+  --side-panel-min: 340px;     /* the sidebar while a filament's or the printer's pages are open */
+  --stage-min: 420px;          /* the stage left beside a sidebar dragged wide (STAGE_MIN) */
+  --grip: 8px;                 /* what is dragged at an edge: the sidebar's */
 
   --time-fast: 90ms;
   --time: 140ms;
@@ -132,6 +137,7 @@
     --surface-panel: #f4f5f7;
     --surface-raised: #ffffff;
     --surface-float: #ffffff;
+    --surface-track: #e3e6ea;
     --fill-hover: rgba(16, 22, 32, 0.055);
     --fill-active: rgba(16, 22, 32, 0.1);
 
@@ -285,8 +291,8 @@ button svg.chevron { display: block; width: 9px; height: 6px; fill: none; stroke
 
 /* -- tabs: <div class="tabs" role="tablist"> of <button role="tab">: text
       (with an icon, if it has one) on a hairline, the open one with the
-      accent under it. .tabs.scrolls keeps them on one line, scrolled
-      sideways (the wheel too) where they do not fit -- */
+      accent under it. The pages' tabs of the settings (.tabs.pages) are
+      drawn otherwise, in settings.css -- */
 
 .tabs { display: flex; min-width: 0; border-bottom: 1px solid var(--line-1); }
 .tabs > [role="tab"] {
@@ -307,8 +313,6 @@ button svg.chevron { display: block; width: 9px; height: 6px; fill: none; stroke
 .tabs > [role="tab"][aria-selected="true"] { color: var(--text-1); font-weight: 600; border-bottom-color: var(--accent); }
 .tabs > [role="tab"]:focus-visible { outline-offset: -2px; }
 .tabs > [role="tab"] svg { flex: none; width: 18px; height: 18px; fill: none; stroke: currentColor; stroke-width: 1.2; stroke-linecap: round; stroke-linejoin: round; }
-.tabs.scrolls { overflow-x: auto; overflow-y: hidden; overscroll-behavior-x: contain; scrollbar-width: none; }
-.tabs.scrolls::-webkit-scrollbar { display: none; }
 
 /* -- what lies over the 3D stage: .overlay is the surface (a toolbar is
       on it too); the scene shows faintly through it -- */
@@ -1011,7 +1015,28 @@ dialog .row button { min-width: 84px; }
   background: var(--surface-panel);
   border-right: 1px solid var(--line-1);
 }
+#side { position: relative; }
 #side-scroll { flex: 1; min-height: 0; overflow-y: auto; scrollbar-gutter: stable; }
+/* The sidebar's right edge, to drag (app.js): over the hairline, half on
+   the stage; a short mark in its middle says it is there, the whole edge
+   lights while pointed at, given the keys or dragged. */
+#side-grip {
+  position: absolute;
+  top: 0;
+  right: calc(var(--grip) / -2);
+  bottom: 0;
+  width: var(--grip);
+  z-index: var(--z-overlay);
+  cursor: ew-resize;
+  touch-action: none;
+}
+#side-grip::before, #side-grip::after { content: ""; position: absolute; left: calc(var(--grip) / 2 - 1px); width: 2px; border-radius: 1px; }
+#side-grip::before { top: calc(50% - 12px); height: 24px; background: var(--line-3); opacity: 0.6; }
+#side-grip::after { top: 0; bottom: 0; background: var(--accent); opacity: 0; transition: opacity var(--time-fast) var(--ease); }
+#side-grip:hover::after, #side-grip:focus-visible::after, body.side-dragging #side-grip::after { opacity: 1; }
+#side-grip:focus-visible { outline: none; }
+/* While the edge is dragged nothing is selected, and the pointer keeps its look across the page. */
+body.side-dragging { cursor: ew-resize; user-select: none; -webkit-user-select: none; }
 #side-scroll .fold > h2, #side-scroll .fold-pin, #preset-scroll > .fold-pin {
   position: sticky;
   top: 0;
@@ -1079,8 +1104,8 @@ dialog .row button { min-width: 84px; }
 .flush-under p.out { color: var(--danger); }
 .flush-multiplier { grid-column: 1 / -1; justify-self: start; flex-direction: row; align-items: center; gap: var(--space-2); color: var(--text-1); font-size: var(--size-body); }
 .flush-multiplier input { width: 72px; }
-/* "Apply All": one preset for every filament, under the list. */
-.apply-all { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: center; gap: var(--space-2); margin-top: var(--space-2); padding: 2px 2px 2px var(--space-1); }
+/* "Apply All": one preset for every filament, over the list it acts on. */
+.apply-all { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: center; gap: var(--space-2); padding: 2px 2px 2px var(--space-1); }
 .apply-all > button { height: var(--control-s); padding: 0 var(--space-2); font-size: var(--size-label); }
 
 /* Process: the settings set over the preset, a label and its number. */
@@ -1344,6 +1369,7 @@ dialog .row button { min-width: 84px; }
   #plater { grid-template-columns: 1fr; grid-template-rows: auto minmax(360px, 1fr); overflow-y: auto; }
   #side { min-height: auto; border-right: 0; border-bottom: 1px solid var(--line-1); }
   #side-scroll { flex: none; overflow: visible; }
+  #side-grip { display: none; }
   #side-tools { gap: var(--space-1); }
   #tabs > [role="tab"] { padding: 0 var(--space-3); }
 }

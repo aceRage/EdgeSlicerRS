@@ -715,6 +715,19 @@ impl Session {
         })
     }
 
+    /// Whether a kind's pages have a group of that title on that page,
+    /// both by the reference's message id (an extruder's page by its
+    /// "Extruder %d").
+    pub(super) fn has_group(book: Book, page: &str, group: &str) -> bool {
+        pages(book).json["pages"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter(|each| each["title"] == page)
+            .flat_map(|each| each["groups"].as_array().into_iter().flatten())
+            .any(|each| each["title"] == group)
+    }
+
     /// The pages of a kind of preset and their options, as the reference
     /// has them.
     pub(super) fn settings_pages(book: Book) -> Value {

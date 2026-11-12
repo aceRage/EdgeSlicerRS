@@ -64,6 +64,14 @@ pub struct Data {
     /// `enable_rotation_fff` and `_fff_seq_print`,
     /// `allow_multi_materials_on_same_plate`, `avoid_extrusion_cali_region`.
     pub arrange: BTreeMap<String, String>,
+    /// The page's own layout (`layout` in the file, [`super::layout`]):
+    /// the sidebar's width as it was dragged, none for its usual width.
+    pub sidebar_width: Option<u32>,
+    /// The groups of the settings pages folded or unfolded by hand, by
+    /// kind ("process", "filament", "printer", "item"), page and group,
+    /// each by the reference's message id: true open, false folded. A
+    /// group not here is as [`super::layout`] has it at first.
+    pub groups: BTreeMap<(String, String, String), bool>,
     /// What the file held that this build does not know: written back
     /// as it was.
     other: Map<String, Value>,
@@ -195,6 +203,28 @@ impl Data {
                 .filter_map(|(key, value)| Some((key.clone(), value.as_str()?.to_owned())))
                 .collect();
         }
+        if let Some(layout) = root.get("layout") {
+            data.sidebar_width = layout
+                .get("sidebar_width")
+                .and_then(Value::as_u64)
+                .and_then(|width| u32::try_from(width).ok());
+            // { kind: { page: { group: true | false } } }
+            for (kind, pages) in layout
+                .get("groups")
+                .and_then(Value::as_object)
+                .into_iter()
+                .flatten()
+            {
+                for (page, groups) in pages.as_object().into_iter().flatten() {
+                    for (group, open) in groups.as_object().into_iter().flatten() {
+                        if let Some(open) = open.as_bool() {
+                            data.groups
+                                .insert((kind.clone(), page.clone(), group.clone()), open);
+                        }
+                    }
+                }
+            }
+        }
         for known in [
             "version",
             "app",
@@ -203,6 +233,7 @@ impl Data {
             "printers",
             "recent_projects",
             "arrange",
+            "layout",
         ] {
             root.remove(known);
         }
@@ -258,6 +289,26 @@ impl Data {
         root.insert("recent_projects".into(), Value::Object(recent));
         if !self.arrange.is_empty() {
             root.insert("arrange".into(), json!(self.arrange));
+        }
+        let mut layout = Map::new();
+        if let Some(width) = self.sidebar_width {
+            layout.insert("sidebar_width".into(), json!(width));
+        }
+        if !self.groups.is_empty() {
+            let mut kinds = Map::new();
+            for ((kind, page, group), open) in &self.groups {
+                let pages = kinds.entry(kind.clone()).or_insert_with(|| json!({}));
+                let groups = pages
+                    .as_object_mut()
+                    .expect("an object")
+                    .entry(page.clone())
+                    .or_insert_with(|| json!({}));
+                groups[group.as_str()] = json!(open);
+            }
+            layout.insert("groups".into(), Value::Object(kinds));
+        }
+        if !layout.is_empty() {
+            root.insert("layout".into(), Value::Object(layout));
         }
         Value::Object(root)
     }
@@ -362,6 +413,19 @@ mod tests {
             .insert("min_object_distance_fff".into(), "12.5".into());
         data.arrange
             .insert("enable_rotation_fff".into(), "1".into());
+        data.sidebar_width = Some(420);
+        data.groups.insert(
+            (
+                "process".into(),
+                "Strength".into(),
+                "Top/bottom shells".into(),
+            ),
+            false,
+        );
+        data.groups.insert(
+            ("printer".into(), "Extruder %d".into(), "Retraction".into()),
+            true,
+        );
     }
 
     #[test]
@@ -395,6 +459,16 @@ mod tests {
         assert_eq!(written["printers"][0]["curr_bed_type"], "Cool Plate");
         // The arrange options under the reference's keys.
         assert_eq!(written["arrange"]["min_object_distance_fff"], "12.5");
+        // The page's layout in a section of its own.
+        assert_eq!(written["layout"]["sidebar_width"], 420);
+        assert_eq!(
+            written["layout"]["groups"]["process"]["Strength"]["Top/bottom shells"],
+            false
+        );
+        assert_eq!(
+            written["layout"]["groups"]["printer"]["Extruder %d"]["Retraction"],
+            true
+        );
         // Nothing is left beside it.
         let names: Vec<_> = std::fs::read_dir(&folder)
             .unwrap()
