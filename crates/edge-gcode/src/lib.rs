@@ -3220,7 +3220,16 @@ impl Writer<'_> {
         // On a line contoured in height the move climbs or falls as it
         // goes, lays as much as the line is tall, and may be slowed for
         // it (`contour.rs`).
-        let laid = flow.mm3_per_mm() * s.filament_flow_ratio * s.print_flow_ratio * share;
+        // The prime tower's lines are laid at their own cross-section:
+        // the reference's tower writer works out their plastic itself
+        // and no flow ratio comes into it (WipeTower2.cpp
+        // `extrusion_flow`, WipeTower.cpp likewise).
+        let ratios = if matches!(role, Role::PrimeTower | Role::PrimeLine) {
+            1.0
+        } else {
+            s.filament_flow_ratio * s.print_flow_ratio
+        };
+        let laid = flow.mm3_per_mm() * ratios * share;
         let contoured = self.contour_on((from, to), role, flow, motion.speed, length, laid);
         let moved = match (&sloping, &contoured) {
             (Some(sloping), _) => sloping.length,
@@ -3255,8 +3264,7 @@ impl Writer<'_> {
         let share = share
             * short.map_or(1.0, |model| model.share(length))
             * contoured.as_ref().map_or(1.0, |contoured| contoured.flow);
-        let volume =
-            length * flow.mm3_per_mm() * s.filament_flow_ratio * s.print_flow_ratio * share;
+        let volume = length * flow.mm3_per_mm() * ratios * share;
         let feed = volume / self.filament_area;
         self.feed(speed);
         let feed_word = self.feed_word();

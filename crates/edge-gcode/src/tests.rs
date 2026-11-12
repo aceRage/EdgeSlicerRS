@@ -1977,6 +1977,7 @@ fn a_new_nozzle_lays_its_block_on_the_tower_move_by_move() {
     let settings = PrintSettings {
         retraction_length: 0.8,
         retraction_speed: 30.0,
+        filament_flow_ratio: 0.95,
         ..basic()
     };
     let (text, _) = print(&[layer], &settings);
@@ -1985,7 +1986,8 @@ fn a_new_nozzle_lays_its_block_on_the_tower_move_by_move() {
         .iter()
         .position(|line| line.starts_with("G1 X43.000 Y40.000 E"))
         .unwrap();
-    // Each line at its own speed.
+    // Each line at its own speed, with as much plastic as its own
+    // cross-section holds: no flow ratio, as the reference's tower writes it.
     let area = std::f64::consts::PI * 1.75 * 1.75 / 4.0;
     let e = word(lines[first], 'E').unwrap();
     assert!(
