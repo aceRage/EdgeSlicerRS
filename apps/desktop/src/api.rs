@@ -1108,6 +1108,7 @@ impl Session {
                 self.preset_changes(args, book)
             }
             "preset_compare" => self.preset_compare(args),
+            "preset_transfer" => self.preset_transfer(args),
             "preset_import" => self.preset_import(args),
             "preset_export" => self.preset_export(args),
 

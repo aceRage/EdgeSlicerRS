@@ -1060,6 +1060,80 @@ impl Session {
         Ok(answer)
     }
 
+    /// `preset_transfer`: "Compare presets" with "Transfer values from
+    /// left to right" (DiffPresetDialog.cpp l.2037–2090, `Tab::transfer_options`
+    /// l.9797): the options named (`keys`) take the left preset's (`from`)
+    /// values, set over the right one (`to`), which the project's preset of
+    /// the kind (and filament) must be: the page selects it first, as the
+    /// reference's tab does. Each value goes through the pages' own checks
+    /// (`settings_set`); the first one refused stops the transfer, with
+    /// what came before it kept.
+    pub(super) fn preset_transfer(&self, args: &Value) -> Result<Value, String> {
+        let book = kind_of(args)?;
+        let kind = kept::kind(book);
+        let from = needed(args, "from")?;
+        let to = needed(args, "to")?;
+        let (choices, filaments) = {
+            let state = lock(&self.state);
+            let project = &state.projects[state.target(args)?];
+            (project.choices.clone(), project.filament_count())
+        };
+        let (vendor, _) = Self::on_presets(&choices)?;
+        let filament = filament_of(args, book, filaments)?;
+        let (current, modified) = Self::selected(&choices, book, filament);
+        if current.as_deref() != Some(to) {
+            return Err(if modified {
+                tr("You can only transfer to current active profile because it has been modified.")
+            } else {
+                format!("the project is not on \"{to}\"")
+            });
+        }
+        let shelf = self.shelf(&vendor)?;
+        let left = self.resolve_named(&shelf, kind, from)?;
+        let right = self.resolve_named(&shelf, kind, to)?;
+        let mut values = BTreeMap::new();
+        let listed = kept::differences(book, &left, &right);
+        for page in listed.as_array().into_iter().flatten() {
+            for group in page["groups"].as_array().into_iter().flatten() {
+                for row in group["rows"].as_array().into_iter().flatten() {
+                    if let (Some(key), Some(old)) = (row["key"].as_str(), row["old"].as_str()) {
+                        values.insert(key.to_owned(), old.to_owned());
+                    }
+                }
+            }
+        }
+        let keys: Vec<&str> = args
+            .get("keys")
+            .and_then(Value::as_array)
+            .ok_or("keys were not given")?
+            .iter()
+            .filter_map(Value::as_str)
+            .collect();
+        let mut set = 0;
+        for key in keys {
+            let Some(value) = values.get(key) else {
+                continue;
+            };
+            let mut one = json!({ "key": key, "value": value });
+            if let Some(project) = args.get("project") {
+                one["project"] = project.clone();
+            }
+            if book != Book::Process {
+                one["kind"] = json!(book_name(book));
+            }
+            if book == Book::Filament {
+                one["filament"] = json!(filament + 1);
+            }
+            self.settings_set(&one, book)?;
+            set += 1;
+        }
+        let mut answer = self.after_change(args)?;
+        if let Some(object) = answer.as_object_mut() {
+            object.insert("transferred".into(), json!(set));
+        }
+        Ok(answer)
+    }
+
     /// Reads the person's presets again from their folder, as they now
     /// are on the disk.
     pub(super) fn presets_reload(&self) -> Value {

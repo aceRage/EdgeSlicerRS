@@ -767,6 +767,67 @@ fn changes_go_over_the_next_preset_only_where_the_reference_transfers_them() {
 }
 
 #[test]
+fn chosen_values_are_transferred_from_left_to_right() {
+    let dir = tempfile::tempdir().unwrap();
+    let session = session(dir.path());
+    ask(&session, "printer_select", json!({ "initial": true }));
+    let (system, _) = process_of(&session);
+    let fine = "0.08mm Standard @Snapmaker U1 (0.4 nozzle)";
+    let compared = ask(
+        &session,
+        "preset_compare",
+        json!({ "kind": "process", "left": fine, "right": system }),
+    );
+    let rows: Vec<(String, String, String)> = compared["pages"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .flat_map(|page| page["groups"].as_array().unwrap().clone())
+        .flat_map(|group| group["rows"].as_array().unwrap().clone())
+        .map(|row| {
+            (
+                row["key"].as_str().unwrap().to_owned(),
+                row["old"].as_str().unwrap().to_owned(),
+                row["new"].as_str().unwrap().to_owned(),
+            )
+        })
+        .collect();
+    assert!(rows.iter().any(|(key, _, _)| key == "layer_height"));
+    // Only the right one, the preset the project is on, takes them.
+    assert_eq!(
+        refused(
+            &session,
+            "preset_transfer",
+            json!({ "kind": "process", "from": system, "to": fine, "keys": ["layer_height"] })
+        ),
+        format!("the project is not on \"{fine}\"")
+    );
+    let keys: Vec<&str> = rows.iter().map(|(key, _, _)| key.as_str()).collect();
+    let done = ask(
+        &session,
+        "preset_transfer",
+        json!({ "kind": "process", "from": fine, "to": system, "keys": keys }),
+    );
+    assert_eq!(done["transferred"], rows.len());
+    assert_eq!(done["choices"]["process"], system);
+    // Every value differing is set over the preset, the left one's.
+    let changes = ask(&session, "preset_changes", json!({ "kind": "process" }));
+    assert_eq!(changes["count"], rows.len());
+    for (key, left, _) in &rows {
+        assert_eq!(&done["choices"]["over"][key], left, "{key}");
+    }
+    // With changes over it, another preset is not transferred to.
+    assert_eq!(
+        refused(
+            &session,
+            "preset_transfer",
+            json!({ "kind": "process", "from": system, "to": fine, "keys": ["layer_height"] })
+        ),
+        "You can only transfer to current active profile because it has been modified."
+    );
+}
+
+#[test]
 fn presets_the_reference_wrote_are_offered_and_a_broken_one_is_said() {
     let dir = tempfile::tempdir().unwrap();
     let folder = user_dir(dir.path()).join("process");
