@@ -818,7 +818,9 @@ fn template_seconds(text: &str, from: [f64; 2], height: f64, feedrate: f64) -> f
             "G90" => absolute = true,
             "G91" => absolute = false,
             "G4" => {
-                seconds += value('S').or_else(|| value('P').map(|ms| ms / 1000.0)).unwrap_or(0.0);
+                seconds += value('S')
+                    .or_else(|| value('P').map(|ms| ms / 1000.0))
+                    .unwrap_or(0.0);
             }
             "G0" | "G1" | "G2" | "G3" => {
                 if let Some(f) = value('F') {
@@ -836,7 +838,11 @@ fn template_seconds(text: &str, from: [f64; 2], height: f64, feedrate: f64) -> f
                         let radius = i.hypot(j);
                         let start = (at[1] - centre[1]).atan2(at[0] - centre[0]);
                         let end = (to[1] - centre[1]).atan2(to[0] - centre[0]);
-                        let mut sweep = if command == "G3" { end - start } else { start - end };
+                        let mut sweep = if command == "G3" {
+                            end - start
+                        } else {
+                            start - end
+                        };
                         if sweep < 0.0 {
                             sweep += std::f64::consts::TAU;
                         }
@@ -845,7 +851,11 @@ fn template_seconds(text: &str, from: [f64; 2], height: f64, feedrate: f64) -> f
                     _ => (to[0] - at[0]).hypot(to[1] - at[1]),
                 };
                 let length = across.hypot(to[2] - at[2]);
-                let length = if length > 0.0 { length } else { value('E').map_or(0.0, f64::abs) };
+                let length = if length > 0.0 {
+                    length
+                } else {
+                    value('E').map_or(0.0, f64::abs)
+                };
                 if length > 0.0 && feed > 0.0 {
                     seconds += length / feed;
                 }
@@ -2187,8 +2197,16 @@ impl Writer<'_> {
         // Its moves count towards the layer's time for cooling, as the
         // reference's cooling counts every move of the layer after its
         // first line (CoolingBuffer.cpp `parse`).
-        let from = self.state.position.map_or([0.0, 0.0], |at| [unscaled(at.x), unscaled(at.y)]);
-        let seconds = template_seconds(&text, from, self.state.height.unwrap_or(z), self.state.feedrate);
+        let from = self
+            .state
+            .position
+            .map_or([0.0, 0.0], |at| [unscaled(at.x), unscaled(at.y)]);
+        let seconds = template_seconds(
+            &text,
+            from,
+            self.state.height.unwrap_or(z),
+            self.state.feedrate,
+        );
         self.spend(seconds);
         if !bambu {
             return Ok(());
