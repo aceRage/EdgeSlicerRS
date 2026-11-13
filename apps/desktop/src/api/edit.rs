@@ -858,6 +858,56 @@ struct Outcome {
     recipe: Option<Value>,
 }
 
+/// "Mesh Boolean": `source` and `tool` (part numbers) of `object` made one
+/// by `operation` ("union", "difference", "intersection"), the tool
+/// deleted when `delete_input` (always for a union). Answers the part
+/// made. A failure changes nothing and is said in the reference's words
+/// (GLGizmoMeshBoolean.cpp `warning_text`), with why where the reference
+/// has words for it. A boolean that leaves nothing is said in the words of
+/// the fix to the reference (aceRage/EdgeSlicer#1005, `empty_text`): the
+/// pinned gizmo says it failed.
+fn mesh_boolean(model: &mut Model, bed: Option<&Bed>, args: &Value) -> Result<u64, String> {
+    use super::i18n::{fill, tr};
+    use edge_engine::{BooleanFailure, BooleanOp};
+    let op = match needed(args, "operation")? {
+        "union" => BooleanOp::Union,
+        "difference" => BooleanOp::Difference,
+        "intersection" => BooleanOp::Intersection,
+        other => return Err(format!("there is no boolean operation named {other}")),
+    };
+    let delete = args
+        .get("delete_input")
+        .and_then(Value::as_bool)
+        .unwrap_or(false);
+    let (object, source, tool) = (
+        whole(args, "object")?,
+        whole(args, "source")?,
+        whole(args, "tool")?,
+    );
+    model
+        .mesh_boolean(bed, object, source, tool, op, delete)
+        .map_err(|failure| match failure {
+            BooleanFailure::Refused(why) => why.to_string(),
+            BooleanFailure::Empty => tr(
+                "The boolean operation leaves nothing of the selected parts: they do not overlap, or the tool covers the whole part",
+            ),
+            BooleanFailure::Failed { part, .. } => {
+                let mut said = tr("Unable to perform boolean operation on selected parts");
+                // A part that does not bound a volume is named, in the
+                // reference's words for it (PerformCSGMeshBooleans.hpp,
+                // the export's check of each part).
+                if let Some(part) = part {
+                    said.push('\n');
+                    said.push_str(&fill(
+                        &tr("Reason: part \"%1%\" does not bound a volume."),
+                        &[&part],
+                    ));
+                }
+                said
+            }
+        })
+}
+
 /// A matrix as the page takes it: sixteen numbers, column by column.
 fn matrix_json(transform: &Transform) -> Value {
     let mut numbers = Vec::with_capacity(16);
@@ -1486,6 +1536,12 @@ impl Session {
                 recipe["missing"] = json!(edit.missing);
                 outcome.recipe = Some(recipe);
                 outcome.name = "Edit cut".into();
+            }
+            // "Mesh Boolean" (GLGizmoMeshBoolean.cpp `run_boolean`,
+            // `generate_new_volume`): the result is selected after.
+            "mesh_boolean" => {
+                outcome.part = Some(mesh_boolean(model, bed, args)?);
+                outcome.name = "Mesh Boolean".into();
             }
             // An object's, a part's or a height range's own settings, and
             // the height ranges (settings/items.rs).

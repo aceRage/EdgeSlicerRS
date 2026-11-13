@@ -2071,3 +2071,122 @@ fn a_bare_model_is_cut_where_it_is_shown() {
     assert!((width - (high[0] - low[0])).abs() < 1e-3, "{reach}");
     assert!(numbers(&reach[0])[0] < 0.0 && numbers(&reach[1])[0] > 0.0);
 }
+
+#[test]
+fn a_mesh_boolean_is_one_step_selects_its_result_and_is_saved_and_sliced() {
+    let dir = tempfile::tempdir().unwrap();
+    // Two 20 mm cubes sharing half of each, and a third well away.
+    let path = boxes(
+        &dir.path().join("pair.stl"),
+        &[
+            ([0.0; 3], [20.0; 3]),
+            ([10.0, 0.0, 0.0], [20.0; 3]),
+            ([60.0, 0.0, 0.0], [10.0; 3]),
+        ],
+    );
+    let session = Arc::new(Session::new(None));
+    let project = stl_project(&session, &path);
+    let scene = ask(&session, "scene", json!({}));
+    let object = scene["objects"][0]["id"].clone();
+    let answer = edit(
+        &session,
+        json!({ "project": project, "op": "split_parts", "object": object }),
+    );
+    let listed = part_list(&answer["scene"]);
+    assert_eq!(listed.len(), 3);
+    let ids: Vec<Value> = listed.iter().map(|part| part["id"].clone()).collect();
+    let before = answer["project"]["edit"]["undo"].clone();
+
+    // Two parts that do not meet: nothing is left, which is said, and
+    // nothing changes.
+    let error = refused(
+        &session,
+        "scene_edit",
+        json!({ "project": project, "op": "mesh_boolean", "object": object,
+                "operation": "intersection", "source": ids[0], "tool": ids[2], "delete_input": true }),
+    );
+    assert_eq!(
+        error,
+        "The boolean operation leaves nothing of the selected parts: they do not overlap, or the tool covers the whole part"
+    );
+    let scene = ask(&session, "scene", json!({ "project": project }));
+    assert_eq!(part_list(&scene).len(), 3);
+    let detail = ask(&session, "project", json!({ "project": project }));
+    assert_eq!(detail["edit"]["undo"], before);
+
+    // The difference, the tool kept: one step, the result in the first
+    // part's place and answered to be selected.
+    let done = edit(
+        &session,
+        json!({ "project": project, "op": "mesh_boolean", "object": object,
+                "operation": "difference", "source": ids[0], "tool": ids[1] }),
+    );
+    assert_eq!(done["done"], "Mesh Boolean");
+    assert_eq!(done["project"]["edit"]["undo"], "Mesh Boolean");
+    let listed = part_list(&done["scene"]);
+    assert_eq!(listed.len(), 3);
+    assert_eq!(listed[0]["id"], done["part"]);
+    assert_eq!(listed[0]["name"], "pair.stl_1 - difference");
+    assert_eq!(listed[1]["id"], ids[1]);
+    // The union deletes the tool.
+    let done = edit(
+        &session,
+        json!({ "project": project, "op": "mesh_boolean", "object": object,
+                "operation": "union", "source": done["part"], "tool": ids[1] }),
+    );
+    let listed = part_list(&done["scene"]);
+    assert_eq!(listed.len(), 2);
+    assert_eq!(listed[0]["name"], "pair.stl_1 - difference - union");
+    // Each is one step back, and forward again.
+    let undone = ask(&session, "undo", json!({ "project": project }));
+    assert_eq!(part_list(&undone["scene"]).len(), 3);
+    assert_eq!(undone["project"]["edit"]["undo"], "Mesh Boolean");
+    let undone = ask(&session, "undo", json!({ "project": project }));
+    let names: Vec<Value> = part_list(&undone["scene"])
+        .iter()
+        .map(|part| part["name"].clone())
+        .collect();
+    assert_eq!(
+        names,
+        [
+            json!("pair.stl_1"),
+            json!("pair.stl_2"),
+            json!("pair.stl_3")
+        ]
+    );
+    ask(&session, "redo", json!({ "project": project }));
+    let redone = ask(&session, "redo", json!({ "project": project }));
+    assert_eq!(part_list(&redone["scene"]).len(), 2);
+
+    // It slices, and saved and read back it is the same parts.
+    sliced(&session, project, None);
+    let path = dir.path().join("boolean.3mf");
+    let saved = ask(
+        &session,
+        "project_save",
+        json!({ "project": project, "path": path.to_string_lossy(), "accept": true }),
+    );
+    assert_eq!(saved["saved"], true, "{saved}");
+    let other = Arc::new(Session::new(None));
+    let again = ask(
+        &other,
+        "project_open",
+        json!({ "path": path.to_string_lossy() }),
+    );
+    let scene = ask(&other, "scene", json!({ "project": again["id"] }));
+    let names: Vec<Value> = part_list(&scene)
+        .iter()
+        .map(|part| part["name"].clone())
+        .collect();
+    assert_eq!(
+        names,
+        [
+            json!("pair.stl_1 - difference - union"),
+            json!("pair.stl_3")
+        ]
+    );
+    assert_eq!(
+        scene["objects"][0]["triangles"],
+        redone["scene"]["objects"][0]["triangles"]
+    );
+}
