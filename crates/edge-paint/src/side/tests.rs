@@ -61,14 +61,17 @@ fn square() -> Vec<ExPolygon> {
 /// The shares of one layer at 1 mm up, sides only, in mm² by colour.
 fn shares(outline: &[ExPolygon], facets: &[Facet]) -> Vec<(u8, f64)> {
     let settings = PaintSettings {
-        top_layers: 0,
-        bottom_layers: 0,
+        top: crate::Shell::default(),
+        bottom: crate::Shell::default(),
         wall_width: edge_geom::scaled(0.45),
         wall_spacing: edge_geom::scaled(0.4),
         small: edge_geom::scaled(0.1),
+        gaps_filled: true,
+        classic: false,
         run_scale: 1.0,
+        depth: crate::depth::Depth::default(),
     };
-    let painted = segment(&[outline], &[1.0], facets, &settings).unwrap();
+    let painted = segment(&[outline], &[1.0], &[[0.9, 1.1]], facets, &settings).unwrap();
     painted[0]
         .iter()
         .map(|(colour, regions)| {

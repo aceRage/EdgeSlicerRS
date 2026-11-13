@@ -1860,7 +1860,7 @@ Painted colours are a first working version. A project's `paint_color`
 is read, triangles cut up as the paint cuts them (a port of
 `TriangleSelector::deserialize`), and each painted object is shared out
 between filaments as the reference's `segmentation_by_painting` shares
-it with `paint_depth_mode` at `unlimited`, its default. The sides are a
+it. The sides are a
 port of the reference's stages, listed at the top of edge-paint's
 `side` module: each painted triangle is cut by the layer's plane and
 the cut put onto the edges of the outline within 5 micrometres and 30
@@ -1871,16 +1871,31 @@ of the Voronoi diagram of those lines that part two colours, traced
 through the reference's graph (`MMU_Graph`, `extract_colored_segments`).
 What is painted on a top or bottom face is carried through the shell
 layers behind it, in by a wall and a space, where it wins over what the
-sides say. Islands of paint too small for a classic wall are not
-dropped. Two parts of an object rarely meet exactly: their meshes
+sides say; with classic walls, islands of paint on a face too narrow for
+a wall's first loop are dropped. How deep a colour reaches follows
+`paint_depth_mode` (`edge_paint::depth`): unlimited, the default, takes
+all a painted surface is nearest; walls (`paint_depth_walls`) or
+millimetres (`paint_depth_mm`) cut each colour back to a band along the
+outline, a thin part keeping half of itself, with the band notched on
+even layers (`mmu_segmented_region_interlocking_depth`), and carry paint
+on a top or bottom face as deep as the band, a flat face no deeper than
+its shell. Islands of the part's own filament left between two painted
+claims too narrow to print go to the colour beside them. Where one
+colour meets another above or below, each gets a solid skin of its own
+(`paint_depth_solid_interfaces`, as `interface_shells`, which is
+followed too); the reference does that for the painted object, here it
+is done for the whole plate. The band is worked out from the plate's
+walls, where the reference takes the widest over an object's regions.
+An old project's `mmu_segmented_region_max_width` is read as a depth in
+millimetres. Two parts of an object rarely meet exactly: their meshes
 follow the same curve with different corners, and cracks a few
 micrometres wide are left between them. This engine closes those
 cracks when it slices. The reference does not, so where paint makes
 both sides of a crack one filament it
 lays walls round the crack, a slit of two loops in the middle of a
-solid area. That is not copied. The bounded depths
-(`paint_depth_mode` at `walls` or `millimeters`), interlocking and
-`top_color_penetration_layers` are noted and not followed. Seams
+solid area. That is not copied. Beam interlocking (`interlocking_beam`),
+`paint_infill_override` off and `top_color_penetration_layers` are noted
+and not followed. Seams
 painted on or off are followed (G-code, Seams, below), and so are
 supports painted on or off (Regions, below). Painted fuzzy skin is not
 read; a project that has it painted on says so when it is sliced. Paint

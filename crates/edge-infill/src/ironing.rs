@@ -427,12 +427,13 @@ impl Ironing {
 /// nothing over it, and where it faces down: what the reference types
 /// its regions' slices as, walls and all, before any thought of how many
 /// shell layers there are (`PrintObject::detect_surfaces_type`). `slices`
-/// and `outlines` are as for [`crate::classify`], and `opening` its
-/// [`Shells::opening`].
+/// and `outlines` are as for [`crate::classify`], and `shells` the
+/// filament's [`Shells`], of which the opening, the outer wall's width and
+/// whether shares are shells of their own are taken.
 pub fn exposed(
     slices: &[&[ExPolygon]],
     outlines: &[&[ExPolygon]],
-    opening: Coord,
+    shells: &Shells,
 ) -> Result<Vec<Faces>, ClipError> {
     surfaces::faces(
         slices,
@@ -444,10 +445,10 @@ pub fn exposed(
             bottom_thickness: 0.0,
             sparse_density: 0.0,
             minimum_sparse_area: 0.0,
-            opening,
             ensure: None,
             outer_spacing: 0,
             second_bridge: None,
+            ..*shells
         },
     )
 }

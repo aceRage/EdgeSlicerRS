@@ -41,13 +41,29 @@ fn square(low: f64, high: f64) -> Vec<ExPolygon> {
 
 fn settings(top_layers: usize, bottom_layers: usize) -> PaintSettings {
     PaintSettings {
-        top_layers,
-        bottom_layers,
+        top: Shell {
+            layers: top_layers,
+            thickness: 0.0,
+        },
+        bottom: Shell {
+            layers: bottom_layers,
+            thickness: 0.0,
+        },
         wall_width: scaled(0.5),
         wall_spacing: scaled(0.5),
         small: scaled(0.1),
+        gaps_filled: true,
+        classic: false,
         run_scale: 1.0,
+        depth: depth::Depth::default(),
     }
+}
+
+/// Each layer's bottom and top, for layers all of `height`.
+fn z(count: usize, height: f64) -> Vec<[f64; 2]> {
+    (0..count)
+        .map(|layer| [layer as f64 * height, (layer + 1) as f64 * height])
+        .collect()
 }
 
 /// Ten layers of a 10 mm block, 0.2 mm each, cut through their middles.
@@ -85,7 +101,7 @@ fn a_painted_side_takes_what_lies_nearest_it() {
         2 => 5,
         _ => 0,
     });
-    let painted = segment(&outlines, &planes, &facets, &settings(0, 0)).unwrap();
+    let painted = segment(&outlines, &planes, &z(10, 0.2), &facets, &settings(0, 0)).unwrap();
     // Each side's share is the triangle from it to the middle: a quarter.
     for layer in areas(&painted) {
         assert_eq!(layer, [(2, 25.0), (5, 25.0)]);
@@ -101,7 +117,7 @@ fn a_painted_side_takes_what_lies_nearest_it() {
 
     // Nothing painted, nothing moved.
     let bare = block([0.0; 3], [10.0, 10.0, 2.0], |_| 0);
-    let painted = segment(&outlines, &planes, &bare, &settings(3, 3)).unwrap();
+    let painted = segment(&outlines, &planes, &z(10, 0.2), &bare, &settings(3, 3)).unwrap();
     assert!(painted.iter().all(Vec::is_empty));
 }
 
@@ -114,7 +130,7 @@ fn one_colour_all_round_takes_the_whole_layer() {
         [10.0, 10.0, 2.0],
         |side| if side < 4 { 3 } else { 0 },
     );
-    let painted = segment(&outlines, &planes, &facets, &settings(0, 0)).unwrap();
+    let painted = segment(&outlines, &planes, &z(10, 0.2), &facets, &settings(0, 0)).unwrap();
     for layer in areas(&painted) {
         assert_eq!(layer, [(3, 100.0)]);
     }
@@ -129,7 +145,8 @@ fn a_painted_top_goes_down_through_the_shell_and_no_further() {
         [10.0, 10.0, 2.0],
         |side| if side == 5 { 4 } else { 0 },
     );
-    let painted = areas(&segment(&outlines, &planes, &facets, &settings(3, 0)).unwrap());
+    let painted =
+        areas(&segment(&outlines, &planes, &z(10, 0.2), &facets, &settings(3, 0)).unwrap());
     // The top layer whole; the two behind it in by a wall and a space,
     // which is as far in as an open face is ever drawn; nothing below.
     assert_eq!(painted[9], [(4, 100.0)]);
@@ -143,7 +160,8 @@ fn a_painted_top_goes_down_through_the_shell_and_no_further() {
         [10.0, 10.0, 2.0],
         |side| if side == 4 { 6 } else { 0 },
     );
-    let painted = areas(&segment(&outlines, &planes, &facets, &settings(0, 2)).unwrap());
+    let painted =
+        areas(&segment(&outlines, &planes, &z(10, 0.2), &facets, &settings(0, 2)).unwrap());
     assert_eq!(painted[0], [(6, 100.0)]);
     assert_eq!(painted[1], [(6, 64.0)]);
     assert!(painted[2..].iter().all(Vec::is_empty));
@@ -159,7 +177,8 @@ fn a_face_wins_over_the_sides_on_the_layers_it_reaches() {
         4 => 0,
         _ => 1,
     });
-    let painted = areas(&segment(&outlines, &planes, &facets, &settings(2, 2)).unwrap());
+    let painted =
+        areas(&segment(&outlines, &planes, &z(10, 0.2), &facets, &settings(2, 2)).unwrap());
     // On top the face has it all; a layer down it has the middle and
     // the sides the rim.
     assert_eq!(painted[9], [(2, 100.0)]);

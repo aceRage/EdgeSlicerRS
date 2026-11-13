@@ -6,66 +6,47 @@ use edge_clip::ClipError;
 use edge_config::{ConfigError, Settings};
 use edge_extrusion::Flow;
 use edge_geom::ExPolygon;
-use edge_paint::{PaintSettings, Share};
+use edge_paint::{PaintSettings, Share, Shell, depth};
 use edge_slice::LayerRegions;
 use rayon::prelude::*;
 
-/// What the profile says of how deep paint goes, as [`PaintSettings`],
-/// with a note for each thing it asks that is not done. `outer` is the
-/// outer wall as laid at the layer height, and `heights` how thick each
-/// layer of the print is.
+/// What the profile says of how a painted part is shared out, as
+/// [`PaintSettings`], with a note for each thing it asks that is not
+/// done. `outer` and `inner` are the outer and inner walls as laid at the
+/// layer height, and `classic` whether walls are classic. `painted` says
+/// whether anything is painted: what is only read for paint
+/// (`interlocking_beam`) is read then, and the notes are only of use
+/// then.
+///
+/// Besides, whether each filament's share is to be a shell of its own
+/// (`PrintObject::has_bounded_paint_depth` with
+/// `paint_depth_solid_interfaces`): so with a bounded depth on a painted
+/// plate, unless the setting is off.
+///
+/// The widths a bounded depth is worked out from are the plate's walls.
+/// The reference takes the widest band over an object's regions (and the
+/// narrowest inner wall for the notch), which differ where a region sets
+/// its own line widths or a painted filament has a nozzle of another
+/// size; here every region has the plate's.
 pub(crate) fn settings(
     settings: &Settings,
     outer: &Flow,
-    layer_height: f64,
-    heights: &[f64],
-) -> Result<(PaintSettings, Vec<String>), ConfigError> {
+    inner: &Flow,
+    classic: bool,
+    painted: bool,
+) -> Result<(PaintSettings, bool, Vec<String>), ConfigError> {
     let mut notes = Vec::new();
-    // As many layers as the shell has, and no fewer than its thickness
-    // takes; none where the count is zero (`compute_layer_color_stat`).
-    //
-    // The thickness is taken in layers of the layer height. The
-    // reference measures it in the layers as they lie behind each face
-    // (MultiMaterialSegmentation.cpp `effective_shell_layers_by_thickness`),
-    // which comes to another number where the first layer or the last
-    // five (`precise_z_height`) are of another height; a note says so
-    // where that is the case.
-    let mut layers = |count_key: &str, key: &str, default: i64| -> Result<usize, ConfigError> {
-        let count = settings.integer(count_key)?.unwrap_or(default).max(0) as usize;
-        let thickness = settings.float(key)?.unwrap_or(0.0);
-        if count == 0 {
-            return Ok(0);
-        }
-        let deep = count.max((thickness / layer_height - 1e-9).ceil().max(0.0) as usize);
-        let top = key.starts_with("top");
-        let (pair, of) = if top {
-            (((count, 0), (thickness, 0.0)), "top")
-        } else {
-            (((0, count), (0.0, thickness)), "bottom")
-        };
-        let (tops, bottoms) = edge_infill::shell_depths(heights, pair.0, pair.1);
-        // The first face whose shell is not as deep as paint is carried,
-        // short of where the print ends.
-        let other = (0..heights.len()).find_map(|face| {
-            let (shell, room) = if top {
-                (tops[face], face + 1)
-            } else {
-                (bottoms[face], heights.len() - face)
-            };
-            (shell != deep.min(room)).then_some((face, shell))
-        });
-        if let Some((face, shell)) = other {
-            notes.push(format!(
-                "{key} \"{thickness}\": paint on a {of} face goes {deep} layer(s) deep, which is that \
-                 thickness in layers of {layer_height} mm; the shell behind a {of} face on layer {} \
-                 is {shell} layer(s) deep",
-                face + 1
-            ));
-        }
-        Ok(deep)
+    // The shells behind a top and above a bottom face: a count and a
+    // thickness, the larger taken face by face over the layers as they
+    // lie (`compute_layer_color_stat`, `effective_shell_layers_by_thickness`).
+    let shell = |count_key: &str, key: &str, default: i64| -> Result<Shell, ConfigError> {
+        Ok(Shell {
+            layers: settings.integer(count_key)?.unwrap_or(default).max(0) as usize,
+            thickness: settings.float(key)?.unwrap_or(0.0),
+        })
     };
-    let top_layers = layers("top_shell_layers", "top_shell_thickness", 4)?;
-    let bottom_layers = layers("bottom_shell_layers", "bottom_shell_thickness", 3)?;
+    let top = shell("top_shell_layers", "top_shell_thickness", 4)?;
+    let bottom = shell("bottom_shell_layers", "bottom_shell_thickness", 3)?;
     let gaps_filled = settings
         .floats("gap_infill_speed")?
         .and_then(|speeds| speeds.first().copied().flatten())
@@ -76,50 +57,112 @@ pub(crate) fn settings(
         0.5 * (outer.width + 0.7 * outer.spacing)
     };
 
-    if let Some(mode) = settings.text("paint_depth_mode")
-        && mode != "unlimited"
-    {
-        notes.push(format!(
-            "paint_depth_mode \"{mode}\": painted colours go as deep as the part, as with \"unlimited\""
-        ));
-    }
-    for key in [
-        "mmu_segmented_region_max_width",
-        "mmu_segmented_region_interlocking_depth",
-    ] {
-        if settings.float(key)?.is_some_and(|value| value > 0.0) {
+    // How deep a colour reaches (`multi_material_segmentation_by_painting`).
+    let mode_text = settings.text("paint_depth_mode").unwrap_or("unlimited");
+    let mode = match depth::Mode::parse(mode_text) {
+        Some(mode) => mode,
+        None => {
             notes.push(format!(
-                "{key}: painted colours go as deep as the part and do not interlock"
+                "paint_depth_mode \"{mode_text}\": not known; painted colours go as deep as the part, as with \"unlimited\""
             ));
+            depth::Mode::Unlimited
         }
+    };
+    let walls = settings.integer("paint_depth_walls")?.unwrap_or(3);
+    let mm = settings.float("paint_depth_mm")?.unwrap_or(0.0);
+    let configured_notch = settings
+        .float("mmu_segmented_region_interlocking_depth")?
+        .unwrap_or(0.0);
+    let solid_interfaces = settings
+        .flag("paint_depth_solid_interfaces")?
+        .unwrap_or(true);
+    let infill_override = settings.flag("paint_infill_override")?.unwrap_or(true);
+    let (outer_width, outer_spacing, inner_spacing) = (
+        outer.width as f32,
+        outer.spacing as f32,
+        inner.spacing as f32,
+    );
+    let mut band = depth::band_mm(mode, walls, mm, outer_width, outer_spacing, inner_spacing);
+    let wall_stack = outer_width + outer_spacing;
+    if classic {
+        band = depth::band_classic_floor_mm(band, outer_width, outer_spacing);
     }
-    if settings.flag("interlocking_beam")? == Some(true) {
+    let mut interlocking = if mode == depth::Mode::Unlimited {
+        0.0
+    } else {
+        depth::interlocking_mm(mode, configured_notch, inner_spacing)
+    };
+    if classic {
+        interlocking = depth::classic_notch_cap_mm(interlocking, band, wall_stack);
+    }
+    let beam = painted && settings.flag("interlocking_beam")? == Some(true);
+    let bounded = mode != depth::Mode::Unlimited;
+    if painted && beam {
         notes.push(
-            "interlocking_beam \"1\": painted colours are not keyed into each other".to_owned(),
+            "interlocking_beam \"1\": painted colours are not keyed into each other by beams"
+                .to_owned(),
         );
     }
-    for key in [
-        "top_color_penetration_layers",
-        "bottom_color_penetration_layers",
-    ] {
-        if settings.integer(key)?.is_some_and(|layers| layers > 0) {
-            notes.push(format!(
-                "{key}: paint on a face goes through the shell layers behind it"
-            ));
+    if painted && bounded && !infill_override {
+        notes.push(
+            "paint_infill_override \"0\": sparse infill within a bounded paint depth is printed in the painted filament, as with \"1\""
+                .to_owned(),
+        );
+    }
+    if painted {
+        for key in [
+            "top_color_penetration_layers",
+            "bottom_color_penetration_layers",
+        ] {
+            if settings.integer(key)?.is_some_and(|layers| layers > 0) {
+                notes.push(format!(
+                    "{key}: paint on a face goes through the shell layers behind it"
+                ));
+            }
         }
     }
     Ok((
         PaintSettings {
-            top_layers,
-            bottom_layers,
+            top,
+            bottom,
             wall_width: outer.scaled_width(),
             wall_spacing: outer.scaled_spacing(),
             small: edge_geom::scaled(small),
+            gaps_filled,
+            classic,
             // Set for each object by [`run_scale`].
             run_scale: 1.0,
+            depth: depth::Depth {
+                band,
+                interlocking,
+                min_claim_width: outer_width,
+                normal: if bounded { band } else { 0.0 },
+                wall_stack,
+                beam,
+            },
         },
+        painted && bounded && solid_interfaces,
         notes,
     ))
+}
+
+/// A project saved before paint depth was a mode of its own kept it as
+/// `mmu_segmented_region_max_width`, nothing for no bound: one above
+/// nothing is taken as that many millimetres, and the old setting set to
+/// nothing (PrintConfig.cpp, `handle_legacy_composite`).
+pub(crate) fn migrate_legacy_depth(project: &mut Settings) {
+    use edge_config::Value;
+    if project.get("paint_depth_mode").is_some() {
+        return;
+    }
+    let Ok(Some(width)) = project.float("mmu_segmented_region_max_width") else {
+        return;
+    };
+    if width > 0.0 {
+        project.insert("paint_depth_mode", Value::One("millimeters".to_owned()));
+        project.insert("paint_depth_mm", Value::One(width.to_string()));
+        project.insert("mmu_segmented_region_max_width", Value::One("0".to_owned()));
+    }
 }
 
 /// How the lengths runs of colour are filtered by are scaled for an
@@ -442,87 +485,136 @@ mod tests {
         assert_eq!(plain.by_filament[0].0, 2);
     }
 
-    #[test]
-    fn shell_layers_and_small_areas_come_from_the_profile() {
-        let outer = Flow::new(0.42, 0.2, 0.4).unwrap();
-        let read = |json: &str| {
-            settings(&Settings::from_json(json).unwrap(), &outer, 0.2, &[0.2; 40]).unwrap()
-        };
-        let (paint, notes) = read(
-            r#"{"top_shell_layers": "5", "top_shell_thickness": "1.4",
-                "bottom_shell_layers": "0", "bottom_shell_thickness": "1"}"#,
-        );
-        // Seven layers make 1.4 mm; no bottom shell at all means none.
-        assert_eq!((paint.top_layers, paint.bottom_layers), (7, 0));
-        assert_eq!(paint.small, edge_geom::scaled(0.105));
-        assert!(notes.is_empty());
+    fn read(json: &str, classic: bool, painted: bool) -> (PaintSettings, Vec<String>) {
+        let (paint, _, notes) = read_all(json, classic, painted).unwrap();
+        (paint, notes)
+    }
 
-        let (paint, notes) = read(
-            r#"{"gap_infill_speed": ["0"], "paint_depth_mode": "walls",
-                "mmu_segmented_region_max_width": "1.5", "interlocking_beam": "1"}"#,
-        );
-        assert!(paint.small > edge_geom::scaled(0.3));
-        assert_eq!(notes.len(), 3);
+    fn read_all(
+        json: &str,
+        classic: bool,
+        painted: bool,
+    ) -> Option<(PaintSettings, bool, Vec<String>)> {
+        let outer = Flow::new(0.45, 0.1, 0.4).unwrap();
+        let inner = Flow::new(0.45, 0.1, 0.4).unwrap();
+        settings(
+            &Settings::from_json(json).unwrap(),
+            &outer,
+            &inner,
+            classic,
+            painted,
+        )
+        .ok()
     }
 
     #[test]
-    fn paint_that_goes_another_depth_than_the_shell_is_said() {
-        let outer = Flow::new(0.42, 0.2, 0.4).unwrap();
-        let asked = Settings::from_json(
-            r#"{"top_shell_layers": "5", "top_shell_thickness": "1.0",
-                "bottom_shell_layers": "3", "bottom_shell_thickness": "0.85"}"#,
-        )
-        .unwrap();
-        // Layers all of 0.2 mm: five make the top shell and five the
-        // bottom one, and paint goes as deep.
-        let (paint, notes) = settings(&asked, &outer, 0.2, &[0.2; 40]).unwrap();
-        assert_eq!((paint.top_layers, paint.bottom_layers), (5, 5));
-        assert!(notes.is_empty(), "{notes:?}");
-
-        // The last five made 0.19 mm: the shell under the top is six
-        // layers, and paint still goes five.
-        let mut heights = [0.2; 40];
-        heights[35..].fill(0.19);
-        let (paint, notes) = settings(&asked, &outer, 0.2, &heights).unwrap();
-        assert_eq!(paint.top_layers, 5);
-        assert_eq!(notes.len(), 1, "{notes:?}");
-        assert!(
-            notes[0].starts_with("top_shell_thickness \"1\""),
-            "{}",
-            notes[0]
-        );
-        assert!(notes[0].contains("goes 5 layer(s) deep"), "{}", notes[0]);
-        assert!(
-            notes[0].contains("on layer 36 is 6 layer(s) deep"),
-            "{}",
-            notes[0]
-        );
-
-        // A first layer of 0.25 mm: four layers over the bed start under
-        // 0.85 mm, where five of 0.2 mm would be needed.
-        let mut heights = [0.2; 40];
-        heights[0] = 0.25;
-        let (paint, notes) = settings(&asked, &outer, 0.2, &heights).unwrap();
-        assert_eq!(paint.bottom_layers, 5);
-        assert_eq!(notes.len(), 1, "{notes:?}");
-        assert!(
-            notes[0].starts_with("bottom_shell_thickness \"0.85\""),
-            "{}",
-            notes[0]
-        );
-        assert!(
-            notes[0].contains("on layer 1 is 4 layer(s) deep"),
-            "{}",
-            notes[0]
-        );
-
-        // No thickness asked, or no shell: nothing to say.
-        let counted = Settings::from_json(
-            r#"{"top_shell_layers": "5", "top_shell_thickness": "0",
+    fn shells_and_small_areas_come_from_the_profile() {
+        let (paint, notes) = read(
+            r#"{"top_shell_layers": "5", "top_shell_thickness": "1.4",
                 "bottom_shell_layers": "0", "bottom_shell_thickness": "1"}"#,
+            false,
+            true,
+        );
+        assert_eq!((paint.top.layers, paint.top.thickness), (5, 1.4));
+        assert_eq!((paint.bottom.layers, paint.bottom.thickness), (0, 1.0));
+        assert_eq!(paint.small, edge_geom::scaled(0.1125));
+        assert!(paint.gaps_filled);
+        assert!(!paint.depth.bounded());
+        assert!(notes.is_empty(), "{notes:?}");
+
+        let (paint, notes) = read(
+            r#"{"gap_infill_speed": ["0"], "interlocking_beam": "1"}"#,
+            false,
+            true,
+        );
+        assert!(paint.small > edge_geom::scaled(0.3));
+        assert!(!paint.gaps_filled);
+        assert!(paint.depth.beam);
+        assert_eq!(notes.len(), 1, "{notes:?}");
+        // Unpainted, the beam is not even read.
+        let (paint, notes) = read(r#"{"interlocking_beam": "1"}"#, false, false);
+        assert!(!paint.depth.beam);
+        assert!(notes.is_empty());
+    }
+
+    #[test]
+    fn a_bounded_depth_is_worked_out_from_the_walls() {
+        // Unlimited, the default: nothing is bounded and no notch is cut,
+        // whatever the notch is set to.
+        let (paint, _) = read(
+            r#"{"mmu_segmented_region_interlocking_depth": "0.3"}"#,
+            false,
+            true,
+        );
+        assert_eq!(paint.depth.band, 0.0);
+        assert_eq!(paint.depth.interlocking, 0.0);
+        // Three walls of 0.45 mm at 0.1 mm layers: the reference's 1.435675,
+        // the notch at its default 0.1 mm.
+        let (paint, notes) = read(
+            r#"{"paint_depth_mode": "walls", "paint_depth_walls": "3",
+                "mmu_segmented_region_interlocking_depth": "0.1"}"#,
+            false,
+            true,
+        );
+        assert!((f64::from(paint.depth.band) - 1.435675).abs() < 1e-5);
+        assert_eq!(paint.depth.normal, paint.depth.band);
+        assert!((f64::from(paint.depth.interlocking) - 0.1).abs() < 1e-6);
+        assert!((f64::from(paint.depth.wall_stack) - 0.87854).abs() < 1e-5);
+        assert!((f64::from(paint.depth.min_claim_width) - 0.45).abs() < 1e-6);
+        assert!(notes.is_empty(), "{notes:?}");
+        // Solid interfaces are forced with a bounded depth on paint, unless
+        // turned off; never with an unlimited one.
+        let forced = |json: &str, painted: bool| read_all(json, false, painted).unwrap().1;
+        assert!(forced(r#"{"paint_depth_mode": "walls"}"#, true));
+        assert!(!forced(r#"{"paint_depth_mode": "walls"}"#, false));
+        assert!(!forced(
+            r#"{"paint_depth_mode": "walls", "paint_depth_solid_interfaces": "0"}"#,
+            true
+        ));
+        assert!(!forced(r#"{}"#, true));
+        // One wall with classic walls is floored at the wall stack, and the
+        // notch then has no room.
+        let (paint, _) = read(
+            r#"{"paint_depth_mode": "walls", "paint_depth_walls": "1",
+                "mmu_segmented_region_interlocking_depth": "0.1"}"#,
+            true,
+            true,
+        );
+        assert!((f64::from(paint.depth.band) - 0.87854).abs() < 1e-5);
+        assert_eq!(paint.depth.interlocking, 0.0);
+        // Millimetres as set, the notch as set.
+        let (paint, notes) = read(
+            r#"{"paint_depth_mode": "millimeters", "paint_depth_mm": "3",
+                "mmu_segmented_region_interlocking_depth": "0.5",
+                "paint_depth_solid_interfaces": "0", "paint_infill_override": "0"}"#,
+            false,
+            true,
+        );
+        assert_eq!(paint.depth.band, 3.0);
+        assert_eq!(paint.depth.interlocking, 0.5);
+        assert_eq!(notes.len(), 1, "{notes:?}");
+        assert!(notes[0].starts_with("paint_infill_override"));
+    }
+
+    #[test]
+    fn an_old_projects_region_width_becomes_a_depth_in_millimetres() {
+        let mut old = Settings::from_json(r#"{"mmu_segmented_region_max_width": "2.5"}"#).unwrap();
+        migrate_legacy_depth(&mut old);
+        assert_eq!(old.text("paint_depth_mode"), Some("millimeters"));
+        assert_eq!(old.float("paint_depth_mm").unwrap(), Some(2.5));
+        assert_eq!(
+            old.float("mmu_segmented_region_max_width").unwrap(),
+            Some(0.0)
+        );
+        // Nothing, or a mode of its own, is left alone.
+        let mut zero = Settings::from_json(r#"{"mmu_segmented_region_max_width": "0"}"#).unwrap();
+        migrate_legacy_depth(&mut zero);
+        assert_eq!(zero.text("paint_depth_mode"), None);
+        let mut set = Settings::from_json(
+            r#"{"mmu_segmented_region_max_width": "2", "paint_depth_mode": "walls"}"#,
         )
         .unwrap();
-        let (_, notes) = settings(&counted, &outer, 0.2, &heights).unwrap();
-        assert!(notes.is_empty(), "{notes:?}");
+        migrate_legacy_depth(&mut set);
+        assert_eq!(set.text("paint_depth_mode"), Some("walls"));
     }
 }

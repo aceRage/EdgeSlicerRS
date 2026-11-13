@@ -45,15 +45,17 @@
 //! united the Voronoi cells of each colour's edges whole. Steps 4 to 8
 //! replace that.
 //!
+//! `filter_colorized_polygon`'s last pass (a run of 0.5 mm or less
+//! between two runs of one painted colour takes that colour) is done as
+//! it is meant: the reference recolours the run after the short one,
+//! which has the colour already, so its pass does nothing (fixed in
+//! aceRage/EdgeSlicer#1017).
+//!
 //! Left out, as workarounds for flaws or as no-ops:
 //! - The Voronoi diagram is not checked and rebuilt rotated when Boost
 //!   gets it wrong (`VoronoiDiagram::construct_voronoi`'s
 //!   `try_to_repair_if_needed`); a diagram the graph cannot use is an
 //!   error for the layer.
-//! - `filter_colorized_polygon`'s last pass (a run under 0.5 mm between
-//!   two runs of one painted colour) gives the colour to the run after
-//!   the short one, which already has it, so it changes nothing; it is
-//!   not ported.
 //! - A coloured line of no length is dropped before the diagram is made
 //!   (Boost's diagram is not defined for one).
 

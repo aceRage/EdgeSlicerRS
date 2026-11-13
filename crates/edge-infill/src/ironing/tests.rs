@@ -311,7 +311,21 @@ fn faces_are_what_has_nothing_over_it_and_nothing_under_it() {
         vec![block(0.0, 0.0, 10.0, 20.0)],
     ];
     let slices: Vec<&[ExPolygon]> = layers.iter().map(Vec::as_slice).collect();
-    let faces = exposed(&slices, &slices, scaled(0.045)).unwrap();
+    let shells = Shells {
+        top_layers: 1,
+        bottom_layers: 1,
+        top_thickness: 0.0,
+        bottom_thickness: 0.0,
+        sparse_density: 0.0,
+        minimum_sparse_area: 0.0,
+        opening: scaled(0.045),
+        ensure: None,
+        outer_spacing: 0,
+        outer_width: 0,
+        second_bridge: None,
+        interface: false,
+    };
+    let faces = exposed(&slices, &slices, &shells).unwrap();
     let sizes: Vec<(f64, f64)> = faces
         .iter()
         .map(|(top, bottom)| (area(top).round(), area(bottom).round()))

@@ -173,7 +173,8 @@ pub(crate) fn get_segments(ring: &[ColouredLine]) -> Vec<(usize, usize)> {
 /// (`filter_colorized_polygon`): one or two lines of 0.5 mm or less
 /// between two lines of one painted colour, and then a run of 0.2 mm or
 /// less after a run of another colour at least 0.1 mm long, and again
-/// after any run of a painted colour.
+/// after any run of a painted colour; last, a run of 0.5 mm or less
+/// between two runs of one painted colour.
 fn filter_colorized_polygon(mut lines: Vec<ColouredLine>, run_scale: f32) -> Vec<ColouredLine> {
     let half = scale(0.5 * f64::from(run_scale));
     let short = scale(0.2 * f64::from(run_scale));
@@ -242,10 +243,26 @@ fn filter_colorized_polygon(mut lines: Vec<ColouredLine>, run_scale: f32) -> Vec
             }
         }
     }
-    // The reference's last pass, over three runs with the first and the
-    // third of one painted colour and the middle one short, gives the
-    // colour to the third run, which has it already: it changes nothing
-    // and is left out.
+
+    // Last, round the ring with wrap-around: a run of 0.5 mm or less
+    // between two runs of one painted colour takes that colour
+    // (PrusaSlicer #7112). The reference's pass recolours the run after
+    // the short one (`segments[next_next_idx]`), which has the colour
+    // already, so it does nothing there; the short run is what is meant,
+    // and that is done here (fix: aceRage/EdgeSlicer#1017).
+    let segments = get_segments(&lines);
+    if segments.len() >= 3 {
+        for curr in 0..segments.len() {
+            let next = (curr + 1) % segments.len();
+            let after = (next + 1) % segments.len();
+            let c0 = lines[segments[curr].0].colour;
+            let c1 = lines[segments[next].0].colour;
+            let c2 = lines[segments[after].0].colour;
+            if c0 > 0 && c0 == c2 && c0 != c1 && length(&lines, segments[next]) <= half {
+                paint(&mut lines, segments[next], c0);
+            }
+        }
+    }
     lines
 }
 
@@ -292,5 +309,60 @@ mod tests {
         // closes over a gap.
         let lines = filter_colorized_polygon(run(&[(5.0, 0), (0.4, 2), (5.0, 0)]), 1.0);
         assert_eq!(colours(&lines), [0, 2, 0]);
+    }
+
+    /// The C++ fix's test (aceRage/EdgeSlicer#1017,
+    /// tests/libslic3r/test_mm_filter_colorized.cpp): a 20 x 10 mm
+    /// rectangle, the bottom edge in colour 1, then up the right edge a
+    /// short run of `mid` cut into three lines, the rest of the right edge
+    /// and the top in colour 1, the left edge in colour 2.
+    fn short_run_between_painted(mid: u8, run_mm: f64) -> Vec<ColouredLine> {
+        let s = run_mm / 3.0;
+        let points = [
+            ((0.0, 0.0), 1),
+            ((20.0, 0.0), mid),
+            ((20.0, s), mid),
+            ((20.0, 2.0 * s), mid),
+            ((20.0, run_mm), 1),
+            ((20.0, 10.0), 1),
+            ((0.0, 10.0), 2),
+        ];
+        (0..points.len())
+            .map(|at| {
+                let ((ax, ay), colour) = points[at];
+                let ((bx, by), _) = points[(at + 1) % points.len()];
+                ColouredLine {
+                    line: Line::new(Point2::from_mm(ax, ay), Point2::from_mm(bx, by)),
+                    colour,
+                }
+            })
+            .collect()
+    }
+
+    #[test]
+    fn a_short_run_between_two_runs_of_one_painted_colour_takes_it() {
+        let middle = |lines: &[ColouredLine]| colours(&lines[1..4]);
+        // 0.4 mm unpainted, and 0.4 mm of colour 3, both go to colour 1.
+        for mid in [0, 3] {
+            let out = filter_colorized_polygon(short_run_between_painted(mid, 0.4), 1.0);
+            assert_eq!(out.len(), 7);
+            assert_eq!(middle(&out), [1, 1, 1], "mid {mid}");
+            assert_eq!(out[6].colour, 2);
+        }
+        // 0.6 mm is over the limit.
+        let out = filter_colorized_polygon(short_run_between_painted(0, 0.6), 1.0);
+        assert_eq!(middle(&out), [0, 0, 0]);
+        // The limit scales: 0.4 mm is over it at a 0.2 mm nozzle.
+        let out = filter_colorized_polygon(short_run_between_painted(0, 0.4), 0.5);
+        assert_eq!(middle(&out), [0, 0, 0]);
+        // Between two runs of the default colour nothing changes.
+        let mut lines = short_run_between_painted(3, 0.4);
+        for line in &mut lines {
+            if line.colour == 1 {
+                line.colour = 0;
+            }
+        }
+        let out = filter_colorized_polygon(lines, 1.0);
+        assert_eq!(middle(&out), [3, 3, 3]);
     }
 }

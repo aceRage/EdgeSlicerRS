@@ -71,11 +71,22 @@ pub struct Shells {
     /// one layer, the face itself, the fill this far round a face on its
     /// own layer is made solid, so that the face is held at its edges.
     pub outer_spacing: Coord,
+    /// The outer wall's line width: a crack where a layer's top and bottom
+    /// faces meet narrower than three of them is a top on any layer but
+    /// the first.
+    pub outer_width: Coord,
     /// Set where a bridge gets a second layer of bridge over it
     /// (`enable_extra_bridge_layer` for bridges over air): the least
     /// half-width of bridge worth a second layer, which the reference
     /// takes to be the width of the walls.
     pub second_bridge: Option<Coord>,
+    /// Set where each filament's share is its own shell
+    /// (`interface_shells`, or a bounded paint depth with
+    /// `paint_depth_solid_interfaces`): a face is then where the share has
+    /// none of itself above or below, even where another filament's share
+    /// is, and a face that rests on another share is a bottom and not a
+    /// bridge (PrintObject.cpp `detect_surfaces_type`).
+    pub interface: bool,
 }
 
 /// The one set of walls a layer would have were it all in one filament.
@@ -151,30 +162,56 @@ pub(crate) fn faces(
     shells: &Shells,
 ) -> Result<Vec<Faces>, ClipError> {
     let count = slices.len();
+    let open = |area: &[ExPolygon]| edge_clip::opening(area, shells.opening, Join::MITER);
     let exposed = |layer: usize, neighbour: Option<usize>| match neighbour {
-        Some(neighbour) => edge_clip::opening(
-            &edge_clip::difference(slices[layer], outlines[neighbour])?,
-            shells.opening,
-            Join::MITER,
-        ),
+        Some(neighbour) => open(&edge_clip::difference(slices[layer], outlines[neighbour])?),
         None => Ok(slices[layer].to_vec()),
     };
     let found = (0..count)
         .into_par_iter()
         .map(|layer| {
-            let bottom = if shells.bottom_layers == 0 {
+            let below = layer.checked_sub(1);
+            let mut bottom = if shells.bottom_layers == 0 {
                 Vec::new()
             } else {
-                exposed(layer, layer.checked_sub(1))?
+                exposed(layer, below)?
             };
+            // With shells of each share's own, also what rests on
+            // another share.
+            if let Some(below) = below.filter(|_| shells.interface && shells.bottom_layers > 0) {
+                let on_other = open(&edge_clip::difference(
+                    &edge_clip::intersection(slices[layer], outlines[below])?,
+                    slices[below],
+                )?)?;
+                if !on_other.is_empty() {
+                    bottom.extend(on_other);
+                    bottom = edge_clip::union_ex(&bottom)?;
+                }
+            }
+            let above = Some(layer + 1).filter(|&above| above < count);
             let mut top = if shells.top_layers == 0 {
                 Vec::new()
+            } else if shells.interface {
+                match above {
+                    Some(above) => open(&edge_clip::difference(slices[layer], slices[above])?)?,
+                    None => slices[layer].to_vec(),
+                }
             } else {
-                exposed(layer, Some(layer + 1).filter(|&above| above < count))?
+                exposed(layer, above)?
             };
-            // A single-layer-thick area is both; it is laid as a bottom.
+            // A single-layer-thick area is both; it is laid as a bottom,
+            // except that above the first layer a crack of it narrower
+            // than three outer walls is a top, unless it lies within a
+            // larger bottom that has room beside it
+            // (PrintObject.cpp `detect_surfaces_type`).
             if !top.is_empty() && !bottom.is_empty() {
-                top = edge_clip::difference(&top, &bottom)?;
+                let cracks = edge_clip::intersection(&top, &bottom)?;
+                if !cracks.is_empty() {
+                    if layer > 0 && shells.outer_width > 0 {
+                        bottom = small_cracks_to_top(&cracks, bottom, shells.outer_width)?;
+                    }
+                    top = edge_clip::difference(&top, &bottom)?;
+                }
             }
             Ok((top, bottom))
         })
@@ -185,6 +222,49 @@ pub(crate) fn faces(
         Some(narrow) => crate::bridges::second_bridge_layers(slices, found, narrow),
         None => Ok(found),
     }
+}
+
+/// `bottom` less the cracks narrower than three outer walls (each grown by
+/// one and a half), but for one that lies within a piece of `bottom`
+/// more than twice its size with room for a line beside it.
+fn small_cracks_to_top(
+    cracks: &[ExPolygon],
+    mut bottom: Vec<ExPolygon>,
+    outer_width: Coord,
+) -> Result<Vec<ExPolygon>, ClipError> {
+    /// `ClipperSafetyOffset`.
+    const SAFETY: Coord = 10;
+    let threshold = (1.5 * outer_width as f64) as Coord;
+    for crack in cracks {
+        let crack = std::slice::from_ref(crack);
+        if !edge_clip::offset(crack, -threshold, Join::MITER)?.is_empty() {
+            continue;
+        }
+        let crack_area = crack[0].area_mm2();
+        let mut within_larger = false;
+        for piece in &bottom {
+            let piece = std::slice::from_ref(piece);
+            if edge_clip::difference(crack, &edge_clip::offset(piece, SAFETY, Join::MITER)?)?
+                .is_empty()
+                && piece[0].area_mm2() > crack_area * 2.0
+                && !edge_clip::offset(
+                    &edge_clip::difference(piece, crack)?,
+                    -threshold,
+                    Join::MITER,
+                )?
+                .is_empty()
+            {
+                within_larger = true;
+                break;
+            }
+        }
+        if within_larger {
+            continue;
+        }
+        bottom =
+            edge_clip::difference(&bottom, &edge_clip::offset(crack, threshold, Join::MITER)?)?;
+    }
+    Ok(bottom)
 }
 
 /// The part of each layer's cross-section that is neither a top face nor
@@ -297,12 +377,23 @@ pub fn classify(
                 }
             };
             push(SurfaceKind::Top, within(top)?);
-            let bottom_kind = if layer == 0 {
-                SurfaceKind::Bottom
+            if layer == 0 {
+                push(SurfaceKind::Bottom, within(bottom)?);
+            } else if shells.interface && !bottom.is_empty() {
+                // What rests on another share is a bottom; only what
+                // rests on nothing is a bridge.
+                let bottom = within(bottom)?;
+                push(
+                    SurfaceKind::Bridge,
+                    edge_clip::difference(&bottom, outlines[layer - 1])?,
+                );
+                push(
+                    SurfaceKind::Bottom,
+                    edge_clip::intersection(&bottom, outlines[layer - 1])?,
+                );
             } else {
-                SurfaceKind::Bridge
-            };
-            push(bottom_kind, within(bottom)?);
+                push(SurfaceKind::Bridge, within(bottom)?);
+            }
 
             let internal = if top.is_empty() && bottom.is_empty() {
                 area.to_vec()
@@ -955,7 +1046,9 @@ mod tests {
             opening: scaled(0.045),
             ensure: None,
             outer_spacing: scaled(0.42),
+            outer_width: scaled(0.45),
             second_bridge: None,
+            interface: false,
         }
     }
 
@@ -1797,5 +1890,68 @@ mod tests {
         layers.extend(vec![block(8.0, 8.0, 12.0, 12.2); 4]);
         let found = anchored(&layers, &shells(2, 1));
         assert_eq!(area_of(&found[3], Sparse), 0.0);
+    }
+
+    /// Faces of one share with the whole layer's outline around it.
+    fn share_faces(
+        own: &[Vec<ExPolygon>],
+        whole: &[Vec<ExPolygon>],
+        shells: &Shells,
+    ) -> Vec<(f64, f64)> {
+        let own: Vec<&[ExPolygon]> = own.iter().map(Vec::as_slice).collect();
+        let whole: Vec<&[ExPolygon]> = whole.iter().map(Vec::as_slice).collect();
+        faces(&own, &whole, shells)
+            .unwrap()
+            .iter()
+            .map(|(top, bottom)| {
+                let area =
+                    |face: &[ExPolygon]| face.iter().map(ExPolygon::area_mm2).sum::<f64>().round();
+                (area(top), area(bottom))
+            })
+            .collect()
+    }
+
+    #[test]
+    fn a_share_is_a_shell_of_its_own_with_interfaces() {
+        // A 10 mm block four layers tall; the share is its lower two
+        // layers, another filament's the upper two.
+        let whole = vec![block(0.0, 0.0, 10.0, 10.0); 4];
+        let mut lower = vec![block(0.0, 0.0, 10.0, 10.0); 2];
+        lower.extend([Vec::new(), Vec::new()]);
+        let mut upper = vec![Vec::new(), Vec::new()];
+        upper.extend(vec![block(0.0, 0.0, 10.0, 10.0); 2]);
+        let plain = shells(3, 3);
+        let own = Shells {
+            interface: true,
+            ..shells(3, 3)
+        };
+        // Without, only the part's own top and bottom are faces.
+        assert_eq!(share_faces(&lower, &whole, &plain)[1], (0.0, 0.0));
+        assert_eq!(share_faces(&upper, &whole, &plain)[2], (0.0, 0.0));
+        // With, the lower share has a top under the other filament, and
+        // the upper one a bottom on it, laid as a bottom and not a bridge.
+        assert_eq!(share_faces(&lower, &whole, &own)[1], (100.0, 0.0));
+        assert_eq!(share_faces(&upper, &whole, &own)[2], (0.0, 100.0));
+        let slices: Vec<&[ExPolygon]> = upper.iter().map(Vec::as_slice).collect();
+        let outlines: Vec<&[ExPolygon]> = whole.iter().map(Vec::as_slice).collect();
+        let found = classify(&slices, &outlines, &slices, &[], &flat(4), &own).unwrap();
+        assert!(found[2].iter().any(|s| s.kind == SurfaceKind::Bottom));
+        assert!(found[2].iter().all(|s| s.kind != SurfaceKind::Bridge));
+    }
+
+    #[test]
+    fn a_narrow_crack_that_is_both_top_and_bottom_is_a_top() {
+        // Layer 1 has a 1 mm wide strip with nothing above or below it,
+        // beside a 10 mm block that runs through all three layers.
+        let base = block(0.0, 0.0, 10.0, 10.0);
+        let mut with_strip = base.clone();
+        with_strip.extend(block(11.0, 0.0, 12.0, 10.0));
+        let layers = vec![base.clone(), with_strip, base];
+        let found = share_faces(&layers, &layers, &shells(3, 3));
+        // Under three outer walls (1.35 mm) wide: a top, not a bottom.
+        assert_eq!(found[1], (10.0, 0.0));
+        // On the first layer it stays a bottom.
+        let first = vec![block(11.0, 0.0, 12.0, 10.0)];
+        assert_eq!(share_faces(&first, &first, &shells(3, 3))[0], (0.0, 10.0));
     }
 }
