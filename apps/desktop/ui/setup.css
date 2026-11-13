@@ -66,15 +66,15 @@
 
 /* ---- the Filament manager ---- */
 
-#fm-table { min-width: 1080px; }
+#fm-table { min-width: 1170px; }
 #fm-table th.check { width: 84px; padding-left: var(--space-4); }
 #fm-table th.star { width: 84px; }
-#fm-table th:nth-child(3) { width: 110px; }
+#fm-table th:nth-child(3) { width: 100px; }
 #fm-table th:nth-child(5) { width: 84px; }
 #fm-table th:nth-child(6) { width: 80px; }
-#fm-table th:nth-child(7) { width: 160px; }
+#fm-table th:nth-child(7) { width: 140px; }
 #fm-table th.num { width: 92px; }
-#fm-table th:nth-child(10) { width: 150px; }
+#fm-table th:nth-child(10) { width: 136px; }
 #fm-table td.name { font-weight: 550; }
 #fm-table td.name.inuse::after { content: ' •'; color: var(--accent); }
 #fm-table td:nth-child(3), #fm-table td:nth-child(6), #fm-table td:nth-child(7), #fm-table td:nth-child(10) { color: var(--text-2); }
