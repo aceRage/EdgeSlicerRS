@@ -167,23 +167,7 @@ impl Session {
                 .and_then(|settings| settings.text("printer_settings_id"))
                 .map(|name| self.system_printer(name))
         };
-        // On presets chosen here the list is the process preset's own
-        // `compatible_printers`, as `full_fff_config` makes it
-        // (PresetBundle.cpp l.4456): not what the project's file had.
-        let process_list = match (&choices.vendor, &choices.process) {
-            (Some(vendor), Some(process)) if choices.from_presets => self
-                .choose_presets(vendor, None, Some(process), &[], &choices.inside)
-                .ok()
-                .and_then(|chosen| chosen.process)
-                .map(|(_, settings)| {
-                    settings
-                        .texts("compatible_printers")
-                        .map(<[String]>::to_vec)
-                        .unwrap_or_default()
-                }),
-            _ => None,
-        };
-        saving = with_compatible(saving, ready.file.settings.as_deref(), process_list, system);
+        saving = with_compatible(saving, ready.file.settings.as_deref(), system);
         let pictures = pictures(args)?;
         ready
             .write(&path, saving, all, pictures)
@@ -215,18 +199,20 @@ impl Session {
     }
 }
 
-/// `saving` with `print_compatible_printers` as the reference's sliced
-/// files have it: on presets chosen here, the process preset's list
-/// (`process`); then, where that names no printer, the printer's system
-/// preset (`fill_print_compatible_printers_for_export`). A project saved
-/// on its own settings is written from them (read from its file), so the
-/// name can be set.
+/// `saving` with `print_compatible_printers` naming the printer's system
+/// preset where the settings name no printer there
+/// (`fill_print_compatible_printers_for_export`); on presets chosen here
+/// they already carry the process preset's list (`edge_engine::settled`).
+/// A project saved on its own settings is written from them (read from
+/// its file), so the name can be set.
 fn with_compatible(
     saving: edge_engine::Saving,
     own: Option<&edge_config::Settings>,
-    process: Option<Vec<String>>,
     system: Option<String>,
 ) -> edge_engine::Saving {
+    let Some(system) = system.filter(|name| !name.is_empty()) else {
+        return saving;
+    };
     let (mut settings, presets) = match saving {
         edge_engine::Saving::Settings { settings, presets } => (settings, presets),
         edge_engine::Saving::Own => match own {
@@ -235,13 +221,10 @@ fn with_compatible(
         },
         edge_engine::Saving::None => return edge_engine::Saving::None,
     };
-    if let Some(list) = process {
-        settings.insert("print_compatible_printers", Setting::Many(list));
-    }
     let named = settings
         .texts("print_compatible_printers")
         .is_some_and(|names| names.iter().any(|name| !name.is_empty()));
-    if !named && let Some(system) = system.filter(|name| !name.is_empty()) {
+    if !named {
         settings.insert("print_compatible_printers", Setting::Many(vec![system]));
     }
     edge_engine::Saving::Settings { settings, presets }

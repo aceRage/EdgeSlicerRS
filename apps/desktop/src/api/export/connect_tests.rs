@@ -199,3 +199,24 @@ fn an_empty_project_is_refused() {
         "There are no objects in the project."
     );
 }
+
+#[test]
+fn a_project_saved_on_other_presets_names_their_printers() {
+    // The U1 project switched to an A1 mini and its process: "Save
+    // Project" writes the process preset's `compatible_printers`, not the
+    // U1 its file named (PresetBundle.cpp `full_fff_config` l.4456).
+    let session = Arc::new(Session::new(None));
+    let id = on_a1_mini(&session);
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("saved.3mf");
+    let answer = ask(
+        &session,
+        "project_save",
+        json!({ "project": id, "path": path, "accept": true }),
+    );
+    assert_eq!(answer["saved"], true, "{answer}");
+    let all = entries(&path);
+    let settings: Value =
+        serde_json::from_str(text(&all, "Metadata/project_settings.config")).unwrap();
+    assert_eq!(settings["print_compatible_printers"], json!([A1_MINI]));
+}

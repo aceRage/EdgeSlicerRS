@@ -267,8 +267,17 @@ pub fn prepare(mut loaded: Loaded, chosen: &Chosen, overrides: &Overrides) -> Re
     }
     // The presets are named in the file, as the reference names them, for
     // whoever reads it back.
-    if let Some((name, _)) = &chosen.process {
+    if let Some((name, process)) = &chosen.process {
         settings.insert("print_settings_id", Value::One(name.clone()));
+        // The printers it suits are the process preset's own list, as the
+        // reference's `full_fff_config` makes `print_compatible_printers`
+        // (PresetBundle.cpp l.4456), not what the project's file had for
+        // the presets it was saved with.
+        let suits = process
+            .texts("compatible_printers")
+            .map(<[String]>::to_vec)
+            .unwrap_or_default();
+        settings.insert("print_compatible_printers", Value::Many(suits));
     }
     if let Some((name, _)) = &chosen.machine {
         settings.insert("printer_settings_id", Value::One(name.clone()));
