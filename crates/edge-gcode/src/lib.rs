@@ -1758,6 +1758,7 @@ impl Writer<'_> {
             }
         }
         let ram = ram.filter(|_| self.state.primed);
+        let rammed = ram.is_some();
         // A tool of the reference's other tower changed where it is
         // (described below).
         let in_place =
@@ -1887,10 +1888,11 @@ impl Writer<'_> {
         }
         // Pull the filament well back, wiping first as for any retraction.
         if self.state.primed && s.retract_length_toolchange > 0.0 {
-            if in_place {
-                // Where it is, the whole of it is the change's retraction,
-                // the wipe included (GCode.cpp `set_extruder`,
-                // `retract(true)`), not the usual one with more after.
+            if !rammed {
+                // The whole of it is the change's retraction, the wipe
+                // included (GCode.cpp `set_extruder`, `retract(true)`,
+                // `retract_for_toolchange`), not the usual one with more
+                // after; on Bambu's tower too (`append_tcr`).
                 self.retract_by(s.retract_length_toolchange, false)?;
             } else {
                 self.retract(false)?;
