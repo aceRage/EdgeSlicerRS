@@ -24,8 +24,8 @@
 //!    `filter_painted_lines`): [`lines::post_process`].
 //! 6. Each ring cut into lines of one colour, unpainted stretches
 //!    coloured 0, short runs given to their neighbours
-//!    (`colorize_contours`, `colorize_contour`, `colorize_line`):
-//!    [`colour`]. Not yet `filter_colorized_polygon`.
+//!    (`colorize_contours`, `colorize_contour`, `colorize_line`,
+//!    `filter_colorized_polygon`): [`colour`].
 //! 7. A layer all one colour is that colour's whole
 //!    (`has_layer_only_one_color`): [`share`].
 //! 8. Otherwise the graph of the rings and the Voronoi diagram of their
@@ -50,6 +50,10 @@
 //!   gets it wrong (`VoronoiDiagram::construct_voronoi`'s
 //!   `try_to_repair_if_needed`); a diagram the graph cannot use is an
 //!   error for the layer.
+//! - `filter_colorized_polygon`'s last pass (a run under 0.5 mm between
+//!   two runs of one painted colour) gives the colour to the run after
+//!   the short one, which already has it, so it changes nothing; it is
+//!   not ported.
 //! - A coloured line of no length is dropped before the diagram is made
 //!   (Boost's diagram is not defined for one).
 

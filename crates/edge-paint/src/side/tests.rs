@@ -126,6 +126,14 @@ fn a_stripe_narrower_than_a_wall_keeps_its_strip_unless_it_is_a_scrap() {
         &[(0.0, 0)],
     ]);
     assert!(shares(&square(), &facets).is_empty());
+    // And 0.4 mm of nothing between two runs of 2 is closed over.
+    let facets = prism([
+        &[(0.0, 2), (4.8, 0), (5.2, 2)],
+        &[(0.0, 0)],
+        &[(0.0, 0)],
+        &[(0.0, 0)],
+    ]);
+    assert_eq!(shares(&square(), &facets), [(2, 25.0)]);
 }
 
 #[test]

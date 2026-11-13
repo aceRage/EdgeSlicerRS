@@ -53,7 +53,7 @@ fn colorize_contour(
     }
     let last = painted[painted.len() - 1].edge;
     coloured.extend((last + 1..count).map(bare));
-    coloured
+    filter_colorized_polygon(coloured, run_scale)
 }
 
 /// One edge cut into coloured lines by its painted lines, gaps between
@@ -169,6 +169,86 @@ pub(crate) fn get_segments(ring: &[ColouredLine]) -> Vec<(usize, usize)> {
     segments
 }
 
+/// Short runs round a ring given to the colour about them
+/// (`filter_colorized_polygon`): one or two lines of 0.5 mm or less
+/// between two lines of one painted colour, and then a run of 0.2 mm or
+/// less after a run of another colour at least 0.1 mm long, and again
+/// after any run of a painted colour.
+fn filter_colorized_polygon(mut lines: Vec<ColouredLine>, run_scale: f32) -> Vec<ColouredLine> {
+    let half = scale(0.5 * f64::from(run_scale));
+    let short = scale(0.2 * f64::from(run_scale));
+    let tenth = scale(0.1 * f64::from(run_scale));
+    for at in 2..lines.len() {
+        let (c0, c1, c2) = (lines[at - 2].colour, lines[at - 1].colour, lines[at].colour);
+        if c0 == c2 && c0 != c1 && c0 >= 1 && lines[at - 1].line.length() <= half {
+            lines[at - 1].colour = c0;
+        }
+    }
+    for at in 3..lines.len() {
+        let (c0, c3) = (lines[at - 3].colour, lines[at].colour);
+        if c0 == c3
+            && (c0 != lines[at - 2].colour || c0 != lines[at - 1].colour)
+            && c0 >= 1
+            && c3 >= 1
+            && lines[at - 2].line.length() + lines[at - 1].line.length() <= half
+        {
+            lines[at - 2].colour = c0;
+            lines[at - 1].colour = c0;
+        }
+    }
+
+    let count = lines.len();
+    let length = |lines: &[ColouredLine], (first, last): (usize, usize)| {
+        let mut total = 0.0;
+        let mut at = first;
+        while at != last {
+            total += lines[at].line.length();
+            at = (at + 1) % count;
+        }
+        total + lines[last].line.length()
+    };
+    let paint = |lines: &mut [ColouredLine], (first, last): (usize, usize), colour: u8| {
+        let mut at = first;
+        while at != last {
+            lines[at].colour = colour;
+            at = (at + 1) % count;
+        }
+        lines[last].colour = colour;
+    };
+
+    let segments = get_segments(&lines);
+    if segments.len() >= 2 {
+        for curr in 0..segments.len() {
+            let next = (curr + 1) % segments.len();
+            let c0 = lines[segments[curr].0].colour;
+            let c1 = lines[segments[next].0].colour;
+            if c0 != c1
+                && length(&lines, segments[curr]) >= tenth
+                && length(&lines, segments[next]) <= short
+            {
+                paint(&mut lines, segments[next], c0);
+            }
+        }
+    }
+
+    let segments = get_segments(&lines);
+    if segments.len() >= 2 {
+        for curr in 0..segments.len() {
+            let next = (curr + 1) % segments.len();
+            let c0 = lines[segments[curr].0].colour;
+            let c1 = lines[segments[next].0].colour;
+            if c0 >= 1 && c0 != c1 && length(&lines, segments[next]) <= short {
+                paint(&mut lines, segments[next], c0);
+            }
+        }
+    }
+    // The reference's last pass, over three runs with the first and the
+    // third of one painted colour and the middle one short, gives the
+    // colour to the third run, which has it already: it changes nothing
+    // and is left out.
+    lines
+}
+
 #[cfg(test)]
 mod tests {
     use edge_geom::Point2;
@@ -187,11 +267,30 @@ mod tests {
             .collect()
     }
 
+    fn colours(lines: &[ColouredLine]) -> Vec<u8> {
+        lines.iter().map(|line| line.colour).collect()
+    }
+
     #[test]
     fn runs_round_a_ring_start_at_the_first_change() {
         let lines = run(&[(1.0, 1), (1.0, 1), (1.0, 2), (1.0, 0), (1.0, 1)]);
         assert_eq!(get_segments(&lines), [(2, 2), (3, 3), (4, 1)]);
         let one = run(&[(1.0, 3), (1.0, 3)]);
         assert_eq!(get_segments(&one), [(0, 1)]);
+    }
+
+    #[test]
+    fn short_runs_go_to_the_colour_about_them() {
+        // 0.4 mm unpainted between two of colour 2 goes to 2; 0.15 mm of
+        // 3 after a long run of 1 goes to 1.
+        let lines = filter_colorized_polygon(
+            run(&[(5.0, 2), (0.4, 0), (5.0, 2), (5.0, 1), (0.15, 3), (5.0, 0)]),
+            1.0,
+        );
+        assert_eq!(colours(&lines), [2, 2, 2, 1, 1, 0]);
+        // 0.4 mm of colour between two unpainted runs stays: only paint
+        // closes over a gap.
+        let lines = filter_colorized_polygon(run(&[(5.0, 0), (0.4, 2), (5.0, 0)]), 1.0);
+        assert_eq!(colours(&lines), [0, 2, 0]);
     }
 }

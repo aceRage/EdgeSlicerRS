@@ -1745,20 +1745,23 @@ Painted colours are a first working version. A project's `paint_color`
 is read, triangles cut up as the paint cuts them (a port of
 `TriangleSelector::deserialize`), and each painted object is shared out
 between filaments as the reference's `segmentation_by_painting` shares
-it with `paint_depth_mode` at `unlimited`, its default: every point of a
-layer takes the colour of the nearest stretch of the layer's outline
-(the Voronoi diagram of the outline's edges, each coloured by the
-painted triangles that cut the layer there), and what is painted on a
-top or bottom face is carried through the shell layers behind it, in by
-a wall and a space, where it wins over what the sides say. Not a port
-line for line: a triangle's cut colours an edge of the outline when it
-lies within 0.15 mm of it, where the reference walks a grid and tests
-angles; runs of colour under 0.2 mm go to their neighbour; islands of
-paint too small for a classic wall are not dropped. Two parts of an
-object rarely meet exactly: their meshes follow the same curve with
-different corners, and cracks a few micrometres wide are left between
-them. This engine closes those cracks when it slices. The reference
-does not, so where paint makes both sides of a crack one filament it
+it with `paint_depth_mode` at `unlimited`, its default. The sides are a
+port of the reference's stages, listed at the top of edge-paint's
+`side` module: each painted triangle is cut by the layer's plane and
+the cut put onto the edges of the outline within 5 micrometres and 30
+degrees of it, each ring is cut into lines of one colour with short
+runs given to the colours about them (`colorize_contours`,
+`filter_colorized_polygon`), and the layer is divided along the edges
+of the Voronoi diagram of those lines that part two colours, traced
+through the reference's graph (`MMU_Graph`, `extract_colored_segments`).
+What is painted on a top or bottom face is carried through the shell
+layers behind it, in by a wall and a space, where it wins over what the
+sides say. Islands of paint too small for a classic wall are not
+dropped. Two parts of an object rarely meet exactly: their meshes
+follow the same curve with different corners, and cracks a few
+micrometres wide are left between them. This engine closes those
+cracks when it slices. The reference does not, so where paint makes
+both sides of a crack one filament it
 lays walls round the crack, a slit of two loops in the middle of a
 solid area. That is not copied. The bounded depths
 (`paint_depth_mode` at `walls` or `millimeters`), interlocking and
