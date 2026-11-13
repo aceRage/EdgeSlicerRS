@@ -29,6 +29,10 @@ pub(super) fn short_name(name: &str) -> &str {
     name.split('@').next().unwrap_or(name).trim()
 }
 
+/// A row of the Filament manager being gathered: its presets, its type
+/// and the printers it is cut for.
+type ManagerRow = (Vec<String>, String, BTreeSet<String>);
+
 /// The filament types put first on the guide's page, in this order
 /// (22.js `FilamentPriority`); the rest follow as they are met.
 const TYPE_PRIORITY: [&str; 5] = ["pla", "abs", "pet", "tpu", "pc"];
@@ -155,29 +159,26 @@ impl Session {
     /// usual ones (`default_materials`); the printers, types and vendors
     /// to tick by, in the page's order.
     pub(super) fn filament_selection(&self, args: &Value) -> Result<Value, String> {
-        let wanted = match args.get("models").and_then(Value::as_array) {
-            None => None,
-            Some(models) => Some(
-                models
-                    .iter()
-                    .filter_map(|entry| {
-                        let vendor = entry.get("vendor")?.as_str()?.to_owned();
-                        let model = entry.get("model")?.as_str()?.to_owned();
-                        let nozzles = entry
-                            .get("nozzles")
-                            .and_then(Value::as_array)
-                            .map(|nozzles| {
-                                nozzles
-                                    .iter()
-                                    .filter_map(|n| n.as_str().map(str::to_owned))
-                                    .collect()
-                            })
-                            .unwrap_or_default();
-                        Some((vendor, model, nozzles))
-                    })
-                    .collect::<Vec<_>>(),
-            ),
-        };
+        let wanted = args.get("models").and_then(Value::as_array).map(|models| {
+            models
+                .iter()
+                .filter_map(|entry| {
+                    let vendor = entry.get("vendor")?.as_str()?.to_owned();
+                    let model = entry.get("model")?.as_str()?.to_owned();
+                    let nozzles = entry
+                        .get("nozzles")
+                        .and_then(Value::as_array)
+                        .map(|nozzles| {
+                            nozzles
+                                .iter()
+                                .filter_map(|n| n.as_str().map(str::to_owned))
+                                .collect()
+                        })
+                        .unwrap_or_default();
+                    Some((vendor, model, nozzles))
+                })
+                .collect::<Vec<_>>()
+        });
         let machines = self.guide_machines(wanted);
         let groups = self.guide_groups(&machines)?;
         let enabled = lock(&self.state).store.data.filaments.clone();
@@ -308,8 +309,7 @@ impl Session {
             .into_iter()
             .map(|(vendor, machine, _, _)| (vendor, machine))
             .collect();
-        let mut rows: BTreeMap<(String, String), (Vec<String>, String, BTreeSet<String>)> =
-            BTreeMap::new();
+        let mut rows: BTreeMap<(String, String), ManagerRow> = BTreeMap::new();
         for vendor in &vendors {
             let Ok(shelf) = self.shelf(vendor) else {
                 continue;

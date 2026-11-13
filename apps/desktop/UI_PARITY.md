@@ -50,7 +50,12 @@ The last column reads:
   sections 2, 6, 7, 9, 15 and 17 that point to it;
   twentieth pass: the sliced file and "Export Generic 3MF", in
   section 2 ("Slice and export", "Files"), section 15 ("The sliced file")
-  and section 17; and Preferences, section 18).
+  and section 17; and Preferences, section 18; setup pass: "Filament
+  Selection", the Filament manager, "Create Printer/Nozzle", "Create
+  Filament" and deleting a printer of one's own with its presets, in
+  section 8, with the rows of sections 2, 7 and 9 that point to them.
+  Checked in the browser at 1280 dark English and 900 light German,
+  screenshots in `~/Dev/EdgeSlicerRS-shots/setup/`).
 - **differs** — built, but on purpose not as the C++ does it; the cell says how.
 - **not yet** — not built, with what it waits for. Nothing in this column is
   shown in the page as a control that does nothing.
