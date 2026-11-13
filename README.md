@@ -4119,8 +4119,7 @@ under the lettering are not the reference's (below), internal solid is
 
 `edge orient <model> --command-line` measures each object as the
 reference's `--orient 1` does and prints its lines ("orientation: …, cost:
-…", "best: …"); `work/orient/compare.sh` in the baselines folder runs both
-and puts them side by side. On 3DBenchy, the seven handy models, the 16
+…", "best: …"), to set beside the reference's own. On 3DBenchy, the seven handy models, the 16
 turned and mirrored arms of `mcbrim_test.3mf` and eight shapes made for it
 (a tilted box, an L standing up and lying, a T on its post, a mushroom
 upright and tilted, a wedge, a cube on its edge) the directions tried are

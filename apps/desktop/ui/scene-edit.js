@@ -63,6 +63,7 @@
     add: 'M1.5,12.5v-9a1,1,0,0,1,1-1h3l1.5,2h6.5a1,1,0,0,1,1,1v7a1,1,0,0,1-1,1h-11A1,1,0,0,1,1.5,12.5ZM8,7v4M6,9h4',
     addPlate: 'M1.5,11.5l6.5,3l6.5-3l-6.5-3ZM8,1.5v5M5.5,4h5',
     arrange: 'M1.5,1.5h5v5h-5ZM9.5,1.5h5v5h-5ZM1.5,9.5h5v5h-5ZM9.5,9.5h5v5h-5Z',
+    orient: 'M2,14.5h12M4.5,14.5v-5h7v5M2.5,7a5.5,5.5,0,0,1,10.5-3M13.5,1.5v3h-3',
     splitObjects: 'M1.5,4.5h5v8h-5ZM9.5,2.5h5v5h-5ZM9.5,10.5h5v3h-5ZM8,1v14',
     splitParts: 'M1.5,3.5h13v9h-13ZM6.5,3.5v9M10.5,3.5v9',
     undo: 'M5,3.5l-3,3l3,3M2,6.5h7.5a4,4,0,0,1,0,8h-3.5',
@@ -183,6 +184,9 @@
         // A click opens the options beside it, as the reference's toolbar
         // item does (GLCanvas3D.cpp `_render_arrange_menu`); their
         // "Arrange" and the A key arrange.
+        // "Auto orient" (GLCanvas3D.cpp `_init_main_toolbar`, the item
+        // "orient"): a click orients what is selected, or everything.
+        orient: button('orient', t('Auto orient all/selected objects'), `${t('Auto orient all/selected objects')} [Q]\n${t('Auto orient all objects on current plate')} [${t('Shift+')}Q]`, ICONS.orient, () => this.orient(false)),
         arrange: button('arrange', t('Arrange all objects'), `${t('Arrange all objects')} [A]\n${t('Arrange objects on selected plates')} [Shift+A]`, ICONS.arrange, () => this.toggleArrangeMenu()),
         splitObjects: button('split-objects', t('Split to objects'), t('Split to objects'), ICONS.splitObjects, () => this.split(true)),
         splitParts: button('split-parts', t('Split to parts'), t('Split to parts'), ICONS.splitParts, () => this.split(false)),
@@ -195,7 +199,7 @@
       }
       const b = this.buttons;
       this.bar = el('div', { className: 'toolbar', id: 'edit-bar' },
-        b.add, b.addPlate, gap(), b.arrange, gap(), b.splitObjects, b.splitParts, gap(), b.move, b.rotate, b.scale, b.flatten, b.cut, b.boolean, gap(),
+        b.add, b.addPlate, gap(), b.orient, b.arrange, gap(), b.splitObjects, b.splitParts, gap(), b.move, b.rotate, b.scale, b.flatten, b.cut, b.boolean, gap(),
         b.supports, b.seam, b.fuzzy_skin, b.color, gap(), b.undo, b.redo);
       this.bar.setAttribute('role', 'toolbar');
       this.bar.setAttribute('aria-label', t('Prepare'));
@@ -405,6 +409,18 @@
       if (all) { this.commit({ op: 'arrange', all: true }); return; }
       const chosen = this.partMode() ? [] : [...this.stage.selection()];
       this.commit(chosen.length ? { op: 'arrange', copies: chosen } : { op: 'arrange' });
+    },
+
+    // "Auto orient" (Plater.cpp `orient`, Jobs/OrientJob.cpp): Q and the
+    // toolbar orient the objects selected (a part selected stands for its
+    // object), or every object with none selected; Shift+Q the plate shown.
+    // A locked plate is refused in the reference's words, from the session.
+    async orient(plate) {
+      const project = this.host.project();
+      if (!this.editing() || !this.data() || !this.data().placings.length || this.busy) return;
+      this.host.say(t('Orienting...'));
+      const args = plate ? { op: 'orient', plate: project.plate } : { op: 'orient', copies: [...this.stage.selection()] };
+      await this.commit(args);
     },
 
     // ---- the options beside the Arrange button ----
@@ -741,6 +757,7 @@
         return;
       }
       if (key === 'a') { take(() => this.arrange(!event.shiftKey)); return; }
+      if (key === 'q') { take(() => this.orient(event.shiftKey)); return; }
       for (const [tool, { key: letter }] of Object.entries(TOOLS)) {
         if (key === letter && !event.shiftKey) { take(() => this.setTool(this.tool === tool ? null : tool)); return; }
       }
@@ -819,6 +836,7 @@
       b.add.disabled = this.busy;
       b.addPlate.disabled = this.busy || project.empty || !printer;
       b.arrange.disabled = this.busy || !data || !data.placings.length || !printer;
+      b.orient.disabled = this.busy || !data || !data.placings.length;
       const target = this.splitTarget();
       b.splitObjects.disabled = this.busy || !target || !target.split.objects;
       b.splitParts.disabled = this.busy || !((target && target.split.parts) || this.splitPart());
