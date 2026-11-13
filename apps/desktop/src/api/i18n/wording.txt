@@ -22,6 +22,8 @@ All non-solid parts (modifiers) were deleted	GUI/Plater.cpp:16185
 Angular width of one lug, in degrees. It has to share its slice of the bore with the entry channel and the track.	GUI/Gizmos/GLGizmoCut.cpp:7551
 Apply All	GUI/Plater.cpp:3688
 Filament manager	GUI/PresetManagerDialog.cpp:54
++ Add row	GUI/CreatePresetsDialog.cpp:1043
+No compatible preset	GUI/CreatePresetsDialog.cpp:1718
 Attached to A	GUI/Gizmos/GLGizmoCut.cpp:8158
 Attached to B	GUI/Gizmos/GLGizmoCut.cpp:8158
 Auto edge placement	GUI/Gizmos/GLGizmoCut.cpp:7618
@@ -609,6 +611,8 @@ Search
 Printers
 Source
 Changes are saved at once.
+Create new
+Create a new filament preset
 
 # The menu bar's entries that are not built: what each waits for
 # (src/api/menu.rs), shown as the entry's tooltip.

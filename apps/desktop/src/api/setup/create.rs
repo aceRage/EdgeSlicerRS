@@ -25,7 +25,7 @@ use super::super::{
     i18n::{fill, tr},
     lock, needed, printers, text,
 };
-use super::lists::{NOZZLES, PRINTER_MODELS, PRINTER_VENDORS};
+use super::lists::{FILAMENT_VENDORS, NOZZLES, PRINTER_MODELS, PRINTER_VENDORS};
 
 /// The folder the reference keeps its printer templates in, beside its
 /// profiles (Preset.hpp `PRESET_PROFILES_TEMOLATE_DIR`), and the vendor
@@ -898,6 +898,525 @@ impl Session {
             );
         }
         Ok(answer)
+    }
+}
+
+/// A filament preset "Create Filament" can make from: its name, type, the
+/// printers it names, whether it is laid over another, and its id.
+struct Source {
+    name: String,
+    kind: String,
+    printers: Vec<String>,
+    stands_alone: bool,
+    filament_id: String,
+}
+
+/// The nozzle a printer preset's name gives ("… 0.4 nozzle" or "…(0.4
+/// nozzle)"), as `get_printer_nozzle_diameter` reads it; empty without.
+fn printer_nozzle(name: &str) -> String {
+    let (head, open) = match name.find(" nozzle)") {
+        Some(at) => (&name[..at], '('),
+        None => match name.find(" nozzle") {
+            Some(at) => (&name[..at], ' '),
+            None => return String::new(),
+        },
+    };
+    head.rsplit(open).next().unwrap_or_default().to_owned()
+}
+
+/// A printer preset's name without its nozzle, and the nozzle
+/// (`split_printer_name_nozzle`).
+fn printer_base(name: &str) -> (String, String) {
+    let nozzle = printer_nozzle(name);
+    if nozzle.is_empty() {
+        return (name.to_owned(), nozzle);
+    }
+    let bracket = format!("({nozzle} nozzle)");
+    let plain = format!("{nozzle} nozzle");
+    let base = if let Some(at) = name.find(&bracket) {
+        format!("{}{}", &name[..at], &name[at + bracket.len()..])
+    } else if let Some(at) = name.find(&plain) {
+        format!("{}{}", &name[..at], &name[at + plain.len()..])
+    } else {
+        name.to_owned()
+    };
+    let collapsed = base
+        .split(' ')
+        .filter(|part| !part.is_empty())
+        .collect::<Vec<_>>()
+        .join(" ");
+    let base = if collapsed.is_empty() {
+        name.to_owned()
+    } else {
+        collapsed
+    };
+    (base, nozzle)
+}
+
+/// The reference's natural order without regard to case, digits by value
+/// (`natural_less_nocase`), near enough for its lists: by the text in
+/// lower case with each run of digits compared as a number.
+fn natural(a: &str, b: &str) -> std::cmp::Ordering {
+    let parts = |text: &str| -> Vec<(bool, String)> {
+        let mut out: Vec<(bool, String)> = Vec::new();
+        for c in text.to_lowercase().chars() {
+            let digit = c.is_ascii_digit();
+            match out.last_mut() {
+                Some((was, run)) if *was == digit => run.push(c),
+                _ => out.push((digit, c.to_string())),
+            }
+        }
+        out
+    };
+    let (x, y) = (parts(a), parts(b));
+    for ((dx, px), (dy, py)) in x.iter().zip(&y) {
+        let order = if *dx && *dy {
+            let (nx, ny) = (px.trim_start_matches('0'), py.trim_start_matches('0'));
+            nx.len().cmp(&ny.len()).then_with(|| nx.cmp(ny))
+        } else {
+            px.cmp(py)
+        };
+        if order != std::cmp::Ordering::Equal {
+            return order;
+        }
+    }
+    x.len().cmp(&y.len())
+}
+
+impl Session {
+    /// The printer presets "Create Filament" offers: every one shown, the
+    /// vendors' of the printers added and the person's
+    /// (`get_all_visible_printer_name`).
+    fn visible_printers(&self) -> Vec<String> {
+        let mut printers: Vec<String> = self
+            .guide_machines(None)
+            .into_iter()
+            .map(|(_, machine, _, _)| machine)
+            .collect();
+        printers.extend(
+            self.users()
+                .of(Kind::Machine)
+                .filter(|preset| preset.visible)
+                .map(|preset| preset.name.clone()),
+        );
+        printers.sort();
+        printers.dedup();
+        printers
+    }
+
+    /// Every filament preset "Create Filament" can make from: the person's
+    /// and the vendors' shown, each with a `filament_id`
+    /// (`get_all_filament_presets`), and the types of all the vendors'
+    /// (`m_system_filament_types_set`).
+    fn filament_sources(&self) -> (Vec<Source>, BTreeSet<String>) {
+        let vendors: Vec<String> = lock(&self.state)
+            .store
+            .data
+            .models
+            .keys()
+            .cloned()
+            .collect();
+        let shown = self.shown_filaments();
+        let mut sources = Vec::new();
+        let mut types = BTreeSet::new();
+        let source_of = |name: &str, settings: &Settings| -> Source {
+            let first = |key: &str| {
+                settings
+                    .texts(key)
+                    .and_then(|items| items.first().cloned())
+                    .or_else(|| settings.text(key).map(str::to_owned))
+                    .unwrap_or_default()
+            };
+            Source {
+                name: name.to_owned(),
+                kind: first("filament_type"),
+                printers: settings
+                    .texts("compatible_printers")
+                    .map(<[String]>::to_vec)
+                    .unwrap_or_default()
+                    .into_iter()
+                    .filter(|printer| !printer.is_empty())
+                    .collect(),
+                stands_alone: settings.text("inherits").is_none_or(str::is_empty),
+                filament_id: settings.text("filament_id").unwrap_or_default().to_owned(),
+            }
+        };
+        let mut first_shelf = None;
+        for vendor in &vendors {
+            let Ok(shelf) = self.shelf(vendor) else {
+                continue;
+            };
+            for name in shelf.all_of(Kind::Filament) {
+                let Ok(settings) = shelf.resolve(Kind::Filament, &name) else {
+                    continue;
+                };
+                let source = source_of(&name, &settings);
+                if source.filament_id.is_empty() || source.filament_id == "null" {
+                    continue;
+                }
+                types.insert(source.kind.clone());
+                if shown.as_ref().is_none_or(|shown| shown.contains(&name)) {
+                    sources.push(source);
+                }
+            }
+            first_shelf.get_or_insert(shelf);
+        }
+        if let Some(shelf) = first_shelf {
+            let users = self.users();
+            for preset in users.of(Kind::Filament) {
+                let Ok(settings) = self.resolve_named(&shelf, Kind::Filament, &preset.name) else {
+                    continue;
+                };
+                let mut source = source_of(&preset.name, &settings);
+                source.stands_alone = preset.inherits.is_none();
+                if source.filament_id.is_empty() || source.filament_id == "null" {
+                    continue;
+                }
+                sources.retain(|known| known.name != source.name);
+                sources.push(source);
+            }
+        }
+        (sources, types)
+    }
+
+    /// `create_filament_choices`: the lists of "Create Filament": its
+    /// vendors (Snapmaker first, then in natural order), the types of the
+    /// filaments known, and the printers shown.
+    pub(in crate::api) fn create_filament_choices(&self) -> Result<Value, String> {
+        let mut vendors: Vec<&str> = FILAMENT_VENDORS
+            .iter()
+            .copied()
+            .filter(|v| *v != "Snapmaker")
+            .collect();
+        vendors.sort_by(|a, b| natural(a, b));
+        if FILAMENT_VENDORS.contains(&"Snapmaker") {
+            vendors.insert(0, "Snapmaker");
+        }
+        let (_, types) = self.filament_sources();
+        let mut types: Vec<String> = types.into_iter().filter(|kind| !kind.is_empty()).collect();
+        types.sort_by(|a, b| natural(a, b));
+        Ok(json!({ "vendors": vendors, "types": types }))
+    }
+
+    /// `create_filament_presets`: for a type, what "Create Based on
+    /// Current Filament" offers (each filament that stands alone, by its
+    /// name up to " @", with the printers its presets are for:
+    /// `get_filament_preset_choices`) and what "Copy Current Filament
+    /// Preset " offers (each printer shown, by its name without the
+    /// nozzle, its nozzles, and for each the presets of the type for it:
+    /// `get_filament_presets_by_machine`, `build_printer_nozzle_map`),
+    /// with the first row the printer and filament the project is on.
+    pub(in crate::api) fn create_filament_presets(&self, args: &Value) -> Result<Value, String> {
+        let wanted = needed(args, "type")?;
+        let (sources, _) = self.filament_sources();
+        let printers = self.visible_printers();
+        // For a printer, a preset's printers: those it names that are shown,
+        // or every one shown with a nozzle in its name when it names none.
+        let printers_of = |source: &Source| -> Vec<String> {
+            if source.printers.is_empty() {
+                printers
+                    .iter()
+                    .filter(|printer| nozzle_number(&printer_nozzle(printer)).is_some())
+                    .cloned()
+                    .collect()
+            } else {
+                source
+                    .printers
+                    .iter()
+                    .filter(|printer| printers.contains(printer))
+                    .filter(|printer| nozzle_number(&printer_nozzle(printer)).is_some())
+                    .cloned()
+                    .collect()
+            }
+        };
+        // "Create Based on Current Filament".
+        let mut by_id: BTreeMap<String, Vec<&Source>> = BTreeMap::new();
+        for source in sources
+            .iter()
+            .filter(|s| s.stands_alone && s.kind == wanted)
+        {
+            by_id
+                .entry(source.filament_id.clone())
+                .or_default()
+                .push(source);
+        }
+        let mut choices: Vec<(String, Vec<(String, String)>)> = Vec::new();
+        let mut taken: BTreeSet<String> = BTreeSet::new();
+        let mut suffix = 0;
+        for presets in by_id.values() {
+            let names: BTreeSet<&str> = presets.iter().map(|s| prefix_of(&s.name)).collect();
+            for public in names {
+                let mut label = public.to_owned();
+                if taken.contains(&label) {
+                    suffix += 1;
+                    label = format!("{public}_{suffix}");
+                }
+                taken.insert(label.clone());
+                let mut pairs: Vec<(String, String)> = presets
+                    .iter()
+                    .flat_map(|source| {
+                        printers_of(source)
+                            .into_iter()
+                            .map(|printer| (printer, source.name.clone()))
+                    })
+                    .collect();
+                pairs.sort_by(|a, b| natural(&a.0, &b.0));
+                choices.push((label, pairs));
+            }
+        }
+        let (snapmaker, others): (Vec<_>, Vec<_>) = choices
+            .into_iter()
+            .partition(|(label, _)| label.contains("Snapmaker"));
+        let mut snapmaker = snapmaker;
+        let mut others = others;
+        snapmaker.sort_by(|a, b| natural(&a.0, &b.0));
+        others.sort_by(|a, b| natural(&a.0, &b.0));
+        let base: Vec<Value> = snapmaker
+            .into_iter()
+            .chain(others)
+            .map(|(label, pairs)| {
+                json!({
+                    "name": label,
+                    "printers": pairs.iter().map(|(printer, preset)| json!({ "printer": printer, "preset": preset })).collect::<Vec<_>>(),
+                })
+            })
+            .collect();
+        // "Copy Current Filament Preset ".
+        let mut for_printer: BTreeMap<String, Vec<String>> = BTreeMap::new();
+        for source in sources.iter().filter(|s| s.kind == wanted) {
+            for printer in printers_of(source) {
+                for_printer
+                    .entry(printer)
+                    .or_default()
+                    .push(source.name.clone());
+            }
+        }
+        let mut bases: BTreeMap<String, Vec<(String, String)>> = BTreeMap::new();
+        for printer in &printers {
+            let (base, nozzle) = printer_base(printer);
+            let nozzles = bases.entry(base.clone()).or_default();
+            if nozzles.iter().any(|(known, _)| *known == nozzle) {
+                bases
+                    .entry(printer.clone())
+                    .or_default()
+                    .push((nozzle, printer.clone()));
+            } else {
+                nozzles.push((nozzle, printer.clone()));
+            }
+        }
+        let mut table: Vec<(String, Vec<(String, String)>)> = bases.into_iter().collect();
+        table.sort_by(|a, b| natural(&a.0, &b.0));
+        let table: Vec<Value> = table
+            .into_iter()
+            .map(|(base, mut nozzles)| {
+                nozzles.sort_by(|a, b| natural(&a.0, &b.0));
+                json!({
+                    "printer": base,
+                    "nozzles": nozzles.iter().map(|(nozzle, printer)| {
+                        let mut presets = for_printer.get(printer).cloned().unwrap_or_default();
+                        presets.sort_by(|a, b| natural(a, b));
+                        presets.dedup();
+                        json!({ "nozzle": if nozzle.is_empty() { "-" } else { nozzle.as_str() }, "machine": printer, "presets": presets })
+                    }).collect::<Vec<_>>(),
+                })
+            })
+            .collect();
+        // The first row: what the project is on.
+        let (machine, filament) = {
+            let state = lock(&self.state);
+            let project = &state.projects[state.target(args)?];
+            (
+                project.choices.machine.clone(),
+                project.choices.filaments.first().cloned(),
+            )
+        };
+        Ok(
+            json!({ "base": base, "table": table, "current": { "machine": machine, "filament": filament } }),
+        )
+    }
+
+    /// `create_filament`: "Create" (CreateFilamentPresetDialog's
+    /// `create_dialog_buttons`): its checks in its order, then one preset
+    /// for each printer and preset chosen (`presets: [{ printer, preset }]`),
+    /// each a copy of the preset standing alone, named "<vendor> <type>
+    /// <serial> @<printer>", its vendor, type and printer set, all with one
+    /// new `filament_id` (`clone_presets_for_filament`). Asked first: a
+    /// name already a filament's (`continue_name` answers), a preset of a
+    /// name taken (`rewrite`).
+    pub(in crate::api) fn create_filament(&self, args: &Value) -> Result<Value, String> {
+        let custom = args.get("custom").and_then(Value::as_bool) == Some(true);
+        let mut vendor = if custom {
+            let typed = text(args, "custom_vendor").unwrap_or_default();
+            if typed.is_empty() {
+                return Err(tr(
+                    "Custom vendor is not input, please input custom vendor.",
+                ));
+            }
+            if typed == "Bambu" || typed == "Generic" {
+                return Err(tr(
+                    "\"Bambu\" or \"Generic\" cannot be used as a Vendor for custom filaments.",
+                ));
+            }
+            typed.to_owned()
+        } else {
+            match text(args, "vendor").filter(|vendor| !vendor.is_empty()) {
+                Some(vendor) => vendor.to_owned(),
+                None => return Err(tr("Vendor is not selected, please reselect vendor.")),
+            }
+        };
+        let kind = text(args, "type")
+            .filter(|kind| !kind.is_empty())
+            .ok_or_else(|| tr("Filament type is not selected, please reselect type."))?
+            .to_owned();
+        let mut serial = text(args, "serial").unwrap_or_default().to_owned();
+        if serial.is_empty() {
+            return Err(tr("Filament serial is not entered, please enter serial."));
+        }
+        vendor = without_special(&vendor);
+        serial = without_special(&serial);
+        if vendor.is_empty() || serial.is_empty() {
+            return Err(tr(
+                "There may be escape characters in the vendor or serial input of filament. Please delete and re-enter.",
+            ));
+        }
+        vendor = vendor.trim().to_owned();
+        serial = serial.trim().to_owned();
+        if vendor.is_empty() || serial.is_empty() {
+            return Err(tr(
+                "All inputs in the custom vendor or serial are spaces. Please re-enter.",
+            ));
+        }
+        if custom && vendor.chars().all(|c| c.is_ascii_digit()) {
+            return Err(tr("The vendor cannot be a number. Please re-enter."));
+        }
+        let mut chosen: Vec<(String, String)> = Vec::new();
+        for pair in args
+            .get("presets")
+            .and_then(Value::as_array)
+            .into_iter()
+            .flatten()
+        {
+            let (Some(printer), Some(preset)) = (
+                pair.get("printer").and_then(Value::as_str),
+                pair.get("preset").and_then(Value::as_str),
+            ) else {
+                continue;
+            };
+            let pair = (printer.to_owned(), preset.to_owned());
+            if !chosen.contains(&pair) {
+                chosen.push(pair);
+            }
+        }
+        if chosen.is_empty() {
+            return Err(tr(
+                "You have not selected a printer or preset yet. Please select at least one.",
+            ));
+        }
+        let name = format!(
+            "{vendor} {} {serial}",
+            if kind == "PLA-AERO" {
+                "PLA Aero"
+            } else {
+                kind.as_str()
+            }
+        );
+        // `is_alias_exist`: a filament of that name already.
+        let (sources, _) = self.filament_sources();
+        let users = self.users();
+        let exists = sources
+            .iter()
+            .any(|source| super::short_name(&source.name) == name)
+            || users
+                .of(Kind::Filament)
+                .any(|preset| super::short_name(&preset.name) == name);
+        if exists && args.get("continue_name").and_then(Value::as_bool) != Some(true) {
+            return Ok(json!({
+                "created": false,
+                "step": "name",
+                "title": tr("Info"),
+                "ask": fill(&tr("The Filament name %s you created already exists.\nIf you continue creating, the preset created will be displayed with its full name. Do you want to continue?"), &[&name]),
+            }));
+        }
+        let made_names: Vec<String> = chosen
+            .iter()
+            .map(|(printer, _)| format!("{name} @{printer}"))
+            .collect();
+        let taken: Vec<&String> = made_names
+            .iter()
+            .filter(|made| users.get(Kind::Filament, made).is_some())
+            .collect();
+        if !taken.is_empty() && args.get("rewrite").and_then(Value::as_bool) != Some(true) {
+            let mut message = tr("Some existing presets have failed to be created, as follows:\n");
+            for made in &taken {
+                message.push_str(made);
+                message.push('\n');
+            }
+            message.push_str(&tr("\nDo you want to rewrite it?"));
+            return Ok(
+                json!({ "created": false, "step": "rewrite", "title": tr("Info"), "ask": message }),
+            );
+        }
+        let filament_id = self.new_filament_id(&name);
+        let vendors: Vec<String> = lock(&self.state)
+            .store
+            .data
+            .models
+            .keys()
+            .cloned()
+            .collect();
+        let shelf = self.shelf(vendors.first().ok_or("no printer is added")?)?;
+        let mut made = Vec::new();
+        for ((printer, preset), made_name) in chosen.iter().zip(&made_names) {
+            // The preset as its own vendor has it, else the person's.
+            let settings = vendors
+                .iter()
+                .filter_map(|vendor| self.shelf(vendor).ok())
+                .find_map(|shelf| self.resolve_named(&shelf, Kind::Filament, preset).ok())
+                .ok_or_else(|| format!("there is no filament preset {preset}"))?;
+            let version = users
+                .get(Kind::Filament, preset)
+                .and_then(|mine| mine.version.clone())
+                .unwrap_or_else(|| shelf.preset_version());
+            let mut own = whole(&settings, Kind::Filament);
+            own.insert(
+                "filament_vendor",
+                edge_config::Value::Many(vec![vendor.clone()]),
+            );
+            own.insert(
+                "compatible_printers",
+                edge_config::Value::Many(vec![printer.clone()]),
+            );
+            own.insert(
+                "filament_type",
+                edge_config::Value::Many(vec![kind.clone()]),
+            );
+            own.insert("filament_id", edge_config::Value::One(filament_id.clone()));
+            made.push((made_name.clone(), own, version));
+        }
+        {
+            let mut state = lock(&self.state);
+            if state.users.dir.is_none() {
+                return Err("there is no data folder to keep presets in".into());
+            }
+            let presets = Arc::make_mut(&mut state.users.presets);
+            for (made_name, own, version) in &made {
+                presets
+                    .save(
+                        Kind::Filament,
+                        made_name,
+                        ToSave {
+                            own: own.clone(),
+                            inherits: None,
+                            version: version.clone(),
+                            base_id: None,
+                        },
+                    )
+                    .map_err(|e| e.to_string())?;
+            }
+        }
+        Ok(
+            json!({ "created": true, "name": name, "filament_id": filament_id, "presets": made_names }),
+        )
     }
 }
 

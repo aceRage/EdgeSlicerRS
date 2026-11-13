@@ -3,6 +3,7 @@ use std::path::{Path, PathBuf};
 use super::*;
 use crate::api::i18n::{fill, tr};
 use edge_config::Kind;
+use md5::Digest;
 use std::sync::Arc;
 
 pub(super) fn reference(path: &str) -> String {
@@ -992,5 +993,170 @@ fn a_nozzle_is_made_for_a_printer_of_ones_own_from_the_current_printers_presets(
     assert_eq!(
         made_process["layer_height"],
         source.text("layer_height").unwrap()
+    );
+}
+
+#[test]
+fn every_check_of_create_filament_and_what_it_writes() {
+    let dir = tempfile::tempdir().unwrap();
+    let session = session(dir.path());
+    ask(&session, "printer_select", json!({ "initial": true }));
+    let choices = ask(&session, "create_filament_choices", Value::Null);
+    assert_eq!(choices["vendors"][0], "Snapmaker");
+    assert!(strings(&choices["types"]).contains(&"PLA".to_owned()));
+    let form = json!({
+        "vendor": "Polymaker", "type": "PLA", "serial": "Matte",
+        "presets": [{ "printer": U1, "preset": "Generic PLA @U1 0.4 nozzle" }],
+    });
+    let create = |args: Value| refused(&session, "create_filament", args);
+    assert_eq!(
+        create(with(form.clone(), json!({ "vendor": "" }))),
+        tr("Vendor is not selected, please reselect vendor.")
+    );
+    assert_eq!(
+        create(with(
+            form.clone(),
+            json!({ "custom": true, "custom_vendor": "" })
+        )),
+        tr("Custom vendor is not input, please input custom vendor.")
+    );
+    assert_eq!(
+        create(with(
+            form.clone(),
+            json!({ "custom": true, "custom_vendor": "Generic" })
+        )),
+        tr("\"Bambu\" or \"Generic\" cannot be used as a Vendor for custom filaments.")
+    );
+    assert_eq!(
+        create(with(form.clone(), json!({ "type": "" }))),
+        tr("Filament type is not selected, please reselect type.")
+    );
+    assert_eq!(
+        create(with(form.clone(), json!({ "serial": "" }))),
+        tr("Filament serial is not entered, please enter serial.")
+    );
+    assert_eq!(
+        create(with(form.clone(), json!({ "serial": "@;" }))),
+        tr(
+            "There may be escape characters in the vendor or serial input of filament. Please delete and re-enter."
+        )
+    );
+    assert_eq!(
+        create(with(form.clone(), json!({ "serial": "   " }))),
+        tr("All inputs in the custom vendor or serial are spaces. Please re-enter.")
+    );
+    assert_eq!(
+        create(with(
+            form.clone(),
+            json!({ "custom": true, "custom_vendor": "123" })
+        )),
+        tr("The vendor cannot be a number. Please re-enter.")
+    );
+    assert_eq!(
+        create(with(form.clone(), json!({ "presets": [] }))),
+        tr("You have not selected a printer or preset yet. Please select at least one.")
+    );
+    // "Copy Current Filament Preset ": the table for PLA, the project's
+    // printer and filament to start the first row.
+    let offered = ask(
+        &session,
+        "create_filament_presets",
+        json!({ "type": "PLA" }),
+    );
+    assert_eq!(offered["current"]["machine"], U1);
+    let u1 = offered["table"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|row| row["printer"] == "Snapmaker U1")
+        .expect("the U1 by its name without the nozzle");
+    let nozzle = u1["nozzles"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|n| n["nozzle"] == "0.4")
+        .unwrap();
+    assert_eq!(nozzle["machine"], U1);
+    assert!(strings(&nozzle["presets"]).contains(&"Generic PLA @U1 0.4 nozzle".to_owned()));
+
+    // Made, read back from the disk.
+    let made = ask(&session, "create_filament", form.clone());
+    assert_eq!(made["created"], true);
+    let name = format!("Polymaker PLA Matte @{U1}");
+    assert_eq!(made["presets"], json!([name]));
+    let written = read_json(
+        &user_dir(dir.path())
+            .join("filament")
+            .join("base")
+            .join(format!("{name}.json")),
+    );
+    assert_eq!(written["name"], name.as_str());
+    assert_eq!(written["inherits"], "");
+    assert_eq!(written["from"], "User");
+    assert_eq!(written["filament_vendor"], json!(["Polymaker"]));
+    assert_eq!(written["filament_type"], json!(["PLA"]));
+    assert_eq!(written["compatible_printers"], json!([U1]));
+    assert_eq!(written["filament_settings_id"], json!([name]));
+    let id = written["filament_id"].as_str().unwrap();
+    assert!(id.starts_with('P') && id.len() == 8, "{id}");
+    // The same id as `get_filament_id` gives a new name: "P" and the MD5's first seven.
+    let digest: String = md5::Md5::digest(b"Polymaker PLA Matte")
+        .iter()
+        .map(|b| format!("{b:02x}"))
+        .collect();
+    assert_eq!(id, format!("P{}", &digest[..7]));
+    let keys = reference_keys(Kind::Filament);
+    assert!(
+        written
+            .as_object()
+            .unwrap()
+            .keys()
+            .all(|key| keys.contains(key))
+    );
+    // Offered on the U1.
+    let lists = ask(
+        &session,
+        "presets",
+        json!({ "vendor": "Snapmaker", "machine": U1 }),
+    );
+    assert!(strings(&lists["user_filaments"]).contains(&name));
+
+    // Again: the name is a filament's already, then the preset is there.
+    let asked = ask(&session, "create_filament", form.clone());
+    assert_eq!(asked["step"], "name");
+    assert_eq!(
+        asked["ask"],
+        fill(
+            &tr(
+                "The Filament name %s you created already exists.\nIf you continue creating, the preset created will be displayed with its full name. Do you want to continue?"
+            ),
+            &[&"Polymaker PLA Matte"]
+        )
+    );
+    let asked = ask(
+        &session,
+        "create_filament",
+        with(form.clone(), json!({ "continue_name": true })),
+    );
+    assert_eq!(asked["step"], "rewrite");
+    let done = ask(
+        &session,
+        "create_filament",
+        with(form, json!({ "continue_name": true, "rewrite": true })),
+    );
+    assert_eq!(done["created"], true);
+    assert_eq!(done["filament_id"], id, "the filament keeps its id");
+    // "Create Based on Current Filament" now offers it: it stands alone.
+    let offered = ask(
+        &session,
+        "create_filament_presets",
+        json!({ "type": "PLA" }),
+    );
+    assert!(
+        offered["base"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|choice| choice["name"] == "Polymaker PLA Matte")
     );
 }

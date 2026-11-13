@@ -455,7 +455,169 @@ const Setup = (() => {
     dialog.showModal();
   }
 
+  // ---- "Create Filament" ----
+
+  const cf = { choices: null, offered: null, base: true };
+
+  // A row of the table: printer, nozzle and preset ("Copy Current Filament Preset ").
+  function cfRow(machine = null, filament = null) {
+    const table = cf.offered.table;
+    const printer = el('select');
+    printer.append(...table.map((row, at) => new Option(row.printer, String(at))));
+    const nozzle = el('select');
+    const preset = el('select');
+    const fillPresets = (want) => {
+      const entry = table[Number(printer.value)];
+      const at = entry ? entry.nozzles[Number(nozzle.value)] : null;
+      const names = at ? at.presets : [];
+      preset.replaceChildren(...names.map((name) => new Option(name, name)));
+      // "No compatible preset" stands where none is.
+      if (!names.length) preset.append(Object.assign(new Option(t('No compatible preset'), ''), { disabled: true, selected: true }));
+      else preset.value = names.includes(want) ? want : names[0];
+    };
+    const fillNozzles = (want, wantPreset) => {
+      const entry = table[Number(printer.value)];
+      const nozzles = entry ? entry.nozzles : [];
+      nozzle.replaceChildren(...nozzles.map((at, index) => new Option(at.nozzle, String(index))));
+      const found = nozzles.findIndex((at) => at.machine === want);
+      nozzle.value = String(Math.max(0, found));
+      fillPresets(wantPreset);
+    };
+    const start = table.findIndex((row) => row.nozzles.some((at) => at.machine === machine));
+    printer.value = String(Math.max(0, start));
+    fillNozzles(machine, filament);
+    printer.addEventListener('change', () => fillNozzles(null, null));
+    nozzle.addEventListener('change', () => fillPresets(null));
+    const remove = el('button', { type: 'button', className: 'danger', textContent: t('Remove') });
+    const row = el('div', { className: 'cr-table-row' }, listbox(printer), listbox(nozzle), listbox(preset), remove);
+    row.pick = () => {
+      const entry = table[Number(printer.value)];
+      const at = entry ? entry.nozzles[Number(nozzle.value)] : null;
+      return at && preset.value ? { printer: at.machine, preset: preset.value } : null;
+    };
+    remove.addEventListener('click', () => row.remove());
+    return row;
+  }
+
+  async function cfOffered() {
+    const page = cf.page;
+    const type = page.type.value;
+    page.base.replaceChildren(new Option(t('Select Filament Preset'), ''));
+    page.base.options[0].disabled = true;
+    page.base.value = '';
+    page.printers.replaceChildren();
+    page.rows.replaceChildren();
+    cf.offered = null;
+    if (!type) return;
+    cf.offered = await call('create_filament_presets', { project: activeId(), type });
+    page.base.append(...cf.offered.base.map((choice, at) => new Option(choice.name, String(at))));
+    // The first row starts on what the project prints with.
+    page.rows.append(cfRow(cf.offered.current.machine, cf.offered.current.filament));
+  }
+
+  function cfShowMode() {
+    const page = cf.page;
+    page.base.closest('.lb').hidden = !cf.base;
+    page.printers.hidden = !cf.base;
+    page.tableBox.hidden = cf.base;
+    page.note.textContent = cf.base
+      ? t('We could create the filament presets for your following printer:')
+      : t('We would rename the presets as "Vendor Type Serial @printer you selected".\nTo add preset for more printers, please go to printer selection');
+  }
+
+  async function cfCreate(more) {
+    const page = cf.page;
+    const presets = cf.base
+      ? [...page.printers.querySelectorAll('input:checked')].map((input) => JSON.parse(input.value))
+      : [...page.rows.children].map((row) => row.pick()).filter(Boolean);
+    const args = {
+      custom: page.cant.checked,
+      vendor: page.vendor.value,
+      custom_vendor: page.customVendor.value,
+      type: page.type.value,
+      serial: page.serial.value,
+      presets,
+      ...more,
+    };
+    let answer;
+    try {
+      answer = await call('create_filament', args);
+    } catch (error) {
+      await info(error.message);
+      return;
+    }
+    if (!answer.created) {
+      if (!(await confirmBox(answer.title, answer.ask, t('Yes'), t('No')))) return;
+      await cfCreate({ ...more, ...(answer.step === 'name' ? { continue_name: true } : { rewrite: true }) });
+      return;
+    }
+    $('cf-dialog').close();
+    presetsByMachine.clear();
+    await showSidebar();
+    if ($('fm-dialog').open) {
+      fm.rows = (await call('filament_manager', { project: activeId() })).rows;
+      fmDraw();
+    }
+    await inform(t('Filament Created Successfully'), `${t('Filament Created')}\n${t('Please go to filament setting to edit your presets if you need.\nPlease note that nozzle temperature, hot bed temperature, and maximum volumetric speed has a significant impact on printing quality. Please set them carefully.')}`);
+  }
+
+  async function openCreateFilament() {
+    cf.choices = await call('create_filament_choices', {});
+    cf.base = true;
+    const vendor = promptList(t('Select Vendor'), cf.choices.vendors);
+    const customVendor = el('input', { type: 'text', placeholder: t('Input Custom Vendor'), maxLength: 50, hidden: true });
+    const cant = el('input', { type: 'checkbox' });
+    const type = promptList(t('Select Type'), cf.choices.types);
+    const serial = el('input', { type: 'text', maxLength: 50 });
+    const base = el('select');
+    const printers = el('div', { className: 'cr-grid' });
+    const rows = el('div', { className: 'cr-table' });
+    const addRow = el('button', { type: 'button', textContent: t('+ Add row') });
+    addRow.addEventListener('click', () => { if (cf.offered) rows.append(cfRow()); });
+    const tableBox = el('div', { hidden: true },
+      el('div', { className: 'cr-table-row cr-table-head' }, el('span', { textContent: t('Printer') }), el('span', { textContent: t('Nozzle') }),
+        el('span', { textContent: t('Filament Preset') }), el('span')),
+      rows, el('div', { className: 'row' }, addRow));
+    const note = el('p', { className: 'quiet cr-note' });
+    cf.page = { vendor, customVendor, cant, type, serial, base, printers, rows, tableBox, note };
+    cant.addEventListener('change', () => {
+      vendor.closest('.lb').hidden = cant.checked;
+      customVendor.hidden = !cant.checked;
+    });
+    type.addEventListener('change', () => attempt(cfOffered));
+    base.addEventListener('change', () => {
+      const choice = cf.offered && cf.offered.base[Number(base.value)];
+      printers.replaceChildren(...(choice ? choice.printers : []).map((pair) => el('label', { className: 'fs-item', title: pair.preset },
+        el('input', { type: 'checkbox', value: JSON.stringify(pair) }), pair.printer)));
+    });
+    const create = el('button', { type: 'button', className: 'primary', textContent: t('Create') });
+    create.addEventListener('click', () => attempt(() => cfCreate({})));
+    const cancel = el('button', { type: 'button', textContent: t('Cancel') });
+    cancel.addEventListener('click', () => $('cf-dialog').close());
+    const dialog = $('cf-dialog');
+    dialog.replaceChildren(
+      el('h2', { id: 'cf-title', textContent: t('Create Filament') }),
+      el('div', { className: 'cr-page' },
+        el('h3', { className: 'cr-section', textContent: t('Basic Information') }),
+        formRow(t('Vendor'), el('div', { className: 'cr-stack' }, el('div', { className: 'cr-pair' }, listbox(vendor), customVendor),
+          el('label', { className: 'cr-check' }, cant, t("Can't find vendor I want")))),
+        formRow(t('Type'), el('div', { className: 'cr-pair' }, listbox(type))),
+        formRow(t('Serial'), el('div', { className: 'cr-stack' }, serial, el('small', { className: 'quiet', textContent: t('e.g. Basic, Matte, Silk, Marble') }))),
+        el('h3', { className: 'cr-section', textContent: t('Add Filament Preset under this filament') }),
+        formRow(t('Filament Preset'), el('div', { className: 'cr-stack' },
+          radios('cf-mode', [['base', t('Create Based on Current Filament')], ['copy', t('Copy Current Filament Preset ')]],
+            (value) => { cf.base = value === 'base'; cfShowMode(); }),
+          el('div', { className: 'cr-pair' }, listbox(base)))),
+        note,
+        el('div', { className: 'setup-scroll cr-scroll' }, el('div', { className: 'cr-lists' }, printers, tableBox))),
+      el('div', { className: 'dialog-foot' }, el('div', { className: 'grow' }), create, cancel));
+    base.append(Object.assign(new Option(t('Select Filament Preset'), ''), { disabled: true, selected: true }));
+    cfShowMode();
+    dialog.showModal();
+  }
+
   function init() {
+    $('fm-create').addEventListener('click', () => attempt(openCreateFilament));
     $('fs-all').addEventListener('click', () => fsEvery(true));
     $('fs-clear').addEventListener('click', () => fsEvery(false));
     $('fs-finish').addEventListener('click', () => attempt(fsFinish));
@@ -473,5 +635,5 @@ const Setup = (() => {
     $('fm-close').addEventListener('click', () => $('fm-dialog').close());
   }
 
-  return { init, openFilamentSelection, openFilamentManager, openCreatePrinter };
+  return { init, openFilamentSelection, openFilamentManager, openCreatePrinter, openCreateFilament };
 })();
