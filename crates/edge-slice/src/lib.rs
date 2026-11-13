@@ -22,6 +22,7 @@ pub use polyholes::{
 };
 pub use rings::{Replaced, centroid, same_ring};
 
+pub mod layering;
 mod precise_z;
 mod printable;
 

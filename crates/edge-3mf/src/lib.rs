@@ -154,6 +154,39 @@ impl Object {
             .map(ObjectKept::layer_ranges)
             .unwrap_or_default()
     }
+
+    /// The object's variable layer height profile
+    /// (`Metadata/layer_heights_profile.txt`, read as bbs_3mf.cpp
+    /// `_extract_layer_heights_profile_config_from_archive` reads it):
+    /// pairs of a height in the object and the layer height there. None
+    /// where it has none, or one the reference would not read (fewer than
+    /// six numbers, or an odd count).
+    pub fn layer_height_profile(&self) -> Option<Vec<f64>> {
+        let text = self.kept.as_deref()?.layer_heights.as_deref()?;
+        let values: Vec<f64> = text
+            .split(';')
+            .map(|value| value.trim().parse::<f64>().unwrap_or(0.0))
+            .collect();
+        (values.len() > 4 && values.len().is_multiple_of(2)).then_some(values)
+    }
+
+    /// Gives the object a layer height profile, or takes it away, written
+    /// as the reference writes one (`%f` for each number,
+    /// `_add_layer_height_profile_file_to_archive`).
+    pub fn set_layer_height_profile(&mut self, profile: Option<&[f64]>) {
+        let text = profile.filter(|values| values.len() >= 4).map(|values| {
+            values
+                .iter()
+                .map(|value| format!("{value:.6}"))
+                .collect::<Vec<_>>()
+                .join(";")
+        });
+        if text.is_none() && self.kept.is_none() {
+            return;
+        }
+        let kept = Arc::make_mut(self.kept.get_or_insert_with(Default::default));
+        kept.layer_heights = text;
+    }
 }
 
 impl Part {
