@@ -599,13 +599,21 @@ pub fn slice(job: Job, watch: &dyn Watcher) -> Result<Sliced, Failure> {
     // Read whether or not anything is painted: how deep paint goes is a
     // setting a print follows, with paint or without.
     let wall_params = walls.params(layer_height, false)?;
-    let (paint, _forced_interfaces, notes) = crate::paint::settings(
+    let (paint, forced_interfaces, notes) = crate::paint::settings(
         &settings,
         &wall_params.outer,
         &wall_params.inner,
         wall_params.arachne.is_none(),
         !painted.is_empty(),
     )?;
+    // Each filament's share a shell of its own (`interface_shells`, and a
+    // bounded paint depth with `paint_depth_solid_interfaces`;
+    // PrintObject.cpp `detect_surfaces_type`, `discover_vertical_shells`,
+    // and the tops PerimeterGenerator.cpp finds). The reference does it
+    // object by object, for a painted object; here the plate is sliced as
+    // one, and a bounded depth on a painted object makes every filament's
+    // share on the plate its own shell.
+    let interfaces = forced_interfaces || settings.flag("interface_shells")? == Some(true);
     if !painted.is_empty() {
         paint_notes = notes;
         let z: Vec<[f64; 2]> = (0..planes.len())
@@ -978,8 +986,19 @@ pub fn slice(job: Job, watch: &dyn Watcher) -> Result<Sliced, Failure> {
             }
             // A top surface is told from the part as a whole, on
             // the layer above and the one below.
+            let own_above;
+            let upper = if interfaces && index + 1 < layers.len() {
+                // What of the same share lies on the layer above.
+                let above: Vec<ExPolygon> = (group.iter())
+                    .flat_map(|member| share(*member, index + 1).iter().cloned())
+                    .collect();
+                own_above = edge_clip::union_ex(&above).map_err(|e| e.to_string())?;
+                own_above.as_slice()
+            } else {
+                outlines.get(index + 1).copied().unwrap_or(&[])
+            };
             let around = Some(edge_perimeter::Around {
-                upper: outlines.get(index + 1).copied().unwrap_or(&[]),
+                upper,
                 lower: index.checked_sub(1).map(|below| outlines[below]),
             });
             let bores = match (&walls.counterbore, index.checked_sub(1)) {
@@ -1107,7 +1126,10 @@ pub fn slice(job: Job, watch: &dyn Watcher) -> Result<Sliced, Failure> {
     };
     // With regions of their own settings, as deep as the deepest walls of
     // those on the layer, and spaced as the closest.
-    let inside_all = if regions.any() && used.len() > 1 {
+    let inside_all = if interfaces {
+        // Each share a shell of its own: no one set of walls round it all.
+        edge_infill::inside_walls(&inside_by, &printed, None)?
+    } else if regions.any() && used.len() > 1 {
         let own_around: Vec<Option<edge_infill::WallsAround>> = (stages.iter())
             .map(|own| own.infill.walls_around(layer_height))
             .collect::<Result<_, _>>()?;
@@ -1130,7 +1152,14 @@ pub fn slice(job: Job, watch: &dyn Watcher) -> Result<Sliced, Failure> {
     // `bottom_shell_thickness` ask, measured in the layers as they lie.
     let thick = heights.all();
     let shells_of: Vec<edge_infill::Shells> = (stages.iter())
-        .map(|own| own.infill.shells(layer_height))
+        .map(|own| {
+            own.infill
+                .shells(layer_height)
+                .map(|shells| edge_infill::Shells {
+                    interface: interfaces,
+                    ..shells
+                })
+        })
         .collect::<Result<_, _>>()?;
     let anchoring_of: Vec<edge_infill::Anchoring> = (stages.iter())
         .map(|own| own.infill.anchoring(layer_height))
@@ -1381,12 +1410,11 @@ pub fn slice(job: Job, watch: &dyn Watcher) -> Result<Sliced, Failure> {
             if !ironing.enabled() {
                 continue;
             }
-            let opening = shells_of[filament].opening;
             let own = ironing.for_filament(used[filament], layer_height);
             let slices: Vec<&[ExPolygon]> = (0..layers.len())
                 .map(|index| share(filament, index))
                 .collect();
-            let faces = edge_infill::exposed(&slices, &outlines, opening)?;
+            let faces = edge_infill::exposed(&slices, &outlines, &shells_of[filament])?;
             let (surfaces, perimeters) = (&surfaces_by[filament], &walls_by[filament]);
             let ironed = (0..layers.len())
                 .into_par_iter()

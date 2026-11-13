@@ -659,6 +659,7 @@ impl InfillSettings {
             opening: scaled(outer.width / 10.0),
             ensure: self.ensure_vertical_shells.then(|| scaled(solid.spacing)),
             outer_spacing: outer.scaled_spacing(),
+            outer_width: outer.scaled_width(),
             // The width of the walls: the outer one's and every inner
             // one's (`offset_distance` in `detect_surfaces_type`).
             second_bridge: if self.extra_bridge_layer.external() {
@@ -676,6 +677,8 @@ impl InfillSettings {
             } else {
                 None
             },
+            // Set by the caller where shares are shells of their own.
+            interface: false,
         })
     }
 

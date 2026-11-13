@@ -109,12 +109,6 @@ pub(crate) fn settings(
                 .to_owned(),
         );
     }
-    if painted && bounded && solid_interfaces {
-        notes.push(
-            "paint_depth_solid_interfaces \"1\": where one colour meets another above or below it there is no solid skin of its own"
-                .to_owned(),
-        );
-    }
     if painted {
         for key in [
             "top_color_penetration_layers",
@@ -567,7 +561,7 @@ mod tests {
         assert!((f64::from(paint.depth.interlocking) - 0.1).abs() < 1e-6);
         assert!((f64::from(paint.depth.wall_stack) - 0.87854).abs() < 1e-5);
         assert!((f64::from(paint.depth.min_claim_width) - 0.45).abs() < 1e-6);
-        assert_eq!(notes.len(), 1, "{notes:?}");
+        assert!(notes.is_empty(), "{notes:?}");
         // Solid interfaces are forced with a bounded depth on paint, unless
         // turned off; never with an unlimited one.
         let forced = |json: &str, painted: bool| read_all(json, false, painted).unwrap().1;

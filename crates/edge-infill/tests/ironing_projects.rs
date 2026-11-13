@@ -106,7 +106,7 @@ fn every_solid_layer_is_ironed_inside_its_outline() {
             &shells,
         )
         .unwrap();
-        let faces = edge_infill::exposed(&slices, &slices, shells.opening).unwrap();
+        let faces = edge_infill::exposed(&slices, &slices, &shells).unwrap();
         ironed_projects += 1;
 
         let mut problems = Vec::new();
