@@ -51,6 +51,47 @@ pub(super) fn favorite_key(name: &str, system: bool) -> String {
     }
 }
 
+/// The favourite keys after the vendors' renames (FavoriteFilaments.hpp
+/// `migrate`): a key no filament has now that a vendor renamed becomes the
+/// new key (a chain followed, eight steps at most); a key still in use,
+/// or that no one knows, stays. And whether anything changed.
+pub(super) fn migrate(
+    keys: &BTreeSet<String>,
+    current: &BTreeSet<String>,
+    renames: &BTreeMap<String, String>,
+) -> (BTreeSet<String>, bool) {
+    let mut changed = false;
+    let mut out = BTreeSet::new();
+    for key in keys {
+        let mut target = key.clone();
+        let mut hops = 0;
+        while hops < 8 && !current.contains(&target) {
+            match renames.get(&target) {
+                Some(next) => target = next.clone(),
+                None => break,
+            }
+            hops += 1;
+        }
+        if target != *key && !current.contains(key) && current.contains(&target) {
+            out.insert(target);
+            changed = true;
+        } else {
+            out.insert(key.clone());
+        }
+    }
+    (out, changed)
+}
+
+/// A filament preset's name less its " @printer" part, trailing spaces
+/// gone (FavoriteFilaments.hpp `strip_printer_suffix`).
+pub(super) fn strip_printer_suffix(name: &str) -> String {
+    name.split(" @")
+        .next()
+        .unwrap_or(name)
+        .trim_end_matches([' ', '\t'])
+        .to_owned()
+}
+
 /// A list as Config.cpp `escape_strings_cstyle` writes it: joined by ";",
 /// an item with a space, a tab, a backslash, a quote or a new line in
 /// quotes with its backslashes, quotes and new lines escaped.
@@ -722,7 +763,7 @@ impl Session {
     /// The favourite filaments' keys, as kept (FavoriteFilamentsUI.cpp
     /// `fav_read_config`: an empty key is passed over).
     pub(super) fn favorites(&self) -> BTreeSet<String> {
-        lock(&self.state)
+        let keys: BTreeSet<String> = lock(&self.state)
             .store
             .data
             .prefs
@@ -731,7 +772,62 @@ impl Session {
             .unwrap_or_default()
             .into_iter()
             .filter(|key| !key.is_empty())
-            .collect()
+            .collect();
+        self.migrate_favorites(keys)
+    }
+
+    /// Once a run, after the vendors' presets are there: a favourite whose
+    /// vendor preset was renamed (`renamed_from` in the new profile) moves
+    /// to the new name; a key still in use, or that no one knows, stays
+    /// (FavoriteFilamentsUI.cpp `fav_migrate_once`, FavoriteFilaments.hpp
+    /// `rename_map`, `migrate`).
+    fn migrate_favorites(&self, mut keys: BTreeSet<String>) -> BTreeSet<String> {
+        let vendors: Vec<String> = {
+            let state = lock(&self.state);
+            if state.favorites_migrated[0] || keys.is_empty() || state.library.is_none() {
+                return keys;
+            }
+            state.store.data.models.keys().cloned().collect()
+        };
+        if vendors.is_empty() {
+            return keys;
+        }
+        let mut current: BTreeSet<String> = BTreeSet::new();
+        let mut renames: BTreeMap<String, String> = BTreeMap::new();
+        for vendor in &vendors {
+            let Ok(shelf) = self.shelf(vendor) else {
+                continue;
+            };
+            for name in shelf.all_of(Kind::Filament) {
+                let key = favorite_key(&name, true);
+                current.insert(key.clone());
+                let old_names = shelf
+                    .resolve(Kind::Filament, &name)
+                    .ok()
+                    .and_then(|settings| settings.text("renamed_from").map(str::to_owned))
+                    .unwrap_or_default();
+                for old in old_names
+                    .split(';')
+                    .map(str::trim)
+                    .filter(|old| !old.is_empty())
+                {
+                    let old_key = strip_printer_suffix(old);
+                    if !old_key.is_empty() && old_key != key {
+                        renames.entry(old_key).or_insert_with(|| key.clone());
+                    }
+                }
+            }
+        }
+        for preset in self.users().of(Kind::Filament) {
+            current.insert(preset.name.clone());
+        }
+        let (out, changed) = migrate(&keys, &current, &renames);
+        lock(&self.state).favorites_migrated[0] = true;
+        if changed {
+            keys = out;
+            self.keep_favorites(&keys);
+        }
+        keys
     }
 
     fn keep_favorites(&self, keys: &BTreeSet<String>) {
@@ -1105,6 +1201,35 @@ impl Session {
             Err((_, why)) => return Ok(json!({ "ok": false, "message": why })),
             Ok(renames) => renames,
         };
+        // A preset with unsaved changes is saved or discarded first
+        // (PresetManagerDialog.cpp `rename` l.459–470).
+        let dirty = {
+            let state = lock(&self.state);
+            renames
+                .iter()
+                .find(|(from, _)| {
+                    state.projects.iter().any(|project| {
+                        let choices = &project.choices;
+                        choices.filaments.iter().enumerate().any(|(slot, name)| {
+                            name == from
+                                && choices
+                                    .filament_over
+                                    .get(slot)
+                                    .is_some_and(|own| !own.is_empty())
+                        })
+                    })
+                })
+                .map(|(from, _)| from.clone())
+        };
+        if let Some(from) = dirty {
+            return Ok(json!({
+                "ok": false,
+                "unsaved": true,
+                "title": tr("Rename preset"),
+                "ask": fill(&tr("\"%s\" has unsaved changes. Save or discard them in its settings first, then rename it."), &[&from]),
+                "message": tr("Save or discard the unsaved changes first."),
+            }));
+        }
         let mut new_key = key.clone();
         let row_name = key.strip_prefix("u|").unwrap_or_default().to_owned();
         let mut error = None;

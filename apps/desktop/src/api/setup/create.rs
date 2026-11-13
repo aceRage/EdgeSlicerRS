@@ -341,6 +341,10 @@ impl Session {
                 template_vendors.push(vendor);
             }
         }
+        if !template_vendors.iter().any(|v| v == CUSTOM_VENDOR) && !self.custom_models().is_empty()
+        {
+            template_vendors.push(CUSTOM_VENDOR.to_owned());
+        }
         Ok(json!({
             "vendors": PRINTER_VENDORS
                 .iter()
@@ -368,6 +372,10 @@ impl Session {
             .map_err(|_| tr("Vendor was not found, please reselect."))?;
         let nozzle =
             nozzle_number(nozzle_of(text(args, "nozzle").unwrap_or("0.4 mm"))).unwrap_or(0.4);
+        let mut models: Vec<edge_engine::PrinterModel> = models.to_vec();
+        if vendor == CUSTOM_VENDOR {
+            models.extend(self.custom_models());
+        }
         let listed = by_nearest_nozzle(&models, nozzle);
         if listed.is_empty() {
             return Err(tr("Current vendor has no models, please reselect."));
@@ -381,6 +389,18 @@ impl Session {
     fn template_printer(&self, vendor: &str, choice: &str) -> Result<String, String> {
         let (name, variant) = model_and_variant(choice)
             .ok_or_else(|| tr("The nozzle diameter was not found, please reselect."))?;
+        // One of the person's printers that stands alone, under "Custom"
+        // (`find_custom_preset_by_model_and_variant`).
+        if vendor == CUSTOM_VENDOR {
+            let users = self.users();
+            if let Some(mine) = users.of(Kind::Machine).find(|preset| {
+                preset.inherits.is_none()
+                    && preset.own.text("printer_model") == Some(name)
+                    && preset.own.text("printer_variant") == Some(variant)
+            }) {
+                return Ok(mine.name.clone());
+            }
+        }
         let models = self
             .models_of(vendor)
             .map_err(|_| tr("Preset path was not found, please reselect vendor."))?;
@@ -766,9 +786,7 @@ impl Session {
         // bed files from the first page (`save_printable_area_config`),
         // or the existing printer's for another nozzle, and its model,
         // nozzle and variant.
-        let template = shelf
-            .resolve(Kind::Machine, &template_machine)
-            .map_err(|e| e.to_string())?;
+        let template = self.resolve_named(&shelf, Kind::Machine, &template_machine)?;
         let mut own = whole(&template, Kind::Machine);
         let number = |value: f64| {
             let text = format!("{value:.6}");
@@ -1312,19 +1330,36 @@ impl Session {
             .iter()
             .map(|(printer, _)| format!("{name} @{printer}"))
             .collect();
-        let taken: Vec<&String> = made_names
-            .iter()
-            .filter(|made| users.get(Kind::Filament, made).is_some())
-            .collect();
-        if !taken.is_empty() && args.get("rewrite").and_then(Value::as_bool) != Some(true) {
-            let mut message = tr("Some existing presets have failed to be created, as follows:\n");
-            for made in &taken {
-                message.push_str(made);
-                message.push('\n');
-            }
-            message.push_str(&tr("\nDo you want to rewrite it?"));
+        // Each preset of a name taken is asked about in turn, as the
+        // reference asks for each row (`create_dialog_buttons` l.1170):
+        // Yes writes over it (`rewrite`, the names, or true for all), No
+        // leaves it and makes the others (`skip`).
+        let listed = |key: &str| -> Vec<String> {
+            args.get(key)
+                .and_then(Value::as_array)
+                .map(|names| {
+                    names
+                        .iter()
+                        .filter_map(|n| n.as_str().map(str::to_owned))
+                        .collect()
+                })
+                .unwrap_or_default()
+        };
+        let rewrite_all = args.get("rewrite").and_then(Value::as_bool) == Some(true);
+        let (rewrite, skip) = (listed("rewrite"), listed("skip"));
+        if let Some(made) = made_names.iter().find(|made| {
+            users.get(Kind::Filament, made).is_some()
+                && !rewrite_all
+                && !rewrite.contains(made)
+                && !skip.contains(made)
+        }) {
+            let message = format!(
+                "{}{made}\n{}",
+                tr("Some existing presets have failed to be created, as follows:\n"),
+                tr("\nDo you want to rewrite it?")
+            );
             return Ok(
-                json!({ "created": false, "step": "rewrite", "title": tr("Info"), "ask": message }),
+                json!({ "created": false, "step": "rewrite", "name_taken": made, "title": tr("Info"), "ask": message }),
             );
         }
         let filament_id = self.new_filament_id(&name);
@@ -1338,6 +1373,9 @@ impl Session {
         let shelf = self.shelf(vendors.first().ok_or("no printer is added")?)?;
         let mut made = Vec::new();
         for ((printer, preset), made_name) in chosen.iter().zip(&made_names) {
+            if skip.contains(made_name) {
+                continue;
+            }
             // The preset as its own vendor has it, else the person's.
             let settings = vendors
                 .iter()
@@ -1385,6 +1423,10 @@ impl Session {
                     .map_err(|e| e.to_string())?;
             }
         }
+        let made_names: Vec<&String> = made_names
+            .iter()
+            .filter(|made| !skip.contains(made))
+            .collect();
         Ok(
             json!({ "created": true, "name": name, "filament_id": filament_id, "presets": made_names }),
         )
@@ -1699,6 +1741,54 @@ impl Session {
             }
         }
         Ok(json!({ "deleted": true, "gone": true, "count": names.len() }))
+    }
+}
+
+/// The vendor the person's own printer models are offered under
+/// (Preset.hpp `PRESET_CUSTOM_VENDOR`).
+const CUSTOM_VENDOR: &str = "Custom";
+
+impl Session {
+    /// The person's printers that stand alone, as models of "Custom"
+    /// (PresetBundle.cpp `get_custom_vendor_models`): each `printer_model`
+    /// with the `printer_variant`s it has. The reference puts them in the
+    /// vendors' map under the key of the profiles' own "Custom" vendor,
+    /// which they then replace (UI_PARITY section 8, errors); here they
+    /// are offered beside its models.
+    fn custom_models(&self) -> Vec<edge_engine::PrinterModel> {
+        let users = self.users();
+        let mut models: Vec<edge_engine::PrinterModel> = Vec::new();
+        for preset in users
+            .of(Kind::Machine)
+            .filter(|preset| preset.inherits.is_none())
+        {
+            let (Some(model), Some(variant)) = (
+                preset.own.text("printer_model"),
+                preset.own.text("printer_variant"),
+            ) else {
+                continue;
+            };
+            match models.iter_mut().find(|known| known.name == model) {
+                Some(known) => known.variants.push(variant.to_owned()),
+                None => models.push(edge_engine::PrinterModel {
+                    vendor: CUSTOM_VENDOR.to_owned(),
+                    model: model.to_owned(),
+                    name: model.to_owned(),
+                    model_id: None,
+                    variants: vec![variant.to_owned()],
+                    default_materials: Vec::new(),
+                    bed_model: None,
+                    bed_texture: None,
+                    default_bed_type: None,
+                    cover: None,
+                    machines: Vec::new(),
+                    bed: None,
+                    height: None,
+                    nozzles: None,
+                }),
+            }
+        }
+        models
     }
 }
 

@@ -270,7 +270,7 @@ document.addEventListener('pointerdown', (event) => {
 // was typed. The keys never leave the closed face, so there is nothing
 // to give them back to.
 let listboxes = 0;
-function listbox(select, { trigger = null, decorate = null, bare = false } = {}) {
+function listbox(select, { trigger = null, decorate = null, bare = false, onClose = null } = {}) {
   const id = `lb${++listboxes}`;
   const face = trigger || el('div', { className: `lb-trigger${bare ? ' bare' : ''}` });
   let shown = face.querySelector('.lb-value');
@@ -353,6 +353,7 @@ function listbox(select, { trigger = null, decorate = null, bare = false } = {})
     if (!pop) return;
     pop.remove();
     pop = null;
+    if (onClose) setTimeout(onClose, 0);
     rows = [];
     active = -1;
     face.setAttribute('aria-expanded', 'false');
@@ -831,7 +832,7 @@ async function showSidebar() {
       // With no filament to show the list shows none, not the entry.
       if (list.value === MANAGE_FILAMENTS) list.selectedIndex = -1;
       list.addEventListener('change', filamentChanged);
-      name = listbox(list, { bare: true, decorate: decorateAction });
+      name = listbox(list, { bare: true, decorate: decorateAction, onClose: regroupFavourites });
     } else {
       // Cut short where it does not fit, and whole in its tooltip.
       const saved = (project.saved.filaments || [])[index] || 'not named';
@@ -871,8 +872,28 @@ function brightness(colour) {
 // The entry at the foot of each filament list; not a filament.
 const MANAGE_FILAMENTS = '\u0000manage';
 
-// The favourite filaments' keys, as the session keeps them.
-const favourites = { keys: new Set(), loaded: false };
+// The favourite filaments' keys, as the session keeps them; `regroup` once a star changed in an open list.
+const favourites = { keys: new Set(), loaded: false, regroup: false };
+function regroupFavourites() {
+  if (!favourites.regroup) return;
+  favourites.regroup = false;
+  presetsByMachine.clear();
+  attempt(showSidebar);
+}
+// "Add "%s" to favorite filaments" / "Remove "%s" from favorite filaments" at the end of a menu, for
+// the preset a filament slot is on (FavoriteFilamentsUI.cpp `append_toggle_item`).
+function favouriteMenuItem(slot) {
+  const list = $('filaments').querySelector(`select[data-filament="${slot}"]`);
+  const option = list && list.selectedOptions[0];
+  const key = option && option.dataset.fav;
+  if (!key) return [];
+  const on = favourites.keys.has(key);
+  return [null, [fmt(on ? t('Remove "%s" from favorite filaments') : t('Add "%s" to favorite filaments'), key), () => attempt(async () => {
+    favourites.keys = new Set((await call('favorite_toggle', { key })).favs);
+    presetsByMachine.clear();
+    await showSidebar();
+  })]];
+}
 async function loadFavourites() {
   favourites.keys = new Set((await call('favorites', {})).favs);
   favourites.loaded = true;
@@ -894,11 +915,17 @@ function decorateAction(row, option) {
       attempt(async () => {
         const answer = await call('favorite_toggle', { key: option.dataset.fav });
         favourites.keys = new Set(answer.favs);
-        presetsByMachine.clear();
-        // The lists are drawn again, the favourites regrouped.
-        await showSidebar();
+        // The stars of the open list follow; the list regroups when it closes, so no row moves under
+        // the pointer (FavoriteFilamentsUI.cpp `m_regroup_on_close`).
+        for (const other of document.querySelectorAll('.lb-pop .lb-star')) {
+          const on = favourites.keys.has(other.dataset.fav);
+          other.classList.toggle('on', on);
+          other.title = fmt(on ? t('Remove "%s" from favorite filaments') : t('Add "%s" to favorite filaments'), other.dataset.fav);
+        }
+        favourites.regroup = true;
       });
     });
+    star.dataset.fav = option.dataset.fav;
     row.append(star);
     return;
   }

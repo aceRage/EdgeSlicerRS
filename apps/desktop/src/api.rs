@@ -112,6 +112,9 @@ struct State {
     /// "Auto-Backup") are still to be offered back or let go: until they
     /// are, this run writes none of its own over them ([`prefs`]).
     backups_left: bool,
+    /// Whether the favourites were followed through the vendors' renames
+    /// this run (FavoriteFilamentsUI.cpp `fav_migrate_once`), by kind.
+    favorites_migrated: [bool; 2],
 }
 
 /// One open project.
@@ -1008,6 +1011,7 @@ impl Session {
                 next_colour: 0,
                 arrange_align: None,
                 backups_left,
+                favorites_migrated: [false; 2],
             }),
             startup,
             traced: std::env::var_os("EDGE_DESKTOP_TRACE").is_some(),

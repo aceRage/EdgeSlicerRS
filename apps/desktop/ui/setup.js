@@ -212,8 +212,18 @@ const Setup = (() => {
     });
     input.addEventListener('keydown', (event) => {
       if (event.key === 'Enter') { event.preventDefault(); attempt(() => fmCommit(row, input)); }
+      // Tab renames, and goes on to the next row's name (preset_manager.js `onEditKey`).
+      if (event.key === 'Tab' && !event.shiftKey) { event.preventDefault(); attempt(() => fmCommit(row, input, true)); }
       if (event.key === 'Escape') { event.preventDefault(); event.stopPropagation(); fmEditing = null; fmStatus(''); fmDraw(); }
     });
+    // A click anywhere else renames, as Enter does; not when the window itself lost the focus, nor a
+    // click inside the field's own box ("Only this printer"), nor once Escape let go (`blur`).
+    input.addEventListener('blur', () => setTimeout(() => {
+      if (!fmEditing || fmEditing.key !== row.key || fmEditing.busy || !input.isConnected) return;
+      if (!document.hasFocus() || document.activeElement === input) return;
+      if (document.activeElement && document.activeElement.closest && document.activeElement.closest('.fm-edit')) return;
+      attempt(() => fmCommit(row, input));
+    }, 0));
     setTimeout(() => { input.focus(); input.select(); }, 0);
     return box;
   }
@@ -226,16 +236,39 @@ const Setup = (() => {
     fmStatus(answer.message);
   }
 
-  async function fmCommit(row, input) {
+  async function fmCommit(row, input, thenNext = false) {
+    if (!fmEditing || fmEditing.busy) return;
+    const shown = fmShown();
+    const at = shown.findIndex((other) => other.key === row.key);
+    const next = thenNext ? shown.slice(at + 1).find((other) => other.can_rename) : null;
+    const unchanged = input.value === (row.suffix ? row.base : row.name);
+    if (unchanged) {
+      fmEditing = null;
+      fmDraw();
+      if (next) fmRename(next);
+      return;
+    }
+    fmEditing.busy = true;
     const answer = await call('filament_manager_rename', fmArgs({ key: row.key, name: input.value, scope: fmEditing.scope }));
+    if (fmEditing) fmEditing.busy = false;
     if (!answer.ok) {
       input.classList.add('invalid');
       fmStatus(answer.message);
+      // Unsaved changes: said in a box (PresetManagerDialog.cpp `rename`), the rename let go.
+      if (answer.unsaved) {
+        fmEditing = null;
+        fmDraw();
+        await inform(answer.title, answer.ask);
+      }
       return;
     }
     fmEditing = null;
     fmTake(answer);
     fmStatus(answer.message || 'Renamed');
+    if (next) {
+      const again = fm.rows.find((other) => other.key === next.key);
+      if (again) fmRename(again);
+    }
     presetsByMachine.clear();
     state.project = await call('project', { project: activeId() });
     await showSidebar();
@@ -1230,8 +1263,16 @@ const Setup = (() => {
       return;
     }
     if (!answer.created) {
-      if (!(await confirmBox(answer.title, answer.ask, t('Yes'), t('No')))) return;
-      await cfCreate({ ...more, ...(answer.step === 'name' ? { continue_name: true } : { rewrite: true }) });
+      const yes = await confirmBox(answer.title, answer.ask, t('Yes'), t('No'));
+      if (answer.step === 'name') {
+        if (yes) await cfCreate({ ...more, continue_name: true });
+        return;
+      }
+      // Each name taken in turn: Yes writes over it, No leaves it and makes the others.
+      const rewrite = [...(more.rewrite || [])];
+      const skip = [...(more.skip || [])];
+      (yes ? rewrite : skip).push(answer.name_taken);
+      await cfCreate({ ...more, rewrite, skip });
       return;
     }
     $('cf-dialog').close();

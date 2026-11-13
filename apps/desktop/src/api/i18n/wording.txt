@@ -24,6 +24,9 @@ Apply All	GUI/Plater.cpp:3688
 Filament manager	GUI/PresetManagerDialog.cpp:54
 Favorite filaments	GUI/PresetComboBoxes.cpp:384
 Delete the preset "%s"?	GUI/PresetManagerDialog.cpp:536
+"%s" has unsaved changes. Save or discard them in its settings first, then rename it.	GUI/PresetManagerDialog.cpp:465
+Save or discard the unsaved changes first.	GUI/PresetManagerDialog.cpp:469
+Rename preset	GUI/PresetManagerDialog.cpp:466
 Delete %d preset?	GUI/PresetManagerDialog.cpp:668
 Delete these %d presets?	GUI/PresetManagerDialog.cpp:668
 and %d more	GUI/PresetManagerDialog.cpp:673

@@ -1,4 +1,4 @@
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 
 use super::*;
@@ -1867,4 +1867,167 @@ fn a_tables_column_widths_are_kept_across_a_restart() {
         json!({ "columns": { "filament_manager": null } }),
     );
     assert_eq!(cleared["columns"], json!({}));
+}
+
+#[test]
+fn a_favourite_follows_a_vendors_rename_once() {
+    let set =
+        |items: &[&str]| -> BTreeSet<String> { items.iter().map(|s| (*s).to_owned()).collect() };
+    let renames: BTreeMap<String, String> = [
+        ("Old PLA", "Mid PLA"),
+        ("Mid PLA", "New PLA"),
+        ("Kept PLA", "Other PLA"),
+    ]
+    .iter()
+    .map(|(a, b)| ((*a).to_owned(), (*b).to_owned()))
+    .collect();
+    let current = set(&["New PLA", "Kept PLA", "Other PLA"]);
+    // A chain is followed; a key still in use stays; one nobody knows stays.
+    let (out, changed) = super::migrate(
+        &set(&["Old PLA", "Kept PLA", "Nobody PLA"]),
+        &current,
+        &renames,
+    );
+    assert!(changed);
+    assert_eq!(out, set(&["New PLA", "Kept PLA", "Nobody PLA"]));
+    let (out, changed) = super::migrate(&set(&["Kept PLA"]), &current, &renames);
+    assert!(!changed);
+    assert_eq!(out, set(&["Kept PLA"]));
+    // In a session: the reference's profiles rename no Snapmaker favourite away from a name still in
+    // use ("Snapmaker ABS Benchy" is still the J1's), so it stays, and once a run is enough.
+    let dir = tempfile::tempdir().unwrap();
+    let session = session(dir.path());
+    ask(
+        &session,
+        "favorite_toggle",
+        json!({ "key": "Snapmaker ABS Benchy" }),
+    );
+    assert_eq!(
+        ask(&session, "favorites", Value::Null)["favs"],
+        json!(["Snapmaker ABS Benchy"])
+    );
+    assert_eq!(
+        super::strip_printer_suffix("Generic PLA @U1 0.4 nozzle  "),
+        "Generic PLA"
+    );
+}
+
+#[test]
+fn a_rename_waits_for_unsaved_changes_and_create_filament_asks_for_each_name() {
+    let dir = tempfile::tempdir().unwrap();
+    let session = session(dir.path());
+    ask(&session, "printer_select", json!({ "initial": true }));
+    let (a, b, _) = two_printer_filament(&session);
+    ask(&session, "project_set", json!({ "filaments": [a.clone()] }));
+    ask(
+        &session,
+        "settings_set",
+        json!({ "kind": "filament", "filament": 1, "key": "nozzle_temperature", "value": 214 }),
+    );
+    let answer = ask(
+        &session,
+        "filament_manager_rename",
+        json!({ "key": format!("u|{a}"), "name": "Silky PLA" }),
+    );
+    assert_eq!(answer["ok"], false);
+    assert_eq!(answer["unsaved"], true);
+    assert_eq!(answer["title"], tr("Rename preset"));
+    assert_eq!(
+        answer["ask"],
+        fill(
+            &tr(
+                "\"%s\" has unsaved changes. Save or discard them in its settings first, then rename it."
+            ),
+            &[&a]
+        )
+    );
+    // Once let go, it renames.
+    ask(
+        &session,
+        "settings_set",
+        json!({ "kind": "filament", "filament": 1, "reset": true }),
+    );
+    let answer = ask(
+        &session,
+        "filament_manager_rename",
+        json!({ "key": format!("u|{a}"), "name": "Silky PLA", "scope": "one" }),
+    );
+    assert_eq!(answer["ok"], true);
+    // Create Filament with both names of the other taken: asked for each.
+    let form = json!({
+        "vendor": "Polymaker", "type": "PLA", "serial": "Matte", "continue_name": true,
+        "presets": [
+            { "printer": "Snapmaker U1 (0.2 nozzle)", "preset": "Generic PLA @U1 0.2 nozzle" },
+            { "printer": U1, "preset": "Generic PLA @U1 0.4 nozzle" },
+        ],
+    });
+    let first = ask(&session, "create_filament", form.clone());
+    assert_eq!(first["step"], "rewrite");
+    assert_eq!(first["name_taken"], b.as_str());
+    // No for it: the other is made, it is left as it was.
+    let done = ask(
+        &session,
+        "create_filament",
+        with(form, json!({ "skip": [b.clone()] })),
+    );
+    assert_eq!(done["created"], true);
+    assert_eq!(
+        done["presets"],
+        json!([format!("Polymaker PLA Matte @{U1}")])
+    );
+}
+
+#[test]
+fn a_printer_of_ones_own_is_a_template_under_custom() {
+    let dir = tempfile::tempdir().unwrap();
+    let session = session(dir.path());
+    ask(&session, "printer_select", json!({ "initial": true }));
+    ask(
+        &session,
+        "create_printer",
+        with(
+            printer_form(),
+            json!({
+                "custom": true, "vendor": "Test Vendor", "model": "Box",
+                "preset_vendor": "Snapmaker", "preset_model": "Snapmaker U1 @ 0.4 nozzle",
+                "template": true, "filaments": ["Generic PLA template"], "processes": ["process template"],
+            }),
+        ),
+    );
+    let models = ask(
+        &session,
+        "create_printer_models",
+        json!({ "vendor": "Custom", "nozzle": "0.4 mm" }),
+    );
+    assert!(
+        strings(&models["models"]).contains(&"Test Vendor Box @ 0.4 nozzle".to_owned()),
+        "{models}"
+    );
+    // The profiles' own Custom printers stay offered beside it.
+    assert!(strings(&models["models"]).len() > 1);
+    let offered = ask(
+        &session,
+        "create_printer_presets",
+        json!({ "vendor": "Custom", "model": "Test Vendor Box @ 0.4 nozzle" }),
+    );
+    assert_eq!(offered["printer"], "Test Vendor Box 0.4 nozzle");
+    assert!(
+        strings(&offered["processes"])
+            .contains(&"process template @Test Vendor Box 0.4 nozzle".to_owned())
+    );
+    let made = ask(
+        &session,
+        "create_printer",
+        with(
+            printer_form(),
+            json!({
+                "custom": true, "vendor": "Test Vendor", "model": "Box Two",
+                "preset_vendor": "Custom", "preset_model": "Test Vendor Box @ 0.4 nozzle",
+                "template": false,
+                "filaments": ["Generic PLA template @Test Vendor Box 0.4 nozzle"],
+                "processes": ["process template @Test Vendor Box 0.4 nozzle"],
+            }),
+        ),
+    );
+    assert_eq!(made["printer"], "Test Vendor Box Two 0.4 nozzle");
 }
