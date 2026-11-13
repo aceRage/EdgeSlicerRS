@@ -13,6 +13,7 @@
 //! shown. The person's own presets are always shown.
 
 pub(super) mod create;
+mod lists;
 
 use std::collections::{BTreeMap, BTreeSet};
 

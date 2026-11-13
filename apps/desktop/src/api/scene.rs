@@ -441,6 +441,28 @@ impl Session {
     /// `system_printer_bed_model`, `system_printer_bed_texture`): named
     /// by the printer model's own file, beside the vendor's presets.
     fn bed_files(&self, printer: &Settings) -> BedFiles {
+        // The printer's own (`bed_custom_model`, `bed_custom_texture`, set
+        // by "Create Printer/Nozzle") come before the vendor's, as the
+        // reference takes them (Plater.cpp `set_bed_shape` l.29321, 3DBed.cpp
+        // `set_shape` l.282). A file that is not there, or not of its
+        // kind, is passed over.
+        let custom = |key: &str, kinds: &[&str]| {
+            let path = PathBuf::from(printer.text(key).filter(|path| !path.is_empty())?);
+            let kind = path.extension()?.to_str()?.to_ascii_lowercase();
+            (kinds.contains(&kind.as_str()) && path.is_file()).then_some(path)
+        };
+        let (own_model, own_texture) = (
+            custom("bed_custom_model", &["stl"]),
+            custom("bed_custom_texture", &["svg", "png"]),
+        );
+        let vendor = self.vendor_bed_files(printer);
+        BedFiles {
+            model: own_model.or(vendor.model),
+            texture: own_texture.or(vendor.texture),
+        }
+    }
+
+    fn vendor_bed_files(&self, printer: &Settings) -> BedFiles {
         let Some(dir) = lock(&self.state)
             .library
             .as_ref()

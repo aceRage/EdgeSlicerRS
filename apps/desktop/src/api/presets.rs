@@ -298,10 +298,28 @@ impl Session {
     /// printer among those added, each with its model and nozzle.
     pub(super) fn user_printers(&self, installed: &[edge_engine::PrinterModel]) -> Vec<Value> {
         let users = self.users();
+        let kept = lock(&self.state).store.data.printers.clone();
         users
             .of(Kind::Machine)
             .filter(|preset| preset.visible)
             .filter_map(|preset| {
+                if preset.inherits.is_none() {
+                    // One that stands alone ("Create printer"): its own
+                    // model; the vendor of the printer it was made from,
+                    // else the first added, for the lists.
+                    let vendor = kept
+                        .get(&preset.name)
+                        .and_then(|kept| kept.vendor.clone())
+                        .or_else(|| installed.first().map(|model| model.vendor.clone()))?;
+                    return Some(json!({
+                        "name": preset.name,
+                        "vendor": vendor,
+                        "model": preset.own.text("printer_model"),
+                        "variant": preset.own.text("printer_variant"),
+                        "base": preset.name,
+                        "alone": true,
+                    }));
+                }
                 let base = users.system_parent(Kind::Machine, &preset.name)?;
                 let (model, system) = installed.iter().find_map(|model| {
                     let found = model.machines.iter().find(|machine| machine.name == base)?;

@@ -78,3 +78,44 @@
   .setup-dialog { width: calc(100vw - 16px); height: calc(100vh - 16px); }
   .fs-line { grid-template-columns: 1fr; }
 }
+
+/* ---- "Create Printer/Nozzle" and "Create Filament" ---- */
+
+.create-dialog { width: min(760px, calc(100vw - 32px)); max-height: calc(100vh - 32px); display: none; }
+.create-dialog[open] { display: flex; flex-direction: column; gap: var(--space-3); }
+.cr-steps { display: flex; align-items: center; justify-content: center; gap: var(--space-5); padding-bottom: var(--space-2); border-bottom: 1px solid var(--line-1); color: var(--text-3); }
+.cr-step { display: inline-flex; align-items: center; gap: var(--space-2); }
+.cr-step b { display: inline-grid; place-items: center; width: 20px; height: 20px; border-radius: 50%; border: 1px solid var(--line-2); font-size: var(--size-label); }
+.cr-step.on { color: var(--text-1); }
+.cr-step.on b { border-color: var(--accent); background: var(--accent); color: var(--on-accent, #fff); }
+.cr-page { display: flex; flex-direction: column; gap: var(--space-2); min-height: 0; }
+.cr-p1, .cr-p2 { min-height: 0; overflow-y: auto; }
+.cr-p1[hidden], .cr-p2[hidden] { display: none; }
+.cr-row { display: grid; grid-template-columns: 150px minmax(0, 1fr); align-items: center; gap: var(--space-3); min-height: var(--control-l); }
+.cr-row[hidden] { display: none; }
+.cr-name { color: var(--text-2); font-size: var(--size-label); font-weight: 600; }
+.cr-controls { display: flex; align-items: center; flex-wrap: wrap; gap: var(--space-2) var(--space-3); min-width: 0; }
+.cr-pair { display: flex; flex-wrap: wrap; gap: var(--space-2); }
+.cr-pair > .lb, .cr-pair > input { width: 220px; }
+.cr-pair > .lb[hidden], .cr-pair > input[hidden] { display: none; }
+.cr-stack { display: flex; flex-direction: column; gap: 4px; }
+.cr-radios { display: flex; flex-direction: column; gap: 6px; }
+.cr-radios label, .cr-check { display: inline-flex; flex-direction: row; align-items: center; gap: 6px; color: var(--text-1); font-size: var(--size-body); cursor: pointer; }
+.cr-unit { display: inline-flex; align-items: center; gap: 4px; }
+.cr-unit small { color: var(--text-3); }
+.cr-number { width: 84px; }
+.cr-axis { color: var(--text-3); font-size: var(--size-label); font-weight: 600; }
+.cr-scroll { max-height: 46vh; border-radius: var(--radius-m); border: 1px solid var(--line-2); }
+.cr-lists { display: flex; flex-direction: column; gap: var(--space-3); padding: var(--space-3); }
+.cr-ticks h3 { font-size: var(--size-label); color: var(--text-2); margin-bottom: 4px; }
+.cr-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(200px, 1fr)); gap: 2px var(--space-2); }
+.cr-table { display: flex; flex-direction: column; gap: var(--space-1); padding: var(--space-2); }
+.cr-table-row { display: grid; grid-template-columns: minmax(0, 2fr) 96px minmax(0, 3fr) auto; align-items: center; gap: var(--space-2); }
+.cr-table-head { color: var(--text-3); font-size: var(--size-label); font-weight: 600; }
+.cr-note { white-space: pre-line; }
+
+@media (max-width: 760px) {
+  .cr-row { grid-template-columns: 1fr; gap: 4px; }
+  .cr-pair > .lb, .cr-pair > input { width: 100%; }
+  .cr-table-row { grid-template-columns: 1fr 1fr; }
+}

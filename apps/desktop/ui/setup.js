@@ -195,6 +195,266 @@ const Setup = (() => {
     $('fm-search').focus();
   }
 
+  // ---- shared by the two "Create" dialogs ----
+
+  // A row of a form: its name on the left, its controls on the right (the reference's OPTION_SIZE column).
+  const formRow = (label, ...controls) => el('div', { className: 'cr-row' },
+    el('span', { className: 'cr-name', textContent: label }), el('div', { className: 'cr-controls' }, ...controls));
+
+  // A list to pick from with a prompt standing in until something is picked ("Select Vendor").
+  function promptList(prompt, values, labels = values) {
+    const select = el('select');
+    const none = new Option(prompt, '');
+    none.disabled = true;
+    none.hidden = true;
+    select.append(none, ...values.map((value, at) => new Option(labels[at], value)));
+    select.value = '';
+    return select;
+  }
+
+  function radios(name, choices, onChange) {
+    const box = el('div', { className: 'cr-radios' });
+    choices.forEach(([value, label], at) => {
+      const input = el('input', { type: 'radio', name, value, checked: at === 0 });
+      input.addEventListener('change', () => onChange(value));
+      box.append(el('label', {}, input, label));
+    });
+    return box;
+  }
+
+  // The reference's "<app> - Info" message boxes.
+  const info = (text) => inform(t('Info'), text);
+
+  // ---- "Create Printer/Nozzle" ----
+
+  const cp = { choices: null, page: 1, nozzleOnly: false, custom: false, bedModel: '', bedTexture: '', presets: null, template: true };
+
+  function cpField(value, unit = 'mm') {
+    const input = el('input', { type: 'text', inputMode: 'numeric', value, className: 'cr-number' });
+    // As the reference's fields: digits only (wxFILTER_DIGITS).
+    input.addEventListener('input', () => { input.value = input.value.replace(/[^0-9]/g, ''); });
+    return el('span', { className: 'cr-unit' }, input, el('small', { textContent: unit }));
+  }
+
+  function cpForm() {
+    const page = cp.page1;
+    return {
+      type: cp.nozzleOnly ? 'nozzle' : 'printer',
+      custom: cp.custom,
+      vendor: cp.custom ? page.customVendor.value : page.vendor.value,
+      model: cp.custom ? page.customModel.value : page.model.value,
+      printer: page.existing.value,
+      nozzle: page.nozzle.value,
+      bed: [page.x.querySelector('input').value, page.y.querySelector('input').value],
+      origin: [page.ox.querySelector('input').value, page.oy.querySelector('input').value],
+      height: page.height.querySelector('input').value,
+      bed_model: cp.bedModel,
+      bed_texture: cp.bedTexture,
+    };
+  }
+
+  // What the first page shows for the type picked (`select_curr_radiobox`).
+  function cpShowType() {
+    const page = cp.page1;
+    page.printerLine.hidden = cp.nozzleOnly;
+    page.existingLine.hidden = !cp.nozzleOnly;
+    page.info.hidden = cp.nozzleOnly;
+    page.vendor.closest('.lb').hidden = cp.custom;
+    page.model.closest('.lb').hidden = cp.custom;
+    page.customVendor.hidden = !cp.custom;
+    page.customModel.hidden = !cp.custom;
+  }
+
+  async function cpBedFile(kind, label) {
+    const path = await pick(kind === 'model' ? 'bed_model' : 'bed_texture');
+    if (!path) return;
+    if (kind === 'model') cp.bedModel = ''; else cp.bedTexture = '';
+    label.textContent = t('Empty');
+    try {
+      const answer = await call('create_printer_bed_file', { kind, path });
+      if (kind === 'model') cp.bedModel = answer.path; else cp.bedTexture = answer.path;
+      label.textContent = answer.name;
+      label.title = answer.path;
+    } catch (error) {
+      // "Invalid file format." is said in a box; the size in the line, as the reference has them.
+      if (error.message === t('Invalid file format.')) await inform(t('Error'), error.message);
+      else label.textContent = error.message;
+    }
+  }
+
+  function cpPage1() {
+    const choices = cp.choices;
+    const vendor = promptList(t('Select Vendor'), choices.vendors.map((entry) => entry.vendor));
+    const model = promptList(t('Select Model'), []);
+    vendor.addEventListener('change', () => {
+      const entry = choices.vendors.find((known) => known.vendor === vendor.value);
+      model.replaceChildren(...entry.models.map((name) => new Option(name, name)));
+      model.value = entry.models[0] || '';
+    });
+    const customVendor = el('input', { type: 'text', placeholder: t('Input Custom Vendor'), hidden: true });
+    const customModel = el('input', { type: 'text', placeholder: t('Input Custom Model'), hidden: true });
+    const cant = el('input', { type: 'checkbox' });
+    cant.addEventListener('change', () => { cp.custom = cant.checked; cpShowType(); });
+    const existing = promptList(t('Select Printer'), choices.existing);
+    const nozzle = el('select');
+    nozzle.append(...choices.nozzles.map((value) => new Option(value, value)));
+    const loadModel = el('button', { type: 'button', textContent: t('Load...') });
+    const modelName = el('span', { className: 'quiet', textContent: t('Empty') });
+    loadModel.addEventListener('click', () => attempt(() => cpBedFile('model', modelName)));
+    const loadTexture = el('button', { type: 'button', textContent: t('Load...') });
+    const textureName = el('span', { className: 'quiet', textContent: t('Empty') });
+    loadTexture.addEventListener('click', () => attempt(() => cpBedFile('texture', textureName)));
+    const page = {
+      vendor, model, customVendor, customModel, existing, nozzle,
+      x: cpField('200'), y: cpField('200'), ox: cpField('0'), oy: cpField('0'), height: cpField('200'),
+    };
+    const lists = el('div', { className: 'cr-pair' }, listbox(vendor), listbox(model), customVendor, customModel);
+    page.printerLine = formRow(t('Printer'), lists, el('label', { className: 'cr-check' }, cant, t("Can't find my printer model")));
+    page.existingLine = formRow(t('Printer'), listbox(existing));
+    page.info = el('div', {},
+      formRow(t('Bed Shape'), el('span', { textContent: t('Rectangle') })),
+      formRow(t('Printable Space'), el('span', { className: 'cr-axis', textContent: 'X' }), page.x, el('span', { className: 'cr-axis', textContent: 'Y' }), page.y),
+      formRow(t('Origin'), el('span', { className: 'cr-axis', textContent: 'X' }), page.ox, el('span', { className: 'cr-axis', textContent: 'Y' }), page.oy),
+      formRow(t('Hot Bed STL'), loadModel, modelName),
+      formRow(t('Hot Bed SVG'), loadTexture, textureName),
+      formRow(t('Max Print Height'), page.height));
+    cp.page1 = page;
+    const ok = el('button', { type: 'button', className: 'primary', textContent: t('OK') });
+    ok.addEventListener('click', () => attempt(cpNext));
+    const cancel = el('button', { type: 'button', textContent: t('Cancel') });
+    cancel.addEventListener('click', () => $('cp-dialog').close());
+    return el('div', { className: 'cr-page' },
+      formRow(t('Create Type'), radios('cp-type', [['printer', t('Create Printer')], ['nozzle', t('Create Nozzle for Existing Printer')]],
+        (value) => { cp.nozzleOnly = value === 'nozzle'; cpShowType(); })),
+      page.printerLine, page.existingLine,
+      formRow(t('Nozzle Diameter'), listbox(nozzle)),
+      page.info,
+      el('div', { className: 'dialog-foot' }, el('div', { className: 'grow' }), ok, cancel));
+  }
+
+  // The second page's lists of presets to make, with "Select All" / "Deselect All".
+  function cpTicks(title, names) {
+    const boxes = names.map((name) => el('label', { className: 'fs-item', title: name }, el('input', { type: 'checkbox', checked: false, value: name }), name));
+    const grid = el('div', { className: 'cr-grid' }, ...boxes);
+    const every = (on) => () => { for (const label of boxes) label.querySelector('input').checked = on; };
+    const all = el('button', { type: 'button', className: 'link', textContent: t('Select All') });
+    all.addEventListener('click', every(true));
+    const none = el('button', { type: 'button', className: 'link', textContent: t('Deselect All') });
+    none.addEventListener('click', every(false));
+    return el('div', { className: 'cr-ticks' }, el('h3', { textContent: title }), grid, el('div', { className: 'row' }, all, none));
+  }
+
+  async function cpPresets() {
+    const page = cp.page2;
+    page.lists.replaceChildren();
+    cp.presets = null;
+    if (!page.vendor.value || !page.model.value) return;
+    const offered = await call('create_printer_presets', { vendor: page.vendor.value, model: page.model.value, template: cp.template });
+    cp.presets = offered;
+    page.lists.append(cpTicks(t('Filament Preset Template'), offered.filaments), cpTicks(t('Process Preset Template'), offered.processes));
+  }
+
+  function cpPage2() {
+    const vendor = promptList(t('Select Vendor'), cp.choices.template_vendors);
+    const model = promptList(t('Select Model'), []);
+    const lists = el('div', { className: 'cr-lists' });
+    cp.page2 = { vendor, model, lists };
+    vendor.addEventListener('change', () => attempt(async () => {
+      const answer = await call('create_printer_models', { vendor: vendor.value, nozzle: cp.page1.nozzle.value });
+      model.replaceChildren(...answer.models.map((name) => new Option(name, name)));
+      model.value = answer.models[0];
+      await cpPresets();
+    }));
+    model.addEventListener('change', () => attempt(cpPresets));
+    const back = el('button', { type: 'button', textContent: t('Return') });
+    back.addEventListener('click', () => cpShow(1));
+    const create = el('button', { type: 'button', className: 'primary', textContent: t('Create') });
+    create.addEventListener('click', () => attempt(() => cpCreate({})));
+    const cancel = el('button', { type: 'button', textContent: t('Cancel') });
+    cancel.addEventListener('click', () => $('cp-dialog').close());
+    return el('div', { className: 'cr-page' },
+      formRow(t('Printer Preset'), el('div', { className: 'cr-stack' },
+        el('span', { className: 'quiet', textContent: t('Create Based on Current Printer') }),
+        el('div', { className: 'cr-pair' }, listbox(vendor), listbox(model)))),
+      formRow(t('Presets'), radios('cp-presets', [['template', t('Create from Template')], ['current', t('Create Based on Current Printer')]],
+        (value) => { cp.template = value === 'template'; attempt(cpPresets); })),
+      el('div', { className: 'setup-scroll cr-scroll' }, lists),
+      el('div', { className: 'dialog-foot' }, el('div', { className: 'grow' }), back, create, cancel));
+  }
+
+  function cpShow(page) {
+    cp.page = page;
+    $('cp-dialog').querySelector('.cr-p1').hidden = page !== 1;
+    $('cp-dialog').querySelector('.cr-p2').hidden = page !== 2;
+    for (const [at, step] of $('cp-dialog').querySelectorAll('.cr-step').entries()) step.classList.toggle('on', at + 1 === page);
+  }
+
+  async function cpNext() {
+    try {
+      await call('create_printer_check', cpForm());
+    } catch (error) {
+      await info(error.message);
+      return;
+    }
+    cpShow(2);
+  }
+
+  async function cpCreate(more) {
+    const page = cp.page2;
+    const ticked = (title) => [...page.lists.querySelectorAll('.cr-ticks')].filter((box) => box.querySelector('h3').textContent === title)
+      .flatMap((box) => [...box.querySelectorAll('input:checked')].map((input) => input.value));
+    const args = {
+      ...cpForm(),
+      project: activeId(),
+      preset_vendor: page.vendor.value,
+      preset_model: page.model.value,
+      template: cp.template,
+      filaments: ticked(t('Filament Preset Template')),
+      processes: ticked(t('Process Preset Template')),
+      ...more,
+    };
+    let answer;
+    try {
+      answer = await call('create_printer', args);
+    } catch (error) {
+      await info(error.message);
+      // An illegal printable area goes back to the first page.
+      if (error.message === t('You have entered an illegal input in the printable area section on the first page. Please check before creating it.')
+        || error.message === t('The custom printer or model is not entered, please enter it.')) cpShow(1);
+      return;
+    }
+    if (!answer.created) {
+      // Written over only when the person says so.
+      if (!(await confirmBox(answer.title, answer.ask, t('Yes'), t('Cancel')))) return;
+      await cpCreate({ ...more, ...(answer.step === 'printer' ? { rewrite: true } : { rewrite_presets: true }) });
+      return;
+    }
+    $('cp-dialog').close();
+    state.project = answer;
+    presetsByMachine.clear();
+    await showSidebar();
+    await showStage();
+    await refreshStrip();
+    // "Printer Created Successfully": "Printer Setting" opens the printer's settings.
+    if (await confirmBox(t('Printer Created Successfully'), `${t('Printer Created')}\n${t('Please go to printer settings to edit your presets')}`, t('Printer Setting'), t('Cancel'))) {
+      $('printer-edit').click();
+    }
+  }
+
+  async function openCreatePrinter() {
+    cp.choices = await call('create_printer_choices', {});
+    Object.assign(cp, { nozzleOnly: false, custom: false, bedModel: '', bedTexture: '', template: true });
+    const dialog = $('cp-dialog');
+    const steps = el('div', { className: 'cr-steps' },
+      el('span', { className: 'cr-step on' }, el('b', { textContent: '1' }), t('Create Printer')),
+      el('span', { className: 'cr-step' }, el('b', { textContent: '2' }), t('Import Preset')));
+    dialog.replaceChildren(el('h2', { id: 'cp-title', textContent: t('Create Printer/Nozzle') }), steps,
+      el('div', { className: 'cr-p1' }, cpPage1()), el('div', { className: 'cr-p2', hidden: true }, cpPage2()));
+    cpShowType();
+    cpShow(1);
+    dialog.showModal();
+  }
+
   function init() {
     $('fs-all').addEventListener('click', () => fsEvery(true));
     $('fs-clear').addEventListener('click', () => fsEvery(false));
@@ -213,5 +473,5 @@ const Setup = (() => {
     $('fm-close').addEventListener('click', () => $('fm-dialog').close());
   }
 
-  return { init, openFilamentSelection, openFilamentManager };
+  return { init, openFilamentSelection, openFilamentManager, openCreatePrinter };
 })();

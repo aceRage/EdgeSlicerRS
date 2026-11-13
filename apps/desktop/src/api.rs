@@ -1116,6 +1116,12 @@ impl Session {
             "filament_selection_save" => self.filament_selection_save(args),
             "filament_manager" => self.filament_manager(args),
             "filament_enable" => self.filament_enable(args),
+            "create_printer_choices" => self.create_printer_choices(),
+            "create_printer_models" => self.create_printer_models(args),
+            "create_printer_presets" => self.create_printer_presets(args),
+            "create_printer_check" => self.create_printer_check(args),
+            "create_printer_bed_file" => self.create_printer_bed_file(args),
+            "create_printer" => self.create_printer(args),
 
             "projects" => Ok(lock(&self.state).listing()),
             "project" => {

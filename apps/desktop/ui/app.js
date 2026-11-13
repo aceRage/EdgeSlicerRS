@@ -105,6 +105,8 @@ const asking = {
   stl_folder: 'Path of the folder to export the STL files to',
   presets: 'Path of the configs to import',
   preset_folder: 'Path of the folder to export the presets to',
+  bed_model: t('Choose an STL file to import bed model from:'),
+  bed_texture: t('Choose a file to import bed texture from (PNG/SVG):'),
 };
 
 function modal(dialog) {
@@ -824,6 +826,8 @@ async function showSidebar() {
       // At the list's foot, "Add/Remove filaments" opens the Filament manager (PresetComboBoxes.cpp l.1756,
       // GUI_App.cpp `run_wizard` l.9598).
       list.append(el('hr'), new Option(t('Add/Remove filaments'), MANAGE_FILAMENTS));
+      // With no filament to show the list shows none, not the entry.
+      if (list.value === MANAGE_FILAMENTS) list.selectedIndex = -1;
       list.addEventListener('change', filamentChanged);
       name = listbox(list, { bare: true, decorate: decorateAction });
     } else {
