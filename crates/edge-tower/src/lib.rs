@@ -979,6 +979,13 @@ pub struct Tower {
     /// The ground the tower takes, ribs and brim included, as min x, min
     /// y, max x, max y in mm; none when there is no tower.
     pub footprint: Option<[f64; 4]>,
+    /// Where the nozzle goes round on its way into the tower through a
+    /// gap in its wall: the box round the middles of its first layer's
+    /// lines, brim and ribs included, as min x, min y, max x, max y in mm
+    /// (GCode.cpp `travel_to_tower_gap`, the first-layer envelope). Only
+    /// for a tower whose wall has gaps (`wipe_tower_wall_gap`) and is not
+    /// Bambu Lab's, whose nozzle goes in straight, as there.
+    pub envelope: Option<[f64; 4]>,
 }
 
 /// The speed of a block's next row, in mm/min, from the last
@@ -1311,6 +1318,7 @@ pub fn plan_changes(
     let mut tower = Tower {
         layers: vec![TowerLayer::default(); count],
         footprint: None,
+        envelope: None,
     };
     let Some(last) = changes.iter().rposition(|changes| !changes.is_empty()) else {
         return Ok(tower);
@@ -1563,7 +1571,18 @@ pub fn plan_changes(
             }
             let target = settings.wipe_target(slow(made + index));
             let mut feed = 0.33 * target;
-            let mut wipe = Wipe::new(at(x, y), wipe_flow);
+            // A block with nothing rammed starts where the reference's
+            // does, in the corner of the space it cleans (WipeTower2.cpp
+            // `emit_planned_tool_change`: `cleaning_box.ld` and the depth
+            // used before it), and the new nozzle moves to its first row
+            // from there; a nozzle changed over the tower is changed there.
+            let mut wipe = if whole {
+                let mut wipe = Wipe::new(at(line / 2.0, line / 2.0 + used), wipe_flow);
+                wipe.go(at(x, y), None);
+                wipe
+            } else {
+                Wipe::new(at(x, y), wipe_flow)
+            };
             // Every tool change but the tower's first layer's starts so
             // many rows further in, in turn (`stagger_offset_for`); what
             // it skips is filled at the end.
@@ -1827,7 +1846,7 @@ pub fn plan_changes(
     }
     // The ground it takes: its first layer, out to the edge of the lines.
     let half = line / 2.0;
-    tower.footprint = tower.layers[first_laid]
+    let middles = tower.layers[first_laid]
         .finish
         .iter()
         .flat_map(|path| &path.points)
@@ -1837,8 +1856,9 @@ pub fn plan_changes(
                 None => [x, y, x, y],
                 Some([a, b, c, d]) => [a.min(x), b.min(y), c.max(x), d.max(y)],
             })
-        })
-        .map(|[a, b, c, d]| [a - half, b - half, c + half, d + half]);
+        });
+    tower.footprint = middles.map(|[a, b, c, d]| [a - half, b - half, c + half, d + half]);
+    tower.envelope = middles.filter(|_| settings.wall_gap);
     Ok(tower)
 }
 

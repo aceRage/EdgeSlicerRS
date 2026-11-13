@@ -994,6 +994,7 @@ pub(crate) fn plan(
     let mut tower = Tower {
         layers: vec![TowerLayer::default(); count],
         footprint: None,
+        envelope: None,
     };
     let Some(last) = changes.iter().rposition(|changes| !changes.is_empty()) else {
         return Ok(tower);

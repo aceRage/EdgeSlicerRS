@@ -2299,6 +2299,61 @@ fn a_tree_branch_s_wall_is_laid_hook_first() {
 }
 
 #[test]
+fn a_tool_changed_where_it_is_goes_round_the_tower_to_its_gap() {
+    // A tower from 40 x 40 to 60 x 60, its gap on the left at y 50.
+    let settings = two_tools(Some(CHANGE)).map(|tool| PrintSettings {
+        tower_envelope: Some([40.0, 40.0, 60.0, 60.0]),
+        bed: Some([0.0, 0.0, 200.0, 200.0]),
+        ..tool
+    });
+    let loops = [wall(100.0, 100.0, 10.0, 0)];
+    let fill = [line((100.0, 30.0), (110.0, 30.0), Role::SolidInfill)];
+    let tower = [line((42.0, 50.0), (58.0, 50.0), Role::PrimeTower)];
+    let enter = [Point2::from_mm(38.5, 50.0), Point2::from_mm(40.25, 50.0)];
+    let layer = one_layer(&loops, &[0..1], &[])[0];
+    let plan = [
+        layer,
+        Layer {
+            z: 0.4,
+            paths: &fill,
+            ..layer
+        },
+        Layer {
+            z: 0.4,
+            filament: 1,
+            enter: &enter,
+            tower: &tower,
+            loops: &[],
+            islands: &[],
+            ..layer
+        },
+    ];
+    let mut out = Vec::new();
+    write_tools(&mut out, &plan, &settings).unwrap();
+    let text = String::from_utf8(out).unwrap();
+    let after: Vec<&str> = text
+        .lines()
+        .skip_while(|line| !line.starts_with("; Change Tool0 -> Tool1"))
+        .take_while(|line| !line.starts_with("G1 X38.500 Y50.000"))
+        .filter(|line| line.starts_with("G1 X"))
+        .collect();
+    // From the fill, below and right of the tower, round its box grown by
+    // 2 mm the shorter way: to its right side, down to the corner, along
+    // its foot, up its left side to level with the gap, then in.
+    let ends: Vec<(f64, f64)> = after
+        .iter()
+        .map(|line| (word(line, 'X').unwrap(), word(line, 'Y').unwrap()))
+        .collect();
+    assert_eq!(ends.len(), 4, "{after:#?}");
+    assert!((ends[0].0 - 62.0).abs() < 1e-3, "{after:#?}");
+    assert_eq!(
+        ends[1..],
+        [(62.0, 38.0), (38.0, 38.0), (38.0, 50.0)],
+        "{after:#?}"
+    );
+}
+
+#[test]
 fn a_rammed_filament_is_laid_by_the_tool_being_put_away() {
     let [a, b] = two_tools(Some(CHANGE));
     let settings = [a, b];
@@ -2352,12 +2407,13 @@ fn a_rammed_filament_is_laid_by_the_tool_being_put_away() {
     let parked = at("G1 X43.350 Y41.850");
     assert!(laid < parked && parked < change);
     assert_eq!(word(text.lines().nth(parked).unwrap(), 'F'), Some(2400.0));
-    // The new tool comes in from outside the tower's wall, through the
-    // gap, and starts where the ram stopped.
-    let outside = at("G1 X38.500 Y41.450");
-    let inside = at("G1 X40.250 Y41.450");
+    // Changed over the tower, the new tool starts where the ram stopped,
+    // without going out of the tower to come in again through the gap
+    // in its wall: the reference's block goes on from there (GCode.cpp
+    // `append_tcr2` routes only a tool changed where it was).
     let first = at("G1 X60.000 Y41.100 E");
-    assert!(change < outside && outside < inside && inside < first);
+    assert!(change < first);
+    assert!(!text.contains("G1 X38.500 Y41.450") && !text.contains("G1 X40.250 Y41.450"));
     // The old tool's count has the ram in it.
     let (_, summary) = (0, write_tools(&mut Vec::new(), &plan, &settings).unwrap());
     assert!(summary.filament_mm3 > volume);
