@@ -460,6 +460,9 @@ function ptOpenPop(column, anchor) {
 async function openPrinterSelection(options = {}) {
   const dialog = $('printers-dialog');
   if (dialog.open) return;
+  // Each time at its own size, as the reference makes the dialog anew; a drag lasts while it is open.
+  dialog.style.width = '';
+  dialog.style.height = '';
   pt.wizard = Boolean(options.wizard);
   // The guide's printer page has "Next" (page 21); alone it has "Confirm" (page 24).
   $('pt-confirm').textContent = pt.wizard ? t('Next') : t('Confirm');

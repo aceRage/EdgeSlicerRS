@@ -62,13 +62,18 @@
 
 /* ---- Printer Selection ---- */
 
+/* 1000 x 720 within nine tenths of the window, and resizable down to 720 x 520, as the
+   reference's (WebGuideDialog.cpp l.262-269). */
 #printers-dialog {
-  width: min(1120px, calc(100vw - 48px));
-  height: min(780px, calc(100vh - 48px));
-  max-width: none;
-  max-height: none;
+  width: min(1000px, 90vw);
+  height: min(720px, 90vh);
+  min-width: min(720px, calc(100vw - 16px));
+  min-height: min(520px, calc(100vh - 16px));
+  max-width: calc(100vw - 16px);
+  max-height: calc(100vh - 16px);
   padding: 0;
   overflow: hidden;
+  resize: both;
 }
 #printers-dialog[open] { display: flex; flex-direction: column; }
 #printers-dialog h2 { padding: 14px var(--space-4) 0; }

@@ -965,5 +965,13 @@ document.addEventListener('scripts-loaded', () => {
       closePresetPanel();
     }
   });
-  $('printer-edit').addEventListener('click', () => attempt(() => openPresetPanel('printer')));
+  // The printer's cog opens a menu (PresetComboBoxes.cpp `show_edit_menu` l.1498): its settings,
+  // and "Add/Remove presets", the guide's printer page alone.
+  $('printer-edit').addEventListener('click', (event) => {
+    const box = event.currentTarget.getBoundingClientRect();
+    showMenu(box.left, box.bottom + 4, [
+      [t('Edit preset'), () => attempt(() => openPresetPanel('printer'))],
+      [t('Add/Remove presets'), () => attempt(openPrinterSelection)],
+    ]);
+  });
 });

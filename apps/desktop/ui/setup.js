@@ -1186,7 +1186,7 @@ const Setup = (() => {
     await refreshStrip();
     // "Printer Created Successfully": "Printer Setting" opens the printer's settings.
     if (await confirmBox(t('Printer Created Successfully'), `${t('Printer Created')}\n${t('Please go to printer settings to edit your presets')}`, t('Printer Setting'), t('Cancel'))) {
-      $('printer-edit').click();
+      await openPresetPanel('printer');
     }
   }
 
