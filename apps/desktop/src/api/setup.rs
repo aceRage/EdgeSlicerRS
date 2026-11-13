@@ -132,9 +132,44 @@ pub(super) fn unescape_list(text: &str) -> Vec<String> {
     items
 }
 
-/// A row of the Filament manager being gathered: its presets, its type
-/// and the printers it is cut for.
-type ManagerRow = (Vec<String>, String, BTreeSet<String>);
+/// The reference's order of names in the managers (PresetManagerModel.cpp
+/// `pm_less_name`): without regard to case, a shorter name first, then
+/// exactly.
+pub(super) fn less_name(a: &str, b: &str) -> std::cmp::Ordering {
+    let (x, y) = (a.as_bytes(), b.as_bytes());
+    for (ca, cb) in x.iter().zip(y) {
+        let (la, lb) = (ca.to_ascii_lowercase(), cb.to_ascii_lowercase());
+        if la != lb {
+            return la.cmp(&lb);
+        }
+    }
+    x.len().cmp(&y.len()).then_with(|| a.cmp(b))
+}
+
+/// A name and its " @printer" part (PresetManagerModel.cpp
+/// `split_preset_suffix`).
+pub(super) fn split_suffix(name: &str) -> (String, String) {
+    match name.find(" @") {
+        Some(at) => (name[..at].to_owned(), name[at..].to_owned()),
+        None => (name.to_owned(), String::new()),
+    }
+}
+
+/// The filament setting the bed temperature of a plate is in
+/// (PrintConfig.hpp `get_bed_temp_key`), by the plate's name; the
+/// project's plate, or the High Temp Plate when it has none
+/// (PresetManagerDialog.cpp `build_model`: `btPEI` for `btDefault`).
+pub(super) fn bed_temperature_key(plate: Option<&str>) -> &'static str {
+    match plate {
+        Some("Supertack Plate") => "supertack_plate_temp",
+        Some("Cool Plate") => "cool_plate_temp",
+        Some("Textured Cool Plate") => "textured_cool_plate_temp",
+        Some("Engineering Plate") => "eng_plate_temp",
+        Some("Textured PEI Plate") => "textured_plate_temp",
+        Some("Graphic Effect Plate") => "graphic_effect_plate_temp",
+        _ => "hot_plate_temp",
+    }
+}
 
 /// The filament types put first on the guide's page, in this order
 /// (22.js `FilamentPriority`); the rest follow as they are met.
@@ -382,12 +417,14 @@ impl Session {
         Ok(json!({ "enabled": state.store.data.filaments }))
     }
 
-    /// The rows of the Filament manager: one for each filament of the
-    /// vendors added (by vendor and name before the "@", all the printers'
-    /// presets of it in one), then one for each of the person's
-    /// (PresetManagerModel.cpp `build_preset_manager_model`).
-    fn manager_rows(&self, args: &Value) -> Result<Vec<Value>, String> {
-        let (vendors, enabled, in_use) = {
+    /// The rows of the Filament manager (PresetManagerModel.cpp
+    /// `collect_preset_manager_items`, `build_preset_manager_model`): one
+    /// for each filament of a vendor's bundle, by the bundle and the alias
+    /// (the name up to the "@"), its members in order of name and its
+    /// values the first member's that has them; then one for each of the
+    /// person's. The vendors' by maker and name, the person's by name.
+    pub(super) fn manager_rows(&self, args: &Value) -> Result<Vec<Value>, String> {
+        let (vendors, enabled, in_use, bed_key) = {
             let state = lock(&self.state);
             let project = &state.projects[state.target(args)?];
             let mut in_use: BTreeSet<String> = BTreeSet::new();
@@ -404,6 +441,7 @@ impl Session {
                 state.store.data.models.keys().cloned().collect::<Vec<_>>(),
                 state.store.data.filaments.clone(),
                 in_use,
+                bed_temperature_key(project.choices.bed_type.as_deref()),
             )
         };
         // Every printer preset added, to list a row's printers by.
@@ -412,7 +450,40 @@ impl Session {
             .into_iter()
             .map(|(vendor, machine, _, _)| (vendor, machine))
             .collect();
-        let mut rows: BTreeMap<(String, String), ManagerRow> = BTreeMap::new();
+        let added: Vec<String> = printers
+            .iter()
+            .map(|(_, machine)| machine.clone())
+            .collect();
+        let favs = self.favorites();
+        let temperatures = |settings: Option<&edge_config::Settings>| -> [Option<f64>; 4] {
+            let first = |key: &str| -> Option<f64> {
+                let settings = settings?;
+                let text = settings
+                    .texts(key)
+                    .and_then(|items| items.first().cloned())
+                    .or_else(|| settings.text(key).map(str::to_owned))?;
+                // "nil" and what is not a number are not known.
+                text.trim().parse::<f64>().ok()
+            };
+            [
+                first("nozzle_temperature"),
+                first("nozzle_temperature_range_low"),
+                first("nozzle_temperature_range_high"),
+                first(bed_key),
+            ]
+        };
+        struct Group {
+            vendor: String,
+            name: String,
+            key: String,
+            members: Vec<String>,
+            kind: String,
+            filament_id: String,
+            printers: BTreeSet<String>,
+            values: [Option<f64>; 4],
+            version: String,
+        }
+        let mut groups: Vec<Group> = Vec::new();
         for vendor in &vendors {
             let Ok(shelf) = self.shelf(vendor) else {
                 continue;
@@ -426,91 +497,185 @@ impl Session {
                     for_printer.entry(name).or_default().insert(machine.clone());
                 }
             }
-            for name in shelf.all_of(Kind::Filament) {
-                let maker = shelf.filament_vendor(&name).unwrap_or_default().to_owned();
-                let key = (maker, short_name(&name).to_owned());
-                let row = rows.entry(key).or_insert_with(|| {
-                    (
-                        Vec::new(),
-                        shelf.filament_type(&name).unwrap_or_default().to_owned(),
-                        BTreeSet::new(),
-                    )
-                });
-                if let Some(printers) = for_printer.get(name.as_str()) {
-                    row.2.extend(printers.iter().cloned());
+            let mut names = shelf.all_of(Kind::Filament);
+            names.sort_by(|a, b| less_name(a, b));
+            for name in names {
+                let alias = favorite_key(&name, true);
+                let key = format!("s|{vendor}|{alias}");
+                let settings = shelf.resolve(Kind::Filament, &name).ok();
+                let values = temperatures(settings.as_ref());
+                let at = match groups.iter().position(|group| group.key == key) {
+                    Some(at) => at,
+                    None => {
+                        groups.push(Group {
+                            vendor: String::new(),
+                            name: alias,
+                            key,
+                            members: Vec::new(),
+                            kind: String::new(),
+                            filament_id: String::new(),
+                            printers: BTreeSet::new(),
+                            values: [None; 4],
+                            version: shelf.preset_version(),
+                        });
+                        groups.len() - 1
+                    }
+                };
+                let group = &mut groups[at];
+                if !group.members.contains(&name) {
+                    group.members.push(name.clone());
                 }
-                if !row.0.contains(&name) {
-                    row.0.push(name);
+                if let Some(printers) = for_printer.get(name.as_str()) {
+                    group.printers.extend(printers.iter().cloned());
+                }
+                if group.vendor.is_empty() {
+                    group.vendor = shelf.filament_vendor(&name).unwrap_or_default().to_owned();
+                }
+                if group.kind.is_empty() {
+                    group.kind = shelf.filament_type(&name).unwrap_or_default().to_owned();
+                }
+                if group.filament_id.is_empty() {
+                    group.filament_id = settings
+                        .as_ref()
+                        .and_then(|s| s.text("filament_id"))
+                        .unwrap_or_default()
+                        .to_owned();
+                }
+                for (known, value) in group.values.iter_mut().zip(values) {
+                    if known.is_none() {
+                        *known = value;
+                    }
                 }
             }
         }
-        let favs = self.favorites();
+        groups.sort_by(|a, b| {
+            less_name(&a.vendor, &b.vendor)
+                .then_with(|| less_name(&a.name, &b.name))
+                .then_with(|| less_name(&a.key, &b.key))
+        });
+        let all_of = |printers: &[String]| added.len() > 1 && printers.len() == added.len();
         let mut answer = Vec::new();
-        for ((maker, alias), (members, kind, printers)) in rows {
+        for group in groups {
             let on = enabled
                 .as_ref()
-                .is_none_or(|on| members.iter().any(|name| on.contains(name)));
-            let used = members.iter().any(|name| in_use.contains(name));
+                .is_none_or(|on| group.members.iter().any(|name| on.contains(name)));
+            let used = group.members.iter().any(|name| in_use.contains(name));
+            let mut printers: Vec<String> = group.printers.into_iter().collect();
+            printers.sort_by(|a, b| less_name(a, b));
+            let [nozzle_t, nozzle_lo, nozzle_hi, bed_t] = group.values;
             answer.push(json!({
-                "fav": favorite_key(&alias, true),
-                "star": favs.contains(&favorite_key(&alias, true)),
-                "key": format!("s|{maker}|{alias}"),
-                "name": alias,
-                "members": members,
-                "vendor": maker,
-                "type": kind,
+                "fav": group.name,
+                "star": favs.contains(&group.name),
+                "key": group.key,
+                "name": group.name,
+                "members": group.members,
+                "vendor": group.vendor,
+                "type": group.kind,
+                "filament_id": group.filament_id,
                 "source": "System",
+                "version": group.version,
+                "all": all_of(&printers),
                 "printers": printers,
+                "nozzle_t": nozzle_t,
+                "nozzle_lo": nozzle_lo,
+                "nozzle_hi": nozzle_hi,
+                "bed_t": bed_t,
+                "mtime": null,
                 "enabled": on,
                 "in_use": used,
                 // A preset in use cannot be unticked (PresetManagerDialog.cpp
                 // `apply_enabled`).
                 "lock": if used && on { "in_use" } else { "" },
+                "can_rename": false,
+                "can_delete": false,
             }));
         }
         let users = self.users();
-        let added: Vec<String> = printers
-            .iter()
-            .map(|(_, machine)| machine.clone())
-            .collect();
+        let shelf = vendors.first().and_then(|v| self.shelf(v).ok());
+        let mut mine: Vec<Value> = Vec::new();
         for preset in users.of(Kind::Filament).filter(|preset| preset.visible) {
-            let (maker, kind, fits) = match vendors.first().and_then(|v| self.shelf(v).ok()) {
-                Some(shelf) => {
-                    let settings = self
-                        .resolve_named(&shelf, Kind::Filament, &preset.name)
-                        .ok();
-                    let first = |key: &str| {
-                        settings
-                            .as_ref()
-                            .and_then(|s| s.texts(key))
-                            .and_then(|items| items.first().cloned())
-                            .unwrap_or_default()
-                    };
-                    let fits: Vec<String> = added
-                        .iter()
-                        .filter(|machine| self.fits(&shelf, Kind::Filament, &preset.name, machine))
-                        .cloned()
-                        .collect();
-                    (first("filament_vendor"), first("filament_type"), fits)
-                }
-                None => (String::new(), String::new(), Vec::new()),
+            let settings = shelf
+                .as_ref()
+                .and_then(|shelf| self.resolve_named(shelf, Kind::Filament, &preset.name).ok());
+            let first = |key: &str| {
+                settings
+                    .as_ref()
+                    .and_then(|s| s.texts(key))
+                    .and_then(|items| items.first().cloned())
+                    .unwrap_or_default()
             };
-            answer.push(json!({
+            let mut fits: Vec<String> = match &shelf {
+                Some(shelf) => added
+                    .iter()
+                    .filter(|machine| self.fits(shelf, Kind::Filament, &preset.name, machine))
+                    .cloned()
+                    .collect(),
+                None => Vec::new(),
+            };
+            fits.sort_by(|a, b| less_name(a, b));
+            let [nozzle_t, nozzle_lo, nozzle_hi, bed_t] = temperatures(settings.as_ref());
+            let mtime = std::fs::metadata(&preset.file)
+                .and_then(|meta| meta.modified())
+                .ok()
+                .and_then(|time| time.duration_since(std::time::UNIX_EPOCH).ok())
+                .map(|since| since.as_secs());
+            let (base, suffix) = split_suffix(&preset.name);
+            mine.push(json!({
                 "fav": preset.name,
                 "star": favs.contains(&preset.name),
                 "key": format!("u|{}", preset.name),
                 "name": preset.name,
                 "members": [preset.name],
-                "vendor": maker,
-                "type": kind,
+                "vendor": first("filament_vendor"),
+                "type": first("filament_type"),
+                "filament_id": settings.as_ref().and_then(|s| s.text("filament_id")).unwrap_or_default(),
                 "source": "User",
+                "version": "",
+                "all": all_of(&fits),
                 "printers": fits,
+                "nozzle_t": nozzle_t,
+                "nozzle_lo": nozzle_lo,
+                "nozzle_hi": nozzle_hi,
+                "bed_t": bed_t,
+                "mtime": mtime,
                 "enabled": true,
                 "in_use": in_use.contains(&preset.name),
                 // User presets are always shown.
                 "lock": "user",
+                "can_rename": true,
+                "can_delete": true,
+                "base": base,
+                "suffix": suffix,
             }));
         }
+        // A user filament's family: those of its id and its name before " @".
+        let family_of = |row: &Value| -> Vec<String> {
+            let mut family: Vec<String> = mine
+                .iter()
+                .filter(|other| {
+                    !row["filament_id"].as_str().unwrap_or_default().is_empty()
+                        && other["filament_id"] == row["filament_id"]
+                        && other["base"] == row["base"]
+                })
+                .filter_map(|other| other["name"].as_str().map(str::to_owned))
+                .collect();
+            if family.is_empty() {
+                family.push(row["name"].as_str().unwrap_or_default().to_owned());
+            }
+            family.sort_by(|a, b| less_name(a, b));
+            family
+        };
+        let families: Vec<Vec<String>> = mine.iter().map(family_of).collect();
+        for (row, family) in mine.iter_mut().zip(families) {
+            row["family"] = json!(family);
+        }
+        mine.sort_by(|a, b| {
+            less_name(
+                a["name"].as_str().unwrap_or_default(),
+                b["name"].as_str().unwrap_or_default(),
+            )
+        });
+        answer.extend(mine);
         Ok(answer)
     }
 

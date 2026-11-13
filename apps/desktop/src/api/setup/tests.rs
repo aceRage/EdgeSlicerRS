@@ -209,7 +209,7 @@ fn the_filament_manager_enables_and_disables_at_once() {
     assert!(rows.iter().all(|row| row["enabled"] == true));
     let pla = rows
         .iter()
-        .find(|row| row["key"] == "s|Generic|Generic PLA")
+        .find(|row| row["key"] == "s|Snapmaker|Generic PLA")
         .expect("a row for Generic PLA");
     assert!(strings(&pla["printers"]).contains(&U1.to_owned()));
     // The filament the project is on is in use: it cannot be unticked.
@@ -1258,4 +1258,75 @@ fn favourites_are_kept_as_the_reference_keeps_them_and_head_the_lists() {
         json!({ "kind": "filament", "preset": "Your PLA", "confirm": true }),
     );
     assert_eq!(ask(&session, "favorites", Value::Null)["favs"], json!([]));
+}
+
+#[test]
+fn the_managers_temperatures_are_the_first_members_for_the_plate_in_force() {
+    let dir = tempfile::tempdir().unwrap();
+    let session = session(dir.path());
+    ask(&session, "printer_select", json!({ "initial": true }));
+    let project = ask(&session, "project", Value::Null);
+    let plate = project["choices"]["bed_type"].as_str().map(str::to_owned);
+    let table = ask(&session, "filament_manager", Value::Null);
+    let row = table["rows"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|row| row["key"] == "s|Snapmaker|Generic PLA")
+        .unwrap()
+        .clone();
+    // Its members in order of name; the values are the first one's.
+    let members = strings(&row["members"]);
+    let mut sorted = members.clone();
+    sorted.sort_by(|a, b| super::less_name(a, b));
+    assert_eq!(members, sorted);
+    let first = session
+        .shelf("Snapmaker")
+        .unwrap()
+        .resolve(Kind::Filament, &members[0])
+        .unwrap();
+    let number = |key: &str| first.texts(key).unwrap()[0].parse::<f64>().unwrap();
+    assert_eq!(
+        row["nozzle_t"].as_f64().unwrap(),
+        number("nozzle_temperature")
+    );
+    assert_eq!(
+        row["nozzle_lo"].as_f64().unwrap(),
+        number("nozzle_temperature_range_low")
+    );
+    assert_eq!(
+        row["nozzle_hi"].as_f64().unwrap(),
+        number("nozzle_temperature_range_high")
+    );
+    let key = super::bed_temperature_key(plate.as_deref());
+    assert_eq!(row["bed_t"].as_f64().unwrap(), number(key));
+    assert_eq!(row["mtime"], Value::Null);
+    assert!(row["version"].as_str().is_some_and(|v| !v.is_empty()));
+    // Another plate: its own setting.
+    ask(&session, "project_set", json!({ "bed_type": "Cool Plate" }));
+    let table = ask(&session, "filament_manager", Value::Null);
+    let row = table["rows"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|row| row["key"] == "s|Snapmaker|Generic PLA")
+        .unwrap()
+        .clone();
+    assert_eq!(row["bed_t"].as_f64().unwrap(), number("cool_plate_temp"));
+    assert_eq!(super::bed_temperature_key(None), "hot_plate_temp");
+    // The rows: the vendors' by maker and name, then the person's by name.
+    let rows = table["rows"].as_array().unwrap();
+    let system: Vec<(String, String)> = rows
+        .iter()
+        .filter(|row| row["source"] == "System")
+        .map(|row| {
+            (
+                row["vendor"].as_str().unwrap().to_owned(),
+                row["name"].as_str().unwrap().to_owned(),
+            )
+        })
+        .collect();
+    let mut ordered = system.clone();
+    ordered.sort_by(|a, b| super::less_name(&a.0, &b.0).then_with(|| super::less_name(&a.1, &b.1)));
+    assert_eq!(system, ordered);
 }

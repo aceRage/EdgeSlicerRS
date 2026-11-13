@@ -609,13 +609,23 @@ At least one filament must be selected.
 Do you want to use default filament ?
 yes
 no
-Search
 Printers
 Source
 Changes are saved at once.
 Create new
 Create a new filament preset
 Favourite
+Search name, vendor, type or printer
+Nozzle °C
+Bed °C
+Modified
+Any printer
+Bed temperature for the current plate type
+In use
+Add to favourites
+Remove from favourites
+User presets are always shown
+In use in this project
 
 # The menu bar's entries that are not built: what each waits for
 # (src/api/menu.rs), shown as the entry's tooltip.

@@ -147,37 +147,84 @@ const Setup = (() => {
   const fm = { rows: [], search: '', pending: false };
   const STAR = '<svg viewBox="0 0 16 16" aria-hidden="true"><path d="M8 1.4l1.95 4.1 4.45.55-3.27 3.08.84 4.42L8 11.4l-3.97 2.15.84-4.42L1.6 6.05l4.45-.55z"/></svg>';
 
+  // The values as preset_manager.js shows them: whole degrees, a date of the system's, "—" when unknown.
+  const fmTemp = (value) => (value === null || value === undefined ? '—' : String(Math.round(value)));
+  function fmDate(seconds) {
+    if (seconds === null || seconds === undefined) return '—';
+    const date = new Date(seconds * 1000);
+    try { return date.toLocaleString(undefined, { dateStyle: 'medium', timeStyle: 'short' }); } catch { /* below */ }
+    return date.toISOString().replace('T', ' ').slice(0, 16);
+  }
+  function fmPrinters(row) {
+    if (row.all) return 'Any printer';
+    if (!row.printers.length) return '—';
+    if (row.printers.length === 1) return row.printers[0];
+    return `${row.printers[0]} +${row.printers.length - 1}`;
+  }
+
+  // The columns, in the reference's order (preset_manager.js, `KIND === 'filament'`): each with what its
+  // cell shows; `sort` the session's name of the column to sort by, `filter` what its funnel offers.
+  const FM_COLUMNS = [
+    { key: 'checked', label: () => t('Enabled'), cls: 'check', sort: 'checked', filter: 'set' },
+    { key: 'star', label: () => 'Favourite', cls: 'star', sort: 'star', filter: 'set' },
+    { key: 'vendor', label: () => t('Vendor'), sort: 'vendor', filter: 'set', cell: (row) => [row.vendor || '—', row.vendor] },
+    { key: 'name', label: () => t('Name'), sort: 'name', filter: 'text', cls: 'name' },
+    { key: 'type', label: () => t('Type'), sort: 'type', filter: 'set', cell: (row) => [row.type || '—', row.type] },
+    { key: 'source', label: () => 'Source', sort: 'source', filter: 'set', cell: (row) => [row.source === 'User' ? t('User') : 'System'] },
+    { key: 'printers', label: () => 'Printers', sort: 'printers', filter: 'set', cell: (row) => [fmPrinters(row), row.printers.join('\n')] },
+    { key: 'nozzle_t', label: () => 'Nozzle °C', cls: 'num', sort: 'nozzle_t', filter: 'range', tip: t('Nozzle temperature'),
+      cell: (row) => [fmTemp(row.nozzle_t), row.nozzle_lo !== null && row.nozzle_hi !== null ? `Range ${fmTemp(row.nozzle_lo)}–${fmTemp(row.nozzle_hi)} °C` : ''] },
+    { key: 'bed_t', label: () => 'Bed °C', cls: 'num', sort: 'bed_t', filter: 'range', tip: 'Bed temperature for the current plate type',
+      cell: (row) => [fmTemp(row.bed_t)] },
+    { key: 'mtime', label: () => 'Modified', sort: 'mtime',
+      cell: (row) => [fmDate(row.mtime), row.mtime === null && row.version ? `Vendor bundle ${row.version}` : ''] },
+  ];
+
+  function fmHead() {
+    $('fm-head').replaceChildren(...FM_COLUMNS.map((column) => {
+      const cell = el('th', { className: column.cls || '', textContent: column.label() });
+      if (column.tip) cell.title = column.tip;
+      return cell;
+    }));
+  }
+
   function fmMatches(row) {
     const words = fm.search.toLowerCase().match(/\S+/g) || [];
     const hay = `${row.name}\u0000${row.vendor}\u0000${row.type}\u0000${row.printers.join('\u0000')}`.toLowerCase();
     return words.every((word) => hay.includes(word));
   }
 
+  function fmRow(row) {
+    const box = el('input', { type: 'checkbox', checked: row.enabled, disabled: row.lock === 'user' || (row.lock === 'in_use') });
+    box.setAttribute('aria-label', `Enable ${row.name}`);
+    // Why it cannot change (preset_manager.js `lockText`).
+    const why = row.lock === 'user' ? 'User presets are always shown' : row.lock === 'in_use' ? 'In use in this project' : '';
+    if (why) box.title = why;
+    box.addEventListener('change', () => attempt(() => fmEnable(row, box.checked)));
+    // The star (preset_manager.js `COL_STAR`): applied at once.
+    const star = el('button', { type: 'button', className: `pt-star${row.star ? ' on' : ''}`, innerHTML: STAR });
+    star.title = row.star ? 'Remove from favourites' : 'Add to favourites';
+    star.setAttribute('aria-label', `${star.title}: ${row.name}`);
+    star.setAttribute('aria-pressed', String(row.star));
+    star.addEventListener('click', () => attempt(() => fmStar(row)));
+    const cells = FM_COLUMNS.map((column) => {
+      if (column.key === 'checked') return el('td', { className: 'check' }, box);
+      if (column.key === 'star') return el('td', { className: 'star' }, star);
+      if (column.key === 'name') {
+        let title = row.name;
+        if (row.members.length > 1 || row.members[0] !== row.name) title += `\n${row.members.join('\n')}`;
+        if (row.in_use) title += '\nIn use';
+        return el('td', { className: `name${row.in_use ? ' inuse' : ''}`, textContent: row.name, title });
+      }
+      const [text, title] = column.cell(row);
+      return el('td', { className: `${column.cls || ''}${text === '—' ? ' na' : ''}`, textContent: text, title: title || '' });
+    });
+    return el('tr', { className: row.enabled ? 'on' : '' }, ...cells);
+  }
+
   function fmDraw() {
     const shown = fm.rows.filter(fmMatches);
-    $('fm-body').replaceChildren(...shown.map((row) => {
-      const box = el('input', { type: 'checkbox', checked: row.enabled, disabled: row.lock === 'user' || (row.lock === 'in_use') });
-      box.setAttribute('aria-label', row.name);
-      // Why it cannot change (preset_manager.js `pm_lock_user`, `pm_lock_in_use`).
-      const why = row.lock === 'user' ? 'User presets are always shown' : row.lock === 'in_use' ? 'In use in this project' : '';
-      if (why) box.title = why;
-      box.addEventListener('change', () => attempt(() => fmEnable(row, box.checked)));
-      const printers = row.printers.length > 2 ? `${row.printers[0]} +${row.printers.length - 1}` : row.printers.join(', ');
-      // The star (preset_manager.js `COL_STAR`): applied at once.
-      const star = el('button', { type: 'button', className: `pt-star${row.star ? ' on' : ''}`, innerHTML: STAR });
-      star.title = row.star ? 'Remove from favourites' : 'Add to favourites';
-      star.setAttribute('aria-label', `${star.title}: ${row.name}`);
-      star.setAttribute('aria-pressed', String(row.star));
-      star.addEventListener('click', () => attempt(() => fmStar(row)));
-      return el('tr', { className: row.enabled ? 'on' : '' },
-        el('td', { className: 'check' }, box),
-        el('td', { className: 'star' }, star),
-        el('td', { textContent: row.name, title: row.members.join('\n') }),
-        el('td', { textContent: row.vendor || '—' }),
-        el('td', { textContent: row.type || '—' }),
-        el('td', { textContent: printers || '—', title: row.printers.join('\n') }),
-        el('td', { textContent: row.source === 'User' ? t('User') : 'System' }));
-    }));
+    $('fm-body').replaceChildren(...shown.map(fmRow));
     const on = fm.rows.filter((row) => row.enabled).length;
     $('fm-count').textContent = `${shown.length} of ${fm.rows.length} shown · ${on} enabled`;
   }
@@ -209,6 +256,7 @@ const Setup = (() => {
     fm.search = '';
     $('fm-search').value = '';
     $('fm-status').textContent = '';
+    fmHead();
     fmDraw();
     $('fm-dialog').showModal();
     $('fm-search').focus();
