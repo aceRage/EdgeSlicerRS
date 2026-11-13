@@ -617,6 +617,19 @@ pub fn slice(job: Job, watch: &dyn Watcher) -> Result<Sliced, Failure> {
                         filament: facet.filament,
                     })
                     .collect();
+                let mut used: Vec<usize> = facets
+                    .iter()
+                    .map(|facet| usize::from(facet.filament))
+                    .filter(|filament| *filament > 0)
+                    .collect();
+                used.push(base);
+                used.sort_unstable();
+                used.dedup();
+                let paint = edge_paint::PaintSettings {
+                    run_scale: crate::paint::run_scale(&settings, used)
+                        .map_err(|e| e.to_string())?,
+                    ..paint
+                };
                 edge_paint::segment(&outlines, &planes, &facets, &paint).map_err(|e| e.to_string())
             })
             .collect::<Result<Vec<_>, String>>()?;
