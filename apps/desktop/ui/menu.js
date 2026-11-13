@@ -162,16 +162,64 @@ const Menu = (() => {
     const { suggested } = await call('export_sliced', { project, all, suggest: true });
     const path = await pick('gcode3mf', suggested);
     if (!path) return;
+    const pictures = await slicedPictures(project, all);
+    const answer = await written('export_sliced', { project, all, path, pictures });
+    if (!answer) return;
+    say(`Saved ${answer.path} (${(answer.bytes / 1e6).toFixed(2)} MB).`);
+  }
+
+  // The pictures of the plates a sliced file holds, drawn by the 3D view
+  // as the reference draws them for it.
+  async function slicedPictures(project, all) {
     const plates = await call('export_sliced_plates', { project, all });
     const scene = stage();
     const numbers = {};
     for (const one of plates.copies) numbers[one.copy] = one.number;
     const drawn = plates.all_plates.length ? plates.all_plates : [1];
-    const pictures = scene && scene.platePictures ? scene.platePictures(drawn, numbers) : {};
-    const answer = await written('export_sliced', { project, all, path, pictures });
-    if (!answer) return;
-    say(`Saved ${answer.path} (${(answer.bytes / 1e6).toFixed(2)} MB).`);
+    return scene && scene.platePictures ? scene.platePictures(drawn, numbers) : {};
   }
+
+  // Bambu Connect's own page, in the system's browser, from the window
+  // alone; in a browser its address is said.
+  async function connectPage(url) {
+    if (tauri) await tauri.core.invoke('hand_off', { page: url });
+    else say(url);
+  }
+
+  // "Send plate to Bambu Connect" (`all` false), "Send all plates to
+  // Bambu Connect" (`all` true) and the print button's "Send to Bambu
+  // Connect" (Plater.cpp `send_to_bambu_connect`): the sliced file
+  // written, then handed to the person's own Bambu Connect by its URL.
+  // Only the window opens it (`hand_off`); in a browser the URL is shown.
+  async function sendToBambuConnect(all) {
+    const title = t('Send to Bambu Connect');
+    const project = activeId();
+    let answer;
+    try {
+      const pictures = await slicedPictures(project, all).catch(() => ({}));
+      answer = await call('bambu_connect_send', { project, all, pictures });
+    } catch (error) {
+      await inform(title, error.message);
+      return;
+    }
+    if (answer.not_installed) {
+      const text = t('Bambu Connect is not installed. Bambu Connect is Bambu Lab\'s free app that sends sliced files to Bambu printers with your Bambu account or over LAN. Install it from Bambu Lab, then send again.');
+      if (await confirmBox(title, text, t('Open Bambu Connect page'), t('Close'))) await connectPage(answer.info_url);
+      return;
+    }
+    if (!tauri) {
+      await inform(title, `${fmt(t('In a browser no other application is opened. The file was written to %1%; in the app\'s window Bambu Connect is opened with:'), answer.path)}\n\n${answer.url}`);
+      return;
+    }
+    const outcome = await tauri.core.invoke('hand_off', { connect: answer.url });
+    if (outcome !== 'launched') {
+      const text = t('Bambu Connect could not be opened. Check that Bambu Connect is installed and up to date, then try again.');
+      if (await confirmBox(title, text, t('Open Bambu Connect page'), t('Close'))) await connectPage('https://wiki.bambulab.com/en/software/bambu-connect');
+      return;
+    }
+    say(fmt(t('Sent "%1%" to Bambu Connect. Choose the printer and start the print there.'), answer.name));
+  }
+  window.sendToBambuConnect = sendToBambuConnect;
 
   // "Export Generic 3MF..." (Plater.cpp `export_core_3mf`).
   async function exportGeneric() {
@@ -286,6 +334,8 @@ const Menu = (() => {
       case 'export.plate_sliced': return go(() => exportSliced(false));
       case 'export.all_sliced': return go(() => exportSliced(true));
       case 'export.generic_3mf': return go(exportGeneric);
+      case 'export.bambu_connect': return go(() => sendToBambuConnect(false));
+      case 'export.bambu_connect_all': return go(() => sendToBambuConnect(true));
       case 'edit.undo': case 'edit.redo':
         if (!edit || state.tab !== 'prepare') return false;
         return go(() => edit.step(id === 'edit.undo' ? 'undo' : 'redo'));

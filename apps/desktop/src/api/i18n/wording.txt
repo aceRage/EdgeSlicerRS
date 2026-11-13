@@ -452,6 +452,19 @@ Extras	GUI/Preferences.cpp:1832
 Auto-Save project	GUI/Preferences.cpp:2487
 Periodically save the project to its own file. Only projects that have already been saved once are auto-saved.	GUI/Preferences.cpp:2488
 The period of auto-save in seconds.	GUI/Preferences.cpp:2489
+Send to Bambu Connect	GUI/MainFrame.cpp:2390
+Send plate to Bambu Connect	GUI/MainFrame.cpp:3528
+Send all plates to Bambu Connect	GUI/MainFrame.cpp:3532
+Export the current plate's sliced file and open it in Bambu Connect, which prints it with your Bambu account or over LAN	GUI/MainFrame.cpp:3529
+Export the sliced file of all plates and open it in Bambu Connect, where you pick the plate to print	GUI/MainFrame.cpp:3533
+Slice all plates first, then send them to Bambu Connect.	GUI/Plater.cpp:25756
+Slice the plate first, then send it to Bambu Connect.	GUI/Plater.cpp:25757
+Bambu Connect is not installed. Bambu Connect is Bambu Lab's free app that sends sliced files to Bambu printers with your Bambu account or over LAN. Install it from Bambu Lab, then send again.	GUI/Plater.cpp:25734
+Bambu Connect could not be opened. Check that Bambu Connect is installed and up to date, then try again.	GUI/Plater.cpp:25733
+Open Bambu Connect page	GUI/Plater.cpp:25737
+Could not create a temporary folder for the file to send to Bambu Connect.	GUI/Plater.cpp:25783
+Failed to export the sliced file for Bambu Connect.	GUI/Plater.cpp:25796
+Sent "%1%" to Bambu Connect. Choose the printer and start the print there.	GUI/Plater.cpp:25811
 
 [own]
 # This app's own words on the static page, with no counterpart in the
@@ -702,3 +715,5 @@ Path of the configs to import
 Saved ${answer.path} (${answer.triangles} triangles).
 Saved ${answer.files.length} STL files in ${dir}.
 The object is open where it was cut: %d of the cut's outlines could not be closed.
+Send to Bambu Connect is for a Bambu Lab printer.
+In a browser no other application is opened. The file was written to %1%; in the app's window Bambu Connect is opened with:
