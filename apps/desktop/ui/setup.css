@@ -1,0 +1,158 @@
+/* Setting up printers and filaments (setup.js): "Filament Selection", the
+   Filament manager, "Create Printer/Nozzle" and "Create Filament". Tokens
+   and controls are the page's own (style.css, STYLE.md). */
+
+/* A dialog that holds a list or a table: tall, the list scrolling between two hairlines. */
+.setup-dialog {
+  width: min(1180px, calc(100vw - 48px));
+  height: min(720px, calc(100vh - 48px));
+  max-width: none;
+  max-height: none;
+  padding: 0;
+  overflow: hidden;
+}
+.setup-dialog[open] { display: flex; flex-direction: column; }
+.setup-dialog > h2 { padding: 14px var(--space-4) 0; }
+.setup-dialog > .dialog-foot { padding: var(--space-3) var(--space-4); }
+.setup-scroll {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+  border-top: 1px solid var(--line-2);
+  border-bottom: 1px solid var(--line-2);
+  background: var(--surface-well);
+}
+
+/* ---- Filament Selection ---- */
+
+.fs-filters { display: flex; flex-direction: column; gap: var(--space-2); padding: var(--space-3) var(--space-4) 0; }
+.fs-line { display: grid; grid-template-columns: 112px minmax(0, 1fr); align-items: baseline; gap: var(--space-2); }
+.fs-line[hidden] { display: none; }
+.fs-name { color: var(--text-2); font-size: var(--size-label); font-weight: 600; }
+.fs-values { display: flex; flex-wrap: wrap; gap: 2px var(--space-3); max-height: 96px; overflow-y: auto; }
+.fs-values label, .fs-item { display: inline-flex; flex-direction: row; align-items: center; gap: 6px; color: var(--text-1); font-size: var(--size-body); cursor: pointer; }
+.fs-bar { display: flex; align-items: center; gap: var(--space-3); padding: var(--space-3) var(--space-4); }
+.fs-bar input[type="search"] { flex: 1 1 220px; max-width: 320px; }
+#fs-count, #fm-count { margin-left: auto; font-variant-numeric: tabular-nums; }
+#fs-items {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
+  align-content: start;
+  gap: 2px var(--space-3);
+  padding: var(--space-3) var(--space-4);
+}
+.fs-item { min-height: 30px; padding: 0 6px; border-radius: var(--radius-s); overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
+.fs-item:hover { background: var(--fill-hover); }
+.fs-item[hidden] { display: none; }
+
+/* The guide's notice over the page: nothing ticked. */
+.setup-notice {
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  translate: -50% -50%;
+  width: min(360px, calc(100% - 32px));
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  padding: var(--space-4);
+  border: 1px solid var(--line-2);
+  border-radius: var(--radius-l);
+  background: var(--surface-raised);
+  box-shadow: var(--shadow-float);
+}
+.setup-notice[hidden] { display: none; }
+.setup-notice h3 { color: var(--danger); font-size: var(--size-body); }
+
+/* ---- the Filament manager ---- */
+
+#fm-table { min-width: 1170px; }
+#fm-table th.check { width: 84px; padding-left: var(--space-4); }
+#fm-table th.star { width: 84px; }
+#fm-table th:nth-child(3) { width: 100px; }
+#fm-table th:nth-child(5) { width: 84px; }
+#fm-table th:nth-child(6) { width: 80px; }
+#fm-table th:nth-child(7) { width: 140px; }
+#fm-table th.num { width: 92px; }
+#fm-table th:nth-child(10) { width: 136px; }
+#fm-table td.name { font-weight: 550; }
+#fm-table td.name.inuse::after { content: ' •'; color: var(--accent); }
+#fm-table td:nth-child(3), #fm-table td:nth-child(6), #fm-table td:nth-child(7), #fm-table td:nth-child(10) { color: var(--text-2); }
+#fm-table tbody tr { cursor: default; }
+
+@media (max-width: 760px) {
+  .setup-dialog { width: calc(100vw - 16px); height: calc(100vh - 16px); }
+  .fs-line { grid-template-columns: 1fr; }
+}
+
+/* ---- "Create Printer/Nozzle" and "Create Filament" ---- */
+
+.create-dialog { width: min(760px, calc(100vw - 32px)); max-height: calc(100vh - 32px); display: none; }
+.create-dialog[open] { display: flex; flex-direction: column; gap: var(--space-3); }
+.cr-steps { display: flex; align-items: center; justify-content: center; gap: var(--space-5); padding-bottom: var(--space-2); border-bottom: 1px solid var(--line-1); color: var(--text-3); }
+.cr-step { display: inline-flex; align-items: center; gap: var(--space-2); }
+.cr-step b { display: inline-grid; place-items: center; width: 20px; height: 20px; border-radius: 50%; border: 1px solid var(--line-2); font-size: var(--size-label); }
+.cr-step.on { color: var(--text-1); }
+.cr-step.on b { border-color: var(--accent); background: var(--accent); color: var(--on-accent, #fff); }
+.cr-page { display: flex; flex-direction: column; gap: var(--space-2); min-height: 0; }
+.cr-p1, .cr-p2 { min-height: 0; overflow-y: auto; }
+.cr-p1[hidden], .cr-p2[hidden] { display: none; }
+.cr-row { display: grid; grid-template-columns: 150px minmax(0, 1fr); align-items: center; gap: var(--space-3); min-height: var(--control-l); }
+.cr-row[hidden] { display: none; }
+.cr-name { color: var(--text-2); font-size: var(--size-label); font-weight: 600; }
+.cr-controls { display: flex; align-items: center; flex-wrap: wrap; gap: var(--space-2) var(--space-3); min-width: 0; }
+.cr-pair { display: flex; flex-wrap: wrap; gap: var(--space-2); }
+.cr-pair > .lb, .cr-pair > input { width: 220px; }
+.cr-pair > .lb[hidden], .cr-pair > input[hidden] { display: none; }
+.cr-stack { display: flex; flex-direction: column; gap: 4px; }
+.cr-radios { display: flex; flex-direction: column; gap: 6px; }
+.cr-radios label, .cr-check { display: inline-flex; flex-direction: row; align-items: center; gap: 6px; color: var(--text-1); font-size: var(--size-body); cursor: pointer; }
+.cr-unit { display: inline-flex; align-items: center; gap: 4px; }
+.cr-unit small { color: var(--text-3); }
+.cr-number { width: 84px; }
+.cr-axis { color: var(--text-3); font-size: var(--size-label); font-weight: 600; }
+.cr-scroll { max-height: 46vh; border-radius: var(--radius-m); border: 1px solid var(--line-2); }
+.cr-lists { display: flex; flex-direction: column; gap: var(--space-3); padding: var(--space-3); }
+.cr-ticks h3 { font-size: var(--size-label); color: var(--text-2); margin-bottom: 4px; }
+.cr-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(200px, 1fr)); gap: 2px var(--space-2); }
+.cr-table { display: flex; flex-direction: column; gap: var(--space-1); padding: var(--space-2); }
+.cr-table-row { display: grid; grid-template-columns: minmax(0, 2fr) 96px minmax(0, 3fr) auto; align-items: center; gap: var(--space-2); }
+.cr-table-head { color: var(--text-3); font-size: var(--size-label); font-weight: 600; }
+.cr-note { white-space: pre-line; }
+
+@media (max-width: 760px) {
+  .cr-row { grid-template-columns: 1fr; gap: 4px; }
+  .cr-pair > .lb, .cr-pair > input { width: 100%; }
+  .cr-table-row { grid-template-columns: 1fr 1fr; }
+}
+.cr-section { font-size: var(--size-body); color: var(--text-1); margin-top: var(--space-2); }
+.cr-table-row .lb { min-width: 0; }
+
+/* The favourite star, in the Filament manager and in a filament list's rows. */
+.pt-star, .lb-star { display: inline-grid; place-items: center; width: 24px; height: 24px; padding: 0; border: 0; border-radius: var(--radius-s); background: none; color: var(--text-3); cursor: pointer; }
+.pt-star svg, .lb-star svg { width: 15px; height: 15px; fill: none; stroke: currentColor; stroke-width: 1.2; }
+.pt-star:hover, .lb-star:hover { color: var(--text-1); background: var(--fill-hover); }
+.pt-star.on, .lb-star.on { color: var(--accent); }
+.pt-star.on svg, .lb-star.on svg { fill: currentColor; }
+.lb-option .lb-star { margin-left: auto; flex: none; }
+#fm-table th.star { width: 84px; }
+#fm-table td.star { text-align: center; }
+
+.fm-chips { display: flex; align-items: center; flex-wrap: wrap; gap: 6px var(--space-2); padding: 0 var(--space-4) var(--space-3); }
+.fm-chips[hidden] { display: none; }
+.fm-printer-pick { display: inline-flex; flex-direction: row; align-items: center; gap: 6px; color: var(--text-2); font-size: var(--size-label); }
+.fm-printer-pick select { max-width: 240px; }
+#fm-none { padding: var(--space-6) var(--space-4); text-align: center; }
+#fm-pop { width: 260px; }
+#fm-pop .check-list { max-height: 240px; overflow-y: auto; }
+
+#fm-table th.actions { width: 64px; }
+#fm-table td.actions { text-align: center; }
+.fm-act svg { width: 14px; height: 14px; fill: currentColor; }
+.fm-edit { display: flex; flex-wrap: wrap; align-items: center; gap: 2px 6px; min-width: 0; padding: 4px 0; }
+.fm-edit-input { flex: 1 1 100%; min-width: 0; height: 28px; }
+.fm-edit-input.invalid { box-shadow: inset 0 0 0 1px var(--danger); }
+.fm-edit-suffix { color: var(--text-3); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.fm-edit-scope { display: inline-flex; flex-direction: row; align-items: center; gap: 4px; color: var(--text-2); font-size: var(--size-label); white-space: nowrap; }
+#fm-table td.name.editing { overflow: visible; }
+#fm-table tbody tr:has(td.editing) td { height: auto; }

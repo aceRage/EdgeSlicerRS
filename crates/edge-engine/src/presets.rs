@@ -24,6 +24,8 @@ pub struct Shelf {
     filaments: Vec<(String, Vec<String>)>,
     /// What each filament preset is made of (`filament_type`), by name.
     filament_types: HashMap<String, String>,
+    /// Who makes each filament preset's filament (`filament_vendor`), by name.
+    filament_vendors: HashMap<String, String>,
 }
 
 /// A printer model as a vendor's index lists it (`machine_model_list`):
@@ -141,6 +143,7 @@ impl Library {
                 .collect()
         };
         let mut filament_types = HashMap::new();
+        let mut filament_vendors = HashMap::new();
         let filaments = usable(Kind::Filament)
             .into_iter()
             .map(|(name, settings)| {
@@ -149,6 +152,12 @@ impl Library {
                     .and_then(|kinds| kinds.first())
                 {
                     filament_types.insert(name.clone(), kind.clone());
+                }
+                if let Some(maker) = settings
+                    .texts("filament_vendor")
+                    .and_then(|makers| makers.first())
+                {
+                    filament_vendors.insert(name.clone(), maker.clone());
                 }
                 let printers = settings
                     .texts("compatible_printers")
@@ -165,6 +174,7 @@ impl Library {
             processes: with_printers(Kind::Process),
             filaments,
             filament_types,
+            filament_vendors,
             vendor,
         })
     }
@@ -323,6 +333,12 @@ impl Shelf {
     /// What a filament preset is made of ("PLA"), when it says.
     pub fn filament_type(&self, filament: &str) -> Option<&str> {
         self.filament_types.get(filament).map(String::as_str)
+    }
+
+    /// Who makes a filament preset's filament ("Generic", "Polymaker"),
+    /// when it says (`filament_vendor`).
+    pub fn filament_vendor(&self, filament: &str) -> Option<&str> {
+        self.filament_vendors.get(filament).map(String::as_str)
     }
 
     /// The process and the filament preset a printer's own profile names

@@ -25,13 +25,23 @@ const Presets = (() => {
   // Fills a preset list in the reference's groups and order: the
   // person's ("User presets"), then the vendor's ("System presets"). A
   // group with nothing in it is left out, as the reference leaves it out.
-  function fillList(select, { user = [], system = [], value = null, modified = false }) {
+  // A filament list (with `favorites`) starts with "Favorite filaments", the
+  // favourites among those offered, in order of name, and gives each row
+  // the key its star is kept by (PresetComboBoxes.cpp `append_favorite_group`,
+  // FavoriteFilaments.hpp `key_for`).
+  function fillList(select, { user = [], system = [], value = null, modified = false, favorites = null }) {
+    const keyOf = (name) => (user.includes(name) ? name : name.split('@')[0].trimEnd());
     const group = (title, names) => {
       const node = el('optgroup', { label: title });
-      node.append(...names.map((name) => new Option(label(name, modified && name === value), name)));
+      node.append(...names.map((name) => {
+        const option = new Option(label(name, modified && name === value), name);
+        if (favorites) option.dataset.fav = keyOf(name);
+        return option;
+      }));
       return node;
     };
     const groups = [];
+    if (favorites && favorites.length) groups.push(group(t('Favorite filaments'), favorites));
     if (user.length) groups.push(group(t('User presets'), user));
     if (system.length) groups.push(group(t('System presets'), system));
     // What the project is on that neither list holds is still listed.
@@ -107,7 +117,11 @@ const Presets = (() => {
       // preset the entries are not there, as the reference hides its
       // delete button.
       ...(mine ? [
-        [t('Rename preset'), () => attempt(() => rename(kind, current.name))],
+        // "Rename" (the catalogs' word, as the reference's menus name a
+        // rename): "Rename preset", the reference's newer words for it
+        // (PresetManagerDialog.cpp l.466), is in none of its catalogs and
+        // read in English in every language.
+        [t('Rename'), () => attempt(() => rename(kind, current.name))],
         [t('Delete this preset'), () => attempt(() => remove(kind, current.name))],
       ] : []),
       null,
@@ -201,7 +215,7 @@ const Presets = (() => {
 
   async function rename(kind, preset) {
     const answer = await askName({
-      heading: t('Rename preset'),
+      heading: t('Rename'),
       caption: t('Name'),
       kind,
       preset,

@@ -346,7 +346,7 @@ const Menu = (() => {
       case 'window.next': case 'window.previous':
         return go(() => cycleProject(id === 'window.next' ? 1 : -1));
       case 'help.shortcuts': return go(showShortcuts);
-      case 'help.wizard': return go(openPrinterSelection);
+      case 'help.wizard': return go(() => openPrinterSelection({ wizard: true }));
       case 'app.about': case 'help.about': return go(showAbout);
       case 'app.preferences': return go(showPreferences);
       default: return false;

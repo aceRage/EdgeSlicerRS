@@ -131,6 +131,17 @@ fn pick(app: tauri::AppHandle, what: String, suggested: Option<String>) -> Optio
             .set_title("Open CA certificate file")
             .add_filter("Certificate files (*.crt, *.pem)", &["crt", "pem"])
             .blocking_pick_file(),
+        // "Create Printer/Nozzle"'s "Hot Bed STL" and "Hot Bed SVG"
+        // (CreatePresetsDialog.cpp `load_model_stl`, `load_texture`), the
+        // reference's titles and filters (FT_STL, FT_TEX).
+        "bed_model" => dialog
+            .set_title("Choose an STL file to import bed model from:")
+            .add_filter("STL files", &["stl"])
+            .blocking_pick_file(),
+        "bed_texture" => dialog
+            .set_title("Choose a file to import bed texture from (PNG/SVG):")
+            .add_filter("Texture", &["png", "svg"])
+            .blocking_pick_file(),
         _ => None,
     };
     let path = picked?.into_path().ok()?;

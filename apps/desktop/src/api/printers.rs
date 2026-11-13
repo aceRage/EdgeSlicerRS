@@ -188,6 +188,9 @@ fn pick_process(
         .map(str::to_owned)
         .or_else(|| shelf.usual_for(base).0)
         .or_else(|| offered.processes.first().cloned())
+        // A printer of one's own that stands alone is offered the
+        // person's presets made for it, and nothing of the vendor's.
+        .or_else(|| offered.user_processes.first().cloned())
 }
 
 /// The filament a slot is put on when its project goes to a printer. One
@@ -210,7 +213,8 @@ fn pick_filament(
             .filter(|name| all.contains(name))
             .map(str::to_owned)
             .or(usual)
-            .or_else(|| offered.filaments.first().cloned());
+            .or_else(|| offered.filaments.first().cloned())
+            .or_else(|| offered.user_filaments.first().cloned());
     };
     if all.contains(&current) {
         return Some(current.to_owned());
@@ -238,6 +242,7 @@ fn pick_filament(
         }
     }
     best.map(|(name, _)| name.to_owned())
+        .or_else(|| all.first().map(|name| (*name).to_owned()))
 }
 
 /// Bytes as base64, for a picture handed to the page as a `data:` URL.
@@ -316,7 +321,7 @@ pub(super) fn remember(state: &mut State, at: usize, args: &Value) {
 
 impl Session {
     /// A vendor's printer models, read once and kept, as its presets are.
-    fn models_of(&self, vendor: &str) -> Result<Arc<Vec<PrinterModel>>, String> {
+    pub(super) fn models_of(&self, vendor: &str) -> Result<Arc<Vec<PrinterModel>>, String> {
         let library = {
             let state = lock(&self.state);
             if let Some(models) = state.catalogue.get(vendor) {
@@ -343,7 +348,7 @@ impl Session {
     /// and then by vendor: the order of the reference's list, which is
     /// that of the names. One added from other profiles is not listed
     /// and stays added.
-    fn installed(&self) -> Vec<PrinterModel> {
+    pub(super) fn installed(&self) -> Vec<PrinterModel> {
         let added = lock(&self.state).store.data.models.clone();
         let mut installed: Vec<PrinterModel> = added
             .iter()
@@ -382,7 +387,7 @@ impl Session {
     /// a preset of a model elsewhere (`get_similar_printer_preset`) it
     /// says that is not wanted and takes the 0.4 one. The model found
     /// first is kept, on its usual nozzle.
-    fn usual_printer(&self, installed: &[PrinterModel]) -> Option<(String, String)> {
+    pub(super) fn usual_printer(&self, installed: &[PrinterModel]) -> Option<(String, String)> {
         let last = lock(&self.state).store.data.last.clone();
         let added = |vendor: &str, machine: &str| {
             let machine = self.system_printer(machine);
@@ -599,6 +604,24 @@ impl Session {
                     "added": is_added(vendor, &model.model),
                     "user": self.is_users(edge_config::Kind::Machine, machine),
                 }),
+                // One of the person's that stands alone ("Create
+                // printer"): its own model and nozzle.
+                None if self.is_users(edge_config::Kind::Machine, machine) => {
+                    let own = self
+                        .users()
+                        .get(edge_config::Kind::Machine, machine)
+                        .map(|preset| preset.own.clone())
+                        .unwrap_or_default();
+                    json!({
+                        "source": "preset",
+                        "vendor": vendor,
+                        "machine": machine,
+                        "model": own.text("printer_model"),
+                        "variant": own.text("printer_variant"),
+                        "added": false,
+                        "user": true,
+                    })
+                }
                 // A name the vendor does not have: said when slicing.
                 None => json!({
                     "source": "preset",

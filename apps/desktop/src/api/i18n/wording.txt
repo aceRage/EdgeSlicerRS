@@ -21,6 +21,18 @@ Add fuzzy skin	GUI/Gizmos/GLGizmoFuzzySkin.cpp:47
 All non-solid parts (modifiers) were deleted	GUI/Plater.cpp:16185
 Angular width of one lug, in degrees. It has to share its slice of the bore with the entry channel and the track.	GUI/Gizmos/GLGizmoCut.cpp:7551
 Apply All	GUI/Plater.cpp:3688
+Filament manager	GUI/PresetManagerDialog.cpp:54
+Favorite filaments	GUI/PresetComboBoxes.cpp:384
+Delete the preset "%s"?	GUI/PresetManagerDialog.cpp:536
+If the preset corresponds to a filament currently in use on your printer, please reset the filament information for that slot.	GUI/PresetManagerDialog.cpp:552
+They switch to the next visible filament preset.	GUI/PresetManagerDialog.cpp:548
+Could not rename "%s": %s	GUI/PresetManagerDialog.cpp:479
+This preset cannot be deleted.	GUI/PresetManagerDialog.cpp:518
+The printer part of the name (after " @") is kept; type the name without "@".	GUI/SavePresetDialog.cpp:225
+Remove "%s" from favorite filaments	GUI/FavoriteFilamentsUI.cpp:193
+Add "%s" to favorite filaments	GUI/FavoriteFilamentsUI.cpp:194
++ Add row	GUI/CreatePresetsDialog.cpp:1043
+No compatible preset	GUI/CreatePresetsDialog.cpp:1718
 Attached to A	GUI/Gizmos/GLGizmoCut.cpp:8158
 Attached to B	GUI/Gizmos/GLGizmoCut.cpp:8158
 Auto edge placement	GUI/Gizmos/GLGizmoCut.cpp:7618
@@ -263,7 +275,6 @@ Show 3Dconnexion Settings	GUI/MainFrame.cpp:3841
 Show Center of Mass	GUI/MainFrame.cpp:3884
 Show every object as a translucent, edge-weighted surface to see inside and behind parts.	GUI/MainFrame.cpp:3864
 Show names only	GUI/ProjectStrip.cpp:1456
-Rename preset	GUI/PresetManagerDialog.cpp:466
 Show the center of mass of each plate, object, separate part and support in Prepare and Preview. Click a marker for its weight, volume and moment of inertia.	GUI/MainFrame.cpp:3885
 Show the project strip	GUI/ProjectStrip.cpp:1377
 Show the start page with recent projects on the Home tab	GUI/MainFrame.cpp:3438
@@ -595,6 +606,36 @@ a height range
 # "Mesh Boolean" (src/api/edit.rs): the words of the fix to the
 # reference, aceRage/EdgeSlicer#1005, which the pinned C++ has not.
 The boolean operation leaves nothing of the selected parts: they do not overlap, or the tool covers the whole part
+# The guide's filament page and the Filament manager (setup.js,
+# index.html): the words of the reference's web pages (resources/web/
+# guide/22, guide/preset_manager, data/text.js), which are not message ids
+# of its catalog; English in every language here.
+Filament Selection
+At least one filament must be selected.
+Do you want to use default filament ?
+yes
+no
+Printers
+Source
+Changes are saved at once.
+Create new
+Create a new filament preset
+Favourite
+Search name, vendor, type or printer
+No filament matches the search and filters.
+All printers
+Not favourite
+Only this printer
+Nozzle °C
+Bed °C
+Modified
+Any printer
+Bed temperature for the current plate type
+In use
+Add to favourites
+Remove from favourites
+User presets are always shown
+In use in this project
 
 # The menu bar's entries that are not built: what each waits for
 # (src/api/menu.rs), shown as the entry's tooltip.

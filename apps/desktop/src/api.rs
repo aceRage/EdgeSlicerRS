@@ -26,6 +26,7 @@ mod preset_files;
 mod presets;
 mod save;
 mod scene;
+mod setup;
 mod ticks;
 
 use std::{
@@ -1111,6 +1112,24 @@ impl Session {
             "preset_transfer" => self.preset_transfer(args),
             "preset_import" => self.preset_import(args),
             "preset_export" => self.preset_export(args),
+            "filament_selection" => self.filament_selection(args),
+            "filament_selection_save" => self.filament_selection_save(args),
+            "filament_manager" => self.filament_manager(args),
+            "filament_enable" => self.filament_enable(args),
+            "favorite_toggle" => self.favorite_toggle(args),
+            "filament_manager_check_name" => self.filament_manager_check_name(args),
+            "filament_manager_rename" => self.filament_manager_rename(args),
+            "filament_manager_delete" => self.filament_manager_delete(args),
+            "favorites" => Ok(json!({ "favs": self.favorites() })),
+            "create_printer_choices" => self.create_printer_choices(),
+            "create_printer_models" => self.create_printer_models(args),
+            "create_printer_presets" => self.create_printer_presets(args),
+            "create_printer_check" => self.create_printer_check(args),
+            "create_printer_bed_file" => self.create_printer_bed_file(args),
+            "create_printer" => self.create_printer(args),
+            "create_filament_choices" => self.create_filament_choices(),
+            "create_filament_presets" => self.create_filament_presets(args),
+            "create_filament" => self.create_filament(args),
 
             "projects" => Ok(lock(&self.state).listing()),
             "project" => {

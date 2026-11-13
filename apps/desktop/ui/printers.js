@@ -70,7 +70,7 @@ function showPrinterBlock() {
   });
   // A printer the project is on that is not among those added is still
   // the one in force: it is listed while it is.
-  if (onPreset && !selected.added) {
+  if (onPreset && !selected.added && !selected.user) {
     rows.push(pictured(new Option(selected.model || selected.machine, 'current'), selected));
     value = 'current';
   }
@@ -92,7 +92,8 @@ function showPrinterBlock() {
   const none = new Option(listing.installed.length ? 'No printer selected' : 'No printer added', '');
   none.disabled = true;
   none.hidden = true;
-  select.replaceChildren(none, ...groups, el('hr'), new Option(t('Select/Remove printers (system presets)'), 'wizard'));
+  select.replaceChildren(none, ...groups, el('hr'), new Option(t('Select/Remove printers (system presets)'), 'wizard'),
+    new Option(t('Create printer'), 'create'));
   select.value = value;
   select.dataset.shown = value;
   // The reference's tooltip: the preset's own name.
@@ -152,6 +153,10 @@ async function printerPicked() {
     // Not a printer: the list stays on the one it was on.
     select.value = select.dataset.shown;
     await openPrinterSelection();
+  } else if (value === 'create') {
+    // "Create printer" opens "Create Printer/Nozzle" (Plater.cpp `create_printer_preset`).
+    select.value = select.dataset.shown;
+    await Setup.openCreatePrinter();
   } else if (value === 'project') {
     // Its own settings, the bed type among them.
     await setProject({ source: 'project', bed_type: null });
@@ -196,6 +201,9 @@ const pt = {
   // By column: a set of the values shown, a text, or { min, max }.
   filters: new Map(),
   pop: null,
+  // The setup wizard (Help > "Setup Wizard", the first run): "Next" goes
+  // on to "Filament Selection", which keeps both (setup.js).
+  wizard: false,
 };
 
 const ptCollator = new Intl.Collator(undefined, { numeric: true, sensitivity: 'base' });
@@ -449,9 +457,12 @@ function ptOpenPop(column, anchor) {
   if (first) first.focus();
 }
 
-async function openPrinterSelection() {
+async function openPrinterSelection(options = {}) {
   const dialog = $('printers-dialog');
   if (dialog.open) return;
+  pt.wizard = Boolean(options.wizard);
+  // The guide's printer page has "Next" (page 21); alone it has "Confirm" (page 24).
+  $('pt-confirm').textContent = pt.wizard ? t('Next') : t('Confirm');
   const catalogue = await call('printer_catalogue');
   pt.rows = catalogue.models.map((model, order) => ({
     ...model,
@@ -489,6 +500,12 @@ async function printersChanged(answer) {
 
 async function ptConfirm() {
   const models = pt.rows.filter((row) => row.enabled).map((row) => ({ vendor: row.vendor, model: row.model }));
+  if (pt.wizard && models.length) {
+    // Nothing is kept until "Finish" on the filament page.
+    $('printers-dialog').close();
+    await Setup.openFilamentSelection(models);
+    return;
+  }
   let answer;
   try {
     answer = await call('printers_save', { project: activeId(), models });
@@ -514,7 +531,7 @@ async function ptCancel() {
 // With no printer added, the selection opens by itself, as the
 // reference's setup does on its first run.
 async function firstRun() {
-  if (state.printers && state.printers.first_run) await openPrinterSelection();
+  if (state.printers && state.printers.first_run) await openPrinterSelection({ wizard: true });
 }
 
 function initPrinters() {
@@ -523,7 +540,7 @@ function initPrinters() {
   listbox($('printer'), {
     trigger: $('printer-row'),
     decorate(row, option) {
-      if (option.value === 'wizard') {
+      if (option.value === 'wizard' || option.value === 'create') {
         row.classList.add('lb-action');
         row.insertAdjacentHTML('afterbegin', '<svg viewBox="0 0 16 16" aria-hidden="true"><circle cx="8" cy="8" r="2.2"/><path d="M8,1.5v2M8,12.5v2M1.5,8h2M12.5,8h2M3.4,3.4l1.4,1.4M11.2,11.2l1.4,1.4M3.4,12.6l1.4-1.4M11.2,4.8l1.4-1.4"/></svg>');
         return;
