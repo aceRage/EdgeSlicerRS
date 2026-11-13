@@ -393,7 +393,6 @@ pub fn discover_windows(
 
 /// The ways Bambu Studio is started on this system, in order, for a file
 /// (each a program and its arguments). On Windows the program found.
-#[cfg_attr(not(test), allow(dead_code))]
 pub fn bambu_studio_tries(file: &str) -> Vec<Vec<String>> {
     if cfg!(target_os = "macos") {
         vec![macos_by_name(file), macos_by_bundle(file)]

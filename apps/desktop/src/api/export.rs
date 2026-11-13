@@ -20,13 +20,15 @@ use serde_json::{Value, json};
 use super::{Done, Session, lock, shown};
 
 /// The calls answered here.
-pub(super) const JSON: [&str; 4] = [
+pub(super) const JSON: [&str; 5] = [
     "export_sliced",
     "export_generic",
     "export_sliced_plates",
     "bambu_connect_send",
+    "export_bambu",
 ];
 
+mod bambu;
 mod connect;
 pub(super) use connect::is_bambu;
 
@@ -195,6 +197,7 @@ impl Session {
             "export_sliced_plates" => self.sliced_plates(args),
             "export_generic" => self.export_generic(args),
             name if connect::JSON.contains(&name) => self.connect_json(name, args),
+            name if bambu::JSON.contains(&name) => self.bambu_json(name, args),
             other => Err(format!("there is no call named {other}")),
         }
     }
@@ -363,6 +366,8 @@ impl Session {
     }
 }
 
+#[cfg(test)]
+mod bambu_tests;
 #[cfg(test)]
 mod connect_tests;
 #[cfg(test)]

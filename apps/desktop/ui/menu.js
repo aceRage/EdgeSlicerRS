@@ -221,6 +221,42 @@ const Menu = (() => {
   }
   window.sendToBambuConnect = sendToBambuConnect;
 
+  // "Export Bambu 3MF..." (`open` false) and "Export && Open in Bambu
+  // Studio..." (`open` true) (Plater.cpp `export_bambu_3mf`,
+  // `export_and_open_in_bambu_studio`): the project in the form Bambu
+  // Studio reads as its own, and the reference's one line on what was left
+  // out. Only the window starts Bambu Studio (`hand_off`); in a browser
+  // how it would be started is shown.
+  async function exportBambu(open) {
+    const project = activeId();
+    const { suggested } = await call('export_bambu', { project, suggest: true });
+    const path = await pick('project', suggested);
+    if (!path) return;
+    let answer;
+    try {
+      answer = await written('export_bambu', { project, path, open });
+    } catch (error) {
+      await inform(t('Error'), error.message);
+      return;
+    }
+    if (!answer) return;
+    say(answer.said);
+    if (!open) return;
+    if (!tauri) {
+      const ways = (answer.open || []).map((argv) => argv.join(' ')).join('\n');
+      await inform(t('Export && Open in Bambu Studio').replace('&&', '&'), `${t('In a browser no other application is started. In the app\'s window Bambu Studio is started with:')}\n\n${ways}`);
+      return;
+    }
+    // The export stands whatever happens next (the reference never makes a
+    // failed start an export failure).
+    const outcome = await tauri.core.invoke('hand_off', { studio: answer.path });
+    if (outcome === 'not_found') {
+      await inform(t('Bambu Studio not found'), fmt(t('Bambu Studio was not found. The file was exported to %s.'), answer.path));
+    } else if (outcome.startsWith('failed:')) {
+      await inform(t('Could not launch Bambu Studio'), fmt(t('Failed to launch Bambu Studio (found at %s). The file was exported to %s.'), outcome.slice(7), answer.path));
+    }
+  }
+
   // "Export Generic 3MF..." (Plater.cpp `export_core_3mf`).
   async function exportGeneric() {
     const project = activeId();
@@ -334,6 +370,8 @@ const Menu = (() => {
       case 'export.plate_sliced': return go(() => exportSliced(false));
       case 'export.all_sliced': return go(() => exportSliced(true));
       case 'export.generic_3mf': return go(exportGeneric);
+      case 'export.bambu_3mf': return go(() => exportBambu(false));
+      case 'export.bambu_open': return go(() => exportBambu(true));
       case 'export.bambu_connect': return go(() => sendToBambuConnect(false));
       case 'export.bambu_connect_all': return go(() => sendToBambuConnect(true));
       case 'edit.undo': case 'edit.redo':

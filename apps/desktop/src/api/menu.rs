@@ -243,7 +243,6 @@ const ONE_WINDOW: &str = "not yet: the app has one window";
 const NO_ZIP: &str = "not yet: models are not read from a ZIP archive";
 const NO_GCODE_CONFIG: &str = "not yet: settings are not read from a G-code file";
 const NO_STEP: &str = "not yet: STEP needs a CAD kernel, which the engine has not";
-const NO_BAMBU: &str = "not yet: no Bambu Studio export";
 const NO_PRESETS: &str = "not yet: a vendor's system profile is not imported";
 const NO_3DCONNEXION: &str = "not yet: 3D mice are not read";
 const NO_OVERHANG: &str = "not yet: overhangs are not marked in the scene";
@@ -347,16 +346,14 @@ static EXPORT: &[Node] = &[
         "Export a project Bambu Studio opens with its settings (settings Bambu Studio does not have are left out)",
         When::Objects,
     )
-    .dots()
-    .waits(NO_BAMBU)),
+    .dots()),
     I(item(
         "export.bambu_open",
         "Export && Open in Bambu Studio",
         "Export a project Bambu Studio opens with its settings, then launch Bambu Studio with it",
         When::Objects,
     )
-    .dots()
-    .waits(NO_BAMBU)),
+    .dots()),
     I(item(
         "export.plate_sliced",
         "Export plate sliced file",
