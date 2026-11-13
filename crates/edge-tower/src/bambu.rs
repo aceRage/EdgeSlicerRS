@@ -477,6 +477,12 @@ struct Generator<'a> {
     nozzle: f64,
     first_feed: f32,
     max_feed: f32,
+    /// The tower's first layer: the print's, or with the layers that have
+    /// no tool change left out, the first that has one
+    /// (`m_first_layer_idx`).
+    first: usize,
+    /// Whether the tower is laid on each layer.
+    laid: Vec<bool>,
 }
 
 /// The rib wall round `area`, a box in the tower's frame on the layer
@@ -589,13 +595,22 @@ impl Generator<'_> {
             .transpose()
     }
 
+    /// The tower's layer laid last before `index`.
+    fn laid_below(&self, index: usize) -> Option<usize> {
+        (0..index).rev().find(|below| self.laid[*below])
+    }
+
     /// The open part of the layer below, which a row over it bridges
-    /// (`get_floating_area`).
+    /// (`get_floating_area`). Nothing is open over the solid first layer.
+    /// Below is the tower's layer laid last: not as the reference with the
+    /// layers that have no tool change left out, which looks at the
+    /// print's layer below, laid or not.
     fn floating(&self, index: usize) -> Option<(f32, f32)> {
-        if index < 2 {
+        let below = self.laid_below(index)?;
+        if below == self.first {
             return None;
         }
-        let below = &self.plan[index - 1];
+        let below = &self.plan[below];
         let fill = below.used() + self.line;
         if below.depth - fill <= 2.0 * self.line {
             return None;
@@ -624,7 +639,7 @@ impl Generator<'_> {
         wall: bool,
     ) -> Result<(Pen, f32), TowerError> {
         let layer = self.plan[index].clone();
-        let first = index == 0;
+        let first = index == self.first;
         let planned = layer
             .changes
             .iter()
@@ -678,7 +693,7 @@ impl Generator<'_> {
         length: f32,
     ) -> Result<(), TowerError> {
         let layer = &self.plan[index];
-        let first = index == 0;
+        let first = index == self.first;
         let fuller = self.flow(layer.height, if first { 1.15 } else { 1.0 })?;
         let plain = self.flow(layer.height, 1.0)?;
         let thick = self.flow(BRIDGE_HEIGHT, 1.0)?;
@@ -726,7 +741,7 @@ impl Generator<'_> {
     /// uses, the wall where `wall` says and the brim (`finish_layer`).
     fn finish(&mut self, index: usize, wall: bool) -> Result<Pen, TowerError> {
         let layer = self.plan[index].clone();
-        let first = index == 0;
+        let first = index == self.first;
         let line = self.line;
         let plain = self.flow(layer.height, 1.0)?;
         let feed = self.wall_feed(self.tool, first, layer.height);
@@ -843,10 +858,22 @@ impl Generator<'_> {
         let spacing = line - layer.height * (1.0 - PI / 4.0);
         let mut loops = ((self.brim_width + spacing / 2.0) / spacing) as i32;
         if !first {
-            loops = if layer.depth != self.plan[0].depth {
+            // A loop fewer for each layer of the tower laid above its
+            // first, none below it. Not as the reference with the layers
+            // that have no tool change left out, which counts the print's
+            // layers between, laid or not, so the brim is mostly gone by
+            // the tower's second layer (`finish_layer`,
+            // `wipe_tower_printed_layer_distance`, whose own comment has it
+            // count the layers printed).
+            let climbed = if index < self.first {
+                -1
+            } else {
+                (self.first + 1..=index).filter(|at| self.laid[*at]).count() as i32
+            };
+            loops = if layer.depth != self.plan[0].depth || climbed < 0 {
                 0
             } else {
-                loops.min((MAX_CHAMFER / spacing) as i32) - index as i32
+                loops.min((MAX_CHAMFER / spacing) as i32) - climbed
             };
         }
         let mut walled = wall;
@@ -971,6 +998,14 @@ pub(crate) fn plan(
     let Some(last) = changes.iter().rposition(|changes| !changes.is_empty()) else {
         return Ok(tower);
     };
+    // With the layers that have no tool change left out, the tower starts
+    // on the first that has one, and is laid on those only
+    // (`plan_toolchange`, GCode.cpp `wipe_tower_layer_is_sparse`).
+    let skip = settings.skip_sparse;
+    let laid: Vec<bool> = (0..=last)
+        .map(|layer| !skip || !changes[layer].is_empty())
+        .collect();
+    let first = laid.iter().position(|laid| *laid).unwrap_or(0);
     let t1 = &settings.type1;
     let nozzle = settings.nozzle_diameter as f32;
     let line = if t1.line_width > 0.0 {
@@ -1069,8 +1104,12 @@ pub(crate) fn plan(
     }
     let across = width - 2.0 * line;
     for (index, layer) in plan.iter_mut().enumerate() {
-        if index == 0 && extra_spacing > 1.0 + EPSILON {
-            // The first layer stays solid: its blocks lay more instead.
+        // The tower's first layer stays solid: its blocks lay more
+        // instead. Not as the reference with the layers that have no tool
+        // change left out, which keeps the print's first layer solid, one
+        // the tower is not laid on, and spreads the rows of the tower's
+        // first (`plan_tower`, "apply solid fill for the first layer").
+        if index == first && extra_spacing > 1.0 + EPSILON {
             layer.spacing = 1.0;
             for change in &mut layer.changes {
                 let length = volume_to_length(change.volume, line, layer.height);
@@ -1130,6 +1169,8 @@ pub(crate) fn plan(
         nozzle: settings.nozzle_diameter,
         first_feed: settings.first_layer_speed as f32 * 60.0,
         max_feed: t1.max_speed as f32 * 60.0,
+        first,
+        laid,
     };
     // `set_rib_offset`: the tower stands where the box round its first
     // layer's wall has its corner on the place set.
@@ -1153,14 +1194,28 @@ pub(crate) fn plan(
     }
     generator.origin = (settings.x as f32 + offset.0, settings.y as f32 + offset.1);
 
-    for index in 0..=last {
+    // How tall the tower stands, by the layers laid.
+    let mut tower_top = 0.0f64;
+    for (index, height) in heights.iter().enumerate().take(last + 1) {
         let layer = generator.plan[index].clone();
+        if generator.laid[index] {
+            tower_top += height;
+            let out = &mut tower.layers[index];
+            out.z = skip.then_some(tower_top);
+            out.first_speed = index == first;
+        }
         if layer.depth < line {
             continue;
         }
         if layer.depth < depth - line {
             generator.shift =
                 align_round((depth - layer.depth) / 2.0, generator.extra_spacing * line);
+        }
+        // A layer the tower is not laid on is planned like any other: what
+        // it would lay changes nothing the layers above lay, but where it
+        // sits does.
+        if !generator.laid[index] {
+            continue;
         }
         let soluble = &settings.type1.soluble;
         let support = &settings.type1.support;
@@ -1219,7 +1274,7 @@ pub(crate) fn plan(
     }
     // The ground it takes: its first layer, out to the edge of its lines.
     let half = f64::from(line) / 2.0;
-    let first = &tower.layers[0];
+    let first = &tower.layers[first];
     tower.footprint = first
         .finish
         .iter()
@@ -1443,5 +1498,49 @@ mod tests {
             // It ends with somewhere to wipe to.
             assert_eq!(wipe.wipe_path.len(), 2);
         }
+    }
+
+    /// Laid line length of a layer's blocks, the rows each change purges
+    /// (what the tower lays less its frame, wall and brim).
+    fn purged(layer: &TowerLayer) -> f64 {
+        (layer.changes.iter())
+            .filter_map(|block| block.wipe.as_ref())
+            .flat_map(|wipe| &wipe.strokes)
+            .filter(|stroke| matches!(stroke, TowerStroke::Lay(..)))
+            .count() as f64
+    }
+
+    #[test]
+    fn without_sparse_layers_the_tower_starts_on_the_first_change() {
+        // Changes on layers 3 and 8 alone.
+        let mut counts = vec![0; 10];
+        counts[3] = 1;
+        counts[8] = 1;
+        let heights = [0.2; 10];
+        let mut skip = settings(Wall::Box);
+        skip.skip_sparse = true;
+        let off = plan(&changes(&counts), &heights, &settings(Wall::Box)).unwrap();
+        let on = plan(&changes(&counts), &heights, &skip).unwrap();
+        // Laid on those two layers alone, one 0.2 mm layer on the other.
+        let laid: Vec<(usize, f64)> = (on.layers.iter().enumerate())
+            .filter_map(|(index, layer)| layer.z.map(|z| (index, z)))
+            .collect();
+        assert_eq!(laid.len(), 2);
+        assert_eq!(laid[0].0, 3);
+        assert!((laid[0].1 - 0.2).abs() < 1e-9 && (laid[1].1 - 0.4).abs() < 1e-9);
+        for (index, layer) in on.layers.iter().enumerate() {
+            if ![3, 8].contains(&index) {
+                assert!(
+                    layer.finish.is_empty() && layer.changes.is_empty() && layer.sparse.is_none()
+                );
+            }
+        }
+        // Its first layer is the tower's first: a full brim and a
+        // footprint as the print's first layer would give it.
+        assert_eq!(on.footprint, off.footprint);
+        assert!(on.layers[3].first_speed && !on.layers[8].first_speed);
+        // The change above it purges what it purges with every layer laid.
+        assert_eq!(purged(&on.layers[8]), purged(&off.layers[8]));
+        assert_eq!(off.layers[3].z, None);
     }
 }

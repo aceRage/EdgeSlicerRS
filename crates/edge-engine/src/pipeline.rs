@@ -1583,6 +1583,56 @@ pub fn slice(job: Job, watch: &dyn Watcher) -> Result<Sliced, Failure> {
             tower_settings.y = moved.y;
         }
     }
+    // A tower that leaves out the layers with no tool change stands lower
+    // than the print, and the nozzle goes down to it: the plate is refused
+    // where the toolhead would then meet an object, first by the tower's
+    // estimated size and each object's whole height, as the reference
+    // refuses it before slicing (Print.cpp
+    // `compacted_wipe_tower_clearance_valid`), and once the tower is
+    // planned by what it lays (below).
+    let clearance = (tower_settings.skip_sparse && used.len() > 1)
+        .then(|| edge_tower::Clearance::from_settings(&settings))
+        .transpose()?;
+    let clearance_objects: Vec<edge_tower::Object> = if clearance.is_some() {
+        let meshes: Vec<&Mesh> = if objects.is_empty() {
+            bodies.iter().map(|body| &body.solid).collect()
+        } else {
+            objects.iter().collect()
+        };
+        (meshes.iter())
+            .filter_map(|mesh| {
+                let (low, high) = mesh.bounds()?;
+                Some(edge_tower::Object {
+                    hull: edge_geom::convex_hull(
+                        (mesh.vertices.iter())
+                            .map(|v| Point2::from_mm(f64::from(v[0]), f64::from(v[1]))),
+                    ),
+                    top: f64::from(high[2] - low[2]),
+                })
+            })
+            .collect()
+    } else {
+        Vec::new()
+    };
+    if let Some(clearance) = &clearance {
+        let ground = edge_tower::Ground {
+            bed: print.bed.unwrap_or_default(),
+            filaments: used.iter().map(|filament| filament - 1).collect(),
+            layer_height,
+            first_layer_height,
+            height: f64::from(max[2] - min[2]),
+        };
+        if let Some(size) = edge_tower::estimated_size(&settings, &tower_settings, &ground)?
+            && !edge_tower::estimate_clears(
+                clearance,
+                (tower_settings.x, tower_settings.y),
+                size,
+                &clearance_objects,
+            )?
+        {
+            return Err(edge_tower::CLEARANCE_ERROR.into());
+        }
+    }
     // On the bed, each tool is judged by its smallest piece as cut,
     // pieces too slight to print a line of not counted.
     let mut on_bed = if layers.is_empty() {
@@ -1741,6 +1791,16 @@ pub fn slice(job: Job, watch: &dyn Watcher) -> Result<Sliced, Failure> {
         }
     }
     let tower = edge_tower::plan_changes(&rams, &heights.all(), &tower_settings)?;
+    // And by what the tower lays, layer by layer (Print.cpp
+    // `validate_compacted_wipe_tower_clearance`).
+    if let Some(clearance) = &clearance {
+        let tops: Vec<f64> = (0..layers.len())
+            .map(|index| heights.top_of(index))
+            .collect();
+        if !edge_tower::tower_clears(clearance, &tower, &tops, &clearance_objects)? {
+            return Err(edge_tower::CLEARANCE_ERROR.into());
+        }
+    }
     // Each tool's turn on a layer, as its regions there, in order.
     let tool_orders = orders;
     let orders: Vec<Vec<usize>> = (tool_orders.iter().enumerate())
@@ -2425,6 +2485,12 @@ impl Sliced {
                         wipe_path: &wipe.wipe_path,
                     }),
                     tower: &turn.lines[turn.laid..],
+                    tower_z: self.tower.layers.get(index).and_then(|layer| layer.z),
+                    tower_first: self
+                        .tower
+                        .layers
+                        .get(index)
+                        .is_some_and(|layer| layer.first_speed),
                     around: if starts { &self.around[index] } else { &[] },
                     support: if starts { &self.supports[index] } else { &[] },
                     loops: &own.loops,
