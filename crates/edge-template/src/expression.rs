@@ -41,17 +41,10 @@ impl Value {
         }
     }
 
-    /// The value as a script writes it out or joins it to text: numbers
-    /// that are not whole to six significant digits, as the reference's
-    /// stream output gives them.
+    /// The value as a script writes it out or joins it to text: as
+    /// [`fmt::Display`] does.
     pub(crate) fn brief(&self) -> String {
-        match self {
-            Value::Float(value) => match format!("{value:.5e}").parse::<f64>() {
-                Ok(rounded) => rounded.to_string(),
-                Err(_) => value.to_string(),
-            },
-            other => other.to_string(),
-        }
+        self.to_string()
     }
 
     /// Whether the value counts as true in a condition.
@@ -74,16 +67,48 @@ impl fmt::Display for Value {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Value::Int(value) => write!(f, "{value}"),
-            // Fifteen significant digits, as the reference prints: enough for
-            // any setting, and it hides the noise arithmetic leaves behind
-            // (0.25 + 3 * 0.2 reads 0.85, not 0.8500000000000001).
-            Value::Float(value) => match format!("{value:.14e}").parse::<f64>() {
-                Ok(rounded) => write!(f, "{rounded}"),
-                Err(_) => write!(f, "{value}"),
-            },
+            // As a C++ stream writes a double, which is how the reference
+            // turns every number a template gives into text (PlaceholderParser.cpp
+            // `expr::to_string`, Config.hpp `ConfigOptionFloat::serialize`): six
+            // significant digits, no trailing zeros, an exponent below 1e-4
+            // and from 1e6 (0.25 + 3 * 0.2 reads 0.85, a feed rate 523.843).
+            Value::Float(value) => f.write_str(&stream_double(*value)),
             Value::Bool(value) => write!(f, "{value}"),
             Value::Text(text) => f.write_str(text),
         }
+    }
+}
+
+/// A double as `std::ostream << double` writes it with the stream's
+/// default precision of six: `%g`.
+pub fn stream_double(value: f64) -> String {
+    if !value.is_finite() {
+        return match value {
+            v if v.is_nan() => "nan".into(),
+            v if v > 0.0 => "inf".into(),
+            _ => "-inf".into(),
+        };
+    }
+    if value == 0.0 {
+        return if value.is_sign_negative() { "-0" } else { "0" }.into();
+    }
+    // The exponent once rounded to six significant digits.
+    let scientific = format!("{value:.5e}");
+    let (mantissa, exponent) = scientific.split_once('e').unwrap_or((&scientific, "0"));
+    let exponent: i32 = exponent.parse().unwrap_or(0);
+    let trim = |text: &str| -> String {
+        if text.contains('.') {
+            text.trim_end_matches('0').trim_end_matches('.').to_owned()
+        } else {
+            text.to_owned()
+        }
+    };
+    if !(-4..6).contains(&exponent) {
+        let sign = if exponent < 0 { '-' } else { '+' };
+        format!("{}e{sign}{:02}", trim(mantissa), exponent.abs())
+    } else {
+        let decimals = (5 - exponent).max(0) as usize;
+        trim(&format!("{value:.decimals$}"))
     }
 }
 
@@ -678,6 +703,19 @@ mod tests {
         assert_eq!(shown("2 + 3 * (4 - 1)"), "11");
         assert_eq!(shown("speed * 60"), "30000");
         assert!(value("1 / 0").is_err());
+    }
+
+    #[test]
+    fn numbers_are_written_as_a_cpp_stream_writes_them() {
+        // Bambu Lab's start G-code: F{filament_max_volumetric_speed / 2.4053 * 60}.
+        assert_eq!(shown("21 / 2.4053 * 60"), "523.843");
+        assert_eq!(stream_double(6_033.274_122_871_84), "6033.27");
+        assert_eq!(stream_double(1234567.0), "1.23457e+06");
+        assert_eq!(stream_double(0.00001234), "1.234e-05");
+        assert_eq!(stream_double(0.0001234), "0.0001234");
+        assert_eq!(stream_double(-2.5), "-2.5");
+        assert_eq!(stream_double(100.0), "100");
+        assert_eq!(stream_double(999999.6), "1e+06");
     }
 
     #[test]

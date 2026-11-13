@@ -80,6 +80,10 @@ pub struct Limits {
     pub minimum_cruise_ratio: f64,
     /// Set for a printer whose `M6211` (swap filament and purge) is timed.
     pub elegoo: Option<Elegoo>,
+    /// A Bambu Lab printer, whose end G-code's waits come after the print
+    /// and are not counted (GCodeProcessor.cpp `m_skip_end_gcode_delays`,
+    /// set by GCode.cpp `_do_export` as the machine's end G-code starts).
+    pub bambu: bool,
 }
 
 impl Default for Limits {
@@ -100,6 +104,7 @@ impl Default for Limits {
             unload_time: 0.0,
             minimum_cruise_ratio: 0.5,
             elegoo: None,
+            bambu: false,
         }
     }
 }
@@ -159,6 +164,9 @@ impl Limits {
                 }
                 _ => None,
             },
+            bambu: settings
+                .text("printer_model")
+                .is_some_and(|model| model.starts_with("Bambu Lab")),
         })
     }
 

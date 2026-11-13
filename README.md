@@ -1538,9 +1538,9 @@ feature filaments (`wall_filament`, `sparse_infill_filament`,
   timed here, come to its own time. Not as the reference: its G-code
   writer rewrites the feed rates inside a custom block (a `G1 F1800`
   already in force taken out, leaving an empty line); here custom G-code
-  is written exactly as given. A Bambu printer's tags (`; PAUSE_PRINTING`,
-  `; CUSTOM_GCODE`) are written in the form the engine writes every tag
-  in (`;PAUSE_PRINT`), as for its layer changes.
+  is written exactly as given. A Bambu Lab printer's file has Bambu
+  Studio's tags (`; PAUSE_PRINTING`, `; CUSTOM_GCODE`), as it has for
+  every part of the file (below).
 - File layout: the G-code file is laid out as the reference lays its own
   out, because printers and their hosts read it by that layout: a header
   block, the line widths, the G-code between `EXECUTABLE_BLOCK` markers
@@ -1684,10 +1684,93 @@ it agree to the second; the rest of the tower times above is the move in.
 What is left of the whole print's time is in the change G-code: the
 reference's A1 change pulls the filament back 18 mm before the cut and
 pushes it on again (`M620.11 S1 ... E-18`, its filament's
-`filament_long_retractions_when_cut`), which this engine's leaves out
-(`M620.11 S0`), about 2 s a change. Slicing is no slower: the G-code
+`filament_long_retractions_when_cut`), which this engine's left out
+(`M620.11 S0`), about 2 s a change; done since (below). Slicing is no slower: the G-code
 stage of the figurine 0.94 to 1.23 s before, 1.10 to 1.19 s after, on a
 busy machine, and the lettered plates' within the same spread.
+
+**Bambu Lab's printers: the file and its templates** (2026-11-12,
+`edge-parity`'s template check). A printer whose `printer_model` (or,
+failing that, preset name) starts "Bambu Lab" gets its file in Bambu
+Studio's form, as the reference writes it (GCode.cpp `_do_export`,
+GCodeProcessor.cpp `Reserved_Tags`): the tags its firmware and Bambu
+Handy read (`; FEATURE:`, `; CHANGE_LAYER`, `; Z_HEIGHT:`,
+`; LAYER_HEIGHT:`, `; LINE_WIDTH:`, `; WIPE_START`, `; PAUSE_PRINTING`),
+the time in the header (`; model printing time: …; total estimated time:
+…`), the settings at the top, the spaghetti detector opened before the
+first layer and closed after the last (`M981`), power-loss recovery from
+the second layer (`M1003`, and Marlin 2's `M413` elsewhere, by
+`enable_power_loss_recovery`), the first layer's scan where asked
+(`scan_first_layer`, `M976`), a tool change on the tower framed as the
+tower writes it (`; CP TOOLCHANGE START`, the material, `M220 S100`,
+`; WIPE_TOWER_START` / `_END`, the filament's end G-code before the
+filament is pulled back). Every Marlin or RepRapFirmware printer is told
+its limits before the start G-code (`M201`, `M203`, `M204`, `M205`,
+`emit_machine_limits_to_gcode`), and every file has the reference's
+`;_SET_FAN_SPEED_CHANGING_LAYER` marker after each layer change. Positions
+are taken back by `extruder_offset` (0x2 on the P1 and X1). The
+timelapse G-code (`time_lapse_gcode`, dropped before) goes where the
+reference puts it: as the layer starts, or on a bed-slinger such as the A1
+before the first tower work of the layer, else once the first island with
+fill has its walls, else at the layer's end, the filament pulled back
+first and the nozzle put back at its height after, its moves counted in
+the layer's time for cooling. Templates are given what Bambu's read:
+`first_layer_center_no_wipe_tower`, `in_head_wrap_detect_zone`,
+`min_vitrification_temperature`, `is_extruder_used`,
+`travel_point_1_x` to `_3_y` (the way past the objects to the cutter,
+`get_path_of_change_filament`), `first_layer_print_min`/`_size` from the
+reference's first-layer hull (the skirt's, out to its last loop even with
+no loops, the islands, the brim, the tower), `toolchange_count` counting
+the first tool taken up, each filament's own retraction laid over the
+printer's (`filament_long_retractions_when_cut` and the rest, so the A1
+and X1 now pull the filament back before the cut, `M620.11 S1 … E-18`),
+a list of choices as its number (`z_hop_types[…] == 0`), and every
+number as a C++ stream writes it (six significant digits: `F523.843`).
+A Bambu Lab printer of two nozzles (H2D, H2C) is refused: which nozzle
+each filament prints with is Bambu Studio's grouping, not done. The time
+estimate reads what the reference's does: `G28` as a move home, Bambu's
+`G29` as 260 s once, `M191` above 40 °C as 720 s, Bambu's own tool
+commands (`T1000`, `T255`) as nothing, and the waits of a Bambu Lab
+printer's end G-code as after the print.
+
+Projects made with `tools/make_project.py` from the BBL profiles, the
+part centred where the reference's command line moves it and the
+flushing volumes set to those it works out; lines of template G-code
+that differ, of the layer changes, timelapse, tool changes, start and
+end, before / after:
+
+| project | template lines differing, `main` / now | print, reference / `main` / now | reference's file timed here |
+| --- | --- | --- | --- |
+| cube, P1S | 519 / 7 | 14m40 / 12m25 / 14m50 | 14m47 |
+| cube, X1 Carbon | 625 / 7 | 15m46 / 15m26 / 15m56 | 15m53 |
+| cube, A1 | refused (`first_layer_center_no_wipe_tower`) / 218 | 19m32 / - / 19m47 | 19m33 |
+| `twotone`, P1S | 2198 / 292 | 50m47 / 48m07 / 50m21 | 51m21 |
+| `twotone`, X1 Carbon | 2304 / 292 | 51m53 / 51m08 / 51m27 | 52m28 |
+| `twotone`, A1 | refused / 679 | 52m02 / - / 51m52 | 52m31 |
+| cube and `twotone`, H2D | refused (`min_vitrification_temperature`) / refused (two nozzles) | | |
+
+What is left: on the cubes the order of a feature's tag and its `M204`;
+around a tool change, the writer's own moves to and from the tower (the
+retraction is pulled back in two parts here and one there, the way down
+onto the tower, the fan set back after the change: the reference sets the
+layer's, here the one in force); the tower's own comments on a layer with
+no change (`; CP EMPTY GRID`); on the A1 the fan speeds the cooling
+works out, and, above the tower, the timelapse picture the reference
+leaves out (below). Not done, and listed by the check as left out: the
+objects labelled for skipping (`M624`/`M625`, `; printing object`, and
+Klipper's `EXCLUDE_OBJECT_*`, which the U1's file lacks too), progress at
+each change of the figure (`M73`, here at each layer). The reference's
+own files timed here come to within 7 s on the cubes and 35 s on the
+two-filament prints (about 1.5 s a tool change, not yet found).
+
+A C++ error this turned up: above the prime tower's top the reference
+marks every layer but the last as having a tower (ToolOrdering.cpp
+`collect_extruders`' last pass, the loop that keeps tower layers within
+`max_layer_height`, about line 1316), though the Type1 tower lays nothing
+there, so the A1's timelapse picture, which is taken before the tower's
+work on such a layer, is never taken: on `twotone` (30 layers, the tower
+20) layers 21 to 29 have none. Not copied: here every layer has its
+picture.
 
 **On hardware so far:** a deck across a 30 mm gap printed on an Elegoo
 Centauri Carbon on 2026-11-10 and the bridge held; the wall across the
@@ -1877,6 +1960,15 @@ plastic per millimetre, acceleration and fan, on the first layer and on
 the rest, with a mark where the two differ; and the print time at the
 speeds written, and the temperatures set along the way. A wall printed
 five times too fast shows there and nowhere in the lengths.
+
+Then the printer's templates, line for line, layer by layer
+(`templates.rs`): the start and end G-code, the layer change, the
+timelapse and a tool change on the tower up to its rows, the moves the
+templates make kept and the toolpaths' left out, with the differing
+stretches and how often each kind of line differs. Left out as different
+by design or not done: progress (`M73`), the objects' labels for
+skipping, the width and height tags, and a feed rate already in force
+inside custom G-code, which the reference's writer drops.
 
 Last it gives the print time each file states, and times both files with
 this engine's estimator, each planned both ways. The reference's own
