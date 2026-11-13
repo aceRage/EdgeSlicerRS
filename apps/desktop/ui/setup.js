@@ -617,6 +617,10 @@ const Setup = (() => {
   }
 
   function init() {
+    // The guide's "Back" (its text.js, t8; "Zurück" in German) is not the
+    // catalogs' "Back", which is a model's back side ("Rückseite"):
+    // outside English the catalogs' "Return" ("Zurück") says it.
+    $('fs-back').textContent = I18n.language.startsWith('en') ? 'Back' : t('Return');
     $('fm-create').addEventListener('click', () => attempt(openCreateFilament));
     $('fs-all').addEventListener('click', () => fsEvery(true));
     $('fs-clear').addEventListener('click', () => fsEvery(false));

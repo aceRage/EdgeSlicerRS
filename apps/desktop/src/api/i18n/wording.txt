@@ -266,7 +266,6 @@ Show 3Dconnexion Settings	GUI/MainFrame.cpp:3841
 Show Center of Mass	GUI/MainFrame.cpp:3884
 Show every object as a translucent, edge-weighted surface to see inside and behind parts.	GUI/MainFrame.cpp:3864
 Show names only	GUI/ProjectStrip.cpp:1456
-Rename preset	GUI/PresetManagerDialog.cpp:466
 Show the center of mass of each plate, object, separate part and support in Prepare and Preview. Click a marker for its weight, volume and moment of inertia.	GUI/MainFrame.cpp:3885
 Show the project strip	GUI/ProjectStrip.cpp:1377
 Show the start page with recent projects on the Home tab	GUI/MainFrame.cpp:3438

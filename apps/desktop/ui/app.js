@@ -924,7 +924,7 @@ $('process').addEventListener('change', () => attempt(async () => {
   await setProject({ process: to });
 }));
 {
-  // The process list's cog: "Save current %s", "Rename preset", "Delete this preset", "Compare presets".
+  // The process list's cog: "Save current %s", "Rename", "Delete this preset", "Compare presets".
   const label = $('process-row');
   const row = el('div', { className: 'preset-row' });
   label.replaceWith(row);

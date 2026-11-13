@@ -107,7 +107,11 @@ const Presets = (() => {
       // preset the entries are not there, as the reference hides its
       // delete button.
       ...(mine ? [
-        [t('Rename preset'), () => attempt(() => rename(kind, current.name))],
+        // "Rename" (the catalogs' word, as the reference's menus name a
+        // rename): "Rename preset", the reference's newer words for it
+        // (PresetManagerDialog.cpp l.466), is in none of its catalogs and
+        // read in English in every language.
+        [t('Rename'), () => attempt(() => rename(kind, current.name))],
         [t('Delete this preset'), () => attempt(() => remove(kind, current.name))],
       ] : []),
       null,
@@ -201,7 +205,7 @@ const Presets = (() => {
 
   async function rename(kind, preset) {
     const answer = await askName({
-      heading: t('Rename preset'),
+      heading: t('Rename'),
       caption: t('Name'),
       kind,
       preset,
