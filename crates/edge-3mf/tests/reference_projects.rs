@@ -207,7 +207,14 @@ fn painted_colours_are_read_with_the_objects_they_are_on() {
     for object in &painted {
         // Every triangle of the object is given, painted or not, and
         // the paint is for the filaments the file says.
-        assert_eq!(object.facets.len(), object.solid.triangles.len());
+        assert_eq!(
+            object.facets.len(),
+            object
+                .parts
+                .iter()
+                .map(|part| part.triangles.len())
+                .sum::<usize>()
+        );
         let mut filaments: Vec<u8> = object.facets.iter().map(|facet| facet.filament).collect();
         filaments.sort_unstable();
         filaments.dedup();
@@ -218,7 +225,11 @@ fn painted_colours_are_read_with_the_objects_they_are_on() {
         );
         assert!(filaments.iter().any(|filament| *filament > 0));
         // In world coordinates, like the mesh.
-        let (low, high) = object.solid.bounds().unwrap();
+        let mut whole = edge_mesh::Mesh::default();
+        for part in &object.parts {
+            whole.append(part, &edge_mesh::Transform::IDENTITY);
+        }
+        let (low, high) = whole.bounds().unwrap();
         assert!(
             object
                 .facets

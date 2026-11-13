@@ -475,7 +475,7 @@ pub(crate) fn placed(
         );
         for object in &mut painted {
             shift_meshes(
-                std::iter::once(&mut object.solid).chain(object.negative.as_mut()),
+                object.parts.iter_mut().chain(object.negative.as_mut()),
                 -x,
                 -y,
             );

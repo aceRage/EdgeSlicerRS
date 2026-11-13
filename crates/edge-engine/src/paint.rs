@@ -8,6 +8,7 @@ use edge_extrusion::Flow;
 use edge_geom::ExPolygon;
 use edge_paint::{PaintSettings, Share};
 use edge_slice::LayerRegions;
+use rayon::prelude::*;
 
 /// What the profile says of how deep paint goes, as [`PaintSettings`],
 /// with a note for each thing it asks that is not done. `outer` is the
@@ -119,17 +120,131 @@ pub(crate) fn settings(
     ))
 }
 
+/// Each layer of a painted object as colour is shared out over it: its
+/// printed parts cut one by one, each with its cracks closed by itself,
+/// then put together. As the reference has it
+/// (MultiMaterialSegmentation.cpp, the start of `segmentation_by_painting`,
+/// from the layer's regions as `PrintObjectSlice.cpp` cuts them part by
+/// part): each piece is grown by ten times `SCALED_EPSILON`, a
+/// micrometre, the pieces are united, islands and holes under 0.01 mm²
+/// are dropped, and what is left is shrunk back. So two parts that
+/// overlap or touch become one, and two that stand a few micrometres
+/// apart keep the crack between them; the paint on the faces either side
+/// of it colours the layer from there, as paint on the outside does, and
+/// a part inside another keeps the colour painted on it.
+///
+/// Cutting the whole object as one mesh instead would fill such cracks
+/// (they are far narrower than the closing radius) and leave only the
+/// outside to share the layer out from.
+pub(crate) fn outlines(
+    object: &edge_3mf::Painted,
+    planes: &[f64],
+    closing_radius: edge_geom::Coord,
+    base: usize,
+) -> Result<Vec<Vec<ExPolygon>>, ClipError> {
+    /// Ten times the reference's `SCALED_EPSILON`, in scaled units.
+    const MERGE: edge_geom::Coord = 1_000;
+    /// The reference's `remove_small_and_small_holes` limit, in mm².
+    const SMALL: f64 = 0.01;
+    /// Five times `SCALED_EPSILON`, the reference's `expolygons_simplify`
+    /// tolerance there.
+    const SIMPLIFY: edge_geom::Coord = 500;
+    let parts = object
+        .parts
+        .par_iter()
+        .map(|part| {
+            edge_slice::slice_regions(
+                &[edge_slice::Body {
+                    solid: part,
+                    negative: object.negative.as_ref(),
+                    filament: base,
+                }],
+                planes,
+                closing_radius,
+            )
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    (0..planes.len())
+        .into_par_iter()
+        .map(|layer| {
+            let pieces: Vec<ExPolygon> = parts
+                .iter()
+                .flat_map(|part| part[layer].regions.iter().cloned())
+                .collect();
+            if pieces.is_empty() {
+                return Ok(Vec::new());
+            }
+            let mut merged = edge_clip::offset(&pieces, MERGE, edge_clip::Join::MITER)?;
+            merged.retain(|piece| piece.area_mm2() >= SMALL);
+            for piece in &mut merged {
+                piece
+                    .holes
+                    .retain(|hole| hole.signed_area_mm2().abs() >= SMALL);
+            }
+            let shrunk = edge_clip::offset(&merged, -MERGE, edge_clip::Join::MITER)?;
+            let mut simplified = edge_clip::simplify(&shrunk, SIMPLIFY)?;
+            for piece in &mut simplified {
+                drop_near_duplicates(&mut piece.contour);
+                for hole in &mut piece.holes {
+                    drop_near_duplicates(hole);
+                }
+                piece.holes.retain(|hole| !hole.points.is_empty());
+            }
+            simplified.retain(|piece| !piece.contour.points.is_empty());
+            Ok(simplified)
+        })
+        .collect()
+}
+
+/// Takes out a corner closer than 0.01 mm to the one before it where the
+/// outline barely turns there, by under 30 degrees seen from the corner
+/// before: the reference's `remove_duplicates(MutablePolygon&, scaled_eps,
+/// max_angle)` (MutablePolygon.cpp) as `segmentation_by_painting` calls
+/// it. A ring left with under three corners is emptied.
+fn drop_near_duplicates(ring: &mut edge_geom::Polygon) {
+    const NEAR: i64 = 10_000;
+    let cos_max_2 = (std::f64::consts::PI / 6.0).cos().powi(2);
+    let points = &mut ring.points;
+    if points.len() >= 3 {
+        // From the second corner once round, the first staying, as the
+        // reference's walk does: each corner is weighed against the last
+        // one kept and the next one along.
+        let count = points.len();
+        let mut kept = Vec::with_capacity(count);
+        kept.push(points[0]);
+        for at in 1..count {
+            let (prev, p, next) = (kept[kept.len() - 1], points[at], points[(at + 1) % count]);
+            let v1 = ((p.x - prev.x) as f64, (p.y - prev.y) as f64);
+            let v1_norm = v1.0 * v1.0 + v1.1 * v1.1;
+            if v1_norm < (NEAR * NEAR) as f64 {
+                let v2 = ((next.x - prev.x) as f64, (next.y - prev.y) as f64);
+                let dot = v1.0 * v2.0 + v1.1 * v2.1;
+                if dot * dot > cos_max_2 * v1_norm * (v2.0 * v2.0 + v2.1 * v2.1) {
+                    continue;
+                }
+            }
+            kept.push(p);
+        }
+        *points = kept;
+    }
+    if points.len() < 3 {
+        points.clear();
+    }
+}
+
 /// Gives the painted areas of a layer to the filaments they are painted
 /// for, and takes them from whichever had them: `painted` holds each
 /// painted object's areas in turn. A layer that was all one filament's,
 /// `base`, is first set down as that filament's.
 ///
 /// What a filament is given is united with what it had, cracks and all:
-/// two parts of an object seldom meet exactly, and slicing here closes
-/// the cracks between them. The reference leaves them, so where paint
-/// makes both sides of a crack one filament it lays walls round the
-/// crack, loops as wide as two half walls in the middle of a solid
-/// area. That is not copied.
+/// two parts of an object seldom meet exactly, and while the colours are
+/// shared out over an outline that keeps the cracks between them
+/// ([`outlines`]), the layer they are given out of has them closed. The
+/// reference leaves them in the layer too, so where paint makes both
+/// sides of a crack one filament it lays walls round the crack, loops as
+/// wide as two half walls in the middle of a solid area. That is not
+/// copied.
 pub(crate) fn apply(
     layer: &mut LayerRegions,
     painted: &[&[Share]],
@@ -177,6 +292,63 @@ mod tests {
             },
             holes: Vec::new(),
         }]
+    }
+
+    /// A painted object of two boxes side by side, `gap` mm apart.
+    fn two_boxes(gap: f32) -> edge_3mf::Painted {
+        let cube = |min: [f32; 3], max: [f32; 3]| {
+            edge_mesh::Mesh::from_triangle_soup(edge_mesh::primitives::cuboid(min, max))
+        };
+        edge_3mf::Painted {
+            negative: None,
+            facets: Vec::new(),
+            parts: vec![
+                cube([0.0, 0.0, 0.0], [10.0, 10.0, 1.0]),
+                cube([10.0 + gap, 0.0, 0.0], [20.0, 10.0, 1.0]),
+            ],
+        }
+    }
+
+    #[test]
+    fn parts_a_micrometre_apart_are_one_outline_and_wider_cracks_stay() {
+        let touching = outlines(&two_boxes(0.001), &[0.5], 0, 1).unwrap();
+        assert_eq!(touching[0].len(), 1);
+        assert!((area(&touching[0]) - 200.0).abs() < 0.01);
+        // Three micrometres is more than growing each side by one closes,
+        // and the crack between the boxes is kept.
+        let apart = outlines(&two_boxes(0.003), &[0.5], 0, 1).unwrap();
+        assert_eq!(apart[0].len(), 2);
+    }
+
+    #[test]
+    fn near_duplicate_corners_go_only_where_the_outline_runs_on() {
+        let ring = |points: &[(f64, f64)]| Polygon {
+            points: points.iter().map(|&(x, y)| Point2::from_mm(x, y)).collect(),
+        };
+        // A corner 5 µm along a straight edge goes; one 5 µm off at a
+        // right angle to where the outline goes on stays, as does
+        // everything 0.01 mm or more apart.
+        let mut straight = ring(&[
+            (0.0, 0.0),
+            (5.0, 0.0),
+            (5.005, 0.0),
+            (10.0, 0.0),
+            (10.0, 10.0),
+        ]);
+        drop_near_duplicates(&mut straight);
+        assert_eq!(straight.points.len(), 4);
+        let mut turning = ring(&[
+            (0.0, 0.0),
+            (5.0, 0.0),
+            (5.0, 0.005),
+            (10.0, 0.005),
+            (10.0, 10.0),
+        ]);
+        drop_near_duplicates(&mut turning);
+        assert_eq!(turning.points.len(), 5);
+        let mut tiny = ring(&[(0.0, 0.0), (0.001, 0.0), (0.002, 0.0)]);
+        drop_near_duplicates(&mut tiny);
+        assert!(tiny.points.is_empty());
     }
 
     fn area(regions: &[ExPolygon]) -> f64 {
