@@ -593,7 +593,8 @@ pub fn slice(job: Job, watch: &dyn Watcher) -> Result<Sliced, Failure> {
 
     // Colours painted onto a part move what they cover from the filament
     // the part is made of to the one painted. Each painted object is
-    // shared out by itself, from its own outline.
+    // shared out by itself, from its own outline, cut part by part
+    // (`crate::paint::outlines`).
     let mut paint_notes = Vec::new();
     if !painted.is_empty() {
         let outer = walls.params(layer_height, false)?.outer;
@@ -605,18 +606,9 @@ pub fn slice(job: Job, watch: &dyn Watcher) -> Result<Sliced, Failure> {
         let shares = painted
             .par_iter()
             .map(|object| {
-                let own = edge_slice::slice_regions(
-                    &[edge_slice::Body {
-                        solid: &object.solid,
-                        negative: object.negative.as_ref(),
-                        filament: base,
-                    }],
-                    &planes,
-                    scaled(closing_radius),
-                )
-                .map_err(|e| e.to_string())?;
-                let outlines: Vec<&[ExPolygon]> =
-                    own.iter().map(|layer| layer.regions.as_slice()).collect();
+                let own = crate::paint::outlines(object, &planes, scaled(closing_radius), base)
+                    .map_err(|e| e.to_string())?;
+                let outlines: Vec<&[ExPolygon]> = own.iter().map(Vec::as_slice).collect();
                 let facets: Vec<edge_paint::Facet> = object
                     .facets
                     .iter()

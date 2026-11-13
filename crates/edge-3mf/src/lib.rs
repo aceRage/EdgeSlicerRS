@@ -603,17 +603,19 @@ impl Project {
                     .any(|part| part.kind == PartKind::Normal && part.paint.is_some())
             })
             .map(|(object, instance)| {
-                let mut solid = Mesh::default();
-                append_parts(&mut solid, object, instance, PartKind::Normal, None);
                 let mut negative = Mesh::default();
                 append_parts(&mut negative, object, instance, PartKind::Negative, None);
                 let mut facets = Vec::new();
+                let mut parts = Vec::new();
                 for part in object
                     .parts
                     .iter()
                     .filter(|part| part.kind == PartKind::Normal)
                 {
                     let placed = part.transform.then(&instance.transform);
+                    let mut own = Mesh::default();
+                    own.append(&part.mesh, &placed);
+                    parts.push(own);
                     let mirrored = placed.is_mirrored();
                     let mut place = |corners: edge_mesh::Triangle, filament: u8| {
                         let [a, b, c] = corners
@@ -638,9 +640,9 @@ impl Project {
                     }
                 }
                 Painted {
-                    solid,
                     negative: (!negative.triangles.is_empty()).then_some(negative),
                     facets,
+                    parts,
                 }
             })
             .collect()
@@ -787,13 +789,15 @@ impl Project {
 /// One instance of an object with paint on it, in world coordinates.
 #[derive(Clone, Debug)]
 pub struct Painted {
-    /// All of its printed material, whatever the filament.
-    pub solid: Mesh,
     /// What its negative parts take away, when it has any.
     pub negative: Option<Mesh>,
     /// Every triangle of its printed parts with the filament it is
     /// painted for, 0 where it is not painted.
     pub facets: Vec<Facet>,
+    /// Its printed material, each part by itself, whatever the
+    /// filament: the parts are cut one by one, as the reference cuts
+    /// them, for the outline colour is shared out over.
+    pub parts: Vec<Mesh>,
 }
 
 /// One instance's printed parts, each by itself.
