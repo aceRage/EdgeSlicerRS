@@ -1976,8 +1976,15 @@ impl Writer<'_> {
         };
         self.swap(Some(from as i64), to, Some(layer), z, toolchange_z)?;
         self.state.flushed.select(to, self.all);
-        self.state.parked[from] = (self.state.retracted, self.state.retracted_length);
-        (self.state.retracted, self.state.retracted_length) = self.state.parked[to];
+        // Each nozzle keeps its own filament's retraction; with one nozzle
+        // for all the filaments it is the one retraction, carried on to
+        // the filament taken up (Extruder.cpp `m_share_retracted`, with
+        // `single_extruder_multi_material`), so the new filament is
+        // pushed on by as much as the change pulled back.
+        if !s.single_nozzle {
+            self.state.parked[from] = (self.state.retracted, self.state.retracted_length);
+            (self.state.retracted, self.state.retracted_length) = self.state.parked[to];
+        }
         self.state.tool = to;
         self.state.tool_changes += 1;
         self.state.summary.tool_changes += 1;
