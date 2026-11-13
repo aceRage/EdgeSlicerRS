@@ -24,6 +24,7 @@ mod job;
 pub mod lay_on_face;
 mod layer_codes;
 mod layer_heights;
+mod layering;
 mod load;
 mod model;
 mod order;

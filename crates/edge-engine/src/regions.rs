@@ -449,9 +449,10 @@ pub fn settable(key: &str) -> Settable {
         // config is (`region_config_from_model_volume`), and its
         // `layer_height` sets the range's layers' height.
         on_range: region || key == "layer_height",
-        followed_on_object: scope != Scope::Plate && (followed || OBJECT_FOLLOWED.contains(&key)),
+        followed_on_object: scope != Scope::Plate
+            && (followed || OBJECT_FOLLOWED.contains(&key) || LAYERING_FOLLOWED.contains(&key)),
         followed_on_part: region && followed,
-        followed_on_range: region && followed,
+        followed_on_range: (region && followed) || key == "layer_height",
     }
 }
 
@@ -805,6 +806,11 @@ pub(crate) fn note_set(
 /// config).
 const OBJECT_FOLLOWED: [&str; 3] = ["brim_type", "brim_width", "brim_object_gap"];
 
+/// What an object may set for itself that decides where it is cut
+/// (`crate::layering`): its layer height, and whether its last layers
+/// are tuned to its height.
+const LAYERING_FOLLOWED: [&str; 2] = ["layer_height", "precise_z_height"];
+
 /// The plate's settings with an object's own brim laid over them, when it
 /// sets one that differs.
 pub(crate) fn object_brim(plate: &Settings, object: &crate::OwnObject) -> Option<Settings> {
@@ -850,6 +856,7 @@ pub(crate) fn unfollowed(set: &BTreeMap<String, BTreeSet<String>>) -> Vec<String
                 // Set on a part, a modifier or a range it is not the
                 // reference's either; set on an object it is followed.
                 Scope::Object if OBJECT_FOLLOWED.contains(&key.as_str()) => None,
+                Scope::Object if LAYERING_FOLLOWED.contains(&key.as_str()) => None,
                 _ => Some(format!(
                     "{key}: set on {on}, not followed there; the plate's value is used"
                 )),
@@ -1028,9 +1035,8 @@ struct Step {
 /// What a modifier sets that changes nothing leaves its parent's region
 /// as it is, as the reference gives such a modifier its parent's region.
 ///
-/// Not as the reference: a range's `layer_height` is not followed (every
-/// object on a plate is cut at the same heights here), and is said in a
-/// note.
+/// A range's `layer_height` is followed where the object is cut
+/// (`crate::layering`), not here.
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn lay_over_parts(
     layers: &mut [edge_slice::LayerRegions],
@@ -1072,14 +1078,6 @@ pub(crate) fn lay_over_parts(
                 |key| scope(key) == Scope::Region,
                 &label,
             );
-            let height = (range.settings.iter()).find(|(key, _)| key == "layer_height");
-            if let Some((_, height)) = height
-                && !plate_text(plate, "layer_height").is_some_and(|own| same_value(&own, height))
-            {
-                set.entry("layer_height".to_owned())
-                    .or_default()
-                    .insert(label.clone());
-            }
             let mut becomes = BTreeMap::new();
             for key in &met {
                 let mut overrides = regions.overrides(*key);
@@ -1448,6 +1446,9 @@ pub(crate) mod tests {
                 volumes,
                 ranges,
                 support_paint: Vec::new(),
+                layer_height_profile: None,
+                bottom: 0.0,
+                solid: cube(15.0),
             }],
             objects: vec![cube(0.0), cube(15.0)],
             negatives: vec![Mesh::default(), Mesh::default()],
@@ -1523,7 +1524,7 @@ pub(crate) mod tests {
         // What is set and not followed is said; what a part may not set
         // is not, as the reference takes no notice of it either.
         let noted = two_cubes(
-            &[("layer_height", "0.1"), ("travel_speed", "50")],
+            &[("seam_position", "back"), ("travel_speed", "50")],
             &[("brim_width", "9")],
             Vec::new(),
             Vec::new(),
@@ -1532,7 +1533,7 @@ pub(crate) mod tests {
         let gaps = noted.gaps();
         assert!(
             gaps.iter()
-                .any(|gap| gap.starts_with("layer_height: set on object \"second\"")),
+                .any(|gap| gap.starts_with("seam_position: set on object \"second\"")),
             "{gaps:?}"
         );
         assert!(!gaps.iter().any(|gap| gap.starts_with("travel_speed")));
@@ -1559,7 +1560,8 @@ pub(crate) mod tests {
         assert!(density.followed_on_part);
         let layer = settable("layer_height");
         assert!(layer.on_object && !layer.on_part && layer.on_range);
-        assert!(!layer.followed_on_object);
+        // Followed where the object is cut (`crate::layering`).
+        assert!(layer.followed_on_object && layer.followed_on_range && !layer.followed_on_part);
         let travel = settable("travel_speed");
         assert!(!travel.on_object && !travel.on_part);
     }
@@ -1637,6 +1639,43 @@ pub(crate) mod tests {
     }
 
     #[test]
+    fn an_object_of_its_own_layer_height_is_cut_at_its_own() {
+        let sliced = two_cubes(
+            &[("layer_height", "0.12")],
+            &[],
+            Vec::new(),
+            Vec::new(),
+            "{}",
+        );
+        // 50 layers of the first cube, 83 of the second, 17 of them at
+        // the same tops.
+        assert_eq!(sliced.layers.len(), 116);
+        assert!((sliced.top_of(0) - 0.2).abs() < 1e-9);
+        assert!((sliced.top_of(1) - 0.32).abs() < 1e-9);
+        assert!((sliced.top_of(2) - 0.4).abs() < 1e-9);
+        assert!((sliced.height_of(2) - 0.08).abs() < 1e-9);
+        assert_eq!(loops_within(&sliced, 1, -1.0, 11.0), 0);
+        assert!(loops_within(&sliced, 1, 14.0, 26.0) > 0);
+        assert!(loops_within(&sliced, 2, -1.0, 11.0) > 0);
+        assert_eq!(loops_within(&sliced, 2, 14.0, 26.0), 0);
+        // The second cube's walls are 0.12 mm thick.
+        let second: Vec<f64> = (0..sliced.slots.len())
+            .flat_map(|slot| &sliced.walls_by[slot][1].loops)
+            .map(|wall| wall.flow.height)
+            .collect();
+        assert!(
+            !second.is_empty() && second.iter().all(|height| (height - 0.12).abs() < 1e-9),
+            "{second:?}"
+        );
+        assert!(
+            !sliced
+                .gaps()
+                .iter()
+                .any(|gap| gap.starts_with("layer_height"))
+        );
+    }
+
+    #[test]
     fn a_height_range_sets_its_own_layers() {
         let range = edge_3mf::LayerRange {
             min_z: 4.0,
@@ -1652,11 +1691,16 @@ pub(crate) mod tests {
         assert_eq!(loops_within(&sliced, 25, 14.0, 26.0), 3);
         assert_eq!(loops_within(&sliced, 40, 14.0, 26.0), 2);
         assert_eq!(loops_within(&sliced, 25, -1.0, 11.0), 2);
-        // Its layer height is said not to be followed.
+        // Its layers are 0.1 mm thick, laid between the other cube's.
+        assert!((sliced.top_of(19) - 4.0).abs() < 1e-9);
+        assert!((sliced.top_of(20) - 4.1).abs() < 1e-9);
+        assert!((sliced.height_of(20) - 0.1).abs() < 1e-9);
+        assert_eq!(loops_within(&sliced, 20, -1.0, 11.0), 0);
+        assert_eq!(loops_within(&sliced, 20, 14.0, 26.0), 3);
+        assert_eq!(sliced.layers.len(), 20 + 20 + 20);
         let gaps = sliced.gaps();
         assert!(
-            gaps.iter()
-                .any(|gap| gap.starts_with("layer_height: set on height range 4-6 mm")),
+            !gaps.iter().any(|gap| gap.starts_with("layer_height")),
             "{gaps:?}"
         );
     }

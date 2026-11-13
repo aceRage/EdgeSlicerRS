@@ -32,6 +32,42 @@ impl LayerHeights {
         }
     }
 
+    /// Layers of the heights given, each its bottom and top measured from
+    /// the bottom of the model: an object's own (`crate::layering`).
+    pub(crate) fn spans(first: f64, rest: f64, spans: &[(f64, f64)]) -> Self {
+        Self {
+            first,
+            rest,
+            count: spans.len(),
+            tail: spans
+                .iter()
+                .map(|(low, high)| (high - low, *high))
+                .collect(),
+        }
+    }
+
+    /// Layers ending at `tops`, each as thick as the step from the one
+    /// before: the plate's layers when objects of their own heights are
+    /// laid together, as the reference gives a layer of G-code the
+    /// height from the last (GCode.cpp `process_layer`).
+    pub(crate) fn tops(first: f64, rest: f64, tops: &[f64]) -> Self {
+        let mut below = 0.0;
+        let tail = tops
+            .iter()
+            .map(|top| {
+                let height = top - below;
+                below = *top;
+                (height, *top)
+            })
+            .collect();
+        Self {
+            first,
+            rest,
+            count: tops.len(),
+            tail,
+        }
+    }
+
     fn changed(&self, index: usize) -> Option<(f64, f64)> {
         let from = self.count - self.tail.len();
         self.tail.get(index.checked_sub(from)?).copied()
@@ -155,7 +191,7 @@ pub(crate) fn settle(
 /// nozzles of the filaments in use allow, and those of the supports'
 /// filaments where there are supports, never narrower than the layer
 /// height itself (Slicing.cpp `SlicingParameters::create_from_config`).
-fn limits(
+pub(crate) fn limits(
     settings: &Settings,
     layer_height: f64,
     filaments: &[usize],

@@ -152,6 +152,9 @@ pub struct Sliced {
     /// The first layers' outlines as modelled, before they were shrunk
     /// against elephant foot.
     modelled: Vec<Vec<ExPolygon>>,
+    /// What lies under each layer's objects where objects of their own
+    /// heights are laid together (`ObjectStage::below`).
+    below: Option<Vec<Vec<ExPolygon>>>,
     /// The objects on the plate, as seams are placed by them: each one's
     /// bounds across the bed and their middle; its surface, with where
     /// in it the triangles of what is cut out of it start (none for a
@@ -506,362 +509,1174 @@ pub fn slice(job: Job, watch: &dyn Watcher) -> Result<Sliced, Failure> {
         walls.wall_loops = count;
     }
 
-    step(watch, Stage::Layers)?;
-    let started = Instant::now();
-    let mut planes = edge_slice::layer_planes(
-        min[2].into(),
-        max[2].into(),
-        first_layer_height,
-        layer_height,
-    );
-    // How thick each layer is. With `precise_z_height` the last five are
-    // tuned, and cut where they then lie, so that the print ends at the
-    // top of the part; `crate::layer_heights` has the rest.
-    let filaments: Vec<usize> = bodies.iter().map(|body| body.filament).collect();
-    let tops: Vec<f64> = objects
+    // Each object's own layers (`crate::layering`): the objects that set
+    // nothing of their heights are sliced together at the plate's, as
+    // they always were, and each group of objects with layers of their
+    // own by itself; their layers are then laid together by their tops.
+    let object_heights: Vec<f64> = objects
         .iter()
-        .filter_map(Mesh::bounds)
-        .map(|(_, high)| high[2].into())
+        .map(|mesh| {
+            mesh.bounds()
+                .map_or(0.0, |(low, high)| f64::from(high[2] - low[2]))
+        })
         .collect();
-    let (heights, mut quality_notes) = crate::layer_heights::settle(
-        &settings,
-        &mut planes,
-        &crate::layer_heights::Stack {
-            span: (min[2].into(), max[2].into()),
-            first_layer_height,
+    let layering = crate::layering::settle(
+        &crate::layering::PlateLayers {
+            settings: &settings,
             layer_height,
-            filaments: &filaments,
-            tops: &tops,
+            first_layer_height,
+            heights: &object_heights,
         },
+        &own,
     )?;
-    // With Z contouring every layer but the first is sliced `zaa_min_z`
-    // above its bottom (`crate::contour`).
-    let zaa = edge_contour::ZaaSettings::read(&settings)?;
-    if let Some(contouring) = &zaa.zaa {
-        crate::contour::plane(contouring, &mut planes, &heights, min[2].into())?;
-    }
-    quality_notes.extend(zaa.notes);
-    // Each body's region: its filament's, or one of its own where its
-    // object or the part sets something (`crate::regions`).
+    let all_bodies = bodies.len();
     let mut regions = crate::regions::Regions::default();
     let mut own_set: std::collections::BTreeMap<String, std::collections::BTreeSet<String>> =
         Default::default();
-    let body_keys: Vec<usize> = bodies
-        .iter()
-        .map(|body| match body.part {
-            Some((object, volume)) => {
-                let (object, volume) = (&own[object], &own[object].volumes[volume]);
-                let overrides =
-                    crate::regions::part_overrides(&settings, object, volume, &mut own_set);
-                regions.key(&settings, body.filament, &overrides)
-            }
-            None => body.filament,
-        })
-        .collect();
-    let borrowed: Vec<edge_slice::Body<'_>> = bodies
-        .iter()
-        .zip(&body_keys)
-        .map(|(body, key)| edge_slice::Body {
-            solid: &body.solid,
-            negative: body.negative.as_ref(),
-            filament: *key,
-        })
-        .collect();
-    let holes = crate::holes::HoleSettings::from_settings(&settings)?;
-    let mut layers = edge_slice::slice_regions(&borrowed, &planes, scaled(closing_radius))?;
-    // Height ranges and modifiers lay their settings over what of an
-    // object's parts they take (`crate::regions`).
-    crate::regions::lay_over_parts(
-        &mut layers,
-        &planes,
-        scaled(closing_radius),
-        &own,
-        &bodies,
-        &body_keys,
-        &mut regions,
-        &settings,
-        &mut own_set,
-    )?;
-
-    // Overhangs are made printable by growing the layers under them
-    // (`make_overhang_printable`), before anything else is done to the
-    // layers as cut; `crate::printable` has the rest.
-    let mut printable = crate::printable::Printable::from_settings(&settings)?;
-    quality_notes.extend(printable.apply(&mut layers, &heights, !painted.is_empty())?);
-    let cut_time = started.elapsed();
-    let painting = Instant::now();
-
-    // Colours painted onto a part move what they cover from the filament
-    // the part is made of to the one painted. Each painted object is
-    // shared out by itself, from its own outline, cut part by part
-    // (`crate::paint::outlines`).
-    let mut paint_notes = Vec::new();
-    // Read whether or not anything is painted: how deep paint goes is a
-    // setting a print follows, with paint or without.
-    let wall_params = walls.params(layer_height, false)?;
-    let (paint, forced_interfaces, notes) = crate::paint::settings(
-        &settings,
-        &wall_params.outer,
-        &wall_params.inner,
-        wall_params.arachne.is_none(),
-        !painted.is_empty(),
-    )?;
-    // Each filament's share a shell of its own (`interface_shells`, and a
-    // bounded paint depth with `paint_depth_solid_interfaces`;
-    // PrintObject.cpp `detect_surfaces_type`, `discover_vertical_shells`,
-    // and the tops PerimeterGenerator.cpp finds). The reference does it
-    // object by object, for a painted object; here the plate is sliced as
-    // one, and a bounded depth on a painted object makes every filament's
-    // share on the plate its own shell.
-    let interfaces = forced_interfaces || settings.flag("interface_shells")? == Some(true);
-    if !painted.is_empty() {
-        paint_notes = notes;
-        let z: Vec<[f64; 2]> = (0..planes.len())
-            .map(|index| {
-                let top = heights.top_of(index);
-                [top - heights.height_of(index), top]
-            })
-            .collect();
-        let base = body_keys.first().copied().unwrap_or(1);
-        // Worked out side by side, then applied in the order given.
-        let shares = painted
-            .par_iter()
-            .map(|object| {
-                let own = crate::paint::outlines(object, &planes, scaled(closing_radius), base)
-                    .map_err(|e| e.to_string())?;
-                let outlines: Vec<&[ExPolygon]> = own.iter().map(Vec::as_slice).collect();
-                let facets: Vec<edge_paint::Facet> = object
-                    .facets
-                    .iter()
-                    .map(|facet| edge_paint::Facet {
-                        corners: facet.corners,
-                        filament: facet.filament,
-                    })
-                    .collect();
-                let mut used: Vec<usize> = facets
-                    .iter()
-                    .map(|facet| usize::from(facet.filament))
-                    .filter(|filament| *filament > 0)
-                    .collect();
-                used.push(base);
-                used.sort_unstable();
-                used.dedup();
-                let paint = edge_paint::PaintSettings {
-                    run_scale: crate::paint::run_scale(&settings, used)
-                        .map_err(|e| e.to_string())?,
-                    ..paint
-                };
-                edge_paint::segment(&outlines, &planes, &z, &facets, &paint)
-                    .map_err(|e| e.to_string())
-            })
-            .collect::<Result<Vec<_>, String>>()?;
-        layers
-            .par_iter_mut()
-            .enumerate()
-            .try_for_each(|(index, layer)| {
-                let painted: Vec<&[edge_paint::Share]> = shares
-                    .iter()
-                    .map(|object| object[index].as_slice())
-                    .collect();
-                crate::paint::apply(layer, &painted, base)
-            })?;
-    }
-
-    let paint_time = painting.elapsed();
-
-    // Outlines and holes are made larger or smaller by what the profile
-    // sets, to make up for a printer that prints them off size
-    // (`xy_contour_compensation`, `xy_hole_compensation`;
-    // PrintObjectSlice.cpp, the "make_slices in parallel" part of
-    // `PrintObject::slice_volumes`). Growing is done first and shrinking
-    // after. On a layer in several filaments the layer is grown as a
-    // whole and each filament takes what its own share grown reaches of
-    // it, the first to come keeping what two would both reach; shrinking
-    // trims every share to the layer shrunk.
-    //
-    // As the reference has it, none of it is done where colour is
-    // painted on: the two cannot be combined. Not as the reference: it
-    // leaves out the painted object only, and here everything on the
-    // plate is sliced together, so one painted object leaves the whole
-    // plate as modelled. A note says so.
-    let xy_contour = settings.float("xy_contour_compensation")?.unwrap_or(0.0);
-    let xy_hole = settings.float("xy_hole_compensation")?.unwrap_or(0.0);
-    let mut size_notes = Vec::new();
-    if xy_contour != 0.0 || xy_hole != 0.0 {
-        if painted.is_empty() {
-            let (contour, hole) = (scaled(xy_contour), scaled(xy_hole));
-            layers.par_iter_mut().try_for_each(|layer| {
-                compensate_size(layer, contour, hole).map_err(|e| e.to_string())
-            })?;
-        } else {
-            size_notes.push(
-                "xy_contour_compensation, xy_hole_compensation: not used on a plate with colour painted on it"
-                    .to_owned(),
-            );
-        }
-    }
-
-    // The first layers are printed slightly smaller than modelled, tapering
-    // to nothing over `elefant_foot_compensation_layers`. The modelled
-    // outlines are kept: neighbouring layers are still compared with them.
-    //
-    // As the reference does it (PrintObjectSlice.cpp, the "make_slices in
-    // parallel" part of `PrintObject::slice_volumes`): the external wall of
-    // the layer in hand sets how narrow a part may be left; a layer in one
-    // material is shrunk as it is; a layer in several is closed
-    // first by one and a half times the closing radius, so that the seams
-    // between its materials are not taken for outline, that is shrunk, and
-    // each material keeps what it has inside the result. What was shrunk,
-    // closed or not, is what the layer counts as modelled.
-    //
-    // The reference decides between the two for each object by its count
-    // of regions; here a layer on which more than one filament has a share
-    // is treated as the second kind, whichever object the shares are in.
-    // The reference also leaves a part on a raft as modelled; no raft is
-    // printed here, so the first layer is on the bed whatever
-    // `raft_layers` says and is shrunk.
-    let elephant_foot = settings.float("elefant_foot_compensation")?.unwrap_or(0.0);
-    let elephant_layers = if elephant_foot > 0.0 {
-        usize::try_from(
-            settings
-                .integer("elefant_foot_compensation_layers")?
-                .unwrap_or(1),
-        )
-        .unwrap_or(0)
-    } else {
-        0
-    }
-    .min(layers.len());
-    let mut modelled: Vec<Vec<ExPolygon>> = Vec::with_capacity(elephant_layers);
-    for (index, layer) in layers.iter_mut().take(elephant_layers).enumerate() {
-        let height = heights.height_of(index);
-        let outer = walls.params(height, index == 0)?.outer;
-        let amount = elephant_foot * (1.0 - index as f64 / elephant_layers as f64);
-        let compensate = |regions: &[ExPolygon]| {
-            edge_slice::compensate_elephant_foot(
-                regions,
-                scaled(outer.width + outer.spacing),
-                scaled(amount),
-            )
-        };
-        // Regions stay in the order they were in: islands are printed in
-        // an order worked out from it. The reference unites what was
-        // shrunk again, which here would only shuffle regions that
-        // cannot have come to overlap.
-        let (whole, shrunk) = if layer.by_filament.len() > 1 {
-            let whole = edge_clip::closing(
-                &layer.regions,
-                scaled(closing_radius * 1.5),
-                edge_clip::Join::MITER,
-            )?;
-            let shrunk = kept_inside(&layer.regions, &compensate(&whole)?)?;
-            (whole, shrunk)
-        } else {
-            let shrunk = compensate(&layer.regions)?;
-            (std::mem::take(&mut layer.regions), shrunk)
-        };
-        layer.regions = shrunk;
-        modelled.push(whole);
-    }
-    let slice_time = started.elapsed();
-
-    // What the plate prints in, and the filament changes set at its
-    // layers: from a change up every layer is printed in the filament it
-    // names, as the reference overrides the extruder of every region of a
-    // layer (ToolOrdering.cpp `collect_extruders`, `extruder_override`).
-    let object_filaments: Vec<usize> = {
-        let mut own: Vec<usize> = layers
+    #[allow(clippy::too_many_arguments)]
+    let object_stage = |bodies: &[Body],
+                        painted: &[edge_3mf::Painted],
+                        objects: &[Mesh],
+                        own_layers: Option<&[edge_slice::layering::Span]>,
+                        layer_height: f64,
+                        regions: &mut crate::regions::Regions,
+                        own_set: &mut std::collections::BTreeMap<
+        String,
+        std::collections::BTreeSet<String>,
+    >|
+     -> Result<ObjectStage, Failure> {
+        step(watch, Stage::Layers)?;
+        let started = Instant::now();
+        // The top of what this group prints: the plate's, for the plate as
+        // one.
+        let group_top: f32 = bodies
             .iter()
-            .flat_map(|layer| {
-                layer
-                    .by_filament
-                    .iter()
-                    .map(|(key, _)| regions.filament(*key))
+            .filter_map(|body| body.solid.bounds())
+            .map(|(_, high)| high[2])
+            .fold(min[2], f32::max);
+        let top = if bodies.len() == all_bodies {
+            max[2]
+        } else {
+            group_top
+        };
+        let mut planes = match own_layers {
+            None => edge_slice::layer_planes(
+                min[2].into(),
+                top.into(),
+                first_layer_height,
+                layer_height,
+            ),
+            // An object of its own heights is cut through the middle of
+            // each of its layers (PrintObject.cpp `slice_z`).
+            Some(spans) => spans
+                .iter()
+                .map(|(low, high)| f64::from(min[2]) + 0.5 * (low + high))
+                .collect(),
+        };
+        // How thick each layer is. With `precise_z_height` the last five are
+        // tuned, and cut where they then lie, so that the print ends at the
+        // top of the part; `crate::layer_heights` has the rest.
+        let filaments: Vec<usize> = bodies.iter().map(|body| body.filament).collect();
+        let tops: Vec<f64> = objects
+            .iter()
+            .filter_map(Mesh::bounds)
+            .map(|(_, high)| high[2].into())
+            .collect();
+        let (heights, mut quality_notes) = match own_layers {
+            None => crate::layer_heights::settle(
+                &settings,
+                &mut planes,
+                &crate::layer_heights::Stack {
+                    span: (min[2].into(), top.into()),
+                    first_layer_height,
+                    layer_height,
+                    filaments: &filaments,
+                    tops: &tops,
+                },
+            )?,
+            // Tuned for `precise_z_height` already, object by object
+            // (`crate::layering`).
+            Some(spans) => (
+                crate::layer_heights::LayerHeights::spans(first_layer_height, layer_height, spans),
+                Vec::new(),
+            ),
+        };
+        // With Z contouring every layer but the first is sliced `zaa_min_z`
+        // above its bottom (`crate::contour`).
+        let zaa = edge_contour::ZaaSettings::read(&settings)?;
+        if let Some(contouring) = &zaa.zaa {
+            crate::contour::plane(contouring, &mut planes, &heights, min[2].into())?;
+        }
+        quality_notes.extend(zaa.notes);
+        // Each body's region: its filament's, or one of its own where its
+        // object or the part sets something (`crate::regions`).
+        let body_keys: Vec<usize> = bodies
+            .iter()
+            .map(|body| match body.part {
+                Some((object, volume)) => {
+                    let (object, volume) = (&own[object], &own[object].volumes[volume]);
+                    let overrides =
+                        crate::regions::part_overrides(&settings, object, volume, own_set);
+                    regions.key(&settings, body.filament, &overrides)
+                }
+                None => body.filament,
             })
             .collect();
-        if own.is_empty() {
-            own = body_keys
-                .iter()
-                .map(|key| regions.filament(*key))
-                .take(1)
-                .collect();
-        }
-        own.sort_unstable();
-        own.dedup();
-        own
-    };
-    let (switches, mut code_notes) =
-        crate::layer_codes::switches(custom_gcode.as_ref(), &settings, &object_filaments);
-    if let ([own], false) = (object_filaments.as_slice(), switches.is_empty()) {
-        let tops: Vec<f64> = (0..layers.len())
-            .map(|index| heights.top_of(index))
+        let borrowed: Vec<edge_slice::Body<'_>> = bodies
+            .iter()
+            .zip(&body_keys)
+            .map(|(body, key)| edge_slice::Body {
+                solid: &body.solid,
+                negative: body.negative.as_ref(),
+                filament: *key,
+            })
             .collect();
-        let by_layer = crate::layer_codes::filament_by_layer(&switches, *own, &tops);
-        if by_layer.iter().any(|filament| filament != own) && !regions.any() {
-            for (layer, filament) in layers.iter_mut().zip(by_layer) {
-                layer.by_filament = vec![(filament, layer.regions.clone())];
-                layer.cut_by_filament = vec![(filament, layer.regions.clone())];
+        let holes = crate::holes::HoleSettings::from_settings(&settings)?;
+        let mut layers = edge_slice::slice_regions(&borrowed, &planes, scaled(closing_radius))?;
+        // Height ranges and modifiers lay their settings over what of an
+        // object's parts they take (`crate::regions`).
+        crate::regions::lay_over_parts(
+            &mut layers,
+            &planes,
+            scaled(closing_radius),
+            &own,
+            &bodies,
+            &body_keys,
+            regions,
+            &settings,
+            own_set,
+        )?;
+
+        // Overhangs are made printable by growing the layers under them
+        // (`make_overhang_printable`), before anything else is done to the
+        // layers as cut; `crate::printable` has the rest.
+        let mut printable = crate::printable::Printable::from_settings(&settings)?;
+        quality_notes.extend(printable.apply(&mut layers, &heights, !painted.is_empty())?);
+        let cut_time = started.elapsed();
+        let painting = Instant::now();
+
+        // Colours painted onto a part move what they cover from the filament
+        // the part is made of to the one painted. Each painted object is
+        // shared out by itself, from its own outline, cut part by part
+        // (`crate::paint::outlines`).
+        let mut paint_notes = Vec::new();
+        // Read whether or not anything is painted: how deep paint goes is a
+        // setting a print follows, with paint or without.
+        let wall_params = walls.params(layer_height, false)?;
+        let (paint, forced_interfaces, notes) = crate::paint::settings(
+            &settings,
+            &wall_params.outer,
+            &wall_params.inner,
+            wall_params.arachne.is_none(),
+            !painted.is_empty(),
+        )?;
+        // Each filament's share a shell of its own (`interface_shells`, and a
+        // bounded paint depth with `paint_depth_solid_interfaces`;
+        // PrintObject.cpp `detect_surfaces_type`, `discover_vertical_shells`,
+        // and the tops PerimeterGenerator.cpp finds). The reference does it
+        // object by object, for a painted object; here the plate is sliced as
+        // one, and a bounded depth on a painted object makes every filament's
+        // share on the plate its own shell.
+        let interfaces = forced_interfaces || settings.flag("interface_shells")? == Some(true);
+        if !painted.is_empty() {
+            paint_notes = notes;
+            let z: Vec<[f64; 2]> = (0..planes.len())
+                .map(|index| {
+                    let top = heights.top_of(index);
+                    [top - heights.height_of(index), top]
+                })
+                .collect();
+            let base = body_keys.first().copied().unwrap_or(1);
+            // Worked out side by side, then applied in the order given.
+            let shares = painted
+                .par_iter()
+                .map(|object| {
+                    let own = crate::paint::outlines(object, &planes, scaled(closing_radius), base)
+                        .map_err(|e| e.to_string())?;
+                    let outlines: Vec<&[ExPolygon]> = own.iter().map(Vec::as_slice).collect();
+                    let facets: Vec<edge_paint::Facet> = object
+                        .facets
+                        .iter()
+                        .map(|facet| edge_paint::Facet {
+                            corners: facet.corners,
+                            filament: facet.filament,
+                        })
+                        .collect();
+                    let mut used: Vec<usize> = facets
+                        .iter()
+                        .map(|facet| usize::from(facet.filament))
+                        .filter(|filament| *filament > 0)
+                        .collect();
+                    used.push(base);
+                    used.sort_unstable();
+                    used.dedup();
+                    let paint = edge_paint::PaintSettings {
+                        run_scale: crate::paint::run_scale(&settings, used)
+                            .map_err(|e| e.to_string())?,
+                        ..paint
+                    };
+                    edge_paint::segment(&outlines, &planes, &z, &facets, &paint)
+                        .map_err(|e| e.to_string())
+                })
+                .collect::<Result<Vec<_>, String>>()?;
+            layers
+                .par_iter_mut()
+                .enumerate()
+                .try_for_each(|(index, layer)| {
+                    let painted: Vec<&[edge_paint::Share]> = shares
+                        .iter()
+                        .map(|object| object[index].as_slice())
+                        .collect();
+                    crate::paint::apply(layer, &painted, base)
+                })?;
+        }
+
+        let paint_time = painting.elapsed();
+
+        // Outlines and holes are made larger or smaller by what the profile
+        // sets, to make up for a printer that prints them off size
+        // (`xy_contour_compensation`, `xy_hole_compensation`;
+        // PrintObjectSlice.cpp, the "make_slices in parallel" part of
+        // `PrintObject::slice_volumes`). Growing is done first and shrinking
+        // after. On a layer in several filaments the layer is grown as a
+        // whole and each filament takes what its own share grown reaches of
+        // it, the first to come keeping what two would both reach; shrinking
+        // trims every share to the layer shrunk.
+        //
+        // As the reference has it, none of it is done where colour is
+        // painted on: the two cannot be combined. Not as the reference: it
+        // leaves out the painted object only, and here everything on the
+        // plate is sliced together, so one painted object leaves the whole
+        // plate as modelled. A note says so.
+        let xy_contour = settings.float("xy_contour_compensation")?.unwrap_or(0.0);
+        let xy_hole = settings.float("xy_hole_compensation")?.unwrap_or(0.0);
+        let mut size_notes = Vec::new();
+        if xy_contour != 0.0 || xy_hole != 0.0 {
+            if painted.is_empty() {
+                let (contour, hole) = (scaled(xy_contour), scaled(xy_hole));
+                layers.par_iter_mut().try_for_each(|layer| {
+                    compensate_size(layer, contour, hole).map_err(|e| e.to_string())
+                })?;
+            } else {
+                size_notes.push(
+                    "xy_contour_compensation, xy_hole_compensation: not used on a plate with colour painted on it"
+                        .to_owned(),
+                );
             }
-        } else if by_layer.iter().any(|filament| filament != own) {
-            // Every region of the layer goes over to the filament named,
-            // each keeping its own settings.
-            let single = body_keys.first().copied().unwrap_or(*own);
-            for (layer, filament) in layers.iter_mut().zip(by_layer) {
-                for shares in [&mut layer.by_filament, &mut layer.cut_by_filament] {
-                    if shares.is_empty() {
-                        *shares = vec![(single, layer.regions.clone())];
+        }
+
+        // The first layers are printed slightly smaller than modelled, tapering
+        // to nothing over `elefant_foot_compensation_layers`. The modelled
+        // outlines are kept: neighbouring layers are still compared with them.
+        //
+        // As the reference does it (PrintObjectSlice.cpp, the "make_slices in
+        // parallel" part of `PrintObject::slice_volumes`): the external wall of
+        // the layer in hand sets how narrow a part may be left; a layer in one
+        // material is shrunk as it is; a layer in several is closed
+        // first by one and a half times the closing radius, so that the seams
+        // between its materials are not taken for outline, that is shrunk, and
+        // each material keeps what it has inside the result. What was shrunk,
+        // closed or not, is what the layer counts as modelled.
+        //
+        // The reference decides between the two for each object by its count
+        // of regions; here a layer on which more than one filament has a share
+        // is treated as the second kind, whichever object the shares are in.
+        // The reference also leaves a part on a raft as modelled; no raft is
+        // printed here, so the first layer is on the bed whatever
+        // `raft_layers` says and is shrunk.
+        let elephant_foot = settings.float("elefant_foot_compensation")?.unwrap_or(0.0);
+        let elephant_layers = if elephant_foot > 0.0 {
+            usize::try_from(
+                settings
+                    .integer("elefant_foot_compensation_layers")?
+                    .unwrap_or(1),
+            )
+            .unwrap_or(0)
+        } else {
+            0
+        }
+        .min(layers.len());
+        let mut modelled: Vec<Vec<ExPolygon>> = Vec::with_capacity(elephant_layers);
+        for (index, layer) in layers.iter_mut().take(elephant_layers).enumerate() {
+            let height = heights.height_of(index);
+            let outer = walls.params(height, index == 0)?.outer;
+            let amount = elephant_foot * (1.0 - index as f64 / elephant_layers as f64);
+            let compensate = |regions: &[ExPolygon]| {
+                edge_slice::compensate_elephant_foot(
+                    regions,
+                    scaled(outer.width + outer.spacing),
+                    scaled(amount),
+                )
+            };
+            // Regions stay in the order they were in: islands are printed in
+            // an order worked out from it. The reference unites what was
+            // shrunk again, which here would only shuffle regions that
+            // cannot have come to overlap.
+            let (whole, shrunk) = if layer.by_filament.len() > 1 {
+                let whole = edge_clip::closing(
+                    &layer.regions,
+                    scaled(closing_radius * 1.5),
+                    edge_clip::Join::MITER,
+                )?;
+                let shrunk = kept_inside(&layer.regions, &compensate(&whole)?)?;
+                (whole, shrunk)
+            } else {
+                let shrunk = compensate(&layer.regions)?;
+                (std::mem::take(&mut layer.regions), shrunk)
+            };
+            layer.regions = shrunk;
+            modelled.push(whole);
+        }
+        let slice_time = started.elapsed();
+
+        // What the plate prints in, and the filament changes set at its
+        // layers: from a change up every layer is printed in the filament it
+        // names, as the reference overrides the extruder of every region of a
+        // layer (ToolOrdering.cpp `collect_extruders`, `extruder_override`).
+        let object_filaments: Vec<usize> = {
+            let mut own: Vec<usize> = layers
+                .iter()
+                .flat_map(|layer| {
+                    layer
+                        .by_filament
+                        .iter()
+                        .map(|(key, _)| regions.filament(*key))
+                })
+                .collect();
+            if own.is_empty() {
+                own = body_keys
+                    .iter()
+                    .map(|key| regions.filament(*key))
+                    .take(1)
+                    .collect();
+            }
+            own.sort_unstable();
+            own.dedup();
+            own
+        };
+        let (switches, code_notes) =
+            crate::layer_codes::switches(custom_gcode.as_ref(), &settings, &object_filaments);
+        if let ([own], false) = (object_filaments.as_slice(), switches.is_empty()) {
+            let tops: Vec<f64> = (0..layers.len())
+                .map(|index| heights.top_of(index))
+                .collect();
+            let by_layer = crate::layer_codes::filament_by_layer(&switches, *own, &tops);
+            if by_layer.iter().any(|filament| filament != own) && !regions.any() {
+                for (layer, filament) in layers.iter_mut().zip(by_layer) {
+                    layer.by_filament = vec![(filament, layer.regions.clone())];
+                    layer.cut_by_filament = vec![(filament, layer.regions.clone())];
+                }
+            } else if by_layer.iter().any(|filament| filament != own) {
+                // Every region of the layer goes over to the filament named,
+                // each keeping its own settings.
+                let single = body_keys.first().copied().unwrap_or(*own);
+                for (layer, filament) in layers.iter_mut().zip(by_layer) {
+                    for shares in [&mut layer.by_filament, &mut layer.cut_by_filament] {
+                        if shares.is_empty() {
+                            *shares = vec![(single, layer.regions.clone())];
+                        }
+                        for (key, _) in shares.iter_mut() {
+                            *key = regions.in_filament(*key, &settings, filament);
+                        }
+                        shares.sort_by_key(|(key, _)| *key);
                     }
-                    for (key, _) in shares.iter_mut() {
-                        *key = regions.in_filament(*key, &settings, filament);
-                    }
-                    shares.sort_by_key(|(key, _)| *key);
                 }
             }
         }
-    }
 
-    // The filaments in use, and each one's share of every layer. With one
-    // filament its share is the layer itself.
-    //
-    // Each of these is a region (`crate::regions`): `keys` holds each
-    // one's key and `used` the filament it prints in, so a filament may
-    // come more than once in `used` where it prints regions with settings
-    // of their own. Without any, a region is a filament and its key the
-    // filament's number.
-    let mut keys: Vec<usize> = layers
-        .iter()
-        .flat_map(|layer| layer.by_filament.iter().map(|(key, _)| *key))
-        .collect();
-    keys.sort_unstable();
-    keys.dedup();
-    let mut shares: Vec<Vec<Vec<ExPolygon>>> = if keys.is_empty() {
-        keys = vec![body_keys.first().copied().unwrap_or(1)];
-        Vec::new()
-    } else {
-        keys.iter()
-            .map(|filament| {
-                layers
-                    .par_iter()
-                    .enumerate()
-                    .map(|(index, layer)| {
-                        let own = layer
-                            .by_filament
-                            .iter()
-                            .find(|(of, _)| of == filament)
-                            .map_or(&[][..], |(_, regions)| regions.as_slice());
-                        // The first layers are shrunk as a whole; each
-                        // share keeps what is left of it.
-                        if index < elephant_layers {
-                            edge_clip::intersection(own, &layer.regions).map_err(|e| e.to_string())
-                        } else {
-                            Ok(own.to_vec())
-                        }
-                    })
-                    .collect::<Result<Vec<_>, String>>()
+        // The filaments in use, and each one's share of every layer. With one
+        // filament its share is the layer itself.
+        //
+        // Each of these is a region (`crate::regions`): `keys` holds each
+        // one's key and `used` the filament it prints in, so a filament may
+        // come more than once in `used` where it prints regions with settings
+        // of their own. Without any, a region is a filament and its key the
+        // filament's number.
+        let mut keys: Vec<usize> = layers
+            .iter()
+            .flat_map(|layer| layer.by_filament.iter().map(|(key, _)| *key))
+            .collect();
+        keys.sort_unstable();
+        keys.dedup();
+        let mut shares: Vec<Vec<Vec<ExPolygon>>> = if keys.is_empty() {
+            keys = vec![body_keys.first().copied().unwrap_or(1)];
+            Vec::new()
+        } else {
+            keys.iter()
+                .map(|filament| {
+                    layers
+                        .par_iter()
+                        .enumerate()
+                        .map(|(index, layer)| {
+                            let own = layer
+                                .by_filament
+                                .iter()
+                                .find(|(of, _)| of == filament)
+                                .map_or(&[][..], |(_, regions)| regions.as_slice());
+                            // The first layers are shrunk as a whole; each
+                            // share keeps what is left of it.
+                            if index < elephant_layers {
+                                edge_clip::intersection(own, &layer.regions)
+                                    .map_err(|e| e.to_string())
+                            } else {
+                                Ok(own.to_vec())
+                            }
+                        })
+                        .collect::<Result<Vec<_>, String>>()
+                })
+                .collect::<Result<_, String>>()?
+        };
+        let used: Vec<usize> = keys.iter().map(|key| regions.filament(*key)).collect();
+        // The settings of the stages worked out region by region: the
+        // plate's for a filament's own region.
+        let walls_override = |mut own: crate::regions::StageSettings| {
+            if let Some(count) = wall_loops {
+                own.walls.wall_loops = count;
+            }
+            own
+        };
+        let plate_stages = crate::regions::StageSettings {
+            walls: walls.clone(),
+            infill: InfillSettings::from_settings(&settings)?,
+            ironing: edge_infill::IroningSettings::from_settings(&settings)?,
+        };
+        let stages: Vec<crate::regions::StageSettings> = keys
+            .iter()
+            .zip(&used)
+            .map(|(key, filament)| match regions.own(*key) {
+                Some(region) => crate::regions::StageSettings::read(&region.settings, *filament)
+                    .map(walls_override),
+                None => Ok(plate_stages.clone()),
             })
-            .collect::<Result<_, String>>()?
+            .collect::<Result<_, _>>()?;
+        // Round outlines and holes are resized by what the filament prints
+        // them off by, and round holes that run up through the part are made
+        // polygons of few sides (`enable_circle_compensation`,
+        // `hole_to_polyhole`): after the compensations above and in that
+        // order, as in the reference. `crate::holes` has the rest.
+        let circle_marks = crate::holes::apply(&holes, &mut layers, &mut shares, &used)?;
+        let share = |filament: usize, layer: usize| -> &[ExPolygon] {
+            match shares.get(filament) {
+                Some(own) => &own[layer],
+                None => &layers[layer].regions,
+            }
+        };
+
+        // The part's outlines as modelled: what supports, brim and skirt stand
+        // off, and what neighbouring layers are compared by, so a first layer
+        // shrunk against elephant foot does not count as an overhang above it.
+        let outlines: Vec<&[ExPolygon]> = (0..layers.len())
+            .map(|index| {
+                modelled
+                    .get(index)
+                    .map_or(layers[index].regions.as_slice(), Vec::as_slice)
+            })
+            .collect();
+
+        step(watch, Stage::Walls)?;
+        let started = Instant::now();
+        // With each layer's walls, what of it is left to be bridged without
+        // any: the roof of a hole that narrows from the layer below
+        // (`counterbore_hole_bridging`), which `edge_perimeter`'s
+        // `counterbore` has the rest of. Every filament's layers side by
+        // side: a plate of few layers and many filaments has too few layers
+        // alone to keep every thread busy.
+        //
+        // Regions whose walls are alike have them laid round all of them at
+        // once (`crate::regions::wall_groups`): the first of them in each
+        // group lays them, by the settings of the one with the densest
+        // sparse fill on the layer, and each keeps what of the area inside
+        // them is its own.
+        let groups = crate::regions::wall_groups(&keys, &used, &regions, &settings);
+        let members = |leader: usize| -> Vec<usize> {
+            (0..used.len())
+                .filter(|slot| groups[*slot] == leader)
+                .collect()
+        };
+        let count = layers.len();
+        let walled: Vec<(Perimeters, Vec<ExPolygon>)> = (0..used.len() * count)
+            .into_par_iter()
+            .map(|at| {
+                let (filament, index) = (at / count, at % count);
+                if groups[filament] != filament {
+                    return Ok((Perimeters::default(), Vec::new()));
+                }
+                let group = members(filament);
+                let present: Vec<usize> = (group.iter().copied())
+                    .filter(|member| !share(*member, index).is_empty())
+                    .collect();
+                let united;
+                let (lays, regions) = match present.as_slice() {
+                    [] => (filament, share(filament, index)),
+                    [one] => (*one, share(*one, index)),
+                    several => {
+                        let all: Vec<ExPolygon> = (several.iter())
+                            .flat_map(|member| share(*member, index).iter().cloned())
+                            .collect();
+                        united = edge_clip::union_ex(&all).map_err(|e| e.to_string())?;
+                        // Layer.cpp `make_perimeters`: "Use the region with
+                        // highest infill rate".
+                        let densest = several.iter().copied().fold(several[0], |best, member| {
+                            if stages[member].infill.sparse_infill_density_percent
+                                > stages[best].infill.sparse_infill_density_percent
+                            {
+                                member
+                            } else {
+                                best
+                            }
+                        });
+                        (densest, united.as_slice())
+                    }
+                };
+                let height = heights.height_of(index);
+                let walls = &stages[lays].walls;
+                let mut params = walls
+                    .params_at(height, index, layers.len())
+                    .map_err(|e| e.to_string())?;
+                if let Some(fuzzy) = &mut params.fuzzy {
+                    // The middle of the layer, where it was sliced;
+                    // with Z contouring, where that was instead.
+                    fuzzy.slice_z = match zaa.zaa {
+                        Some(_) => planes[index] - f64::from(min[2]),
+                        None => heights.top_of(index) - height / 2.0,
+                    };
+                }
+                // A top surface is told from the part as a whole, on
+                // the layer above and the one below.
+                let own_above;
+                let upper = if interfaces && index + 1 < layers.len() {
+                    // What of the same share lies on the layer above.
+                    let above: Vec<ExPolygon> = (group.iter())
+                        .flat_map(|member| share(*member, index + 1).iter().cloned())
+                        .collect();
+                    own_above = edge_clip::union_ex(&above).map_err(|e| e.to_string())?;
+                    own_above.as_slice()
+                } else {
+                    outlines.get(index + 1).copied().unwrap_or(&[])
+                };
+                let around = Some(edge_perimeter::Around {
+                    upper,
+                    lower: index.checked_sub(1).map(|below| outlines[below]),
+                });
+                let bores = match (&walls.counterbore, index.checked_sub(1)) {
+                    (Some(bore), Some(below)) => Some(
+                        edge_perimeter::split_counterbores(regions, outlines[below], &params, bore)
+                            .map_err(|e| e.to_string())?,
+                    ),
+                    _ => None,
+                };
+                let (walled, bridged) = match bores {
+                    Some(split) => (Cow::Owned(split.walled), split.bridged),
+                    None => (Cow::Borrowed(regions), Vec::new()),
+                };
+                let mut made = edge_perimeter::classic_between(&walled, &params, around)
+                    .map_err(|e| e.to_string())?;
+                // The walls round a compensated circle are told apart,
+                // by the regions as they were cut.
+                for member in &group {
+                    circle_marks
+                        .flag(*member, index, share(*member, index), &params, &mut made)
+                        .map_err(|e| e.to_string())?;
+                }
+                Ok((made, bridged))
+            })
+            .collect::<Result<_, String>>()?;
+        let (mut walls_by, mut bored_by): (Vec<Vec<Perimeters>>, Vec<Vec<Vec<ExPolygon>>>) = (
+            Vec::with_capacity(used.len()),
+            Vec::with_capacity(used.len()),
+        );
+        let mut walled = walled.into_iter();
+        for _ in 0..used.len() {
+            let (walls, bored): (Vec<Perimeters>, Vec<Vec<ExPolygon>>) =
+                walled.by_ref().take(count).unzip();
+            walls_by.push(walls);
+            bored_by.push(bored);
+        }
+        // Each region of a group keeps what of the area inside the walls is
+        // its own (Layer.cpp `split_fill_surfaces_by_region`).
+        for leader in (0..used.len()).filter(|slot| groups[*slot] == *slot) {
+            let group = members(leader);
+            if group.len() < 2 {
+                continue;
+            }
+            let split: Vec<Vec<(Vec<ExPolygon>, Vec<ExPolygon>)>> = (0..count)
+                .into_par_iter()
+                .map(|index| {
+                    let laid = &walls_by[leader][index];
+                    (group.iter())
+                        .map(|member| {
+                            let own = share(*member, index);
+                            Ok((
+                                edge_clip::intersection(&laid.infill, own)?,
+                                edge_clip::intersection(&laid.infill_no_overlap, own)?,
+                            ))
+                        })
+                        .collect::<Result<Vec<_>, edge_clip::ClipError>>()
+                })
+                .collect::<Result<_, _>>()?;
+            for (index, parts) in split.into_iter().enumerate() {
+                for (member, (infill, no_overlap)) in group.iter().zip(parts) {
+                    let own = &mut walls_by[*member][index];
+                    own.infill = infill;
+                    own.infill_no_overlap = no_overlap;
+                }
+            }
+        }
+        let perimeter_time = started.elapsed();
+
+        step(watch, Stage::Supports)?;
+        let started = Instant::now();
+        let support = SupportSettings::from_settings(&settings)?;
+        // Support enforcers and blockers, and supports painted on.
+        let annotations = if support.enabled
+            && own.iter().any(|object| {
+                !object.support_paint.is_empty()
+                    || (object.volumes.iter()).any(|volume| {
+                        matches!(
+                            volume.kind,
+                            edge_3mf::PartKind::SupportEnforcer
+                                | edge_3mf::PartKind::SupportBlocker
+                        )
+                    })
+            }) {
+            crate::regions::support_annotations(&own, &bodies, &planes, scaled(closing_radius))?
+        } else {
+            edge_support::Annotations::default()
+        };
+        let mut supports = edge_support::generate_with(
+            &outlines,
+            middle,
+            first_layer_height,
+            layer_height,
+            &support,
+            &annotations,
+        )?;
+        heights.fit(&mut supports)?;
+        let support_time = started.elapsed();
+
+        step(watch, Stage::Fill)?;
+        let started = Instant::now();
+        let infill = plate_stages.infill.clone();
+        let mut classify_time = Duration::ZERO;
+        let mut surfaces_by = Vec::with_capacity(used.len());
+        let mut fills_by: Vec<Vec<Vec<ExtrusionPath>>> = Vec::with_capacity(used.len());
+        let classifying = Instant::now();
+        // Each layer's area inside the walls, over every filament. Where
+        // filaments meet inside a part, the walls between them are not the
+        // part's shell.
+        let inside_by: Vec<Vec<&[ExPolygon]>> = walls_by
+            .iter()
+            .map(|perimeters| {
+                perimeters
+                    .iter()
+                    .map(|layer| layer.infill.as_slice())
+                    .collect()
+            })
+            .collect();
+        let printed: Vec<&[ExPolygon]> = layers
+            .iter()
+            .map(|layer| layer.regions.as_slice())
+            .collect();
+        let around = if used.len() > 1 {
+            infill.walls_around(layer_height)?
+        } else {
+            None
+        };
+        // With regions of their own settings, as deep as the deepest walls of
+        // those on the layer, and spaced as the closest.
+        let inside_all = if interfaces {
+            // Each share a shell of its own: no one set of walls round it all.
+            edge_infill::inside_walls(&inside_by, &printed, None)?
+        } else if regions.any() && used.len() > 1 {
+            let own_around: Vec<Option<edge_infill::WallsAround>> = (stages.iter())
+                .map(|own| own.infill.walls_around(layer_height))
+                .collect::<Result<_, _>>()?;
+            let deepest = |index: usize| {
+                (0..used.len())
+                    .filter(|slot| !share(*slot, index).is_empty())
+                    .filter_map(|slot| own_around[slot])
+                    .reduce(|a, b| edge_infill::WallsAround {
+                        depth: a.depth.max(b.depth),
+                        spacing: a.spacing.min(b.spacing),
+                    })
+            };
+            edge_infill::inside_walls_by_layer(&inside_by, &printed, &deepest)?
+        } else {
+            edge_infill::inside_walls(&inside_by, &printed, around)?
+        };
+        let mut anchored_by = Vec::with_capacity(used.len());
+        let mut shelter: Vec<Vec<ExPolygon>> = vec![Vec::new(); layers.len()];
+        // A shell is as thick as `top_shell_thickness` and
+        // `bottom_shell_thickness` ask, measured in the layers as they lie.
+        let thick = heights.all();
+        let shells_of: Vec<edge_infill::Shells> = (stages.iter())
+            .map(|own| {
+                own.infill
+                    .shells(layer_height)
+                    .map(|shells| edge_infill::Shells {
+                        interface: interfaces,
+                        ..shells
+                    })
+            })
+            .collect::<Result<_, _>>()?;
+        let anchoring_of: Vec<edge_infill::Anchoring> = (stages.iter())
+            .map(|own| own.infill.anchoring(layer_height))
+            .collect::<Result<_, _>>()?;
+        // Filament by filament side by side, each over its layers.
+        type Classified = (Vec<Vec<ExPolygon>>, Vec<Vec<Surface>>);
+        let classified: Vec<Classified> = inside_by
+            .par_iter()
+            .enumerate()
+            .map(|(filament, inside_walls)| -> Result<Classified, String> {
+                let (shells, anchoring) = (&shells_of[filament], &anchoring_of[filament]);
+                let slices: Vec<&[ExPolygon]> = (0..layers.len())
+                    .map(|index| share(filament, index))
+                    .collect();
+                let sheltered =
+                    edge_infill::internal(&slices, &outlines, shells).map_err(|e| e.to_string())?;
+                // Whatever the filament, a surface is a top or a bottom by
+                // what the whole part has above and below it.
+                let surfaces = edge_infill::classify(
+                    &slices,
+                    &outlines,
+                    inside_walls,
+                    &inside_all,
+                    &thick,
+                    shells,
+                )
+                .map_err(|e| e.to_string())?;
+                // Bridges, bottoms and tops reach into the fill beside them,
+                // and each bridge is turned to run from support to support.
+                let mut anchored =
+                    edge_infill::anchor(&surfaces, anchoring).map_err(|e| e.to_string())?;
+                // What the walls left to be bridged over a hole that narrows
+                // is a bridge as it stands, walls between it and the rest.
+                if let Some(bore) = &stages[filament].walls.counterbore {
+                    for (index, bridged) in bored_by[filament].iter().enumerate().skip(1) {
+                        if !bridged.is_empty() {
+                            edge_infill::bridge_counterbores(
+                                &mut anchored[index],
+                                bridged,
+                                outlines[index - 1],
+                                shells.opening,
+                                bore.fixed_angle,
+                                bore.added_angle,
+                            )
+                            .map_err(|e| e.to_string())?;
+                        }
+                    }
+                }
+                Ok((sheltered, anchored))
+            })
+            .collect::<Result<_, String>>()?;
+        for (sheltered, anchored) in classified {
+            // Each filament's pieces are kept apart, as the reference keeps
+            // its regions': a move from one into another is not sheltered.
+            for (all, own) in shelter.iter_mut().zip(sheltered) {
+                all.extend(own);
+            }
+            anchored_by.push(anchored);
+        }
+        // What each layer gives the next to rest on, whatever the filament.
+        let beneath: Vec<edge_infill::Beneath> = (0..layers.len())
+            .into_par_iter()
+            .map(|index| {
+                edge_infill::Beneath::gather(anchored_by.iter().zip(&walls_by).map(
+                    |(surfaces, perimeters)| {
+                        (
+                            surfaces[index].as_slice(),
+                            perimeters[index].infill.as_slice(),
+                        )
+                    },
+                ))
+            })
+            .collect();
+        classify_time += classifying.elapsed();
+        let classifying = Instant::now();
+        // What laying a layer's fill needs. A sparse pattern is laid
+        // through the middle of the object it fills, as in the reference.
+        let params_of =
+            |filament: usize, index: usize| -> Result<edge_infill::FillParams, Failure> {
+                let mut params = stages[filament]
+                    .infill
+                    .params(heights.height_of(index), index == 0)?;
+                params.origin = middle;
+                params.z = heights.top_of(index);
+                Ok(params)
+            };
+        let frame = |surface: &edge_infill::Surface| {
+            frame_of(&middles, surface.area.contour.points.first().copied()).unwrap_or(
+                edge_infill::Frame {
+                    origin: middle,
+                    bounds: None,
+                },
+            )
+        };
+        // Solid over sparse fill is laid as a bridge across it, run out to
+        // the sparse lines beneath that carry it: those lines are laid for
+        // this as they will be laid, from each layer's sparse surfaces as
+        // they stand. Which is worth bridging is
+        // `dont_filter_internal_bridges`' to say; and the sparse fill under
+        // a bridge's edge, where that edge runs along the walls, is made
+        // solid to carry it.
+        let tops: Vec<f64> = (0..layers.len())
+            .map(|index| heights.top_of(index))
+            .collect();
+        let sparse_lines = |index: usize| -> Result<Vec<Vec<Point2>>, Failure> {
+            let mut lines = Vec::new();
+            for (filament, surfaces) in anchored_by.iter().enumerate() {
+                let sparse: Vec<edge_infill::Surface> = surfaces[index]
+                    .iter()
+                    .filter(|s| s.kind == edge_infill::SurfaceKind::Sparse)
+                    .cloned()
+                    .collect();
+                if sparse.is_empty() {
+                    continue;
+                }
+                let params = params_of(filament, index)?;
+                lines.extend(
+                    edge_infill::fill_within(&sparse, index, &params, &frame, &[])?
+                        .into_iter()
+                        .map(|path| path.points),
+                );
+            }
+            Ok(lines)
+        };
+        let bridged_by = edge_infill::bridge_over_infill_by(
+            &anchored_by,
+            &beneath,
+            &tops,
+            &infill.over_infill(layer_height)?,
+            &sparse_lines,
+        )?;
+        // A second layer of bridge over those, where the profile asks
+        // (`enable_extra_bridge_layer`); over a bridge over air it is made
+        // when surfaces are told apart.
+        let bridged_by = if infill.extra_bridge_layer.internal() {
+            edge_infill::second_internal_bridges(&bridged_by, &infill.params(layer_height, false)?)?
+        } else {
+            bridged_by
+        };
+        classify_time += classifying.elapsed();
+        // Every filament's layers side by side, as the walls are.
+        //
+        // Regions in one filament whose fill is laid alike on a layer are
+        // filled as one, as the reference fills together the surfaces of a
+        // layer that share their fill's parameters (Fill.cpp `group_fills`):
+        // the first of them lays the lines over the surfaces of all, each
+        // kind of surface united across them.
+        let count = layers.len();
+        let filled: Vec<Vec<ExtrusionPath>> = (0..bridged_by.len() * count)
+            .into_par_iter()
+            .map(|at| {
+                let (filament, index) = (at / count, at % count);
+                let params = params_of(filament, index).map_err(|e| e.to_string())?;
+                let mut alike = vec![filament];
+                if regions.any() {
+                    let settings_of = |slot: usize| {
+                        regions
+                            .own(keys[slot])
+                            .map_or(&settings, |region| &*region.settings)
+                    };
+                    let same = |other: usize| -> Result<bool, String> {
+                        Ok(used[other] == used[filament]
+                            && params_of(other, index).map_err(|e| e.to_string())? == params
+                            && crate::regions::written_alike(
+                                settings_of(other),
+                                settings_of(filament),
+                            ))
+                    };
+                    for (other, surfaces) in bridged_by.iter().enumerate() {
+                        if other < filament && same(other)? && !surfaces[index].is_empty() {
+                            // An earlier region lays this one's lines.
+                            return Ok(Vec::new());
+                        }
+                        if other > filament && same(other)? {
+                            alike.push(other);
+                        }
+                    }
+                }
+                if alike.len() == 1 {
+                    return edge_infill::fill_within(
+                        &bridged_by[filament][index],
+                        index,
+                        &params,
+                        &frame,
+                        // What is inside this filament's walls on the layer,
+                        // for the fill's own gap fill.
+                        &walls_by[filament][index].infill_no_overlap,
+                    )
+                    .map_err(|e| e.to_string());
+                }
+                let (merged, no_overlap) = crate::regions::merge_surfaces(
+                    alike.iter().map(|slot| bridged_by[*slot][index].as_slice()),
+                    alike
+                        .iter()
+                        .map(|slot| walls_by[*slot][index].infill_no_overlap.as_slice()),
+                )
+                .map_err(|e| e.to_string())?;
+                edge_infill::fill_within(&merged, index, &params, &frame, &no_overlap)
+                    .map_err(|e| e.to_string())
+            })
+            .collect::<Result<_, String>>()?;
+        let mut filled = filled.into_iter();
+        for (surfaces, perimeters) in bridged_by.into_iter().zip(&walls_by) {
+            let mut fills: Vec<Vec<ExtrusionPath>> = filled.by_ref().take(count).collect();
+            // The lines that fill gaps between walls go with the fill, and
+            // before it: the reference lays them with the walls.
+            for (layer, walls) in fills.iter_mut().zip(perimeters) {
+                layer.splice(0..0, walls.gap_fill.iter().cloned());
+                // So do walls over fill that hangs over air; the writer
+                // takes those ahead of the loops.
+                layer.splice(0..0, walls.over_air.iter().cloned());
+            }
+            surfaces_by.push(surfaces);
+            fills_by.push(fills);
+        }
+        // Ironing: the surfaces `ironing_type` names are gone over again
+        // once everything else in their island is down (Fill.cpp
+        // `Layer::make_ironing`, which the reference runs after all the fill
+        // is made). Each filament irons its own share of a layer, as the
+        // reference irons a region with that region's solid fill filament,
+        // "to not contaminate the print with another material leaking from
+        // the nozzle".
+        // A region irons by its own settings.
+        let mut ironing_notes: Vec<String> = Vec::new();
+        for own in stages.iter().filter(|own| own.ironing.enabled()) {
+            for note in &own.ironing.unsupported {
+                if !ironing_notes.contains(note) {
+                    ironing_notes.push(note.clone());
+                }
+            }
+        }
+        if stages.iter().any(|own| own.ironing.enabled()) {
+            // The last layer of each object: the last whose middle, where it
+            // is sliced, is still inside the object. A bare model is one
+            // object, and ends with the print.
+            let lasts: Vec<(Point2, Point2, usize)> = objects
+                .iter()
+                .filter_map(Mesh::bounds)
+                .map(|(lo, hi)| {
+                    (
+                        Point2::from_mm(lo[0].into(), lo[1].into()),
+                        Point2::from_mm(hi[0].into(), hi[1].into()),
+                        planes
+                            .iter()
+                            .rposition(|plane| *plane <= f64::from(hi[2]))
+                            .unwrap_or(0),
+                    )
+                })
+                .collect();
+            for (filament, fills) in fills_by.iter_mut().enumerate() {
+                let ironing = &stages[filament].ironing;
+                if !ironing.enabled() {
+                    continue;
+                }
+                let own = ironing.for_filament(used[filament], layer_height);
+                let slices: Vec<&[ExPolygon]> = (0..layers.len())
+                    .map(|index| share(filament, index))
+                    .collect();
+                let faces = edge_infill::exposed(&slices, &outlines, &shells_of[filament])?;
+                let (surfaces, perimeters) = (&surfaces_by[filament], &walls_by[filament]);
+                let ironed = (0..layers.len())
+                    .into_par_iter()
+                    .map(|index| {
+                        // The object standing at a point is the one with the
+                        // smallest bounds that hold it, as for sparse fill.
+                        let ends_here = |point: Point2| {
+                            lasts
+                                .iter()
+                                .filter(|(low, high, _)| {
+                                    point.x >= low.x
+                                        && point.x <= high.x
+                                        && point.y >= low.y
+                                        && point.y <= high.y
+                                })
+                                .min_by_key(|(low, high, _)| {
+                                    i128::from(high.x - low.x) * i128::from(high.y - low.y)
+                                })
+                                .map_or(layers.len() - 1, |&(_, _, last)| last)
+                                == index
+                        };
+                        let areas = edge_infill::ironing_areas(
+                            &edge_infill::IronedLayer {
+                                slices: slices[index],
+                                faces: &faces[index],
+                                on_bed: index == 0,
+                                surfaces: &surfaces[index],
+                                infill: &perimeters[index].infill,
+                                // As modelled: the reference keeps a layer
+                                // shrunk against elephant foot its outline
+                                // from before (PrintObjectSlice.cpp,
+                                // "Store the uncompensated value there"),
+                                // and ironing is kept back from that.
+                                outline: outlines[index],
+                                ends_here: &ends_here,
+                            },
+                            &own,
+                        )
+                        .map_err(|e| e.to_string())?;
+                        edge_infill::iron(
+                            &areas,
+                            index,
+                            &own,
+                            &|area| {
+                                frame_of(&middles, area.contour.points.first().copied())
+                                    .map_or(middle, |frame| frame.origin)
+                            },
+                            // Numbered on from the layer's surfaces.
+                            surfaces[index].len() as u32 + 1,
+                        )
+                        .map_err(|e| e.to_string())
+                    })
+                    .collect::<Result<Vec<Vec<ExtrusionPath>>, String>>()?;
+                for (layer, lines) in fills.iter_mut().zip(ironed) {
+                    layer.extend(lines);
+                }
+            }
+        }
+        // Z contouring: every layer's walls, top surfaces and ironing laid
+        // at the height of the model's surface under them.
+        let contours = match &zaa.zaa {
+            Some(contouring) => crate::contour::apply(
+                contouring,
+                &bodies,
+                &planes,
+                &heights,
+                min[2].into(),
+                &mut walls_by,
+                &mut fills_by,
+            ),
+            None => Vec::new(),
+        };
+        let infill_time = started.elapsed();
+
+        Ok(ObjectStage {
+            planes,
+            heights,
+            printable,
+            layers,
+            modelled,
+            elephant_foot,
+            elephant_layers,
+            keys,
+            used,
+            shares,
+            stages,
+            plate_stages,
+            walls_by,
+            surfaces_by,
+            fills_by,
+            shelter,
+            contours,
+            contour_speed: zaa.zaa.is_some_and(|contouring| contouring.speed_scaling),
+            supports,
+            support,
+            infill,
+            object_filaments,
+            quality_notes,
+            size_notes,
+            ironing_notes,
+            paint_notes,
+            code_notes,
+            times: [
+                slice_time,
+                cut_time,
+                paint_time,
+                perimeter_time,
+                support_time,
+                classify_time,
+                infill_time,
+            ],
+            body_keys,
+            below: None,
+        })
     };
-    let used: Vec<usize> = keys.iter().map(|key| regions.filament(*key)).collect();
+    let ObjectStage {
+        planes,
+        heights,
+        printable,
+        layers,
+        modelled,
+        elephant_foot,
+        elephant_layers,
+        keys,
+        used,
+        shares,
+        stages,
+        plate_stages,
+        walls_by,
+        surfaces_by,
+        fills_by,
+        shelter,
+        contours,
+        contour_speed,
+        supports,
+        support,
+        infill,
+        object_filaments,
+        quality_notes,
+        size_notes,
+        ironing_notes,
+        paint_notes,
+        mut code_notes,
+        times:
+            [
+                slice_time,
+                cut_time,
+                paint_time,
+                perimeter_time,
+                support_time,
+                classify_time,
+                infill_time,
+            ],
+        body_keys: _,
+        below,
+    } = if layering.plain() {
+        object_stage(
+            &bodies,
+            &painted,
+            &objects,
+            None,
+            layer_height,
+            &mut regions,
+            &mut own_set,
+        )?
+    } else {
+        crate::layering::slice_groups(
+            &layering,
+            &bodies,
+            &own,
+            &painted,
+            &objects,
+            |group, bodies, painted, objects| {
+                let (layers, height) = match group {
+                    0 => (None, layer_height),
+                    at => (
+                        Some(layering.groups[at - 1].as_slice()),
+                        layering.layer_heights[at - 1],
+                    ),
+                };
+                object_stage(
+                    bodies,
+                    painted,
+                    objects,
+                    layers,
+                    height,
+                    &mut regions,
+                    &mut own_set,
+                )
+            },
+        )?
+    };
+    // The objects' outlines as modelled, layer by layer.
+    let outlines: Vec<&[ExPolygon]> = (0..layers.len())
+        .map(|index| {
+            modelled
+                .get(index)
+                .map_or(layers[index].regions.as_slice(), Vec::as_slice)
+        })
+        .collect();
     // The tools: each filament in use once, in order, and the tool each
     // region is printed with.
     let mut tools = used.clone();
@@ -870,625 +1685,6 @@ pub fn slice(job: Job, watch: &dyn Watcher) -> Result<Sliced, Failure> {
     let tool_of: Vec<usize> = (used.iter())
         .map(|filament| tools.binary_search(filament).unwrap_or(0))
         .collect();
-    // The settings of the stages worked out region by region: the
-    // plate's for a filament's own region.
-    let walls_override = |mut own: crate::regions::StageSettings| {
-        if let Some(count) = wall_loops {
-            own.walls.wall_loops = count;
-        }
-        own
-    };
-    let plate_stages = crate::regions::StageSettings {
-        walls,
-        infill: InfillSettings::from_settings(&settings)?,
-        ironing: edge_infill::IroningSettings::from_settings(&settings)?,
-    };
-    let stages: Vec<crate::regions::StageSettings> =
-        keys.iter()
-            .zip(&used)
-            .map(|(key, filament)| match regions.own(*key) {
-                Some(region) => crate::regions::StageSettings::read(&region.settings, *filament)
-                    .map(walls_override),
-                None => Ok(plate_stages.clone()),
-            })
-            .collect::<Result<_, _>>()?;
-    // Round outlines and holes are resized by what the filament prints
-    // them off by, and round holes that run up through the part are made
-    // polygons of few sides (`enable_circle_compensation`,
-    // `hole_to_polyhole`): after the compensations above and in that
-    // order, as in the reference. `crate::holes` has the rest.
-    let circle_marks = crate::holes::apply(&holes, &mut layers, &mut shares, &used)?;
-    let share = |filament: usize, layer: usize| -> &[ExPolygon] {
-        match shares.get(filament) {
-            Some(own) => &own[layer],
-            None => &layers[layer].regions,
-        }
-    };
-
-    // The part's outlines as modelled: what supports, brim and skirt stand
-    // off, and what neighbouring layers are compared by, so a first layer
-    // shrunk against elephant foot does not count as an overhang above it.
-    let outlines: Vec<&[ExPolygon]> = (0..layers.len())
-        .map(|index| {
-            modelled
-                .get(index)
-                .map_or(layers[index].regions.as_slice(), Vec::as_slice)
-        })
-        .collect();
-
-    step(watch, Stage::Walls)?;
-    let started = Instant::now();
-    // With each layer's walls, what of it is left to be bridged without
-    // any: the roof of a hole that narrows from the layer below
-    // (`counterbore_hole_bridging`), which `edge_perimeter`'s
-    // `counterbore` has the rest of. Every filament's layers side by
-    // side: a plate of few layers and many filaments has too few layers
-    // alone to keep every thread busy.
-    //
-    // Regions whose walls are alike have them laid round all of them at
-    // once (`crate::regions::wall_groups`): the first of them in each
-    // group lays them, by the settings of the one with the densest
-    // sparse fill on the layer, and each keeps what of the area inside
-    // them is its own.
-    let groups = crate::regions::wall_groups(&keys, &used, &regions, &settings);
-    let members = |leader: usize| -> Vec<usize> {
-        (0..used.len())
-            .filter(|slot| groups[*slot] == leader)
-            .collect()
-    };
-    let count = layers.len();
-    let walled: Vec<(Perimeters, Vec<ExPolygon>)> = (0..used.len() * count)
-        .into_par_iter()
-        .map(|at| {
-            let (filament, index) = (at / count, at % count);
-            if groups[filament] != filament {
-                return Ok((Perimeters::default(), Vec::new()));
-            }
-            let group = members(filament);
-            let present: Vec<usize> = (group.iter().copied())
-                .filter(|member| !share(*member, index).is_empty())
-                .collect();
-            let united;
-            let (lays, regions) = match present.as_slice() {
-                [] => (filament, share(filament, index)),
-                [one] => (*one, share(*one, index)),
-                several => {
-                    let all: Vec<ExPolygon> = (several.iter())
-                        .flat_map(|member| share(*member, index).iter().cloned())
-                        .collect();
-                    united = edge_clip::union_ex(&all).map_err(|e| e.to_string())?;
-                    // Layer.cpp `make_perimeters`: "Use the region with
-                    // highest infill rate".
-                    let densest = several.iter().copied().fold(several[0], |best, member| {
-                        if stages[member].infill.sparse_infill_density_percent
-                            > stages[best].infill.sparse_infill_density_percent
-                        {
-                            member
-                        } else {
-                            best
-                        }
-                    });
-                    (densest, united.as_slice())
-                }
-            };
-            let height = heights.height_of(index);
-            let walls = &stages[lays].walls;
-            let mut params = walls
-                .params_at(height, index, layers.len())
-                .map_err(|e| e.to_string())?;
-            if let Some(fuzzy) = &mut params.fuzzy {
-                // The middle of the layer, where it was sliced;
-                // with Z contouring, where that was instead.
-                fuzzy.slice_z = match zaa.zaa {
-                    Some(_) => planes[index] - f64::from(min[2]),
-                    None => heights.top_of(index) - height / 2.0,
-                };
-            }
-            // A top surface is told from the part as a whole, on
-            // the layer above and the one below.
-            let own_above;
-            let upper = if interfaces && index + 1 < layers.len() {
-                // What of the same share lies on the layer above.
-                let above: Vec<ExPolygon> = (group.iter())
-                    .flat_map(|member| share(*member, index + 1).iter().cloned())
-                    .collect();
-                own_above = edge_clip::union_ex(&above).map_err(|e| e.to_string())?;
-                own_above.as_slice()
-            } else {
-                outlines.get(index + 1).copied().unwrap_or(&[])
-            };
-            let around = Some(edge_perimeter::Around {
-                upper,
-                lower: index.checked_sub(1).map(|below| outlines[below]),
-            });
-            let bores = match (&walls.counterbore, index.checked_sub(1)) {
-                (Some(bore), Some(below)) => Some(
-                    edge_perimeter::split_counterbores(regions, outlines[below], &params, bore)
-                        .map_err(|e| e.to_string())?,
-                ),
-                _ => None,
-            };
-            let (walled, bridged) = match bores {
-                Some(split) => (Cow::Owned(split.walled), split.bridged),
-                None => (Cow::Borrowed(regions), Vec::new()),
-            };
-            let mut made = edge_perimeter::classic_between(&walled, &params, around)
-                .map_err(|e| e.to_string())?;
-            // The walls round a compensated circle are told apart,
-            // by the regions as they were cut.
-            for member in &group {
-                circle_marks
-                    .flag(*member, index, share(*member, index), &params, &mut made)
-                    .map_err(|e| e.to_string())?;
-            }
-            Ok((made, bridged))
-        })
-        .collect::<Result<_, String>>()?;
-    let (mut walls_by, mut bored_by): (Vec<Vec<Perimeters>>, Vec<Vec<Vec<ExPolygon>>>) = (
-        Vec::with_capacity(used.len()),
-        Vec::with_capacity(used.len()),
-    );
-    let mut walled = walled.into_iter();
-    for _ in 0..used.len() {
-        let (walls, bored): (Vec<Perimeters>, Vec<Vec<ExPolygon>>) =
-            walled.by_ref().take(count).unzip();
-        walls_by.push(walls);
-        bored_by.push(bored);
-    }
-    // Each region of a group keeps what of the area inside the walls is
-    // its own (Layer.cpp `split_fill_surfaces_by_region`).
-    for leader in (0..used.len()).filter(|slot| groups[*slot] == *slot) {
-        let group = members(leader);
-        if group.len() < 2 {
-            continue;
-        }
-        let split: Vec<Vec<(Vec<ExPolygon>, Vec<ExPolygon>)>> = (0..count)
-            .into_par_iter()
-            .map(|index| {
-                let laid = &walls_by[leader][index];
-                (group.iter())
-                    .map(|member| {
-                        let own = share(*member, index);
-                        Ok((
-                            edge_clip::intersection(&laid.infill, own)?,
-                            edge_clip::intersection(&laid.infill_no_overlap, own)?,
-                        ))
-                    })
-                    .collect::<Result<Vec<_>, edge_clip::ClipError>>()
-            })
-            .collect::<Result<_, _>>()?;
-        for (index, parts) in split.into_iter().enumerate() {
-            for (member, (infill, no_overlap)) in group.iter().zip(parts) {
-                let own = &mut walls_by[*member][index];
-                own.infill = infill;
-                own.infill_no_overlap = no_overlap;
-            }
-        }
-    }
-    let perimeter_time = started.elapsed();
-
-    step(watch, Stage::Supports)?;
-    let started = Instant::now();
-    let support = SupportSettings::from_settings(&settings)?;
-    // Support enforcers and blockers, and supports painted on.
-    let annotations = if support.enabled
-        && own.iter().any(|object| {
-            !object.support_paint.is_empty()
-                || (object.volumes.iter()).any(|volume| {
-                    matches!(
-                        volume.kind,
-                        edge_3mf::PartKind::SupportEnforcer | edge_3mf::PartKind::SupportBlocker
-                    )
-                })
-        }) {
-        crate::regions::support_annotations(&own, &bodies, &planes, scaled(closing_radius))?
-    } else {
-        edge_support::Annotations::default()
-    };
-    let mut supports = edge_support::generate_with(
-        &outlines,
-        middle,
-        first_layer_height,
-        layer_height,
-        &support,
-        &annotations,
-    )?;
-    heights.fit(&mut supports)?;
-    let support_time = started.elapsed();
-
-    step(watch, Stage::Fill)?;
-    let started = Instant::now();
-    let infill = plate_stages.infill.clone();
-    let mut classify_time = Duration::ZERO;
-    let mut surfaces_by = Vec::with_capacity(used.len());
-    let mut fills_by: Vec<Vec<Vec<ExtrusionPath>>> = Vec::with_capacity(used.len());
-    let classifying = Instant::now();
-    // Each layer's area inside the walls, over every filament. Where
-    // filaments meet inside a part, the walls between them are not the
-    // part's shell.
-    let inside_by: Vec<Vec<&[ExPolygon]>> = walls_by
-        .iter()
-        .map(|perimeters| {
-            perimeters
-                .iter()
-                .map(|layer| layer.infill.as_slice())
-                .collect()
-        })
-        .collect();
-    let printed: Vec<&[ExPolygon]> = layers
-        .iter()
-        .map(|layer| layer.regions.as_slice())
-        .collect();
-    let around = if used.len() > 1 {
-        infill.walls_around(layer_height)?
-    } else {
-        None
-    };
-    // With regions of their own settings, as deep as the deepest walls of
-    // those on the layer, and spaced as the closest.
-    let inside_all = if interfaces {
-        // Each share a shell of its own: no one set of walls round it all.
-        edge_infill::inside_walls(&inside_by, &printed, None)?
-    } else if regions.any() && used.len() > 1 {
-        let own_around: Vec<Option<edge_infill::WallsAround>> = (stages.iter())
-            .map(|own| own.infill.walls_around(layer_height))
-            .collect::<Result<_, _>>()?;
-        let deepest = |index: usize| {
-            (0..used.len())
-                .filter(|slot| !share(*slot, index).is_empty())
-                .filter_map(|slot| own_around[slot])
-                .reduce(|a, b| edge_infill::WallsAround {
-                    depth: a.depth.max(b.depth),
-                    spacing: a.spacing.min(b.spacing),
-                })
-        };
-        edge_infill::inside_walls_by_layer(&inside_by, &printed, &deepest)?
-    } else {
-        edge_infill::inside_walls(&inside_by, &printed, around)?
-    };
-    let mut anchored_by = Vec::with_capacity(used.len());
-    let mut shelter: Vec<Vec<ExPolygon>> = vec![Vec::new(); layers.len()];
-    // A shell is as thick as `top_shell_thickness` and
-    // `bottom_shell_thickness` ask, measured in the layers as they lie.
-    let thick = heights.all();
-    let shells_of: Vec<edge_infill::Shells> = (stages.iter())
-        .map(|own| {
-            own.infill
-                .shells(layer_height)
-                .map(|shells| edge_infill::Shells {
-                    interface: interfaces,
-                    ..shells
-                })
-        })
-        .collect::<Result<_, _>>()?;
-    let anchoring_of: Vec<edge_infill::Anchoring> = (stages.iter())
-        .map(|own| own.infill.anchoring(layer_height))
-        .collect::<Result<_, _>>()?;
-    // Filament by filament side by side, each over its layers.
-    type Classified = (Vec<Vec<ExPolygon>>, Vec<Vec<Surface>>);
-    let classified: Vec<Classified> = inside_by
-        .par_iter()
-        .enumerate()
-        .map(|(filament, inside_walls)| -> Result<Classified, String> {
-            let (shells, anchoring) = (&shells_of[filament], &anchoring_of[filament]);
-            let slices: Vec<&[ExPolygon]> = (0..layers.len())
-                .map(|index| share(filament, index))
-                .collect();
-            let sheltered =
-                edge_infill::internal(&slices, &outlines, shells).map_err(|e| e.to_string())?;
-            // Whatever the filament, a surface is a top or a bottom by
-            // what the whole part has above and below it.
-            let surfaces = edge_infill::classify(
-                &slices,
-                &outlines,
-                inside_walls,
-                &inside_all,
-                &thick,
-                shells,
-            )
-            .map_err(|e| e.to_string())?;
-            // Bridges, bottoms and tops reach into the fill beside them,
-            // and each bridge is turned to run from support to support.
-            let mut anchored =
-                edge_infill::anchor(&surfaces, anchoring).map_err(|e| e.to_string())?;
-            // What the walls left to be bridged over a hole that narrows
-            // is a bridge as it stands, walls between it and the rest.
-            if let Some(bore) = &stages[filament].walls.counterbore {
-                for (index, bridged) in bored_by[filament].iter().enumerate().skip(1) {
-                    if !bridged.is_empty() {
-                        edge_infill::bridge_counterbores(
-                            &mut anchored[index],
-                            bridged,
-                            outlines[index - 1],
-                            shells.opening,
-                            bore.fixed_angle,
-                            bore.added_angle,
-                        )
-                        .map_err(|e| e.to_string())?;
-                    }
-                }
-            }
-            Ok((sheltered, anchored))
-        })
-        .collect::<Result<_, String>>()?;
-    for (sheltered, anchored) in classified {
-        // Each filament's pieces are kept apart, as the reference keeps
-        // its regions': a move from one into another is not sheltered.
-        for (all, own) in shelter.iter_mut().zip(sheltered) {
-            all.extend(own);
-        }
-        anchored_by.push(anchored);
-    }
-    // What each layer gives the next to rest on, whatever the filament.
-    let beneath: Vec<edge_infill::Beneath> = (0..layers.len())
-        .into_par_iter()
-        .map(|index| {
-            edge_infill::Beneath::gather(anchored_by.iter().zip(&walls_by).map(
-                |(surfaces, perimeters)| {
-                    (
-                        surfaces[index].as_slice(),
-                        perimeters[index].infill.as_slice(),
-                    )
-                },
-            ))
-        })
-        .collect();
-    classify_time += classifying.elapsed();
-    let classifying = Instant::now();
-    // What laying a layer's fill needs. A sparse pattern is laid
-    // through the middle of the object it fills, as in the reference.
-    let params_of = |filament: usize, index: usize| -> Result<edge_infill::FillParams, Failure> {
-        let mut params = stages[filament]
-            .infill
-            .params(heights.height_of(index), index == 0)?;
-        params.origin = middle;
-        params.z = heights.top_of(index);
-        Ok(params)
-    };
-    let frame = |surface: &edge_infill::Surface| {
-        frame_of(&middles, surface.area.contour.points.first().copied()).unwrap_or(
-            edge_infill::Frame {
-                origin: middle,
-                bounds: None,
-            },
-        )
-    };
-    // Solid over sparse fill is laid as a bridge across it, run out to
-    // the sparse lines beneath that carry it: those lines are laid for
-    // this as they will be laid, from each layer's sparse surfaces as
-    // they stand. Which is worth bridging is
-    // `dont_filter_internal_bridges`' to say; and the sparse fill under
-    // a bridge's edge, where that edge runs along the walls, is made
-    // solid to carry it.
-    let tops: Vec<f64> = (0..layers.len())
-        .map(|index| heights.top_of(index))
-        .collect();
-    let sparse_lines = |index: usize| -> Result<Vec<Vec<Point2>>, Failure> {
-        let mut lines = Vec::new();
-        for (filament, surfaces) in anchored_by.iter().enumerate() {
-            let sparse: Vec<edge_infill::Surface> = surfaces[index]
-                .iter()
-                .filter(|s| s.kind == edge_infill::SurfaceKind::Sparse)
-                .cloned()
-                .collect();
-            if sparse.is_empty() {
-                continue;
-            }
-            let params = params_of(filament, index)?;
-            lines.extend(
-                edge_infill::fill_within(&sparse, index, &params, &frame, &[])?
-                    .into_iter()
-                    .map(|path| path.points),
-            );
-        }
-        Ok(lines)
-    };
-    let bridged_by = edge_infill::bridge_over_infill_by(
-        &anchored_by,
-        &beneath,
-        &tops,
-        &infill.over_infill(layer_height)?,
-        &sparse_lines,
-    )?;
-    // A second layer of bridge over those, where the profile asks
-    // (`enable_extra_bridge_layer`); over a bridge over air it is made
-    // when surfaces are told apart.
-    let bridged_by = if infill.extra_bridge_layer.internal() {
-        edge_infill::second_internal_bridges(&bridged_by, &infill.params(layer_height, false)?)?
-    } else {
-        bridged_by
-    };
-    classify_time += classifying.elapsed();
-    // Every filament's layers side by side, as the walls are.
-    //
-    // Regions in one filament whose fill is laid alike on a layer are
-    // filled as one, as the reference fills together the surfaces of a
-    // layer that share their fill's parameters (Fill.cpp `group_fills`):
-    // the first of them lays the lines over the surfaces of all, each
-    // kind of surface united across them.
-    let count = layers.len();
-    let filled: Vec<Vec<ExtrusionPath>> = (0..bridged_by.len() * count)
-        .into_par_iter()
-        .map(|at| {
-            let (filament, index) = (at / count, at % count);
-            let params = params_of(filament, index).map_err(|e| e.to_string())?;
-            let mut alike = vec![filament];
-            if regions.any() {
-                let settings_of = |slot: usize| {
-                    regions
-                        .own(keys[slot])
-                        .map_or(&settings, |region| &*region.settings)
-                };
-                let same = |other: usize| -> Result<bool, String> {
-                    Ok(used[other] == used[filament]
-                        && params_of(other, index).map_err(|e| e.to_string())? == params
-                        && crate::regions::written_alike(settings_of(other), settings_of(filament)))
-                };
-                for (other, surfaces) in bridged_by.iter().enumerate() {
-                    if other < filament && same(other)? && !surfaces[index].is_empty() {
-                        // An earlier region lays this one's lines.
-                        return Ok(Vec::new());
-                    }
-                    if other > filament && same(other)? {
-                        alike.push(other);
-                    }
-                }
-            }
-            if alike.len() == 1 {
-                return edge_infill::fill_within(
-                    &bridged_by[filament][index],
-                    index,
-                    &params,
-                    &frame,
-                    // What is inside this filament's walls on the layer,
-                    // for the fill's own gap fill.
-                    &walls_by[filament][index].infill_no_overlap,
-                )
-                .map_err(|e| e.to_string());
-            }
-            let (merged, no_overlap) = crate::regions::merge_surfaces(
-                alike.iter().map(|slot| bridged_by[*slot][index].as_slice()),
-                alike
-                    .iter()
-                    .map(|slot| walls_by[*slot][index].infill_no_overlap.as_slice()),
-            )
-            .map_err(|e| e.to_string())?;
-            edge_infill::fill_within(&merged, index, &params, &frame, &no_overlap)
-                .map_err(|e| e.to_string())
-        })
-        .collect::<Result<_, String>>()?;
-    let mut filled = filled.into_iter();
-    for (surfaces, perimeters) in bridged_by.into_iter().zip(&walls_by) {
-        let mut fills: Vec<Vec<ExtrusionPath>> = filled.by_ref().take(count).collect();
-        // The lines that fill gaps between walls go with the fill, and
-        // before it: the reference lays them with the walls.
-        for (layer, walls) in fills.iter_mut().zip(perimeters) {
-            layer.splice(0..0, walls.gap_fill.iter().cloned());
-            // So do walls over fill that hangs over air; the writer
-            // takes those ahead of the loops.
-            layer.splice(0..0, walls.over_air.iter().cloned());
-        }
-        surfaces_by.push(surfaces);
-        fills_by.push(fills);
-    }
-    // Ironing: the surfaces `ironing_type` names are gone over again
-    // once everything else in their island is down (Fill.cpp
-    // `Layer::make_ironing`, which the reference runs after all the fill
-    // is made). Each filament irons its own share of a layer, as the
-    // reference irons a region with that region's solid fill filament,
-    // "to not contaminate the print with another material leaking from
-    // the nozzle".
-    // A region irons by its own settings.
-    let mut ironing_notes: Vec<String> = Vec::new();
-    for own in stages.iter().filter(|own| own.ironing.enabled()) {
-        for note in &own.ironing.unsupported {
-            if !ironing_notes.contains(note) {
-                ironing_notes.push(note.clone());
-            }
-        }
-    }
-    if stages.iter().any(|own| own.ironing.enabled()) {
-        // The last layer of each object: the last whose middle, where it
-        // is sliced, is still inside the object. A bare model is one
-        // object, and ends with the print.
-        let lasts: Vec<(Point2, Point2, usize)> = objects
-            .iter()
-            .filter_map(Mesh::bounds)
-            .map(|(lo, hi)| {
-                (
-                    Point2::from_mm(lo[0].into(), lo[1].into()),
-                    Point2::from_mm(hi[0].into(), hi[1].into()),
-                    planes
-                        .iter()
-                        .rposition(|plane| *plane <= f64::from(hi[2]))
-                        .unwrap_or(0),
-                )
-            })
-            .collect();
-        for (filament, fills) in fills_by.iter_mut().enumerate() {
-            let ironing = &stages[filament].ironing;
-            if !ironing.enabled() {
-                continue;
-            }
-            let own = ironing.for_filament(used[filament], layer_height);
-            let slices: Vec<&[ExPolygon]> = (0..layers.len())
-                .map(|index| share(filament, index))
-                .collect();
-            let faces = edge_infill::exposed(&slices, &outlines, &shells_of[filament])?;
-            let (surfaces, perimeters) = (&surfaces_by[filament], &walls_by[filament]);
-            let ironed = (0..layers.len())
-                .into_par_iter()
-                .map(|index| {
-                    // The object standing at a point is the one with the
-                    // smallest bounds that hold it, as for sparse fill.
-                    let ends_here = |point: Point2| {
-                        lasts
-                            .iter()
-                            .filter(|(low, high, _)| {
-                                point.x >= low.x
-                                    && point.x <= high.x
-                                    && point.y >= low.y
-                                    && point.y <= high.y
-                            })
-                            .min_by_key(|(low, high, _)| {
-                                i128::from(high.x - low.x) * i128::from(high.y - low.y)
-                            })
-                            .map_or(layers.len() - 1, |&(_, _, last)| last)
-                            == index
-                    };
-                    let areas = edge_infill::ironing_areas(
-                        &edge_infill::IronedLayer {
-                            slices: slices[index],
-                            faces: &faces[index],
-                            on_bed: index == 0,
-                            surfaces: &surfaces[index],
-                            infill: &perimeters[index].infill,
-                            // As modelled: the reference keeps a layer
-                            // shrunk against elephant foot its outline
-                            // from before (PrintObjectSlice.cpp,
-                            // "Store the uncompensated value there"),
-                            // and ironing is kept back from that.
-                            outline: outlines[index],
-                            ends_here: &ends_here,
-                        },
-                        &own,
-                    )
-                    .map_err(|e| e.to_string())?;
-                    edge_infill::iron(
-                        &areas,
-                        index,
-                        &own,
-                        &|area| {
-                            frame_of(&middles, area.contour.points.first().copied())
-                                .map_or(middle, |frame| frame.origin)
-                        },
-                        // Numbered on from the layer's surfaces.
-                        surfaces[index].len() as u32 + 1,
-                    )
-                    .map_err(|e| e.to_string())
-                })
-                .collect::<Result<Vec<Vec<ExtrusionPath>>, String>>()?;
-            for (layer, lines) in fills.iter_mut().zip(ironed) {
-                layer.extend(lines);
-            }
-        }
-    }
-    // Z contouring: every layer's walls, top surfaces and ironing laid
-    // at the height of the model's surface under them.
-    let contours = match &zaa.zaa {
-        Some(contouring) => crate::contour::apply(
-            contouring,
-            &bodies,
-            &planes,
-            &heights,
-            min[2].into(),
-            &mut walls_by,
-            &mut fills_by,
-        ),
-        None => Vec::new(),
-    };
-    let infill_time = started.elapsed();
-
     step(watch, Stage::Around)?;
     let started = Instant::now();
     // Which filaments print on each layer, and in what order
@@ -2036,6 +2232,7 @@ pub fn slice(job: Job, watch: &dyn Watcher) -> Result<Sliced, Failure> {
         elephant_layers,
         layers,
         modelled,
+        below,
         seams,
         measured,
         used: tools,
@@ -2048,7 +2245,7 @@ pub fn slice(job: Job, watch: &dyn Watcher) -> Result<Sliced, Failure> {
         fills_by,
         shelter,
         contours,
-        contour_speed: zaa.zaa.is_some_and(|contouring| contouring.speed_scaling),
+        contour_speed,
         supports,
         around,
         skirt_loops,
@@ -2074,6 +2271,48 @@ pub fn slice(job: Job, watch: &dyn Watcher) -> Result<Sliced, Failure> {
         code_notes,
         plate_facts,
     })
+}
+
+/// What slicing a group of objects at their layers gives: everything
+/// up to the order of tools, the prime tower, skirt and brim, which are
+/// worked out for the plate as a whole (`crate::layering::slice_groups`
+/// lays the groups' layers together).
+pub(crate) struct ObjectStage {
+    pub(crate) planes: Vec<f64>,
+    pub(crate) heights: crate::layer_heights::LayerHeights,
+    pub(crate) printable: crate::printable::Printable,
+    pub(crate) layers: Vec<edge_slice::LayerRegions>,
+    pub(crate) modelled: Vec<Vec<ExPolygon>>,
+    pub(crate) elephant_foot: f64,
+    pub(crate) elephant_layers: usize,
+    pub(crate) keys: Vec<usize>,
+    pub(crate) used: Vec<usize>,
+    pub(crate) shares: Vec<Vec<Vec<ExPolygon>>>,
+    pub(crate) stages: Vec<crate::regions::StageSettings>,
+    pub(crate) plate_stages: crate::regions::StageSettings,
+    pub(crate) walls_by: Vec<Vec<Perimeters>>,
+    pub(crate) surfaces_by: Vec<Vec<Vec<Surface>>>,
+    pub(crate) fills_by: Vec<Vec<Vec<ExtrusionPath>>>,
+    pub(crate) shelter: Vec<Vec<ExPolygon>>,
+    pub(crate) contours: Vec<Vec<edge_contour::LayerProfiles>>,
+    pub(crate) contour_speed: bool,
+    pub(crate) supports: Vec<Vec<ExtrusionPath>>,
+    pub(crate) support: SupportSettings,
+    pub(crate) infill: InfillSettings,
+    pub(crate) object_filaments: Vec<usize>,
+    pub(crate) quality_notes: Vec<String>,
+    pub(crate) size_notes: Vec<String>,
+    pub(crate) ironing_notes: Vec<String>,
+    pub(crate) paint_notes: Vec<String>,
+    pub(crate) code_notes: Vec<String>,
+    /// Slicing, cutting, painting, walls, supports, telling surfaces
+    /// apart, and fill with them.
+    pub(crate) times: [Duration; 7],
+    pub(crate) body_keys: Vec<usize>,
+    /// Where groups of objects of their own heights are laid together:
+    /// what lies under each layer's objects, each on its own layer below.
+    /// None where the layer below is what lies under them.
+    pub(crate) below: Option<Vec<Vec<ExPolygon>>>,
 }
 
 /// What [`plate_facts`] works from.
@@ -2497,7 +2736,11 @@ impl Sliced {
                     islands: &own.islands,
                     paths: &self.fills_by[*filament][index],
                     shelter: &self.shelter[index],
-                    below: if index > 0 { outlines[index - 1] } else { &[] },
+                    below: match &self.below {
+                        Some(below) => &below[index],
+                        None if index > 0 => outlines[index - 1],
+                        None => &[],
+                    },
                     region: region_of[*filament],
                 }
             })
