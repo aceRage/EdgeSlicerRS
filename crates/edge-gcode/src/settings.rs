@@ -303,6 +303,12 @@ pub struct PrintSettings {
     /// reference's tower or tool change does (WipeTower2.cpp
     /// `toolchange_Unload`, GCode.cpp `set_extruder`).
     pub single_nozzle: bool,
+    /// A tool that is not rammed is taken over the prime tower before it
+    /// is changed (`tool_change_on_wipe_tower`); otherwise, on a printer
+    /// of a nozzle for each filament, it is changed where it is, except
+    /// first thing on a layer (GCode.cpp `append_tcr2`,
+    /// `should_travel_to_tower`).
+    pub change_on_tower: bool,
     /// An Elegoo printer, whose `M6211` changes filament and purges
     /// (`printer_model`).
     pub elegoo: bool,
@@ -490,6 +496,7 @@ impl Default for PrintSettings {
             preheat_time: 30.0,
             tool_change_temperature_wait: true,
             single_nozzle: true,
+            change_on_tower: false,
             elegoo: false,
             prime_tower: false,
             bambu_tower: false,
@@ -1049,6 +1056,9 @@ impl PrintSettings {
             single_nozzle: settings
                 .flag("single_extruder_multi_material")?
                 .unwrap_or(defaults.single_nozzle),
+            change_on_tower: settings
+                .flag("tool_change_on_wipe_tower")?
+                .unwrap_or(defaults.change_on_tower),
             prime_tower: settings.flag("enable_prime_tower")?.unwrap_or(false),
             bambu_tower: settings
                 .text("printer_model")

@@ -620,3 +620,109 @@ fn the_nozzle_is_below_the_layer_only_over_the_tower() {
         }
     }
 }
+
+/// Each tool change in a file: whether anything was laid on its layer
+/// before it, whether the nozzle was then over `post` (a box, grown by
+/// half a line), and whether it was lower than the layer.
+fn changes(gcode: &str, post: ([f64; 2], [f64; 2])) -> Vec<(bool, bool, bool)> {
+    let (mut at, mut z, mut top, mut relative, mut laid) =
+        ([0.0f64; 2], 0.0f64, None::<f64>, false, false);
+    let mut out = Vec::new();
+    for line in gcode.lines() {
+        let line = line.trim();
+        if let Some(value) = line.strip_prefix(";Z:") {
+            top = value.parse().ok();
+            laid = false;
+            continue;
+        }
+        let code = line.split(';').next().unwrap_or("");
+        let mut words = code.split_whitespace();
+        match words.next() {
+            Some("G90") => relative = false,
+            Some("G91") => relative = true,
+            Some(tool)
+                if tool.len() > 1 && tool.starts_with('T') && tool[1..].parse::<u32>().is_ok() =>
+            {
+                let Some(top) = top else { continue };
+                let over = (0..2)
+                    .all(|axis| at[axis] > post.0[axis] - 0.25 && at[axis] < post.1[axis] + 0.25);
+                out.push((laid, over, z < top - 1e-3));
+            }
+            Some("G0" | "G1" | "G2" | "G3") => {
+                let word = |letter: char| {
+                    code.split_whitespace()
+                        .skip(1)
+                        .find_map(|word| word.strip_prefix(letter)?.parse::<f64>().ok())
+                };
+                let axis = |letter: char, now: f64| match word(letter) {
+                    Some(v) if relative => now + v,
+                    Some(v) => v,
+                    None => now,
+                };
+                let to = [axis('X', at[0]), axis('Y', at[1])];
+                z = axis('Z', z);
+                laid |= word('E').is_some_and(|e| e > 0.0) && to != at;
+                at = to;
+            }
+            _ => {}
+        }
+    }
+    out
+}
+
+/// "Tool change on wipe tower" (`tool_change_on_wipe_tower`), as the
+/// reference has it after aceRage/EdgeSlicer#1020: off, a multi-tool
+/// printer's tool that is not rammed is changed where the nozzle is, over
+/// the post in the middle of a layer, at the layer's height or above,
+/// and only first thing on a layer over the tower; on, always over the
+/// tower. A rammed tool, one nozzle and Bambu's tower are not touched by
+/// it.
+#[test]
+fn tool_change_on_wipe_tower_says_where_an_unrammed_tool_is_changed() {
+    let dir = tempfile::tempdir().unwrap();
+    let model = halves(dir.path());
+    let post = ([125.5, 126.0], [145.5, 146.0]);
+    let set = |extra: &str, on: bool| {
+        format!(
+            r#"{{"wipe_tower_no_sparse_layers": "1", "tool_change_on_wipe_tower": "{}"{extra}}}"#,
+            u8::from(on)
+        )
+    };
+    let unrammed = r#", "filament_multitool_ramming": ["0", "0"]"#;
+    let off = slice(&model, &set(unrammed, false)).unwrap();
+    let on = slice(&model, &set(unrammed, true)).unwrap();
+    assert_ne!(off, on);
+    let (in_place, at_tower) = (changes(&off, post), changes(&on, post));
+    assert_eq!(in_place.len(), at_tower.len());
+    // Ten in the middle of a layer, two first thing on one.
+    assert_eq!(in_place.iter().filter(|change| change.0).count(), 10);
+    assert_eq!(in_place.iter().filter(|change| !change.0).count(), 2);
+    for (laid, over, low) in in_place {
+        assert_eq!(
+            over, laid,
+            "changed over the post where, and only where, the layer was begun"
+        );
+        assert!(!low, "changed at the layer's height or above");
+    }
+    for (_, over, low) in at_tower {
+        assert!(!over && !low, "changed over the tower");
+    }
+    // Where the tool is rammed, on one nozzle and on Bambu's tower the
+    // setting changes nothing but its own line in the file.
+    let without = |gcode: &str| {
+        gcode
+            .lines()
+            .filter(|line| !line.starts_with("; tool_change_on_wipe_tower"))
+            .collect::<Vec<_>>()
+            .join("\n")
+    };
+    for extra in [
+        "",
+        r#", "single_extruder_multi_material": "1", "enable_filament_ramming": "0""#,
+        r#", "filament_multitool_ramming": ["0", "0"], "wipe_tower_type": "type1""#,
+    ] {
+        let off = slice(&model, &set(extra, false)).unwrap();
+        let on = slice(&model, &set(extra, true)).unwrap();
+        assert_eq!(without(&off), without(&on), "{extra}");
+    }
+}
