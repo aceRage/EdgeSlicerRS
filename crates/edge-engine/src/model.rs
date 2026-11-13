@@ -53,6 +53,9 @@ mod arrange;
 
 #[path = "cut.rs"]
 mod cut;
+
+#[path = "mesh_boolean.rs"]
+mod mesh_boolean;
 pub use arrange::{ArrangeOptions, ArrangeScope, Arranged};
 pub use cut::{
     CONNECTOR_HOLE_OVERLAP, CUT_THICKNESS_MAX, Connector, ConnectorKind, ConnectorShape,
@@ -61,6 +64,7 @@ pub use cut::{
 };
 pub use filaments::{FlushBasis, MAX_FILAMENTS, NEXT_COLOURS};
 pub use item_settings::SettingChange;
+pub use mesh_boolean::BooleanFailure;
 pub use plates::{FIRST_LATER_LAYER, LAST_LAYER, LONGEST_PLATE_NAME, LayerSequence, PlateSettings};
 
 use crate::{
@@ -1553,7 +1557,15 @@ impl Model {
             .filter(|(index, _)| !found.contains(index))
             .map(|(_, held)| held)
             .unzip();
-        if let [last] = list.as_mut_slice() {
+        self.last_part_to_object(at, &mut list);
+        self.reshape(bed, at, list, ids);
+        Ok(())
+    }
+
+    /// When one part is all an object is left with, its own filament and
+    /// settings become the object's.
+    fn last_part_to_object(&mut self, at: usize, list: &mut [Part]) {
+        if let [last] = list {
             if let Some(own) = last.own_filament.take() {
                 self.objects[at].filament = Some(own);
             }
@@ -1567,8 +1579,6 @@ impl Model {
                 last.kept = Some(Arc::new(part.without_settings()));
             }
         }
-        self.reshape(bed, at, list, ids);
-        Ok(())
     }
 
     /// Sets where parts stand within their object: each part's transform,
