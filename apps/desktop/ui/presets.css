@@ -48,7 +48,8 @@ tr.pc-group th { text-align: left; font-size: var(--size-caps); letter-spacing: 
 /* "Compare presets" with "Transfer values from left to right": a narrow
    first column of ticks; the line under the table says why Transfer is
    off, or what it does. */
-table.pc-table.ticks th:first-child { width: 2.4em; }
+table.pc-table.ticks th:first-child { width: 2.6em; }
+table.pc-table.ticks th:first-child, table.pc-table td.pc-tick { padding-left: 4px; padding-right: 4px; text-overflow: clip; }
 table.pc-table.ticks th:nth-child(2) { width: 38%; }
 table.pc-table td.pc-tick { text-align: center; }
 #cmp-bottom { white-space: pre-line; margin: 6px 0 0; min-height: 1.2em; }
