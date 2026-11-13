@@ -1152,6 +1152,18 @@ pub fn slice(job: Job, watch: &dyn Watcher) -> Result<Sliced, Failure> {
             &annotations,
         )?;
         heights.fit(&mut supports)?;
+        // Supports are laid out for layers of one height: on an object of
+        // layers of varying heights the gaps above and below them are
+        // counted in layers of its layer height.
+        let varying =
+            (1..layers.len()).any(|index| (heights.height_of(index) - layer_height).abs() > 1e-9);
+        if own_layers.is_some() && support.enabled && varying {
+            quality_notes.push(
+                "enable_support: on an object of varying layer heights, the gaps above and below \
+                 supports are counted in layers of its layer_height"
+                    .to_owned(),
+            );
+        }
         let support_time = started.elapsed();
 
         step(watch, Stage::Fill)?;

@@ -261,3 +261,16 @@ dialog.plate-settings .row.end .grow { flex: 1; align-self: center; }
 .boolean-panel .joined > button { flex: 1 1 0; }
 /* Each slot's mark is round, so it is not taken for a tick box. */
 .boolean-panel .cut-marker { border-radius: 50%; }
+
+/* ---- "Variable layer height" (vlh.js): the bar at the stage's right
+   edge and its panel ---- */
+.vlh-bar { position: absolute; right: var(--stage-inset); z-index: var(--z-overlay); padding: 0; cursor: ns-resize; touch-action: none; }
+.vlh-panel { left: auto; right: calc(var(--stage-inset) + 70px + var(--space-2)); margin-inline: 0; width: 380px; max-width: calc(100% - 70px - 2 * var(--stage-inset)); }
+.vlh-row { display: flex; align-items: center; gap: var(--space-2); }
+.vlh-row input[type="range"] { flex: 1 1 auto; width: auto; min-width: 40px; }
+.vlh-panel .vlh-row input.vlh-number { flex: none; width: 60px; font-size: var(--size-small); }
+.vlh-panel hr { width: 100%; margin: 0; border: 0; border-top: 1px solid var(--line-1); }
+.vlh-hints { display: grid; grid-template-columns: auto auto; gap: 2px var(--space-2); margin: 0; color: var(--text-2); font-size: var(--size-small); }
+.vlh-hints dd { margin: 0; }
+.vlh-row > .vlh-button, .vlh-row > .edit-label { flex: none; white-space: nowrap; }
+.vlh-row > .vlh-button { min-width: 80px; justify-content: center; border: 1px solid var(--line-2); border-radius: var(--radius-m); }

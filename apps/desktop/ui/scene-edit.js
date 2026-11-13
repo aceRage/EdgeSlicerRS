@@ -65,6 +65,8 @@
     arrange: 'M1.5,1.5h5v5h-5ZM9.5,1.5h5v5h-5ZM1.5,9.5h5v5h-5ZM9.5,9.5h5v5h-5Z',
     splitObjects: 'M1.5,4.5h5v8h-5ZM9.5,2.5h5v5h-5ZM9.5,10.5h5v3h-5ZM8,1v14',
     splitParts: 'M1.5,3.5h13v9h-13ZM6.5,3.5v9M10.5,3.5v9',
+    // Layers closer together towards the top (vlh.js).
+    layers: 'M2,13.5h12M2,10h12M2,7.5h12M2,5.5h12M2,4h12M2,2.8h12',
     undo: 'M5,3.5l-3,3l3,3M2,6.5h7.5a4,4,0,0,1,0,8h-3.5',
     redo: 'M11,3.5l3,3l-3,3M14,6.5h-7.5a4,4,0,0,0,0,8h3.5',
   };
@@ -154,6 +156,7 @@
       // The painting tools, with what they need of this.
       if (GL.cutter) GL.cutter.init(host, this);
       if (GL.mesher) GL.mesher.init(host, this);
+      if (GL.vlh) GL.vlh.init(host, this);
       if (GL.painter) {
         GL.painter.init({
           ...host,
@@ -186,6 +189,7 @@
         arrange: button('arrange', t('Arrange all objects'), `${t('Arrange all objects')} [A]\n${t('Arrange objects on selected plates')} [Shift+A]`, ICONS.arrange, () => this.toggleArrangeMenu()),
         splitObjects: button('split-objects', t('Split to objects'), t('Split to objects'), ICONS.splitObjects, () => this.split(true)),
         splitParts: button('split-parts', t('Split to parts'), t('Split to parts'), ICONS.splitParts, () => this.split(false)),
+        layers: button('layers-editing', t('Variable layer height'), t('Variable layer height'), ICONS.layers, () => GL.vlh && GL.vlh.toggle()),
         undo: button('undo', t('Undo'), `${t('Undo')} [Ctrl+Z]`, ICONS.undo, () => this.step('undo')),
         redo: button('redo', t('Redo'), `${t('Redo')} [Ctrl+Y]`, ICONS.redo, () => this.step('redo')),
       };
@@ -195,7 +199,7 @@
       }
       const b = this.buttons;
       this.bar = el('div', { className: 'toolbar', id: 'edit-bar' },
-        b.add, b.addPlate, gap(), b.arrange, gap(), b.splitObjects, b.splitParts, gap(), b.move, b.rotate, b.scale, b.flatten, b.cut, b.boolean, gap(),
+        b.add, b.addPlate, gap(), b.arrange, gap(), b.splitObjects, b.splitParts, b.layers, gap(), b.move, b.rotate, b.scale, b.flatten, b.cut, b.boolean, gap(),
         b.supports, b.seam, b.fuzzy_skin, b.color, gap(), b.undo, b.redo);
       this.bar.setAttribute('role', 'toolbar');
       this.bar.setAttribute('aria-label', t('Prepare'));
@@ -822,6 +826,8 @@
       const target = this.splitTarget();
       b.splitObjects.disabled = this.busy || !target || !target.split.objects;
       b.splitParts.disabled = this.busy || !((target && target.split.parts) || this.splitPart());
+      b.layers.disabled = this.busy || !(GL.vlh && GL.vlh.allowed());
+      if (GL.vlh) GL.vlh.refresh();
       b.undo.disabled = this.busy || !history.undo;
       b.redo.disabled = this.busy || !history.redo;
       // What would be undone is named by the reference's message id.
