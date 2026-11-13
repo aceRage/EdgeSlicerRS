@@ -774,8 +774,67 @@ impl Session {
             }
             return Err(message);
         }
+        // A printer of one's own that stands alone ("Create printer") goes
+        // with the presets made for it (Tab.cpp `delete_preset` l.10043,
+        // `select_preset` l.9136, l.9348). The reference counts and deletes
+        // every filament and process preset compatible with it, so the
+        // vendor's that name no printer (or whose condition fits) go from
+        // the run's lists too; here only the person's presets that belong
+        // to it: those whose `compatible_printers` name it and no other,
+        // as "Create Printer/Nozzle" makes them
+        // (`clone_presets_for_printer`) and "Create Filament" too
+        // (`clone_presets_for_filament`). See UI_PARITY.md section 8.
+        let attached = if book == Book::Printer && preset.inherits.is_none() {
+            self.attached_to(&name)
+        } else {
+            Vec::new()
+        };
+        let held: Vec<String> = attached
+            .iter()
+            .flat_map(|(kind, preset)| {
+                users
+                    .children(*kind, preset)
+                    .into_iter()
+                    .filter(|child| !attached.iter().any(|(_, other)| other == child))
+                    .map(str::to_owned)
+                    .collect::<Vec<_>>()
+            })
+            .collect();
+        if !held.is_empty() {
+            let mut message = format!(
+                "{}\n{}",
+                tr("Presets inherited by other presets cannot be deleted!"),
+                trn(
+                    "The following presets inherit this preset.",
+                    "The following preset inherits this preset.",
+                    if held.len() == 1 { 2 } else { 1 },
+                )
+            );
+            for child in &held {
+                message.push_str("\n - ");
+                message.push_str(child);
+            }
+            return Err(message);
+        }
         if args.get("confirm").and_then(Value::as_bool) != Some(true) {
             let stands_alone = preset.inherits.is_none();
+            if book == Book::Printer && stands_alone {
+                let count = |kind: Kind| attached.iter().filter(|(k, _)| *k == kind).count();
+                // Its own question, which stands for the usual one
+                // (`confirm_delete_third_party_printer`).
+                let message = fill(
+                    &tr(
+                        "%d Filament Preset and %d Process Preset is attached to this printer. Those presets would be deleted if the printer is deleted.",
+                    ),
+                    &[&count(Kind::Filament), &count(Kind::Process)],
+                );
+                return Ok(json!({
+                    "deleted": false,
+                    "title": tr("Delete"),
+                    "ask": message,
+                    "attached": attached.iter().map(|(_, name)| name).collect::<Vec<_>>(),
+                }));
+            }
             let mut message = if stands_alone && book == Book::Filament {
                 tr(
                     "Are you sure to delete the selected preset? \nIf the preset corresponds to a filament currently in use on your printer, please reset the filament information for that slot.",
@@ -794,18 +853,53 @@ impl Session {
             }
             return Ok(json!({ "deleted": false, "title": title, "ask": message }));
         }
+        // Where its projects go, known before it is gone: the system
+        // printer it is made from, else (one that stands alone) the
+        // printer a project with none is given.
+        let printer_to = (book == Book::Printer).then(|| self.system_printer(&name));
         {
             let mut state = lock(&self.state);
-            Arc::make_mut(&mut state.users.presets)
-                .delete(kind, &name)
-                .map_err(|e| e.to_string())?;
+            let presets = Arc::make_mut(&mut state.users.presets);
+            for (kind, attached) in &attached {
+                presets.delete(*kind, attached).map_err(|e| e.to_string())?;
+            }
+            presets.delete(kind, &name).map_err(|e| e.to_string())?;
         }
-        self.move_off(book, &name)?;
+        for (kind, attached) in &attached {
+            let book = match kind {
+                Kind::Process => Book::Process,
+                _ => Book::Filament,
+            };
+            self.move_off(book, attached, None)?;
+        }
+        self.move_off(book, &name, printer_to.as_deref())?;
         let mut answer = self.after_change(args)?;
         if let Some(object) = answer.as_object_mut() {
             object.insert("deleted".into(), json!(true));
         }
         Ok(answer)
+    }
+
+    /// The person's filament and process presets that belong to a printer
+    /// of theirs: those whose `compatible_printers` name it and no other.
+    pub(super) fn attached_to(&self, printer: &str) -> Vec<(Kind, String)> {
+        let users = self.users();
+        let mut attached = Vec::new();
+        for kind in [Kind::Filament, Kind::Process] {
+            for preset in users.of(kind) {
+                let named: Vec<&String> = preset
+                    .own
+                    .texts("compatible_printers")
+                    .unwrap_or_default()
+                    .iter()
+                    .filter(|named| !named.is_empty())
+                    .collect();
+                if !named.is_empty() && named.iter().all(|named| *named == printer) {
+                    attached.push((kind, preset.name.clone()));
+                }
+            }
+        }
+        attached
     }
 
     /// The lines "Used by:" lists: where the open projects use a preset.
@@ -855,7 +949,7 @@ impl Session {
     /// printer to the system preset it was made from; what was set over
     /// the preset is let go of (`delete_user_preset_by_name`,
     /// `discard_current_changes`).
-    fn move_off(&self, book: Book, name: &str) -> Result<(), String> {
+    fn move_off(&self, book: Book, name: &str, printer_to: Option<&str>) -> Result<(), String> {
         let on: Vec<(u32, Choices, usize)> = lock(&self.state)
             .projects
             .iter()
@@ -875,12 +969,13 @@ impl Session {
             };
             if book == Book::Printer {
                 if machine == name {
-                    let base = self.system_printer(name);
-                    let base = if base == name {
-                        // Gone already: what it was made from is unknown.
-                        continue;
-                    } else {
-                        base
+                    // The system printer it was made from; one that stood
+                    // alone gives way to the printer a project with none
+                    // is given (the reference selects the next visible
+                    // printer, Tab.cpp `select_preset` with `delete_current`).
+                    let to = match printer_to.filter(|base| *base != name) {
+                        Some(base) => Some((vendor.clone(), base.to_owned())),
+                        None => self.usual_printer(&self.installed()),
                     };
                     {
                         let mut state = lock(&self.state);
@@ -888,7 +983,9 @@ impl Session {
                             state.projects[at].choices.printer_over.clear();
                         }
                     }
-                    self.put_on(id, &vendor, &base, false, false)?;
+                    if let Some((vendor, base)) = to {
+                        self.put_on(id, &vendor, &base, false, false)?;
+                    }
                 }
                 continue;
             }

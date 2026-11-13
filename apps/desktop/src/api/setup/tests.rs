@@ -264,3 +264,172 @@ fn the_filament_manager_enables_and_disables_at_once() {
     let shown = u1_filaments(&session);
     assert!(strings(&other["members"]).iter().any(|m| shown.contains(m)));
 }
+
+/// Writes one of the person's presets as the reference's writer lays it
+/// out, standing alone (`base/`).
+fn write_alone(dir: &Path, folder: &str, name: &str, body: Value) {
+    let base = user_dir(dir).join(folder).join("base");
+    std::fs::create_dir_all(&base).unwrap();
+    let mut body = body;
+    body["name"] = json!(name);
+    body["from"] = json!("User");
+    body["inherits"] = json!("");
+    body["version"] = json!("2.3.0.0");
+    std::fs::write(
+        base.join(format!("{name}.json")),
+        serde_json::to_string_pretty(&body).unwrap(),
+    )
+    .unwrap();
+    std::fs::write(
+        base.join(format!("{name}.info")),
+        "sync_info = \nuser_id = \nsetting_id = \nbase_id = \nupdated_time = 0\n",
+    )
+    .unwrap();
+}
+
+#[test]
+fn deleting_a_printer_of_ones_own_takes_only_its_own_presets() {
+    let dir = tempfile::tempdir().unwrap();
+    let printer = "Test Vendor Box 0.4 nozzle";
+    write_alone(
+        dir.path(),
+        "machine",
+        printer,
+        json!({ "printer_settings_id": printer, "printer_model": "Test Vendor Box", "printer_variant": "0.4", "nozzle_diameter": ["0.4"] }),
+    );
+    let filament = format!("Generic PLA template @{printer}");
+    let process = format!("process template @{printer}");
+    write_alone(
+        dir.path(),
+        "filament",
+        &filament,
+        json!({ "filament_settings_id": [filament], "compatible_printers": [printer], "filament_type": ["PLA"] }),
+    );
+    write_alone(
+        dir.path(),
+        "process",
+        &process,
+        json!({ "print_settings_id": process, "compatible_printers": [printer] }),
+    );
+    // Made for this printer and another: not the printer's alone.
+    write_alone(
+        dir.path(),
+        "filament",
+        "Shared PLA",
+        json!({ "filament_settings_id": ["Shared PLA"], "compatible_printers": [printer, U1], "filament_type": ["PLA"] }),
+    );
+    // Made for every printer.
+    write_alone(
+        dir.path(),
+        "filament",
+        "Any PLA",
+        json!({ "filament_settings_id": ["Any PLA"], "compatible_printers": [], "filament_type": ["PLA"] }),
+    );
+    let session = session(dir.path());
+    let before = ask(
+        &session,
+        "presets",
+        json!({ "vendor": "Snapmaker", "machine": U1 }),
+    );
+
+    // A system printer is never deleted.
+    let error = refused(
+        &session,
+        "preset_delete",
+        json!({ "kind": "printer", "preset": U1 }),
+    );
+    assert_eq!(error, "System presets cannot be deleted.");
+
+    // The reference's question, with the presets that go with it.
+    let asked = ask(
+        &session,
+        "preset_delete",
+        json!({ "kind": "printer", "preset": printer }),
+    );
+    assert_eq!(asked["deleted"], false);
+    assert_eq!(
+        asked["ask"],
+        "1 Filament Preset and 1 Process Preset is attached to this printer. Those presets would be deleted if the printer is deleted."
+    );
+    let mut attached = strings(&asked["attached"]);
+    attached.sort();
+    assert_eq!(attached, vec![filament.clone(), process.clone()]);
+    // Nothing went yet.
+    assert!(
+        user_dir(dir.path())
+            .join("machine/base")
+            .join(format!("{printer}.json"))
+            .is_file()
+    );
+
+    let done = ask(
+        &session,
+        "preset_delete",
+        json!({ "kind": "printer", "preset": printer, "confirm": true }),
+    );
+    assert_eq!(done["deleted"], true);
+    let gone = |folder: &str, name: &str| {
+        let base = user_dir(dir.path()).join(folder).join("base");
+        !base.join(format!("{name}.json")).exists() && !base.join(format!("{name}.info")).exists()
+    };
+    assert!(gone("machine", printer));
+    assert!(gone("filament", &filament));
+    assert!(gone("process", &process));
+    // What is not the printer's alone stays, on disk and in the session.
+    assert!(!gone("filament", "Shared PLA"));
+    assert!(!gone("filament", "Any PLA"));
+    let mine = ask(&session, "user_presets", Value::Null);
+    let names: Vec<&str> = mine["filament"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|preset| preset["name"].as_str().unwrap())
+        .collect();
+    assert!(
+        names.contains(&"Shared PLA") && names.contains(&"Any PLA"),
+        "{names:?}"
+    );
+    assert!(mine["printer"].as_array().unwrap().is_empty());
+    // The vendor's presets are untouched.
+    let after = ask(
+        &session,
+        "presets",
+        json!({ "vendor": "Snapmaker", "machine": U1 }),
+    );
+    assert_eq!(before["filaments"], after["filaments"]);
+    assert_eq!(before["processes"], after["processes"]);
+}
+
+#[test]
+fn a_project_on_a_deleted_printer_of_ones_own_goes_to_its_system_printer() {
+    let dir = tempfile::tempdir().unwrap();
+    let session = session(dir.path());
+    ask(&session, "printer_select", json!({ "initial": true }));
+    ask(
+        &session,
+        "settings_set",
+        json!({ "kind": "printer", "key": "printable_height", "value": 250 }),
+    );
+    let saved = ask(
+        &session,
+        "preset_save",
+        json!({ "kind": "printer", "name": "My U1" }),
+    );
+    assert_eq!(saved["choices"]["machine"], "My U1");
+    // Laid over the U1: the usual question, nothing attached.
+    let asked = ask(
+        &session,
+        "preset_delete",
+        json!({ "kind": "printer", "preset": "My U1" }),
+    );
+    assert_eq!(
+        asked["ask"],
+        "Are you sure you want to Delete the selected preset?\n\nUsed by:\n - Printer"
+    );
+    let done = ask(
+        &session,
+        "preset_delete",
+        json!({ "kind": "printer", "preset": "My U1", "confirm": true }),
+    );
+    assert_eq!(done["choices"]["machine"], U1);
+}
