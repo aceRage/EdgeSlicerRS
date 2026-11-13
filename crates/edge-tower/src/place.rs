@@ -189,6 +189,19 @@ fn footprint(
     Ok(Some((w, depth, brim)))
 }
 
+/// The tower's size as estimated before slicing, in mm: width, depth and
+/// the brim's width; none where the plate has no tower to size (one
+/// filament). What the reference checks a plate against before slicing
+/// (Print.cpp `wipe_tower_data`, the estimate it falls back on).
+pub fn estimated_size(
+    settings: &Settings,
+    tower: &TowerSettings,
+    ground: &Ground,
+) -> Result<Option<(f64, f64, f64)>, ConfigError> {
+    Ok(footprint(settings, tower, ground)?
+        .map(|(width, depth, brim)| (f64::from(width), f64::from(depth), f64::from(brim))))
+}
+
 fn align_ceil(value: f32, base: f32) -> f32 {
     (value / base).ceil() * base
 }
