@@ -24,6 +24,7 @@ mod job;
 pub mod lay_on_face;
 mod layer_codes;
 mod layer_heights;
+mod layering;
 mod load;
 mod model;
 mod order;
@@ -56,8 +57,10 @@ pub use edge_mesh::boolean::Op as BooleanOp;
 /// Painting a mesh's triangles, and finding which one a line of sight
 /// meets, for the painting tools of whoever shows a model.
 pub use edge_mesh::{Mesh, raycast, selector};
+pub use edge_slice::layering::EditAction;
 pub use followed::{Followed, followed, followed_in, settled};
 pub use job::{BedType, Chosen, Job, Overrides, Sourced, prepare, prepare_noted};
+pub use layering::{ObjectLayers, ProfileEdit};
 pub use load::{Loaded, Opened, OwnObject, OwnVolume, PlateInfo, open};
 pub use model::SettingChange;
 pub use model::{

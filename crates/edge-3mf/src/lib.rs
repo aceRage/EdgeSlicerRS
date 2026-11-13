@@ -154,6 +154,22 @@ impl Object {
             .map(ObjectKept::layer_ranges)
             .unwrap_or_default()
     }
+
+    /// The object's variable layer height profile
+    /// ([`ObjectKept::layer_height_profile`]).
+    pub fn layer_height_profile(&self) -> Option<Vec<f64>> {
+        self.kept.as_deref()?.layer_height_profile()
+    }
+
+    /// Gives the object a layer height profile, or takes it away
+    /// ([`ObjectKept::with_layer_height_profile`]).
+    pub fn set_layer_height_profile(&mut self, profile: Option<&[f64]>) {
+        if profile.is_none() && self.kept.is_none() {
+            return;
+        }
+        let kept = self.kept.as_deref().cloned().unwrap_or_default();
+        self.kept = Some(Arc::new(kept.with_layer_height_profile(profile)));
+    }
 }
 
 impl Part {

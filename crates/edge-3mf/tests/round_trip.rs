@@ -539,3 +539,38 @@ fn a_cut_connector_follows_its_part_and_one_gone_is_asked_about() {
     );
     assert!(cut_text(&gone).is_none());
 }
+
+#[test]
+fn a_layer_height_profile_is_read_set_and_written_as_the_reference_writes_it() {
+    let mut project = two_copies();
+    assert_eq!(project.objects[0].layer_height_profile(), None);
+    let profile = [0.0, 0.2, 0.2, 0.2, 5.0, 0.12, 10.0, 0.12];
+    project.objects[0].set_layer_height_profile(Some(&profile));
+    let bytes = saved(&project);
+    let mut archive = zip::ZipArchive::new(Cursor::new(bytes.clone())).unwrap();
+    let mut text = String::new();
+    std::io::Read::read_to_string(
+        &mut archive
+            .by_name("Metadata/layer_heights_profile.txt")
+            .unwrap(),
+        &mut text,
+    )
+    .unwrap();
+    assert_eq!(
+        text,
+        "object_id=1|0.000000;0.200000;0.200000;0.200000;5.000000;0.120000;10.000000;0.120000\n"
+    );
+    let mut again = Project::read(Cursor::new(bytes)).unwrap();
+    assert_eq!(
+        again.objects[0].layer_height_profile(),
+        Some(profile.to_vec())
+    );
+    again.objects[0].set_layer_height_profile(None);
+    let none = saved(&again);
+    let mut archive = zip::ZipArchive::new(Cursor::new(none)).unwrap();
+    assert!(
+        archive
+            .by_name("Metadata/layer_heights_profile.txt")
+            .is_err()
+    );
+}

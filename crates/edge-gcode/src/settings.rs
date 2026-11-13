@@ -366,6 +366,10 @@ pub struct PrintSettings {
     /// When the file is made, as `2026-11-10 at 07:21:37`, for its first
     /// lines; none leaves the time out.
     pub produced_at: Option<String>,
+    /// Objects of their own layer heights are printed on one layer: each
+    /// line's height is said where it changes, as the reference says it
+    /// (GCode.cpp `_extrude`, the Height tag), not only the layer's.
+    pub own_heights: bool,
 
     /// Settings present in the input that export does not honour yet, each
     /// with what is done instead.
@@ -514,6 +518,7 @@ impl Default for PrintSettings {
             variables: variables(&Settings::default(), None, None, None, None),
             config: Vec::new(),
             produced_at: None,
+            own_heights: false,
             unsupported: Vec::new(),
         }
     }
@@ -1181,6 +1186,7 @@ impl PrintSettings {
                 config
             },
             produced_at: None,
+            own_heights: false,
             unsupported,
         })
     }

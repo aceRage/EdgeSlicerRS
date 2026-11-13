@@ -30,6 +30,12 @@ impl ModelObject {
             .unwrap_or_default()
     }
 
+    /// The object's variable layer height profile, when it has one
+    /// ([`ObjectKept::layer_height_profile`]).
+    pub fn layer_height_profile(&self) -> Option<Vec<f64>> {
+        self.kept.as_deref()?.layer_height_profile()
+    }
+
     /// The object's height ranges, lowest first.
     pub fn layer_ranges(&self) -> Vec<LayerRange> {
         self.kept
@@ -118,6 +124,32 @@ impl Model {
         }
         parts[index].kept = Some(Arc::new(kept));
         self.objects[at].shape = Shape::keeping(parts, shape.ids.clone());
+        Ok(())
+    }
+
+    /// Gives an object a variable layer height profile, or takes it away
+    /// (GLCanvas3D.cpp `LayersEditing`, which sets the model object's
+    /// `layer_height_profile`).
+    pub fn set_layer_height_profile(
+        &mut self,
+        bed: Option<&Bed>,
+        object: u64,
+        profile: Option<Vec<f64>>,
+    ) -> Result<(), Failure> {
+        let at = self.object_at(object)?;
+        if let Some(profile) = &profile
+            && (profile.len() < 4
+                || !profile.len().is_multiple_of(2)
+                || profile.iter().any(|value| !value.is_finite()))
+        {
+            return Err(refused("Invalid numeric."));
+        }
+        self.settle(bed);
+        let kept = self
+            .object_kept(at)
+            .with_layer_height_profile(profile.as_deref());
+        self.objects[at].kept = Some(Arc::new(kept));
+        self.restamp(at);
         Ok(())
     }
 

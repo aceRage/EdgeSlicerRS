@@ -31,6 +31,11 @@ pub struct FillParams {
     /// The visible top fill.
     pub top: Flow,
     pub sparse: Flow,
+    /// How far apart sparse lines are laid at full density, in mm: the
+    /// spacing of `sparse` at the object's own layer height, whatever
+    /// this layer's is (Fill.cpp `group_fills`: "a generic flow spacing
+    /// for all layers").
+    pub sparse_spacing: f64,
     /// Sparse fill density from 0 to 1.
     pub density: f64,
     pub pattern: Pattern,
@@ -166,7 +171,7 @@ impl FillParams {
                 (along + third, 0.0),
                 (
                     along + 2.0 * third,
-                    1.5 * self.sparse.spacing / self.density,
+                    1.5 * self.sparse_spacing / self.density,
                 ),
             ],
             Pattern::Cubic => {
@@ -179,8 +184,8 @@ impl FillParams {
             }
             Pattern::QuarterCubic => {
                 // In scaled whole units, as the reference works it out.
-                let line = scaled(self.sparse.spacing);
-                let period = (scaled(self.sparse.spacing) as f64 / self.density) as i64 * 4;
+                let line = scaled(self.sparse_spacing);
+                let period = (scaled(self.sparse_spacing) as f64 / self.density) as i64 * 4;
                 let shift = |part: f64| {
                     let raw = (std::f64::consts::FRAC_1_SQRT_2
                         * (scaled(self.z) as f64 + part * period as f64 * 2.0))
@@ -248,7 +253,7 @@ impl FillParams {
     /// singly: its cells are two thirds single wall and a third double,
     /// so it is laid a third further apart than its density says.
     fn lateral_pitch(&self) -> f64 {
-        (4.0 / 3.0) * self.sparse.spacing / self.density
+        (4.0 / 3.0) * self.sparse_spacing / self.density
     }
 }
 
@@ -432,21 +437,21 @@ pub fn fill_within(
                 Pattern::Lines => (
                     params.sparse,
                     Role::SparseInfill,
-                    params.sparse.spacing / params.density,
+                    params.sparse_spacing / params.density,
                     Lay::Zigzag,
                     &[params.sparse_angle + turned],
                 ),
                 Pattern::AlignedLines => (
                     params.sparse,
                     Role::SparseInfill,
-                    params.sparse.spacing / params.density,
+                    params.sparse_spacing / params.density,
                     Lay::Zigzag,
                     &[params.sparse_angle],
                 ),
                 Pattern::ZigZag | Pattern::CrossZag => (
                     params.sparse,
                     Role::SparseInfill,
-                    params.sparse.spacing / params.density,
+                    params.sparse_spacing / params.density,
                     Lay::Zigzag,
                     &[params.sparse_angle + turned],
                 ),
@@ -460,7 +465,7 @@ pub fn fill_within(
                 | Pattern::Octagram => (
                     params.sparse,
                     Role::SparseInfill,
-                    params.sparse.spacing / params.density,
+                    params.sparse_spacing / params.density,
                     Lay::Curved,
                     &[params.sparse_angle],
                 ),
@@ -471,7 +476,7 @@ pub fn fill_within(
                     if params.pattern == Pattern::LateralHoneycomb {
                         params.lateral_pitch()
                     } else {
-                        sweeps.len() as f64 * params.sparse.spacing / params.density
+                        sweeps.len() as f64 * params.sparse_spacing / params.density
                     },
                     Lay::Anchored,
                     &sweep_angles,
@@ -1179,6 +1184,7 @@ mod tests {
             internal_bridge_spacing: 0.45,
             top,
             sparse: flow,
+            sparse_spacing: flow.spacing,
             density,
             pattern,
             sparse_angle: 45f64.to_radians(),

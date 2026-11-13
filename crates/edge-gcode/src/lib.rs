@@ -1258,6 +1258,8 @@ struct State {
     auxiliary_fan: Option<u8>,
     role: Option<Role>,
     width: f64,
+    /// The height last said in the file (`Settings::own_heights`).
+    height_tag: f64,
     summary: Summary,
 }
 
@@ -1959,6 +1961,7 @@ impl Writer<'_> {
                 layer.z, layer.height
             )?;
         }
+        self.state.height_tag = layer.height;
         // The reference counts layers from 1 before the change and from 0 after it.
         self.variables
             .set("layer_num", Value::Int(index as i64 + 1));
@@ -4022,6 +4025,15 @@ impl Writer<'_> {
         if self.state.width != flow.width {
             self.width_tag(flow.width)?;
             self.state.width = flow.width;
+        }
+        if s.own_heights && (self.state.height_tag - flow.height).abs() > 1e-4 {
+            let tag = if s.bambu {
+                "; LAYER_HEIGHT: "
+            } else {
+                ";HEIGHT:"
+            };
+            writeln!(self.out, "{tag}{}", stream_double(flow.height))?;
+            self.state.height_tag = flow.height;
         }
         self.accelerate(motion.acceleration)?;
         // A layer's time is counted from its first line, as in the reference.

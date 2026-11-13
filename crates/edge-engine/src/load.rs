@@ -82,6 +82,15 @@ pub struct OwnObject {
     pub volumes: Vec<OwnVolume>,
     /// Its height ranges, with their heights measured from the bed.
     pub ranges: Vec<edge_3mf::LayerRange>,
+    /// Its variable layer height profile, in its own heights (from its
+    /// bottom), when its file has one.
+    pub layer_height_profile: Option<Vec<f64>>,
+    /// Its bottom as it stands, in mm: what its ranges and profile are
+    /// measured from.
+    pub bottom: f64,
+    /// Its printed parts as one mesh, in world coordinates: what its
+    /// height is measured by.
+    pub solid: Mesh,
     /// The pieces of its printed parts' triangles painted to have
     /// supports or to keep them off, in world coordinates, each facing
     /// out of the part.
@@ -116,6 +125,7 @@ fn sets_own(object: &edge_3mf::Object) -> bool {
             PartKind::Negative | PartKind::PreciseSeam => false,
         })
         || !object.layer_ranges().is_empty()
+        || object.layer_height_profile().is_some()
 }
 
 /// The objects on a plate that set something for themselves, and a body
@@ -204,6 +214,9 @@ fn own_objects(project: &Project, plate: Option<usize>) -> (Vec<OwnObject>, Vec<
             settings: object.settings(),
             volumes,
             support_paint,
+            layer_height_profile: object.layer_height_profile(),
+            bottom,
+            solid,
             ranges: (object.layer_ranges().into_iter())
                 .map(|range| edge_3mf::LayerRange {
                     min_z: range.min_z + bottom,
@@ -473,6 +486,7 @@ pub(crate) fn placed(
             -x,
             -y,
         );
+        shift_meshes(own.iter_mut().map(|object| &mut object.solid), -x, -y);
         for object in &mut painted {
             shift_meshes(
                 object.parts.iter_mut().chain(object.negative.as_mut()),

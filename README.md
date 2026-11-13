@@ -720,7 +720,7 @@ Working:
   | the part's filament (`extruder`) | yes | yes | yes | no (as the reference) |
   | wall, sparse and solid infill filaments | noted | noted | noted | noted |
   | brim type, width and gap | yes | ignored (as the reference) | ignored | ignored |
-  | `layer_height` | noted | ignored | ignored | noted |
+  | `layer_height`, `precise_z_height` (object) | yes | ignored | ignored | yes (`layer_height`) |
   | supports on/off and their options, `seam_position`, elephant foot, XY compensation, closing radius | noted | ignored | ignored | ignored |
   | holes to polyholes, `make_overhang_printable`, Z contouring, scarf seams, bridges over sparse fill, `enable_extra_bridge_layer` | noted | noted | noted | noted |
   | EdgeSlicer support groups (`support_group` on a part) | | noted | | |
@@ -734,14 +734,50 @@ Working:
   region; painted triangles that stand upright, which the reference
   hands tree supports as points to grow a tip from, are not followed;
   colour painted on an object with settings of its own prints with the
-  plate's settings (a note says so). Not done, and noted: an object's
-  own layer height (everything on a plate is cut at the same heights,
-  so the reference's objects of different layer heights, and what that
-  asks of a prime tower, do not arise), supports on or off for one
-  object, and an object's own seam position.
+  plate's settings (a note says so). Not done, and noted: supports on
+  or off for one object, and an object's own seam position.
+
+- An object's own layers (`crates/edge-engine/src/layering.rs`,
+  `crates/edge-slice/src/layering.rs`, ported from Slicing.cpp and
+  SlicingAdaptive.cpp): its own `layer_height`, its height ranges'
+  `layer_height`, or its variable layer height profile
+  (`Metadata/layer_heights_profile.txt`, read and written as bbs_3mf.cpp
+  does: used where it ends at the object's top, else the profile its
+  ranges give, `PrintObject::update_layer_height_profile`), each layer as
+  thick as the profile asks at its middle (`generate_object_layers`, with
+  `precise_z_height` tuning the object's own last five), held within the
+  least and greatest height its nozzles allow
+  (`SlicingParameters::create_from_config`). The adaptive profile from the
+  slopes of the object's faces, its smoothing and a stroke of the layer
+  height tool are ported for the desktop app. The objects that set nothing
+  of their heights are sliced together at the plate's, as before; each set
+  of objects whose layers agree is sliced by itself, everything up to the
+  order of tools, the prime tower, skirt and brim; their layers are then
+  laid together by their tops, tops within `EPSILON` as one, at their
+  middle (GCode.cpp `collect_layers_to_print`). A layer's height in the
+  G-code is the step from the one before, and each line's height is said
+  where it changes; what lies under an object's layer is its own layer
+  below; sparse fill is spaced by the object's layer height
+  (Fill.cpp `group_fills`). Refused with the reference's words
+  (`Print::validate`): a prime tower with objects of different layer
+  heights, of different raft layers or of different variable layer
+  heights, and organic tree supports with a variable layer height.
+  Not as the reference: an object's first layer for its brim is cut at
+  the first group's heights (the same first layer for all; with
+  `make_overhang_printable` the growth down to it is the first group's);
+  `seam_slope_start_height` given in mm and the height a seam is placed
+  at go by the step from the layer before where objects of their own
+  heights share a layer. Parity (`edge-parity`, each object's layers and
+  every Z the same as the reference's, feature lengths within 0.1% but
+  sparse fill, which is 1% short here as on a plain cube): on the
+  Snapmaker U1 and the Elegoo Centauri Carbon, two 10 mm cubes at 0.2 and
+  0.12 mm (50 and 82 layers on the U1, 50 and 83 on the Carbon, 115 and
+  116 layers of G-code); a 20 mm cube with a 5-10 mm range at 0.1 mm
+  beside a plain one (125 and 50); a cone with a variable profile beside a
+  cube (117 and 50).
 
 Known gaps: typed settings (values are text until a stage needs them),
-an object's own layer height, supports and seam position, and the
+an object's own supports and seam position, and the
 feature filaments (`wall_filament`, `sparse_infill_filament`,
 `solid_infill_filament`).
 
