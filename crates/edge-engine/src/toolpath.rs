@@ -303,6 +303,32 @@ impl Reader {
     }
 
     fn comment(&mut self, text: &str) {
+        // A Bambu Lab printer's file has Bambu Studio's tags, which say the
+        // same (GCodeProcessor.cpp `Reserved_Tags`): read as the others.
+        let bambu = [
+            ("FEATURE:", "TYPE:"),
+            ("LINE_WIDTH:", "WIDTH:"),
+            ("LAYER_HEIGHT:", "HEIGHT:"),
+            ("Z_HEIGHT:", "Z:"),
+        ];
+        let renamed;
+        let text = match text.strip_prefix(' ') {
+            Some(tag) if tag.trim_end() == "CHANGE_LAYER" => "LAYER_CHANGE",
+            Some(tag) if tag.trim_end() == "WIPE_START" || tag.trim_end() == "WIPE_END" => {
+                tag.trim_end()
+            }
+            Some(tag) => match bambu
+                .iter()
+                .find_map(|(from, to)| Some((tag.strip_prefix(from)?, to)))
+            {
+                Some((value, to)) => {
+                    renamed = format!("{to}{}", value.trim());
+                    renamed.as_str()
+                }
+                None => text,
+            },
+            None => text,
+        };
         if let Some(name) = text.strip_prefix("TYPE:") {
             // A name this reader does not know is the file's own: custom.
             self.feature = Feature::from_name(name.trim()).unwrap_or(Feature::Custom);
@@ -764,6 +790,23 @@ mod tests {
             ]
         );
         assert_eq!(path.lines, [2, 8, 9, 10, 11]);
+    }
+
+    /// A Bambu Lab printer's file says the same in Bambu Studio's tags.
+    #[test]
+    fn bambu_studios_tags_are_read_as_the_others() {
+        let ours = read_toolpath(
+            b"M83\nG1 X0 Y0 Z0.3\n;LAYER_CHANGE\n;Z:0.3\n;HEIGHT:0.3\n\
+              ;TYPE:Outer wall\n;WIDTH:0.42\nG1 X10 E1\n;WIPE_START\nG1 X5 E-0.5\n;WIPE_END\n",
+        );
+        let bambu = read_toolpath(
+            b"M83\nG1 X0 Y0 Z0.3\n; CHANGE_LAYER\n; Z_HEIGHT: 0.3\n; LAYER_HEIGHT: 0.3\n\
+              ; FEATURE: Outer wall\n; LINE_WIDTH: 0.42\nG1 X10 E1\n; WIPE_START\nG1 X5 E-0.5\n; WIPE_END\n",
+        );
+        assert_eq!(bambu.moves, ours.moves);
+        assert_eq!(bambu.layers.len(), ours.layers.len());
+        assert_eq!(bambu.moves[1].feature, Feature::OuterWall);
+        assert_eq!(bambu.moves[1].width, 0.42);
     }
 
     #[test]
