@@ -24,6 +24,10 @@ Apply All	GUI/Plater.cpp:3688
 Filament manager	GUI/PresetManagerDialog.cpp:54
 Favorite filaments	GUI/PresetComboBoxes.cpp:384
 Delete the preset "%s"?	GUI/PresetManagerDialog.cpp:536
+Delete %d preset?	GUI/PresetManagerDialog.cpp:668
+Delete these %d presets?	GUI/PresetManagerDialog.cpp:668
+and %d more	GUI/PresetManagerDialog.cpp:673
+Skipped: other presets inherit these:	GUI/PresetManagerDialog.cpp:690
 If the preset corresponds to a filament currently in use on your printer, please reset the filament information for that slot.	GUI/PresetManagerDialog.cpp:552
 They switch to the next visible filament preset.	GUI/PresetManagerDialog.cpp:548
 Could not rename "%s": %s	GUI/PresetManagerDialog.cpp:479
@@ -626,6 +630,9 @@ No filament matches the search and filters.
 All printers
 Not favourite
 Only this printer
+Edit printers…
+Enable or disable every row shown
+Drag to resize the column; double-click to reset all widths
 Nozzle °C
 Bed °C
 Modified

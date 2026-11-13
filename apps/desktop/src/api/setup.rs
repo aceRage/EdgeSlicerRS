@@ -1133,6 +1133,9 @@ impl Session {
     /// the cog menu's "Delete this preset" deletes it (slots to the next,
     /// the star away), and the table again.
     pub(super) fn filament_manager_delete(&self, args: &Value) -> Result<Value, String> {
+        if args.get("keys").is_some() {
+            return self.filament_manager_delete_many(args);
+        }
         let (row, _, _) = self.user_row(args)?;
         if row["source"] != "User" {
             return Err(tr("System presets cannot be deleted."));
@@ -1189,6 +1192,139 @@ impl Session {
         self.preset_delete(&one)?;
         let mut answer = self.filament_manager(args)?;
         answer["deleted"] = json!(true);
+        Ok(answer)
+    }
+
+    /// `filament_manager_delete` with `keys`: the rows selected deleted in
+    /// one go (PresetManagerDialog.cpp `delete_rows`). A preset another
+    /// outside the selection is laid over is skipped; inside it, children
+    /// go before their parents. One question: "Delete %d preset?" (or
+    /// "these %d presets"), the first ten names and "and %d more", what
+    /// uses them, what is skipped.
+    fn filament_manager_delete_many(&self, args: &Value) -> Result<Value, String> {
+        let keys: Vec<&str> = args["keys"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter_map(Value::as_str)
+            .collect();
+        let users = self.users();
+        let mut names: Vec<String> = Vec::new();
+        for key in keys {
+            if let Some(name) = key.strip_prefix("u|")
+                && users.get(Kind::Filament, name).is_some()
+                && !names.iter().any(|known| known == name)
+            {
+                names.push(name.to_owned());
+            }
+        }
+        if names.is_empty() {
+            return Err(tr("System presets cannot be deleted."));
+        }
+        let mut chosen: BTreeSet<String> = names.iter().cloned().collect();
+        let mut skipped: Vec<String> = Vec::new();
+        let mut changed = true;
+        while changed {
+            changed = false;
+            for name in &names {
+                if !chosen.contains(name) {
+                    continue;
+                }
+                if users
+                    .children(Kind::Filament, name)
+                    .iter()
+                    .any(|child| !chosen.contains(*child))
+                {
+                    chosen.remove(name);
+                    skipped.push(name.clone());
+                    changed = true;
+                }
+            }
+        }
+        let mut todo: Vec<String> = names
+            .iter()
+            .filter(|name| chosen.contains(*name))
+            .cloned()
+            .collect();
+        let depth = |name: &str| {
+            let mut depth = 0;
+            let mut at = users
+                .get(Kind::Filament, name)
+                .and_then(|p| p.inherits.clone());
+            while let Some(parent) = at.filter(|parent| chosen.contains(parent)) {
+                depth += 1;
+                if depth > 16 {
+                    break;
+                }
+                at = users
+                    .get(Kind::Filament, &parent)
+                    .and_then(|p| p.inherits.clone());
+            }
+            depth
+        };
+        todo.sort_by_key(|name| std::cmp::Reverse(depth(name)));
+        let title = tr("Delete Preset");
+        let mut message = if todo.is_empty() {
+            tr("Presets inherited by other presets cannot be deleted!")
+        } else {
+            let mut message = fill(
+                &super::i18n::trn(
+                    "Delete %d preset?",
+                    "Delete these %d presets?",
+                    todo.len() as u64,
+                ),
+                &[&todo.len()],
+            );
+            for name in todo.iter().take(10) {
+                message.push_str("\n - ");
+                message.push_str(name);
+            }
+            if todo.len() > 10 {
+                message.push('\n');
+                message.push_str(&fill(&tr("and %d more"), &[&(todo.len() - 10)]));
+            }
+            let mut used = String::new();
+            for name in &todo {
+                let lines = self.used_by(super::settings::Book::Filament, name, args)?;
+                if !lines.is_empty() {
+                    used.push_str(&format!("\n - {name}: {}", lines.join(", ")));
+                }
+            }
+            if !used.is_empty() {
+                message.push_str(&format!(
+                    "\n\n{}{used}\n\n{}",
+                    tr("Used by:"),
+                    tr("They switch to the next visible filament preset.")
+                ));
+            }
+            message
+        };
+        if !skipped.is_empty() {
+            message.push_str("\n\n");
+            message.push_str(&tr("Skipped: other presets inherit these:"));
+            for name in &skipped {
+                message.push_str("\n - ");
+                message.push_str(name);
+            }
+        }
+        if todo.is_empty() {
+            return Ok(
+                json!({ "deleted": false, "refused": true, "title": title, "message": message }),
+            );
+        }
+        if args.get("confirm").and_then(Value::as_bool) != Some(true) {
+            return Ok(json!({ "deleted": false, "title": title, "ask": message, "todo": todo }));
+        }
+        for name in &todo {
+            let mut one = json!({ "kind": "filament", "preset": name, "confirm": true });
+            if let Some(project) = args.get("project") {
+                one["project"] = project.clone();
+            }
+            self.preset_delete(&one)?;
+        }
+        let mut answer = self.filament_manager(args)?;
+        answer["deleted"] = json!(true);
+        answer["count"] = json!(todo.len());
         Ok(answer)
     }
 

@@ -1635,3 +1635,236 @@ fn check_taken(session: &Arc<Session>, key: &str, name: &str) -> Value {
         json!({ "key": key, "name": name }),
     )
 }
+
+/// Two presets of one filament for the U1's 0.4 and 0.2 nozzles.
+fn two_printer_filament(session: &Arc<Session>) -> (String, String, String) {
+    let made = ask(
+        session,
+        "create_filament",
+        json!({
+            "vendor": "Polymaker", "type": "PLA", "serial": "Matte",
+            "presets": [
+                { "printer": U1, "preset": "Generic PLA @U1 0.4 nozzle" },
+                { "printer": "Snapmaker U1 (0.2 nozzle)", "preset": "Generic PLA @U1 0.2 nozzle" },
+            ],
+        }),
+    );
+    (
+        format!("Polymaker PLA Matte @{U1}"),
+        "Polymaker PLA Matte @Snapmaker U1 (0.2 nozzle)".to_owned(),
+        made["filament_id"].as_str().unwrap().to_owned(),
+    )
+}
+
+#[test]
+fn several_rows_are_deleted_in_one_go_children_first_the_held_skipped() {
+    let dir = tempfile::tempdir().unwrap();
+    let session = session(dir.path());
+    ask(&session, "printer_select", json!({ "initial": true }));
+    let (a, b, _) = two_printer_filament(&session);
+    // A child of a, outside the selection: a is skipped.
+    ask(&session, "project_set", json!({ "filaments": [a.clone()] }));
+    ask(
+        &session,
+        "settings_set",
+        json!({ "kind": "filament", "filament": 1, "key": "nozzle_temperature", "value": 213 }),
+    );
+    ask(
+        &session,
+        "preset_save",
+        json!({ "kind": "filament", "filament": 1, "name": "Child PLA" }),
+    );
+    let keys = json!([
+        format!("u|{a}"),
+        format!("u|{b}"),
+        "s|Snapmaker|Generic PLA"
+    ]);
+    let asked = ask(&session, "filament_manager_delete", json!({ "keys": keys }));
+    assert_eq!(asked["title"], tr("Delete Preset"));
+    let text = asked["ask"].as_str().unwrap();
+    assert!(
+        text.starts_with(&fill(
+            &crate::api::i18n::trn("Delete %d preset?", "Delete these %d presets?", 1),
+            &[&1]
+        )),
+        "{text}"
+    );
+    assert!(text.contains(&format!("\n - {b}")));
+    assert!(
+        text.contains(&tr("Skipped: other presets inherit these:"))
+            && text.ends_with(&format!("\n - {a}")),
+        "{text}"
+    );
+    assert_eq!(asked["todo"], json!([b]));
+    // With the child in the selection: the child goes before its parent.
+    let keys = json!([format!("u|{a}"), "u|Child PLA"]);
+    let asked = ask(&session, "filament_manager_delete", json!({ "keys": keys }));
+    assert_eq!(asked["todo"], json!(["Child PLA", a]));
+    let done = ask(
+        &session,
+        "filament_manager_delete",
+        json!({ "keys": keys, "confirm": true }),
+    );
+    assert_eq!(done["count"], 2);
+    let users = ask(&session, "user_presets", Value::Null);
+    let names: Vec<&str> = users["filament"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|p| p["name"].as_str().unwrap())
+        .collect();
+    assert_eq!(names, vec![b.as_str()]);
+    // Only vendors' rows: refused.
+    let error = refused(
+        &session,
+        "filament_manager_delete",
+        json!({ "keys": ["s|Snapmaker|Generic PLA"] }),
+    );
+    assert_eq!(error, tr("System presets cannot be deleted."));
+}
+
+#[test]
+fn edit_filament_lists_adds_and_deletes_a_filaments_presets() {
+    let dir = tempfile::tempdir().unwrap();
+    let session = session(dir.path());
+    ask(&session, "printer_select", json!({ "initial": true }));
+    let (a, b, id) = two_printer_filament(&session);
+    let family = ask(&session, "filament_family", json!({ "filament_id": id }));
+    assert_eq!(family["name"], "Polymaker PLA Matte");
+    assert_eq!(family["vendor"], "Polymaker");
+    assert_eq!(family["type"], "PLA");
+    assert_eq!(family["serial"], "Matte");
+    assert_eq!(family["printers"].as_array().unwrap().len(), 2);
+    assert_eq!(family["note"], false);
+    // "Add Preset": the printers and what to copy for each.
+    let choices = ask(
+        &session,
+        "filament_family_choices",
+        json!({ "filament_id": id }),
+    );
+    let u1_06 = "Snapmaker U1 (0.6 nozzle)";
+    let row = choices["printers"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|p| p["printer"] == u1_06)
+        .expect("the U1 0.6")
+        .clone();
+    let source = strings(&row["presets"])
+        .into_iter()
+        .find(|name| name.starts_with("Generic PLA @"))
+        .unwrap();
+    let added = ask(
+        &session,
+        "filament_family_add",
+        json!({ "filament_id": id, "printer": u1_06, "preset": source }),
+    );
+    let c = format!("Polymaker PLA Matte @{u1_06}");
+    assert_eq!(added["preset"], c.as_str());
+    assert_eq!(added["printers"].as_array().unwrap().len(), 3);
+    let written = read_json(
+        &user_dir(dir.path())
+            .join("filament")
+            .join("base")
+            .join(format!("{c}.json")),
+    );
+    assert_eq!(written["filament_id"], id.as_str());
+    assert_eq!(written["compatible_printers"], json!([u1_06]));
+    assert_eq!(written["filament_vendor"], json!(["Polymaker"]));
+    // Again: asked first.
+    let again = ask(
+        &session,
+        "filament_family_add",
+        json!({ "filament_id": id, "printer": u1_06, "preset": source }),
+    );
+    assert_eq!(again["created"], false);
+    assert!(again["ask"].as_str().unwrap().contains(&c));
+    let error = refused(
+        &session,
+        "filament_family_add",
+        json!({ "filament_id": id, "printer": u1_06, "preset": "" }),
+    );
+    assert_eq!(
+        error,
+        tr("The filament choice not find filament preset, please reselect it")
+    );
+    // One preset: asked, then gone.
+    let asked = ask(
+        &session,
+        "filament_family_delete",
+        json!({ "filament_id": id, "preset": c }),
+    );
+    assert_eq!(asked["title"], tr("Delete preset"));
+    assert!(asked["ask"].as_str().unwrap().starts_with(&tr(
+        "Are you sure to delete the selected preset?\nIf the preset"
+    )));
+    let after = ask(
+        &session,
+        "filament_family_delete",
+        json!({ "filament_id": id, "preset": c, "confirm": true }),
+    );
+    assert_eq!(after["printers"].as_array().unwrap().len(), 2);
+    // The whole filament.
+    let asked = ask(
+        &session,
+        "filament_family_delete",
+        json!({ "filament_id": id }),
+    );
+    assert_eq!(asked["title"], tr("Delete filament"));
+    let gone = ask(
+        &session,
+        "filament_family_delete",
+        json!({ "filament_id": id, "confirm": true }),
+    );
+    assert_eq!(gone["gone"], true);
+    let users = ask(&session, "user_presets", Value::Null);
+    assert!(
+        users["filament"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|p| p["name"] != a.as_str() && p["name"] != b.as_str())
+    );
+}
+
+#[test]
+fn a_tables_column_widths_are_kept_across_a_restart() {
+    let dir = tempfile::tempdir().unwrap();
+    let session = session(dir.path());
+    let laid = ask(
+        &session,
+        "layout_set",
+        json!({ "columns": { "filament_manager": [84, 84, 100, 240] } }),
+    );
+    assert_eq!(
+        laid["columns"]["filament_manager"],
+        json!([84, 84, 100, 240])
+    );
+    let again = Arc::new(Session::with_settings(None, Some(dir.path().to_owned())));
+    assert_eq!(
+        ask(&again, "layout", Value::Null)["columns"]["filament_manager"],
+        json!([84, 84, 100, 240])
+    );
+    assert!(
+        refused(
+            &again,
+            "layout_set",
+            json!({ "columns": { "nowhere": [1] } })
+        )
+        .contains("no table")
+    );
+    assert!(
+        refused(
+            &again,
+            "layout_set",
+            json!({ "columns": { "filament_manager": [0] } })
+        )
+        .contains("width")
+    );
+    let cleared = ask(
+        &again,
+        "layout_set",
+        json!({ "columns": { "filament_manager": null } }),
+    );
+    assert_eq!(cleared["columns"], json!({}));
+}

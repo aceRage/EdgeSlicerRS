@@ -72,6 +72,9 @@ pub struct Data {
     /// each by the reference's message id: true open, false folded. A
     /// group not here is as [`super::layout`] has it at first.
     pub groups: BTreeMap<(String, String, String), bool>,
+    /// The widths a table's columns were dragged to, by table
+    /// (`layout.columns`), as the reference keeps them for its tables.
+    pub columns: BTreeMap<String, Vec<u32>>,
     /// The Preferences (`prefs.rs`) set, by the reference's keys, kept in
     /// the `app` section beside the language as the reference keeps them.
     pub prefs: BTreeMap<String, String>,
@@ -226,6 +229,22 @@ impl Data {
                 .get("sidebar_width")
                 .and_then(Value::as_u64)
                 .and_then(|width| u32::try_from(width).ok());
+            for (table, widths) in layout
+                .get("columns")
+                .and_then(Value::as_object)
+                .into_iter()
+                .flatten()
+            {
+                let widths: Vec<u32> = widths
+                    .as_array()
+                    .into_iter()
+                    .flatten()
+                    .filter_map(|width| width.as_u64().and_then(|w| u32::try_from(w).ok()))
+                    .collect();
+                if !widths.is_empty() {
+                    data.columns.insert(table.clone(), widths);
+                }
+            }
             // { kind: { page: { group: true | false } } }
             for (kind, pages) in layout
                 .get("groups")
@@ -345,6 +364,9 @@ impl Data {
                 groups[group.as_str()] = json!(open);
             }
             layout.insert("groups".into(), Value::Object(kinds));
+        }
+        if !self.columns.is_empty() {
+            layout.insert("columns".into(), json!(self.columns));
         }
         if !layout.is_empty() {
             root.insert("layout".into(), Value::Object(layout));

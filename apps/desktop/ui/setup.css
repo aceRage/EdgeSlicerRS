@@ -156,3 +156,20 @@
 .fm-edit-scope { display: inline-flex; flex-direction: row; align-items: center; gap: 4px; color: var(--text-2); font-size: var(--size-label); white-space: nowrap; }
 #fm-table td.name.editing { overflow: visible; }
 #fm-table tbody tr:has(td.editing) td { height: auto; }
+
+/* The Filament manager's row focus, selection, resize grips and header box. */
+#fm-table tbody tr.focus { outline: 1px solid var(--accent); outline-offset: -1px; }
+#fm-table tbody tr.sel td { background: color-mix(in srgb, var(--accent) 22%, transparent); }
+#fm-table th { position: sticky; }
+.fm-resize { position: absolute; top: 0; right: -3px; width: 7px; height: 100%; cursor: col-resize; z-index: 1; }
+.fm-resize:hover { background: color-mix(in srgb, var(--accent) 40%, transparent); }
+.fm-hcheck { margin-right: 6px; vertical-align: middle; }
+#fm-scope { white-space: nowrap; font-size: var(--size-label); }
+/* "Edit Filament": its presets by printer. */
+.ef-tree { display: flex; flex-direction: column; gap: var(--space-2); padding: var(--space-3); }
+.ef-printer-name { font-weight: 600; margin-bottom: 4px; }
+.ef-preset { display: grid; grid-template-columns: minmax(0, 1fr) auto auto; align-items: center; gap: var(--space-2); padding-left: var(--space-3); }
+.ef-preset span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+#fm-dialog .fs-bar { flex-wrap: wrap; row-gap: var(--space-2); }
+#fm-dialog .fs-bar button { white-space: nowrap; }
+#fm-dialog .fs-bar input[type="search"] { flex: 1 1 200px; }

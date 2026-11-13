@@ -580,7 +580,15 @@
   <div class="fs-bar">
     <input id="fm-search" type="search" placeholder="Search name, vendor, type or printer" aria-label="Search name, vendor, type or printer" autocomplete="off" spellcheck="false">
     <label class="fm-printer-pick">Printer <select id="fm-printer" aria-label="Printer"></select></label>
+    <button id="fm-delete-selected" type="button">Delete selected</button>
+    <button id="fm-create" type="button" title="Create a new filament preset" data-no-t>Create new</button>
+    <button id="fm-edit-printers" type="button" data-no-t>Edit printers…</button>
     <span id="fm-count" class="quiet" aria-live="polite"></span>
+    <span id="fm-scope" class="quiet"></span>
+    <div class="joined">
+      <button id="fm-all" type="button">All</button>
+      <button id="fm-clear" type="button">Clear all</button>
+    </div>
   </div>
   <div id="fm-chips" class="fm-chips" hidden></div>
   <div class="setup-scroll setup-table">
@@ -592,7 +600,6 @@
   </div>
   <div class="dialog-foot">
     <div class="grow"><span id="fm-status" class="quiet" role="status" aria-live="polite"></span> <span class="quiet" data-no-t>Changes are saved at once.</span></div>
-    <button id="fm-create" type="button" title="Create a new filament preset" data-no-t>Create new</button>
     <button id="fm-close" type="button" class="primary">Close</button>
   </div>
   <div id="fm-pop" class="popover" hidden></div>
@@ -603,6 +610,10 @@
 
 <!-- "Create Filament" (CreatePresetsDialog.cpp `CreateFilamentPresetDialog`), filled by setup.js. -->
 <dialog id="cf-dialog" class="create-dialog" aria-labelledby="cf-title"></dialog>
+
+<!-- "Edit Filament" ("Edit printers…") and its "Add Preset" (CreatePresetsDialog.cpp), filled by setup.js. -->
+<dialog id="ef-dialog" class="create-dialog" aria-labelledby="ef-title"></dialog>
+<dialog id="ap-dialog" class="create-dialog"></dialog>
 
 <div id="menu" role="menu" hidden></div>
 

@@ -1391,6 +1391,317 @@ impl Session {
     }
 }
 
+impl Session {
+    /// The person's filament presets of a `filament_id`, by the printers
+    /// each names (EditFilamentPresetDialog `get_same_filament_id_presets`,
+    /// `get_filament_compatible_printer`), in order of printer.
+    fn family_presets(&self, filament_id: &str) -> Vec<(String, Vec<String>)> {
+        let users = self.users();
+        let vendors: Vec<String> = lock(&self.state)
+            .store
+            .data
+            .models
+            .keys()
+            .cloned()
+            .collect();
+        let shelf = vendors.first().and_then(|vendor| self.shelf(vendor).ok());
+        let mut by_printer: BTreeMap<String, Vec<String>> = BTreeMap::new();
+        for preset in users.of(Kind::Filament) {
+            let settings = match &shelf {
+                Some(shelf) => self.resolve_named(shelf, Kind::Filament, &preset.name).ok(),
+                None => Some(preset.own.clone()),
+            };
+            let Some(settings) = settings else { continue };
+            if settings.text("filament_id") != Some(filament_id) {
+                continue;
+            }
+            for printer in settings.texts("compatible_printers").unwrap_or_default() {
+                by_printer
+                    .entry(printer.clone())
+                    .or_default()
+                    .push(preset.name.clone());
+            }
+        }
+        by_printer.into_iter().collect()
+    }
+
+    /// `filament_family`: "Edit Filament" ("Edit printers…" in the Filament
+    /// manager): the filament's vendor, type and serial (from the first of
+    /// its presets that stands alone), and its presets by printer.
+    pub(in crate::api) fn filament_family(&self, args: &Value) -> Result<Value, String> {
+        let filament_id = needed(args, "filament_id")?;
+        let printers = self.family_presets(filament_id);
+        let users = self.users();
+        let first = printers
+            .iter()
+            .flat_map(|(_, names)| names.iter())
+            .find(|name| {
+                users
+                    .get(Kind::Filament, name)
+                    .is_some_and(|p| p.inherits.is_none())
+            })
+            .or_else(|| printers.first().and_then(|(_, names)| names.first()))
+            .cloned()
+            .ok_or("the filament has no presets of your own")?;
+        let vendors: Vec<String> = lock(&self.state)
+            .store
+            .data
+            .models
+            .keys()
+            .cloned()
+            .collect();
+        let settings = match vendors.first().and_then(|vendor| self.shelf(vendor).ok()) {
+            Some(shelf) => self.resolve_named(&shelf, Kind::Filament, &first)?,
+            None => users
+                .get(Kind::Filament, &first)
+                .map(|p| p.own.clone())
+                .unwrap_or_default(),
+        };
+        let one = |key: &str| {
+            settings
+                .texts(key)
+                .and_then(|items| items.first().cloned())
+                .unwrap_or_default()
+        };
+        let name = filament_name_of(&first).unwrap_or(&first).to_owned();
+        let (vendor, kind) = (one("filament_vendor"), one("filament_type"));
+        // The serial: what follows the type in the name.
+        let shown_type = if kind == "PLA-AERO" {
+            "PLA Aero".to_owned()
+        } else {
+            kind.clone()
+        };
+        let serial = name
+            .find(&shown_type)
+            .filter(|at| at + shown_type.len() < name.len())
+            .map(|at| name[at + shown_type.len()..].trim_start().to_owned())
+            .unwrap_or_default();
+        let only_one = printers.len() == 1 && printers[0].1.len() == 1;
+        Ok(json!({
+            "filament_id": filament_id,
+            "name": name,
+            "vendor": vendor,
+            "type": kind,
+            "serial": serial,
+            "printers": printers.iter().map(|(printer, names)| json!({ "printer": printer, "presets": names })).collect::<Vec<_>>(),
+            // "Note: If the only preset under this filament is deleted, …"
+            "note": only_one,
+        }))
+    }
+
+    /// `filament_family_choices`: "Add Preset" (CreatePresetForPrinterDialog):
+    /// each printer shown that stands alone or is the vendor's, and the
+    /// filament presets of the filament's type that go with it to copy
+    /// from ("Copy preset from filament").
+    pub(in crate::api) fn filament_family_choices(&self, args: &Value) -> Result<Value, String> {
+        let family = self.filament_family(args)?;
+        let wanted = family["type"].as_str().unwrap_or_default().to_owned();
+        let wanted = if wanted == "PLA Aero" {
+            "PLA-AERO".to_owned()
+        } else {
+            wanted
+        };
+        let (sources, _) = self.filament_sources();
+        let users = self.users();
+        let mut printers = Vec::new();
+        for printer in self.visible_printers() {
+            if users
+                .get(Kind::Machine, &printer)
+                .is_some_and(|p| p.inherits.is_some())
+            {
+                continue;
+            }
+            let presets: Vec<&str> = sources
+                .iter()
+                .filter(|source| source.kind == wanted)
+                .filter(|source| source.printers.is_empty() || source.printers.contains(&printer))
+                .map(|source| source.name.as_str())
+                .collect();
+            if !presets.is_empty() {
+                printers.push(json!({ "printer": printer, "presets": presets }));
+            }
+        }
+        Ok(json!({ "printers": printers }))
+    }
+
+    /// `filament_family_add`: "OK" of "Add Preset": a copy of the preset
+    /// chosen for the printer chosen, standing alone, named "<the
+    /// filament's name> @<printer>", with the filament's vendor, type and
+    /// id (`clone_presets_for_filament`); a name taken is asked about first
+    /// ("Some existing presets have failed to be created, …", `rewrite`).
+    pub(in crate::api) fn filament_family_add(&self, args: &Value) -> Result<Value, String> {
+        let family = self.filament_family(args)?;
+        let printer = needed(args, "printer")?.to_owned();
+        let preset = text(args, "preset")
+            .filter(|preset| !preset.is_empty())
+            .ok_or_else(|| tr("The filament choice not find filament preset, please reselect it"))?
+            .to_owned();
+        let name = format!("{} @{printer}", family["name"].as_str().unwrap_or_default());
+        let users = self.users();
+        if users.get(Kind::Filament, &name).is_some()
+            && args.get("rewrite").and_then(Value::as_bool) != Some(true)
+        {
+            let message = format!(
+                "{}{name}\n{}",
+                tr("Some existing presets have failed to be created, as follows:\n"),
+                tr("\nDo you want to rewrite it?")
+            );
+            return Ok(json!({ "created": false, "title": tr("Info"), "ask": message }));
+        }
+        let vendors: Vec<String> = lock(&self.state)
+            .store
+            .data
+            .models
+            .keys()
+            .cloned()
+            .collect();
+        let settings = vendors
+            .iter()
+            .filter_map(|vendor| self.shelf(vendor).ok())
+            .find_map(|shelf| self.resolve_named(&shelf, Kind::Filament, &preset).ok())
+            .ok_or_else(|| {
+                tr("The filament choice not find filament preset, please reselect it")
+            })?;
+        let shelf = self.shelf(vendors.first().ok_or("no printer is added")?)?;
+        let version = users
+            .get(Kind::Filament, &preset)
+            .and_then(|mine| mine.version.clone())
+            .unwrap_or_else(|| shelf.preset_version());
+        let mut own = whole(&settings, Kind::Filament);
+        let one = |value: &Value| {
+            edge_config::Value::Many(vec![value.as_str().unwrap_or_default().to_owned()])
+        };
+        own.insert("filament_vendor", one(&family["vendor"]));
+        own.insert(
+            "compatible_printers",
+            edge_config::Value::Many(vec![printer.clone()]),
+        );
+        own.insert("filament_type", one(&family["type"]));
+        own.insert(
+            "filament_id",
+            edge_config::Value::One(
+                family["filament_id"]
+                    .as_str()
+                    .unwrap_or_default()
+                    .to_owned(),
+            ),
+        );
+        {
+            let mut state = lock(&self.state);
+            if state.users.dir.is_none() {
+                return Err("there is no data folder to keep presets in".into());
+            }
+            Arc::make_mut(&mut state.users.presets)
+                .save(
+                    Kind::Filament,
+                    &name,
+                    ToSave {
+                        own,
+                        inherits: None,
+                        version,
+                        base_id: None,
+                    },
+                )
+                .map_err(|e| e.to_string())?;
+        }
+        let mut answer = self.filament_family(args)?;
+        answer["created"] = json!(true);
+        answer["preset"] = json!(name);
+        Ok(answer)
+    }
+
+    /// `filament_family_delete`: "Delete" of "Edit Filament": every preset
+    /// of the filament, those laid over another first ("All the filament
+    /// presets belong to this filament would be deleted. …", "Delete
+    /// filament", Yes / Cancel). With `preset`, that one alone ("Edit
+    /// Filament"'s "Delete Preset": "Are you sure to delete the selected
+    /// preset?", with the note for one that stands alone, "Delete preset";
+    /// refused for one others are laid over).
+    pub(in crate::api) fn filament_family_delete(&self, args: &Value) -> Result<Value, String> {
+        let confirm = args.get("confirm").and_then(Value::as_bool) == Some(true);
+        let users = self.users();
+        let with_project = |preset: &str| {
+            let mut one = json!({ "kind": "filament", "preset": preset, "confirm": true });
+            if let Some(project) = args.get("project") {
+                one["project"] = project.clone();
+            }
+            one
+        };
+        if let Some(preset) = text(args, "preset") {
+            let mine = users
+                .get(Kind::Filament, preset)
+                .cloned()
+                .ok_or_else(|| tr("This preset cannot be deleted."))?;
+            let children = users.children(Kind::Filament, preset);
+            if mine.inherits.is_none() && !children.is_empty() {
+                let mut message = format!(
+                    "{}\n{}",
+                    tr("Presets inherited by other presets cannot be deleted"),
+                    super::super::i18n::trn(
+                        "The following presets inherits this preset.",
+                        "The following preset inherits this preset.",
+                        children.len() as u64,
+                    )
+                );
+                for child in &children {
+                    message.push_str("\n - ");
+                    message.push_str(child);
+                }
+                return Ok(
+                    json!({ "deleted": false, "refused": true, "title": tr("Delete Preset"), "message": message }),
+                );
+            }
+            if !confirm {
+                let message = if mine.inherits.is_none() {
+                    tr(
+                        "Are you sure to delete the selected preset?\nIf the preset corresponds to a filament currently in use on your printer, please reset the filament information for that slot.",
+                    )
+                } else {
+                    tr("Are you sure to delete the selected preset?")
+                };
+                return Ok(
+                    json!({ "deleted": false, "title": tr("Delete preset"), "ask": message }),
+                );
+            }
+            self.preset_delete(&with_project(preset))?;
+            let left = self.family_presets(needed(args, "filament_id")?);
+            if left.is_empty() {
+                return Ok(json!({ "deleted": true, "gone": true }));
+            }
+            let mut answer = self.filament_family(args)?;
+            answer["deleted"] = json!(true);
+            return Ok(answer);
+        }
+        let filament_id = needed(args, "filament_id")?;
+        if !confirm {
+            return Ok(json!({
+                "deleted": false,
+                "title": tr("Delete filament"),
+                "ask": tr("All the filament presets belong to this filament would be deleted.\nIf you are using this filament on your printer, please reset the filament information for that slot."),
+            }));
+        }
+        let mut names: Vec<String> = self
+            .family_presets(filament_id)
+            .into_iter()
+            .flat_map(|(_, names)| names)
+            .collect();
+        names.sort();
+        names.dedup();
+        // Those laid over another first, then the ones that stand alone.
+        names.sort_by_key(|name| {
+            users
+                .get(Kind::Filament, name)
+                .is_some_and(|p| p.inherits.is_none())
+        });
+        for name in &names {
+            if self.users().get(Kind::Filament, name).is_some() {
+                self.preset_delete(&with_project(name))?;
+            }
+        }
+        Ok(json!({ "deleted": true, "gone": true, "count": names.len() }))
+    }
+}
+
 /// The templates of a kind, each by the name its file gives it (as the
 /// reference names a vendor's preset, PresetBundle.cpp
 /// `load_vendor_configs_from_json` l.5716) and by the name the vendor's
