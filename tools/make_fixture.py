@@ -30,7 +30,8 @@ parts meet; twotone is two blocks side by side, the first in filament 1 and 6 mm
 the second in filament 2 and 4 mm tall, so there is a tool change on every
 layer up to 4 mm and none above; bands is a post in filament 1 with two
 bands of filament 2 round it, 3 to 4 mm and 9 to 10 mm up, for tool changes
-with long stretches of one filament between them; comb is a spine with teeth 0.5 to 2 mm
+with long stretches of one filament between them, and splitbands the same with
+the bands on one half only, for tool changes in the middle of a layer; comb is a spine with teeth 0.5 to 2 mm
 wide standing on the bed, and twocomb the same with the teeth in filament 2,
 for the first layer's elephant foot compensation; steps is three tiers with a
 top surface on each, the lowest with a hole through it, for ironing. cylinder
@@ -199,6 +200,12 @@ SHAPES = {
     # none on the first layer, for a prime tower without sparse layers
     "bands": [(125.5, 126, 0, 20, 20, 3), (125.5, 126, 3, 20, 20, 1), (125.5, 126, 4, 20, 20, 5),
               (125.5, 126, 9, 20, 20, 1), (125.5, 126, 10, 20, 20, 4)],
+    # the same post with its bands in filament 2 on the half at the larger
+    # x only: on the bands' layers the filament changes in the middle of
+    # the layer, with the nozzle over the post (tool_change_on_wipe_tower)
+    "splitbands": [(125.5, 126, 0, 20, 20, 3), (125.5, 126, 3, 10, 20, 1), (135.5, 126, 3, 10, 20, 1),
+                   (125.5, 126, 4, 20, 20, 5), (125.5, 126, 9, 10, 20, 1), (135.5, 126, 9, 10, 20, 1),
+                   (125.5, 126, 10, 20, 20, 4)],
     # a spine with seven teeth standing on the bed, 0.5 to 2 mm wide, for
     # what the first layer's elephant foot compensation leaves of thin parts
     "comb": [(115.5, 129, 0, 40, 6, 3)] + [
@@ -221,7 +228,8 @@ SHAPES = {
 # the comb again, its teeth in a second filament
 SHAPES["twocomb"] = SHAPES["comb"]
 # The filament each box of a shape is printed in, where it is not all the first.
-FILAMENTS = {"twotone": [1, 2], "twocomb": [1] + [2] * 7, "bands": [1, 2, 1, 2, 1]}
+FILAMENTS = {"twotone": [1, 2], "twocomb": [1] + [2] * 7, "bands": [1, 2, 1, 2, 1],
+             "splitbands": [1, 1, 2, 1, 1, 2, 1]}
 
 # Shapes with parts that are not printed, each box's kind as the reference
 # writes it (`subtype`): the cube with a modifier box through its right
