@@ -1,13 +1,64 @@
-//! Colours from a part's sides: where the painted triangles cut each
-//! layer's plane, which edges of the layer's outline those cuts colour,
-//! and the share of the layer nearest each colour's edges.
+//! Colours from a part's sides: which stretches of each layer's outline
+//! the painted triangles colour, and the share of the layer each colour
+//! takes from them. A port of the side half of the reference's
+//! `segmentation_by_painting` (MultiMaterialSegmentation.cpp).
+//!
+//! What the reference runs, in order, and where it is here:
+//!
+//! 1. The layer's outline (`input_expolygons`): the regions grown by ten
+//!    `SCALED_EPSILON`, united, islands and holes under 0.01 mm² dropped,
+//!    shrunk back, simplified and near-duplicate corners taken out.
+//!    Matched in `edge_engine::paint::outlines` (each part cut by itself).
+//! 2. A grid over the outline's rings (`EdgeGrid::Grid::create`, 10 mm
+//!    squares). Here: [`lines::Rings`], a grid of its own; it only finds
+//!    candidates, every test made on them is the reference's.
+//! 3. Each painted triangle cut by each layer's plane, in single
+//!    precision as the reference cuts it (the "Projection of painted
+//!    triangles" loop): [`cuts`].
+//! 4. A cut matched to the edges of the outline it lies along: less than
+//!    30 degrees off and within 50 `SCALED_EPSILON` (5 µm) at one end,
+//!    then projected onto the edge (`PaintedLineVisitor`,
+//!    `project_line_on_line`): [`lines::painted`].
+//! 5. Each edge's painted lines sorted along it and joined where they
+//!    overlap or nearly meet (`post_process_painted_lines`,
+//!    `filter_painted_lines`): [`lines::post_process`].
+//! 6. Each ring cut into lines of one colour, unpainted stretches
+//!    coloured 0, short runs given to their neighbours
+//!    (`colorize_contours`, `colorize_contour`, `colorize_line`):
+//!    [`colour`]. Not yet `filter_colorized_polygon`.
+//! 7. A layer all one colour is that colour's whole
+//!    (`has_layer_only_one_color`): [`share`].
+//! 8. Otherwise the graph of the rings and the Voronoi diagram of their
+//!    coloured lines: the diagram's edges that divide two colours kept,
+//!    the rest pruned, and each colour's faces traced round it
+//!    (`MMU_Graph`, `build_graph`, `remove_multiple_edges_in_vertices`,
+//!    `remove_nodes_with_one_arc`, `extract_colored_segments`): [`graph`].
+//!
+//! After this the reference cuts each colour back to a band along the
+//! outline where paint depth is bounded (`cut_segmented_layers`, step 9),
+//! takes paint on top and bottom faces through the shell
+//! (`segmentation_top_and_bottom_layers`, [`crate::shells`]) and merges
+//! the two (`merge_segmented_layers`, [`crate::segment`]).
+//!
+//! Before this port the engine matched a cut to an edge within 0.15 mm
+//! by the nearest cut, gave runs under 0.2 mm to the run before, and
+//! united the Voronoi cells of each colour's edges whole. Steps 4 to 8
+//! replace that.
+//!
+//! Left out, as workarounds for flaws or as no-ops:
+//! - The Voronoi diagram is not checked and rebuilt rotated when Boost
+//!   gets it wrong (`VoronoiDiagram::construct_voronoi`'s
+//!   `try_to_repair_if_needed`); a diagram the graph cannot use is an
+//!   error for the layer.
+//! - A coloured line of no length is dropped before the diagram is made
+//!   (Boost's diagram is not defined for one).
 
 pub(crate) mod colour;
 pub(crate) mod graph;
 pub use graph::SideError;
+pub(crate) mod lines;
 
-use edge_geom::{Coord, ExPolygon, Point2, UNITS_PER_MM};
-use rustc_hash::FxHashMap;
+use edge_geom::{ExPolygon, Point2};
 
 use crate::{Facet, PaintError};
 
@@ -22,6 +73,10 @@ impl Line {
     pub fn new(a: Point2, b: Point2) -> Self {
         Self { a, b }
     }
+
+    pub fn length(&self) -> f64 {
+        dist(self.a, self.b)
+    }
 }
 
 pub(crate) fn dist2(a: Point2, b: Point2) -> f64 {
@@ -29,7 +84,12 @@ pub(crate) fn dist2(a: Point2, b: Point2) -> f64 {
     dx * dx + dy * dy
 }
 
-/// The reference's `scale_(mm)`.
+pub(crate) fn dist(a: Point2, b: Point2) -> f64 {
+    dist2(a, b).sqrt()
+}
+
+/// The reference's `scale_(mm)`: a length in millimetres in scaled
+/// units, as a double.
 pub(crate) fn scale(mm: f64) -> f64 {
     mm / 1e-6
 }
@@ -37,284 +97,116 @@ pub(crate) fn scale(mm: f64) -> f64 {
 /// `SCALED_EPSILON`, in scaled units.
 pub(crate) const SCALED_EPSILON: i64 = 100;
 
-/// A cut colours the stretch of an outline's edge it lies within this
-/// far of, in scaled units: the outline has been closed up and
-/// simplified since the mesh was cut, so the two do not lie exactly on
-/// each other.
-pub(crate) const NEAR: f64 = 0.15 * UNITS_PER_MM;
-/// A run of one colour along an outline shorter than this is given to
-/// the run before it: such scraps come of where triangles meet, not of
-/// what was painted.
-const SHORT_RUN: f64 = 0.2 * UNITS_PER_MM;
-/// A triangle no taller than this is flat for the purpose of cutting it
-/// (the reference's `is_equal`).
-const FLAT: f32 = 1e-3;
-/// The side of the squares cuts are sorted into to be found again.
-const CELL: f64 = 2.0 * UNITS_PER_MM;
-
-/// Where a painted triangle crosses a layer's plane.
+/// A painted triangle cut by one layer's plane: the cut, its colour and
+/// which triangle it came from.
 #[derive(Clone, Copy, Debug)]
 pub(crate) struct Cut {
-    a: (f64, f64),
-    b: (f64, f64),
-    colour: u8,
+    pub line: Line,
+    pub colour: u8,
+    pub facet: u32,
 }
 
-/// Each layer's cuts through the painted triangles, in the order the
-/// triangles are given.
+/// The reference's `is_equal` and `is_less` on single precision.
+fn is_equal(left: f32, right: f32) -> bool {
+    (left - right).abs() <= 1e-3
+}
+
+fn is_less(left: f32, right: f32) -> bool {
+    left + 1e-3 < right
+}
+
+/// Each layer's cuts through the painted triangles, as the reference
+/// makes them (the "Projection of painted triangles" loop of
+/// `segmentation_by_painting`): in single precision, a triangle that is
+/// flat to within a micrometre left out, and a triangle with a side
+/// lying in the plane cut along that side.
 pub(crate) fn cuts(facets: &[Facet], planes: &[f64]) -> Vec<Vec<Cut>> {
+    const EPSILON: f64 = 1e-4;
     let mut cuts: Vec<Vec<Cut>> = vec![Vec::new(); planes.len()];
-    for facet in facets.iter().filter(|facet| facet.filament > 0) {
-        let mut corners = facet.corners;
-        corners.sort_by(|a, b| a[2].total_cmp(&b[2]));
-        let [low, middle, high] = corners;
-        if high[2] - low[2] <= FLAT {
+    for (index, facet) in facets.iter().enumerate() {
+        if facet.filament == 0 {
             continue;
         }
-        let first = planes.partition_point(|&z| z < f64::from(low[2]));
-        for (layer, &z) in planes.iter().enumerate().skip(first) {
-            let z = z as f32;
-            if z > high[2] {
-                break;
+        let mut corners = facet.corners;
+        let min_z = corners.iter().map(|c| c[2]).fold(f32::MAX, f32::min);
+        let max_z = corners.iter().map(|c| c[2]).fold(f32::MIN, f32::max);
+        if is_equal(min_z, max_z) {
+            continue;
+        }
+        corners.sort_by(|a, b| a[2].total_cmp(&b[2]));
+        let [p0, p1, p2] = corners;
+        // The lowest plane above the triangle's foot, less a tolerance,
+        // to the highest one under its top, plus one.
+        let low = f64::from((f64::from(min_z) - EPSILON) as f32);
+        let high = f64::from((f64::from(max_z) + EPSILON) as f32);
+        let first = planes.partition_point(|&z| z <= low);
+        let last = planes.partition_point(|&z| z <= high);
+        for (layer, &plane) in planes.iter().enumerate().take(last).skip(first) {
+            let z = plane as f32;
+            if is_less(z, p0[2]) || is_less(p2[2], z) {
+                continue;
             }
-            let along = |from: [f32; 3], to: [f32; 3]| {
-                let t = if to[2] > from[2] {
-                    ((z - from[2]) / (to[2] - from[2])).clamp(0.0, 1.0)
-                } else {
-                    0.0
-                };
-                (
-                    f64::from(from[0] + t * (to[0] - from[0])) * UNITS_PER_MM,
-                    f64::from(from[1] + t * (to[1] - from[1])) * UNITS_PER_MM,
-                )
+            let at = |from: [f32; 3], to: [f32; 3], t: f32| {
+                [
+                    from[0] + t * (to[0] - from[0]),
+                    from[1] + t * (to[1] - from[1]),
+                ]
             };
-            let a = along(low, high);
-            let b = if middle[2] > z {
-                along(low, middle)
+            let start = at(p0, p2, (z - p0[2]) / (p2[2] - p0[2]));
+            let end = if (is_equal(p0[2], p1[2]) && is_equal(p1[2], z))
+                || (is_equal(p1[2], p2[2]) && is_equal(p1[2], z))
+            {
+                [p1[0], p1[1]]
+            } else if f64::from(p1[2]) > plane {
+                at(p0, p1, (z - p0[2]) / (p1[2] - p0[2]))
             } else {
-                along(middle, high)
+                at(p1, p2, (z - p1[2]) / (p2[2] - p1[2]))
+            };
+            let point = |p: [f32; 2]| Point2 {
+                x: scale(f64::from(p[0])).round() as i64,
+                y: scale(f64::from(p[1])).round() as i64,
             };
             cuts[layer].push(Cut {
-                a,
-                b,
+                line: Line::new(point(start), point(end)),
                 colour: facet.filament,
+                facet: index as u32,
             });
         }
     }
     cuts
 }
 
-/// One edge of an outline, from `from` to the next one's `from`, and the
-/// colour it is painted, 0 for none.
-#[derive(Clone, Copy, Debug, PartialEq)]
-pub(crate) struct Painted {
-    pub from: Point2,
-    pub colour: u8,
-}
-
-/// A layer's rings with their edges cut where the colour changes.
-pub(crate) fn colour(outline: &[ExPolygon], cuts: &[Cut]) -> Vec<Vec<Painted>> {
-    // The cuts by the squares they pass through.
-    let cell = |c: f64| (c / CELL).floor() as i64;
-    let mut grid: FxHashMap<(i64, i64), Vec<u32>> = FxHashMap::default();
-    for (index, cut) in cuts.iter().enumerate() {
-        let (x0, x1) = (cut.a.0.min(cut.b.0) - NEAR, cut.a.0.max(cut.b.0) + NEAR);
-        let (y0, y1) = (cut.a.1.min(cut.b.1) - NEAR, cut.a.1.max(cut.b.1) + NEAR);
-        for x in cell(x0)..=cell(x1) {
-            for y in cell(y0)..=cell(y1) {
-                grid.entry((x, y)).or_default().push(index as u32);
-            }
-        }
-    }
-
-    outline
-        .iter()
-        .flat_map(ExPolygon::rings)
-        .map(|ring| {
-            let mut painted = Vec::new();
-            let points = &ring.points;
-            for (at, &from) in points.iter().enumerate() {
-                let to = points[(at + 1) % points.len()];
-                if from == to {
-                    continue;
-                }
-                let (ax, ay) = (from.x as f64, from.y as f64);
-                let (dx, dy) = (to.x as f64 - ax, to.y as f64 - ay);
-                let length = dx.hypot(dy);
-                let (ux, uy) = (dx / length, dy / length);
-                let mut near: Vec<u32> = Vec::new();
-                for x in cell(ax.min(ax + dx))..=cell(ax.max(ax + dx)) {
-                    for y in cell(ay.min(ay + dy))..=cell(ay.max(ay + dy)) {
-                        if let Some(found) = grid.get(&(x, y)) {
-                            near.extend(found);
-                        }
-                    }
-                }
-                near.sort_unstable();
-                near.dedup();
-                // The stretch of the edge each cut lies along, with how
-                // far off it is: (from, to, off, colour).
-                let mut along: Vec<(f64, f64, f64, u8)> = Vec::new();
-                for &index in &near {
-                    let cut = &cuts[index as usize];
-                    let place = |p: (f64, f64)| {
-                        let (px, py) = (p.0 - ax, p.1 - ay);
-                        (px * ux + py * uy, px * uy - py * ux)
-                    };
-                    let ((mut t0, mut d0), (mut t1, mut d1)) = (place(cut.a), place(cut.b));
-                    if t0 > t1 {
-                        ((t0, d0), (t1, d1)) = ((t1, d1), (t0, d0));
-                    }
-                    // Only the part beside the edge counts.
-                    let (low, high) = (t0.max(0.0), t1.min(length));
-                    if high - low < 1.0 {
-                        continue;
-                    }
-                    let off = |t: f64| {
-                        if t1 > t0 {
-                            d0 + (d1 - d0) * (t - t0) / (t1 - t0)
-                        } else {
-                            d0
-                        }
-                    };
-                    let (off_low, off_high) = (off(low).abs(), off(high).abs());
-                    if off_low.max(off_high) <= NEAR {
-                        along.push((low, high, (off_low + off_high) / 2.0, cut.colour));
-                    }
-                }
-                let mut breaks: Vec<f64> = along
-                    .iter()
-                    .flat_map(|&(low, high, ..)| [low, high])
-                    .chain([0.0, length])
-                    .collect();
-                breaks.sort_by(f64::total_cmp);
-                breaks.dedup_by(|a, b| (*a - *b).abs() < 1.0);
-                // The colour of the stretch before, on this edge.
-                let mut last = None;
-                for pair in breaks.windows(2) {
-                    let middle = (pair[0] + pair[1]) / 2.0;
-                    // The nearest cut beside this stretch says its colour.
-                    let colour = along
-                        .iter()
-                        .filter(|&&(low, high, ..)| low <= middle && middle <= high)
-                        .min_by(|a, b| a.2.total_cmp(&b.2))
-                        .map_or(0, |found| found.3);
-                    if last == Some(colour) {
-                        continue;
-                    }
-                    last = Some(colour);
-                    let start = if pair[0] <= 0.0 {
-                        from
-                    } else {
-                        Point2 {
-                            x: (ax + ux * pair[0]).round() as Coord,
-                            y: (ay + uy * pair[0]).round() as Coord,
-                        }
-                    };
-                    if painted
-                        .last()
-                        .is_none_or(|last: &Painted| last.from != start)
-                    {
-                        painted.push(Painted {
-                            from: start,
-                            colour,
-                        });
-                    }
-                }
-            }
-            if painted.len() > 1 && painted[0].from == painted[painted.len() - 1].from {
-                painted.pop();
-            }
-            settle(&mut painted);
-            painted
-        })
-        .collect()
-}
-
-/// Gives each run of one colour too short to mean anything to the run
-/// before it, shortest first, until none is left.
-fn settle(ring: &mut [Painted]) {
-    let count = ring.len();
-    if count < 2 {
-        return;
-    }
-    let lengths: Vec<f64> = (0..count)
-        .map(|at| {
-            let (a, b) = (ring[at].from, ring[(at + 1) % count].from);
-            ((b.x - a.x) as f64).hypot((b.y - a.y) as f64)
-        })
-        .collect();
-    loop {
-        // Runs as (first edge, edges, length), starting at a change of colour.
-        let Some(start) =
-            (0..count).find(|&at| ring[at].colour != ring[(at + count - 1) % count].colour)
-        else {
-            return;
-        };
-        let mut runs: Vec<(usize, usize, f64)> = Vec::new();
-        let mut at = 0;
-        while at < count {
-            let first = (start + at) % count;
-            let (mut edges, mut length) = (0, 0.0);
-            while at < count && ring[(start + at) % count].colour == ring[first].colour {
-                length += lengths[(start + at) % count];
-                edges += 1;
-                at += 1;
-            }
-            runs.push((first, edges, length));
-        }
-        let shortest = runs
-            .iter()
-            .enumerate()
-            .filter(|(_, run)| run.2 < SHORT_RUN)
-            .min_by(|a, b| a.1.2.total_cmp(&b.1.2))
-            .map(|(index, _)| index);
-        let Some(shortest) = shortest else { return };
-        let before = runs[(shortest + runs.len() - 1) % runs.len()];
-        let colour = ring[before.0].colour;
-        let (first, edges, _) = runs[shortest];
-        for step in 0..edges {
-            ring[(first + step) % count].colour = colour;
-        }
-    }
-}
-
-/// The share of a layer nearest each colour's stretches of its outline:
-/// one list of regions for every colour, 0 being unpainted.
+/// The share of a layer each colour takes from the painted stretches of
+/// its outline: one list of regions for every colour, 0 being
+/// unpainted. `run_scale` shrinks the lengths runs of colour are
+/// filtered by for nozzles under 0.4 mm
+/// (`mm_segmentation_run_filter_scale`).
 pub(crate) fn share(
     layer: usize,
     outline: &[ExPolygon],
     cuts: &[Cut],
     colours: usize,
+    run_scale: f32,
 ) -> Result<Vec<Vec<ExPolygon>>, PaintError> {
     let mut shares = vec![Vec::new(); colours];
     if outline.is_empty() || cuts.is_empty() {
         return Ok(shares);
     }
-    let rings = colour(outline, cuts);
-    let mut seen = rings.iter().flatten().map(|edge| edge.colour);
-    let Some(first) = seen.next() else {
-        return Ok(shares);
-    };
-    // One colour all round needs no dividing.
-    if seen.all(|colour| colour == first) {
-        shares[first as usize] = outline.to_vec();
+    let rings = lines::Rings::new(outline);
+    let painted = lines::painted(&rings, cuts);
+    if painted.is_empty() {
         return Ok(shares);
     }
-    // The borders between colours traced through the graph of the
-    // rings and their Voronoi diagram (MultiMaterialSegmentation.cpp
-    // `build_graph`, `extract_colored_segments`).
-    let coloured: Vec<Vec<colour::ColouredLine>> = rings
-        .iter()
-        .map(|ring| {
-            (0..ring.len())
-                .map(|at| colour::ColouredLine {
-                    line: Line::new(ring[at].from, ring[(at + 1) % ring.len()].from),
-                    colour: ring[at].colour,
-                })
-                .collect()
-        })
-        .collect();
+    let by_ring = lines::post_process(&rings, painted, run_scale);
+    let coloured = colour::colorize_contours(&rings, &by_ring, run_scale);
+    // `has_layer_only_one_color`.
+    let first = coloured[0][0].colour;
+    if coloured.iter().flatten().all(|line| line.colour == first) {
+        if let Some(own) = shares.get_mut(first as usize) {
+            *own = outline.to_vec();
+        }
+        return Ok(shares);
+    }
     let faces = graph::segments(&coloured, colours)
         .map_err(|source| PaintError::Diagram { layer, source })?;
     for (colour, polygons) in faces.into_iter().enumerate() {
@@ -324,3 +216,6 @@ pub(crate) fn share(
     }
     Ok(shares)
 }
+
+#[cfg(test)]
+mod tests;

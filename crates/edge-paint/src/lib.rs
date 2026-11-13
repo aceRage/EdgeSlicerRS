@@ -1,27 +1,24 @@
 //! Which filament prints what, where colours are painted onto a part.
 //!
 //! Paint is on the surface; a print is solid. So each layer is shared out
-//! from its outline inwards: every point of a layer takes the colour of
-//! the nearest stretch of the layer's outline, and what is painted on a
-//! face that looks up or down is carried through the shell behind it,
-//! where it wins over what the sides say.
+//! from its outline inwards: the painted triangles colour the stretches
+//! of the layer's outline they lie along, the layer is divided between
+//! the colours along the borders the Voronoi diagram of those stretches
+//! draws, and what is painted on a face that looks up or down is carried
+//! through the shell behind it, where it wins over what the sides say.
 //!
 //! This follows the reference's `segmentation_by_painting`
 //! (MultiMaterialSegmentation.cpp) as it runs with `paint_depth_mode` at
-//! `unlimited`, which is its default: painted triangles are cut by each
-//! layer's plane and the cuts matched to the outline's edges, the layer is
-//! divided by the Voronoi diagram of those edges, and top and bottom faces
-//! are projected onto their layers and taken down or up through the shell
-//! layers, further in from the outline with every layer.
+//! `unlimited`, which is its default. The sides are a port of the
+//! reference's stages ([`side`], which lists them); the top and bottom
+//! faces ([`shells`]) and the merge ([`segment`]) follow it.
 //!
-//! Not a port line for line. A cut is matched to an edge when it lies
-//! within [`NEAR`] of it, where the reference walks a grid and tests
-//! angles; and what the
-//! reference does to drop islands of paint too small to print with a
-//! classic wall (`drop_unprintable_painted_islands`) is not done. The
-//! bounded depths (`paint_depth_mode` at `walls` or `millimeters`,
+//! What the reference does to drop islands of paint too small to print
+//! with a classic wall (`drop_unprintable_painted_islands`) is not done.
+//! The bounded depths (`paint_depth_mode` at `walls` or `millimeters`,
 //! `mmu_segmented_region_max_width`), interlocking and
-//! `top_color_penetration_layers` are not here at all.
+//! `top_color_penetration_layers` are not here at all; where the bounded
+//! depths would go is said at [`segment`].
 
 mod shells;
 mod side;
@@ -57,6 +54,20 @@ pub struct PaintSettings {
     /// the outer wall's width where gaps are filled, and otherwise half
     /// of what two overlapping walls take up.
     pub small: Coord,
+    /// What the lengths runs of colour round an outline are filtered by
+    /// are scaled by: 1 for nozzles of 0.4 mm and more, less for finer
+    /// ones ([`run_filter_scale`]).
+    pub run_scale: f32,
+}
+
+/// `mm_segmentation_run_filter_scale`: the lengths runs of colour are
+/// filtered by scaled down for the finest nozzle an object is printed
+/// with, when that is under 0.4 mm, to no less than a quarter.
+pub fn run_filter_scale(nozzle_mm: f64) -> f32 {
+    if nozzle_mm.is_nan() || nozzle_mm <= 0.0 || nozzle_mm >= 0.4 - 1e-6 {
+        return 1.0;
+    }
+    (nozzle_mm / 0.4).clamp(0.25, 1.0) as f32
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -95,8 +106,14 @@ pub fn segment(
         .par_iter()
         .zip(&cuts)
         .enumerate()
-        .map(|(layer, (outline, cuts))| side::share(layer, outline, cuts, colours))
+        .map(|(layer, (outline, cuts))| {
+            side::share(layer, outline, cuts, colours, settings.run_scale)
+        })
         .collect::<Result<_, _>>()?;
+    // Where paint depth is bounded the reference cuts each colour's
+    // share here back to a band along the outline
+    // (`cut_segmented_layers`, keeping `paint_depth_clamp_keep_core`),
+    // before the faces are worked out and merged in.
     let faces = shells::faces(outlines, planes, facets, colours, settings)?;
 
     (0..outlines.len())

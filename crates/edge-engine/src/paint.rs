@@ -115,9 +115,47 @@ pub(crate) fn settings(
             wall_width: outer.scaled_width(),
             wall_spacing: outer.scaled_spacing(),
             small: edge_geom::scaled(small),
+            // Set for each object by [`run_scale`].
+            run_scale: 1.0,
         },
         notes,
     ))
+}
+
+/// How the lengths runs of colour are filtered by are scaled for an
+/// object printed with `filaments` (counting from 1): by the finest of
+/// their nozzles (MultiMaterialSegmentation.cpp
+/// `mm_segmentation_finest_nozzle`, `mm_segmentation_run_filter_scale`).
+/// The reference takes the object's extruders, every filament any of
+/// its regions prints with; here they are the filament the object is
+/// made of and those painted on it.
+pub(crate) fn run_scale(
+    settings: &Settings,
+    filaments: impl IntoIterator<Item = usize>,
+) -> Result<f32, ConfigError> {
+    let nozzles: Vec<f64> = settings
+        .floats("nozzle_diameter")?
+        .unwrap_or_default()
+        .into_iter()
+        .flatten()
+        .collect();
+    let finest = filaments
+        .into_iter()
+        .filter_map(|filament| {
+            nozzles
+                .get(filament.saturating_sub(1))
+                .or(nozzles.first())
+                .copied()
+        })
+        .filter(|nozzle| *nozzle > 0.0)
+        .fold(0.0, |finest: f64, nozzle| {
+            if finest == 0.0 {
+                nozzle
+            } else {
+                finest.min(nozzle)
+            }
+        });
+    Ok(edge_paint::run_filter_scale(finest))
 }
 
 /// Each layer of a painted object as colour is shared out over it: its

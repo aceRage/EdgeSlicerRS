@@ -46,6 +46,7 @@ fn settings(top_layers: usize, bottom_layers: usize) -> PaintSettings {
         wall_width: scaled(0.5),
         wall_spacing: scaled(0.5),
         small: scaled(0.1),
+        run_scale: 1.0,
     }
 }
 
