@@ -1512,6 +1512,20 @@ Read from `libslic3r/Orient.cpp` and `.hpp`, `Jobs/OrientJob.cpp`,
 | Preferences: an "auto orient on import" setting | Preferences.cpp | none in the reference (no orient option in its dialog or `AppConfig`) |
 | Keys listed in "Keyboard Shortcuts": "Q" and Shift+"Q" with the reference's words | KBShortcutsDialog.cpp l.226 | **added** (marked as working) |
 
+Checked in the served page (`--serve`, 1280 × 820, dark, English) on a
+30 × 20 × 10 box tilted 27° and 41°, on the U1: the tool's two-line
+tooltip, Q laid the box flat on the bed ("Orient" to undo), the plate
+row's menu with "Auto Rotate", the plate locked and Shift+Q refused with
+"This plate is locked.\nCannot auto-orient on this plate.", two undos back
+to the tilted box. In German the page loaded with the tooltip "Alle/
+ausgewählte Objekte automatische Ausrichtung [Q]" and "[Umschalt+Q]"; the
+light German pass at 900 × 560 could not be driven or pictured (the
+browser pane was hidden and the page does not run while it is).
+Screenshots in `~/Dev/EdgeSlicerRS-shots/orient/`. Session tests:
+`src/api/edit/tests.rs` (two); engine: `crates/edge-engine/tests/orient.rs`
+(seven) and `src/orient/tests.rs` (nine).
+
+
 ### Arrange
 
 The reference arranges with libnest2d (`deps_src/libnest2d`) driven by
