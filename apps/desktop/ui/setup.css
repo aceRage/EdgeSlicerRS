@@ -66,9 +66,9 @@
 
 /* ---- the Filament manager ---- */
 
-#fm-table { min-width: 1170px; }
-#fm-table th.col-checked { width: 84px; padding-left: var(--space-4); }
-#fm-table th.col-star { width: 84px; }
+#fm-table { min-width: 1218px; }
+#fm-table th.col-checked { width: 112px; padding-left: var(--space-4); }
+#fm-table th.col-star { width: 104px; }
 #fm-table th.col-vendor { width: 100px; }
 #fm-table th.col-type { width: 84px; }
 #fm-table th.col-source { width: 80px; }
@@ -165,7 +165,7 @@
 #fm-table th { position: sticky; }
 .fm-resize { position: absolute; top: 0; right: -3px; width: 7px; height: 100%; cursor: col-resize; z-index: 1; }
 .fm-resize:hover { background: color-mix(in srgb, var(--accent) 40%, transparent); }
-.fm-hcheck { margin-right: 6px; vertical-align: middle; }
+#fm-table th .fm-hcheck { margin: 0 6px 0 0; vertical-align: middle; }
 #fm-scope { white-space: nowrap; font-size: var(--size-label); }
 /* "Edit Filament": its presets by printer. */
 .ef-tree { display: flex; flex-direction: column; gap: var(--space-2); padding: var(--space-3); }
