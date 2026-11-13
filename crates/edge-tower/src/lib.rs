@@ -48,10 +48,17 @@
 //! A tower whose saved place no longer fits it is moved onto the bed
 //! before it is planned (`place.rs`).
 //!
-//! Not done: the cone wall, turning the tower end for end on alternate
-//! layers, and leaving out the layers no tool change uses.
+//! With `wipe_tower_no_sparse_layers` the tower leaves out the layers that
+//! have no tool change and stands only as tall as the layers it lays, each
+//! one's top given with it ([`TowerLayer::z`]); the nozzle goes down to it
+//! there. A plate where the toolhead would then meet what is printed is
+//! refused, as the reference refuses it (`clearance.rs`).
+//!
+//! Not done: the cone wall, and turning the tower end for end on
+//! alternate layers.
 
 mod bambu;
+mod clearance;
 mod place;
 
 use std::f64::consts::PI;
@@ -62,7 +69,8 @@ use edge_extrusion::{ExtrusionPath, Flow, FlowError, Role, TowerStroke};
 use edge_geom::{ExPolygon, Point2, Polygon, scaled, unscaled};
 
 pub use bambu::Type1;
-pub use place::{Ground, Moved, PlaceError, relocate};
+pub use clearance::{CLEARANCE_ERROR, Clearance, Object, estimate_clears, tower_clears};
+pub use place::{Ground, Moved, PlaceError, estimated_size, relocate};
 
 /// The tower's lines are this many nozzle diameters wide
 /// (WipeTower2.hpp `Width_To_Nozzle_Ratio`).
@@ -211,6 +219,11 @@ pub struct TowerSettings {
     pub iron_areas: Vec<f64>,
     /// What the Bambu Lab tower reads besides (`bambu_tower`).
     pub type1: Type1,
+    /// The tower leaves out the layers with no tool change, and stands
+    /// only as tall as the layers it lays: `wipe_tower_no_sparse_layers`,
+    /// unless a smooth timelapse wants a tower on every layer
+    /// (WipeTower.cpp `wipe_tower_sparse_layers_skipped`).
+    pub skip_sparse: bool,
     /// Settings present in the input that are not honoured, each with what
     /// is done instead.
     pub unsupported: Vec<String>,
@@ -262,6 +275,7 @@ impl Default for TowerSettings {
             infill_speed: 100.0,
             iron_areas: Vec::new(),
             type1: Type1::default(),
+            skip_sparse: false,
             unsupported: Vec::new(),
         }
     }
@@ -299,27 +313,21 @@ impl TowerSettings {
         let enabled = settings
             .flag("enable_prime_tower")?
             .unwrap_or(defaults.enabled);
+        // A smooth timelapse photographs the tower on every layer, so none
+        // is left out then (WipeTower.cpp `wipe_tower_sparse_layers_skipped`).
+        let skip_sparse = enabled
+            && settings
+                .flag("wipe_tower_no_sparse_layers")?
+                .unwrap_or(false)
+            && settings.text("timelapse_type") != Some("1");
         let mut unsupported = Vec::new();
         if enabled {
-            for (key, plain, instead) in [
-                (
-                    "wipe_tower_rotation_angle",
-                    "0",
-                    "the tower stands square to the bed",
-                ),
-                (
-                    "wipe_tower_no_sparse_layers",
-                    "0",
-                    "the tower is printed on every layer up to the last tool change, where the \
-                     reference leaves out those with none, lowers the nozzle to the tower and \
-                     refuses a plate where the toolhead would then meet a printed object",
-                ),
-            ] {
-                if let Some(value) = settings.text(key)
-                    && value != plain
-                {
-                    unsupported.push(format!("{key} \"{value}\": {instead}"));
-                }
+            if let Some(value) = settings.text("wipe_tower_rotation_angle")
+                && value != "0"
+            {
+                unsupported.push(format!(
+                    "wipe_tower_rotation_angle \"{value}\": the tower stands square to the bed"
+                ));
             }
             // Bambu's tower lays a cone as a box as well, as the
             // reference's does.
@@ -497,7 +505,9 @@ impl TowerSettings {
                         .to_owned(),
                 );
             }
-            if on("wipe_tower_sparse_layers_combination") {
+            // Leaving the layers out wins over laying them as one
+            // (WipeTower.cpp `wipe_tower_sparse_layers_combined`).
+            if on("wipe_tower_sparse_layers_combination") && !skip_sparse {
                 unsupported.push(
                     "wipe_tower_sparse_layers_combination \"1\": the tower's layers with no tool \
                      change are laid one by one, where the reference lays a run of them as one"
@@ -636,6 +646,7 @@ impl TowerSettings {
                 .map(|area| area.unwrap_or(4.0))
                 .collect(),
             type1,
+            skip_sparse,
             unsupported,
         })
     }
@@ -947,6 +958,17 @@ pub struct TowerLayer {
     /// where the tower lays it so (WipeTower.cpp `finish_layer`); none
     /// where its lines are laid nearest first.
     pub sparse: Option<Wipe>,
+    /// With the layers that have no tool change left out
+    /// ([`TowerSettings::skip_sparse`]): the top of the tower's own layer,
+    /// which stands lower than the print's by every layer left out under
+    /// it (WipeTower.cpp `compute_compacted_wipe_tower_z`). None for a
+    /// layer the tower is not laid on, and where nothing is left out.
+    pub z: Option<f64>,
+    /// Whether `finish` is laid at the first layer's speed: on the first
+    /// layer, and on a printer's own tower (WipeTower2.cpp) with layers
+    /// left out, wherever no more than one tool change has been made yet
+    /// (`finish_layer`, "it must be still the first layer").
+    pub first_speed: bool,
 }
 
 /// The whole tower.
@@ -1356,11 +1378,39 @@ pub fn plan_changes(
     let place =
         |x: f64, y: f64| Point2::from_mm(settings.x - corner.0 + x, settings.y - corner.1 + y);
 
+    // The layers the tower is laid on: every one up to the last tool
+    // change, or with the layers that have none left out, only those that
+    // have one. The tower's first layer stays the print's first all the
+    // same, laid or not (WipeTower2.cpp `plan_toolchange`, which takes the
+    // first layer planned for it; GCode.cpp `is_empty_wipe_tower_gcode`,
+    // which leaves it out when it has no change).
+    let skip = settings.skip_sparse;
+    let laid: Vec<bool> = (0..=last)
+        .map(|layer| !skip || !changes[layer].is_empty())
+        .collect();
+    let first_laid = laid.iter().position(|laid| *laid).unwrap_or(0);
+    // The layer laid last before each, which a layer is laid on.
+    let laid_below = |layer: usize| (0..layer).rev().find(|below| laid[*below]);
+    // Tool changes made on the layers below (`m_num_tool_changes`).
+    let mut made = 0usize;
+    // How tall the tower stands, by the layers laid.
+    let mut tower_top = 0.0;
+
     let mut top = 0.0;
     for layer in 0..=last {
         let first = layer == 0;
         let height = heights[layer];
         top += height;
+        if laid[layer] {
+            tower_top += height;
+        }
+        // With layers left out, the tower's lines and its frame go at the
+        // first layer's speed as long as no more than one tool change has
+        // been made, "it must be still the first layer" (WipeTower2.cpp
+        // `toolchange_Wipe`, `finish_layer`); their rows stay spaced as
+        // the print's first layer has them only on it.
+        let slow = |made: usize| first || (skip && made <= 1);
+        let finish_slow = slow(made + usize::from(!changes[layer].is_empty()));
         let flow = settings.flow(height)?;
         let path = |points: Vec<Point2>| ExtrusionPath {
             points,
@@ -1419,10 +1469,13 @@ pub fn plan_changes(
                 let mut lines = Vec::new();
                 // Where the ram would end over the open part of the layer
                 // below, a line is laid up to it first for it to rest on.
-                let below = if layer > 1 {
-                    Some(used_at(span, layer - 1) + line)
-                } else {
-                    None
+                // Below is the tower's layer laid last, under one with
+                // layers left out between: not as the reference, which
+                // looks at the print's layer below whether the tower was
+                // laid on it or not (WipeTower2.cpp `toolchange_Unload`).
+                let below = match laid_below(layer) {
+                    Some(below) if below != first_laid => Some(used_at(span, below) + line),
+                    _ => None,
                 };
                 let lead = planned.first_wipe - wide;
                 if below.is_some_and(|open| used + planned.ramming > open + 0.5 * line)
@@ -1508,7 +1561,7 @@ pub fn plan_changes(
                 y += step;
                 rightward = !rightward;
             }
-            let target = settings.wipe_target(first);
+            let target = settings.wipe_target(slow(made + index));
             let mut feed = 0.33 * target;
             let mut wipe = Wipe::new(at(x, y), wipe_flow);
             // Every tool change but the tower's first layer's starts so
@@ -1645,7 +1698,7 @@ pub fn plan_changes(
         let room = fill - line;
         if room > line {
             let start = left + 2.0 * line;
-            if first {
+            if finish_slow {
                 // Lines that touch the frame.
                 let (left, right) = (left + line, right - line);
                 let count = (room / line) as usize;
@@ -1719,13 +1772,21 @@ pub fn plan_changes(
         // it, from no wider than the chamfer allows.
         let spacing = flow.spacing;
         let mut loops = ((settings.brim_width + spacing / 2.0) / spacing) as usize;
-        if !first {
+        if !finish_slow {
             // The brim does not go on up a tower that has got shallower.
             let as_deep = (blocks - deep[0]).abs() < 1e-9;
+            // A loop fewer for each layer of the tower laid above its
+            // first. Not as the reference with layers left out, which
+            // counts the print's layers between, laid or not, so the brim
+            // is mostly gone by the tower's second layer
+            // (WipeTower2.cpp `finish_layer`,
+            // `wipe_tower_printed_layer_distance`, whose own comment has it
+            // count the layers printed).
+            let climbed = (first_laid + 1..=layer).filter(|at| laid[*at]).count();
             loops = if settings.brim_chamfer && as_deep {
                 loops
                     .min((settings.brim_chamfer_max / spacing) as usize)
-                    .saturating_sub(layer)
+                    .saturating_sub(climbed)
             } else {
                 0
             };
@@ -1744,11 +1805,20 @@ pub fn plan_changes(
             finish.push(path(closed(&outline)));
             ring = vec![region(&outline)];
         }
-        tower.layers[layer].finish = finish;
+        made += changes[layer].len();
+        let out = &mut tower.layers[layer];
+        if laid[layer] {
+            out.finish = finish;
+            out.first_speed = finish_slow;
+            out.z = skip.then_some(tower_top);
+        } else {
+            // Planned like any other layer, and not laid.
+            *out = TowerLayer::default();
+        }
     }
     // The ground it takes: its first layer, out to the edge of the lines.
     let half = line / 2.0;
-    tower.footprint = tower.layers[0]
+    tower.footprint = tower.layers[first_laid]
         .finish
         .iter()
         .flat_map(|path| &path.points)
@@ -2803,5 +2873,65 @@ mod tests {
             same.layers[1].changes[1].lines[0].points,
             old.layers[1].changes[1].lines[0].points
         );
+    }
+
+    #[test]
+    fn without_sparse_layers_only_the_layers_with_a_change_are_laid() {
+        let mut changes = counts(&[0, 0, 0, 1, 0, 0, 0, 0, 1, 0]);
+        changes.truncate(10);
+        let heights = [0.2; 10];
+        let off = plan(&changes, &heights, &on()).unwrap();
+        let skip = TowerSettings {
+            skip_sparse: true,
+            ..on()
+        };
+        let tower = plan(&changes, &heights, &skip).unwrap();
+        let laid: Vec<(usize, f64)> = (tower.layers.iter().enumerate())
+            .filter_map(|(index, layer)| layer.z.map(|z| (index, z)))
+            .collect();
+        assert_eq!(laid.len(), 2);
+        assert_eq!((laid[0].0, laid[1].0), (3, 8));
+        assert!((laid[0].1 - 0.2).abs() < 1e-9 && (laid[1].1 - 0.4).abs() < 1e-9);
+        assert!(tower.layers[0].finish.is_empty() && tower.layers[5].finish.is_empty());
+        // Each change purges what it purges with every layer laid; the
+        // tower's first layer laid stays spaced as any above the print's
+        // first, and goes at the first layer's speed with its full brim.
+        for layer in [3, 8] {
+            let rows = |tower: &Tower| -> usize {
+                tower.layers[layer]
+                    .changes
+                    .iter()
+                    .map(|block| block.lines.len())
+                    .sum()
+            };
+            assert_eq!(rows(&tower), rows(&off));
+        }
+        assert!(tower.layers[3].first_speed);
+        assert!(tower.layers[8].finish.len() > off.layers[8].finish.len());
+        assert_eq!(
+            tower.footprint.map(|f| f[2] - f[0]),
+            off.footprint.map(|f| f[2] - f[0])
+        );
+        // Off, nothing is said of its height.
+        assert!(off.layers.iter().all(|layer| layer.z.is_none()));
+    }
+
+    #[test]
+    fn the_setting_is_read_and_a_smooth_timelapse_keeps_every_layer() {
+        let read = |json: &str| {
+            TowerSettings::from_settings(&Settings::from_json(json).unwrap(), 0).unwrap()
+        };
+        let skipped = read(r#"{"enable_prime_tower": "1", "wipe_tower_no_sparse_layers": "1"}"#);
+        assert!(skipped.skip_sparse);
+        assert!(
+            skipped
+                .unsupported
+                .iter()
+                .all(|note| !note.contains("no_sparse"))
+        );
+        let smooth = read(
+            r#"{"enable_prime_tower": "1", "wipe_tower_no_sparse_layers": "1", "timelapse_type": "1"}"#,
+        );
+        assert!(!smooth.skip_sparse);
     }
 }
