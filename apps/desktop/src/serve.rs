@@ -71,8 +71,10 @@ const PRESETS: [(&str, &str); 2] = [
 ];
 /// The menu bar: what its entries do and its keys, and the bar itself in
 /// a browser.
-const MENU: [(&str, &str); 2] = [
+const MENU: [(&str, &str); 3] = [
     ("menu.js", include_str!("../ui/menu.js")),
+    // Preferences (prefs.rs).
+    ("prefs.js", include_str!("../ui/prefs.js")),
     ("menu.css", include_str!("../ui/menu.css")),
 ];
 /// The page's words: the table of the language chosen, and then the

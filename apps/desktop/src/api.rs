@@ -21,6 +21,7 @@ mod filaments;
 mod layout;
 mod menu;
 mod paint;
+mod prefs;
 mod preset_files;
 mod presets;
 mod save;
@@ -106,6 +107,10 @@ struct State {
     /// printer it was set for; none for the printer's own
     /// ([`arrange`]).
     arrange_align: Option<(String, bool)>,
+    /// Whether backups a run before this one left (Preferences'
+    /// "Auto-Backup") are still to be offered back or let go: until they
+    /// are, this run writes none of its own over them ([`prefs`]).
+    backups_left: bool,
 }
 
 /// One open project.
@@ -972,6 +977,7 @@ impl Session {
         let kept = crate::hosts::kept::Kept::open(settings.clone());
         let users = presets::Users::open(settings.as_deref());
         let store = store::Store::open(settings);
+        let backups_left = prefs::left_behind(&store);
         // The language kept; until one is (the first run), English, and
         // the page's first call (`language`) chooses from the system's.
         let language = store
@@ -1000,6 +1006,7 @@ impl Session {
                 next_id: 2,
                 next_colour: 0,
                 arrange_align: None,
+                backups_left,
             }),
             startup,
             traced: std::env::var_os("EDGE_DESKTOP_TRACE").is_some(),
@@ -1159,6 +1166,9 @@ impl Session {
                     && answer["saved"] == json!(true)
                 {
                     self.note_recent(Path::new(path));
+                    if let Some(id) = answer["id"].as_u64().and_then(|id| u32::try_from(id).ok()) {
+                        self.drop_backup(id);
+                    }
                 }
                 Ok(answer)
             }
@@ -1217,6 +1227,7 @@ impl Session {
             }
             name if menu::JSON.contains(&name) => self.menu_json(name, args),
             name if export::JSON.contains(&name) => self.export_json(name, args),
+            name if prefs::JSON.contains(&name) => self.prefs_json(name, args),
             name if edit::JSON.contains(&name) => self.edit_json(name, args),
             "item_settings" => self.items_json(name, args),
             name if ticks::JSON.contains(&name) => self.ticks_json(name, args),
@@ -1390,6 +1401,41 @@ impl Session {
         state.projects[at].load(file);
         let id = state.projects[at].id;
         Ok(state.listing_with(json!({ "id": id })))
+    }
+
+    /// A backup opened as a project of its own (Preferences' "Auto-Backup"):
+    /// named as it was, its changes unsaved, the project file it was
+    /// opened from (if any) the one it is saved to.
+    fn open_backup(
+        &self,
+        backup: &Path,
+        origin: Option<PathBuf>,
+        name: String,
+    ) -> Result<u32, String> {
+        let read = read(backup)?;
+        let mut model = read.model.clone();
+        if let Some(origin) = &origin {
+            model.saved_as(origin);
+        }
+        let file = Arc::new(File {
+            path: origin.clone(),
+            ..File::of(model)
+        });
+        let mut state = lock(&self.state);
+        let shown = state.active_index();
+        let at = if state.projects[shown].blank() {
+            shown
+        } else {
+            state.add(String::new())
+        };
+        let project = &mut state.projects[at];
+        project.load(file);
+        // Unsaved, as it was when it was backed up.
+        project.opened = None;
+        if !name.is_empty() {
+            project.name = name;
+        }
+        Ok(project.id)
     }
 
     /// Closes a project (ProjectStrip.cpp `close_project`). One with

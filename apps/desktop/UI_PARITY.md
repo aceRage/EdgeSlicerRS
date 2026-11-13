@@ -50,7 +50,7 @@ The last column reads:
   sections 2, 6, 7, 9, 15 and 17 that point to it;
   twentieth pass: the sliced file and "Export Generic 3MF", in
   section 2 ("Slice and export", "Files"), section 15 ("The sliced file")
-  and section 17).
+  and section 17; and Preferences, section 18).
 - **differs** — built, but on purpose not as the C++ does it; the cell says how.
 - **not yet** — not built, with what it waits for. Nothing in this column is
   shown in the page as a control that does nothing.
@@ -669,7 +669,7 @@ reference's own numbers; each is named in `scene.js` with where it is from.
 | --- | --- | --- |
 | Left button dragged: "Rotate View", 0.8° a pixel, about the middle of what is selected, else of the objects on the plate shown, else of the plate; with Ctrl or Cmd about the point of the bed in the middle of the view | `on_mouse` l.6642–6716, `TRACKBALLSIZE` | **added**. A drag that starts on an object moves the object, as in the C++ (section 13) |
 | Right or middle button dragged: "Pan View" | l.6718–6747 | **added**. **differs**: what is under the pointer on the plane through the target stays under it. The C++ measures the move on the near plane, so in perspective the scene lags the pointer (listed with the errors found) |
-| Mouse wheel: "Zoom View"; "Zoom to mouse position" (off), "Reverse mouse zoom" (off) | `on_mouse_wheel` l.6007 | **added**, both in the "View" menu. **differs**: zooming to the pointer starts on, as the view from above did |
+| Mouse wheel: "Zoom View"; "Zoom to mouse position" (off), "Reverse mouse zoom" (off) | `on_mouse_wheel` l.6007 | **added**, both in the "View" menu, and (twentieth pass) both Preferences' settings, kept with them (section 18): off unless set, as the reference |
 | "Orbit speed multiplier", "Swap pan and rotate mouse buttons", "Camera style": "Touchpad" (Alt to turn, Shift to move) | Preferences.cpp l.1998–2029 | **not yet**: no preferences |
 | Pinch to zoom, two fingers to move and to turn | l.6136–6169 | **added**: the pinch (a browser sends it as a wheel). **not yet**: the other two |
 | A click on an object selects it; Ctrl adds it to the selection or takes it away; a click on nothing lets go of everything (not with Shift held); a right click selects | l.6423–6551, l.6749–6858 | **added** |
@@ -2953,7 +2953,7 @@ its tooltip "not yet: …" saying what it waits for.
 | Menu | Entry (message id) | Key | Here |
 | --- | --- | --- | --- |
 | EdgeSlicerRS (macOS) | "&About %s" | | built: "About EdgeSlicerRS", a box with the app's name, what it follows and its licence |
-| | "Preferences" | Cmd+, | built: "Preferences", General, "Language" (section 16) |
+| | "Preferences" | Cmd+, | built: "Preferences", its General and Extras pages as far as they mean something here (section 18) |
 | | "Themes..." | | off: the app follows the system's dark or light |
 | | "Costs..." | | off: no prices or rates of your own are kept |
 | | "Quit" | Cmd+Q | wired: asks about unsaved projects as closing the window does (section 5), then closes it; off in a browser |
@@ -3108,3 +3108,103 @@ What File > Export still waits for (shown, off):
 - MainFrame.cpp l.3708–3713 (macOS): "Clone selected" shows Ctrl+K but
   hands the 3D view the key M; on Windows and Linux (l.3612) the entry
   shows no key, while the shortcuts window lists Ctrl+K for it.
+
+
+## 18. Preferences
+
+Read from `Preferences.cpp` (`create_general_page` l.1917, `create_ultra_page`
+l.2480; the "Develop" page is built only when `BBL_RELEASE_TO_PUBLIC` is 0,
+and it is 1) and the defaults of `AppConfig.cpp` (`set_defaults`).
+
+### How it is made
+
+The dialog is described by the session (`src/api/prefs.rs`, `preferences`):
+its two pages, "General" and "Extras", their groups, and each setting's
+key, label and tooltip (message ids, put in the language by the page),
+kind (on/off, a list, a number with its range and unit) and value.
+`ui/prefs.js` draws it (a tab for each page, a card for each group, the
+page's own lists) and keeps what OK changes through `preference_set`,
+which checks a value and puts a number within its range as the
+reference's fields do. Every value is kept in `settings.json`'s `app`
+section, under the reference's own key, beside the language (section 8);
+a setting not set reads its reference default. A setting under another
+("every") is off while that one is. Cancel keeps nothing.
+
+### Every setting
+
+"built" does what the reference's does; "not shown" is a setting of a
+feature this app does not have (it is not drawn as a switch that does
+nothing).
+
+| Page / group | Setting (key) | Here |
+| --- | --- | --- |
+| General / General Settings | "Language" (`language`) | built (section 16) |
+| | "Login Region" | not shown: there is no cloud account |
+| | "Units" (`use_inches`): "Metric (mm, g)", "Imperial (in, oz)" | built: the Move and Scale tools' Position and Size in inches (typed in inches, kept in mm: `GizmoObjectManipulation` `in_to_mm` 25.4), Preview's "Total Filament" and the slice's statistics in in and oz (`GCodeViewer.cpp`, 28.34952 g to the ounce) |
+| | "Default Page" (Home, Prepare) | not shown: there is no Home tab, so the app always opens on Prepare |
+| | "Camera style" (`camera_navigation_style`): Default, Touchpad | built: Touchpad turns the view with Alt and moves it with Shift as the pointer moves, no button held (`is_camera_rotate`, `is_camera_pan`) |
+| | "Allow only one EdgeSlicer instance" | not shown: one window; on a Mac the system keeps one instance |
+| | "Zoom to mouse position" (`zoom_to_mouse`) | built; also View > the 3D view's menu, which sets the same setting. **differs** from before: off unless set, the reference's default (the page had it on) |
+| | "Use free camera" (`use_free_camera`) | built: the view turns about the camera's own axes, not kept upright (`rotate_local_around_target`) |
+| | "Swap pan and rotate mouse buttons" (`swap_mouse_buttons`) | built: the right button turns the view, the left (away from an object) moves it |
+| | "Reverse mouse zoom" (`reverse_mouse_wheel_zoom`) | built; also in the 3D view's menu |
+| | "Allow high/low temperature filament mixing" | not shown: slices are not blocked for mixed temperatures yet (section 2) |
+| | Tool panel opacity, selection highlight | not yet: the tool panels and the selection are drawn one way |
+| | "Orbit speed multiplier" (`camera_orbit_mult`, 0.05 to 2) | built |
+| | "Default preview view type" (`preview_default_view_type`): Automatic, Last used, a view type | built: a project's Preview opens in it (Automatic: Filament for a print in several filaments, Line Type otherwise; Last used: the one last picked, kept as `preview_last_view_type`); one picked by hand stays with the project. Only the view types Preview has are offered |
+| | "Dim lower layers…", "Dimmed layer brightness" | not yet: Preview draws every layer alike |
+| | "Show splash screen", "Show Tip of the day…", "Check for new versions…", "Update channel", "Sign in to my Snapmaker account…" | not shown: no splash, no tips, no network calls, no account |
+| | "Flushing volumes: Auto-calculate every time when the filament is changed." | not yet: the volumes are worked out by "Re-calculate" only (section 2) |
+| | "Multi-device Management…", "Show the step mesh parameter setting dialog." | not shown: no multi-device, STEP is not read |
+| | "Auto arrange plate after cloning" (`auto_arrange`) | not yet: it is the default of the reference's Clone dialog ("Number of copies"), which is not built (Clone makes one copy) |
+| | "Auto slice after changes", "Warn when memory is low during slicing" | not yet |
+| General / Graphics | "MSAA Multiplier", "FXAA post-processing", "FPS cap", "Show FPS overlay", "Smooth normals", "Realistic view", "Phong shading", "SSAO ambient occlusion", "Shadows" | not yet: the 3D view has one way of drawing |
+| General / Presets | "Flushing volumes: Auto-calculate every time the color changed." | not yet, as above |
+| | "Auto sync user presets…", "Update built-in Presets automatically." | not shown: no cloud, no profile updates |
+| | "Remember printer configuration" (`remember_printer_config`, on) | built: a printer chosen goes back to the process last used with it only while on (Tab.cpp l.9235); its filaments stay the project's, as the fork keeps them |
+| | "Remember last print action" (`remember_print_action`, off) | built: the print button's action picked is kept for the next run (`print_action_last`) only while on; in a run it is kept either way |
+| | "Clear my choice on the unsaved presets." | not shown: no choice about unsaved presets is remembered |
+| General / Associate files, web links (Windows) | ".3mf", ".stl", ".step/.stp"; OrcaSlicer, PrusaSlicer, Bambu Studio, Cura links | not shown: they register the app with the system, which this app does not change |
+| General / Layerling, Model browser | | not shown |
+| General / Project | "Load Behaviour", "Open project files from Explorer / Finder in" | not yet: a project always brings its own settings; files from Finder are not opened |
+| | "Reopen the open projects at the next start", "Maximum open projects" | not yet: the strip is not kept between runs; at most `MAX_OPEN` (section 5) |
+| | "Maximum recent files" (`max_recent_count`, 0 to 10000) | built: the recent list holds at most this many, cut at once when it is lowered (`set_max_recent_count`) |
+| | "Add model files (stl/step) to recent file list." (`recent_models`) | built: an STL, OBJ or STEP opened as a project goes in the list too |
+| | "Clear my choice on the unsaved projects.", "No warnings when loading 3MF with modified G-code" | not shown: no such choice or warning here |
+| | "Auto-Backup" (`backup_switch`, on), "every" (`backup_interval`, 10 s) | built: each open project with unsaved changes is written, every interval, to `backup/` beside the settings (`backup_write`); saving it or ending the window cleanly takes its backup away. At the next start backups a run left are offered back, "Previous unsaved project detected, do you want to restore it?" ("Restore"): Yes opens each as a project of its own, named as it was, unsaved, saved to the project file it came from; No lets them go. A run never offers its own backups back to itself |
+| General / Downloads, ZIP files, Bambu Studio, Blender, FreeCAD | | not shown: none of these is used |
+| General / Dark Mode (Windows only) | "Enable Dark mode" (`dark_color_mode`) | built on every system. **differs**: until it is set the page follows the system (the reference on Windows starts light, elsewhere follows the system); set, it is dark or light whatever the system |
+| General / Privacy, Develop mode | "Send crash reports", "Develop mode", "Skip AMS blacklist check" | not shown: nothing is sent; no AMS |
+| Extras / Project | "Auto-Save project" (`autosave_switch`, off), "every" (`autosave_interval`, 300 s) | built: every interval each project already saved once to a project file, with unsaved changes and not slicing, is saved to it as "Save Project" saves it (`autosave_due`); one whose save would ask first is left |
+| | "Keep my printer when opening project files", "Skip Settings Mapping Warnings", "Show print-by-object caution notices", "Drop imported models to the bed", "Bottom-referenced Z position", "Hide other plates while moving" | not yet |
+| Extras / Cost | "Include costs in exported G-code", "Currency symbol", "Your own costs" | not yet: no costs are worked out (section 17, "Costs...") |
+| Extras / Presets | "Prefer Last Used Print Profile", "Seamless System Filament Edits" | not yet; "Import Bambu Studio user presets", "Sync now", "Re-pull all": not shown |
+| Extras / Bambu Network, Spool Manager, Phone access, G-Code Archive | | not shown: no network plug-in, no Spoolman, no hub |
+| Extras / Troubleshooting | "Log level" | not shown: the app keeps no logs |
+
+The task named "auto-orient on import": the reference's Preferences have
+no such setting (Orca's `auto_orient` is not in this dialog), so there is
+nothing to build for it.
+
+### How it was checked
+
+`src/api/prefs/tests.rs` (5 tests): the description and the reference
+defaults, and that every label and tooltip is a message id or listed;
+a value checked, put within range, kept in `settings.json` and read back
+by the next session; the recent list with "Add model files…" and a
+lower "Maximum recent files"; a backup written, found by the next run,
+restored named and unsaved, and this run's own not offered back; only a
+project saved once is due to be auto-saved.
+
+In a browser (`--serve`, 1280 × 820 dark English, 900 × 560 light German):
+the dialog's two pages; "Enable Dark mode" off turned the page light while
+the system was dark, and kept it at the next load; Units Imperial showed a
+copy's X as 5.33 in, 5 typed moved it to 127 mm, and Preview's total read
+"23.88 in 0.06 oz" for 606.5 mm and 1.81 g; "Swap…" made a left drag move
+the view (target changed, rotation not); "Use free camera" let the view
+tilt out of upright, turning the same way as the constrained one; a
+change left unsaved was backed up within ten seconds, the server stopped
+and started again, the page asked "Previously unsaved items have been
+detected…" (the English catalog's words) and Yes brought the project back
+with its bed type, unsaved. Screenshots in `~/Dev/EdgeSlicerRS-shots/export/`.
+Not checked in the window (WebKit), nor Touchpad style with a real pad.

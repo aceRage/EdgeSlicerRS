@@ -402,6 +402,18 @@ Visible	GUI/Gizmos/GLGizmoCut.cpp:9347
 both sides	GUI/Gizmos/GLGizmoCut.cpp:10926
 the lower side	GUI/Gizmos/GLGizmoCut.cpp:10928
 the upper side	GUI/Gizmos/GLGizmoCut.cpp:10927
+Default preview view type	GUI/Preferences.cpp:2038
+The color scheme the sliced preview opens with.\nAutomatic: Filament for multi material prints, Line Type for single material ones.\nLast used: the view type you selected last.\nAny other value always opens that view type.\nYou can still switch the view type in the preview afterwards.	GUI/Preferences.cpp:2039
+Automatic	GUI/GCodeViewer.cpp:1229
+Last used	GUI/GCodeViewer.cpp:1230
+Remember last print action	GUI/Preferences.cpp:2129
+If enabled, EdgeSlicer will remember the last selected option in the print button's dropdown (for example Print, Print plate, Export plate sliced file, or Export G-code file) and restore it on the next startup and when the printer or preset changes, when the current printer still offers it.	GUI/Preferences.cpp:2130
+Enable dark mode	GUI/Preferences.cpp:2300
+Extras	GUI/Preferences.cpp:1832
+Auto-Save project	GUI/Preferences.cpp:2487
+Periodically save the project to its own file. Only projects that have already been saved once are auto-saved.	GUI/Preferences.cpp:2488
+The period of auto-save in seconds.	GUI/Preferences.cpp:2489
+
 [own]
 # This app's own words on the static page, with no counterpart in the
 # C++: shown in English in every language.

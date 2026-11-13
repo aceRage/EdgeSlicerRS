@@ -657,7 +657,9 @@ function kept(id) {
       layers: new Map(),       // "run:plate:index" -> the layer's lines
       layerAt: {},             // plate -> the layer its Preview is on
       codes: null,             // what is set at the shown plate's layers (`layer_codes`)
-      viewType: 'Line Type',
+      // None until Preview opens: then Preferences' "Default preview view
+      // type" picks it (prefs.js).
+      viewType: null,
       hidden: new Set(),
       camera: { prepare: null, preview: null },
       restored: false,
@@ -1809,6 +1811,7 @@ function showLegend() {
   // In 3D the legend's rows are the 3D view's own (gl/stage.js).
   const own = stage3d.active ? stage3d.legend(mine, summary, filamentColour) : null;
   const types = own ? own.types : Object.keys(viewTypes);
+  if (mine.viewType === null && summary) mine.viewType = Prefs.defaultViewType((summary.filaments || []).length);
   if (!types.includes(mine.viewType)) mine.viewType = 'Line Type';
   fill($('view-type'), types, mine.viewType, types.map((type) => t(type)));
   const rows = $('legend-rows');
@@ -1853,8 +1856,8 @@ function showLegend() {
   const gcode = summary.gcode;
   const figures = [];
   if (!('error' in gcode)) {
-    const weight = gcode.grams === null ? '' : `  ${number(gcode.grams, 2)} g`;
-    figures.push([`${t('Total Filament')}:`, `${number(gcode.filament_m, 2)} m${weight}`]);
+    // In m and g, or with Preferences' "Units" Imperial in in and oz.
+    figures.push([`${t('Total Filament')}:`, Prefs.filamentText(gcode.filament_m, gcode.grams, number)]);
     if (gcode.tool_changes > 0) figures.push([`${t('Filament change times')}:`, String(gcode.tool_changes)]);
     figures.push([`${t('Total time')}:`, duration(gcode.minutes)]);
     const how = { klipper: 'Planned as Klipper plans it; heating is not counted.', acceleration: 'With acceleration; heating is not counted.' };
@@ -1868,6 +1871,7 @@ function showLegend() {
 $('view-type').addEventListener('change', () => {
   const mine = here();
   mine.viewType = $('view-type').value;
+  Prefs.viewTypePicked(mine.viewType);
   showLegend();
   draw();
   noteView();
@@ -2155,8 +2159,8 @@ async function showStats() {
     minutes += gcode.minutes;
     if (gcode.grams === null) weighed = false; else grams += gcode.grams;
     rows.push(el('tr', {}, el('td', { textContent: `${t('Plate')} ${plate}` }),
-      el('td', { textContent: `${number(gcode.filament_m, 2)} m` }),
-      el('td', { textContent: gcode.grams === null ? '' : `${number(gcode.grams, 2)} g` }),
+      el('td', { textContent: Prefs.filamentText(gcode.filament_m, null, number) }),
+      el('td', { textContent: gcode.grams === null ? '' : Prefs.filamentText(0, gcode.grams, number).split('  ')[1] }),
       el('td', { textContent: duration(gcode.minutes) })));
   }
   const table = $('stats-table');
@@ -2164,8 +2168,8 @@ async function showStats() {
     el('thead', {}, el('tr', {}, ...['', t('Filament'), '', t('Total time')].map((name) => el('th', { textContent: name })))),
     el('tbody', {}, ...rows),
     el('tfoot', {}, el('tr', {}, el('td', { textContent: t('Total') }),
-      el('td', { textContent: `${number(metres, 2)} m` }),
-      el('td', { textContent: weighed ? `${number(grams, 2)} g` : '' }),
+      el('td', { textContent: Prefs.filamentText(metres, null, number) }),
+      el('td', { textContent: weighed ? Prefs.filamentText(0, grams, number).split('  ')[1] : '' }),
       el('td', { textContent: duration(minutes) }))),
   );
   await modal($('stats'));
@@ -2631,11 +2635,15 @@ document.addEventListener('keydown', (event) => {
   initPrinters();
   try {
     await loadLibrary(await call('library'));
+    // Preferences (prefs.js): the theme, the camera, the timers; and a
+    // backup a run that did not end as it should left behind.
+    await Prefs.load();
     await applyListing(await call('projects'));
     const { model } = await call('startup');
     if (model) await openProject(model);
     // With no printer added yet, the printer selection opens by itself.
     await firstRun();
+    await Prefs.offerBackups();
   } catch (error) {
     say(error.message, true);
   }

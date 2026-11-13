@@ -39,8 +39,9 @@ pub(super) const JSON: [&str; 5] = [
     "shortcuts",
 ];
 
-/// How many recent projects are kept: the reference's `max_recent_count`
-/// as it starts (AppConfig.cpp l.533, MainFrame.cpp `m_recent_projects(18)`).
+/// How many recent projects are kept unless Preferences' "Maximum recent
+/// files" says otherwise: the reference's `max_recent_count` as it starts
+/// (AppConfig.cpp l.533, MainFrame.cpp `m_recent_projects(18)`).
 pub const RECENT_MOST: usize = 18;
 
 /// The name the app goes by, in "&About %s".
@@ -1575,7 +1576,13 @@ pub fn shortcuts(mac: bool) -> Value {
 /// `recent` with `path` put first, once (wxFileHistory
 /// `AddFileToHistory`: two spellings of one path are one entry), at most
 /// [`RECENT_MOST`].
+#[cfg(test)]
 pub fn with_recent(recent: &[String], path: &str) -> Vec<String> {
+    with_recent_most(recent, path, RECENT_MOST)
+}
+
+/// [`with_recent`], at most `most`.
+pub fn with_recent_most(recent: &[String], path: &str, most: usize) -> Vec<String> {
     let key = super::normalized(path, cfg!(windows));
     let mut out = vec![path.to_owned()];
     out.extend(
@@ -1584,7 +1591,7 @@ pub fn with_recent(recent: &[String], path: &str) -> Vec<String> {
             .filter(|kept| super::normalized(kept, cfg!(windows)) != key)
             .cloned(),
     );
-    out.truncate(RECENT_MOST);
+    out.truncate(most);
     out
 }
 
@@ -1689,19 +1696,26 @@ impl Session {
 
     /// Puts a project file first among the recent projects, as the
     /// reference does when a project is opened or saved (Plater.cpp
-    /// `set_project_filename`): a 3MF that is there. An STL opened as a
-    /// project is not one (the reference lists a model only with its
-    /// "recent_models" preference, off unless asked for).
+    /// `set_project_filename`): a 3MF that is there. A model opened as a
+    /// project (an STL, an OBJ) is one only with Preferences' "Add model
+    /// files (stl/step) to recent file list." (`recent_models`, off unless
+    /// asked for). At most "Maximum recent files" are kept.
     pub(super) fn note_recent(&self, path: &Path) {
-        let is_project = path
-            .extension()
-            .is_some_and(|ext| ext.eq_ignore_ascii_case("3mf"));
-        if !is_project || !path.is_file() {
+        let ext = |wanted: &[&str]| {
+            path.extension()
+                .is_some_and(|ext| wanted.iter().any(|one| ext.eq_ignore_ascii_case(one)))
+        };
+        let mut state = lock(&self.state);
+        let prefs = &state.store.data.prefs;
+        let models = super::prefs::on(prefs, "recent_models");
+        let listed = ext(&["3mf"]) || (models && ext(&["stl", "obj", "step", "stp"]));
+        if !listed || !path.is_file() {
             return;
         }
+        let most = super::prefs::number(prefs, "max_recent_count")
+            .map_or(RECENT_MOST, |most| most as usize);
         let path = shown(path);
-        let mut state = lock(&self.state);
-        let recent = with_recent(&state.store.data.recent_projects, &path);
+        let recent = with_recent_most(&state.store.data.recent_projects, &path, most);
         // Not kept, it is not said: opening or saving went well.
         let _ = state.store.change(|data| data.recent_projects = recent);
     }

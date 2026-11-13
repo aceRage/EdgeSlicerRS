@@ -16,7 +16,7 @@ fixed-width face for values.
 
 | File | Holds |
 | --- | --- |
-| `style.css`, part 1 | The tokens: every colour, size and step. Dark is the base (`:root`), light is laid over it in one `@media (prefers-color-scheme: light)` block |
+| `style.css`, part 1 | The tokens: every colour, size and step. Dark is the base (`:root`), light is laid over it in one `:root.light` block |
 | `style.css`, part 2 | The base: the page, text, headings, `.quiet`, `.error`, `.row` |
 | `style.css`, part 3 | The components, each written once |
 | `style.css`, part 4 | The page's parts, in the order they stand on it |
@@ -30,10 +30,11 @@ fixed-width face for values.
 | `app.js`, "controls" | `listbox` (the page's own list for a `<select>`) and the tooltips |
 | `menu.css` | The menu bar in a browser (`#menubar`, its menus `.menubar-panel`), "Keyboard Shortcuts" (`#shortcuts`) and Preferences (`#prefs`) |
 
-The theme follows the system (`prefers-color-scheme`); there is no switch in
-the page. A switch, when there is one, sets the light block's values under a
-selector of its own beside the media query; nothing else has to change,
-because no rule outside part 1 names a colour.
+The theme is Preferences' "Enable Dark mode" (prefs.js), else the
+system's (`prefers-color-scheme`): `EdgeTheme` (i18n.js, first to run) puts
+`light` on `<html>` and sends `themechange`. A rule that differs by theme
+names `:root.light` (or `:root:not(.light)`), never the media query; no
+rule outside part 1 names a colour.
 
 Every part of the page is on the tokens: the project strip, the tab bar,
 the sidebar, the stage and what lies over it, Device and the dialogs. The

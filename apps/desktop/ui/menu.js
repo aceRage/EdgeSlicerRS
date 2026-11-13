@@ -26,7 +26,7 @@
 // `saveProject`, `saveBeforeQuitting`, printers.js's
 // `openPrinterSelection`, and the 3D editor (`window.EdgeGL.edit`).
 
-/* global call, pick, attempt, say, inform, confirmBox, state, activeId, newProject, openProject,
+/* global Prefs, call, pick, attempt, say, inform, confirmBox, state, activeId, newProject, openProject,
    selectProject, cycleProject, fit, stage3d, saveProject, saveBeforeQuitting, openPrinterSelection,
    tauri, $, el, t, fmt, I18n, exportGcode, listbox */
 
@@ -272,7 +272,9 @@ const Menu = (() => {
       case 'file.save_as': return go(() => saveProject(activeId(), true));
       case 'file.quit':
         if (!tauri) return false;
-        return go(async () => { if (await saveBeforeQuitting()) await tauri.core.invoke('close_window'); });
+        // A clean end: the backups go (the reference removes its own on
+        // closing).
+        return go(async () => { if (await saveBeforeQuitting()) { await call('backup_clear').catch(() => {}); await tauri.core.invoke('close_window'); } });
       case 'import.model':
         if (!edit || state.tab !== 'prepare') return false;
         return go(() => edit.add());
@@ -612,20 +614,9 @@ const Menu = (() => {
 
   // "Preferences": of the reference's, what this app has (Preferences.cpp,
   // General: "Language"). Another language reloads the page in it.
-  let prefsList = false;
+  // Preferences: prefs.js draws the dialog from the session's description.
   function showPreferences() {
-    const select = $('prefs-language');
-    select.replaceChildren(...I18n.languages.map((language) => new Option(language.name, language.code)));
-    select.value = I18n.language;
-    select.dataset.value = I18n.language;
-    // The page's own list, not the system's (STYLE.md).
-    if (!prefsList) { listbox(select, { bare: true }); prefsList = true; }
-    const dialog = $('prefs');
-    dialog.returnValue = 'cancel';
-    dialog.addEventListener('close', () => {
-      if (dialog.returnValue === 'ok' && select.value !== I18n.language) attempt(() => I18n.choose(select.value));
-    }, { once: true });
-    dialog.showModal();
+    return Prefs.show();
   }
 
   return { refresh, run, pageState, exportSliced, get tree() { return tree; } };

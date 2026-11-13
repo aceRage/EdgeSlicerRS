@@ -208,11 +208,12 @@ $('host-form').addEventListener('submit', (event) => {
 
 const PRINT_ACTIONS = { send: 'Print', sliced: 'Export plate sliced file', all_sliced: 'Export all sliced file', export: 'Export G-code file' };
 
-// The action the button does: the one picked last, as the reference
-// remembers it ("last_print_action"); "Print" only where it can send,
-// as the reference does not bring back a send it cannot do.
+// The action the button does: the one picked last, kept from one run to
+// the next only with Preferences' "Remember last print action" (prefs.js);
+// "Print" only where it can send, as the reference does not bring back a
+// send it cannot do.
 function printAction() {
-  const picked = remembered.get('print_action');
+  const picked = Prefs.printAction();
   if (picked === 'send' && canSend()[0]) return 'send';
   if (picked === 'export' || picked === 'sliced' || picked === 'all_sliced') return picked;
   return canSend()[0] ? 'send' : 'export';
@@ -221,7 +222,7 @@ function printAction() {
 $('export-more').addEventListener('click', (event) => {
   const box = event.currentTarget.getBoundingClientRect();
   const action = printAction();
-  const choose = (what) => () => { remembered.set('print_action', what); showButtons(); };
+  const choose = (what) => () => { Prefs.choosePrintAction(what); showButtons(); };
   const [can, why] = canSend();
   showMenu(box.right - 220, box.bottom + 4, [
     [t('Print'), choose('send'), { checked: action === 'send', title: can ? 'Send the plate to the printer' : why }],

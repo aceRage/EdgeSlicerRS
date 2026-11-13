@@ -127,9 +127,9 @@
   --scroll-thumb-hover: #56606c;
 }
 
-/* The page follows the system: light where the system is light. */
-@media (prefers-color-scheme: light) {
-  :root {
+/* Light: where Preferences say so, else where the system is light
+   (i18n.js `EdgeTheme` puts `light` on <html>). */
+:root.light {
     color-scheme: light;
 
     --surface-app: #e8eaee;
@@ -177,7 +177,6 @@
     --line-swatch: rgba(90, 90, 90, 0.45);
     --scroll-thumb: #c3c8cf;
     --scroll-thumb-hover: #9aa1ab;
-  }
 }
 
 /* ---- 2. base ---- */
