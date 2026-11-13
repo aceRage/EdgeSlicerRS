@@ -2,10 +2,40 @@
 //! layer's plane, which edges of the layer's outline those cuts colour,
 //! and the share of the layer nearest each colour's edges.
 
-use edge_geom::{Coord, ExPolygon, Point2, Polygon, UNITS_PER_MM};
+pub(crate) mod colour;
+pub(crate) mod graph;
+pub use graph::SideError;
+
+use edge_geom::{Coord, ExPolygon, Point2, UNITS_PER_MM};
 use rustc_hash::FxHashMap;
 
 use crate::{Facet, PaintError};
+
+/// A segment from `a` to `b`, in scaled units (the reference's `Line`).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(crate) struct Line {
+    pub a: Point2,
+    pub b: Point2,
+}
+
+impl Line {
+    pub fn new(a: Point2, b: Point2) -> Self {
+        Self { a, b }
+    }
+}
+
+pub(crate) fn dist2(a: Point2, b: Point2) -> f64 {
+    let (dx, dy) = ((b.x - a.x) as f64, (b.y - a.y) as f64);
+    dx * dx + dy * dy
+}
+
+/// The reference's `scale_(mm)`.
+pub(crate) fn scale(mm: f64) -> f64 {
+    mm / 1e-6
+}
+
+/// `SCALED_EPSILON`, in scaled units.
+pub(crate) const SCALED_EPSILON: i64 = 100;
 
 /// A cut colours the stretch of an outline's edge it lies within this
 /// far of, in scaled units: the outline has been closed up and
@@ -271,26 +301,25 @@ pub(crate) fn share(
         shares[first as usize] = outline.to_vec();
         return Ok(shares);
     }
-    let mut edges: Vec<[i64; 4]> = Vec::new();
-    let mut of: Vec<u8> = Vec::new();
-    for ring in &rings {
-        for (at, edge) in ring.iter().enumerate() {
-            let to = ring[(at + 1) % ring.len()].from;
-            if edge.from != to {
-                edges.push([edge.from.x, edge.from.y, to.x, to.y]);
-                of.push(edge.colour);
-            }
-        }
-    }
-    let cells =
-        edge_medial::cells(&edges).map_err(|source| PaintError::Diagram { layer, source })?;
-    let mut by_colour: Vec<Vec<Polygon>> = vec![Vec::new(); colours];
-    for (edge, cell) in cells {
-        by_colour[of[edge] as usize].push(cell);
-    }
-    for (colour, cells) in by_colour.iter().enumerate() {
-        if !cells.is_empty() {
-            shares[colour] = edge_clip::intersection(&edge_clip::union(cells)?, outline)?;
+    // The borders between colours traced through the graph of the
+    // rings and their Voronoi diagram (MultiMaterialSegmentation.cpp
+    // `build_graph`, `extract_colored_segments`).
+    let coloured: Vec<Vec<colour::ColouredLine>> = rings
+        .iter()
+        .map(|ring| {
+            (0..ring.len())
+                .map(|at| colour::ColouredLine {
+                    line: Line::new(ring[at].from, ring[(at + 1) % ring.len()].from),
+                    colour: ring[at].colour,
+                })
+                .collect()
+        })
+        .collect();
+    let faces = graph::segments(&coloured, colours)
+        .map_err(|source| PaintError::Diagram { layer, source })?;
+    for (colour, polygons) in faces.into_iter().enumerate() {
+        if !polygons.is_empty() {
+            shares[colour] = edge_clip::union(&polygons)?;
         }
     }
     Ok(shares)

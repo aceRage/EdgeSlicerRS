@@ -16,8 +16,7 @@
 //!
 //! Not a port line for line. A cut is matched to an edge when it lies
 //! within [`NEAR`] of it, where the reference walks a grid and tests
-//! angles; a layer's cells are united whole, where the reference traces
-//! the borders between colours through the diagram; and what the
+//! angles; and what the
 //! reference does to drop islands of paint too small to print with a
 //! classic wall (`drop_unprintable_painted_islands`) is not done. The
 //! bounded depths (`paint_depth_mode` at `walls` or `millimeters`,
@@ -27,9 +26,10 @@
 mod shells;
 mod side;
 
+pub use side::SideError;
+
 use edge_clip::ClipError;
 use edge_geom::{Coord, ExPolygon};
-use edge_medial::MedialError;
 use rayon::prelude::*;
 
 /// A triangle in millimetres, wound counter-clockwise seen from outside,
@@ -64,7 +64,10 @@ pub enum PaintError {
     #[error(transparent)]
     Clip(#[from] ClipError),
     #[error("layer {layer}: the painted colours could not be shared out: {source}")]
-    Diagram { layer: usize, source: MedialError },
+    Diagram {
+        layer: usize,
+        source: side::SideError,
+    },
 }
 
 /// What one filament painted onto a part prints of a layer: its number,

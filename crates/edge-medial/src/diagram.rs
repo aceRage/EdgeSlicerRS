@@ -63,6 +63,10 @@ pub struct VoronoiDiagram {
     pub edges: Vec<VoronoiEdge>,
     /// Where each vertex is, measured from `origin`.
     pub vertices: Vec<[f64; 2]>,
+    /// For each vertex, one of the edges that start there (the one the
+    /// library keeps with it, as Boost's `vertex_type::incident_edge`);
+    /// none where it keeps none.
+    pub vertex_edges: Vec<Option<usize>>,
     /// The point the vertices are measured from, in the coordinates the
     /// segments were given in. It is whole, so a vertex is put back
     /// where the segments are without its fraction being touched.
@@ -160,10 +164,16 @@ pub fn diagram(segments: &[[i64; 4]]) -> Result<VoronoiDiagram, MedialError> {
         .iter()
         .map(|vertex| [vertex.x(), vertex.y()])
         .collect();
+    let vertex_edges = built
+        .vertices()
+        .iter()
+        .map(|vertex| vertex.get_incident_edge().ok().map(|edge| edge.usize()))
+        .collect();
     Ok(VoronoiDiagram {
         cells,
         edges,
         vertices,
+        vertex_edges,
         origin,
     })
 }
@@ -200,6 +210,10 @@ mod tests {
         };
         assert!((0..found.vertices.len()).any(|vertex| found.point(vertex) == middle));
         assert!(found.vertices.contains(&[0.0, 0.0]));
+        // Every vertex keeps an edge that starts at it.
+        for (vertex, edge) in found.vertex_edges.iter().enumerate() {
+            assert_eq!(found.edges[edge.unwrap()].vertex0, Some(vertex));
+        }
         // Every edge is its twin's twin, and going round a cell comes back.
         for (index, edge) in found.edges.iter().enumerate() {
             assert_eq!(found.edges[edge.twin].twin, index);
