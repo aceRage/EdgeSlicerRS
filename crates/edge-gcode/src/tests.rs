@@ -1921,6 +1921,38 @@ fn a_template_move_to_where_the_head_already_is_is_kept() {
 }
 
 #[test]
+fn a_tool_wanted_again_soon_is_not_cooled() {
+    // Filament 1, 2 and 1 again on one layer, timed as a printer runs it:
+    // tool 0 is wanted again within its 30 s preheat, after walls that
+    // take 20 s a layer.
+    let timed = |settings: PrintSettings| PrintSettings {
+        outer_wall_speed: 2.0,
+        initial_layer_speed: 2.0,
+        limits: Some(edge_time::Limits {
+            flavor: edge_time::Flavor::Klipper,
+            max_extruding: 5000.0,
+            ..edge_time::Limits::default()
+        }),
+        ..settings
+    };
+    let settings = two_tools(Some(CHANGE)).map(timed);
+    let (text, _) = in_filaments(&[&[0], &[0, 1, 0]], &settings);
+    let lines: Vec<&str> = text.lines().collect();
+    let at = |wanted: &str| lines.iter().position(|line| line.starts_with(wanted));
+    let away = at("; Change Tool0 -> Tool1").unwrap();
+    let back = at("; Change Tool1 -> Tool0").unwrap();
+    // Its cooldown is taken out, as the reference's post-processor takes
+    // it out, and it is told its temperature before it is put away.
+    assert!(
+        !text.contains("T0 ; set nozzle temperature ;cooldown"),
+        "{text}"
+    );
+    assert!(lines[..back].iter().any(|line| *line == "; removed M104"));
+    let preheat = at("M104 S210 T0 ; preheat T0").unwrap_or_else(|| panic!("{text}"));
+    assert!(preheat < away, "{text}");
+}
+
+#[test]
 fn the_next_tool_is_warmed_ahead_of_its_turn() {
     // One tool prints for a long time before the other is wanted: a slow
     // wall, 160 mm at 2 mm/s.

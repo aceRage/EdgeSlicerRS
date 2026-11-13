@@ -722,41 +722,68 @@ pub fn write_timed(
         }
     }
     // A tool waiting its turn is kept cooler; it is told to warm up
-    // `preheat_time` before it is wanted, but never before the last
-    // thing said of its temperature, which would undo it.
+    // `preheat_time` before it is wanted, as the reference's
+    // post-processor tells it (GCodeProcessor.cpp `process_line_T`,
+    // `ExportLines::insert_lines`): looking back from the change no
+    // further than the last time the tool was taken up (its own `T`
+    // line) or the start of the print (`G28`, `G29`, `PRINT_START`,
+    // `START_PRINT`), where it is not told at all; a cooldown of the tool
+    // between there and the change is taken out (`; removed M104`), so
+    // a tool wanted again within `preheat_time` is not cooled at all.
+    let mut cut: Vec<(usize, usize)> = Vec::new();
     if let (Some((_, elapsed, ends)), Some(text)) = (&timed, text) {
+        let line_at = |index: usize| {
+            let from = if index == 0 { 0 } else { ends[index - 1] };
+            &text[from..ends[index]]
+        };
+        let command = |line: &str| -> String {
+            let code = line.split(';').next().unwrap_or_default();
+            code.split_whitespace()
+                .next()
+                .unwrap_or_default()
+                .to_owned()
+        };
         for (change, tool, temperature) in &changes {
             let wanted = &settings[*tool];
             if wanted.standby_temperature_delta.is_none() || wanted.preheat_time <= 0.0 {
                 continue;
             }
             let last = ends.partition_point(|end| *end <= *change);
-            let mentions = |line: &str| {
-                let code = line.split(';').next().unwrap_or_default();
-                let mut words = code.split_whitespace();
-                matches!(words.next(), Some("M104" | "M109"))
-                    && words.any(|word| {
-                        word.strip_prefix('T').and_then(|t| t.parse().ok()) == Some(*tool)
-                    })
-            };
-            let line_at = |index: usize| {
-                let from = if index == 0 { 0 } else { ends[index - 1] };
-                &text[from..ends[index]]
-            };
-            let earliest = (0..last)
-                .rev()
-                .find(|index| mentions(line_at(*index)))
-                .map_or(0, |index| index + 1);
             let at_change = if last == 0 { 0.0 } else { elapsed[last - 1] };
             let target = at_change - wanted.preheat_time;
-            // After the last line that ends before the moment wanted.
-            let line = elapsed[..last]
-                .partition_point(|seconds| *seconds < target)
-                .max(earliest)
-                .min(last);
-            // Nothing is put before the file's own first lines.
-            let executable = reached.first().map_or(0, |(at, _)| *at);
-            let at = (if line == 0 { 0 } else { ends[line - 1] }).max(executable);
+            let own = format!("T{tool}");
+            let stops = |line: &str| {
+                let command = command(line);
+                command == own
+                    || ["G28", "G29", "PRINT_START", "START_PRINT"]
+                        .iter()
+                        .any(|start| command.eq_ignore_ascii_case(start))
+            };
+            // Back over every line that ends after the moment wanted.
+            let mut line = last;
+            let mut cooled = Vec::new();
+            while line > 0 && elapsed[line - 1] > target && !stops(line_at(line - 1)) {
+                let text = line_at(line - 1);
+                let code = text.split(';').next().unwrap_or_default();
+                let mut words = code.split_whitespace();
+                if words.next() == Some("M104")
+                    && words.any(|word| word == own)
+                    && text.contains("cooldown")
+                {
+                    cooled.push(line - 1);
+                }
+                line -= 1;
+            }
+            cut.extend(cooled.iter().map(|index| {
+                let from = if *index == 0 { 0 } else { ends[index - 1] };
+                (from, ends[*index])
+            }));
+            // Back as far as the tool was last taken up, or the start:
+            // not told.
+            if line == 0 || line == last || stops(line_at(line - 1)) {
+                continue;
+            }
+            let at = ends[line - 1];
             let lead = at_change - gone(at).unwrap_or(at_change);
             slipped.push((
                 at,
@@ -784,12 +811,23 @@ pub fn write_timed(
             ),
         ));
     }
-    slipped.sort_by_key(|(at, _)| *at);
+    // Each cooldown taken out leaves the reference's note in its place.
+    cut.sort_unstable();
+    cut.dedup();
+    let mut slipped: Vec<(usize, usize, String)> = slipped
+        .into_iter()
+        .map(|(at, line)| (at, at, line))
+        .chain(
+            cut.into_iter()
+                .map(|(from, to)| (from, to, "; removed M104\n".to_owned())),
+        )
+        .collect();
+    slipped.sort_by_key(|(at, end, _)| (*at, *end));
     let mut from = 0;
-    for (at, line) in slipped {
+    for (at, end, line) in slipped {
         out.write_all(&whole[from..at])?;
         out.write_all(line.as_bytes())?;
-        from = at;
+        from = end;
     }
     out.write_all(&whole[from..])?;
     if writer.file.estimate_at.is_none() {
