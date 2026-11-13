@@ -35,6 +35,7 @@ mod printable;
 pub mod pushfit;
 mod regions;
 mod scene;
+pub mod sliced_file;
 pub mod tac;
 mod tac_data;
 mod toolpath;
@@ -44,8 +45,8 @@ use std::{error::Error, fmt};
 
 pub use clock::timestamp;
 pub use edge_3mf::{
-    CustomGcode, CustomItem, CustomKind, CustomMode, CutRecipe, LayerRange, PaintKind, PartKind,
-    RecipeDrawn, RecipeGroove, RecipeKind, RecipeSheet,
+    CustomGcode, CustomItem, CustomKind, CustomMode, CutRecipe, LayerRange, Layout, PaintKind,
+    PartKind, Pictures, RecipeDrawn, RecipeGroove, RecipeKind, RecipeSheet, gcode_md5,
 };
 pub use edge_mesh::Transform;
 /// Stops a mesh boolean under way (a curved cut's preview).
@@ -66,7 +67,7 @@ pub use model::{
     PlateStamp, Prepared, Reach, Saved, Saving, Shape, connector_mesh, own_settings,
     project_settings,
 };
-pub use pipeline::{Gcode, Sliced, Timings, slice};
+pub use pipeline::{FirstLayer, Gcode, Sliced, Timings, slice};
 pub use presets::{Library, ModelPreset, PrinterModel, Shelf};
 pub use preview::Stroke;
 pub use regions::{Scope, Settable, scope, settable, unfollowed_note};

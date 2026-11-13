@@ -47,7 +47,10 @@ The last column reads:
   a height range"), 13 (`scene_edit`, undo, "The object list", "Parts"),
   15 and 16);
   nineteenth pass: "Cut", in section 13 ("Cut"), with the rows of
-  sections 2, 6, 7, 9, 15 and 17 that point to it).
+  sections 2, 6, 7, 9, 15 and 17 that point to it;
+  twentieth pass: the sliced file and "Export Generic 3MF", in
+  section 2 ("Slice and export", "Files"), section 15 ("The sliced file")
+  and section 17).
 - **differs** — built, but on purpose not as the C++ does it; the cell says how.
 - **not yet** — not built, with what it waits for. Nothing in this column is
   shown in the page as a control that does nothing.
@@ -215,7 +218,7 @@ does with each option.
 | "Slice plate", with a menu: "Slice all", "Slice plate" (and "Filament arrangement..." on dual-nozzle Bambu printers); the button keeps the mode picked | `create_side_tools` l.2482 | **added**: the button and its menu, in the tab bar. Before: one "Slice" button in the sidebar. "Slice all" slices every plate that holds something and is not sliced yet, one after another (`slice` with `all`) |
 | "Slice plate" is off while slicing, when the plate's result is valid, or when the plate cannot be sliced; "Slice all" when no plate can be | `MainFrame::get_enable_slice_status` l.2672 | **added**: the same three rules. **not yet**: the blocks for mixed filament temperatures, a cold plate and zero flow ratio |
 | Progress as a notification on the canvas with the stage's text, a percentage and a cancel; "Slice ok." when done, "Slicing Canceled" when called off | `SlicingProgressNotification.cpp`, Plater.cpp l.18718, l.19108 | **added**: a note on the stage with the engine's stage, a bar, "Cancel", then "Slice ok." or "Slicing Canceled" (before: a bar in the sidebar). Cancel takes effect between stages, as before |
-| The print button and its menu: "Print plate", "Print all", "Print" (send to a print host), "Send", "Send all", "Export plate sliced file" [Ctrl+G], "Export all sliced file", "Export G-code file", "Send to Multi-device", "Send to Bambu Connect"; the last one used is remembered | `print_select_type_label` l.2378, `available_print_actions` l.2397 | **added**: "Export G-code file" for the plate shown (**had** as "Export G-code…"), on when the plate is sliced and its G-code was written. **added** (twelfth pass): the button with its menu, as the reference offers it for a printer that is not Bambu's: "Print" (send to the printer's host, section 4) and "Export G-code file"; the last one picked is remembered (by the page), "Print" not brought back for a printer that cannot be sent to (as the fork's `get_remembered_print_select`). "Print" opens "Send G-code to printer host" for the plate shown. **differs**: "Print host upload queue" is in the button's menu as well (the reference has it nowhere else either for a non-Bambu printer). File > Export > "Export G-code..." is the same export (section 17). **not yet**: the sliced-file (3MF) exports; "Print plate", "Send" and the rest are Bambu's or not offered by the fork for other printers |
+| The print button and its menu: "Print plate", "Print all", "Print" (send to a print host), "Send", "Send all", "Export plate sliced file" [Ctrl+G], "Export all sliced file", "Export G-code file", "Send to Multi-device", "Send to Bambu Connect"; the last one used is remembered | `print_select_type_label` l.2378, `available_print_actions` l.2397 | **added**: "Export G-code file" for the plate shown (**had** as "Export G-code…"), on when the plate is sliced and its G-code was written. **added** (twelfth pass): the button with its menu, as the reference offers it for a printer that is not Bambu's: "Print" (send to the printer's host, section 4) and "Export G-code file"; the last one picked is remembered (by the page), "Print" not brought back for a printer that cannot be sent to (as the fork's `get_remembered_print_select`). "Print" opens "Send G-code to printer host" for the plate shown. **differs**: "Print host upload queue" is in the button's menu as well (the reference has it nowhere else either for a non-Bambu printer). File > Export > "Export G-code..." is the same export (section 17). **added** (twentieth pass): "Export plate sliced file" and "Export all sliced file" in the button's menu, in the reference's order (Print, the two sliced files, Export G-code file), as the fork offers them to every printer not Bambu Lab's (`available_print_actions`); "Export all sliced file" is on when every plate that holds something is sliced (`can_export_all_gcode`). **not yet**: "Print plate", "Send" and the rest are Bambu's or not offered by the fork for other printers |
 | Ctrl+R slices the plate | `MainFrame` char hook l.771 | **added** |
 | Warnings and errors of a slice as notifications | `NotificationManager` | **had**, moved to Preview: "About this print" on the stage keeps the three kinds apart (what is wrong with this print; what was settled without being asked; the settings this engine does not follow yet) |
 
@@ -229,7 +232,9 @@ does with each option.
 | "Import 3MF/STL/STEP/SVG/OBJ/AMF/GLB..." [Ctrl+I] adds geometry to the project shown; dropping files on the window; "Open as project" / "Import geometry only" | l.3385, `PlaterDropTarget::OnDropFiles` l.13122 | **added**: File > Import > "Import 3MF/STL/STEP/SVG/OBJ/AMF/GLB..." and "Add" [Ctrl+I] put a 3MF's, an STL's or (fifteenth pass) an OBJ's geometry in the project shown, a 3MF always as "Import geometry only" (section 13). The dialog's filter offers 3MF, STL and OBJ, what the engine reads. The strip's Open still opens a file as a project of its own (**had**), an OBJ too. **not yet**: STEP (a CAD kernel), SVG (an emboss feature), AMF (XML, rarely used), GLB; dropping files; the question which of the two is meant |
 | OBJ: `v` and `f` (texture and normal numbers read past, a negative number counted back), a quad cut in two along its first corner, a face of five corners or more refused ("The file contains polygons with more than 4 vertices."), a solid wound inside out turned round; colours from `usemtl`/`mtllib` and vertex colours | `Format/OBJ.cpp` `load_obj`, `objparser.cpp` | **added** (`edge-mesh::obj`): the geometry, as the reference reads it; checked against the C++ slicer's `--info` on all 21 OBJs of its own tests (triangles and bounds, `crates/edge-mesh/tests/reference_obj.rs`). **differs**: a convex face of five corners or more is cut into a fan, as the quad is (only a concave one is refused); a face naming vertex 0 is refused (the reference takes it as its end-of-face mark and reads the faces after it wrongly). **not yet**: colours and materials |
 | Export: "Export all objects as one STL...", "Export all objects as STLs...": every object, every copy, its printed parts (no modifier, blocker, enforcer), placed in the project's coordinates, in mm, binary; negative parts cut out (CGAL), else the printed parts alone with "Unable to perform boolean operation on model meshes. Only positive parts will be exported."; "as STLs": into a folder ("Choose a directory"), a file for each object named by it, "(1)", "(2)" after a name taken | Plater.cpp `export_stl` l.25936, `get_export_file` (FT_STL, "Export STL file:") | **added** (`export_stl`, `export_stls`, `edge-engine::export`): the same meshes; written whole or not at all, never over a file without being told (the window's save dialog asks; in a browser the page asks, "Confirm Save As" / "The file %s already exists\nDo you want to replace it?"); a failure says why. Checked against the C++ slicer: its `--export-stl` of `mcbrim_test.3mf` and our "as STLs" give the same 16 objects, each with the same triangle count (85,046) and bounds to 0.001 mm, and its `--info` reads our one STL as 1,360,736 triangles, the sum. **differs**: negative parts are never cut out (no solid boolean here): the objects that have them are named, with the reference's sentence; an object's name is made a file name (what a file system refuses put as `_`), where the reference writes `name` as it is and fails silently on "a/b" (section 17, errors); the copies stand where the project has them, the reference also taking each object's `origin_translation` off in "as STLs" |
-| Export: STEP, generic and Bambu 3MF, sliced files (.gcode.3mf), preset bundles | the same | **not yet** (section 17 says what each waits for). `edge save` (the command line) writes the same project file as "Save Project" |
+| Export: "Export plate sliced file..." [Ctrl+G], "Export all plate sliced file..." (the sliced file, `.gcode.3mf`): the project without its model (`SplitModel \| WithGcode \| SkipModel`), each plate's G-code and its MD5, the pictures of every plate, the first layer's boxes, what the slice came to, the order filaments are taken up in; "Save Sliced file as:", "Gcode 3MF files", ".3mf" put on a name without it | Plater.cpp `export_gcode_3mf` l.25588, `export_3mf` l.26546 | **added** (twentieth pass, `export_sliced`, `edge-3mf::write_sliced`, `edge-engine::sliced_file`): the entries the reference writes, in its order (section 15, "The sliced file"); the pictures drawn by the page's 3D view. Also `edge slice --gcode-3mf` (without pictures) |
+| Export: "Export Generic 3MF...": the project with every mesh in `3D/3dmodel.model` and without the production extension (`export_3mf` with `Silence` alone), "Save file as:" | Plater.cpp `export_core_3mf` l.25682 | **added** (`export_generic`, `edge_3mf::Layout::Core`): the project file's entries, but no `3D/Objects/` files, no `3D/_rels`, no `p:UUID`, each part a mesh of its own; the project stays the file it was. Also `edge save --generic`. Checked: the reference's `--info` reads our generic file of `mcbrim_test.3mf` (16 objects, 85,046 triangles each) exactly as it reads the project itself (all 208 lines alike) |
+| Export: STEP, Bambu 3MF, "Export && Open in Bambu Studio", preset bundles | the same | **not yet**: STEP and the Bambu exports (section 17 says what each waits for); preset bundles **added** (sixteenth pass). `edge save` (the command line) writes the same project file as "Save Project" |
 
 ## 3. Preview
 
@@ -2570,17 +2575,47 @@ save` lists the same and writes only with `--accept-losses`.
   "Apply All" with PETG and undone. Screenshots in the pass's scratch
   folder.
 
+### The sliced file
+
+"Export plate sliced file..." and "Export all plate sliced file..."
+(twentieth pass): the reference's `export_3mf` with
+`SplitModel | WithGcode | SkipModel`, laid out by `edge_3mf::write_sliced`
+from what `edge_engine::sliced_file` reads off the slice and its G-code.
+
+| C++ | Where | Here |
+| --- | --- | --- |
+| The entries, in order: `[Content_Types].xml`; each plate's `plate_N.png` and `plate_N_small.png`, then each one's `plate_no_light_N.png`, then each one's `top_N.png` and `pick_N.png`; `plate_N.json`; `3D/3dmodel.model` (no objects, `<build/>`); the files that go by an object's place (layer heights, ranges, brim ears, cut information) and custom G-code; `project_settings.config` and the embedded presets; each `plate_N.gcode.md5`, each `plate_N.gcode`; `Metadata/_rels/model_settings.config.rels`; `model_settings.config` (the plates only, each with `gcode_file`, its pictures and `pattern_bbox_file`); `slice_info.config`; `filament_sequence.json`; `_rels/.rels` (the plate exported's picture, or plate 1's) | bbs_3mf.cpp `_save_model_to_file` l.7344 | **added**, the same names in the same order. Checked against the reference's own export of the same plates (the command line's `--slice N --min-save --export-3mf`, which is the GUI's strategy): `mcbrim_test.3mf` plate 2 and all plates, `twopart_groups.3mf`. Every entry name matches; the reference reads our file back (`--info --debug 5`) logging the same files, plates and pictures as for its own, and ends as for its own ("The supplied file couldn't be read because it's empty": `--info` takes no model-less file) |
+| The pictures: 512 × 512, nothing behind the objects; lit from the default view, unlit, from above, and from above with each copy in the colour of its `identify_id` (red the low byte); the small one a quarter | Plater.cpp `export_3mf`, `generate_thumbnail` | **added**: drawn by the page's 3D view (`stage.platePictures`), each plate's printable copies, the printed parts only; the camera is the reference's (the plate's bed fitted, orthographic): the pick picture of `mcbrim_test.3mf` plate 2 has the same colours on the same number of pixels as the reference's (3,057, 3,055, 3,041, 3,036 and the background's 249,955). **differs**: the small picture is the large one scaled by the browser, not the reference's box average |
+| `plate_N.json`: each object's first-layer box (its brim's when it has one) and area, the tower's box, the filaments used, the first filament, bed type, first layer time | Plater.cpp `generate_first_layer_bbox` l.20052 | **added**: each printable copy cut through the middle of the first layer (`Sliced::first_layer_objects`), boxed by its brim loops to their outer edge; `mcbrim_test` plate 2's boxes within 0.03 mm of the reference's, areas within 0.02 mm². **differs**: an object is given by its copy's `identify_id` (the reference names its runtime object id, which matches nothing else in the file); the tower's area is 0 (the reference copies the last object's, below) |
+| `slice_info.config`: per plate the extruder kinds, nozzle sizes, time, weight, first layer time, support, the filament map, each printable copy (`identify_id`, name), each filament used (tray id, type, colour, metres, grams, nozzle, used for objects / supports), the nozzles | bbs_3mf.cpp `_add_slice_info_config_file_to_archive` l.10141, PartPlate.cpp `store_to_3mf_structure` | **added**: from the settings, the G-code's notes (filament used, first layer time, support on the tower) and its moves (what each filament laid). On a printer of several toolheads alike (U1) each filament from toolhead i, round again (`identity_filament_map`). `printer_model_id` is empty (Bambu Lab's model codes; this app sends to no Bambu printer); `label_object_enabled` false (objects are not labelled, edge-gcode notes it) |
+| `filament_sequence.json`: every plate, the filaments in the order taken up, a nozzle 0 for each | `_add_filament_sequence_file_to_archive` | **added**: `mcbrim_test` plate 2's 51 filaments, in the reference's order |
+| The settings: `full_config_secure` with `print_compatible_printers` filled | Plater.cpp `export_3mf` | **differs**: the settings "Save Project" writes (section "The settings"), which the reference reads back the same |
+
 ### Not yet
 
-- Drawing a plate's pictures, and the project's cover.
-- "Export plate sliced file", "Export all sliced file" (a project with its
-  G-code), and "Export Bambu 3MF".
+- The project's own cover picture when it is saved (pictures are drawn
+  for the sliced file only).
+- "Export Bambu 3MF".
 - Reading back, or keeping, what a project is saved with beyond the file:
   "Reopen the open projects at the next start", recent projects, crash
   backups.
 
 ### Errors found in the C++
 
+- PartPlate.cpp l.6297–6302: a sliced plate's filaments are given their
+  toolhead by `identity_filament_map(config, slice_filaments_info.size())`,
+  a map as long as the number of filaments *used*, indexed by the
+  filament's number. On a U1 printing filaments 2 to 7 of 7, filament 7
+  (index 6, past the six-long map) is reported on toolhead 0
+  (`group_id="0"`) while `filament_maps` and the G-code put it on
+  toolhead 3; measured on `mcbrim_test.3mf` plate 2. The map should be
+  as long as all the filaments. Here it is (`group_id="2"`).
+- Plater.cpp l.20101–20112: the wipe tower's entry in `plate_N.json`
+  reuses the last object's `BBoxData`, so it carries that object's area
+  (827.02 mm² on `mcbrim_test` plate 2) and layer height. Here its area is 0.
+- `bbs_3mf.cpp` l.8035: for a whole-project export the small cover's
+  relationship is written without the line's leading space (cosmetic;
+  written with it here).
 - `bbs_3mf.cpp` l.7954: the small thumbnail is checked with
   `if (png_data != nullptr)`, the large one's pointer (freed at l.7912),
   where `small_png_data` is meant; a small picture that failed to encode is
@@ -2852,6 +2887,11 @@ it did.
   Left out here (`WRONG` in the tool). Its "Print" is "aktuelle Platte
   drucken" too, which reads oddly on a menu entry but is not plainly
   another string's; kept.
+- `de/Snapmaker_Orca_de.po` l.4815 and the entry for "Export plate sliced
+  file": "Exportiere alle Platten als STL Dateien" and "Exportiere aktuelle
+  Platte als STL Datei", files of STL where the sliced file is a 3MF of
+  G-code. Left out here (`WRONG` in the tool), so German reads the message
+  ids (twentieth pass).
 - `de/Snapmaker_Orca_de.po` l.1705: "Language" is "Spache" (for
   "Sprache"), so the German C++ titles its Preferences' list so, and so
   does the strip's menu here. A misspelling, not another string's
@@ -2931,10 +2971,10 @@ its tooltip "not yet: …" saying what it waits for.
 | | Export ▸ "Export all objects as one STL..." | | built (section 2, "Files"); on with objects |
 | | Export ▸ "Export all objects as STLs..." | | built; on with objects |
 | | Export ▸ "Export as STEP..." | | off: STEP needs a CAD kernel |
-| | Export ▸ "Export Generic 3MF..." | | off: the project file is written in the reference's own layout only. The reference's "generic" 3MF is its project file with every mesh in the one model file (`export_3mf` without `SplitModel`), which `edge-3mf::write` does not write; that is its own change to the writer |
+| | Export ▸ "Export Generic 3MF..." | | built (twentieth pass, section 2, "Files"); on with objects |
 | | Export ▸ "Export Bambu 3MF...", "Export && Open in Bambu Studio..." | | off: no Bambu Studio export |
-| | Export ▸ "Export plate sliced file..." | Ctrl+G | off: the sliced file (.gcode.3mf) is not written |
-| | Export ▸ "Export all plate sliced file..." | | off: the same |
+| | Export ▸ "Export plate sliced file..." | Ctrl+G | built (twentieth pass, section 15, "The sliced file"); on when the plate shown is sliced and its G-code written (`can_export_gcode`) |
+| | Export ▸ "Export all plate sliced file..." | | built; on when every plate that holds something is sliced (`can_export_all_gcode`) |
 | | Export ▸ "Send plate to Bambu Connect", "Send all plates to Bambu Connect" | | not shown: the reference takes them out for a printer not Bambu's, and sending to Bambu is not this app's |
 | | Export ▸ "Export G-code..." | | wired: the print button's "Export G-code file" (section 2); on when the plate shown is sliced and its G-code written |
 | | Export ▸ "Export Preset Bundle..." | | wired (sixteenth pass): "Export Preset Bundle", the reference's five kinds ("Printer config bundle(.orca_printer)" and its note, "Filament bundle(.orca_filament)", "Printer presets(.zip)", "Filament presets(.zip)", "Process presets(.zip)"), the presets of the kind each ticked, "Export", then a folder; a zip already there is asked about in the reference's words; "Export successful" with the files written (`presetExport()`, `preset_export`) |
@@ -3011,6 +3051,29 @@ that is off; letters, "?", Delete and Escape typed in a text field reached
 it and nothing else. The window: built (`tools/make_app.sh`), the menu's
 description and the window bar's make-up unit-tested; the system's bar
 itself was not clicked through.
+
+The twentieth pass (File > Export and the entry points beside it) went
+through the browser (`--serve`, 1280 × 820 dark English, 900 × 560 light
+German): a recent project opened after the server was started again;
+"Export plate sliced file" by Ctrl+G (Cmd+G) on plate 2 of
+`mcbrim_test.3mf`, into a folder that was not there (the error said) and
+then one that was; "Export all sliced file" from the print button after
+"Slice all", off until all three plates were sliced; "Export Generic
+3MF"; "Save Project as..." (".3mf" put on the name, the strip and
+"Recent projects" taking the new file); "Import 3MF/STL/..." by Ctrl+I
+adding an STL to the project, after which "Export all" was off again
+(plate 2 no longer sliced). Screenshots in `~/Dev/EdgeSlicerRS-shots/export/`.
+
+What File > Export still waits for (shown, off):
+
+- "Export as STEP...": a CAD kernel to write solids (the reference's
+  OpenCASCADE); the engine has triangles only.
+- "Export Bambu 3MF...", "Export && Open in Bambu Studio...": the settings
+  translated to Bambu Studio's names and versions (`BambuExport.cpp`, a
+  table of renamed and dropped options per Bambu Studio line), and for
+  the second, launching another application.
+- "Export Toolpaths as OBJ" is the G-code viewer's menu
+  (`init_menubar_as_gcodeviewer` l.4417), not the editor's; not this app's.
 
 ### Errors found in the C++
 

@@ -1072,6 +1072,112 @@
       this.drawn = (this.drawn || 0) + 1;
     },
 
+    // A sliced file's pictures of each plate in `plates` (Plater.cpp
+    // `export_3mf`, `generate_thumbnail`): 512 × 512 PNGs with nothing
+    // behind the objects; the plate from the default view, lit and
+    // unlit, and from above, lit and with each copy in the colour of its
+    // number (`numbers`: { copy id: number }, the pick picture a printer
+    // that skips objects reads); and the first at 128 × 128. As base64,
+    // by plate number. Only the printable copies on each plate are drawn.
+    platePictures(plates, numbers) {
+      const out = {};
+      if (!this.scene || !this.scene.data) return out;
+      const r = this.renderer;
+      const gl = r.gl;
+      const SIZE = 512;
+      const target = gl.createFramebuffer();
+      gl.bindFramebuffer(gl.FRAMEBUFFER, target);
+      const colour = gl.createRenderbuffer();
+      gl.bindRenderbuffer(gl.RENDERBUFFER, colour);
+      gl.renderbufferStorage(gl.RENDERBUFFER, gl.RGBA8, SIZE, SIZE);
+      gl.framebufferRenderbuffer(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.RENDERBUFFER, colour);
+      const depth = gl.createRenderbuffer();
+      gl.bindRenderbuffer(gl.RENDERBUFFER, depth);
+      gl.renderbufferStorage(gl.RENDERBUFFER, gl.DEPTH_COMPONENT24, SIZE, SIZE);
+      gl.framebufferRenderbuffer(gl.FRAMEBUFFER, gl.DEPTH_ATTACHMENT, gl.RENDERBUFFER, depth);
+      const pixels = new Uint8Array(SIZE * SIZE * 4);
+      const canvas = document.createElement('canvas');
+      canvas.width = SIZE;
+      canvas.height = SIZE;
+      const context = canvas.getContext('2d');
+      const small = document.createElement('canvas');
+      small.width = 128;
+      small.height = 128;
+      const smallContext = small.getContext('2d');
+      const png = (from) => from.toDataURL('image/png').slice('data:image/png;base64,'.length);
+      const scene = this.scene;
+      const draw = (plate, view, how) => {
+        const placings = scene.data.placings.filter((placing) => (placing.plate === plate || scene.plates.length <= 1) && placing.printable);
+        let box = null;
+        for (const placing of placings) if (placing.box) box = M.union(box, placing.box);
+        const camera = new GL.Camera();
+        camera.perspective = false;
+        camera.viewport = [SIZE, SIZE];
+        camera.selectView(view);
+        // Fitted to the plate's bed, as the reference frames a plate.
+        const fit = scene.plateBox(plate) || box;
+        if (!fit) return false;
+        const whole = box ? M.union(fit, box) : fit;
+        camera.zoomToBox(whole, 1.0);
+        camera.sceneBox = whole;
+        const frame = camera.matrices(whole);
+        gl.bindFramebuffer(gl.FRAMEBUFFER, target);
+        gl.viewport(0, 0, SIZE, SIZE);
+        gl.clearColor(0, 0, 0, 0);
+        gl.depthMask(true);
+        gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT);
+        gl.enable(gl.DEPTH_TEST);
+        gl.depthFunc(gl.LEQUAL);
+        gl.disable(gl.BLEND);
+        for (const placing of placings) {
+          const mesh = scene.meshOf(placing.object);
+          if (!mesh) continue;
+          // The printed parts alone (`parts_only`).
+          const parts = scene.data.objects[placing.object].part_list;
+          const ranges = parts ? parts.filter((part) => part.kind === 'part').map((part) => part.triangles) : [null];
+          for (const range of ranges) {
+            if (how === 'pick') {
+              const number = numbers[placing.id] || 0;
+              r.drawFlat(mesh, M.multiply(M.multiply(frame.projection, frame.view), placing.matrix), GL.Renderer.pickColour(number), undefined, range);
+            } else {
+              r.drawMesh(mesh, frame, placing.matrix, { palette: scene.palette, pass: 2, range, emission: how === 'unlit' ? -1 : 0 });
+            }
+          }
+        }
+        gl.readPixels(0, 0, SIZE, SIZE, gl.RGBA, gl.UNSIGNED_BYTE, pixels);
+        // The frame buffer is upside down to a picture.
+        const image = context.createImageData(SIZE, SIZE);
+        const row = SIZE * 4;
+        for (let y = 0; y < SIZE; y += 1) image.data.set(pixels.subarray((SIZE - 1 - y) * row, (SIZE - y) * row), y * row);
+        context.putImageData(image, 0, 0);
+        return true;
+      };
+      try {
+        for (const plate of plates) {
+          if (!draw(plate, 'iso', 'lit')) continue;
+          const pictures = { plate: png(canvas) };
+          smallContext.clearRect(0, 0, 128, 128);
+          smallContext.imageSmoothingQuality = 'high';
+          smallContext.drawImage(canvas, 0, 0, 128, 128);
+          pictures.small = png(small);
+          draw(plate, 'iso', 'unlit');
+          pictures.no_light = png(canvas);
+          draw(plate, 'top', 'lit');
+          pictures.top = png(canvas);
+          draw(plate, 'top', 'pick');
+          pictures.pick = png(canvas);
+          out[plate] = pictures;
+        }
+      } finally {
+        gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+        gl.deleteFramebuffer(target);
+        gl.deleteRenderbuffer(colour);
+        gl.deleteRenderbuffer(depth);
+        this.frame();
+      }
+      return out;
+    },
+
     // The names of the objects on the plate shown, over them ("Show Labels").
     showLabels(frame) {
       const data = this.scene.data;

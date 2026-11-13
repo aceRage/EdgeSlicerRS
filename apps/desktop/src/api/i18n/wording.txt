@@ -594,11 +594,9 @@ not yet: the app follows the system's dark or light
 not yet: the app has one window
 not yet: the app keeps no logs
 not yet: the firewall is not checked
-not yet: the project file is written in the reference's own layout only (a model file for each object)
 not yet: the scene has no X-ray view
 not yet: the scene has one way of shading
 not yet: the sidebar's layout is not reset
-not yet: the sliced file (.gcode.3mf) is not written; Export G-code is
 not yet: there are no releases to check for
 not yet: there are no tips
 not yet: there is no Home tab

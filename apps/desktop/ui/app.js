@@ -98,6 +98,7 @@ const asking = {
   model: 'Path of an STL, OBJ or 3MF file on this machine',
   folder: 'Path of the folder of vendor profiles',
   gcode: 'Save the G-code as (a full path)',
+  gcode3mf: 'Save the sliced file as (a full path)',
   project: 'Save the project as (a full path)',
   cafile: 'Path of the CA certificate file (crt or pem)',
   stl: 'Export the STL as (a full path)',
@@ -986,9 +987,13 @@ function showButtons() {
   const failed = summary && 'error' in summary.summary.gcode;
   // The print button: "Print" (send to the printer's host, hosts.js) or
   // "Export G-code file", whichever was picked from its menu.
-  const sending = typeof printAction === 'function' && printAction() === 'send';
-  const ready = Boolean(project && onPlater && project.sliced && !busy && !failed);
-  $('export').textContent = sending ? t('Print') : t('Export G-code file');
+  const action = typeof printAction === 'function' ? printAction() : 'export';
+  const sending = action === 'send';
+  // "Export all sliced file": every plate that holds something sliced
+  // (`can_export_all_gcode`).
+  const allSliced = Boolean(project) && plates.length > 0 && plates.every((plate) => isSliced(project, plate));
+  const ready = Boolean(project && onPlater && !busy && (action === 'all_sliced' ? allSliced : project.sliced && !failed));
+  $('export').textContent = t(PRINT_ACTIONS[action] || 'Export G-code file');
   $('export').disabled = !ready;
   $('export').title = sending && hostsState.info ? `Send the plate to ${hostsState.info.printer}` : '';
   $('export-more').disabled = !project;
@@ -1025,8 +1030,13 @@ $('slice-more').addEventListener('click', (event) => {
 $('cancel').addEventListener('click', () => call('cancel', { project: activeId() }).catch(() => {}));
 
 $('export').addEventListener('click', () => attempt(async () => {
-  if (typeof printAction === 'function' && printAction() === 'send') {
+  const action = typeof printAction === 'function' ? printAction() : 'export';
+  if (action === 'send') {
     await openSend();
+    return;
+  }
+  if (action === 'sliced' || action === 'all_sliced') {
+    await Menu.exportSliced(action === 'all_sliced');
     return;
   }
   await exportGcode();

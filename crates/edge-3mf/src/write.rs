@@ -39,6 +39,7 @@ use zip::{CompressionMethod, DateTime, ZipWriter, write::SimpleFileOptions};
 use crate::{
     Error, Extras, Object, Part, PartKind, Plate, Project,
     kept::{self, Carry, Entry, Kept, Left, ObjectKept, Picture},
+    sliced::{self, SlicedFile, SlicedPlate},
 };
 
 /// The version of the reference this layout is that of: the pinned
@@ -227,17 +228,69 @@ fn by_place_holds(project: &Project, kept: &Kept) -> bool {
     })
 }
 
+/// How a project's package is laid out.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Layout {
+    /// "Save Project": a model file of its own for each object, a mesh
+    /// two parts share written once (`SplitModel | ShareMesh`).
+    Project,
+    /// "Export Generic 3MF": every mesh in the one model file, each
+    /// part's its own, without the production extension (Plater.cpp
+    /// `export_core_3mf`: `export_3mf` with `Silence` alone).
+    Core,
+}
+
+/// How the package is written.
+#[derive(Clone, Copy)]
+enum Mode<'a> {
+    Layout(Layout),
+    /// A sliced file: the plates' G-code and what goes with it, without
+    /// the model (`SplitModel | WithGcode | SkipModel`).
+    Sliced(&'a SlicedFile<'a>),
+}
+
 /// Writes `save` to `path`: to `<path>.tmp`, then moved into place, so a
 /// file is there whole or not at all, and one that was there is left as
 /// it was when writing fails.
 pub fn write(save: &Save<'_>, path: &Path) -> Result<Written, Error> {
+    write_as(save, path, Layout::Project)
+}
+
+/// [`write`], laid out as `layout` says.
+pub fn write_as(save: &Save<'_>, path: &Path, layout: Layout) -> Result<Written, Error> {
+    whole(path, |out| package(save, out, Mode::Layout(layout)))
+}
+
+/// Writes a sliced file (`.gcode.3mf`) of `save` and `sliced` to `path`,
+/// whole or not at all, as [`write`] does.
+pub fn write_sliced(
+    save: &Save<'_>,
+    sliced: &SlicedFile<'_>,
+    path: &Path,
+) -> Result<Written, Error> {
+    whole(path, |out| package(save, out, Mode::Sliced(sliced)))
+}
+
+/// [`write_sliced`] to `out`.
+pub fn write_sliced_to<W: Write + Seek>(
+    save: &Save<'_>,
+    sliced: &SlicedFile<'_>,
+    out: W,
+) -> Result<Written, Error> {
+    package(save, out, Mode::Sliced(sliced))
+}
+
+fn whole(
+    path: &Path,
+    write: impl FnOnce(&mut BufWriter<fs::File>) -> Result<Written, Error>,
+) -> Result<Written, Error> {
     let mut temporary = path.as_os_str().to_owned();
     temporary.push(".tmp");
     let temporary = PathBuf::from(temporary);
     let result = (|| -> Result<Written, Error> {
         let file = fs::File::create(&temporary)?;
         let mut out = BufWriter::new(file);
-        let mut written = write_to(save, &mut out)?;
+        let mut written = write(&mut out)?;
         let file = out.into_inner().map_err(|e| e.into_error())?;
         file.sync_all()?;
         written.bytes = file.metadata()?.len();
@@ -348,11 +401,23 @@ fn object_file(meshes: &[(u32, u32, &Mesh, Option<&Extras>)]) -> String {
     let mut out = String::with_capacity(size + 512);
     model_head(&mut out);
     out.push_str(" <metadata name=\"BambuStudio:3mfVersion\">1</metadata>\n <resources>\n");
+    mesh_objects(&mut out, meshes, true);
+    out.push_str(" </resources>\n <build/>\n</model>\n");
+    out
+}
+
+/// The meshes, each an `<object>` of its own; with the production
+/// extension, each with its UUID.
+fn mesh_objects(out: &mut String, meshes: &[(u32, u32, &Mesh, Option<&Extras>)], production: bool) {
     for (id, uuid, mesh, extras) in meshes {
-        let _ = writeln!(
-            out,
-            r#"  <object id="{id}" p:UUID="{uuid:08x}{SUB_OBJECT_UUID}" type="model">"#
-        );
+        if production {
+            let _ = writeln!(
+                out,
+                r#"  <object id="{id}" p:UUID="{uuid:08x}{SUB_OBJECT_UUID}" type="model">"#
+            );
+        } else {
+            let _ = writeln!(out, r#"  <object id="{id}" type="model">"#);
+        }
         out.push_str("   <mesh>\n    <vertices>\n");
         for [x, y, z] in &mesh.vertices {
             let _ = writeln!(out, r#"     <vertex x="{x}" y="{y}" z="{z}"/>"#);
@@ -380,8 +445,6 @@ fn object_file(meshes: &[(u32, u32, &Mesh, Option<&Extras>)]) -> String {
         }
         out.push_str("    </triangles>\n   </mesh>\n  </object>\n");
     }
-    out.push_str(" </resources>\n <build/>\n</model>\n");
-    out
 }
 
 /// A name fit for a path in the package: the reference uses an object's
@@ -668,7 +731,25 @@ fn same_extras(a: Option<&Arc<Extras>>, b: Option<&Arc<Extras>>) -> bool {
 
 /// Writes the package to `out`.
 pub fn write_to<W: Write + Seek>(save: &Save<'_>, out: W) -> Result<Written, Error> {
+    package(save, out, Mode::Layout(Layout::Project))
+}
+
+/// [`write_to`], laid out as `layout` says.
+pub fn write_to_as<W: Write + Seek>(
+    save: &Save<'_>,
+    out: W,
+    layout: Layout,
+) -> Result<Written, Error> {
+    package(save, out, Mode::Layout(layout))
+}
+
+fn package<W: Write + Seek>(save: &Save<'_>, out: W, mode: Mode<'_>) -> Result<Written, Error> {
     let project = save.project;
+    let sliced = match mode {
+        Mode::Sliced(sliced) => Some(sliced),
+        Mode::Layout(_) => None,
+    };
+    let core = matches!(mode, Mode::Layout(Layout::Core));
     let kept = project.kept.as_deref();
     let time = stamp();
     let deflated = SimpleFileOptions::default()
@@ -703,11 +784,51 @@ pub fn write_to<W: Write + Seek>(save: &Save<'_>, out: W) -> Result<Written, Err
     // Each plate's pictures, under its number as it stands, while they
     // still show it.
     let mut pictures: Vec<(u32, Picture)> = Vec::new();
-    for plate in &project.plates {
-        let Some(own) = &plate.kept else { continue };
-        for (picture, bytes) in &own.pictures {
-            zip.add(&picture.file(plate.id), bytes)?;
-            pictures.push((plate.id, *picture));
+    if let Some(sliced) = sliced {
+        // A sliced file's are those drawn for it, in the reference's
+        // order: each plate's picture and its small one, then each one's
+        // without light, then each one's from above and to pick by.
+        for (plate, drawn) in &sliced.pictures {
+            for (picture, bytes) in [
+                (Picture::Plate, &drawn.plate),
+                (Picture::Small, &drawn.small),
+            ] {
+                if !bytes.is_empty() {
+                    zip.add(&picture.file(*plate), bytes)?;
+                    pictures.push((*plate, picture));
+                }
+            }
+        }
+        for (plate, drawn) in &sliced.pictures {
+            if !drawn.no_light.is_empty() {
+                zip.add(&Picture::NoLight.file(*plate), &drawn.no_light)?;
+                pictures.push((*plate, Picture::NoLight));
+            }
+        }
+        for (plate, drawn) in &sliced.pictures {
+            for (picture, bytes) in [(Picture::Top, &drawn.top), (Picture::Pick, &drawn.pick)] {
+                if !bytes.is_empty() {
+                    zip.add(&picture.file(*plate), bytes)?;
+                    pictures.push((*plate, picture));
+                }
+            }
+        }
+        // The first layer's boxes of each plate sliced.
+        for plate in &sliced.plates {
+            if let Some(boxes) = &plate.boxes {
+                zip.add(
+                    &format!("Metadata/plate_{}.json", plate.plate),
+                    boxes.json().as_bytes(),
+                )?;
+            }
+        }
+    } else {
+        for plate in &project.plates {
+            let Some(own) = &plate.kept else { continue };
+            for (picture, bytes) in &own.pictures {
+                zip.add(&picture.file(plate.id), bytes)?;
+                pictures.push((plate.id, *picture));
+            }
         }
     }
 
@@ -716,7 +837,12 @@ pub fn write_to<W: Write + Seek>(save: &Save<'_>, out: W) -> Result<Written, Err
     let mut counter = 1u32;
     let mut written: Vec<(Arc<Mesh>, Option<Arc<Extras>>, Placed)> = Vec::new();
     let mut objects_out: Vec<ObjectOut> = Vec::new();
-    for (at, object) in project.objects.iter().enumerate() {
+    let modelled: &[Object] = if sliced.is_some() {
+        &[]
+    } else {
+        &project.objects
+    };
+    for (at, object) in modelled.iter().enumerate() {
         // An object a file names nowhere is named as the reference names
         // it when it reads that file (bbs_3mf.cpp `_load_model_from_file`:
         // "Object_" and its place).
@@ -734,8 +860,9 @@ pub fn write_to<W: Write + Seek>(save: &Save<'_>, out: W) -> Result<Written, Err
         let mut shared = false;
         for (index, part) in object.parts.iter().enumerate() {
             let extras = extras_of(part);
+            // Without `ShareMesh` every part has a mesh of its own.
             let found = written.iter().find(|(mesh, other, _)| {
-                Arc::ptr_eq(mesh, &part.mesh) && same_extras(other.as_ref(), extras)
+                !core && Arc::ptr_eq(mesh, &part.mesh) && same_extras(other.as_ref(), extras)
             });
             let placed = match found {
                 Some((_, _, placed)) => {
@@ -770,7 +897,15 @@ pub fn write_to<W: Write + Seek>(save: &Save<'_>, out: W) -> Result<Written, Err
 
     // 3D/3dmodel.model.
     let mut root = String::new();
-    model_head(&mut root);
+    if core {
+        let _ = writeln!(root, r#"<?xml version="1.0" encoding="UTF-8"?>"#);
+        let _ = writeln!(
+            root,
+            r#"<model unit="millimeter" xml:lang="en-US" xmlns="{CORE_NS}" xmlns:BambuStudio="{BAMBU_NS}">"#
+        );
+    } else {
+        model_head(&mut root);
+    }
     let mut header: BTreeMap<String, String> = kept
         .map(|kept| kept.header.iter().cloned().collect())
         .unwrap_or_default();
@@ -785,9 +920,17 @@ pub fn write_to<W: Write + Seek>(save: &Save<'_>, out: W) -> Result<Written, Err
     ] {
         header.entry(key.to_owned()).or_default();
     }
+    // A sliced file keeps the name the reference has always given it
+    // (bbs_3mf.cpp `_add_model_file_to_archive`: "a Bambu printer /
+    // Bambu Studio artifact rather than a project").
+    let application = if sliced.is_some() {
+        "BambuStudio"
+    } else {
+        "EdgeSlicer"
+    };
     header.insert(
         "Application".into(),
-        format!("EdgeSlicer-{REFERENCE_VERSION}"),
+        format!("{application}-{REFERENCE_VERSION}"),
     );
     header.insert("BambuStudio:3mfVersion".into(), "1".into());
     // The reference writes neither when the file was made nor who made it
@@ -797,8 +940,6 @@ pub fn write_to<W: Write + Seek>(save: &Save<'_>, out: W) -> Result<Written, Err
     header.insert("DesignerUserId".into(), String::new());
     header.remove("bamboo_slicer:Version3mf");
     let first_plate = project.plates.first().map(|plate| plate.id);
-    let has_picture =
-        |picture: Picture| first_plate.is_some_and(|plate| pictures.contains(&(plate, picture)));
     // A cover named in the header that is no longer written is not named.
     let carried = |name: &str| {
         kept.is_some_and(|kept| {
@@ -807,7 +948,12 @@ pub fn write_to<W: Write + Seek>(save: &Save<'_>, out: W) -> Result<Written, Err
                 .any(|file| file.name.eq_ignore_ascii_case(name.trim_start_matches('/')))
         })
     };
+    // A sliced file carries the header as it was read, as the reference's
+    // does (`model_info->metadata_items`).
     for key in ["Thumbnail_Middle", "Thumbnail_Small"] {
+        if sliced.is_some() {
+            break;
+        }
         if let Some(target) = header.get(key).cloned() {
             let shown = Picture::ALL.iter().any(|picture| {
                 first_plate.is_some_and(|plate| {
@@ -829,7 +975,53 @@ pub fn write_to<W: Write + Seek>(save: &Save<'_>, out: W) -> Result<Written, Err
         );
     }
     root.push_str(" <resources>\n");
-    for (object, source) in objects_out.iter().zip(&project.objects) {
+    // The generic layout has every mesh here, each object's in turn, and
+    // then the objects made of them (`_add_model_file_to_archive` without
+    // `SplitModel`).
+    if core {
+        let inline: Vec<String> = objects_out
+            .par_iter()
+            .zip(modelled)
+            .map(|(out, object)| {
+                let meshes: Vec<(u32, u32, &Mesh, Option<&Extras>)> = out
+                    .meshes
+                    .iter()
+                    .map(|(id, uuid, index)| {
+                        let part = &object.parts[*index];
+                        (
+                            *id,
+                            *uuid,
+                            part.mesh.as_ref(),
+                            extras_of(part).map(|e| e.as_ref()),
+                        )
+                    })
+                    .collect();
+                let mut text = String::new();
+                mesh_objects(&mut text, &meshes, false);
+                text
+            })
+            .collect();
+        for text in inline {
+            root.push_str(&text);
+        }
+        for (object, source) in objects_out.iter().zip(modelled) {
+            let _ = writeln!(root, r#"  <object id="{}" type="model">"#, object.id);
+            root.push_str("   <components>\n");
+            for (placed, part) in object.components.iter().zip(&source.parts) {
+                let _ = writeln!(
+                    root,
+                    r#"    <component objectid="{}" transform="{}"/>"#,
+                    placed.id,
+                    transform_text(&part.transform)
+                );
+            }
+            root.push_str("   </components>\n  </object>\n");
+        }
+    }
+    for (object, source) in objects_out.iter().zip(modelled) {
+        if core {
+            break;
+        }
         let suffix = if object.shared {
             OBJECT_UUID_SHARED
         } else {
@@ -854,14 +1046,24 @@ pub fn write_to<W: Write + Seek>(save: &Save<'_>, out: W) -> Result<Written, Err
         root.push_str("   </components>\n  </object>\n");
     }
     root.push_str(" </resources>\n");
-    let items: Vec<(u32, &crate::Instance)> = project
-        .objects
+    let items: Vec<(u32, &crate::Instance)> = modelled
         .iter()
         .zip(&objects_out)
         .flat_map(|(object, out)| object.instances.iter().map(move |copy| (out.id, copy)))
         .collect();
     if items.is_empty() {
         root.push_str(" <build/>\n");
+    } else if core {
+        root.push_str(" <build>\n");
+        for (id, copy) in items {
+            let _ = writeln!(
+                root,
+                r#"  <item objectid="{id}" transform="{}" printable="{}"/>"#,
+                transform_text(&copy.transform),
+                u8::from(copy.printable)
+            );
+        }
+        root.push_str(" </build>\n");
     } else {
         let _ = writeln!(root, r#" <build p:UUID="{BUILD_UUID}">"#);
         for (id, copy) in items {
@@ -890,14 +1092,15 @@ pub fn write_to<W: Write + Seek>(save: &Save<'_>, out: W) -> Result<Written, Err
         );
     }
     rels.push_str("</Relationships>");
-    if !objects_out.is_empty() {
+    if !objects_out.is_empty() && !core {
         zip.add(MODEL_RELS, rels.as_bytes())?;
     }
 
     // The objects' files, made side by side.
     let files: Vec<String> = objects_out
         .par_iter()
-        .zip(&project.objects)
+        .zip(modelled)
+        .filter(|_| !core)
         .map(|(out, object)| {
             let meshes: Vec<(u32, u32, &Mesh, Option<&Extras>)> = out
                 .meshes
@@ -961,7 +1164,7 @@ pub fn write_to<W: Write + Seek>(save: &Save<'_>, out: W) -> Result<Written, Err
             let wanted = match file.carry {
                 Carry::AsIs => true,
                 Carry::Preset => save.presets,
-                Carry::ByObjectPlace => holds,
+                Carry::ByObjectPlace => holds && sliced.is_none(),
             };
             if wanted && file.name != PROJECT_SETTINGS && !zip.entries.contains(&file.name) {
                 zip.add(&file.name, &file.bytes)?;
@@ -969,8 +1172,43 @@ pub fn write_to<W: Write + Seek>(save: &Save<'_>, out: W) -> Result<Written, Err
         }
     }
 
+    // Each plate's G-code's MD5, then the G-code itself, and what names
+    // them (`_add_gcode_file_to_archive`, `_add_model_config_file_to_archive`).
+    if let Some(sliced) = sliced {
+        for plate in &sliced.plates {
+            zip.add(
+                &format!("Metadata/plate_{}.gcode.md5", plate.plate),
+                sliced::gcode_md5(plate.gcode).as_bytes(),
+            )?;
+        }
+        for plate in &sliced.plates {
+            zip.add(
+                &format!("Metadata/plate_{}.gcode", plate.plate),
+                plate.gcode,
+            )?;
+        }
+        let mut rels = String::from(
+            "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<Relationships xmlns=\"http://schemas.openxmlformats.org/package/2006/relationships\">\n",
+        );
+        for (at, plate) in sliced.plates.iter().enumerate() {
+            let _ = writeln!(
+                rels,
+                r#" <Relationship Target="/Metadata/plate_{}.gcode" Id="rel-{}" Type="http://schemas.bambulab.com/package/2021/gcode"/>"#,
+                plate.plate,
+                at + 1
+            );
+        }
+        rels.push_str("</Relationships>");
+        if !sliced.plates.is_empty() {
+            zip.add("Metadata/_rels/model_settings.config.rels", rels.as_bytes())?;
+        }
+    }
+
     // Metadata/model_settings.config.
-    let settings = model_settings(project, &objects_out, &pictures, save.filaments);
+    let settings = match sliced {
+        Some(sliced) => sliced_model_settings(project, sliced, &pictures, save.filaments),
+        None => model_settings(project, &objects_out, &pictures, save.filaments),
+    };
     zip.add(MODEL_SETTINGS, settings.as_bytes())?;
 
     // Metadata/slice_info.config: a project saved unsliced has its header
@@ -988,7 +1226,21 @@ pub fn write_to<W: Write + Seek>(save: &Save<'_>, out: W) -> Result<Written, Err
         ),
         version.join(".")
     );
-    zip.add(kept::SLICE_INFO, slice_info.as_bytes())?;
+    match sliced {
+        Some(sliced) => {
+            zip.add(
+                kept::SLICE_INFO,
+                sliced::slice_info(&sliced.plates).as_bytes(),
+            )?;
+            let ids: Vec<u32> = project.plates.iter().map(|plate| plate.id).collect();
+            let ids = if ids.is_empty() { vec![1] } else { ids };
+            zip.add(
+                "Metadata/filament_sequence.json",
+                sliced::filament_sequence(&ids, &sliced.plates).as_bytes(),
+            )?;
+        }
+        None => zip.add(kept::SLICE_INFO, slice_info.as_bytes())?,
+    }
 
     // _rels/.rels: the model, and the cover (the file's own, else the
     // first plate's picture), as `_add_relationships_file_to_archive`.
@@ -999,7 +1251,13 @@ pub fn write_to<W: Write + Seek>(save: &Save<'_>, out: W) -> Result<Written, Err
         rels,
         r#" <Relationship Target="/{MODEL}" Id="rel-1" Type="{MODEL_TYPE}"/>"#
     );
-    let plate_one = first_plate.unwrap_or(1);
+    // A sliced file of one plate shows that plate's picture; of them all,
+    // the first plate's (`_add_relationships_file_to_archive`).
+    let plate_one = sliced
+        .and_then(|sliced| sliced.plate)
+        .or(first_plate)
+        .unwrap_or(1);
+    let has_picture = |picture: Picture| pictures.contains(&(plate_one, picture));
     for (id, cover, picture, kind) in [
         (
             2,
@@ -1020,7 +1278,8 @@ pub fn write_to<W: Write + Seek>(save: &Save<'_>, out: W) -> Result<Written, Err
             "http://schemas.bambulab.com/package/2021/cover-thumbnail-small",
         ),
     ] {
-        let target = if zip.entries.iter().any(|entry| entry == cover) {
+        let plate_shown = sliced.is_some_and(|sliced| sliced.plate.is_some());
+        let target = if !plate_shown && zip.entries.iter().any(|entry| entry == cover) {
             Some(cover.to_owned())
         } else if has_picture(picture) {
             Some(picture.file(plate_one))
@@ -1231,6 +1490,83 @@ fn custom_gcode(project: &Project, kept: Option<&Kept>) -> Option<String> {
     ))
 }
 
+/// Each copy's number (`identify_id`), by object and copy: the one it was
+/// read with while its object has all its copies, else one no other copy
+/// has. The number a printer that skips objects knows each copy by, in a
+/// sliced file's `slice_info.config` and pick picture.
+pub fn identify_numbers(project: &Project) -> HashMap<(usize, usize), u32> {
+    let mut identify = HashMap::new();
+    let mut taken = std::collections::HashSet::new();
+    for (at, object) in project.objects.iter().enumerate() {
+        let Some(own) = &object.kept else { continue };
+        if own.copies != object.instances.len() {
+            continue;
+        }
+        for (copy, number) in own.identify.iter().enumerate() {
+            if let Some(number) = number
+                && taken.insert(*number)
+            {
+                identify.insert((at, copy), *number);
+            }
+        }
+    }
+    let mut next = taken.iter().max().map_or(1, |most| most + 1);
+    for (at, object) in project.objects.iter().enumerate() {
+        for copy in 0..object.instances.len() {
+            identify.entry((at, copy)).or_insert_with(|| {
+                next += 1;
+                next - 1
+            });
+        }
+    }
+    identify
+}
+
+/// `Metadata/model_settings.config` of a sliced file: the plates alone,
+/// each with its G-code, pictures and boxes (`_add_model_config_file_to_archive`
+/// with `SkipModel`).
+fn sliced_model_settings(
+    project: &Project,
+    sliced: &SlicedFile<'_>,
+    pictures: &[(u32, Picture)],
+    filaments: usize,
+) -> String {
+    let mut out = String::from("<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<config>\n");
+    let identify = HashMap::new();
+    if project.plates.is_empty() {
+        // A model without plates is sliced as plate 1.
+        let plate = Plate {
+            id: 1,
+            name: String::new(),
+            first_layer_sequence: Vec::new(),
+            instances: Vec::new(),
+            kept: None,
+        };
+        plate_settings(
+            &mut out,
+            &plate,
+            &[],
+            pictures,
+            filaments,
+            &identify,
+            Some(sliced),
+        );
+    }
+    for plate in &project.plates {
+        plate_settings(
+            &mut out,
+            plate,
+            &[],
+            pictures,
+            filaments,
+            &identify,
+            Some(sliced),
+        );
+    }
+    out.push_str("</config>\n");
+    out
+}
+
 fn model_settings(
     project: &Project,
     objects_out: &[ObjectOut],
@@ -1257,34 +1593,17 @@ fn model_settings(
         }
         out.push_str("  </object>\n");
     }
-    // Each copy's number (`identify_id`): the one it was read with while
-    // its object has all its copies, else one no other copy has.
-    let mut identify = HashMap::new();
-    let mut taken = std::collections::HashSet::new();
-    for (at, object) in project.objects.iter().enumerate() {
-        let Some(own) = &object.kept else { continue };
-        if own.copies != object.instances.len() {
-            continue;
-        }
-        for (copy, number) in own.identify.iter().enumerate() {
-            if let Some(number) = number
-                && taken.insert(*number)
-            {
-                identify.insert((at, copy), *number);
-            }
-        }
-    }
-    let mut next = taken.iter().max().map_or(1, |most| most + 1);
-    for (at, object) in project.objects.iter().enumerate() {
-        for copy in 0..object.instances.len() {
-            identify.entry((at, copy)).or_insert_with(|| {
-                next += 1;
-                next - 1
-            });
-        }
-    }
+    let identify = identify_numbers(project);
     for plate in &project.plates {
-        plate_settings(&mut out, plate, objects_out, pictures, filaments, &identify);
+        plate_settings(
+            &mut out,
+            plate,
+            objects_out,
+            pictures,
+            filaments,
+            &identify,
+            None,
+        );
     }
     out.push_str("  <assemble>\n");
     for (object, written) in project.objects.iter().zip(objects_out) {
@@ -1320,6 +1639,7 @@ fn plate_settings(
     pictures: &[(u32, Picture)],
     filaments: usize,
     identify: &HashMap<(usize, usize), u32>,
+    sliced: Option<&SlicedFile<'_>>,
 ) {
     out.push_str("  <plate>\n");
     let _ = writeln!(
@@ -1332,7 +1652,17 @@ fn plate_settings(
         r#"    <metadata key="plater_name" value="{}"/>"#,
         escape(&plate.name)
     );
-    let maps = || vec!["1"; filaments.max(1)].join(" ");
+    let given = sliced
+        .map(|sliced| sliced.filament_maps.as_slice())
+        .filter(|maps| !maps.is_empty());
+    let maps = || match given {
+        Some(maps) => maps
+            .iter()
+            .map(u32::to_string)
+            .collect::<Vec<_>>()
+            .join(" "),
+        None => vec!["1"; filaments.max(1)].join(" "),
+    };
     match &plate.kept {
         Some(own) => {
             let mut entries = own.entries.clone();
@@ -1342,9 +1672,14 @@ fn plate_settings(
                 .iter_mut()
                 .find(|entry| entry.key() == Some("filament_maps"))
             {
-                let mut values: Vec<String> = value.split_whitespace().map(str::to_owned).collect();
-                values.resize(filaments.max(1), "1".into());
-                *value = values.join(" ");
+                if given.is_some() {
+                    *value = maps();
+                } else {
+                    let mut values: Vec<String> =
+                        value.split_whitespace().map(str::to_owned).collect();
+                    values.resize(filaments.max(1), "1".into());
+                    *value = values.join(" ");
+                }
             }
             write_entries(out, &entries, "    ");
         }
@@ -1370,6 +1705,14 @@ fn plate_settings(
             );
         }
     }
+    let this: Option<&SlicedPlate<'_>> =
+        sliced.and_then(|sliced| sliced.plates.iter().find(|one| one.plate == plate.id));
+    if sliced.is_some() {
+        let file = this.map_or_else(String::new, |this| {
+            format!("Metadata/plate_{}.gcode", this.plate)
+        });
+        let _ = writeln!(out, r#"    <metadata key="gcode_file" value="{file}"/>"#);
+    }
     for picture in Picture::ALL {
         if let Some(key) = picture.key()
             && pictures.contains(&(plate.id, picture))
@@ -1380,6 +1723,18 @@ fn plate_settings(
                 picture.file(plate.id)
             );
         }
+    }
+    if this.is_some_and(|this| this.boxes.is_some()) {
+        let _ = writeln!(
+            out,
+            r#"    <metadata key="pattern_bbox_file" value="Metadata/plate_{}.json"/>"#,
+            plate.id
+        );
+    }
+    // A sliced file has no model: its plates name no copies.
+    if sliced.is_some() {
+        out.push_str("  </plate>\n");
+        return;
     }
     for at in &plate.instances {
         let Some(written) = objects_out.get(at.object) else {

@@ -314,6 +314,10 @@ def placeholders(text, flags):
 WRONG = {
     # "Plate" names a plate ("Plate 2"); this is "Print current plate".
     ("de", "Plate"): "the translation of \"Print current plate\"",
+    # The sliced file is a 3MF of G-code, not STL: these read "Export the
+    # current plate as an STL file" and "Export all plates as STL files".
+    ("de", "Export plate sliced file"): "says it exports an STL file",
+    ("de", "Export all sliced file"): "says it exports STL files",
 }
 
 def table(language, path):

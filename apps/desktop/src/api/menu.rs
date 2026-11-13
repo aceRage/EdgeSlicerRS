@@ -117,6 +117,9 @@ pub enum When {
     /// The plate shown is sliced and its G-code was written
     /// (`can_export_gcode`).
     Gcode,
+    /// Every plate that holds something is sliced and its G-code written
+    /// (`can_export_all_gcode`).
+    AllGcode,
     /// There is more than one project open.
     Projects,
     /// In the app's window, not a browser (Quit, Minimize, Zoom).
@@ -225,10 +228,7 @@ const ONE_WINDOW: &str = "not yet: the app has one window";
 const NO_ZIP: &str = "not yet: models are not read from a ZIP archive";
 const NO_GCODE_CONFIG: &str = "not yet: settings are not read from a G-code file";
 const NO_STEP: &str = "not yet: STEP needs a CAD kernel, which the engine has not";
-const NO_GENERIC: &str = "not yet: the project file is written in the reference's own layout only (a model file for each object)";
 const NO_BAMBU: &str = "not yet: no Bambu Studio export";
-const NO_SLICED_FILE: &str =
-    "not yet: the sliced file (.gcode.3mf) is not written; Export G-code is";
 const NO_PRESETS: &str = "not yet: a vendor's system profile is not imported";
 const NO_3DCONNEXION: &str = "not yet: 3D mice are not read";
 const NO_OVERHANG: &str = "not yet: overhangs are not marked in the scene";
@@ -325,8 +325,7 @@ static EXPORT: &[Node] = &[
         "Export 3mf file without using some 3mf-extensions",
         When::Objects,
     )
-    .dots()
-    .waits(NO_GENERIC)),
+    .dots()),
     I(item(
         "export.bambu_3mf",
         "Export Bambu 3MF",
@@ -350,16 +349,14 @@ static EXPORT: &[Node] = &[
         When::Gcode,
     )
     .dots()
-    .key(command("G"))
-    .waits(NO_SLICED_FILE)),
+    .key(command("G"))),
     I(item(
         "export.all_sliced",
         "Export all plate sliced file",
         "Export all plate sliced file",
-        When::Gcode,
+        When::AllGcode,
     )
-    .dots()
-    .waits(NO_SLICED_FILE)),
+    .dots()),
     I(item(
         "export.gcode",
         "Export G-code",
@@ -1087,6 +1084,7 @@ pub struct SessionState {
     pub undo: Option<String>,
     pub redo: Option<String>,
     pub gcode: bool,
+    pub all_gcode: bool,
     pub recent: Vec<(String, bool)>,
     pub projects: Vec<(u32, String)>,
     pub active: u32,
@@ -1115,6 +1113,7 @@ pub fn enabled(item: &Item, page: &PageState, session: &SessionState) -> bool {
         When::PrepareIdle => prepare && !session.slicing,
         When::Preview => page.tab == "preview",
         When::Gcode => plater && session.gcode && !session.slicing,
+        When::AllGcode => plater && session.all_gcode && !session.slicing,
         When::Projects => session.projects.len() > 1,
         When::Window => page.window,
         When::Call(names) => names.iter().any(|name| session.calls.contains(name)),
@@ -1616,6 +1615,14 @@ impl Session {
             .results
             .get(&slot(project.plate))
             .is_some_and(|done| done.gcode.is_ok());
+        let sliceable = project.sliceable();
+        let all_gcode = !sliceable.is_empty()
+            && sliceable.iter().all(|plate| {
+                project
+                    .results
+                    .get(&slot(*plate))
+                    .is_some_and(|done| done.gcode.is_ok())
+            });
         SessionState {
             slicing: project.slicing(),
             dirty: project.dirty(),
@@ -1626,6 +1633,7 @@ impl Session {
             undo: name("undo"),
             redo: name("redo"),
             gcode,
+            all_gcode,
             recent: state
                 .store
                 .data

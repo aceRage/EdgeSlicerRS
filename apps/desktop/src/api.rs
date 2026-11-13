@@ -16,6 +16,7 @@
 
 mod arrange;
 mod edit;
+mod export;
 mod filaments;
 mod layout;
 mod menu;
@@ -1215,6 +1216,7 @@ impl Session {
                 Ok(json!({ "path": shown(path), "bytes": gcode.text.len() }))
             }
             name if menu::JSON.contains(&name) => self.menu_json(name, args),
+            name if export::JSON.contains(&name) => self.export_json(name, args),
             name if edit::JSON.contains(&name) => self.edit_json(name, args),
             "item_settings" => self.items_json(name, args),
             name if ticks::JSON.contains(&name) => self.ticks_json(name, args),

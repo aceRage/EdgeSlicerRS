@@ -206,7 +206,7 @@ $('host-form').addEventListener('submit', (event) => {
 
 // ---- the print button ----
 
-const PRINT_ACTIONS = { send: 'Print', export: 'Export G-code file' };
+const PRINT_ACTIONS = { send: 'Print', sliced: 'Export plate sliced file', all_sliced: 'Export all sliced file', export: 'Export G-code file' };
 
 // The action the button does: the one picked last, as the reference
 // remembers it ("last_print_action"); "Print" only where it can send,
@@ -214,7 +214,7 @@ const PRINT_ACTIONS = { send: 'Print', export: 'Export G-code file' };
 function printAction() {
   const picked = remembered.get('print_action');
   if (picked === 'send' && canSend()[0]) return 'send';
-  if (picked === 'export') return 'export';
+  if (picked === 'export' || picked === 'sliced' || picked === 'all_sliced') return picked;
   return canSend()[0] ? 'send' : 'export';
 }
 
@@ -225,6 +225,10 @@ $('export-more').addEventListener('click', (event) => {
   const [can, why] = canSend();
   showMenu(box.right - 220, box.bottom + 4, [
     [t('Print'), choose('send'), { checked: action === 'send', title: can ? 'Send the plate to the printer' : why }],
+    // MainFrame.cpp `available_print_actions`: a printer not Bambu Lab's
+    // is offered both sliced files as well.
+    [t('Export plate sliced file'), choose('sliced'), { checked: action === 'sliced' }],
+    [t('Export all sliced file'), choose('all_sliced'), { checked: action === 'all_sliced' }],
     [t('Export G-code file'), choose('export'), { checked: action === 'export' }],
     null,
     [t('Print host upload queue'), () => attempt(openQueue)],
