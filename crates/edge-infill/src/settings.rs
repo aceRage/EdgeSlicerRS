@@ -781,6 +781,35 @@ impl InfillSettings {
         })
     }
 
+    /// Lays the sparse lines of a layer apart as on a layer of the
+    /// object's own height, `layer_height`, with their anchors (Fill.cpp
+    /// `group_fills`: internal sparse fill takes its spacing from the
+    /// object's `layer_height`, so a layer of another height does not
+    /// shift the pattern).
+    pub fn space_sparse(
+        &self,
+        params: &mut FillParams,
+        layer_height: f64,
+    ) -> Result<(), FlowError> {
+        let nozzle = self.widths.nozzle_diameter;
+        let spacing = Flow::from_widths(
+            &self.widths,
+            self.sparse_infill_line_width,
+            Flow::auto_width(nozzle),
+            layer_height,
+            false,
+        )?
+        .spacing;
+        params.sparse_spacing = spacing;
+        params.sparse_link_max = self.infill_anchor_max.resolve(spacing).max(0.0);
+        params.sparse_anchor = self
+            .infill_anchor
+            .resolve(spacing)
+            .min(self.infill_anchor_max.resolve(spacing))
+            .max(0.0);
+        Ok(())
+    }
+
     /// What filling a layer of this height needs.
     pub fn params(&self, layer_height: f64, first_layer: bool) -> Result<FillParams, FlowError> {
         let nozzle = self.widths.nozzle_diameter;
@@ -819,6 +848,7 @@ impl InfillSettings {
             // A top surface left unset is drawn at the nozzle's own width.
             top: flow(self.top_surface_line_width, nozzle)?,
             sparse,
+            sparse_spacing: sparse.spacing,
             density: self.sparse_infill_density_percent / 100.0,
             pattern: self.pattern,
             sparse_angle: self.infill_direction.to_radians(),

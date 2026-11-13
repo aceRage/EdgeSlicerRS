@@ -1297,9 +1297,15 @@ pub fn slice(job: Job, watch: &dyn Watcher) -> Result<Sliced, Failure> {
         // through the middle of the object it fills, as in the reference.
         let params_of =
             |filament: usize, index: usize| -> Result<edge_infill::FillParams, Failure> {
-                let mut params = stages[filament]
-                    .infill
-                    .params(heights.height_of(index), index == 0)?;
+                let height = heights.height_of(index);
+                let mut params = stages[filament].infill.params(height, index == 0)?;
+                // Sparse lines are laid apart as on a layer of the
+                // object's own height (Fill.cpp `group_fills`).
+                if index > 0 && (height - layer_height).abs() > 1e-9 {
+                    stages[filament]
+                        .infill
+                        .space_sparse(&mut params, layer_height)?;
+                }
                 params.origin = middle;
                 params.z = heights.top_of(index);
                 Ok(params)
@@ -2680,6 +2686,7 @@ impl Sliced {
         for print in &mut prints {
             print.produced_at = Some(produced_at.to_owned());
             print.plate = self.plate_facts.clone();
+            print.own_heights = self.below.is_some();
         }
         // A region with settings of its own lays its walls and fill by
         // them; each such region's place among these, by region.
@@ -2690,6 +2697,7 @@ impl Sliced {
                 Some(region) => {
                     let mut print = PrintSettings::for_filament(&region.settings, filament - 1)?;
                     print.produced_at = Some(produced_at.to_owned());
+                    print.own_heights = self.below.is_some();
                     region_prints.push(print);
                     Some(region_prints.len() - 1)
                 }
