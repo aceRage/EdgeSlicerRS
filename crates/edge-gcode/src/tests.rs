@@ -2013,6 +2013,71 @@ fn the_prime_tower_is_printed_first_and_its_first_line_slowly() {
 }
 
 #[test]
+fn the_tower_s_own_lines_are_joined_without_pulling_the_filament_back() {
+    let part = [wall(0.0, 0.0, 10.0, 0)];
+    // A frame, a line across it, and a wall cut by a gap into two pieces.
+    let frame = ExtrusionPath {
+        points: [
+            (40.0, 40.0),
+            (60.0, 40.0),
+            (60.0, 50.0),
+            (40.0, 50.0),
+            (40.0, 40.0),
+        ]
+        .map(|(x, y)| Point2::from_mm(x, y))
+        .to_vec(),
+        ..line((0.0, 0.0), (1.0, 0.0), Role::PrimeTower)
+    };
+    let across = line((45.0, 42.0), (45.0, 48.0), Role::PrimeTower);
+    let piece = |from: (f64, f64), to: (f64, f64)| ExtrusionPath {
+        part: ExtrusionPath::TOWER_WALL,
+        ..line(from, to, Role::PrimeTower)
+    };
+    let tower = [
+        frame,
+        across,
+        piece((39.0, 39.0), (61.0, 39.0)),
+        piece((61.0, 41.0), (61.0, 51.0)),
+    ];
+    let layers: Vec<Layer<'_>> = [0.2, 0.4]
+        .into_iter()
+        .map(|z| Layer {
+            z,
+            ram: None,
+            enter: &[],
+            wipe: None,
+            tower: &tower,
+            ..one_layer(&part, &[0..1], &[])[0]
+        })
+        .collect();
+    let (text, _) = print(&layers, &basic());
+    let second = text.split(";LAYER_CHANGE").nth(2).unwrap();
+    let on_tower: Vec<&str> = second
+        .lines()
+        .skip_while(|line| *line != ";TYPE:Prime tower")
+        .take_while(|line| *line != ";TYPE:Outer wall")
+        .collect();
+    // Up to the last of its lines, before the travel back to the part.
+    let last = on_tower
+        .iter()
+        .rposition(|line| line.contains(" X") && line.contains(" E0."))
+        .unwrap();
+    let on_tower = &on_tower[..=last];
+    // Pulled back once only, to cross the gap in the wall, at 10 mm/s.
+    let pulls: Vec<usize> = (on_tower.iter().enumerate())
+        .filter(|(_, line)| line.starts_with("G1 E-"))
+        .map(|(at, _)| at)
+        .collect();
+    assert_eq!(pulls.len(), 1, "{on_tower:#?}");
+    assert!(on_tower[pulls[0] + 1].ends_with(" F600"), "{on_tower:#?}");
+    // Not lifted between its lines either.
+    assert!(
+        !on_tower.iter().any(|line| line.contains(" Z")),
+        "{on_tower:#?}"
+    );
+}
+
+#[test]
 fn a_new_nozzle_lays_its_block_on_the_tower_move_by_move() {
     let part = [wall(0.0, 0.0, 10.0, 0)];
     let at = |x: f64, y: f64| Point2::from_mm(x, y);

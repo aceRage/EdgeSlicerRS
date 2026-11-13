@@ -1759,11 +1759,20 @@ pub fn plan_changes(
                 ];
             }
         }
+        // The wall, whole or in pieces, known as the wall by its part
+        // number: the writer lays it as one, as the reference's
+        // (WipeTower2.cpp `generate_path`).
+        let wall_path = |points: Vec<Point2>| ExtrusionPath {
+            part: ExtrusionPath::TOWER_WALL,
+            ..path(points)
+        };
         if gaps.is_empty() {
-            finish.push(path(closed(&wall)));
+            finish.push(wall_path(closed(&wall)));
         } else {
             for piece in opened(&wall, &gaps, GAP_HALF * line) {
-                finish.push(path(piece.iter().map(|(x, y)| place(*x, *y)).collect()));
+                finish.push(wall_path(
+                    piece.iter().map(|(x, y)| place(*x, *y)).collect(),
+                ));
             }
         }
 

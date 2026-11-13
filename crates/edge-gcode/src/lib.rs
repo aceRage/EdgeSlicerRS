@@ -240,6 +240,25 @@ const HOOK_REACH: f64 = 6.5;
 /// How fast a tool that has rammed its filament is taken clear of it, in
 /// mm a second (WipeTower2.cpp `toolchange_Unload`).
 const RAM_PARK_SPEED: f64 = 40.0;
+/// How fast the nozzle goes from a change's block on the prime tower to the
+/// tower's own lines, in mm/s (WipeTower2.cpp `merge_tcr`, `F7200`).
+const TOWER_MERGE_SPEED: f64 = 120.0;
+/// How fast it crosses a gap in the tower's wall, in mm/s (WipeTower2.cpp
+/// `generate_path`, `travel(..., 600.)`).
+const TOWER_GAP_SPEED: f64 = 10.0;
+
+/// How the nozzle comes to the start of one of the prime tower's own lines.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum TowerWay {
+    /// From the part: a travel of the print's.
+    Onto,
+    /// From the end of a change's block on the tower.
+    Merge,
+    /// From the line before, at the speed in force.
+    Glide,
+    /// Across a gap in the tower's wall.
+    Gap,
+}
 
 /// How many layers have their arcs fitted at once: enough to keep every
 /// thread busy, few enough that what is fitted is not held for the whole
@@ -2182,7 +2201,7 @@ impl Writer<'_> {
                 .find(|wall| wall.role == Role::Perimeter)
                 .map(|wall| wall.flow);
             self.state.tower_first = layer.tower_first;
-            self.tower_lines(layer.tower, low)?;
+            self.tower_lines(layer.tower, low, layer.wipe.is_some())?;
             self.state.tower_first = false;
             // Straight up off the tower before going anywhere.
             self.leave_tower()?;
@@ -2769,28 +2788,162 @@ impl Writer<'_> {
 
     /// The prime tower's lines, nearest end first: they are given in the
     /// order they are meant to go down, and the next is always the nearest.
-    fn tower_lines(&mut self, paths: &[ExtrusionPath], low: Option<f64>) -> io::Result<()> {
-        let mut remaining: Vec<&ExtrusionPath> =
-            paths.iter().filter(|path| path.points.len() >= 2).collect();
-        while !remaining.is_empty() {
-            let ends = |path: &ExtrusionPath| [path.points[0], path.points[path.points.len() - 1]];
-            let nearest = self.nearest(remaining.iter().map(|path| ends(path).into_iter()));
-            let path = remaining.remove(nearest);
-            let [head, tail] = ends(path);
-            let reversed = self
-                .state
-                .position
-                .is_some_and(|at| distance(at, tail) < distance(at, head));
-            let mut points: Vec<Point2> = path.points.clone();
-            if reversed {
-                points.reverse();
+    /// The tower's own lines (its frame, fill, wall and brim), nearest
+    /// first. `after_block` is whether the nozzle is on the tower already,
+    /// at the end of a change's block on it.
+    ///
+    /// Once on the tower the nozzle goes from line to line as the
+    /// reference's tower writes its moves (WipeTower2.cpp `finish_layer`,
+    /// `WipeTowerWriter2::travel`): straight, without pulling the filament
+    /// back or lifting, at the speed in force; from a change's block to
+    /// the first of them at 120 mm/s (`merge_tcr`, `F7200`). A closed line
+    /// starts at its corner nearest the nozzle and goes round the way it
+    /// is drawn (`rectangle`, the brim's loops); the wall, whole or in
+    /// pieces ([`ExtrusionPath::TOWER_WALL`]), is laid as one from the
+    /// corner nearest the nozzle, and across each gap left in it the
+    /// filament is pulled back by its retraction length and the nozzle
+    /// crosses at 10 mm/s (`generate_path`). Only the move onto the tower
+    /// from the part is a travel of the print's, with its retraction.
+    fn tower_lines(
+        &mut self,
+        paths: &[ExtrusionPath],
+        low: Option<f64>,
+        after_block: bool,
+    ) -> io::Result<()> {
+        // The wall's pieces, in the order they go round, as one item.
+        let mut items: Vec<Vec<&ExtrusionPath>> = Vec::new();
+        for path in paths.iter().filter(|path| path.points.len() >= 2) {
+            match items.last_mut() {
+                Some(item)
+                    if path.part == ExtrusionPath::TOWER_WALL
+                        && item[0].part == ExtrusionPath::TOWER_WALL =>
+                {
+                    item.push(path);
+                }
+                _ => items.push(vec![path]),
             }
-            if let Some(tower) = low.filter(|_| self.state.lowered.is_none()) {
-                self.travel(points[0], false, Some(path.role))?;
+        }
+        let closed = |path: &ExtrusionPath| {
+            path.points.len() > 2 && path.points[0] == path.points[path.points.len() - 1]
+        };
+        let mut way = if after_block {
+            TowerWay::Merge
+        } else {
+            TowerWay::Onto
+        };
+        while !items.is_empty() {
+            // Where each item may be started: an open line at either end,
+            // a closed one or the wall at any corner.
+            let nearest = self.nearest(items.iter().map(|item| {
+                item.iter().flat_map(move |path| {
+                    let n = path.points.len();
+                    let open =
+                        !(item.len() > 1 || path.part == ExtrusionPath::TOWER_WALL || closed(path));
+                    let corners: &[Point2] = if open { &[] } else { &path.points[..n - 1] };
+                    let ends = if open {
+                        vec![path.points[0], path.points[n - 1]]
+                    } else {
+                        Vec::new()
+                    };
+                    corners.iter().copied().chain(ends)
+                })
+            }));
+            let item = items.remove(nearest);
+            let role = item[0].role;
+            let flow = item[0].flow;
+            // The runs to lay, each from where the last ended or across a gap.
+            let mut runs: Vec<Vec<Point2>> = Vec::new();
+            let at = self.state.position;
+            let near = |point: Point2| at.map_or(0.0, |at| distance(at, point));
+            if item.len() == 1 && item[0].part != ExtrusionPath::TOWER_WALL && !closed(item[0]) {
+                let mut points = item[0].points.clone();
+                if near(points[points.len() - 1]) < near(points[0]) {
+                    points.reverse();
+                }
+                runs.push(points);
+            } else {
+                // Every segment of it in turn, round from the nearest start.
+                let segments: Vec<(Point2, Point2)> = item
+                    .iter()
+                    .flat_map(|path| path.points.windows(2).map(|pair| (pair[0], pair[1])))
+                    .collect();
+                let first = (0..segments.len())
+                    .min_by(|a, b| near(segments[*a].0).total_cmp(&near(segments[*b].0)))
+                    .unwrap_or(0);
+                for step in 0..segments.len() {
+                    let (from, to) = segments[(first + step) % segments.len()];
+                    match runs.last_mut() {
+                        Some(run) if run[run.len() - 1] == from => run.push(to),
+                        _ => runs.push(vec![from, to]),
+                    }
+                }
+            }
+            for (index, run) in runs.iter().enumerate() {
+                if index > 0 {
+                    way = TowerWay::Gap;
+                }
+                self.tower_move(run[0], way, low, role)?;
+                self.lay_path(run, None, role, &flow, false)?;
+                way = TowerWay::Glide;
+            }
+        }
+        Ok(())
+    }
+
+    /// The move to the start of one of the tower's own lines, the way
+    /// given (described at [`Self::tower_lines`]); onto the tower it goes
+    /// down to it where it stands lower.
+    fn tower_move(
+        &mut self,
+        to: Point2,
+        way: TowerWay,
+        low: Option<f64>,
+        role: Role,
+    ) -> io::Result<()> {
+        let s = self.settings;
+        let lowering = low.filter(|_| self.state.lowered.is_none());
+        let at = (self.state.position).filter(|_| way != TowerWay::Onto && lowering.is_none());
+        let Some(at) = at else {
+            self.travel(to, false, Some(role))?;
+            if let Some(tower) = lowering {
                 self.lower_to_tower(tower)?;
             }
-            self.path(&points, path.role, &path.flow, false, false)?;
+            return Ok(());
+        };
+        let length = distance(at, to);
+        self.state.wipe_path.clear();
+        if length <= 0.0 {
+            return Ok(());
         }
+        match way {
+            TowerWay::Gap if s.retraction_length > 0.0 => {
+                self.tower_pull(true)?;
+                self.go(to, None, TOWER_GAP_SPEED, length)?;
+                self.tower_pull(false)?;
+            }
+            TowerWay::Gap => self.go(to, None, TOWER_GAP_SPEED, length)?,
+            TowerWay::Merge => self.go(to, None, TOWER_MERGE_SPEED, length)?,
+            _ => {
+                let speed = match self.state.feedrate.abs() {
+                    0.0 => s.travel_speed,
+                    feedrate => feedrate / 60.0,
+                };
+                self.go(to, None, speed, length)?;
+            }
+        }
+        Ok(())
+    }
+
+    /// The filament pulled back (`back`) or pushed on again by its
+    /// retraction length at its retraction speed, as the tower's writer
+    /// does it, with nothing else (WipeTower2.cpp `retract`).
+    fn tower_pull(&mut self, back: bool) -> io::Result<()> {
+        let s = self.settings;
+        let sign = if back { "-" } else { "" };
+        self.feed(s.retraction_speed);
+        let feed_word = self.feed_word();
+        writeln!(self.out, "G1 E{sign}{:.5}{feed_word}", s.retraction_length)?;
+        self.spend(s.retraction_length / s.retraction_speed);
         Ok(())
     }
 
