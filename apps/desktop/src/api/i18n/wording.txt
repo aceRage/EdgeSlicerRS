@@ -308,6 +308,7 @@ Z	GUI/Gizmos/GLGizmoCut.cpp:8666
 Click a face of the model.	GUI/Gizmos/GLGizmoCut.cpp:9029
 Click a model face to set the cut plane flush with it; use Cut position to offset	GUI/Gizmos/GLGizmoCut.cpp:9022
 Pick face	GUI/Gizmos/GLGizmoCut.cpp:9022
+Pick from list	GUI/Gizmos/GLGizmoMeshBoolean.cpp:281
 Count	GUI/Gizmos/GLGizmoCut.cpp:248
 Gap	GUI/Gizmos/GLGizmoCut.cpp:249
 Edit cut...	GUI/GUI_Factories.cpp:2148

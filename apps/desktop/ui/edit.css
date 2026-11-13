@@ -254,3 +254,10 @@ dialog.plate-settings .row.end .grow { flex: 1; align-self: center; }
 .cut-panel .pin-drawing .pin-cut { stroke: var(--text-3); stroke-width: 1; }
 .cut-panel .pin-drawing .pin-word { fill: var(--text-3); font-size: 10px; }
 .cut-panel .unit.cut-count { width: 64px; }
+
+/* ---- "Mesh Boolean" (boolean.js): "Cut"'s panel, with a part's name ---- */
+/* A long name is cut short; the whole is its tooltip. */
+.boolean-name { max-width: 14ch; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--text-1); font-size: var(--size-small); }
+.boolean-panel .joined > button { flex: 1 1 0; }
+/* Each slot's mark is round, so it is not taken for a tick box. */
+.boolean-panel .cut-marker { border-radius: 50%; }

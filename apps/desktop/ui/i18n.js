@@ -122,7 +122,7 @@ const I18n = (() => {
   const SCRIPTS = [
     'gl/math.js', 'gl/camera.js', 'gl/shaders.js', 'gl/renderer.js', 'gl/scene.js',
     'gl/toolpath.js', 'gl/controls.js', 'gl/gcode.js', 'gl/stage.js',
-    'paint.js', 'cut.js', 'connectors.js', 'curved.js', 'drawn.js', 'joints.js', 'scene-edit.js', 'plates.js', 'objects.js', 'printers.js', 'settings.js',
+    'paint.js', 'cut.js', 'connectors.js', 'curved.js', 'drawn.js', 'joints.js', 'boolean.js', 'scene-edit.js', 'plates.js', 'objects.js', 'printers.js', 'settings.js',
     'objsettings.js', 'presets.js', 'filaments.js', 'prefs.js', 'app.js', 'save.js', 'hosts.js', 'menu.js',
   ];
   // Once the last has run, `scripts-loaded` is sent where the page's

@@ -48,6 +48,9 @@
     // GLGizmoCut.cpp: for one whole copy (`on_is_activable`:
     // `is_single_full_instance`); cut.js.
     cut: { name: t('Cut'), key: 'c', one: true, cut: true, icon: 'M3.5,2.5h9v11h-9ZM1,8h14M12.5,5.5l2.5,2.5l-2.5,2.5' },
+    // GLGizmoMeshBoolean.cpp: for one whole copy of an object of several
+    // parts (`on_is_activable`), here two printed ones; boolean.js.
+    boolean: { name: t('Mesh Boolean'), key: 'b', one: true, boolean: true, icon: 'M1.5,1.5h8v8h-8ZM6.5,6.5h8v8h-8Z' },
     // The painting tools (paint.js), each on one whole copy
     // (GLGizmoPainterBase.cpp `on_is_activable`: `is_single_full_instance`),
     // in the reference's order (GLGizmosManager.cpp `init`).
@@ -150,6 +153,7 @@
       GL.edit = this;
       // The painting tools, with what they need of this.
       if (GL.cutter) GL.cutter.init(host, this);
+      if (GL.mesher) GL.mesher.init(host, this);
       if (GL.painter) {
         GL.painter.init({
           ...host,
@@ -191,7 +195,7 @@
       }
       const b = this.buttons;
       this.bar = el('div', { className: 'toolbar', id: 'edit-bar' },
-        b.add, b.addPlate, gap(), b.arrange, gap(), b.splitObjects, b.splitParts, gap(), b.move, b.rotate, b.scale, b.flatten, b.cut, gap(),
+        b.add, b.addPlate, gap(), b.arrange, gap(), b.splitObjects, b.splitParts, gap(), b.move, b.rotate, b.scale, b.flatten, b.cut, b.boolean, gap(),
         b.supports, b.seam, b.fuzzy_skin, b.color, gap(), b.undo, b.redo);
       this.bar.setAttribute('role', 'toolbar');
       this.bar.setAttribute('aria-label', t('Prepare'));
@@ -502,7 +506,10 @@
     // Whether a tool can be opened for what is selected. "Lay on face" is
     // for a whole object (GLGizmoFlatten.cpp `is_selection_supported`).
     usable(tool, chosen = this.chosen()) {
-      return Boolean(chosen) && (!TOOLS[tool].one || (chosen.copies.length === 1 && !this.partMode()));
+      const one = Boolean(chosen) && (!TOOLS[tool].one || (chosen.copies.length === 1 && !this.partMode()));
+      if (!one || !TOOLS[tool].boolean) return one;
+      const object = this.data().objects[chosen.copies[0].object];
+      return (object.part_list || []).filter((part) => part.kind === 'part').length > 1;
     },
 
     setTool(tool) {
@@ -518,6 +525,9 @@
       }
       const cutter = GL.cutter;
       if (cutter && cutter.active() && tool !== 'cut') cutter.close();
+      const mesher = GL.mesher;
+      if (mesher && mesher.active() && tool !== 'boolean') mesher.close();
+      if (mesher && tool === 'boolean' && tool !== this.tool) mesher.start(this.chosen().copies[0]);
       if (cutter && tool === 'cut' && tool !== this.tool) {
         const chosen = this.chosen();
         if (chosen) cutter.start(chosen.copies[0]);
@@ -775,8 +785,9 @@
     // "Cut" follows the copy selected: another one, or the same one
     // moved, starts the plane again round it.
     followCut() {
-      if (!GL.cutter || !GL.cutter.active()) return;
       const chosen = this.chosen();
+      if (GL.mesher) GL.mesher.follow(chosen && chosen.copies.length === 1 ? chosen.copies[0] : null);
+      if (!GL.cutter || !GL.cutter.active()) return;
       GL.cutter.follow(chosen && chosen.copies.length === 1 ? chosen.copies[0] : null);
     },
 
@@ -822,6 +833,7 @@
       }
       if (this.tool === 'flatten' && chosen && chosen.copies.length === 1) this.wantFaces(chosen.copies[0]);
       if (this.tool === 'cut' && GL.cutter) GL.cutter.panel();
+      if (GL.mesher && GL.mesher.active()) GL.mesher.panel();
       // A plate with an object over its edge cannot be printed
       // (Plater.cpp `validate_current_plate`).
       const over = data && data.placings.some((placing) => placing.over && placing.plate === project.plate);
@@ -947,6 +959,9 @@
       // plane along; no object is dragged while it is open, as the
       // reference's gizmo lets none be (GLGizmoCut.cpp `on_mouse`).
       if (this.tool === 'cut') return GL.cutter ? GL.cutter.grab(x, y, event) : null;
+      // "Mesh Boolean" takes the press to pick a part; with Ctrl the view
+      // turns instead (GLGizmoMeshBoolean.cpp `on_mouse`).
+      if (this.tool === 'boolean') return GL.mesher && !(event.ctrlKey || event.metaKey) ? GL.mesher.grab(x, y) : null;
       const chosen = this.tool ? this.chosen() : null;
       const handle = chosen ? this.handleAt(x, y, chosen) : null;
       if (handle && handle.kind === 'face') {
@@ -1183,6 +1198,7 @@
       const gl = r.gl;
       if (this.tool === 'flatten') { this.drawFaces(frame, chosen); return; }
       if (this.tool === 'cut') { if (GL.cutter) GL.cutter.draw(frame); return; }
+      if (this.tool === 'boolean') { if (GL.mesher) GL.mesher.draw(frame); return; }
       const parts = this.parts();
       const matrix = M.multiply(frame.projection, frame.view);
       const mm = this.scale();
@@ -1310,7 +1326,7 @@
     showFields(live = false) {
       // A painting tool has its own panel (paint.js), and so has "Cut"
       // (cut.js).
-      const chosen = this.tool && !TOOLS[this.tool].paint && !TOOLS[this.tool].cut && this.editing() ? this.chosen() : null;
+      const chosen = this.tool && !TOOLS[this.tool].paint && !TOOLS[this.tool].cut && !TOOLS[this.tool].boolean && this.editing() ? this.chosen() : null;
       this.panel.hidden = !chosen;
       if (!chosen) return;
       const { el } = this.host;

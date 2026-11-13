@@ -918,6 +918,9 @@
     // and right button released without a drag).
     click(press, event) {
       if (this.model.tab !== 'prepare' || !this.scene.data) return;
+      // "Mesh Boolean" takes a click of the left button whole: it neither
+      // selects nor lets go (GLGizmoMeshBoolean.cpp `gizmo_event`).
+      if (press.button === 0 && GL.mesher && GL.mesher.active() && !event.ctrlKey && !event.metaKey) return;
       // "Cut" takes the right button with no key held: the piece under it
       // goes to the other side (GLGizmoCut.cpp `on_mouse`); on a curved
       // surface's handle, with Shift too, it snaps the handle.
