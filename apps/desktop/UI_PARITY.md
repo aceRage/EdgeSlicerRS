@@ -985,6 +985,18 @@ no stage reads at all.
 | Others | 51 | 28 | 1 (`exclude_object`) | 22 | 13 | 22 |
 | All | 433 | 224 | 1 | 208 | 57 | 181 |
 
+Since the paint depth pass the Multimaterial page's paint depth options
+(`paint_depth_mode`, `paint_depth_walls`, `paint_depth_mm`,
+`paint_infill_override`, `paint_depth_solid_interfaces`,
+`mmu_segmented_region_interlocking_depth`) are read whether or not
+anything is painted, and `interface_shells` is read and followed; the
+counts above are from before it. `interlocking_beam` is read only on a
+painted plate (it turns the notch off) and keeps its ring: beams are not
+made. `paint_infill_override` off with a bounded depth has a note: sparse
+infill there is printed in the painted filament. The rules showing each
+paint depth option only for its mode are the reference's
+(ConfigManipulation.cpp l.1400–1421, `rules.rs`).
+
 Turned on, three more are read with a note: `spiral_mode`, `raft_layers`,
 `draft_shield`; and `print_sequence` (read since the tenth pass) has one at
 "by object", which is not followed: every object is printed together, layer
