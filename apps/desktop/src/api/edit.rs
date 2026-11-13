@@ -1284,6 +1284,32 @@ impl Session {
                 outcome.note = (!notes.is_empty()).then(|| notes.join("\n"));
                 outcome.name = "Arrange".into();
             }
+            "orient" => {
+                // "Auto orient" (Jobs/OrientJob.cpp): the plate named
+                // ("Auto orient all objects on current plate", its icon,
+                // "Auto Rotate"), or the objects of the copies named, or
+                // with none named everything ("Auto orient all/selected
+                // objects"); the support threshold angle of the settings
+                // the project is sliced with.
+                let chosen = match args.get("copies") {
+                    Some(Value::Array(list)) if !list.is_empty() => ids(args, "copies")?,
+                    Some(Value::Array(_)) | None => Vec::new(),
+                    Some(_) => return Err("copies is not a list".into()),
+                };
+                let scope = match plate(args) {
+                    Some(plate) if args.get("copies").is_none() => {
+                        edge_engine::OrientScope::Plate(plate)
+                    }
+                    _ => edge_engine::OrientScope::Selected(&chosen),
+                };
+                let oriented = model
+                    .orient(bed, global, scope)
+                    .map_err(|error| super::i18n::tr(&error.to_string()))?;
+                // The reference takes its snapshot before it knows; a turn
+                // that changes nothing is no step here.
+                outcome.unchanged = oriented.turned.is_empty();
+                outcome.name = "Orient".into();
+            }
             "mirror" => {
                 let axis = match needed(args, "axis")? {
                     "x" => 0,
@@ -1661,6 +1687,10 @@ impl Session {
             (Some(global), Some(options))
         } else if items::OPS.contains(&needed(args, "op")?) {
             (Some(self.items_global(stage.id)?), None)
+        } else if needed(args, "op")? == "orient" {
+            // Without a printer chosen, the model's own settings or the
+            // reference's defaults.
+            (self.items_global(stage.id).ok(), None)
         } else {
             (None, None)
         };
