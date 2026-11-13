@@ -1952,8 +1952,16 @@ mod tests {
         // On the first layer it builds up to that layer's speed.
         let first = plan(&counts(&[1]), &[0.2], &settings).unwrap();
         let wipe = first.layers[0].changes[0].wipe.as_ref().unwrap();
-        let TowerStroke::Lay(_, speed) = wipe.strokes[0] else {
+        // The block starts in the corner of the space it cleans, half a
+        // line in (WipeTower2.cpp `cleaning_box.ld`), and goes to its
+        // first row from there.
+        let TowerStroke::Move(row, None) = wipe.strokes[0] else {
             panic!("{:?}", wipe.strokes[0]);
+        };
+        let ahead = unscaled(row.x) - unscaled(wipe.start.x);
+        assert!(ahead > 0.0 && ahead < 2.0 * settings.width, "{ahead}");
+        let TowerStroke::Lay(_, speed) = wipe.strokes[1] else {
+            panic!("{:?}", wipe.strokes[1]);
         };
         assert_eq!((speed * 60.0).round(), (0.33f32 * 1800.0).round() as f64);
     }
@@ -2021,12 +2029,16 @@ mod tests {
         let change = &tower.layers[1].changes[0];
         let wipe = change.wipe.as_ref().unwrap();
         let x = |point: &Point2| unscaled(point.x);
-        let start = x(&wipe.start);
+        // From the block's corner to its first row, and from there:
+        let TowerStroke::Move(row, None) = wipe.strokes[0] else {
+            panic!("{:?}", wipe.strokes[0]);
+        };
+        let start = x(&row);
         // 3 mm laid towards the far side, the filament pulled back, back
         // 4.5 mm at 600 mm/min and on 1.5 mm at 240, a square spiral of
         // two turns a line apart round where it is at 600 mm/min, then on
         // to 3 mm past it, the filament pushed on and the row laid.
-        let moves: Vec<(String, f64, f64)> = (wipe.strokes.iter())
+        let moves: Vec<(String, f64, f64)> = (wipe.strokes.iter().skip(1))
             .map(|stroke| match stroke {
                 TowerStroke::Lay(to, speed) => ("lay".into(), x(to) - start, *speed * 60.0),
                 TowerStroke::Move(to, speed) => {
@@ -2077,8 +2089,9 @@ mod tests {
         };
         let tower = plan(&counts(&[0, 1]), &[0.2; 2], &shut).unwrap();
         let strokes = &tower.layers[1].changes[0].wipe.as_ref().unwrap().strokes;
+        assert!(matches!(strokes[0], TowerStroke::Move(_, None)));
         assert!(
-            strokes
+            strokes[1..]
                 .iter()
                 .all(|stroke| matches!(stroke, TowerStroke::Lay(..)))
         );

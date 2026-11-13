@@ -1390,13 +1390,19 @@ feature filaments (`wall_filament`, `sparse_infill_filament`,
   - A tool change follows the reference: pull the filament well back, cool
     the tool being put away, run the printer's own tool-change G-code,
     heat and select the new tool, and push its filament back as far as it
-    was pulled when last put away. The tool being put away goes to the
-    prime tower first, so it is over the tower and not over the part that
-    it waits while the next comes up to temperature. The next tool starts
-    warming `preheat_time` ahead by the file's own timing, which for the
-    first change is during the start G-code as in the reference, but
-    never before the last thing said of its temperature; and a tool not
-    needed again is switched off.
+    was pulled when last put away (on a printer of one nozzle, as far as
+    the change pulled it back: the one retraction is shared, Extruder.cpp
+    `m_share_retracted`). The change's retraction is one, the wipe within
+    it (`retract_for_toolchange`). Where the tool is changed over the
+    prime tower it is changed where the change's block starts, at the
+    layer's height with the filament pushed back first, as the reference
+    does (`append_tcr2`). The next tool starts warming `preheat_time`
+    ahead by the file's own timing, looking back no further than the last
+    time that tool was taken up or the start of the print, and a cooldown
+    of it on the way is taken out (`; removed M104`), so a tool wanted
+    again within `preheat_time` is not cooled at all (GCodeProcessor.cpp
+    `process_line_T`); a tool not needed again is switched off. After the
+    change G-code the fans go back to the layer's speeds.
   - Filament presets are named one for each filament (`--filament`
     given again for filament 2, and so on). One alone is used for every
     filament, and a filament past the last named takes the last; a note
@@ -1821,11 +1827,12 @@ end, before / after:
 | cube and `twotone`, H2D | refused (`min_vitrification_temperature`) / refused (two nozzles) | | |
 
 What is left: on the cubes the order of a feature's tag and its `M204`;
-around a tool change, the writer's own moves to and from the tower (the
-retraction is pulled back in two parts here and one there, the way down
-onto the tower, the fan set back after the change: the reference sets the
-layer's, here the one in force); the tower's own comments on a layer with
-no change (`; CP EMPTY GRID`); on the A1 the fan speeds the cooling
+around a tool change, the reference's repeated `G1 Z` lines on the move
+to the tower (its writer's, after a change G-code that leaves the head's
+place unclear; they move nothing), and its wipe before the change at its
+own speed and length (`G1 E-1.853 F12232.572` there, `E-1.88 F15000`
+here); the tower's own comments on a layer with no change
+(`; CP EMPTY GRID`); on the A1 the fan speeds the cooling
 works out, and, above the tower, the timelapse picture the reference
 leaves out (below). Not done, and listed by the check as left out: the
 objects labelled for skipping (`M624`/`M625`, `; printing object`, and
