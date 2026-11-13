@@ -198,7 +198,7 @@ does with each option.
 | C++ | Where | Here |
 | --- | --- | --- |
 | A 3D view of every plate with the objects on it, orbit / pan / zoom, selection | `View3D`, `GLCanvas3D` | **added**, in 3D: section 9. Where the browser has no WebGL2, the view from above the first pass built is kept: the bed of the printer chosen with its grid and each object's outline (its convex hull), name and size, drag to move, wheel to zoom, "Fit part" [Z] and "Fit bed" |
-| Main toolbar: "Add" [Ctrl+I], "Add plate", "Auto orient all/selected objects" [Q], "Arrange all objects" [A] with its options, "Split to objects", "Split to parts", "Variable layer height", "Assembly View" | `GLCanvas3D::_init_main_toolbar` l.9274 | **added**: "Add", "Add plate", "Arrange all objects" with its options (section 13, "Arrange": the reference's arranger, ported), "Split to objects" and "Split to parts". **not yet**: auto orient (the engine does not do it), variable layer height, the assembly view |
+| Main toolbar: "Add" [Ctrl+I], "Add plate", "Auto orient all/selected objects" [Q], "Arrange all objects" [A] with its options, "Split to objects", "Split to parts", "Variable layer height", "Assembly View" | `GLCanvas3D::_init_main_toolbar` l.9274 | **added**: "Add", "Add plate", "Auto orient all/selected objects" [Q] and Shift+Q (section 13, "Auto orient": the reference's orienter, ported), "Arrange all objects" with its options (section 13, "Arrange": the reference's arranger, ported), "Split to objects" and "Split to parts". **not yet**: variable layer height, the assembly view |
 | Gizmos: "Move" [M], "Rotate" [R], "Scale" [S], "Lay on face" [F], "Cut" [C], "Mesh Boolean" [B], "Support Painting" [L], "Seam painting" [P], "Paint-on fuzzy skin" [H], "Color Painting" [N], "Texture displacement", "Emboss" [T], "SVG", "Measure" [U], "Assemble" [Y], "Simplify", "Brim Ears" [E], "Sculpt", "Edit", "Fillet / chamfer (CAD)" | `Gizmos/GLGizmosManager.cpp::init` l.224 | **added**: "Move", "Rotate" and "Scale" with their number fields, and "Lay on face" [F] (section 13); "Support Painting" [L], "Seam painting" [P], "Paint-on fuzzy skin" [H] and "Color Painting" [N] (section 13, "The painting tools"); "Cut" [C]: "Planar" on a flat surface, "Pick face", a part given to the other side, "Dovetail", "Keep cut editable" / "Edit cut..." / "Copy cut to..." (section 13, "Cut"); "Mesh Boolean" [B] (section 13, "Mesh Boolean"). **not yet**: "Cut"'s curved and drawn surfaces and connectors (section 13, "Cut"), "Texture displacement", "Emboss", "SVG", "Measure", "Assemble", "Simplify", "Brim Ears", "Sculpt", "Edit", "Fillet / chamfer (CAD)": each waits for the engine to do what it does (joining meshes, displacing a surface, text and pictures made into meshes, measuring and assembling, simplifying, brim ears in the brim) |
 | Object list: plates, objects, parts, instances, layer ranges; columns "Name", printable, "Fila.", paint marks; the object, part and plate menus | `GUI_ObjectList.cpp`, `GUI_Factories.cpp` | **added**: plates, objects, parts and instances with "Name", printable and "Fila.", and the object's, the part's and the plate's menus (section 13); the mark of an item with settings of its own, "Layers" and its height ranges (eighteenth pass, section 13). **not yet**: the paint marks |
 | View options: "Realistic View", "X-Ray", "Center of Mass", "Show 3D Navigator", Ctrl+0..6 views | `GLCanvas3D.cpp` l.8297, View menu | **added**: the navigator and the views (section 9). **not yet**: the three view options |
@@ -208,8 +208,8 @@ does with each option.
 | C++ | Where | Here |
 | --- | --- | --- |
 | Every plate shown on the canvas; a click selects it | `PartPlateList`, `Plater::select_plate_by_hover_id` l.30481 | **added**: in the 3D scene, every plate where it stands, a click selecting it (section 9); and the column of plate numbers of the first pass (two plates or more), in Prepare and in Preview |
-| Per plate: delete, orient, arrange, lock, "Customize current plate" (bed type, print sequence, spiral vase, filament sequences), name, "Move plate to the front", "Print history" | `PartPlate::render_icons` l.1173, `PlateSettingsDialog.cpp` | **added** (tenth pass): delete, arrange, lock, "Customize current plate", the name and "Move plate to the front", as tools beside the plate shown, in its menu (its tile, its row, the plate in the scene) and kept by a save (section 13, "Plates"). **not yet**: orient (the engine has no orientation), "Print history" (sending is built, section 4, but no history of it is kept) |
-| "Add plate", "Duplicate Current Plate", the plate menu ("Select All", "Delete All", "Arrange", "Reload All", "Auto Rotate", "Delete Plate") | toolbar, `create_plate_menu` l.2831 | **added**: "Add plate", "Duplicate Current Plate" (in the plate's menu, there being no Edit menu), and of the menu "Select All", "Delete All", "Arrange", "Delete Plate", "Lock" / "Unlock", "Edit Plate Name". **not yet**: "Reload All" (no edit reads an object's source file again: "Reload from disk" waits for it), "Auto Rotate" (orientation); neither is shown |
+| Per plate: delete, orient, arrange, lock, "Customize current plate" (bed type, print sequence, spiral vase, filament sequences), name, "Move plate to the front", "Print history" | `PartPlate::render_icons` l.1173, `PlateSettingsDialog.cpp` | **added** (tenth pass): delete, arrange, lock, "Customize current plate", the name and "Move plate to the front", as tools beside the plate shown, in its menu (its tile, its row, the plate in the scene) and kept by a save (section 13, "Plates"); orient since the auto orient pass (section 13, "Auto orient"). **not yet**: "Print history" (sending is built, section 4, but no history of it is kept) |
+| "Add plate", "Duplicate Current Plate", the plate menu ("Select All", "Delete All", "Arrange", "Reload All", "Auto Rotate", "Delete Plate") | toolbar, `create_plate_menu` l.2831 | **added**: "Add plate", "Duplicate Current Plate" (in the plate's menu, there being no Edit menu), and of the menu "Select All", "Delete All", "Arrange", "Auto Rotate", "Delete Plate", "Lock" / "Unlock", "Edit Plate Name". **not yet**: "Reload All" (no edit reads an object's source file again: "Reload from disk" waits for it), not shown |
 
 ### Slice and export
 
@@ -717,7 +717,7 @@ reference's own numbers; each is named in `scene.js` with where it is from.
 | Every plate that is not the one shown is filled (0.82, dark (0.384, 0.384, 0.412)); the one shown is the bed itself | `render_background` l.656 | **added** |
 | A grid from the plate's origin: every 10 mm (20, 50 or 100 on a bed 600, 1200 or 6000 mm across), every fifth line bold, and the bed's outline; (0.89), dark (0.431, 0.431, 0.463); the plate shown (0.5294, 0.5451, 0.5333), dark (0.298, 0.298, 0.3333) | `calc_gridlines` l.476, `render_grid` l.995, 2DBed.cpp l.27 | **added**; the bold lines are two pixels wide, drawn as quads (WebGL has no wide lines) |
 | The plate's number, "01" to "36", at its bottom right, and its name ("Untitled" without one) at its top left, in (242, 117, 78) | `calc_vertex_for_number` l.545, `generate_plate_name_texture` l.2264 | **added** |
-| Icons beside each plate: "Remove current plate (if not last one)", "Auto orient objects on current plate", "Arrange objects on current plate", "Lock current plate", "Customize current plate", "Move plate to the front", "Print history", "Edit current plate name" | `render_icons` l.1154 | **added** (tenth pass): a column of the page's own tools at the far right corner of the plate shown, with these tooltips ("Unlock current plate" on a locked one; a dot of the accent on "Customize current plate" when the plate sets anything, as the reference draws its changed icon). **differs**: beside the plate shown only, not every plate; HTML over the scene, placed as the scene is drawn and hidden while the corner is out of sight. **not yet**: orient, "Print history" |
+| Icons beside each plate: "Remove current plate (if not last one)", "Auto orient objects on current plate", "Arrange objects on current plate", "Lock current plate", "Customize current plate", "Move plate to the front", "Print history", "Edit current plate name" | `render_icons` l.1154 | **added** (tenth pass): a column of the page's own tools at the far right corner of the plate shown, with these tooltips ("Unlock current plate" on a locked one; a dot of the accent on "Customize current plate" when the plate sets anything, as the reference draws its changed icon). **differs**: beside the plate shown only, not every plate; HTML over the scene, placed as the scene is drawn and hidden while the corner is out of sight. "Auto orient objects on current plate" since the auto orient pass. **not yet**: "Print history" |
 | Height limits for printing by object, the areas a printer keeps clear, the stripes of a two-nozzle bed | l.858, l.968, `calc_height_limit` | **not yet** |
 
 ### Objects
@@ -1124,6 +1124,7 @@ undo history.
 | `add_plate` | — | a plate after the last, which is then the one shown | "add partplate" |
 | `delete_plate` | `plate?` | takes a plate away, not the last one | "delete partplate" |
 | `arrange` | `plate?`, or `all: true`, or `copies: [id]` | arranges one plate (the one shown when none is named), every plate, or the copies named around what else stands on their plates, with the options beside the Arrange button and the project's settings (see "Arrange" below); `note` says what fitted no plate ("Arranging is done but there are unpacked items. Reduce spacing and try again.") and what has no size ("Object %s has zero size and can't be arranged.") | "Arrange" |
+| `orient` | `plate`, or `copies: [id]` (none: nothing selected) | "Auto orient" (section 13, "Auto orient"): the copies on the plate, or every copy of the objects of the copies named, or with none named every copy not on a locked plate, each turned the way up the reference's orienter finds best and stood on the bed. Refused, nothing changed: "This plate is locked.\nCannot auto-orient on this plate.", "All the selected objects are on a locked plate.\nCannot auto-orient these objects." Nothing turned is no step (`done` null) | "Orient" |
 | `mirror` | `copies`, `axis` (`x`, `y`, `z`) | mirrors the copies along that axis of the scene, about the middle of the box round them, and stands them on the bed; the mirror is kept in each copy's transform | "Mirror Object" |
 | `split_objects` | `object` | "Split to objects": an object for each piece of the object's one mesh, or for each of its printed parts; each has a copy wherever the object had one, on the same plates, standing where its piece stood (brought down to the bed when it was in the air); `made` is the new copies. `note` says when modifiers or negative parts were left out. Refused, nothing changed: "The selected object couldn't be split." | "Split to Objects" |
 | `split_parts` | `object` | "Split to parts": the object's one part becomes a part for each piece of its mesh. Refused: "The target object contains only one part and can not be split." | "Split to parts" |
@@ -1481,7 +1482,49 @@ used now is off, not hidden.
 | Removing a plate: its objects are not deleted, they are left beside the plates that remain; the last plate stays | `PartPlateList::delete_plate` l.4531, `compute_origin_for_unprintable` l.3900 | **added**, the same place beside the plates. Which plate is shown afterwards is the reference's rule |
 | "Arrange all objects" [A], "Arrange objects on selected plates" [Shift+A], with a popup of options ("Spacing", "Auto rotate for arrangement", "Allow multiple materials on same plate", "Avoid extrusion calibration region", "Align to Y axis") | l.9352, `_render_arrange_menu` l.8057, `ArrangeJob.cpp` | **added**, the reference's arranger (below). A click on the tool opens the options under the toolbar, as the reference's toggled item does (`#arrange-panel`, pressed while open, Escape closes it): "Spacing", a slider 0 to 100 with its number (0.05 a step, never under 0), "0 means auto spacing.", "Auto rotate for arrangement", "Allow multiple materials on same plate", "Avoid extrusion calibration region" (only for a Bambu Lab printer that scans its first layer), "Align to Y axis" (off and greyed while turning is on), then "Arrange" (every plate) and "Reset". Kept at once in the app's settings under the reference's keys of its `arrange` section (`min_object_distance_fff` / `_fff_seq_print`, `enable_rotation_fff` / `_fff_seq_print` by the project's print sequence, `allow_multi_materials_on_same_plate`, `avoid_extrusion_cali_region`); "Align to Y axis" is not kept and follows the printer (an i3's: on), as Plater.cpp sets it; "Reset" takes the kept ones away. A arranges every plate; Shift+A the plate shown, as the reference does. **differs**: Shift+A with objects selected arranges those around what else stands on their plates, which stays where it is (the reference's `prepare_selected`, which no key or menu of its reaches) |
 | "Split to objects", "Split to parts" | l.9376–9395 | **added** (below) |
-| "Auto orient", "Variable layer height", "Assembly View" | l.9331–9400 | **not yet** |
+| "Auto orient all/selected objects" [Q], "Auto orient all objects on current plate" [Shift+Q] | l.9330 | **added** ("Auto orient" below) |
+| "Variable layer height", "Assembly View" | l.9331–9400 | **not yet** |
+
+### Auto orient
+
+Read from `libslic3r/Orient.cpp` and `.hpp`, `Jobs/OrientJob.cpp`,
+`Plater.cpp` (`orient`, `optimize_rotation`, the `EVT_GLCANVAS_ORIENT*` and
+`EVT_GLTOOLBAR_ORIENT` handlers, `select_plate_by_hover_id`),
+`GLCanvas3D.cpp` (`_init_main_toolbar`, the Q key, `OrientSettings`,
+`_render_orient_menu`), `GUI_Factories.cpp` (`create_plate_menu`,
+`create_sla_object_menu`), `PartPlate.cpp` (`render_icons`),
+`KBShortcutsDialog.cpp` and `Preferences.cpp`. The engine's side is
+`crates/edge-engine/src/orient.rs` (the orienter) and `orient_job.rs`
+(what is oriented, and the turn put back); the page's is `orient` in
+`ui/scene-edit.js` and the plate's tool and menu entry in `ui/plates.js`.
+
+| C++ | Where | Here |
+| --- | --- | --- |
+| The orienter: directions tried (the mesh as it stands, the 10 and the 14 normals of most area of the mesh and of its convex hull, 18 fixed ones, repeats taken out), each measured (area on the bed, the hull's area on the bed, overhanging area past the support threshold angle, nearly flat faces) and weighed by `OrientParamsArea` (the application) or `OrientParams` (the command line); the least cost wins, the mesh as it stands among equals; the turn from Eigen's `setFromTwoVectors` | Orient.cpp `AutoOrienter` | **added**, step for step: every cost is the reference's to the bit but the hull's area on the bed (this engine's hull, not qhull's, triangulates flat faces otherwise). **differs**: among directions of equal area or equal cost the first found is taken, where the reference's pick is its hash map's order (README, "Auto orient") |
+| The mesh measured: the object's model parts, every instance of it merged (`ModelObject::mesh`) | `get_orient_mesh` | **differs**: each copy by its own parts as it stands; the reference measures an object of several instances as the pile of all of them |
+| Q and the toolbar's "Auto orient all/selected objects": the objects selected (a part selected counts for its object), all their instances, those on locked plates left out; with nothing selected (or only on locked plates…) everything not on a locked plate; everything selected on a locked plate: "All the selected objects are on a locked plate.\nCannot auto-orient these objects." | `prepare_selected`, `prepare_selection` | **added**, the same. The toolbar's tooltip is the reference's two lines ("…[Q]", "Auto orient all objects on current plate [Shift+Q]"); the tool is off while nothing is in the project or an edit is under way (`can_arrange`) |
+| Shift+Q, the plate's icon "Auto orient objects on current plate", its menu's "Auto Rotate" ("auto rotate current plate"): the plate; refused on a locked plate: "This plate is locked.\nCannot auto-orient on this plate."; nothing on an empty one | `prepare_partplate`, `select_plate_by_hover_id` | **added**. **differs**: the copies on the plate; the reference takes an object as on the plate by its last instance alone, orients every instance of it wherever it is, and with no object so taken orients the whole project (OrientJob.cpp l.130, l.73: "Errors found in the C++") |
+| A turned instance: `rotate(R)` on its rotation, its offset kept, then `ensure_on_bed`; nothing else moves, nothing is arranged after; `update` settles the plates | `finalize`, `get_orient_mesh` setter | **added**: turned, stood on the bed (out of the air or up from under it), on the plate it then reaches over. **differs**: turned about the middle of its box, as "Lay on face" turns here; the reference turns about the instance's origin |
+| One undo step, "Orient" (the object menu's SLA entry "Optimize Rotation") | `Plater::orient` | **added**: "Orient". **differs**: a turn that changes nothing is no step; the reference takes its snapshot before it knows |
+| Run as a job: "Orienting...", "Orienting" and the object's name as it goes, cancelled from the progress bar ("Orienting canceled."); the other tools off meanwhile | `OrientJob::process`, `Plater::orient` (`is_idle`) | **differs**: one call, the page busy and saying "Orienting..." meanwhile; it takes 18 ms for Benchy (56 ms on one thread), copies in parallel, so there is nothing to cancel |
+| "Optimize support interface area" (`min_area`) and the rest of `OrientSettings`, behind a menu the toolbar no longer opens ("do not show orient menu") | `_render_orient_menu` | not shown: the reference's window cannot reach it either; `min_area` is on, as it always is there |
+| The object menu: "Auto orientation" ("Auto orient the object to improve print quality.") | `create_sla_object_menu` | not shown: the SLA object menu only; the FFF object menu has no orient entry |
+| Preferences: an "auto orient on import" setting | Preferences.cpp | none in the reference (no orient option in its dialog or `AppConfig`) |
+| Keys listed in "Keyboard Shortcuts": "Q" and Shift+"Q" with the reference's words | KBShortcutsDialog.cpp l.226 | **added** (marked as working) |
+
+Checked in the served page (`--serve`, 1280 × 820, dark, English) on a
+30 × 20 × 10 box tilted 27° and 41°, on the U1: the tool's two-line
+tooltip, Q laid the box flat on the bed ("Orient" to undo), the plate
+row's menu with "Auto Rotate", the plate locked and Shift+Q refused with
+"This plate is locked.\nCannot auto-orient on this plate.", two undos back
+to the tilted box. In German the page loaded with the tooltip "Alle/
+ausgewählte Objekte automatische Ausrichtung [Q]" and "[Umschalt+Q]"; the
+light German pass at 900 × 560 could not be driven or pictured (the
+browser pane was hidden and the page does not run while it is).
+Screenshots in `~/Dev/EdgeSlicerRS-shots/orient/`. Session tests:
+`src/api/edit/tests.rs` (two); engine: `crates/edge-engine/tests/orient.rs`
+(seven) and `src/orient/tests.rs` (nine).
+
 
 ### Arrange
 
@@ -1565,8 +1608,8 @@ engine's side is `crates/edge-engine/src/plates.rs`; the page's
 
 | C++ | Where | Here |
 | --- | --- | --- |
-| Icons down the right of every plate, each acting on its plate after showing it | `render_icons` l.1154, `select_plate_by_hover_id` l.30481 | **added** for the plate shown (see section 9, "Plates"): remove, arrange, lock, customize, name, to the front. **not yet**: orient, "Print history" |
-| The plate's menu (the object list's plate row; the right button on a plate): "Select All", "Delete All", "Arrange", "Reload All", "Auto Rotate", "Delete Plate", "Add Primitive", "Add Handy models", "Add Custom Models", "Add Models", then "Lock" / "Unlock", "Edit Plate Name" | `create_plate_menu` l.2831, `plate_menu` l.3149 | **added**, with their help text as tooltips, on the plate's tile (top left of the stage), its row in the object list and the plate in the scene, by the right button or Shift+F10 / the menu key; after them "Customize current plate", "Move plate to the front" (off for plate 1) and "Duplicate Current Plate" ("Duplicate the current plate"), which are the icons' and the Edit menu's in the reference. **not yet**, not shown: "Reload All", "Auto Rotate", the four ways to add a model (one "Add" [Ctrl+I] is in the toolbar) |
+| Icons down the right of every plate, each acting on its plate after showing it | `render_icons` l.1154, `select_plate_by_hover_id` l.30481 | **added** for the plate shown (see section 9, "Plates"): remove, orient, arrange, lock, customize, name, to the front. **not yet**: "Print history" |
+| The plate's menu (the object list's plate row; the right button on a plate): "Select All", "Delete All", "Arrange", "Reload All", "Auto Rotate", "Delete Plate", "Add Primitive", "Add Handy models", "Add Custom Models", "Add Models", then "Lock" / "Unlock", "Edit Plate Name" | `create_plate_menu` l.2831, `plate_menu` l.3149 | **added**, with their help text as tooltips, on the plate's tile (top left of the stage), its row in the object list and the plate in the scene, by the right button or Shift+F10 / the menu key; after them "Customize current plate", "Move plate to the front" (off for plate 1) and "Duplicate Current Plate" ("Duplicate the current plate"), which are the icons' and the Edit menu's in the reference. "Auto Rotate" ("auto rotate current plate") since the auto orient pass. **not yet**, not shown: "Reload All", the four ways to add a model (one "Add" [Ctrl+I] is in the toolbar) |
 | "Edit Plate Name": "Plate name", at most 250 characters, OK / Cancel; Enter is OK; an empty name is none | `PlateNameEditDialog` PlateSettingsDialog.cpp l.679 | **added**. The name stands at the plate's top left in the scene ("Untitled" without one, **had**), in its tile's tooltip and at its row ("Plate 2 (name)") |
 | Lock: a locked plate's copies are left where they are by "Arrange all", which arranges the rest; arranging a locked plate alone is refused: "This plate is locked.\nCannot auto-arrange on this plate." | `preprocess_arrange_polygon` PartPlate.cpp l.5407, ArrangeJob.cpp l.198, l.407 | **added**. A lock is drawn on the plate's tile and at its row; the lock tool is pressed while it is locked |
 | "Plate Settings": "Plate name"; "Bed type" ("Same as Global Plate Type" and the printer's plates; off for a printer without a choice); "Print sequence" ("Same as Global Print Sequence", "By Layer", "By Object"); "Spiral vase" ("Same as Global", "Enable", "Disable"); "First layer filament sequence" ("Auto" / "Customize" with the filaments to drag into order); "Other layer filament sequence" ("Auto" / "Customize": ranges "Layer" [from] "to" [to or "End"], each with its order, added and taken off by + and −); "Please input layer value (>= 2)." | PlateSettingsDialog.cpp l.371–520, `open_platesettings_dialog` Plater.cpp l.30400 | **added**, the same rows and words, the orders as chips of the filaments' colours dragged into place or moved with Left and Right. The ranges are put in order of their first layer, as the reference sorts them. **differs**: "Enable" asks nothing and changes no other setting, where the reference asks first and sets what vase mode needs ("Spiral mode only works when…", the same as the process page's, **not yet** in section 2); a range's end before its start is refused, where the reference moves the end |
@@ -1654,7 +1697,7 @@ paint) has no counterpart here yet.
 | "Lay on face": its second mode, "Face under cursor" (any flat face under the pointer, recessed ones too, and Alt to use it for a moment), and laying one part of an object on a face | the first needs the page to grow a flat face from the triangle under the pointer (`grow_flat_face`) and to warn of a recessed one; the second, the faces of one part (`scene_faces` for a part) and a turn of the part within its object |
 | "Fill bed with copies" (`GUI_Factories.cpp` l.1146, `FillBedJob.cpp`) | the reference's arrangement: it asks the arranger how many more fit |
 | Sinking an object under the bed; the arrow along Z; "Drop" | the engine cutting what is under the bed away (it slices from an object's lowest point) |
-| "Auto orient", "Simplify" | mesh operations the engine does not have ("Mesh Boolean" is built: "Mesh Boolean" above) |
+| "Simplify" | mesh operations the engine does not have ("Mesh Boolean" is built: "Mesh Boolean" above; "Auto orient" too: "Auto orient" above) |
 | "Split" > "By painted colour" ("Convert the part's colour painting into separate parts, one per filament") | cutting a mesh along its painted borders, which the engine does only layer by layer while slicing |
 | The other instances of an object taking a mirror or a turn of the object too | instances kept alike, which no tool here does yet (a part's edits are every instance's, as in the C++) |
 | "Edit in Parameter Table" (the table of section 2), "Separate" / "Set as an individual object", copying and pasting parts | the table is a piece of work of its own; copying parts in the model. A modifier's and a part's own settings are set on their pages (eighteenth pass) |
@@ -1662,7 +1705,6 @@ paint) has no counterpart here yet.
 | Saving the project with its edits | **added**: section 15 |
 | The glow round what is selected, the red background while something is over the edge, the ticks of the rotate ring | nothing; they are looks, left for a pass on the stage's own drawing |
 | Rectangle selection (Shift with a drag), dragging rows of the list | nothing; not built in this pass |
-| A plate's "Auto orient objects on current plate", "Auto Rotate" | orientation in the engine (`Orient.cpp`) |
 | "Reload All" ("reload all from disk") | reading an object's source file again (`source_file` is kept with it, section 15, but nothing reads it): the part menu's "Reload from disk" first |
 | "Print history" | sending to a printer (section 4); a file's `print_history` is kept with its plate |
 | The plate's tools beside every plate, not only the one shown | nothing; the page shows the plate shown's, where the keys and the pointer are |
@@ -1817,6 +1859,24 @@ and then gone through with the mouse. The screenshots are under the
 session's scratch folder, `ui_plates/shots/`.
 
 ### Errors found in the C++
+- Jobs/OrientJob.cpp l.126–132 (`prepare_partplate`): `obj_sel[oidx] =
+  plate->contain_instance(oidx, inst_idx)` is set for each instance in
+  turn, so an object counts as on the plate by its last instance only;
+  with it, `prepare_selection` (l.70–74, nothing selected and nothing
+  locked) then orients every object of the project. "Auto orient objects
+  on current plate" on a plate holding the first instance of an object
+  whose second is on another plate orients the whole project; on the
+  plate of its last instance it turns the first too. Read, not run: the
+  window is not opened here, and the command line does not reach it.
+- Jobs/OrientJob.cpp l.231 (`get_orient_mesh`): each instance is measured
+  by `obj->mesh()`, every instance of the object placed and merged, and
+  the up direction then applied to each instance's own turn; with two
+  instances standing apart (or turned differently) the bottom, overhang
+  and hull are those of the pile. Read, not run, as above.
+- Orient.cpp l.162 (`process`): the check that keeps a mesh as it stands
+  when that ties with the best stops one short of the end
+  (`i < results_vector.size()-1`), so it is missed when the tie is the
+  last result. Read; here every result is looked at.
 - TriangleMeshSlicer.cpp l.2398–2406 (`triangulate_slice`): each corner
   of a cap triangle is looked for among the cut's vertices by nearness
   (`is_equal`), and where none is found a new vertex is added. A corner

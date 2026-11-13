@@ -27,6 +27,7 @@ mod layer_heights;
 mod load;
 mod model;
 mod order;
+pub mod orient;
 mod paint;
 mod pipeline;
 mod presets;
@@ -64,9 +65,9 @@ pub use model::{
     CUT_THICKNESS_MAX, Changed, Connector, ConnectorKind, ConnectorShape, ConnectorStyle, CutDone,
     CutEdit, CutOptions, CutPieces, CutSection, CutThickness, DrawnCut, FIRST_LATER_LAYER, FaceHit,
     FlushBasis, Groove, LAST_LAYER, LONGEST_PLATE_NAME, LayerSequence, Look, MAX_FILAMENTS,
-    MAX_PLATES, Model, ModelCopy, ModelObject, ModelPlate, NEXT_COLOURS, NewPart, PlateSettings,
-    PlateStamp, Prepared, Reach, Saved, Saving, Shape, connector_mesh, own_settings,
-    project_settings,
+    MAX_PLATES, Model, ModelCopy, ModelObject, ModelPlate, NEXT_COLOURS, NewPart, OrientScope,
+    Oriented, PlateSettings, PlateStamp, Prepared, Reach, Saved, Saving, Shape, connector_mesh,
+    own_settings, project_settings,
 };
 pub use pipeline::{FirstLayer, Gcode, Sliced, Timings, slice};
 pub use presets::{Library, ModelPreset, PrinterModel, Shelf};
