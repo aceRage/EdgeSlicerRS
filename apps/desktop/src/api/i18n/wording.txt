@@ -315,6 +315,7 @@ Z	GUI/Gizmos/GLGizmoCut.cpp:8666
 Click a face of the model.	GUI/Gizmos/GLGizmoCut.cpp:9029
 Click a model face to set the cut plane flush with it; use Cut position to offset	GUI/Gizmos/GLGizmoCut.cpp:9022
 Pick face	GUI/Gizmos/GLGizmoCut.cpp:9022
+Pick from list	GUI/Gizmos/GLGizmoMeshBoolean.cpp:281
 Count	GUI/Gizmos/GLGizmoCut.cpp:248
 Gap	GUI/Gizmos/GLGizmoCut.cpp:249
 Edit cut...	GUI/GUI_Factories.cpp:2148
@@ -591,6 +592,9 @@ Edit height range
 an object
 a part
 a height range
+# "Mesh Boolean" (src/api/edit.rs): the words of the fix to the
+# reference, aceRage/EdgeSlicer#1005, which the pinned C++ has not.
+The boolean operation leaves nothing of the selected parts: they do not overlap, or the tool covers the whole part
 
 # The menu bar's entries that are not built: what each waits for
 # (src/api/menu.rs), shown as the entry's tooltip.

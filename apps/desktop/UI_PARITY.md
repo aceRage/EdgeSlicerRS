@@ -199,7 +199,7 @@ does with each option.
 | --- | --- | --- |
 | A 3D view of every plate with the objects on it, orbit / pan / zoom, selection | `View3D`, `GLCanvas3D` | **added**, in 3D: section 9. Where the browser has no WebGL2, the view from above the first pass built is kept: the bed of the printer chosen with its grid and each object's outline (its convex hull), name and size, drag to move, wheel to zoom, "Fit part" [Z] and "Fit bed" |
 | Main toolbar: "Add" [Ctrl+I], "Add plate", "Auto orient all/selected objects" [Q], "Arrange all objects" [A] with its options, "Split to objects", "Split to parts", "Variable layer height", "Assembly View" | `GLCanvas3D::_init_main_toolbar` l.9274 | **added**: "Add", "Add plate", "Arrange all objects" with its options (section 13, "Arrange": the reference's arranger, ported), "Split to objects" and "Split to parts". **not yet**: auto orient (the engine does not do it), variable layer height, the assembly view |
-| Gizmos: "Move" [M], "Rotate" [R], "Scale" [S], "Lay on face" [F], "Cut" [C], "Mesh Boolean" [B], "Support Painting" [L], "Seam painting" [P], "Paint-on fuzzy skin" [H], "Color Painting" [N], "Texture displacement", "Emboss" [T], "SVG", "Measure" [U], "Assemble" [Y], "Simplify", "Brim Ears" [E], "Sculpt", "Edit", "Fillet / chamfer (CAD)" | `Gizmos/GLGizmosManager.cpp::init` l.224 | **added**: "Move", "Rotate" and "Scale" with their number fields, and "Lay on face" [F] (section 13); "Support Painting" [L], "Seam painting" [P], "Paint-on fuzzy skin" [H] and "Color Painting" [N] (section 13, "The painting tools"); "Cut" [C]: "Planar" on a flat surface, "Pick face", a part given to the other side, "Dovetail", "Keep cut editable" / "Edit cut..." / "Copy cut to..." (section 13, "Cut"). **not yet**: "Cut"'s curved and drawn surfaces and connectors (section 13, "Cut"), "Mesh Boolean", "Texture displacement", "Emboss", "SVG", "Measure", "Assemble", "Simplify", "Brim Ears", "Sculpt", "Edit", "Fillet / chamfer (CAD)": each waits for the engine to do what it does (joining meshes, displacing a surface, text and pictures made into meshes, measuring and assembling, simplifying, brim ears in the brim) |
+| Gizmos: "Move" [M], "Rotate" [R], "Scale" [S], "Lay on face" [F], "Cut" [C], "Mesh Boolean" [B], "Support Painting" [L], "Seam painting" [P], "Paint-on fuzzy skin" [H], "Color Painting" [N], "Texture displacement", "Emboss" [T], "SVG", "Measure" [U], "Assemble" [Y], "Simplify", "Brim Ears" [E], "Sculpt", "Edit", "Fillet / chamfer (CAD)" | `Gizmos/GLGizmosManager.cpp::init` l.224 | **added**: "Move", "Rotate" and "Scale" with their number fields, and "Lay on face" [F] (section 13); "Support Painting" [L], "Seam painting" [P], "Paint-on fuzzy skin" [H] and "Color Painting" [N] (section 13, "The painting tools"); "Cut" [C]: "Planar" on a flat surface, "Pick face", a part given to the other side, "Dovetail", "Keep cut editable" / "Edit cut..." / "Copy cut to..." (section 13, "Cut"); "Mesh Boolean" [B] (section 13, "Mesh Boolean"). **not yet**: "Cut"'s curved and drawn surfaces and connectors (section 13, "Cut"), "Texture displacement", "Emboss", "SVG", "Measure", "Assemble", "Simplify", "Brim Ears", "Sculpt", "Edit", "Fillet / chamfer (CAD)": each waits for the engine to do what it does (joining meshes, displacing a surface, text and pictures made into meshes, measuring and assembling, simplifying, brim ears in the brim) |
 | Object list: plates, objects, parts, instances, layer ranges; columns "Name", printable, "Fila.", paint marks; the object, part and plate menus | `GUI_ObjectList.cpp`, `GUI_Factories.cpp` | **added**: plates, objects, parts and instances with "Name", printable and "Fila.", and the object's, the part's and the plate's menus (section 13); the mark of an item with settings of its own, "Layers" and its height ranges (eighteenth pass, section 13). **not yet**: the paint marks |
 | View options: "Realistic View", "X-Ray", "Center of Mass", "Show 3D Navigator", Ctrl+0..6 views | `GLCanvas3D.cpp` l.8297, View menu | **added**: the navigator and the views (section 9). **not yet**: the three view options |
 
@@ -1403,6 +1403,60 @@ How it was checked:
   key; so was selecting the copy before C on a server started anew, and
   the camera's turn for the pictures.
 
+### Mesh Boolean
+
+Read from `Gizmos/GLGizmoMeshBoolean.cpp/.hpp`, `GLGizmosManager.cpp`
+(`init`, `handle_shortcut`), `KBShortcutsDialog.cpp` ("Gizmo mesh
+boolean"), `libslic3r/MeshBoolean.cpp` (`mfd::make_boolean`),
+`libslic3r/Model.cpp` (`replace_volume_with_object_mesh`,
+`delete_volume`) and `tests/libslic3r/test_meshboolean.cpp`. The mesh's
+side is `edge_mesh::boolean`; the model's `Model::mesh_boolean`
+(`crates/edge-engine/src/mesh_boolean.rs`); the session's `scene_edit`
+op `mesh_boolean` (`src/api/edit.rs`); the page's `ui/boolean.js`.
+
+| C++ | Where | Here |
+| --- | --- | --- |
+| The tool on the toolbar after "Cut", key B; for one whole instance of an object of more than one volume | `on_init`, `on_is_activable` l.119 | **added**. **differs**: for an object with two printed parts (below) |
+| "Union", "Difference", "Intersection" side by side, "Union" each time it opens | l.301–311, `on_set_state` | **added** (joined buttons) |
+| "Part 1" / "Part 2", for a difference "Subtract from" / "Subtract with"; each with "Select" ("1 selected" once picked), pressed while a click fills it, the part's name and ✕ to let it go; "Pick from list" with the object's parts | l.314–370, `part_picker` l.276 | **added**. "Pick from list" is the C++'s word newer than its catalog (`wording.txt`) |
+| A click on a part of the object picks it: the first click the first part, then the second; the part nearest the eye; a part picked for one slot is let go from the other; Ctrl lets the view turn; a click takes nothing else (no selection) | `gizmo_event` l.28, `on_mouse` l.87, `set_src_volume` | **added**: the parts drawn with their pick colours under the pointer; off the object's parts the view turns as with no tool, a click there does nothing |
+| The first part's box drawn white, the second's teal (0, 150, 136) | `on_render` l.124 | **added**, the selection's corner box in those colours; each slot's caption marked in its colour |
+| "Delete input", one for the difference and one for the intersection; the union always deletes the second part | l.398–416 | **added** |
+| The button named for the operation, on with both parts picked: both meshes in the object's coordinates by their own matrices (a mirrored one turned round), the boolean, the result in the first part's place (`replace_volume_with_object_mesh`): its mesh about the middle of its box, its matrix the move back there, named "<name> - union" ("difference", "intersection"), the first part's kind, filament and settings, its paint dropped; the second part deleted as above; one undo step "Mesh Boolean"; the result selected | `run_boolean` l.376, `generate_new_volume` l.447 | **added** (`Model::mesh_boolean`). The result selected is a part, so the tool closes, as there (`on_is_activable` no longer holds). Checked: two 20 mm cubes 10 mm apart, each operation, the tool kept and deleted: the result closed, wound outward, 12 000 / 4 000 / 4 000 mm³, where the boolean puts it; a mirrored and half-height second part, both ways round; one undo back and one redo; saved, read back alike and sliced alike; the C++ slicer's `--info` reads every saved result as `manifold = yes` with those volumes (12 000, 4 000, 4 000; 9 999.999, 6 000, 2 000 for the mirrored; 8 000 for the part made in the page). Its CLI has no boolean of its own to compare with, and its tests are not built here; the volumes are compared with the boxes' own |
+| "Unable to perform boolean operation on selected parts" when it cannot be done | `warning_text` l.17 | **added**, as the error the page says; a part that does not bound a volume is named after it in the reference's export's words ("Reason: part "%1%" does not bound a volume."); the model is left as it was |
+| The undo snapshot of the gizmo's own state (`on_save`, `on_load`) | l.434 | **differs**: after undo or redo the picks that are gone are let go; nothing else of the tool is kept in the history |
+
+**Differs, on purpose:**
+
+- A result that leaves nothing (parts that do not meet, intersected; a
+  part the other covers, taken away) is said as "The boolean operation
+  leaves nothing of the selected parts: they do not overlap, or the tool
+  covers the whole part" (own wording, the words of the fix
+  aceRage/EdgeSlicer#1005) and changes nothing; the pinned reference
+  says it failed.
+- Only printed parts can be picked, and the tool is for an object with
+  two of them. The reference takes any volume (its `is_model_part` test
+  is commented out) and gives the result the first one's kind: a
+  modifier's region added to a part as solid, a part's material cut out
+  of a negative part.
+- "Delete input" starts unticked each time the tool opens; the
+  reference means to reset it (`on_set_state`) but declares local
+  variables of the same names, so its ticks are kept.
+- The airbrush paint the reference carries onto the result
+  (`airbrush_carry_field`) is not: there is no airbrush here.
+
+**Not yet**: the other copies of the object hidden while the tool is open
+(`InstancesHider`); the object clipped by a plane (`ObjectClipper`).
+
+**Seen** in the page (`--serve`), 1280 dark English and 900 light
+German, pictures in `~/Dev/EdgeSlicerRS-shots/boolean/`: an STL of three
+boxes split to parts; two picked by clicks in the scene, the boxes white
+and teal; "Difference" made, the result selected and the tool closed;
+undone in one step; an intersection of parts apart said as empty with the
+picks kept; in German two parts picked from the lists and "Delete input"
+ticked. The pane's clicks were the scene's own; switching the language
+and opening the panel at 900 were done through the page's own calls.
+
 ### The main toolbar
 
 Over the stage, in the middle (`.toolbar`, STYLE.md). A tool that cannot be
@@ -1588,7 +1642,7 @@ paint) has no counterpart here yet.
 | "Lay on face": its second mode, "Face under cursor" (any flat face under the pointer, recessed ones too, and Alt to use it for a moment), and laying one part of an object on a face | the first needs the page to grow a flat face from the triangle under the pointer (`grow_flat_face`) and to warn of a recessed one; the second, the faces of one part (`scene_faces` for a part) and a turn of the part within its object |
 | "Fill bed with copies" (`GUI_Factories.cpp` l.1146, `FillBedJob.cpp`) | the reference's arrangement: it asks the arranger how many more fit |
 | Sinking an object under the bed; the arrow along Z; "Drop" | the engine cutting what is under the bed away (it slices from an object's lowest point) |
-| "Auto orient", "Mesh Boolean", "Simplify" | mesh operations the engine does not have |
+| "Auto orient", "Simplify" | mesh operations the engine does not have ("Mesh Boolean" is built: "Mesh Boolean" above) |
 | "Split" > "By painted colour" ("Convert the part's colour painting into separate parts, one per filament") | cutting a mesh along its painted borders, which the engine does only layer by layer while slicing |
 | The other instances of an object taking a mirror or a turn of the object too | instances kept alike, which no tool here does yet (a part's edits are every instance's, as in the C++) |
 | "Edit in Parameter Table" (the table of section 2), "Separate" / "Set as an individual object", copying and pasting parts | the table is a piece of work of its own; copying parts in the model. A modifier's and a part's own settings are set on their pages (eighteenth pass) |
