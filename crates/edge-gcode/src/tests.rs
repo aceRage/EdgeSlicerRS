@@ -1787,12 +1787,13 @@ fn a_tool_change_goes_through_the_printers_own_gcode() {
     assert_eq!(opening[7], "M104 S220 T0 ; set nozzle temperature");
 
     // The change on the first layer: pull the filament right back, end the
-    // old filament, cool its tool, run the template, start the new one.
+    // old filament, cool its tool, run the template, set the fan back to
+    // the layer's speed, start the new one.
     let first = text.split(";LAYER_CHANGE").nth(1).unwrap();
     let change: Vec<&str> = first
         .lines()
         .skip_while(|line| *line != "; filament end")
-        .take(9)
+        .take(10)
         .collect();
     assert_eq!(
         change,
@@ -1804,6 +1805,7 @@ fn a_tool_change_goes_through_the_printers_own_gcode() {
             "M109 S250 T1",
             "T1",
             "; custom gcode end",
+            "M106 S0",
             "; filament start",
             "M104 S250 T1 ; set nozzle temperature",
         ]
@@ -1918,6 +1920,28 @@ fn a_template_move_to_where_the_head_already_is_is_kept() {
             "layer {layer}"
         );
     }
+}
+
+#[test]
+fn after_a_change_the_fan_is_set_back_to_the_layer_s_speed() {
+    // The fan is off on the first layer and on from the second, where the
+    // change is made after the first filament's wall.
+    let settings = two_tools(Some(CHANGE)).map(|tool| PrintSettings {
+        close_fan_the_first_x_layers: 1,
+        fan_min_speed: 100.0,
+        fan_max_speed: 100.0,
+        ..tool
+    });
+    let (text, _) = in_filaments(&[&[0], &[0, 1]], &settings);
+    let second = text.split(";LAYER_CHANGE").nth(2).unwrap();
+    let fans: Vec<&str> = (second.lines())
+        .skip_while(|line| !line.starts_with("; Change Tool0 -> Tool1"))
+        .take_while(|line| !line.starts_with(";TYPE:"))
+        .filter(|line| line.starts_with("M106"))
+        .collect();
+    // The layer's speed after the change, not the first layer's that was
+    // in force when the layer began.
+    assert_eq!(fans, ["M106 S255"], "{second}");
 }
 
 #[test]

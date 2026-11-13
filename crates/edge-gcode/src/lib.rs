@@ -232,6 +232,9 @@ pub use edge_time::Model as TimeModel;
 /// Starts a line the writer leaves for itself where a tool is changed:
 /// the tool taken up and the temperature it prints at.
 const CHANGE_MARK: &[u8] = b";_TOOL_CHANGE ";
+/// Where the fans are set back to the layer's speeds after a tool change,
+/// replaced once the layer's speeds are known.
+const RESUME_FAN_MARK: &[u8] = b";_RESUME_FAN_SPEED\n";
 
 /// A support wall's hook is six line spacings long, so its two ends are
 /// never further apart than a little more than that.
@@ -1978,12 +1981,20 @@ impl Writer<'_> {
         self.state.tool = to;
         self.state.tool_changes += 1;
         self.state.summary.tool_changes += 1;
-        // The template may have touched the fans.
-        if let Some(speed) = self.state.auxiliary_fan {
-            writeln!(self.out, "M106 P2 S{speed}")?;
-        }
-        if let Some(speed) = self.state.fan {
-            writeln!(self.out, "M106 S{speed}")?;
+        // The template may have touched the fans: they are set back to
+        // the layer's speeds, which are known once the layer is laid out,
+        // as the reference's cooling sets them at `;_FORCE_RESUME_FAN_SPEED`
+        // (CoolingBuffer.cpp); not to the speeds in force, which before
+        // the layer's own are set are the layer below's.
+        self.out.extend_from_slice(RESUME_FAN_MARK);
+        // Bambu's tower: to where its block starts and down to the layer,
+        // the filament pushed back, straight after the change G-code and
+        // before the new filament's start G-code (GCode.cpp `append_tcr`,
+        // "Move to start pos", `unretract`).
+        if let Some(start) = over.filter(|_| framed && self.state.primed) {
+            self.settings = &self.all[to];
+            self.travel(start, false, None)?;
+            self.prime()?;
         }
         self.announce(to, layer == 0)?;
         // A Bambu Lab printer's change G-code leaves the nozzle cooler
@@ -2189,6 +2200,35 @@ impl Writer<'_> {
                 fans.push_str(&format!("M106 P2 S{speed}\n"));
                 self.state.auxiliary_fan = Some(speed);
             }
+        }
+        // Each tool change's fans, set back to the layer's speeds.
+        let resume = {
+            let mut text = String::new();
+            if let Some(speed) = self.state.auxiliary_fan {
+                text.push_str(&format!("M106 P2 S{speed}\n"));
+            }
+            if let Some(speed) = self.state.fan {
+                text.push_str(&format!("M106 S{speed}\n"));
+            }
+            text.into_bytes()
+        };
+        if self
+            .out
+            .windows(RESUME_FAN_MARK.len())
+            .any(|window| window == RESUME_FAN_MARK)
+        {
+            let mut out = Vec::with_capacity(self.out.len());
+            let mut rest = &self.out[..];
+            while let Some(at) = rest
+                .windows(RESUME_FAN_MARK.len())
+                .position(|window| window == RESUME_FAN_MARK)
+            {
+                out.extend_from_slice(&rest[..at]);
+                out.extend_from_slice(&resume);
+                rest = &rest[at + RESUME_FAN_MARK.len()..];
+            }
+            out.extend_from_slice(rest);
+            self.out = out;
         }
         self.out.splice(0..0, fans.into_bytes());
         Ok(())
