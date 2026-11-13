@@ -145,6 +145,7 @@ const Setup = (() => {
   // ---- the Filament manager ----
 
   const fm = {
+    kind: 'filament',
     rows: [], view: [], values: {}, search: '', sort: { key: null, dir: 1 }, filters: {}, pop: null, current: null,
     // The focused row, the rows selected (Ctrl / Shift+click, one's own only), the one clicked last,
     // and the Enabled ticks not sent yet (preset_manager.js `pending`, 250 ms after the last one).
@@ -186,6 +187,20 @@ const Setup = (() => {
       cell: (row) => [fmDate(row.mtime), row.mtime === null && row.version ? `Vendor bundle ${row.version}` : ''] },
     { key: 'actions', label: () => t('Actions'), cls: 'actions' },
   ];
+  // The Process manager's columns (preset_manager.js, `KIND === 'process'`).
+  const fmLayer = (value) => (value === null || value === undefined ? '—' : value.toFixed(3).replace(/0$/, ''));
+  const PM_COLUMNS = [
+    FM_COLUMNS[0], FM_COLUMNS[1], FM_COLUMNS[3],
+    { key: 'printers', label: () => t('Printer'), sort: 'printers', filter: 'set', cell: (row) => [fmPrinters(row), row.printers.join('\n')] },
+    { key: 'nozzles', label: () => t('Nozzle'), sort: 'nozzles', filter: 'set', cell: (row) => [row.nozzles.length ? row.nozzles.join(' / ') : '—'] },
+    { key: 'lh', label: () => t('Layer height'), cls: 'num', sort: 'lh', filter: 'range', tip: 'mm', cell: (row) => [fmLayer(row.lh)] },
+    { key: 'tier', label: () => 'Quality / parent', sort: 'tier', filter: 'set', cell: (row) => [row.tier || '—', row.tier] },
+    FM_COLUMNS[5], FM_COLUMNS[9], FM_COLUMNS[10],
+  ];
+  const fmCols = () => (fm.kind === 'process' ? PM_COLUMNS : FM_COLUMNS);
+  const fmTable = () => (fm.kind === 'process' ? 'process_manager' : 'filament_manager');
+  const fmPlural = () => (fm.kind === 'process' ? 'process presets' : 'filaments');
+
   const TRASH = '<svg viewBox="0 0 16 16" aria-hidden="true"><path d="M6 1h4l.5 1H14v1.5H2V2h3.5zM3 5h10l-.8 9.2a1 1 0 0 1-1 .8H4.8a1 1 0 0 1-1-.8z"/></svg>';
 
   // ---- rename and delete of one's own (preset_manager.js `startEdit`, `requestDelete`) ----
@@ -295,7 +310,7 @@ const Setup = (() => {
   // The column sorted by (data_table.js `cycleSort`: up, down, then none; not kept between openings)
   // and the filters of the columns, applied by the session (`filament_manager`).
   function fmArgs(more = {}) {
-    return { project: activeId(), search: fm.search, sort: fm.sort, filters: fm.filters, ...more };
+    return { project: activeId(), kind: fm.kind, search: fm.search, sort: fm.sort, filters: fm.filters, ...more };
   }
   function fmActive(column) {
     const filter = fm.filters[column.key];
@@ -314,8 +329,9 @@ const Setup = (() => {
   }
 
   function fmHead() {
-    $('fm-head').replaceChildren(...FM_COLUMNS.map((column) => {
-      const cell = el('th', { className: column.cls || '' });
+    const columns = fmCols();
+    $('fm-head').replaceChildren(...columns.map((column) => {
+      const cell = el('th', { className: `${column.cls || ''} col-${column.key}` });
       const sorting = fm.sort.key === column.sort ? fm.sort.dir : 0;
       cell.setAttribute('aria-sort', sorting > 0 ? 'ascending' : sorting < 0 ? 'descending' : 'none');
       const title = el('button', { type: 'button', className: 'th-sort', title: column.tip ? `${column.tip}. Click to sort` : 'Click to sort' },
@@ -340,9 +356,9 @@ const Setup = (() => {
         funnel.addEventListener('click', (event) => { event.stopPropagation(); fmFilter(column, funnel); });
         cell.append(funnel);
       }
-      if (FM_COLUMNS.indexOf(column) < FM_COLUMNS.length - 1) {
+      if (columns.indexOf(column) < columns.length - 1) {
         const grip = el('span', { className: 'fm-resize', title: 'Drag to resize the column; double-click to reset all widths' });
-        grip.addEventListener('pointerdown', (event) => fmResize(event, FM_COLUMNS.indexOf(column)));
+        grip.addEventListener('pointerdown', (event) => fmResize(event, columns.indexOf(column)));
         grip.addEventListener('click', (event) => event.stopPropagation());
         grip.addEventListener('dblclick', (event) => { event.stopPropagation(); attempt(() => fmKeepWidths(null)); });
         cell.append(grip);
@@ -428,7 +444,7 @@ const Setup = (() => {
 
   // The filters in force, each to take away, and "Clear search and filters" (data_table.js `renderChips`).
   function fmChips() {
-    const chips = FM_COLUMNS.filter(fmActive).map((column) => {
+    const chips = fmCols().filter(fmActive).map((column) => {
       const filter = fm.filters[column.key];
       let said;
       if (column.filter === 'set') {
@@ -464,7 +480,7 @@ const Setup = (() => {
     const values = fm.values.printers || [];
     const excluded = new Set((fm.filters.printers || {}).exclude || []);
     const shown = values.filter((value) => !excluded.has(value));
-    const options = [new Option('All printers', ''), ...values.map((value) => new Option(fmLabel(FM_COLUMNS[6], value), value))];
+    const options = [new Option('All printers', ''), ...values.map((value) => new Option(fmLabel({ key: 'printers' }, value), value))];
     if (shown.length > 1 && shown.length < values.length) options.push(new Option(`${shown.length} printers`, '\u0000several'));
     select.replaceChildren(...options);
     select.value = shown.length === values.length ? '' : shown.length === 1 ? shown[0] : '\u0000several';
@@ -499,7 +515,7 @@ const Setup = (() => {
     star.setAttribute('aria-label', `${star.title}: ${row.name}`);
     star.setAttribute('aria-pressed', String(row.star));
     star.addEventListener('click', (event) => { event.stopPropagation(); attempt(() => fmStar(row)); });
-    const cells = FM_COLUMNS.map((column) => {
+    const cells = fmCols().map((column) => {
       if (column.key === 'checked') return el('td', { className: 'check' }, box);
       if (column.key === 'star') return el('td', { className: 'star' }, star);
       if (column.key === 'actions') {
@@ -549,13 +565,13 @@ const Setup = (() => {
     $('fm-body').replaceChildren(...shown.map(fmRow));
     $('fm-none').hidden = shown.length > 0;
     const on = fm.rows.filter((row) => row.enabled).length;
-    const filtered = fm.search.trim() !== '' || FM_COLUMNS.some(fmActive);
+    const filtered = fm.search.trim() !== '' || fmCols().some(fmActive);
     // preset_manager.js `tx.count_all`, `tx.count`.
-    $('fm-count').textContent = filtered ? `${shown.length} of ${fm.rows.length} shown · ${on} enabled` : `${fm.rows.length} filaments · ${on} enabled`;
+    $('fm-count').textContent = filtered ? `${shown.length} of ${fm.rows.length} shown · ${on} enabled` : `${fm.rows.length} ${fmPlural()} · ${on} enabled`;
     // "All" / "Clear all" and the header box act on the rows shown, locked rows skipped (data_table.js `setShown`).
     const shownOn = shown.filter((row) => row.enabled).length;
     $('fm-scope').textContent = filtered ? `All / Clear all: the ${shown.length} shown` : 'All / Clear all: every row';
-    const tip = `Applies to the ${shown.length} filaments shown by the search and filters (${shownOn} of them enabled); locked rows are skipped`;
+    const tip = `Applies to the ${shown.length} ${fm.kind === 'process' ? 'presets' : 'filaments'} shown by the search and filters (${shownOn} of them enabled); locked rows are skipped`;
     $('fm-all').title = tip;
     $('fm-clear').title = tip;
     const head = $('fm-head').querySelector('.fm-hcheck');
@@ -712,7 +728,7 @@ const Setup = (() => {
     if (!fm.pending.size) return;
     const changes = [...fm.pending].map(([key, on]) => ({ key, on }));
     fm.pending.clear();
-    fmTake(await call('filament_enable', fmArgs({ changes })));
+    fmTake(await call(fm.kind === 'process' ? 'process_enable' : 'filament_enable', fmArgs({ changes })));
     fmStatus('Saved.');
     // The sidebar's lists follow at once, as the reference's do.
     presetsByMachine.clear();
@@ -730,6 +746,16 @@ const Setup = (() => {
     await fmFlush();
     $('fm-dialog').close();
     const choices = state.project.choices;
+    if (fm.kind === 'process') {
+      // The process settings tab selects it: the project goes onto it, what is set over the one it
+      // leaves asked about first; its pages are the sidebar's.
+      if (choices.process !== name) {
+        const answer = await Presets.beforeLeaving('process', 1, name);
+        if (answer === null) return;
+        await setProject({ process: name });
+      }
+      return;
+    }
     if (choices.filaments[0] !== name) {
       const answer = await Presets.beforeLeaving('filament', 1, name);
       if (answer === null) return;
@@ -743,14 +769,14 @@ const Setup = (() => {
   // ---- dragged column widths, kept (data_table.js `startResize`, `saveWidths`) ----
 
   function fmWidths() {
-    const kept = (I18n.layout && I18n.layout.columns && I18n.layout.columns.filament_manager) || null;
+    const kept = (I18n.layout && I18n.layout.columns && I18n.layout.columns[fmTable()]) || null;
     const heads = [...$('fm-head').children];
     heads.forEach((cell, at) => { cell.style.width = kept && kept[at] ? `${kept[at]}px` : ''; });
     $('fm-table').style.width = kept ? `${kept.reduce((sum, width) => sum + width, 0)}px` : '';
   }
 
   async function fmKeepWidths(widths) {
-    const answer = await call('layout_set', { columns: { filament_manager: widths } });
+    const answer = await call('layout_set', { columns: { [fmTable()]: widths } });
     if (I18n.layout) I18n.layout.columns = answer.columns;
     fmWidths();
   }
@@ -784,15 +810,22 @@ const Setup = (() => {
 
   // Every row of the same favourite key follows (preset_manager.js `star`).
   async function fmStar(row) {
-    const answer = await call('favorite_toggle', { key: row.fav });
-    const keys = new Set(answer.favs);
-    favourites.keys = keys;
+    const answer = await call('favorite_toggle', { kind: fm.kind, key: row.fav });
+    if (fm.kind !== 'process') favourites.keys = new Set(answer.favs);
     await fmLoad();
     presetsByMachine.clear();
     await showSidebar();
   }
 
-  async function openFilamentManager() {
+  // The Filament manager, or (kind 'process') the Process manager: the same table, its own columns.
+  async function openFilamentManager(kind = 'filament') {
+    fm.kind = kind;
+    $('fm-title').textContent = kind === 'process' ? t('Process manager') : t('Filament manager');
+    const search = kind === 'process' ? 'Search name, printer or quality' : 'Search name, vendor, type or printer';
+    $('fm-search').placeholder = search;
+    $('fm-search').setAttribute('aria-label', search);
+    $('fm-none').textContent = kind === 'process' ? 'No process preset matches the search and filters.' : 'No filament matches the search and filters.';
+    for (const id of ['fm-create', 'fm-edit-printers']) $(id).hidden = kind === 'process';
     fm.search = '';
     fm.sort = { key: null, dir: 1 };
     fm.filters = {};
@@ -1393,5 +1426,5 @@ const Setup = (() => {
     // Escape: a filter, then a rename, then the selection, then the dialog (preset_manager.js `escape`).
   }
 
-  return { init, openFilamentSelection, openFilamentManager, openCreatePrinter, openCreateFilament };
+  return { init, openFilamentSelection, openFilamentManager, openProcessManager: () => openFilamentManager('process'), openCreatePrinter, openCreateFilament };
 })();

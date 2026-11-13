@@ -23,6 +23,11 @@ Angular width of one lug, in degrees. It has to share its slice of the bore with
 Apply All	GUI/Plater.cpp:3688
 Filament manager	GUI/PresetManagerDialog.cpp:54
 Favorite filaments	GUI/PresetComboBoxes.cpp:384
+Favorite process presets	GUI/PresetComboBoxes.cpp:383
+Remove "%s" from favorite process presets	GUI/FavoriteFilamentsUI.cpp:189
+Add "%s" to favorite process presets	GUI/FavoriteFilamentsUI.cpp:190
+Process manager	GUI/PresetManagerDialog.cpp:54
+Manage process presets	GUI/ParamsPanel.cpp:243
 Delete the preset "%s"?	GUI/PresetManagerDialog.cpp:536
 "%s" has unsaved changes. Save or discard them in its settings first, then rename it.	GUI/PresetManagerDialog.cpp:465
 Save or discard the unsaved changes first.	GUI/PresetManagerDialog.cpp:469
@@ -33,6 +38,7 @@ and %d more	GUI/PresetManagerDialog.cpp:673
 Skipped: other presets inherit these:	GUI/PresetManagerDialog.cpp:690
 If the preset corresponds to a filament currently in use on your printer, please reset the filament information for that slot.	GUI/PresetManagerDialog.cpp:552
 They switch to the next visible filament preset.	GUI/PresetManagerDialog.cpp:548
+The plate switches to the next visible process preset; a nozzle goes back to the plate's process.	GUI/PresetManagerDialog.cpp:549
 Could not rename "%s": %s	GUI/PresetManagerDialog.cpp:479
 This preset cannot be deleted.	GUI/PresetManagerDialog.cpp:518
 The printer part of the name (after " @") is kept; type the name without "@".	GUI/SavePresetDialog.cpp:225
@@ -630,6 +636,10 @@ Create a new filament preset
 Favourite
 Search name, vendor, type or printer
 No filament matches the search and filters.
+No process preset matches the search and filters.
+Search name, printer or quality
+Quality / parent
+process presets
 All printers
 Not favourite
 Only this printer

@@ -847,12 +847,16 @@ async function showSidebar() {
   $('saved-process').hidden = fromPresets;
   $('saved-process').textContent = project.saved.process || 'The project names no process.';
   $('process-cog').hidden = !fromPresets;
+  $('process-manage').hidden = !fromPresets;
   if (fromPresets) {
     Presets.fillList($('process'), {
       user: lists ? lists.user_processes : [],
       system: lists ? lists.processes : [],
       value: choices.process,
       modified: Presets.on('process').modified,
+      favorites: lists ? lists.favorite_processes || [] : [],
+      favoritesTitle: t('Favorite process presets'),
+      favKind: 'process',
     });
   }
   // The pages of process settings, and what is set over the preset; a
@@ -872,8 +876,13 @@ function brightness(colour) {
 // The entry at the foot of each filament list; not a filament.
 const MANAGE_FILAMENTS = '\u0000manage';
 
-// The favourite filaments' keys, as the session keeps them; `regroup` once a star changed in an open list.
-const favourites = { keys: new Set(), loaded: false, regroup: false };
+// The favourite filaments' keys and the favourite processes' (`process`), as the session keeps them;
+// `regroup` once a star changed in an open list.
+const favourites = { keys: new Set(), process: new Set(), loaded: false, regroup: false };
+const favouriteKeys = (kind) => (kind === 'process' ? favourites.process : favourites.keys);
+const favouriteTitle = (kind, on) => (kind === 'process'
+  ? (on ? t('Remove "%s" from favorite process presets') : t('Add "%s" to favorite process presets'))
+  : (on ? t('Remove "%s" from favorite filaments') : t('Add "%s" to favorite filaments')));
 function regroupFavourites() {
   if (!favourites.regroup) return;
   favourites.regroup = false;
@@ -896,6 +905,7 @@ function favouriteMenuItem(slot) {
 }
 async function loadFavourites() {
   favourites.keys = new Set((await call('favorites', {})).favs);
+  favourites.process = new Set((await call('favorites', { kind: 'process' })).favs);
   favourites.loaded = true;
 }
 
@@ -903,24 +913,26 @@ async function loadFavourites() {
 // the star that makes it a favourite or no longer one (PresetComboBoxes.cpp `enable_favorites`).
 function decorateAction(row, option) {
   if (option.dataset.fav) {
-    const on = favourites.keys.has(option.dataset.fav);
+    const kind = option.dataset.favKind || 'filament';
+    const on = favouriteKeys(kind).has(option.dataset.fav);
     const star = el('button', { type: 'button', className: `lb-star${on ? ' on' : ''}`, tabIndex: -1 });
     // TRN %s is a filament name (FavoriteFilamentsUI.cpp `append_toggle_item`).
-    star.title = fmt(on ? t('Remove "%s" from favorite filaments') : t('Add "%s" to favorite filaments'), option.dataset.fav);
+    star.title = fmt(favouriteTitle(kind, on), option.dataset.fav);
+    star.dataset.favKind = kind;
     star.innerHTML = '<svg viewBox="0 0 16 16" aria-hidden="true"><path d="M8 1.4l1.95 4.1 4.45.55-3.27 3.08.84 4.42L8 11.4l-3.97 2.15.84-4.42L1.6 6.05l4.45-.55z"/></svg>';
     star.addEventListener('pointerdown', (event) => { event.preventDefault(); event.stopPropagation(); });
     star.addEventListener('click', (event) => {
       event.preventDefault();
       event.stopPropagation();
       attempt(async () => {
-        const answer = await call('favorite_toggle', { key: option.dataset.fav });
-        favourites.keys = new Set(answer.favs);
+        const answer = await call('favorite_toggle', { kind, key: option.dataset.fav });
+        if (kind === 'process') favourites.process = new Set(answer.favs); else favourites.keys = new Set(answer.favs);
         // The stars of the open list follow; the list regroups when it closes, so no row moves under
         // the pointer (FavoriteFilamentsUI.cpp `m_regroup_on_close`).
         for (const other of document.querySelectorAll('.lb-pop .lb-star')) {
-          const on = favourites.keys.has(other.dataset.fav);
+          const on = favouriteKeys(other.dataset.favKind).has(other.dataset.fav);
           other.classList.toggle('on', on);
-          other.title = fmt(on ? t('Remove "%s" from favorite filaments') : t('Add "%s" to favorite filaments'), other.dataset.fav);
+          other.title = fmt(favouriteTitle(other.dataset.favKind, on), other.dataset.fav);
         }
         favourites.regroup = true;
       });
@@ -966,7 +978,7 @@ async function filamentChanged(event) {
 }
 
 // The sidebar's lists are the page's own (listbox); the printer's is set up with its card, in printers.js.
-listbox($('process'));
+listbox($('process'), { decorate: decorateAction, onClose: regroupFavourites });
 listbox($('bed'), { bare: true });
 Filaments.init();
 Setup.init();
@@ -988,7 +1000,12 @@ $('process').addEventListener('change', () => attempt(async () => {
   label.replaceWith(row);
   const cog = Presets.cogButton('process');
   cog.id = 'process-cog';
-  row.append(label, cog);
+  // The process row's "manage the list" gear (ParamsPanel.cpp l.240): the Process manager.
+  const manage = el('button', { type: 'button', className: 'icon tool', id: 'process-manage', title: t('Manage process presets') });
+  manage.setAttribute('aria-label', manage.title);
+  manage.innerHTML = '<svg viewBox="0 0 16 16" aria-hidden="true"><path d="M2,4h12M2,8h12M2,12h8"/></svg>';
+  manage.addEventListener('click', () => attempt(() => Setup.openProcessManager()));
+  row.append(label, manage, cog);
 }
 $('bed').addEventListener('change', () => attempt(() => setProject({ bed_type: $('bed').value })));
 for (const title of document.querySelectorAll('.fold-title')) {

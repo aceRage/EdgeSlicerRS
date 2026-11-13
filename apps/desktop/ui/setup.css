@@ -67,17 +67,21 @@
 /* ---- the Filament manager ---- */
 
 #fm-table { min-width: 1170px; }
-#fm-table th.check { width: 84px; padding-left: var(--space-4); }
-#fm-table th.star { width: 84px; }
-#fm-table th:nth-child(3) { width: 100px; }
-#fm-table th:nth-child(5) { width: 84px; }
-#fm-table th:nth-child(6) { width: 80px; }
-#fm-table th:nth-child(7) { width: 140px; }
+#fm-table th.col-checked { width: 84px; padding-left: var(--space-4); }
+#fm-table th.col-star { width: 84px; }
+#fm-table th.col-vendor { width: 100px; }
+#fm-table th.col-type { width: 84px; }
+#fm-table th.col-source { width: 80px; }
+#fm-table th.col-printers { width: 140px; }
+#fm-table th.col-nozzles { width: 80px; }
+#fm-table th.col-tier { width: 130px; }
 #fm-table th.num { width: 92px; }
-#fm-table th:nth-child(10) { width: 136px; }
+#fm-table th.col-lh { width: 110px; }
+#fm-table th.col-mtime { width: 136px; }
+#fm-table th.col-actions { width: 72px; }
 #fm-table td.name { font-weight: 550; }
 #fm-table td.name.inuse::after { content: ' •'; color: var(--accent); }
-#fm-table td:nth-child(3), #fm-table td:nth-child(6), #fm-table td:nth-child(7), #fm-table td:nth-child(10) { color: var(--text-2); }
+#fm-table td:not(.name):not(.check):not(.star):not(.num) { color: var(--text-2); }
 #fm-table tbody tr { cursor: default; }
 
 @media (max-width: 760px) {
@@ -135,7 +139,6 @@
 .pt-star.on, .lb-star.on { color: var(--accent); }
 .pt-star.on svg, .lb-star.on svg { fill: currentColor; }
 .lb-option .lb-star { margin-left: auto; flex: none; }
-#fm-table th.star { width: 84px; }
 #fm-table td.star { text-align: center; }
 
 .fm-chips { display: flex; align-items: center; flex-wrap: wrap; gap: 6px var(--space-2); padding: 0 var(--space-4) var(--space-3); }
@@ -146,7 +149,6 @@
 #fm-pop { width: 260px; }
 #fm-pop .check-list { max-height: 240px; overflow-y: auto; }
 
-#fm-table th.actions { width: 64px; }
 #fm-table td.actions { text-align: center; }
 .fm-act svg { width: 14px; height: 14px; fill: currentColor; }
 .fm-edit { display: flex; flex-wrap: wrap; align-items: center; gap: 2px 6px; min-width: 0; padding: 4px 0; }

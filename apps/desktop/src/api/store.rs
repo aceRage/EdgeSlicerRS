@@ -85,6 +85,11 @@ pub struct Data {
     /// filament is shown (Preset.cpp `set_visible_from_appconfig` leaves
     /// a preset visible without one).
     pub filaments: Option<BTreeSet<String>>,
+    /// The vendors' process presets hidden (the Process manager's
+    /// "Enabled" unticked), by name: the reference's
+    /// `hidden_process_presets` section (AppConfig.cpp
+    /// `SECTION_HIDDEN_PROCESSES`), each name with "true".
+    pub hidden_processes: BTreeSet<String>,
     /// What the file held that this build does not know: written back
     /// as it was.
     other: Map<String, Value>,
@@ -272,7 +277,21 @@ impl Data {
                     .collect(),
             );
         }
+        if let Some(section) = root
+            .get("hidden_process_presets")
+            .and_then(Value::as_object)
+        {
+            data.hidden_processes = section
+                .iter()
+                .filter(|(_, on)| {
+                    on.as_str()
+                        .is_some_and(|on| !on.is_empty() && on != "false")
+                })
+                .map(|(name, _)| name.clone())
+                .collect();
+        }
         for known in [
+            "hidden_process_presets",
             "filaments",
             "version",
             "app",
@@ -347,6 +366,14 @@ impl Data {
                 .map(|name| (name.clone(), json!("true")))
                 .collect();
             root.insert("filaments".into(), Value::Object(section));
+        }
+        if !self.hidden_processes.is_empty() {
+            let section: Map<String, Value> = self
+                .hidden_processes
+                .iter()
+                .map(|name| (name.clone(), json!("true")))
+                .collect();
+            root.insert("hidden_process_presets".into(), Value::Object(section));
         }
         let mut layout = Map::new();
         if let Some(width) = self.sidebar_width {

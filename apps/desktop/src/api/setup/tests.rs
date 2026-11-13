@@ -2031,3 +2031,164 @@ fn a_printer_of_ones_own_is_a_template_under_custom() {
     );
     assert_eq!(made["printer"], "Test Vendor Box Two 0.4 nozzle");
 }
+
+#[test]
+fn the_process_manager_hides_stars_sorts_and_renames() {
+    let dir = tempfile::tempdir().unwrap();
+    let session = session(dir.path());
+    ask(&session, "printer_select", json!({ "initial": true }));
+    assert_eq!(
+        super::quality_tier("0.20mm Standard @Snapmaker U1 (0.4 nozzle)"),
+        "Standard"
+    );
+    assert_eq!(super::quality_tier(".12mm Fine"), "Fine");
+    assert_eq!(super::quality_tier("My process"), "");
+    let process = |args: Value| -> Value {
+        let mut args = args;
+        args["kind"] = json!("process");
+        ask(&session, "filament_manager", args)
+    };
+    let table = process(json!({}));
+    let rows = table["rows"].as_array().unwrap().clone();
+    let on = ask(&session, "project", Value::Null)["choices"]["process"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let used = rows
+        .iter()
+        .find(|row| row["key"] == format!("s|{on}"))
+        .expect("the project's process")
+        .clone();
+    assert_eq!(used["lock"], "in_use");
+    assert_eq!(used["name"], super::favorite_key(&on, true).as_str());
+    assert!(strings(&used["nozzles"]).contains(&"0.4".to_owned()));
+    assert!(used["lh"].as_f64().is_some());
+    assert!(!used["tier"].as_str().unwrap().is_empty());
+    // Hiding a process of the printer takes it out of the list; the one in use cannot be hidden.
+    let lists = ask(
+        &session,
+        "presets",
+        json!({ "vendor": "Snapmaker", "machine": U1 }),
+    );
+    let other = strings(&lists["processes"])
+        .into_iter()
+        .find(|name| *name != on)
+        .unwrap();
+    let after = ask(
+        &session,
+        "process_enable",
+        json!({ "changes": [
+        { "key": format!("s|{other}"), "on": false },
+        { "key": format!("s|{on}"), "on": false },
+    ] }),
+    );
+    let row = |table: &Value, key: &str| {
+        table["rows"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|row| row["key"] == key)
+            .cloned()
+            .unwrap()
+    };
+    assert_eq!(row(&after, &format!("s|{other}"))["enabled"], false);
+    assert_eq!(row(&after, &format!("s|{on}"))["enabled"], true);
+    let lists = ask(
+        &session,
+        "presets",
+        json!({ "vendor": "Snapmaker", "machine": U1 }),
+    );
+    assert!(!strings(&lists["processes"]).contains(&other));
+    assert!(strings(&lists["processes"]).contains(&on));
+    let written: Value =
+        serde_json::from_str(&std::fs::read_to_string(dir.path().join("settings.json")).unwrap())
+            .unwrap();
+    assert_eq!(written["hidden_process_presets"][other.as_str()], "true");
+    ask(
+        &session,
+        "process_enable",
+        json!({ "changes": [{ "key": format!("s|{other}"), "on": true }] }),
+    );
+    // Favourites of their own, under their own key.
+    let alias = super::favorite_key(&on, true);
+    ask(
+        &session,
+        "favorite_toggle",
+        json!({ "kind": "process", "key": alias }),
+    );
+    assert_eq!(
+        ask(&session, "favorites", json!({ "kind": "process" }))["favs"],
+        json!([alias])
+    );
+    assert_eq!(ask(&session, "favorites", Value::Null)["favs"], json!([]));
+    let lists = ask(
+        &session,
+        "presets",
+        json!({ "vendor": "Snapmaker", "machine": U1 }),
+    );
+    assert!(strings(&lists["favorite_processes"]).contains(&on));
+    assert_eq!(written["app"]["favorite_process_presets"], Value::Null);
+    let written: Value =
+        serde_json::from_str(&std::fs::read_to_string(dir.path().join("settings.json")).unwrap())
+            .unwrap();
+    assert!(
+        written["app"]["favorite_process_presets"]
+            .as_str()
+            .unwrap()
+            .contains(&alias)
+    );
+    // Sorted by layer height, filtered by quality.
+    let sorted = process(json!({ "sort": { "key": "lh", "dir": 1 } }));
+    let heights: Vec<f64> = strings(&sorted["view"])
+        .iter()
+        .filter_map(|key| row(&sorted, key)["lh"].as_f64())
+        .collect();
+    assert!(heights.windows(2).all(|w| w[0] <= w[1]));
+    let tiers = strings(&sorted["values"]["tier"]);
+    let others: Vec<String> = tiers.iter().filter(|t| *t != "Standard").cloned().collect();
+    let standard = process(json!({ "filters": { "tier": { "exclude": others } } }));
+    assert!(
+        strings(&standard["view"])
+            .iter()
+            .all(|key| row(&standard, key)["tier"] == "Standard")
+    );
+    // One of one's own: "Detached" or its parent, renamed and deleted from the table.
+    ask(
+        &session,
+        "process_set",
+        json!({ "key": "wall_loops", "value": 3 }),
+    );
+    ask(
+        &session,
+        "preset_save",
+        json!({ "kind": "process", "name": "Strong walls" }),
+    );
+    let table = process(json!({}));
+    let mine = row(&table, "u|Strong walls");
+    assert_eq!(mine["tier"], alias.as_str());
+    let renamed = ask(
+        &session,
+        "filament_manager_rename",
+        json!({ "kind": "process", "key": "u|Strong walls", "name": "Stronger walls" }),
+    );
+    assert_eq!(renamed["ok"], true);
+    assert_eq!(
+        ask(&session, "project", Value::Null)["choices"]["process"],
+        "Stronger walls"
+    );
+    let asked = ask(
+        &session,
+        "filament_manager_delete",
+        json!({ "kind": "process", "key": "u|Stronger walls" }),
+    );
+    assert!(asked["ask"].as_str().unwrap().contains(&tr("The plate switches to the next visible process preset; a nozzle goes back to the plate's process.")));
+    ask(
+        &session,
+        "filament_manager_delete",
+        json!({ "kind": "process", "key": "u|Stronger walls", "confirm": true }),
+    );
+    assert_ne!(
+        ask(&session, "project", Value::Null)["choices"]["process"],
+        "Stronger walls"
+    );
+}
