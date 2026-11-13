@@ -1971,7 +1971,7 @@ fn a_tool_wanted_again_soon_is_not_cooled() {
         !text.contains("T0 ; set nozzle temperature ;cooldown"),
         "{text}"
     );
-    assert!(lines[..back].iter().any(|line| *line == "; removed M104"));
+    assert!(lines[..back].contains(&"; removed M104"));
     let preheat = at("M104 S210 T0 ; preheat T0").unwrap_or_else(|| panic!("{text}"));
     assert!(preheat < away, "{text}");
 }

@@ -2997,7 +2997,7 @@ impl Writer<'_> {
             let t1 = cross(along, start) / denominator;
             let t2 = cross(ray, start) / denominator;
             (t1 >= 0.0 && (0.0..=1.0).contains(&t2))
-                .then(|| (index, (end.0 + t1 * ray.0, end.1 + t1 * ray.1)))
+                .then_some((index, (end.0 + t1 * ray.0, end.1 + t1 * ray.1)))
         });
         let Some((out_edge, out_point)) = out else {
             return Ok(());
@@ -3014,7 +3014,7 @@ impl Writer<'_> {
             let t = cross(start, q) / denominator;
             let u = cross(start, r) / denominator;
             ((0.0..=1.0).contains(&t) && (0.0..=1.0).contains(&u))
-                .then(|| (index, (fx + t * r.0, fy + t * r.1)))
+                .then_some((index, (fx + t * r.0, fy + t * r.1)))
         });
         let mut way = Vec::new();
         match meets {
