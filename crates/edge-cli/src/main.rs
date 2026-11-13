@@ -36,6 +36,11 @@ enum Command {
     /// Arrange a project's objects as the reference's Arrange does (every
     /// plate, or one) and save it as a project file.
     Arrange(Box<ArrangeArgs>),
+    /// Auto orient a project's objects as the reference's "Auto orient"
+    /// does (every copy, or one plate's) and save it as a project file;
+    /// with --command-line, measure each object as the reference's
+    /// `--orient 1` does instead and say what it found.
+    Orient(Box<OrientArgs>),
     /// Write where each object of a project stands, plate by plate, as
     /// JSON: its outline on the bed and its transform.
     Layout {
@@ -73,6 +78,29 @@ struct ArrangeArgs {
     #[arg(long)]
     layout: Option<PathBuf>,
     /// Arrange this many times over (from the same start) and report the
+    /// fastest, to time it.
+    #[arg(long, default_value_t = 1)]
+    runs: usize,
+}
+
+#[derive(Args)]
+struct OrientArgs {
+    /// STL (binary or ASCII) or 3MF file.
+    model: PathBuf,
+    /// The project file to write.
+    #[arg(long)]
+    out: Option<PathBuf>,
+    /// Orient only the copies on this plate ("Auto orient all objects on
+    /// current plate"); every copy when left out.
+    #[arg(long)]
+    plate: Option<u32>,
+    /// Measure each object as the reference's command line does
+    /// (`--orient 1`: every copy of the object merged, its weights) and
+    /// write what each direction cost, in the reference's own lines;
+    /// nothing is turned or written.
+    #[arg(long)]
+    command_line: bool,
+    /// Orient this many times over (from the same start) and report the
     /// fastest, to time it.
     #[arg(long, default_value_t = 1)]
     runs: usize,
@@ -208,6 +236,7 @@ fn main() -> ExitCode {
         Command::Preset(args) => preset(args),
         Command::Save(args) => save(*args),
         Command::Arrange(args) => arrange(*args),
+        Command::Orient(args) => orient(*args),
         Command::Layout { project, json } => {
             edge_engine::Model::open(&project).and_then(|model| write_layout(&model, &json))
         }
@@ -427,6 +456,150 @@ fn arrange(args: ArrangeArgs) -> Result<(), Failure> {
     }
     if let Some(json) = &args.layout {
         write_layout(&model, json)?;
+    }
+    Ok(())
+}
+
+/// A row of numbers as Eigen writes one with `std::fixed` and a
+/// precision: each right-aligned to the widest, one space apart.
+fn eigen_row(values: &[f64], precision: usize) -> String {
+    let texts: Vec<String> = values
+        .iter()
+        .map(|value| format!("{value:.precision$}"))
+        .collect();
+    let width = texts.iter().map(String::len).max().unwrap_or(0);
+    texts
+        .iter()
+        .map(|text| format!("{text:>width$}"))
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
+/// The size of the box round an object's copies as they stand.
+fn object_size(object: &edge_engine::ModelObject) -> Option<[f64; 3]> {
+    let mut reach: Option<[[f64; 3]; 2]> = None;
+    for copy in object.copies() {
+        let placing = copy.world();
+        for part in object.shape().parts() {
+            if part.kind != PartKind::Normal {
+                continue;
+            }
+            let placed = part.transform.then(&placing);
+            for vertex in &part.mesh.vertices {
+                let p = placed.apply(vertex.map(f64::from));
+                let [low, high] = reach.get_or_insert([p, p]);
+                for axis in 0..3 {
+                    low[axis] = low[axis].min(p[axis]);
+                    high[axis] = high[axis].max(p[axis]);
+                }
+            }
+        }
+    }
+    reach.map(|[low, high]| std::array::from_fn(|axis| high[axis] - low[axis]))
+}
+
+/// The size of the box round an object's copies turned by `rotation`
+/// (a matrix applied to a column) about the origin.
+fn object_size_turned(
+    object: &edge_engine::ModelObject,
+    rotation: &[[f64; 3]; 3],
+) -> Option<[f64; 3]> {
+    let mut reach: Option<[[f64; 3]; 2]> = None;
+    for copy in object.copies() {
+        let placing = copy.world();
+        for part in object.shape().parts() {
+            if part.kind != PartKind::Normal {
+                continue;
+            }
+            let placed = part.transform.then(&placing);
+            for vertex in &part.mesh.vertices {
+                let p = placed.apply(vertex.map(f64::from));
+                let p: [f64; 3] = std::array::from_fn(|r| {
+                    rotation[r][0] * p[0] + rotation[r][1] * p[1] + rotation[r][2] * p[2]
+                });
+                let [low, high] = reach.get_or_insert([p, p]);
+                for axis in 0..3 {
+                    low[axis] = low[axis].min(p[axis]);
+                    high[axis] = high[axis].max(p[axis]);
+                }
+            }
+        }
+    }
+    reach.map(|[low, high]| std::array::from_fn(|axis| high[axis] - low[axis]))
+}
+
+/// Orients a project's objects and saves it, or with --command-line says
+/// what the reference's command line would find.
+fn orient(args: OrientArgs) -> Result<(), Failure> {
+    let opened = edge_engine::Model::open(&args.model)?;
+    if args.command_line {
+        for object in opened.objects() {
+            let size = object_size(object).unwrap_or_default();
+            println!("object {}: size {}", object.name(), eigen_row(&size, 3));
+            let Some(found) = object.orientation_as_command_line() else {
+                println!("  nothing to orient");
+                continue;
+            };
+            for tried in &found.tried {
+                let c = tried.costs;
+                println!(
+                    "orientation:{}, cost:{:.1},\t{:.1},\t{:.1},\t{:.1},\t{:.1},\t{:.1},\t{:.1}",
+                    eigen_row(&tried.up.map(f64::from), 4),
+                    c.overhang,
+                    c.bottom,
+                    c.bottom_hull,
+                    c.contour,
+                    c.area_laf,
+                    c.area_projected,
+                    c.unprintability
+                );
+            }
+            println!("best:{}", eigen_row(&found.up, 6));
+            let turned = object_size_turned(object, &found.rotation).unwrap_or_default();
+            println!("size turned {}", eigen_row(&turned, 3));
+            for row in &found.rotation {
+                println!("  {}", eigen_row(row, 6));
+            }
+        }
+        return Ok(());
+    }
+    let bed = bed_of(&opened);
+    let scope = match args.plate {
+        Some(plate) => edge_engine::OrientScope::Plate(plate),
+        None => edge_engine::OrientScope::Selected(&[]),
+    };
+    let mut best: Option<(
+        std::time::Duration,
+        edge_engine::Model,
+        edge_engine::Oriented,
+    )> = None;
+    for _ in 0..args.runs.max(1) {
+        let mut model = opened.clone();
+        let start = Instant::now();
+        let oriented = model.orient(bed.as_ref(), None, scope)?;
+        let took = start.elapsed();
+        if best.as_ref().is_none_or(|(fastest, ..)| took < *fastest) {
+            best = Some((took, model, oriented));
+        }
+    }
+    let (took, model, oriented) = best.expect("oriented at least once");
+    println!(
+        "oriented {} copies, turned {}, in {:.1} ms",
+        oriented.examined.len(),
+        oriented.turned.len(),
+        took.as_secs_f64() * 1000.0
+    );
+    for object in model.objects() {
+        let size = object_size(object).unwrap_or_default();
+        println!("  {}: size {}", object.name(), eigen_row(&size, 3));
+    }
+    if let Some(out) = &args.out {
+        let saving = if model.settings().is_some() {
+            edge_engine::Saving::Own
+        } else {
+            edge_engine::Saving::None
+        };
+        model.save(out, &saving, bed.as_ref())?;
     }
     Ok(())
 }

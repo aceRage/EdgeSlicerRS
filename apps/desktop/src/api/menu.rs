@@ -1337,12 +1337,12 @@ fn sections(mac: bool) -> Vec<(&'static str, Vec<Shortcut>)> {
                 row(
                     K(plain("Q")),
                     "Auto orients selected objects or all objects. If there are selected objects, it just orients the selected ones. Otherwise, it will orient all objects in the current project.",
-                    false,
+                    true,
                 ),
                 row(
                     Shift("Q"),
                     "Auto orients all objects on the active plate.",
-                    false,
+                    true,
                 ),
                 row(Shift("Tab"), "Collapse/Expand the sidebar", false),
                 row(Command("Any arrow"), "Movement in camera space", false),

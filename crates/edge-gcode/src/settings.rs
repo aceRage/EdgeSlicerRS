@@ -303,6 +303,12 @@ pub struct PrintSettings {
     /// reference's tower or tool change does (WipeTower2.cpp
     /// `toolchange_Unload`, GCode.cpp `set_extruder`).
     pub single_nozzle: bool,
+    /// A tool that is not rammed is taken over the prime tower before it
+    /// is changed (`tool_change_on_wipe_tower`); otherwise, on a printer
+    /// of a nozzle for each filament, it is changed where it is, except
+    /// first thing on a layer (GCode.cpp `append_tcr2`,
+    /// `should_travel_to_tower`).
+    pub change_on_tower: bool,
     /// An Elegoo printer, whose `M6211` changes filament and purges
     /// (`printer_model`).
     pub elegoo: bool,
@@ -494,6 +500,7 @@ impl Default for PrintSettings {
             preheat_time: 30.0,
             tool_change_temperature_wait: true,
             single_nozzle: true,
+            change_on_tower: false,
             elegoo: false,
             prime_tower: false,
             bambu_tower: false,
@@ -700,6 +707,17 @@ impl PrintSettings {
             };
         let nozzle_diameter = number("nozzle_diameter", defaults.nozzle_diameter)?;
         let travel_speed = number("travel_speed", defaults.travel_speed)?;
+        // The first layer's travel speed, a speed or a share of
+        // `travel_speed` (GCodeWriter.cpp `active_travel_speed`), is not
+        // followed yet: said where it differs from the speed used.
+        let first_travel =
+            listed_share("initial_layer_travel_speed", FloatOrPercent::Percent(100.0))?
+                .resolve(travel_speed);
+        if (first_travel - travel_speed).abs() > 1e-6 {
+            unsupported.push(format!(
+                "initial_layer_travel_speed: the first layer travels at travel_speed ({travel_speed} mm/s), not {first_travel} mm/s"
+            ));
+        }
         // The bed is the box around the corners of `printable_area`, each "XxY".
         let bed = settings.texts("printable_area").and_then(|corners| {
             let mut extent: Option<[f64; 4]> = None;
@@ -1054,6 +1072,9 @@ impl PrintSettings {
             single_nozzle: settings
                 .flag("single_extruder_multi_material")?
                 .unwrap_or(defaults.single_nozzle),
+            change_on_tower: settings
+                .flag("tool_change_on_wipe_tower")?
+                .unwrap_or(defaults.change_on_tower),
             prime_tower: settings.flag("enable_prime_tower")?.unwrap_or(false),
             bambu_tower: settings
                 .text("printer_model")
@@ -1335,6 +1356,13 @@ fn variables(
     let mut variables = Variables::default();
     for (key, value) in settings.iter() {
         match value {
+            // A filament's option is a list in the reference, one entry
+            // for each filament, even where only its default stands for
+            // all of them: a template may ask for any filament's
+            // (Prusa's MMU3 start G-code, `required_nozzle_HRC[4]`).
+            Setting::One(text) if edge_config::filaments::is_per_filament(key) => {
+                variables.set_list(key, vec![Value::text(text)])
+            }
             Setting::One(text) => variables.set(key, Value::text(text)),
             Setting::Many(texts) => {
                 variables.set_list(key, texts.iter().map(Value::text).collect())
@@ -1651,6 +1679,51 @@ fn filament_retraction_overrides(settings: &Settings, variables: &mut Variables)
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The first layer's travel speed is not followed; where it differs
+    /// from the travel speed, as a speed or a share of it, that is said.
+    #[test]
+    fn a_first_layer_travel_speed_not_followed_is_said() {
+        let notes = |json: &str| {
+            PrintSettings::from_settings(&Settings::from_json(json).unwrap())
+                .unwrap()
+                .unsupported
+                .into_iter()
+                .filter(|note| note.starts_with("initial_layer_travel_speed"))
+                .count()
+        };
+        assert_eq!(notes(r#"{"travel_speed": ["300"]}"#), 0);
+        assert_eq!(
+            notes(r#"{"travel_speed": ["300"], "initial_layer_travel_speed": ["100%"]}"#),
+            0
+        );
+        assert_eq!(
+            notes(r#"{"travel_speed": ["300"], "initial_layer_travel_speed": ["300"]}"#),
+            0
+        );
+        assert_eq!(
+            notes(r#"{"travel_speed": ["300"], "initial_layer_travel_speed": ["50%"]}"#),
+            1
+        );
+        assert_eq!(
+            notes(r#"{"travel_speed": ["300"], "initial_layer_travel_speed": ["150"]}"#),
+            1
+        );
+    }
+
+    /// A filament's option that only its default gives is still a list,
+    /// so a template may ask for any filament's entry.
+    #[test]
+    fn a_filament_option_left_at_its_default_is_a_list() {
+        let settings =
+            Settings::from_json(r#"{"required_nozzle_HRC": "0", "layer_height": "0.2"}"#).unwrap();
+        let variables = variables(&settings, None, None, None, None);
+        assert_eq!(
+            variables.list("required_nozzle_HRC").map(<[Value]>::len),
+            Some(1)
+        );
+        assert!(variables.list("layer_height").is_none());
+    }
 
     #[test]
     fn absent_settings_keep_reference_defaults() {

@@ -211,43 +211,57 @@ fn a_filament_preset_serves_every_filament_of_the_model() {
     assert_eq!(job.settings.texts("nozzle_temperature").unwrap().len(), 1);
 }
 
+/// Where the U1 of `mcbrim_test.3mf` (its filaments not rammed) puts each
+/// tool away: with "Tool change on wipe tower" set, over the prime tower,
+/// so that it waits there and not over the part while the next heats; as
+/// the project has it, unset, where the nozzle is, except first thing on
+/// a layer (GCode.cpp `append_tcr2`, `should_travel_to_tower`).
 #[test]
-fn a_tool_is_changed_over_the_prime_tower() {
-    let opened = edge_engine::open(&reference("tests/mcbrim_test.3mf"), Some(2)).unwrap();
-    let job = edge_engine::prepare(
-        opened.place().unwrap(),
-        &Chosen::default(),
-        &Overrides::default(),
-    )
-    .unwrap();
-    let sliced = edge_engine::slice(job, &Unwatched).unwrap();
-    let [min_x, min_y, max_x, max_y] = sliced.tower.footprint.expect("a tower");
-    let text = String::from_utf8(sliced.gcode("now").unwrap().text).unwrap();
-    let lines: Vec<&str> = text.lines().collect();
-    let word = |line: &str, letter: char| -> Option<f64> {
-        line.split_whitespace()
-            .find_map(|word| word.strip_prefix(letter)?.parse().ok())
-    };
-    let mut changes = 0;
-    for (at, _) in lines
-        .iter()
-        .enumerate()
-        .filter(|(_, line)| line.ends_with(";cooldown"))
-    {
-        // Wherever the nozzle last went before it was put away.
-        let (x, y) = lines[..at]
+fn a_tool_is_changed_over_the_prime_tower_where_that_is_set() {
+    let put_away = |set: &str| {
+        let opened = edge_engine::open(&reference("tests/mcbrim_test.3mf"), Some(2)).unwrap();
+        let overrides = Overrides {
+            settings: edge_config::Settings::from_json(set).unwrap(),
+            ..Overrides::default()
+        };
+        let job =
+            edge_engine::prepare(opened.place().unwrap(), &Chosen::default(), &overrides).unwrap();
+        let sliced = edge_engine::slice(job, &Unwatched).unwrap();
+        let [min_x, min_y, max_x, max_y] = sliced.tower.footprint.expect("a tower");
+        let text = String::from_utf8(sliced.gcode("now").unwrap().text).unwrap();
+        let lines: Vec<&str> = text.lines().collect();
+        let word = |line: &str, letter: char| -> Option<f64> {
+            line.split_whitespace()
+                .find_map(|word| word.strip_prefix(letter)?.parse().ok())
+        };
+        // For each change, whether the nozzle was last over the tower.
+        lines
             .iter()
-            .rev()
-            .filter(|line| ["G1 ", "G2 ", "G3 "].iter().any(|g| line.starts_with(g)))
-            .find_map(|line| Some((word(line, 'X')?, word(line, 'Y')?)))
-            .expect("a move before the change");
-        assert!(
-            (min_x..=max_x).contains(&x) && (min_y..=max_y).contains(&y),
-            "tool put away at {x} x {y}, off the tower"
-        );
-        changes += 1;
-    }
-    assert!(changes > 20, "{changes} changes");
+            .enumerate()
+            .filter(|(_, line)| line.ends_with(";cooldown"))
+            .map(|(at, _)| {
+                let (x, y) = lines[..at]
+                    .iter()
+                    .rev()
+                    .filter(|line| ["G1 ", "G2 ", "G3 "].iter().any(|g| line.starts_with(g)))
+                    .find_map(|line| Some((word(line, 'X')?, word(line, 'Y')?)))
+                    .expect("a move before the change");
+                (min_x..=max_x).contains(&x) && (min_y..=max_y).contains(&y)
+            })
+            .collect::<Vec<bool>>()
+    };
+    let set = put_away(r#"{"tool_change_on_wipe_tower": "1"}"#);
+    assert!(set.len() > 20, "{} changes", set.len());
+    assert!(
+        set.iter().all(|over| *over),
+        "a tool put away off the tower"
+    );
+    let unset = put_away("{}");
+    assert_eq!(unset.len(), set.len());
+    assert!(
+        unset.iter().filter(|over| !**over).count() > set.len() / 2,
+        "most tools put away where they are"
+    );
 }
 
 #[test]

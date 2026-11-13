@@ -15,6 +15,7 @@
   const ICONS = {
     remove: 'M2.5,4.5h11M6,4.5v-2h4v2M4,4.5l1,9.5h6l1-9.5M6.8,7v4.5M9.2,7v4.5',
     arrange: 'M1.5,1.5h5v5h-5ZM9.5,1.5h5v5h-5ZM1.5,9.5h5v5h-5ZM9.5,9.5h5v5h-5Z',
+    orient: 'M2,14.5h12M4.5,14.5v-5h7v5M2.5,7a5.5,5.5,0,0,1,10.5-3M13.5,1.5v3h-3',
     locked: 'M3.5,7.5h9v7h-9ZM5.5,7.5v-2.5a2.5,2.5,0,0,1,5,0v2.5',
     unlocked: 'M3.5,7.5h9v7h-9ZM5.5,7.5v-2.5a2.5,2.5,0,0,1,5,0',
     settings: 'M2,4.5h7M12,4.5h2M2,11.5h2M7,11.5h7M9,2.5v4h3v-4ZM4,9.5v4h3v-4Z',
@@ -94,6 +95,7 @@
         [t('Select All'), () => this.host.stage.select(on), { disabled: !on.length, title: t('select all objects on current plate') }],
         [t('Delete All'), () => this.commit({ op: 'delete', copies: on }), { disabled: !on.length, title: t('delete all objects on current plate') }],
         [t('Arrange'), () => this.commit({ op: 'arrange', plate: id }), { disabled: !on.length, title: t('arrange current plate') }],
+        [t('Auto Rotate'), () => this.commit({ op: 'orient', plate: id }), { disabled: !on.length, title: t('auto rotate current plate') }],
         [t('Delete Plate'), () => this.commit({ op: 'delete_plate', plate: id }), { disabled: count < 2, title: t('Remove the selected plate') }],
         null,
         [plate.locked ? t('Unlock') : t('Lock'), () => this.commit({ op: 'plate_lock', plate: id, value: !plate.locked })],
@@ -126,6 +128,7 @@
       };
       this.tools = {
         remove: tool('remove', t('Remove current plate (if not last one)'), ICONS.remove, (id) => this.commit({ op: 'delete_plate', plate: id })),
+        orient: tool('orient', t('Auto orient objects on current plate'), ICONS.orient, (id) => this.commit({ op: 'orient', plate: id })),
         arrange: tool('arrange', t('Arrange objects on current plate'), ICONS.arrange, (id) => this.commit({ op: 'arrange', plate: id })),
         lock: tool('lock', t('Lock current plate'), ICONS.unlocked, (id) => {
           const plate = this.listed(id);
@@ -137,7 +140,7 @@
       };
       const tools = this.tools;
       this.bar = el('div', { className: 'toolbar vertical plate-tools', id: 'plate-tools', hidden: true },
-        tools.remove, tools.arrange, tools.lock, tools.settings, tools.name, tools.front);
+        tools.remove, tools.orient, tools.arrange, tools.lock, tools.settings, tools.name, tools.front);
       this.bar.setAttribute('role', 'toolbar');
       this.bar.setAttribute('aria-label', t('Plate'));
       this.host.stageNode.append(this.bar);
@@ -155,6 +158,7 @@
       const busy = !this.usable();
       tools.remove.disabled = busy || project.plates.length < 2;
       tools.arrange.disabled = busy || !this.copiesOn(plate.id).length;
+      tools.orient.disabled = busy || !this.copiesOn(plate.id).length;
       tools.lock.disabled = busy;
       tools.settings.disabled = busy;
       tools.name.disabled = busy;

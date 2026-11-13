@@ -2190,3 +2190,161 @@ fn a_mesh_boolean_is_one_step_selects_its_result_and_is_saved_and_sliced() {
         redone["scene"]["objects"][0]["triangles"]
     );
 }
+
+/// A 30 × 20 × 10 box turned 27° about X and −41° about Y, as an STL.
+fn tilted_box(path: &Path) -> String {
+    let (sa, ca) = 27f64.to_radians().sin_cos();
+    let (sb, cb) = (-41f64).to_radians().sin_cos();
+    let corner = |i: usize| -> [f32; 3] {
+        let [x, y, z]: [f64; 3] = std::array::from_fn(|axis| {
+            if i >> axis & 1 == 1 {
+                [30.0, 20.0, 10.0][axis]
+            } else {
+                0.0
+            }
+        });
+        let (y, z) = (ca * y - sa * z, sa * y + ca * z);
+        let (x, z) = (cb * x + sb * z, -sb * x + cb * z);
+        [x as f32, y as f32, z as f32 + 40.0]
+    };
+    let faces = [
+        [0, 2, 3],
+        [0, 3, 1],
+        [4, 5, 7],
+        [4, 7, 6],
+        [0, 1, 5],
+        [0, 5, 4],
+        [2, 6, 7],
+        [2, 7, 3],
+        [0, 4, 6],
+        [0, 6, 2],
+        [1, 3, 7],
+        [1, 7, 5],
+    ];
+    let mut bytes = vec![0u8; 80];
+    bytes.extend_from_slice(&(faces.len() as u32).to_le_bytes());
+    for face in faces {
+        bytes.extend_from_slice(&[0u8; 12]);
+        for at in face {
+            for value in corner(at) {
+                bytes.extend_from_slice(&value.to_le_bytes());
+            }
+        }
+        bytes.extend_from_slice(&[0u8; 2]);
+    }
+    std::fs::write(path, bytes).unwrap();
+    path.to_string_lossy().into_owned()
+}
+
+#[test]
+fn an_object_is_oriented_in_one_step_onto_the_bed_and_undone_byte_for_byte() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = tilted_box(&dir.path().join("tilted.stl"));
+    let session = Arc::new(Session::new(None));
+    let project = stl_project(&session, &path);
+    // Named, so that a save does not name it after the file it goes to.
+    let object = ask(&session, "scene", json!({}))["objects"][0]["id"].clone();
+    edit(
+        &session,
+        json!({ "op": "rename", "object": object, "name": "tilted" }),
+    );
+    let save = |name: &str| -> Vec<u8> {
+        let path = dir.path().join(name);
+        let saved = ask(
+            &session,
+            "project_save",
+            json!({ "project": project, "path": path.to_string_lossy(), "accept": true }),
+        );
+        assert_eq!(saved["saved"], true, "{saved}");
+        std::fs::read(path).unwrap()
+    };
+    let before = save("before.3mf");
+    let shown = ask(&session, "scene", json!({}))["placings"][0].clone();
+    sliced(&session, project, None);
+
+    // Q with nothing selected: everything.
+    let answer = edit(&session, json!({ "op": "orient", "copies": [] }));
+    assert_eq!(answer["done"], "Orient");
+    assert_eq!(answer["project"]["sliced"], false);
+    let reach = &answer["scene"]["placings"][0]["box"];
+    let (low, high) = (numbers(&reach[0]), numbers(&reach[1]));
+    assert_eq!(low[2], 0.0, "on the bed");
+    assert!(
+        (high[2] - low[2] - 10.0).abs() < 1e-3,
+        "lying flat: {reach}"
+    );
+    assert_eq!(answer["scene"]["placings"][0]["plate"], 1);
+    // Sliced as it now lies.
+    sliced(&session, project, None);
+    let path_box = ask(&session, "toolpath", json!({}))["box"].clone();
+    assert!((numbers(&path_box[1])[2] - 10.0).abs() < 0.1, "{path_box}");
+
+    // Oriented again, nothing turns: no step.
+    let again = edit(&session, json!({ "op": "orient", "copies": [shown["id"]] }));
+    assert_eq!(again["done"], Value::Null);
+    assert_eq!(again["project"]["edit"]["undo"], "Orient");
+
+    // One undo: where it was, to the byte.
+    let undone = ask(&session, "undo", json!({}));
+    assert_eq!(undone["done"], "Orient");
+    assert_eq!(undone["scene"]["placings"][0]["matrix"], shown["matrix"]);
+    assert_eq!(save("after.3mf"), before);
+}
+
+#[test]
+fn orienting_a_plate_lets_go_of_its_slice_only_and_a_locked_one_is_refused() {
+    let session = Arc::new(Session::new(None));
+    let project = open(&session, THREE_PLATES);
+    sliced(&session, project, Some(1));
+    let plates = |detail: &Value| -> Vec<bool> {
+        detail["plates"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|plate| plate["sliced"] == true)
+            .collect()
+    };
+    // Plate 3's arms stand on their flat backs, which are flat to an f32:
+    // they turn by a hair, as the reference turns them. Plate 1 keeps its
+    // slice.
+    let answer = edit(&session, json!({ "op": "orient", "plate": 3 }));
+    assert_eq!(answer["done"], "Orient");
+    assert_eq!(plates(&answer["project"]), [true, false, false]);
+    for placing in answer["scene"]["placings"].as_array().unwrap() {
+        assert!(numbers(&placing["box"][0])[2].abs() < 1e-9);
+    }
+
+    // Locked: the plate alone is refused, and so is what is selected on it.
+    edit(
+        &session,
+        json!({ "op": "plate_lock", "plate": 2, "value": true }),
+    );
+    assert_eq!(
+        refused(
+            &session,
+            "scene_edit",
+            json!({ "op": "orient", "plate": 2 })
+        ),
+        "This plate is locked.\nCannot auto-orient on this plate."
+    );
+    let on_two = ask(&session, "scene", json!({}))["placings"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|placing| placing["plate"] == 2)
+        .unwrap()["id"]
+        .clone();
+    assert_eq!(
+        refused(
+            &session,
+            "scene_edit",
+            json!({ "op": "orient", "copies": [on_two] })
+        ),
+        "All the selected objects are on a locked plate.\nCannot auto-orient these objects."
+    );
+    // Nothing changed by either: the last step is still the lock.
+    assert_eq!(
+        ask(&session, "project", json!({}))["edit"]["undo"],
+        "lock partplate"
+    );
+}
