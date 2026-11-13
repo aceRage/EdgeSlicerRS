@@ -91,6 +91,10 @@ pub struct Layer {
     pub bounds: Option<[f64; 4]>,
     /// Every extruding move, kept only for the layer asked for.
     pub segments: Vec<Segment>,
+    /// The lowest and highest the nozzle stood while it laid the prime
+    /// tower on this layer; none where it laid none. Below the layer's
+    /// own `z` where the tower leaves out the layers with no tool change.
+    pub tower: Option<[f64; 2]>,
 }
 
 #[derive(Clone, Debug, Default, PartialEq)]
@@ -147,6 +151,9 @@ pub fn parse(text: &str, keep_segments: Option<usize>) -> Print {
     // width in mm, acceleration in mm/s² and the part fan from 0 to 255.
     let (mut feedrate, mut width, mut acceleration, mut fan) = (0.0f64, 0.0f64, 0.0f64, 0.0f64);
 
+    // The nozzle's height, and whether moves are given relative to where
+    // it is (`G91`, as a change G-code may lift the nozzle).
+    let (mut z, mut relative_xyz) = (0.0f64, false);
     let mut in_start_block = false;
     for line in text.lines() {
         let line = line.trim();
@@ -232,12 +239,17 @@ pub fn parse(text: &str, keep_segments: Option<usize>) -> Print {
             }
             "M82" => relative_e = false,
             "M83" => relative_e = true,
+            "G90" => relative_xyz = false,
+            "G91" => relative_xyz = true,
             "G92" => {
                 if let Some(e) = word('E') {
                     last_e = e;
                 }
             }
             "G0" | "G1" | "G2" | "G3" => {
+                if let Some(to) = word('Z') {
+                    z = if relative_xyz { z + to } else { to };
+                }
                 let target = [
                     word('X').unwrap_or(position[0]),
                     word('Y').unwrap_or(position[1]),
@@ -295,6 +307,11 @@ pub fn parse(text: &str, keep_segments: Option<usize>) -> Print {
                         None => print.before_layers.add(stat),
                         Some(layer) => {
                             layer.features.entry(feature.clone()).or_default().add(stat);
+                            if feature == "Prime tower" {
+                                let [low, high] = layer.tower.get_or_insert([z, z]);
+                                *low = low.min(z);
+                                *high = high.max(z);
+                            }
                             let b = layer.bounds.get_or_insert([
                                 f64::MAX,
                                 f64::MAX,

@@ -635,6 +635,78 @@ fn report(project: &Path, times: &Times, reference: &Print, ours: &Print) -> Str
         }
     }
 
+    // The prime tower: on how many layers each lays it, how tall it
+    // stands, and at what height each of its layers is laid, which is
+    // below the print's where the tower leaves out layers with no tool
+    // change.
+    let towered = |print: &Print| -> Vec<(usize, [f64; 2])> {
+        (print.layers.iter().enumerate())
+            .filter_map(|(index, layer)| layer.tower.map(|heights| (index, heights)))
+            .collect()
+    };
+    let (rt, ot) = (towered(reference), towered(ours));
+    if !rt.is_empty() || !ot.is_empty() {
+        let top = |laid: &[(usize, [f64; 2])]| {
+            laid.iter().map(|(_, [_, high])| *high).fold(0.0, f64::max)
+        };
+        writeln!(
+            out,
+            "
+prime tower: laid on {} / {} layers, up to {:.3} / {:.3} mm",
+            rt.len(),
+            ot.len(),
+            top(&rt),
+            top(&ot)
+        )
+        .unwrap();
+        let same =
+            |a: [f64; 2], b: [f64; 2]| (a[0] - b[0]).abs() < 1e-3 && (a[1] - b[1]).abs() < 1e-3;
+        let differing: Vec<String> = rt
+            .iter()
+            .map(|(index, heights)| (*index, Some(*heights)))
+            .chain(
+                ot.iter()
+                    .filter(|(index, _)| !rt.iter().any(|(at, _)| at == index))
+                    .map(|(index, _)| (*index, None)),
+            )
+            .filter_map(|(index, reference)| {
+                let here = ot
+                    .iter()
+                    .find(|(at, _)| *at == index)
+                    .map(|(_, heights)| *heights);
+                let shown = |heights: Option<[f64; 2]>| match heights {
+                    Some([low, high]) if (high - low).abs() < 1e-3 => format!("{low:.3}"),
+                    Some([low, high]) => format!("{low:.3}-{high:.3}"),
+                    None => "none".to_owned(),
+                };
+                match (reference, here) {
+                    (Some(a), Some(b)) if same(a, b) => None,
+                    _ => Some(format!(
+                        "layer {index}: {} / {}",
+                        shown(reference),
+                        shown(here)
+                    )),
+                }
+            })
+            .collect();
+        if differing.is_empty() {
+            writeln!(out, "  each of its layers laid at the same height").unwrap();
+        } else {
+            writeln!(
+                out,
+                "  {} of its layers laid at another height or on one side only, first {}",
+                differing.len(),
+                differing
+                    .iter()
+                    .take(4)
+                    .cloned()
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            )
+            .unwrap();
+        }
+    }
+
     // Layer by layer, where the two prints have the same layers.
     let pairs: Vec<(usize, &Layer, &Layer)> = reference
         .layers

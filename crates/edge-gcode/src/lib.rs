@@ -134,6 +134,20 @@ pub struct Layer<'a> {
     pub wipe: Option<TowerWipe<'a>>,
     /// Prime tower lines, printed before anything else.
     pub tower: &'a [ExtrusionPath],
+    /// Where the prime tower stands lower than the layer, its layers with
+    /// no tool change left out (`wipe_tower_no_sparse_layers`): the top of
+    /// the tower's own layer, which `ram`, `wipe` and `tower` are laid at.
+    /// The nozzle is taken over the tower at the layer's height, goes
+    /// straight down to it, back up before the change G-code and down
+    /// again after, and straight up before it leaves, so that nothing it
+    /// does down there crosses the print (GCode.cpp `append_tcr`,
+    /// `append_tcr2`). None, or the layer's own top, for a tower laid at
+    /// the layer.
+    pub tower_z: Option<f64>,
+    /// Whether `tower` is laid at the first layer's speed above the first
+    /// layer: the tower's first layer, with the layers below it left out
+    /// (WipeTower2.cpp `finish_layer`).
+    pub tower_first: bool,
     /// Loops laid before the part on this layer, in order: skirt and brim.
     pub around: &'a [ExtrusionLoop],
     /// Support lines, printed before the part so it has them to rest on.
@@ -1223,6 +1237,12 @@ struct State {
     primed: bool,
     /// A lift decided on at retraction, to be made by the travel that follows.
     pending_lift: Option<Lift>,
+    /// Down on a prime tower that stands lower than the layer
+    /// ([`Layer::tower_z`]): the layer's height, to go back up to.
+    lowered: Option<f64>,
+    /// Whether the tower's lines go at the first layer's speed
+    /// ([`Layer::tower_first`]).
+    tower_first: bool,
     /// What was just printed, in the order the wipe retraces it.
     wipe_path: Vec<Point2>,
     /// Speed of the line just printed, before any slowdown, in mm/s.
@@ -1357,7 +1377,7 @@ impl Writer<'_> {
                 let tool = line.trim().strip_prefix('T')?.parse::<i64>().ok()?;
                 (0..255).contains(&tool).then_some(tool)
             });
-            self.swap(from, self.state.tool, None, 0.0)?;
+            self.swap(from, self.state.tool, None, 0.0, 0.0)?;
             // The reference leaves this marker of its own here.
             writeln!(self.out, ";_FORCE_RESUME_FAN_SPEED")?;
             self.announce(self.state.tool, true)?;
@@ -1457,6 +1477,7 @@ impl Writer<'_> {
         to: usize,
         layer: Option<usize>,
         z: f64,
+        toolchange_z: f64,
     ) -> Result<(), GcodeError> {
         let first_layer = layer.is_none_or(|layer| layer == 0);
         let old = from.and_then(|tool| usize::try_from(tool).ok());
@@ -1495,7 +1516,7 @@ impl Writer<'_> {
             Value::Int(layer.map_or(-1, |layer| layer as i64)),
         );
         v.set("layer_z", Value::Float(z));
-        v.set("toolchange_z", Value::Float(z));
+        v.set("toolchange_z", Value::Float(toolchange_z));
         v.set("relative_e_axis", Value::Bool(true));
         v.set("toolchange_count", Value::Int(count));
         v.set("fan_speed", Value::Int(0));
@@ -1666,6 +1687,7 @@ impl Writer<'_> {
     /// there first, so that it waits over the tower, not over the part,
     /// while the new one comes up to temperature (WipeTower2.cpp
     /// `tool_change`, which unloads on the tower).
+    #[allow(clippy::too_many_arguments)]
     fn change_tool(
         &mut self,
         to: usize,
@@ -1674,6 +1696,7 @@ impl Writer<'_> {
         cursor: usize,
         over: Option<Point2>,
         ram: Option<Ram<'_>>,
+        low: Option<f64>,
     ) -> Result<(), GcodeError> {
         let from = self.state.tool;
         let s = self.settings;
@@ -1743,6 +1766,11 @@ impl Writer<'_> {
                         ..self.motion(line.role, &line.flow, self.state.first_layer)
                     };
                     self.travel(line.points[0], false, None)?;
+                    if index == 0
+                        && let Some(tower) = low
+                    {
+                        self.lower_to_tower(tower)?;
+                    }
                     // Pressure advance is set for the ram once the nozzle
                     // is at its start (WipeTower2.cpp `toolchange_Unload`,
                     // `disable_linear_advance_value`).
@@ -1774,6 +1802,10 @@ impl Writer<'_> {
                 }
                 let length = self.state.position.map_or(0.0, |at| distance(at, ram.park));
                 self.go(ram.park, None, RAM_PARK_SPEED, length)?;
+                // Back up to the layer before the change G-code, which
+                // may take the head anywhere (GCode.cpp `append_tcr2`,
+                // "Restore layer Z before toolchange").
+                self.leave_tower()?;
             }
             // Bambu's tower changes filament where the nozzle is, and
             // goes to the tower after (WipeTower.cpp, GCode.cpp
@@ -1829,7 +1861,13 @@ impl Writer<'_> {
         // and timed, when the tool is told to warm up ahead of it.
         self.out.extend_from_slice(CHANGE_MARK);
         writeln!(self.out, "T{to} S{:.0}", self.temperature(to, layer == 0))?;
-        self.swap(Some(from as i64), to, Some(layer), z)?;
+        // Bambu's tower gives the change G-code the height of the tower's
+        // layer (GCode.cpp `append_tcr`), the other that of the print's.
+        let toolchange_z = match low {
+            Some(tower) if s.bambu_tower => tower,
+            _ => z,
+        };
+        self.swap(Some(from as i64), to, Some(layer), z, toolchange_z)?;
         self.state.flushed.select(to, self.all);
         self.state.parked[from] = (self.state.retracted, self.state.retracted_length);
         (self.state.retracted, self.state.retracted_length) = self.state.parked[to];
@@ -2077,6 +2115,9 @@ impl Writer<'_> {
             if towered {
                 self.state.routing.kind = Kind::Outside;
             }
+            // Where the tower stands lower than the layer, what is laid
+            // on it is laid down there.
+            let low = layer.tower_z.filter(|tower| *tower < layer.z - 1e-6);
             if layer.filament != self.state.tool {
                 let over = (layer.wipe.map(|wipe| wipe.start)).or_else(|| {
                     layer
@@ -2094,6 +2135,7 @@ impl Writer<'_> {
                     cursor + offset,
                     over,
                     layer.ram,
+                    low,
                 )?;
                 // The new tool comes in through the gap in the tower's wall.
                 for point in layer.enter {
@@ -2101,14 +2143,18 @@ impl Writer<'_> {
                 }
             }
             if let Some(wipe) = layer.wipe {
-                self.tower_wipe(wipe)?;
+                self.tower_wipe(wipe, low)?;
             }
             self.inner_wall = layer
                 .loops
                 .iter()
                 .find(|wall| wall.role == Role::Perimeter)
                 .map(|wall| wall.flow);
-            self.tower_lines(layer.tower)?;
+            self.state.tower_first = layer.tower_first;
+            self.tower_lines(layer.tower, low)?;
+            self.state.tower_first = false;
+            // Straight up off the tower before going anywhere.
+            self.leave_tower()?;
             self.state.routing.outside_once |= towered;
             // So are the moves to and between skirt and brim (GCode.cpp
             // `use_external_mp` round each). From the first layer's
@@ -2692,7 +2738,7 @@ impl Writer<'_> {
 
     /// The prime tower's lines, nearest end first: they are given in the
     /// order they are meant to go down, and the next is always the nearest.
-    fn tower_lines(&mut self, paths: &[ExtrusionPath]) -> io::Result<()> {
+    fn tower_lines(&mut self, paths: &[ExtrusionPath], low: Option<f64>) -> io::Result<()> {
         let mut remaining: Vec<&ExtrusionPath> =
             paths.iter().filter(|path| path.points.len() >= 2).collect();
         while !remaining.is_empty() {
@@ -2708,6 +2754,10 @@ impl Writer<'_> {
             if reversed {
                 points.reverse();
             }
+            if let Some(tower) = low.filter(|_| self.state.lowered.is_none()) {
+                self.travel(points[0], false, Some(path.role))?;
+                self.lower_to_tower(tower)?;
+            }
             self.path(&points, path.role, &path.flow, false, false)?;
         }
         Ok(())
@@ -2719,9 +2769,12 @@ impl Writer<'_> {
     /// `extrude_explicit`). The filament is pulled back and pushed on
     /// again where the tower says, by its retraction length at its
     /// retraction speed and with nothing else in between.
-    fn tower_wipe(&mut self, wipe: TowerWipe<'_>) -> io::Result<()> {
+    fn tower_wipe(&mut self, wipe: TowerWipe<'_>, low: Option<f64>) -> io::Result<()> {
         let s = self.settings;
         self.travel(wipe.start, false, Some(Role::PrimeTower))?;
+        if let Some(tower) = low {
+            self.lower_to_tower(tower)?;
+        }
         let mut usual = self.motion(Role::PrimeTower, &wipe.flow, self.state.first_layer);
         // Bambu's tower (WipeTower.cpp) sets no acceleration of its own:
         // its lines go at whatever is in force.
@@ -2854,6 +2907,69 @@ impl Writer<'_> {
             self.state.wipe_path = run;
         } else {
             self.state.wipe_path = wipe.wipe_path.to_vec();
+        }
+        Ok(())
+    }
+
+    /// Takes the nozzle straight down from over the prime tower to the
+    /// tower's own layer, which stands lower than the print's, and makes
+    /// that the height lines are laid at until [`Self::leave_tower`]
+    /// (GCode.cpp `append_tcr`, "Travel down to the last wipe tower
+    /// layer", and `descend_to_tower`).
+    fn lower_to_tower(&mut self, tower: f64) -> io::Result<()> {
+        if self.state.lowered.is_some() {
+            return Ok(());
+        }
+        let layer = self.state.z;
+        self.plunge(tower)?;
+        self.state.z = tower;
+        self.state.lowered = Some(layer);
+        Ok(())
+    }
+
+    /// Takes the nozzle straight up from the prime tower to the layer, if
+    /// it is down on it: before it goes anywhere the print may be in the
+    /// way (GCode.cpp `append_tcr`, "Travel back up to the topmost object
+    /// layer"). Not as the reference's own travel off the tower, which
+    /// climbs as it goes.
+    fn leave_tower(&mut self) -> io::Result<()> {
+        let Some(layer) = self.state.lowered.take() else {
+            return Ok(());
+        };
+        // The reference does not wipe back over the tower on its way up.
+        self.state.wipe_path.clear();
+        self.plunge(layer)?;
+        self.state.z = layer;
+        Ok(())
+    }
+
+    /// A move straight up or down to `z`, the filament pulled back for it
+    /// and pushed on again after, without a wipe; where it is pulled back
+    /// already it stays so.
+    fn plunge(&mut self, z: f64) -> io::Result<()> {
+        let s = self.settings;
+        let pulled = !self.state.retracted && self.state.primed && s.retraction_length > 0.0;
+        if pulled {
+            self.feed(s.retraction_speed);
+            let feed_word = self.feed_word();
+            writeln!(self.out, "G1 E-{:.5}{feed_word}", s.retraction_length)?;
+            self.state.retracted = true;
+            self.state.retracted_length = s.retraction_length;
+            self.state.summary.retractions += 1;
+            self.spend(s.retraction_length / s.retraction_speed);
+        }
+        self.state.pending_lift = None;
+        if self.state.height != Some(z) {
+            self.feed(s.z_speed);
+            let feed_word = self.feed_word();
+            writeln!(self.out, "G1 Z{z:.3}{feed_word}")?;
+            if let Some(height) = self.state.height {
+                self.spend((height - z).abs() / s.z_speed);
+            }
+            self.state.height = Some(z);
+        }
+        if pulled {
+            self.unretract()?;
         }
         Ok(())
     }
@@ -3381,7 +3497,7 @@ impl Writer<'_> {
             // As WipeTower2.cpp has it; a fresh nozzle's first line goes
             // down at a third of the speed.
             Role::PrimeTower | Role::PrimeLine => {
-                let usual = if first_layer {
+                let usual = if first_layer || (role == Role::PrimeTower && self.state.tower_first) {
                     s.initial_layer_speed
                 } else {
                     s.wipe_tower_max_purge_speed.min(s.sparse_infill_speed)
