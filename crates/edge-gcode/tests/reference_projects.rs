@@ -165,6 +165,14 @@ fn every_reference_project_exports_well_formed_gcode_that_adds_up() {
                 ));
                 continue;
             }
+            // So must one asking for what the engine does not do yet.
+            Err(edge_gcode::GcodeError::Unsupported(what)) => {
+                refused.push(format!(
+                    "{}: {what}",
+                    path.file_name().unwrap().to_string_lossy()
+                ));
+                continue;
+            }
             Err(error) => panic!("{}: {error}", path.display()),
         };
         let whole = String::from_utf8(out).unwrap();
@@ -172,8 +180,13 @@ fn every_reference_project_exports_well_formed_gcode_that_adds_up() {
         bytes += whole.len();
         // The checks below are about the layers; what comes before and
         // after them is the profile's own start and end G-code.
-        let layers_from = whole.find(";LAYER_CHANGE").unwrap_or(0);
-        let layers_to = whole.rfind(";TYPE:Custom").unwrap_or(whole.len());
+        // A Bambu Lab printer's file has Bambu Studio's tags.
+        let layers_from = (whole.find(";LAYER_CHANGE"))
+            .or_else(|| whole.find("; CHANGE_LAYER"))
+            .unwrap_or(0);
+        let layers_to = (whole.rfind(";TYPE:Custom"))
+            .or_else(|| whole.rfind("; FEATURE: Custom"))
+            .unwrap_or(whole.len());
         let text = &whole[layers_from..layers_to.max(layers_from)];
 
         let mut problems = Vec::new();

@@ -43,7 +43,8 @@
   // A filament no colour is known for (GLVolume::MODEL_COLOR, in turn).
   const SPARE = ['#ffff00', '#ff8080', '#80ff80', '#8080ff'];
 
-  const dark = () => window.matchMedia('(prefers-color-scheme: dark)').matches;
+  // Preferences' theme, else the system's (i18n.js `EdgeTheme`).
+  const dark = () => !EdgeTheme.light();
   const themed = (pair) => (dark() ? pair.dark : pair.light);
 
   function rgb(text) {

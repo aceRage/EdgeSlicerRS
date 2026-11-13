@@ -19,7 +19,7 @@ use super::{Choices, File, Session, bed_of, lock, name_from_path, settings, show
 /// Where a project is offered to be saved when the person is asked: as
 /// a project beside the file it was opened from, else under its name in
 /// the strip (Plater.cpp `get_export_file`, "Untitled.3mf").
-fn suggested(file: Option<&File>, name: &str) -> String {
+pub(super) fn suggested(file: Option<&File>, name: &str) -> String {
     let path = file.and_then(|file| file.path.as_deref());
     let stem = path
         .and_then(Path::file_stem)
@@ -65,7 +65,7 @@ fn changed(choices: &Choices) -> Changed {
 
 impl Session {
     /// The settings a project is saved with: what it is sliced with.
-    fn saving(&self, choices: &Choices, file: Option<&File>) -> Result<Saving, String> {
+    pub(super) fn saving(&self, choices: &Choices, file: Option<&File>) -> Result<Saving, String> {
         let own = file.and_then(|file| file.settings.clone());
         let set_by_hand = !choices.over.is_empty()
             || choices.filament_over.iter().any(|own| !own.is_empty())

@@ -44,6 +44,8 @@ boostvoronoi = "0.12"
 # (Apache-2.0). Only edge-mesh's `boolean` module may name it. Without its
 # `parallel` feature it runs on one thread, so results do not depend on
 # the thread count.
+# The MD5 a sliced file carries of each plate's G-code (bbs_3mf.cpp `bbl_calc_md5`).
+md-5 = "0.10.6"
 manifold-rust = { version = "0.19.2", default-features = false }
 clap = { version = "4", features = ["derive", "env"] }
 clipper2-rs = "0.3"

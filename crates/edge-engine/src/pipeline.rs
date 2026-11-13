@@ -207,6 +207,8 @@ pub struct Sliced {
     /// of what was set there is not done (`crate::layer_codes`).
     pub(crate) codes: Vec<edge_gcode::AtLayer>,
     pub(crate) code_notes: Vec<String>,
+    /// What the printer's templates are told of the plate as a whole.
+    pub(crate) plate_facts: edge_gcode::Plate,
 }
 
 /// The object a point belongs to, for laying its sparse pattern: of the
@@ -1806,6 +1808,19 @@ pub fn slice(job: Job, watch: &dyn Watcher) -> Result<Sliced, Failure> {
         .flat_map(|ground| ground.contour.points.iter().copied())
         .collect();
     let brim = edge_adhesion::brim(&footings, &tower_ground, &adhesion, first_layer_height)?;
+    let plate_facts = plate_facts(
+        PlateInput {
+            beside,
+            supports: &supports_beside,
+            first: outlines.first().copied().unwrap_or(&[]),
+            brim: &brim,
+            tower: &tower_corners,
+            objects: &middles,
+        },
+        &adhesion,
+        &settings,
+        first_layer_height,
+    )?;
     let mut around: Vec<Vec<ExtrusionLoop>> = vec![Vec::new(); layers.len()];
     for (index, lines) in around.iter_mut().enumerate() {
         if adhesion.has_skirt(index) {
@@ -1955,10 +1970,243 @@ pub fn slice(job: Job, watch: &dyn Watcher) -> Result<Sliced, Failure> {
         },
         codes,
         code_notes,
+        plate_facts,
     })
 }
 
+/// What [`plate_facts`] works from.
+struct PlateInput<'a> {
+    /// The plate's outlines on the layers the skirt stands beside.
+    beside: &'a [&'a [ExPolygon]],
+    supports: &'a [&'a [ExtrusionPath]],
+    /// The first layer's islands, as modelled.
+    first: &'a [ExPolygon],
+    brim: &'a [ExtrusionLoop],
+    /// The prime tower's corners on the first layer, brim included.
+    tower: &'a [Point2],
+    /// Each object's bounds across the bed, and its middle.
+    objects: &'a [(Point2, Point2, Point2)],
+}
+
+/// The plate's first-layer hull, the middle of its objects' first layers
+/// and whether it reaches into the printer's head-wrap detection zone, as
+/// the reference works them out for the start G-code (GCode.cpp
+/// `_do_export`; Print.cpp `_make_skirt`, `finalize_first_layer_convex_hull`).
+///
+/// The skirt's hull is there whenever `skirt_height` is above 0, loops or
+/// none: the hull of everything the skirt goes round (the outlines up to
+/// its height, support, the brim's ground and, the skirt being one round
+/// everything, the tower) grown to the skirt's last loop, half a line out.
+/// To it the first layer's islands, the brim's ground and the tower's
+/// corners are added. The brim's ground is taken as the hull of its lines
+/// grown by half a line.
+fn plate_facts(
+    input: PlateInput<'_>,
+    adhesion: &AdhesionSettings,
+    settings: &Settings,
+    first_layer_height: f64,
+) -> Result<edge_gcode::Plate, Failure> {
+    let round = edge_clip::Join::Round {
+        tolerance: scaled(0.1),
+    };
+    let hull_of = |points: Vec<Point2>| -> Option<ExPolygon> {
+        let contour = edge_geom::convex_hull(points);
+        (contour.points.len() >= 3).then(|| ExPolygon {
+            contour,
+            holes: Vec::new(),
+        })
+    };
+    let grown = |hull: Option<ExPolygon>, by: f64| -> Result<Vec<Point2>, Failure> {
+        let Some(hull) = hull else {
+            return Ok(Vec::new());
+        };
+        Ok(edge_clip::offset(&[hull], scaled(by), round)?
+            .into_iter()
+            .flat_map(|region| region.contour.points)
+            .collect())
+    };
+    let brim_ground = match input.brim.first() {
+        Some(line) => grown(
+            hull_of(
+                input
+                    .brim
+                    .iter()
+                    .flat_map(|line| line.polygon.points.clone())
+                    .collect(),
+            ),
+            line.flow.spacing / 2.0,
+        )?,
+        None => Vec::new(),
+    };
+    let contours = |layers: &[&[ExPolygon]]| -> Vec<Point2> {
+        layers
+            .iter()
+            .flat_map(|layer| layer.iter())
+            .flat_map(|island| island.contour.points.iter().copied())
+            .collect()
+    };
+    let mut points = Vec::new();
+    if adhesion.skirt_height > 0 {
+        let mut around = contours(input.beside);
+        around.extend(
+            (input.supports.iter())
+                .flat_map(|layer| layer.iter())
+                .flat_map(|line| line.points.iter().copied()),
+        );
+        around.extend(brim_ground.iter().copied());
+        around.extend(input.tower.iter().copied());
+        let spacing = adhesion.skirt_flow(first_layer_height)?.spacing;
+        let reach = adhesion.skirt_distance + adhesion.skirt_loops as f64 * spacing;
+        points.extend(grown(hull_of(around), reach)?);
+    }
+    let first = contours(&[input.first]);
+    points.extend(first.iter().copied());
+    points.extend(brim_ground.iter().copied());
+    points.extend(input.tower.iter().copied());
+    let hull = hull_of(points);
+    let box_of = |points: &mut dyn Iterator<Item = &Point2>| {
+        points.fold(None, |box_: Option<[f64; 4]>, point| {
+            let (x, y) = (unscaled(point.x), unscaled(point.y));
+            let [a, b, c, d] = box_.unwrap_or([x, y, x, y]);
+            Some([a.min(x), b.min(y), c.max(x), d.max(y)])
+        })
+    };
+    let first_layer_box = hull
+        .as_ref()
+        .and_then(|hull| box_of(&mut hull.contour.points.iter()));
+    let first_layer_centre = box_of(&mut first.iter().chain(&brim_ground))
+        .map(|[a, b, c, d]| [(a + c) / 2.0, (b + d) / 2.0]);
+    // An object's box, or the first layer's hull, with an edge in the zone
+    // (the reference's `intersection_pl` of their outlines with it).
+    let zone: Vec<Point2> = settings
+        .texts("head_wrap_detect_zone")
+        .unwrap_or(&[])
+        .iter()
+        .filter_map(|corner| {
+            let (x, y) = corner.trim().split_once('x')?;
+            Some(Point2::from_mm(
+                x.trim().parse().ok()?,
+                y.trim().parse().ok()?,
+            ))
+        })
+        .collect();
+    let in_head_wrap_detect_zone = zone.len() >= 3 && {
+        let zone = [ExPolygon {
+            contour: Polygon { points: zone },
+            holes: Vec::new(),
+        }];
+        let closed = |corners: Vec<Point2>| {
+            let mut line = corners.clone();
+            line.extend(corners.first().copied());
+            line
+        };
+        let mut outlines: Vec<Vec<Point2>> = (input.objects.iter())
+            .map(|(lo, hi, _)| {
+                closed(vec![
+                    *lo,
+                    Point2 { x: hi.x, y: lo.y },
+                    *hi,
+                    Point2 { x: lo.x, y: hi.y },
+                ])
+            })
+            .collect();
+        if let Some(hull) = &hull {
+            outlines.push(closed(hull.contour.points.clone()));
+        }
+        !edge_clip::clip_lines(&outlines, &zone)?.is_empty()
+    };
+    Ok(edge_gcode::Plate {
+        first_layer_box,
+        first_layer_centre,
+        in_head_wrap_detect_zone,
+        objects: (input.objects.iter())
+            .map(|(lo, hi, _)| {
+                [
+                    unscaled(lo.x),
+                    unscaled(lo.y),
+                    unscaled(hi.x),
+                    unscaled(hi.y),
+                ]
+            })
+            .collect(),
+    })
+}
+
+/// One object's first layer, as a sliced file's boxes give it.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct FirstLayer {
+    /// Least x, y and greatest x, y, in mm.
+    pub bbox: [f64; 4],
+    /// The area it covers, in mm².
+    pub area: f64,
+}
+
 impl Sliced {
+    /// Each object on the plate as the project lists its printable copies
+    /// (`edge_3mf::Project::instance_meshes`), cut through the middle of
+    /// the first layer: its box and area there (PrintObject.cpp
+    /// `get_first_layer_bbox`, of the layer as sliced); none for one that
+    /// does not reach it. Empty for a bare model, which is one object.
+    pub fn first_layer_objects(&self) -> Vec<Option<FirstLayer>> {
+        let z = self.seams.floor + self.height_of(0) / 2.0;
+        let box_of = |points: &[Point2]| {
+            let mut bbox = [f64::MAX, f64::MAX, f64::MIN, f64::MIN];
+            for point in points {
+                let (x, y) = (unscaled(point.x), unscaled(point.y));
+                bbox = [
+                    bbox[0].min(x),
+                    bbox[1].min(y),
+                    bbox[2].max(x),
+                    bbox[3].max(y),
+                ];
+            }
+            bbox
+        };
+        // The brim's loops on the first layer: an object with a brim is
+        // boxed by its brim (`firstLayerObjectBrimBoundingBox`).
+        let brims: Vec<[f64; 4]> = self
+            .around
+            .first()
+            .into_iter()
+            .flatten()
+            .filter(|lap| lap.role == edge_extrusion::Role::Brim)
+            .map(|lap| {
+                // To the line's outer edge.
+                let [a, b, c, d] = box_of(&lap.polygon.points);
+                let half = lap.flow.width / 2.0;
+                [a - half, b - half, c + half, d + half]
+            })
+            .collect();
+        let overlaps = |a: &[f64; 4], b: &[f64; 4]| {
+            a[0] <= b[2] && b[0] <= a[2] && a[1] <= b[3] && b[1] <= a[3]
+        };
+        (self.seams.meshes.par_iter())
+            .map(|(mesh, cut_from)| {
+                let mut solid = mesh.clone();
+                solid.triangles.truncate(*cut_from);
+                let layer = edge_slice::slice(&solid, &[z]).pop()?;
+                let area: f64 = layer.polygons.iter().map(Polygon::signed_area_mm2).sum();
+                let points: Vec<Point2> = (layer.polygons.iter())
+                    .flat_map(|polygon| polygon.points.iter().copied())
+                    .collect();
+                let mut bbox = box_of(&points);
+                if bbox[0] > bbox[2] {
+                    return None;
+                }
+                let own = bbox;
+                for brim in brims.iter().filter(|brim| overlaps(brim, &own)) {
+                    bbox = [
+                        bbox[0].min(brim[0]),
+                        bbox[1].min(brim[1]),
+                        bbox[2].max(brim[2]),
+                        bbox[3].max(brim[3]),
+                    ];
+                }
+                Some(FirstLayer { bbox, area })
+            })
+            .collect()
+    }
+
     /// How thick layer `index` is, in mm.
     pub fn height_of(&self, index: usize) -> f64 {
         self.heights.height_of(index)
@@ -2090,6 +2338,7 @@ impl Sliced {
             .collect::<Result<_, _>>()?;
         for print in &mut prints {
             print.produced_at = Some(produced_at.to_owned());
+            print.plate = self.plate_facts.clone();
         }
         // A region with settings of its own lays its walls and fill by
         // them; each such region's place among these, by region.
@@ -2276,6 +2525,73 @@ mod tests {
     use edge_geom::Polygon;
 
     use super::*;
+
+    #[test]
+    fn the_first_layers_hull_reaches_out_to_the_skirt_with_or_without_loops() {
+        // A 20 mm cube in the middle of a 256 mm bed, Bambu Lab's
+        // settings: a skirt one layer high with no loops, 2 mm off. The
+        // reference's start G-code is given 116 x 116 and 24 x 24 for it.
+        let cube = [ExPolygon {
+            contour: rect(118.0, 118.0, 138.0, 138.0),
+            holes: Vec::new(),
+        }];
+        let settings = Settings::from_json(
+            r#"{"skirt_loops": "0", "skirt_height": "1", "skirt_distance": "2",
+                "head_wrap_detect_zone": ["226x224", "256x224", "256x256", "226x256"]}"#,
+        )
+        .unwrap();
+        let adhesion = AdhesionSettings::from_settings(&settings).unwrap();
+        let objects = [(
+            Point2::from_mm(118.0, 118.0),
+            Point2::from_mm(138.0, 138.0),
+            Point2::from_mm(128.0, 128.0),
+        )];
+        let facts = plate_facts(
+            PlateInput {
+                beside: &[&cube],
+                supports: &[],
+                first: &cube,
+                brim: &[],
+                tower: &[],
+                objects: &objects,
+            },
+            &adhesion,
+            &settings,
+            0.2,
+        )
+        .unwrap();
+        let [x0, y0, x1, y1] = facts.first_layer_box.unwrap();
+        for (found, wanted) in [(x0, 116.0), (y0, 116.0), (x1, 140.0), (y1, 140.0)] {
+            assert!((found - wanted).abs() < 0.01, "{:?}", facts.first_layer_box);
+        }
+        assert_eq!(facts.first_layer_centre, Some([128.0, 128.0]));
+        assert!(!facts.in_head_wrap_detect_zone);
+        // A tower in the zone's corner reaches into it.
+        let tower = [
+            (230.0, 230.0),
+            (250.0, 230.0),
+            (250.0, 250.0),
+            (230.0, 250.0),
+        ]
+        .map(|(x, y)| Point2::from_mm(x, y));
+        let facts = plate_facts(
+            PlateInput {
+                beside: &[&cube],
+                supports: &[],
+                first: &cube,
+                brim: &[],
+                tower: &tower,
+                objects: &objects,
+            },
+            &adhesion,
+            &settings,
+            0.2,
+        )
+        .unwrap();
+        assert!(facts.in_head_wrap_detect_zone);
+        // The middle leaves the tower out.
+        assert_eq!(facts.first_layer_centre, Some([128.0, 128.0]));
+    }
 
     fn rect(x0: f64, y0: f64, x1: f64, y1: f64) -> Polygon {
         Polygon {

@@ -19,6 +19,19 @@
   // How many prints' moves are kept on the graphics card at once.
   const PRINTS_KEPT = 3;
 
+  // The settings of Preferences the camera takes (Preferences.cpp,
+  // GLCanvas3D.cpp `on_mouse`), kept by the session (prefs.js).
+  const PREFERENCES = { zoomToMouse: 'zoom_to_mouse', reverseZoom: 'reverse_mouse_wheel_zoom' };
+  const pref = (key) => typeof Prefs !== 'undefined' && Prefs.flag(key);
+  const orbit = () => {
+    const mult = typeof Prefs !== 'undefined' ? Number(Prefs.get('camera_orbit_mult')) : 1;
+    return ORBIT * (Number.isFinite(mult) && mult > 0 ? mult : 1);
+  };
+  // "Camera style": Touchpad turns the view with Alt and moves it with
+  // Shift, the pointer moved without a button (`is_camera_rotate`,
+  // `is_camera_pan`).
+  const touchpad = () => typeof Prefs !== 'undefined' && Prefs.get('camera_navigation_style') === '1';
+
   const hex = (colour) => [1, 3, 5].map((at) => parseInt(colour.slice(at, at + 2), 16));
   const css = (colour) => `rgb(${colour.join(',')})`;
 
@@ -56,10 +69,6 @@
       this.prefs = {
         perspective: host.remembered.get('gl.perspective') !== '0',
         autoPerspective: host.remembered.get('gl.auto_perspective') === '1',
-        // The reference keeps this off until asked ("Zoom to mouse
-        // position"); here it starts on.
-        zoomToMouse: host.remembered.get('gl.zoom_to_mouse') !== '0',
-        reverseZoom: host.remembered.get('gl.reverse_zoom') === '1',
         navigator: host.remembered.get('gl.navigator') !== '0',
         labels: host.remembered.get('gl.labels') === '1',
         // The G-code window, shown unless it was hidden (the reference
@@ -114,6 +123,11 @@
     },
 
     setPref(name, key, value) {
+      // Those of Preferences are the session's (prefs.js).
+      if (PREFERENCES[name]) {
+        attempt(() => Prefs.set(PREFERENCES[name], value ? 'true' : 'false'));
+        return;
+      }
       this.prefs[name] = value;
       this.host.remembered.set(`gl.${key}`, value ? '1' : '0');
       if (name === 'perspective') this.camera.perspective = value;
@@ -138,8 +152,8 @@
         [t('Use Orthogonal View'), () => this.setPref('perspective', 'perspective', false), { checked: !p.perspective }],
         [t('Auto Perspective'), () => this.setPref('autoPerspective', 'auto_perspective', !p.autoPerspective), { checked: p.autoPerspective }],
         null,
-        [t('Zoom to mouse position'), () => this.setPref('zoomToMouse', 'zoom_to_mouse', !p.zoomToMouse), { checked: p.zoomToMouse }],
-        [t('Reverse mouse zoom'), () => this.setPref('reverseZoom', 'reverse_zoom', !p.reverseZoom), { checked: p.reverseZoom }],
+        [t('Zoom to mouse position'), () => this.setPref('zoomToMouse', 'zoom_to_mouse', !pref('zoom_to_mouse')), { checked: pref('zoom_to_mouse') }],
+        [t('Reverse mouse zoom'), () => this.setPref('reverseZoom', 'reverse_zoom', !pref('reverse_mouse_wheel_zoom')), { checked: pref('reverse_mouse_wheel_zoom') }],
         null,
         [t('Show 3D Navigator'), () => this.setPref('navigator', 'navigator', !p.navigator), { checked: p.navigator }],
         [t('Show Labels'), () => this.setPref('labels', 'labels', !p.labels), { checked: p.labels }],
@@ -789,7 +803,10 @@
         // the object under it, which a drag then moves (GLCanvas3D.cpp
         // `on_mouse`); anywhere else it turns the view.
         if (!painter && event.button === 0 && this.model.tab === 'prepare' && GL.edit) press.grab = GL.edit.grab(x, y, event);
-        if (event.button === 0 && !press.grab && !press.paint) {
+        // "Swap pan and rotate mouse buttons": the right button turns.
+        const turns = pref('swap_mouse_buttons') ? 2 : 0;
+        press.turns = turns;
+        if (event.button === turns && !press.grab && !press.paint) {
           // With Ctrl or Cmd, about the point of the bed in the middle
           // of the view.
           const centre = event.ctrlKey || event.metaKey ? this.camera.onGround(this.camera.viewport[0] / 2, this.camera.viewport[1] / 2) : null;
@@ -813,10 +830,9 @@
         press.y = y;
         if (press.grab) {
           GL.edit.drag(press.grab, x, y, event);
-        } else if (press.button === 0) {
-          // The left button turns the view.
-          this.camera.rotateOnSphere(dx * ORBIT, dy * ORBIT, true, press.pivot);
-          if (this.prefs.autoPerspective) this.camera.perspective = true;
+        } else if (press.button === press.turns) {
+          // The left button turns the view (the right, swapped).
+          this.turn(dx, dy, press.pivot);
         } else {
           // The right and the middle button move it.
           this.camera.pan(dx, dy);
@@ -836,6 +852,23 @@
         // A face laid on the bed was the press itself (scene-edit.js).
         else if (!done.moved && event.type === 'pointerup' && !(done.grab && done.grab.kind === 'face')) this.click(done, event);
       };
+      // "Camera style: Touchpad": the pointer moved with Alt turns the
+      // view, with Shift moves it, no button held.
+      let glide = null;
+      canvas.addEventListener('pointermove', (event) => {
+        if (press || !this.model || !touchpad() || event.buttons) { glide = null; return; }
+        const [x, y] = at(event);
+        const turning = event.altKey && !event.shiftKey;
+        const moving = event.shiftKey && !event.altKey;
+        if (!turning && !moving) { glide = null; return; }
+        if (glide) {
+          const [dx, dy] = [x - glide[0], y - glide[1]];
+          if (turning) this.turn(dx, dy, this.pivot());
+          else this.camera.pan(dx, dy);
+          this.frame();
+        }
+        glide = [x, y];
+      });
       // The handle under the pointer is shown as taken up.
       canvas.addEventListener('pointermove', (event) => {
         if (press || !this.model || this.model.tab !== 'prepare' || !GL.edit) return;
@@ -855,19 +888,30 @@
         // A notch of a wheel is a step; a pad sends many small ones, and
         // a pinch comes as a wheel with Ctrl.
         const notch = event.deltaMode === 1 ? 3 : event.ctrlKey ? 10 : 100;
-        const steps = (-event.deltaY / notch) * (this.prefs.reverseZoom ? -1 : 1);
+        const steps = (-event.deltaY / notch) * (pref('reverse_mouse_wheel_zoom') ? -1 : 1);
         const [x, y] = at(event);
-        if (this.prefs.zoomToMouse) this.camera.zoomAt(steps, x, y);
+        if (pref('zoom_to_mouse')) this.camera.zoomAt(steps, x, y);
         else this.camera.updateZoom(steps);
         this.frame();
       }, { passive: false });
       document.addEventListener('keydown', (event) => this.key(event));
       new ResizeObserver(() => this.draw()).observe(canvas);
-      window.matchMedia('(prefers-color-scheme: dark)').addEventListener('change', () => this.frame());
+      document.addEventListener('themechange', () => this.frame());
       canvas.addEventListener('webglcontextlost', (event) => {
         event.preventDefault();
         this.host.say('The graphics card took the 3D view away; reload the page to have it back.', true);
       });
+    },
+
+    // The view turned by a drag of (dx, dy) pixels: about `pivot`, kept
+    // upright, or with "Use free camera" about the camera's own axes
+    // (Camera.cpp `rotate_local_around_target`); "Orbit speed
+    // multiplier" scales it.
+    turn(dx, dy, pivot) {
+      const step = orbit();
+      if (pref('use_free_camera')) this.camera.rotateFree(dx * step, dy * step);
+      else this.camera.rotateOnSphere(dx * step, dy * step, true, pivot);
+      if (this.prefs.autoPerspective) this.camera.perspective = true;
     },
 
     // A click: in Prepare it selects (GLCanvas3D.cpp `on_mouse`, the left
@@ -1070,6 +1114,112 @@
       this.showLabels(frame);
       mine.camera = this.camera.save();
       this.drawn = (this.drawn || 0) + 1;
+    },
+
+    // A sliced file's pictures of each plate in `plates` (Plater.cpp
+    // `export_3mf`, `generate_thumbnail`): 512 × 512 PNGs with nothing
+    // behind the objects; the plate from the default view, lit and
+    // unlit, and from above, lit and with each copy in the colour of its
+    // number (`numbers`: { copy id: number }, the pick picture a printer
+    // that skips objects reads); and the first at 128 × 128. As base64,
+    // by plate number. Only the printable copies on each plate are drawn.
+    platePictures(plates, numbers) {
+      const out = {};
+      if (!this.scene || !this.scene.data) return out;
+      const r = this.renderer;
+      const gl = r.gl;
+      const SIZE = 512;
+      const target = gl.createFramebuffer();
+      gl.bindFramebuffer(gl.FRAMEBUFFER, target);
+      const colour = gl.createRenderbuffer();
+      gl.bindRenderbuffer(gl.RENDERBUFFER, colour);
+      gl.renderbufferStorage(gl.RENDERBUFFER, gl.RGBA8, SIZE, SIZE);
+      gl.framebufferRenderbuffer(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.RENDERBUFFER, colour);
+      const depth = gl.createRenderbuffer();
+      gl.bindRenderbuffer(gl.RENDERBUFFER, depth);
+      gl.renderbufferStorage(gl.RENDERBUFFER, gl.DEPTH_COMPONENT24, SIZE, SIZE);
+      gl.framebufferRenderbuffer(gl.FRAMEBUFFER, gl.DEPTH_ATTACHMENT, gl.RENDERBUFFER, depth);
+      const pixels = new Uint8Array(SIZE * SIZE * 4);
+      const canvas = document.createElement('canvas');
+      canvas.width = SIZE;
+      canvas.height = SIZE;
+      const context = canvas.getContext('2d');
+      const small = document.createElement('canvas');
+      small.width = 128;
+      small.height = 128;
+      const smallContext = small.getContext('2d');
+      const png = (from) => from.toDataURL('image/png').slice('data:image/png;base64,'.length);
+      const scene = this.scene;
+      const draw = (plate, view, how) => {
+        const placings = scene.data.placings.filter((placing) => (placing.plate === plate || scene.plates.length <= 1) && placing.printable);
+        let box = null;
+        for (const placing of placings) if (placing.box) box = M.union(box, placing.box);
+        const camera = new GL.Camera();
+        camera.perspective = false;
+        camera.viewport = [SIZE, SIZE];
+        camera.selectView(view);
+        // Fitted to the plate's bed, as the reference frames a plate.
+        const fit = scene.plateBox(plate) || box;
+        if (!fit) return false;
+        const whole = box ? M.union(fit, box) : fit;
+        camera.zoomToBox(whole, 1.0);
+        camera.sceneBox = whole;
+        const frame = camera.matrices(whole);
+        gl.bindFramebuffer(gl.FRAMEBUFFER, target);
+        gl.viewport(0, 0, SIZE, SIZE);
+        gl.clearColor(0, 0, 0, 0);
+        gl.depthMask(true);
+        gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT);
+        gl.enable(gl.DEPTH_TEST);
+        gl.depthFunc(gl.LEQUAL);
+        gl.disable(gl.BLEND);
+        for (const placing of placings) {
+          const mesh = scene.meshOf(placing.object);
+          if (!mesh) continue;
+          // The printed parts alone (`parts_only`).
+          const parts = scene.data.objects[placing.object].part_list;
+          const ranges = parts ? parts.filter((part) => part.kind === 'part').map((part) => part.triangles) : [null];
+          for (const range of ranges) {
+            if (how === 'pick') {
+              const number = numbers[placing.id] || 0;
+              r.drawFlat(mesh, M.multiply(M.multiply(frame.projection, frame.view), placing.matrix), GL.Renderer.pickColour(number), undefined, range);
+            } else {
+              r.drawMesh(mesh, frame, placing.matrix, { palette: scene.palette, pass: 2, range, emission: how === 'unlit' ? -1 : 0 });
+            }
+          }
+        }
+        gl.readPixels(0, 0, SIZE, SIZE, gl.RGBA, gl.UNSIGNED_BYTE, pixels);
+        // The frame buffer is upside down to a picture.
+        const image = context.createImageData(SIZE, SIZE);
+        const row = SIZE * 4;
+        for (let y = 0; y < SIZE; y += 1) image.data.set(pixels.subarray((SIZE - 1 - y) * row, (SIZE - y) * row), y * row);
+        context.putImageData(image, 0, 0);
+        return true;
+      };
+      try {
+        for (const plate of plates) {
+          if (!draw(plate, 'iso', 'lit')) continue;
+          const pictures = { plate: png(canvas) };
+          smallContext.clearRect(0, 0, 128, 128);
+          smallContext.imageSmoothingQuality = 'high';
+          smallContext.drawImage(canvas, 0, 0, 128, 128);
+          pictures.small = png(small);
+          draw(plate, 'iso', 'unlit');
+          pictures.no_light = png(canvas);
+          draw(plate, 'top', 'lit');
+          pictures.top = png(canvas);
+          draw(plate, 'top', 'pick');
+          pictures.pick = png(canvas);
+          out[plate] = pictures;
+        }
+      } finally {
+        gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+        gl.deleteFramebuffer(target);
+        gl.deleteRenderbuffer(colour);
+        gl.deleteRenderbuffer(depth);
+        this.frame();
+      }
+      return out;
     },
 
     // The names of the objects on the plate shown, over them ("Show Labels").

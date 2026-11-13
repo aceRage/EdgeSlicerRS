@@ -150,6 +150,27 @@ pub fn parse(text: &str, keep_segments: Option<usize>) -> Print {
     let mut in_start_block = false;
     for line in text.lines() {
         let line = line.trim();
+        // A Bambu Lab printer's file has Bambu Studio's tags, which say the
+        // same (GCodeProcessor.cpp `Reserved_Tags`).
+        let renamed;
+        let line = match line.strip_prefix("; ") {
+            Some("CHANGE_LAYER") => ";LAYER_CHANGE",
+            Some(tag) => match [
+                ("FEATURE: ", ";TYPE:"),
+                ("LINE_WIDTH: ", ";WIDTH:"),
+                ("Z_HEIGHT: ", ";Z:"),
+            ]
+            .iter()
+            .find_map(|(from, to)| Some((tag.strip_prefix(from)?, to)))
+            {
+                Some((value, to)) => {
+                    renamed = format!("{to}{value}");
+                    renamed.as_str()
+                }
+                None => line,
+            },
+            None => line,
+        };
         if print.layers.is_empty() {
             if line == ";TYPE:Custom" {
                 in_start_block = true;

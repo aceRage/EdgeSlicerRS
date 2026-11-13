@@ -1328,14 +1328,19 @@
         return;
       }
       const m = this.measured(chosen);
+      // Lengths in mm or, with Preferences' "Units" Imperial, in inches
+      // (GizmoObjectManipulation.cpp `m_imperial_units`, `in_to_mm`).
+      const length = (unit) => unit === 'mm' && typeof Prefs !== 'undefined';
       const row = (label, values, { unit, key, off = [], digits = 2, min = null }) => {
+        const inches = length(unit);
+        const shownUnit = inches ? Prefs.lengthUnit() : unit;
         const cells = values.map((value, axis) => {
-          const input = el('input', { type: 'number', step: 'any', value: String(round(value, digits)), disabled: this.busy || off.includes(axis) });
+          const input = el('input', { type: 'number', step: 'any', value: String(round(inches ? Prefs.fromMm(value) : value, digits)), disabled: this.busy || off.includes(axis) });
           input.dataset.field = `${key}-${axis}`;
           input.setAttribute('aria-label', `${label} ${'XYZ'[axis]}`);
           if (min !== null) input.min = String(min);
-          input.addEventListener('change', () => this.typed(key, axis, Number(input.value)));
-          return el('span', { className: 'unit' }, input, unit ? ` ${unit}` : '');
+          input.addEventListener('change', () => this.typed(key, axis, inches ? Prefs.toMm(Number(input.value)) : Number(input.value)));
+          return el('span', { className: 'unit' }, input, shownUnit ? ` ${shownUnit}` : '');
         });
         return [el('span', { className: 'edit-label', textContent: label }), ...cells];
       };
@@ -1345,9 +1350,10 @@
           const input = this.panel.querySelector(`[data-field="${key}-${axis}"]`);
           if (input && document.activeElement !== input) input.value = String(round(value, digits));
         });
-        set('position', m.position);
+        const shownLength = (values) => (length('mm') ? values.map(Prefs.fromMm) : values);
+        set('position', shownLength(m.position));
         set('scale', m.scale);
-        set('size', m.size);
+        set('size', shownLength(m.size));
         if (m.angles) set('absolute', m.angles);
         if (this.held && this.held.kind === 'rotate') set('relative', this.fields.relative.map((value, axis) => value + (axis === this.held.handle.axis ? degrees(this.held.angle || 0) : 0)));
         return;

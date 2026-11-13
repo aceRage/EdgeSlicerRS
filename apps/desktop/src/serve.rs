@@ -71,8 +71,10 @@ const PRESETS: [(&str, &str); 2] = [
 ];
 /// The menu bar: what its entries do and its keys, and the bar itself in
 /// a browser.
-const MENU: [(&str, &str); 2] = [
+const MENU: [(&str, &str); 3] = [
     ("menu.js", include_str!("../ui/menu.js")),
+    // Preferences (prefs.rs).
+    ("prefs.js", include_str!("../ui/prefs.js")),
     ("menu.css", include_str!("../ui/menu.css")),
 ];
 /// The page's words: the table of the language chosen, and then the
@@ -93,8 +95,10 @@ fn asset(name: &str, built_in: &'static str) -> String {
     built_in.to_owned()
 }
 
-/// More than any call sends; a longer body is refused unread.
-const LONGEST_CALL: u64 = 64 * 1024;
+/// More than any call sends; a longer body is refused unread. The
+/// longest is "Export plate sliced file"'s, with five pictures of each
+/// plate as PNG files (512 × 512): a few hundred kilobytes a plate.
+const LONGEST_CALL: u64 = 64 * 1024 * 1024;
 
 /// Unguessable from outside: the standard library seeds each hasher from
 /// the operating system.

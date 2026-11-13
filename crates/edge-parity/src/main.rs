@@ -2,6 +2,7 @@
 //! then compares how long each took and what each printed.
 
 mod gcode;
+mod templates;
 
 use std::{
     collections::BTreeSet,
@@ -149,6 +150,7 @@ fn compare(cli: &Cli, engine: &Path, work: &Path, runs: usize) -> Result<(), Fai
         engine: engine_time,
     };
     print!("{}", report(&cli.project, &times, &reference, &ours));
+    print!("{}", template_report(&reference_text, &engine_text));
     print!("{}", estimates(&reference_text, &engine_text));
 
     if let Some(path) = &cli.svg {
@@ -257,6 +259,42 @@ fn logged_span(log: &str) -> Option<Duration> {
     Some(Duration::from_secs_f64(span))
 }
 
+/// The printer's templates and the writer's own commands, line for line
+/// (`templates.rs`).
+fn template_report(reference: &str, ours: &str) -> String {
+    let compared = templates::compare(reference, ours);
+    let mut out = String::new();
+    writeln!(
+        out,
+        "\ntemplate G-code (start, layer change, timelapse, tool change, end), layer by layer \
+         over {} and {} layers: {} line(s) differ",
+        compared.layers.0, compared.layers.1, compared.differing
+    )
+    .unwrap();
+    for (layer, reference, here) in &compared.hunks {
+        let at = match layer {
+            0 => "before the first layer".to_owned(),
+            n => format!("layer {n}"),
+        };
+        writeln!(out, "  {at}:").unwrap();
+        for line in reference {
+            writeln!(out, "    reference: {line}").unwrap();
+        }
+        for line in here {
+            writeln!(out, "    here:      {line}").unwrap();
+        }
+    }
+    if !compared.kinds.is_empty() {
+        let mut kinds: Vec<(&String, &usize)> = compared.kinds.iter().collect();
+        kinds.sort_by(|a, b| b.1.cmp(a.1).then(a.0.cmp(b.0)));
+        writeln!(out, "  by kind, numbers as #:").unwrap();
+        for (kind, count) in kinds.into_iter().take(20) {
+            writeln!(out, "  {count:6}  {kind}").unwrap();
+        }
+    }
+    out
+}
+
 /// Filament cross-section for the usual 1.75 mm filament, in mm².
 const FILAMENT_AREA: f64 = std::f64::consts::PI * 0.875 * 0.875;
 
@@ -266,9 +304,16 @@ const FILAMENT_AREA: f64 = std::f64::consts::PI * 0.875 * 0.875;
 /// same file planned as Klipper plans shows what the reference's
 /// estimator leaves out.
 fn estimates(reference: &str, ours: &str) -> String {
+    // A Bambu Lab printer's file says it at the top, in its own words.
     let written = |text: &str| {
         text.lines()
-            .find_map(|line| line.strip_prefix("; estimated printing time (normal mode) = "))
+            .find_map(|line| {
+                line.strip_prefix("; estimated printing time (normal mode) = ")
+                    .or_else(|| {
+                        line.split_once("; total estimated time: ")
+                            .map(|(_, time)| time)
+                    })
+            })
             .unwrap_or("none")
             .to_owned()
     };

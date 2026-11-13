@@ -496,3 +496,41 @@ fn a_pause_set_at_a_layer_stops_the_head_there() {
         assert!(close(estimate(custom, &limits, model).seconds, plain));
     }
 }
+
+#[test]
+fn a_bambu_lab_file_is_timed_as_the_reference_times_it() {
+    let bambu = Limits {
+        bambu: true,
+        load_time: 25.0,
+        unload_time: 29.0,
+        ..klipper(1000.0, 500.0)
+    };
+    let bambu = Limits {
+        flavor: Flavor::Other,
+        ..bambu
+    };
+    let timed = |text: &str, limits: &Limits| estimate(text, limits, Model::Reference).seconds;
+    // Bed levelling: 260 s, once (GCodeProcessor.cpp `process_G29`); only
+    // on a Bambu Lab printer, and `G29.1` is something else.
+    assert!(close(timed("G29 A\nG29.1 Z0\nG29 A\n", &bambu), 260.0));
+    let other = Limits {
+        bambu: false,
+        ..bambu
+    };
+    assert!(close(timed("G29 A\n", &other), 0.0));
+    // Waiting for a warm chamber: 720 s above 40 °C.
+    assert!(close(timed("M191 S45\nM191 S35\n", &other), 720.0));
+    // Bambu's own tool commands take up no filament.
+    assert!(close(timed("T1000\nT255\nT65535\n", &bambu), 0.0));
+    assert!(close(timed("T1\n", &bambu), 54.0));
+    // Homing is a move to 0 on the axes named: back the 100 mm the move
+    // before went, the corner between taken at the jerk's speed.
+    let homed = timed("G1 X100 Y0 F6000\nG28 X\n", &bambu);
+    assert!(homed > 2.1 && homed <= 2.2, "{homed}");
+    // The waits of the end G-code come after the print.
+    let text = "; FEATURE: Custom\nM400 S2\n; FEATURE: Outer wall\nM400 S1\n; FEATURE: Custom\nM400 S180\n";
+    assert!(close(timed(text, &bambu), 3.0));
+    assert!(close(timed(text, &other), 183.0));
+    // A pause, in a Bambu Lab printer's words, stops the head.
+    assert!(close(timed("; PAUSE_PRINTING\n", &bambu), 0.0));
+}

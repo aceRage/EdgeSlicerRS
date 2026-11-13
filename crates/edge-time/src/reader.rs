@@ -378,15 +378,32 @@ pub(crate) fn read<P: Planner>(
     let mut tool = 0usize;
     // Whether an Elegoo printer has loaded its first filament yet.
     let mut loaded = false;
+    // Whether a Bambu Lab printer's bed levelling has been counted.
+    let mut levelled = false;
     let mut lines = 0;
+    // On a Bambu Lab printer the waits of the end G-code, from the last
+    // custom tag on, are after the print (GCode.cpp `_do_export`,
+    // `start_machine_end_gcode`).
+    let end_from = if limits.bambu {
+        gcode
+            .lines()
+            .enumerate()
+            .filter(|(_, raw)| raw.trim_end() == "; FEATURE: Custom")
+            .map(|(line, _)| line)
+            .last()
+            .unwrap_or(usize::MAX)
+    } else {
+        usize::MAX
+    };
     for (line, raw) in gcode.lines().enumerate() {
         lines = line + 1;
         let code = raw.split(';').next().unwrap_or_default().trim();
         if code.is_empty() {
             // A pause set at a layer: the printer finishes its moves and
             // stops, for as long as no file can say (GCodeProcessor.cpp,
-            // the `PAUSE_PRINT` tag: `simulate_st_synchronize`).
-            if raw.trim_end() == ";PAUSE_PRINT" {
+            // the `PAUSE_PRINT` tag, `PAUSE_PRINTING` in a Bambu Lab
+            // printer's file: `simulate_st_synchronize`).
+            if matches!(raw.trim_end(), ";PAUSE_PRINT" | "; PAUSE_PRINTING") {
                 planner.rest(line, 0.0);
             }
             continue;
@@ -550,6 +567,7 @@ pub(crate) fn read<P: Planner>(
                     planner.set(Set::ExtrudeFactor(percent / 100.0));
                 }
             }
+            "M400" if line > end_from && !klipper => {}
             "M400" => {
                 let seconds =
                     word(&words, 'S').unwrap_or(0.0) + word(&words, 'P').unwrap_or(0.0) / 1e3;
@@ -558,6 +576,40 @@ pub(crate) fn read<P: Planner>(
                 }
             }
             "M1" | "M01" if !klipper => planner.rest(line, 0.0),
+            // Homing as the reference's estimator takes it: a move to 0 on
+            // the axes named, or on all three (GCodeProcessor.cpp
+            // `process_G28`, through `process_G1`).
+            "G28" if !klipper => {
+                let named: Vec<usize> = (['X', 'Y', 'Z'].iter().enumerate())
+                    .filter(|(_, letter)| words.iter().any(|word| word.starts_with(**letter)))
+                    .map(|(axis, _)| axis)
+                    .collect();
+                let axes = if named.is_empty() {
+                    vec![0, 1, 2]
+                } else {
+                    named
+                };
+                let mut to = position;
+                for axis in axes {
+                    to[axis] = if absolute { 0.0 } else { position[axis] };
+                }
+                let delta: [f64; 4] = std::array::from_fn(|axis| to[axis] - position[axis]);
+                position = to;
+                if delta.iter().any(|d| *d != 0.0) && feed > 0.0 {
+                    planner.go(line, delta, feed);
+                }
+            }
+            // Bambu Lab's bed levelling, 260 s, once a file
+            // (GCodeProcessor.cpp `process_G29`).
+            "G29" if !klipper && limits.bambu && !levelled => {
+                levelled = true;
+                planner.rest(line, 260.0);
+            }
+            // Waiting for the chamber to warm, 720 s above 40 °C
+            // (GCodeProcessor.cpp `process_M191`).
+            "M191" if !klipper && word(&words, 'S').is_some_and(|heat| heat > 40.0) => {
+                planner.rest(line, 720.0);
+            }
             // Klipper finishes its moves before it waits on a temperature
             // or homes. How long the wait is, no file says.
             "M109" | "M190" | "G28" | "M1" | "M01" if klipper => planner.rest(line, 0.0),
@@ -607,9 +659,13 @@ pub(crate) fn read<P: Planner>(
             }
             other => {
                 // T<number>: another tool, which is not taken up on the fly.
+                // Past 254 no tool is taken up, as the reference's
+                // estimator reads it: Bambu Lab's own commands (`T255`,
+                // `T1000`) cost nothing (GCodeProcessor.cpp `process_T`).
                 let picked = other
                     .strip_prefix('T')
-                    .and_then(|number| number.parse::<usize>().ok());
+                    .and_then(|number| number.parse::<usize>().ok())
+                    .filter(|picked| klipper || *picked <= 254);
                 if let Some(picked) = picked {
                     if picked != tool {
                         tool = picked;

@@ -197,7 +197,7 @@ pub fn own_settings(own: &Settings, settled: &Settings, changed: &Changed) -> Se
 
 impl Saving {
     /// Whether the presets the file carried go with it.
-    fn presets(&self) -> bool {
+    pub(crate) fn presets(&self) -> bool {
         match self {
             Saving::Own => true,
             Saving::Settings { presets, .. } => *presets,
@@ -317,8 +317,13 @@ impl Model {
 
     /// Writes it to `path` as a project file, whole or not at all. `bed`
     /// is the printer's, for a bare model that has no place yet.
-    pub fn save(&self, path: &Path, saving: &Saving, bed: Option<&Bed>) -> Result<Saved, Failure> {
-        let (text, settings) = match saving {
+    /// `Metadata/project_settings.config` as `saving` has it written, and
+    /// the settings it holds.
+    pub(crate) fn saving_text(
+        &self,
+        saving: &Saving,
+    ) -> Result<(Option<String>, Option<Settings>), Failure> {
+        Ok(match saving {
             // Its own settings laid out for filaments changed here.
             Saving::Own if self.filaments_edited => {
                 let settings = self
@@ -346,7 +351,23 @@ impl Model {
                 Some(settings.clone()),
             ),
             Saving::None => (None, None),
-        };
+        })
+    }
+
+    pub fn save(&self, path: &Path, saving: &Saving, bed: Option<&Bed>) -> Result<Saved, Failure> {
+        self.save_as(path, saving, bed, edge_3mf::Layout::Project)
+    }
+
+    /// [`Model::save`] laid out as `layout` says: "Export Generic 3MF" is
+    /// [`edge_3mf::Layout::Core`].
+    pub fn save_as(
+        &self,
+        path: &Path,
+        saving: &Saving,
+        bed: Option<&Bed>,
+        layout: edge_3mf::Layout,
+    ) -> Result<Saved, Failure> {
+        let (text, settings) = self.saving_text(saving)?;
         // A bare model is stood in the middle of the printer's bed.
         let own_bed = settings.as_ref().and_then(|settings| {
             edge_gcode::PrintSettings::from_settings(settings)
@@ -365,8 +386,8 @@ impl Model {
             presets: saving.presets(),
             filaments,
         };
-        let written =
-            edge_3mf::write(&save, path).map_err(|e| format!("{}: {e}", path.display()))?;
+        let written = edge_3mf::write_as(&save, path, layout)
+            .map_err(|e| format!("{}: {e}", path.display()))?;
         Ok(Saved {
             bytes: written.bytes,
             entries: written.entries,

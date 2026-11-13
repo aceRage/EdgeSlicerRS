@@ -42,7 +42,7 @@ use edge_avoid::Kind;
 use edge_config::FloatOrPercent;
 use edge_extrusion::{ExtrusionLoop, ExtrusionPath, Flow, Role, TowerStroke};
 use edge_geom::{ExPolygon, Point2, scaled, unscaled};
-use edge_template::{TemplateError, Value, Variables};
+use edge_template::{TemplateError, Value, Variables, stream_double};
 use rayon::prelude::*;
 
 pub use contour::Contours;
@@ -50,12 +50,17 @@ pub use edge_avoid::{Detour, Slices};
 pub use scarf::{Scarf, ScarfSeam};
 pub use seam::Seam;
 pub use seam_plan::{SeamMeasures, SeamMesh, SeamObject, SeamPart, SeamScene, measure_seams};
-pub use settings::{Lift, OverhangFan, PrintSettings, WallDirection, WallOrder, gcode_template};
+pub use settings::{
+    Lift, OverhangFan, Plate, PrintSettings, Timelapse, WallDirection, WallOrder, gcode_template,
+};
 
 #[derive(Debug, thiserror::Error)]
 pub enum GcodeError {
     #[error(transparent)]
     Io(#[from] io::Error),
+    /// The printer asks for something this engine does not do yet.
+    #[error("{0}; no G-code was written")]
+    Unsupported(String),
     /// The print uses a filament no settings were given for.
     #[error("filament {filament} is used but settings were given for {given}")]
     NoSettings { filament: usize, given: usize },
@@ -348,6 +353,19 @@ pub fn write_timed(
         &[]
     };
     let first = layers.first().map_or(0, |layer| layer.filament);
+    // A Bambu Lab printer of two nozzles is told by the file which nozzle
+    // each filament goes to, and its templates are written for that
+    // (GCode.cpp: `filament_map`, the nozzle grouping); not done here.
+    if let Some(s) = settings.get(first)
+        && s.bambu
+        && s.tools >= 2
+    {
+        return Err(GcodeError::Unsupported(
+            "a Bambu Lab printer of two nozzles (H2D, H2C): which nozzle each filament \
+             prints with is Bambu Studio's filament grouping (filament_map), not done yet"
+                .into(),
+        ));
+    }
     if let Some(layer) = layers.iter().find(|layer| layer.filament >= settings.len()) {
         return Err(GcodeError::NoSettings {
             filament: layer.filament + 1,
@@ -393,13 +411,49 @@ pub fn write_timed(
     ] {
         variables.set(name, Value::Int(first as i64));
     }
-    // Where the first layer is, for start G-code that probes or purges near it.
-    // "First" being the first layer with anything on it.
-    if let Some([min_x, min_y, max_x, max_y]) = layers.iter().find_map(extent) {
-        let pair = |x: f64, y: f64| vec![Value::Float(x), Value::Float(y)];
+    // Where the first layer is, for start G-code that probes or purges near
+    // it: the plate's first-layer hull as the reference has it, or else
+    // the box round the first layer with anything on it.
+    let plate = &settings[first].plate;
+    let pair = |x: f64, y: f64| vec![Value::Float(x), Value::Float(y)];
+    if let Some([min_x, min_y, max_x, max_y]) = plate
+        .first_layer_box
+        .or_else(|| layers.iter().find_map(extent))
+    {
         variables.set_list("first_layer_print_min", pair(min_x, min_y));
         variables.set_list("first_layer_print_max", pair(max_x, max_y));
         variables.set_list("first_layer_print_size", pair(max_x - min_x, max_y - min_y));
+    }
+    if let Some([x, y]) = plate.first_layer_centre {
+        variables.set_list("first_layer_center_no_wipe_tower", pair(x, y));
+    }
+    variables.set(
+        "in_head_wrap_detect_zone",
+        Value::Bool(plate.in_head_wrap_detect_zone),
+    );
+    // The filaments in use, as the reference's templates are told of them
+    // (GCode.cpp `_do_export`).
+    let mut used: Vec<usize> = layers.iter().map(|layer| layer.filament).collect();
+    used.sort_unstable();
+    used.dedup();
+    let mut in_use = vec![Value::Bool(false); settings.len().max(64)];
+    for filament in &used {
+        in_use[*filament] = Value::Bool(true);
+    }
+    variables.set_list("is_extruder_used", in_use);
+    // The lowest glass transition among them, 0 with none.
+    let softens = variables.list("temperature_vitrification").unwrap_or(&[]);
+    let softening = used
+        .iter()
+        .filter_map(|filament| softens.get(*filament).or(softens.first()))
+        .filter_map(|value| value.to_string().trim().parse::<f64>().ok())
+        .map(|temperature| temperature as i64)
+        .min()
+        .unwrap_or(0);
+    variables.set("min_vitrification_temperature", Value::Int(softening));
+    for (index, [x, y]) in change_path(&settings[first]).into_iter().enumerate() {
+        variables.set(format!("travel_point_{}_x", index + 1), Value::Float(x));
+        variables.set(format!("travel_point_{}_y", index + 1), Value::Float(y));
     }
 
     let mut writer = Writer {
@@ -431,6 +485,12 @@ pub fn write_timed(
                 used
             },
             first_layer_seconds: 0.0,
+            estimate_at: None,
+            first_layer_bed: layers
+                .iter()
+                .take_while(|layer| layer.z == layers[0].z)
+                .filter_map(|layer| settings[layer.filament].bed_temperature_initial_layer)
+                .reduce(f64::max),
             widths: {
                 // Above the first layer, the first line of each kind;
                 // and whatever the first layer starts with.
@@ -490,6 +550,10 @@ pub fn write_timed(
     };
     let several = layers.iter().any(|layer| layer.filament > 0);
     writer.preamble(several)?;
+    if writer.settings.bambu {
+        // GCode.cpp `_do_export`, after the first tool is taken up.
+        writeln!(writer.out, "M981 S1 P20000 ;open spaghetti detector")?;
+    }
     // The whole file is put together before any of it is handed on, so
     // that progress can be written into it once the time is known. Each
     // entry is a place in the file and the seconds printed by then.
@@ -667,6 +731,26 @@ pub fn write_timed(
             ));
         }
     }
+    // A Bambu Lab printer's header: the time of the print less what comes
+    // before its first layer, the whole time, and that time before the
+    // first layer, which the reference calls the first layer's
+    // (GCodeProcessor.cpp, `Estimated_Printing_Time_Placeholder` with
+    // `s_IsBBLPrinter`: `machine.time - machine.prepare_time`).
+    if let Some(at) = writer.file.estimate_at {
+        let before = reached
+            .get(1)
+            .map_or(0.0, |(start, at_speeds)| gone(*start).unwrap_or(*at_speeds));
+        slipped.push((
+            at,
+            format!(
+                "; model printing time: {}; total estimated time: {}\n\
+                 ; estimated first layer printing time (normal mode) = {}\n",
+                days_hours_minutes_seconds(summary.seconds - before),
+                days_hours_minutes_seconds(summary.seconds),
+                days_hours_minutes_seconds(before)
+            ),
+        ));
+    }
     slipped.sort_by_key(|(at, _)| *at);
     let mut from = 0;
     for (at, line) in slipped {
@@ -675,16 +759,18 @@ pub fn write_timed(
         from = at;
     }
     out.write_all(&whole[from..])?;
-    writeln!(
-        out,
-        "; estimated printing time (normal mode) = {}",
-        days_hours_minutes_seconds(summary.seconds)
-    )?;
-    writeln!(
-        out,
-        "; estimated first layer printing time (normal mode) = {}",
-        days_hours_minutes_seconds(writer.file.first_layer_seconds)
-    )?;
+    if writer.file.estimate_at.is_none() {
+        writeln!(
+            out,
+            "; estimated printing time (normal mode) = {}",
+            days_hours_minutes_seconds(summary.seconds)
+        )?;
+        writeln!(
+            out,
+            "; estimated first layer printing time (normal mode) = {}",
+            days_hours_minutes_seconds(writer.file.first_layer_seconds)
+        )?;
+    }
     // How the time above was come by, and the plain figure beside it.
     match summary.timed {
         Some(TimeModel::Klipper) => writeln!(
@@ -705,6 +791,184 @@ pub fn write_timed(
     timings.estimate = started.elapsed();
     Ok((summary, timings))
 }
+
+/// How long a template's moves take as the reference's cooling reckons a
+/// layer (CoolingBuffer.cpp `parse`): each move's length across x, y and z,
+/// or else the filament's, at its feed rate, the length of an arc round its
+/// centre, and the waits of `G4`. `from` is where the nozzle starts, at
+/// `height`, with `feedrate` (mm/min) in force.
+fn template_seconds(text: &str, from: [f64; 2], height: f64, feedrate: f64) -> f64 {
+    let mut at = [from[0], from[1], height];
+    let mut feed = feedrate / 60.0;
+    let mut absolute = true;
+    let mut seconds = 0.0;
+    for line in text.lines() {
+        let code = line.split(';').next().unwrap_or_default();
+        let mut words = code.split_whitespace();
+        let Some(command) = words.next() else {
+            continue;
+        };
+        let words: Vec<&str> = words.collect();
+        let value = |letter: char| {
+            words
+                .iter()
+                .find_map(|word| word.strip_prefix(letter)?.parse::<f64>().ok())
+        };
+        match command {
+            "G90" => absolute = true,
+            "G91" => absolute = false,
+            "G4" => {
+                seconds += value('S')
+                    .or_else(|| value('P').map(|ms| ms / 1000.0))
+                    .unwrap_or(0.0);
+            }
+            "G0" | "G1" | "G2" | "G3" => {
+                if let Some(f) = value('F') {
+                    feed = f / 60.0;
+                }
+                let mut to = at;
+                for (axis, letter) in ['X', 'Y', 'Z'].into_iter().enumerate() {
+                    if let Some(v) = value(letter) {
+                        to[axis] = if absolute { v } else { at[axis] + v };
+                    }
+                }
+                let across = match (command, value('I'), value('J')) {
+                    ("G2" | "G3", Some(i), Some(j)) => {
+                        let centre = [at[0] + i, at[1] + j];
+                        let radius = i.hypot(j);
+                        let start = (at[1] - centre[1]).atan2(at[0] - centre[0]);
+                        let end = (to[1] - centre[1]).atan2(to[0] - centre[0]);
+                        let mut sweep = if command == "G3" {
+                            end - start
+                        } else {
+                            start - end
+                        };
+                        if sweep < 0.0 {
+                            sweep += std::f64::consts::TAU;
+                        }
+                        radius * sweep
+                    }
+                    _ => (to[0] - at[0]).hypot(to[1] - at[1]),
+                };
+                let length = across.hypot(to[2] - at[2]);
+                let length = if length > 0.0 {
+                    length
+                } else {
+                    value('E').map_or(0.0, f64::abs)
+                };
+                if length > 0.0 && feed > 0.0 {
+                    seconds += length / feed;
+                }
+                at = to;
+            }
+            _ => {}
+        }
+    }
+    seconds
+}
+
+/// The way a Bambu Lab printer's head goes to its filament cutter and back
+/// past the objects (GCode.cpp `get_path_of_change_filament`), for the
+/// change G-code's `travel_point_1_x` to `_3_y`: a gap between the
+/// objects' spans across the bed nearest the end of `start_end_points`.
+fn change_path(s: &PrintSettings) -> [[f64; 2]; 3] {
+    let safe = [[54.0, 0.0], [54.0, 0.0], [54.0, 245.0]];
+    let pairs = |key: &str| -> Vec<[f64; 2]> {
+        s.variables
+            .list(key)
+            .unwrap_or(&[])
+            .iter()
+            .filter_map(|point| {
+                let text = point.to_string();
+                let (x, y) = text.trim().split_once('x')?;
+                Some([x.trim().parse().ok()?, y.trim().parse().ok()?])
+            })
+            .collect()
+    };
+    let (ends, cutter) = (pairs("start_end_points"), pairs("bed_exclude_area"));
+    if ends.len() != 2 || cutter.len() != 4 {
+        return safe;
+    }
+    let (start_x, end_x, end_y) = (ends[0][0], ends[1][0], ends[1][1]);
+    let cutter_y = cutter[2][1] + 2.0;
+    let mut from_left = true;
+    let mut spans: Vec<(f64, f64)> = Vec::new();
+    for [min_x, min_y, max_x, _] in &s.plate.objects {
+        if *min_x < start_x && *min_y < cutter_y {
+            from_left = false;
+        }
+        let mut span = (min_x - 2.0, max_x + 2.0);
+        let mut kept = Vec::new();
+        for other in spans {
+            if other.1 >= span.0 && other.0 <= span.1 {
+                span = (other.0.min(span.0), other.1.max(span.1));
+            } else {
+                kept.push(other);
+            }
+        }
+        kept.push(span);
+        spans = kept;
+    }
+    spans.sort_by(|a, b| a.0.total_cmp(&b.0));
+    let mut open = Vec::new();
+    let mut at = 0.0;
+    for (low, high) in &spans {
+        if *low > at {
+            open.push((at, *low));
+        }
+        at = *high;
+    }
+    open.push((at, 255.0));
+    let mut path = 255.0_f64;
+    for (low, high) in open {
+        if low > end_x {
+            let gap = low - end_x;
+            path = if (end_x - path).abs() < gap {
+                path
+            } else {
+                low
+            };
+            break;
+        } else if high >= end_x {
+            path = end_x;
+            break;
+        } else if !from_left && high < start_x {
+            continue;
+        } else {
+            path = high;
+        }
+    }
+    if path < start_x {
+        [[start_x, cutter_y], [path, cutter_y], [path, end_y]]
+    } else {
+        [[path, 0.0], [path, 0.0], [path, end_y]]
+    }
+}
+
+/// The comments that mark the parts of a file.
+struct Tags {
+    feature: &'static str,
+    wipe_start: &'static str,
+    wipe_end: &'static str,
+    pause: &'static str,
+    custom: &'static str,
+}
+
+const TAGS: Tags = Tags {
+    feature: ";TYPE:",
+    wipe_start: ";WIPE_START",
+    wipe_end: ";WIPE_END",
+    pause: ";PAUSE_PRINT",
+    custom: ";CUSTOM_GCODE",
+};
+
+const BAMBU_TAGS: Tags = Tags {
+    feature: "; FEATURE: ",
+    wipe_start: "; WIPE_START",
+    wipe_end: "; WIPE_END",
+    pause: "; PAUSE_PRINTING",
+    custom: "; CUSTOM_GCODE",
+};
 
 /// The box around everything a layer extrudes, in mm: min x, min y, max x, max y.
 fn extent(layer: &Layer<'_>) -> Option<[f64; 4]> {
@@ -824,6 +1088,11 @@ struct FileInfo {
     /// Line widths in mm as the file's opening lines give them, each
     /// with the name the reference gives it; only those the print has.
     widths: Vec<(&'static str, f64)>,
+    /// Where in the file a Bambu Lab printer's header says how long the
+    /// print takes, once that is known.
+    estimate_at: Option<usize>,
+    /// The hottest bed any filament of the first layer asks for.
+    first_layer_bed: Option<f64>,
 }
 
 /// What tells one measured wall from another: where it starts and ends,
@@ -895,6 +1164,14 @@ impl<'a> Laid<'a> {
 struct State {
     /// Where the nozzle is, once it has been anywhere.
     position: Option<Point2>,
+    /// A tool change on Bambu's tower is under way, framed in the tower
+    /// writer's comments (WipeTower.cpp `tool_change`), which its block
+    /// closes.
+    framing: bool,
+    /// Whether the layer being written has had its timelapse picture.
+    pictured: bool,
+    /// How many times a tool has been taken up, the first included.
+    swaps: usize,
     /// Which layer of the print is being written, and how its next
     /// travel is routed.
     layer: usize,
@@ -986,6 +1263,12 @@ impl Writer<'_> {
             Some(when) => writeln!(self.out, " on {when}")?,
             None => writeln!(self.out)?,
         }
+        // A Bambu Lab printer's header says how long the print takes,
+        // which is put in once known (GCode.cpp `_do_export`,
+        // `Estimated_Printing_Time_Placeholder`).
+        if s.bambu {
+            self.file.estimate_at = Some(self.out.len());
+        }
         writeln!(self.out, "; total layer number: {}", self.file.layers)?;
         for key in ["filament_density", "filament_diameter"] {
             if let Some((_, value)) = s.config.iter().find(|(name, _)| name == key) {
@@ -997,6 +1280,25 @@ impl Writer<'_> {
         writeln!(self.out, "; filament: {}", filaments.join(","))?;
         writeln!(self.out, "; support_material_on_wipe_tower: 0")?;
         writeln!(self.out, "; HEADER_BLOCK_END\n")?;
+        // Bambu Lab's printers read the settings from the top of the file
+        // (GCode.cpp `_do_export`, "BBS: write global config at the
+        // beginning of gcode file because printer need these config
+        // information"); everyone else's come at the end.
+        if s.bambu && !s.config.is_empty() {
+            writeln!(self.out, "; CONFIG_BLOCK_START")?;
+            for (key, value) in &s.config {
+                writeln!(self.out, "; {key} = {value}")?;
+            }
+            if let Some(bed) = self.file.first_layer_bed {
+                writeln!(self.out, "; first_layer_bed_temperature = {bed:.0}")?;
+            }
+            writeln!(
+                self.out,
+                "; first_layer_temperature = {:.0}",
+                s.nozzle_temperature_initial_layer
+            )?;
+            writeln!(self.out, "; CONFIG_BLOCK_END\n")?;
+        }
         for (name, width) in &self.file.widths {
             writeln!(self.out, "; {name} extrusion width = {width:.2}mm")?;
         }
@@ -1004,6 +1306,9 @@ impl Writer<'_> {
             writeln!(self.out)?;
         }
         self.out.extend_from_slice(EXECUTABLE_START);
+        if let Some(envelope) = &s.machine_envelope {
+            self.out.extend_from_slice(envelope.as_bytes());
+        }
         // Both fans off before anything heats, as the reference does when
         // the printer has an auxiliary fan.
         if s.auxiliary_fan && s.close_fan_the_first_x_layers > 0 {
@@ -1011,7 +1316,7 @@ impl Writer<'_> {
         }
         match &s.machine_start_gcode {
             Some(template) => {
-                writeln!(self.out, ";TYPE:Custom")?;
+                writeln!(self.out, "{}Custom", self.tags().feature)?;
                 started = self.custom("machine_start_gcode", template)?;
                 self.state.primed = true;
             }
@@ -1045,10 +1350,13 @@ impl Writer<'_> {
             // A print in more than one filament starts by going through
             // the printer's tool-change G-code for its first tool, from
             // whichever tool the start G-code selected last.
-            let from = started
-                .lines()
-                .rev()
-                .find_map(|line| line.trim().strip_prefix('T')?.parse::<i64>().ok());
+            // Only a filament counts: Bambu Lab's own tool commands
+            // (`T1000`, `T255`) do not (GCodeProcessor.cpp
+            // `get_gcode_last_filament`, from 0 to 254).
+            let from = started.lines().rev().find_map(|line| {
+                let tool = line.trim().strip_prefix('T')?.parse::<i64>().ok()?;
+                (0..255).contains(&tool).then_some(tool)
+            });
             self.swap(from, self.state.tool, None, 0.0)?;
             // The reference leaves this marker of its own here.
             writeln!(self.out, ";_FORCE_RESUME_FAN_SPEED")?;
@@ -1118,13 +1426,13 @@ impl Writer<'_> {
         match code {
             LayerCode::Pause(template) => {
                 let text = expand("machine_pause_gcode", template, &self.variables)?;
-                write!(self.out, ";PAUSE_PRINT\n{text}\n")?;
+                write!(self.out, "{}\n{text}\n", self.tags().pause)?;
             }
             LayerCode::Template(template) => {
                 let text = expand("template_custom_gcode", template, &self.variables)?;
-                write!(self.out, ";CUSTOM_GCODE\n{text}")?;
+                write!(self.out, "{}\n{text}", self.tags().custom)?;
             }
-            LayerCode::Custom(text) => write!(self.out, ";CUSTOM_GCODE\n{text}")?,
+            LayerCode::Custom(text) => write!(self.out, "{}\n{text}", self.tags().custom)?,
         }
         writeln!(self.out)?;
         Ok(())
@@ -1168,9 +1476,12 @@ impl Writer<'_> {
         let position = self
             .state
             .position
-            .map_or((0.0, 0.0), |at| (unscaled(at.x), unscaled(at.y)));
+            .map_or((0.0, 0.0), |at| (self.gcode_x(at), self.gcode_y(at)));
         let height = self.state.height.unwrap_or(z);
-        let count = self.state.tool_changes as i64 + 1;
+        // Every change so far and this one, the print's first taking up
+        // of a tool included (GCode.cpp `m_toolchange_count`).
+        self.state.swaps += 1;
+        let count = self.state.swaps as i64;
         let top = (self.variables.value("max_layer_z")).unwrap_or(Value::Float(0.0));
         let v = &mut self.variables;
         v.set("previous_extruder", Value::Int(from.unwrap_or(-1)));
@@ -1256,16 +1567,7 @@ impl Writer<'_> {
             };
             v.set(format!("flush_length_{chunk}"), Value::Float(each));
         }
-        for name in [
-            "travel_point_1_x",
-            "travel_point_1_y",
-            "travel_point_2_x",
-            "travel_point_2_y",
-            "travel_point_3_x",
-            "travel_point_3_y",
-            "next_wipe_x",
-            "next_wipe_y",
-        ] {
+        for name in ["next_wipe_x", "next_wipe_y"] {
             v.set(name, Value::Float(0.0));
         }
         v.set(
@@ -1375,6 +1677,39 @@ impl Writer<'_> {
     ) -> Result<(), GcodeError> {
         let from = self.state.tool;
         let s = self.settings;
+        let framed = self.state.framing;
+        // Bambu's tower frames its change in comments, sets the speed
+        // override back to 100% and writes the filament's end G-code
+        // before the filament is pulled back (WipeTower.cpp `tool_change`,
+        // GCode.cpp `append_tcr`).
+        if framed {
+            let material = |tool: usize| {
+                self.variables
+                    .list("filament_type")
+                    .and_then(|types| types.get(tool).or(types.first()))
+                    .map_or_else(|| "(NONE)".to_owned(), Value::to_string)
+            };
+            if self.state.role != Some(Role::PrimeTower) {
+                writeln!(
+                    self.out,
+                    "{}{}",
+                    self.tags().feature,
+                    role_name(Role::PrimeTower)
+                )?;
+                self.state.role = Some(Role::PrimeTower);
+            }
+            writeln!(
+                self.out,
+                ";--------------------\n; CP TOOLCHANGE START\n; toolchange #{}\n\
+                 ; material : {} -> {}\n;--------------------\nM220 S100\n; WIPE_TOWER_START",
+                self.state.tool_changes + 1,
+                material(from),
+                material(to)
+            )?;
+            if let Some(template) = &s.filament_end_gcode {
+                self.custom("filament_end_gcode", template)?;
+            }
+        }
         match ram.filter(|_| self.state.primed) {
             // A rammed filament is pushed out fast on the tower, and its
             // tool then waits just clear of what it laid.
@@ -1474,7 +1809,7 @@ impl Writer<'_> {
                 self.spend(more / s.retraction_speed);
             }
         }
-        if let Some(template) = &s.filament_end_gcode {
+        if let Some(template) = s.filament_end_gcode.as_ref().filter(|_| !framed) {
             self.custom("filament_end_gcode", template)?;
         }
         // A tool waiting its turn is kept cooler so it does not ooze; one
@@ -1543,14 +1878,30 @@ impl Writer<'_> {
     ) -> Result<(), GcodeError> {
         let s = self.settings;
         let layer = &parts[0];
-        writeln!(
-            self.out,
-            ";LAYER_CHANGE\n;Z:{:.3}\n;HEIGHT:{:.3}",
-            layer.z, layer.height
-        )?;
+        if s.bambu {
+            // GCode.cpp `process_layer`: "; Z_HEIGHT: %g" and the height
+            // as `%g`, in Bambu Studio's tags.
+            writeln!(
+                self.out,
+                "; CHANGE_LAYER\n; Z_HEIGHT: {}\n; LAYER_HEIGHT: {}",
+                stream_double(layer.z),
+                stream_double(layer.height)
+            )?;
+        } else {
+            writeln!(
+                self.out,
+                ";LAYER_CHANGE\n;Z:{:.3}\n;HEIGHT:{:.3}",
+                layer.z, layer.height
+            )?;
+        }
         // The reference counts layers from 1 before the change and from 0 after it.
         self.variables
             .set("layer_num", Value::Int(index as i64 + 1));
+        // The highest layer begun, this one included (GCode.cpp
+        // `process_layer`, `m_max_layer_z`), which the layer's templates
+        // and the timelapse are given; by the end it is the print's top.
+        self.variables
+            .set("max_layer_z", Value::Float(self.state.max_z.max(layer.z)));
         self.variables.set("layer_z", Value::Float(layer.z));
         if let Some(template) = &s.before_layer_change_gcode {
             self.custom("before_layer_change_gcode", template)?;
@@ -1560,8 +1911,32 @@ impl Writer<'_> {
             self.retract(true)?;
         }
         self.variables.set("layer_num", Value::Int(index as i64));
+        self.state.pictured = false;
+        if let Some((_, Timelapse::LayerStart { .. })) = &s.time_lapse {
+            self.timelapse(layer.z)?;
+        }
         if let Some(template) = &s.layer_change_gcode {
             self.custom("layer_change_gcode", template)?;
+        }
+        // Where the reference's cooling sets the layer's fan; a marker in
+        // the file, as there (GCode.cpp `process_layer`).
+        writeln!(self.out, ";_SET_FAN_SPEED_CHANGING_LAYER")?;
+        if index == 1 {
+            // GCode.cpp `process_layer`, the second layer's things: power
+            // loss recovery as the printer asks, and a Bambu Lab printer's
+            // scan of the first layer, the filament pulled back for it.
+            if let Some((on, _)) = s.power_loss_recovery {
+                self.out.extend_from_slice(on.as_bytes());
+            }
+            if s.bambu && s.scan_first_layer {
+                self.retract(false)?;
+                writeln!(
+                    self.out,
+                    "M976 S1 P1 ; scan model before printing 2nd layer\nM400 P100"
+                )?;
+                self.spend(0.1);
+                self.unretract()?;
+            }
         }
         if index == 1 {
             if s.nozzle_temperature != s.nozzle_temperature_initial_layer {
@@ -1680,7 +2055,19 @@ impl Writer<'_> {
     fn body(&mut self, index: usize, parts: &[Layer<'_>], cursor: usize) -> Result<(), GcodeError> {
         self.timing = Timing::default();
         self.extruding = false;
+        // GCode.cpp `process_layer`: a layer with work on the prime tower
+        // has its timelapse picture before the first tool's.
+        let towered_layer = parts
+            .iter()
+            .any(|part| !part.tower.is_empty() || part.wipe.is_some());
+        let traditional = matches!(&self.settings.time_lapse, Some((_, Timelapse::Traditional)));
         for (offset, layer) in parts.iter().enumerate() {
+            if traditional
+                && !self.state.pictured
+                && (!layer.tower.is_empty() || layer.wipe.is_some())
+            {
+                self.timelapse(layer.z)?;
+            }
             // To a prime tower, on it and away from it are moves outside
             // the part (GCode.cpp `append_tcr`: `use_external_mp_once`
             // before the move to the tower and after the tower). The
@@ -1697,6 +2084,9 @@ impl Writer<'_> {
                         .first()
                         .and_then(|line| line.points.first().copied())
                 });
+                // Bambu's tower frames the change it takes in comments
+                // (WipeTower.cpp `tool_change`).
+                self.state.framing = layer.wipe.is_some() && self.all[layer.filament].bambu_tower;
                 self.change_tool(
                     layer.filament,
                     index,
@@ -1772,11 +2162,72 @@ impl Writer<'_> {
             if let Some(region) = layer.region.and_then(|at| self.regions.get(at)) {
                 self.settings = region;
             }
-            let laid = self.islands(layer, ironing_fan);
+            let laid = self.islands(layer, ironing_fan, traditional && !towered_layer);
             self.settings = own;
             laid?;
         }
+        if traditional && !towered_layer && !self.state.pictured {
+            self.timelapse(parts[0].z)?;
+        }
         self.fan_over_air(false)?;
+        Ok(())
+    }
+
+    /// The printer's timelapse G-code (GCode.cpp `process_layer`,
+    /// `generate_timelapse_gcode`): the filament pulled back first where
+    /// the reference does, and the nozzle put back to the height it had
+    /// when the template leaves it elsewhere. The template moves the head,
+    /// so where it is after is not known.
+    fn timelapse(&mut self, z: f64) -> Result<(), GcodeError> {
+        let s = self.settings;
+        let Some((template, place)) = &s.time_lapse else {
+            return Ok(());
+        };
+        self.state.pictured = true;
+        let bambu = match place {
+            Timelapse::TwoNozzles => return Ok(()),
+            Timelapse::LayerStart { bambu } => *bambu,
+            Timelapse::Traditional => true,
+        };
+        if bambu && (*place == Timelapse::Traditional || s.retract_when_changing_layer) {
+            self.retract(false)?;
+        }
+        self.variables.set("layer_z", Value::Float(z));
+        let text = self.custom("time_lapse_gcode", template)?;
+        // Its moves count towards the layer's time for cooling, as the
+        // reference's cooling counts every move of the layer after its
+        // first line (CoolingBuffer.cpp `parse`).
+        let from = self
+            .state
+            .position
+            .map_or([0.0, 0.0], |at| [unscaled(at.x), unscaled(at.y)]);
+        let seconds = template_seconds(
+            &text,
+            from,
+            self.state.height.unwrap_or(z),
+            self.state.feedrate,
+        );
+        self.spend(seconds);
+        if !bambu {
+            return Ok(());
+        }
+        let before = self.state.height.unwrap_or(z);
+        let last_z = text.lines().rev().find_map(|line| {
+            let code = line.split(';').next()?.trim();
+            let mut words = code.split_whitespace();
+            matches!(words.next()?, "G0" | "G1" | "G2" | "G3")
+                .then(|| words.find_map(|word| word.strip_prefix('Z')?.parse::<f64>().ok()))
+                .flatten()
+        });
+        if let Some(last_z) = last_z {
+            if (last_z - before).abs() > 1e-4 {
+                writeln!(self.out, "G1 Z{before:.3}")?;
+                self.state.height = Some(before);
+            } else {
+                self.state.height = Some(last_z);
+            }
+        }
+        self.state.position = None;
         Ok(())
     }
 
@@ -1831,7 +2282,12 @@ impl Writer<'_> {
     /// last its ironing, over all of that (GCode.cpp `process_layer`).
     /// Fill in no island comes last. `ironing_fan` is the fan's speed
     /// while ironing, when ironing has one of its own on this layer.
-    fn islands(&mut self, layer: &Layer<'_>, ironing_fan: Option<u8>) -> io::Result<()> {
+    fn islands(
+        &mut self,
+        layer: &Layer<'_>,
+        ironing_fan: Option<u8>,
+        picture: bool,
+    ) -> Result<(), GcodeError> {
         let homes = homes(layer);
         let fill = |island: usize| -> Vec<&ExtrusionPath> {
             layer
@@ -1869,13 +2325,22 @@ impl Writer<'_> {
             }
             // Loops wholly over air, with `unsupported_wall_last`.
             let held = self.held(&layer.loops[layer.islands[island].clone()], &with_walls);
+            // A bed-slinger's timelapse picture, once the first island
+            // with fill has its walls (GCode.cpp `process_layer`).
+            let pictured = picture && !self.state.pictured && !rest.is_empty();
             if self.settings.infill_first {
+                if pictured {
+                    self.timelapse(layer.z)?;
+                }
                 self.lines(&rest, layer.shelter)?;
             }
             self.lines(&over_air, layer.shelter)?;
             self.walls(layer, &layer.islands[island], held.as_ref(), false)?;
             self.lines(&with_walls, layer.shelter)?;
             if !self.settings.infill_first {
+                if pictured {
+                    self.timelapse(layer.z)?;
+                }
                 self.lines(&rest, layer.shelter)?;
                 // Then the loops left hanging in mid air, now that the
                 // fill can anchor them (GCode.cpp `process_layer`, the
@@ -1891,7 +2356,7 @@ impl Writer<'_> {
             .into_iter()
             .partition(|path| path.role == Role::Ironing);
         self.lines(&rest, layer.shelter)?;
-        self.ironing(&ironing, layer.shelter, ironing_fan)
+        Ok(self.ironing(&ironing, layer.shelter, ironing_fan)?)
     }
 
     /// An island's ironing, once its walls and fill are down (GCode.cpp
@@ -2272,6 +2737,7 @@ impl Writer<'_> {
         };
         let mut run: Vec<Point2> = Vec::new();
         let mut index = 0;
+        let mut wiping = false;
         while index < wipe.strokes.len() {
             let stroke = &wipe.strokes[index];
             index += 1;
@@ -2315,6 +2781,10 @@ impl Writer<'_> {
                     run.extend_from_slice(&fitted.points[1..]);
                 }
                 TowerStroke::Lay(to, speed) | TowerStroke::LayAs(to, speed, _) => {
+                    if self.state.framing && !wiping {
+                        writeln!(self.out, "; CP TOOLCHANGE WIPE")?;
+                        wiping = true;
+                    }
                     let flow = match *stroke {
                         TowerStroke::LayAs(_, _, flow) => flow,
                         _ => wipe.flow,
@@ -2346,6 +2816,21 @@ impl Writer<'_> {
                     };
                     self.go(to, None, speed, length)?;
                     run.clear();
+                }
+                // The end of the change's block: the frame closed round it
+                // (WipeTower.cpp `tool_change`).
+                TowerStroke::Sync if self.state.framing => {
+                    writeln!(self.out, "; WIPE_TOWER_END")?;
+                    let travel = (s.travel_speed * 60.0).round();
+                    if self.state.feedrate != travel {
+                        writeln!(self.out, "G1 F{travel:.0}")?;
+                        self.state.feedrate = travel;
+                    }
+                    writeln!(
+                        self.out,
+                        "G4 S0\nG92 E0\n; CP TOOLCHANGE END\n;------------------\n\n"
+                    )?;
+                    self.state.framing = false;
                 }
                 TowerStroke::Sync => writeln!(self.out, "G4 S0")?,
                 TowerStroke::Retract | TowerStroke::Unretract if s.retraction_length > 0.0 => {
@@ -3120,6 +3605,20 @@ impl Writer<'_> {
             (None, Some(height)) => height.max(arrival),
             (None, None) => z,
         };
+        // From a place a template left the nozzle at, at a known height
+        // (the timelapse): lifted before it goes anywhere, as the
+        // reference's travel lifts first.
+        if let (None, Some(height)) = (from, self.state.height)
+            && top > height
+        {
+            self.feed(s.z_speed);
+            let feed_word = self.feed_word();
+            writeln!(self.out, "G1 Z{top:.3}{feed_word}")?;
+            self.spend((top - height) / s.z_speed);
+            self.go(to, None, s.travel_speed, 0.0)?;
+            self.state.height = Some(top);
+            return Ok(());
+        }
         let (Some(from), Some(height)) = (from, self.state.height) else {
             // The first move starts wherever the start G-code left the
             // nozzle, which is not known: across at that height, then to
@@ -3178,6 +3677,38 @@ impl Writer<'_> {
         Ok(())
     }
 
+    /// The tags the file's readers know its parts by: Bambu Studio's on a
+    /// Bambu Lab printer, which its firmware and Bambu Handy read, the
+    /// others' anywhere else (GCodeProcessor.cpp `Reserved_Tags`,
+    /// `Reserved_Tags_compatible`).
+    fn tags(&self) -> &'static Tags {
+        if self.settings.bambu {
+            &BAMBU_TAGS
+        } else {
+            &TAGS
+        }
+    }
+
+    /// A line's width, when it changes: `%g` on a Bambu Lab printer
+    /// (GCode.cpp `_extrude`), to the thousandth elsewhere.
+    fn width_tag(&mut self, width: f64) -> io::Result<()> {
+        if self.settings.bambu {
+            writeln!(self.out, "; LINE_WIDTH: {}", stream_double(width))
+        } else {
+            writeln!(self.out, ";WIDTH:{width:.3}")
+        }
+    }
+
+    /// Where a point on the bed is written in the file: taken back by the
+    /// tool's `extruder_offset` (GCode.cpp `point_to_gcode`).
+    fn gcode_x(&self, point: Point2) -> f64 {
+        unscaled(point.x) - self.settings.extruder_offset[0]
+    }
+
+    fn gcode_y(&self, point: Point2) -> f64 {
+        unscaled(point.y) - self.settings.extruder_offset[1]
+    }
+
     /// One move without extruding, to `to` and, if given, height `z`.
     /// `length` is how far that is across the bed, in mm.
     fn go(&mut self, to: Point2, z: Option<f64>, speed: f64, length: f64) -> io::Result<()> {
@@ -3187,8 +3718,8 @@ impl Writer<'_> {
         writeln!(
             self.out,
             "G1 X{:.3} Y{:.3}{height}{feed_word}",
-            unscaled(to.x),
-            unscaled(to.y)
+            self.gcode_x(to),
+            self.gcode_y(to)
         )?;
         // The very first move has no known start, so it is not counted.
         if length.is_finite() {
@@ -3340,12 +3871,12 @@ impl Writer<'_> {
         if self.state.role != Some(role) {
             // Two roles may go by one name, which is then said once.
             if self.state.role.map(role_name) != Some(role_name(role)) {
-                writeln!(self.out, ";TYPE:{}", role_name(role))?;
+                writeln!(self.out, "{}{}", self.tags().feature, role_name(role))?;
             }
             self.state.role = Some(role);
         }
         if self.state.width != flow.width {
-            writeln!(self.out, ";WIDTH:{:.3}", flow.width)?;
+            self.width_tag(flow.width)?;
             self.state.width = flow.width;
         }
         self.accelerate(motion.acceleration)?;
@@ -3423,8 +3954,8 @@ impl Writer<'_> {
                 writeln!(
                     self.out,
                     "G1 X{:.3} Y{:.3} Z{:.3} E{feed:.5}{feed_word}",
-                    unscaled(to.x),
-                    unscaled(to.y),
+                    self.gcode_x(to),
+                    self.gcode_y(to),
                     contoured.z
                 )?;
                 self.state.height = Some(contoured.z);
@@ -3433,8 +3964,8 @@ impl Writer<'_> {
                 writeln!(
                     self.out,
                     "G1 X{:.3} Y{:.3} Z{:.3} E{feed:.5}{feed_word}",
-                    unscaled(to.x),
-                    unscaled(to.y),
+                    self.gcode_x(to),
+                    self.gcode_y(to),
                     sloping.z
                 )?;
                 self.state.height = Some(sloping.z);
@@ -3442,8 +3973,8 @@ impl Writer<'_> {
             (None, None) => writeln!(
                 self.out,
                 "G1 X{:.3} Y{:.3} E{feed:.5}{feed_word}",
-                unscaled(to.x),
-                unscaled(to.y)
+                self.gcode_x(to),
+                self.gcode_y(to)
             )?,
             // GCodeWriter.cpp `extrude_arc_to_xy`: G3 goes round
             // counter-clockwise and G2 clockwise, and I and J say where
@@ -3453,8 +3984,8 @@ impl Writer<'_> {
                 self.out,
                 "G{} X{:.3} Y{:.3} I{:.3} J{:.3} E{feed:.5}{feed_word}",
                 if arc.ccw { 3 } else { 2 },
-                unscaled(to.x),
-                unscaled(to.y),
+                self.gcode_x(to),
+                self.gcode_y(to),
                 thousandths(unscaled(arc.center.x) - unscaled(arc.start.x)),
                 thousandths(unscaled(arc.center.y) - unscaled(arc.start.y)),
             )?,
@@ -3525,7 +4056,12 @@ impl Writer<'_> {
         let heights = self.state.wipe_heights.take();
         if let Some(path) = wipe.filter(|_| reach > 0.0) {
             self.state.feedrate = (wipe_speed * 60.0).round();
-            writeln!(self.out, ";WIPE_START\nG1 F{:.0}", self.state.feedrate)?;
+            writeln!(
+                self.out,
+                "{}\nG1 F{:.0}",
+                self.tags().wipe_start,
+                self.state.feedrate
+            )?;
             for pair in path.windows(2) {
                 let length = distance(pair[0], pair[1]);
                 if length == 0.0 {
@@ -3540,14 +4076,14 @@ impl Writer<'_> {
                 writeln!(
                     self.out,
                     "G1 X{:.3} Y{:.3}{height}{pulled}",
-                    unscaled(pair[1].x),
-                    unscaled(pair[1].y)
+                    self.gcode_x(pair[1]),
+                    self.gcode_y(pair[1])
                 )?;
                 self.state.summary.travel_mm += length;
                 self.spend(length / wipe_speed);
                 self.state.position = Some(pair[1]);
             }
-            writeln!(self.out, ";WIPE_END")?;
+            writeln!(self.out, "{}", self.tags().wipe_end)?;
         }
         if after > 0.0 {
             self.feed(s.retraction_speed);
@@ -3588,6 +4124,12 @@ impl Writer<'_> {
             self.state.height = Some(z);
         }
         self.state.pending_lift = None;
+        self.unretract()
+    }
+
+    /// Pushes back what was retracted, at once.
+    fn unretract(&mut self) -> io::Result<()> {
+        let s = self.settings;
         if self.state.retracted {
             let speed = if s.deretraction_speed > 0.0 {
                 s.deretraction_speed
@@ -3627,13 +4169,25 @@ impl Writer<'_> {
 
     fn finish(&mut self) -> Result<Summary, GcodeError> {
         let s = self.settings;
+        // Power-loss recovery closed where it was opened, on the second
+        // layer (GCode.cpp `_do_export`).
+        if self.file.layers > 1
+            && let Some((_, off)) = s.power_loss_recovery
+        {
+            self.out.extend_from_slice(off.as_bytes());
+        }
         self.retract(false)?;
         writeln!(self.out, "M106 S0")?;
         if s.auxiliary_fan {
             writeln!(self.out, "M106 P2 S0")?;
         }
+        if s.bambu {
+            // GCode.cpp `_do_export`: "M981 is also used to tell xcam the
+            // last layer is finished".
+            writeln!(self.out, "M981 S0 P20000 ; close spaghetti detector")?;
+        }
         if s.filament_end_gcode.is_some() || s.machine_end_gcode.is_some() {
-            writeln!(self.out, ";TYPE:Custom")?;
+            writeln!(self.out, "{}Custom", self.tags().feature)?;
         }
         if let Some(template) = &s.filament_end_gcode {
             self.custom("filament_end_gcode", template)?;
@@ -3695,7 +4249,7 @@ impl Writer<'_> {
         if weighed {
             writeln!(self.out, "; filament used [g] = {}", listed(&grams))?;
         }
-        if !s.config.is_empty() {
+        if !s.config.is_empty() && !s.bambu {
             writeln!(self.out, "; CONFIG_BLOCK_START")?;
             for (key, value) in &s.config {
                 writeln!(self.out, "; {key} = {value}")?;
@@ -3718,6 +4272,12 @@ impl Writer<'_> {
                 self.file.first_layer_height
             )?;
             writeln!(self.out, "; CONFIG_BLOCK_END\n")?;
+        }
+        // A Bambu Lab printer's file ends with what each filament used,
+        // its time being at the top (GCode.cpp `_do_export`).
+        if s.bambu {
+            writeln!(self.out)?;
+            return Ok(summary);
         }
         if weighed {
             writeln!(

@@ -311,6 +311,34 @@ pub struct PrintSettings {
     /// The printer gets the reference's Bambu Lab tower (WipeTower.cpp):
     /// a Bambu Lab printer, or `wipe_tower_type` `type1`.
     pub bambu_tower: bool,
+    /// A Bambu Lab printer (`printer_model`, or failing that the preset's
+    /// name, starting "Bambu Lab"), which the reference writes its file
+    /// for in Bambu Studio's form (Print.hpp `is_BBL_printer`, set by the
+    /// command line's `is_bbl_vendor_preset`): the tags its firmware reads
+    /// (`; FEATURE:`, `; CHANGE_LAYER`), the objects labelled for skipping,
+    /// the settings block at the top.
+    pub bambu: bool,
+    /// Where each tool's nozzle sits off the first's, in mm
+    /// (`extruder_offset`): every position written is taken back by it
+    /// (GCode.cpp `point_to_gcode`). Bambu Lab's P1 and X1 have 0x2.
+    pub extruder_offset: [f64; 2],
+    /// What the reference works out of the whole plate for the templates.
+    pub plate: Plate,
+    /// The machine's limits as the file tells a Marlin or RepRapFirmware
+    /// printer them before its start G-code (`emit_machine_limits_to_gcode`;
+    /// GCode.cpp `print_machine_envelope`): `M201`, `M203`, `M204`, `M205`.
+    pub machine_envelope: Option<String>,
+    /// What turns power-loss recovery on from the second layer and off at
+    /// the end (`enable_power_loss_recovery` `enable` or `disable`;
+    /// GCodeWriter.cpp `enable_power_loss_recovery`): Bambu Lab's
+    /// `M1003`, Marlin 2's `M413`. None leaves it to the printer.
+    pub power_loss_recovery: Option<(&'static str, &'static str)>,
+    /// A Bambu Lab printer scans the first layer before the second
+    /// (`scan_first_layer`, `M976 S1 P1`).
+    pub scan_first_layer: bool,
+    /// The printer's timelapse G-code and where in a layer it goes
+    /// (`time_lapse_gcode`; GCode.cpp `process_layer`).
+    pub time_lapse: Option<(String, Timelapse)>,
     /// How far below its temperature the printer's change G-code leaves
     /// this filament before the tower, which that tower heats it back up
     /// from (`filament_cooling_before_tower`).
@@ -465,6 +493,13 @@ impl Default for PrintSettings {
             elegoo: false,
             prime_tower: false,
             bambu_tower: false,
+            bambu: false,
+            extruder_offset: [0.0, 0.0],
+            plate: Plate::default(),
+            machine_envelope: None,
+            power_loss_recovery: None,
+            scan_first_layer: false,
+            time_lapse: None,
             cooling_before_tower: 0.0,
             tools: 1,
             flush_volumes: Vec::new(),
@@ -1021,6 +1056,64 @@ impl PrintSettings {
                 .or(settings.text("printer_settings_id"))
                 .is_some_and(|name| name.starts_with("Bambu Lab"))
                 || settings.text("wipe_tower_type") == Some("type1"),
+            bambu: settings
+                .text("printer_model")
+                .filter(|model| !model.is_empty())
+                .or(settings.text("printer_settings_id"))
+                .is_some_and(|name| name.starts_with("Bambu Lab")),
+            extruder_offset: settings
+                .texts("extruder_offset")
+                // As `ConfigOptionVector::get_at`: past the end, the first.
+                .and_then(|offsets| offsets.get(index).or(offsets.first()))
+                .and_then(|offset| {
+                    let (x, y) = offset.trim().split_once('x')?;
+                    Some([x.trim().parse().ok()?, y.trim().parse().ok()?])
+                })
+                .unwrap_or([0.0, 0.0]),
+            plate: Plate::default(),
+            machine_envelope: machine_envelope(settings)?,
+            power_loss_recovery: {
+                let bambu = settings
+                    .text("printer_model")
+                    .filter(|model| !model.is_empty())
+                    .or(settings.text("printer_settings_id"))
+                    .is_some_and(|name| name.starts_with("Bambu Lab"));
+                let marlin2 = settings.text("gcode_flavor") == Some("marlin2");
+                let (on, off) = match (bambu, marlin2) {
+                    (true, _) => (
+                        "; open powerlost recovery\nM1003 S1\n",
+                        "; close powerlost recovery\nM1003 S0\n",
+                    ),
+                    (false, true) => ("M413 S1\n", "M413 S0\n"),
+                    (false, false) => ("", ""),
+                };
+                match settings.text("enable_power_loss_recovery") {
+                    Some("enable") if !on.is_empty() => Some((on, off)),
+                    // Turned off from the second layer on, and never back on.
+                    Some("disable") if !on.is_empty() => Some((off, "")),
+                    _ => None,
+                }
+            },
+            scan_first_layer: settings.flag("scan_first_layer")?.unwrap_or(false),
+            time_lapse: {
+                let bambu = settings
+                    .text("printer_model")
+                    .filter(|model| !model.is_empty())
+                    .or(settings.text("printer_settings_id"))
+                    .is_some_and(|name| name.starts_with("Bambu Lab"));
+                let i3 = settings.text("printer_structure") == Some("i3");
+                let by_layer = settings.text("print_sequence") != Some("by object");
+                let nozzles = settings.texts("nozzle_diameter").map_or(1, <[String]>::len);
+                gcode_template(settings, "time_lapse_gcode").map(|template| {
+                    let place = match (i3 && by_layer, bambu) {
+                        (true, _) => Timelapse::Traditional,
+                        (false, true) if nozzles >= 2 => Timelapse::TwoNozzles,
+                        (false, true) => Timelapse::LayerStart { bambu: true },
+                        (false, false) => Timelapse::LayerStart { bambu: false },
+                    };
+                    (template, place)
+                })
+            },
             cooling_before_tower: number("filament_cooling_before_tower", 0.0)?,
             flush_volumes: {
                 // Some projects write the multiplier as a list of one;
@@ -1072,6 +1165,125 @@ impl PrintSettings {
     }
 }
 
+/// GCode.cpp `print_machine_envelope`: the machine's limits, for a Marlin
+/// or RepRapFirmware printer that is to be told them. Input shaping, which
+/// the reference sets there for Marlin 2 and RepRapFirmware where asked
+/// (`input_shaping_emit`), is not written; a note says so where set.
+fn machine_envelope(settings: &Settings) -> Result<Option<String>, ConfigError> {
+    // Only for a printer the settings describe: without one the file has
+    // a generic preamble and no limits to tell (as `limits`).
+    let Some(flavor) = settings.text("gcode_flavor") else {
+        return Ok(None);
+    };
+    let emit = settings
+        .flag("emit_machine_limits_to_gcode")?
+        .unwrap_or(true);
+    if !emit || !matches!(flavor, "marlin" | "marlin2" | "reprapfirmware") {
+        return Ok(None);
+    }
+    let first = |key: &str| -> Result<f64, ConfigError> {
+        Ok(settings
+            .floats(key)?
+            .and_then(|values| values.first().copied().flatten())
+            .unwrap_or(0.0))
+    };
+    let whole = |value: f64| (value + 0.5) as i64;
+    let rrf = flavor == "reprapfirmware";
+    let factor = if rrf { 60.0 } else { 1.0 };
+    let axes = |stem: &str, by: f64| -> Result<Vec<i64>, ConfigError> {
+        ["x", "y", "z", "e"]
+            .iter()
+            .map(|axis| Ok(whole(first(&format!("{stem}_{axis}"))? * by)))
+            .collect()
+    };
+    let accelerations = axes("machine_max_acceleration", 1.0)?;
+    let speeds = axes("machine_max_speed", factor)?;
+    let mut out = format!(
+        "M201 X{} Y{} Z{} E{}\nM203 X{} Y{} Z{} E{}\n",
+        accelerations[0],
+        accelerations[1],
+        accelerations[2],
+        accelerations[3],
+        speeds[0],
+        speeds[1],
+        speeds[2],
+        speeds[3]
+    );
+    let extruding = whole(first("machine_max_acceleration_extruding")?);
+    let retracting = whole(first("machine_max_acceleration_retracting")?);
+    let travel = whole(first("machine_max_acceleration_travel")?);
+    out += &match flavor {
+        "reprapfirmware" => {
+            format!("M204 P{extruding} T{travel} ; sets acceleration (P, T), mm/sec^2\n")
+        }
+        "marlin2" => format!(
+            "M204 P{extruding} R{retracting} T{travel} ; sets acceleration (P, T) and retract acceleration (R), mm/sec^2\n"
+        ),
+        // Marlin before 2 travels at the printing acceleration.
+        _ => format!("M204 P{extruding} R{retracting} T{extruding}\n"),
+    };
+    let jerk = |axis: &str| first(&format!("machine_max_jerk_{axis}")).map(|jerk| jerk * factor);
+    out += &format!(
+        "{} X{:.2} Y{:.2} Z{:.2} E{:.2} ; sets the jerk limits, {}\n",
+        if rrf { "M566" } else { "M205" },
+        jerk("x")?,
+        jerk("y")?,
+        jerk("z")?,
+        jerk("e")?,
+        if rrf { "mm/min" } else { "mm/sec" }
+    );
+    let deviation = first("machine_max_junction_deviation")?;
+    if flavor == "marlin2" && deviation > 0.0 {
+        out += &format!("M205 J{deviation:.3}\n");
+    }
+    Ok(Some(out))
+}
+
+/// Where in a layer the printer's timelapse G-code goes (GCode.cpp
+/// `process_layer`). A smooth timelapse's tower is not done (a note says
+/// so where set).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Timelapse {
+    /// As the layer starts, after the layer change. On a Bambu Lab
+    /// printer the filament is pulled back first, where the printer
+    /// retracts at layer changes, and the nozzle is put back to its height
+    /// after (`generate_timelapse_gcode`).
+    LayerStart { bambu: bool },
+    /// A bed-slinger printing layer by layer takes the picture in the
+    /// middle of the layer (`need_insert_timelapse_gcode_for_traditional`):
+    /// before the first tool's work on the prime tower where the layer has
+    /// any, else once the first island with fill has its walls, else at the
+    /// layer's end; retracted first, the height put back after.
+    Traditional,
+    /// A Bambu Lab printer of two nozzles, which takes its picture with the
+    /// nozzle that prints most; not done, and refused.
+    TwoNozzles,
+}
+
+/// What the reference works out of the whole plate before it writes the
+/// file, which the printer's templates are given (GCode.cpp `_do_export`).
+/// Positions are on the bed, before any `extruder_offset`.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct Plate {
+    /// The box round the first layer's convex hull, min x, min y, max x,
+    /// max y (`first_layer_print_min`, `_max`, `_size`): the skirt's hull
+    /// out to its last loop (there whenever `skirt_height` is above 0, with
+    /// no loops at `skirt_distance`), the first layer's islands, the brim's
+    /// ground and the prime tower's corners (Print.cpp
+    /// `finalize_first_layer_convex_hull`). None leaves it to what the
+    /// first layer extrudes.
+    pub first_layer_box: Option<[f64; 4]>,
+    /// The middle of the box round the objects' first layers, each one's
+    /// brim included, the prime tower left out
+    /// (`first_layer_center_no_wipe_tower`, `PrintObject::get_first_layer_bbox`).
+    pub first_layer_centre: Option<[f64; 2]>,
+    /// Whether an object, or the first layer's hull, reaches into the
+    /// printer's `head_wrap_detect_zone` (`in_head_wrap_detect_zone`).
+    pub in_head_wrap_detect_zone: bool,
+    /// Each object's box across the bed: min x, min y, max x, max y.
+    pub objects: Vec<[f64; 4]>,
+}
+
 /// A template as the reference reads it from a preset: a backslash makes
 /// `\n` a line break and `\r` a carriage return, and stands any other
 /// character after it for itself (Config.cpp `unescape_string_cstyle`).
@@ -1121,6 +1333,32 @@ fn variables(
             Setting::Many(texts) => {
                 variables.set_list(key, texts.iter().map(Value::text).collect())
             }
+        }
+    }
+    filament_retraction_overrides(settings, &mut variables);
+    // A list of choices reads in an expression as the number of each
+    // choice (PlaceholderParser.cpp, `coEnums` read with `set_i`): Bambu
+    // Lab's change G-code asks `z_hop_types[current_extruder] == 0`.
+    // (The older `[name]` form writes the choice's name there; here it
+    // writes the number too.)
+    for (key, choices) in VECTOR_ENUMS {
+        let Some(values) = variables.list(key) else {
+            continue;
+        };
+        let numbers: Option<Vec<Value>> = values
+            .iter()
+            .map(|value| {
+                let text = value.to_string();
+                let text = text.trim();
+                choices
+                    .iter()
+                    .find(|(name, _)| *name == text)
+                    .map(|(_, number)| Value::Int(*number))
+                    .or_else(|| text.parse::<i64>().ok().map(Value::Int))
+            })
+            .collect();
+        if let Some(numbers) = numbers {
+            variables.set_list(*key, numbers);
         }
     }
     // Pressure advance is an on/off setting per filament that templates
@@ -1275,6 +1513,133 @@ fn variables(
         }
     }
     variables
+}
+
+/// The settings that are lists of choices (`coEnums` in PrintConfig.cpp),
+/// each choice with its number (the `s_keys_map_*` tables there).
+const VECTOR_ENUMS: &[(&str, &[(&str, i64)])] = &[
+    (
+        "overhang_fan_threshold",
+        &[
+            ("0%", 0),
+            ("10%", 1),
+            ("25%", 2),
+            ("50%", 3),
+            ("75%", 4),
+            ("95%", 5),
+        ],
+    ),
+    ("nozzle_volume_type", NOZZLE_VOLUME_TYPES),
+    ("default_nozzle_volume_type", NOZZLE_VOLUME_TYPES),
+    ("extruder_nozzle_volume_type", NOZZLE_VOLUME_TYPES),
+    ("extruder_type", &[("Direct Drive", 0), ("Bowden", 1)]),
+    ("filament_volume_type", &[("standard", 0), ("high_flow", 1)]),
+    (
+        "z_hop_types",
+        &[
+            ("Auto Lift", 0),
+            ("Normal Lift", 1),
+            ("Slope Lift", 2),
+            ("Spiral Lift", 3),
+        ],
+    ),
+    (
+        "retract_lift_enforce",
+        &[
+            ("All Surfaces", 0),
+            ("Top Only", 1),
+            ("Bottom Only", 2),
+            ("Top and Bottom", 3),
+        ],
+    ),
+];
+
+const NOZZLE_VOLUME_TYPES: &[(&str, i64)] = &[
+    ("Standard", 0),
+    ("High Flow", 1),
+    ("Hybrid", 2),
+    ("TPU High Flow", 3),
+    ("TPU285", 4),
+    ("E3D High Flow", 5),
+];
+
+/// The printer's retraction settings a filament may set for itself
+/// (PrintConfig.cpp `is_extruder_retract_key`).
+const EXTRUDER_RETRACT_KEYS: &[&str] = &[
+    "retraction_length",
+    "z_hop",
+    "travel_slope",
+    "retract_lift_above",
+    "retract_lift_below",
+    "retract_lift_enforce",
+    "z_hop_types",
+    "retraction_speed",
+    "deretraction_speed",
+    "retraction_minimum_travel",
+    "retract_when_changing_layer",
+    "wipe",
+    "wipe_distance",
+    "retract_before_wipe",
+    "retract_after_wipe",
+    "retract_length_toolchange",
+    "retract_restart_extra",
+    "retract_restart_extra_toolchange",
+    "long_retractions_when_cut",
+    "retraction_distances_when_cut",
+];
+
+/// Templates read a printer's retraction settings with each filament's own
+/// laid over them, one entry per filament, as the reference gives them
+/// (PrintApply.cpp `print_config_diffs`: `filament_<key>` applied to
+/// `<key>` with `ConfigOptionVector::apply_override`, an entry of `nil`
+/// taking the printer's first). The two settings of the long retraction
+/// when cutting are taken from the filament only where the printer says
+/// so (`enable_long_retraction_when_cut` 2, `EnableFilament`). Then a
+/// filament's long retraction counts as on only with a distance above 0
+/// (GCode.cpp `effective_long_retractions_when_cut`).
+fn filament_retraction_overrides(settings: &Settings, variables: &mut Variables) {
+    let by_filament = settings
+        .text("enable_long_retraction_when_cut")
+        .and_then(|level| level.trim().parse::<i64>().ok())
+        == Some(2);
+    for key in EXTRUDER_RETRACT_KEYS {
+        if !by_filament && key.ends_with("_when_cut") {
+            continue;
+        }
+        let Some(own) = settings.texts(&format!("filament_{key}")) else {
+            continue;
+        };
+        let nil = |text: &String| text.trim() == "nil";
+        if own.is_empty() || own.iter().all(nil) {
+            continue;
+        }
+        let Some(printer) = settings.texts(key).and_then(|values| values.first()) else {
+            continue;
+        };
+        let values = own
+            .iter()
+            .map(|text| Value::text(if nil(text) { printer } else { text }))
+            .collect();
+        variables.set_list(*key, values);
+    }
+    let (Some(on), Some(lengths)) = (
+        variables.list("long_retractions_when_cut"),
+        variables.list("retraction_distances_when_cut"),
+    ) else {
+        return;
+    };
+    let at = |values: &[Value], index: usize| values.get(index).or(values.first()).cloned();
+    let effective = (0..on.len())
+        .map(|index| {
+            let on =
+                at(on, index).is_some_and(|value| matches!(value.to_string().trim(), "1" | "true"));
+            let length = at(lengths, index)
+                .and_then(|value| value.to_string().trim().parse::<f64>().ok())
+                .unwrap_or(0.0);
+            Value::Int(i64::from(on && length > 0.0))
+        })
+        .collect();
+    variables.set_list("long_retractions_when_cut", effective);
 }
 
 #[cfg(test)]
@@ -1570,5 +1935,104 @@ mod tests {
                 ("z_hop_types", "Auto Lift,Auto Lift"),
             ]
         );
+    }
+
+    #[test]
+    fn a_filaments_retraction_is_what_templates_read() {
+        let read =
+            |json: &str| PrintSettings::from_settings(&Settings::from_json(json).unwrap()).unwrap();
+        // Bambu Lab's: the long retraction when cutting is the filament's
+        // where the printer says so (2), and on only with a distance.
+        let settings = read(
+            r#"{"enable_long_retraction_when_cut": "2", "long_retractions_when_cut": ["0"],
+                "retraction_distances_when_cut": ["18"], "filament_long_retractions_when_cut": ["1", "1", "nil"],
+                "filament_retraction_distances_when_cut": ["18", "0", "nil"],
+                "retraction_length": ["0.8"], "filament_retraction_length": ["nil", "1.2", "nil"],
+                "z_hop_types": ["Auto Lift"], "filament_z_hop_types": ["nil", "Spiral Lift", "nil"]}"#,
+        );
+        let list = |name: &str| -> Vec<String> {
+            settings
+                .variables
+                .list(name)
+                .unwrap()
+                .iter()
+                .map(Value::to_string)
+                .collect()
+        };
+        assert_eq!(list("long_retractions_when_cut"), ["1", "0", "0"]);
+        assert_eq!(list("retraction_distances_when_cut"), ["18", "0", "18"]);
+        assert_eq!(list("retraction_length"), ["0.8", "1.2", "0.8"]);
+        // A list of choices reads as each choice's number.
+        assert_eq!(list("z_hop_types"), ["0", "3", "0"]);
+        // Anywhere else the printer's own pair stands.
+        let settings = read(
+            r#"{"enable_long_retraction_when_cut": "0", "long_retractions_when_cut": ["1"],
+                "retraction_distances_when_cut": ["18"], "filament_long_retractions_when_cut": ["0"]}"#,
+        );
+        let on: Vec<String> = (settings
+            .variables
+            .list("long_retractions_when_cut")
+            .unwrap()
+            .iter())
+        .map(Value::to_string)
+        .collect();
+        assert_eq!(on, ["1"]);
+    }
+
+    #[test]
+    fn a_marlin_printer_is_told_its_limits() {
+        let read =
+            |json: &str| PrintSettings::from_settings(&Settings::from_json(json).unwrap()).unwrap();
+        let limits = r#""machine_max_acceleration_x": ["20000"], "machine_max_acceleration_y": ["20000"],
+            "machine_max_acceleration_z": ["500"], "machine_max_acceleration_e": ["5000"],
+            "machine_max_speed_x": ["500"], "machine_max_speed_y": ["500"], "machine_max_speed_z": ["20"],
+            "machine_max_speed_e": ["30"], "machine_max_acceleration_extruding": ["20000"],
+            "machine_max_acceleration_retracting": ["5000"], "machine_max_acceleration_travel": ["9000"],
+            "machine_max_jerk_x": ["9"], "machine_max_jerk_y": ["9"], "machine_max_jerk_z": ["3"],
+            "machine_max_jerk_e": ["2.5"]"#;
+        let marlin = read(&format!(r#"{{"gcode_flavor": "marlin", {limits}}}"#));
+        assert_eq!(
+            marlin.machine_envelope.as_deref(),
+            Some(
+                "M201 X20000 Y20000 Z500 E5000\nM203 X500 Y500 Z20 E30\nM204 P20000 R5000 T20000\n\
+                 M205 X9.00 Y9.00 Z3.00 E2.50 ; sets the jerk limits, mm/sec\n"
+            )
+        );
+        let klipper = read(&format!(r#"{{"gcode_flavor": "klipper", {limits}}}"#));
+        assert_eq!(klipper.machine_envelope, None);
+        let kept = read(&format!(
+            r#"{{"gcode_flavor": "marlin", "emit_machine_limits_to_gcode": "0", {limits}}}"#
+        ));
+        assert_eq!(kept.machine_envelope, None);
+    }
+
+    #[test]
+    fn a_bambu_lab_printers_own_settings_are_read() {
+        let read =
+            |json: &str| PrintSettings::from_settings(&Settings::from_json(json).unwrap()).unwrap();
+        let a1 = read(
+            r#"{"printer_model": "Bambu Lab A1", "printer_structure": "i3", "extruder_offset": ["0x2"],
+                "enable_power_loss_recovery": "enable", "scan_first_layer": "1",
+                "time_lapse_gcode": "M971 S11 C11 O0"}"#,
+        );
+        assert!(a1.bambu && a1.scan_first_layer);
+        assert_eq!(a1.extruder_offset, [0.0, 2.0]);
+        assert_eq!(
+            a1.power_loss_recovery.unwrap().0,
+            "; open powerlost recovery\nM1003 S1\n"
+        );
+        assert_eq!(a1.time_lapse.unwrap().1, Timelapse::Traditional);
+        let x1 = read(
+            r#"{"printer_model": "Bambu Lab X1 Carbon", "printer_structure": "corexy", "time_lapse_gcode": "M971"}"#,
+        );
+        assert_eq!(
+            x1.time_lapse.unwrap().1,
+            Timelapse::LayerStart { bambu: true }
+        );
+        let u1 = read(
+            r#"{"printer_model": "Snapmaker U1", "gcode_flavor": "marlin2", "enable_power_loss_recovery": "enable"}"#,
+        );
+        assert!(!u1.bambu);
+        assert_eq!(u1.power_loss_recovery, Some(("M413 S1\n", "M413 S0\n")));
     }
 }

@@ -110,6 +110,15 @@
       this.target = M.along(moved, this.forward, this.distance);
     }
 
+    // Camera::rotate_local_around_target: about the camera's own up and
+    // right through the target, by `yaw` and `pitch` radians, nothing
+    // kept upright ("Use free camera").
+    rotateFree(yaw, pitch) {
+      const turn = M.rows.multiply(M.rows.about(this.up, yaw), M.rows.about(this.right, pitch));
+      this.rotation = M.rows.tidy(M.rows.multiply(this.rotation, turn));
+      this.updateZenit();
+    }
+
     // Camera::update_zoom: a step of the wheel is a tenth.
     updateZoom(delta) {
       this.setZoom(this.zoom / (1 - Math.max(-4, Math.min(4, delta)) * ZOOM_UNIT));

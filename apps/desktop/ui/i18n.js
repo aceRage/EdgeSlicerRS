@@ -16,6 +16,36 @@
 // there. The page loads nothing from the network: the table comes
 // through the session, as every call does.
 
+// The page's theme: dark or light as Preferences' "Enable Dark mode"
+// says (prefs.js), else as the system is. Set before anything is drawn,
+// from what was last in force (kept in the browser only to draw the
+// first frame right; the setting is the session's). `light` on <html>
+// takes the light tokens (style.css); `themechange` tells what draws.
+const EdgeTheme = (() => {
+  const system = window.matchMedia('(prefers-color-scheme: light)');
+  let chosen = null;
+  try { chosen = localStorage.getItem('edge.theme'); } catch { /* none */ }
+  const light = () => (chosen ? chosen === 'light' : system.matches);
+  const show = () => {
+    const was = document.documentElement.classList.contains('light');
+    document.documentElement.classList.toggle('light', light());
+    if (was !== light()) document.dispatchEvent(new Event('themechange'));
+  };
+  system.addEventListener('change', show);
+  show();
+  return {
+    light,
+    // 'dark', 'light', or null to follow the system.
+    set(mode) {
+      chosen = mode;
+      try {
+        if (mode) localStorage.setItem('edge.theme', mode); else localStorage.removeItem('edge.theme');
+      } catch { /* not kept here */ }
+      show();
+    },
+  };
+})();
+
 const I18n = (() => {
   let table = { messages: {}, plurals: {}, plural: '' };
   let current = { language: 'en_GB', languages: [] };
@@ -93,7 +123,7 @@ const I18n = (() => {
     'gl/math.js', 'gl/camera.js', 'gl/shaders.js', 'gl/renderer.js', 'gl/scene.js',
     'gl/toolpath.js', 'gl/controls.js', 'gl/gcode.js', 'gl/stage.js',
     'paint.js', 'cut.js', 'connectors.js', 'curved.js', 'drawn.js', 'joints.js', 'scene-edit.js', 'plates.js', 'objects.js', 'printers.js', 'settings.js',
-    'objsettings.js', 'presets.js', 'filaments.js', 'app.js', 'save.js', 'hosts.js', 'menu.js',
+    'objsettings.js', 'presets.js', 'filaments.js', 'prefs.js', 'app.js', 'save.js', 'hosts.js', 'menu.js',
   ];
   // Once the last has run, `scripts-loaded` is sent where the page's
   // scripts used to wait for DOMContentLoaded.

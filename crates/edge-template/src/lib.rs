@@ -20,7 +20,7 @@ mod expression;
 
 use std::collections::HashMap;
 
-pub use expression::Value;
+pub use expression::{Value, stream_double};
 
 #[derive(Debug, PartialEq, thiserror::Error)]
 #[error("line {line}: {message}")]

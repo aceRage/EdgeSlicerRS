@@ -1211,6 +1211,7 @@ fn start_gcode_leaves_the_nozzle_primed_so_the_first_move_retracts() {
         .nth(1)
         .unwrap()
         .lines()
+        .filter(|line| *line != ";_SET_FAN_SPEED_CHANGING_LAYER")
         .take(4)
         .collect();
     // Retract, cross at the height the start G-code left the nozzle at,
@@ -3523,4 +3524,262 @@ fn one_nozzle_sets_the_new_temperature_without_waiting() {
             "M104 T0 S240 N0 ;Wipe tower reheat before wipe",
         ]
     );
+}
+
+/// A Bambu Lab printer's settings, as far as these tests need them.
+fn bambu(templates: &[(&str, &str)]) -> PrintSettings {
+    PrintSettings {
+        bambu: true,
+        power_loss_recovery: Some((
+            "; open powerlost recovery\nM1003 S1\n",
+            "; close powerlost recovery\nM1003 S0\n",
+        )),
+        machine_envelope: Some("M201 X20000 Y20000 Z500 E5000\n".into()),
+        config: vec![("printer_model".into(), "Bambu Lab P1S".into())],
+        ..profile(templates)
+    }
+}
+
+#[test]
+fn a_bambu_lab_printers_file_has_its_tags_settings_and_detectors() {
+    let settings = bambu(&[("start", "PRINT_START"), ("end", "PRINT_END")]);
+    let text = printed(3, &settings);
+    // Bambu Studio's tags, which the printer and Bambu Handy read.
+    assert!(text.contains("; CHANGE_LAYER\n; Z_HEIGHT: 0.2\n; LAYER_HEIGHT: 0.2\n"));
+    assert!(text.contains("; FEATURE: Outer wall"));
+    assert!(!text.contains(";TYPE:") && !text.contains(";LAYER_CHANGE"));
+    // The time at the top, the settings after the header.
+    let header: Vec<&str> = text.lines().take(5).collect();
+    assert!(
+        header[2].starts_with("; model printing time: "),
+        "{header:?}"
+    );
+    assert!(header[3].starts_with("; estimated first layer printing time (normal mode) = "));
+    let config = text.find("; CONFIG_BLOCK_START").unwrap();
+    assert!(config < text.find("; EXECUTABLE_BLOCK_START").unwrap());
+    assert!(!text.contains("; estimated printing time (normal mode)"));
+    // The limits, then the start; the spaghetti detector opened after it
+    // and closed before the end G-code; power-loss recovery from the
+    // second layer to the end.
+    let executable = text.split("; EXECUTABLE_BLOCK_START\n").nth(1).unwrap();
+    assert!(
+        executable
+            .lines()
+            .any(|line| line == "M201 X20000 Y20000 Z500 E5000")
+    );
+    let at = |what: &str| text.find(what).unwrap_or_else(|| panic!("{what}"));
+    assert!(
+        at("PRINT_START") < at("M981 S1 P20000") && at("M981 S1 P20000") < at("; CHANGE_LAYER")
+    );
+    let second = text.match_indices("; CHANGE_LAYER").nth(1).unwrap().0;
+    assert!(at("M1003 S1") > second && at("M1003 S1") < at("; Z_HEIGHT: 0.6"));
+    assert!(at("M1003 S0") < at("M981 S0 P20000") && at("M981 S0 P20000") < at("PRINT_END"));
+    // The marker where the reference sets each layer's fan.
+    assert_eq!(text.matches(";_SET_FAN_SPEED_CHANGING_LAYER").count(), 3);
+}
+
+#[test]
+fn a_bed_slingers_timelapse_goes_between_walls_and_fill() {
+    let settings = PrintSettings {
+        time_lapse: Some((
+            "; TIMELAPSE {layer_num} at {max_layer_z}\nG1 Z{max_layer_z + 0.4}\nG1 X0 Y128".into(),
+            Timelapse::Traditional,
+        )),
+        ..bambu(&[("start", "PRINT_START")])
+    };
+    let text = printed(2, &settings);
+    let second = text.split("; CHANGE_LAYER").nth(2).unwrap();
+    let at = |what: &str| {
+        second
+            .find(what)
+            .unwrap_or_else(|| panic!("{what}: {second}"))
+    };
+    assert!(at("; FEATURE: Outer wall") < at("; TIMELAPSE 1 at 0.4"));
+    assert!(at("; TIMELAPSE 1 at 0.4") < at("; FEATURE: Sparse infill"));
+    // The nozzle is put back at the height it had, and lifted before it
+    // goes anywhere.
+    let after: Vec<&str> = second[at("G1 X0 Y128")..].lines().skip(1).take(3).collect();
+    assert_eq!(after[0], "G1 Z0.400");
+    assert!(
+        after[1].starts_with("G1 Z0.") && word(after[1], 'Z') > Some(0.4),
+        "{after:?}"
+    );
+    // Elsewhere it is taken as the layer starts.
+    let settings = PrintSettings {
+        time_lapse: Some(("; TIMELAPSE".into(), Timelapse::LayerStart { bambu: false })),
+        ..profile(&[("start", "PRINT_START"), ("after", "; LAYER CHANGE")])
+    };
+    let text = printed(2, &settings);
+    let second = text.split(";LAYER_CHANGE").nth(2).unwrap();
+    assert!(second.find("; TIMELAPSE").unwrap() < second.find("; LAYER CHANGE").unwrap());
+}
+
+#[test]
+fn coordinates_are_taken_back_by_the_extruder_offset() {
+    let plain = printed(1, &basic());
+    let offset = printed(
+        1,
+        &PrintSettings {
+            extruder_offset: [0.0, 2.0],
+            ..basic()
+        },
+    );
+    let first = |text: &str| -> (f64, f64) {
+        let line = moves(text).find(|line| line.contains(" E")).unwrap();
+        (word(line, 'X').unwrap(), word(line, 'Y').unwrap())
+    };
+    let ((x, y), (ox, oy)) = (first(&plain), first(&offset));
+    assert_eq!(ox, x);
+    assert!((y - oy - 2.0).abs() < 1e-9, "{y} {oy}");
+}
+
+#[test]
+fn the_plates_first_layer_and_the_filaments_reach_the_templates() {
+    let settings = PrintSettings {
+        plate: Plate {
+            first_layer_box: Some([116.0, 116.0, 140.0, 140.0]),
+            first_layer_centre: Some([128.0, 126.0]),
+            in_head_wrap_detect_zone: true,
+            objects: vec![[118.0, 118.0, 138.0, 138.0]],
+        },
+        ..profile(&[(
+            "start",
+            "G29 A X{first_layer_print_min[0]} Y{first_layer_print_min[1]} I{first_layer_print_size[0]} J{first_layer_print_size[1]}\n\
+             G1 Y{first_layer_center_no_wipe_tower[1]}\n{if in_head_wrap_detect_zone}WRAP{endif}\n\
+             V{min_vitrification_temperature} U{is_extruder_used[0]} {is_extruder_used[1]}",
+        )])
+    };
+    let mut settings = settings;
+    settings
+        .variables
+        .set_list("temperature_vitrification", vec![Value::Int(45)]);
+    let text = printed(1, &settings);
+    assert!(
+        text.contains("G29 A X116 Y116 I24 J24\nG1 Y126\nWRAP\nV45 Utrue false"),
+        "{text}"
+    );
+}
+
+#[test]
+fn a_bambu_lab_printer_of_two_nozzles_is_refused() {
+    let settings = PrintSettings {
+        tools: 2,
+        ..bambu(&[("start", "PRINT_START")])
+    };
+    let layers = one_layer(&[], &[], &[]);
+    let error = write(&mut Vec::new(), &layers, &settings).unwrap_err();
+    assert!(matches!(error, GcodeError::Unsupported(_)), "{error}");
+}
+
+#[test]
+fn the_way_to_the_cutter_goes_round_the_objects() {
+    let mut settings = basic();
+    settings.variables.set_list(
+        "start_end_points",
+        vec![Value::text("30x-3"), Value::text("54x245")],
+    );
+    settings.variables.set_list(
+        "bed_exclude_area",
+        ["0x0", "18x0", "18x28", "0x28"].map(Value::text).to_vec(),
+    );
+    // Nothing in the way: straight up the cutter's own path.
+    settings.plate.objects = vec![[118.0, 118.0, 138.0, 138.0]];
+    assert_eq!(
+        change_path(&settings),
+        [[54.0, 0.0], [54.0, 0.0], [54.0, 245.0]]
+    );
+    // An object across x = 54: the nearest gap beside it (GCode.cpp
+    // `get_path_of_change_filament`).
+    settings.plate.objects = vec![[40.0, 100.0, 80.0, 140.0]];
+    assert_eq!(
+        change_path(&settings),
+        [[38.0, 0.0], [38.0, 0.0], [38.0, 245.0]]
+    );
+    // That gap left of where the head starts: out over the cutter first.
+    settings.variables.set_list(
+        "start_end_points",
+        vec![Value::text("60x-3"), Value::text("54x245")],
+    );
+    assert_eq!(
+        change_path(&settings),
+        [[60.0, 30.0], [38.0, 30.0], [38.0, 245.0]]
+    );
+    // Without the printer's points, the safe default.
+    assert_eq!(
+        change_path(&basic()),
+        [[54.0, 0.0], [54.0, 0.0], [54.0, 245.0]]
+    );
+}
+
+#[test]
+fn bambus_tower_frames_its_tool_change_and_ends_the_old_filament_first() {
+    let at = |x: f64, y: f64| Point2::from_mm(x, y);
+    let flow = Flow::new(0.5, 0.2, 0.4).unwrap();
+    let strokes = [
+        TowerStroke::Glide(at(40.0, 40.0)),
+        TowerStroke::LayAs(at(60.0, 40.0), 30.0, flow),
+        TowerStroke::Sync,
+        TowerStroke::Move(at(60.0, 50.0), Some(120.0)),
+    ];
+    let tool = |filament: &str| {
+        let mut tool = PrintSettings {
+            bambu_tower: true,
+            prime_tower: true,
+            filament_end_gcode: Some("; filament end gcode".into()),
+            change_filament_gcode: Some("M620 S[next_extruder]A\nT[next_extruder]".into()),
+            ..bambu(&[("start", "PRINT_START")])
+        };
+        tool.variables.set_list(
+            "filament_type",
+            vec![Value::text("PLA"), Value::text(filament)],
+        );
+        tool
+    };
+    let part = [wall(0.0, 0.0, 10.0, 0)];
+    let first = one_layer(&part, &[0..1], &[])[0];
+    let second = Layer {
+        filament: 1,
+        wipe: Some(TowerWipe {
+            start: at(40.0, 40.0),
+            strokes: &strokes,
+            flow,
+            wipe_path: &[],
+        }),
+        loops: &[],
+        islands: &[],
+        ..first
+    };
+    let mut out = Vec::new();
+    write_tools(&mut out, &[first, second], &[tool("PETG"), tool("PETG")]).unwrap();
+    let text = String::from_utf8(out).unwrap();
+    let change = text
+        .split("; CP TOOLCHANGE START\n")
+        .nth(1)
+        .unwrap_or_else(|| panic!("{text}"));
+    let lines: Vec<&str> = change.lines().collect();
+    assert_eq!(
+        lines[..5],
+        [
+            "; toolchange #1",
+            "; material : PLA -> PETG",
+            ";--------------------",
+            "M220 S100",
+            "; WIPE_TOWER_START"
+        ]
+    );
+    let at = |what: &str| {
+        change
+            .find(what)
+            .unwrap_or_else(|| panic!("{what}: {change}"))
+    };
+    assert!(
+        at("; filament end gcode") < at("M620 S1A") && at("M620 S1A") < at("; CP TOOLCHANGE WIPE")
+    );
+    assert!(at("; CP TOOLCHANGE WIPE") < at("; WIPE_TOWER_END"));
+    assert!(
+        change.contains("; WIPE_TOWER_END\nG1 F") || change.contains("; WIPE_TOWER_END\nG4 S0")
+    );
+    assert!(change.contains("G4 S0\nG92 E0\n; CP TOOLCHANGE END\n;------------------\n"));
+    // The filament's end G-code is written once.
+    assert_eq!(text.matches("; filament end gcode").count(), 2);
 }

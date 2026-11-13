@@ -319,12 +319,12 @@ impl Writer<'_> {
         self.prime()?;
         if self.state.role != Some(role) {
             if self.state.role.map(role_name) != Some(role_name(role)) {
-                writeln!(self.out, ";TYPE:{}", role_name(role))?;
+                writeln!(self.out, "{}{}", self.tags().feature, role_name(role))?;
             }
             self.state.role = Some(role);
         }
         if self.state.width != flow.width {
-            writeln!(self.out, ";WIDTH:{:.3}", flow.width)?;
+            self.width_tag(flow.width)?;
             self.state.width = flow.width;
         }
         let first_layer = self.state.first_layer;
@@ -354,8 +354,8 @@ impl Writer<'_> {
         writeln!(
             self.out,
             "G1 X{:.3} Y{:.3}{feed_word}",
-            unscaled(to.x),
-            unscaled(to.y)
+            self.gcode_x(to),
+            self.gcode_y(to)
         )?;
         self.state.line_speed = wanted;
         self.state.summary.travel_mm += length;
@@ -476,8 +476,8 @@ impl Writer<'_> {
                 writeln!(
                     self.out,
                     "G1 X{:.3} Y{:.3}{up}",
-                    unscaled(to.x),
-                    unscaled(to.y)
+                    self.gcode_x(to),
+                    self.gcode_y(to)
                 )?;
                 self.state.summary.travel_mm += length;
                 self.spend(length / speed);
@@ -491,7 +491,12 @@ impl Writer<'_> {
             // moves alone, at the wipe's speed.
             let speed = s.wipe_speed.unwrap_or(self.state.line_speed).max(10.0);
             self.state.feedrate = (speed * 60.0).round();
-            writeln!(self.out, ";WIPE_START\nG1 F{:.0}", self.state.feedrate)?;
+            writeln!(
+                self.out,
+                "{}\nG1 F{:.0}",
+                self.tags().wipe_start,
+                self.state.feedrate
+            )?;
             for &to in &path[1..] {
                 let length = distance(from, to);
                 if length == 0.0 {
@@ -501,15 +506,15 @@ impl Writer<'_> {
                 writeln!(
                     self.out,
                     "G1 X{:.3} Y{:.3}{up}",
-                    unscaled(to.x),
-                    unscaled(to.y)
+                    self.gcode_x(to),
+                    self.gcode_y(to)
                 )?;
                 self.state.summary.travel_mm += length;
                 self.spend(length / speed);
                 self.state.position = Some(to);
                 from = to;
             }
-            writeln!(self.out, ";WIPE_END")?;
+            writeln!(self.out, "{}", self.tags().wipe_end)?;
             // "prevent wiping again on same path"
             self.state.wipe_path.clear();
         }
