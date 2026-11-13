@@ -112,6 +112,9 @@ struct State {
     /// "Auto-Backup") are still to be offered back or let go: until they
     /// are, this run writes none of its own over them ([`prefs`]).
     backups_left: bool,
+    /// Whether the favourites were followed through the vendors' renames
+    /// this run (FavoriteFilamentsUI.cpp `fav_migrate_once`), by kind.
+    favorites_migrated: [bool; 2],
 }
 
 /// One open project.
@@ -1008,6 +1011,7 @@ impl Session {
                 next_colour: 0,
                 arrange_align: None,
                 backups_left,
+                favorites_migrated: [false; 2],
             }),
             startup,
             traced: std::env::var_os("EDGE_DESKTOP_TRACE").is_some(),
@@ -1116,11 +1120,16 @@ impl Session {
             "filament_selection_save" => self.filament_selection_save(args),
             "filament_manager" => self.filament_manager(args),
             "filament_enable" => self.filament_enable(args),
+            "process_enable" => self.process_enable(args),
             "favorite_toggle" => self.favorite_toggle(args),
             "filament_manager_check_name" => self.filament_manager_check_name(args),
             "filament_manager_rename" => self.filament_manager_rename(args),
             "filament_manager_delete" => self.filament_manager_delete(args),
-            "favorites" => Ok(json!({ "favs": self.favorites() })),
+            "filament_family" => self.filament_family(args),
+            "filament_family_choices" => self.filament_family_choices(args),
+            "filament_family_add" => self.filament_family_add(args),
+            "filament_family_delete" => self.filament_family_delete(args),
+            "favorites" => Ok(json!({ "favs": self.favorites_of(setup::manager_kind(args)) })),
             "create_printer_choices" => self.create_printer_choices(),
             "create_printer_models" => self.create_printer_models(args),
             "create_printer_presets" => self.create_printer_presets(args),

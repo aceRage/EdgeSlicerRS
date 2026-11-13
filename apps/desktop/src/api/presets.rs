@@ -252,6 +252,7 @@ impl Session {
         // `load_external_preset` makes it visible). The person's own are
         // always shown.
         let shown = self.shown_filaments();
+        let hidden = self.hidden_processes();
         let mine = |kind: Kind| -> Vec<String> {
             users
                 .of(kind)
@@ -261,9 +262,13 @@ impl Session {
                 .collect()
         };
         Offered {
+            // A vendor's process hidden in the Process manager is not
+            // offered, unless an open project is on it (Preset.cpp
+            // `set_visible_from_appconfig`, `TYPE_PRINT`).
             processes: shelf
                 .processes_for(&base)
                 .into_iter()
+                .filter(|name| !hidden.contains(*name))
                 .map(str::to_owned)
                 .collect(),
             filaments: shelf
@@ -289,6 +294,7 @@ impl Session {
             "user_processes": offered.user_processes,
             "user_filaments": offered.user_filaments,
             "favorite_filaments": self.favorite_filaments(&offered.filaments, &offered.user_filaments),
+            "favorite_processes": self.favorite_presets(Kind::Process, &offered.processes, &offered.user_processes),
             // What the printer's own profile usually prints with.
             "usual_process": process,
             "usual_filament": filament,
@@ -726,9 +732,9 @@ impl Session {
             }
         }
         let (old_name, new_name) = (old.clone(), new.clone());
-        if book == Book::Filament {
+        if matches!(book, Book::Filament | Book::Process) {
             drop(state);
-            self.favorite_renamed(&old, Some(&new));
+            self.favorite_renamed_of(kind, &old, Some(&new));
             state = lock(&self.state);
         }
         printers::keep(&mut state, |data| {
@@ -907,8 +913,8 @@ impl Session {
             self.move_off(book, attached, None)?;
         }
         self.move_off(book, &name, printer_to.as_deref())?;
-        if book == Book::Filament {
-            self.favorite_renamed(&name, None);
+        if matches!(book, Book::Filament | Book::Process) {
+            self.favorite_renamed_of(kind, &name, None);
         }
         for (kind, attached) in &attached {
             if *kind == Kind::Filament {

@@ -283,6 +283,7 @@ const Filaments = (() => {
       [t('Edit'), () => attempt(() => openPresetPanel('filament', index + 1))],
       [t('Delete'), () => attempt(() => edit({ op: 'delete', filament: index + 1 })), { title: t('Delete this filament'), disabled: count <= 1 }],
       [t('Merge with'), null, { items: targets, disabled: targets.length === 0 }],
+      ...(typeof favouriteMenuItem === 'function' ? favouriteMenuItem(index + 1) : []),
     ]);
   }
 

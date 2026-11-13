@@ -1,4 +1,4 @@
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 
 use super::*;
@@ -1634,4 +1634,561 @@ fn check_taken(session: &Arc<Session>, key: &str, name: &str) -> Value {
         "filament_manager_check_name",
         json!({ "key": key, "name": name }),
     )
+}
+
+/// Two presets of one filament for the U1's 0.4 and 0.2 nozzles.
+fn two_printer_filament(session: &Arc<Session>) -> (String, String, String) {
+    let made = ask(
+        session,
+        "create_filament",
+        json!({
+            "vendor": "Polymaker", "type": "PLA", "serial": "Matte",
+            "presets": [
+                { "printer": U1, "preset": "Generic PLA @U1 0.4 nozzle" },
+                { "printer": "Snapmaker U1 (0.2 nozzle)", "preset": "Generic PLA @U1 0.2 nozzle" },
+            ],
+        }),
+    );
+    (
+        format!("Polymaker PLA Matte @{U1}"),
+        "Polymaker PLA Matte @Snapmaker U1 (0.2 nozzle)".to_owned(),
+        made["filament_id"].as_str().unwrap().to_owned(),
+    )
+}
+
+#[test]
+fn several_rows_are_deleted_in_one_go_children_first_the_held_skipped() {
+    let dir = tempfile::tempdir().unwrap();
+    let session = session(dir.path());
+    ask(&session, "printer_select", json!({ "initial": true }));
+    let (a, b, _) = two_printer_filament(&session);
+    // A child of a, outside the selection: a is skipped.
+    ask(&session, "project_set", json!({ "filaments": [a.clone()] }));
+    ask(
+        &session,
+        "settings_set",
+        json!({ "kind": "filament", "filament": 1, "key": "nozzle_temperature", "value": 213 }),
+    );
+    ask(
+        &session,
+        "preset_save",
+        json!({ "kind": "filament", "filament": 1, "name": "Child PLA" }),
+    );
+    let keys = json!([
+        format!("u|{a}"),
+        format!("u|{b}"),
+        "s|Snapmaker|Generic PLA"
+    ]);
+    let asked = ask(&session, "filament_manager_delete", json!({ "keys": keys }));
+    assert_eq!(asked["title"], tr("Delete Preset"));
+    let text = asked["ask"].as_str().unwrap();
+    assert!(
+        text.starts_with(&fill(
+            &crate::api::i18n::trn("Delete %d preset?", "Delete these %d presets?", 1),
+            &[&1]
+        )),
+        "{text}"
+    );
+    assert!(text.contains(&format!("\n - {b}")));
+    assert!(
+        text.contains(&tr("Skipped: other presets inherit these:"))
+            && text.ends_with(&format!("\n - {a}")),
+        "{text}"
+    );
+    assert_eq!(asked["todo"], json!([b]));
+    // With the child in the selection: the child goes before its parent.
+    let keys = json!([format!("u|{a}"), "u|Child PLA"]);
+    let asked = ask(&session, "filament_manager_delete", json!({ "keys": keys }));
+    assert_eq!(asked["todo"], json!(["Child PLA", a]));
+    let done = ask(
+        &session,
+        "filament_manager_delete",
+        json!({ "keys": keys, "confirm": true }),
+    );
+    assert_eq!(done["count"], 2);
+    let users = ask(&session, "user_presets", Value::Null);
+    let names: Vec<&str> = users["filament"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|p| p["name"].as_str().unwrap())
+        .collect();
+    assert_eq!(names, vec![b.as_str()]);
+    // Only vendors' rows: refused.
+    let error = refused(
+        &session,
+        "filament_manager_delete",
+        json!({ "keys": ["s|Snapmaker|Generic PLA"] }),
+    );
+    assert_eq!(error, tr("System presets cannot be deleted."));
+}
+
+#[test]
+fn edit_filament_lists_adds_and_deletes_a_filaments_presets() {
+    let dir = tempfile::tempdir().unwrap();
+    let session = session(dir.path());
+    ask(&session, "printer_select", json!({ "initial": true }));
+    let (a, b, id) = two_printer_filament(&session);
+    let family = ask(&session, "filament_family", json!({ "filament_id": id }));
+    assert_eq!(family["name"], "Polymaker PLA Matte");
+    assert_eq!(family["vendor"], "Polymaker");
+    assert_eq!(family["type"], "PLA");
+    assert_eq!(family["serial"], "Matte");
+    assert_eq!(family["printers"].as_array().unwrap().len(), 2);
+    assert_eq!(family["note"], false);
+    // "Add Preset": the printers and what to copy for each.
+    let choices = ask(
+        &session,
+        "filament_family_choices",
+        json!({ "filament_id": id }),
+    );
+    let u1_06 = "Snapmaker U1 (0.6 nozzle)";
+    let row = choices["printers"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|p| p["printer"] == u1_06)
+        .expect("the U1 0.6")
+        .clone();
+    let source = strings(&row["presets"])
+        .into_iter()
+        .find(|name| name.starts_with("Generic PLA @"))
+        .unwrap();
+    let added = ask(
+        &session,
+        "filament_family_add",
+        json!({ "filament_id": id, "printer": u1_06, "preset": source }),
+    );
+    let c = format!("Polymaker PLA Matte @{u1_06}");
+    assert_eq!(added["preset"], c.as_str());
+    assert_eq!(added["printers"].as_array().unwrap().len(), 3);
+    let written = read_json(
+        &user_dir(dir.path())
+            .join("filament")
+            .join("base")
+            .join(format!("{c}.json")),
+    );
+    assert_eq!(written["filament_id"], id.as_str());
+    assert_eq!(written["compatible_printers"], json!([u1_06]));
+    assert_eq!(written["filament_vendor"], json!(["Polymaker"]));
+    // Again: asked first.
+    let again = ask(
+        &session,
+        "filament_family_add",
+        json!({ "filament_id": id, "printer": u1_06, "preset": source }),
+    );
+    assert_eq!(again["created"], false);
+    assert!(again["ask"].as_str().unwrap().contains(&c));
+    let error = refused(
+        &session,
+        "filament_family_add",
+        json!({ "filament_id": id, "printer": u1_06, "preset": "" }),
+    );
+    assert_eq!(
+        error,
+        tr("The filament choice not find filament preset, please reselect it")
+    );
+    // One preset: asked, then gone.
+    let asked = ask(
+        &session,
+        "filament_family_delete",
+        json!({ "filament_id": id, "preset": c }),
+    );
+    assert_eq!(asked["title"], tr("Delete preset"));
+    assert!(asked["ask"].as_str().unwrap().starts_with(&tr(
+        "Are you sure to delete the selected preset?\nIf the preset"
+    )));
+    let after = ask(
+        &session,
+        "filament_family_delete",
+        json!({ "filament_id": id, "preset": c, "confirm": true }),
+    );
+    assert_eq!(after["printers"].as_array().unwrap().len(), 2);
+    // The whole filament.
+    let asked = ask(
+        &session,
+        "filament_family_delete",
+        json!({ "filament_id": id }),
+    );
+    assert_eq!(asked["title"], tr("Delete filament"));
+    let gone = ask(
+        &session,
+        "filament_family_delete",
+        json!({ "filament_id": id, "confirm": true }),
+    );
+    assert_eq!(gone["gone"], true);
+    let users = ask(&session, "user_presets", Value::Null);
+    assert!(
+        users["filament"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|p| p["name"] != a.as_str() && p["name"] != b.as_str())
+    );
+}
+
+#[test]
+fn a_tables_column_widths_are_kept_across_a_restart() {
+    let dir = tempfile::tempdir().unwrap();
+    let session = session(dir.path());
+    let laid = ask(
+        &session,
+        "layout_set",
+        json!({ "columns": { "filament_manager": [84, 84, 100, 240] } }),
+    );
+    assert_eq!(
+        laid["columns"]["filament_manager"],
+        json!([84, 84, 100, 240])
+    );
+    let again = Arc::new(Session::with_settings(None, Some(dir.path().to_owned())));
+    assert_eq!(
+        ask(&again, "layout", Value::Null)["columns"]["filament_manager"],
+        json!([84, 84, 100, 240])
+    );
+    assert!(
+        refused(
+            &again,
+            "layout_set",
+            json!({ "columns": { "nowhere": [1] } })
+        )
+        .contains("no table")
+    );
+    assert!(
+        refused(
+            &again,
+            "layout_set",
+            json!({ "columns": { "filament_manager": [0] } })
+        )
+        .contains("width")
+    );
+    let cleared = ask(
+        &again,
+        "layout_set",
+        json!({ "columns": { "filament_manager": null } }),
+    );
+    assert_eq!(cleared["columns"], json!({}));
+}
+
+#[test]
+fn a_favourite_follows_a_vendors_rename_once() {
+    let set =
+        |items: &[&str]| -> BTreeSet<String> { items.iter().map(|s| (*s).to_owned()).collect() };
+    let renames: BTreeMap<String, String> = [
+        ("Old PLA", "Mid PLA"),
+        ("Mid PLA", "New PLA"),
+        ("Kept PLA", "Other PLA"),
+    ]
+    .iter()
+    .map(|(a, b)| ((*a).to_owned(), (*b).to_owned()))
+    .collect();
+    let current = set(&["New PLA", "Kept PLA", "Other PLA"]);
+    // A chain is followed; a key still in use stays; one nobody knows stays.
+    let (out, changed) = super::migrate(
+        &set(&["Old PLA", "Kept PLA", "Nobody PLA"]),
+        &current,
+        &renames,
+    );
+    assert!(changed);
+    assert_eq!(out, set(&["New PLA", "Kept PLA", "Nobody PLA"]));
+    let (out, changed) = super::migrate(&set(&["Kept PLA"]), &current, &renames);
+    assert!(!changed);
+    assert_eq!(out, set(&["Kept PLA"]));
+    // In a session: the reference's profiles rename no Snapmaker favourite away from a name still in
+    // use ("Snapmaker ABS Benchy" is still the J1's), so it stays, and once a run is enough.
+    let dir = tempfile::tempdir().unwrap();
+    let session = session(dir.path());
+    ask(
+        &session,
+        "favorite_toggle",
+        json!({ "key": "Snapmaker ABS Benchy" }),
+    );
+    assert_eq!(
+        ask(&session, "favorites", Value::Null)["favs"],
+        json!(["Snapmaker ABS Benchy"])
+    );
+    assert_eq!(
+        super::strip_printer_suffix("Generic PLA @U1 0.4 nozzle  "),
+        "Generic PLA"
+    );
+}
+
+#[test]
+fn a_rename_waits_for_unsaved_changes_and_create_filament_asks_for_each_name() {
+    let dir = tempfile::tempdir().unwrap();
+    let session = session(dir.path());
+    ask(&session, "printer_select", json!({ "initial": true }));
+    let (a, b, _) = two_printer_filament(&session);
+    ask(&session, "project_set", json!({ "filaments": [a.clone()] }));
+    ask(
+        &session,
+        "settings_set",
+        json!({ "kind": "filament", "filament": 1, "key": "nozzle_temperature", "value": 214 }),
+    );
+    let answer = ask(
+        &session,
+        "filament_manager_rename",
+        json!({ "key": format!("u|{a}"), "name": "Silky PLA" }),
+    );
+    assert_eq!(answer["ok"], false);
+    assert_eq!(answer["unsaved"], true);
+    assert_eq!(answer["title"], tr("Rename preset"));
+    assert_eq!(
+        answer["ask"],
+        fill(
+            &tr(
+                "\"%s\" has unsaved changes. Save or discard them in its settings first, then rename it."
+            ),
+            &[&a]
+        )
+    );
+    // Once let go, it renames.
+    ask(
+        &session,
+        "settings_set",
+        json!({ "kind": "filament", "filament": 1, "reset": true }),
+    );
+    let answer = ask(
+        &session,
+        "filament_manager_rename",
+        json!({ "key": format!("u|{a}"), "name": "Silky PLA", "scope": "one" }),
+    );
+    assert_eq!(answer["ok"], true);
+    // Create Filament with both names of the other taken: asked for each.
+    let form = json!({
+        "vendor": "Polymaker", "type": "PLA", "serial": "Matte", "continue_name": true,
+        "presets": [
+            { "printer": "Snapmaker U1 (0.2 nozzle)", "preset": "Generic PLA @U1 0.2 nozzle" },
+            { "printer": U1, "preset": "Generic PLA @U1 0.4 nozzle" },
+        ],
+    });
+    let first = ask(&session, "create_filament", form.clone());
+    assert_eq!(first["step"], "rewrite");
+    assert_eq!(first["name_taken"], b.as_str());
+    // No for it: the other is made, it is left as it was.
+    let done = ask(
+        &session,
+        "create_filament",
+        with(form, json!({ "skip": [b.clone()] })),
+    );
+    assert_eq!(done["created"], true);
+    assert_eq!(
+        done["presets"],
+        json!([format!("Polymaker PLA Matte @{U1}")])
+    );
+}
+
+#[test]
+fn a_printer_of_ones_own_is_a_template_under_custom() {
+    let dir = tempfile::tempdir().unwrap();
+    let session = session(dir.path());
+    ask(&session, "printer_select", json!({ "initial": true }));
+    ask(
+        &session,
+        "create_printer",
+        with(
+            printer_form(),
+            json!({
+                "custom": true, "vendor": "Test Vendor", "model": "Box",
+                "preset_vendor": "Snapmaker", "preset_model": "Snapmaker U1 @ 0.4 nozzle",
+                "template": true, "filaments": ["Generic PLA template"], "processes": ["process template"],
+            }),
+        ),
+    );
+    let models = ask(
+        &session,
+        "create_printer_models",
+        json!({ "vendor": "Custom", "nozzle": "0.4 mm" }),
+    );
+    assert!(
+        strings(&models["models"]).contains(&"Test Vendor Box @ 0.4 nozzle".to_owned()),
+        "{models}"
+    );
+    // The profiles' own Custom printers stay offered beside it.
+    assert!(strings(&models["models"]).len() > 1);
+    let offered = ask(
+        &session,
+        "create_printer_presets",
+        json!({ "vendor": "Custom", "model": "Test Vendor Box @ 0.4 nozzle" }),
+    );
+    assert_eq!(offered["printer"], "Test Vendor Box 0.4 nozzle");
+    assert!(
+        strings(&offered["processes"])
+            .contains(&"process template @Test Vendor Box 0.4 nozzle".to_owned())
+    );
+    let made = ask(
+        &session,
+        "create_printer",
+        with(
+            printer_form(),
+            json!({
+                "custom": true, "vendor": "Test Vendor", "model": "Box Two",
+                "preset_vendor": "Custom", "preset_model": "Test Vendor Box @ 0.4 nozzle",
+                "template": false,
+                "filaments": ["Generic PLA template @Test Vendor Box 0.4 nozzle"],
+                "processes": ["process template @Test Vendor Box 0.4 nozzle"],
+            }),
+        ),
+    );
+    assert_eq!(made["printer"], "Test Vendor Box Two 0.4 nozzle");
+}
+
+#[test]
+fn the_process_manager_hides_stars_sorts_and_renames() {
+    let dir = tempfile::tempdir().unwrap();
+    let session = session(dir.path());
+    ask(&session, "printer_select", json!({ "initial": true }));
+    assert_eq!(
+        super::quality_tier("0.20mm Standard @Snapmaker U1 (0.4 nozzle)"),
+        "Standard"
+    );
+    assert_eq!(super::quality_tier(".12mm Fine"), "Fine");
+    assert_eq!(super::quality_tier("My process"), "");
+    let process = |args: Value| -> Value {
+        let mut args = args;
+        args["kind"] = json!("process");
+        ask(&session, "filament_manager", args)
+    };
+    let table = process(json!({}));
+    let rows = table["rows"].as_array().unwrap().clone();
+    let on = ask(&session, "project", Value::Null)["choices"]["process"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let used = rows
+        .iter()
+        .find(|row| row["key"] == format!("s|{on}"))
+        .expect("the project's process")
+        .clone();
+    assert_eq!(used["lock"], "in_use");
+    assert_eq!(used["name"], super::favorite_key(&on, true).as_str());
+    assert!(strings(&used["nozzles"]).contains(&"0.4".to_owned()));
+    assert!(used["lh"].as_f64().is_some());
+    assert!(!used["tier"].as_str().unwrap().is_empty());
+    // Hiding a process of the printer takes it out of the list; the one in use cannot be hidden.
+    let lists = ask(
+        &session,
+        "presets",
+        json!({ "vendor": "Snapmaker", "machine": U1 }),
+    );
+    let other = strings(&lists["processes"])
+        .into_iter()
+        .find(|name| *name != on)
+        .unwrap();
+    let after = ask(
+        &session,
+        "process_enable",
+        json!({ "changes": [
+        { "key": format!("s|{other}"), "on": false },
+        { "key": format!("s|{on}"), "on": false },
+    ] }),
+    );
+    let row = |table: &Value, key: &str| {
+        table["rows"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|row| row["key"] == key)
+            .cloned()
+            .unwrap()
+    };
+    assert_eq!(row(&after, &format!("s|{other}"))["enabled"], false);
+    assert_eq!(row(&after, &format!("s|{on}"))["enabled"], true);
+    let lists = ask(
+        &session,
+        "presets",
+        json!({ "vendor": "Snapmaker", "machine": U1 }),
+    );
+    assert!(!strings(&lists["processes"]).contains(&other));
+    assert!(strings(&lists["processes"]).contains(&on));
+    let written: Value =
+        serde_json::from_str(&std::fs::read_to_string(dir.path().join("settings.json")).unwrap())
+            .unwrap();
+    assert_eq!(written["hidden_process_presets"][other.as_str()], "true");
+    ask(
+        &session,
+        "process_enable",
+        json!({ "changes": [{ "key": format!("s|{other}"), "on": true }] }),
+    );
+    // Favourites of their own, under their own key.
+    let alias = super::favorite_key(&on, true);
+    ask(
+        &session,
+        "favorite_toggle",
+        json!({ "kind": "process", "key": alias }),
+    );
+    assert_eq!(
+        ask(&session, "favorites", json!({ "kind": "process" }))["favs"],
+        json!([alias])
+    );
+    assert_eq!(ask(&session, "favorites", Value::Null)["favs"], json!([]));
+    let lists = ask(
+        &session,
+        "presets",
+        json!({ "vendor": "Snapmaker", "machine": U1 }),
+    );
+    assert!(strings(&lists["favorite_processes"]).contains(&on));
+    assert_eq!(written["app"]["favorite_process_presets"], Value::Null);
+    let written: Value =
+        serde_json::from_str(&std::fs::read_to_string(dir.path().join("settings.json")).unwrap())
+            .unwrap();
+    assert!(
+        written["app"]["favorite_process_presets"]
+            .as_str()
+            .unwrap()
+            .contains(&alias)
+    );
+    // Sorted by layer height, filtered by quality.
+    let sorted = process(json!({ "sort": { "key": "lh", "dir": 1 } }));
+    let heights: Vec<f64> = strings(&sorted["view"])
+        .iter()
+        .filter_map(|key| row(&sorted, key)["lh"].as_f64())
+        .collect();
+    assert!(heights.windows(2).all(|w| w[0] <= w[1]));
+    let tiers = strings(&sorted["values"]["tier"]);
+    let others: Vec<String> = tiers.iter().filter(|t| *t != "Standard").cloned().collect();
+    let standard = process(json!({ "filters": { "tier": { "exclude": others } } }));
+    assert!(
+        strings(&standard["view"])
+            .iter()
+            .all(|key| row(&standard, key)["tier"] == "Standard")
+    );
+    // One of one's own: "Detached" or its parent, renamed and deleted from the table.
+    ask(
+        &session,
+        "process_set",
+        json!({ "key": "wall_loops", "value": 3 }),
+    );
+    ask(
+        &session,
+        "preset_save",
+        json!({ "kind": "process", "name": "Strong walls" }),
+    );
+    let table = process(json!({}));
+    let mine = row(&table, "u|Strong walls");
+    assert_eq!(mine["tier"], alias.as_str());
+    let renamed = ask(
+        &session,
+        "filament_manager_rename",
+        json!({ "kind": "process", "key": "u|Strong walls", "name": "Stronger walls" }),
+    );
+    assert_eq!(renamed["ok"], true);
+    assert_eq!(
+        ask(&session, "project", Value::Null)["choices"]["process"],
+        "Stronger walls"
+    );
+    let asked = ask(
+        &session,
+        "filament_manager_delete",
+        json!({ "kind": "process", "key": "u|Stronger walls" }),
+    );
+    assert!(asked["ask"].as_str().unwrap().contains(&tr("The plate switches to the next visible process preset; a nozzle goes back to the plate's process.")));
+    ask(
+        &session,
+        "filament_manager_delete",
+        json!({ "kind": "process", "key": "u|Stronger walls", "confirm": true }),
+    );
+    assert_ne!(
+        ask(&session, "project", Value::Null)["choices"]["process"],
+        "Stronger walls"
+    );
 }

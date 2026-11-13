@@ -39,6 +39,46 @@ pub(super) fn short_name(name: &str) -> &str {
 /// config's `app` section (FavoritePresets.hpp `config_key`), the keys
 /// joined as `escape_strings_cstyle` joins a list.
 pub(super) const FAVORITES_KEY: &str = "favorite_filaments";
+/// The same for process presets (FavoritePresets.hpp `config_key`).
+pub(super) const PROCESS_FAVORITES_KEY: &str = "favorite_process_presets";
+
+/// A manager's kind: the filaments' or the processes' (`kind` "process").
+pub(super) fn manager_kind(args: &Value) -> Kind {
+    if args.get("kind").and_then(Value::as_str) == Some("process") {
+        Kind::Process
+    } else {
+        Kind::Filament
+    }
+}
+
+/// The settings book of a manager's kind.
+pub(super) fn manager_book(args: &Value) -> super::settings::Book {
+    if manager_kind(args) == Kind::Process {
+        super::settings::Book::Process
+    } else {
+        super::settings::Book::Filament
+    }
+}
+
+/// What the delete's question says the presets in use go to
+/// (PresetManagerDialog.cpp l.548–549).
+fn switch_note(args: &Value) -> String {
+    if manager_kind(args) == Kind::Process {
+        tr(
+            "The plate switches to the next visible process preset; a nozzle goes back to the plate's process.",
+        )
+    } else {
+        tr("They switch to the next visible filament preset.")
+    }
+}
+
+fn favorites_key_of(kind: Kind) -> &'static str {
+    if kind == Kind::Process {
+        PROCESS_FAVORITES_KEY
+    } else {
+        FAVORITES_KEY
+    }
+}
 
 /// The key a favourite filament is kept by (FavoriteFilaments.hpp
 /// `key_for`): a vendor's preset's alias (its name up to the "@"), one of
@@ -49,6 +89,77 @@ pub(super) fn favorite_key(name: &str, system: bool) -> String {
     } else {
         name.to_owned()
     }
+}
+
+/// The favourite keys after the vendors' renames (FavoriteFilaments.hpp
+/// `migrate`): a key no filament has now that a vendor renamed becomes the
+/// new key (a chain followed, eight steps at most); a key still in use,
+/// or that no one knows, stays. And whether anything changed.
+pub(super) fn migrate(
+    keys: &BTreeSet<String>,
+    current: &BTreeSet<String>,
+    renames: &BTreeMap<String, String>,
+) -> (BTreeSet<String>, bool) {
+    let mut changed = false;
+    let mut out = BTreeSet::new();
+    for key in keys {
+        let mut target = key.clone();
+        let mut hops = 0;
+        while hops < 8 && !current.contains(&target) {
+            match renames.get(&target) {
+                Some(next) => target = next.clone(),
+                None => break,
+            }
+            hops += 1;
+        }
+        if target != *key && !current.contains(key) && current.contains(&target) {
+            out.insert(target);
+            changed = true;
+        } else {
+            out.insert(key.clone());
+        }
+    }
+    (out, changed)
+}
+
+/// The quality of a vendor's process from its alias ("0.20mm Standard":
+/// "Standard"; PresetManagerModel.cpp `process_quality_tier`); empty when
+/// it is not named so.
+pub(super) fn quality_tier(alias: &str) -> String {
+    let base = alias.split(" @").next().unwrap_or(alias).trim();
+    // A number (".2", "0.20"), "mm", then the rest.
+    let digits_end = base
+        .find(|c: char| !(c.is_ascii_digit() || c == '.'))
+        .unwrap_or(base.len());
+    let number = &base[..digits_end];
+    if number.is_empty()
+        || !number.chars().any(|c| c.is_ascii_digit())
+        || number.matches('.').count() > 1
+    {
+        return String::new();
+    }
+    let rest = base[digits_end..].trim_start();
+    let Some(rest) = rest
+        .strip_prefix("mm")
+        .or_else(|| rest.strip_prefix("MM"))
+        .or_else(|| rest.strip_prefix("Mm"))
+    else {
+        return String::new();
+    };
+    if !rest.starts_with(char::is_whitespace) {
+        return String::new();
+    }
+    rest.trim().to_owned()
+}
+
+/// A filament preset's name less its " @printer" part, trailing spaces
+/// gone (FavoriteFilaments.hpp `strip_printer_suffix`).
+pub(super) fn strip_printer_suffix(name: &str) -> String {
+    name.split(" @")
+        .next()
+        .unwrap_or(name)
+        .trim_end_matches([' ', '\t'])
+        .to_owned()
 }
 
 /// A list as Config.cpp `escape_strings_cstyle` writes it: joined by ";",
@@ -241,6 +352,21 @@ impl Session {
             }
         }
         Some(shown)
+    }
+
+    /// The vendors' process presets hidden in the Process manager, but for
+    /// those an open project is on.
+    pub(super) fn hidden_processes(&self) -> BTreeSet<String> {
+        let state = lock(&self.state);
+        let mut hidden = state.store.data.hidden_processes.clone();
+        for project in &state.projects {
+            for choices in [&project.choices, &project.baseline] {
+                if let Some(process) = &choices.process {
+                    hidden.remove(process);
+                }
+            }
+        }
+        hidden
     }
 
     /// The printers a filament can be cut for, as the guide lists them:
@@ -464,6 +590,9 @@ impl Session {
     /// values the first member's that has them; then one for each of the
     /// person's. The vendors' by maker and name, the person's by name.
     pub(super) fn manager_rows(&self, args: &Value) -> Result<Vec<Value>, String> {
+        if manager_kind(args) == Kind::Process {
+            return self.process_rows(args);
+        }
         let (vendors, enabled, in_use, bed_key) = {
             let state = lock(&self.state);
             let project = &state.projects[state.target(args)?];
@@ -719,60 +848,361 @@ impl Session {
         Ok(answer)
     }
 
+    /// The rows of the Process manager (PresetManagerModel.cpp
+    /// `collect_preset_manager_items`, `build_preset_manager_model` for
+    /// `PresetManagerKind::Process`): one for each process preset of the
+    /// vendors added, by its alias, with the printers added it goes with,
+    /// their nozzles, its layer height and its quality ("0.20mm Standard":
+    /// "Standard", `process_quality_tier`); then one for each of the
+    /// person's, its quality the preset it is laid over ("Detached" for one
+    /// that stands alone). Hidden ones are unticked; the one the project is
+    /// on cannot be.
+    fn process_rows(&self, args: &Value) -> Result<Vec<Value>, String> {
+        let (vendors, hidden, in_use) = {
+            let state = lock(&self.state);
+            let project = &state.projects[state.target(args)?];
+            (
+                state.store.data.models.keys().cloned().collect::<Vec<_>>(),
+                state.store.data.hidden_processes.clone(),
+                project
+                    .choices
+                    .process
+                    .clone()
+                    .filter(|_| project.choices.from_presets),
+            )
+        };
+        let machines: Vec<(String, String, String, String)> = self.guide_machines(None);
+        let added: Vec<String> = machines
+            .iter()
+            .map(|(_, machine, _, _)| machine.clone())
+            .collect();
+        // A printer's first nozzle, as "0.4" (`pm_nozzle_text`).
+        let nozzle_of = |vendor: &str, machine: &str| -> Option<String> {
+            let settings = self
+                .shelf(vendor)
+                .ok()?
+                .resolve(Kind::Machine, machine)
+                .ok()?;
+            let size: f64 = settings
+                .texts("nozzle_diameter")?
+                .first()?
+                .trim()
+                .parse()
+                .ok()?;
+            let text = format!("{size:.2}");
+            Some(text.trim_end_matches('0').trim_end_matches('.').to_owned())
+        };
+        let nozzles: BTreeMap<String, String> = machines
+            .iter()
+            .filter_map(|(vendor, machine, _, _)| {
+                Some((machine.clone(), nozzle_of(vendor, machine)?))
+            })
+            .collect();
+        let favs = self.favorites_of(Kind::Process);
+        let number = |settings: Option<&edge_config::Settings>, key: &str| -> Option<f64> {
+            settings?.text(key)?.trim().parse().ok()
+        };
+        let row_nozzles = |printers: &[String]| -> Vec<String> {
+            let mut list: Vec<String> = printers
+                .iter()
+                .filter_map(|p| nozzles.get(p).cloned())
+                .collect();
+            list.sort_by(|a, b| {
+                a.parse::<f64>()
+                    .unwrap_or(0.0)
+                    .total_cmp(&b.parse::<f64>().unwrap_or(0.0))
+            });
+            list.dedup();
+            list
+        };
+        let all_of = |printers: &[String]| added.len() > 1 && printers.len() == added.len();
+        let mut system: Vec<Value> = Vec::new();
+        for vendor in &vendors {
+            let Ok(shelf) = self.shelf(vendor) else {
+                continue;
+            };
+            let mut for_printer: BTreeMap<&str, Vec<String>> = BTreeMap::new();
+            for (of, machine, _, _) in &machines {
+                if of != vendor {
+                    continue;
+                }
+                for name in shelf.processes_for(machine) {
+                    for_printer.entry(name).or_default().push(machine.clone());
+                }
+            }
+            for name in shelf.all_of(Kind::Process) {
+                let alias = favorite_key(&name, true);
+                let settings = shelf.resolve(Kind::Process, &name).ok();
+                let mut printers = for_printer.get(name.as_str()).cloned().unwrap_or_default();
+                printers.sort_by(|a, b| less_name(a, b));
+                printers.dedup();
+                let on = !hidden.contains(&name);
+                let used = in_use.as_deref() == Some(name.as_str());
+                system.push(json!({
+                    "fav": alias,
+                    "star": favs.contains(&alias),
+                    "key": format!("s|{name}"),
+                    "name": alias,
+                    "members": [name],
+                    "vendor": "",
+                    "type": "",
+                    "source": "System",
+                    "version": shelf.preset_version(),
+                    "all": all_of(&printers),
+                    "nozzles": row_nozzles(&printers),
+                    "printers": printers,
+                    "lh": number(settings.as_ref(), "layer_height"),
+                    "tier": quality_tier(&alias),
+                    "mtime": null,
+                    "enabled": on,
+                    "in_use": used,
+                    "lock": if used && on { "in_use" } else { "" },
+                    "can_rename": false,
+                    "can_delete": false,
+                }));
+            }
+        }
+        system.sort_by(|a, b| {
+            let text = |row: &Value, key: &str| row[key].as_str().unwrap_or_default().to_owned();
+            less_name(&text(a, "name"), &text(b, "name"))
+                .then_with(|| less_name(&text(a, "key"), &text(b, "key")))
+        });
+        let users = self.users();
+        let shelf = vendors.first().and_then(|v| self.shelf(v).ok());
+        let mut mine: Vec<Value> = Vec::new();
+        for preset in users.of(Kind::Process).filter(|preset| preset.visible) {
+            let settings = shelf
+                .as_ref()
+                .and_then(|shelf| self.resolve_named(shelf, Kind::Process, &preset.name).ok());
+            let mut printers: Vec<String> = match &shelf {
+                Some(shelf) => added
+                    .iter()
+                    .filter(|machine| self.fits(shelf, Kind::Process, &preset.name, machine))
+                    .cloned()
+                    .collect(),
+                None => Vec::new(),
+            };
+            printers.sort_by(|a, b| less_name(a, b));
+            let mtime = std::fs::metadata(&preset.file)
+                .and_then(|meta| meta.modified())
+                .ok()
+                .and_then(|time| time.duration_since(std::time::UNIX_EPOCH).ok())
+                .map(|since| since.as_secs());
+            let tier = match &preset.inherits {
+                None => "Detached".to_owned(),
+                Some(parent) => favorite_key(parent, true),
+            };
+            mine.push(json!({
+                "fav": preset.name,
+                "star": favs.contains(&preset.name),
+                "key": format!("u|{}", preset.name),
+                "name": preset.name,
+                "members": [preset.name],
+                "vendor": "",
+                "type": "",
+                "source": "User",
+                "version": "",
+                "all": all_of(&printers),
+                "nozzles": row_nozzles(&printers),
+                "printers": printers,
+                "lh": number(settings.as_ref(), "layer_height"),
+                "tier": tier,
+                "mtime": mtime,
+                "enabled": true,
+                "in_use": in_use.as_deref() == Some(preset.name.as_str()),
+                "lock": "user",
+                "can_rename": true,
+                "can_delete": true,
+                "base": preset.name,
+                "suffix": "",
+                "family": [preset.name],
+            }));
+        }
+        mine.sort_by(|a, b| {
+            less_name(
+                a["name"].as_str().unwrap_or_default(),
+                b["name"].as_str().unwrap_or_default(),
+            )
+        });
+        system.extend(mine);
+        Ok(system)
+    }
+
+    /// `process_enable`: rows of the Process manager ticked or unticked
+    /// (`changes: [{ key, on }]`), kept at once in the
+    /// `hidden_process_presets` section (`hidden_process_section_with`); a
+    /// row of one's own and one in use being unticked are passed over.
+    pub(super) fn process_enable(&self, args: &Value) -> Result<Value, String> {
+        let changes = args
+            .get("changes")
+            .and_then(Value::as_array)
+            .ok_or("changes were not given")?;
+        let mut kind_args = args.clone();
+        kind_args["kind"] = json!("process");
+        let rows = self.manager_rows(&kind_args)?;
+        let mut hidden = lock(&self.state).store.data.hidden_processes.clone();
+        for change in changes {
+            let (Some(key), on) = (
+                change.get("key").and_then(Value::as_str),
+                change.get("on").and_then(Value::as_bool).unwrap_or(true),
+            ) else {
+                continue;
+            };
+            let Some(row) = rows.iter().find(|row| row["key"] == key) else {
+                continue;
+            };
+            if row["lock"] == "user" || (row["lock"] == "in_use" && !on) {
+                continue;
+            }
+            for name in row["members"]
+                .as_array()
+                .into_iter()
+                .flatten()
+                .filter_map(Value::as_str)
+            {
+                if on {
+                    hidden.remove(name);
+                } else {
+                    hidden.insert(name.to_owned());
+                }
+            }
+        }
+        let mut state = lock(&self.state);
+        printers::keep(&mut state, |data| data.hidden_processes = hidden);
+        drop(state);
+        self.filament_manager(&kind_args)
+    }
+
     /// The favourite filaments' keys, as kept (FavoriteFilamentsUI.cpp
     /// `fav_read_config`: an empty key is passed over).
     pub(super) fn favorites(&self) -> BTreeSet<String> {
-        lock(&self.state)
+        self.favorites_of(Kind::Filament)
+    }
+
+    /// The favourite keys of a kind (filaments or processes).
+    pub(super) fn favorites_of(&self, kind: Kind) -> BTreeSet<String> {
+        let keys: BTreeSet<String> = lock(&self.state)
             .store
             .data
             .prefs
-            .get(FAVORITES_KEY)
+            .get(favorites_key_of(kind))
             .map(|kept| unescape_list(kept))
             .unwrap_or_default()
             .into_iter()
             .filter(|key| !key.is_empty())
-            .collect()
+            .collect();
+        self.migrate_favorites(kind, keys)
     }
 
-    fn keep_favorites(&self, keys: &BTreeSet<String>) {
+    /// Once a run, after the vendors' presets are there: a favourite whose
+    /// vendor preset was renamed (`renamed_from` in the new profile) moves
+    /// to the new name; a key still in use, or that no one knows, stays
+    /// (FavoriteFilamentsUI.cpp `fav_migrate_once`, FavoriteFilaments.hpp
+    /// `rename_map`, `migrate`).
+    fn migrate_favorites(&self, kind: Kind, mut keys: BTreeSet<String>) -> BTreeSet<String> {
+        let slot = usize::from(kind == Kind::Process);
+        let vendors: Vec<String> = {
+            let state = lock(&self.state);
+            if state.favorites_migrated[slot] || keys.is_empty() || state.library.is_none() {
+                return keys;
+            }
+            state.store.data.models.keys().cloned().collect()
+        };
+        if vendors.is_empty() {
+            return keys;
+        }
+        let mut current: BTreeSet<String> = BTreeSet::new();
+        let mut renames: BTreeMap<String, String> = BTreeMap::new();
+        for vendor in &vendors {
+            let Ok(shelf) = self.shelf(vendor) else {
+                continue;
+            };
+            for name in shelf.all_of(kind) {
+                let key = favorite_key(&name, true);
+                current.insert(key.clone());
+                let old_names = shelf
+                    .resolve(kind, &name)
+                    .ok()
+                    .and_then(|settings| settings.text("renamed_from").map(str::to_owned))
+                    .unwrap_or_default();
+                for old in old_names
+                    .split(';')
+                    .map(str::trim)
+                    .filter(|old| !old.is_empty())
+                {
+                    let old_key = strip_printer_suffix(old);
+                    if !old_key.is_empty() && old_key != key {
+                        renames.entry(old_key).or_insert_with(|| key.clone());
+                    }
+                }
+            }
+        }
+        for preset in self.users().of(kind) {
+            current.insert(preset.name.clone());
+        }
+        let (out, changed) = migrate(&keys, &current, &renames);
+        lock(&self.state).favorites_migrated[slot] = true;
+        if changed {
+            keys = out;
+            self.keep_favorites_of(kind, &keys);
+        }
+        keys
+    }
+
+    fn keep_favorites_of(&self, kind: Kind, keys: &BTreeSet<String>) {
         let text = escape_list(&keys.iter().cloned().collect::<Vec<_>>());
         let mut state = lock(&self.state);
         printers::keep(&mut state, |data| {
-            data.prefs.insert(FAVORITES_KEY.to_owned(), text);
+            data.prefs.insert(favorites_key_of(kind).to_owned(), text);
         });
     }
 
     /// `favorite_toggle`: a filament made a favourite, or no longer one
     /// (`FavoriteFilamentsUI::toggle`), by its key; kept at once.
     pub(super) fn favorite_toggle(&self, args: &Value) -> Result<Value, String> {
+        let kind = manager_kind(args);
         let key = needed(args, "key")?.to_owned();
-        let mut keys = self.favorites();
+        let mut keys = self.favorites_of(kind);
         let on = !keys.remove(&key);
         if on {
             keys.insert(key);
         }
-        self.keep_favorites(&keys);
+        self.keep_favorites_of(kind, &keys);
         Ok(json!({ "on": on, "favs": keys }))
     }
 
     /// A preset of one's own renamed or deleted: its star follows it, or
     /// goes (`rename_key`, `remove_key`).
     pub(super) fn favorite_renamed(&self, old: &str, new: Option<&str>) {
-        let mut keys = self.favorites();
+        self.favorite_renamed_of(Kind::Filament, old, new);
+    }
+
+    pub(super) fn favorite_renamed_of(&self, kind: Kind, old: &str, new: Option<&str>) {
+        let mut keys = self.favorites_of(kind);
         if !keys.remove(old) {
             return;
         }
         if let Some(new) = new {
             keys.insert(new.to_owned());
         }
-        self.keep_favorites(&keys);
+        self.keep_favorites_of(kind, &keys);
     }
 
     /// The favourites among the filaments offered, in order of name: the
     /// "Favorite filaments" group at the head of a filament list
     /// (PresetComboBoxes.cpp `append_favorite_group`).
     pub(super) fn favorite_filaments(&self, system: &[String], mine: &[String]) -> Vec<String> {
-        let keys = self.favorites();
+        self.favorite_presets(Kind::Filament, system, mine)
+    }
+
+    /// The same for a kind: "Favorite filaments" or "Favorite process presets".
+    pub(super) fn favorite_presets(
+        &self,
+        kind: Kind,
+        system: &[String],
+        mine: &[String],
+    ) -> Vec<String> {
+        let keys = self.favorites_of(kind);
         let mut names: Vec<String> = system
             .iter()
             .filter(|name| keys.contains(&favorite_key(name, true)))
@@ -800,7 +1230,7 @@ impl Session {
             let keys = match column {
                 "checked" => vec![if row["enabled"] == true { "yes" } else { "no" }.to_owned()],
                 "star" => vec![if row["star"] == true { "yes" } else { "no" }.to_owned()],
-                "printers" => row["printers"]
+                "printers" | "nozzles" => row[column]
                     .as_array()
                     .into_iter()
                     .flatten()
@@ -814,7 +1244,17 @@ impl Session {
                 keys
             }
         };
-        const SETS: [&str; 6] = ["checked", "star", "vendor", "type", "source", "printers"];
+        let process = manager_kind(args) == Kind::Process;
+        let sets: &[&str] = if process {
+            &["checked", "star", "printers", "nozzles", "tier", "source"]
+        } else {
+            &["checked", "star", "vendor", "type", "source", "printers"]
+        };
+        let ranges: &[&str] = if process {
+            &["lh"]
+        } else {
+            &["nozzle_t", "bed_t"]
+        };
         let filters = args.get("filters").cloned().unwrap_or(Value::Null);
         let words = |text: &str| -> Vec<String> {
             text.to_lowercase()
@@ -837,6 +1277,7 @@ impl Session {
                     row["name"].as_str().unwrap_or_default().to_owned(),
                     row["vendor"].as_str().unwrap_or_default().to_owned(),
                     row["type"].as_str().unwrap_or_default().to_owned(),
+                    row["tier"].as_str().unwrap_or_default().to_owned(),
                     list("printers").join("\u{0}"),
                     list("members").join("\u{0}"),
                 ]
@@ -846,7 +1287,7 @@ impl Session {
             if !search.iter().all(|word| hay.contains(word.as_str())) {
                 return false;
             }
-            for column in SETS {
+            for column in sets.iter().copied() {
                 let Some(excluded) = filters[column]["exclude"].as_array() else {
                     continue;
                 };
@@ -865,7 +1306,7 @@ impl Session {
                     return false;
                 }
             }
-            for column in ["nozzle_t", "bed_t"] {
+            for column in ranges.iter().copied() {
                 let (min, max) = (
                     filters[column]["min"].as_f64(),
                     filters[column]["max"].as_f64(),
@@ -914,8 +1355,12 @@ impl Session {
                         text(&row["printers"][0])
                     }
                 }
-                "nozzle_t" | "bed_t" | "mtime" => row[key].as_f64().map(Sort::Number),
-                "name" | "vendor" | "type" | "source" => text(&row[key]),
+                "nozzle_t" | "bed_t" | "mtime" | "lh" => row[key].as_f64().map(Sort::Number),
+                "nozzles" => row["nozzles"][0]
+                    .as_str()
+                    .and_then(|n| n.parse().ok())
+                    .map(Sort::Number),
+                "name" | "vendor" | "type" | "source" | "tier" => text(&row[key]),
                 _ => None,
             }
         };
@@ -952,7 +1397,7 @@ impl Session {
         }
         // Each list filter's values, in their order (`sortKeys`, `setOrder`).
         let mut universe = serde_json::Map::new();
-        for column in SETS {
+        for column in sets.iter().copied() {
             let mut values: Vec<String> = Vec::new();
             for row in rows {
                 for value in set_keys(column, row) {
@@ -975,6 +1420,9 @@ impl Session {
                     };
                     rank(a).cmp(&rank(b)).then_with(|| natural(a, b))
                 }
+                "nozzles" => (a.is_empty(), a.parse::<f64>().unwrap_or(0.0))
+                    .partial_cmp(&(b.is_empty(), b.parse::<f64>().unwrap_or(0.0)))
+                    .unwrap_or(std::cmp::Ordering::Equal),
                 _ => natural(a, b),
             });
             universe.insert(column.to_owned(), json!(values));
@@ -1027,7 +1475,12 @@ impl Session {
         let name = row["name"].as_str().unwrap_or_default().to_owned();
         let typed = text(args, "name").unwrap_or_default().to_owned();
         let (_, suffix) = split_suffix(&name);
-        let book = super::settings::Book::Filament;
+        let kind = manager_kind(args);
+        let book = if kind == Kind::Process {
+            super::settings::Book::Process
+        } else {
+            super::settings::Book::Filament
+        };
         let check = |to: &str, from: &str| -> Option<String> {
             let (level, message) =
                 self.check_name(&shelf, book, to, Some(from), true, machine.as_deref());
@@ -1105,11 +1558,48 @@ impl Session {
             Err((_, why)) => return Ok(json!({ "ok": false, "message": why })),
             Ok(renames) => renames,
         };
+        // A preset with unsaved changes is saved or discarded first
+        // (PresetManagerDialog.cpp `rename` l.459–470).
+        let dirty = {
+            let state = lock(&self.state);
+            renames
+                .iter()
+                .find(|(from, _)| {
+                    state.projects.iter().any(|project| {
+                        let choices = &project.choices;
+                        choices.filaments.iter().enumerate().any(|(slot, name)| {
+                            name == from
+                                && choices
+                                    .filament_over
+                                    .get(slot)
+                                    .is_some_and(|own| !own.is_empty())
+                        })
+                    })
+                })
+                .map(|(from, _)| from.clone())
+        };
+        if let Some(from) = dirty {
+            return Ok(json!({
+                "ok": false,
+                "unsaved": true,
+                "title": tr("Rename preset"),
+                "ask": fill(&tr("\"%s\" has unsaved changes. Save or discard them in its settings first, then rename it."), &[&from]),
+                "message": tr("Save or discard the unsaved changes first."),
+            }));
+        }
         let mut new_key = key.clone();
         let row_name = key.strip_prefix("u|").unwrap_or_default().to_owned();
         let mut error = None;
         for (from, to) in &renames {
-            if let Err(why) = self.apply_rename(super::settings::Book::Filament, from, to) {
+            if let Err(why) = self.apply_rename(
+                if manager_kind(args) == Kind::Process {
+                    super::settings::Book::Process
+                } else {
+                    super::settings::Book::Filament
+                },
+                from,
+                to,
+            ) {
                 error = Some(fill(&tr("Could not rename \"%s\": %s"), &[from, &why]));
                 break;
             }
@@ -1133,6 +1623,9 @@ impl Session {
     /// the cog menu's "Delete this preset" deletes it (slots to the next,
     /// the star away), and the table again.
     pub(super) fn filament_manager_delete(&self, args: &Value) -> Result<Value, String> {
+        if args.get("keys").is_some() {
+            return self.filament_manager_delete_many(args);
+        }
         let (row, _, _) = self.user_row(args)?;
         if row["source"] != "User" {
             return Err(tr("System presets cannot be deleted."));
@@ -1140,10 +1633,10 @@ impl Session {
         let name = row["name"].as_str().unwrap_or_default().to_owned();
         let users = self.users();
         let preset = users
-            .get(Kind::Filament, &name)
+            .get(manager_kind(args), &name)
             .cloned()
             .ok_or_else(|| tr("This preset cannot be deleted."))?;
-        let children = users.children(Kind::Filament, &name);
+        let children = users.children(manager_kind(args), &name);
         if !children.is_empty() {
             let mut message = format!(
                 "{}\n{}",
@@ -1165,7 +1658,7 @@ impl Session {
         }
         if args.get("confirm").and_then(Value::as_bool) != Some(true) {
             let mut message = fill(&tr("Delete the preset \"%s\"?"), &[&name]);
-            let used = self.used_by(super::settings::Book::Filament, &name, args)?;
+            let used = self.used_by(manager_book(args), &name, args)?;
             if !used.is_empty() {
                 message.push_str("\n\n");
                 message.push_str(&tr("Used by:"));
@@ -1174,21 +1667,154 @@ impl Session {
                     message.push_str(&line);
                 }
                 message.push_str("\n\n");
-                message.push_str(&tr("They switch to the next visible filament preset."));
+                message.push_str(&switch_note(args));
             }
-            if preset.inherits.is_none() {
+            if preset.inherits.is_none() && manager_kind(args) == Kind::Filament {
                 message.push_str("\n\n");
                 message.push_str(&tr("If the preset corresponds to a filament currently in use on your printer, please reset the filament information for that slot."));
             }
             return Ok(json!({ "deleted": false, "title": tr("Delete Preset"), "ask": message }));
         }
-        let mut one = json!({ "kind": "filament", "preset": name, "confirm": true });
+        let mut one = json!({ "kind": if manager_kind(args) == Kind::Process { "process" } else { "filament" }, "preset": name, "confirm": true });
         if let Some(project) = args.get("project") {
             one["project"] = project.clone();
         }
         self.preset_delete(&one)?;
         let mut answer = self.filament_manager(args)?;
         answer["deleted"] = json!(true);
+        Ok(answer)
+    }
+
+    /// `filament_manager_delete` with `keys`: the rows selected deleted in
+    /// one go (PresetManagerDialog.cpp `delete_rows`). A preset another
+    /// outside the selection is laid over is skipped; inside it, children
+    /// go before their parents. One question: "Delete %d preset?" (or
+    /// "these %d presets"), the first ten names and "and %d more", what
+    /// uses them, what is skipped.
+    fn filament_manager_delete_many(&self, args: &Value) -> Result<Value, String> {
+        let keys: Vec<&str> = args["keys"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter_map(Value::as_str)
+            .collect();
+        let users = self.users();
+        let mut names: Vec<String> = Vec::new();
+        for key in keys {
+            if let Some(name) = key.strip_prefix("u|")
+                && users.get(manager_kind(args), name).is_some()
+                && !names.iter().any(|known| known == name)
+            {
+                names.push(name.to_owned());
+            }
+        }
+        if names.is_empty() {
+            return Err(tr("System presets cannot be deleted."));
+        }
+        let mut chosen: BTreeSet<String> = names.iter().cloned().collect();
+        let mut skipped: Vec<String> = Vec::new();
+        let mut changed = true;
+        while changed {
+            changed = false;
+            for name in &names {
+                if !chosen.contains(name) {
+                    continue;
+                }
+                if users
+                    .children(Kind::Filament, name)
+                    .iter()
+                    .any(|child| !chosen.contains(*child))
+                {
+                    chosen.remove(name);
+                    skipped.push(name.clone());
+                    changed = true;
+                }
+            }
+        }
+        let mut todo: Vec<String> = names
+            .iter()
+            .filter(|name| chosen.contains(*name))
+            .cloned()
+            .collect();
+        let depth = |name: &str| {
+            let mut depth = 0;
+            let mut at = users
+                .get(Kind::Filament, name)
+                .and_then(|p| p.inherits.clone());
+            while let Some(parent) = at.filter(|parent| chosen.contains(parent)) {
+                depth += 1;
+                if depth > 16 {
+                    break;
+                }
+                at = users
+                    .get(Kind::Filament, &parent)
+                    .and_then(|p| p.inherits.clone());
+            }
+            depth
+        };
+        todo.sort_by_key(|name| std::cmp::Reverse(depth(name)));
+        let title = tr("Delete Preset");
+        let mut message = if todo.is_empty() {
+            tr("Presets inherited by other presets cannot be deleted!")
+        } else {
+            let mut message = fill(
+                &super::i18n::trn(
+                    "Delete %d preset?",
+                    "Delete these %d presets?",
+                    todo.len() as u64,
+                ),
+                &[&todo.len()],
+            );
+            for name in todo.iter().take(10) {
+                message.push_str("\n - ");
+                message.push_str(name);
+            }
+            if todo.len() > 10 {
+                message.push('\n');
+                message.push_str(&fill(&tr("and %d more"), &[&(todo.len() - 10)]));
+            }
+            let mut used = String::new();
+            for name in &todo {
+                let lines = self.used_by(manager_book(args), name, args)?;
+                if !lines.is_empty() {
+                    used.push_str(&format!("\n - {name}: {}", lines.join(", ")));
+                }
+            }
+            if !used.is_empty() {
+                message.push_str(&format!(
+                    "\n\n{}{used}\n\n{}",
+                    tr("Used by:"),
+                    switch_note(args)
+                ));
+            }
+            message
+        };
+        if !skipped.is_empty() {
+            message.push_str("\n\n");
+            message.push_str(&tr("Skipped: other presets inherit these:"));
+            for name in &skipped {
+                message.push_str("\n - ");
+                message.push_str(name);
+            }
+        }
+        if todo.is_empty() {
+            return Ok(
+                json!({ "deleted": false, "refused": true, "title": title, "message": message }),
+            );
+        }
+        if args.get("confirm").and_then(Value::as_bool) != Some(true) {
+            return Ok(json!({ "deleted": false, "title": title, "ask": message, "todo": todo }));
+        }
+        for name in &todo {
+            let mut one = json!({ "kind": if manager_kind(args) == Kind::Process { "process" } else { "filament" }, "preset": name, "confirm": true });
+            if let Some(project) = args.get("project") {
+                one["project"] = project.clone();
+            }
+            self.preset_delete(&one)?;
+        }
+        let mut answer = self.filament_manager(args)?;
+        answer["deleted"] = json!(true);
+        answer["count"] = json!(todo.len());
         Ok(answer)
     }
 

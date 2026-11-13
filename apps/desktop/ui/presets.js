@@ -29,19 +29,22 @@ const Presets = (() => {
   // favourites among those offered, in order of name, and gives each row
   // the key its star is kept by (PresetComboBoxes.cpp `append_favorite_group`,
   // FavoriteFilaments.hpp `key_for`).
-  function fillList(select, { user = [], system = [], value = null, modified = false, favorites = null }) {
+  function fillList(select, { user = [], system = [], value = null, modified = false, favorites = null, favoritesTitle = null, favKind = 'filament' }) {
     const keyOf = (name) => (user.includes(name) ? name : name.split('@')[0].trimEnd());
     const group = (title, names) => {
       const node = el('optgroup', { label: title });
       node.append(...names.map((name) => {
         const option = new Option(label(name, modified && name === value), name);
-        if (favorites) option.dataset.fav = keyOf(name);
+        if (favorites) {
+          option.dataset.fav = keyOf(name);
+          option.dataset.favKind = favKind;
+        }
         return option;
       }));
       return node;
     };
     const groups = [];
-    if (favorites && favorites.length) groups.push(group(t('Favorite filaments'), favorites));
+    if (favorites && favorites.length) groups.push(group(favoritesTitle || t('Favorite filaments'), favorites));
     if (user.length) groups.push(group(t('User presets'), user));
     if (system.length) groups.push(group(t('System presets'), system));
     // What the project is on that neither list holds is still listed.

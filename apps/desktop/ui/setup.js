@@ -144,7 +144,14 @@ const Setup = (() => {
 
   // ---- the Filament manager ----
 
-  const fm = { rows: [], view: [], values: {}, search: '', sort: { key: null, dir: 1 }, filters: {}, pop: null, current: null };
+  const fm = {
+    kind: 'filament',
+    rows: [], view: [], values: {}, search: '', sort: { key: null, dir: 1 }, filters: {}, pop: null, current: null,
+    // The focused row, the rows selected (Ctrl / Shift+click, one's own only), the one clicked last,
+    // and the Enabled ticks not sent yet (preset_manager.js `pending`, 250 ms after the last one).
+    focus: null, selected: new Set(), anchor: null, pending: new Map(), timer: null,
+  };
+  const PENCIL = '<svg viewBox="0 0 16 16" aria-hidden="true"><path d="M11.3 1.6a1.5 1.5 0 0 1 2.1 0l1 1a1.5 1.5 0 0 1 0 2.1L5.8 13.3 2 14l.7-3.8z"/></svg>';
   const STAR = '<svg viewBox="0 0 16 16" aria-hidden="true"><path d="M8 1.4l1.95 4.1 4.45.55-3.27 3.08.84 4.42L8 11.4l-3.97 2.15.84-4.42L1.6 6.05l4.45-.55z"/></svg>';
 
   // The values as preset_manager.js shows them: whole degrees, a date of the system's, "—" when unknown.
@@ -180,6 +187,20 @@ const Setup = (() => {
       cell: (row) => [fmDate(row.mtime), row.mtime === null && row.version ? `Vendor bundle ${row.version}` : ''] },
     { key: 'actions', label: () => t('Actions'), cls: 'actions' },
   ];
+  // The Process manager's columns (preset_manager.js, `KIND === 'process'`).
+  const fmLayer = (value) => (value === null || value === undefined ? '—' : value.toFixed(3).replace(/0$/, ''));
+  const PM_COLUMNS = [
+    FM_COLUMNS[0], FM_COLUMNS[1], FM_COLUMNS[3],
+    { key: 'printers', label: () => t('Printer'), sort: 'printers', filter: 'set', cell: (row) => [fmPrinters(row), row.printers.join('\n')] },
+    { key: 'nozzles', label: () => t('Nozzle'), sort: 'nozzles', filter: 'set', cell: (row) => [row.nozzles.length ? row.nozzles.join(' / ') : '—'] },
+    { key: 'lh', label: () => t('Layer height'), cls: 'num', sort: 'lh', filter: 'range', tip: 'mm', cell: (row) => [fmLayer(row.lh)] },
+    { key: 'tier', label: () => 'Quality / parent', sort: 'tier', filter: 'set', cell: (row) => [row.tier || '—', row.tier] },
+    FM_COLUMNS[5], FM_COLUMNS[9], FM_COLUMNS[10],
+  ];
+  const fmCols = () => (fm.kind === 'process' ? PM_COLUMNS : FM_COLUMNS);
+  const fmTable = () => (fm.kind === 'process' ? 'process_manager' : 'filament_manager');
+  const fmPlural = () => (fm.kind === 'process' ? 'process presets' : 'filaments');
+
   const TRASH = '<svg viewBox="0 0 16 16" aria-hidden="true"><path d="M6 1h4l.5 1H14v1.5H2V2h3.5zM3 5h10l-.8 9.2a1 1 0 0 1-1 .8H4.8a1 1 0 0 1-1-.8z"/></svg>';
 
   // ---- rename and delete of one's own (preset_manager.js `startEdit`, `requestDelete`) ----
@@ -206,8 +227,18 @@ const Setup = (() => {
     });
     input.addEventListener('keydown', (event) => {
       if (event.key === 'Enter') { event.preventDefault(); attempt(() => fmCommit(row, input)); }
+      // Tab renames, and goes on to the next row's name (preset_manager.js `onEditKey`).
+      if (event.key === 'Tab' && !event.shiftKey) { event.preventDefault(); attempt(() => fmCommit(row, input, true)); }
       if (event.key === 'Escape') { event.preventDefault(); event.stopPropagation(); fmEditing = null; fmStatus(''); fmDraw(); }
     });
+    // A click anywhere else renames, as Enter does; not when the window itself lost the focus, nor a
+    // click inside the field's own box ("Only this printer"), nor once Escape let go (`blur`).
+    input.addEventListener('blur', () => setTimeout(() => {
+      if (!fmEditing || fmEditing.key !== row.key || fmEditing.busy || !input.isConnected) return;
+      if (!document.hasFocus() || document.activeElement === input) return;
+      if (document.activeElement && document.activeElement.closest && document.activeElement.closest('.fm-edit')) return;
+      attempt(() => fmCommit(row, input));
+    }, 0));
     setTimeout(() => { input.focus(); input.select(); }, 0);
     return box;
   }
@@ -220,16 +251,39 @@ const Setup = (() => {
     fmStatus(answer.message);
   }
 
-  async function fmCommit(row, input) {
+  async function fmCommit(row, input, thenNext = false) {
+    if (!fmEditing || fmEditing.busy) return;
+    const shown = fmShown();
+    const at = shown.findIndex((other) => other.key === row.key);
+    const next = thenNext ? shown.slice(at + 1).find((other) => other.can_rename) : null;
+    const unchanged = input.value === (row.suffix ? row.base : row.name);
+    if (unchanged) {
+      fmEditing = null;
+      fmDraw();
+      if (next) fmRename(next);
+      return;
+    }
+    fmEditing.busy = true;
     const answer = await call('filament_manager_rename', fmArgs({ key: row.key, name: input.value, scope: fmEditing.scope }));
+    if (fmEditing) fmEditing.busy = false;
     if (!answer.ok) {
       input.classList.add('invalid');
       fmStatus(answer.message);
+      // Unsaved changes: said in a box (PresetManagerDialog.cpp `rename`), the rename let go.
+      if (answer.unsaved) {
+        fmEditing = null;
+        fmDraw();
+        await inform(answer.title, answer.ask);
+      }
       return;
     }
     fmEditing = null;
     fmTake(answer);
     fmStatus(answer.message || 'Renamed');
+    if (next) {
+      const again = fm.rows.find((other) => other.key === next.key);
+      if (again) fmRename(again);
+    }
     presetsByMachine.clear();
     state.project = await call('project', { project: activeId() });
     await showSidebar();
@@ -256,7 +310,7 @@ const Setup = (() => {
   // The column sorted by (data_table.js `cycleSort`: up, down, then none; not kept between openings)
   // and the filters of the columns, applied by the session (`filament_manager`).
   function fmArgs(more = {}) {
-    return { project: activeId(), search: fm.search, sort: fm.sort, filters: fm.filters, ...more };
+    return { project: activeId(), kind: fm.kind, search: fm.search, sort: fm.sort, filters: fm.filters, ...more };
   }
   function fmActive(column) {
     const filter = fm.filters[column.key];
@@ -275,8 +329,9 @@ const Setup = (() => {
   }
 
   function fmHead() {
-    $('fm-head').replaceChildren(...FM_COLUMNS.map((column) => {
-      const cell = el('th', { className: column.cls || '' });
+    const columns = fmCols();
+    $('fm-head').replaceChildren(...columns.map((column) => {
+      const cell = el('th', { className: `${column.cls || ''} col-${column.key}` });
       const sorting = fm.sort.key === column.sort ? fm.sort.dir : 0;
       cell.setAttribute('aria-sort', sorting > 0 ? 'ascending' : sorting < 0 ? 'descending' : 'none');
       const title = el('button', { type: 'button', className: 'th-sort', title: column.tip ? `${column.tip}. Click to sort` : 'Click to sort' },
@@ -286,6 +341,13 @@ const Setup = (() => {
         fm.sort = next ? { key: column.sort, dir: next } : { key: null, dir: 1 };
         return fmLoad();
       }));
+      if (column.key === 'checked') {
+        // Every row shown, ticked or not (data_table.js `headerCheck`).
+        const head = el('input', { type: 'checkbox', className: 'fm-hcheck', title: 'Enable or disable every row shown' });
+        head.setAttribute('aria-label', head.title);
+        head.addEventListener('change', () => fmSetShown(head.checked));
+        cell.append(head);
+      }
       cell.append(title);
       if (column.filter) {
         const funnel = el('button', { type: 'button', className: `th-filter${fmActive(column) ? ' on' : ''}`, title: `Filter ${column.label()}` });
@@ -293,6 +355,13 @@ const Setup = (() => {
         funnel.innerHTML = '<svg viewBox="0 0 12 12" aria-hidden="true"><path d="M1,1.5h10L7.2,6.2v4.3L4.8,9.3V6.2Z"/></svg>';
         funnel.addEventListener('click', (event) => { event.stopPropagation(); fmFilter(column, funnel); });
         cell.append(funnel);
+      }
+      if (columns.indexOf(column) < columns.length - 1) {
+        const grip = el('span', { className: 'fm-resize', title: 'Drag to resize the column; double-click to reset all widths' });
+        grip.addEventListener('pointerdown', (event) => fmResize(event, columns.indexOf(column)));
+        grip.addEventListener('click', (event) => event.stopPropagation());
+        grip.addEventListener('dblclick', (event) => { event.stopPropagation(); attempt(() => fmKeepWidths(null)); });
+        cell.append(grip);
       }
       return cell;
     }));
@@ -375,7 +444,7 @@ const Setup = (() => {
 
   // The filters in force, each to take away, and "Clear search and filters" (data_table.js `renderChips`).
   function fmChips() {
-    const chips = FM_COLUMNS.filter(fmActive).map((column) => {
+    const chips = fmCols().filter(fmActive).map((column) => {
       const filter = fm.filters[column.key];
       let said;
       if (column.filter === 'set') {
@@ -411,7 +480,7 @@ const Setup = (() => {
     const values = fm.values.printers || [];
     const excluded = new Set((fm.filters.printers || {}).exclude || []);
     const shown = values.filter((value) => !excluded.has(value));
-    const options = [new Option('All printers', ''), ...values.map((value) => new Option(fmLabel(FM_COLUMNS[6], value), value))];
+    const options = [new Option('All printers', ''), ...values.map((value) => new Option(fmLabel({ key: 'printers' }, value), value))];
     if (shown.length > 1 && shown.length < values.length) options.push(new Option(`${shown.length} printers`, '\u0000several'));
     select.replaceChildren(...options);
     select.value = shown.length === values.length ? '' : shown.length === 1 ? shown[0] : '\u0000several';
@@ -438,22 +507,30 @@ const Setup = (() => {
     // Why it cannot change (preset_manager.js `lockText`).
     const why = row.lock === 'user' ? 'User presets are always shown' : row.lock === 'in_use' ? 'In use in this project' : '';
     if (why) box.title = why;
-    box.addEventListener('change', () => attempt(() => fmEnable(row, box.checked)));
+    box.addEventListener('click', (event) => event.stopPropagation());
+    box.addEventListener('change', () => fmTick([row], box.checked));
     // The star (preset_manager.js `COL_STAR`): applied at once.
     const star = el('button', { type: 'button', className: `pt-star${row.star ? ' on' : ''}`, innerHTML: STAR });
     star.title = row.star ? 'Remove from favourites' : 'Add to favourites';
     star.setAttribute('aria-label', `${star.title}: ${row.name}`);
     star.setAttribute('aria-pressed', String(row.star));
-    star.addEventListener('click', () => attempt(() => fmStar(row)));
-    const cells = FM_COLUMNS.map((column) => {
+    star.addEventListener('click', (event) => { event.stopPropagation(); attempt(() => fmStar(row)); });
+    const cells = fmCols().map((column) => {
       if (column.key === 'checked') return el('td', { className: 'check' }, box);
       if (column.key === 'star') return el('td', { className: 'star' }, star);
       if (column.key === 'actions') {
         const cell = el('td', { className: 'actions' });
+        if (row.can_rename) {
+          // Its settings (preset_manager.js `COL_ACTIONS`, `pm_open`).
+          const open = el('button', { type: 'button', className: 'icon fm-act', innerHTML: PENCIL, title: `Edit ${row.name}` });
+          open.setAttribute('aria-label', open.title);
+          open.addEventListener('click', (event) => { event.stopPropagation(); attempt(() => fmOpen(row)); });
+          cell.append(open);
+        }
         if (row.can_delete) {
           const remove = el('button', { type: 'button', className: 'icon fm-act', innerHTML: TRASH, title: `Delete ${row.name}` });
           remove.setAttribute('aria-label', remove.title);
-          remove.addEventListener('click', () => attempt(() => fmDelete(row)));
+          remove.addEventListener('click', (event) => { event.stopPropagation(); attempt(() => fmDelete(row)); });
           cell.append(remove);
         }
         return cell;
@@ -471,12 +548,14 @@ const Setup = (() => {
       const [text, title] = column.cell(row);
       return el('td', { className: `${column.cls || ''}${text === '—' ? ' na' : ''}`, textContent: text, title: title || '' });
     });
-    const line = el('tr', { className: row.enabled ? 'on' : '', tabIndex: -1 }, ...cells);
-    line.addEventListener('keydown', (event) => {
-      if (event.target !== line) return;
-      if (event.key === 'F2') { event.preventDefault(); fmRename(row); }
-      if (event.key === 'Delete') { event.preventDefault(); attempt(() => fmDelete(row)); }
-    });
+    const classes = [row.enabled ? 'on' : '', fm.focus === row.key ? 'focus' : '', fm.selected.has(row.key) ? 'sel' : ''];
+    const line = el('tr', { className: classes.filter(Boolean).join(' '), tabIndex: fm.focus === row.key ? 0 : -1 }, ...cells);
+    line.dataset.key = row.key;
+    if (fm.locks && row.lock) line.title = '';
+    // A click focuses the row; Ctrl / Cmd+click adds or takes away one of one's own from the
+    // selection, Shift+click selects those shown from the one clicked last (data_table.js `multiSelect`).
+    line.addEventListener('click', (event) => fmClick(row, event));
+    line.addEventListener('keydown', (event) => { if (event.target === line) fmKey(row, event); });
     return line;
   }
 
@@ -486,39 +565,383 @@ const Setup = (() => {
     $('fm-body').replaceChildren(...shown.map(fmRow));
     $('fm-none').hidden = shown.length > 0;
     const on = fm.rows.filter((row) => row.enabled).length;
-    const filtered = fm.search.trim() !== '' || FM_COLUMNS.some(fmActive);
+    const filtered = fm.search.trim() !== '' || fmCols().some(fmActive);
     // preset_manager.js `tx.count_all`, `tx.count`.
-    $('fm-count').textContent = filtered ? `${shown.length} of ${fm.rows.length} shown · ${on} enabled` : `${fm.rows.length} filaments · ${on} enabled`;
+    $('fm-count').textContent = filtered ? `${shown.length} of ${fm.rows.length} shown · ${on} enabled` : `${fm.rows.length} ${fmPlural()} · ${on} enabled`;
+    // "All" / "Clear all" and the header box act on the rows shown, locked rows skipped (data_table.js `setShown`).
+    const shownOn = shown.filter((row) => row.enabled).length;
+    $('fm-scope').textContent = filtered ? `All / Clear all: the ${shown.length} shown` : 'All / Clear all: every row';
+    const tip = `Applies to the ${shown.length} ${fm.kind === 'process' ? 'presets' : 'filaments'} shown by the search and filters (${shownOn} of them enabled); locked rows are skipped`;
+    $('fm-all').title = tip;
+    $('fm-clear').title = tip;
+    const head = $('fm-head').querySelector('.fm-hcheck');
+    if (head) {
+      head.checked = shown.length > 0 && shownOn === shown.length;
+      head.indeterminate = shownOn > 0 && shownOn < shown.length;
+      head.disabled = shown.length === 0;
+    }
+    fmButtons();
+    fmWidths();
   }
 
-  // Every row of the same favourite key follows (preset_manager.js `star`).
-  async function fmStar(row) {
-    const answer = await call('favorite_toggle', { key: row.fav });
-    const keys = new Set(answer.favs);
-    favourites.keys = keys;
-    await fmLoad();
+  // "Delete selected" and "Edit printers…" as the selection and the focused row allow (preset_manager.js `updateButtons`).
+  function fmButtons() {
+    const n = [...fm.selected].filter((key) => fm.rows.some((row) => row.key === key)).length;
+    const del = $('fm-delete-selected');
+    del.textContent = n ? `${t('Delete selected')} (${n})` : t('Delete selected');
+    del.disabled = n === 0;
+    del.title = n ? 'Delete the selected presets (Delete key)' : 'Ctrl+click or Shift+click your own presets to select them';
+    const focused = fm.rows.find((row) => row.key === fm.focus);
+    const editable = Boolean(focused && focused.source === 'User' && focused.filament_id);
+    const edit = $('fm-edit-printers');
+    edit.disabled = !editable;
+    edit.title = editable ? 'Edit the printers of this filament' : 'Select one of your own filaments first';
+  }
+
+  // ---- focus, selection and keys ----
+
+  function fmShown() {
+    const byKey = new Map(fm.rows.map((row) => [row.key, row]));
+    return fm.view.map((key) => byKey.get(key)).filter(Boolean);
+  }
+
+  function fmFocus(key, scroll = true) {
+    fm.focus = key;
+    for (const line of $('fm-body').children) {
+      const on = line.dataset.key === key;
+      line.classList.toggle('focus', on);
+      line.tabIndex = on ? 0 : -1;
+      if (on) {
+        line.focus({ preventScroll: !scroll });
+        if (scroll) line.scrollIntoView({ block: 'nearest' });
+      }
+    }
+    fmButtons();
+  }
+
+  function fmClick(row, event) {
+    if (event.target.closest('input, button, .fm-edit')) return;
+    const mine = row.can_delete;
+    if ((event.ctrlKey || event.metaKey) && mine) {
+      // The first Ctrl+click also takes the row clicked before it.
+      const before = fm.rows.find((other) => other.key === fm.anchor);
+      if (fm.selected.size === 0 && before && before.can_delete && before.key !== row.key) fm.selected.add(before.key);
+      if (fm.selected.has(row.key)) fm.selected.delete(row.key); else fm.selected.add(row.key);
+    } else if (event.shiftKey && mine && fm.anchor) {
+      const shown = fmShown();
+      const [from, to] = [shown.findIndex((other) => other.key === fm.anchor), shown.findIndex((other) => other.key === row.key)];
+      if (from >= 0 && to >= 0) {
+        for (const other of shown.slice(Math.min(from, to), Math.max(from, to) + 1)) if (other.can_delete) fm.selected.add(other.key);
+      }
+    } else {
+      fm.selected.clear();
+    }
+    fm.anchor = row.key;
+    fm.focus = row.key;
+    fmDraw();
+    fmFocus(row.key, false);
+  }
+
+  // The focused row's keys (preset_manager.js `onRowKey`): Space ticks Enabled, F or * stars, F2 (Return
+  // on macOS) renames, Delete deletes (Backspace too on macOS), the arrows, Home, End, Page Up and Page
+  // Down move.
+  function fmKey(row, event) {
+    const mac = /Mac/.test(navigator.platform);
+    const shown = fmShown();
+    const at = shown.findIndex((other) => other.key === row.key);
+    const move = (to) => {
+      event.preventDefault();
+      const next = shown[Math.max(0, Math.min(shown.length - 1, to))];
+      if (next) fmFocus(next.key);
+    };
+    if (event.ctrlKey || event.metaKey || event.altKey) {
+      if (mac && event.metaKey && event.key === 'Backspace') { event.preventDefault(); attempt(() => fmDeleteKey(row)); }
+      return;
+    }
+    switch (event.key) {
+      case 'ArrowDown': return move(at + 1);
+      case 'ArrowUp': return move(at - 1);
+      case 'Home': return move(0);
+      case 'End': return move(shown.length - 1);
+      case 'PageDown': return move(at + 10);
+      case 'PageUp': return move(at - 10);
+      case ' ':
+        event.preventDefault();
+        if (row.lock) { fmStatus(row.lock === 'user' ? 'User presets are always shown' : 'In use in this project'); return undefined; }
+        return fmTick([row], !row.enabled);
+      case 'f': case 'F': case '*':
+        event.preventDefault();
+        return attempt(() => fmStar(row));
+      case 'F2':
+        event.preventDefault();
+        return fmRename(row);
+      case 'Enter':
+        if (mac) { event.preventDefault(); fmRename(row); }
+        return undefined;
+      case 'Delete':
+        event.preventDefault();
+        return attempt(() => fmDeleteKey(row));
+      case 'Backspace':
+        if (mac) { event.preventDefault(); attempt(() => fmDeleteKey(row)); }
+        return undefined;
+      default:
+        return undefined;
+    }
+  }
+
+  // Delete: the selection when there is one, else the row.
+  function fmDeleteKey(row) {
+    return fm.selected.size ? fmDeleteSelected() : fmDelete(row);
+  }
+
+  async function fmDeleteSelected() {
+    const keys = [...fm.selected];
+    if (!keys.length) { fmStatus('Ctrl+click or Shift+click your own presets to select them'); return; }
+    const asked = await call('filament_manager_delete', fmArgs({ keys }));
+    if (asked.refused) { await inform(asked.title, asked.message); return; }
+    if (!(await confirmBox(asked.title, asked.ask, t('Yes'), t('No')))) return;
+    fmTake(await call('filament_manager_delete', fmArgs({ keys, confirm: true })));
+    fm.selected.clear();
+    fmDraw();
+    fmStatus('Deleted');
     presetsByMachine.clear();
+    state.project = await call('project', { project: activeId() });
     await showSidebar();
   }
 
-  async function fmEnable(row, on) {
-    fmTake(await call('filament_enable', fmArgs({ changes: [{ key: row.key, on }] })));
-    $('fm-status').textContent = 'Saved.';
+  // ---- Enabled, in batches ----
+
+  function fmTick(rows, on) {
+    for (const row of rows) {
+      if (row.lock === 'user' || (row.lock === 'in_use' && !on)) continue;
+      row.enabled = on;
+      fm.pending.set(row.key, on);
+    }
+    fmDraw();
+    clearTimeout(fm.timer);
+    fm.timer = setTimeout(() => attempt(fmFlush), 250);
+  }
+
+  async function fmFlush() {
+    clearTimeout(fm.timer);
+    fm.timer = null;
+    if (!fm.pending.size) return;
+    const changes = [...fm.pending].map(([key, on]) => ({ key, on }));
+    fm.pending.clear();
+    fmTake(await call(fm.kind === 'process' ? 'process_enable' : 'filament_enable', fmArgs({ changes })));
+    fmStatus('Saved.');
     // The sidebar's lists follow at once, as the reference's do.
     presetsByMachine.clear();
     await showSidebar();
   }
 
-  async function openFilamentManager() {
+  function fmSetShown(on) { fmTick(fmShown(), on); }
+
+  // ---- the row's edit button: its settings ----
+
+  // As the reference's settings tab selects the preset (GUI_App.cpp `run_preset_manager`,
+  // `OpenPresetEditor`): the slot of filament 1 goes onto it, what is set over the preset it
+  // leaves asked about first, and its pages open; the manager closes.
+  async function fmOpen(row, name = row.members[0]) {
+    await fmFlush();
+    $('fm-dialog').close();
+    const choices = state.project.choices;
+    if (fm.kind === 'process') {
+      // The process settings tab selects it: the project goes onto it, what is set over the one it
+      // leaves asked about first; its pages are the sidebar's.
+      if (choices.process !== name) {
+        const answer = await Presets.beforeLeaving('process', 1, name);
+        if (answer === null) return;
+        await setProject({ process: name });
+      }
+      return;
+    }
+    if (choices.filaments[0] !== name) {
+      const answer = await Presets.beforeLeaving('filament', 1, name);
+      if (answer === null) return;
+      const filaments = [...choices.filaments];
+      filaments[0] = name;
+      await setProject({ filaments });
+    }
+    await openPresetPanel('filament', 1);
+  }
+
+  // ---- dragged column widths, kept (data_table.js `startResize`, `saveWidths`) ----
+
+  function fmWidths() {
+    const kept = (I18n.layout && I18n.layout.columns && I18n.layout.columns[fmTable()]) || null;
+    const heads = [...$('fm-head').children];
+    heads.forEach((cell, at) => { cell.style.width = kept && kept[at] ? `${kept[at]}px` : ''; });
+    $('fm-table').style.width = kept ? `${kept.reduce((sum, width) => sum + width, 0)}px` : '';
+  }
+
+  async function fmKeepWidths(widths) {
+    const answer = await call('layout_set', { columns: { [fmTable()]: widths } });
+    if (I18n.layout) I18n.layout.columns = answer.columns;
+    fmWidths();
+  }
+
+  function fmResize(event, at) {
+    event.preventDefault();
+    event.stopPropagation();
+    fmClosePop();
+    const heads = [...$('fm-head').children];
+    const start = heads.map((cell) => Math.round(cell.getBoundingClientRect().width));
+    const x0 = event.clientX;
+    const min = 40;
+    const move = (ev) => {
+      const widths = [...start];
+      // It grows or shrinks; the column after it gives or takes the room, the total kept.
+      const dx = Math.max(min - start[at], Math.min(ev.clientX - x0, start[at + 1] - min));
+      widths[at] = start[at] + dx;
+      widths[at + 1] = start[at + 1] - dx;
+      heads.forEach((cell, i) => { cell.style.width = `${widths[i]}px`; });
+      fm.dragged = widths;
+    };
+    const up = () => {
+      document.removeEventListener('pointermove', move);
+      document.removeEventListener('pointerup', up);
+      if (fm.dragged) attempt(() => fmKeepWidths(fm.dragged));
+      fm.dragged = null;
+    };
+    document.addEventListener('pointermove', move);
+    document.addEventListener('pointerup', up);
+  }
+
+  // Every row of the same favourite key follows (preset_manager.js `star`).
+  async function fmStar(row) {
+    const answer = await call('favorite_toggle', { kind: fm.kind, key: row.fav });
+    if (fm.kind !== 'process') favourites.keys = new Set(answer.favs);
+    await fmLoad();
+    presetsByMachine.clear();
+    await showSidebar();
+  }
+
+  // The Filament manager, or (kind 'process') the Process manager: the same table, its own columns.
+  async function openFilamentManager(kind = 'filament') {
+    fm.kind = kind;
+    $('fm-title').textContent = kind === 'process' ? t('Process manager') : t('Filament manager');
+    const search = kind === 'process' ? 'Search name, printer or quality' : 'Search name, vendor, type or printer';
+    $('fm-search').placeholder = search;
+    $('fm-search').setAttribute('aria-label', search);
+    $('fm-none').textContent = kind === 'process' ? 'No process preset matches the search and filters.' : 'No filament matches the search and filters.';
+    for (const id of ['fm-create', 'fm-edit-printers']) $(id).hidden = kind === 'process';
     fm.search = '';
     fm.sort = { key: null, dir: 1 };
     fm.filters = {};
+    fm.selected.clear();
+    fm.focus = null;
     $('fm-search').value = '';
     $('fm-status').textContent = '';
     fmClosePop();
     await fmLoad();
     $('fm-dialog').showModal();
     $('fm-search').focus();
+  }
+
+  // ---- "Edit printers…": "Edit Filament" (CreatePresetsDialog.cpp `EditFilamentPresetDialog`) ----
+
+  async function openEditFilament(filamentId) {
+    await fmFlush();
+    const family = await call('filament_family', { project: activeId(), filament_id: filamentId });
+    const dialog = $('ef-dialog');
+    const done = async () => {
+      dialog.close();
+      await fmLoad();
+      presetsByMachine.clear();
+      state.project = await call('project', { project: activeId() });
+      await showSidebar();
+    };
+    const draw = (info) => {
+      const tree = el('div', { className: 'ef-tree' }, ...info.printers.map((entry) => el('div', { className: 'ef-printer' },
+        el('div', { className: 'ef-printer-name', textContent: entry.printer }),
+        ...entry.presets.map((name) => {
+          const edit = el('button', { type: 'button', textContent: t('Edit Preset') });
+          // "Edit Preset": that preset's settings, the dialogs closed (`edit_preset`).
+          edit.addEventListener('click', () => attempt(async () => { dialog.close(); await fmOpen({ members: [name] }, name); }));
+          const remove = el('button', { type: 'button', className: 'danger', textContent: t('Delete Preset') });
+          remove.addEventListener('click', () => attempt(async () => {
+            const asked = await call('filament_family_delete', { project: activeId(), filament_id: filamentId, preset: name });
+            if (asked.refused) { await inform(asked.title, asked.message); return; }
+            if (!(await confirmBox(asked.title, asked.ask, t('Yes'), t('No')))) return;
+            const after = await call('filament_family_delete', { project: activeId(), filament_id: filamentId, preset: name, confirm: true });
+            if (after.gone) { await done(); return; }
+            draw(after);
+          }));
+          return el('div', { className: 'ef-preset' }, el('span', { textContent: name, title: name }), edit, remove);
+        }))));
+      const add = el('button', { type: 'button', textContent: t('+ Add Preset') });
+      add.addEventListener('click', () => attempt(async () => {
+        const after = await openAddPreset(filamentId);
+        if (after) draw(after);
+      }));
+      const remove = el('button', { type: 'button', className: 'danger', textContent: t('Delete') });
+      remove.addEventListener('click', () => attempt(async () => {
+        const asked = await call('filament_family_delete', { project: activeId(), filament_id: filamentId });
+        if (!(await confirmBox(asked.title, asked.ask, t('Yes'), t('Cancel')))) return;
+        await call('filament_family_delete', { project: activeId(), filament_id: filamentId, confirm: true });
+        await done();
+      }));
+      const ok = el('button', { type: 'button', className: 'primary', textContent: t('OK') });
+      ok.addEventListener('click', () => attempt(done));
+      dialog.replaceChildren(
+        el('h2', { id: 'ef-title', textContent: t('Edit Filament') }),
+        el('div', { className: 'cr-page' },
+          el('h3', { className: 'cr-section', textContent: t('Basic Information') }),
+          formRow(t('Vendor'), el('span', { textContent: info.vendor })),
+          formRow(t('Type'), el('span', { textContent: info.type })),
+          formRow(t('Serial'), el('span', { textContent: info.serial })),
+          el('h3', { className: 'cr-section', textContent: t('Filament presets under this filament') }),
+          el('div', {}, add),
+          el('div', { className: 'setup-scroll cr-scroll' }, tree),
+          info.note ? el('p', { className: 'quiet', textContent: t('Note: If the only preset under this filament is deleted, the filament will be deleted after exiting the dialog.') }) : ''),
+        el('div', { className: 'dialog-foot' }, remove, el('div', { className: 'grow' }), ok));
+    };
+    draw(family);
+    if (!dialog.open) dialog.showModal();
+  }
+
+  // "+ Add Preset" (CreatePresetForPrinterDialog): a printer, and the preset to copy for it.
+  function openAddPreset(filamentId) {
+    return new Promise((resolve) => {
+      attempt(async () => {
+        const choices = await call('filament_family_choices', { project: activeId(), filament_id: filamentId });
+        const dialog = $('ap-dialog');
+        const printer = el('select');
+        printer.append(...choices.printers.map((entry, at) => new Option(entry.printer, String(at))));
+        const preset = el('select');
+        const fill = () => {
+          const entry = choices.printers[Number(printer.value)];
+          preset.replaceChildren(...(entry ? entry.presets : []).map((name) => new Option(name, name)));
+        };
+        fill();
+        printer.addEventListener('change', fill);
+        const finish = (value) => { dialog.close(); resolve(value); };
+        const make = async (more) => {
+          const entry = choices.printers[Number(printer.value)];
+          const answer = await call('filament_family_add', { project: activeId(), filament_id: filamentId,
+            printer: entry ? entry.printer : '', preset: preset.value, ...more });
+          if (!answer.created) {
+            if (await confirmBox(answer.title, answer.ask, t('Yes'), t('No'))) await make({ rewrite: true });
+            return;
+          }
+          finish(answer);
+        };
+        const ok = el('button', { type: 'button', className: 'primary', textContent: t('OK') });
+        ok.addEventListener('click', () => attempt(async () => {
+          try { await make({}); } catch (error) { await info(error.message); }
+        }));
+        const cancel = el('button', { type: 'button', textContent: t('Cancel') });
+        cancel.addEventListener('click', () => finish(null));
+        dialog.replaceChildren(el('h2', { textContent: t('Add Preset') }),
+          el('div', { className: 'cr-page' },
+            el('h3', { className: 'cr-section', textContent: t('Add preset for new printer') }),
+            formRow(t('Printer'), el('div', { className: 'cr-pair' }, listbox(printer))),
+            formRow(t('Copy preset from filament'), el('div', { className: 'cr-pair' }, listbox(preset)))),
+          el('div', { className: 'dialog-foot' }, el('div', { className: 'grow' }), ok, cancel));
+        dialog.showModal();
+      });
+    });
   }
 
   // ---- shared by the two "Create" dialogs ----
@@ -763,7 +1186,7 @@ const Setup = (() => {
     await refreshStrip();
     // "Printer Created Successfully": "Printer Setting" opens the printer's settings.
     if (await confirmBox(t('Printer Created Successfully'), `${t('Printer Created')}\n${t('Please go to printer settings to edit your presets')}`, t('Printer Setting'), t('Cancel'))) {
-      $('printer-edit').click();
+      await openPresetPanel('printer');
     }
   }
 
@@ -873,8 +1296,16 @@ const Setup = (() => {
       return;
     }
     if (!answer.created) {
-      if (!(await confirmBox(answer.title, answer.ask, t('Yes'), t('No')))) return;
-      await cfCreate({ ...more, ...(answer.step === 'name' ? { continue_name: true } : { rewrite: true }) });
+      const yes = await confirmBox(answer.title, answer.ask, t('Yes'), t('No'));
+      if (answer.step === 'name') {
+        if (yes) await cfCreate({ ...more, continue_name: true });
+        return;
+      }
+      // Each name taken in turn: Yes writes over it, No leaves it and makes the others.
+      const rewrite = [...(more.rewrite || [])];
+      const skip = [...(more.skip || [])];
+      (yes ? rewrite : skip).push(answer.name_taken);
+      await cfCreate({ ...more, rewrite, skip });
       return;
     }
     $('cf-dialog').close();
@@ -947,6 +1378,16 @@ const Setup = (() => {
     // outside English the catalogs' "Return" ("Zurück") says it.
     $('fs-back').textContent = I18n.language.startsWith('en') ? 'Back' : t('Return');
     $('fm-create').addEventListener('click', () => attempt(openCreateFilament));
+    $('fm-all').addEventListener('click', () => fmSetShown(true));
+    $('fm-clear').addEventListener('click', () => fmSetShown(false));
+    $('fm-delete-selected').addEventListener('click', () => attempt(fmDeleteSelected));
+    $('fm-edit-printers').addEventListener('click', () => attempt(() => {
+      const focused = fm.rows.find((row) => row.key === fm.focus);
+      if (!focused || focused.source !== 'User' || !focused.filament_id) { fmStatus('Select one of your own filaments first'); return undefined; }
+      return openEditFilament(focused.filament_id);
+    }));
+    // What is ticked is sent before the dialog goes.
+    $('fm-dialog').addEventListener('close', () => attempt(fmFlush));
     $('fs-all').addEventListener('click', () => fsEvery(true));
     $('fs-clear').addEventListener('click', () => fsEvery(false));
     $('fs-finish').addEventListener('click', () => attempt(fsFinish));
@@ -974,12 +1415,16 @@ const Setup = (() => {
       return fmLoad();
     }));
     // Escape: a filter first, then the dialog (preset_manager.js `escape`).
-    $('fm-dialog').addEventListener('cancel', (event) => { if (fm.pop) { event.preventDefault(); fmClosePop(); } });
+    $('fm-dialog').addEventListener('cancel', (event) => {
+      if (fm.pop) { event.preventDefault(); fmClosePop(); return; }
+      if (fm.selected.size) { event.preventDefault(); fm.selected.clear(); fmDraw(); }
+    });
     $('fm-dialog').addEventListener('pointerdown', (event) => {
       if (fm.pop && !$('fm-pop').contains(event.target) && !event.target.closest('.th-filter')) fmClosePop();
     });
     $('fm-close').addEventListener('click', () => $('fm-dialog').close());
+    // Escape: a filter, then a rename, then the selection, then the dialog (preset_manager.js `escape`).
   }
 
-  return { init, openFilamentSelection, openFilamentManager, openCreatePrinter, openCreateFilament };
+  return { init, openFilamentSelection, openFilamentManager, openProcessManager: () => openFilamentManager('process'), openCreatePrinter, openCreateFilament };
 })();

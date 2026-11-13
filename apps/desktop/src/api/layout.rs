@@ -148,6 +148,7 @@ impl Session {
             "stage_min": STAGE_MIN,
             "groups": groups,
             "folded_at_first": folded_at_first(),
+            "columns": data.columns,
         })
     }
 
@@ -199,6 +200,52 @@ impl Session {
             lock(&self.state)
                 .store
                 .change(|data| data.sidebar_width = width)?;
+        }
+        // `columns`: { table: [width, …] | null }, the widths a table's
+        // columns were dragged to, as the reference's tables keep them
+        // (data_table.js `saveWidths`, under `storageKey`), null for the
+        // widths it starts with. Tables: the Filament and the Process
+        // manager.
+        if let Some(columns) = args.get("columns") {
+            let columns = columns.as_object().ok_or("columns must be an object")?;
+            let mut kept = Vec::new();
+            for (table, widths) in columns {
+                if !matches!(table.as_str(), "filament_manager" | "process_manager") {
+                    return Err(format!("there is no table {table}"));
+                }
+                let widths = match widths {
+                    Value::Null => None,
+                    widths => Some(
+                        widths
+                            .as_array()
+                            .ok_or("widths must be a list")?
+                            .iter()
+                            .map(|width| {
+                                width
+                                    .as_u64()
+                                    .and_then(|width| u32::try_from(width).ok())
+                                    .filter(|width| (16..=2000).contains(width))
+                                    .ok_or_else(|| {
+                                        "a width must be a whole number from 16 to 2000".to_owned()
+                                    })
+                            })
+                            .collect::<Result<Vec<u32>, String>>()?,
+                    ),
+                };
+                kept.push((table.clone(), widths));
+            }
+            lock(&self.state).store.change(|data| {
+                for (table, widths) in kept {
+                    match widths {
+                        Some(widths) => {
+                            data.columns.insert(table, widths);
+                        }
+                        None => {
+                            data.columns.remove(&table);
+                        }
+                    }
+                }
+            })?;
         }
         if !folds.is_empty() {
             lock(&self.state).store.change(|data| {

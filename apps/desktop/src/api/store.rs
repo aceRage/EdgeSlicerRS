@@ -72,6 +72,9 @@ pub struct Data {
     /// each by the reference's message id: true open, false folded. A
     /// group not here is as [`super::layout`] has it at first.
     pub groups: BTreeMap<(String, String, String), bool>,
+    /// The widths a table's columns were dragged to, by table
+    /// (`layout.columns`), as the reference keeps them for its tables.
+    pub columns: BTreeMap<String, Vec<u32>>,
     /// The Preferences (`prefs.rs`) set, by the reference's keys, kept in
     /// the `app` section beside the language as the reference keeps them.
     pub prefs: BTreeMap<String, String>,
@@ -82,6 +85,11 @@ pub struct Data {
     /// filament is shown (Preset.cpp `set_visible_from_appconfig` leaves
     /// a preset visible without one).
     pub filaments: Option<BTreeSet<String>>,
+    /// The vendors' process presets hidden (the Process manager's
+    /// "Enabled" unticked), by name: the reference's
+    /// `hidden_process_presets` section (AppConfig.cpp
+    /// `SECTION_HIDDEN_PROCESSES`), each name with "true".
+    pub hidden_processes: BTreeSet<String>,
     /// What the file held that this build does not know: written back
     /// as it was.
     other: Map<String, Value>,
@@ -226,6 +234,22 @@ impl Data {
                 .get("sidebar_width")
                 .and_then(Value::as_u64)
                 .and_then(|width| u32::try_from(width).ok());
+            for (table, widths) in layout
+                .get("columns")
+                .and_then(Value::as_object)
+                .into_iter()
+                .flatten()
+            {
+                let widths: Vec<u32> = widths
+                    .as_array()
+                    .into_iter()
+                    .flatten()
+                    .filter_map(|width| width.as_u64().and_then(|w| u32::try_from(w).ok()))
+                    .collect();
+                if !widths.is_empty() {
+                    data.columns.insert(table.clone(), widths);
+                }
+            }
             // { kind: { page: { group: true | false } } }
             for (kind, pages) in layout
                 .get("groups")
@@ -253,7 +277,21 @@ impl Data {
                     .collect(),
             );
         }
+        if let Some(section) = root
+            .get("hidden_process_presets")
+            .and_then(Value::as_object)
+        {
+            data.hidden_processes = section
+                .iter()
+                .filter(|(_, on)| {
+                    on.as_str()
+                        .is_some_and(|on| !on.is_empty() && on != "false")
+                })
+                .map(|(name, _)| name.clone())
+                .collect();
+        }
         for known in [
+            "hidden_process_presets",
             "filaments",
             "version",
             "app",
@@ -329,6 +367,14 @@ impl Data {
                 .collect();
             root.insert("filaments".into(), Value::Object(section));
         }
+        if !self.hidden_processes.is_empty() {
+            let section: Map<String, Value> = self
+                .hidden_processes
+                .iter()
+                .map(|name| (name.clone(), json!("true")))
+                .collect();
+            root.insert("hidden_process_presets".into(), Value::Object(section));
+        }
         let mut layout = Map::new();
         if let Some(width) = self.sidebar_width {
             layout.insert("sidebar_width".into(), json!(width));
@@ -345,6 +391,9 @@ impl Data {
                 groups[group.as_str()] = json!(open);
             }
             layout.insert("groups".into(), Value::Object(kinds));
+        }
+        if !self.columns.is_empty() {
+            layout.insert("columns".into(), json!(self.columns));
         }
         if !layout.is_empty() {
             root.insert("layout".into(), Value::Object(layout));

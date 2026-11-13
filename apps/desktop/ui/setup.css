@@ -66,18 +66,22 @@
 
 /* ---- the Filament manager ---- */
 
-#fm-table { min-width: 1170px; }
-#fm-table th.check { width: 84px; padding-left: var(--space-4); }
-#fm-table th.star { width: 84px; }
-#fm-table th:nth-child(3) { width: 100px; }
-#fm-table th:nth-child(5) { width: 84px; }
-#fm-table th:nth-child(6) { width: 80px; }
-#fm-table th:nth-child(7) { width: 140px; }
+#fm-table { min-width: 1218px; }
+#fm-table th.col-checked { width: 112px; padding-left: var(--space-4); }
+#fm-table th.col-star { width: 104px; }
+#fm-table th.col-vendor { width: 100px; }
+#fm-table th.col-type { width: 84px; }
+#fm-table th.col-source { width: 80px; }
+#fm-table th.col-printers { width: 140px; }
+#fm-table th.col-nozzles { width: 80px; }
+#fm-table th.col-tier { width: 130px; }
 #fm-table th.num { width: 92px; }
-#fm-table th:nth-child(10) { width: 136px; }
+#fm-table th.col-lh { width: 110px; }
+#fm-table th.col-mtime { width: 136px; }
+#fm-table th.col-actions { width: 72px; }
 #fm-table td.name { font-weight: 550; }
 #fm-table td.name.inuse::after { content: ' •'; color: var(--accent); }
-#fm-table td:nth-child(3), #fm-table td:nth-child(6), #fm-table td:nth-child(7), #fm-table td:nth-child(10) { color: var(--text-2); }
+#fm-table td:not(.name):not(.check):not(.star):not(.num) { color: var(--text-2); }
 #fm-table tbody tr { cursor: default; }
 
 @media (max-width: 760px) {
@@ -135,7 +139,6 @@
 .pt-star.on, .lb-star.on { color: var(--accent); }
 .pt-star.on svg, .lb-star.on svg { fill: currentColor; }
 .lb-option .lb-star { margin-left: auto; flex: none; }
-#fm-table th.star { width: 84px; }
 #fm-table td.star { text-align: center; }
 
 .fm-chips { display: flex; align-items: center; flex-wrap: wrap; gap: 6px var(--space-2); padding: 0 var(--space-4) var(--space-3); }
@@ -146,7 +149,6 @@
 #fm-pop { width: 260px; }
 #fm-pop .check-list { max-height: 240px; overflow-y: auto; }
 
-#fm-table th.actions { width: 64px; }
 #fm-table td.actions { text-align: center; }
 .fm-act svg { width: 14px; height: 14px; fill: currentColor; }
 .fm-edit { display: flex; flex-wrap: wrap; align-items: center; gap: 2px 6px; min-width: 0; padding: 4px 0; }
@@ -156,3 +158,20 @@
 .fm-edit-scope { display: inline-flex; flex-direction: row; align-items: center; gap: 4px; color: var(--text-2); font-size: var(--size-label); white-space: nowrap; }
 #fm-table td.name.editing { overflow: visible; }
 #fm-table tbody tr:has(td.editing) td { height: auto; }
+
+/* The Filament manager's row focus, selection, resize grips and header box. */
+#fm-table tbody tr.focus { outline: 1px solid var(--accent); outline-offset: -1px; }
+#fm-table tbody tr.sel td { background: color-mix(in srgb, var(--accent) 22%, transparent); }
+#fm-table th { position: sticky; }
+.fm-resize { position: absolute; top: 0; right: -3px; width: 7px; height: 100%; cursor: col-resize; z-index: 1; }
+.fm-resize:hover { background: color-mix(in srgb, var(--accent) 40%, transparent); }
+#fm-table th .fm-hcheck { margin: 0 6px 0 0; vertical-align: middle; }
+#fm-scope { white-space: nowrap; font-size: var(--size-label); }
+/* "Edit Filament": its presets by printer. */
+.ef-tree { display: flex; flex-direction: column; gap: var(--space-2); padding: var(--space-3); }
+.ef-printer-name { font-weight: 600; margin-bottom: 4px; }
+.ef-preset { display: grid; grid-template-columns: minmax(0, 1fr) auto auto; align-items: center; gap: var(--space-2); padding-left: var(--space-3); }
+.ef-preset span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+#fm-dialog .fs-bar { flex-wrap: wrap; row-gap: var(--space-2); }
+#fm-dialog .fs-bar button { white-space: nowrap; }
+#fm-dialog .fs-bar input[type="search"] { flex: 1 1 200px; }
