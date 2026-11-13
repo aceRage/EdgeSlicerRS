@@ -54,27 +54,83 @@ fn bands(dir: &Path) -> Model {
     model
 }
 
-/// A Snapmaker U1 with two filaments of PLA, its presets as shipped.
-fn u1() -> Chosen {
-    let vendor = Vendor::open(&reference("resources/profiles"), "Snapmaker").unwrap();
+/// The same post with its two bands in filament 2 on one half only, the
+/// half at the larger x: on the bands' layers the filament changes in the
+/// middle of the layer, with the nozzle over the post (the reference's
+/// test of aceRage/EdgeSlicer#1020, `halves.stl`).
+fn halves(dir: &Path) -> Model {
+    let mut soup = Vec::new();
+    for (index, (low, high, split)) in [
+        (0.0, 3.0, false),
+        (3.0, 4.0, true),
+        (4.0, 9.0, false),
+        (9.0, 10.0, true),
+        (10.0, 14.0, false),
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        let low = if index == 0 { low } else { low + 0.02 };
+        if split {
+            soup.extend(cuboid([125.5, 126.0, low], [135.49, 146.0, high]));
+            soup.extend(cuboid([135.51, 126.0, low], [145.5, 146.0, high]));
+        } else {
+            soup.extend(cuboid([125.5, 126.0, low], [145.5, 146.0, high]));
+        }
+    }
+    let mesh = Mesh::from_triangle_soup(soup);
+    let path = dir.join("halves.stl");
+    std::fs::write(&path, edge_mesh::stl::to_binary(&mesh)).unwrap();
+    let mut model = Model::open(&path).unwrap();
+    let object = model.objects()[0].id();
+    model.split_to_parts(None, object).unwrap();
+    let parts = model.objects()[0].shape().part_ids().to_vec();
+    assert_eq!(parts.len(), 7);
+    // The halves at the larger x of the bands, by where they start.
+    let banded: Vec<u64> = (model.objects()[0].shape().parts().iter())
+        .zip(&parts)
+        .filter(|(part, _)| part.mesh.bounds().unwrap().0[0] > 135.0)
+        .map(|(_, id)| *id)
+        .collect();
+    assert_eq!(banded.len(), 2);
+    model
+        .set_part_filament(None, object, &banded, Some(2))
+        .unwrap();
+    model
+}
+
+/// Two filaments' presets on one printer, as shipped.
+fn printer(vendor: &str, machine: &str, process: &str, filament: &str) -> Chosen {
+    let vendor = Vendor::open(&reference("resources/profiles"), vendor).unwrap();
     let preset = |kind, name: &str| (name.to_owned(), vendor.resolve(kind, name).unwrap());
-    let filament = preset(Kind::Filament, "Generic PLA @U1 0.4 nozzle");
+    let filament = preset(Kind::Filament, filament);
     Chosen {
-        machine: Some(preset(Kind::Machine, "Snapmaker U1 (0.4 nozzle)")),
-        process: Some(preset(
-            Kind::Process,
-            "0.20mm Standard @Snapmaker U1 (0.4 nozzle)",
-        )),
+        machine: Some(preset(Kind::Machine, machine)),
+        process: Some(preset(Kind::Process, process)),
         filaments: vec![filament.clone(), filament],
     }
 }
 
+/// A Snapmaker U1 with two filaments of PLA, its presets as shipped.
+fn u1() -> Chosen {
+    printer(
+        "Snapmaker",
+        "Snapmaker U1 (0.4 nozzle)",
+        "0.20mm Standard @Snapmaker U1 (0.4 nozzle)",
+        "Generic PLA @U1 0.4 nozzle",
+    )
+}
+
 fn slice(model: &Model, set: &str) -> Result<String, String> {
+    slice_on(model, &u1(), set)
+}
+
+fn slice_on(model: &Model, chosen: &Chosen, set: &str) -> Result<String, String> {
     let overrides = Overrides {
         settings: Settings::from_json(set).unwrap(),
         ..Overrides::default()
     };
-    let job = edge_engine::prepare(model.place(None).unwrap(), &u1(), &overrides).unwrap();
+    let job = edge_engine::prepare(model.place(None).unwrap(), chosen, &overrides).unwrap();
     let sliced = edge_engine::slice(job, &Unwatched).map_err(|error| error.to_string())?;
     let gcode = sliced
         .gcode("2001-01-01 at 00:00:00")
@@ -292,4 +348,275 @@ fn with_the_setting_off_nothing_changes() {
             .filter(|laying| laying.tower && laying.extruding)
             .all(|laying| (laying.z - laying.layer_top).abs() < 1e-6)
     );
+}
+
+/// What [`low_off_the_tower`] finds in a file.
+#[derive(Debug, Default)]
+struct Lows {
+    /// Lines that had the nozzle below the layer, on the tower.
+    on_tower: usize,
+    /// Lines that had it below the layer anywhere else, as written.
+    off_tower: Vec<String>,
+}
+
+/// Every line that moves the nozzle, travel, extrusion, or the filament
+/// alone (a retraction, a push back), with the nozzle lower than the top
+/// of the layer printed last, sorted by whether it is over the prime tower:
+/// the footprint of everything laid as tower, grown by `margin`, which a
+/// move must start and end in. A new layer's top counts from the first
+/// move that reaches it, so the old tool finishing at the last layer's
+/// height is not taken for a fall. Reads this engine's files and the
+/// reference's alike: arcs end where they say, a relative move
+/// (`G91`) moves by what it says.
+fn low_off_the_tower(gcode: &str, margin: f64) -> Lows {
+    // One pass for the tower's footprint, one for the moves.
+    let mut tower = ([f64::MAX; 2], [f64::MIN; 2]);
+    let mut lows = Lows::default();
+    for pass in 0..2 {
+        let (mut at, mut z, mut relative) = ([0.0f64; 2], 0.0f64, false);
+        let (mut top, mut coming): (Option<f64>, Option<f64>) = (None, None);
+        let mut on_tower = false;
+        for line in gcode.lines() {
+            let line = line.trim();
+            let tag = line
+                .strip_prefix(";Z:")
+                .or_else(|| line.strip_prefix("; Z_HEIGHT:"));
+            if let Some(value) = tag {
+                coming = value.trim().parse().ok();
+                continue;
+            }
+            if let Some(name) = line.strip_prefix(";TYPE:") {
+                on_tower = name == "Prime tower";
+                continue;
+            }
+            if let Some(name) = line.strip_prefix("; FEATURE:") {
+                on_tower = name.trim() == "Prime tower";
+                continue;
+            }
+            let code = line.split(';').next().unwrap_or("");
+            let mut words = code.split_whitespace();
+            match words.next() {
+                Some("G90") => relative = false,
+                Some("G91") => relative = true,
+                Some("G0" | "G1" | "G2" | "G3") => {
+                    let word = |letter: char| {
+                        code.split_whitespace()
+                            .skip(1)
+                            .find_map(|word| word.strip_prefix(letter)?.parse::<f64>().ok())
+                    };
+                    let axis = |letter: char, now: f64| match word(letter) {
+                        Some(v) if relative => now + v,
+                        Some(v) => v,
+                        None => now,
+                    };
+                    let (from, was) = (at, z);
+                    at = [axis('X', at[0]), axis('Y', at[1])];
+                    z = axis('Z', z);
+                    if pass == 0 {
+                        if on_tower && word('E').is_some_and(|e| e > 0.0) && at != from {
+                            for point in [from, at] {
+                                tower.0 = [tower.0[0].min(point[0]), tower.0[1].min(point[1])];
+                                tower.1 = [tower.1[0].max(point[0]), tower.1[1].max(point[1])];
+                            }
+                        }
+                        continue;
+                    }
+                    // The start against the layer it was on, the end
+                    // against the one it reached.
+                    let before = top;
+                    if let Some(new) = coming.filter(|new| z >= new - 1e-3) {
+                        top = Some(new);
+                        coming = None;
+                    }
+                    let Some(top) = top else { continue };
+                    if before.is_none_or(|before| was >= before - 1e-3) && z >= top - 1e-3 {
+                        continue;
+                    }
+                    let inside = |point: [f64; 2]| {
+                        (0..2).all(|axis| {
+                            point[axis] >= tower.0[axis] - margin
+                                && point[axis] <= tower.1[axis] + margin
+                        })
+                    };
+                    if inside(from) && inside(at) {
+                        lows.on_tower += 1;
+                    } else {
+                        lows.off_tower.push(format!(
+                            "{line} (from {from:?} to {at:?} at {z} on the layer up to {top})"
+                        ));
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
+    lows
+}
+
+/// The reference's own file before aceRage/EdgeSlicer#1020, at the first
+/// of its tool changes in the middle of a layer (`halves.stl`, 0.3 mm
+/// layers, a multi-tool Klipper printer, no ramming, "Tool change on wipe
+/// tower" off, no sparse layers; work/cpp/dump_main/in_place_5.gcode, the
+/// lines from the layer at 3.3 mm to the end of its tower block, with the
+/// progress, width and speed limit lines and most of the tower's brim
+/// left out). `append_tcr2` took the nozzle down to the tower's 0.3 mm
+/// at the end of the post's wall, X49.775 Y49.985, pushed the filament
+/// back there, and went up again for the change.
+const REFERENCE_DESCENT_OVER_THE_PART: &str = r#";Z:3.3
+G92 E0
+;_SET_FAN_SPEED_CHANGING_LAYER
+; printing object halves.stl id:0 copy 0
+G1 E-.8 F1800 ; retract
+G1 X49.827 Y52.145 Z3.7 F7200 ; move to first perimeter point
+G1 X49.775 Y50.025 Z3.7 ; move to first perimeter point
+G1 Z3.3 F720 ; restore layer Z
+G1 E.8 F1800 ;  ; unretract
+;TYPE:Outer wall
+G1 F1037.293
+G1 X49.775 Y59.775 E.46894 ; perimeter
+G1 X40.225 Y59.775 E.45932 ; perimeter
+G1 X40.225 Y40.225 E.94029 ; perimeter
+G1 X49.775 Y40.225 E.45932 ; perimeter
+G1 X49.775 Y49.985 E.46942 ; perimeter
+; stop printing object halves.stl id:0 copy 0
+G1 E-.8 F1800 ; retract
+G1 Z.3 F720 ; Travel down to the last wipe tower layer.
+G1 E.8 F1800 ;  ; unretract
+;TYPE:Prime tower
+;--------------------
+; CP TOOLCHANGE START
+; toolchange #1
+; material : PLA -> PLA
+;--------------------
+M220 S100
+; WIPE_TOWER_START
+; CP TOOLCHANGE UNLOAD
+M400
+G1 E-.8 ; retract
+G1 Z3.3 F720 ; Restore layer Z before toolchange to avoid collision with printed parts
+G1 E.8 F1800 ;  ; unretract
+G1 E-10 ; retract for toolchange
+T1 ; change extruder
+G1 E-.8 ; retract
+G1 Z3.7 F720 ; normal lift Z
+G1 X159.774 Y134.951 Z3.7 F7200 ; Travel to a Wipe Tower
+G1 X175.049 Y134.951
+G1 X175.049 Y146.75
+G1 X169.75 Y146.75
+G1  X169.750 Y146.750
+G1  X169.250 Y146.250
+G1 Z.3 F720 ; Force restore layer Z
+G1 F7200
+G1 E.8 F1800 ;  ; unretract
+G1  Y146.750
+; CP TOOLCHANGE WIPE
+G1  X166.250  E0.1630 F594
+G1 E-0.8000 F1800
+G1  X170.750  F600
+G1  X169.250  F240
+G1  X168.750  F600
+G1  Y146.250
+G1  X169.750
+G1  Y147.250
+G1  X168.250
+G1  Y145.750
+G1  X170.250
+G1  Y147.750
+G1  X166.250 Y146.750   F594
+G1 E0.8000 F1800
+G1  X173.049 Y136.951
+G1  Y150.049  E0.7117
+G1  X136.951  E1.9613
+G1  Y136.951  E0.7117
+G1  X173.049  E1.9613
+; WIPE_TOWER_END
+G1 E-.8 ; retract
+G1 Z3.3 F720 ; Travel back up to the topmost object layer.
+G1 E.8 F1800 ;  ; unretract
+"#;
+
+#[test]
+fn the_check_finds_the_reference_going_down_over_the_part() {
+    let lows = low_off_the_tower(REFERENCE_DESCENT_OVER_THE_PART, 1.0);
+    // Down at the post, the filament pushed back and pulled again there,
+    // and up from it for the change.
+    assert_eq!(lows.off_tower.len(), 4, "{:#?}", lows.off_tower);
+    assert!(
+        lows.off_tower[0].starts_with("G1 Z.3 F720 ; Travel down to the last wipe tower layer.")
+    );
+    assert!(lows.off_tower[1].starts_with("G1 E.8 F1800"));
+    assert!(lows.off_tower[3].contains("Restore layer Z before toolchange"));
+    // What it then does on the tower is not taken for a fault.
+    assert!(lows.on_tower > 10);
+}
+
+/// Every printer and tower this engine lays a tower for without sparse
+/// layers, with the filament changing first thing on a layer (`bands`)
+/// and in the middle of one, the nozzle over the post (`halves`): the
+/// nozzle is never lower than the layer anywhere but over the tower, not
+/// to travel, lay a line or move the filament alone. On the reference
+/// before aceRage/EdgeSlicer#1020 the in-place change (a multi-tool
+/// printer, no ramming, "Tool change on wipe tower" off) failed this.
+#[test]
+fn the_nozzle_is_below_the_layer_only_over_the_tower() {
+    let dir = tempfile::tempdir().unwrap();
+    let u1 = u1();
+    let x1c = printer(
+        "BBL",
+        "Bambu Lab X1 Carbon 0.4 nozzle",
+        "0.20mm Standard @BBL X1C",
+        "Bambu PLA Basic @BBL X1C",
+    );
+    let cases: [(&str, &Chosen, &str); 7] = [
+        // A multi-tool printer that rams the filament put away on the
+        // tower, as the U1 is shipped.
+        ("rammed", &u1, r#""tool_change_on_wipe_tower": "0""#),
+        (
+            "rammed, change on the tower",
+            &u1,
+            r#""tool_change_on_wipe_tower": "1""#,
+        ),
+        // No ramming: the reference changed tool where the nozzle was.
+        (
+            "in place",
+            &u1,
+            r#""filament_multitool_ramming": ["0", "0"], "tool_change_on_wipe_tower": "0""#,
+        ),
+        (
+            "not rammed, change on the tower",
+            &u1,
+            r#""filament_multitool_ramming": ["0", "0"], "tool_change_on_wipe_tower": "1""#,
+        ),
+        // One nozzle, the reference's WipeTower2.
+        (
+            "one nozzle",
+            &u1,
+            r#""single_extruder_multi_material": "1", "enable_filament_ramming": "0""#,
+        ),
+        // Bambu's tower on a multi-tool printer and on a Bambu Lab one.
+        ("Bambu tower", &u1, r#""wipe_tower_type": "type1""#),
+        ("Bambu Lab X1 Carbon", &x1c, ""),
+    ];
+    let models = [("bands", bands(dir.path())), ("halves", halves(dir.path()))];
+    for (name, chosen, set) in cases {
+        let set = if set.is_empty() {
+            ON.to_owned()
+        } else {
+            format!(r#"{{"wipe_tower_no_sparse_layers": "1", {set}}}"#)
+        };
+        for (shape, model) in &models {
+            let gcode = slice_on(model, chosen, &set).unwrap();
+            let lows = low_off_the_tower(&gcode, 1.0);
+            assert!(
+                lows.on_tower > 100,
+                "{name}, {shape}: the tower is laid low"
+            );
+            assert!(
+                lows.off_tower.is_empty(),
+                "{name}, {shape}: {} lines below the layer off the tower: {:#?}",
+                lows.off_tower.len(),
+                &lows.off_tower[..lows.off_tower.len().min(10)]
+            );
+        }
+    }
 }

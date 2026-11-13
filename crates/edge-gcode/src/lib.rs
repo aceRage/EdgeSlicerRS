@@ -1810,6 +1810,16 @@ impl Writer<'_> {
             // Bambu's tower changes filament where the nozzle is, and
             // goes to the tower after (WipeTower.cpp, GCode.cpp
             // `append_tcr`).
+            //
+            // The other goes over the tower first, at the layer's height,
+            // whether or not "Tool change on wipe tower" is set: the
+            // reference changes a multi-tool printer's tool that is not
+            // rammed where the nozzle is, over the part, unless that is
+            // set (GCode.cpp `append_tcr2`, `should_travel_to_tower`).
+            // Either way the nozzle goes down to a tower lower than the
+            // layer only over it, in `tower_wipe` and `tower_lines`
+            // (aceRage/EdgeSlicer#1020 for the reference's descent over
+            // the part).
             None => {
                 if let Some(over) = over.filter(|_| self.state.primed && !s.bambu_tower) {
                     self.travel(over, false, None)?;
