@@ -23,6 +23,12 @@ Angular width of one lug, in degrees. It has to share its slice of the bore with
 Apply All	GUI/Plater.cpp:3688
 Filament manager	GUI/PresetManagerDialog.cpp:54
 Favorite filaments	GUI/PresetComboBoxes.cpp:384
+Delete the preset "%s"?	GUI/PresetManagerDialog.cpp:536
+If the preset corresponds to a filament currently in use on your printer, please reset the filament information for that slot.	GUI/PresetManagerDialog.cpp:552
+They switch to the next visible filament preset.	GUI/PresetManagerDialog.cpp:548
+Could not rename "%s": %s	GUI/PresetManagerDialog.cpp:479
+This preset cannot be deleted.	GUI/PresetManagerDialog.cpp:518
+The printer part of the name (after " @") is kept; type the name without "@".	GUI/SavePresetDialog.cpp:225
 Remove "%s" from favorite filaments	GUI/FavoriteFilamentsUI.cpp:193
 Add "%s" to favorite filaments	GUI/FavoriteFilamentsUI.cpp:194
 + Add row	GUI/CreatePresetsDialog.cpp:1043
@@ -619,6 +625,7 @@ Search name, vendor, type or printer
 No filament matches the search and filters.
 All printers
 Not favourite
+Only this printer
 Nozzle °C
 Bed °C
 Modified

@@ -1447,3 +1447,191 @@ fn the_manager_sorts_and_filters_as_its_table_does() {
     }
     assert!(both.len() < generic.len());
 }
+
+#[test]
+fn the_manager_renames_and_deletes_by_the_references_rules() {
+    let dir = tempfile::tempdir().unwrap();
+    let session = session(dir.path());
+    ask(&session, "printer_select", json!({ "initial": true }));
+    let u1_02 = "Snapmaker U1 (0.2 nozzle)";
+    ask(
+        &session,
+        "create_filament",
+        json!({
+            "vendor": "Polymaker", "type": "PLA", "serial": "Matte",
+            "presets": [
+                { "printer": U1, "preset": "Generic PLA @U1 0.4 nozzle" },
+                { "printer": u1_02, "preset": "Generic PLA @U1 0.2 nozzle" },
+            ],
+        }),
+    );
+    let a = format!("Polymaker PLA Matte @{U1}");
+    let b = format!("Polymaker PLA Matte @{u1_02}");
+    let table = ask(&session, "filament_manager", Value::Null);
+    let row = |table: &Value, key: &str| {
+        table["rows"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|row| row["key"] == key)
+            .cloned()
+    };
+    let mine = row(&table, &format!("u|{a}")).unwrap();
+    assert_eq!(mine["base"], "Polymaker PLA Matte");
+    assert_eq!(mine["suffix"], format!(" @{U1}"));
+    let mut family = strings(&mine["family"]);
+    family.sort();
+    let mut both = vec![a.clone(), b.clone()];
+    both.sort();
+    assert_eq!(family, both);
+    // A vendor's row is refused.
+    let error = refused(
+        &session,
+        "filament_manager_rename",
+        json!({ "key": "s|Snapmaker|Generic PLA", "name": "X" }),
+    );
+    assert_eq!(error, tr("System presets cannot be renamed."));
+    let error = refused(
+        &session,
+        "filament_manager_delete",
+        json!({ "key": "s|Snapmaker|Generic PLA" }),
+    );
+    assert_eq!(error, tr("System presets cannot be deleted."));
+    // Names that cannot be had.
+    let check = |name: &str| {
+        ask(
+            &session,
+            "filament_manager_check_name",
+            json!({ "key": format!("u|{a}"), "name": name }),
+        )
+    };
+    assert_eq!(
+        check("Bad@Name")["message"],
+        tr("The printer part of the name (after \" @\") is kept; type the name without \"@\".")
+    );
+    assert_eq!(
+        check("")["message"],
+        tr("The name is not allowed to be empty.")
+    );
+    assert_eq!(
+        check(" Lead")["message"],
+        tr("The name is not allowed to start with space character.")
+    );
+    assert!(
+        check("Bad:Name")["message"]
+            .as_str()
+            .unwrap()
+            .starts_with(&tr("Name is invalid;"))
+    );
+    let fine = check("Silky PLA");
+    assert_eq!(fine["level"], "ok");
+    assert_eq!(fine["count"], 2, "the whole family");
+    let refused_rename = ask(
+        &session,
+        "filament_manager_rename",
+        json!({ "key": format!("u|{a}"), "name": "Bad@Name" }),
+    );
+    assert_eq!(refused_rename["ok"], false);
+    // Only this printer: the one preset.
+    let one = ask(
+        &session,
+        "filament_manager_rename",
+        json!({ "key": format!("u|{a}"), "name": "Silky PLA", "scope": "one" }),
+    );
+    assert_eq!(one["ok"], true);
+    let silky_a = format!("Silky PLA @{U1}");
+    assert_eq!(one["new_key"], format!("u|{silky_a}"));
+    assert!(row(&one, &format!("u|{b}")).is_some(), "the other stays");
+    // The whole family (the default), and the project on it follows.
+    ask(&session, "project_set", json!({ "filaments": [b.clone()] }));
+    let whole = ask(
+        &session,
+        "filament_manager_rename",
+        json!({ "key": format!("u|{b}"), "name": "Glossy PLA" }),
+    );
+    assert_eq!(whole["ok"], true);
+    let glossy_b = format!("Glossy PLA @{u1_02}");
+    assert!(row(&whole, &format!("u|{glossy_b}")).is_some());
+    let project = ask(&session, "project", Value::Null);
+    assert_eq!(project["choices"]["filaments"][0], glossy_b.as_str());
+    // Delete: the question, then gone, its star with it.
+    ask(&session, "favorite_toggle", json!({ "key": glossy_b }));
+    let asked = ask(
+        &session,
+        "filament_manager_delete",
+        json!({ "key": format!("u|{glossy_b}") }),
+    );
+    assert_eq!(asked["title"], tr("Delete Preset"));
+    let text = asked["ask"].as_str().unwrap();
+    assert!(
+        text.starts_with(&fill(&tr("Delete the preset \"%s\"?"), &[&glossy_b])),
+        "{text}"
+    );
+    assert!(
+        text.contains(&tr("Used by:"))
+            && text.contains(&tr("They switch to the next visible filament preset.")),
+        "{text}"
+    );
+    assert!(text.contains(&tr("If the preset corresponds to a filament currently in use on your printer, please reset the filament information for that slot.")));
+    let done = ask(
+        &session,
+        "filament_manager_delete",
+        json!({ "key": format!("u|{glossy_b}"), "confirm": true }),
+    );
+    assert_eq!(done["deleted"], true);
+    assert!(row(&done, &format!("u|{glossy_b}")).is_none());
+    assert_eq!(ask(&session, "favorites", Value::Null)["favs"], json!([]));
+    let project = ask(&session, "project", Value::Null);
+    assert_ne!(project["choices"]["filaments"][0], glossy_b.as_str());
+    // One that another is laid over is refused with the reference's words.
+    ask(
+        &session,
+        "project_set",
+        json!({ "filaments": [silky_a.clone()] }),
+    );
+    ask(
+        &session,
+        "settings_set",
+        json!({ "kind": "filament", "filament": 1, "key": "nozzle_temperature", "value": 213 }),
+    );
+    ask(
+        &session,
+        "preset_save",
+        json!({ "kind": "filament", "filament": 1, "name": "Child PLA" }),
+    );
+    let held = ask(
+        &session,
+        "filament_manager_delete",
+        json!({ "key": format!("u|{silky_a}") }),
+    );
+    assert_eq!(held["refused"], true);
+    assert!(
+        held["message"]
+            .as_str()
+            .unwrap()
+            .starts_with(&tr("Presets inherited by other presets cannot be deleted!"))
+    );
+    assert!(
+        held["message"]
+            .as_str()
+            .unwrap()
+            .ends_with("\n - Child PLA")
+    );
+    // A name another preset of one's own has is refused (a name with no
+    // " @" is checked whole).
+    let taken = check_taken(&session, "u|Child PLA", &silky_a);
+    assert_eq!(taken["level"], "invalid");
+    assert_eq!(
+        taken["message"],
+        fill(&tr("Preset \"%1%\" already exists."), &[&silky_a])
+    );
+}
+
+/// The name check for a row, on a name another preset of one's own has.
+fn check_taken(session: &Arc<Session>, key: &str, name: &str) -> Value {
+    ask(
+        session,
+        "filament_manager_check_name",
+        json!({ "key": key, "name": name }),
+    )
+}

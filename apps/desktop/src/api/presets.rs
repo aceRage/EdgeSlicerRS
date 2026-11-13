@@ -88,7 +88,7 @@ impl Offered {
 /// How a name the person typed stands (`validate_preset_name`): fine, to
 /// be warned about (it saves over a preset of theirs), or not to be had.
 #[derive(Clone, Copy, PartialEq, Eq)]
-enum Level {
+pub(super) enum Level {
     Ok,
     Warn,
     Invalid,
@@ -361,7 +361,7 @@ impl Session {
     /// while it is typed (`validate_preset_name`, `preset_name_check_message`):
     /// a rename refuses a name that is taken, a save warns that it will
     /// save over it. `current` is the preset being saved or renamed.
-    fn check_name(
+    pub(super) fn check_name(
         &self,
         shelf: &Shelf,
         book: Book,
@@ -695,6 +695,17 @@ impl Session {
         if new == old {
             return self.after_change(args);
         }
+        self.apply_rename(book, &old, &new)?;
+        self.after_change(args)
+    }
+
+    /// One of the person's presets renamed, checked already: its files,
+    /// every open project naming it, what is remembered with each printer
+    /// and its favourite star follow (`rename_user_preset`,
+    /// `update_presets_from_to`, `FavoriteFilamentsUI::rename_key`).
+    pub(super) fn apply_rename(&self, book: Book, old: &str, new: &str) -> Result<(), String> {
+        let kind = kept::kind(book);
+        let (old, new) = (old.to_owned(), new.to_owned());
         let mut state = lock(&self.state);
         Arc::make_mut(&mut state.users.presets)
             .rename(kind, &old, &new)
@@ -747,8 +758,7 @@ impl Session {
                 }
             }
         });
-        drop(state);
-        self.after_change(args)
+        Ok(())
     }
 
     /// `preset_delete`: one of the person's presets taken away, its file
@@ -935,7 +945,12 @@ impl Session {
     }
 
     /// The lines "Used by:" lists: where the open projects use a preset.
-    fn used_by(&self, book: Book, name: &str, args: &Value) -> Result<Vec<String>, String> {
+    pub(super) fn used_by(
+        &self,
+        book: Book,
+        name: &str,
+        args: &Value,
+    ) -> Result<Vec<String>, String> {
         let state = lock(&self.state);
         let shown = state.projects[state.target(args)?].id;
         let mut lines = Vec::new();

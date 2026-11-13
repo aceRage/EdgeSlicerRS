@@ -20,7 +20,13 @@ use std::collections::{BTreeMap, BTreeSet};
 use edge_config::Kind;
 use serde_json::{Value, json};
 
-use super::{Session, lock, needed, printers, text};
+use std::sync::Arc;
+
+use super::{
+    Session,
+    i18n::{fill, tr},
+    lock, needed, printers, text,
+};
 
 /// The name a filament is listed by on the guide's page and in the
 /// Filament manager: its preset's name up to the "@"
@@ -975,6 +981,214 @@ impl Session {
                 .collect(),
             Value::Object(universe),
         )
+    }
+
+    /// A row of one's own of the Filament manager by its key, and the
+    /// shelf to check names against (the project's vendor's, else the
+    /// first added).
+    fn user_row(
+        &self,
+        args: &Value,
+    ) -> Result<(Value, Arc<edge_engine::Shelf>, Option<String>), String> {
+        let key = needed(args, "key")?;
+        let rows = self.manager_rows(args)?;
+        let row = rows
+            .into_iter()
+            .find(|row| row["key"] == key)
+            .ok_or_else(|| format!("the Filament manager has no row {key}"))?;
+        let (vendor, machine) = {
+            let state = lock(&self.state);
+            let choices = &state.projects[state.target(args)?].choices;
+            let vendor = choices
+                .vendor
+                .clone()
+                .or_else(|| state.store.data.models.keys().next().cloned())
+                .ok_or("no printer is added")?;
+            (vendor, choices.machine.clone())
+        };
+        Ok((row, self.shelf(&vendor)?, machine))
+    }
+
+    /// The renames a name typed for a row makes (PresetManagerModel.cpp
+    /// `plan_preset_rename`): a name without " @" whole, by the save
+    /// dialog's rules; a filament's " @printer" variant by the part before
+    /// it, the printer part kept, its family (`scope` "family", the default:
+    /// the person's presets of its id and that part) renamed with it. The
+    /// first name that cannot be had stops it, with why.
+    fn plan_rename(
+        &self,
+        args: &Value,
+    ) -> Result<Result<Vec<(String, String)>, (String, String)>, String> {
+        let (row, shelf, machine) = self.user_row(args)?;
+        if row["source"] != "User" {
+            return Err(tr("System presets cannot be renamed."));
+        }
+        let name = row["name"].as_str().unwrap_or_default().to_owned();
+        let typed = text(args, "name").unwrap_or_default().to_owned();
+        let (_, suffix) = split_suffix(&name);
+        let book = super::settings::Book::Filament;
+        let check = |to: &str, from: &str| -> Option<String> {
+            let (level, message) =
+                self.check_name(&shelf, book, to, Some(from), true, machine.as_deref());
+            (level == super::presets::Level::Invalid).then(|| message.unwrap_or_default())
+        };
+        if suffix.is_empty() {
+            if let Some(why) = check(&typed, &name) {
+                return Ok(Err((typed, why)));
+            }
+            return Ok(Ok(if typed == name {
+                Vec::new()
+            } else {
+                vec![(name, typed)]
+            }));
+        }
+        let invalid = |why: String| Ok(Err((format!("{typed}{suffix}"), why)));
+        if typed.is_empty() {
+            return invalid(tr("The name is not allowed to be empty."));
+        }
+        if typed.contains('@') {
+            return invalid(tr(
+                "The printer part of the name (after \" @\") is kept; type the name without \"@\".",
+            ));
+        }
+        if typed.starts_with(' ') {
+            return invalid(tr("The name is not allowed to start with space character."));
+        }
+        if typed.ends_with(' ') {
+            return invalid(tr("The name is not allowed to end with space character."));
+        }
+        let mut members = vec![name.clone()];
+        if text(args, "scope") != Some("one") {
+            for other in row["family"]
+                .as_array()
+                .into_iter()
+                .flatten()
+                .filter_map(Value::as_str)
+            {
+                if other != name {
+                    members.push(other.to_owned());
+                }
+            }
+        }
+        let mut renames = Vec::new();
+        for member in members {
+            let (_, member_suffix) = split_suffix(&member);
+            let to = format!("{typed}{member_suffix}");
+            if to == member {
+                continue;
+            }
+            if let Some(why) = check(&to, &member) {
+                return Ok(Err((to, why)));
+            }
+            renames.push((member, to));
+        }
+        Ok(Ok(renames))
+    }
+
+    /// `filament_manager_check_name`: what the rename field says of a name
+    /// as it is typed (`check_name`): `{ level, message, count }`.
+    pub(super) fn filament_manager_check_name(&self, args: &Value) -> Result<Value, String> {
+        Ok(match self.plan_rename(args) {
+            Err(why) => json!({ "level": "invalid", "message": why, "count": 0 }),
+            Ok(Err((_, why))) => json!({ "level": "invalid", "message": why, "count": 0 }),
+            Ok(Ok(renames)) => json!({ "level": "ok", "message": "", "count": renames.len() }),
+        })
+    }
+
+    /// `filament_manager_rename`: the renames made (PresetManagerDialog.cpp
+    /// `rename`), each as "Rename" in a list's cog menu makes it, then the
+    /// table again: `{ ok, message, new_key, ... }`.
+    pub(super) fn filament_manager_rename(&self, args: &Value) -> Result<Value, String> {
+        let key = needed(args, "key")?.to_owned();
+        let renames = match self.plan_rename(args)? {
+            Err((_, why)) => return Ok(json!({ "ok": false, "message": why })),
+            Ok(renames) => renames,
+        };
+        let mut new_key = key.clone();
+        let row_name = key.strip_prefix("u|").unwrap_or_default().to_owned();
+        let mut error = None;
+        for (from, to) in &renames {
+            if let Err(why) = self.apply_rename(super::settings::Book::Filament, from, to) {
+                error = Some(fill(&tr("Could not rename \"%s\": %s"), &[from, &why]));
+                break;
+            }
+            if *from == row_name {
+                new_key = format!("u|{to}");
+            }
+        }
+        let mut answer = self.filament_manager(args)?;
+        answer["ok"] = json!(error.is_none());
+        answer["message"] = json!(error.unwrap_or_default());
+        answer["new_key"] = json!(new_key);
+        Ok(answer)
+    }
+
+    /// `filament_manager_delete`: a row of one's own deleted
+    /// (PresetManagerDialog.cpp `delete_row`). Refused for a vendor's
+    /// ("System presets cannot be deleted.") and for one others are laid
+    /// over (the reference's message, "Delete Preset"); without `confirm`
+    /// the question: "Delete the preset \"%s\"?", what uses it and where
+    /// it goes, the note for a filament that stands alone; with it, gone as
+    /// the cog menu's "Delete this preset" deletes it (slots to the next,
+    /// the star away), and the table again.
+    pub(super) fn filament_manager_delete(&self, args: &Value) -> Result<Value, String> {
+        let (row, _, _) = self.user_row(args)?;
+        if row["source"] != "User" {
+            return Err(tr("System presets cannot be deleted."));
+        }
+        let name = row["name"].as_str().unwrap_or_default().to_owned();
+        let users = self.users();
+        let preset = users
+            .get(Kind::Filament, &name)
+            .cloned()
+            .ok_or_else(|| tr("This preset cannot be deleted."))?;
+        let children = users.children(Kind::Filament, &name);
+        if !children.is_empty() {
+            let mut message = format!(
+                "{}\n{}",
+                tr("Presets inherited by other presets cannot be deleted!"),
+                super::i18n::trn(
+                    "The following presets inherit this preset.",
+                    "The following preset inherits this preset.",
+                    // The count picks the sentence that fits (see presets.rs).
+                    if children.len() == 1 { 2 } else { 1 },
+                )
+            );
+            for child in &children {
+                message.push_str("\n - ");
+                message.push_str(child);
+            }
+            return Ok(
+                json!({ "deleted": false, "refused": true, "title": tr("Delete Preset"), "message": message }),
+            );
+        }
+        if args.get("confirm").and_then(Value::as_bool) != Some(true) {
+            let mut message = fill(&tr("Delete the preset \"%s\"?"), &[&name]);
+            let used = self.used_by(super::settings::Book::Filament, &name, args)?;
+            if !used.is_empty() {
+                message.push_str("\n\n");
+                message.push_str(&tr("Used by:"));
+                for line in used {
+                    message.push_str("\n - ");
+                    message.push_str(&line);
+                }
+                message.push_str("\n\n");
+                message.push_str(&tr("They switch to the next visible filament preset."));
+            }
+            if preset.inherits.is_none() {
+                message.push_str("\n\n");
+                message.push_str(&tr("If the preset corresponds to a filament currently in use on your printer, please reset the filament information for that slot."));
+            }
+            return Ok(json!({ "deleted": false, "title": tr("Delete Preset"), "ask": message }));
+        }
+        let mut one = json!({ "kind": "filament", "preset": name, "confirm": true });
+        if let Some(project) = args.get("project") {
+            one["project"] = project.clone();
+        }
+        self.preset_delete(&one)?;
+        let mut answer = self.filament_manager(args)?;
+        answer["deleted"] = json!(true);
+        Ok(answer)
     }
 
     /// `filament_manager`: the Filament manager's table.

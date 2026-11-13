@@ -178,7 +178,80 @@ const Setup = (() => {
       cell: (row) => [fmTemp(row.bed_t)] },
     { key: 'mtime', label: () => 'Modified', sort: 'mtime',
       cell: (row) => [fmDate(row.mtime), row.mtime === null && row.version ? `Vendor bundle ${row.version}` : ''] },
+    { key: 'actions', label: () => t('Actions'), cls: 'actions' },
   ];
+  const TRASH = '<svg viewBox="0 0 16 16" aria-hidden="true"><path d="M6 1h4l.5 1H14v1.5H2V2h3.5zM3 5h10l-.8 9.2a1 1 0 0 1-1 .8H4.8a1 1 0 0 1-1-.8z"/></svg>';
+
+  // ---- rename and delete of one's own (preset_manager.js `startEdit`, `requestDelete`) ----
+
+  // The rename in progress: { key, scope ('family' | 'one'), check (a timer) }.
+  let fmEditing = null;
+
+  function fmStatus(text) { $('fm-status').textContent = text || ''; }
+
+  function fmEditor(row) {
+    // The part before " @" of a filament variant; the printer part stays, after the field.
+    const input = el('input', { type: 'text', className: 'fm-edit-input', value: row.suffix ? row.base : row.name, spellcheck: false });
+    input.setAttribute('aria-label', `New name for ${row.name}`);
+    const box = el('span', { className: 'fm-edit' }, input);
+    if (row.suffix) box.append(el('span', { className: 'fm-edit-suffix', textContent: row.suffix }));
+    if (row.suffix && row.family && row.family.length > 1) {
+      const one = el('input', { type: 'checkbox', checked: fmEditing.scope === 'one' });
+      one.addEventListener('change', () => { fmEditing.scope = one.checked ? 'one' : 'family'; fmCheck(row, input); });
+      box.append(el('label', { className: 'fm-edit-scope', title: `Renames all ${row.family.length} printer variants of this filament` }, one, 'Only this printer'));
+    }
+    input.addEventListener('input', () => {
+      clearTimeout(fmEditing.check);
+      fmEditing.check = setTimeout(() => attempt(() => fmCheck(row, input)), 150);
+    });
+    input.addEventListener('keydown', (event) => {
+      if (event.key === 'Enter') { event.preventDefault(); attempt(() => fmCommit(row, input)); }
+      if (event.key === 'Escape') { event.preventDefault(); event.stopPropagation(); fmEditing = null; fmStatus(''); fmDraw(); }
+    });
+    setTimeout(() => { input.focus(); input.select(); }, 0);
+    return box;
+  }
+
+  async function fmCheck(row, input) {
+    if (!fmEditing) return;
+    const answer = await call('filament_manager_check_name', fmArgs({ key: row.key, name: input.value, scope: fmEditing.scope }));
+    input.classList.toggle('invalid', answer.level === 'invalid');
+    input.title = answer.message || '';
+    fmStatus(answer.message);
+  }
+
+  async function fmCommit(row, input) {
+    const answer = await call('filament_manager_rename', fmArgs({ key: row.key, name: input.value, scope: fmEditing.scope }));
+    if (!answer.ok) {
+      input.classList.add('invalid');
+      fmStatus(answer.message);
+      return;
+    }
+    fmEditing = null;
+    fmTake(answer);
+    fmStatus(answer.message || 'Renamed');
+    presetsByMachine.clear();
+    state.project = await call('project', { project: activeId() });
+    await showSidebar();
+  }
+
+  function fmRename(row) {
+    if (!row.can_rename) { fmStatus('System presets cannot be renamed'); return; }
+    fmEditing = { key: row.key, scope: 'family', check: null };
+    fmDraw();
+  }
+
+  async function fmDelete(row) {
+    if (!row.can_delete) { fmStatus('System presets cannot be deleted'); return; }
+    const asked = await call('filament_manager_delete', fmArgs({ key: row.key }));
+    if (asked.refused) { await inform(asked.title, asked.message); return; }
+    if (!(await confirmBox(asked.title, asked.ask, t('Yes'), t('No')))) return;
+    fmTake(await call('filament_manager_delete', fmArgs({ key: row.key, confirm: true })));
+    fmStatus('Deleted');
+    presetsByMachine.clear();
+    state.project = await call('project', { project: activeId() });
+    await showSidebar();
+  }
 
   // The column sorted by (data_table.js `cycleSort`: up, down, then none; not kept between openings)
   // and the filters of the columns, applied by the session (`filament_manager`).
@@ -375,16 +448,36 @@ const Setup = (() => {
     const cells = FM_COLUMNS.map((column) => {
       if (column.key === 'checked') return el('td', { className: 'check' }, box);
       if (column.key === 'star') return el('td', { className: 'star' }, star);
+      if (column.key === 'actions') {
+        const cell = el('td', { className: 'actions' });
+        if (row.can_delete) {
+          const remove = el('button', { type: 'button', className: 'icon fm-act', innerHTML: TRASH, title: `Delete ${row.name}` });
+          remove.setAttribute('aria-label', remove.title);
+          remove.addEventListener('click', () => attempt(() => fmDelete(row)));
+          cell.append(remove);
+        }
+        return cell;
+      }
+      if (column.key === 'name' && fmEditing && fmEditing.key === row.key) return el('td', { className: 'name editing' }, fmEditor(row));
       if (column.key === 'name') {
         let title = row.name;
         if (row.members.length > 1 || row.members[0] !== row.name) title += `\n${row.members.join('\n')}`;
         if (row.in_use) title += '\nIn use';
-        return el('td', { className: `name${row.in_use ? ' inuse' : ''}`, textContent: row.name, title });
+        const cell = el('td', { className: `name${row.in_use ? ' inuse' : ''}`, textContent: row.name, title });
+        // A double-click or F2 renames one's own (preset_manager.js `onDblClick`, `onRowKey`).
+        cell.addEventListener('dblclick', () => fmRename(row));
+        return cell;
       }
       const [text, title] = column.cell(row);
       return el('td', { className: `${column.cls || ''}${text === '—' ? ' na' : ''}`, textContent: text, title: title || '' });
     });
-    return el('tr', { className: row.enabled ? 'on' : '' }, ...cells);
+    const line = el('tr', { className: row.enabled ? 'on' : '', tabIndex: -1 }, ...cells);
+    line.addEventListener('keydown', (event) => {
+      if (event.target !== line) return;
+      if (event.key === 'F2') { event.preventDefault(); fmRename(row); }
+      if (event.key === 'Delete') { event.preventDefault(); attempt(() => fmDelete(row)); }
+    });
+    return line;
   }
 
   function fmDraw() {
