@@ -281,7 +281,9 @@ const Presets = (() => {
     const table = el('div', { className: 'pc-scroll' });
     const buttons = {};
     const foot = el('div', { className: 'dialog-foot' }, el('div', { className: 'grow' }));
-    for (const [value, words, primary] of [['transfer', 'Transfer', true], ['discard', 'Discard'], ['save', 'Save'], ['cancel', 'Cancel']]) {
+    // Transfer is never asked here: where it can be had it is done without
+    // asking (beforeLeaving). Cancel stands for the reference's close box.
+    for (const [value, words, primary] of [['discard', 'Discard'], ['save', 'Save', true], ['cancel', 'Cancel']]) {
       const button = el('button', { type: 'submit', value, textContent: t(words), className: primary ? 'primary' : '' });
       buttons[value] = button;
       foot.append(button);
@@ -304,13 +306,28 @@ const Presets = (() => {
   async function beforeLeaving(kind, filament, to) {
     const current = on(kind, filament);
     if (!current || !current.modified || current.name === to) return 'none';
-    const changes = await call('preset_changes', { project: activeId(), kind, ...(kind === 'filament' ? { filament } : {}) });
+    const changes = await call('preset_changes', { project: activeId(), kind, ...(kind === 'filament' ? { filament } : {}), to });
+    // Nothing the pages show is changed: let go of without asking
+    // (Tab.cpp `may_discard_current_dirty_preset`, `getUpdateItemCount`).
     if (!changes.count) return 'none';
+    if (changes.transfer) {
+      // Where the reference can transfer, it does so without asking
+      // (UnsavedChangesDialog.cpp `ShowModal`) and says what was kept.
+      say(changes.note);
+      // The pages are told the preset changed under what is set, so that
+      // they do not say it a second time (settings.js `showSettings`).
+      const book = bookOf(kind);
+      for (const [whose, name] of book.seen) {
+        const [project, slot] = whose.split(':');
+        if (Number(project) === activeId() && name === current.name && (kind !== 'filament' || Number(slot) === filament)) book.seen.set(whose, to);
+      }
+      return 'transfer';
+    }
+    // A printer, or a filament of another type: save or discard, or stay.
     const nodes = changesNodes();
     nodes.text.textContent = fmt(t('You have changed some settings of preset "%1%".'), changes.name)
-      + t('\nYou can save or discard the preset values you have modified, or choose to transfer the values you have modified to the new preset.');
+      + t('\nYou can save or discard the preset values you have modified.');
     nodes.table.replaceChildren(await optionTable(kind, changes.pages, [t('Settings'), t('Old Value'), t('New Value')]));
-    nodes.buttons.transfer.title = fmt(t('Transfer the selected options to the newly selected preset \n"%1%".'), to);
     nodes.buttons.discard.title = t('All changes will be discarded.');
     nodes.buttons.save.title = t('Save the selected options.');
     nodes.dialog.returnValue = 'cancel';
@@ -318,7 +335,6 @@ const Presets = (() => {
       nodes.dialog.addEventListener('close', () => resolve(nodes.dialog.returnValue), { once: true });
       nodes.dialog.showModal();
     });
-    if (answer === 'transfer') return 'transfer';
     if (answer === 'discard') {
       const args = { project: activeId(), reset: true };
       if (kind === 'process') await call('process_set', args);

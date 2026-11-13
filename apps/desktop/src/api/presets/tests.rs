@@ -534,6 +534,114 @@ fn what_is_set_over_a_preset_is_listed_and_two_presets_compared() {
 }
 
 #[test]
+fn changes_go_over_the_next_preset_only_where_the_reference_transfers_them() {
+    let dir = tempfile::tempdir().unwrap();
+    let session = session(dir.path());
+    ask(&session, "printer_select", json!({ "initial": true }));
+    let (system, _) = process_of(&session);
+    ask(
+        &session,
+        "process_set",
+        json!({ "key": "wall_loops", "value": 3 }),
+    );
+    ask(
+        &session,
+        "process_set",
+        json!({ "key": "sparse_infill_density", "value": "30%" }),
+    );
+    // A process: always, with what was kept said.
+    let to = "0.08mm Standard @Snapmaker U1 (0.4 nozzle)";
+    let process = ask(
+        &session,
+        "preset_changes",
+        json!({ "kind": "process", "to": to }),
+    );
+    assert_eq!(process["count"], 2);
+    assert_eq!(process["transfer"], true);
+    assert_eq!(
+        process["note"],
+        format!("Kept 2 modified process settings from \"{system}\" (revertable).")
+    );
+    // Without a preset to go to, nothing is transferred.
+    let asked = ask(&session, "preset_changes", json!({ "kind": "process" }));
+    assert_eq!(asked["transfer"], false);
+    assert_eq!(asked["note"], Value::Null);
+    // Transferred: the settings stay over the next preset.
+    let moved = ask(&session, "project_set", json!({ "process": to }));
+    assert_eq!(moved["choices"]["process"], to);
+    assert_eq!(moved["choices"]["over"]["wall_loops"], "3");
+
+    // A filament: only to one of the same filament_type.
+    let project = ask(&session, "project", Value::Null);
+    let offered = ask(
+        &session,
+        "presets",
+        json!({ "vendor": project["choices"]["vendor"], "machine": project["choices"]["machine"] }),
+    );
+    let filaments: Vec<&str> = offered["filaments"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter_map(Value::as_str)
+        .collect();
+    let first = project["choices"]["filaments"][0].as_str().unwrap();
+    let shelf = session.shelf("Snapmaker").unwrap();
+    let type_of = |name: &str| {
+        session
+            .resolve_named(&shelf, Kind::Filament, name)
+            .unwrap()
+            .texts("filament_type")
+            .unwrap()[0]
+            .clone()
+    };
+    let same = filaments
+        .iter()
+        .find(|name| **name != first && type_of(name) == type_of(first))
+        .expect("another filament of the same type");
+    let other = filaments
+        .iter()
+        .find(|name| type_of(name) != type_of(first))
+        .expect("a filament of another type");
+    ask(
+        &session,
+        "settings_set",
+        json!({ "kind": "filament", "filament": 1, "key": "nozzle_temperature", "value": 212 }),
+    );
+    let alike = ask(
+        &session,
+        "preset_changes",
+        json!({ "kind": "filament", "filament": 1, "to": same }),
+    );
+    assert_eq!(alike["transfer"], true);
+    assert_eq!(
+        alike["note"],
+        format!("Kept 1 modified filament setting from \"{first}\" (revertable).")
+    );
+    let unlike = ask(
+        &session,
+        "preset_changes",
+        json!({ "kind": "filament", "filament": 1, "to": other }),
+    );
+    assert_eq!(unlike["transfer"], false);
+    assert_eq!(unlike["count"], 1);
+
+    // A printer: never; the dialog asks to save or discard.
+    ask(
+        &session,
+        "settings_set",
+        json!({ "kind": "printer", "key": "printable_height", "value": 250 }),
+    );
+    let printer = ask(
+        &session,
+        "preset_changes",
+        json!({ "kind": "printer", "to": "Snapmaker U1 (0.6 nozzle)" }),
+    );
+    assert_eq!(printer["transfer"], false);
+    assert_eq!(printer["count"], 1);
+    assert_eq!(printer["pages"][0]["groups"][0]["rows"][0]["new"], "250");
+}
+
+#[test]
 fn presets_the_reference_wrote_are_offered_and_a_broken_one_is_said() {
     let dir = tempfile::tempdir().unwrap();
     let folder = user_dir(dir.path()).join("process");
