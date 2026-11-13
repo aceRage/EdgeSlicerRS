@@ -186,6 +186,15 @@ impl File {
     }
 }
 
+/// The word a kind of preset goes by in the calls.
+fn kind_word(kind: edge_config::Kind) -> &'static str {
+    match kind {
+        edge_config::Kind::Process => "process",
+        edge_config::Kind::Filament => "filament",
+        _ => "printer",
+    }
+}
+
 /// What a project is sliced with, as chosen in its sidebar.
 #[derive(Clone, Debug, Default, PartialEq)]
 struct Choices {
@@ -206,6 +215,10 @@ struct Choices {
     /// The printer settings set over its preset; an extruder's own as
     /// `key#n`, n from 0.
     printer_over: BTreeMap<String, String>,
+    /// The presets kept inside the project ("Preset Inside Project"):
+    /// read from its file, saved here, written with it. Each project has
+    /// its own; they are found after the vendor's and the person's.
+    inside: Vec<edge_engine::InsidePreset>,
 }
 
 impl Choices {
@@ -248,6 +261,11 @@ impl Choices {
             "over": self.over,
             "filament_over": self.filament_over,
             "printer_over": self.printer_over,
+            "inside": self.inside.iter().map(|preset| json!({
+                "kind": kind_word(preset.kind),
+                "name": preset.name,
+                "inherits": preset.inherits,
+            })).collect::<Vec<_>>(),
         })
     }
 }
@@ -599,6 +617,10 @@ impl Project {
             .or(file.plates.first())
             .map(|plate| plate.id);
         self.choices.from_presets = file.settings.is_none();
+        // The presets the file keeps inside it are this project's alone
+        // (PresetBundle.cpp `load_project_embedded_presets`); those of the
+        // project it replaces go (`reset_project_embedded_presets`).
+        self.choices.inside = file.model.inside_presets().0;
         // A project's own bed type is in force until another is chosen
         // for it: the one that went with the printer the empty project
         // was on is not a choice made for this file.
@@ -1722,7 +1744,9 @@ impl Session {
         };
         // A name that is not among the vendor's is no printer yet: it is
         // said when slicing is asked for.
-        let chosen = self.choose_presets(vendor, Some(machine), None, &[]).ok();
+        let chosen = self
+            .choose_presets(vendor, Some(machine), None, &[], &choices.inside)
+            .ok();
         Ok(chosen
             .and_then(|chosen| chosen.machine)
             .map(|(_, settings)| ("preset", Arc::new(settings))))
@@ -1743,7 +1767,7 @@ impl Session {
         } else {
             match (&choices.vendor, &choices.process) {
                 (Some(vendor), Some(process)) => self
-                    .choose_presets(vendor, None, Some(process), &[])
+                    .choose_presets(vendor, None, Some(process), &[], &choices.inside)
                     .ok()
                     .and_then(|chosen| chosen.process)
                     .map(|(_, settings)| Arc::new(settings)),

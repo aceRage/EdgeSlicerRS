@@ -22,7 +22,11 @@ use edge_config::Settings;
 use edge_engine::{ModelPreset, PrinterModel, Shelf};
 use serde_json::{Value, json};
 
-use super::{Choices, Session, State, lock, plates_for, presets::Offered, shown, text};
+use super::{
+    Choices, Session, State, lock, plates_for,
+    presets::{Offered, inside_of},
+    shown, text,
+};
 
 /// The vendor the reference lists first in the printer selection
 /// (printer_table.js `VENDOR_PRIORITY`) and looks at first for the
@@ -420,11 +424,17 @@ impl Session {
         selected: bool,
     ) -> Result<(), String> {
         let shelf = self.shelf(vendor)?;
+        let inside = {
+            let state = lock(&self.state);
+            state
+                .index_of(id)
+                .map(|at| state.projects[at].choices.inside.clone())
+                .unwrap_or_default()
+        };
         let (_, printer) = self
-            .choose_presets(vendor, Some(machine), None, &[])?
+            .choose_presets(vendor, Some(machine), None, &[], &inside)?
             .machine
             .ok_or_else(|| format!("{vendor} has no printer preset {machine}"))?;
-        let offered = self.offered(&shelf, machine);
         let base = self.system_printer(machine);
         let model = self.located(vendor, machine).map(|(model, _)| model);
         let (current, saved, count, kept) = {
@@ -456,6 +466,7 @@ impl Session {
                     .cloned(),
             )
         };
+        let offered = self.offered_in(&shelf, machine, &current.inside);
         // What the project is on now: its presets, or for one sliced
         // with its own settings the presets it was saved with, by name.
         let (process_now, filaments_now): (Option<String>, Vec<(String, Option<String>)>) =
@@ -545,7 +556,9 @@ impl Session {
         if initial {
             project.baseline = choices.clone();
         }
-        if !selected {
+        // A printer kept inside the project is not remembered: no other
+        // project has it.
+        if !selected || inside_of(&inside, edge_config::Kind::Machine, machine).is_some() {
             return Ok(());
         }
         // What the reference writes whenever its selection changes
@@ -603,6 +616,7 @@ impl Session {
                     "variant": variant,
                     "added": is_added(vendor, &model.model),
                     "user": self.is_users(edge_config::Kind::Machine, machine),
+                    "inside": self.is_inside_printer(machine, &choices.inside),
                 }),
                 // One of the person's that stands alone ("Create
                 // printer"): its own model and nozzle.
@@ -648,6 +662,28 @@ impl Session {
             _ => None,
         };
         let user = self.user_printers(&installed);
+        // The printers kept inside the project, each with the model and
+        // nozzle of the printer it is laid over.
+        let inside: Vec<Value> = choices
+            .inside
+            .iter()
+            .filter(|preset| preset.kind == edge_config::Kind::Machine)
+            .filter(|preset| !self.is_users(edge_config::Kind::Machine, &preset.name))
+            .filter_map(|preset| {
+                let base = self.system_printer(preset.inherits.as_deref()?);
+                let (model, system) = installed.iter().find_map(|model| {
+                    let found = model.machines.iter().find(|machine| machine.name == base)?;
+                    Some((model, found))
+                })?;
+                Some(json!({
+                    "name": preset.name,
+                    "vendor": model.vendor,
+                    "model": model.model,
+                    "variant": system.variant,
+                    "base": base,
+                }))
+            })
+            .collect();
         let installed: Vec<Value> = installed
             .iter()
             .map(|model| {
@@ -674,6 +710,9 @@ impl Session {
             "installed": installed,
             // The person's own printer presets, under "User presets".
             "user": user,
+            // The project's own printer presets kept inside it, under
+            // "Project-inside presets".
+            "inside": inside,
             "selected": selected,
             // The printer a project was saved with: its own row.
             "project_printer": saved.as_ref().map(|_| named("printer_settings_id")),
@@ -956,7 +995,9 @@ impl Session {
             // One of the person's printers, by name.
             (Some(vendor), None) if text(args, "machine").is_some() => {
                 let machine = text(args, "machine").unwrap_or_default();
-                if !self.is_users(edge_config::Kind::Machine, machine) {
+                if !self.is_users(edge_config::Kind::Machine, machine)
+                    && !self.is_inside_printer(machine, &choices.inside)
+                {
                     return Err(format!("{machine} is not a printer preset of your own"));
                 }
                 Some((vendor.to_owned(), machine.to_owned()))

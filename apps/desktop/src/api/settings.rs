@@ -703,6 +703,7 @@ impl Session {
                     choices.machine.as_deref(),
                     choices.process.as_deref(),
                     &filaments,
+                    &choices.inside,
                 )?
             }
             _ => Chosen::default(),

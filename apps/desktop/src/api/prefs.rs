@@ -97,9 +97,9 @@ const VIEW_CHOICES: [(&str, &str, &str); 10] = [
     ("temperature", "Temperature", ""),
 ];
 
-/// "General": the reference's General Settings, Presets, Project and
-/// Dark Mode, as far as they are built.
-pub static GENERAL: [(&str, &[Pref]); 4] = [
+/// "General": the reference's General Settings, Presets, Project, Dark
+/// Mode and Develop mode, as far as they are built.
+pub static GENERAL: [(&str, &[Pref]); 5] = [
     (
         "General Settings",
         &[
@@ -236,6 +236,20 @@ pub static GENERAL: [(&str, &[Pref]); 4] = [
             // kept until it is set, and the page follows the system's.
             kind: Kind::Flag,
             default: "",
+            under: None,
+        }],
+    ),
+    // "Develop mode" (Preferences.cpp l.2337, `developer_mode`): on, the
+    // settings' mode is "develop" (`user_mode`), which shows the
+    // developer options and the save dialog's "Detach from parent".
+    (
+        "Develop mode",
+        &[Pref {
+            key: "developer_mode",
+            label: "Develop mode",
+            tip: "Develop mode",
+            kind: Kind::Flag,
+            default: "false",
             under: None,
         }],
     ),
@@ -551,7 +565,9 @@ impl Session {
                 continue;
             };
             let saving = self.saving(&choices, Some(&file))?;
-            file.model
+            let mut model = file.model.clone();
+            model.set_inside(choices.inside.clone());
+            model
                 .save(&model_path, &saving, None)
                 .map_err(|error| error.to_string())?;
             let note = json!({ "name": name, "origin": origin });

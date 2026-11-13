@@ -164,9 +164,13 @@ impl Session {
             PathBuf::from(named)
         };
         let saving = self.saving(&choices, file.as_deref())?;
-        let model = file
+        let mut model = file
             .as_ref()
             .map_or_else(Model::new, |file| file.model.clone());
+        // The presets kept inside the project go with it, in place of
+        // those its file carried (Plater.cpp `export_3mf`,
+        // `get_current_project_embedded_presets`).
+        model.set_inside(choices.inside.clone());
         let losses = model.save_losses(&saving);
         if !losses.is_empty() && !accept {
             let state = lock(&self.state);

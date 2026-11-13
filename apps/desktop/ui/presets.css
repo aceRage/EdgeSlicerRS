@@ -21,6 +21,14 @@ dialog.preset-dialog label { color: var(--text-2); font-size: var(--size-label);
 .pn-message { margin: 0; min-height: 2.6em; white-space: pre-line; font-size: var(--size-label); color: var(--text-3); }
 .pn-message.warn { color: var(--warn); }
 .pn-message.invalid { color: var(--danger); }
+.pn-where { display: flex; flex-direction: column; gap: 6px; margin: 0; padding: 0; border: 0; }
+.pn-where[hidden], .pn-detach[hidden] { display: none; }
+dialog.preset-dialog .pn-choice { display: flex; flex-direction: row; align-items: center; justify-content: flex-start; gap: var(--space-2); color: var(--text-1); font-size: var(--size-body); cursor: pointer; }
+.pn-choice input { margin: 0; }
+dialog.preset-dialog .pn-choice:has(input:disabled) { color: var(--text-3); cursor: default; }
+.pn-where .pn-choice:last-child { margin-left: 22px; }
+.pn-detach { display: flex; flex-direction: column; gap: 2px; margin-top: var(--space-1); }
+.pn-parent { margin: 0 0 0 22px; color: var(--text-3); font-size: var(--size-label); }
 
 /* The two large ones: a head, a table in a well that scrolls, the foot. */
 dialog.preset-dialog.wide { width: min(820px, calc(100vw - 32px)); max-height: calc(100vh - 32px); padding: var(--space-4); }

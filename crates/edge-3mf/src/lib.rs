@@ -8,6 +8,7 @@
 //! and everything about a plate except which instances are on it.
 
 mod custom_gcode;
+mod inside;
 mod kept;
 mod model;
 mod model_settings;
@@ -32,6 +33,7 @@ use edge_mesh::{Mesh, Transform};
 use rayon::prelude::*;
 
 pub use custom_gcode::{CustomGcode, CustomItem, CustomKind, CustomMode};
+pub use inside::{InsidePreset, InsideUnread, inside_entries};
 pub use kept::{
     CutConnectorInfo, CutId, Entry, Extras, Kept, LayerRange, Left, ObjectKept, PartKept, PlateKept,
 };

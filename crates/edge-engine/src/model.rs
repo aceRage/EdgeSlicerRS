@@ -558,6 +558,10 @@ pub struct Model {
     /// filaments are once they were changed: their colours and what is
     /// flushed between them. A slice lays the presets over it.
     filament_lists: Option<Arc<Settings>>,
+    /// The presets kept inside the project, to be written in place of
+    /// those its file carried; none to leave the file's as they were
+    /// ([`Model::set_inside`]).
+    pub(crate) inside: Option<Arc<Vec<edge_3mf::InsidePreset>>>,
 }
 
 impl Default for Model {
@@ -581,6 +585,7 @@ impl Model {
             loose_custom_gcode: None,
             filaments_edited: false,
             filament_lists: None,
+            inside: None,
         }
     }
 
@@ -2446,6 +2451,7 @@ impl From<Opened> for Model {
                     loose_custom_gcode: None,
                     filaments_edited: false,
                     filament_lists: None,
+                    inside: None,
                 }
             }
             Held::Project { project, .. } => {
@@ -2532,6 +2538,7 @@ impl From<Opened> for Model {
                     // A project without plates has its items under plate 1.
                     filaments_edited: false,
                     filament_lists: None,
+                    inside: None,
                     loose_custom_gcode: if project.plates.is_empty() {
                         project.custom_gcode.get(&1).cloned()
                     } else {

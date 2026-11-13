@@ -312,7 +312,22 @@ impl Model {
     /// sentences to ask the person about first; empty when all is kept.
     pub fn save_losses(&self, saving: &Saving) -> Vec<String> {
         let project = self.as_project(None, None);
-        edge_3mf::losses(&project, saving.presets())
+        edge_3mf::losses(&project, saving.presets() || self.inside.is_some())
+    }
+
+    /// The presets its file keeps inside it, and the entries that could
+    /// not be read as one.
+    pub fn inside_presets(&self) -> (Vec<edge_3mf::InsidePreset>, Vec<edge_3mf::InsideUnread>) {
+        self.kept
+            .as_ref()
+            .map(|kept| kept.inside_presets())
+            .unwrap_or_default()
+    }
+
+    /// Says which presets are kept inside it when it is saved: written in
+    /// place of those its file carried.
+    pub fn set_inside(&mut self, presets: Vec<edge_3mf::InsidePreset>) {
+        self.inside = Some(std::sync::Arc::new(presets));
     }
 
     /// Writes it to `path` as a project file, whole or not at all. `bed`
@@ -384,6 +399,7 @@ impl Model {
             project: &project,
             settings: text,
             presets: saving.presets(),
+            inside: self.inside.as_deref().map(Vec::as_slice),
             filaments,
         };
         let written = edge_3mf::write_as(&save, path, layout)

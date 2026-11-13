@@ -47,6 +47,7 @@ pub fn saved(project: &Project) -> Vec<u8> {
         project,
         settings,
         presets: true,
+        inside: None,
         filaments: filaments(project),
     };
     let mut out = Cursor::new(Vec::new());

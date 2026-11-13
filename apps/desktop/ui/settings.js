@@ -509,9 +509,10 @@ function buildSettingsPage(book, page) {
 }
 
 // Whether an option is shown in the mode the "Advance" switch is in.
-// Developer options are the reference's developer mode's, which is a
-// preference this app has not got.
-const inMode = (option) => option.mode === 'simple' || (settingsMode.advanced && option.mode === 'advanced');
+// Developer options are shown with it on in Preferences' "Develop mode"
+// (`user_mode` "develop", GUI_App.cpp `save_mode`).
+const inMode = (option) => option.mode === 'simple'
+  || (settingsMode.advanced && (option.mode === 'advanced' || (settingsMode.develop && option.mode === 'developer')));
 
 function showSettingsPage(book) {
   const data = book.data;
@@ -944,6 +945,14 @@ function wireSettings(book) {
 
 // Once every script of the page has run (i18n.js loads them).
 document.addEventListener('scripts-loaded', () => {
+  Prefs.onChange((values) => {
+    const develop = values.developer_mode === 'true';
+    if (develop === Boolean(settingsMode.develop)) return;
+    settingsMode.develop = develop;
+    for (const book of [processBook(), presetPanel.book]) {
+      if (book) { showSettingsPage(book); showSettingsSearch(book); }
+    }
+  });
   for (const id of ['process-advanced', 'preset-advanced']) {
     $(id).addEventListener('change', () => {
       settingsMode.advanced = $(id).checked;

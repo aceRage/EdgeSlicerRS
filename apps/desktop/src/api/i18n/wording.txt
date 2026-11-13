@@ -32,6 +32,13 @@ Delete the preset "%s"?	GUI/PresetManagerDialog.cpp:536
 "%s" has unsaved changes. Save or discard them in its settings first, then rename it.	GUI/PresetManagerDialog.cpp:465
 Save or discard the unsaved changes first.	GUI/PresetManagerDialog.cpp:469
 Rename preset	GUI/PresetManagerDialog.cpp:466
+Use for every printer	GUI/SavePresetDialog.cpp:119
+Only for a preset inside the project: list it for every printer, and keep it selected when you switch printers. Otherwise it is offered only for the printers its parent preset is made for.	GUI/SavePresetDialog.cpp:120
+Copies all inherited values from the parent into this preset and removes the parent relationship. Presets compatible only with the parent may become unsupported.	GUI/SavePresetDialog.cpp:135
+Detach from parent	GUI/SavePresetDialog.cpp:140
+Unique preset	GUI/SavePresetDialog.cpp:149
+Parent preset	GUI/SavePresetDialog.cpp:153
+This preset does not inherit from another preset.	GUI/SavePresetDialog.cpp:153
 Delete %d preset?	GUI/PresetManagerDialog.cpp:668
 Delete these %d presets?	GUI/PresetManagerDialog.cpp:668
 and %d more	GUI/PresetManagerDialog.cpp:673
