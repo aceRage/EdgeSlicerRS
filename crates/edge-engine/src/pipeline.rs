@@ -640,7 +640,7 @@ pub fn slice(job: Job, watch: &dyn Watcher) -> Result<Sliced, Failure> {
             &planes,
             scaled(closing_radius),
             &own,
-            &bodies,
+            bodies,
             &body_keys,
             regions,
             &settings,
@@ -936,7 +936,7 @@ pub fn slice(job: Job, watch: &dyn Watcher) -> Result<Sliced, Failure> {
             own
         };
         let plate_stages = crate::regions::StageSettings {
-            walls: walls.clone(),
+            walls,
             infill: InfillSettings::from_settings(&settings)?,
             ironing: edge_infill::IroningSettings::from_settings(&settings)?,
         };
@@ -987,7 +987,7 @@ pub fn slice(job: Job, watch: &dyn Watcher) -> Result<Sliced, Failure> {
         // group lays them, by the settings of the one with the densest
         // sparse fill on the layer, and each keeps what of the area inside
         // them is its own.
-        let groups = crate::regions::wall_groups(&keys, &used, &regions, &settings);
+        let groups = crate::regions::wall_groups(&keys, &used, regions, &settings);
         let members = |leader: usize| -> Vec<usize> {
             (0..used.len())
                 .filter(|slot| groups[*slot] == leader)
@@ -1139,7 +1139,7 @@ pub fn slice(job: Job, watch: &dyn Watcher) -> Result<Sliced, Failure> {
                         )
                     })
             }) {
-            crate::regions::support_annotations(&own, &bodies, &planes, scaled(closing_radius))?
+            crate::regions::support_annotations(&own, bodies, &planes, scaled(closing_radius))?
         } else {
             edge_support::Annotations::default()
         };
@@ -1546,7 +1546,7 @@ pub fn slice(job: Job, watch: &dyn Watcher) -> Result<Sliced, Failure> {
         let contours = match &zaa.zaa {
             Some(contouring) => crate::contour::apply(
                 contouring,
-                &bodies,
+                bodies,
                 &planes,
                 &heights,
                 min[2].into(),

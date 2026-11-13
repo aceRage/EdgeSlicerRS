@@ -67,6 +67,37 @@ impl ObjectKept {
         object.layer_ranges = (!ranges.is_empty()).then(|| written(ranges));
         object
     }
+
+    /// The object's variable layer height profile
+    /// (`Metadata/layer_heights_profile.txt`, read as bbs_3mf.cpp
+    /// `_extract_layer_heights_profile_config_from_archive` reads it):
+    /// pairs of a height in the object and the layer height there. None
+    /// where it has none, or one the reference would not read (fewer than
+    /// six numbers, or an odd count).
+    pub fn layer_height_profile(&self) -> Option<Vec<f64>> {
+        let values: Vec<f64> = self
+            .layer_heights
+            .as_deref()?
+            .split(';')
+            .map(|value| value.trim().parse::<f64>().unwrap_or(0.0))
+            .collect();
+        (values.len() > 4 && values.len().is_multiple_of(2)).then_some(values)
+    }
+
+    /// The object with this layer height profile, or with none, written as
+    /// the reference writes one (`%f` for each number,
+    /// `_add_layer_height_profile_file_to_archive`).
+    pub fn with_layer_height_profile(&self, profile: Option<&[f64]>) -> ObjectKept {
+        let mut object = self.clone();
+        object.layer_heights = profile.filter(|values| values.len() >= 4).map(|values| {
+            values
+                .iter()
+                .map(|value| format!("{value:.6}"))
+                .collect::<Vec<_>>()
+                .join(";")
+        });
+        object
+    }
 }
 
 impl PartKept {

@@ -106,8 +106,7 @@ fn each_kind_of_item_offers_the_references_options() {
     assert!(has(&on_part["keys"], "support_interface_top_layers"));
     assert!(has(&on_part["keys"], "sparse_infill_density"));
     // What the engine does with each (regions.rs): walls and infill
-    // followed on an object and a part; a layer height on an object noted
-    // as not followed, in the words a slice gives.
+    // followed on an object and a part.
     for (answer, key) in [
         (&on_object, "wall_loops"),
         (&on_part, "sparse_infill_density"),
@@ -115,12 +114,8 @@ fn each_kind_of_item_offers_the_references_options() {
     ] {
         assert!(!has(&answer["unread"], key), "{key} followed");
     }
-    assert!(has(&on_object["unread"], "layer_height"));
-    let note = on_object["why"]["layer_height"].as_str().unwrap();
-    assert!(
-        note.starts_with("layer_height: set on an object, not followed"),
-        "{note}"
-    );
+    // An object's layer height is followed (`edge_engine::layering`).
+    assert!(!has(&on_object["unread"], "layer_height"));
     // A part's support interface is the reference's to set on a part
     // (`part_support_keys`), not followed per part here: said.
     assert!(has(&on_part["unread"], "support_interface_top_layers"));
@@ -488,9 +483,107 @@ fn what_an_object_a_part_and_a_range_set_reaches_the_slice() {
         .iter()
         .filter_map(Value::as_str)
         .collect();
+    // The range's layer height is followed.
     assert!(
-        gaps.iter()
-            .any(|gap| gap.starts_with("layer_height: set on height range 0-2 mm")),
+        !gaps.iter().any(|gap| gap.starts_with("layer_height")),
         "{gaps:?}"
     );
+}
+
+#[test]
+fn the_variable_layer_height_tool_edits_an_objects_profile_one_step_each() {
+    let session = Arc::new(Session::new(None));
+    let project = open(&session, &reference(SMALL));
+    choose_presets(&session, project);
+    let scene = ask(&session, "scene", json!({ "project": project }));
+    let object = scene["objects"][0]["id"].clone();
+    let layers = |session: &Arc<Session>, project: u64, object: &Value| {
+        ask(
+            session,
+            "layer_profile",
+            json!({ "project": project, "object": object }),
+        )
+    };
+    let plain = layers(&session, project, &object);
+    assert_eq!(plain["own_profile"], false);
+    assert_eq!(plain["min_layer_height"], 0.08);
+    assert_eq!(plain["max_layer_height"], 0.32);
+    let count = |answer: &Value| answer["layers"].as_array().unwrap().len();
+    let plain_count = count(&plain);
+
+    // "Adaptive" at "Quality / Speed" 0: upright walls take the greatest
+    // height (SlicingAdaptive.cpp), so the layers change; one step.
+    let answer = edit(
+        &session,
+        json!({ "op": "profile_adaptive", "object": object, "quality": 0.0 }),
+    );
+    assert_eq!(answer["done"], "Variable layer height - Adaptive");
+    let adaptive = layers(&session, project, &object);
+    assert_eq!(adaptive["own_profile"], true);
+    assert_ne!(count(&adaptive), plain_count);
+    // "Smooth" with its radius and "Keep min".
+    let answer = edit(
+        &session,
+        json!({ "op": "profile_smooth", "object": object, "radius": 3, "keep_min": true }),
+    );
+    assert_eq!(answer["done"], "Variable layer height - Smooth all");
+    // A drag over the bar: strokes of the left button, one step.
+    let middle = plain["height"].as_f64().unwrap() / 2.0;
+    let strokes: Vec<Value> = (0..20)
+        .map(|_| json!({ "z": middle, "action": "increase" }))
+        .collect();
+    let answer = edit(
+        &session,
+        json!({ "op": "profile_strokes", "object": object, "strokes": strokes, "band_width": 2.0 }),
+    );
+    assert_eq!(answer["done"], "Variable layer height - Manual edit");
+    assert!(
+        refused(
+            &session,
+            "scene_edit",
+            json!({ "op": "profile_strokes", "object": object, "strokes": [{ "z": 1, "action": "up" }] })
+        )
+        .contains("no stroke named")
+    );
+    let edited = layers(&session, project, &object);
+
+    // Saved and opened again: the profile is the object's.
+    let dir = tempfile::tempdir().unwrap();
+    let saved = dir.path().join("profile.3mf");
+    ask(
+        &session,
+        "project_save",
+        json!({ "project": project, "path": saved, "accept": true }),
+    );
+    let other = Arc::new(Session::new(None));
+    let again = open(&other, &saved);
+    choose_presets(&other, again);
+    let object_again =
+        ask(&other, "scene", json!({ "project": again }))["objects"][0]["id"].clone();
+    let reread = layers(&other, again, &object_again);
+    assert_eq!(reread["own_profile"], true);
+    assert_eq!(count(&reread), count(&edited));
+
+    // "Reset", and nothing more to reset.
+    let answer = edit(&session, json!({ "op": "profile_reset", "object": object }));
+    assert_eq!(answer["done"], "Variable layer height - Reset");
+    assert_eq!(layers(&session, project, &object)["own_profile"], false);
+    let mut names = Vec::new();
+    loop {
+        let detail = ask(&session, "project", json!({ "project": project }));
+        if detail["edit"]["undo"].is_null() {
+            break;
+        }
+        names.push(ask(&session, "undo", json!({ "project": project }))["done"].clone());
+    }
+    assert_eq!(
+        names,
+        [
+            "Variable layer height - Reset",
+            "Variable layer height - Manual edit",
+            "Variable layer height - Smooth all",
+            "Variable layer height - Adaptive",
+        ]
+    );
+    assert_eq!(count(&layers(&session, project, &object)), plain_count);
 }

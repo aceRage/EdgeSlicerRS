@@ -66,9 +66,9 @@ pub(crate) struct PlateLayers<'a> {
 
 /// The plate's settings with an object's own laid over them: what its
 /// layers are settled by (the reference's `PrintObjectConfig`).
-fn object_settings(plate: &Settings, own: &crate::OwnObject) -> Settings {
+fn object_settings(plate: &Settings, own: &[(String, String)]) -> Settings {
     let mut settings = plate.clone();
-    for (key, value) in &own.settings {
+    for (key, value) in own {
         if scope(key) != Scope::Plate {
             settings.insert(key.clone(), Value::One(value.clone()));
         }
@@ -76,12 +76,18 @@ fn object_settings(plate: &Settings, own: &crate::OwnObject) -> Settings {
     settings
 }
 
+/// A height range: bottom and top in the object's own heights, and what
+/// it sets.
+type RangeOf<'a> = (f64, f64, &'a [(String, String)]);
+
 /// One object's layering as the reference has it.
 struct Object {
     params: SlicingParams,
     /// Its profile: the one its file has where it fits, else the one its
     /// height ranges give (PrintObject.cpp `update_layer_height_profile`).
     profile: Vec<f64>,
+    /// Its height ranges with their layer heights, in its own heights.
+    ranges: Vec<HeightRange>,
     precise_z: bool,
     /// Whether it has height ranges or a profile (Model.hpp
     /// `has_custom_layering`).
@@ -97,21 +103,8 @@ fn read_object(
     height: f64,
 ) -> Result<Object, Failure> {
     let settings = match own {
-        Some(own) => object_settings(plate.settings, own),
+        Some(own) => object_settings(plate.settings, &own.settings),
         None => plate.settings.clone(),
-    };
-    let layer_height =
-        match own.and_then(|own| own.settings.iter().find(|(k, _)| k == "layer_height")) {
-            Some((_, value)) => value
-                .trim()
-                .parse::<f64>()
-                .map_err(|_| format!("layer_height \"{value}\": not a number"))?,
-            None => plate.layer_height,
-        };
-    let first = if plate.first_layer_height <= 0.0 {
-        layer_height
-    } else {
-        plate.first_layer_height
     };
     let filaments: Vec<usize> = own
         .map(|own| {
@@ -124,7 +117,63 @@ fn read_object(
             used
         })
         .unwrap_or_default();
-    let (min, max) = crate::layer_heights::limits(&settings, layer_height, &filaments)?;
+    let ranges: Vec<RangeOf<'_>> = own
+        .map(|own| {
+            (own.ranges.iter())
+                .map(|range| {
+                    (
+                        range.min_z - own.bottom,
+                        range.max_z - own.bottom,
+                        range.settings.as_slice(),
+                    )
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+    let custom =
+        own.is_some_and(|own| !own.ranges.is_empty() || own.layer_height_profile.is_some());
+    object_of(
+        &settings,
+        own.map_or(&[][..], |own| own.settings.as_slice()),
+        plate.layer_height,
+        plate.first_layer_height,
+        &filaments,
+        &ranges,
+        own.and_then(|own| own.layer_height_profile.as_deref()),
+        height,
+        custom,
+    )
+}
+
+/// One object's layering from its settings (the plate's with its own
+/// laid over them), its own settings as written (for its `layer_height`),
+/// the filaments its parts print in, its height ranges in its own
+/// heights, the profile its file has, and its height.
+#[allow(clippy::too_many_arguments)]
+fn object_of(
+    settings: &Settings,
+    own: &[(String, String)],
+    plate_layer_height: f64,
+    plate_first_layer_height: f64,
+    filaments: &[usize],
+    ranges: &[RangeOf<'_>],
+    file_profile: Option<&[f64]>,
+    height: f64,
+    custom: bool,
+) -> Result<Object, Failure> {
+    let layer_height = match own.iter().find(|(k, _)| k == "layer_height") {
+        Some((_, value)) => value
+            .trim()
+            .parse::<f64>()
+            .map_err(|_| format!("layer_height \"{value}\": not a number"))?,
+        None => plate_layer_height,
+    };
+    let first = if plate_first_layer_height <= 0.0 {
+        layer_height
+    } else {
+        plate_first_layer_height
+    };
+    let (min, max) = crate::layer_heights::limits(settings, layer_height, filaments)?;
     let params = SlicingParams {
         layer_height,
         first_layer_height: first,
@@ -132,33 +181,27 @@ fn read_object(
         max_layer_height: max,
         height,
     };
-    let mut ranges: Vec<HeightRange> = Vec::new();
-    if let Some(own) = own {
-        for range in &own.ranges {
-            let range_height = match range.settings.iter().find(|(k, _)| k == "layer_height") {
+    let mut ranges: Vec<HeightRange> = ranges
+        .iter()
+        .map(|(low, high, set)| HeightRange {
+            low: *low,
+            high: *high,
+            layer_height: match set.iter().find(|(k, _)| k == "layer_height") {
                 Some((_, value)) => value.trim().parse::<f64>().unwrap_or(layer_height),
                 None => layer_height,
-            };
-            ranges.push(HeightRange {
-                low: range.min_z - own.bottom,
-                high: range.max_z - own.bottom,
-                layer_height: range_height,
-            });
-        }
-    }
+            },
+        })
+        .collect();
     // A `std::map` keyed by the range's ends.
     ranges.sort_by(|a, b| {
         (a.low, a.high)
             .partial_cmp(&(b.low, b.high))
             .unwrap_or(std::cmp::Ordering::Equal)
     });
-    let file_profile = own.and_then(|own| own.layer_height_profile.as_ref());
     let profile = match file_profile {
-        Some(profile) if layering::profile_fits(&params, profile) => profile.clone(),
+        Some(profile) if layering::profile_fits(&params, profile) => profile.to_vec(),
         _ => layering::profile_from_ranges(&params, &ranges),
     };
-    let custom =
-        own.is_some_and(|own| !own.ranges.is_empty() || own.layer_height_profile.is_some());
     let supported = settings.flag("enable_support")? == Some(true)
         || settings.integer("raft_layers")?.unwrap_or(0) > 0
         || settings.integer("enforce_support_layers")?.unwrap_or(0) > 0;
@@ -174,11 +217,203 @@ fn read_object(
     Ok(Object {
         params,
         profile,
+        ranges,
         precise_z: settings.flag("precise_z_height")? == Some(true),
         custom,
         raft_layers: settings.integer("raft_layers")?.unwrap_or(0),
         organic,
     })
+}
+
+/// An object's layers as the desktop app's "Variable layer height" tool
+/// shows and edits them (GLCanvas3D.cpp `LayersEditing`), in the object's
+/// own heights.
+#[derive(Clone, Debug, PartialEq)]
+pub struct ObjectLayers {
+    pub layer_height: f64,
+    pub first_layer_height: f64,
+    /// The least and greatest height a layer may have (Slicing.cpp
+    /// `SlicingParameters`).
+    pub min_layer_height: f64,
+    pub max_layer_height: f64,
+    /// The object's height.
+    pub height: f64,
+    /// The profile in force: its own where it has one that fits, else the
+    /// one its height ranges give.
+    pub profile: Vec<f64>,
+    /// Whether it has a profile of its own.
+    pub own_profile: bool,
+    /// Each layer's bottom and top.
+    pub layers: Vec<[f64; 2]>,
+    /// Its height ranges: bottom, top and layer height.
+    pub ranges: Vec<[f64; 3]>,
+}
+
+/// A change the "Variable layer height" tool makes to an object's profile.
+#[derive(Clone, Debug, PartialEq)]
+pub enum ProfileEdit {
+    /// "Reset": the profile taken away.
+    Reset,
+    /// "Adaptive", for "Quality / Speed" from 0 to 1.
+    Adaptive { quality: f32 },
+    /// "Smooth", with "Radius" and "Keep min".
+    Smooth { radius: u32, keep_min: bool },
+    /// Strokes of the mouse over the bar, each at a height with what it
+    /// does, `band_width` mm wide and by `strength` mm a stroke.
+    Strokes {
+        band_width: f64,
+        strength: f64,
+        strokes: Vec<(f64, layering::EditAction)>,
+    },
+}
+
+/// What [`crate::Model::object_layers`] works from: an object's own
+/// settings, ranges, profile, filaments and printed mesh (its first copy's,
+/// its bottom at 0).
+pub(crate) struct ModelLayering {
+    object: Object,
+    own_profile: bool,
+    mesh: edge_mesh::Mesh,
+}
+
+impl crate::Model {
+    fn model_layering(&self, settings: &Settings, object: u64) -> Result<ModelLayering, Failure> {
+        let at = self.object_at(object)?;
+        let held = &self.objects()[at];
+        let transform = held
+            .copies()
+            .first()
+            .map_or(edge_mesh::Transform::IDENTITY, |copy| copy.transform());
+        let mut mesh = held.shape().printed_mesh(&transform);
+        let (low, high) = mesh.bounds().ok_or("the object has nothing printed")?;
+        for vertex in &mut mesh.vertices {
+            vertex[2] -= low[2];
+        }
+        let own = held.settings();
+        let ranges = held.layer_ranges();
+        let ranges: Vec<RangeOf<'_>> = ranges
+            .iter()
+            .map(|range| (range.min_z, range.max_z, range.settings.as_slice()))
+            .collect();
+        let file = held.layer_height_profile();
+        let plate_layer = settings.float("layer_height")?.unwrap_or(0.2);
+        let first = settings
+            .float("initial_layer_print_height")?
+            .unwrap_or(plate_layer);
+        let object = object_of(
+            &object_settings(settings, &own),
+            &own,
+            plate_layer,
+            first,
+            &held.shape().filaments(),
+            &ranges,
+            file.as_deref(),
+            f64::from(high[2] - low[2]),
+            true,
+        )?;
+        let own_profile = file
+            .as_deref()
+            .is_some_and(|profile| layering::profile_fits(&object.params, profile));
+        Ok(ModelLayering {
+            object,
+            own_profile,
+            mesh,
+        })
+    }
+
+    /// An object's layers under `settings` (the project's, as it would be
+    /// sliced with): its layer height, the limits of its layer heights, its
+    /// profile and the layers it lays.
+    pub fn object_layers(&self, settings: &Settings, object: u64) -> Result<ObjectLayers, Failure> {
+        let ModelLayering {
+            object,
+            own_profile,
+            ..
+        } = self.model_layering(settings, object)?;
+        let params = object.params;
+        Ok(ObjectLayers {
+            layer_height: params.layer_height,
+            first_layer_height: params.first_layer_height,
+            min_layer_height: params.min_layer_height,
+            max_layer_height: params.max_layer_height,
+            height: params.height,
+            layers: layering::object_layers(&params, &object.profile, object.precise_z)
+                .into_iter()
+                .map(|(low, high)| [low, high])
+                .collect(),
+            ranges: object
+                .ranges
+                .iter()
+                .map(|range| [range.low, range.high, range.layer_height])
+                .collect(),
+            profile: object.profile,
+            own_profile,
+        })
+    }
+
+    /// Changes an object's profile as the "Variable layer height" tool
+    /// does (GLCanvas3D.cpp `reset_layer_height_profile`,
+    /// `adaptive_layer_height_profile`, `smooth_layer_height_profile`,
+    /// `LayersEditing::adjust_layer_height_profile`). False where nothing
+    /// changed.
+    pub fn edit_layer_profile(
+        &mut self,
+        bed: Option<&crate::Bed>,
+        settings: &Settings,
+        object: u64,
+        edit: &ProfileEdit,
+    ) -> Result<bool, Failure> {
+        let ModelLayering {
+            object: held,
+            own_profile,
+            mesh,
+        } = self.model_layering(settings, object)?;
+        let params = held.params;
+        let profile = match edit {
+            ProfileEdit::Reset => {
+                if !own_profile {
+                    return Ok(false);
+                }
+                None
+            }
+            ProfileEdit::Adaptive { quality } => Some(layering::adaptive_profile(
+                &params,
+                &layering::Adaptive::new(&mesh),
+                quality.clamp(0.0, 1.0),
+                &held.ranges,
+            )),
+            ProfileEdit::Smooth { radius, keep_min } => Some(layering::smooth_profile(
+                &held.profile,
+                &params,
+                (*radius).clamp(1, 10),
+                *keep_min,
+            )),
+            ProfileEdit::Strokes {
+                band_width,
+                strength,
+                strokes,
+            } => {
+                let mut profile = held.profile.clone();
+                for (z, action) in strokes {
+                    layering::adjust_profile(
+                        &params,
+                        &held.ranges,
+                        &mut profile,
+                        *z,
+                        *strength,
+                        *band_width,
+                        *action,
+                    );
+                }
+                Some(profile)
+            }
+        };
+        if profile.as_ref() == Some(&held.profile) && own_profile {
+            return Ok(false);
+        }
+        self.set_layer_height_profile(bed, object, profile)?;
+        Ok(true)
+    }
 }
 
 /// Whether two lists of layers agree as far as the shorter goes, each

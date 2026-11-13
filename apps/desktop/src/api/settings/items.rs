@@ -54,12 +54,16 @@ pub(crate) mod words {
 }
 
 /// The `scene_edit` operations made here.
-pub(crate) const OPS: [&str; 5] = [
+pub(crate) const OPS: [&str; 9] = [
     "item_set",
     "item_reset",
     "range_add",
     "range_set",
     "range_delete",
+    "profile_reset",
+    "profile_adaptive",
+    "profile_smooth",
+    "profile_strokes",
 ];
 
 /// Which kind of item, as the reference's tabs tell them apart.
@@ -284,6 +288,7 @@ impl Session {
     pub(crate) fn items_json(&self, name: &str, args: &Value) -> Result<Value, String> {
         match name {
             "item_settings" => self.item_settings(args),
+            "layer_profile" => self.layer_profile(args),
             other => Err(format!("there is no call named {other}")),
         }
     }
@@ -302,6 +307,40 @@ impl Session {
         let item = found(&file.model, named)?;
         let (global, filaments) = global(self, id)?;
         Ok(described(id, named, &item, &global, filaments))
+    }
+
+    /// An object's layers for the "Variable layer height" tool: its layer
+    /// height and the limits of its layer heights, its profile, the layers
+    /// it lays and its height ranges, in its own heights.
+    fn layer_profile(&self, args: &Value) -> Result<Value, String> {
+        let object = args
+            .get("object")
+            .and_then(Value::as_u64)
+            .ok_or("object was not given")?;
+        let (id, file) = {
+            let state = lock(&self.state);
+            let project = &state.projects[state.target(args)?];
+            (project.id, project.file.clone())
+        };
+        let file = file.ok_or("the project has no objects")?;
+        let (global, _) = global(self, id)?;
+        let layers = file
+            .model
+            .object_layers(&global, object)
+            .map_err(|error| error.to_string())?;
+        Ok(json!({
+            "project": id,
+            "object": object,
+            "layer_height": layers.layer_height,
+            "first_layer_height": layers.first_layer_height,
+            "min_layer_height": layers.min_layer_height,
+            "max_layer_height": layers.max_layer_height,
+            "height": layers.height,
+            "profile": layers.profile,
+            "own_profile": layers.own_profile,
+            "layers": layers.layers,
+            "ranges": layers.ranges,
+        }))
     }
 
     /// The project's settings as the items' pages lay theirs over, for
@@ -512,6 +551,9 @@ pub(crate) fn apply(
     global: &Settings,
 ) -> Result<Option<String>, String> {
     let failed = |error: edge_engine::Failure| error.to_string();
+    if op.starts_with("profile_") {
+        return profile_edit(model, bed, op, args, global);
+    }
     let named = Named::of(args)?;
     let kind = named.kind();
     let item = found(model, named)?;
@@ -675,6 +717,94 @@ pub(crate) fn apply(
             .map_err(failed)?,
     }
     Ok(Some(name))
+}
+
+/// One change of the "Variable layer height" tool (GLCanvas3D.cpp
+/// `LayersEditing`), one step of the history each, named as the reference
+/// names its snapshots (untranslated, as `take_snapshot` takes them).
+fn profile_edit(
+    model: &mut Model,
+    bed: Option<&Bed>,
+    op: &str,
+    args: &Value,
+    global: &Settings,
+) -> Result<Option<String>, String> {
+    use edge_engine::{EditAction, ProfileEdit};
+    let object = args
+        .get("object")
+        .and_then(Value::as_u64)
+        .ok_or("object was not given")?;
+    let number = |key: &str, otherwise: f64| -> Result<f64, String> {
+        match args.get(key) {
+            None | Some(Value::Null) => Ok(otherwise),
+            Some(value) => value
+                .as_f64()
+                .filter(|number| number.is_finite())
+                .ok_or_else(|| tr("Invalid numeric.")),
+        }
+    };
+    let (edit, name) = match op {
+        "profile_reset" => (ProfileEdit::Reset, "Variable layer height - Reset"),
+        "profile_adaptive" => (
+            // "Quality / Speed", 0.5 at first (GLCanvas3D.hpp).
+            ProfileEdit::Adaptive {
+                quality: number("quality", 0.5)?.clamp(0.0, 1.0) as f32,
+            },
+            "Variable layer height - Adaptive",
+        ),
+        "profile_smooth" => (
+            // "Radius" 1 to 10, 5 at first; "Keep min" off
+            // (Slicing.hpp `HeightProfileSmoothingParams`).
+            ProfileEdit::Smooth {
+                radius: number("radius", 5.0)?.round().clamp(1.0, 10.0) as u32,
+                keep_min: args
+                    .get("keep_min")
+                    .and_then(Value::as_bool)
+                    .unwrap_or(false),
+            },
+            "Variable layer height - Smooth all",
+        ),
+        _ => {
+            let strokes = args
+                .get("strokes")
+                .and_then(Value::as_array)
+                .ok_or("strokes was not given")?
+                .iter()
+                .map(|stroke| -> Result<(f64, EditAction), String> {
+                    let z = stroke
+                        .get("z")
+                        .and_then(Value::as_f64)
+                        .filter(|z| z.is_finite())
+                        .ok_or_else(|| tr("Invalid numeric."))?;
+                    let action = match stroke.get("action").and_then(Value::as_str) {
+                        Some("increase") => EditAction::Increase,
+                        Some("decrease") => EditAction::Decrease,
+                        Some("reduce") => EditAction::Reduce,
+                        Some("smooth") => EditAction::Smooth,
+                        other => return Err(format!("there is no stroke named {other:?}")),
+                    };
+                    Ok((z, action))
+                })
+                .collect::<Result<Vec<_>, String>>()?;
+            if strokes.is_empty() {
+                return Ok(None);
+            }
+            (
+                // 2 mm wide (1.5 to 10 by the wheel), 0.005 mm a stroke
+                // (GLCanvas3D.hpp `LayersEditing`).
+                ProfileEdit::Strokes {
+                    band_width: number("band_width", 2.0)?.clamp(1.5, 10.0),
+                    strength: number("strength", 0.005)?.max(0.0),
+                    strokes,
+                },
+                "Variable layer height - Manual edit",
+            )
+        }
+    };
+    let changed = model
+        .edit_layer_profile(bed, global, object, &edit)
+        .map_err(|error| error.to_string())?;
+    Ok(changed.then(|| name.to_owned()))
 }
 
 /// Ranges as they are to be kept: above the bed, each with its top over

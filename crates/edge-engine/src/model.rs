@@ -301,6 +301,15 @@ impl Shape {
         used
     }
 
+    /// Its printed parts as one mesh, where `transform` puts it.
+    pub(crate) fn printed_mesh(&self, transform: &Transform) -> edge_mesh::Mesh {
+        let mut mesh = edge_mesh::Mesh::default();
+        for part in self.printed() {
+            mesh.append(&part.mesh, &part.transform.then(transform));
+        }
+        mesh
+    }
+
     fn printed(&self) -> impl Iterator<Item = &Part> {
         self.parts
             .iter()
@@ -631,7 +640,7 @@ impl Model {
         })
     }
 
-    fn object_at(&self, id: u64) -> Result<usize, Failure> {
+    pub(crate) fn object_at(&self, id: u64) -> Result<usize, Failure> {
         self.objects
             .iter()
             .position(|object| object.id == id)

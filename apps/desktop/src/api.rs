@@ -1230,7 +1230,7 @@ impl Session {
             name if export::JSON.contains(&name) => self.export_json(name, args),
             name if prefs::JSON.contains(&name) => self.prefs_json(name, args),
             name if edit::JSON.contains(&name) => self.edit_json(name, args),
-            "item_settings" => self.items_json(name, args),
+            "item_settings" | "layer_profile" => self.items_json(name, args),
             name if ticks::JSON.contains(&name) => self.ticks_json(name, args),
             name if filaments::JSON.contains(&name) => self.filaments_json(name, args),
             name if print_host::JSON.contains(&name) => self.print_host_json(name, args),

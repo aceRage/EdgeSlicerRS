@@ -1184,6 +1184,7 @@ mod tests {
             internal_bridge_spacing: 0.45,
             top,
             sparse: flow,
+            sparse_spacing: flow.spacing,
             density,
             pattern,
             sparse_angle: 45f64.to_radians(),
