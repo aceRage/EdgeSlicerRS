@@ -39,8 +39,9 @@ pub(super) const JSON: [&str; 5] = [
     "shortcuts",
 ];
 
-/// How many recent projects are kept: the reference's `max_recent_count`
-/// as it starts (AppConfig.cpp l.533, MainFrame.cpp `m_recent_projects(18)`).
+/// How many recent projects are kept unless Preferences' "Maximum recent
+/// files" says otherwise: the reference's `max_recent_count` as it starts
+/// (AppConfig.cpp l.533, MainFrame.cpp `m_recent_projects(18)`).
 pub const RECENT_MOST: usize = 18;
 
 /// The name the app goes by, in "&About %s".
@@ -117,6 +118,9 @@ pub enum When {
     /// The plate shown is sliced and its G-code was written
     /// (`can_export_gcode`).
     Gcode,
+    /// Every plate that holds something is sliced and its G-code written
+    /// (`can_export_all_gcode`).
+    AllGcode,
     /// There is more than one project open.
     Projects,
     /// In the app's window, not a browser (Quit, Minimize, Zoom).
@@ -225,10 +229,7 @@ const ONE_WINDOW: &str = "not yet: the app has one window";
 const NO_ZIP: &str = "not yet: models are not read from a ZIP archive";
 const NO_GCODE_CONFIG: &str = "not yet: settings are not read from a G-code file";
 const NO_STEP: &str = "not yet: STEP needs a CAD kernel, which the engine has not";
-const NO_GENERIC: &str = "not yet: the project file is written in the reference's own layout only (a model file for each object)";
 const NO_BAMBU: &str = "not yet: no Bambu Studio export";
-const NO_SLICED_FILE: &str =
-    "not yet: the sliced file (.gcode.3mf) is not written; Export G-code is";
 const NO_PRESETS: &str = "not yet: a vendor's system profile is not imported";
 const NO_3DCONNEXION: &str = "not yet: 3D mice are not read";
 const NO_OVERHANG: &str = "not yet: overhangs are not marked in the scene";
@@ -325,8 +326,7 @@ static EXPORT: &[Node] = &[
         "Export 3mf file without using some 3mf-extensions",
         When::Objects,
     )
-    .dots()
-    .waits(NO_GENERIC)),
+    .dots()),
     I(item(
         "export.bambu_3mf",
         "Export Bambu 3MF",
@@ -350,16 +350,14 @@ static EXPORT: &[Node] = &[
         When::Gcode,
     )
     .dots()
-    .key(command("G"))
-    .waits(NO_SLICED_FILE)),
+    .key(command("G"))),
     I(item(
         "export.all_sliced",
         "Export all plate sliced file",
         "Export all plate sliced file",
-        When::Gcode,
+        When::AllGcode,
     )
-    .dots()
-    .waits(NO_SLICED_FILE)),
+    .dots()),
     I(item(
         "export.gcode",
         "Export G-code",
@@ -1087,6 +1085,7 @@ pub struct SessionState {
     pub undo: Option<String>,
     pub redo: Option<String>,
     pub gcode: bool,
+    pub all_gcode: bool,
     pub recent: Vec<(String, bool)>,
     pub projects: Vec<(u32, String)>,
     pub active: u32,
@@ -1115,6 +1114,7 @@ pub fn enabled(item: &Item, page: &PageState, session: &SessionState) -> bool {
         When::PrepareIdle => prepare && !session.slicing,
         When::Preview => page.tab == "preview",
         When::Gcode => plater && session.gcode && !session.slicing,
+        When::AllGcode => plater && session.all_gcode && !session.slicing,
         When::Projects => session.projects.len() > 1,
         When::Window => page.window,
         When::Call(names) => names.iter().any(|name| session.calls.contains(name)),
@@ -1576,7 +1576,13 @@ pub fn shortcuts(mac: bool) -> Value {
 /// `recent` with `path` put first, once (wxFileHistory
 /// `AddFileToHistory`: two spellings of one path are one entry), at most
 /// [`RECENT_MOST`].
+#[cfg(test)]
 pub fn with_recent(recent: &[String], path: &str) -> Vec<String> {
+    with_recent_most(recent, path, RECENT_MOST)
+}
+
+/// [`with_recent`], at most `most`.
+pub fn with_recent_most(recent: &[String], path: &str, most: usize) -> Vec<String> {
     let key = super::normalized(path, cfg!(windows));
     let mut out = vec![path.to_owned()];
     out.extend(
@@ -1585,7 +1591,7 @@ pub fn with_recent(recent: &[String], path: &str) -> Vec<String> {
             .filter(|kept| super::normalized(kept, cfg!(windows)) != key)
             .cloned(),
     );
-    out.truncate(RECENT_MOST);
+    out.truncate(most);
     out
 }
 
@@ -1616,6 +1622,14 @@ impl Session {
             .results
             .get(&slot(project.plate))
             .is_some_and(|done| done.gcode.is_ok());
+        let sliceable = project.sliceable();
+        let all_gcode = !sliceable.is_empty()
+            && sliceable.iter().all(|plate| {
+                project
+                    .results
+                    .get(&slot(*plate))
+                    .is_some_and(|done| done.gcode.is_ok())
+            });
         SessionState {
             slicing: project.slicing(),
             dirty: project.dirty(),
@@ -1626,6 +1640,7 @@ impl Session {
             undo: name("undo"),
             redo: name("redo"),
             gcode,
+            all_gcode,
             recent: state
                 .store
                 .data
@@ -1681,19 +1696,26 @@ impl Session {
 
     /// Puts a project file first among the recent projects, as the
     /// reference does when a project is opened or saved (Plater.cpp
-    /// `set_project_filename`): a 3MF that is there. An STL opened as a
-    /// project is not one (the reference lists a model only with its
-    /// "recent_models" preference, off unless asked for).
+    /// `set_project_filename`): a 3MF that is there. A model opened as a
+    /// project (an STL, an OBJ) is one only with Preferences' "Add model
+    /// files (stl/step) to recent file list." (`recent_models`, off unless
+    /// asked for). At most "Maximum recent files" are kept.
     pub(super) fn note_recent(&self, path: &Path) {
-        let is_project = path
-            .extension()
-            .is_some_and(|ext| ext.eq_ignore_ascii_case("3mf"));
-        if !is_project || !path.is_file() {
+        let ext = |wanted: &[&str]| {
+            path.extension()
+                .is_some_and(|ext| wanted.iter().any(|one| ext.eq_ignore_ascii_case(one)))
+        };
+        let mut state = lock(&self.state);
+        let prefs = &state.store.data.prefs;
+        let models = super::prefs::on(prefs, "recent_models");
+        let listed = ext(&["3mf"]) || (models && ext(&["stl", "obj", "step", "stp"]));
+        if !listed || !path.is_file() {
             return;
         }
+        let most = super::prefs::number(prefs, "max_recent_count")
+            .map_or(RECENT_MOST, |most| most as usize);
         let path = shown(path);
-        let mut state = lock(&self.state);
-        let recent = with_recent(&state.store.data.recent_projects, &path);
+        let recent = with_recent_most(&state.store.data.recent_projects, &path, most);
         // Not kept, it is not said: opening or saving went well.
         let _ = state.store.change(|data| data.recent_projects = recent);
     }

@@ -532,10 +532,8 @@
 <dialog id="prefs" aria-labelledby="prefs-title">
   <form method="dialog">
     <h2 id="prefs-title">Preferences</h2>
-    <h3 class="caps">General</h3>
-    <div class="card">
-      <div class="card-row"><label for="prefs-language">Language</label><select id="prefs-language"></select></div>
-    </div>
+    <div id="prefs-tabs" class="tabs" role="tablist"></div>
+    <div id="prefs-body"></div>
     <div class="row end">
       <button type="submit" value="ok" class="primary">OK</button>
       <button type="submit" value="cancel" formnovalidate>Cancel</button>

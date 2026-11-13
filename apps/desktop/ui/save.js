@@ -130,6 +130,10 @@ async function saveBeforeQuitting() {
 // project has unsaved changes).
 if (tauri) {
   tauri.event.listen('close-requested', () => attempt(async () => {
-    if (await saveBeforeQuitting()) await tauri.core.invoke('close_window');
+    if (await saveBeforeQuitting()) {
+      // A clean end: the backups go (Preferences' "Auto-Backup").
+      await call('backup_clear').catch(() => {});
+      await tauri.core.invoke('close_window');
+    }
   }));
 }

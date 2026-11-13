@@ -45,9 +45,8 @@
   cursor: pointer;
 }
 .gl-face:hover:not(:disabled) { border-color: var(--accent); background: var(--accent); color: var(--on-accent); }
-@media (prefers-color-scheme: dark) {
-  .gl-face { background: rgb(59, 59, 59); color: rgb(224, 224, 224); border-color: rgba(255, 255, 255, 0.3); }
-}
+/* Dark (no `light` on <html>, i18n.js `EdgeTheme`). */
+:root:not(.light) .gl-face { background: rgb(59, 59, 59); color: rgb(224, 224, 224); border-color: rgba(255, 255, 255, 0.3); }
 
 /* Fit, and the View menu: a toolbar at the foot of the stage. */
 .gl-tools { position: absolute; left: var(--stage-inset); bottom: var(--stage-inset); z-index: var(--z-overlay); }

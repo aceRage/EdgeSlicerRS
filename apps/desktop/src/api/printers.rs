@@ -437,7 +437,18 @@ impl Session {
                 project.choices.clone(),
                 saved,
                 project.filament_count(),
-                state.store.data.printers.get(machine).cloned(),
+                // What was last used with this printer is gone back to
+                // only with Preferences' "Remember printer configuration"
+                // (Tab.cpp, `remember_printer_config`, on unless turned off).
+                state
+                    .store
+                    .data
+                    .printers
+                    .get(machine)
+                    .filter(|_| {
+                        super::prefs::on(&state.store.data.prefs, "remember_printer_config")
+                    })
+                    .cloned(),
             )
         };
         // What the project is on now: its presets, or for one sliced

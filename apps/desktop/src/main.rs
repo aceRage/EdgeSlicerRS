@@ -84,6 +84,23 @@ fn pick(app: tauri::AppHandle, what: String, suggested: Option<String>) -> Optio
             }
             dialog.blocking_save_file()
         }
+        // "Export plate sliced file..." (Plater.cpp `export_gcode_3mf`):
+        // the reference's title and filter (GUI_App.cpp `file_wildcards`,
+        // FT_GCODE_3MF); the system's dialog asks before a file is replaced.
+        "gcode3mf" => {
+            let suggested =
+                std::path::PathBuf::from(suggested.unwrap_or_else(|| "Untitled.gcode.3mf".into()));
+            let mut dialog = dialog
+                .set_title("Save Sliced file as:")
+                .add_filter("Gcode 3MF files", &["3mf"]);
+            if let Some(dir) = suggested.parent().filter(|dir| dir.is_dir()) {
+                dialog = dialog.set_directory(dir);
+            }
+            if let Some(name) = suggested.file_name() {
+                dialog = dialog.set_file_name(name.to_string_lossy());
+            }
+            dialog.blocking_save_file()
+        }
         // "Export all objects as one STL..." (Plater.cpp `get_export_file`,
         // FT_STL); the system's dialog asks before a file is replaced.
         "stl" => {

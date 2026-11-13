@@ -2119,7 +2119,81 @@ fn plate_facts(
     })
 }
 
+/// One object's first layer, as a sliced file's boxes give it.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct FirstLayer {
+    /// Least x, y and greatest x, y, in mm.
+    pub bbox: [f64; 4],
+    /// The area it covers, in mm².
+    pub area: f64,
+}
+
 impl Sliced {
+    /// Each object on the plate as the project lists its printable copies
+    /// (`edge_3mf::Project::instance_meshes`), cut through the middle of
+    /// the first layer: its box and area there (PrintObject.cpp
+    /// `get_first_layer_bbox`, of the layer as sliced); none for one that
+    /// does not reach it. Empty for a bare model, which is one object.
+    pub fn first_layer_objects(&self) -> Vec<Option<FirstLayer>> {
+        let z = self.seams.floor + self.height_of(0) / 2.0;
+        let box_of = |points: &[Point2]| {
+            let mut bbox = [f64::MAX, f64::MAX, f64::MIN, f64::MIN];
+            for point in points {
+                let (x, y) = (unscaled(point.x), unscaled(point.y));
+                bbox = [
+                    bbox[0].min(x),
+                    bbox[1].min(y),
+                    bbox[2].max(x),
+                    bbox[3].max(y),
+                ];
+            }
+            bbox
+        };
+        // The brim's loops on the first layer: an object with a brim is
+        // boxed by its brim (`firstLayerObjectBrimBoundingBox`).
+        let brims: Vec<[f64; 4]> = self
+            .around
+            .first()
+            .into_iter()
+            .flatten()
+            .filter(|lap| lap.role == edge_extrusion::Role::Brim)
+            .map(|lap| {
+                // To the line's outer edge.
+                let [a, b, c, d] = box_of(&lap.polygon.points);
+                let half = lap.flow.width / 2.0;
+                [a - half, b - half, c + half, d + half]
+            })
+            .collect();
+        let overlaps = |a: &[f64; 4], b: &[f64; 4]| {
+            a[0] <= b[2] && b[0] <= a[2] && a[1] <= b[3] && b[1] <= a[3]
+        };
+        (self.seams.meshes.par_iter())
+            .map(|(mesh, cut_from)| {
+                let mut solid = mesh.clone();
+                solid.triangles.truncate(*cut_from);
+                let layer = edge_slice::slice(&solid, &[z]).pop()?;
+                let area: f64 = layer.polygons.iter().map(Polygon::signed_area_mm2).sum();
+                let points: Vec<Point2> = (layer.polygons.iter())
+                    .flat_map(|polygon| polygon.points.iter().copied())
+                    .collect();
+                let mut bbox = box_of(&points);
+                if bbox[0] > bbox[2] {
+                    return None;
+                }
+                let own = bbox;
+                for brim in brims.iter().filter(|brim| overlaps(brim, &own)) {
+                    bbox = [
+                        bbox[0].min(brim[0]),
+                        bbox[1].min(brim[1]),
+                        bbox[2].max(brim[2]),
+                        bbox[3].max(brim[3]),
+                    ];
+                }
+                Some(FirstLayer { bbox, area })
+            })
+            .collect()
+    }
+
     /// How thick layer `index` is, in mm.
     pub fn height_of(&self, index: usize) -> f64 {
         self.heights.height_of(index)

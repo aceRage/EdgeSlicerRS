@@ -126,6 +126,13 @@ void main() {
   }
   if (u_volume && (any(lessThan(v_world, u_volume_min)) || any(greaterThan(v_world, u_volume_max))))
     color = mix(color, vec3(0.0), 0.3333);
+  // An emission under 0 draws the colour as it is, unlit (the sliced
+  // file's picture without light, Plater.cpp generate_thumbnail with
+  // no lighting).
+  if (u_emission < -0.5) {
+    out_color = vec4(color, v_color.a * side_alpha);
+    return;
+  }
   out_color = vec4(vec3(v_intensity.y) + color * (v_intensity.x + u_emission), v_color.a * side_alpha);
 }`,
   };
