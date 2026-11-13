@@ -9,6 +9,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use edge_config::{Settings, Value as Setting};
 use serde_json::{Value, json};
 
+use super::super::i18n::{fill, tr};
 use super::{
     Asked, Book, Session, address, held, lock, over_of, pages, preset_values, printer_rules,
     unescaped, values_in,
@@ -244,6 +245,58 @@ impl Session {
                 .or(choices.filaments.last())
                 .cloned(),
         };
+        // Whether the changes may go over the preset chosen next (`to`):
+        // Tab.cpp `select_preset` offers it for a process, for a filament
+        // of the same `filament_type`, never for a printer (`no_transfer`).
+        // Where it is offered the pinned reference does it without asking
+        // (UnsavedChangesDialog.cpp `ShowModal`, "Ultra: don't nag") and
+        // says what was kept (Tab.cpp l.9516); the dialog is shown only
+        // where it is not.
+        let to = crate::api::text(args, "to");
+        let transfer = match (book, to) {
+            (_, None) | (Book::Printer, _) => false,
+            (Book::Process, Some(_)) => true,
+            (Book::Filament, Some(to)) => {
+                let now = own
+                    .get("filament_type")
+                    .or_else(|| values.get("filament_type"))
+                    .cloned()
+                    .unwrap_or_default();
+                let vendor = choices.vendor.clone().unwrap_or_default();
+                let next = self
+                    .shelf(&vendor)
+                    .and_then(|shelf| self.resolve_named(&shelf, edge_config::Kind::Filament, to))
+                    .ok()
+                    .and_then(|settings| {
+                        settings
+                            .texts("filament_type")
+                            .and_then(|types| types.first().cloned())
+                    })
+                    .unwrap_or_default();
+                now == next
+            }
+        };
+        let keys: BTreeSet<&str> = own.keys().map(|name| address(name).0).collect();
+        let kept = keys.len();
+        let from = name.clone().unwrap_or_default();
+        let note = transfer.then(|| match (book, kept) {
+            (Book::Process, 1) => fill(
+                &tr("Kept 1 modified process setting from \"%1%\" (revertable)."),
+                &[&from],
+            ),
+            (Book::Process, _) => fill(
+                &tr("Kept %1% modified process settings from \"%2%\" (revertable)."),
+                &[&kept, &from],
+            ),
+            (_, 1) => fill(
+                &tr("Kept 1 modified filament setting from \"%1%\" (revertable)."),
+                &[&from],
+            ),
+            _ => fill(
+                &tr("Kept %1% modified filament settings from \"%2%\" (revertable)."),
+                &[&kept, &from],
+            ),
+        });
         Ok(json!({
             "project": id,
             "kind": book.name(),
@@ -251,6 +304,8 @@ impl Session {
             "name": name,
             "count": count(&listed),
             "pages": listed,
+            "transfer": transfer,
+            "note": note,
         }))
     }
 }

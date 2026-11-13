@@ -922,7 +922,10 @@ impl Session {
                 {
                     safe(&printer.name)?;
                     let files = |kind: Kind, names: &[String]| -> Result<Vec<_>, String> {
-                        names.iter().map(|name| file_of(kind, name)).collect()
+                        parents_first(&users, kind, names)
+                            .iter()
+                            .map(|name| file_of(kind, name))
+                            .collect()
                     };
                     let one = bundle::PrinterBundle {
                         printer: printer.name.clone(),
@@ -944,7 +947,11 @@ impl Session {
                 {
                     safe(filament)?;
                     let mut vendors: BTreeMap<String, Vec<(String, Vec<u8>)>> = BTreeMap::new();
-                    for (vendor, name) in presets {
+                    let names: Vec<String> = presets.iter().map(|(_, name)| name.clone()).collect();
+                    let order = parents_first(&users, Kind::Filament, &names);
+                    let mut presets = presets.clone();
+                    presets.sort_by_key(|(_, name)| order.iter().position(|n| n == name));
+                    for (vendor, name) in &presets {
                         // One the name gives no printer's vendor for is
                         // left out (`if (printer_vendor.empty()) continue;`).
                         if vendor.is_empty() {
@@ -969,7 +976,12 @@ impl Session {
                     _ => ("Process presets.zip", Kind::Process),
                 };
                 let mut entries = Vec::new();
-                for name in listed.iter().filter(|name| chosen.contains(name)) {
+                let picked: Vec<String> = listed
+                    .iter()
+                    .filter(|name| chosen.contains(name))
+                    .cloned()
+                    .collect();
+                for name in &parents_first(&users, preset_kind, &picked) {
                     let bytes = if preset_kind == Kind::Machine {
                         whole_printer(name, None)?
                     } else {
@@ -1032,6 +1044,40 @@ impl Session {
             "message": tr("Export successful"),
         }))
     }
+}
+
+/// Presets of an archive in the order the reference can import them: a
+/// preset after any of the same archive it is laid over. The reference's
+/// import reads an archive in its order and passes over a preset whose
+/// parent it has not met yet (PresetBundle.cpp l.1384–1393), so a child
+/// written before its parent would be lost there; otherwise the order is
+/// the one given.
+fn parents_first(users: &UserPresets, kind: Kind, names: &[String]) -> Vec<String> {
+    let mut out: Vec<String> = Vec::with_capacity(names.len());
+    fn place(
+        users: &UserPresets,
+        kind: Kind,
+        name: &str,
+        names: &[String],
+        out: &mut Vec<String>,
+        depth: usize,
+    ) {
+        if out.iter().any(|done| done == name) || depth > names.len() {
+            return;
+        }
+        if let Some(parent) = users.get(kind, name).and_then(|p| p.inherits.clone())
+            && names.contains(&parent)
+        {
+            place(users, kind, &parent, names, out, depth + 1);
+        }
+        if !out.iter().any(|done| done == name) {
+            out.push(name.to_owned());
+        }
+    }
+    for name in names {
+        place(users, kind, name, names, &mut out, 0);
+    }
+    out
 }
 
 /// Whether a call is the menu bar's question whether it is there.
