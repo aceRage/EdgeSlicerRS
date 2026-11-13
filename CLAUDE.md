@@ -49,6 +49,11 @@ to a stage and say in the PR what moved.
   from the reference's catalogs (`localization/i18n`), and run the
   desktop app's tests, whose wording test reads the reference's
   `Snapmaker_Orca.pot` and `apps/desktop/src/api/i18n/wording.txt`.
+  Then run `tools/make_bambu_keys.py`, which rewrites the table "Export
+  Bambu 3MF" translates settings with (`crates/edge-config/src/bambu/known.rs`,
+  from the reference's `Format/BambuKnownKeys.cpp`, `BambuKeyAliases.cpp`
+  and `PrintConfig.cpp`). `--check` on it, `make_settings_pages.py` and
+  `make_translations.py` says whether their files are what the pin gives.
 - The C++ application shows its strings through gettext, English
   included: its English catalog changes hundreds of them ("Advance" is
   shown as "Advanced"). In the desktop app a string that comes from the

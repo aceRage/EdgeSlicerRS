@@ -263,7 +263,20 @@ pub fn write(save: &Save<'_>, path: &Path) -> Result<Written, Error> {
 
 /// [`write`], laid out as `layout` says.
 pub fn write_as(save: &Save<'_>, path: &Path, layout: Layout) -> Result<Written, Error> {
-    whole(path, |out| package(save, out, Mode::Layout(layout)))
+    whole(path, |out| package(save, out, Mode::Layout(layout), None))
+}
+
+/// [`write_as`] in another form than the project's own: "Export Bambu
+/// 3MF" (`crate::bambu`).
+pub(crate) fn write_form(
+    save: &Save<'_>,
+    path: &Path,
+    layout: Layout,
+    form: &crate::bambu::Form,
+) -> Result<Written, Error> {
+    whole(path, |out| {
+        package(save, out, Mode::Layout(layout), Some(form))
+    })
 }
 
 /// Writes a sliced file (`.gcode.3mf`) of `save` and `sliced` to `path`,
@@ -273,7 +286,7 @@ pub fn write_sliced(
     sliced: &SlicedFile<'_>,
     path: &Path,
 ) -> Result<Written, Error> {
-    whole(path, |out| package(save, out, Mode::Sliced(sliced)))
+    whole(path, |out| package(save, out, Mode::Sliced(sliced), None))
 }
 
 /// [`write_sliced`] to `out`.
@@ -282,7 +295,7 @@ pub fn write_sliced_to<W: Write + Seek>(
     sliced: &SlicedFile<'_>,
     out: W,
 ) -> Result<Written, Error> {
-    package(save, out, Mode::Sliced(sliced))
+    package(save, out, Mode::Sliced(sliced), None)
 }
 
 fn whole(
@@ -736,7 +749,7 @@ fn same_extras(a: Option<&Arc<Extras>>, b: Option<&Arc<Extras>>) -> bool {
 
 /// Writes the package to `out`.
 pub fn write_to<W: Write + Seek>(save: &Save<'_>, out: W) -> Result<Written, Error> {
-    package(save, out, Mode::Layout(Layout::Project))
+    package(save, out, Mode::Layout(Layout::Project), None)
 }
 
 /// [`write_to`], laid out as `layout` says.
@@ -745,10 +758,15 @@ pub fn write_to_as<W: Write + Seek>(
     out: W,
     layout: Layout,
 ) -> Result<Written, Error> {
-    package(save, out, Mode::Layout(layout))
+    package(save, out, Mode::Layout(layout), None)
 }
 
-fn package<W: Write + Seek>(save: &Save<'_>, out: W, mode: Mode<'_>) -> Result<Written, Error> {
+fn package<W: Write + Seek>(
+    save: &Save<'_>,
+    out: W,
+    mode: Mode<'_>,
+    form: Option<&crate::bambu::Form>,
+) -> Result<Written, Error> {
     let project = save.project;
     let sliced = match mode {
         Mode::Sliced(sliced) => Some(sliced),
@@ -935,7 +953,10 @@ fn package<W: Write + Seek>(save: &Save<'_>, out: W, mode: Mode<'_>) -> Result<W
     };
     header.insert(
         "Application".into(),
-        format!("{application}-{REFERENCE_VERSION}"),
+        match form {
+            Some(form) => form.application.clone(),
+            None => format!("{application}-{REFERENCE_VERSION}"),
+        },
     );
     header.insert("BambuStudio:3mfVersion".into(), "1".into());
     // The reference writes neither when the file was made nor who made it
@@ -1165,7 +1186,11 @@ fn package<W: Write + Seek>(save: &Save<'_>, out: W, mode: Mode<'_>) -> Result<W
     // The presets kept inside the project (bbs_3mf.cpp
     // `_add_project_embedded_presets_to_archive`, after the project's
     // settings).
-    if let Some(inside) = save.inside {
+    if let Some(form) = form {
+        for (entry, bytes) in &form.presets {
+            zip.add(entry, bytes)?;
+        }
+    } else if let Some(inside) = save.inside {
         for (entry, bytes) in crate::inside::inside_entries(inside) {
             zip.add(&entry, &bytes)?;
         }
@@ -1185,6 +1210,12 @@ fn package<W: Write + Seek>(save: &Save<'_>, out: W, mode: Mode<'_>) -> Result<W
                 }),
                 Carry::ByObjectPlace => holds && sliced.is_none(),
             };
+            // The Bambu form writes its own presets, converted, and leaves
+            // out what is this app's alone (`crate::bambu`).
+            let wanted = wanted
+                && form.is_none_or(|_| {
+                    file.carry != Carry::Preset && !crate::bambu::left_out(&file.name)
+                });
             if wanted && file.name != PROJECT_SETTINGS && !zip.entries.contains(&file.name) {
                 zip.add(&file.name, &file.bytes)?;
             }
@@ -1232,7 +1263,8 @@ fn package<W: Write + Seek>(save: &Save<'_>, out: W, mode: Mode<'_>) -> Result<W
 
     // Metadata/slice_info.config: a project saved unsliced has its header
     // alone (`_add_slice_info_config_file_to_archive`).
-    let version: Vec<String> = REFERENCE_VERSION
+    let version: Vec<String> = form
+        .map_or(REFERENCE_VERSION, |form| form.client_version.as_str())
         .split('.')
         .map(|part| format!("{part:0>2}"))
         .collect();
