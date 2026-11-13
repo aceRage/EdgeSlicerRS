@@ -805,6 +805,7 @@ async function showSidebar() {
   $('printer-info').textContent = facts.join(' · ');
 
   // Filaments: one for each the project has (filaments.js).
+  if (!favourites.loaded) await loadFavourites();
   const count = project.filament_count;
   const lists = fromPresets && choices.machine ? await presetsOf(choices.vendor, choices.machine) : null;
   const offered = lists ? lists.filaments : [];
@@ -822,6 +823,7 @@ async function showSidebar() {
         system: offered,
         value: choices.filaments[Math.min(index, choices.filaments.length - 1)],
         modified: Presets.on('filament', index + 1).modified,
+        favorites: lists ? lists.favorite_filaments || [] : [],
       });
       // At the list's foot, "Add/Remove filaments" opens the Filament manager (PresetComboBoxes.cpp l.1756,
       // GUI_App.cpp `run_wizard` l.9598).
@@ -869,8 +871,37 @@ function brightness(colour) {
 // The entry at the foot of each filament list; not a filament.
 const MANAGE_FILAMENTS = '\u0000manage';
 
-// An entry at a list's foot that opens something, with the reference's edit mark.
+// The favourite filaments' keys, as the session keeps them.
+const favourites = { keys: new Set(), loaded: false };
+async function loadFavourites() {
+  favourites.keys = new Set((await call('favorites', {})).favs);
+  favourites.loaded = true;
+}
+
+// An entry at a list's foot that opens something, with the reference's edit mark; a filament's row has
+// the star that makes it a favourite or no longer one (PresetComboBoxes.cpp `enable_favorites`).
 function decorateAction(row, option) {
+  if (option.dataset.fav) {
+    const on = favourites.keys.has(option.dataset.fav);
+    const star = el('button', { type: 'button', className: `lb-star${on ? ' on' : ''}`, tabIndex: -1 });
+    // TRN %s is a filament name (FavoriteFilamentsUI.cpp `append_toggle_item`).
+    star.title = fmt(on ? t('Remove "%s" from favorite filaments') : t('Add "%s" to favorite filaments'), option.dataset.fav);
+    star.innerHTML = '<svg viewBox="0 0 16 16" aria-hidden="true"><path d="M8 1.4l1.95 4.1 4.45.55-3.27 3.08.84 4.42L8 11.4l-3.97 2.15.84-4.42L1.6 6.05l4.45-.55z"/></svg>';
+    star.addEventListener('pointerdown', (event) => { event.preventDefault(); event.stopPropagation(); });
+    star.addEventListener('click', (event) => {
+      event.preventDefault();
+      event.stopPropagation();
+      attempt(async () => {
+        const answer = await call('favorite_toggle', { key: option.dataset.fav });
+        favourites.keys = new Set(answer.favs);
+        presetsByMachine.clear();
+        // The lists are drawn again, the favourites regrouped.
+        await showSidebar();
+      });
+    });
+    row.append(star);
+    return;
+  }
   if (option.value !== MANAGE_FILAMENTS) return;
   row.classList.add('lb-action');
   row.insertAdjacentHTML('afterbegin', '<svg viewBox="0 0 16 16" aria-hidden="true"><path d="M3,12.5h10M4.5,10.5l6.8-6.8l1.5,1.5l-6.8,6.8H4.5Z"/></svg>');

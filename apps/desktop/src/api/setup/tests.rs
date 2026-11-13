@@ -1160,3 +1160,102 @@ fn every_check_of_create_filament_and_what_it_writes() {
             .any(|choice| choice["name"] == "Polymaker PLA Matte")
     );
 }
+
+#[test]
+fn favourites_are_kept_as_the_reference_keeps_them_and_head_the_lists() {
+    let dir = tempfile::tempdir().unwrap();
+    let session = session(dir.path());
+    ask(&session, "printer_select", json!({ "initial": true }));
+    // The escaped list of `escape_strings_cstyle`, both ways.
+    let items = vec![
+        "Generic PLA".to_owned(),
+        "Plain".to_owned(),
+        "A \"q\" \\ b".to_owned(),
+    ];
+    let text = super::escape_list(&items);
+    assert_eq!(text, r#""Generic PLA";Plain;"A \"q\" \\ b""#);
+    assert_eq!(super::unescape_list(&text), items);
+    assert_eq!(super::unescape_list(""), Vec::<String>::new());
+    // A vendor's filament by its alias.
+    let on = ask(&session, "favorite_toggle", json!({ "key": "Generic PLA" }));
+    assert_eq!(on["on"], true);
+    let lists = ask(
+        &session,
+        "presets",
+        json!({ "vendor": "Snapmaker", "machine": U1 }),
+    );
+    let favs = strings(&lists["favorite_filaments"]);
+    assert!(
+        favs.contains(&"Generic PLA @U1 0.4 nozzle".to_owned()),
+        "{favs:?}"
+    );
+    assert!(
+        favs.iter().all(|name| name.starts_with("Generic PLA @")),
+        "{favs:?}"
+    );
+    let mut sorted = favs.clone();
+    sorted.sort();
+    assert_eq!(favs, sorted, "in order of name");
+    // The manager shows the star on its row.
+    let table = ask(&session, "filament_manager", Value::Null);
+    let row = table["rows"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|row| row["fav"] == "Generic PLA")
+        .unwrap()
+        .clone();
+    assert_eq!(row["star"], true);
+    // Kept under the reference's key, and read back by another session.
+    let written: Value =
+        serde_json::from_str(&std::fs::read_to_string(dir.path().join("settings.json")).unwrap())
+            .unwrap();
+    assert_eq!(written["app"]["favorite_filaments"], "\"Generic PLA\"");
+    let again = Arc::new(Session::with_settings(None, Some(dir.path().to_owned())));
+    ask(
+        &again,
+        "set_profiles",
+        json!({ "dir": reference("resources/profiles") }),
+    );
+    assert_eq!(
+        ask(&again, "favorites", Value::Null)["favs"],
+        json!(["Generic PLA"])
+    );
+    // Toggled again, it goes.
+    let off = ask(&session, "favorite_toggle", json!({ "key": "Generic PLA" }));
+    assert_eq!(off["on"], false);
+    assert_eq!(ask(&session, "favorites", Value::Null)["favs"], json!([]));
+    // One of one's own by its full name; its star follows a rename and goes with a delete.
+    ask(
+        &session,
+        "settings_set",
+        json!({ "kind": "filament", "filament": 1, "key": "nozzle_temperature", "value": 212 }),
+    );
+    ask(
+        &session,
+        "preset_save",
+        json!({ "kind": "filament", "filament": 1, "name": "My PLA" }),
+    );
+    ask(&session, "favorite_toggle", json!({ "key": "My PLA" }));
+    let lists = ask(
+        &session,
+        "presets",
+        json!({ "vendor": "Snapmaker", "machine": U1 }),
+    );
+    assert_eq!(lists["favorite_filaments"], json!(["My PLA"]));
+    ask(
+        &session,
+        "preset_rename",
+        json!({ "kind": "filament", "preset": "My PLA", "name": "Your PLA" }),
+    );
+    assert_eq!(
+        ask(&session, "favorites", Value::Null)["favs"],
+        json!(["Your PLA"])
+    );
+    ask(
+        &session,
+        "preset_delete",
+        json!({ "kind": "filament", "preset": "Your PLA", "confirm": true }),
+    );
+    assert_eq!(ask(&session, "favorites", Value::Null)["favs"], json!([]));
+}

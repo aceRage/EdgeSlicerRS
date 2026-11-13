@@ -288,6 +288,7 @@ impl Session {
             "filaments": offered.filaments,
             "user_processes": offered.user_processes,
             "user_filaments": offered.user_filaments,
+            "favorite_filaments": self.favorite_filaments(&offered.filaments, &offered.user_filaments),
             // What the printer's own profile usually prints with.
             "usual_process": process,
             "usual_filament": filament,
@@ -714,6 +715,11 @@ impl Session {
             }
         }
         let (old_name, new_name) = (old.clone(), new.clone());
+        if book == Book::Filament {
+            drop(state);
+            self.favorite_renamed(&old, Some(&new));
+            state = lock(&self.state);
+        }
         printers::keep(&mut state, |data| {
             if book == Book::Printer {
                 if let Some(kept) = data.printers.remove(&old_name) {
@@ -891,6 +897,14 @@ impl Session {
             self.move_off(book, attached, None)?;
         }
         self.move_off(book, &name, printer_to.as_deref())?;
+        if book == Book::Filament {
+            self.favorite_renamed(&name, None);
+        }
+        for (kind, attached) in &attached {
+            if *kind == Kind::Filament {
+                self.favorite_renamed(attached, None);
+            }
+        }
         let mut answer = self.after_change(args)?;
         if let Some(object) = answer.as_object_mut() {
             object.insert("deleted".into(), json!(true));

@@ -68,7 +68,7 @@
 
 #fm-table { min-width: 640px; }
 #fm-table th.check { width: 92px; padding-left: var(--space-4); }
-#fm-table th:nth-child(2) { width: 30%; }
+#fm-table th:nth-child(3) { width: 28%; }
 #fm-table th:nth-child(4) { width: 92px; }
 #fm-table th:nth-child(6) { width: 84px; }
 #fm-table td:nth-child(3), #fm-table td:nth-child(5), #fm-table td:nth-child(6) { color: var(--text-2); }
@@ -121,3 +121,13 @@
 }
 .cr-section { font-size: var(--size-body); color: var(--text-1); margin-top: var(--space-2); }
 .cr-table-row .lb { min-width: 0; }
+
+/* The favourite star, in the Filament manager and in a filament list's rows. */
+.pt-star, .lb-star { display: inline-grid; place-items: center; width: 24px; height: 24px; padding: 0; border: 0; border-radius: var(--radius-s); background: none; color: var(--text-3); cursor: pointer; }
+.pt-star svg, .lb-star svg { width: 15px; height: 15px; fill: none; stroke: currentColor; stroke-width: 1.2; }
+.pt-star:hover, .lb-star:hover { color: var(--text-1); background: var(--fill-hover); }
+.pt-star.on, .lb-star.on { color: var(--accent); }
+.pt-star.on svg, .lb-star.on svg { fill: currentColor; }
+.lb-option .lb-star { margin-left: auto; flex: none; }
+#fm-table th.star { width: 84px; }
+#fm-table td.star { text-align: center; }

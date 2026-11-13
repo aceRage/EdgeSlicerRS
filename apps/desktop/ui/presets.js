@@ -25,13 +25,23 @@ const Presets = (() => {
   // Fills a preset list in the reference's groups and order: the
   // person's ("User presets"), then the vendor's ("System presets"). A
   // group with nothing in it is left out, as the reference leaves it out.
-  function fillList(select, { user = [], system = [], value = null, modified = false }) {
+  // A filament list (with `favorites`) starts with "Favorite filaments", the
+  // favourites among those offered, in order of name, and gives each row
+  // the key its star is kept by (PresetComboBoxes.cpp `append_favorite_group`,
+  // FavoriteFilaments.hpp `key_for`).
+  function fillList(select, { user = [], system = [], value = null, modified = false, favorites = null }) {
+    const keyOf = (name) => (user.includes(name) ? name : name.split('@')[0].trimEnd());
     const group = (title, names) => {
       const node = el('optgroup', { label: title });
-      node.append(...names.map((name) => new Option(label(name, modified && name === value), name)));
+      node.append(...names.map((name) => {
+        const option = new Option(label(name, modified && name === value), name);
+        if (favorites) option.dataset.fav = keyOf(name);
+        return option;
+      }));
       return node;
     };
     const groups = [];
+    if (favorites && favorites.length) groups.push(group(t('Favorite filaments'), favorites));
     if (user.length) groups.push(group(t('User presets'), user));
     if (system.length) groups.push(group(t('System presets'), system));
     // What the project is on that neither list holds is still listed.

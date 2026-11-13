@@ -20,13 +20,116 @@ use std::collections::{BTreeMap, BTreeSet};
 use edge_config::Kind;
 use serde_json::{Value, json};
 
-use super::{Session, lock, printers};
+use super::{Session, lock, needed, printers};
 
 /// The name a filament is listed by on the guide's page and in the
 /// Filament manager: its preset's name up to the "@"
 /// (22.js `GetFilamentShortname`; the alias of Preset.cpp).
 pub(super) fn short_name(name: &str) -> &str {
     name.split('@').next().unwrap_or(name).trim()
+}
+
+/// Where the reference keeps the favourite filaments: a key of its
+/// config's `app` section (FavoritePresets.hpp `config_key`), the keys
+/// joined as `escape_strings_cstyle` joins a list.
+pub(super) const FAVORITES_KEY: &str = "favorite_filaments";
+
+/// The key a favourite filament is kept by (FavoriteFilaments.hpp
+/// `key_for`): a vendor's preset's alias (its name up to the "@"), one of
+/// the person's by its full name.
+pub(super) fn favorite_key(name: &str, system: bool) -> String {
+    if system {
+        name.split('@').next().unwrap_or(name).trim_end().to_owned()
+    } else {
+        name.to_owned()
+    }
+}
+
+/// A list as Config.cpp `escape_strings_cstyle` writes it: joined by ";",
+/// an item with a space, a tab, a backslash, a quote or a new line in
+/// quotes with its backslashes, quotes and new lines escaped.
+pub(super) fn escape_list(items: &[String]) -> String {
+    items
+        .iter()
+        .map(|item| {
+            let quote = (items.len() == 1 && item.is_empty())
+                || item
+                    .chars()
+                    .any(|c| matches!(c, ' ' | '\t' | '\\' | '"' | '\r' | '\n'));
+            if !quote {
+                return item.clone();
+            }
+            let mut out = String::from('"');
+            for c in item.chars() {
+                match c {
+                    '\\' | '"' => {
+                        out.push('\\');
+                        out.push(c);
+                    }
+                    '\r' => out.push_str("\\r"),
+                    '\n' => out.push_str("\\n"),
+                    c => out.push(c),
+                }
+            }
+            out.push('"');
+            out
+        })
+        .collect::<Vec<_>>()
+        .join(";")
+}
+
+/// The reverse of [`escape_list`] (Config.cpp `unescape_strings_cstyle`).
+pub(super) fn unescape_list(text: &str) -> Vec<String> {
+    let mut items = Vec::new();
+    let mut chars = text.chars().peekable();
+    if text.is_empty() {
+        return items;
+    }
+    loop {
+        let mut item = String::new();
+        if chars.peek() == Some(&'"') {
+            chars.next();
+            while let Some(c) = chars.next() {
+                match c {
+                    '"' => break,
+                    '\\' => match chars.next() {
+                        Some('n') => item.push('\n'),
+                        Some('r') => item.push('\r'),
+                        Some(other) => item.push(other),
+                        None => {}
+                    },
+                    c => item.push(c),
+                }
+            }
+            // Up to the next ";".
+            for c in chars.by_ref() {
+                if c == ';' {
+                    break;
+                }
+            }
+            items.push(item);
+            if chars.peek().is_none() && !text.ends_with(';') {
+                break;
+            }
+        } else {
+            let mut ended = true;
+            for c in chars.by_ref() {
+                if c == ';' {
+                    ended = false;
+                    break;
+                }
+                item.push(c);
+            }
+            items.push(item);
+            if ended {
+                break;
+            }
+        }
+        if chars.peek().is_none() {
+            break;
+        }
+    }
+    items
 }
 
 /// A row of the Filament manager being gathered: its presets, its type
@@ -341,6 +444,7 @@ impl Session {
                 }
             }
         }
+        let favs = self.favorites();
         let mut answer = Vec::new();
         for ((maker, alias), (members, kind, printers)) in rows {
             let on = enabled
@@ -348,6 +452,8 @@ impl Session {
                 .is_none_or(|on| members.iter().any(|name| on.contains(name)));
             let used = members.iter().any(|name| in_use.contains(name));
             answer.push(json!({
+                "fav": favorite_key(&alias, true),
+                "star": favs.contains(&favorite_key(&alias, true)),
                 "key": format!("s|{maker}|{alias}"),
                 "name": alias,
                 "members": members,
@@ -390,6 +496,8 @@ impl Session {
                 None => (String::new(), String::new(), Vec::new()),
             };
             answer.push(json!({
+                "fav": preset.name,
+                "star": favs.contains(&preset.name),
                 "key": format!("u|{}", preset.name),
                 "name": preset.name,
                 "members": [preset.name],
@@ -404,6 +512,71 @@ impl Session {
             }));
         }
         Ok(answer)
+    }
+
+    /// The favourite filaments' keys, as kept (FavoriteFilamentsUI.cpp
+    /// `fav_read_config`: an empty key is passed over).
+    pub(super) fn favorites(&self) -> BTreeSet<String> {
+        lock(&self.state)
+            .store
+            .data
+            .prefs
+            .get(FAVORITES_KEY)
+            .map(|kept| unescape_list(kept))
+            .unwrap_or_default()
+            .into_iter()
+            .filter(|key| !key.is_empty())
+            .collect()
+    }
+
+    fn keep_favorites(&self, keys: &BTreeSet<String>) {
+        let text = escape_list(&keys.iter().cloned().collect::<Vec<_>>());
+        let mut state = lock(&self.state);
+        printers::keep(&mut state, |data| {
+            data.prefs.insert(FAVORITES_KEY.to_owned(), text);
+        });
+    }
+
+    /// `favorite_toggle`: a filament made a favourite, or no longer one
+    /// (`FavoriteFilamentsUI::toggle`), by its key; kept at once.
+    pub(super) fn favorite_toggle(&self, args: &Value) -> Result<Value, String> {
+        let key = needed(args, "key")?.to_owned();
+        let mut keys = self.favorites();
+        let on = !keys.remove(&key);
+        if on {
+            keys.insert(key);
+        }
+        self.keep_favorites(&keys);
+        Ok(json!({ "on": on, "favs": keys }))
+    }
+
+    /// A preset of one's own renamed or deleted: its star follows it, or
+    /// goes (`rename_key`, `remove_key`).
+    pub(super) fn favorite_renamed(&self, old: &str, new: Option<&str>) {
+        let mut keys = self.favorites();
+        if !keys.remove(old) {
+            return;
+        }
+        if let Some(new) = new {
+            keys.insert(new.to_owned());
+        }
+        self.keep_favorites(&keys);
+    }
+
+    /// The favourites among the filaments offered, in order of name: the
+    /// "Favorite filaments" group at the head of a filament list
+    /// (PresetComboBoxes.cpp `append_favorite_group`).
+    pub(super) fn favorite_filaments(&self, system: &[String], mine: &[String]) -> Vec<String> {
+        let keys = self.favorites();
+        let mut names: Vec<String> = system
+            .iter()
+            .filter(|name| keys.contains(&favorite_key(name, true)))
+            .chain(mine.iter().filter(|name| keys.contains(*name)))
+            .cloned()
+            .collect();
+        names.sort();
+        names.dedup();
+        names
     }
 
     /// `filament_manager`: the Filament manager's table.

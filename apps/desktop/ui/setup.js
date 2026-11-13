@@ -145,6 +145,7 @@ const Setup = (() => {
   // ---- the Filament manager ----
 
   const fm = { rows: [], search: '', pending: false };
+  const STAR = '<svg viewBox="0 0 16 16" aria-hidden="true"><path d="M8 1.4l1.95 4.1 4.45.55-3.27 3.08.84 4.42L8 11.4l-3.97 2.15.84-4.42L1.6 6.05l4.45-.55z"/></svg>';
 
   function fmMatches(row) {
     const words = fm.search.toLowerCase().match(/\S+/g) || [];
@@ -162,8 +163,15 @@ const Setup = (() => {
       if (why) box.title = why;
       box.addEventListener('change', () => attempt(() => fmEnable(row, box.checked)));
       const printers = row.printers.length > 2 ? `${row.printers[0]} +${row.printers.length - 1}` : row.printers.join(', ');
+      // The star (preset_manager.js `COL_STAR`): applied at once.
+      const star = el('button', { type: 'button', className: `pt-star${row.star ? ' on' : ''}`, innerHTML: STAR });
+      star.title = row.star ? 'Remove from favourites' : 'Add to favourites';
+      star.setAttribute('aria-label', `${star.title}: ${row.name}`);
+      star.setAttribute('aria-pressed', String(row.star));
+      star.addEventListener('click', () => attempt(() => fmStar(row)));
       return el('tr', { className: row.enabled ? 'on' : '' },
         el('td', { className: 'check' }, box),
+        el('td', { className: 'star' }, star),
         el('td', { textContent: row.name, title: row.members.join('\n') }),
         el('td', { textContent: row.vendor || '—' }),
         el('td', { textContent: row.type || '—' }),
@@ -172,6 +180,17 @@ const Setup = (() => {
     }));
     const on = fm.rows.filter((row) => row.enabled).length;
     $('fm-count').textContent = `${shown.length} of ${fm.rows.length} shown · ${on} enabled`;
+  }
+
+  // Every row of the same favourite key follows (preset_manager.js `star`).
+  async function fmStar(row) {
+    const answer = await call('favorite_toggle', { key: row.fav });
+    const keys = new Set(answer.favs);
+    for (const other of fm.rows) other.star = keys.has(other.fav);
+    favourites.keys = keys;
+    fmDraw();
+    presetsByMachine.clear();
+    await showSidebar();
   }
 
   async function fmEnable(row, on) {
