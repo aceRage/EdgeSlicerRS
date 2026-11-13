@@ -1401,7 +1401,7 @@ fn sections(mac: bool) -> Vec<(&'static str, Vec<Shortcut>)> {
                 row(K(plain("S")), "Gizmo scale", true),
                 row(K(plain("F")), "Gizmo place face on bed", true),
                 row(K(plain("C")), "Gizmo cut", true),
-                row(K(plain("B")), "Gizmo mesh boolean", false),
+                row(K(plain("B")), "Gizmo mesh boolean", true),
                 // L opens "Support Painting" here: the reference's list still
                 // names it for the SLA gizmo. "Color Painting" [N] is not in
                 // its list.
