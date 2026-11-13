@@ -8,18 +8,16 @@
 //! through the shell behind it, where it wins over what the sides say.
 //!
 //! This follows the reference's `segmentation_by_painting`
-//! (MultiMaterialSegmentation.cpp) as it runs with `paint_depth_mode` at
-//! `unlimited`, which is its default. The sides are a port of the
+//! (MultiMaterialSegmentation.cpp). The sides are a port of the
 //! reference's stages ([`side`], which lists them); the top and bottom
-//! faces ([`shells`]) and the merge ([`segment`]) follow it.
+//! faces ([`shells`]) and the merge ([`segment`]) follow it, and so does
+//! how deep a colour reaches where `paint_depth_mode` bounds it
+//! ([`depth`]).
 //!
-//! What the reference does to drop islands of paint too small to print
-//! with a classic wall (`drop_unprintable_painted_islands`) is not done.
-//! The bounded depths (`paint_depth_mode` at `walls` or `millimeters`,
-//! `mmu_segmented_region_max_width`), interlocking and
-//! `top_color_penetration_layers` are not here at all; where the bounded
-//! depths would go is said at [`segment`].
+//! `top_color_penetration_layers` and `bottom_color_penetration_layers`
+//! are not here.
 
+pub mod depth;
 mod shells;
 mod side;
 
@@ -38,15 +36,22 @@ pub struct Facet {
     pub filament: u8,
 }
 
+/// How deep a shell is asked to be: a count of layers and a thickness,
+/// whichever takes more layers; none at all where the count is none.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct Shell {
+    pub layers: usize,
+    /// In mm.
+    pub thickness: f64,
+}
+
 /// What sharing a painted part out needs to know of how it is printed.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct PaintSettings {
-    /// How many layers a colour painted on a top face is carried down
-    /// through, the face's own layer among them, and the same upwards
-    /// from a bottom face: the shell layers, with no fewer than the
-    /// shell's thickness asks for.
-    pub top_layers: usize,
-    pub bottom_layers: usize,
+    /// The shells behind a top face and above a bottom face: how far a
+    /// colour painted on one is carried, the face's own layer among them.
+    pub top: Shell,
+    pub bottom: Shell,
     /// The outer wall's width and spacing, in scaled units.
     pub wall_width: Coord,
     pub wall_spacing: Coord,
@@ -54,10 +59,17 @@ pub struct PaintSettings {
     /// the outer wall's width where gaps are filled, and otherwise half
     /// of what two overlapping walls take up.
     pub small: Coord,
+    /// Whether gaps are filled (`gap_infill_speed` above nothing).
+    pub gaps_filled: bool,
+    /// Whether walls are classic: islands of paint on a face too narrow
+    /// for a classic wall's first loop are then dropped.
+    pub classic: bool,
     /// What the lengths runs of colour round an outline are filtered by
     /// are scaled by: 1 for nozzles of 0.4 mm and more, less for finer
     /// ones ([`run_filter_scale`]).
     pub run_scale: f32,
+    /// How deep paint reaches: unlimited by default.
+    pub depth: depth::Depth,
 }
 
 /// `mm_segmentation_run_filter_scale`: the lengths runs of colour are
@@ -88,41 +100,99 @@ pub type Share = (u8, Vec<ExPolygon>);
 /// Each layer's painted areas: for every filament painted onto the part
 /// that reaches the layer, the part of the layer it prints. What is left
 /// of a layer keeps the filament it had. `outlines[i]` is the part's
-/// cross-section at height `planes[i]`, in millimetres, and `facets` all
-/// its triangles, painted or not.
+/// cross-section at height `planes[i]`, in millimetres, `z[i]` the
+/// layer's bottom and top, and `facets` all the part's triangles, painted
+/// or not.
 pub fn segment(
     outlines: &[&[ExPolygon]],
     planes: &[f64],
+    z: &[[f64; 2]],
     facets: &[Facet],
     settings: &PaintSettings,
 ) -> Result<Vec<Vec<Share>>, PaintError> {
     assert_eq!(outlines.len(), planes.len(), "one plane per layer");
+    assert_eq!(z.len(), planes.len(), "one bottom and top per layer");
     let colours = facets.iter().map(|facet| facet.filament).max().unwrap_or(0) as usize + 1;
     if colours == 1 {
         return Ok(vec![Vec::new(); outlines.len()]);
     }
+    let depth = &settings.depth;
     let cuts = side::cuts(facets, planes);
-    let sides: Vec<Vec<Vec<ExPolygon>>> = outlines
+    // Each colour's share from the sides, cut back to a band along the
+    // outline where the depth is bounded (`cut_segmented_layers`), and
+    // what that keeps of the part's own filament.
+    type Sides = (Vec<Vec<ExPolygon>>, Vec<ExPolygon>);
+    let (sides, cores): (Vec<Vec<Vec<ExPolygon>>>, Vec<Vec<ExPolygon>>) = outlines
         .par_iter()
         .zip(&cuts)
         .enumerate()
-        .map(|(layer, (outline, cuts))| {
-            side::share(layer, outline, cuts, colours, settings.run_scale)
+        .map(|(layer, (outline, cuts))| -> Result<Sides, PaintError> {
+            let mut shares = side::share(layer, outline, cuts, colours, settings.run_scale)?;
+            let core = depth::cut(layer, outline, &mut shares, depth)?;
+            Ok((shares, core))
         })
-        .collect::<Result<_, _>>()?;
-    // Where paint depth is bounded the reference cuts each colour's
-    // share here back to a band along the outline
-    // (`cut_segmented_layers`, keeping `paint_depth_clamp_keep_core`),
-    // before the faces are worked out and merged in.
-    let faces = shells::faces(outlines, planes, facets, colours, settings)?;
+        .collect::<Result<Vec<_>, _>>()?
+        .into_iter()
+        .unzip();
+    let shells::Faces {
+        claims: mut faces,
+        legacy,
+    } = shells::faces(outlines, planes, z, facets, colours, settings)?;
+    // Paint a bounded depth carries from a face deeper than the shell does
+    // not take what another painted colour has from the sides
+    // (`merge_segmented_layers`, its first part).
+    if let Some(legacy) = &legacy {
+        faces.par_iter_mut().zip(legacy).zip(&sides).try_for_each(
+            |((faces, legacy), sides)| -> Result<(), ClipError> {
+                for colour in 1..colours {
+                    if faces[colour].is_empty() {
+                        continue;
+                    }
+                    let excess = if legacy[colour].is_empty() {
+                        faces[colour].clone()
+                    } else {
+                        edge_clip::difference(&faces[colour], &legacy[colour])?
+                    };
+                    if excess.is_empty() {
+                        continue;
+                    }
+                    let others: Vec<ExPolygon> = (1..colours)
+                        .filter(|other| *other != colour)
+                        .flat_map(|other| sides[other].iter().cloned())
+                        .collect();
+                    if others.is_empty() {
+                        continue;
+                    }
+                    faces[colour] = edge_clip::difference(
+                        &faces[colour],
+                        &edge_clip::intersection(&excess, &others)?,
+                    )?;
+                }
+                Ok(())
+            },
+        )?;
+    }
 
+    let absorb = depth.bounded() && depth.min_claim_width > 0.0 && depth.wall_stack > 0.0;
+    // How narrow an island beside each colour must be to be given to it:
+    // two lines where gap fill is off, one otherwise.
+    let widths: Vec<f32> = if settings.gaps_filled {
+        Vec::new()
+    } else {
+        let width = depth
+            .min_claim_width
+            .max(2.0 * edge_geom::unscaled(settings.small) as f32);
+        (0..colours)
+            .map(|colour| if colour == 0 { 0.0 } else { width })
+            .collect()
+    };
     (0..outlines.len())
         .into_par_iter()
         .map(|layer| {
             // Everything a top or bottom face claims on this layer,
             // whatever its colour, unpainted included.
             let claimed: Vec<ExPolygon> = faces[layer].iter().flatten().cloned().collect();
-            let mut painted = Vec::new();
+            let mut merged = vec![Vec::new(); colours];
             for colour in 1..colours {
                 let mut own = if claimed.is_empty() {
                     sides[layer][colour].clone()
@@ -133,14 +203,91 @@ pub fn segment(
                     own.extend(faces[layer][colour].iter().cloned());
                     own = edge_clip::intersection(&edge_clip::union_ex(&own)?, outlines[layer])?;
                 }
-                if !own.is_empty() {
-                    painted.push((colour as u8, own));
-                }
+                merged[colour] = own;
             }
-            Ok(painted)
+            if absorb {
+                absorb_between_claims(outlines[layer], &mut merged, &cores[layer], &widths, depth)?;
+            }
+            Ok(merged
+                .into_iter()
+                .enumerate()
+                .filter(|(_, own)| !own.is_empty())
+                .map(|(colour, own)| (colour as u8, own))
+                .collect())
         })
         .collect()
 }
 
+/// Islands of the part's own filament left between painted claims too
+/// narrow to print, each given to the colour beside it that shares most
+/// with it (the interior inter-claim absorb at the end of the reference's
+/// `merge_segmented_layers`). An island within a wall stack of the
+/// outline is left, and so is one in a piece of what the cut back kept on
+/// purpose (`core`) where that piece is itself too thin to print.
+fn absorb_between_claims(
+    outline: &[ExPolygon],
+    merged: &mut [Vec<ExPolygon>],
+    core: &[ExPolygon],
+    widths: &[f32],
+    depth: &depth::Depth,
+) -> Result<(), ClipError> {
+    /// Twice `SCALED_EPSILON`.
+    const EPS: Coord = 200;
+    let join = edge_clip::Join::MITER;
+    if outline.is_empty() {
+        return Ok(());
+    }
+    let painted = edge_clip::union_ex(&merged[1..].concat())?;
+    if painted.is_empty() {
+        return Ok(());
+    }
+    let base = edge_clip::difference(outline, &painted)?;
+    if base.is_empty() {
+        return Ok(());
+    }
+    let interior = edge_clip::offset(
+        outline,
+        -depth::delta(depth::scaled_f32(depth.wall_stack)),
+        join,
+    )?;
+    let mut given: Vec<Vec<ExPolygon>> = vec![Vec::new(); merged.len()];
+    for island in base {
+        let single = std::slice::from_ref(&island);
+        let width = depth::absorb_claim_width(single, merged, widths, depth.min_claim_width, EPS)?;
+        let t = depth::delta(depth::scaled_f32(width * 0.5));
+        if !edge_clip::opening(single, t, join)?.is_empty()
+            || !edge_clip::difference(single, &interior)?.is_empty()
+        {
+            continue;
+        }
+        let mut kept = false;
+        for piece in core {
+            let piece = std::slice::from_ref(piece);
+            if !edge_clip::intersection(single, piece)?.is_empty()
+                && edge_clip::opening(piece, t, join)?.is_empty()
+            {
+                kept = true;
+                break;
+            }
+        }
+        if kept {
+            continue;
+        }
+        let winner = depth::absorb_winner(single, merged, EPS)?;
+        if winner > 0 {
+            given[winner].push(island);
+        }
+    }
+    for (colour, islands) in given.into_iter().enumerate() {
+        if !islands.is_empty() {
+            merged[colour].extend(islands);
+            merged[colour] = edge_clip::union_ex(&merged[colour])?;
+        }
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+mod depth_cases;
 #[cfg(test)]
 mod tests;

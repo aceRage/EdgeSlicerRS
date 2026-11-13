@@ -596,11 +596,24 @@ pub fn slice(job: Job, watch: &dyn Watcher) -> Result<Sliced, Failure> {
     // shared out by itself, from its own outline, cut part by part
     // (`crate::paint::outlines`).
     let mut paint_notes = Vec::new();
+    // Read whether or not anything is painted: how deep paint goes is a
+    // setting a print follows, with paint or without.
+    let wall_params = walls.params(layer_height, false)?;
+    let (paint, _forced_interfaces, notes) = crate::paint::settings(
+        &settings,
+        &wall_params.outer,
+        &wall_params.inner,
+        wall_params.arachne.is_none(),
+        !painted.is_empty(),
+    )?;
     if !painted.is_empty() {
-        let outer = walls.params(layer_height, false)?.outer;
-        let (paint, notes) =
-            crate::paint::settings(&settings, &outer, layer_height, &heights.all())?;
         paint_notes = notes;
+        let z: Vec<[f64; 2]> = (0..planes.len())
+            .map(|index| {
+                let top = heights.top_of(index);
+                [top - heights.height_of(index), top]
+            })
+            .collect();
         let base = body_keys.first().copied().unwrap_or(1);
         // Worked out side by side, then applied in the order given.
         let shares = painted
@@ -630,7 +643,8 @@ pub fn slice(job: Job, watch: &dyn Watcher) -> Result<Sliced, Failure> {
                         .map_err(|e| e.to_string())?,
                     ..paint
                 };
-                edge_paint::segment(&outlines, &planes, &facets, &paint).map_err(|e| e.to_string())
+                edge_paint::segment(&outlines, &planes, &z, &facets, &paint)
+                    .map_err(|e| e.to_string())
             })
             .collect::<Result<Vec<_>, String>>()?;
         layers

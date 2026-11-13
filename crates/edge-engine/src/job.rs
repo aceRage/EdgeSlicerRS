@@ -177,6 +177,7 @@ pub fn prepare(mut loaded: Loaded, chosen: &Chosen, overrides: &Overrides) -> Re
     // filaments' flow variants side by side; one entry per filament here.
     if let Some(project) = &mut project_settings {
         variants::unpack_flow_variants(project, &flows);
+        crate::paint::migrate_legacy_depth(project);
     }
     let is_project = project_settings.is_some();
     let placed = loaded.placed;
