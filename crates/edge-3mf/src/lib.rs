@@ -15,6 +15,7 @@ mod own;
 mod package;
 mod paint;
 mod recipe;
+mod sliced;
 mod write;
 mod xml;
 
@@ -42,9 +43,13 @@ pub use recipe::{
     CutRecipe, RECIPE_VERSION, RecipeConnector, RecipeDrawn, RecipeGroove, RecipeKind, RecipeSheet,
     mesh_blob, mesh_of_blob, sha256,
 };
+pub use sliced::{
+    ObjectBox, Pictures, PlateBoxes, SliceFilament, SliceInfo, SliceNozzle, SlicedFile,
+    SlicedPlate, gcode_md5,
+};
 pub use write::{
-    REFERENCE_VERSION, SECRETS, Save, Written, losses, own_settings_text, settings_text, write,
-    write_to,
+    Layout, REFERENCE_VERSION, SECRETS, Save, Written, identify_numbers, losses, own_settings_text,
+    settings_text, write, write_as, write_sliced, write_sliced_to, write_to, write_to_as,
 };
 use xml::malformed;
 

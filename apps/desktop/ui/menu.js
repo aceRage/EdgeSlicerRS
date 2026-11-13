@@ -26,7 +26,7 @@
 // `saveProject`, `saveBeforeQuitting`, printers.js's
 // `openPrinterSelection`, and the 3D editor (`window.EdgeGL.edit`).
 
-/* global call, pick, attempt, say, inform, confirmBox, state, activeId, newProject, openProject,
+/* global Prefs, call, pick, attempt, say, inform, confirmBox, state, activeId, newProject, openProject,
    selectProject, cycleProject, fit, stage3d, saveProject, saveBeforeQuitting, openPrinterSelection,
    tauri, $, el, t, fmt, I18n, exportGcode, listbox */
 
@@ -141,6 +141,48 @@ const Menu = (() => {
     uncut(answer.uncut);
   }
 
+  // A file that is there is asked about first, in the reference's words,
+  // unless the window's save dialog asked already.
+  async function written(call_, args) {
+    let answer = await call(call_, { ...args, replace: Boolean(tauri) });
+    if (answer.exists) {
+      const sure = await confirmBox(t('Confirm Save As'), fmt(t('The file %s already exists\nDo you want to replace it?'), answer.path), t('Yes'), t('No'));
+      if (!sure) return null;
+      answer = await call(call_, { ...args, replace: true });
+    }
+    return answer;
+  }
+
+  // "Export plate sliced file..." [Ctrl+G] and "Export all plate sliced
+  // file..." (Plater.cpp `export_gcode_3mf`): the sliced file, with the
+  // pictures of every plate drawn by the 3D view, as the reference draws
+  // them for it.
+  async function exportSliced(all) {
+    const project = activeId();
+    const { suggested } = await call('export_sliced', { project, all, suggest: true });
+    const path = await pick('gcode3mf', suggested);
+    if (!path) return;
+    const plates = await call('export_sliced_plates', { project, all });
+    const scene = stage();
+    const numbers = {};
+    for (const one of plates.copies) numbers[one.copy] = one.number;
+    const drawn = plates.all_plates.length ? plates.all_plates : [1];
+    const pictures = scene && scene.platePictures ? scene.platePictures(drawn, numbers) : {};
+    const answer = await written('export_sliced', { project, all, path, pictures });
+    if (!answer) return;
+    say(`Saved ${answer.path} (${(answer.bytes / 1e6).toFixed(2)} MB).`);
+  }
+
+  // "Export Generic 3MF..." (Plater.cpp `export_core_3mf`).
+  async function exportGeneric() {
+    const project = activeId();
+    const { suggested } = await call('export_generic', { project, suggest: true });
+    const path = await pick('project', suggested);
+    if (!path) return;
+    const answer = await written('export_generic', { project, path });
+    if (answer) say(`Saved ${answer.path} (${(answer.bytes / 1e6).toFixed(2)} MB).`);
+  }
+
   // Objects whose negative parts were not cut out: as the reference says
   // when it cannot cut them.
   function uncut(names) {
@@ -230,7 +272,9 @@ const Menu = (() => {
       case 'file.save_as': return go(() => saveProject(activeId(), true));
       case 'file.quit':
         if (!tauri) return false;
-        return go(async () => { if (await saveBeforeQuitting()) await tauri.core.invoke('close_window'); });
+        // A clean end: the backups go (the reference removes its own on
+        // closing).
+        return go(async () => { if (await saveBeforeQuitting()) { await call('backup_clear').catch(() => {}); await tauri.core.invoke('close_window'); } });
       case 'import.model':
         if (!edit || state.tab !== 'prepare') return false;
         return go(() => edit.add());
@@ -239,6 +283,9 @@ const Menu = (() => {
       case 'export.stl': return go(exportStl);
       case 'export.stls': return go(exportStls);
       case 'export.gcode': return go(exportGcode);
+      case 'export.plate_sliced': return go(() => exportSliced(false));
+      case 'export.all_sliced': return go(() => exportSliced(true));
+      case 'export.generic_3mf': return go(exportGeneric);
       case 'edit.undo': case 'edit.redo':
         if (!edit || state.tab !== 'prepare') return false;
         return go(() => edit.step(id === 'edit.undo' ? 'undo' : 'redo'));
@@ -567,23 +614,12 @@ const Menu = (() => {
 
   // "Preferences": of the reference's, what this app has (Preferences.cpp,
   // General: "Language"). Another language reloads the page in it.
-  let prefsList = false;
+  // Preferences: prefs.js draws the dialog from the session's description.
   function showPreferences() {
-    const select = $('prefs-language');
-    select.replaceChildren(...I18n.languages.map((language) => new Option(language.name, language.code)));
-    select.value = I18n.language;
-    select.dataset.value = I18n.language;
-    // The page's own list, not the system's (STYLE.md).
-    if (!prefsList) { listbox(select, { bare: true }); prefsList = true; }
-    const dialog = $('prefs');
-    dialog.returnValue = 'cancel';
-    dialog.addEventListener('close', () => {
-      if (dialog.returnValue === 'ok' && select.value !== I18n.language) attempt(() => I18n.choose(select.value));
-    }, { once: true });
-    dialog.showModal();
+    return Prefs.show();
   }
 
-  return { refresh, run, pageState, get tree() { return tree; } };
+  return { refresh, run, pageState, exportSliced, get tree() { return tree; } };
 })();
 
 // The first menu, and again as the session changes (app.js `tick` calls

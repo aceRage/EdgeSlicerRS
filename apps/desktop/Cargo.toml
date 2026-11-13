@@ -37,6 +37,8 @@ ureq = { version = "3.5.1", default-features = false, features = ["rustls"] }
 [dev-dependencies]
 # A folder of its own for each test's settings and profiles.
 tempfile = "3"
+# To read back the 3MF files the exports write.
+zip = { version = "9", default-features = false, features = ["deflate-flate2-zlib-rs"] }
 
 [lints.rust]
 unsafe_code = "deny"

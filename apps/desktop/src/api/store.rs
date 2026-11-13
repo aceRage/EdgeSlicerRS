@@ -72,6 +72,9 @@ pub struct Data {
     /// each by the reference's message id: true open, false folded. A
     /// group not here is as [`super::layout`] has it at first.
     pub groups: BTreeMap<(String, String, String), bool>,
+    /// The Preferences (`prefs.rs`) set, by the reference's keys, kept in
+    /// the `app` section beside the language as the reference keeps them.
+    pub prefs: BTreeMap<String, String>,
     /// What the file held that this build does not know: written back
     /// as it was.
     other: Map<String, Value>,
@@ -127,6 +130,14 @@ impl Data {
         if let Some(app) = root.get("app") {
             data.profiles_dir = text(app, "profiles_dir");
             data.language = text(app, "language");
+            for (key, value) in app.as_object().into_iter().flatten() {
+                if key == "profiles_dir" || key == "language" {
+                    continue;
+                }
+                if let Some(value) = value.as_str() {
+                    data.prefs.insert(key.clone(), value.to_owned());
+                }
+            }
         }
         // As the reference writes them: one entry for each model, its
         // nozzles in one text, "0.2;0.4".
@@ -248,6 +259,9 @@ impl Data {
         if let Some(language) = &self.language {
             app["language"] = json!(language);
         }
+        for (key, value) in &self.prefs {
+            app[key.as_str()] = json!(value);
+        }
         root.insert("app".into(), app);
         let models: Vec<Value> = self
             .models
@@ -315,6 +329,12 @@ impl Data {
 }
 
 impl Store {
+    /// The folder the settings are kept in; none when nothing is kept
+    /// beyond the run.
+    pub fn dir(&self) -> Option<&Path> {
+        self.file.as_deref().and_then(Path::parent)
+    }
+
     /// The settings kept in `dir`, read now; with no folder, settings
     /// that last as long as the run. A file that is not there yet is no
     /// settings; one that cannot be read is said (`problem`), left as it

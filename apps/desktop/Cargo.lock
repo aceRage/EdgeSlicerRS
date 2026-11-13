@@ -894,6 +894,7 @@ version = "0.0.0"
 dependencies = [
  "edge-config",
  "edge-mesh",
+ "md-5",
  "quick-xml",
  "rayon",
  "serde_json",
@@ -987,6 +988,7 @@ dependencies = [
  "tiny_http",
  "tungstenite",
  "ureq",
+ "zip",
 ]
 
 [[package]]

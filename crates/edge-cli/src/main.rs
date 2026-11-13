@@ -107,6 +107,10 @@ struct SaveArgs {
     /// listed either way.
     #[arg(long)]
     accept_losses: bool,
+    /// Write it as "Export Generic 3MF" does: every mesh in the one model
+    /// file, without the production extension.
+    #[arg(long)]
+    generic: bool,
 }
 
 #[derive(Args)]
@@ -172,6 +176,11 @@ struct SliceArgs {
     /// generic preamble is written and the file is only good for viewing.
     #[arg(long)]
     gcode: Option<PathBuf>,
+    /// Also write the plate sliced as a sliced file (`.gcode.3mf`), as the
+    /// desktop app's "Export plate sliced file" writes it, without the
+    /// pictures (the app draws them).
+    #[arg(long, requires = "gcode")]
+    gcode_3mf: Option<PathBuf>,
     /// Say how long each stage took, in more detail than the summary.
     #[arg(long)]
     timings: bool,
@@ -340,7 +349,12 @@ fn save(args: SaveArgs) -> Result<(), Failure> {
                 .into(),
         );
     }
-    let saved = model.save(&args.out, &saving, None)?;
+    let layout = if args.generic {
+        edge_engine::Layout::Core
+    } else {
+        edge_engine::Layout::Project
+    };
+    let saved = model.save_as(&args.out, &saving, None, layout)?;
     println!(
         "{}: {} bytes, {} entries",
         args.out.display(),
@@ -840,6 +854,29 @@ fn slice(args: SliceArgs) -> Result<(), Failure> {
         }
         for note in sliced.remarks.iter().chain(sliced.notes()) {
             println!("note: {note}");
+        }
+        if let Some(out) = &args.gcode_3mf {
+            let model = edge_engine::Model::open(&args.model)?;
+            let saving = if model.settings().is_some() {
+                edge_engine::Saving::Own
+            } else {
+                edge_engine::Saving::None
+            };
+            let plate = args.plate.unwrap_or(1);
+            let slice = edge_engine::sliced_file::PlateSlice {
+                plate,
+                sliced: &sliced,
+                gcode: &gcode.text,
+                seconds: summary.seconds,
+            };
+            let saved =
+                model.save_sliced(out, &saving, &[slice], Some(plate), Default::default())?;
+            println!(
+                "sliced file written to {} ({} entries, {} bytes)",
+                out.display(),
+                saved.entries.len(),
+                saved.bytes
+            );
         }
         // A filament with no tool of its own is written as the reference
         // writes it, and said out loud: the printer may well refuse it.
