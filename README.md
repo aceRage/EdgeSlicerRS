@@ -33,7 +33,7 @@ replaces it until output matches on the printers we care about.
 | `crates/edge-time` | How long a G-code file takes, with acceleration: the file is read as a printer reads it and planned as the reference's estimator plans, or as Klipper does |
 | `crates/edge-tower` | The prime tower a nozzle is primed on after a tool change |
 | `crates/edge-slice` | Mesh to per-layer contours, with the model's corners and not its triangles', then to regions with holes; parallel across layers. Elephant foot compensation of the first layers; round holes made polygons of few sides, and round outlines and holes resized by what the filament prints them off by; the last layers' heights tuned so a part comes out its exact height, and layers grown downward under overhangs so they can be printed |
-| `crates/edge-engine` | The whole pipeline behind one call, for whatever drives it: open a model and list its plates, settle its settings, slice with progress and cancel, G-code, a layer's lines for drawing, a vendor's presets by printer, arranging the plates (`arrange.rs`), and its printer models with the presets, picture and sizes of each; and, for a set of settings, which of them a slice reads and what it notes (`followed`); where a setting may be set for one object, part or height range and whether it is followed there (`settable`), and the regions a plate is shared out among (`regions.rs`); the model's cuts (`cut.rs`: by a plane, a dovetail, with connectors and push-fit pins (`pushfit`), by a curved surface (`curved`) and by a surface swept along a line drawn on the model (`drawn`, a port of the reference's DrawCut.cpp), with the fork's print-in-place Flexi joints (`flexi`, FlexiJoint.cpp) and its TAC Joint (`tac`, TacJoint.cpp, its reference meshes in `tac_data.rs`), each kept editable in the project's recipe) |
+| `crates/edge-engine` | The whole pipeline behind one call, for whatever drives it: open a model and list its plates, settle its settings, slice with progress and cancel, G-code, a layer's lines for drawing, a vendor's presets by printer, arranging the plates (`arrange.rs`), auto orient (`orient.rs`, the reference's Orient.cpp with its cost and weights, and `orient_job.rs`, what its OrientJob orients and how the turn is put back), and its printer models with the presets, picture and sizes of each; and, for a set of settings, which of them a slice reads and what it notes (`followed`); where a setting may be set for one object, part or height range and whether it is followed there (`settable`), and the regions a plate is shared out among (`regions.rs`); the model's cuts (`cut.rs`: by a plane, a dovetail, with connectors and push-fit pins (`pushfit`), by a curved surface (`curved`) and by a surface swept along a line drawn on the model (`drawn`, a port of the reference's DrawCut.cpp), with the fork's print-in-place Flexi joints (`flexi`, FlexiJoint.cpp) and its TAC Joint (`tac`, TacJoint.cpp, its reference meshes in `tac_data.rs`), each kept editable in the project's recipe) |
 | `crates/edge-cli` | The `edge` command line |
 | `tools/make_defaults.py` | Asks the reference for its default of every setting and writes the table `edge-config` carries; run again when the pin moves |
 | `tools/make_settings_pages.py` | Reads the reference's process, filament and printer pages and option definitions from its source and writes the data the desktop app draws its settings pages from; run again when the pin moves, after `make_defaults.py` |
@@ -60,6 +60,9 @@ cargo run --release -p edge-cli -- preset Snapmaker process "0.20mm Standard @Sn
 # A project arranged as the reference's Arrange does (every plate, or --plate N), saved, and where
 # everything stands written as JSON, to compare with the reference's --arrange 1 --export-3mf
 cargo run --release -p edge-cli -- arrange reference/EdgeSlicer/tests/mcbrim_test.3mf --out arranged.3mf --layout arranged.json
+# Every copy turned the way up the reference's "Auto orient" turns it (or one plate's, --plate N);
+# with --command-line, what the reference's --orient 1 finds for each object, in its own lines
+cargo run --release -p edge-cli -- orient reference/EdgeSlicer/resources/handy_models/3DBenchy.3mf --command-line
 # A model or project saved as a project file the reference opens as its own: a 3MF keeps its own
 # settings, an STL is saved without any; --vendor/--machine/--process/--filament save it with presets.
 # What the file holds that would not be kept is listed and nothing is written, unless --accept-losses.
@@ -4111,6 +4114,25 @@ a layer lower than the reference's (216 mm against 146), where without
 contouring it falls on the same layer. On lettered plate 1, whose walls
 under the lettering are not the reference's (below), internal solid is
 3% short and sparse fill 23% over on the layers under the letters.
+
+### Auto orient
+
+`edge orient <model> --command-line` measures each object as the
+reference's `--orient 1` does and prints its lines ("orientation: …, cost:
+…", "best: …"); `work/orient/compare.sh` in the baselines folder runs both
+and puts them side by side. On 3DBenchy, the seven handy models, the 16
+turned and mirrored arms of `mcbrim_test.3mf` and eight shapes made for it
+(a tilted box, an L standing up and lying, a T on its post, a mushroom
+upright and tilted, a wedge, a cube on its edge) the directions tried are
+the reference's, and every cost but one is its own to the bit (checked
+against the reference's expressions built with its Eigen); the one is the
+area of the convex hull on the bed, whose triangles are this engine's hull
+and not qhull's, which moves it by up to a few mm² on some directions.
+The direction chosen is the reference's for every object but those where
+two directions cost exactly the same (a T on either side, a box on its top
+or its bottom), where the reference's pick is the order of its hash map and
+this engine takes the first found. Benchy is oriented in about 18 ms here
+(56 ms on one thread); the reference's command line takes about 150 ms.
 
 ## Print time against the reference
 
