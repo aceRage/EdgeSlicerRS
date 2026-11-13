@@ -168,6 +168,10 @@ pub(super) fn natural(a: &str, b: &str) -> std::cmp::Ordering {
     x.len().cmp(&y.len())
 }
 
+/// The renames a name typed makes (from, to), or the name that cannot be
+/// had and why.
+type RenamePlan = Result<Vec<(String, String)>, (String, String)>;
+
 /// The reference's order of names in the managers (PresetManagerModel.cpp
 /// `pm_less_name`): without regard to case, a shorter name first, then
 /// exactly.
@@ -1015,10 +1019,7 @@ impl Session {
     /// it, the printer part kept, its family (`scope` "family", the default:
     /// the person's presets of its id and that part) renamed with it. The
     /// first name that cannot be had stops it, with why.
-    fn plan_rename(
-        &self,
-        args: &Value,
-    ) -> Result<Result<Vec<(String, String)>, (String, String)>, String> {
+    fn plan_rename(&self, args: &Value) -> Result<RenamePlan, String> {
         let (row, shelf, machine) = self.user_row(args)?;
         if row["source"] != "User" {
             return Err(tr("System presets cannot be renamed."));
