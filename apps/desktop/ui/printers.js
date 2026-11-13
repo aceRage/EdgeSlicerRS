@@ -196,6 +196,9 @@ const pt = {
   // By column: a set of the values shown, a text, or { min, max }.
   filters: new Map(),
   pop: null,
+  // The setup wizard (Help > "Setup Wizard", the first run): "Next" goes
+  // on to "Filament Selection", which keeps both (setup.js).
+  wizard: false,
 };
 
 const ptCollator = new Intl.Collator(undefined, { numeric: true, sensitivity: 'base' });
@@ -449,9 +452,12 @@ function ptOpenPop(column, anchor) {
   if (first) first.focus();
 }
 
-async function openPrinterSelection() {
+async function openPrinterSelection(options = {}) {
   const dialog = $('printers-dialog');
   if (dialog.open) return;
+  pt.wizard = Boolean(options.wizard);
+  // The guide's printer page has "Next" (page 21); alone it has "Confirm" (page 24).
+  $('pt-confirm').textContent = pt.wizard ? t('Next') : t('Confirm');
   const catalogue = await call('printer_catalogue');
   pt.rows = catalogue.models.map((model, order) => ({
     ...model,
@@ -489,6 +495,12 @@ async function printersChanged(answer) {
 
 async function ptConfirm() {
   const models = pt.rows.filter((row) => row.enabled).map((row) => ({ vendor: row.vendor, model: row.model }));
+  if (pt.wizard && models.length) {
+    // Nothing is kept until "Finish" on the filament page.
+    $('printers-dialog').close();
+    await Setup.openFilamentSelection(models);
+    return;
+  }
   let answer;
   try {
     answer = await call('printers_save', { project: activeId(), models });
@@ -514,7 +526,7 @@ async function ptCancel() {
 // With no printer added, the selection opens by itself, as the
 // reference's setup does on its first run.
 async function firstRun() {
-  if (state.printers && state.printers.first_run) await openPrinterSelection();
+  if (state.printers && state.printers.first_run) await openPrinterSelection({ wizard: true });
 }
 
 function initPrinters() {

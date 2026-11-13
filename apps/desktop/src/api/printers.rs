@@ -316,7 +316,7 @@ pub(super) fn remember(state: &mut State, at: usize, args: &Value) {
 
 impl Session {
     /// A vendor's printer models, read once and kept, as its presets are.
-    fn models_of(&self, vendor: &str) -> Result<Arc<Vec<PrinterModel>>, String> {
+    pub(super) fn models_of(&self, vendor: &str) -> Result<Arc<Vec<PrinterModel>>, String> {
         let library = {
             let state = lock(&self.state);
             if let Some(models) = state.catalogue.get(vendor) {
@@ -343,7 +343,7 @@ impl Session {
     /// and then by vendor: the order of the reference's list, which is
     /// that of the names. One added from other profiles is not listed
     /// and stays added.
-    fn installed(&self) -> Vec<PrinterModel> {
+    pub(super) fn installed(&self) -> Vec<PrinterModel> {
         let added = lock(&self.state).store.data.models.clone();
         let mut installed: Vec<PrinterModel> = added
             .iter()
@@ -382,7 +382,7 @@ impl Session {
     /// a preset of a model elsewhere (`get_similar_printer_preset`) it
     /// says that is not wanted and takes the 0.4 one. The model found
     /// first is kept, on its usual nozzle.
-    fn usual_printer(&self, installed: &[PrinterModel]) -> Option<(String, String)> {
+    pub(super) fn usual_printer(&self, installed: &[PrinterModel]) -> Option<(String, String)> {
         let last = lock(&self.state).store.data.last.clone();
         let added = |vendor: &str, machine: &str| {
             let machine = self.system_printer(machine);

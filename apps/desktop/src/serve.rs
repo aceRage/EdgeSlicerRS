@@ -66,10 +66,13 @@ const HOSTS: [(&str, &str); 2] = [
     ("hosts.js", include_str!("../ui/hosts.js")),
     ("hosts.css", include_str!("../ui/hosts.css")),
 ];
-/// A person's own presets: the lists' cog menus and their dialogs.
-const PRESETS: [(&str, &str); 2] = [
+/// A person's own presets: the lists' cog menus and their dialogs; setting
+/// up printers and filaments.
+const PRESETS: [(&str, &str); 4] = [
     ("presets.js", include_str!("../ui/presets.js")),
     ("presets.css", include_str!("../ui/presets.css")),
+    ("setup.js", include_str!("../ui/setup.js")),
+    ("setup.css", include_str!("../ui/setup.css")),
 ];
 /// The menu bar: what its entries do and its keys, and the bar itself in
 /// a browser.

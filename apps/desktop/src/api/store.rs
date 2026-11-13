@@ -14,7 +14,7 @@
 //! or in the folder `EDGE_DESKTOP_DATA` names, when it is set.
 
 use std::{
-    collections::BTreeMap,
+    collections::{BTreeMap, BTreeSet},
     path::{Path, PathBuf},
 };
 
@@ -75,6 +75,13 @@ pub struct Data {
     /// The Preferences (`prefs.rs`) set, by the reference's keys, kept in
     /// the `app` section beside the language as the reference keeps them.
     pub prefs: BTreeMap<String, String>,
+    /// The filament presets enabled ("Filament Selection", the Filament
+    /// manager), by name: the reference's `filaments` section
+    /// (AppConfig.cpp `SECTION_FILAMENTS`), kept as it keeps it, each
+    /// name with "true". None while there is no such section, when every
+    /// filament is shown (Preset.cpp `set_visible_from_appconfig` leaves
+    /// a preset visible without one).
+    pub filaments: Option<BTreeSet<String>>,
     /// What the file held that this build does not know: written back
     /// as it was.
     other: Map<String, Value>,
@@ -236,7 +243,18 @@ impl Data {
                 }
             }
         }
+        // { name: "true" }: a name with an empty value is not enabled.
+        if let Some(section) = root.get("filaments").and_then(Value::as_object) {
+            data.filaments = Some(
+                section
+                    .iter()
+                    .filter(|(_, on)| on.as_str().is_some_and(|on| !on.is_empty()))
+                    .map(|(name, _)| name.clone())
+                    .collect(),
+            );
+        }
         for known in [
+            "filaments",
             "version",
             "app",
             "models",
@@ -303,6 +321,13 @@ impl Data {
         root.insert("recent_projects".into(), Value::Object(recent));
         if !self.arrange.is_empty() {
             root.insert("arrange".into(), json!(self.arrange));
+        }
+        if let Some(filaments) = &self.filaments {
+            let section: Map<String, Value> = filaments
+                .iter()
+                .map(|name| (name.clone(), json!("true")))
+                .collect();
+            root.insert("filaments".into(), Value::Object(section));
         }
         let mut layout = Map::new();
         if let Some(width) = self.sidebar_width {
@@ -446,6 +471,12 @@ mod tests {
             ("printer".into(), "Extruder %d".into(), "Retraction".into()),
             true,
         );
+        data.filaments = Some(
+            ["Generic PLA @U1 0.4 nozzle", "Snapmaker PLA @U1"]
+                .into_iter()
+                .map(str::to_owned)
+                .collect(),
+        );
     }
 
     #[test]
@@ -479,6 +510,11 @@ mod tests {
         assert_eq!(written["printers"][0]["curr_bed_type"], "Cool Plate");
         // The arrange options under the reference's keys.
         assert_eq!(written["arrange"]["min_object_distance_fff"], "12.5");
+        // The filaments enabled, as the reference's `filaments` section.
+        assert_eq!(
+            written["filaments"],
+            json!({ "Generic PLA @U1 0.4 nozzle": "true", "Snapmaker PLA @U1": "true" })
+        );
         // The page's layout in a section of its own.
         assert_eq!(written["layout"]["sidebar_width"], 420);
         assert_eq!(

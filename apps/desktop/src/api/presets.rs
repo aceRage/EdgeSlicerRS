@@ -216,7 +216,7 @@ impl Session {
     /// not worked out here: such a preset goes with the printers the
     /// system preset it is made from is offered for, as the vendor's own
     /// are listed (by `compatible_printers` alone).
-    fn fits(&self, shelf: &Shelf, kind: Kind, name: &str, machine: &str) -> bool {
+    pub(super) fn fits(&self, shelf: &Shelf, kind: Kind, name: &str, machine: &str) -> bool {
         let Ok(settings) = self.resolve_named(shelf, kind, name) else {
             return false;
         };
@@ -246,6 +246,12 @@ impl Session {
     pub(super) fn offered(&self, shelf: &Shelf, machine: &str) -> Offered {
         let base = self.system_printer(machine);
         let users = self.users();
+        // The vendor's filaments shown: those enabled ("Filament Selection",
+        // the Filament manager), and any an open project is on, as the
+        // reference shows a preset its project names (Preset.cpp
+        // `load_external_preset` makes it visible). The person's own are
+        // always shown.
+        let shown = self.shown_filaments();
         let mine = |kind: Kind| -> Vec<String> {
             users
                 .of(kind)
@@ -263,6 +269,7 @@ impl Session {
             filaments: shelf
                 .filaments_for(&base)
                 .into_iter()
+                .filter(|name| shown.as_ref().is_none_or(|shown| shown.contains(*name)))
                 .map(str::to_owned)
                 .collect(),
             user_processes: mine(Kind::Process),
@@ -970,11 +977,16 @@ impl Session {
     /// `select_preset` with `delete_current`, l.8978). The caller takes it
     /// when it goes with the printer; else the printer's usual one, as the
     /// reference's `update_compatible` then picks its preferred preset.
-    /// Every preset here counts as visible: there is no list of enabled
-    /// filaments yet (UI_PARITY section 8).
+    /// A vendor's filament counts only while it is shown (enabled, or on
+    /// an open project), as the reference passes over one not visible.
     fn next_after(&self, shelf: &Shelf, kind: Kind, name: &str) -> Option<String> {
         let users = self.users();
+        let shown = match kind {
+            Kind::Filament => self.shown_filaments(),
+            _ => None,
+        };
         let mut names: Vec<String> = shelf.all_of(kind);
+        names.retain(|other| shown.as_ref().is_none_or(|shown| shown.contains(other)));
         names.extend(
             users
                 .of(kind)

@@ -1,0 +1,80 @@
+/* Setting up printers and filaments (setup.js): "Filament Selection", the
+   Filament manager, "Create Printer/Nozzle" and "Create Filament". Tokens
+   and controls are the page's own (style.css, STYLE.md). */
+
+/* A dialog that holds a list or a table: tall, the list scrolling between two hairlines. */
+.setup-dialog {
+  width: min(980px, calc(100vw - 48px));
+  height: min(720px, calc(100vh - 48px));
+  max-width: none;
+  max-height: none;
+  padding: 0;
+  overflow: hidden;
+}
+.setup-dialog[open] { display: flex; flex-direction: column; }
+.setup-dialog > h2 { padding: 14px var(--space-4) 0; }
+.setup-dialog > .dialog-foot { padding: var(--space-3) var(--space-4); }
+.setup-scroll {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+  border-top: 1px solid var(--line-2);
+  border-bottom: 1px solid var(--line-2);
+  background: var(--surface-well);
+}
+
+/* ---- Filament Selection ---- */
+
+.fs-filters { display: flex; flex-direction: column; gap: var(--space-2); padding: var(--space-3) var(--space-4) 0; }
+.fs-line { display: grid; grid-template-columns: 112px minmax(0, 1fr); align-items: baseline; gap: var(--space-2); }
+.fs-line[hidden] { display: none; }
+.fs-name { color: var(--text-2); font-size: var(--size-label); font-weight: 600; }
+.fs-values { display: flex; flex-wrap: wrap; gap: 2px var(--space-3); max-height: 96px; overflow-y: auto; }
+.fs-values label, .fs-item { display: inline-flex; flex-direction: row; align-items: center; gap: 6px; color: var(--text-1); font-size: var(--size-body); cursor: pointer; }
+.fs-bar { display: flex; align-items: center; gap: var(--space-3); padding: var(--space-3) var(--space-4); }
+.fs-bar input[type="search"] { flex: 1 1 220px; max-width: 320px; }
+#fs-count, #fm-count { margin-left: auto; font-variant-numeric: tabular-nums; }
+#fs-items {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
+  align-content: start;
+  gap: 2px var(--space-3);
+  padding: var(--space-3) var(--space-4);
+}
+.fs-item { min-height: 30px; padding: 0 6px; border-radius: var(--radius-s); overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
+.fs-item:hover { background: var(--fill-hover); }
+.fs-item[hidden] { display: none; }
+
+/* The guide's notice over the page: nothing ticked. */
+.setup-notice {
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  translate: -50% -50%;
+  width: min(360px, calc(100% - 32px));
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  padding: var(--space-4);
+  border: 1px solid var(--line-2);
+  border-radius: var(--radius-l);
+  background: var(--surface-raised);
+  box-shadow: var(--shadow-float);
+}
+.setup-notice[hidden] { display: none; }
+.setup-notice h3 { color: var(--danger); font-size: var(--size-body); }
+
+/* ---- the Filament manager ---- */
+
+#fm-table { min-width: 640px; }
+#fm-table th.check { width: 92px; padding-left: var(--space-4); }
+#fm-table th:nth-child(2) { width: 30%; }
+#fm-table th:nth-child(4) { width: 92px; }
+#fm-table th:nth-child(6) { width: 84px; }
+#fm-table td:nth-child(3), #fm-table td:nth-child(5), #fm-table td:nth-child(6) { color: var(--text-2); }
+#fm-table tbody tr { cursor: default; }
+
+@media (max-width: 760px) {
+  .setup-dialog { width: calc(100vw - 16px); height: calc(100vh - 16px); }
+  .fs-line { grid-template-columns: 1fr; }
+}

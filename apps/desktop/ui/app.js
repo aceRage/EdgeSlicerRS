@@ -821,8 +821,11 @@ async function showSidebar() {
         value: choices.filaments[Math.min(index, choices.filaments.length - 1)],
         modified: Presets.on('filament', index + 1).modified,
       });
+      // At the list's foot, "Add/Remove filaments" opens the Filament manager (PresetComboBoxes.cpp l.1756,
+      // GUI_App.cpp `run_wizard` l.9598).
+      list.append(el('hr'), new Option(t('Add/Remove filaments'), MANAGE_FILAMENTS));
       list.addEventListener('change', filamentChanged);
-      name = listbox(list, { bare: true });
+      name = listbox(list, { bare: true, decorate: decorateAction });
     } else {
       // Cut short where it does not fit, and whole in its tooltip.
       const saved = (project.saved.filaments || [])[index] || 'not named';
@@ -859,8 +862,26 @@ function brightness(colour) {
 
 // What is chosen for a printer (filaments, process, bed type) is kept
 // with that printer by the session, for the next time it is selected.
+// The entry at the foot of each filament list; not a filament.
+const MANAGE_FILAMENTS = '\u0000manage';
+
+// An entry at a list's foot that opens something, with the reference's edit mark.
+function decorateAction(row, option) {
+  if (option.value !== MANAGE_FILAMENTS) return;
+  row.classList.add('lb-action');
+  row.insertAdjacentHTML('afterbegin', '<svg viewBox="0 0 16 16" aria-hidden="true"><path d="M3,12.5h10M4.5,10.5l6.8-6.8l1.5,1.5l-6.8,6.8H4.5Z"/></svg>');
+}
+
 async function filamentChanged(event) {
   const select = event && event.target;
+  if (select && select.value === MANAGE_FILAMENTS) {
+    // The list stays on the filament it was on.
+    const choices = state.project.choices;
+    const slot = Number(select.dataset.filament);
+    select.value = choices.filaments[Math.min(slot - 1, choices.filaments.length - 1)];
+    await Setup.openFilamentManager();
+    return;
+  }
   if (select && select.dataset.filament) {
     // What is set over the preset it leaves is asked about first.
     const slot = Number(select.dataset.filament);
@@ -886,6 +907,7 @@ async function filamentChanged(event) {
 listbox($('process'));
 listbox($('bed'), { bare: true });
 Filaments.init();
+Setup.init();
 $('process').addEventListener('change', () => attempt(async () => {
   const to = $('process').value;
   // What is set over the preset it leaves is asked about first

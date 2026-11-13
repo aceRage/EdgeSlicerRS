@@ -21,6 +21,7 @@ Add fuzzy skin	GUI/Gizmos/GLGizmoFuzzySkin.cpp:47
 All non-solid parts (modifiers) were deleted	GUI/Plater.cpp:16185
 Angular width of one lug, in degrees. It has to share its slice of the bore with the entry channel and the track.	GUI/Gizmos/GLGizmoCut.cpp:7551
 Apply All	GUI/Plater.cpp:3688
+Filament manager	GUI/PresetManagerDialog.cpp:54
 Attached to A	GUI/Gizmos/GLGizmoCut.cpp:8158
 Attached to B	GUI/Gizmos/GLGizmoCut.cpp:8158
 Auto edge placement	GUI/Gizmos/GLGizmoCut.cpp:7618
@@ -595,6 +596,19 @@ a height range
 # "Mesh Boolean" (src/api/edit.rs): the words of the fix to the
 # reference, aceRage/EdgeSlicer#1005, which the pinned C++ has not.
 The boolean operation leaves nothing of the selected parts: they do not overlap, or the tool covers the whole part
+# The guide's filament page and the Filament manager (setup.js,
+# index.html): the words of the reference's web pages (resources/web/
+# guide/22, guide/preset_manager, data/text.js), which are not message ids
+# of its catalog; English in every language here.
+Filament Selection
+At least one filament must be selected.
+Do you want to use default filament ?
+yes
+no
+Search
+Printers
+Source
+Changes are saved at once.
 
 # The menu bar's entries that are not built: what each waits for
 # (src/api/menu.rs), shown as the entry's tooltip.

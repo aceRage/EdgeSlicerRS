@@ -26,6 +26,7 @@ mod preset_files;
 mod presets;
 mod save;
 mod scene;
+mod setup;
 mod ticks;
 
 use std::{
@@ -1111,6 +1112,10 @@ impl Session {
             "preset_transfer" => self.preset_transfer(args),
             "preset_import" => self.preset_import(args),
             "preset_export" => self.preset_export(args),
+            "filament_selection" => self.filament_selection(args),
+            "filament_selection_save" => self.filament_selection_save(args),
+            "filament_manager" => self.filament_manager(args),
+            "filament_enable" => self.filament_enable(args),
 
             "projects" => Ok(lock(&self.state).listing()),
             "project" => {
