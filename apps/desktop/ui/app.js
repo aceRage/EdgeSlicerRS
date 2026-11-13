@@ -685,8 +685,10 @@ const plateKey = (project = state.project) => (project && project.plate !== null
 const presetsByMachine = new Map();
 
 async function presetsOf(vendor, machine) {
-  const key = `${vendor}|${machine}`;
-  if (!presetsByMachine.has(key)) presetsByMachine.set(key, await call('presets', { vendor, machine }));
+  // Each project's lists hold its own presets kept inside it.
+  const project = activeId();
+  const key = `${project}|${vendor}|${machine}`;
+  if (!presetsByMachine.has(key)) presetsByMachine.set(key, await call('presets', { project, vendor, machine }));
   return presetsByMachine.get(key);
 }
 
@@ -820,6 +822,7 @@ async function showSidebar() {
       // A filament past the last chosen prints with the last, as the engine has it;
       // the person's own presets first, "* " before one with something set over it.
       Presets.fillList(list, {
+        inside: lists ? lists.inside_filaments || [] : [],
         user: lists ? lists.user_filaments : [],
         system: offered,
         value: choices.filaments[Math.min(index, choices.filaments.length - 1)],
@@ -840,7 +843,7 @@ async function showSidebar() {
     }
     return Filaments.row(project, index, name);
   }));
-  Filaments.applyAll(project, lists ? [...lists.user_filaments, ...offered] : []);
+  Filaments.applyAll(project, lists ? [...(lists.inside_filaments || []), ...lists.user_filaments, ...offered] : []);
 
   // Process.
   $('process-row').hidden = !fromPresets;
@@ -850,6 +853,7 @@ async function showSidebar() {
   $('process-manage').hidden = !fromPresets;
   if (fromPresets) {
     Presets.fillList($('process'), {
+      inside: lists ? lists.inside_processes || [] : [],
       user: lists ? lists.user_processes : [],
       system: lists ? lists.processes : [],
       value: choices.process,

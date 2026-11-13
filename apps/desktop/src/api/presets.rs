@@ -64,21 +64,26 @@ pub(super) struct Offered {
     pub(super) filaments: Vec<String>,
     pub(super) user_processes: Vec<String>,
     pub(super) user_filaments: Vec<String>,
+    /// The project's presets kept inside it that go with the printer.
+    pub(super) inside_processes: Vec<String>,
+    pub(super) inside_filaments: Vec<String>,
 }
 
 impl Offered {
     /// Every process offered, the person's first as the lists show them.
     pub(super) fn all_processes(&self) -> Vec<&str> {
-        self.user_processes
+        self.inside_processes
             .iter()
+            .chain(&self.user_processes)
             .chain(&self.processes)
             .map(String::as_str)
             .collect()
     }
 
     pub(super) fn all_filaments(&self) -> Vec<&str> {
-        self.user_filaments
+        self.inside_filaments
             .iter()
+            .chain(&self.user_filaments)
             .chain(&self.filaments)
             .map(String::as_str)
             .collect()
@@ -126,6 +131,11 @@ fn kind_of(args: &Value) -> Result<Book, String> {
 }
 
 impl Session {
+    /// Whether Preferences' "Develop mode" is on (`comDevelop`).
+    pub(super) fn develop_mode(&self) -> bool {
+        super::prefs::on(&lock(&self.state).store.data.prefs, "developer_mode")
+    }
+
     /// The person's presets as they stand.
     pub(super) fn users(&self) -> Arc<UserPresets> {
         lock(&self.state).users.presets.clone()
@@ -139,13 +149,58 @@ impl Session {
         kind: Kind,
         name: &str,
     ) -> Result<Settings, String> {
+        self.resolve_in(shelf, kind, name, &[])
+    }
+
+    /// [`Session::resolve_named`], also among a project's presets kept
+    /// inside it, which come after the vendor's and the person's: one of
+    /// a name either has is passed over, as the reference does not load it
+    /// ("Preset already present, not loading", Preset.cpp l.2054). One
+    /// is laid over the preset it inherits; one that inherits nothing is
+    /// its settings alone, as one of the person's that stands alone.
+    pub(super) fn resolve_in(
+        &self,
+        shelf: &Shelf,
+        kind: Kind,
+        name: &str,
+        inside: &[edge_engine::InsidePreset],
+    ) -> Result<Settings, String> {
         let users = self.users();
-        if shelf.knows(kind, name) || users.get(kind, name).is_none() {
+        if shelf.knows(kind, name) {
             return shelf.resolve(kind, name).map_err(|e| e.to_string());
         }
-        users
-            .resolve(kind, name, &|parent| shelf.resolve(kind, parent))
-            .map_err(|e| e.to_string())
+        if users.get(kind, name).is_some() {
+            return users
+                .resolve(kind, name, &|parent| shelf.resolve(kind, parent))
+                .map_err(|e| e.to_string());
+        }
+        let Some(preset) = inside_of(inside, kind, name) else {
+            return shelf.resolve(kind, name).map_err(|e| e.to_string());
+        };
+        let mut resolved = preset.own.clone();
+        resolved.insert("name", edge_config::Value::One(preset.name.clone()));
+        resolved.insert(
+            user::id_key(kind),
+            match kind {
+                Kind::Filament => edge_config::Value::Many(vec![preset.name.clone()]),
+                _ => edge_config::Value::One(preset.name.clone()),
+            },
+        );
+        if let Some(parent) = &preset.inherits {
+            resolved.insert("inherits", edge_config::Value::One(parent.clone()));
+            // A parent inside the project too is not looked for: the
+            // reference's save keeps a project preset on the system or
+            // user preset its own was laid over.
+            let parent = self.resolve_named(shelf, kind, parent)?;
+            let identity = |key: &str| {
+                matches!(
+                    key,
+                    "name" | "inherits" | "instantiation" | "setting_id" | "type" | "from"
+                ) || key == user::id_key(kind)
+            };
+            resolved.inherit(&parent, identity);
+        }
+        Ok(resolved)
     }
 
     /// The presets a project's choices name, found among the vendor's and
@@ -156,10 +211,14 @@ impl Session {
         machine: Option<&str>,
         process: Option<&str>,
         filaments: &[&str],
+        inside: &[edge_engine::InsidePreset],
     ) -> Result<Chosen, String> {
         let shelf = self.shelf(vendor)?;
         let found = |kind, name: &str| -> Result<(String, Settings), String> {
-            Ok((name.to_owned(), self.resolve_named(&shelf, kind, name)?))
+            Ok((
+                name.to_owned(),
+                self.resolve_in(&shelf, kind, name, inside)?,
+            ))
         };
         Ok(Chosen {
             machine: machine.map(|name| found(Kind::Machine, name)).transpose()?,
@@ -184,8 +243,36 @@ impl Session {
             Some(_) => users
                 .system_parent(Kind::Machine, machine)
                 .unwrap_or_else(|| machine.to_owned()),
-            None => machine.to_owned(),
+            None => match self.inside_printer_parent(machine) {
+                Some(parent) if parent != machine => self.system_printer(&parent),
+                _ => machine.to_owned(),
+            },
         }
+    }
+
+    /// The preset a printer kept inside an open project is laid over: the
+    /// project shown first, then the rest in order. Two projects with a
+    /// printer of one name laid over different printers are told apart
+    /// only where the call names its project (the lists and the printer's
+    /// presets), not where a printer is only named.
+    fn inside_printer_parent(&self, machine: &str) -> Option<String> {
+        let state = lock(&self.state);
+        let shown = state.active_index();
+        std::iter::once(&state.projects[shown])
+            .chain(state.projects.iter())
+            .find_map(|project| inside_of(&project.choices.inside, Kind::Machine, machine))
+            .and_then(|preset| preset.inherits.clone())
+    }
+
+    /// Whether a printer is one kept inside a project rather than the
+    /// vendor's or the person's.
+    pub(super) fn is_inside_printer(
+        &self,
+        machine: &str,
+        inside: &[edge_engine::InsidePreset],
+    ) -> bool {
+        !self.is_users(Kind::Machine, machine)
+            && inside_of(inside, Kind::Machine, machine).is_some()
     }
 
     /// A printer preset and every preset of the person's up its chain,
@@ -199,6 +286,15 @@ impl Session {
         while let Some(parent) = users
             .get(Kind::Machine, &at)
             .and_then(|p| p.inherits.clone())
+            .or_else(|| {
+                // A printer kept inside a project stands in for its parent
+                // (Preset.cpp `is_compatible_with_parent_printer`).
+                users
+                    .get(Kind::Machine, &at)
+                    .is_none()
+                    .then(|| self.inside_printer_parent(&at))
+                    .flatten()
+            })
         {
             if chain.contains(&parent) {
                 break;
@@ -217,7 +313,22 @@ impl Session {
     /// system preset it is made from is offered for, as the vendor's own
     /// are listed (by `compatible_printers` alone).
     pub(super) fn fits(&self, shelf: &Shelf, kind: Kind, name: &str, machine: &str) -> bool {
-        let Ok(settings) = self.resolve_named(shelf, kind, name) else {
+        self.fits_in(shelf, kind, name, machine, &[])
+    }
+
+    /// [`Session::fits`] for a preset that may be kept inside the project:
+    /// one with no printer of its own goes where the preset it inherits
+    /// goes ("Use for every printer" unticked, `set_project_preset_printers`
+    /// `FollowParent`); one with an empty list, everywhere.
+    pub(super) fn fits_in(
+        &self,
+        shelf: &Shelf,
+        kind: Kind,
+        name: &str,
+        machine: &str,
+        inside: &[edge_engine::InsidePreset],
+    ) -> bool {
+        let Ok(settings) = self.resolve_in(shelf, kind, name, inside) else {
             return false;
         };
         let chain = self.printer_chain(machine);
@@ -232,12 +343,22 @@ impl Session {
             return true;
         }
         let base = self.system_printer(machine);
-        self.users()
-            .system_parent(kind, name)
-            .is_some_and(|parent| match kind {
-                Kind::Process => shelf.processes_for(&base).contains(&parent.as_str()),
-                _ => shelf.filaments_for(&base).contains(&parent.as_str()),
-            })
+        let parent = match inside_of(inside, kind, name) {
+            Some(preset) if !shelf.knows(kind, name) && !self.is_users(kind, name) => {
+                preset.inherits.as_ref().and_then(|parent| {
+                    if shelf.knows(kind, parent) {
+                        Some(parent.clone())
+                    } else {
+                        self.users().system_parent(kind, parent)
+                    }
+                })
+            }
+            _ => self.users().system_parent(kind, name),
+        };
+        parent.is_some_and(|parent| match kind {
+            Kind::Process => shelf.processes_for(&base).contains(&parent.as_str()),
+            _ => shelf.filaments_for(&base).contains(&parent.as_str()),
+        })
     }
 
     /// What a printer is offered: the vendor's process and filament
@@ -279,20 +400,58 @@ impl Session {
                 .collect(),
             user_processes: mine(Kind::Process),
             user_filaments: mine(Kind::Filament),
+            inside_processes: Vec::new(),
+            inside_filaments: Vec::new(),
         }
+    }
+
+    /// [`Session::offered`] with a project's presets kept inside it that
+    /// go with the printer, "Project-inside presets" in the lists
+    /// (PresetComboBoxes.cpp l.1656, l.1722).
+    pub(super) fn offered_in(
+        &self,
+        shelf: &Shelf,
+        machine: &str,
+        inside: &[edge_engine::InsidePreset],
+    ) -> Offered {
+        let mut offered = self.offered(shelf, machine);
+        let users = self.users();
+        let of = |kind: Kind| -> Vec<String> {
+            inside
+                .iter()
+                .filter(|preset| preset.kind == kind)
+                .filter(|preset| {
+                    !shelf.knows(kind, &preset.name) && users.get(kind, &preset.name).is_none()
+                })
+                .filter(|preset| self.fits_in(shelf, kind, &preset.name, machine, inside))
+                .map(|preset| preset.name.clone())
+                .collect()
+        };
+        offered.inside_processes = of(Kind::Process);
+        offered.inside_filaments = of(Kind::Filament);
+        offered
     }
 
     /// The `presets` call: what a printer is offered, the person's apart.
     pub(super) fn presets_for(&self, args: &Value) -> Result<Value, String> {
         let shelf = self.shelf(needed(args, "vendor")?)?;
         let machine = needed(args, "machine")?;
-        let offered = self.offered(&shelf, machine);
+        let inside = {
+            let state = lock(&self.state);
+            state
+                .target(args)
+                .map(|at| state.projects[at].choices.inside.clone())
+                .unwrap_or_default()
+        };
+        let offered = self.offered_in(&shelf, machine, &inside);
         let (process, filament) = shelf.usual_for(&self.system_printer(machine));
         Ok(json!({
             "processes": offered.processes,
             "filaments": offered.filaments,
             "user_processes": offered.user_processes,
             "user_filaments": offered.user_filaments,
+            "inside_processes": offered.inside_processes,
+            "inside_filaments": offered.inside_filaments,
             "favorite_filaments": self.favorite_filaments(&offered.filaments, &offered.user_filaments),
             "favorite_processes": self.favorite_presets(Kind::Process, &offered.processes, &offered.user_processes),
             // What the printer's own profile usually prints with.
@@ -435,6 +594,47 @@ impl Session {
         }
     }
 
+    /// [`Session::check_name`], also among the presets kept inside the
+    /// project, which the reference's collection holds with the rest: a
+    /// name one of them has is saved over after the same question.
+    #[allow(clippy::too_many_arguments)]
+    pub(super) fn check_name_in(
+        &self,
+        shelf: &Shelf,
+        book: Book,
+        name: &str,
+        current: Option<&str>,
+        rename: bool,
+        machine: Option<&str>,
+        inside: &[edge_engine::InsidePreset],
+    ) -> (Level, Option<String>) {
+        let checked = self.check_name(shelf, book, name, current, rename, machine);
+        let kind = kept::kind(book);
+        if checked.0 != Level::Ok
+            || Some(name) == current
+            || inside_of(inside, kind, name).is_none()
+        {
+            return checked;
+        }
+        let fits = machine.is_none_or(|machine| {
+            book == Book::Printer || self.fits_in(shelf, kind, name, machine, inside)
+        });
+        let mut message = if fits {
+            fill(&tr("Preset \"%1%\" already exists."), &[&name])
+        } else {
+            fill(
+                &tr("Preset \"%1%\" already exists and is incompatible with the current printer."),
+                &[&name],
+            )
+        };
+        if rename {
+            return (Level::Invalid, Some(message));
+        }
+        message.push('\n');
+        message.push_str(&tr("Please note that saving will overwrite this preset."));
+        (Level::Warn, Some(message))
+    }
+
     /// The project's vendor and printer, for a call about its presets.
     fn on_presets(choices: &Choices) -> Result<(String, String), String> {
         match (choices.from_presets, &choices.vendor, &choices.machine) {
@@ -479,15 +679,63 @@ impl Session {
             .get("name")
             .and_then(Value::as_str)
             .map_or_else(|| suggested.clone().unwrap_or_default(), str::to_owned);
-        let (level, message) = self.check_name(
+        let (level, message) = self.check_name_in(
             &shelf,
             book,
             &name,
             current.as_deref(),
             rename,
             Some(&machine),
+            &choices.inside,
         );
+        // Where a preset of that name is: the dialog's "User Preset" /
+        // "Preset Inside Project" follows it and is off; where the preset
+        // saved from is, to start with.
+        let place = |wanted: &str| {
+            if shelf.knows(kind, wanted) {
+                None
+            } else if self.is_users(kind, wanted) {
+                Some("user")
+            } else if inside_of(&choices.inside, kind, wanted).is_some() {
+                Some("inside")
+            } else {
+                None
+            }
+        };
+        let parent = current.as_deref().and_then(|current| {
+            if shelf.knows(kind, current) && !self.is_users(kind, current) {
+                return Some(current.to_owned());
+            }
+            match place(current) {
+                Some("user") => self
+                    .users()
+                    .get(kind, current)
+                    .and_then(|p| p.inherits.clone()),
+                Some(_) => {
+                    inside_of(&choices.inside, kind, current).and_then(|p| p.inherits.clone())
+                }
+                None => None,
+            }
+        });
+        let every_printer = current.as_deref().is_some_and(|current| {
+            place(current) == Some("inside")
+                && inside_of(&choices.inside, kind, current).is_some_and(|preset| {
+                    preset
+                        .own
+                        .texts("compatible_printers")
+                        .is_some_and(|list| list.iter().all(String::is_empty))
+                        && preset
+                            .own
+                            .text("compatible_printers_condition")
+                            .is_some_and(|c| c.trim().is_empty())
+                })
+        });
         Ok(json!({
+            "existing": place(&name),
+            "from": current.as_deref().and_then(place),
+            "parent": parent,
+            "every_printer": every_printer,
+            "develop": self.develop_mode(),
             "kind": book_name(book),
             "name": name,
             "suggested": suggested,
@@ -518,28 +766,48 @@ impl Session {
             )
         };
         let (vendor, machine) = Self::on_presets(&choices)?;
-        let users_dir = lock(&self.state)
-            .users
-            .dir
-            .clone()
-            .ok_or("there is no data folder to keep presets in")?;
         let shelf = self.shelf(&vendor)?;
         let filament = filament_of(args, book, filaments)?;
         let kind = kept::kind(book);
+        let flag = |key: &str| args.get(key).and_then(Value::as_bool) == Some(true);
         let (current, _) = Self::selected(&choices, book, filament);
         let current = current.ok_or("the project has no preset of this kind chosen")?;
-        let (level, message) =
-            self.check_name(&shelf, book, name, Some(&current), false, Some(&machine));
+        let (level, message) = self.check_name_in(
+            &shelf,
+            book,
+            name,
+            Some(&current),
+            false,
+            Some(&machine),
+            &choices.inside,
+        );
         match level {
             Level::Invalid => return Err(message.unwrap_or_default()),
-            Level::Warn if args.get("accept").and_then(Value::as_bool) != Some(true) => {
+            Level::Warn if !flag("accept") => {
                 return Ok(json!({ "saved": false, "ask": message }));
             }
             _ => {}
         }
         let users = self.users();
+        let inside_named = |wanted: &str| {
+            (!shelf.knows(kind, wanted) && users.get(kind, wanted).is_none())
+                .then(|| inside_of(&choices.inside, kind, wanted))
+                .flatten()
+        };
+        // Where it goes: over a preset of that name, where that one is
+        // ("User Preset" or "Preset Inside Project" follows it and cannot
+        // be changed, `SavePresetDialog::Item::update`); else as asked.
+        let to_inside = match (users.get(kind, name), inside_named(name)) {
+            (Some(_), _) => false,
+            (None, Some(_)) => true,
+            (None, None) => flag("inside"),
+        };
+        let users_dir = lock(&self.state).users.dir.clone();
+        if !to_inside && users_dir.is_none() {
+            return Err("there is no data folder to keep presets in".into());
+        }
         // The preset as it stands with what is set over it.
-        let preset = self.resolve_named(&shelf, kind, &current)?;
+        let preset = self.resolve_in(&shelf, kind, &current, &choices.inside)?;
         let own = match book {
             Book::Process => choices.over.clone(),
             Book::Printer => choices.printer_over.clone(),
@@ -550,13 +818,24 @@ impl Session {
                 .unwrap_or_default(),
         };
         let full = kept::with_edits(book, &preset, &own);
-        // What it is laid over: a preset of theirs keeps its parent; one
-        // that stands alone is the parent of a copy of it, and is saved
-        // whole under its own name; a system preset is the parent.
+        // What it is laid over: a preset of theirs (or of the project's)
+        // keeps its parent; one that stands alone is the parent of a copy
+        // of it, and is saved whole under its own name; a system preset
+        // is the parent. "Detach from parent" (develop mode) lays it over
+        // nothing and writes every value (`save_current_preset` with
+        // `detach`).
         let current_user = users.get(kind, &current).cloned();
-        let inherits = match &current_user {
-            Some(mine) if mine.inherits.is_some() => mine.inherits.clone(),
-            Some(_) if name == current => None,
+        let current_inside = inside_named(&current).cloned();
+        let current_parent = match (&current_user, &current_inside) {
+            (Some(mine), _) => Some(mine.inherits.clone()),
+            (None, Some(inside)) => Some(inside.inherits.clone()),
+            (None, None) => None,
+        };
+        let detach = flag("detach");
+        let inherits = match current_parent {
+            _ if detach => None,
+            Some(Some(parent)) => Some(parent),
+            Some(None) if name == current => None,
             _ => Some(current.clone()),
         };
         let parent = inherits
@@ -564,47 +843,101 @@ impl Session {
             .map(|parent| self.resolve_named(&shelf, kind, parent))
             .transpose()?;
         let mut own_values = user::differences(&full, parent.as_ref(), kind);
-        let keep: Vec<String> = own_values
-            .iter()
-            .map(|(key, _)| key.to_owned())
-            .filter(|key| !kept::is_of(book, key))
-            .collect();
-        for key in keep {
-            own_values.remove(&key);
+        // Laid over a parent, what is not among the kind's options is the
+        // parent's to say; laid over nothing, every value goes, the flow
+        // variants' lists among them.
+        if inherits.is_some() {
+            let keep: Vec<String> = own_values
+                .iter()
+                .map(|(key, _)| key.to_owned())
+                .filter(|key| !kept::is_of(book, key))
+                .collect();
+            for key in keep {
+                own_values.remove(&key);
+            }
         }
-        let new = users.get(kind, name).is_none();
-        if book == Book::Filament
-            && new
-            && current_user.is_none()
-            && full
-                .texts("compatible_printers")
-                .is_none_or(|printers| printers.iter().all(String::is_empty))
-        {
-            own_values.insert(
-                "compatible_printers",
-                edge_config::Value::Many(vec![self.system_printer(&machine)]),
-            );
-        }
-        // The id of the preset it is made from, for the reference's cloud.
-        let base_id = match inherits.as_deref() {
-            Some(parent) => match users.get(kind, parent) {
-                Some(mine) => Some(mine.info.setting_id.clone()),
-                None => parent_setting_id(&shelf, kind, parent),
-            },
-            None => None,
-        }
-        .filter(|id| !id.is_empty());
+        let new = users.get(kind, name).is_none() && inside_named(name).is_none();
         let version = current_user
             .as_ref()
             .and_then(|mine| mine.version.clone())
+            .or_else(|| {
+                current_inside
+                    .as_ref()
+                    .and_then(|inside| inside.version.clone())
+            })
             .unwrap_or_else(|| shelf.preset_version());
-        let to_save = ToSave {
-            own: own_values,
-            inherits,
-            version,
-            base_id,
-        };
-        {
+        if to_inside {
+            // "Use for every printer" (process and filament): listed for
+            // every printer, with an empty list and no condition; unticked,
+            // listed where the preset it inherits is (`set_project_preset_printers`).
+            // Not made for the printer it is saved on, as a person's
+            // filament is (Ultra's rule in `save_current_preset`).
+            if book != Book::Printer {
+                if flag("every_printer") {
+                    own_values.insert("compatible_printers", edge_config::Value::Many(Vec::new()));
+                    own_values.insert(
+                        "compatible_printers_condition",
+                        edge_config::Value::One(String::new()),
+                    );
+                } else if inherits.is_some() {
+                    for key in ["compatible_printers", "compatible_printers_condition"] {
+                        let empty = match own_values.get(key) {
+                            Some(edge_config::Value::Many(items)) => {
+                                items.iter().all(String::is_empty)
+                            }
+                            Some(edge_config::Value::One(text)) => text.trim().is_empty(),
+                            None => false,
+                        };
+                        if empty {
+                            own_values.remove(key);
+                        }
+                    }
+                }
+            }
+            let saved = edge_engine::InsidePreset {
+                kind,
+                name: name.to_owned(),
+                inherits: inherits.clone(),
+                version: Some(version),
+                own: own_values,
+            };
+            let mut state = lock(&self.state);
+            let at = state
+                .index_of(id)
+                .ok_or_else(|| format!("there is no project {id}"))?;
+            let inside = &mut state.projects[at].choices.inside;
+            inside.retain(|other| !(other.kind == kind && other.name == name));
+            inside.push(saved);
+        } else {
+            let users_dir = users_dir.unwrap_or_default();
+            if book == Book::Filament
+                && new
+                && current_user.is_none()
+                && !detach
+                && full
+                    .texts("compatible_printers")
+                    .is_none_or(|printers| printers.iter().all(String::is_empty))
+            {
+                own_values.insert(
+                    "compatible_printers",
+                    edge_config::Value::Many(vec![self.system_printer(&machine)]),
+                );
+            }
+            // The id of the preset it is made from, for the reference's cloud.
+            let base_id = match inherits.as_deref() {
+                Some(parent) => match users.get(kind, parent) {
+                    Some(mine) => Some(mine.info.setting_id.clone()),
+                    None => parent_setting_id(&shelf, kind, parent),
+                },
+                None => None,
+            }
+            .filter(|id| !id.is_empty());
+            let to_save = ToSave {
+                own: own_values,
+                inherits,
+                version,
+                base_id,
+            };
             let mut state = lock(&self.state);
             if state.users.dir.as_ref() != Some(&users_dir) {
                 return Err("the data folder changed meanwhile".into());
@@ -659,13 +992,17 @@ impl Session {
         }
         project.choices = choices;
         let detail = project.detail();
-        printers::remember(
-            &mut state,
-            at,
-            &json!({ "process": book == Book::Process, "filaments": book == Book::Filament }),
-        );
-        if book == Book::Printer {
-            remember_printer(&mut state, &vendor, name);
+        // A preset inside the project is not remembered with the printer:
+        // no other project has it.
+        if !to_inside {
+            printers::remember(
+                &mut state,
+                at,
+                &json!({ "process": book == Book::Process, "filaments": book == Book::Filament }),
+            );
+            if book == Book::Printer {
+                remember_printer(&mut state, &vendor, name);
+            }
         }
         let mut answer = detail;
         if let Some(object) = answer.as_object_mut() {
@@ -767,6 +1104,97 @@ impl Session {
         Ok(())
     }
 
+    /// Deleting a preset kept inside the project (Tab.cpp `delete_preset`;
+    /// `Preset::remove_files` leaves the disk alone for one): the usual
+    /// question, then it is gone from the project, and what was on it goes
+    /// to the preset it was laid over, else to what the printer usually
+    /// prints with.
+    fn inside_delete(&self, args: &Value, book: Book, name: &str) -> Result<Value, String> {
+        let kind = kept::kind(book);
+        let (id, choices) = {
+            let state = lock(&self.state);
+            let project = &state.projects[state.target(args)?];
+            (project.id, project.choices.clone())
+        };
+        let Some(preset) = choices
+            .vendor
+            .as_deref()
+            .and_then(|vendor| self.shelf(vendor).ok())
+            .filter(|shelf| !shelf.knows(kind, name))
+            .and_then(|_| inside_of(&choices.inside, kind, name).cloned())
+        else {
+            return Err(tr("System presets cannot be deleted."));
+        };
+        let action = tr("Delete");
+        if args.get("confirm").and_then(Value::as_bool) != Some(true) {
+            return Ok(json!({
+                "deleted": false,
+                "title": fill(&tr("%1% Preset"), &[&action]),
+                "ask": fill(&tr("Are you sure to %1% the selected preset?"), &[&action]),
+            }));
+        }
+        let (vendor, machine) =
+            Self::on_presets(&choices).or_else(|_| match (&choices.vendor, &choices.machine) {
+                (Some(vendor), Some(machine)) => Ok((vendor.clone(), machine.clone())),
+                _ => Err(String::new()),
+            })?;
+        let shelf = self.shelf(&vendor)?;
+        let (usual_process, usual_filament) = shelf.usual_for(&self.system_printer(&machine));
+        // Worked out before the state is held: finding a preset reads it.
+        let parent = preset
+            .inherits
+            .clone()
+            .filter(|parent| self.resolve_named(&shelf, kind, parent).is_ok());
+        let fallback = |usual: Option<&str>| -> Option<String> {
+            parent.clone().or_else(|| usual.map(str::to_owned))
+        };
+        let mut state = lock(&self.state);
+        let at = state
+            .index_of(id)
+            .ok_or_else(|| format!("there is no project {id}"))?;
+        let project = &mut state.projects[at];
+        let mut next = project.choices.clone();
+        next.inside
+            .retain(|other| !(other.kind == kind && other.name == name));
+        match book {
+            Book::Process => {
+                if next.process.as_deref() == Some(name) {
+                    next.process = fallback(usual_process.as_deref());
+                    next.over.clear();
+                }
+            }
+            Book::Filament => {
+                let to = fallback(usual_filament.as_deref());
+                for (slot, chosen) in next.filaments.iter_mut().enumerate() {
+                    if chosen == name {
+                        if let Some(to) = &to {
+                            chosen.clone_from(to);
+                        }
+                        if let Some(own) = next.filament_over.get_mut(slot) {
+                            own.clear();
+                        }
+                    }
+                }
+                tidy_over(&mut next);
+            }
+            Book::Printer => {
+                if next.machine.as_deref() == Some(name) {
+                    next.machine = preset.inherits.clone();
+                    next.printer_over.clear();
+                }
+            }
+        }
+        if !next.settle_as(&project.choices) {
+            project.forget();
+        }
+        project.choices = next;
+        let mut answer = project.detail();
+        if let Some(object) = answer.as_object_mut() {
+            object.insert("deleted".into(), json!(true));
+        }
+        Ok(answer)
+    }
+
     /// `preset_delete`: one of the person's presets taken away, its file
     /// and its `.info` (Tab.cpp `delete_preset`). Refused for a system
     /// preset, and for one that other presets are laid over ("Presets
@@ -780,6 +1208,9 @@ impl Session {
         let kind = kept::kind(book);
         let name = needed(args, "preset")?.to_owned();
         let users = self.users();
+        if users.get(kind, &name).is_none() {
+            return self.inside_delete(args, book, &name);
+        }
         let Some(preset) = users.get(kind, &name) else {
             return Err(tr("System presets cannot be deleted."));
         };
@@ -1344,6 +1775,25 @@ fn parent_setting_id(shelf: &Shelf, kind: Kind, name: &str) -> Option<String> {
         .map(str::to_owned)
 }
 
+/// A project's preset of a kind and name kept inside it, unless the
+/// vendor or the person has one of that name.
+pub(super) fn inside_of<'a>(
+    inside: &'a [edge_engine::InsidePreset],
+    kind: Kind,
+    name: &str,
+) -> Option<&'a edge_engine::InsidePreset> {
+    inside
+        .iter()
+        .find(|preset| preset.kind == kind && preset.name == name)
+}
+
+/// No empty sets of a filament's own after the last with any.
+fn tidy_over(choices: &mut Choices) {
+    while choices.filament_over.last().is_some_and(BTreeMap::is_empty) {
+        choices.filament_over.pop();
+    }
+}
+
 fn book_name(book: Book) -> &'static str {
     match book {
         Book::Process => "process",
@@ -1380,5 +1830,7 @@ fn remember_printer(state: &mut State, vendor: &str, machine: &str) {
     });
 }
 
+#[cfg(test)]
+mod inside_tests;
 #[cfg(test)]
 mod tests;

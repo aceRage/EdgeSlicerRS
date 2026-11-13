@@ -108,6 +108,7 @@ fn a_part_given_its_own_paint_back_is_written_as_it_was() {
                     project,
                     settings: None,
                     presets: false,
+                    inside: None,
                     filaments: 4,
                 },
                 &mut bytes,

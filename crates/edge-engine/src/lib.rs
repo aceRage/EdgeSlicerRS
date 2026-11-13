@@ -47,8 +47,9 @@ use std::{error::Error, fmt};
 
 pub use clock::timestamp;
 pub use edge_3mf::{
-    CustomGcode, CustomItem, CustomKind, CustomMode, CutRecipe, LayerRange, Layout, PaintKind,
-    PartKind, Pictures, RecipeDrawn, RecipeGroove, RecipeKind, RecipeSheet, gcode_md5,
+    CustomGcode, CustomItem, CustomKind, CustomMode, CutRecipe, InsidePreset, InsideUnread,
+    LayerRange, Layout, PaintKind, PartKind, Pictures, RecipeDrawn, RecipeGroove, RecipeKind,
+    RecipeSheet, gcode_md5,
 };
 pub use edge_mesh::Transform;
 /// Stops a mesh boolean under way (a curved cut's preview).

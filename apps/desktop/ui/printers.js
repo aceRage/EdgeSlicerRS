@@ -56,26 +56,37 @@ function showPrinterBlock() {
     if (model && model.vendor && model.model) Object.assign(option.dataset, { vendor: model.vendor, model: model.model });
     return option;
   };
+  const onPreset = selected && selected.source === 'preset';
+  const modified = Presets.on('printer')?.modified ?? false;
+  // The project's own settings as a whole, and its printer presets kept
+  // inside it, each by its name.
+  const insideRows = [];
   if (project.has_settings) {
     const own = selected && selected.source === 'project';
-    groups.push(group(t('Project-inside presets'), [pictured(new Option(listing.project_printer || 'The project names no printer', 'project'), own ? selected : null)]));
+    insideRows.push(pictured(new Option(listing.project_printer || 'The project names no printer', 'project'), own ? selected : null));
     if (own) value = 'project';
   }
-  const onPreset = selected && selected.source === 'preset';
+  (listing.inside || []).forEach((preset, index) => {
+    const on = onPreset && selected.machine === preset.name;
+    const option = pictured(new Option(Presets.label(preset.name, on && modified), `i${index}`), preset);
+    option.title = preset.name;
+    if (on) value = option.value;
+    insideRows.push(option);
+  });
+  if (insideRows.length) groups.push(group(t('Project-inside presets'), insideRows));
   const rows = listing.installed.map((model, index) => {
     const option = pictured(new Option(model.model, `m${index}`), model);
     if (model.brand !== model.vendor || !model.model.startsWith(model.brand)) option.title = model.brand;
-    if (onPreset && selected.vendor === model.vendor && selected.model === model.model) value = option.value;
+    if (onPreset && !selected.inside && selected.vendor === model.vendor && selected.model === model.model) value = option.value;
     return option;
   });
   // A printer the project is on that is not among those added is still
   // the one in force: it is listed while it is.
-  if (onPreset && !selected.added && !selected.user) {
+  if (onPreset && !selected.added && !selected.user && !selected.inside) {
     rows.push(pictured(new Option(selected.model || selected.machine, 'current'), selected));
     value = 'current';
   }
   // A project on its own settings has no printer preset in force.
-  const modified = Presets.on('printer')?.modified ?? false;
   const mine = (listing.user || []).map((preset, index) => {
     const option = pictured(new Option(Presets.label(preset.name, onPreset && selected.machine === preset.name && modified), `u${index}`), preset);
     option.title = preset.name;
@@ -84,7 +95,7 @@ function showPrinterBlock() {
   });
   if (mine.length) groups.push(group(t('User presets'), mine));
   // A system printer in force with something set over it has the mark too.
-  if (modified && onPreset && !selected.user) {
+  if (modified && onPreset && !selected.user && !selected.inside) {
     const row = rows.find((option) => option.value === value);
     if (row) row.text = Presets.label(row.text, true);
   }
@@ -160,15 +171,15 @@ async function printerPicked() {
   } else if (value === 'project') {
     // Its own settings, the bed type among them.
     await setProject({ source: 'project', bed_type: null });
-  } else if (value.startsWith('m') || value.startsWith('u')) {
+  } else if (value.startsWith('m') || value.startsWith('u') || value.startsWith('i')) {
     // What is set over the printer it leaves is asked about first.
     const answer = await Presets.beforeLeaving('printer', 1, select.selectedOptions[0] ? select.selectedOptions[0].label : '');
     if (answer === null) {
       select.value = select.dataset.shown;
       return;
     }
-    if (value.startsWith('u')) {
-      const preset = state.printers.user[Number(value.slice(1))];
+    if (value.startsWith('u') || value.startsWith('i')) {
+      const preset = (value.startsWith('u') ? state.printers.user : state.printers.inside)[Number(value.slice(1))];
       await selectPrinter({ vendor: preset.vendor, machine: preset.name });
     } else {
       const model = state.printers.installed[Number(value.slice(1))];

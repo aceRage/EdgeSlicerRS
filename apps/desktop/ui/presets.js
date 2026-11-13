@@ -29,7 +29,7 @@ const Presets = (() => {
   // favourites among those offered, in order of name, and gives each row
   // the key its star is kept by (PresetComboBoxes.cpp `append_favorite_group`,
   // FavoriteFilaments.hpp `key_for`).
-  function fillList(select, { user = [], system = [], value = null, modified = false, favorites = null, favoritesTitle = null, favKind = 'filament' }) {
+  function fillList(select, { inside = [], user = [], system = [], value = null, modified = false, favorites = null, favoritesTitle = null, favKind = 'filament' }) {
     const keyOf = (name) => (user.includes(name) ? name : name.split('@')[0].trimEnd());
     const group = (title, names) => {
       const node = el('optgroup', { label: title });
@@ -45,12 +45,15 @@ const Presets = (() => {
     };
     const groups = [];
     if (favorites && favorites.length) groups.push(group(favoritesTitle || t('Favorite filaments'), favorites));
+    // The project's own presets kept inside it ("Project-inside presets",
+    // PresetComboBoxes.cpp l.1722), then the person's, then the vendor's.
+    if (inside.length) groups.push(group(t('Project-inside presets'), inside));
     if (user.length) groups.push(group(t('User presets'), user));
     if (system.length) groups.push(group(t('System presets'), system));
-    // What the project is on that neither list holds is still listed.
-    if (value && !user.includes(value) && !system.includes(value)) groups.unshift(new Option(label(value, modified), value));
+    // What the project is on that no list holds is still listed.
+    if (value && !inside.includes(value) && !user.includes(value) && !system.includes(value)) groups.unshift(new Option(label(value, modified), value));
     select.replaceChildren(...groups);
-    select.disabled = user.length + system.length === 0;
+    select.disabled = inside.length + user.length + system.length === 0;
     if (value !== null && value !== undefined) select.value = value;
     select.title = value || '';
   }
@@ -114,6 +117,9 @@ const Presets = (() => {
       return;
     }
     const mine = await isUsers(kind, current.name);
+    // One kept inside the project is deleted from it, never renamed (the
+    // reference's managers rename the person's presets alone).
+    const insideOne = !mine && (state.project.choices.inside || []).some((preset) => preset.kind === kind && preset.name === current.name);
     showMenu(box.left, box.bottom + 4, [
       [fmt(t('Save current %s'), t(TITLES[kind])), () => attempt(() => save(kind, filament))],
       // Only the person's own can be renamed or deleted; for a system
@@ -127,6 +133,7 @@ const Presets = (() => {
         [t('Rename'), () => attempt(() => rename(kind, current.name))],
         [t('Delete this preset'), () => attempt(() => remove(kind, current.name))],
       ] : []),
+      ...(insideOne ? [[t('Delete this preset'), () => attempt(() => remove(kind, current.name))]] : []),
       null,
       [t('Compare presets'), () => attempt(() => compare(kind, current.name, filament))],
     ]);
@@ -150,16 +157,36 @@ const Presets = (() => {
     const caption = el('label', { id: 'pn-label', htmlFor: 'pn-name' });
     const input = el('input', { type: 'text', id: 'pn-name', spellcheck: false, autocomplete: 'off' });
     const message = el('p', { id: 'pn-message', className: 'pn-message', role: 'status' });
+    // Where it is saved (SavePresetDialog.cpp l.108–125): "User Preset" or
+    // "Preset Inside Project", and for a process or filament inside the
+    // project "Use for every printer".
+    const radio = (value, text) => {
+      const input = el('input', { type: 'radio', name: 'pn-where', value });
+      return { input, label: el('label', { className: 'pn-choice' }, input, el('span', { textContent: text })) };
+    };
+    const user = radio('user', t('User Preset'));
+    const inside = radio('inside', t('Preset Inside Project'));
+    const every = el('input', { type: 'checkbox', id: 'pn-every' });
+    const everyTip = t('Only for a preset inside the project: list it for every printer, and keep it selected when you switch printers. Otherwise it is offered only for the printers its parent preset is made for.');
+    const everyLabel = el('label', { className: 'pn-choice', title: everyTip }, every, el('span', { textContent: t('Use for every printer') }));
+    const where = el('fieldset', { className: 'pn-where' }, user.label, inside.label, everyLabel);
+    // "Detach from parent" in develop mode (l.127–181), with the parent's
+    // name, or "Unique preset" when there is none.
+    const detachTip = t('Copies all inherited values from the parent into this preset and removes the parent relationship. Presets compatible only with the parent may become unsupported.');
+    const detach = el('input', { type: 'checkbox', id: 'pn-detach' });
+    const detachLabel = el('label', { className: 'pn-choice', title: detachTip }, detach, el('span', { textContent: t('Detach from parent') }));
+    const parent = el('p', { className: 'pn-parent' });
+    const detachBox = el('div', { className: 'pn-detach' }, detachLabel, parent);
     const ok = el('button', { type: 'submit', className: 'primary', value: 'ok', textContent: t('OK') });
     const cancel = el('button', { type: 'submit', value: 'cancel', textContent: t('Cancel'), formNoValidate: true });
-    const form = el('form', { method: 'dialog' }, title, caption, input, message, el('div', { className: 'row end' }, ok, cancel));
+    const form = el('form', { method: 'dialog' }, title, caption, input, message, where, detachBox, el('div', { className: 'row end' }, ok, cancel));
     const dialog = el('dialog', { id: 'preset-name-dialog', className: 'preset-dialog' }, form);
     dialog.setAttribute('aria-labelledby', 'pn-title');
     form.addEventListener('submit', (event) => {
       dialog.returnValue = event.submitter ? event.submitter.value : 'ok';
     });
     document.body.append(dialog);
-    nameDialog = { dialog, title, caption, input, message, ok };
+    nameDialog = { dialog, title, caption, input, message, ok, where, user: user.input, inside: inside.input, every, everyLabel, detach, detachBox, parent };
     return nameDialog;
   }
 
@@ -173,12 +200,37 @@ const Presets = (() => {
     const base = { project: activeId(), kind, ...(kind === 'filament' ? { filament } : {}), ...(preset ? { preset } : {}), rename: Boolean(rename) };
     const first = await call('preset_check', base);
     nodes.input.value = rename ? preset : first.suggested || '';
+    // Where it goes, to start with where the preset saved from is.
+    let wanted = first.from === 'inside' ? 'inside' : 'user';
+    nodes.where.hidden = Boolean(rename);
+    nodes.everyLabel.hidden = kind === 'printer';
+    nodes.every.checked = Boolean(first.every_printer);
+    nodes.detachBox.hidden = Boolean(rename) || !first.develop;
+    nodes.detach.checked = false;
+    nodes.detach.disabled = !first.parent;
+    nodes.detach.parentElement.classList.toggle('off', !first.parent);
+    nodes.parent.textContent = first.parent || t('Unique preset');
+    nodes.parent.title = first.parent ? t('Parent preset') : t('This preset does not inherit from another preset.');
+    const showWhere = (existing) => {
+      // Over a preset of that name, where that one is, and not to be changed.
+      const at = existing || wanted;
+      nodes.user.checked = at === 'user';
+      nodes.inside.checked = at === 'inside';
+      nodes.user.disabled = Boolean(existing);
+      nodes.inside.disabled = Boolean(existing);
+      nodes.every.disabled = at !== 'inside';
+    };
+    nodes.user.onchange = () => { wanted = 'user'; showWhere(null); };
+    nodes.inside.onchange = () => { wanted = 'inside'; showWhere(null); };
     let level = 'ok';
     let turn = 0;
+    let existing = null;
     const check = async () => {
       const mine = ++turn;
       const answer = await call('preset_check', { ...base, name: nodes.input.value });
       if (mine !== turn) return;
+      existing = answer.existing;
+      showWhere(existing);
       level = answer.level;
       nodes.message.textContent = answer.message || '';
       nodes.message.className = `pn-message ${answer.level}`;
@@ -191,7 +243,13 @@ const Presets = (() => {
     if (!(await promise)) return null;
     await check();
     if (level === 'invalid') return null;
-    return { name: nodes.input.value, level };
+    return {
+      name: nodes.input.value,
+      level,
+      inside: nodes.inside.checked,
+      every_printer: nodes.inside.checked && kind !== 'printer' && nodes.every.checked,
+      detach: !nodes.detachBox.hidden && nodes.detach.checked,
+    };
   }
 
   async function save(kind, filament = 1) {
@@ -210,6 +268,9 @@ const Presets = (() => {
       name: answer.name,
       // The dialog said it saves over the preset of that name.
       accept: answer.level === 'warn',
+      inside: answer.inside,
+      every_printer: answer.every_printer,
+      detach: answer.detach,
     });
     if (!project.saved) return false;
     await shown(project);

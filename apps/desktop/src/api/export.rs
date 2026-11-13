@@ -247,8 +247,9 @@ impl Session {
             });
         }
         let shown_plate = if all { None } else { Some(plate.unwrap_or(1)) };
-        let saved = file
-            .model
+        let mut model = file.model.clone();
+        model.set_inside(choices.inside.clone());
+        let saved = model
             .save_sliced(&path, &saving, &parts, shown_plate, pictures)
             .map_err(|error| error.to_string())?;
         Ok(json!({

@@ -147,6 +147,10 @@ struct Project {
     failures: BTreeMap<u32, String>,
     /// What stands on each plate looked at, seen from above.
     footprints: HashMap<u32, Arc<Vec<Footprint>>>,
+    /// The filament colours and flushing volumes kept with the printer it
+    /// first got, for a model read later that has no settings of its own
+    /// (PresetBundle.cpp `load_selections`): colours, matrix, vector.
+    remembered: Option<printers::Lists>,
 }
 
 /// A project's model as it stands at one moment: as it was opened, or as
@@ -186,6 +190,15 @@ impl File {
     }
 }
 
+/// The word a kind of preset goes by in the calls.
+fn kind_word(kind: edge_config::Kind) -> &'static str {
+    match kind {
+        edge_config::Kind::Process => "process",
+        edge_config::Kind::Filament => "filament",
+        _ => "printer",
+    }
+}
+
 /// What a project is sliced with, as chosen in its sidebar.
 #[derive(Clone, Debug, Default, PartialEq)]
 struct Choices {
@@ -206,6 +219,10 @@ struct Choices {
     /// The printer settings set over its preset; an extruder's own as
     /// `key#n`, n from 0.
     printer_over: BTreeMap<String, String>,
+    /// The presets kept inside the project ("Preset Inside Project"):
+    /// read from its file, saved here, written with it. Each project has
+    /// its own; they are found after the vendor's and the person's.
+    inside: Vec<edge_engine::InsidePreset>,
 }
 
 impl Choices {
@@ -248,6 +265,11 @@ impl Choices {
             "over": self.over,
             "filament_over": self.filament_over,
             "printer_over": self.printer_over,
+            "inside": self.inside.iter().map(|preset| json!({
+                "kind": kind_word(preset.kind),
+                "name": preset.name,
+                "inherits": preset.inherits,
+            })).collect::<Vec<_>>(),
         })
     }
 }
@@ -549,6 +571,7 @@ impl Project {
             results: BTreeMap::new(),
             failures: BTreeMap::new(),
             footprints: HashMap::new(),
+            remembered: None,
         }
     }
 
@@ -565,7 +588,13 @@ impl Project {
 
     /// New, empty and untouched: opening a file takes its place.
     fn blank(&self) -> bool {
-        self.file.is_none() && !self.dirty()
+        // An empty model that only took what was kept with its printer
+        // (its colours) is still empty.
+        let empty = self
+            .file
+            .as_ref()
+            .is_none_or(|file| file.path.is_none() && file.model.objects().is_empty());
+        empty && !self.dirty()
     }
 
     fn slicing(&self) -> bool {
@@ -599,6 +628,27 @@ impl Project {
             .or(file.plates.first())
             .map(|plate| plate.id);
         self.choices.from_presets = file.settings.is_none();
+        // The presets the file keeps inside it are this project's alone
+        // (PresetBundle.cpp `load_project_embedded_presets`); those of the
+        // project it replaces go (`reset_project_embedded_presets`).
+        self.choices.inside = file.model.inside_presets().0;
+        // A model without settings of its own takes the colours and
+        // flushing volumes kept with the printer, as the reference's
+        // project settings hold them when a model is added.
+        let file = match &self.remembered {
+            Some(lists) => {
+                let mut model = file.model.clone();
+                if lists.give(&mut model) {
+                    Arc::new(File {
+                        path: file.path.clone(),
+                        ..File::of(model)
+                    })
+                } else {
+                    file
+                }
+            }
+            None => file,
+        };
         // A project's own bed type is in force until another is chosen
         // for it: the one that went with the printer the empty project
         // was on is not a choice made for this file.
@@ -825,8 +875,14 @@ impl State {
             ..Choices::default()
         };
         project.baseline = project.choices.clone();
+        let machine = project.choices.machine.clone();
         self.active = project.id;
         self.projects.insert(from + 1, project);
+        // A new project starts with what was kept with its printer, as the
+        // reference's project settings do.
+        if let Some(machine) = machine {
+            printers::give_remembered(self, from + 1, &machine);
+        }
         from + 1
     }
 
@@ -1722,7 +1778,9 @@ impl Session {
         };
         // A name that is not among the vendor's is no printer yet: it is
         // said when slicing is asked for.
-        let chosen = self.choose_presets(vendor, Some(machine), None, &[]).ok();
+        let chosen = self
+            .choose_presets(vendor, Some(machine), None, &[], &choices.inside)
+            .ok();
         Ok(chosen
             .and_then(|chosen| chosen.machine)
             .map(|(_, settings)| ("preset", Arc::new(settings))))
@@ -1743,7 +1801,7 @@ impl Session {
         } else {
             match (&choices.vendor, &choices.process) {
                 (Some(vendor), Some(process)) => self
-                    .choose_presets(vendor, None, Some(process), &[])
+                    .choose_presets(vendor, None, Some(process), &[], &choices.inside)
                     .ok()
                     .and_then(|chosen| chosen.process)
                     .map(|(_, settings)| Arc::new(settings)),

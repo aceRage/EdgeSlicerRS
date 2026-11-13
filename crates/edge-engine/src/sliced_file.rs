@@ -479,6 +479,7 @@ impl Model {
             project: &project,
             settings: text,
             presets: saving.presets(),
+            inside: self.inside.as_deref().map(Vec::as_slice),
             filaments,
         };
         let written = edge_3mf::write_sliced(&save, &file, path)

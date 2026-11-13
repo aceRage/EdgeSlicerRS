@@ -38,6 +38,7 @@ use zip::{CompressionMethod, DateTime, ZipWriter, write::SimpleFileOptions};
 
 use crate::{
     Error, Extras, Object, Part, PartKind, Plate, Project,
+    inside::InsidePreset,
     kept::{self, Carry, Entry, Kept, Left, ObjectKept, Picture},
     sliced::{self, SlicedFile, SlicedPlate},
 };
@@ -78,6 +79,10 @@ pub struct Save<'a> {
     /// Whether the presets the file carried go with it: only when the
     /// settings written are the file's own.
     pub presets: bool,
+    /// The presets kept inside the project, written in place of those
+    /// the file carried (`presets` then does not count); none to leave
+    /// the file's as `presets` says.
+    pub inside: Option<&'a [InsidePreset]>,
     /// How many filaments the settings have, for each plate's
     /// `filament_maps`.
     pub filaments: usize,
@@ -1157,13 +1162,27 @@ fn package<W: Write + Seek>(save: &Save<'_>, out: W, mode: Mode<'_>) -> Result<W
         zip.add(PROJECT_SETTINGS, settings.as_bytes())?;
     }
 
+    // The presets kept inside the project (bbs_3mf.cpp
+    // `_add_project_embedded_presets_to_archive`, after the project's
+    // settings).
+    if let Some(inside) = save.inside {
+        for (entry, bytes) in crate::inside::inside_entries(inside) {
+            zip.add(&entry, &bytes)?;
+        }
+    }
+
     // The file's own entries, as they were.
     let holds = kept.is_some_and(|kept| by_place_holds(project, kept));
     if let Some(kept) = kept {
         for file in &kept.files {
             let wanted = match file.carry {
                 Carry::AsIs => true,
-                Carry::Preset => save.presets,
+                // With the project's presets written above, an entry that
+                // could not be read as one goes as it was, where its name
+                // is free.
+                Carry::Preset => save.inside.map_or(save.presets, |_| {
+                    InsidePreset::read(&file.name, &file.bytes).is_err()
+                }),
                 Carry::ByObjectPlace => holds && sliced.is_none(),
             };
             if wanted && file.name != PROJECT_SETTINGS && !zip.entries.contains(&file.name) {

@@ -2192,3 +2192,78 @@ fn the_process_manager_hides_stars_sorts_and_renames() {
         "Stronger walls"
     );
 }
+
+#[test]
+fn the_profiles_custom_printers_stay_templates_beside_ones_own() {
+    let dir = tempfile::tempdir().unwrap();
+    // Two printers of one's own that stand alone, as "Create Printer"
+    // makes them: one of a model of its own, one named as the profiles'
+    // Generic Klipper Printer, with a nozzle that model lacks and one it has.
+    let base = user_dir(dir.path()).join("machine").join("base");
+    std::fs::create_dir_all(&base).unwrap();
+    for (name, model, variant) in [
+        ("Shed Box 0.4 nozzle", "Shed Box", "0.4"),
+        ("My Klipper 0.5 nozzle", "Generic Klipper Printer", "0.5"),
+        ("My Klipper 0.4 nozzle", "Generic Klipper Printer", "0.4"),
+    ] {
+        let text = format!(
+            "{{\n    \"from\": \"User\",\n    \"inherits\": \"\",\n    \"name\": \"{name}\",\n    \"printer_model\": \"{model}\",\n    \"printer_settings_id\": \"{name}\",\n    \"printer_variant\": \"{variant}\",\n    \"nozzle_diameter\": [\n        \"{variant}\"\n    ],\n    \"version\": \"2.3.3.14\"\n}}\n"
+        );
+        std::fs::write(base.join(format!("{name}.json")), text).unwrap();
+    }
+    let session = session(dir.path());
+    let models = strings(
+        &ask(
+            &session,
+            "create_printer_models",
+            json!({ "vendor": "Custom", "nozzle": "0.4 mm" }),
+        )["models"],
+    );
+    // Every one of the profiles' Custom printers is still offered.
+    for generic in [
+        "Generic Klipper Printer",
+        "Generic Marlin Printer",
+        "Generic RRF Printer",
+        "Generic Repetier Printer",
+        "Generic ToolChanger Printer",
+    ] {
+        assert!(
+            models.contains(&format!("{generic} @ 0.4 nozzle")),
+            "{generic}: {models:?}"
+        );
+    }
+    // One's own model beside them; the same-named one gains only the
+    // nozzle it lacked, listed once.
+    assert!(
+        models.contains(&"Shed Box @ 0.4 nozzle".to_owned()),
+        "{models:?}"
+    );
+    assert!(models.contains(&"Generic Klipper Printer @ 0.5 nozzle".to_owned()));
+    assert_eq!(
+        models
+            .iter()
+            .filter(|model| *model == "Generic Klipper Printer @ 0.4 nozzle")
+            .count(),
+        1
+    );
+    // A nozzle the profiles have is made from their printer; the one it
+    // lacked, from one's own.
+    assert_eq!(
+        session
+            .template_printer("Custom", "Generic Klipper Printer @ 0.4 nozzle")
+            .unwrap(),
+        "MyKlipper 0.4 nozzle"
+    );
+    assert_eq!(
+        session
+            .template_printer("Custom", "Generic Klipper Printer @ 0.5 nozzle")
+            .unwrap(),
+        "My Klipper 0.5 nozzle"
+    );
+    assert_eq!(
+        session
+            .template_printer("Custom", "Shed Box @ 0.4 nozzle")
+            .unwrap(),
+        "Shed Box 0.4 nozzle"
+    );
+}

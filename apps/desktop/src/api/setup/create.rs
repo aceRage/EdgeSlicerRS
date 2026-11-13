@@ -374,7 +374,7 @@ impl Session {
             nozzle_number(nozzle_of(text(args, "nozzle").unwrap_or("0.4 mm"))).unwrap_or(0.4);
         let mut models: Vec<edge_engine::PrinterModel> = models.to_vec();
         if vendor == CUSTOM_VENDOR {
-            models.extend(self.custom_models());
+            add_custom_models(&mut models, self.custom_models());
         }
         let listed = by_nearest_nozzle(&models, nozzle);
         if listed.is_empty() {
@@ -386,11 +386,28 @@ impl Session {
     /// The system printer preset of a model and nozzle of a vendor, by
     /// the dialog's "<model> @ <nozzle> nozzle"
     /// (`find_system_preset_by_model_and_variant`).
-    fn template_printer(&self, vendor: &str, choice: &str) -> Result<String, String> {
+    pub(in crate::api) fn template_printer(
+        &self,
+        vendor: &str,
+        choice: &str,
+    ) -> Result<String, String> {
         let (name, variant) = model_and_variant(choice)
             .ok_or_else(|| tr("The nozzle diameter was not found, please reselect."))?;
+        let models = self
+            .models_of(vendor)
+            .map_err(|_| tr("Preset path was not found, please reselect vendor."))?;
+        let system = models
+            .iter()
+            .filter(|model| model.name == name)
+            .flat_map(|model| model.machines.iter())
+            .find(|preset| preset.variant == variant)
+            .map(|preset| preset.name.clone());
+        if let Some(system) = system {
+            return Ok(system);
+        }
         // One of the person's printers that stands alone, under "Custom"
-        // (`find_custom_preset_by_model_and_variant`).
+        // (`find_custom_preset_by_model_and_variant`): a nozzle the
+        // profiles' own model of that name lacks, or a model of its own.
         if vendor == CUSTOM_VENDOR {
             let users = self.users();
             if let Some(mine) = users.of(Kind::Machine).find(|preset| {
@@ -401,16 +418,7 @@ impl Session {
                 return Ok(mine.name.clone());
             }
         }
-        let models = self
-            .models_of(vendor)
-            .map_err(|_| tr("Preset path was not found, please reselect vendor."))?;
-        models
-            .iter()
-            .filter(|model| model.name == name)
-            .flat_map(|model| model.machines.iter())
-            .find(|preset| preset.variant == variant)
-            .map(|preset| preset.name.clone())
-            .ok_or_else(|| tr("The printer preset was not found, please reselect."))
+        Err(tr("The printer preset was not found, please reselect."))
     }
 
     /// `create_printer_presets`: the filament and process presets the
@@ -1751,10 +1759,13 @@ const CUSTOM_VENDOR: &str = "Custom";
 impl Session {
     /// The person's printers that stand alone, as models of "Custom"
     /// (PresetBundle.cpp `get_custom_vendor_models`): each `printer_model`
-    /// with the `printer_variant`s it has. The reference puts them in the
-    /// vendors' map under the key of the profiles' own "Custom" vendor,
-    /// which they then replace (UI_PARITY section 8, errors); here they
-    /// are offered beside its models.
+    /// with the `printer_variant`s it has. The pinned reference stores
+    /// them as a vendor of their own under the key "Custom", which
+    /// replaces the profiles' own "Custom" vendor (Generic Klipper,
+    /// Marlin, RRF, Repetier and ToolChanger printers): with one printer
+    /// of one's own those can no longer be templates (UI_PARITY section 8,
+    /// errors; fix aceRage/EdgeSlicer#1028). Here they are added to that
+    /// vendor ([`add_custom_models`]).
     fn custom_models(&self) -> Vec<edge_engine::PrinterModel> {
         let users = self.users();
         let mut models: Vec<edge_engine::PrinterModel> = Vec::new();
@@ -1789,6 +1800,28 @@ impl Session {
             }
         }
         models
+    }
+}
+
+/// The person's own models added to the profiles' "Custom" vendor, as
+/// the fix of the reference does (aceRage/EdgeSlicer#1028): a model of a
+/// name the vendor has gains only the nozzles it lacks; another is added
+/// after the vendor's.
+fn add_custom_models(
+    models: &mut Vec<edge_engine::PrinterModel>,
+    own: Vec<edge_engine::PrinterModel>,
+) {
+    for mine in own {
+        match models.iter_mut().find(|model| model.name == mine.name) {
+            Some(model) => {
+                for variant in mine.variants {
+                    if !model.variants.contains(&variant) {
+                        model.variants.push(variant);
+                    }
+                }
+            }
+            None => models.push(mine),
+        }
     }
 }
 
