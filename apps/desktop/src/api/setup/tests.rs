@@ -1,3 +1,4 @@
+use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
 use super::*;
@@ -1329,4 +1330,120 @@ fn the_managers_temperatures_are_the_first_members_for_the_plate_in_force() {
     let mut ordered = system.clone();
     ordered.sort_by(|a, b| super::less_name(&a.0, &b.0).then_with(|| super::less_name(&a.1, &b.1)));
     assert_eq!(system, ordered);
+}
+
+#[test]
+fn the_manager_sorts_and_filters_as_its_table_does() {
+    let dir = tempfile::tempdir().unwrap();
+    let session = session(dir.path());
+    ask(&session, "printer_select", json!({ "initial": true }));
+    ask(
+        &session,
+        "settings_set",
+        json!({ "kind": "filament", "filament": 1, "key": "nozzle_temperature", "value": 212 }),
+    );
+    ask(
+        &session,
+        "preset_save",
+        json!({ "kind": "filament", "filament": 1, "name": "My PLA" }),
+    );
+    let view = |args: Value| -> (Vec<String>, Value) {
+        let answer = ask(&session, "filament_manager", args);
+        let rows: BTreeMap<String, Value> = answer["rows"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|row| (row["key"].as_str().unwrap().to_owned(), row.clone()))
+            .collect();
+        (strings(&answer["view"]), json!(rows))
+    };
+    // No sort: as given, the vendors' first, the person's last.
+    let (given, rows) = view(json!({}));
+    assert_eq!(given.last().unwrap(), "u|My PLA");
+    let name = |key: &str| rows[key]["name"].as_str().unwrap().to_owned();
+    // By name, up and down.
+    let (up, _) = view(json!({ "sort": { "key": "name", "dir": 1 } }));
+    let names: Vec<String> = up.iter().map(|key| name(key)).collect();
+    let mut sorted = names.clone();
+    sorted.sort_by(|a, b| super::natural(a, b));
+    assert_eq!(names, sorted);
+    let (down, _) = view(json!({ "sort": { "key": "name", "dir": -1 } }));
+    let mut reversed = up.clone();
+    reversed.reverse();
+    let down_names: Vec<String> = down.iter().map(|key| name(key)).collect();
+    let reversed_names: Vec<String> = reversed.iter().map(|key| name(key)).collect();
+    assert_eq!(down_names, reversed_names);
+    // By nozzle temperature: rising, unknown values last either way.
+    for dir in [1, -1] {
+        let (order, _) = view(json!({ "sort": { "key": "nozzle_t", "dir": dir } }));
+        let temps: Vec<Option<f64>> = order
+            .iter()
+            .map(|key| rows[key.as_str()]["nozzle_t"].as_f64())
+            .collect();
+        let known: Vec<f64> = temps.iter().map_while(|t| *t).collect();
+        assert!(
+            temps[known.len()..].iter().all(Option::is_none),
+            "unknown last"
+        );
+        assert!(
+            known
+                .windows(2)
+                .all(|w| if dir == 1 { w[0] <= w[1] } else { w[0] >= w[1] })
+        );
+    }
+    // Each filter alone.
+    let (users, _) = view(json!({ "filters": { "source": { "exclude": ["System"] } } }));
+    assert_eq!(users, vec!["u|My PLA".to_owned()]);
+    let (petg, _) = view(json!({ "filters": { "type": { "exclude": [] } , "name": "petg" } }));
+    assert!(
+        !petg.is_empty()
+            && petg
+                .iter()
+                .all(|key| name(key).to_lowercase().contains("petg"))
+    );
+    let (hot, _) = view(json!({ "filters": { "nozzle_t": { "min": 240 } } }));
+    assert!(
+        !hot.is_empty()
+            && hot
+                .iter()
+                .all(|key| rows[key.as_str()]["nozzle_t"].as_f64().unwrap() >= 240.0)
+    );
+    let answer = ask(&session, "filament_manager", json!({}));
+    let vendors = strings(&answer["values"]["vendor"]);
+    assert!(vendors.contains(&"Generic".to_owned()));
+    let others: Vec<String> = vendors
+        .iter()
+        .filter(|v| *v != "Generic")
+        .cloned()
+        .collect();
+    let (generic, _) = view(json!({ "filters": { "vendor": { "exclude": others } } }));
+    assert!(
+        !generic.is_empty()
+            && generic
+                .iter()
+                .all(|key| rows[key.as_str()]["vendor"] == "Generic")
+    );
+    let (stars, _) = view(json!({ "filters": { "star": { "exclude": ["no"] } } }));
+    assert!(stars.is_empty(), "no favourite yet");
+    // The printer list puts the project's printer first.
+    assert_eq!(answer["values"]["printers"][0], U1);
+    let (on_u1, _) = view(
+        json!({ "filters": { "printers": { "exclude": strings(&answer["values"]["printers"]).into_iter().filter(|p| p != U1).collect::<Vec<_>>() } } }),
+    );
+    assert!(
+        on_u1
+            .iter()
+            .all(|key| strings(&rows[key.as_str()]["printers"]).contains(&U1.to_owned()))
+    );
+    // A filter with the search: both hold.
+    let (both, _) = view(
+        json!({ "search": "pla", "filters": { "vendor": { "exclude": vendors.iter().filter(|v| *v != "Generic").cloned().collect::<Vec<_>>() } } }),
+    );
+    assert!(!both.is_empty());
+    for key in &both {
+        let row = &rows[key.as_str()];
+        assert_eq!(row["vendor"], "Generic");
+        assert!(row.to_string().to_lowercase().contains("pla"));
+    }
+    assert!(both.len() < generic.len());
 }

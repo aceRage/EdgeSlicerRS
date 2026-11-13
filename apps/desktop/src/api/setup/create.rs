@@ -26,6 +26,7 @@ use super::super::{
     lock, needed, printers, text,
 };
 use super::lists::{FILAMENT_VENDORS, NOZZLES, PRINTER_MODELS, PRINTER_VENDORS};
+use super::natural;
 
 /// The folder the reference keeps its printer templates in, beside its
 /// profiles (Preset.hpp `PRESET_PROFILES_TEMOLATE_DIR`), and the vendor
@@ -951,36 +952,6 @@ fn printer_base(name: &str) -> (String, String) {
         collapsed
     };
     (base, nozzle)
-}
-
-/// The reference's natural order without regard to case, digits by value
-/// (`natural_less_nocase`), near enough for its lists: by the text in
-/// lower case with each run of digits compared as a number.
-fn natural(a: &str, b: &str) -> std::cmp::Ordering {
-    let parts = |text: &str| -> Vec<(bool, String)> {
-        let mut out: Vec<(bool, String)> = Vec::new();
-        for c in text.to_lowercase().chars() {
-            let digit = c.is_ascii_digit();
-            match out.last_mut() {
-                Some((was, run)) if *was == digit => run.push(c),
-                _ => out.push((digit, c.to_string())),
-            }
-        }
-        out
-    };
-    let (x, y) = (parts(a), parts(b));
-    for ((dx, px), (dy, py)) in x.iter().zip(&y) {
-        let order = if *dx && *dy {
-            let (nx, ny) = (px.trim_start_matches('0'), py.trim_start_matches('0'));
-            nx.len().cmp(&ny.len()).then_with(|| nx.cmp(ny))
-        } else {
-            px.cmp(py)
-        };
-        if order != std::cmp::Ordering::Equal {
-            return order;
-        }
-    }
-    x.len().cmp(&y.len())
 }
 
 impl Session {

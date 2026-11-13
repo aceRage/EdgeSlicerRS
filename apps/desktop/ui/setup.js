@@ -144,7 +144,7 @@ const Setup = (() => {
 
   // ---- the Filament manager ----
 
-  const fm = { rows: [], search: '', pending: false };
+  const fm = { rows: [], view: [], values: {}, search: '', sort: { key: null, dir: 1 }, filters: {}, pop: null, current: null };
   const STAR = '<svg viewBox="0 0 16 16" aria-hidden="true"><path d="M8 1.4l1.95 4.1 4.45.55-3.27 3.08.84 4.42L8 11.4l-3.97 2.15.84-4.42L1.6 6.05l4.45-.55z"/></svg>';
 
   // The values as preset_manager.js shows them: whole degrees, a date of the system's, "—" when unknown.
@@ -180,18 +180,183 @@ const Setup = (() => {
       cell: (row) => [fmDate(row.mtime), row.mtime === null && row.version ? `Vendor bundle ${row.version}` : ''] },
   ];
 
+  // The column sorted by (data_table.js `cycleSort`: up, down, then none; not kept between openings)
+  // and the filters of the columns, applied by the session (`filament_manager`).
+  function fmArgs(more = {}) {
+    return { project: activeId(), search: fm.search, sort: fm.sort, filters: fm.filters, ...more };
+  }
+  function fmActive(column) {
+    const filter = fm.filters[column.key];
+    if (!filter) return false;
+    if (column.filter === 'set') return (filter.exclude || []).length > 0;
+    if (column.filter === 'text') return Boolean(filter);
+    return filter.min !== null || filter.max !== null;
+  }
+  // What a list filter's value is called (preset_manager.js `setLabel`).
+  function fmLabel(column, value) {
+    if (column.key === 'checked') return value === 'yes' ? t('Enabled') : 'Not enabled';
+    if (column.key === 'star') return value === 'yes' ? 'Favourite' : 'Not favourite';
+    if (column.key === 'source') return value === 'User' ? t('User') : 'System';
+    if (column.key === 'printers' && value && value === fm.current) return `${value} (current)`;
+    return value === '' ? '—' : value;
+  }
+
   function fmHead() {
     $('fm-head').replaceChildren(...FM_COLUMNS.map((column) => {
-      const cell = el('th', { className: column.cls || '', textContent: column.label() });
-      if (column.tip) cell.title = column.tip;
+      const cell = el('th', { className: column.cls || '' });
+      const sorting = fm.sort.key === column.sort ? fm.sort.dir : 0;
+      cell.setAttribute('aria-sort', sorting > 0 ? 'ascending' : sorting < 0 ? 'descending' : 'none');
+      const title = el('button', { type: 'button', className: 'th-sort', title: column.tip ? `${column.tip}. Click to sort` : 'Click to sort' },
+        column.label(), el('span', { className: 'th-way', textContent: sorting > 0 ? ' ▲' : sorting < 0 ? ' ▼' : '' }));
+      title.addEventListener('click', () => attempt(() => {
+        const next = fm.sort.key !== column.sort ? 1 : fm.sort.dir === 1 ? -1 : 0;
+        fm.sort = next ? { key: column.sort, dir: next } : { key: null, dir: 1 };
+        return fmLoad();
+      }));
+      cell.append(title);
+      if (column.filter) {
+        const funnel = el('button', { type: 'button', className: `th-filter${fmActive(column) ? ' on' : ''}`, title: `Filter ${column.label()}` });
+        funnel.setAttribute('aria-label', `Filter ${column.label()}`);
+        funnel.innerHTML = '<svg viewBox="0 0 12 12" aria-hidden="true"><path d="M1,1.5h10L7.2,6.2v4.3L4.8,9.3V6.2Z"/></svg>';
+        funnel.addEventListener('click', (event) => { event.stopPropagation(); fmFilter(column, funnel); });
+        cell.append(funnel);
+      }
       return cell;
     }));
   }
 
-  function fmMatches(row) {
-    const words = fm.search.toLowerCase().match(/\S+/g) || [];
-    const hay = `${row.name}\u0000${row.vendor}\u0000${row.type}\u0000${row.printers.join('\u0000')}`.toLowerCase();
-    return words.every((word) => hay.includes(word));
+  function fmClosePop() {
+    $('fm-pop').hidden = true;
+    $('fm-pop').replaceChildren();
+    fm.pop = null;
+  }
+
+  // A column's funnel (data_table.js): the values to show, a text the name contains, or the least and most.
+  function fmFilter(column, anchor) {
+    if (fm.pop === column.key) { fmClosePop(); return; }
+    const pop = $('fm-pop');
+    const apply = (filter) => attempt(() => {
+      if (filter === null) delete fm.filters[column.key]; else fm.filters[column.key] = filter;
+      fmClosePop();
+      return fmLoad();
+    });
+    const ok = el('button', { type: 'button', className: 'primary', textContent: t('OK') });
+    const parts = [el('h3', { textContent: `Filter ${column.label()}` })];
+    if (column.filter === 'set') {
+      const values = fm.values[column.key] || [];
+      const now = new Set((fm.filters[column.key] || {}).exclude || []);
+      const list = el('div', { className: 'check-list' }, ...values.map((value) => {
+        const box = el('input', { type: 'checkbox', checked: !now.has(value) });
+        box.dataset.value = value;
+        return el('label', {}, box, fmLabel(column, value));
+      }));
+      if (['vendor', 'type', 'printers'].includes(column.key)) {
+        const find = el('input', { type: 'search', placeholder: 'Find…' });
+        find.addEventListener('input', () => {
+          const wanted = find.value.trim().toLowerCase();
+          for (const label of list.children) label.hidden = !label.textContent.toLowerCase().includes(wanted);
+        });
+        parts.push(find);
+      }
+      const every = (on) => () => { for (const label of list.children) if (!label.hidden) label.querySelector('input').checked = on; };
+      const all = el('button', { type: 'button', className: 'link', textContent: 'Select all' });
+      const none = el('button', { type: 'button', className: 'link', textContent: 'Select none' });
+      all.addEventListener('click', every(true));
+      none.addEventListener('click', every(false));
+      ok.addEventListener('click', () => {
+        const exclude = [...list.querySelectorAll('input')].filter((box) => !box.checked).map((box) => box.dataset.value);
+        apply(exclude.length ? { exclude } : null);
+      });
+      parts.push(el('div', { className: 'row' }, all, none), list);
+    } else if (column.filter === 'text') {
+      const input = el('input', { type: 'text', placeholder: 'Contains…', value: fm.filters[column.key] || '' });
+      const take = () => apply(input.value.trim() === '' ? null : input.value.trim());
+      input.addEventListener('keydown', (event) => { if (event.key === 'Enter') { event.preventDefault(); take(); } });
+      ok.addEventListener('click', take);
+      parts.push(input);
+    } else {
+      const now = fm.filters[column.key] || { min: null, max: null };
+      const least = el('input', { type: 'number', step: '5', value: now.min === null ? '' : now.min });
+      const most = el('input', { type: 'number', step: '5', value: now.max === null ? '' : now.max });
+      const read = (input) => (input.value.trim() === '' || !Number.isFinite(Number(input.value)) ? null : Number(input.value));
+      const take = () => {
+        const [min, max] = [read(least), read(most)];
+        apply(min === null && max === null ? null : { min, max });
+      };
+      for (const input of [least, most]) input.addEventListener('keydown', (event) => { if (event.key === 'Enter') { event.preventDefault(); take(); } });
+      ok.addEventListener('click', take);
+      parts.push(el('label', {}, 'At least', least), el('label', {}, 'At most', most),
+        el('p', { className: 'quiet', textContent: 'Rows without this value are hidden while a limit is set.' }));
+    }
+    parts.push(el('div', { className: 'row end' }, ok));
+    pop.replaceChildren(...parts);
+    pop.hidden = false;
+    fm.pop = column.key;
+    const frame = $('fm-dialog').getBoundingClientRect();
+    const from = anchor.getBoundingClientRect();
+    pop.style.left = `${Math.max(8, Math.min(from.left - frame.left, frame.width - pop.offsetWidth - 8))}px`;
+    pop.style.top = `${from.bottom - frame.top + 4}px`;
+    const first = pop.querySelector('input');
+    if (first) first.focus();
+  }
+
+  // The filters in force, each to take away, and "Clear search and filters" (data_table.js `renderChips`).
+  function fmChips() {
+    const chips = FM_COLUMNS.filter(fmActive).map((column) => {
+      const filter = fm.filters[column.key];
+      let said;
+      if (column.filter === 'set') {
+        const values = fm.values[column.key] || [];
+        const shown = values.filter((value) => !filter.exclude.includes(value));
+        said = shown.length <= 3 ? shown.map((value) => fmLabel(column, value)).join(', ') || 'none' : `${shown.length} of ${values.length}`;
+        said = `${column.label()}: ${said}`;
+      } else if (column.filter === 'text') said = `${column.label()}: “${filter}”`;
+      else if (filter.min !== null && filter.max !== null) said = `${column.label()}: ${filter.min}–${filter.max}`;
+      else if (filter.min !== null) said = `${column.label()} ≥ ${filter.min}`;
+      else said = `${column.label()} ≤ ${filter.max}`;
+      const remove = el('button', { type: 'button', className: 'icon', title: 'Remove this filter', textContent: '✕' });
+      remove.addEventListener('click', () => attempt(() => { delete fm.filters[column.key]; return fmLoad(); }));
+      return el('span', { className: 'chip' }, `${said} `, remove);
+    });
+    if (chips.length || fm.search.trim()) {
+      const clear = el('button', { type: 'button', className: 'link', textContent: 'Clear search and filters' });
+      clear.addEventListener('click', () => attempt(() => {
+        fm.filters = {};
+        fm.search = '';
+        $('fm-search').value = '';
+        return fmLoad();
+      }));
+      chips.push(clear);
+    }
+    $('fm-chips').replaceChildren(...chips);
+    $('fm-chips').hidden = chips.length === 0;
+  }
+
+  // The toolbar's "Printer" list: one printer, or "All printers" ("{n} printers" when the funnel picked several).
+  function fmPrinterList() {
+    const select = $('fm-printer');
+    const values = fm.values.printers || [];
+    const excluded = new Set((fm.filters.printers || {}).exclude || []);
+    const shown = values.filter((value) => !excluded.has(value));
+    const options = [new Option('All printers', ''), ...values.map((value) => new Option(fmLabel(FM_COLUMNS[6], value), value))];
+    if (shown.length > 1 && shown.length < values.length) options.push(new Option(`${shown.length} printers`, '\u0000several'));
+    select.replaceChildren(...options);
+    select.value = shown.length === values.length ? '' : shown.length === 1 ? shown[0] : '\u0000several';
+  }
+
+  async function fmLoad() {
+    const answer = await call('filament_manager', fmArgs());
+    fmTake(answer);
+  }
+  function fmTake(answer) {
+    fm.rows = answer.rows;
+    fm.view = answer.view;
+    fm.values = answer.values;
+    fm.current = answer.current_printer;
+    fmHead();
+    fmChips();
+    fmPrinterList();
+    fmDraw();
   }
 
   function fmRow(row) {
@@ -223,27 +388,28 @@ const Setup = (() => {
   }
 
   function fmDraw() {
-    const shown = fm.rows.filter(fmMatches);
+    const byKey = new Map(fm.rows.map((row) => [row.key, row]));
+    const shown = fm.view.map((key) => byKey.get(key)).filter(Boolean);
     $('fm-body').replaceChildren(...shown.map(fmRow));
+    $('fm-none').hidden = shown.length > 0;
     const on = fm.rows.filter((row) => row.enabled).length;
-    $('fm-count').textContent = `${shown.length} of ${fm.rows.length} shown · ${on} enabled`;
+    const filtered = fm.search.trim() !== '' || FM_COLUMNS.some(fmActive);
+    // preset_manager.js `tx.count_all`, `tx.count`.
+    $('fm-count').textContent = filtered ? `${shown.length} of ${fm.rows.length} shown · ${on} enabled` : `${fm.rows.length} filaments · ${on} enabled`;
   }
 
   // Every row of the same favourite key follows (preset_manager.js `star`).
   async function fmStar(row) {
     const answer = await call('favorite_toggle', { key: row.fav });
     const keys = new Set(answer.favs);
-    for (const other of fm.rows) other.star = keys.has(other.fav);
     favourites.keys = keys;
-    fmDraw();
+    await fmLoad();
     presetsByMachine.clear();
     await showSidebar();
   }
 
   async function fmEnable(row, on) {
-    const answer = await call('filament_enable', { project: activeId(), changes: [{ key: row.key, on }] });
-    fm.rows = answer.rows;
-    fmDraw();
+    fmTake(await call('filament_enable', fmArgs({ changes: [{ key: row.key, on }] })));
     $('fm-status').textContent = 'Saved.';
     // The sidebar's lists follow at once, as the reference's do.
     presetsByMachine.clear();
@@ -251,13 +417,13 @@ const Setup = (() => {
   }
 
   async function openFilamentManager() {
-    const answer = await call('filament_manager', { project: activeId() });
-    fm.rows = answer.rows;
     fm.search = '';
+    fm.sort = { key: null, dir: 1 };
+    fm.filters = {};
     $('fm-search').value = '';
     $('fm-status').textContent = '';
-    fmHead();
-    fmDraw();
+    fmClosePop();
+    await fmLoad();
     $('fm-dialog').showModal();
     $('fm-search').focus();
   }
@@ -622,8 +788,7 @@ const Setup = (() => {
     presetsByMachine.clear();
     await showSidebar();
     if ($('fm-dialog').open) {
-      fm.rows = (await call('filament_manager', { project: activeId() })).rows;
-      fmDraw();
+      await fmLoad();
     }
     await inform(t('Filament Created Successfully'), `${t('Filament Created')}\n${t('Please go to filament setting to edit your presets if you need.\nPlease note that nozzle temperature, hot bed temperature, and maximum volumetric speed has a significant impact on printing quality. Please set them carefully.')}`);
   }
@@ -702,7 +867,24 @@ const Setup = (() => {
       $('fs-dialog').close();
       attempt(ptCancel);
     });
-    $('fm-search').addEventListener('input', () => { fm.search = $('fm-search').value; fmDraw(); });
+    let searching = null;
+    $('fm-search').addEventListener('input', () => {
+      fm.search = $('fm-search').value;
+      clearTimeout(searching);
+      searching = setTimeout(() => attempt(fmLoad), 150);
+    });
+    $('fm-printer').addEventListener('change', () => attempt(() => {
+      const value = $('fm-printer').value;
+      if (value === '\u0000several') return undefined;
+      if (value === '') delete fm.filters.printers;
+      else fm.filters.printers = { exclude: (fm.values.printers || []).filter((other) => other !== value) };
+      return fmLoad();
+    }));
+    // Escape: a filter first, then the dialog (preset_manager.js `escape`).
+    $('fm-dialog').addEventListener('cancel', (event) => { if (fm.pop) { event.preventDefault(); fmClosePop(); } });
+    $('fm-dialog').addEventListener('pointerdown', (event) => {
+      if (fm.pop && !$('fm-pop').contains(event.target) && !event.target.closest('.th-filter')) fmClosePop();
+    });
     $('fm-close').addEventListener('click', () => $('fm-dialog').close());
   }
 

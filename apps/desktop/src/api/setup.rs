@@ -20,7 +20,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use edge_config::Kind;
 use serde_json::{Value, json};
 
-use super::{Session, lock, needed, printers};
+use super::{Session, lock, needed, printers, text};
 
 /// The name a filament is listed by on the guide's page and in the
 /// Filament manager: its preset's name up to the "@"
@@ -130,6 +130,36 @@ pub(super) fn unescape_list(text: &str) -> Vec<String> {
         }
     }
     items
+}
+
+/// The reference's natural order without regard to case, digits by value
+/// (`natural_less_nocase`), near enough for its lists: by the text in
+/// lower case with each run of digits compared as a number.
+pub(super) fn natural(a: &str, b: &str) -> std::cmp::Ordering {
+    let parts = |text: &str| -> Vec<(bool, String)> {
+        let mut out: Vec<(bool, String)> = Vec::new();
+        for c in text.to_lowercase().chars() {
+            let digit = c.is_ascii_digit();
+            match out.last_mut() {
+                Some((was, run)) if *was == digit => run.push(c),
+                _ => out.push((digit, c.to_string())),
+            }
+        }
+        out
+    };
+    let (x, y) = (parts(a), parts(b));
+    for ((dx, px), (dy, py)) in x.iter().zip(&y) {
+        let order = if *dx && *dy {
+            let (nx, ny) = (px.trim_start_matches('0'), py.trim_start_matches('0'));
+            nx.len().cmp(&ny.len()).then_with(|| nx.cmp(ny))
+        } else {
+            px.cmp(py)
+        };
+        if order != std::cmp::Ordering::Equal {
+            return order;
+        }
+    }
+    x.len().cmp(&y.len())
 }
 
 /// The reference's order of names in the managers (PresetManagerModel.cpp
@@ -744,9 +774,218 @@ impl Session {
         names
     }
 
+    /// The rows the Filament manager shows, in its order: the search (every
+    /// word in the name, vendor, type, printers or members), the filters
+    /// of its columns, the "Printer" list, then the sort by a column
+    /// (data_table.js `passes`, `compare`; preset_manager.js `cols`).
+    /// `filters` is by column: `{ exclude: [values] }` for a list of values
+    /// (a row stays while one of its values is not excluded), a text for
+    /// "Name" (every word in it), `{ min, max }` for a temperature (a row
+    /// without the value goes while a limit is set); `sort` is `{ key, dir }`
+    /// (1 up, -1 down), unknown values last either way, equals by name,
+    /// then as given; no sort: as given.
+    fn manager_view(rows: &[Value], args: &Value, current: Option<&str>) -> (Vec<String>, Value) {
+        let set_keys = |column: &str, row: &Value| -> Vec<String> {
+            let text = |key: &str| row[key].as_str().unwrap_or_default().to_owned();
+            let keys = match column {
+                "checked" => vec![if row["enabled"] == true { "yes" } else { "no" }.to_owned()],
+                "star" => vec![if row["star"] == true { "yes" } else { "no" }.to_owned()],
+                "printers" => row["printers"]
+                    .as_array()
+                    .into_iter()
+                    .flatten()
+                    .filter_map(|p| p.as_str().map(str::to_owned))
+                    .collect(),
+                key => vec![text(key)],
+            };
+            if keys.is_empty() {
+                vec![String::new()]
+            } else {
+                keys
+            }
+        };
+        const SETS: [&str; 6] = ["checked", "star", "vendor", "type", "source", "printers"];
+        let filters = args.get("filters").cloned().unwrap_or(Value::Null);
+        let words = |text: &str| -> Vec<String> {
+            text.to_lowercase()
+                .split_whitespace()
+                .map(str::to_owned)
+                .collect()
+        };
+        let search = words(text(args, "search").unwrap_or_default());
+        let passes = |row: &Value| -> bool {
+            let hay = {
+                let list = |key: &str| -> Vec<String> {
+                    row[key]
+                        .as_array()
+                        .into_iter()
+                        .flatten()
+                        .filter_map(|v| v.as_str().map(str::to_owned))
+                        .collect()
+                };
+                [
+                    row["name"].as_str().unwrap_or_default().to_owned(),
+                    row["vendor"].as_str().unwrap_or_default().to_owned(),
+                    row["type"].as_str().unwrap_or_default().to_owned(),
+                    list("printers").join("\u{0}"),
+                    list("members").join("\u{0}"),
+                ]
+                .join("\u{0}")
+                .to_lowercase()
+            };
+            if !search.iter().all(|word| hay.contains(word.as_str())) {
+                return false;
+            }
+            for column in SETS {
+                let Some(excluded) = filters[column]["exclude"].as_array() else {
+                    continue;
+                };
+                let excluded: Vec<&str> = excluded.iter().filter_map(Value::as_str).collect();
+                if !excluded.is_empty()
+                    && set_keys(column, row)
+                        .iter()
+                        .all(|key| excluded.contains(&key.as_str()))
+                {
+                    return false;
+                }
+            }
+            if let Some(text) = filters["name"].as_str() {
+                let name = row["name"].as_str().unwrap_or_default().to_lowercase();
+                if !words(text).iter().all(|word| name.contains(word.as_str())) {
+                    return false;
+                }
+            }
+            for column in ["nozzle_t", "bed_t"] {
+                let (min, max) = (
+                    filters[column]["min"].as_f64(),
+                    filters[column]["max"].as_f64(),
+                );
+                if min.is_none() && max.is_none() {
+                    continue;
+                }
+                let Some(value) = row[column].as_f64() else {
+                    return false;
+                };
+                if min.is_some_and(|min| value < min) || max.is_some_and(|max| value > max) {
+                    return false;
+                }
+            }
+            true
+        };
+        let mut view: Vec<(usize, &Value)> = rows
+            .iter()
+            .enumerate()
+            .filter(|(_, row)| passes(row))
+            .collect();
+        let key = args["sort"]["key"].as_str().unwrap_or_default();
+        let dir = if args["sort"]["dir"].as_i64() == Some(-1) {
+            -1
+        } else {
+            1
+        };
+        enum Sort {
+            Text(String),
+            Number(f64),
+        }
+        let value_of = |row: &Value| -> Option<Sort> {
+            let text = |value: &Value| {
+                value
+                    .as_str()
+                    .filter(|text| !text.is_empty())
+                    .map(|text| Sort::Text(text.to_owned()))
+            };
+            match key {
+                "checked" => Some(Sort::Number(if row["enabled"] == true { 0.0 } else { 1.0 })),
+                "star" => Some(Sort::Number(if row["star"] == true { 0.0 } else { 1.0 })),
+                "printers" => {
+                    if row["all"] == true {
+                        Some(Sort::Text(String::new()))
+                    } else {
+                        text(&row["printers"][0])
+                    }
+                }
+                "nozzle_t" | "bed_t" | "mtime" => row[key].as_f64().map(Sort::Number),
+                "name" | "vendor" | "type" | "source" => text(&row[key]),
+                _ => None,
+            }
+        };
+        if !key.is_empty() {
+            view.sort_by(|(at_a, a), (at_b, b)| {
+                use std::cmp::Ordering;
+                match (value_of(a), value_of(b)) {
+                    (None, None) => at_a.cmp(at_b),
+                    (None, Some(_)) => Ordering::Greater,
+                    (Some(_), None) => Ordering::Less,
+                    (Some(x), Some(y)) => {
+                        let order = match (x, y) {
+                            (Sort::Number(x), Sort::Number(y)) => x.total_cmp(&y),
+                            (Sort::Text(x), Sort::Text(y)) => natural(&x, &y),
+                            (Sort::Number(_), Sort::Text(_)) => Ordering::Less,
+                            (Sort::Text(_), Sort::Number(_)) => Ordering::Greater,
+                        };
+                        let order = if dir < 0 { order.reverse() } else { order };
+                        order
+                            .then_with(|| {
+                                if key == "name" {
+                                    Ordering::Equal
+                                } else {
+                                    natural(
+                                        a["name"].as_str().unwrap_or_default(),
+                                        b["name"].as_str().unwrap_or_default(),
+                                    )
+                                }
+                            })
+                            .then_with(|| at_a.cmp(at_b))
+                    }
+                }
+            });
+        }
+        // Each list filter's values, in their order (`sortKeys`, `setOrder`).
+        let mut universe = serde_json::Map::new();
+        for column in SETS {
+            let mut values: Vec<String> = Vec::new();
+            for row in rows {
+                for value in set_keys(column, row) {
+                    if !values.contains(&value) {
+                        values.push(value);
+                    }
+                }
+            }
+            values.sort_by(|a, b| match column {
+                "checked" | "star" => (a != "yes").cmp(&(b != "yes")),
+                "printers" => {
+                    let rank = |v: &str| {
+                        if Some(v) == current {
+                            0
+                        } else if v.is_empty() {
+                            2
+                        } else {
+                            1
+                        }
+                    };
+                    rank(a).cmp(&rank(b)).then_with(|| natural(a, b))
+                }
+                _ => natural(a, b),
+            });
+            universe.insert(column.to_owned(), json!(values));
+        }
+        (
+            view.into_iter()
+                .map(|(_, row)| row["key"].as_str().unwrap_or_default().to_owned())
+                .collect(),
+            Value::Object(universe),
+        )
+    }
+
     /// `filament_manager`: the Filament manager's table.
     pub(super) fn filament_manager(&self, args: &Value) -> Result<Value, String> {
-        Ok(json!({ "rows": self.manager_rows(args)? }))
+        let rows = self.manager_rows(args)?;
+        let current = {
+            let state = lock(&self.state);
+            state.projects[state.target(args)?].choices.machine.clone()
+        };
+        let (view, universe) = Self::manager_view(&rows, args, current.as_deref());
+        Ok(json!({ "rows": rows, "view": view, "values": universe, "current_printer": current }))
     }
 
     /// `filament_enable`: rows of the Filament manager ticked or unticked

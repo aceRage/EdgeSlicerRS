@@ -616,6 +616,9 @@ Create new
 Create a new filament preset
 Favourite
 Search name, vendor, type or printer
+No filament matches the search and filters.
+All printers
+Not favourite
 Nozzle °C
 Bed °C
 Modified

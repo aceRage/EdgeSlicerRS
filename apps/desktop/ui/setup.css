@@ -69,6 +69,7 @@
 #fm-table { min-width: 980px; }
 #fm-table th.check { width: 92px; padding-left: var(--space-4); }
 #fm-table th.num { width: 84px; }
+#fm-table th:nth-child(4) { width: 24%; }
 #fm-table th:nth-child(5) { width: 84px; }
 #fm-table th:nth-child(6) { width: 76px; }
 #fm-table th:nth-child(10) { width: 150px; }
@@ -134,3 +135,11 @@
 .lb-option .lb-star { margin-left: auto; flex: none; }
 #fm-table th.star { width: 84px; }
 #fm-table td.star { text-align: center; }
+
+.fm-chips { display: flex; align-items: center; flex-wrap: wrap; gap: 6px var(--space-2); padding: 0 var(--space-4) var(--space-3); }
+.fm-chips[hidden] { display: none; }
+.fm-printer-pick { display: inline-flex; flex-direction: row; align-items: center; gap: 6px; color: var(--text-2); font-size: var(--size-label); }
+.fm-printer-pick select { max-width: 240px; }
+#fm-none { padding: var(--space-6) var(--space-4); text-align: center; }
+#fm-pop { width: 260px; }
+#fm-pop .check-list { max-height: 240px; overflow-y: auto; }
