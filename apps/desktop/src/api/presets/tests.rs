@@ -371,6 +371,131 @@ fn a_preset_others_are_laid_over_is_not_deleted() {
 }
 
 #[test]
+fn a_renamed_preset_keeps_what_is_laid_over_it() {
+    let dir = tempfile::tempdir().unwrap();
+    let folder = user_dir(dir.path()).join("process");
+    std::fs::create_dir_all(folder.join("base")).unwrap();
+    std::fs::write(
+        folder.join("base").join("Root.json"),
+        "{\"name\": \"Root\", \"from\": \"User\", \"inherits\": \"\", \"version\": \"2.3.3.14\", \"wall_loops\": \"5\"}",
+    )
+    .unwrap();
+    std::fs::write(
+        folder.join("Leaf.json"),
+        "{\"name\": \"Leaf\", \"from\": \"User\", \"inherits\": \"Root\", \"version\": \"2.3.3.14\", \"sparse_infill_density\": \"30%\"}",
+    )
+    .unwrap();
+    let session = session(dir.path());
+    ask(&session, "printer_select", json!({ "initial": true }));
+    // Taken names and names the reference refuses are refused here too.
+    for (name, why) in [
+        ("Leaf", "Preset \"Leaf\" already exists."),
+        ("a/b", "Name is invalid;\nIllegal characters: <>[]:/\\|?*\""),
+        ("Default Setting", "Name is unavailable."),
+        (" Trunk", "The name is not allowed to start with a space."),
+        ("", "The name field is not allowed to be empty."),
+    ] {
+        assert_eq!(
+            refused(
+                &session,
+                "preset_rename",
+                json!({ "kind": "process", "preset": "Root", "name": name })
+            ),
+            why
+        );
+    }
+    let (system, _) = process_of(&session);
+    assert_eq!(
+        refused(
+            &session,
+            "preset_rename",
+            json!({ "kind": "process", "preset": system, "name": "Mine" })
+        ),
+        "System presets cannot be renamed."
+    );
+    ask(
+        &session,
+        "preset_rename",
+        json!({ "kind": "process", "preset": "Root", "name": "Trunk" }),
+    );
+    assert!(!folder.join("base").join("Root.json").exists());
+    let trunk = read(&folder.join("base").join("Trunk.json"));
+    assert!(trunk.contains("\"name\": \"Trunk\""), "{trunk}");
+    // The preset laid over it names it by its new name, in its file too,
+    // and keeps its own values and what it inherits.
+    let leaf = read(&folder.join("Leaf.json"));
+    assert!(leaf.contains("\"inherits\": \"Trunk\""), "{leaf}");
+    assert!(
+        leaf.contains("\"sparse_infill_density\": \"30%\""),
+        "{leaf}"
+    );
+    let listed = ask(&session, "user_presets", Value::Null);
+    assert!(
+        listed["process"]
+            .as_array()
+            .unwrap()
+            .contains(&json!({ "name": "Leaf", "inherits": "Trunk" }))
+    );
+    // Read again from the disk, it is laid over the renamed one.
+    let again = Session::with_settings(None, Some(dir.path().to_owned()));
+    let users = again.users();
+    assert_eq!(
+        users
+            .get(Kind::Process, "Leaf")
+            .unwrap()
+            .inherits
+            .as_deref(),
+        Some("Trunk")
+    );
+}
+
+#[test]
+fn a_deleted_preset_gives_way_to_the_next_by_name() {
+    let dir = tempfile::tempdir().unwrap();
+    let session = session(dir.path());
+    ask(&session, "printer_select", json!({ "initial": true }));
+    let (system, _) = process_of(&session);
+    let project = ask(&session, "project", Value::Null);
+    let offered = ask(
+        &session,
+        "presets",
+        json!({ "vendor": project["choices"]["vendor"], "machine": project["choices"]["machine"] }),
+    );
+    // A process the printer is offered that is not its usual one; the
+    // preset saved is named to come just before it.
+    let next = offered["processes"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter_map(Value::as_str)
+        .find(|name| *name != system && name.ends_with(')'))
+        .unwrap()
+        .to_owned();
+    let mine = next.trim_end_matches(')').to_owned();
+    ask(
+        &session,
+        "process_set",
+        json!({ "key": "wall_loops", "value": 4 }),
+    );
+    ask(
+        &session,
+        "preset_save",
+        json!({ "kind": "process", "name": mine }),
+    );
+    let deleted = ask(
+        &session,
+        "preset_delete",
+        json!({ "kind": "process", "preset": mine, "confirm": true }),
+    );
+    assert_eq!(deleted["choices"]["process"], next);
+    assert_eq!(deleted["choices"]["over"], json!({}));
+}
+
+fn read(path: &Path) -> String {
+    std::fs::read_to_string(path).unwrap()
+}
+
+#[test]
 fn a_filament_preset_is_saved_for_filament_2_and_a_printer_preset_picked() {
     let dir = tempfile::tempdir().unwrap();
     let session = session(dir.path());
@@ -531,6 +656,175 @@ fn what_is_set_over_a_preset_is_listed_and_two_presets_compared() {
         json!({ "kind": "process", "all": true }),
     );
     assert!(all["system"].as_array().unwrap().len() > listing["system"].as_array().unwrap().len());
+}
+
+#[test]
+fn changes_go_over_the_next_preset_only_where_the_reference_transfers_them() {
+    let dir = tempfile::tempdir().unwrap();
+    let session = session(dir.path());
+    ask(&session, "printer_select", json!({ "initial": true }));
+    let (system, _) = process_of(&session);
+    ask(
+        &session,
+        "process_set",
+        json!({ "key": "wall_loops", "value": 3 }),
+    );
+    ask(
+        &session,
+        "process_set",
+        json!({ "key": "sparse_infill_density", "value": "30%" }),
+    );
+    // A process: always, with what was kept said.
+    let to = "0.08mm Standard @Snapmaker U1 (0.4 nozzle)";
+    let process = ask(
+        &session,
+        "preset_changes",
+        json!({ "kind": "process", "to": to }),
+    );
+    assert_eq!(process["count"], 2);
+    assert_eq!(process["transfer"], true);
+    assert_eq!(
+        process["note"],
+        format!("Kept 2 modified process settings from \"{system}\" (revertable).")
+    );
+    // Without a preset to go to, nothing is transferred.
+    let asked = ask(&session, "preset_changes", json!({ "kind": "process" }));
+    assert_eq!(asked["transfer"], false);
+    assert_eq!(asked["note"], Value::Null);
+    // Transferred: the settings stay over the next preset.
+    let moved = ask(&session, "project_set", json!({ "process": to }));
+    assert_eq!(moved["choices"]["process"], to);
+    assert_eq!(moved["choices"]["over"]["wall_loops"], "3");
+
+    // A filament: only to one of the same filament_type.
+    let project = ask(&session, "project", Value::Null);
+    let offered = ask(
+        &session,
+        "presets",
+        json!({ "vendor": project["choices"]["vendor"], "machine": project["choices"]["machine"] }),
+    );
+    let filaments: Vec<&str> = offered["filaments"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter_map(Value::as_str)
+        .collect();
+    let first = project["choices"]["filaments"][0].as_str().unwrap();
+    let shelf = session.shelf("Snapmaker").unwrap();
+    let type_of = |name: &str| {
+        session
+            .resolve_named(&shelf, Kind::Filament, name)
+            .unwrap()
+            .texts("filament_type")
+            .unwrap()[0]
+            .clone()
+    };
+    let same = filaments
+        .iter()
+        .find(|name| **name != first && type_of(name) == type_of(first))
+        .expect("another filament of the same type");
+    let other = filaments
+        .iter()
+        .find(|name| type_of(name) != type_of(first))
+        .expect("a filament of another type");
+    ask(
+        &session,
+        "settings_set",
+        json!({ "kind": "filament", "filament": 1, "key": "nozzle_temperature", "value": 212 }),
+    );
+    let alike = ask(
+        &session,
+        "preset_changes",
+        json!({ "kind": "filament", "filament": 1, "to": same }),
+    );
+    assert_eq!(alike["transfer"], true);
+    assert_eq!(
+        alike["note"],
+        format!("Kept 1 modified filament setting from \"{first}\" (revertable).")
+    );
+    let unlike = ask(
+        &session,
+        "preset_changes",
+        json!({ "kind": "filament", "filament": 1, "to": other }),
+    );
+    assert_eq!(unlike["transfer"], false);
+    assert_eq!(unlike["count"], 1);
+
+    // A printer: never; the dialog asks to save or discard.
+    ask(
+        &session,
+        "settings_set",
+        json!({ "kind": "printer", "key": "printable_height", "value": 250 }),
+    );
+    let printer = ask(
+        &session,
+        "preset_changes",
+        json!({ "kind": "printer", "to": "Snapmaker U1 (0.6 nozzle)" }),
+    );
+    assert_eq!(printer["transfer"], false);
+    assert_eq!(printer["count"], 1);
+    assert_eq!(printer["pages"][0]["groups"][0]["rows"][0]["new"], "250");
+}
+
+#[test]
+fn chosen_values_are_transferred_from_left_to_right() {
+    let dir = tempfile::tempdir().unwrap();
+    let session = session(dir.path());
+    ask(&session, "printer_select", json!({ "initial": true }));
+    let (system, _) = process_of(&session);
+    let fine = "0.08mm Standard @Snapmaker U1 (0.4 nozzle)";
+    let compared = ask(
+        &session,
+        "preset_compare",
+        json!({ "kind": "process", "left": fine, "right": system }),
+    );
+    let rows: Vec<(String, String, String)> = compared["pages"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .flat_map(|page| page["groups"].as_array().unwrap().clone())
+        .flat_map(|group| group["rows"].as_array().unwrap().clone())
+        .map(|row| {
+            (
+                row["key"].as_str().unwrap().to_owned(),
+                row["old"].as_str().unwrap().to_owned(),
+                row["new"].as_str().unwrap().to_owned(),
+            )
+        })
+        .collect();
+    assert!(rows.iter().any(|(key, _, _)| key == "layer_height"));
+    // Only the right one, the preset the project is on, takes them.
+    assert_eq!(
+        refused(
+            &session,
+            "preset_transfer",
+            json!({ "kind": "process", "from": system, "to": fine, "keys": ["layer_height"] })
+        ),
+        format!("the project is not on \"{fine}\"")
+    );
+    let keys: Vec<&str> = rows.iter().map(|(key, _, _)| key.as_str()).collect();
+    let done = ask(
+        &session,
+        "preset_transfer",
+        json!({ "kind": "process", "from": fine, "to": system, "keys": keys }),
+    );
+    assert_eq!(done["transferred"], rows.len());
+    assert_eq!(done["choices"]["process"], system);
+    // Every value differing is set over the preset, the left one's.
+    let changes = ask(&session, "preset_changes", json!({ "kind": "process" }));
+    assert_eq!(changes["count"], rows.len());
+    for (key, left, _) in &rows {
+        assert_eq!(&done["choices"]["over"][key], left, "{key}");
+    }
+    // With changes over it, another preset is not transferred to.
+    assert_eq!(
+        refused(
+            &session,
+            "preset_transfer",
+            json!({ "kind": "process", "from": system, "to": fine, "keys": ["layer_height"] })
+        ),
+        "You can only transfer to current active profile because it has been modified."
+    );
 }
 
 #[test]

@@ -7,7 +7,8 @@
 // and renaming (SavePresetDialog.cpp), "Transfer or discard changes"
 // (UnsavedChangesDialog.cpp) and "Compare presets" (DiffPresetDialog). The
 // session does the work (`preset_check`, `preset_save`, `preset_rename`,
-// `preset_delete`, `preset_changes`, `preset_compare`); the page asks.
+// `preset_delete`, `preset_changes`, `preset_compare`, `preset_transfer`);
+// the page asks.
 // Loaded before app.js, whose `call`, `$`, `el`, `state` and the rest are
 // used once the page runs.
 
@@ -96,7 +97,7 @@ const Presets = (() => {
     const current = on(kind, filament);
     const box = button.getBoundingClientRect();
     if (!current || !current.name) {
-      showMenu(box.left, box.bottom + 4, [[t('Compare presets'), () => attempt(() => compare(kind))]]);
+      showMenu(box.left, box.bottom + 4, [[t('Compare presets'), () => attempt(() => compare(kind, null, filament))]]);
       return;
     }
     const mine = await isUsers(kind, current.name);
@@ -110,7 +111,7 @@ const Presets = (() => {
         [t('Delete this preset'), () => attempt(() => remove(kind, current.name))],
       ] : []),
       null,
-      [t('Compare presets'), () => attempt(() => compare(kind, current.name))],
+      [t('Compare presets'), () => attempt(() => compare(kind, current.name, filament))],
     ]);
   }
 
@@ -248,28 +249,43 @@ const Presets = (() => {
     return value;
   }
 
-  async function optionTable(kind, pages, heads) {
+  // With `ticks`, a first column of tick boxes, one an option, all
+  // ticked (the reference's toggle column, `colToggle`); the table's
+  // `ticked()` gives the options ticked.
+  async function optionTable(kind, pages, heads, { ticks = false } = {}) {
     const book = bookOf(kind);
     const data = await loadPages(book);
     const body = el('tbody');
+    const span = ticks ? 4 : 3;
+    const boxes = [];
     for (const page of pages) {
       const title = page.extruder ? fmt(t(page.title), page.extruder) : t(page.title);
-      body.append(el('tr', { className: 'pc-page' }, el('th', { colSpan: 3, scope: 'rowgroup', textContent: title })));
+      body.append(el('tr', { className: 'pc-page' }, el('th', { colSpan: span, scope: 'rowgroup', textContent: title })));
       for (const group of page.groups) {
-        if (group.title) body.append(el('tr', { className: 'pc-group' }, el('th', { colSpan: 3, scope: 'rowgroup', textContent: t(group.title) })));
+        if (group.title) body.append(el('tr', { className: 'pc-group' }, el('th', { colSpan: span, scope: 'rowgroup', textContent: t(group.title) })));
         for (const row of group.rows) {
           const option = data.options[row.key.split('#')[0]];
           const name = option ? option.label : t(row.label);
           const [old, now] = await Promise.all([valueShown(kind, row.key, row.old), valueShown(kind, row.key, row.new)]);
-          body.append(el('tr', {},
+          const cells = [
             el('td', { textContent: name, title: row.key }),
             el('td', { className: 'pc-value', textContent: old, title: old }),
-            el('td', { className: 'pc-value', textContent: now, title: now })));
+            el('td', { className: 'pc-value', textContent: now, title: now })];
+          if (ticks) {
+            const box = el('input', { type: 'checkbox', checked: true, value: row.key, ariaLabel: name });
+            boxes.push(box);
+            cells.unshift(el('td', { className: 'pc-tick' }, box));
+          }
+          body.append(el('tr', {}, ...cells));
         }
       }
     }
-    const head = el('thead', {}, el('tr', {}, ...heads.map((text) => el('th', { scope: 'col', textContent: text, title: text }))));
-    return el('table', { className: 'data-table pc-table' }, head, body);
+    const titles = ticks ? ['\u2714', ...heads] : heads;
+    const head = el('thead', {}, el('tr', {}, ...titles.map((text) => el('th', { scope: 'col', textContent: text, title: text }))));
+    const table = el('table', { className: `data-table pc-table${ticks ? ' ticks' : ''}` }, head, body);
+    table.ticked = () => boxes.filter((box) => box.checked).map((box) => box.value);
+    table.boxes = boxes;
+    return table;
   }
 
   // ---- "Transfer or discard changes" ----
@@ -281,7 +297,9 @@ const Presets = (() => {
     const table = el('div', { className: 'pc-scroll' });
     const buttons = {};
     const foot = el('div', { className: 'dialog-foot' }, el('div', { className: 'grow' }));
-    for (const [value, words, primary] of [['transfer', 'Transfer', true], ['discard', 'Discard'], ['save', 'Save'], ['cancel', 'Cancel']]) {
+    // Transfer is never asked here: where it can be had it is done without
+    // asking (beforeLeaving). Cancel stands for the reference's close box.
+    for (const [value, words, primary] of [['discard', 'Discard'], ['save', 'Save', true], ['cancel', 'Cancel']]) {
       const button = el('button', { type: 'submit', value, textContent: t(words), className: primary ? 'primary' : '' });
       buttons[value] = button;
       foot.append(button);
@@ -304,13 +322,28 @@ const Presets = (() => {
   async function beforeLeaving(kind, filament, to) {
     const current = on(kind, filament);
     if (!current || !current.modified || current.name === to) return 'none';
-    const changes = await call('preset_changes', { project: activeId(), kind, ...(kind === 'filament' ? { filament } : {}) });
+    const changes = await call('preset_changes', { project: activeId(), kind, ...(kind === 'filament' ? { filament } : {}), to });
+    // Nothing the pages show is changed: let go of without asking
+    // (Tab.cpp `may_discard_current_dirty_preset`, `getUpdateItemCount`).
     if (!changes.count) return 'none';
+    if (changes.transfer) {
+      // Where the reference can transfer, it does so without asking
+      // (UnsavedChangesDialog.cpp `ShowModal`) and says what was kept.
+      say(changes.note);
+      // The pages are told the preset changed under what is set, so that
+      // they do not say it a second time (settings.js `showSettings`).
+      const book = bookOf(kind);
+      for (const [whose, name] of book.seen) {
+        const [project, slot] = whose.split(':');
+        if (Number(project) === activeId() && name === current.name && (kind !== 'filament' || Number(slot) === filament)) book.seen.set(whose, to);
+      }
+      return 'transfer';
+    }
+    // A printer, or a filament of another type: save or discard, or stay.
     const nodes = changesNodes();
     nodes.text.textContent = fmt(t('You have changed some settings of preset "%1%".'), changes.name)
-      + t('\nYou can save or discard the preset values you have modified, or choose to transfer the values you have modified to the new preset.');
+      + t('\nYou can save or discard the preset values you have modified.');
     nodes.table.replaceChildren(await optionTable(kind, changes.pages, [t('Settings'), t('Old Value'), t('New Value')]));
-    nodes.buttons.transfer.title = fmt(t('Transfer the selected options to the newly selected preset \n"%1%".'), to);
     nodes.buttons.discard.title = t('All changes will be discarded.');
     nodes.buttons.save.title = t('Save the selected options.');
     nodes.dialog.returnValue = 'cancel';
@@ -318,7 +351,6 @@ const Presets = (() => {
       nodes.dialog.addEventListener('close', () => resolve(nodes.dialog.returnValue), { once: true });
       nodes.dialog.showModal();
     });
-    if (answer === 'transfer') return 'transfer';
     if (answer === 'discard') {
       const args = { project: activeId(), reset: true };
       if (kind === 'process') await call('process_set', args);
@@ -343,16 +375,30 @@ const Presets = (() => {
     const info = el('p', { className: 'quiet', id: 'cmp-info', textContent: t('Select presets to compare') });
     const title = el('h2', { id: 'cmp-title', textContent: t('Compare presets') });
     const close = el('button', { type: 'submit', value: 'cancel', className: 'primary', textContent: t('Close') });
+    // "Transfer values from left to right" (DiffPresetDialog
+    // `create_edit_sizer`): ticks before each option, and "Transfer".
+    const use = el('input', { type: 'checkbox', id: 'cmp-use' });
+    const useLabel = el('label', { className: 'tick', id: 'cmp-use-row', title: t('If enabled, this dialog can be used for transfer selected values from left to right preset.') },
+      use, ` ${t('Transfer values from left to right')}`);
+    const bottom = el('p', { className: 'quiet', id: 'cmp-bottom', role: 'status' });
+    const transfer = el('button', { type: 'button', id: 'cmp-transfer', className: 'primary', textContent: t('Transfer') });
+    close.className = '';
+    const hint = t('Transfer the selected options from left preset to the right.\nNote: New modified presets will be selected in settings tabs after close this dialog.');
     const form = el('form', { method: 'dialog' },
       el('div', { className: 'pc-head' }, title,
         el('div', { className: 'cmp-pick' }, listbox(kind, { bare: false }), listbox(left), listbox(right)),
         el('label', { className: 'tick' }, all, ` ${t('Show all presets (including incompatible)')}`), info),
       result,
-      el('div', { className: 'dialog-foot' }, el('div', { className: 'grow' }), close));
+      bottom,
+      el('div', { className: 'dialog-foot' }, useLabel, el('div', { className: 'grow' }), transfer, close));
     const dialog = el('dialog', { id: 'preset-compare', className: 'preset-dialog wide' }, form);
     dialog.setAttribute('aria-labelledby', 'cmp-title');
     document.body.append(dialog);
-    compareDialog = { dialog, kind, left, right, all, result, info };
+    compareDialog = { dialog, kind, left, right, all, result, info, use, useLabel, transfer, bottom, hint, table: null, filament: 1 };
+    use.addEventListener('change', () => attempt(() => showComparison()));
+    transfer.addEventListener('mouseenter', () => { bottom.textContent = hint; });
+    transfer.addEventListener('mouseleave', () => updateTransfer());
+    transfer.addEventListener('click', () => attempt(() => transferValues()));
     const refresh = () => attempt(() => showComparison());
     kind.addEventListener('change', () => attempt(() => fillCompare(null)));
     all.addEventListener('change', () => attempt(() => fillCompare(null)));
@@ -384,17 +430,77 @@ const Presets = (() => {
     }
     const answer = await call('preset_compare', { project: activeId(), kind, left: nodes.left.value, right: nodes.right.value });
     if (nodes.left.value !== answer.left || nodes.right.value !== answer.right) return;
+    nodes.table = null;
     if (!answer.count) {
       nodes.info.textContent = 'These two presets are the same.';
       nodes.result.replaceChildren();
+      updateTransfer();
       return;
     }
     nodes.info.textContent = t('Select presets to compare');
-    nodes.result.replaceChildren(await optionTable(kind, answer.pages, [t('Settings'), answer.left, answer.right]));
+    const table = await optionTable(kind, answer.pages, [t('Settings'), answer.left, answer.right], { ticks: nodes.use.checked });
+    for (const box of table.boxes) box.addEventListener('change', () => updateTransfer());
+    nodes.table = table;
+    nodes.result.replaceChildren(table);
+    updateTransfer();
   }
 
-  async function compare(kind, name = null) {
+  // What the reference shows of the transfer: the tick and the button
+  // only while there are differences between two presets that are not
+  // the same one; the button only with the tick; off with nothing
+  // ticked, or while the kind's preset in force has changes and is not
+  // the right one ("You can only transfer to current active profile
+  // because it has been modified.").
+  function updateTransfer() {
     const nodes = compareNodes();
+    const shown = Boolean(nodes.table) && nodes.left.value !== nodes.right.value;
+    nodes.useLabel.hidden = !shown;
+    nodes.transfer.hidden = !(shown && nodes.use.checked);
+    nodes.bottom.textContent = '';
+    if (nodes.transfer.hidden) return;
+    let enable = nodes.table.ticked().length > 0;
+    if (enable) {
+      const current = on(nodes.kind.value, nodes.filament);
+      if (current && current.modified && current.name !== nodes.right.value) {
+        enable = false;
+        nodes.bottom.textContent = t('You can only transfer to current active profile because it has been modified.');
+      }
+    }
+    nodes.transfer.disabled = !enable;
+  }
+
+  // `Tab::transfer_options`: the right preset selected (it has no
+  // changes, or it is the one in force), then the ticked options set
+  // over it with the left one's values; the dialog closes.
+  async function transferValues() {
+    const nodes = compareNodes();
+    const kind = nodes.kind.value;
+    const filament = nodes.filament;
+    const from = nodes.left.value;
+    const to = nodes.right.value;
+    const keys = nodes.table ? nodes.table.ticked() : [];
+    if (!keys.length) return;
+    nodes.dialog.close();
+    const current = on(kind, filament);
+    if (current && current.name !== to) {
+      if (kind === 'process') await setProject({ process: to });
+      else if (kind === 'filament') {
+        const filaments = [...state.project.choices.filaments];
+        while (filaments.length < filament) filaments.push(filaments[filaments.length - 1]);
+        filaments[filament - 1] = to;
+        await setProject({ filaments });
+      } else {
+        await selectPrinter({ vendor: state.project.choices.vendor, machine: to });
+      }
+    }
+    const project = await call('preset_transfer', { project: activeId(), kind, ...(kind === 'filament' ? { filament } : {}), from, to, keys });
+    await shown(project);
+  }
+
+  async function compare(kind, name = null, filament = 1) {
+    const nodes = compareNodes();
+    nodes.filament = filament;
+    nodes.use.checked = false;
     nodes.kind.value = kind;
     // The closed face follows the attribute (listbox).
     nodes.kind.dataset.value = kind;

@@ -546,3 +546,211 @@ fn an_export_names_only_what_there_is() {
     );
     assert!(error.contains("is not a folder"), "{error}");
 }
+
+/// What the reference's import (PresetBundle.cpp `import_presets`,
+/// `import_json_presets`, l.1227–1433) makes of an archive, entry by
+/// entry in the archive's order, as its code reads: only the entry's own
+/// name counts and `bundle_structure.json` is passed over; a file is
+/// taken when its version reads, it carries a kind's id, and its
+/// `inherits` is empty, a preset already there (`known`) or one taken
+/// before it in the same archive. The names it would import.
+fn as_the_reference_imports(archive: &[u8], known: &[&str]) -> Vec<String> {
+    let mut zip = zip::ZipArchive::new(std::io::Cursor::new(archive)).unwrap();
+    let mut taken: Vec<String> = Vec::new();
+    for index in 0..zip.len() {
+        let mut entry = zip.by_index(index).unwrap();
+        let leaf = entry.name().unwrap().rsplit('/').next().unwrap().to_owned();
+        if leaf == bundle::BUNDLE_STRUCTURE {
+            continue;
+        }
+        let mut text = String::new();
+        std::io::Read::read_to_string(&mut entry, &mut text).unwrap();
+        let json: Value = serde_json::from_str(&text).unwrap();
+        let name = json["name"].as_str().unwrap().to_owned();
+        let version = json["version"].as_str().unwrap_or_default();
+        assert!(
+            version.split('.').all(|part| part.parse::<u32>().is_ok()),
+            "{leaf}: version {version:?} does not read"
+        );
+        assert!(
+            [
+                "printer_settings_id",
+                "print_settings_id",
+                "filament_settings_id"
+            ]
+            .iter()
+            .any(|key| json[*key].as_str() == Some(name.as_str())),
+            "{leaf}: no id of a kind"
+        );
+        let inherits = json["inherits"].as_str().unwrap_or_default();
+        if inherits.is_empty() || known.contains(&inherits) || taken.iter().any(|t| t == inherits) {
+            taken.push(name);
+        }
+    }
+    taken
+}
+
+/// The project's process preset, which "My Process" is laid over.
+const SYSTEM_PROCESS: &str = "0.20mm Standard @Snapmaker U1 (0.4 nozzle)";
+
+#[test]
+fn an_archive_written_here_is_read_by_the_reference_parents_first() {
+    let home = tempfile::tempdir().unwrap();
+    let out = tempfile::tempdir().unwrap();
+    // A preset standing alone and one laid over it, named so that the
+    // child comes first by name.
+    let folder = user_dir(home.path()).join("process");
+    std::fs::create_dir_all(folder.join("base")).unwrap();
+    std::fs::write(
+        folder.join("base").join("Z root.json"),
+        cpp_process("Z root", "", ""),
+    )
+    .unwrap();
+    std::fs::write(
+        folder.join("A leaf.json"),
+        cpp_process("A leaf", "Z root", ""),
+    )
+    .unwrap();
+    let session = opened(home.path());
+    save_process(&session);
+    let path = out.path().to_string_lossy().into_owned();
+    ask(
+        &session,
+        "preset_export",
+        json!({ "path": path, "type": "process" }),
+    );
+    let archive = std::fs::read(out.path().join("Process presets.zip")).unwrap();
+    let names: Vec<String> = {
+        let mut zip = zip::ZipArchive::new(std::io::Cursor::new(&archive)).unwrap();
+        (0..zip.len())
+            .map(|i| zip.by_index(i).unwrap().name().unwrap().into_owned())
+            .collect()
+    };
+    let root = names.iter().position(|n| n == "Z root.json").unwrap();
+    let leaf = names.iter().position(|n| n == "A leaf.json").unwrap();
+    assert!(root < leaf, "{names:?}");
+    let mut imported = as_the_reference_imports(&archive, &[SYSTEM_PROCESS]);
+    imported.sort();
+    assert_eq!(imported, ["A leaf", "My Process", "Z root"]);
+
+    // A printer bundle: the printer whole first, then its presets, with
+    // the structure the reference writes (`archive_preset_bundle_to_file`).
+    ask(
+        &session,
+        "preset_export",
+        json!({ "path": path, "type": "printer_bundle", "names": [U1] }),
+    );
+    let archive = std::fs::read(out.path().join(format!("{U1}.orca_printer"))).unwrap();
+    let mut zip = zip::ZipArchive::new(std::io::Cursor::new(&archive)).unwrap();
+    let entries: Vec<String> = (0..zip.len())
+        .map(|i| zip.by_index(i).unwrap().name().unwrap().into_owned())
+        .collect();
+    assert_eq!(entries[0], format!("printer/{U1}.json"));
+    assert_eq!(entries.last().unwrap(), bundle::BUNDLE_STRUCTURE);
+    let mut text = String::new();
+    std::io::Read::read_to_string(
+        &mut zip.by_name(bundle::BUNDLE_STRUCTURE).unwrap(),
+        &mut text,
+    )
+    .unwrap();
+    let structure: Value = serde_json::from_str(&text).unwrap();
+    assert_eq!(structure["bundle_type"], "printer config bundle");
+    assert_eq!(structure["printer_preset_name"], U1);
+    assert_eq!(structure["version"], "");
+    assert!(
+        structure["bundle_id"]
+            .as_str()
+            .unwrap()
+            .starts_with(&format!("offline_{U1}_"))
+    );
+    assert_eq!(structure["printer_config"], json!([entries[0]]));
+    let listed: Vec<String> = structure["process_config"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|v| v.as_str().unwrap().to_owned())
+        .collect();
+    assert_eq!(
+        listed,
+        entries
+            .iter()
+            .filter(|e| e.starts_with("process/"))
+            .cloned()
+            .collect::<Vec<_>>()
+    );
+    // The system printer goes in whole, without the print host.
+    let mut printer = String::new();
+    std::io::Read::read_to_string(&mut zip.by_index(0).unwrap(), &mut printer).unwrap();
+    let printer: Value = serde_json::from_str(&printer).unwrap();
+    assert_eq!(printer["from"], "System");
+    assert_eq!(printer["printer_settings_id"], U1);
+    assert!(printer.get("print_host").is_none());
+    // The reference passes the system printer over (it has it) and takes
+    // the rest, the parent before its child.
+    let imported = as_the_reference_imports(&archive, &[SYSTEM_PROCESS]);
+    assert!(imported.contains(&"A leaf".to_owned()), "{imported:?}");
+}
+
+/// Every file under a folder with its bytes.
+fn snapshot(dir: &Path) -> Vec<(PathBuf, Vec<u8>)> {
+    let mut out = Vec::new();
+    let mut stack = vec![dir.to_owned()];
+    while let Some(at) = stack.pop() {
+        let Ok(read) = std::fs::read_dir(&at) else {
+            continue;
+        };
+        for entry in read.flatten() {
+            let path = entry.path();
+            if path.is_dir() {
+                stack.push(path);
+            } else {
+                out.push((path.clone(), std::fs::read(&path).unwrap()));
+            }
+        }
+    }
+    out.sort();
+    out
+}
+
+#[test]
+fn a_malformed_file_is_refused_and_nothing_changes() {
+    let home = tempfile::tempdir().unwrap();
+    let session = opened(home.path());
+    save_process(&session);
+    let before = snapshot(&user_dir(home.path()));
+    let listed = ask(&session, "user_presets", Value::Null);
+    let good = std::fs::read(
+        user_dir(home.path())
+            .join("process")
+            .join("My Process.json"),
+    )
+    .unwrap();
+    let whole = bundle::zip(
+        &[Entry {
+            name: "Other.json".into(),
+            bytes: String::from_utf8(good)
+                .unwrap()
+                .replace("My Process", "Other")
+                .into_bytes(),
+        }],
+        0,
+    )
+    .unwrap();
+    // A zip cut short, a zip under another name, and a .json that is not.
+    let cases = [
+        ("cut.zip", whole[..whole.len() / 2].to_vec()),
+        ("cut.orca_printer", whole[..20].to_vec()),
+        (
+            "broken.json",
+            b"{\"name\": \"Broken\", \"version\": ".to_vec(),
+        ),
+    ];
+    for (file, bytes) in cases {
+        let path = home.path().join(file);
+        std::fs::write(&path, bytes).unwrap();
+        let error = refused(&session, "preset_import", json!({ "path": shown(&path) }));
+        assert!(!error.is_empty(), "{file}");
+        assert_eq!(snapshot(&user_dir(home.path())), before, "{file}");
+        assert_eq!(ask(&session, "user_presets", Value::Null), listed, "{file}");
+    }
+}

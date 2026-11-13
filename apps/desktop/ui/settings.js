@@ -660,11 +660,18 @@ async function showSettings(book) {
   // (Tab.cpp `apply_print_settings_carry`).
   const whose = `${project.id}:${book.filament}`;
   const before = book.seen.get(whose);
+  // (A change of the preset itself is said by Presets.beforeLeaving.)
   if (before !== undefined && before !== answer.name && before && answer.changed > 0) {
-    const what = book.kind === 'filament' ? `filament ${book.filament}` : book.kind;
-    say(answer.changed === 1
-      ? `Kept 1 ${what} setting from "${before}" (revertable).`
-      : `Kept ${answer.changed} ${what} settings from "${before}" (revertable).`);
+    const n = answer.changed;
+    if (book.kind === 'process') {
+      say(n === 1 ? fmt(t('Kept 1 process setting from "%1%" (revertable).'), before)
+        : fmt(t('Kept %1% process settings from "%2%" (revertable).'), n, before));
+    } else if (book.kind === 'filament') {
+      say(n === 1 ? fmt(t('Kept 1 modified filament setting from "%1%" (revertable).'), before)
+        : fmt(t('Kept %1% modified filament settings from "%2%" (revertable).'), n, before));
+    } else {
+      say(fmt(t('Kept %1% modified settings from "%2%" (revertable).'), n, before));
+    }
   }
   book.seen.set(whose, answer.name);
   showSettingsPage(book);

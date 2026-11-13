@@ -866,12 +866,17 @@ async function filamentChanged(event) {
     const slot = Number(select.dataset.filament);
     const choices = state.project.choices;
     const was = choices.filaments[Math.min(slot - 1, choices.filaments.length - 1)];
-    const answer = await Presets.beforeLeaving('filament', slot, select.value);
+    const to = select.value;
+    const answer = await Presets.beforeLeaving('filament', slot, to);
     if (answer === null) {
       select.value = was;
       return;
     }
     if (answer === 'saved' || answer === 'discard') state.project = await call('project', { project: activeId() });
+    // Saving drew the lists anew, on the preset saved: the one picked is
+    // still the one to go to (Tab.cpp `may_discard_current_dirty_preset`).
+    const now = $('filaments').querySelector(`select[data-filament="${slot}"]`);
+    if (now) now.value = to;
   }
   const filaments = [...$('filaments').querySelectorAll('select')].map((select) => select.value);
   await setProject({ filaments });

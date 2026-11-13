@@ -136,6 +136,13 @@ Keep them only if you trust where this file came from and know what the scripts 
 Import 3MF/STL/STEP/SVG/OBJ/AMF/GLB	GUI/MainFrame.cpp:3469
 Import Config from G-code	GUI/MainFrame.cpp:3486
 Ironing flow calibration	GUI/MainFrame.cpp:4093
+Kept 1 process setting from "%1%" (revertable).	GUI/Tab.cpp:9323
+Kept %1% process settings from "%2%" (revertable).	GUI/Tab.cpp:9324
+Kept 1 modified process setting from "%1%" (revertable).	GUI/Tab.cpp:9516
+Kept %1% modified process settings from "%2%" (revertable).	GUI/Tab.cpp:9517
+Kept 1 modified filament setting from "%1%" (revertable).	GUI/Tab.cpp:9519
+Kept %1% modified filament settings from "%2%" (revertable).	GUI/Tab.cpp:9520
+Kept %1% modified settings from "%2%" (revertable).	GUI/Tab.cpp:9522
 Knuckles	GUI/Gizmos/GLGizmoCut.cpp:266
 Lead-in turns	GUI/Gizmos/GLGizmoCut.cpp:275
 Left-hand thread	GUI/Gizmos/GLGizmoCut.cpp:7519
@@ -557,8 +564,6 @@ ${option.label}: the filament's own value
 1 setting changed
 ${count} settings changed
 The engine will not slice with these settings: ${answer.refused}
-Kept 1 ${what} setting from "${before}" (revertable).
-Kept ${answer.changed} ${what} settings from "${before}" (revertable).
 Not shown with the settings as they are: it depends on another setting.
 No setting matches.
 The project names no filament preset.
