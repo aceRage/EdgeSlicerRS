@@ -371,6 +371,131 @@ fn a_preset_others_are_laid_over_is_not_deleted() {
 }
 
 #[test]
+fn a_renamed_preset_keeps_what_is_laid_over_it() {
+    let dir = tempfile::tempdir().unwrap();
+    let folder = user_dir(dir.path()).join("process");
+    std::fs::create_dir_all(folder.join("base")).unwrap();
+    std::fs::write(
+        folder.join("base").join("Root.json"),
+        "{\"name\": \"Root\", \"from\": \"User\", \"inherits\": \"\", \"version\": \"2.3.3.14\", \"wall_loops\": \"5\"}",
+    )
+    .unwrap();
+    std::fs::write(
+        folder.join("Leaf.json"),
+        "{\"name\": \"Leaf\", \"from\": \"User\", \"inherits\": \"Root\", \"version\": \"2.3.3.14\", \"sparse_infill_density\": \"30%\"}",
+    )
+    .unwrap();
+    let session = session(dir.path());
+    ask(&session, "printer_select", json!({ "initial": true }));
+    // Taken names and names the reference refuses are refused here too.
+    for (name, why) in [
+        ("Leaf", "Preset \"Leaf\" already exists."),
+        ("a/b", "Name is invalid;\nIllegal characters: <>[]:/\\|?*\""),
+        ("Default Setting", "Name is unavailable."),
+        (" Trunk", "The name is not allowed to start with a space."),
+        ("", "The name field is not allowed to be empty."),
+    ] {
+        assert_eq!(
+            refused(
+                &session,
+                "preset_rename",
+                json!({ "kind": "process", "preset": "Root", "name": name })
+            ),
+            why
+        );
+    }
+    let (system, _) = process_of(&session);
+    assert_eq!(
+        refused(
+            &session,
+            "preset_rename",
+            json!({ "kind": "process", "preset": system, "name": "Mine" })
+        ),
+        "System presets cannot be renamed."
+    );
+    ask(
+        &session,
+        "preset_rename",
+        json!({ "kind": "process", "preset": "Root", "name": "Trunk" }),
+    );
+    assert!(!folder.join("base").join("Root.json").exists());
+    let trunk = read(&folder.join("base").join("Trunk.json"));
+    assert!(trunk.contains("\"name\": \"Trunk\""), "{trunk}");
+    // The preset laid over it names it by its new name, in its file too,
+    // and keeps its own values and what it inherits.
+    let leaf = read(&folder.join("Leaf.json"));
+    assert!(leaf.contains("\"inherits\": \"Trunk\""), "{leaf}");
+    assert!(
+        leaf.contains("\"sparse_infill_density\": \"30%\""),
+        "{leaf}"
+    );
+    let listed = ask(&session, "user_presets", Value::Null);
+    assert!(
+        listed["process"]
+            .as_array()
+            .unwrap()
+            .contains(&json!({ "name": "Leaf", "inherits": "Trunk" }))
+    );
+    // Read again from the disk, it is laid over the renamed one.
+    let again = Session::with_settings(None, Some(dir.path().to_owned()));
+    let users = again.users();
+    assert_eq!(
+        users
+            .get(Kind::Process, "Leaf")
+            .unwrap()
+            .inherits
+            .as_deref(),
+        Some("Trunk")
+    );
+}
+
+#[test]
+fn a_deleted_preset_gives_way_to_the_next_by_name() {
+    let dir = tempfile::tempdir().unwrap();
+    let session = session(dir.path());
+    ask(&session, "printer_select", json!({ "initial": true }));
+    let (system, _) = process_of(&session);
+    let project = ask(&session, "project", Value::Null);
+    let offered = ask(
+        &session,
+        "presets",
+        json!({ "vendor": project["choices"]["vendor"], "machine": project["choices"]["machine"] }),
+    );
+    // A process the printer is offered that is not its usual one; the
+    // preset saved is named to come just before it.
+    let next = offered["processes"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter_map(Value::as_str)
+        .find(|name| *name != system && name.ends_with(')'))
+        .unwrap()
+        .to_owned();
+    let mine = next.trim_end_matches(')').to_owned();
+    ask(
+        &session,
+        "process_set",
+        json!({ "key": "wall_loops", "value": 4 }),
+    );
+    ask(
+        &session,
+        "preset_save",
+        json!({ "kind": "process", "name": mine }),
+    );
+    let deleted = ask(
+        &session,
+        "preset_delete",
+        json!({ "kind": "process", "preset": mine, "confirm": true }),
+    );
+    assert_eq!(deleted["choices"]["process"], next);
+    assert_eq!(deleted["choices"]["over"], json!({}));
+}
+
+fn read(path: &Path) -> String {
+    std::fs::read_to_string(path).unwrap()
+}
+
+#[test]
 fn a_filament_preset_is_saved_for_filament_2_and_a_printer_preset_picked() {
     let dir = tempfile::tempdir().unwrap();
     let session = session(dir.path());

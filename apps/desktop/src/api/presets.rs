@@ -889,6 +889,20 @@ impl Session {
             let offered = self.offered(&shelf, &machine);
             let base = self.system_printer(&machine);
             let (usual_process, usual_filament) = shelf.usual_for(&base);
+            let kind = kept::kind(book);
+            let fits: Vec<&str> = match book {
+                Book::Process => offered.all_processes(),
+                _ => offered.all_filaments(),
+            };
+            let usual = match book {
+                Book::Process => usual_process.or_else(|| offered.processes.first().cloned()),
+                _ => usual_filament.or_else(|| offered.filaments.first().cloned()),
+            };
+            let replacement = self
+                .next_after(&shelf, kind, name)
+                .filter(|next| fits.contains(&next.as_str()))
+                .or(usual)
+                .unwrap_or_default();
             let mut state = lock(&self.state);
             let Some(at) = state.index_of(id) else {
                 continue;
@@ -897,16 +911,10 @@ impl Session {
             let mut next = project.choices.clone();
             match book {
                 Book::Process if next.process.as_deref() == Some(name) => {
-                    next.process = usual_process
-                        .clone()
-                        .or_else(|| offered.processes.first().cloned());
+                    next.process = Some(replacement);
                     next.over.clear();
                 }
                 Book::Filament => {
-                    let replacement = usual_filament
-                        .clone()
-                        .or_else(|| offered.filaments.first().cloned())
-                        .unwrap_or_default();
                     for slot in 0..count.max(next.filaments.len()) {
                         if next.filaments.get(slot).map(String::as_str) == Some(name) {
                             next.filaments[slot].clone_from(&replacement);
@@ -954,6 +962,33 @@ impl Session {
             }
         });
         Ok(())
+    }
+
+    /// The preset the reference goes to when one is deleted: the next of
+    /// its kind by name (the vendor's and the person's in one list, as a
+    /// `PresetCollection` keeps them), else the one before (Tab.cpp
+    /// `select_preset` with `delete_current`, l.8978). The caller takes it
+    /// when it goes with the printer; else the printer's usual one, as the
+    /// reference's `update_compatible` then picks its preferred preset.
+    /// Every preset here counts as visible: there is no list of enabled
+    /// filaments yet (UI_PARITY section 8).
+    fn next_after(&self, shelf: &Shelf, kind: Kind, name: &str) -> Option<String> {
+        let users = self.users();
+        let mut names: Vec<String> = shelf.all_of(kind);
+        names.extend(
+            users
+                .of(kind)
+                .filter(|preset| preset.visible && preset.name != name)
+                .map(|preset| preset.name.clone()),
+        );
+        names.sort();
+        names.dedup();
+        names.retain(|other| other != name);
+        let at = names.partition_point(|other| other.as_str() < name);
+        names
+            .get(at)
+            .or_else(|| at.checked_sub(1).and_then(|before| names.get(before)))
+            .cloned()
     }
 
     /// The project shown (or named) as it is after a change to the
