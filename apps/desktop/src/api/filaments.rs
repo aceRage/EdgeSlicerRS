@@ -359,10 +359,14 @@ impl Session {
             project.forget();
             // The presets are what was last used with the printer
             // (PresetBundle.cpp `export_selections`, after each of these).
-            if named {
-                let presets = json!({ "filaments": project.choices.filaments });
-                super::printers::remember(&mut state, at, &presets);
-            }
+            // With the filaments' colours and flushing volumes, whatever
+            // the project is sliced with.
+            let presets = if named {
+                json!({ "filaments": project.choices.filaments, "colours": true })
+            } else {
+                json!({ "colours": true })
+            };
+            super::printers::remember(&mut state, at, &presets);
         }
         self.edited(stage.id, json!({ "done": done }))
     }

@@ -36,6 +36,18 @@ pub struct Remembered {
     /// By name ("Textured PEI Plate"). The reference keeps the number of
     /// its `BedType`; a name survives a change to that list.
     pub bed_type: Option<String>,
+    /// The filaments' colours, their several colours and colour modes, as
+    /// the reference keeps them with the printer: each list joined by
+    /// commas (`filament_colors`, `filament_multi_colors`,
+    /// `filament_colour_mode`, PresetBundle.cpp `export_selections`).
+    pub filament_colors: Option<String>,
+    pub filament_multi_colors: Option<String>,
+    pub filament_colour_mode: Option<String>,
+    /// The flushing volumes, each number written as `std::to_string`
+    /// writes it and joined by "|" (`flush_volumes_matrix`,
+    /// `flush_volumes_vector`).
+    pub flush_volumes_matrix: Option<String>,
+    pub flush_volumes_vector: Option<String>,
 }
 
 /// Everything kept.
@@ -206,6 +218,11 @@ impl Data {
                     process: text(entry, "process"),
                     filaments,
                     bed_type: text(entry, "curr_bed_type"),
+                    filament_colors: text(entry, "filament_colors"),
+                    filament_multi_colors: text(entry, "filament_multi_colors"),
+                    filament_colour_mode: text(entry, "filament_colour_mode"),
+                    flush_volumes_matrix: text(entry, "flush_volumes_matrix"),
+                    flush_volumes_vector: text(entry, "flush_volumes_vector"),
                 },
             );
         }
@@ -340,13 +357,25 @@ impl Data {
             .printers
             .iter()
             .map(|(machine, kept)| {
-                json!({
+                let mut entry = json!({
                     "machine": machine,
                     "vendor": kept.vendor,
                     "process": kept.process,
                     "filaments": kept.filaments,
                     "curr_bed_type": kept.bed_type,
-                })
+                });
+                for (key, value) in [
+                    ("filament_colors", &kept.filament_colors),
+                    ("filament_multi_colors", &kept.filament_multi_colors),
+                    ("filament_colour_mode", &kept.filament_colour_mode),
+                    ("flush_volumes_matrix", &kept.flush_volumes_matrix),
+                    ("flush_volumes_vector", &kept.flush_volumes_vector),
+                ] {
+                    if let (Some(value), Some(entry)) = (value, entry.as_object_mut()) {
+                        entry.insert(key.into(), json!(value));
+                    }
+                }
+                entry
             })
             .collect();
         root.insert("printers".into(), json!(printers));
@@ -501,6 +530,9 @@ mod tests {
                 process: Some("0.20mm Standard @Snapmaker U1 (0.4 nozzle)".into()),
                 filaments: vec!["Snapmaker PLA @U1".into(), "Snapmaker PETG @U1".into()],
                 bed_type: Some("Cool Plate".into()),
+                filament_colors: Some("#FF0000,#00FF00".into()),
+                flush_volumes_matrix: Some("0.000000|140.000000|140.000000|0.000000".into()),
+                ..Remembered::default()
             },
         );
         data.arrange

@@ -147,6 +147,10 @@ struct Project {
     failures: BTreeMap<u32, String>,
     /// What stands on each plate looked at, seen from above.
     footprints: HashMap<u32, Arc<Vec<Footprint>>>,
+    /// The filament colours and flushing volumes kept with the printer it
+    /// first got, for a model read later that has no settings of its own
+    /// (PresetBundle.cpp `load_selections`): colours, matrix, vector.
+    remembered: Option<printers::Lists>,
 }
 
 /// A project's model as it stands at one moment: as it was opened, or as
@@ -567,6 +571,7 @@ impl Project {
             results: BTreeMap::new(),
             failures: BTreeMap::new(),
             footprints: HashMap::new(),
+            remembered: None,
         }
     }
 
@@ -583,7 +588,13 @@ impl Project {
 
     /// New, empty and untouched: opening a file takes its place.
     fn blank(&self) -> bool {
-        self.file.is_none() && !self.dirty()
+        // An empty model that only took what was kept with its printer
+        // (its colours) is still empty.
+        let empty = self
+            .file
+            .as_ref()
+            .is_none_or(|file| file.path.is_none() && file.model.objects().is_empty());
+        empty && !self.dirty()
     }
 
     fn slicing(&self) -> bool {
@@ -621,6 +632,23 @@ impl Project {
         // (PresetBundle.cpp `load_project_embedded_presets`); those of the
         // project it replaces go (`reset_project_embedded_presets`).
         self.choices.inside = file.model.inside_presets().0;
+        // A model without settings of its own takes the colours and
+        // flushing volumes kept with the printer, as the reference's
+        // project settings hold them when a model is added.
+        let file = match &self.remembered {
+            Some(lists) => {
+                let mut model = file.model.clone();
+                if lists.give(&mut model) {
+                    Arc::new(File {
+                        path: file.path.clone(),
+                        ..File::of(model)
+                    })
+                } else {
+                    file
+                }
+            }
+            None => file,
+        };
         // A project's own bed type is in force until another is chosen
         // for it: the one that went with the printer the empty project
         // was on is not a choice made for this file.
@@ -847,8 +875,14 @@ impl State {
             ..Choices::default()
         };
         project.baseline = project.choices.clone();
+        let machine = project.choices.machine.clone();
         self.active = project.id;
         self.projects.insert(from + 1, project);
+        // A new project starts with what was kept with its printer, as the
+        // reference's project settings do.
+        if let Some(machine) = machine {
+            printers::give_remembered(self, from + 1, &machine);
+        }
         from + 1
     }
 

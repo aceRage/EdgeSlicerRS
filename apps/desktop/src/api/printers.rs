@@ -282,7 +282,7 @@ pub(super) fn keep(state: &mut State, change: impl FnOnce(&mut super::store::Dat
 /// `export_selections`). A project sliced with its own settings has the
 /// printer it was saved with; only its bed type is chosen here.
 pub(super) fn remember(state: &mut State, at: usize, args: &Value) {
-    if !["bed_type", "process", "filaments"]
+    if !["bed_type", "process", "filaments", "colours"]
         .iter()
         .any(|key| args.get(key).is_some())
     {
@@ -304,8 +304,12 @@ pub(super) fn remember(state: &mut State, at: usize, args: &Value) {
     let Some(machine) = machine else {
         return;
     };
+    let lists = Lists::of(project);
     keep(state, |data| {
         let kept = data.printers.entry(machine).or_default();
+        if let Some(lists) = &lists {
+            lists.keep(kept);
+        }
         // A bed type let go of (back to the project's own) is not one
         // that was used with the printer.
         if args.get("bed_type").is_some() && choices.bed_type.is_some() {
@@ -321,6 +325,124 @@ pub(super) fn remember(state: &mut State, at: usize, args: &Value) {
             }
         }
     });
+}
+
+/// The filament colours and flushing volumes kept with a printer, as the
+/// reference writes them in `export_selections` (PresetBundle.cpp
+/// l.2733–2775) and reads them in `load_selections` (l.2456–2468).
+#[derive(Clone, Debug, Default, PartialEq)]
+pub(super) struct Lists {
+    pub(super) colours: Vec<String>,
+    pub(super) multi: Vec<String>,
+    pub(super) modes: Vec<String>,
+    pub(super) matrix: Vec<f64>,
+    pub(super) vector: Vec<f64>,
+}
+
+impl Lists {
+    /// What a project's filaments are as it stands: its model's colours
+    /// (one colour each, a plain colour its own one, mode "0", as
+    /// `FilamentColor::ToMultiColorsString` writes it) and flushing volumes.
+    /// None while it holds none of its own (a model whose filaments were
+    /// never changed takes the presets'): what was kept stays.
+    pub(super) fn of(project: &super::Project) -> Option<Self> {
+        let model = project.file.as_ref()?.model.clone();
+        model.underlying()?;
+        let colours = model.filament_colours();
+        let held = |key: &str| -> Option<Vec<String>> {
+            model
+                .underlying()
+                .and_then(|settings| settings.texts(key))
+                .filter(|items| items.len() == colours.len())
+                .map(<[String]>::to_vec)
+        };
+        let (matrix, vector) = model.flush_volumes();
+        Some(Self {
+            multi: held("filament_multi_colors").unwrap_or_else(|| colours.clone()),
+            modes: held("filament_colour_mode").unwrap_or_else(|| vec!["0".into(); colours.len()]),
+            colours,
+            matrix,
+            vector,
+        })
+    }
+
+    /// Written into what is kept with the printer.
+    pub(super) fn keep(&self, kept: &mut super::store::Remembered) {
+        // `std::to_string(double)`: six decimals.
+        let numbers = |values: &[f64]| {
+            values
+                .iter()
+                .map(|value| format!("{value:.6}"))
+                .collect::<Vec<_>>()
+                .join("|")
+        };
+        kept.filament_colors = Some(self.colours.join(","));
+        kept.filament_multi_colors = Some(self.multi.join(","));
+        kept.filament_colour_mode = Some(self.modes.join(","));
+        kept.flush_volumes_matrix = Some(numbers(&self.matrix));
+        kept.flush_volumes_vector = Some(numbers(&self.vector));
+    }
+
+    /// Read from what is kept with a printer; none where nothing is.
+    pub(super) fn kept(kept: &super::store::Remembered) -> Option<Self> {
+        let split = |text: &Option<String>| -> Vec<String> {
+            text.as_deref()
+                .map(|text| text.split(',').map(str::to_owned).collect())
+                .unwrap_or_default()
+        };
+        // `parse_flush_volume_list`: every number, else none.
+        let numbers = |text: &Option<String>| -> Vec<f64> {
+            text.as_deref()
+                .and_then(|text| {
+                    text.split('|')
+                        .map(|number| number.trim().parse::<f64>().ok())
+                        .collect::<Option<Vec<f64>>>()
+                })
+                .unwrap_or_default()
+        };
+        let lists = Self {
+            colours: split(&kept.filament_colors),
+            multi: split(&kept.filament_multi_colors),
+            modes: split(&kept.filament_colour_mode),
+            matrix: numbers(&kept.flush_volumes_matrix),
+            vector: numbers(&kept.flush_volumes_vector),
+        };
+        (!lists.colours.is_empty() || !lists.matrix.is_empty()).then_some(lists)
+    }
+
+    /// Given to a model without settings of its own: whether it took them.
+    pub(super) fn give(&self, model: &mut edge_engine::Model) -> bool {
+        model.take_remembered(&self.colours, &self.matrix, &self.vector)
+    }
+}
+
+/// A project that has just got its first printer takes what was kept with
+/// it (`load_selections`): now, for its model as it stands, and later for
+/// a model read into it without settings of its own. Nothing it had is
+/// counted as a change.
+pub(super) fn give_remembered(state: &mut State, at: usize, machine: &str) {
+    let Some(lists) = state.store.data.printers.get(machine).and_then(Lists::kept) else {
+        return;
+    };
+    let project = &mut state.projects[at];
+    let was_dirty = project.dirty();
+    let mut model = project
+        .file
+        .as_ref()
+        .map_or_else(edge_engine::Model::new, |file| file.model.clone());
+    if lists.give(&mut model) {
+        let path = project.file.as_ref().and_then(|file| file.path.clone());
+        let file = Arc::new(super::File {
+            path,
+            ..super::File::of(model)
+        });
+        project.file = Some(file.clone());
+        if !was_dirty {
+            project.opened = Some(file);
+        }
+        project.forget();
+    }
+    project.remembered = Some(lists);
 }
 
 impl Session {
@@ -555,6 +677,8 @@ impl Session {
         project.choices = choices.clone();
         if initial {
             project.baseline = choices.clone();
+            // Its first printer: what was kept with it (`load_selections`).
+            give_remembered(&mut state, at, machine);
         }
         // A printer kept inside the project is not remembered: no other
         // project has it.
@@ -564,16 +688,37 @@ impl Session {
         // What the reference writes whenever its selection changes
         // (`export_selections`): the printer, and what it is used with.
         let (vendor, machine) = (vendor.to_owned(), machine.to_owned());
+        // The project's own colours and flushing volumes go with the
+        // printer it is now on (Tab.cpp l.9280–9303 keeps them through a
+        // switch and writes them for the new printer).
+        let lists = Lists::of(&state.projects[at]);
         keep(&mut state, |data| {
-            data.printers.insert(
-                machine.clone(),
-                super::store::Remembered {
-                    vendor: Some(vendor.clone()),
-                    process: choices.process,
-                    filaments: choices.filaments,
-                    bed_type: choices.bed_type,
-                },
-            );
+            let mut kept = super::store::Remembered {
+                vendor: Some(vendor.clone()),
+                process: choices.process,
+                filaments: choices.filaments,
+                bed_type: choices.bed_type,
+                ..Default::default()
+            };
+            match &lists {
+                Some(lists) => lists.keep(&mut kept),
+                // What was kept of the colours stays where the project
+                // holds none of its own.
+                None => {
+                    if let Some(old) = data.printers.get(&machine) {
+                        kept.filament_colors.clone_from(&old.filament_colors);
+                        kept.filament_multi_colors
+                            .clone_from(&old.filament_multi_colors);
+                        kept.filament_colour_mode
+                            .clone_from(&old.filament_colour_mode);
+                        kept.flush_volumes_matrix
+                            .clone_from(&old.flush_volumes_matrix);
+                        kept.flush_volumes_vector
+                            .clone_from(&old.flush_volumes_vector);
+                    }
+                }
+            }
+            data.printers.insert(machine.clone(), kept);
             data.last = Some((vendor, machine));
         });
         Ok(())
@@ -1936,3 +2081,6 @@ mod tests {
         assert_eq!(on(Some("2"), Some(&a1)), "Engineering Plate");
     }
 }
+
+#[cfg(test)]
+mod lists_tests;

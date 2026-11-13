@@ -186,6 +186,38 @@ impl Model {
         Ok(())
     }
 
+    /// What the reference gives the project it starts on a printer from
+    /// what it kept with that printer (PresetBundle.cpp `load_selections`
+    /// l.2456–2468): each filament's colour, as many as it has (the rest
+    /// keep theirs), and the flushing volumes where they are of its size.
+    /// A model with settings of its own keeps them: they are its file's.
+    /// Whether anything was taken.
+    pub fn take_remembered(&mut self, colours: &[String], matrix: &[f64], vector: &[f64]) -> bool {
+        if self.settings.is_some() {
+            return false;
+        }
+        let count = self.filament_count();
+        let mut now = self.filament_colours();
+        for (at, colour) in colours.iter().enumerate().take(count) {
+            if is_colour(colour) {
+                now[at] = colour.to_ascii_uppercase();
+            }
+        }
+        let (mut flush_matrix, mut flush_vector) = self.flush_volumes();
+        if matrix.len() == count * count {
+            flush_matrix = matrix.to_vec();
+        }
+        if vector.len() == 2 * count {
+            flush_vector = vector.to_vec();
+        }
+        let held = self
+            .underlying()
+            .map_or(1, |settings| lists::count(settings));
+        let sources: Vec<usize> = (0..count).map(|at| at.min(held - 1)).collect();
+        self.relay(&sources, &|at| at, &now, &flush_matrix, &flush_vector);
+        true
+    }
+
     /// Whether the filaments have been changed since the file was read:
     /// its own settings, as they were, no longer say what they are.
     pub fn filaments_edited(&self) -> bool {

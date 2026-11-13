@@ -282,7 +282,17 @@ fn a_preset_inside_is_saved_with_the_project_opened_again_and_slices_the_same() 
         json!({ "project": opened, "process": "Project process", "filaments": ["Project PLA"] }),
     );
     let after = sliced(&other, opened, &other_dir.path().join("after.gcode"));
-    assert_eq!(moves(&before), moves(&after));
+    let (before_moves, after_moves) = (moves(&before), moves(&after));
+    let differ: Vec<(&&str, &&str)> = before_moves
+        .iter()
+        .zip(&after_moves)
+        .filter(|(a, b)| a != b)
+        .take(10)
+        .collect();
+    assert!(
+        differ.is_empty() && before_moves.len() == after_moves.len(),
+        "{differ:?}"
+    );
     // Saved again, the entries are written as they were read.
     let again = other_dir.path().join("again.3mf");
     ask(
