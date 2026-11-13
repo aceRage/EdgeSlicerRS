@@ -263,6 +263,19 @@ pub(crate) fn faces(
         && wall > 0
         && f64::from(crate::depth::scaled_f32(depth.normal)) + 100.0 >= wall as f64;
     let join = Join::MITER;
+    // Each layer's outline grown and shrunk by a wall stack, which every
+    // face reaching it uses.
+    let (grown, shrunk): (Vec<Vec<ExPolygon>>, Vec<Vec<ExPolygon>>) = outlines
+        .par_iter()
+        .map(|outline| -> Result<_, ClipError> {
+            Ok((
+                edge_clip::offset(outline, wall, join)?,
+                edge_clip::offset(outline, -wall, join)?,
+            ))
+        })
+        .collect::<Result<Vec<_>, _>>()?
+        .into_iter()
+        .unzip();
     // On its own layer, and carried into the others from above and from
     // below, as far as the shell takes it (and past it): [layer][colour].
     let (mut own, mut legacy) = (none(), none());
@@ -299,27 +312,27 @@ pub(crate) fn faces(
                         } else {
                             shell_layers
                         };
-                        // The layer next to the face, beyond it.
+                        // The layer next to the face, beyond it, grown by a
+                        // wall stack.
                         let beyond = if up {
-                            outlines.get(layer + 1)
+                            Some(layer + 1).filter(|above| *above < count)
                         } else {
-                            layer.checked_sub(1).map(|below| &outlines[below])
+                            layer.checked_sub(1)
                         };
-                        let beyond = beyond.filter(|beyond| !beyond.is_empty());
+                        let beyond = beyond
+                            .filter(|beyond| !outlines[*beyond].is_empty())
+                            .map(|beyond| grown[beyond].as_slice());
                         // The part of the face no wall of the next layer
                         // stands on (`exposed_surface_part`), all of it
                         // where the depth carries the face whole.
                         let bare = match beyond {
-                            Some(beyond) if !deep => edge_clip::difference(
-                                &face,
-                                &edge_clip::offset(beyond, wall, join)?,
-                            )?,
+                            Some(beyond) if !deep => edge_clip::difference(&face, beyond)?,
                             _ => face.clone(),
                         };
                         // Where the depth goes deeper than the shell, the
                         // flat parts of the face stop at the shell.
                         let flat = if deep && descent > shell_layers {
-                            flat_cap(&face, beyond.copied(), wall)?
+                            flat_cap(&face, beyond, wall)?
                         } else {
                             Vec::new()
                         };
@@ -335,22 +348,28 @@ pub(crate) fn faces(
                             (layer + 1..(layer + descent).min(count)).collect()
                         };
                         let mut deposited = false;
+                        // The face drawn in by a wall stack a layer only
+                        // shrinks as it goes: once gone it stays gone.
+                        let mut drawn_in = true;
                         for other in behind {
                             inset -= wall;
                             within = edge_clip::intersection(&within, outlines[other])?;
-                            let mut reached = edge_clip::intersection(
-                                &face,
-                                &edge_clip::offset(&within, inset, join)?,
-                            )?;
+                            let mut reached = if drawn_in {
+                                edge_clip::intersection(
+                                    &face,
+                                    &edge_clip::offset(&within, inset, join)?,
+                                )?
+                            } else {
+                                Vec::new()
+                            };
+                            drawn_in = !reached.is_empty();
                             if !bare.is_empty() {
                                 let reachable = edge_clip::intersection(&bare, &within)?;
                                 if deep && reachable.is_empty() {
                                     break;
                                 }
-                                reached.extend(edge_clip::intersection(
-                                    &reachable,
-                                    &edge_clip::offset(outlines[other], -wall, join)?,
-                                )?);
+                                reached
+                                    .extend(edge_clip::intersection(&reachable, &shrunk[other])?);
                                 reached = edge_clip::union_ex(&reached)?;
                             }
                             let steps = other.abs_diff(layer);
@@ -488,7 +507,8 @@ fn shell_layers_of(z: &[[f64; 2]], face: usize, up: bool, mm: f32) -> usize {
 }
 
 /// The flat parts of a face: each piece of it more than a wall stack from
-/// the next layer's outline (or all of it, with none) that is still there
+/// the next layer's outline (`beyond`, given grown by the wall stack; or
+/// all of it, with none) that is still there
 /// opened by a wall stack (by three quarters of one, with no next layer),
 /// grown back by two and kept within the face (`flat_cap_component_ex`).
 fn flat_cap(
@@ -498,10 +518,7 @@ fn flat_cap(
 ) -> Result<Vec<ExPolygon>, ClipError> {
     let join = Join::MITER;
     let (exposed, opening) = match beyond {
-        Some(beyond) if wall > 0 => (
-            edge_clip::difference(face, &edge_clip::offset(beyond, wall, join)?)?,
-            wall,
-        ),
+        Some(beyond) if wall > 0 => (edge_clip::difference(face, beyond)?, wall),
         _ => (face.to_vec(), (0.75 * wall as f64).round() as Coord),
     };
     if exposed.is_empty() {
