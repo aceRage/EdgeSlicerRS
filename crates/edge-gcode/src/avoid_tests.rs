@@ -74,6 +74,8 @@ fn layer<'a>(z: f64, paths: &'a [ExtrusionPath], shelter: &'a [ExPolygon]) -> La
         enter: &[],
         wipe: None,
         tower: &[],
+        tower_z: None,
+        tower_first: false,
         around: &[],
         support: &[],
         loops: &[],

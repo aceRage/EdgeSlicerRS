@@ -1636,11 +1636,43 @@ G-code's 200 mm purge on the Centauri Carbon not counted, where the
 reference counts it. The twotone cube purging in the tower with one
 flush doubled and the multiplier at 0.5 was refused as off the bed; the
 tower is now moved from 15 x 220 to 15 x 192.194, as there, and is the
-reference's length (73.77 m). Still not done: `wipe_tower_no_sparse_layers`
-(the reference leaves out the tower's layers with no change, lowers the
-nozzle to the tower and back, and refuses a plate where the toolhead
-would then meet a printed object; noted) and the tower turned end for
+reference's length (73.77 m). Still not done: the tower turned end for
 end on alternate layers.
+
+**A prime tower without sparse layers** (`wipe_tower_no_sparse_layers`,
+2026-11-12). Both towers leave out the layers with no tool change and
+stand only as tall as the layers they lay, each layer's top the sum of
+the layers laid below (WipeTower.cpp `compute_compacted_wipe_tower_z`);
+a smooth timelapse keeps every layer. Bambu's tower (WipeTower.cpp)
+starts on the first layer with a change, which is solid and has the full
+brim; the other (WipeTower2.cpp) keeps the print's first layer as its
+own, laid or not, and lays its lines and frame at the first layer's
+speed while no more than one change has been made, as there. The writer
+takes the nozzle over the tower at the layer's height, straight down to
+the tower's layer, back up before the change G-code and down after it,
+and straight up before it leaves for the part (GCode.cpp `append_tcr`,
+`append_tcr2`); a test checks that no move made below the layer crosses
+the part. A plate where the toolhead would then meet what is printed is
+refused with the reference's words, before slicing from the tower's
+estimated size and each object's height, and after from what the tower
+lays and how far each object rises above it (Print.cpp
+`compacted_wipe_tower_clearance_valid`,
+`validate_compacted_wipe_tower_clearance`): the nozzle's cone, the head's
+radius, the rod in the tower's band across the bed and the lid.
+`edge-parity` now reports how many layers each file lays the tower on,
+how tall it stands and each layer's height. On `bands` (a post with two
+bands of a second filament, `tools/make_fixture.py`) on a U1, a P1S and
+a Voron 2.4 of one nozzle: the tower on 4 / 4 layers, up to 0.800 / 0.800
+mm, each layer at the same height as the reference's; with the setting
+off nothing changes. The U1 refused with the tower at x 222 and accepted
+at 226, as the reference. Not as the reference, on purpose (each said
+in the code, the reference's being plain mistakes): the brim's chamfer steps a loop for each
+layer of the tower laid, not for each of the print's layers; Bambu's
+tower keeps its first laid layer solid where the tower is spread for its
+height; a row's or a ram's layer below is the tower's layer laid last;
+and the spiral the clearance allows for takes `travel_slope` in degrees,
+which makes the check 2.3 mm stricter on a U1 (the reference accepts the
+tower at x 224 and 225, here refused).
 
 **Bambu Lab's prime tower against the C++ slicer** (2026-11-12,
 `edge-parity`; both files timed here, each the way its printer plans
