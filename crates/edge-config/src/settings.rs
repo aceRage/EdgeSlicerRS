@@ -109,6 +109,18 @@ impl Settings {
                     Value::One(scalar(other).ok_or_else(|| format!("{key} is not text or a list"))?)
                 }
             };
+            // An old profile's value written as a percentage, where the
+            // setting now takes a number: the reference drops it, so the
+            // value comes from the preset inherited or the default
+            // (PrintConfig.cpp `handle_legacy`, "this is old profile in
+            // which value is expressed as percentage").
+            let percent = match &value {
+                Value::One(text) => text.contains('%'),
+                Value::Many(items) => items.iter().any(|item| item.contains('%')),
+            };
+            if percent && LEGACY_PERCENT.contains(&key.as_str()) {
+                continue;
+            }
             settings.insert(key, value);
         }
         Ok(Self(settings, None))
@@ -200,10 +212,14 @@ impl Settings {
         let Some(text) = self.first(key) else {
             return Ok(None);
         };
-        text.trim()
-            .parse()
-            .map(Some)
-            .map_err(|_| bad(key, text, "a whole number"))
+        match text.trim().parse() {
+            Ok(number) => Ok(Some(number)),
+            // "75%" of a whole number is 75, as the reference reads it.
+            Err(_) => plain_percent(key, text)
+                .filter(|number| number.fract() == 0.0)
+                .map(|number| Some(number as i64))
+                .ok_or_else(|| bad(key, text, "a whole number")),
+        }
     }
 
     /// An on/off setting, stored as `1` or `0`.
@@ -262,10 +278,48 @@ fn scalar(value: serde_json::Value) -> Option<String> {
     }
 }
 
+/// Settings `handle_legacy` drops when their value holds a `%`.
+const LEGACY_PERCENT: [&str; 7] = [
+    "initial_layer_print_height",
+    "initial_layer_speed",
+    "internal_solid_infill_speed",
+    "top_surface_speed",
+    "support_interface_speed",
+    "outer_wall_speed",
+    "support_object_xy_distance",
+];
+
+/// Every setting the reference declares as a plain number or list of
+/// them (`coFloat`, `coFloats`, `coInt`, `coInts`, and the per-axis and
+/// per-filament ones it makes of them), one to a line, sorted.
+const PLAIN_NUMBERS: &str = include_str!("plain_numbers.txt");
+
+/// Whether the reference reads `key` as a plain number.
+pub fn plain_number(key: &str) -> bool {
+    PLAIN_NUMBERS
+        .lines()
+        .collect::<Vec<_>>()
+        .binary_search(&key)
+        .is_ok()
+}
+
+/// A plain number written with a `%` after it, as some profiles write
+/// speeds: the reference reads the number and ignores the rest, so "50%"
+/// is 50 (Config.cpp `deserialize_float_value`, for whole numbers the
+/// stream's `>>`). Only for a setting that takes no percentage; one that
+/// does is read by [`Settings::float_or_percent`].
+fn plain_percent(key: &str, text: &str) -> Option<f64> {
+    let number = text.trim().strip_suffix('%')?.trim_end();
+    plain_number(key)
+        .then(|| number.parse::<f64>().ok())
+        .flatten()
+        .filter(|number| number.is_finite())
+}
+
 fn parse_float(key: &str, text: &str) -> Result<f64, ConfigError> {
     match text.trim().parse::<f64>() {
         Ok(number) if number.is_finite() => Ok(number),
-        _ => Err(bad(key, text, "a number")),
+        _ => plain_percent(key, text).ok_or_else(|| bad(key, text, "a number")),
     }
 }
 
@@ -385,5 +439,66 @@ mod tests {
         assert_eq!(child.text("b"), Some("parent"));
         assert_eq!(child.text("name"), Some("c"));
         assert_eq!(child.get("x"), None);
+    }
+
+    /// The reference's three ways with a "%" after a number.
+    #[test]
+    fn percentages_read_as_the_reference_reads_them() {
+        let read = |json: &str| Settings::from_json(json).unwrap();
+        // One of the old settings that took a percentage: dropped, so
+        // the inherited value stands (`handle_legacy`).
+        let old = read(
+            r#"{"support_interface_speed": ["50%"], "outer_wall_speed": "80%",
+                "support_object_xy_distance": "60%", "initial_layer_print_height": "0.2"}"#,
+        );
+        assert_eq!(old.get("support_interface_speed"), None);
+        assert_eq!(old.get("outer_wall_speed"), None);
+        assert_eq!(old.get("support_object_xy_distance"), None);
+        assert_eq!(old.float("initial_layer_print_height").unwrap(), Some(0.2));
+        let mut child = read(r#"{"support_interface_speed": ["100%"]}"#);
+        child.inherit(&read(r#"{"support_interface_speed": ["60"]}"#), |_| false);
+        assert_eq!(
+            child.floats("support_interface_speed").unwrap(),
+            Some(vec![Some(60.0)])
+        );
+        // Any other plain number: the number, whatever follows it.
+        let plain = read(
+            r#"{"bridge_speed": ["50%", "30"], "sparse_infill_speed": "100 %",
+                "overhang_fan_speed": ["75%"], "additional_cooling_fan_speed": ["80%"]}"#,
+        );
+        assert_eq!(
+            plain.floats("bridge_speed").unwrap(),
+            Some(vec![Some(50.0), Some(30.0)])
+        );
+        assert_eq!(plain.float("sparse_infill_speed").unwrap(), Some(100.0));
+        assert_eq!(plain.integer("overhang_fan_speed").unwrap(), Some(75));
+        assert_eq!(
+            plain.integer("additional_cooling_fan_speed").unwrap(),
+            Some(80)
+        );
+        // A number or a percentage keeps its percentage.
+        let either = read(r#"{"small_perimeter_speed": ["50%"], "wipe_speed": "80%"}"#);
+        assert_eq!(
+            either.float_or_percent("small_perimeter_speed").unwrap(),
+            Some(FloatOrPercent::Percent(50.0))
+        );
+        assert_eq!(
+            either.float_or_percent("wipe_speed").unwrap(),
+            Some(FloatOrPercent::Percent(80.0))
+        );
+        // And is not quietly read as a plain number: asked for as one,
+        // a percentage is refused, so that a stage reading it wrongly
+        // is found out.
+        assert!(either.float("wipe_speed").is_err());
+        assert!(
+            read(r#"{"sparse_infill_density": "15%"}"#)
+                .float("sparse_infill_density")
+                .is_err()
+        );
+        assert!(
+            read(r#"{"bridge_speed": "fast"}"#)
+                .floats("bridge_speed")
+                .is_err()
+        );
     }
 }

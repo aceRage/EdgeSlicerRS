@@ -567,7 +567,13 @@ fn the_nozzle_is_below_the_layer_only_over_the_tower() {
         "0.20mm Standard @BBL X1C",
         "Bambu PLA Basic @BBL X1C",
     );
-    let cases: [(&str, &Chosen, &str); 7] = [
+    let mk4 = printer(
+        "Prusa",
+        "Prusa MK4 MMU3 0.4 nozzle",
+        "0.20mm SPEED @MK4 MMU3 0.4",
+        "Generic PLA @Prusa MK4 MMU3",
+    );
+    let cases: [(&str, &Chosen, &str); 8] = [
         // A multi-tool printer that rams the filament put away on the
         // tower, as the U1 is shipped.
         ("rammed", &u1, r#""tool_change_on_wipe_tower": "0""#),
@@ -592,6 +598,21 @@ fn the_nozzle_is_below_the_layer_only_over_the_tower() {
             "one nozzle",
             &u1,
             r#""single_extruder_multi_material": "1", "enable_filament_ramming": "0""#,
+        ),
+        // A printer of one nozzle as shipped, the reference's WipeTower2.
+        // Its tower, as shipped, stands too near the post to go down to;
+        // its start G-codes, the printer's and the filament's, match text
+        // against patterns (`=~`), and its layer change G-codes ask for
+        // `extruded_weight_total`, neither of which the templates here
+        // have yet, so plain ones stand in for those four.
+        (
+            "Prusa MK4 MMU3",
+            &mk4,
+            r#""wipe_tower_x": ["20"], "wipe_tower_y": ["20"],
+                "machine_start_gcode": "G28\nG1 Z5 F720",
+                "filament_start_gcode": ["; filament start", "; filament start"],
+                "before_layer_change_gcode": "; before the layer change",
+                "layer_change_gcode": "; layer change""#,
         ),
         // Bambu's tower on a multi-tool printer and on a Bambu Lab one.
         ("Bambu tower", &u1, r#""wipe_tower_type": "type1""#),

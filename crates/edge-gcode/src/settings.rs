@@ -702,6 +702,17 @@ impl PrintSettings {
             };
         let nozzle_diameter = number("nozzle_diameter", defaults.nozzle_diameter)?;
         let travel_speed = number("travel_speed", defaults.travel_speed)?;
+        // The first layer's travel speed, a speed or a share of
+        // `travel_speed` (GCodeWriter.cpp `active_travel_speed`), is not
+        // followed yet: said where it differs from the speed used.
+        let first_travel =
+            listed_share("initial_layer_travel_speed", FloatOrPercent::Percent(100.0))?
+                .resolve(travel_speed);
+        if (first_travel - travel_speed).abs() > 1e-6 {
+            unsupported.push(format!(
+                "initial_layer_travel_speed: the first layer travels at travel_speed ({travel_speed} mm/s), not {first_travel} mm/s"
+            ));
+        }
         // The bed is the box around the corners of `printable_area`, each "XxY".
         let bed = settings.texts("printable_area").and_then(|corners| {
             let mut extent: Option<[f64; 4]> = None;
@@ -1339,6 +1350,13 @@ fn variables(
     let mut variables = Variables::default();
     for (key, value) in settings.iter() {
         match value {
+            // A filament's option is a list in the reference, one entry
+            // for each filament, even where only its default stands for
+            // all of them: a template may ask for any filament's
+            // (Prusa's MMU3 start G-code, `required_nozzle_HRC[4]`).
+            Setting::One(text) if edge_config::filaments::is_per_filament(key) => {
+                variables.set_list(key, vec![Value::text(text)])
+            }
             Setting::One(text) => variables.set(key, Value::text(text)),
             Setting::Many(texts) => {
                 variables.set_list(key, texts.iter().map(Value::text).collect())
@@ -1655,6 +1673,51 @@ fn filament_retraction_overrides(settings: &Settings, variables: &mut Variables)
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The first layer's travel speed is not followed; where it differs
+    /// from the travel speed, as a speed or a share of it, that is said.
+    #[test]
+    fn a_first_layer_travel_speed_not_followed_is_said() {
+        let notes = |json: &str| {
+            PrintSettings::from_settings(&Settings::from_json(json).unwrap())
+                .unwrap()
+                .unsupported
+                .into_iter()
+                .filter(|note| note.starts_with("initial_layer_travel_speed"))
+                .count()
+        };
+        assert_eq!(notes(r#"{"travel_speed": ["300"]}"#), 0);
+        assert_eq!(
+            notes(r#"{"travel_speed": ["300"], "initial_layer_travel_speed": ["100%"]}"#),
+            0
+        );
+        assert_eq!(
+            notes(r#"{"travel_speed": ["300"], "initial_layer_travel_speed": ["300"]}"#),
+            0
+        );
+        assert_eq!(
+            notes(r#"{"travel_speed": ["300"], "initial_layer_travel_speed": ["50%"]}"#),
+            1
+        );
+        assert_eq!(
+            notes(r#"{"travel_speed": ["300"], "initial_layer_travel_speed": ["150"]}"#),
+            1
+        );
+    }
+
+    /// A filament's option that only its default gives is still a list,
+    /// so a template may ask for any filament's entry.
+    #[test]
+    fn a_filament_option_left_at_its_default_is_a_list() {
+        let settings =
+            Settings::from_json(r#"{"required_nozzle_HRC": "0", "layer_height": "0.2"}"#).unwrap();
+        let variables = variables(&settings, None, None, None, None);
+        assert_eq!(
+            variables.list("required_nozzle_HRC").map(<[Value]>::len),
+            Some(1)
+        );
+        assert!(variables.list("layer_height").is_none());
+    }
 
     #[test]
     fn absent_settings_keep_reference_defaults() {
