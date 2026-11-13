@@ -1683,10 +1683,11 @@ impl Writer<'_> {
     }
 
     /// Puts the tool in use away and takes up another, mid-print. `over`
-    /// is where on the prime tower the new tool starts: the old one goes
-    /// there first, so that it waits over the tower, not over the part,
-    /// while the new one comes up to temperature (WipeTower2.cpp
-    /// `tool_change`, which unloads on the tower).
+    /// is where on the prime tower the new tool starts: where the change
+    /// is made on the tower, the old one goes there first, so that it
+    /// waits over the tower, not over the part, while the new one comes
+    /// up to temperature (WipeTower2.cpp `tool_change`, which unloads on
+    /// the tower). `first` says nothing of the layer is laid yet.
     #[allow(clippy::too_many_arguments)]
     fn change_tool(
         &mut self,
@@ -1697,6 +1698,7 @@ impl Writer<'_> {
         over: Option<Point2>,
         ram: Option<Ram<'_>>,
         low: Option<f64>,
+        first: bool,
     ) -> Result<(), GcodeError> {
         let from = self.state.tool;
         let s = self.settings;
@@ -1733,7 +1735,12 @@ impl Writer<'_> {
                 self.custom("filament_end_gcode", template)?;
             }
         }
-        match ram.filter(|_| self.state.primed) {
+        let ram = ram.filter(|_| self.state.primed);
+        // A tool of the reference's other tower changed where it is
+        // (described below).
+        let in_place =
+            ram.is_none() && !s.bambu_tower && !(s.single_nozzle || s.change_on_tower || first);
+        match ram {
             // A rammed filament is pushed out fast on the tower, and its
             // tool then waits just clear of what it laid.
             Some(ram) => {
@@ -1809,9 +1816,22 @@ impl Writer<'_> {
             }
             // Bambu's tower changes filament where the nozzle is, and
             // goes to the tower after (WipeTower.cpp, GCode.cpp
-            // `append_tcr`).
+            // `append_tcr`). So does the other on a printer of a nozzle
+            // for each filament, for a tool that is not rammed, unless
+            // the change is set to be made on the tower
+            // (`tool_change_on_wipe_tower`) or is the first thing on the
+            // layer (GCode.cpp `append_tcr2`: `should_travel_to_tower`,
+            // `m_need_change_layer_lift_z`); one nozzle always goes over
+            // the tower first (`is_ramming` there). The change is made at
+            // the layer's height (or above it): the nozzle goes down to a
+            // tower lower than the layer only once it is over it, in
+            // `tower_wipe` and `tower_lines`. The reference before
+            // aceRage/EdgeSlicer#1020 went down to the tower's height
+            // over the part first.
             None => {
-                if let Some(over) = over.filter(|_| self.state.primed && !s.bambu_tower) {
+                if let Some(over) =
+                    over.filter(|_| self.state.primed && !s.bambu_tower && !in_place)
+                {
                     self.travel(over, false, None)?;
                 }
             }
@@ -1830,7 +1850,14 @@ impl Writer<'_> {
         }
         // Pull the filament well back, wiping first as for any retraction.
         if self.state.primed && s.retract_length_toolchange > 0.0 {
-            self.retract(false)?;
+            if in_place {
+                // Where it is, the whole of it is the change's retraction,
+                // the wipe included (GCode.cpp `set_extruder`,
+                // `retract(true)`), not the usual one with more after.
+                self.retract_by(s.retract_length_toolchange, false)?;
+            } else {
+                self.retract(false)?;
+            }
             let more = s.retract_length_toolchange - self.state.retracted_length;
             if more > 0.0 {
                 self.feed(s.retraction_speed);
@@ -2136,6 +2163,7 @@ impl Writer<'_> {
                     over,
                     layer.ram,
                     low,
+                    offset == 0,
                 )?;
                 // The new tool comes in through the gap in the tower's wall.
                 for point in layer.enter {
@@ -4123,12 +4151,17 @@ impl Writer<'_> {
     /// if the profile asks, and decides whether the next travel lifts.
     /// `layer_change` says the retraction is the one between layers.
     fn retract(&mut self, layer_change: bool) -> io::Result<()> {
+        self.retract_by(self.settings.retraction_length, layer_change)
+    }
+
+    /// [`Self::retract`] by `total` mm rather than the filament's
+    /// retraction length.
+    fn retract_by(&mut self, total: f64, layer_change: bool) -> io::Result<()> {
         let s = self.settings;
         let path = std::mem::take(&mut self.state.wipe_path);
-        if self.state.retracted || !self.state.primed || s.retraction_length <= 0.0 {
+        if self.state.retracted || !self.state.primed || total <= 0.0 {
             return Ok(());
         }
-        let total = s.retraction_length;
         // The wipe sets off from where the nozzle is and follows the path
         // for `wipe_distance` (GCode.cpp `Wipe::wipe`).
         let wipe = match self.state.position {
