@@ -1151,6 +1151,10 @@ $('export').addEventListener('click', () => attempt(async () => {
     await Menu.exportSliced(action === 'all_sliced');
     return;
   }
+  if (action === 'bambu_connect') {
+    await window.sendToBambuConnect(false);
+    return;
+  }
   await exportGcode();
 }));
 

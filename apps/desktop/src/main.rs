@@ -13,6 +13,7 @@
 mod api;
 mod hosts;
 mod menubar;
+mod outside;
 mod serve;
 
 use std::sync::Arc;
@@ -148,6 +149,27 @@ fn pick(app: tauri::AppHandle, what: String, suggested: Option<String>) -> Optio
     Some(path.to_string_lossy().into_owned())
 }
 
+/// Hands a file to another application on the person's click: a
+/// `bambu-connect://` URL the session made ("Send to Bambu Connect"),
+/// Bambu Connect's own page, or a file for Bambu Studio ("Export && Open
+/// in Bambu Studio"). The window's alone: a browser's page is answered
+/// with what would be opened (outside.rs). Answers "launched",
+/// "not_found" or "failed:<what was found>".
+#[tauri::command(async)]
+fn hand_off(connect: Option<String>, page: Option<String>, studio: Option<String>) -> String {
+    let what = match (connect, page, studio) {
+        (Some(url), _, _) => outside::HandOff::Connect(url),
+        (_, Some(url), _) if url == outside::CONNECT_INFO_URL => outside::HandOff::Page(url),
+        (_, _, Some(file)) => outside::HandOff::BambuStudio(file.into()),
+        _ => return "failed:".into(),
+    };
+    match outside::perform(&what) {
+        outside::Outcome::Launched => "launched".into(),
+        outside::Outcome::NotFound => "not_found".into(),
+        outside::Outcome::Failed(found) => format!("failed:{found}"),
+    }
+}
+
 /// Closes the window once the page has asked about what is unsaved.
 #[tauri::command]
 fn close_window(window: tauri::Window) {
@@ -208,6 +230,7 @@ fn main() {
             call,
             call_bytes,
             pick,
+            hand_off,
             close_window
         ])
         .run(tauri::generate_context!())

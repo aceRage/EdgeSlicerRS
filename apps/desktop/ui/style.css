@@ -1375,3 +1375,6 @@ body.side-dragging { cursor: ew-resize; user-select: none; -webkit-user-select: 
 
 /* A menu entry with a colour that means something (a filament's). */
 .menu button .swatch { margin-right: var(--space-2); vertical-align: -1px; }
+
+/* A long path or URL in a question wraps inside the box. */
+#confirm-text { overflow-wrap: anywhere; }

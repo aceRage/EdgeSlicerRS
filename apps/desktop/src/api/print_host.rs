@@ -15,14 +15,15 @@ use edge_config::Settings;
 use serde_json::{Value, json};
 
 use super::{Session, lock, needed};
+use crate::api::i18n::tr;
 use crate::hosts::{
-    self, Connection, HOST_TYPES, Options, Upload, elegoo,
+    self, Connection, HOST_TYPES, Options, Toolhead, Upload, elegoo,
     kept::{Key, Saved},
-    snapmaker,
+    snapmaker::{self, FileFilament},
 };
 
 /// The calls answered here.
-pub(super) const JSON: [&str; 11] = [
+pub(super) const JSON: [&str; 14] = [
     "print_host",
     "print_host_set",
     "print_host_test",
@@ -34,6 +35,9 @@ pub(super) const JSON: [&str; 11] = [
     "printer_files",
     "printer_file_delete",
     "printer_file_print",
+    "printer_toolheads",
+    "printer_status",
+    "printer_file_check",
 ];
 
 /// The printer a project is on, as far as sending is concerned.
@@ -98,11 +102,10 @@ impl Session {
                 Ok(self.hosts.queue.listing())
             }
             "printer_files" => self.printer_files(args),
-            "printer_file_delete" => {
-                let (host, _) = self.host(args)?;
-                host.delete(needed(args, "name")?)?;
-                self.printer_files(args)
-            }
+            "printer_file_delete" => self.printer_file_delete(args),
+            "printer_file_check" => self.printer_file_check(args),
+            "printer_toolheads" => self.printer_toolheads(args),
+            "printer_status" => self.printer_status(args),
             "printer_file_print" => {
                 let (host, _) = self.host(args)?;
                 host.print(needed(args, "name")?)?;
@@ -170,12 +173,21 @@ impl Session {
     /// device_url, route, offers { elegoo, unload }, bed_in_force, problem }`.
     fn print_host(&self, args: &Value) -> Result<Value, String> {
         let problem = lock(&self.hosts.kept).problem.clone();
+        // A Bambu Lab printer: the print button offers "Send to Bambu
+        // Connect" (MainFrame.cpp `available_print_actions`).
+        let bambu = {
+            let state = lock(&self.state);
+            let project = &state.projects[state.target(args)?];
+            super::export::is_bambu(&project.choices, project.file.as_deref())
+        };
         let host_types: Vec<Value> = HOST_TYPES
             .iter()
             .map(|(value, label, built)| json!({ "value": value, "label": label, "built": built }))
             .collect();
         let Some(printer) = self.printer(args)? else {
-            return Ok(json!({ "printer": null, "host_types": host_types, "problem": problem }));
+            return Ok(
+                json!({ "printer": null, "host_types": host_types, "problem": problem, "bambu": bambu }),
+            );
         };
         let (connection, from) = self.connection(&printer);
         let model = printer.model();
@@ -214,11 +226,18 @@ impl Session {
             "can_send": made.is_ok(),
             "why_not": made.as_ref().err(),
             "can_start": made.as_ref().is_ok_and(|host| host.can_start()),
-            "storage": route == "snapmaker",
+            // Storage (PrinterStorage.cpp `target_for_host`): Moonraker's
+            // file API for "Octo/Klipper"; else the reference's reason.
+            "storage": matches!(route, "snapmaker" | "octoprint"),
+            "storage_reason": storage_reason(&connection.host_type),
+            // The U1's toolhead map; the printer's state in Device.
+            "toolheads": route == "snapmaker",
+            "status": matches!(route, "snapmaker" | "octoprint"),
             "device_url": hosts::device_url(&connection),
             "route": route,
             "offers": { "elegoo": elegoo, "unload": unload },
             "problem": problem,
+            "bambu": bambu,
         }))
     }
 
@@ -360,6 +379,34 @@ impl Session {
             .shown()
             .to_owned();
         let flag = |key: &str| args["options"][key].as_bool().unwrap_or(false);
+        let filaments = self.plate_filaments(args, plate)?;
+        // "Upload and Print" to a U1: the toolhead of each filament, as
+        // chosen, else as the reference first offers it; checked against
+        // what the printer holds before anything is sent (RemoteSend.cpp
+        // `prepare_snapmaker`).
+        let mapping = if start && snapmaker::is_u1(&connection.printer_model) {
+            let file = self.file_filaments(&done.sliced.settings, &filaments);
+            let heads = match host.toolheads() {
+                Some(Ok(heads)) => heads,
+                Some(Err(error)) => return Err(error),
+                None => Vec::new(),
+            };
+            let mapping = match args["options"]["mapping"].as_array() {
+                Some(chosen) => chosen
+                    .iter()
+                    .map(|t| t.as_i64().map_or(-1, |t| t as i32))
+                    .collect(),
+                None => snapmaker::auto_match(&file, &heads),
+            };
+            if let Some(problem) =
+                snapmaker::mapping_problem(&file, &mapping, &heads, &printer.name, flag("force"))
+            {
+                return Err(problem);
+            }
+            mapping
+        } else {
+            Vec::new()
+        };
         let upload = Upload {
             name,
             data: Arc::new(gcode.text.clone()),
@@ -369,25 +416,155 @@ impl Session {
                 leveling: flag("leveling"),
                 smooth_plate: flag("smooth_plate"),
                 unload_at_end: flag("unload_at_end"),
-                filaments: self.plate_filaments(args, plate)?,
+                filaments,
+                mapping,
+                bed_level: flag("bed_level"),
+                flow_calibrate: flag("flow_calibrate"),
+                time_lapse: flag("time_lapse"),
             },
         };
         let id = self.hosts.queue.add(host, &shown, &printer.name, upload);
         Ok(json!({ "id": id, "queue": self.hosts.queue.listing() }))
     }
 
-    /// The files on the printer: `{ files: [{ name, size, modified }] }`.
+    /// The file's filaments, each with its colour and type and whether the
+    /// plate prints in it (RemoteSend.cpp `file_filaments_of`).
+    fn file_filaments(&self, settings: &Settings, used: &[usize]) -> Vec<FileFilament> {
+        let colours = settings.texts("filament_colour").unwrap_or_default();
+        let types = settings.texts("filament_type").unwrap_or_default();
+        let count = colours
+            .len()
+            .max(types.len())
+            .max(used.iter().map(|f| f + 1).max().unwrap_or(0));
+        (0..count)
+            .map(|index| FileFilament {
+                index,
+                color: colours.get(index).cloned().unwrap_or_default(),
+                filament_type: types.get(index).cloned().unwrap_or_default(),
+                used: used.contains(&index),
+            })
+            .collect()
+    }
+
+    /// What the U1's toolheads hold, set against the plate's filaments:
+    /// `{ printer, state, toolheads [{ index, type, sub_type, vendor, color,
+    /// loaded, nozzle }], filaments [{ index, color, type, used }], mapping,
+    /// warnings, problem }`. `mapping` given is checked; else the
+    /// reference's first offer is answered.
+    fn printer_toolheads(&self, args: &Value) -> Result<Value, String> {
+        let (done, plate) = self.done(args)?;
+        let (host, _) = self.host(args)?;
+        let printer = self
+            .printer(args)?
+            .ok_or("No printer is chosen for the project.")?;
+        let heads = host
+            .toolheads()
+            .ok_or("This printer does not say what its toolheads hold.")??;
+        let state = match host.status() {
+            Some(Ok(status)) => status.state,
+            _ => String::new(),
+        };
+        let used = self.plate_filaments(args, plate)?;
+        let file = self.file_filaments(&done.sliced.settings, &used);
+        let mapping: Vec<i32> = match args.get("mapping").and_then(Value::as_array) {
+            Some(chosen) => chosen
+                .iter()
+                .map(|t| t.as_i64().map_or(-1, |t| t as i32))
+                .collect(),
+            None => snapmaker::auto_match(&file, &heads),
+        };
+        let force = args.get("force").and_then(Value::as_bool).unwrap_or(false);
+        Ok(json!({
+            "printer": printer.name,
+            "state": state,
+            "toolheads": heads.iter().map(toolhead_json).collect::<Vec<_>>(),
+            "filaments": file.iter().map(|f| json!({ "index": f.index, "color": f.color, "type": f.filament_type, "used": f.used })).collect::<Vec<_>>(),
+            "mapping": mapping,
+            "warnings": snapmaker::mapping_warnings(&file, &mapping, &heads),
+            "problem": snapmaker::mapping_problem(&file, &mapping, &heads, &printer.name, force),
+        }))
+    }
+
+    /// What the printer is doing, for the Device tab: `{ online, state,
+    /// said, filename, message, percent, left, layer, total_layers, bed,
+    /// nozzles }`, or `{ online: false, error }` when it does not answer.
+    /// `{ known: false }` for a printer this app cannot ask.
+    fn printer_status(&self, args: &Value) -> Result<Value, String> {
+        let (host, _) = self.host(args)?;
+        let Some(answer) = host.status() else {
+            return Ok(json!({ "known": false }));
+        };
+        Ok(match answer {
+            Ok(status) => json!({
+                "known": true,
+                "online": true,
+                "state": status.state,
+                "said": tr(state_said(&status.state)),
+                "filename": status.filename,
+                "message": status.message,
+                "percent": status.percent,
+                "left": status.left,
+                "layer": status.layer,
+                "total_layers": status.total_layers,
+                "bed": status.bed.map(|(t, target)| json!([t, target])),
+                "nozzles": status.nozzles.iter().map(|(t, target)| json!([t, target])).collect::<Vec<_>>(),
+            }),
+            Err(error) => {
+                json!({ "known": true, "online": false, "said": tr("Offline"), "error": error })
+            }
+        })
+    }
+
+    /// The files on the printer: `{ files: [{ name, size, modified,
+    /// printable, print_time, filament_mm, filament_g, filament_type }] }`.
+    /// A printer that answers 404 has no file API (the reference's
+    /// `Status::NotSupported`).
     fn printer_files(&self, args: &Value) -> Result<Value, String> {
         let (host, _) = self.host(args)?;
-        let files = host
+        let files = match host
             .files()
-            .ok_or("The files on this printer cannot be listed from here yet.")??;
+            .ok_or("The files on this printer cannot be listed from here yet.")?
+        {
+            Ok(files) => files,
+            Err(error) if error.starts_with("HTTP 404") => {
+                return Err(tr("Storage is not available for this printer."));
+            }
+            Err(error) => return Err(error),
+        };
         Ok(json!({
             "files": files
                 .iter()
-                .map(|file| json!({ "name": file.name, "size": file.size, "modified": file.modified }))
+                .map(|file| json!({
+                    "name": file.name, "size": file.size, "modified": file.modified,
+                    "printable": file.printable, "print_time": file.print_time,
+                    "filament_mm": file.filament_mm, "filament_g": file.filament_g,
+                    "filament_type": file.filament_type,
+                }))
                 .collect::<Vec<_>>(),
         }))
+    }
+
+    /// Before "Print" from Storage: what the printer is doing, and on
+    /// which file (PrinterStoragePanel.cpp `on_print`, `CheckStart`).
+    /// `{ state, current, busy }`.
+    fn printer_file_check(&self, args: &Value) -> Result<Value, String> {
+        let (host, _) = self.host(args)?;
+        let status = host
+            .status()
+            .ok_or("This printer does not say what it is doing.")??;
+        let busy = matches!(status.state.as_str(), "printing" | "paused");
+        Ok(json!({ "state": status.state, "current": status.filename, "busy": busy }))
+    }
+
+    /// "Delete": `{ gone }` when it was not there any more (404).
+    fn printer_file_delete(&self, args: &Value) -> Result<Value, String> {
+        let (host, _) = self.host(args)?;
+        let gone = match host.delete(needed(args, "name")?) {
+            Ok(()) => false,
+            Err(error) if error.starts_with("HTTP 404") => true,
+            Err(error) => return Err(error),
+        };
+        Ok(json!({ "gone": gone }))
     }
 }
 
@@ -420,6 +597,49 @@ impl Session {
         origins.sort();
         origins.dedup();
         origins
+    }
+}
+
+fn toolhead_json(head: &Toolhead) -> Value {
+    json!({
+        "index": head.index,
+        "type": head.filament_type,
+        "sub_type": head.sub_type,
+        "vendor": head.vendor,
+        "color": head.color,
+        "loaded": head.loaded,
+        "official": head.official,
+        "nozzle": head.nozzle,
+    })
+}
+
+/// Why a printer has no "Storage" (PrinterStorage.cpp l.364–373).
+fn storage_reason(host_type: &str) -> Option<String> {
+    Some(match host_type {
+        "octoprint" => return None,
+        "elegoolink" => {
+            "Storage for the Centauri Carbon (its SDCP file commands) is not built yet.".into()
+        }
+        "flashforge" => "Flashforge printers are not supported by the Storage tab.".into(),
+        "prusalink" | "prusaconnect" => {
+            "PrusaLink and Prusa Connect printers are not supported by the Storage tab.".into()
+        }
+        other => format!(
+            "The Storage tab works with Klipper printers that run Moonraker; this printer's connection ({other}) has no file API it speaks."
+        ),
+    })
+}
+
+/// A Moonraker printer's state in words (`print_stats.state`).
+fn state_said(state: &str) -> &'static str {
+    match state {
+        "standby" => "Idle",
+        "printing" => "Printing",
+        "paused" => "Paused",
+        "complete" => "Finished",
+        "cancelled" => "Canceled",
+        "error" => "Error",
+        _ => "Unknown",
     }
 }
 

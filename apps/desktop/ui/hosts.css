@@ -49,8 +49,8 @@ p.warn { margin: 0; color: var(--warn); }
 #device:has(#device-view:not([hidden])) { display: flex; flex-direction: column; overflow: hidden; }
 #device-bar { flex: none; display: flex; align-items: center; gap: var(--space-2); padding: 0 var(--space-3); border-bottom: 1px solid var(--line-1); background: var(--surface-panel); }
 #device-bar[hidden] { display: none; }
-#device-bar .tabs { border-bottom: 0; }
-#device-address { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font: var(--size-label) var(--font-mono); color: var(--text-3); text-align: right; }
+#device-bar .tabs { border-bottom: 0; flex: none; }
+#device-address { flex: 0 1 auto; max-width: 30%; margin-left: auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font: var(--size-label) var(--font-mono); color: var(--text-3); text-align: right; }
 #device-bar button.tool { color: var(--text-2); }
 #device-view { flex: 1; min-height: 0; display: flex; flex-direction: column; }
 #device-view[hidden] { display: none; }
@@ -65,9 +65,29 @@ p.warn { margin: 0; color: var(--warn); }
 .storage-scroll { flex: 1; min-height: 0; overflow: auto; border: 1px solid var(--line-2); border-radius: var(--radius-l); background: var(--surface-well); }
 .storage-scroll > p { padding: var(--space-4); white-space: pre-line; }
 .storage-scroll > p:empty { display: none; }
-#storage-table th:nth-child(2) { width: 96px; }
-#storage-table th:nth-child(3) { width: 180px; }
-#storage-table th:nth-child(4) { width: 150px; }
+#storage-table th:nth-child(2) { width: 88px; }
+#storage-table th:nth-child(3) { width: 120px; }
+#storage-table th:nth-child(4) { width: 92px; }
+#storage-table th:nth-child(5) { width: 150px; }
+#storage-table th:nth-child(6) { width: 270px; }
+.storage-head select { width: auto; }
+#device-storage .storage-head label { white-space: nowrap; display: block; flex: none; }
+/* Narrow: the filament and the date give way to the name and the buttons. */
+@media (max-width: 1000px) {
+  #storage-table th:nth-child(3), #storage-table td:nth-child(3) { display: none; }
+  #storage-table th:nth-child(5) { width: 100px; }
+  #storage-table td:nth-child(5) { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+}
 #storage-table tbody tr { cursor: default; }
 .storage-actions { display: flex; align-items: center; justify-content: flex-end; gap: var(--space-1); height: 40px; }
 #device-page .row { margin-top: var(--space-2); }
+
+/* A U1's toolheads in "Send G-code to printer host", and its state over Device. */
+.send-options h3 { margin: var(--space-2) 0 0; font-size: var(--size-label); color: var(--text-2); font-weight: 600; }
+.send-map td { padding: 2px var(--space-2) 2px 0; white-space: nowrap; }
+.send-map select { min-width: 12em; }
+#send-map-note { white-space: pre-line; margin: 0; }
+#device-status { flex: 1 1 0; min-width: 0; padding-left: var(--space-2); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: var(--size-label); color: var(--text-2); }
+#device-status.state-printing { color: var(--accent); }
+#device-status.state-error, #device-status.error { color: var(--danger); }
+.storage-head .colon::after { content: ":"; }

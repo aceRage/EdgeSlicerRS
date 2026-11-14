@@ -409,4 +409,44 @@ impl Model {
             entries: written.entries,
         })
     }
+
+    /// "Export Bambu 3MF" (Plater.cpp `export_bambu_3mf`): the project as
+    /// [`Model::save`] writes it, in the form Bambu Studio reads as a
+    /// project of its own (`edge_3mf::write_bambu`), and what its settings
+    /// lost and how they were changed on the way.
+    pub fn save_bambu(
+        &self,
+        path: &Path,
+        saving: &Saving,
+        bed: Option<&Bed>,
+    ) -> Result<(Saved, edge_config::bambu::Report), Failure> {
+        let (text, settings) = self.saving_text(saving)?;
+        let own_bed = settings.as_ref().and_then(|settings| {
+            edge_gcode::PrintSettings::from_settings(settings)
+                .ok()?
+                .bed
+                .map(Bed::of)
+        });
+        let project = self.as_project(bed.or(own_bed.as_ref()), settings.as_ref());
+        let filaments = settings
+            .as_ref()
+            .and_then(|settings| settings.texts("filament_colour").map(<[String]>::len))
+            .unwrap_or(1);
+        let save = edge_3mf::Save {
+            project: &project,
+            settings: text,
+            presets: saving.presets(),
+            inside: self.inside.as_deref().map(Vec::as_slice),
+            filaments,
+        };
+        let (written, report) = edge_3mf::write_bambu(&save, path, edge_3mf::Layout::Project)
+            .map_err(|e| format!("{}: {e}", path.display()))?;
+        Ok((
+            Saved {
+                bytes: written.bytes,
+                entries: written.entries,
+            },
+            report,
+        ))
+    }
 }

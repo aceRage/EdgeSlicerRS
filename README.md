@@ -141,10 +141,20 @@ the controls it is built from are described in `apps/desktop/ui/STYLE.md`.
   OctoPrint's API ("Octo/Klipper"), a Snapmaker U1 over its Moonraker,
   and the Elegoo Centauri Carbon ("Elegoo Link"); `src/hosts/`, with a
   mock of each printer in the tests. Nothing is asked of a printer
-  unless the person asks.
+  unless the person asks. "Upload and Print" to a U1 reads what its four
+  toolheads hold, offers each filament the toolhead nearest its colour
+  (to be changed by hand), refuses an empty toolhead unless told to go
+  on, and sends the U1's own "Print Preferences" (Auto Leveling,
+  Extrusion Flow Calibration, Time-lapse Camera). A Bambu Lab printer's
+  plate goes to the person's own Bambu Connect ("Send to Bambu
+  Connect") or to Bambu Studio ("Export Bambu 3MF", "Export && Open in
+  Bambu Studio"); the app itself talks to no Bambu printer.
 - **Device**: with a connection, the printer's own page in an isolated
-  frame, and for a U1 its files ("Storage": "Print", "Delete"); without
-  one, the printer of the project shown as its preset describes it.
+  frame, the printer's state over it (printing, percent, time left,
+  layer, temperatures, or offline), and for a U1 or any Octo/Klipper
+  printer that runs Moonraker its files ("Storage": sort, print time,
+  filament, "Print", "Delete"); without one, the printer of the project
+  shown as its preset describes it.
 
 - **Printer Selection** ("Select/Remove printers (system presets)" in
   the printer list, or the gear beside "Printer"): every printer model

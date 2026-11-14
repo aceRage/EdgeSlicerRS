@@ -1041,6 +1041,12 @@ fn slice(args: SliceArgs) -> Result<(), Failure> {
                 sliced: &sliced,
                 gcode: &gcode.text,
                 seconds: summary.seconds,
+                // The model's id from the vendor's files, where profiles
+                // are given (`--profiles` or EDGE_PROFILES).
+                printer_model_id: args.profiles.profiles.as_ref().and_then(|dir| {
+                    let model = sliced.settings.text("printer_model")?;
+                    edge_engine::Library::new(dir).model_id(model.trim())
+                }),
             };
             let saved =
                 model.save_sliced(out, &saving, &[slice], Some(plate), Default::default())?;

@@ -303,6 +303,7 @@
         <button type="button" role="tab" id="device-tab-page" aria-selected="true" title="The printer's own page">Printer page</button>
         <button type="button" role="tab" id="device-tab-storage" aria-selected="false" title="The G-code files on the printer">Storage</button>
       </div>
+      <span id="device-status" hidden></span>
       <span id="device-address" class="quiet"></span>
       <button type="button" id="device-reload" class="icon tool" title="Reload the printer's page" aria-label="Reload the printer's page">
         <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M13.5,8A5.5,5.5,0,1,1,11.9,4.1M12.5,1.5v3h-3"/></svg>
@@ -317,11 +318,18 @@
       <div id="device-storage" hidden>
         <div class="storage-head">
           <h2 id="storage-title">Files on the printer</h2>
+          <label for="storage-sort" class="colon">Sort by</label>
+          <select id="storage-sort">
+            <option value="newest">Newest first</option>
+            <option value="oldest">Oldest first</option>
+            <option value="name">Name</option>
+            <option value="size">Size</option>
+          </select>
           <button type="button" id="storage-refresh" title="List the printer's files again (F5)">Refresh</button>
         </div>
         <div class="storage-scroll">
           <table class="data-table" id="storage-table">
-            <thead><tr><th>Name</th><th class="num">Size</th><th>Modified</th><th></th></tr></thead>
+            <thead><tr><th>Name</th><th class="num">Print time</th><th>Filament</th><th class="num">Size</th><th>Modified</th><th></th></tr></thead>
             <tbody id="storage-body"></tbody>
           </table>
           <p id="storage-note" class="quiet"></p>
@@ -461,6 +469,16 @@
       <label class="tick"><input type="radio" name="send-plate" id="send-plate-a" value="a"> Textured Build Plate (Side A)</label>
       <label class="tick"><input type="radio" name="send-plate" id="send-plate-b" value="b"> Smooth Build Plate (Side B)</label>
       <p id="send-plate-warn" class="warn" hidden>The selected bed type does not match the file. Please confirm before starting the print.</p>
+    </div>
+    <!-- A Snapmaker U1: which toolhead prints each filament, and the device page's "Print Preferences" (its bundled page, resources/web/flutter_web). -->
+    <div id="send-u1" class="send-options" hidden>
+      <h3>Toolheads</h3>
+      <table class="send-map"><tbody id="send-map"></tbody></table>
+      <p id="send-map-note" class="quiet"></p>
+      <h3>Print Preferences</h3>
+      <label class="tick"><input type="checkbox" id="send-bed-level"> Auto Leveling</label>
+      <label class="tick" title="When enabled, the printer will automatically calibrate flow compensation before printing. Recommended after each filament change."><input type="checkbox" id="send-flow"> Extrusion Flow Calibration</label>
+      <label class="tick"><input type="checkbox" id="send-time-lapse"> Time-lapse Camera</label>
     </div>
     <label class="tick"><input type="checkbox" id="send-device"> Switch to Device tab after upload.</label>
     <p id="send-to" class="quiet"></p>

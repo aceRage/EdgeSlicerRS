@@ -142,6 +142,41 @@ mod tests {
     }
 
     #[test]
+    fn the_printers_a_process_suits_are_the_chosen_process_presets() {
+        let process = r#"{"compatible_printers": ["Bambu Lab A1 mini 0.4 nozzle"]}"#;
+        let chosen = Chosen {
+            machine: Some(("printer".into(), printer())),
+            process: Some(("process".into(), Settings::from_json(process).unwrap())),
+            filaments: Vec::new(),
+        };
+        let file =
+            Settings::from_json(r#"{"print_compatible_printers": ["Snapmaker U1 (0.4 nozzle)"]}"#)
+                .unwrap();
+        let settings = settled(&chosen, &Overrides::default(), Some(&file)).unwrap();
+        assert_eq!(
+            settings.texts("print_compatible_printers"),
+            Some(&["Bambu Lab A1 mini 0.4 nozzle".to_owned()][..])
+        );
+        // A process preset that names none: none (the file's is not kept).
+        let chosen = Chosen {
+            process: Some(("process".into(), Settings::default())),
+            ..chosen
+        };
+        let settings = settled(&chosen, &Overrides::default(), Some(&file)).unwrap();
+        assert_eq!(settings.texts("print_compatible_printers"), Some(&[][..]));
+        // No process preset chosen: the project's own, as it was.
+        let chosen = Chosen {
+            process: None,
+            ..chosen
+        };
+        let settings = settled(&chosen, &Overrides::default(), Some(&file)).unwrap();
+        assert_eq!(
+            settings.texts("print_compatible_printers"),
+            Some(&["Snapmaker U1 (0.4 nozzle)".to_owned()][..])
+        );
+    }
+
+    #[test]
     fn what_a_slice_reads_is_told_from_what_it_never_asks_for() {
         let plain = asked("{}");
         assert_eq!(plain.refused, None);

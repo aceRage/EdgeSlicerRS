@@ -20,7 +20,17 @@ use serde_json::{Value, json};
 use super::{Done, Session, lock, shown};
 
 /// The calls answered here.
-pub(super) const JSON: [&str; 3] = ["export_sliced", "export_generic", "export_sliced_plates"];
+pub(super) const JSON: [&str; 5] = [
+    "export_sliced",
+    "export_generic",
+    "export_sliced_plates",
+    "bambu_connect_send",
+    "export_bambu",
+];
+
+mod bambu;
+mod connect;
+pub(super) use connect::is_bambu;
 
 /// Bytes from base64, as a data URL's or bare.
 fn from_base64(text: &str) -> Result<Vec<u8>, String> {
@@ -91,12 +101,106 @@ fn pictures(args: &Value) -> Result<BTreeMap<u32, edge_engine::Pictures>, String
     Ok(out)
 }
 
+/// A project ready to be written as a sliced file.
+struct SlicedProject {
+    file: Arc<super::File>,
+    choices: super::Choices,
+    name: String,
+    plate: Option<u32>,
+    slices: Vec<(u32, Arc<Done>)>,
+    /// The printer model's id in the vendor's files (`printer_model_id`).
+    model_id: Option<String>,
+}
+
+impl SlicedProject {
+    fn naming(&self) -> (&super::File, &str, Option<u32>) {
+        (&self.file, &self.name, self.plate)
+    }
+
+    /// Writes the sliced file to `path` with `saving`'s settings.
+    fn write(
+        &self,
+        path: &Path,
+        saving: edge_engine::Saving,
+        all: bool,
+        pictures: BTreeMap<u32, edge_engine::Pictures>,
+    ) -> Result<edge_engine::Saved, String> {
+        let mut parts = Vec::new();
+        for (id, done) in &self.slices {
+            let gcode = done.gcode.as_ref().map_err(String::clone)?;
+            parts.push(edge_engine::sliced_file::PlateSlice {
+                plate: *id,
+                sliced: &done.sliced,
+                gcode: &gcode.text,
+                seconds: gcode.summary.seconds,
+                printer_model_id: self.model_id.clone(),
+            });
+        }
+        let shown_plate = if all {
+            None
+        } else {
+            Some(self.plate.unwrap_or(1))
+        };
+        let mut model = self.file.model.clone();
+        model.set_inside(self.choices.inside.clone());
+        model
+            .save_sliced(path, &saving, &parts, shown_plate, pictures)
+            .map_err(|error| error.to_string())
+    }
+}
+
+/// The name a sliced file is offered under: the project's, and the
+/// plate's for one plate of several (Plater.cpp
+/// `get_export_gcode_filename`), with `.gcode.3mf`; in the project's
+/// folder when `in_folder`.
+fn suggested_sliced(
+    file: &super::File,
+    name: &str,
+    plate: Option<u32>,
+    all: bool,
+    in_folder: bool,
+) -> String {
+    let stem = file
+        .path
+        .as_deref()
+        .and_then(Path::file_stem)
+        .map(|stem| stem.to_string_lossy().into_owned())
+        .unwrap_or_else(|| name.to_owned());
+    let stem = match plate {
+        Some(id) if !all && file.plates.len() > 1 => {
+            let named = file
+                .plates
+                .iter()
+                .find(|one| one.id == id)
+                .map(|one| one.name.clone())
+                .filter(|name| !name.is_empty());
+            match named {
+                Some(named) => format!("{stem}_{named}"),
+                None => format!("{stem}_plate_{id}"),
+            }
+        }
+        _ => stem,
+    };
+    let named = format!("{stem}.gcode.3mf");
+    match file
+        .path
+        .as_deref()
+        .and_then(Path::parent)
+        .filter(|dir| in_folder && !dir.as_os_str().is_empty())
+    {
+        Some(dir) => shown(&dir.join(named)),
+        None => named,
+    }
+}
+
 impl Session {
     pub(super) fn export_json(&self, name: &str, args: &Value) -> Result<Value, String> {
         match name {
             "export_sliced" => self.export_sliced(args),
             "export_sliced_plates" => self.sliced_plates(args),
             "export_generic" => self.export_generic(args),
+            name if connect::JSON.contains(&name) => self.connect_json(name, args),
+            name if bambu::JSON.contains(&name) => self.bambu_json(name, args),
             other => Err(format!("there is no call named {other}")),
         }
     }
@@ -154,77 +258,14 @@ impl Session {
     /// offers. Answers `{ path, bytes, entries }`.
     fn export_sliced(&self, args: &Value) -> Result<Value, String> {
         let all = args.get("all").and_then(Value::as_bool).unwrap_or(false);
-        let (file, choices, name, plate, slices) = {
-            let state = lock(&self.state);
-            let project = &state.projects[state.target(args)?];
-            let file = project
-                .file
-                .clone()
-                .filter(|file| !file.model.objects().is_empty())
-                .ok_or("There are no objects in the project.")?;
-            let mut slices: Vec<(u32, Arc<Done>)> = Vec::new();
-            let wanted: Vec<Option<u32>> = if all {
-                project.sliceable()
-            } else {
-                vec![project.plate]
-            };
-            for slot in wanted {
-                if let Some(done) = project.results.get(&super::slot(slot))
-                    && done.gcode.is_ok()
-                {
-                    slices.push((slot.unwrap_or(1), done.clone()));
-                }
-            }
-            if slices.is_empty() {
-                return Err("nothing has been sliced yet".into());
-            }
-            (
-                file,
-                project.choices.clone(),
-                project.name.clone(),
-                project.plate,
-                slices,
-            )
-        };
         if args
             .get("suggest")
             .and_then(Value::as_bool)
             .unwrap_or(false)
         {
-            // The project's name, and the plate's for one plate of
-            // several (Plater.cpp `get_export_gcode_filename`).
-            let stem = file
-                .path
-                .as_deref()
-                .and_then(Path::file_stem)
-                .map(|stem| stem.to_string_lossy().into_owned())
-                .unwrap_or(name);
-            let stem = match plate {
-                Some(id) if !all && file.plates.len() > 1 => {
-                    let named = file
-                        .plates
-                        .iter()
-                        .find(|one| one.id == id)
-                        .map(|one| one.name.clone())
-                        .filter(|name| !name.is_empty());
-                    match named {
-                        Some(named) => format!("{stem}_{named}"),
-                        None => format!("{stem}_plate_{id}"),
-                    }
-                }
-                _ => stem,
-            };
-            let named = format!("{stem}.gcode.3mf");
-            let suggested = match file
-                .path
-                .as_deref()
-                .and_then(Path::parent)
-                .filter(|dir| !dir.as_os_str().is_empty())
-            {
-                Some(dir) => shown(&dir.join(named)),
-                None => named,
-            };
-            return Ok(json!({ "suggested": suggested }));
+            let ready = self.sliced_project(args, all)?;
+            let (file, name, plate) = ready.naming();
+            return Ok(json!({ "suggested": suggested_sliced(file, name, plate, all, true) }));
         }
         let path = with_extension(super::needed(args, "path")?, ".3mf");
         let replace = args
@@ -235,28 +276,56 @@ impl Session {
             return Ok(json!({ "exists": true, "path": shown(&path) }));
         }
         let pictures = pictures(args)?;
-        let saving = self.saving(&choices, Some(&file))?;
-        let mut parts = Vec::new();
-        for (id, done) in &slices {
-            let gcode = done.gcode.as_ref().map_err(String::clone)?;
-            parts.push(edge_engine::sliced_file::PlateSlice {
-                plate: *id,
-                sliced: &done.sliced,
-                gcode: &gcode.text,
-                seconds: gcode.summary.seconds,
-            });
-        }
-        let shown_plate = if all { None } else { Some(plate.unwrap_or(1)) };
-        let mut model = file.model.clone();
-        model.set_inside(choices.inside.clone());
-        let saved = model
-            .save_sliced(&path, &saving, &parts, shown_plate, pictures)
-            .map_err(|error| error.to_string())?;
+        let ready = self.sliced_project(args, all)?;
+        let saving = self.saving(&ready.choices, Some(&ready.file))?;
+        let saved = ready.write(&path, saving, all, pictures)?;
         Ok(json!({
             "path": shown(&path),
             "bytes": saved.bytes,
             "entries": saved.entries,
         }))
+    }
+
+    /// The project a sliced file is written of, with the plates sliced
+    /// that go in it: the plate shown, or (`all`) every plate sliced.
+    fn sliced_project(&self, args: &Value, all: bool) -> Result<SlicedProject, String> {
+        let state = lock(&self.state);
+        let project = &state.projects[state.target(args)?];
+        let file = project
+            .file
+            .clone()
+            .filter(|file| !file.model.objects().is_empty())
+            .ok_or("There are no objects in the project.")?;
+        let mut slices: Vec<(u32, Arc<Done>)> = Vec::new();
+        let wanted: Vec<Option<u32>> = if all {
+            project.sliceable()
+        } else {
+            vec![project.plate]
+        };
+        for slot in wanted {
+            if let Some(done) = project.results.get(&super::slot(slot))
+                && done.gcode.is_ok()
+            {
+                slices.push((slot.unwrap_or(1), done.clone()));
+            }
+        }
+        if slices.is_empty() {
+            return Err("nothing has been sliced yet".into());
+        }
+        // Read from the profiles in use, as the reference reads its
+        // loaded vendors (Preset.cpp `get_printer_type`).
+        let model_id = state.library.as_ref().and_then(|library| {
+            let model = slices[0].1.sliced.settings.text("printer_model")?;
+            library.model_id(model.trim())
+        });
+        Ok(SlicedProject {
+            file,
+            choices: project.choices.clone(),
+            name: project.name.clone(),
+            plate: project.plate,
+            slices,
+            model_id,
+        })
     }
 
     /// "Export Generic 3MF...": the project as "Save Project" writes it,
@@ -307,5 +376,9 @@ impl Session {
     }
 }
 
+#[cfg(test)]
+mod bambu_tests;
+#[cfg(test)]
+mod connect_tests;
 #[cfg(test)]
 mod tests;

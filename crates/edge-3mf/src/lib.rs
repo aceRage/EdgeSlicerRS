@@ -7,6 +7,7 @@
 //! Not read yet: painted supports and seams, per-object setting overrides,
 //! and everything about a plate except which instances are on it.
 
+mod bambu;
 mod custom_gcode;
 mod inside;
 mod kept;
@@ -32,6 +33,7 @@ use edge_config::Settings;
 use edge_mesh::{Mesh, Transform};
 use rayon::prelude::*;
 
+pub use bambu::write_bambu;
 pub use custom_gcode::{CustomGcode, CustomItem, CustomKind, CustomMode};
 pub use inside::{InsidePreset, InsideUnread, inside_entries};
 pub use kept::{

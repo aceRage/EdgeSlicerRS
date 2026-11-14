@@ -452,7 +452,50 @@ Extras	GUI/Preferences.cpp:1832
 Auto-Save project	GUI/Preferences.cpp:2487
 Periodically save the project to its own file. Only projects that have already been saved once are auto-saved.	GUI/Preferences.cpp:2488
 The period of auto-save in seconds.	GUI/Preferences.cpp:2489
+Send to Bambu Connect	GUI/MainFrame.cpp:2390
+Send plate to Bambu Connect	GUI/MainFrame.cpp:3528
+Send all plates to Bambu Connect	GUI/MainFrame.cpp:3532
+Export the current plate's sliced file and open it in Bambu Connect, which prints it with your Bambu account or over LAN	GUI/MainFrame.cpp:3529
+Export the sliced file of all plates and open it in Bambu Connect, where you pick the plate to print	GUI/MainFrame.cpp:3533
+Slice all plates first, then send them to Bambu Connect.	GUI/Plater.cpp:25756
+Slice the plate first, then send it to Bambu Connect.	GUI/Plater.cpp:25757
+Bambu Connect is not installed. Bambu Connect is Bambu Lab's free app that sends sliced files to Bambu printers with your Bambu account or over LAN. Install it from Bambu Lab, then send again.	GUI/Plater.cpp:25734
+Bambu Connect could not be opened. Check that Bambu Connect is installed and up to date, then try again.	GUI/Plater.cpp:25733
+Open Bambu Connect page	GUI/Plater.cpp:25737
+Could not create a temporary folder for the file to send to Bambu Connect.	GUI/Plater.cpp:25783
+Failed to export the sliced file for Bambu Connect.	GUI/Plater.cpp:25796
+Sent "%1%" to Bambu Connect. Choose the printer and start the print there.	GUI/Plater.cpp:25811
+Failed to export the project for Bambu Studio.	GUI/Plater.cpp:25716
+Exported for Bambu Studio.	GUI/Plater.cpp:25721
+Exported for Bambu Studio: %d settings not supported by Bambu Studio were left out.	GUI/Plater.cpp:25722
+Bambu Studio was not found. The file was exported to %s.	GUI/Plater.cpp:25842
+Bambu Studio not found	GUI/Plater.cpp:25843
+Failed to launch Bambu Studio (found at %s). The file was exported to %s.	GUI/Plater.cpp:25852
+Could not launch Bambu Studio	GUI/Plater.cpp:25854
 
+Sort by	GUI/PrinterStoragePanel.cpp:184
+Newest first	GUI/PrinterStoragePanel.cpp:186
+Oldest first	GUI/PrinterStoragePanel.cpp:187
+Print time	GUI/PrinterStoragePanel.cpp:218
+Files on %s	GUI/PrinterStoragePanel.cpp:348
+Reading the printer's files...	GUI/PrinterStoragePanel.cpp:494
+The printer's files could not be listed.	GUI/PrinterStoragePanel.cpp:498
+Storage is not available for this printer.	GUI/PrinterStoragePanel.cpp:501
+Delete "%s" from %s?\nThis cannot be undone.	GUI/PrinterStoragePanel.cpp:660
+Deleting %s...	GUI/PrinterStoragePanel.cpp:662
+Deleted %s.	GUI/PrinterStoragePanel.cpp:667
+%s was already gone from the printer.	GUI/PrinterStoragePanel.cpp:671
+Could not delete "%s".	GUI/PrinterStoragePanel.cpp:675
+Asking the printer whether it is free...	GUI/PrinterStoragePanel.cpp:690
+The printer could not be asked whether it is free.	GUI/PrinterStoragePanel.cpp:701
+The printer has a paused print.	GUI/PrinterStoragePanel.cpp:710
+The printer is printing.	GUI/PrinterStoragePanel.cpp:710
+Finish or cancel that job before starting another one.	GUI/PrinterStoragePanel.cpp:712
+Start printing "%s" on %s?	GUI/PrinterStoragePanel.cpp:728
+The file prints exactly as it was sliced. Make sure the build plate is clear and the filament the file was sliced for is loaded.	GUI/PrinterStoragePanel.cpp:731
+Starting %s...	GUI/PrinterStoragePanel.cpp:738
+Print started: %s. Follow it on the printer page.	GUI/PrinterStoragePanel.cpp:742
+The print of "%s" did not start.	GUI/PrinterStoragePanel.cpp:745
 [own]
 # This app's own words on the static page, with no counterpart in the
 # C++: shown in English in every language.
@@ -552,11 +595,6 @@ The upload of ${job.name} was canceled.
 Kept for this printer preset
 As the printer preset gives it
 Reading the printer's files...
-Files on ${hostsState.info.printer}
-The printer's files could not be listed.\n${error.message}
-Start printing "${file.name}" on ${hostsState.info.printer}?
-${file.name} was started on ${hostsState.info.printer}.
-Delete "${file.name}" from ${hostsState.info.printer}?\nThis cannot be undone.
 No objects on this plate.
 Add a range of layers
 Delete the last range of layers
@@ -673,7 +711,6 @@ not yet: calibration models are not built
 not yet: centres of mass are not worked out
 not yet: folders are not shown in the system's file manager
 not yet: models are not read from a ZIP archive
-not yet: no Bambu Studio export
 not yet: no network test
 not yet: no prices or rates of your own are kept
 not yet: overhangs are not marked in the scene
@@ -702,3 +739,14 @@ Path of the configs to import
 Saved ${answer.path} (${answer.triangles} triangles).
 Saved ${answer.files.length} STL files in ${dir}.
 The object is open where it was cut: %d of the cut's outlines could not be closed.
+Send to Bambu Connect is for a Bambu Lab printer.
+In a browser no other application is opened. The file was written to %1%; in the app's window Bambu Connect is opened with:
+In a browser no other application is started. In the app's window Bambu Studio is started with:
+# The U1's own device page (resources/web/flutter_web, Snapmaker's bundled
+# Flutter page, not gettext): its "Print Preferences" in the send dialog.
+Print Preferences	resources/web/flutter_web/main.*.js
+Auto Leveling	resources/web/flutter_web/main.*.js
+Extrusion Flow Calibration	resources/web/flutter_web/main.*.js
+Time-lapse Camera	resources/web/flutter_web/main.*.js
+When enabled, the printer will automatically calibrate flow compensation before printing. Recommended after each filament change.	resources/web/flutter_web/main.*.js
+Toolheads

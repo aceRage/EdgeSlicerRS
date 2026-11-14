@@ -183,6 +183,34 @@ impl Library {
     /// the printer presets made for it. A model whose file cannot be read
     /// is left out, as the reference leaves it out; so is a preset that
     /// cannot be read or is only there to inherit from.
+    /// The model id of the printer model a printer preset names
+    /// (`printer_model`): the first vendor whose index lists a model of
+    /// that name, its file's `model_id` ("N1" for the Bambu Lab A1 mini),
+    /// as `Preset::get_printer_type` finds it (Preset.cpp l.1111).
+    pub fn model_id(&self, printer_model: &str) -> Option<String> {
+        if printer_model.is_empty() {
+            return None;
+        }
+        for vendor in self.vendors().ok()? {
+            let Ok(opened) = Vendor::open(&self.dir, &vendor) else {
+                continue;
+            };
+            if !opened
+                .names(Kind::MachineModel)
+                .any(|name| name == printer_model)
+            {
+                continue;
+            }
+            return opened
+                .resolve(Kind::MachineModel, printer_model)
+                .ok()?
+                .text("model_id")
+                .filter(|id| !id.is_empty())
+                .map(str::to_owned);
+        }
+        None
+    }
+
     pub fn models(&self, vendor: &str) -> Result<Vec<PrinterModel>, Failure> {
         let opened = Vendor::open(&self.dir, vendor)?;
         let mut by_model: HashMap<String, Vec<ModelPreset>> = HashMap::new();

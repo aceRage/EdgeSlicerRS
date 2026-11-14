@@ -121,6 +121,12 @@ pub enum When {
     /// Every plate that holds something is sliced and its G-code written
     /// (`can_export_all_gcode`).
     AllGcode,
+    /// A Bambu Lab printer, and the plate shown sliced
+    /// (`can_send_to_bambu_connect(false)`).
+    BambuGcode,
+    /// A Bambu Lab printer, and every plate sliced
+    /// (`can_send_to_bambu_connect(true)`).
+    BambuAllGcode,
     /// There is more than one project open.
     Projects,
     /// In the app's window, not a browser (Quit, Minimize, Zoom).
@@ -159,6 +165,9 @@ pub struct Item {
     /// Not built: what it waits for, this app's own words.
     pub waits: Option<&'static str>,
     pub os: Os,
+    /// Shown for a Bambu Lab printer alone (MainFrame.cpp
+    /// `show_bambu_connect_menu_items`).
+    pub bambu: bool,
 }
 
 const fn item(id: &'static str, label: &'static str, tip: &'static str, when: When) -> Item {
@@ -173,6 +182,7 @@ const fn item(id: &'static str, label: &'static str, tip: &'static str, when: Wh
         radio: false,
         waits: None,
         os: Os::All,
+        bambu: false,
     }
 }
 
@@ -196,6 +206,10 @@ impl Item {
     }
     const fn waits(mut self, why: &'static str) -> Self {
         self.waits = Some(why);
+        self
+    }
+    const fn bambu(mut self) -> Self {
+        self.bambu = true;
         self
     }
     const fn on(mut self, os: Os) -> Self {
@@ -229,7 +243,6 @@ const ONE_WINDOW: &str = "not yet: the app has one window";
 const NO_ZIP: &str = "not yet: models are not read from a ZIP archive";
 const NO_GCODE_CONFIG: &str = "not yet: settings are not read from a G-code file";
 const NO_STEP: &str = "not yet: STEP needs a CAD kernel, which the engine has not";
-const NO_BAMBU: &str = "not yet: no Bambu Studio export";
 const NO_PRESETS: &str = "not yet: a vendor's system profile is not imported";
 const NO_3DCONNEXION: &str = "not yet: 3D mice are not read";
 const NO_OVERHANG: &str = "not yet: overhangs are not marked in the scene";
@@ -333,16 +346,14 @@ static EXPORT: &[Node] = &[
         "Export a project Bambu Studio opens with its settings (settings Bambu Studio does not have are left out)",
         When::Objects,
     )
-    .dots()
-    .waits(NO_BAMBU)),
+    .dots()),
     I(item(
         "export.bambu_open",
         "Export && Open in Bambu Studio",
         "Export a project Bambu Studio opens with its settings, then launch Bambu Studio with it",
         When::Objects,
     )
-    .dots()
-    .waits(NO_BAMBU)),
+    .dots()),
     I(item(
         "export.plate_sliced",
         "Export plate sliced file",
@@ -358,6 +369,22 @@ static EXPORT: &[Node] = &[
         When::AllGcode,
     )
     .dots()),
+    // Shown for a Bambu Lab printer alone: the sliced file handed to the
+    // person's own Bambu Connect (MainFrame.cpp l.3523–3535, no dots).
+    I(item(
+        "export.bambu_connect",
+        "Send plate to Bambu Connect",
+        "Export the current plate's sliced file and open it in Bambu Connect, which prints it with your Bambu account or over LAN",
+        When::BambuGcode,
+    )
+    .bambu()),
+    I(item(
+        "export.bambu_connect_all",
+        "Send all plates to Bambu Connect",
+        "Export the sliced file of all plates and open it in Bambu Connect, where you pick the plate to print",
+        When::BambuAllGcode,
+    )
+    .bambu()),
     I(item(
         "export.gcode",
         "Export G-code",
@@ -1091,6 +1118,8 @@ pub struct SessionState {
     pub active: u32,
     /// The calls of [`When::Call`] the session has.
     pub calls: Vec<&'static str>,
+    /// The project's printer is a Bambu Lab printer.
+    pub bambu: bool,
 }
 
 /// Whether an entry can be used now.
@@ -1115,6 +1144,8 @@ pub fn enabled(item: &Item, page: &PageState, session: &SessionState) -> bool {
         When::Preview => page.tab == "preview",
         When::Gcode => plater && session.gcode && !session.slicing,
         When::AllGcode => plater && session.all_gcode && !session.slicing,
+        When::BambuGcode => session.bambu && plater && session.gcode && !session.slicing,
+        When::BambuAllGcode => session.bambu && plater && session.all_gcode && !session.slicing,
         When::Projects => session.projects.len() > 1,
         When::Window => page.window,
         When::Call(names) => names.iter().any(|name| session.calls.contains(name)),
@@ -1138,7 +1169,7 @@ pub fn tree(page: &PageState, session: &SessionState, mac: bool) -> Value {
         let mut out: Vec<Value> = Vec::new();
         for node in nodes {
             match node {
-                Node::Item(item) if shows(item.os, mac) => {
+                Node::Item(item) if shows(item.os, mac) && (session.bambu || !item.bambu) => {
                     out.push(entry(item, page, session, mac))
                 }
                 Node::Item(_) => {}
@@ -1616,6 +1647,7 @@ impl Session {
         let calls = preset_calls(self);
         let state = lock(&self.state);
         let project = &state.projects[state.active_index()];
+        let bambu = super::export::is_bambu(&project.choices, project.file.as_deref());
         let marks = project.history.marks();
         let name = |key: &str| marks.get(key).and_then(Value::as_str).map(str::to_owned);
         let gcode = project
@@ -1655,6 +1687,7 @@ impl Session {
                 .collect(),
             active: state.active,
             calls,
+            bambu,
         }
     }
 
