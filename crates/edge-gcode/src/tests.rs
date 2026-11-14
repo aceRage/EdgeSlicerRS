@@ -1787,12 +1787,13 @@ fn a_tool_change_goes_through_the_printers_own_gcode() {
     assert_eq!(opening[7], "M104 S220 T0 ; set nozzle temperature");
 
     // The change on the first layer: pull the filament right back, end the
-    // old filament, cool its tool, run the template, start the new one.
+    // old filament, cool its tool, run the template, set the fan back to
+    // the layer's speed, start the new one.
     let first = text.split(";LAYER_CHANGE").nth(1).unwrap();
     let change: Vec<&str> = first
         .lines()
         .skip_while(|line| *line != "; filament end")
-        .take(9)
+        .take(10)
         .collect();
     assert_eq!(
         change,
@@ -1804,6 +1805,7 @@ fn a_tool_change_goes_through_the_printers_own_gcode() {
             "M109 S250 T1",
             "T1",
             "; custom gcode end",
+            "M106 S0",
             "; filament start",
             "M104 S250 T1 ; set nozzle temperature",
         ]
@@ -1921,6 +1923,60 @@ fn a_template_move_to_where_the_head_already_is_is_kept() {
 }
 
 #[test]
+fn after_a_change_the_fan_is_set_back_to_the_layer_s_speed() {
+    // The fan is off on the first layer and on from the second, where the
+    // change is made after the first filament's wall.
+    let settings = two_tools(Some(CHANGE)).map(|tool| PrintSettings {
+        close_fan_the_first_x_layers: 1,
+        fan_min_speed: 100.0,
+        fan_max_speed: 100.0,
+        ..tool
+    });
+    let (text, _) = in_filaments(&[&[0], &[0, 1]], &settings);
+    let second = text.split(";LAYER_CHANGE").nth(2).unwrap();
+    let fans: Vec<&str> = (second.lines())
+        .skip_while(|line| !line.starts_with("; Change Tool0 -> Tool1"))
+        .take_while(|line| !line.starts_with(";TYPE:"))
+        .filter(|line| line.starts_with("M106"))
+        .collect();
+    // The layer's speed after the change, not the first layer's that was
+    // in force when the layer began.
+    assert_eq!(fans, ["M106 S255"], "{second}");
+}
+
+#[test]
+fn a_tool_wanted_again_soon_is_not_cooled() {
+    // Filament 1, 2 and 1 again on one layer, timed as a printer runs it:
+    // tool 0 is wanted again within its 30 s preheat, after walls that
+    // take 20 s a layer.
+    let timed = |settings: PrintSettings| PrintSettings {
+        outer_wall_speed: 2.0,
+        initial_layer_speed: 2.0,
+        limits: Some(edge_time::Limits {
+            flavor: edge_time::Flavor::Klipper,
+            max_extruding: 5000.0,
+            ..edge_time::Limits::default()
+        }),
+        ..settings
+    };
+    let settings = two_tools(Some(CHANGE)).map(timed);
+    let (text, _) = in_filaments(&[&[0], &[0, 1, 0]], &settings);
+    let lines: Vec<&str> = text.lines().collect();
+    let at = |wanted: &str| lines.iter().position(|line| line.starts_with(wanted));
+    let away = at("; Change Tool0 -> Tool1").unwrap();
+    let back = at("; Change Tool1 -> Tool0").unwrap();
+    // Its cooldown is taken out, as the reference's post-processor takes
+    // it out, and it is told its temperature before it is put away.
+    assert!(
+        !text.contains("T0 ; set nozzle temperature ;cooldown"),
+        "{text}"
+    );
+    assert!(lines[..back].contains(&"; removed M104"));
+    let preheat = at("M104 S210 T0 ; preheat T0").unwrap_or_else(|| panic!("{text}"));
+    assert!(preheat < away, "{text}");
+}
+
+#[test]
 fn the_next_tool_is_warmed_ahead_of_its_turn() {
     // One tool prints for a long time before the other is wanted: a slow
     // wall, 160 mm at 2 mm/s.
@@ -2009,6 +2065,71 @@ fn the_prime_tower_is_printed_first_and_its_first_line_slowly() {
     assert_eq!(
         feed_of(&text, "Prime tower"),
         Some((0.33 * 30.0 * 60.0_f64).round())
+    );
+}
+
+#[test]
+fn the_tower_s_own_lines_are_joined_without_pulling_the_filament_back() {
+    let part = [wall(0.0, 0.0, 10.0, 0)];
+    // A frame, a line across it, and a wall cut by a gap into two pieces.
+    let frame = ExtrusionPath {
+        points: [
+            (40.0, 40.0),
+            (60.0, 40.0),
+            (60.0, 50.0),
+            (40.0, 50.0),
+            (40.0, 40.0),
+        ]
+        .map(|(x, y)| Point2::from_mm(x, y))
+        .to_vec(),
+        ..line((0.0, 0.0), (1.0, 0.0), Role::PrimeTower)
+    };
+    let across = line((45.0, 42.0), (45.0, 48.0), Role::PrimeTower);
+    let piece = |from: (f64, f64), to: (f64, f64)| ExtrusionPath {
+        part: ExtrusionPath::TOWER_WALL,
+        ..line(from, to, Role::PrimeTower)
+    };
+    let tower = [
+        frame,
+        across,
+        piece((39.0, 39.0), (61.0, 39.0)),
+        piece((61.0, 41.0), (61.0, 51.0)),
+    ];
+    let layers: Vec<Layer<'_>> = [0.2, 0.4]
+        .into_iter()
+        .map(|z| Layer {
+            z,
+            ram: None,
+            enter: &[],
+            wipe: None,
+            tower: &tower,
+            ..one_layer(&part, &[0..1], &[])[0]
+        })
+        .collect();
+    let (text, _) = print(&layers, &basic());
+    let second = text.split(";LAYER_CHANGE").nth(2).unwrap();
+    let on_tower: Vec<&str> = second
+        .lines()
+        .skip_while(|line| *line != ";TYPE:Prime tower")
+        .take_while(|line| *line != ";TYPE:Outer wall")
+        .collect();
+    // Up to the last of its lines, before the travel back to the part.
+    let last = on_tower
+        .iter()
+        .rposition(|line| line.contains(" X") && line.contains(" E0."))
+        .unwrap();
+    let on_tower = &on_tower[..=last];
+    // Pulled back once only, to cross the gap in the wall, at 10 mm/s.
+    let pulls: Vec<usize> = (on_tower.iter().enumerate())
+        .filter(|(_, line)| line.starts_with("G1 E-"))
+        .map(|(at, _)| at)
+        .collect();
+    assert_eq!(pulls.len(), 1, "{on_tower:#?}");
+    assert!(on_tower[pulls[0] + 1].ends_with(" F600"), "{on_tower:#?}");
+    // Not lifted between its lines either.
+    assert!(
+        !on_tower.iter().any(|line| line.contains(" Z")),
+        "{on_tower:#?}"
     );
 }
 
@@ -2234,6 +2355,61 @@ fn a_tree_branch_s_wall_is_laid_hook_first() {
 }
 
 #[test]
+fn a_tool_changed_where_it_is_goes_round_the_tower_to_its_gap() {
+    // A tower from 40 x 40 to 60 x 60, its gap on the left at y 50.
+    let settings = two_tools(Some(CHANGE)).map(|tool| PrintSettings {
+        tower_envelope: Some([40.0, 40.0, 60.0, 60.0]),
+        bed: Some([0.0, 0.0, 200.0, 200.0]),
+        ..tool
+    });
+    let loops = [wall(100.0, 100.0, 10.0, 0)];
+    let fill = [line((100.0, 30.0), (110.0, 30.0), Role::SolidInfill)];
+    let tower = [line((42.0, 50.0), (58.0, 50.0), Role::PrimeTower)];
+    let enter = [Point2::from_mm(38.5, 50.0), Point2::from_mm(40.25, 50.0)];
+    let layer = one_layer(&loops, &[0..1], &[])[0];
+    let plan = [
+        layer,
+        Layer {
+            z: 0.4,
+            paths: &fill,
+            ..layer
+        },
+        Layer {
+            z: 0.4,
+            filament: 1,
+            enter: &enter,
+            tower: &tower,
+            loops: &[],
+            islands: &[],
+            ..layer
+        },
+    ];
+    let mut out = Vec::new();
+    write_tools(&mut out, &plan, &settings).unwrap();
+    let text = String::from_utf8(out).unwrap();
+    let after: Vec<&str> = text
+        .lines()
+        .skip_while(|line| !line.starts_with("; Change Tool0 -> Tool1"))
+        .take_while(|line| !line.starts_with("G1 X38.500 Y50.000"))
+        .filter(|line| line.starts_with("G1 X"))
+        .collect();
+    // From the fill, below and right of the tower, round its box grown by
+    // 2 mm the shorter way: to its right side, down to the corner, along
+    // its foot, up its left side to level with the gap, then in.
+    let ends: Vec<(f64, f64)> = after
+        .iter()
+        .map(|line| (word(line, 'X').unwrap(), word(line, 'Y').unwrap()))
+        .collect();
+    assert_eq!(ends.len(), 4, "{after:#?}");
+    assert!((ends[0].0 - 62.0).abs() < 1e-3, "{after:#?}");
+    assert_eq!(
+        ends[1..],
+        [(62.0, 38.0), (38.0, 38.0), (38.0, 50.0)],
+        "{after:#?}"
+    );
+}
+
+#[test]
 fn a_rammed_filament_is_laid_by_the_tool_being_put_away() {
     let [a, b] = two_tools(Some(CHANGE));
     let settings = [a, b];
@@ -2287,12 +2463,13 @@ fn a_rammed_filament_is_laid_by_the_tool_being_put_away() {
     let parked = at("G1 X43.350 Y41.850");
     assert!(laid < parked && parked < change);
     assert_eq!(word(text.lines().nth(parked).unwrap(), 'F'), Some(2400.0));
-    // The new tool comes in from outside the tower's wall, through the
-    // gap, and starts where the ram stopped.
-    let outside = at("G1 X38.500 Y41.450");
-    let inside = at("G1 X40.250 Y41.450");
+    // Changed over the tower, the new tool starts where the ram stopped,
+    // without going out of the tower to come in again through the gap
+    // in its wall: the reference's block goes on from there (GCode.cpp
+    // `append_tcr2` routes only a tool changed where it was).
     let first = at("G1 X60.000 Y41.100 E");
-    assert!(change < outside && outside < inside && inside < first);
+    assert!(change < first);
+    assert!(!text.contains("G1 X38.500 Y41.450") && !text.contains("G1 X40.250 Y41.450"));
     // The old tool's count has the ram in it.
     let (_, summary) = (0, write_tools(&mut Vec::new(), &plan, &settings).unwrap());
     assert!(summary.filament_mm3 > volume);

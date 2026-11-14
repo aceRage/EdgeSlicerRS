@@ -2698,6 +2698,7 @@ impl Sliced {
         for print in &mut prints {
             print.produced_at = Some(produced_at.to_owned());
             print.plate = self.plate_facts.clone();
+            print.tower_envelope = self.tower.envelope;
             print.own_heights = self.below.is_some();
         }
         // A region with settings of its own lays its walls and fill by

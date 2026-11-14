@@ -176,6 +176,11 @@ pub struct PrintSettings {
     pub arc_fitting: bool,
     /// The bed's extent in mm: min x, min y, max x, max y.
     pub bed: Option<[f64; 4]>,
+    /// Where the nozzle goes round on its way into the prime tower
+    /// (`edge_tower::Tower::envelope`): min x, min y, max x, max y in mm.
+    /// Set by the pipeline; none for no tower, Bambu Lab's tower, or a
+    /// wall without gaps.
+    pub tower_envelope: Option<[f64; 4]>,
 
     pub filament_diameter: f64,
     pub filament_flow_ratio: f64,
@@ -436,6 +441,7 @@ impl Default for PrintSettings {
             resolution: 0.01,
             arc_fitting: false,
             bed: None,
+            tower_envelope: None,
             filament_diameter: 1.75,
             filament_flow_ratio: 1.0,
             print_flow_ratio: 1.0,
@@ -911,6 +917,7 @@ impl PrintSettings {
             arc_fitting: flag("enable_arc_fitting", defaults.arc_fitting)?
                 && !flag("spiral_mode", false)?,
             bed,
+            tower_envelope: None,
             filament_diameter: number("filament_diameter", defaults.filament_diameter)?,
             filament_flow_ratio: number("filament_flow_ratio", defaults.filament_flow_ratio)?,
             print_flow_ratio: number("print_flow_ratio", defaults.print_flow_ratio)?,
