@@ -225,15 +225,40 @@ fn the_blacklist_is_read_with_the_references_sentences() {
             .action,
         "prohibition"
     );
-    // "Third Party" warnings are for filaments that are not Bambu Lab's.
+    // Somebody else's PET-CF is not Bambu's.
+    assert!(mapping::blacklisted(&list, "Polymaker", "PET-CF").is_none());
+    // "Third Party" entries are for every filament, Bambu Lab's included
+    // (aceRage/EdgeSlicer#1039, as Bambu Studio now does).
     assert_eq!(
         mapping::blacklisted(&list, "Polymaker", "PLA-CF")
             .unwrap()
             .action,
         "warning"
     );
-    assert!(mapping::blacklisted(&list, "Bambu Lab", "PLA-CF").is_none());
+    assert_eq!(
+        mapping::blacklisted(&list, "Bambu Lab", "PLA-CF")
+            .unwrap()
+            .action,
+        "warning"
+    );
+    assert_eq!(
+        mapping::blacklisted(&list, "Bambu Lab", "PVA")
+            .unwrap()
+            .action,
+        "warning"
+    );
+    assert_eq!(
+        mapping::blacklisted(&list, "Bambu Lab", "TPU")
+            .unwrap()
+            .action,
+        "prohibition"
+    );
     assert!(mapping::blacklisted(&list, "Generic", "PLA").is_none());
+    assert!(mapping::blacklisted(&list, "", "PLA").is_none());
+    assert_eq!(
+        mapping::blacklisted(&list, "", "PVA").unwrap().action,
+        "warning"
+    );
 }
 
 #[test]
@@ -438,4 +463,169 @@ fn a_bridge_that_dies_ends_what_waits_and_is_started_again() {
     client.retry();
     client.start().unwrap();
     assert_eq!(client.state(), State::Running);
+}
+
+/// A machine with the given trays: (tray index, type, colour "RRGGBBAA",
+/// preset id), in the AMS units their indexes say.
+fn trays_machine(trays: &[(i64, &str, &str, &str)]) -> Machine {
+    let mut units: std::collections::BTreeMap<i64, Vec<Value>> = std::collections::BTreeMap::new();
+    let mut bits = 0u64;
+    for (index, kind, colour, preset) in trays {
+        units.entry(index / 4).or_default().push(
+            json!({ "id": (index % 4).to_string(), "tray_type": kind, "tray_info_idx": preset, "tray_color": colour }),
+        );
+        bits |= 1 << index;
+    }
+    let ams_bits: u64 = units.keys().map(|unit| 1 << unit).sum();
+    let ams: Vec<Value> = units
+        .into_iter()
+        .map(|(unit, trays)| json!({ "id": unit.to_string(), "info": "1001", "tray": trays }))
+        .collect();
+    let mut machine = Machine::default();
+    machine.read(&report(json!({
+        "ams": { "ams_exist_bits": format!("{ams_bits:x}"), "tray_exist_bits": format!("{bits:x}"), "ams": ams },
+    })));
+    machine
+}
+
+fn hex(rgb: (u8, u8, u8)) -> String {
+    format!("{:02X}{:02X}{:02X}", rgb.0, rgb.1, rgb.2)
+}
+
+/// The ten colours of aceRage/EdgeSlicer#1039's table.
+const NAMED: [(&str, (u8, u8, u8)); 10] = [
+    ("red", (255, 0, 0)),
+    ("orange", (255, 128, 0)),
+    ("dark red", (128, 0, 0)),
+    ("pink", (255, 105, 180)),
+    ("black", (0, 0, 0)),
+    ("grey", (128, 128, 128)),
+    ("white", (255, 255, 255)),
+    ("navy", (0, 0, 128)),
+    ("blue", (0, 0, 255)),
+    ("purple", (128, 0, 128)),
+];
+
+fn named(name: &str) -> (u8, u8, u8) {
+    NAMED.iter().find(|(n, _)| *n == name).unwrap().1
+}
+
+/// One filament, two PLA trays: the tray picked (0 or 1).
+fn pick_of(filament_colour: (u8, u8, u8), a: (u8, u8, u8), b: (u8, u8, u8)) -> i64 {
+    let (ta, tb) = (format!("{}FF", hex(a)), format!("{}FF", hex(b)));
+    let machine = trays_machine(&[(0, "PLA", &ta, "GFL99"), (1, "PLA", &tb, "GFL99")]);
+    let (_, result) = mapping::auto_map(
+        &machine,
+        &[filament(0, &format!("#{}", hex(filament_colour)), "PLA")],
+    );
+    result[0].tray_id
+}
+
+#[test]
+fn the_auto_match_picks_as_the_reference_does_since_1039() {
+    // aceRage/EdgeSlicer#1039's table: the 13 of 360 choices that changed
+    // there (filament, tray A, tray B, the pick now).
+    let changed = [
+        ("orange", "pink", "grey", "grey"),
+        ("orange", "black", "purple", "black"),
+        ("dark red", "pink", "grey", "pink"),
+        ("dark red", "black", "grey", "black"),
+        ("pink", "black", "blue", "black"),
+        ("pink", "white", "navy", "white"),
+        ("grey", "orange", "navy", "orange"),
+        ("grey", "dark red", "pink", "pink"),
+        ("grey", "dark red", "black", "black"),
+        ("white", "red", "black", "black"),
+        ("blue", "dark red", "white", "dark red"),
+        ("purple", "dark red", "black", "black"),
+        ("purple", "dark red", "blue", "blue"),
+    ];
+    for (f, a, b, now) in changed {
+        assert_eq!(
+            pick_of(named(f), named(a), named(b)),
+            if now == a { 0 } else { 1 },
+            "{f} with {a} and {b}"
+        );
+    }
+    // The whole table: every one of the 360 picks is the nearer tray in
+    // CIE76 on 0..1, as AmsMatch.cpp computes it.
+    let colour = |c: (u8, u8, u8)| format!("#{}", hex(c));
+    let mut cases = 0;
+    for (f, fc) in NAMED {
+        for (i, (a, ac)) in NAMED.iter().enumerate() {
+            for (b, bc) in NAMED.iter().skip(i + 1) {
+                if f == *a || f == *b {
+                    continue;
+                }
+                cases += 1;
+                let nearer_a = mapping::color_distance(&colour(fc), &colour(*ac))
+                    <= mapping::color_distance(&colour(fc), &colour(*bc));
+                assert_eq!(
+                    pick_of(fc, *ac, *bc),
+                    if nearer_a { 0 } else { 1 },
+                    "{f} with {a} and {b}"
+                );
+            }
+        }
+    }
+    assert_eq!(cases, 360);
+    // The distance itself: black to white 100, black to red 117.34.
+    assert!((mapping::color_distance("#000000", "#FFFFFF") - 100.0).abs() < 0.05);
+    assert!((mapping::color_distance("#000000", "#FF0000") - 117.34).abs() < 0.1);
+    // Picks with an obvious answer: the same colour, a near shade, the
+    // only tray of the type, a near white.
+    let machine = trays_machine(&[
+        (0, "PLA", "FF0000FF", "GFL99"),
+        (1, "PLA", "0000FFFF", "GFL99"),
+        (2, "PETG", "FFFFFFFF", "GFL99"),
+        (3, "PLA", "FFFFFFFF", "GFL99"),
+    ]);
+    let filaments = [
+        filament(0, "#FF0000", "PLA"),
+        filament(1, "#1414C8", "PLA"),
+        filament(2, "#00FF00", "PETG"),
+        filament(3, "#FAFAFA", "PLA"),
+    ];
+    let (_, result) = mapping::auto_map(&machine, &filaments);
+    assert_eq!(
+        result.iter().map(|r| r.tray_id).collect::<Vec<_>>(),
+        vec![0, 1, 2, 3]
+    );
+    // A tie goes to the tray holding the filament's own preset, whatever
+    // the tray numbers: the second AMS only, trays 4 and 7 both black.
+    let machine = trays_machine(&[
+        (4, "PLA", "000000FF", "GFL99"),
+        (7, "PLA", "000000FF", "GFA01"),
+    ]);
+    let mut black = filament(0, "#000000", "PLA");
+    black.filament_id = "GFA01".into();
+    assert_eq!(
+        mapping::auto_map(&machine, std::slice::from_ref(&black)).1[0].tray_id,
+        7
+    );
+    // On the first AMS with its four trays, as before.
+    let machine = trays_machine(&[
+        (0, "PLA", "000000FF", "GFL99"),
+        (1, "PLA", "000000FF", "GFA01"),
+        (2, "PLA", "090909FF", "GFL99"),
+        (3, "PLA", "000000FF", "GFL99"),
+    ]);
+    assert_eq!(mapping::auto_map(&machine, &[black]).1[0].tray_id, 1);
+    // A pick keeps its own distance; a see-through filament on an opaque
+    // tray is far (999999), which only the last fallback drops.
+    let machine = trays_machine(&[
+        (0, "PLA", "C80000FF", "GFL99"),
+        (1, "PLA", "0000FFFF", "GFL99"),
+    ]);
+    let (_, r) = mapping::auto_map(
+        &machine,
+        &[
+            filament(0, "#FF0000", "PLA"),
+            filament(1, "#0000FF80", "PLA"),
+        ],
+    );
+    assert_eq!(r[0].tray_id, 0);
+    assert!((r[0].distance - mapping::color_distance("#FF0000", "C80000FF")).abs() < 1e-9);
+    assert_eq!(r[1].tray_id, 1);
+    assert_eq!(r[1].distance, 999_999.0);
 }

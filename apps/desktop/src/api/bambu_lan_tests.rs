@@ -98,6 +98,12 @@ impl Probe {
 
     /// The small project on a P1S's presets with a PLA, sliced.
     fn sliced_project(&self) -> u64 {
+        self.sliced_project_in("Bambu PLA Basic")
+    }
+
+    /// The small project on a P1S's presets with the first filament whose
+    /// name starts with `filament`, sliced.
+    fn sliced_project_in(&self, filament: &str) -> u64 {
         let id = self.ask("project_open", json!({ "path": reference(SMALL) }))["id"]
             .as_u64()
             .unwrap();
@@ -106,10 +112,7 @@ impl Probe {
             .as_array()
             .unwrap()
             .iter()
-            .find(|f| {
-                f.as_str()
-                    .is_some_and(|name| name.starts_with("Bambu PLA Basic"))
-            })
+            .find(|f| f.as_str().is_some_and(|name| name.starts_with(filament)))
             .cloned()
             .unwrap_or_else(|| presets["filaments"][0].clone());
         self.ask(
@@ -550,4 +553,35 @@ fn a_printer_not_in_developer_mode_is_said_before_sending() {
     assert!(mock.requests("start_local_print").is_empty());
     let refused = probe.refused("bambu_control", json!({ "action": "pause" }));
     assert!(refused.starts_with("This printer is not in Developer Mode"));
+}
+
+#[test]
+fn bambu_pet_cf_in_an_ams_slot_is_refused_as_1039_decides() {
+    // aceRage/EdgeSlicer#1039: the presets' "Bambu Lab" is the blacklist's
+    // "Bambulab", so Bambu PET-CF is prohibited in an AMS slot.
+    let mock = Mock::new(Setup {
+        trays: vec![(0, "PET-CF", "222222FF")],
+        ..Setup::default()
+    });
+    let probe = Probe::new(Some(&mock));
+    probe.add_printer(CODE);
+    probe.connected();
+    let project = probe.sliced_project_in("Bambu PET-CF");
+    let dialog = probe.ask("bambu_send_prepare", json!({ "project": project }));
+    assert_eq!(dialog["filaments"][0]["type"], "PET-CF", "{dialog}");
+    assert_eq!(dialog["filaments"][0]["tray"], 0);
+    let refused = probe.ask("bambu_send", json!({ "project": project }));
+    assert_eq!(refused["confirm"]["title"], "Errors");
+    assert_eq!(
+        refused["confirm"]["lines"][0],
+        "Bambu PET-CF/PA6-CF is not supported by AMS."
+    );
+    assert_eq!(refused["confirm"]["blocking"], true);
+    // Not even once confirmed.
+    let again = probe.ask(
+        "bambu_send",
+        json!({ "project": project, "confirmed": true }),
+    );
+    assert_eq!(again["confirm"]["blocking"], true);
+    assert!(mock.requests("start_local_print").is_empty());
 }

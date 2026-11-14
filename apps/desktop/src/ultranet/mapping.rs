@@ -6,24 +6,21 @@
 //! (GUI_App.cpp `transition_tridid`) and the AMS's list of filaments it
 //! does not take (DeviceManager.cpp `check_filaments_in_blacklist`).
 //!
-//! Where this differs from the reference on purpose (each an error of the
-//! reference's, said in the report and UI_PARITY.md):
+//! As the reference matches since aceRage/EdgeSlicer#1039 (its
+//! `AmsMatch.cpp`), which fixed what this port first found there:
 //!
-//! - The colour distance is CIE76 in Lab from sRGB in 0..1. The reference
-//!   hands `RGB2Lab` 0..255 values where it expects 0..1
-//!   (DeviceManager.cpp l.891, ColorSpaceConvert.cpp l.22), so its
-//!   "Lab" is not Lab and some nearest colours differ.
-//! - A tray picked keeps the distance it was picked at. The reference
-//!   copies the tray's own `distance` (DeviceManager.cpp l.1170), a
-//!   `FilamentInfo` field never set, which the last fallback then
-//!   compares with 6000.
-//! - On a tie the filament's preset id is compared with the tray's own
-//!   (`tray_filaments` is a map by tray index, which the reference indexes
-//!   by column number, l.1156).
-//! - The blacklist's "Third Party" entries are for filaments not Bambu
-//!   Lab's: the reference compares the entry's own vendor with
-//!   "bambulab" (always true there, l.8691), and compares "Bambu Lab"
-//!   (the presets' `filament_vendor`) with "bambulab", which never match.
+//! - The colour distance is CIE76 in Lab from sRGB in 0..1 (the pin's
+//!   DeviceManager.cpp l.891 handed `RGB2Lab` 0..255).
+//! - A tray picked keeps the distance it was picked at (the pin copied the
+//!   tray's own, never set, l.1170); the last fallback drops a pick at
+//!   6000 or more, which on this scale is only an opacity mismatch.
+//! - On a tie the filament's preset id is compared with that column's
+//!   tray (the pin indexed its map by tray index with the column, l.1156).
+//! - Vendors are compared without case or spaces, so the presets' "Bambu
+//!   Lab" is the list's "Bambulab": Bambu PET-CF and PA6-CF are prohibited
+//!   in the AMS. A "Third Party" entry applies to every filament, Bambu
+//!   Lab's too: kept on purpose in #1039, as Bambu Studio now applies
+//!   those warnings and the TPU prohibition to every vendor.
 
 use serde_json::{Value, json};
 
@@ -465,8 +462,10 @@ pub fn read_blacklist(text: &str) -> Vec<Blacklisted> {
         .collect()
 }
 
-/// The first entry a filament of `brand` and `kind` falls under. Vendors
-/// are compared without case or spaces ("Bambu Lab" is "Bambulab").
+/// The first entry a filament of `brand` and `kind` falls under
+/// (`AmsMatch::check_blacklist`). Vendors are compared without case or
+/// spaces ("Bambu Lab" is "Bambulab"); a "Third Party" entry is for every
+/// filament.
 pub fn blacklisted<'a>(
     list: &'a [Blacklisted],
     brand: &str,
@@ -476,11 +475,7 @@ pub fn blacklisted<'a>(
     let (brand, kind) = (plain(brand), kind.to_lowercase());
     list.iter().find(|entry| {
         let vendor = plain(&entry.vendor);
-        let ours = if vendor == "thirdparty" {
-            brand != "bambulab"
-        } else {
-            vendor == brand
-        };
+        let ours = vendor == "thirdparty" || vendor == brand;
         ours && entry.kind.to_lowercase() == kind
     })
 }
