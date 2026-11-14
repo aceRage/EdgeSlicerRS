@@ -15,7 +15,10 @@ use super::{
     mock::{self, Got, Printer, Silent, Socket},
     octoprint::OctoPrint,
     queue::Queue,
-    snapmaker::{BUSY, SnapmakerLan, mapping_script},
+    snapmaker::{
+        BUSY, FileFilament, Preferences, SnapmakerLan, auto_match, identity_mapping,
+        mapping_problem, mapping_script, mapping_warnings,
+    },
 };
 
 const KEY: &str = "the-right-key";
@@ -358,7 +361,7 @@ fn a_u1_is_started_after_the_upload_with_its_toolheads() {
     sending.options.unload_at_end = true;
     host.upload(&sending, &Progress::default()).unwrap();
     let asked = printer.asked();
-    let script = mapping_script(&[0, 2], true);
+    let script = mapping_script(&identity_mapping(&[0, 2], 0), Preferences::default(), true);
     assert_eq!(
         script,
         "SET_PRINT_EXTRUDER_MAP CONFIG_EXTRUDER=0 MAP_EXTRUDER=0\nSET_PRINT_EXTRUDER_MAP CONFIG_EXTRUDER=2 MAP_EXTRUDER=2\nSET_PRINT_USED_EXTRUDERS EXTRUDERS=0,2\nSET_PRINT_PREFERENCES BED_LEVEL=0 FLOW_CALIBRATE=0 TIME_LAPSE_CAMERA=0 END_UNLOAD_FILAMENT=[1,0,1,0]"
@@ -732,4 +735,220 @@ fn the_queue_sends_one_after_another_and_calls_off_one_waiting() {
         listing["jobs"][0]["message"],
         "Error uploading to print host:\nHTTP 403: Invalid API key"
     );
+}
+
+// ---- the U1 end to end, against the mock U1 ----
+
+fn u1_host(printer: &Printer) -> SnapmakerLan {
+    SnapmakerLan::new(
+        &connection("octoprint", &printer.address(), "Snapmaker U1"),
+        quick(),
+    )
+    .unwrap()
+}
+
+fn filament(index: usize, color: &str, kind: &str, used: bool) -> FileFilament {
+    FileFilament {
+        index,
+        color: color.into(),
+        filament_type: kind.into(),
+        used,
+    }
+}
+
+#[test]
+fn a_u1_says_what_its_toolheads_hold_and_the_filaments_are_matched_by_colour() {
+    let (printer, _) = mock::u1(mock::U1Setup::default());
+    let host = u1_host(&printer);
+    let heads = host.toolheads().unwrap().unwrap();
+    assert_eq!(heads.len(), 4);
+    assert_eq!(
+        (
+            heads[1].filament_type.as_str(),
+            heads[1].color.as_str(),
+            heads[1].loaded
+        ),
+        ("PETG", "#00FF00", true)
+    );
+    assert!(!heads[3].loaded);
+    assert_eq!(heads[0].nozzle, 0.4);
+    // A blue and a reddish filament: each the nearest loaded colour; the
+    // unused one none; a twin colour shares its toolhead.
+    let file = [
+        filament(0, "#1010F0", "PLA", true),
+        filament(1, "#00FF00", "PLA", false),
+        filament(2, "#F01010", "PLA", true),
+        filament(3, "#1010F0", "PLA", true),
+    ];
+    let mapping = auto_match(&file, &heads);
+    assert_eq!(mapping, [2, -1, 0, 1]);
+    // The fourth took the green toolhead (nearest free): type PETG is only
+    // a warning.
+    assert_eq!(
+        mapping_warnings(&file, &mapping, &heads),
+        ["Filament 4 is PLA but toolhead 2 holds PETG."]
+    );
+    assert_eq!(mapping_problem(&file, &mapping, &heads, "U1", false), None);
+    // The empty toolhead is refused unless the person sends it anyway.
+    let empty = [2, -1, 3, 3];
+    assert_eq!(
+        mapping_problem(&file, &empty, &heads, "U1", false).as_deref(),
+        Some("Toolhead 4 is empty: load it or pick another.")
+    );
+    assert_eq!(mapping_problem(&file, &empty, &heads, "U1", true), None);
+    assert_eq!(
+        mapping_problem(&file, &[2, -1, -1, 0], &heads, "U1", true).as_deref(),
+        Some("Filament 3 has no toolhead; every filament the file uses needs one.")
+    );
+    assert_eq!(
+        mapping_problem(&file, &[2, -1, 4, 0], &heads, "U1", true).as_deref(),
+        Some("U1 has 4 toolheads, so there is no toolhead 5.")
+    );
+    // Nothing loaded at all: every filament on toolhead 1, as a suggestion.
+    let none = vec![super::Toolhead::default(); 4];
+    assert_eq!(auto_match(&file[..1], &none), [0]);
+}
+
+#[test]
+fn a_u1_print_goes_from_the_upload_to_done() {
+    let (printer, shared) = mock::u1(mock::U1Setup::default());
+    let host = u1_host(&printer);
+    let mut sending = upload("cube.gcode", mock::gcode(40_000), true);
+    sending.options.mapping = vec![2, -1, 0];
+    sending.options.bed_level = true;
+    sending.options.time_lapse = true;
+    sending.options.unload_at_end = true;
+    host.upload(&sending, &Progress::default()).unwrap();
+    let script = shared.lock().unwrap().scripts.clone();
+    // As the bundled page writes it: the toolheads in the order the file
+    // first uses them, the preferences ticked as 1.
+    assert_eq!(
+        script,
+        [
+            "SET_PRINT_EXTRUDER_MAP CONFIG_EXTRUDER=0 MAP_EXTRUDER=2\nSET_PRINT_EXTRUDER_MAP CONFIG_EXTRUDER=2 MAP_EXTRUDER=0\nSET_PRINT_USED_EXTRUDERS EXTRUDERS=2,0\nSET_PRINT_PREFERENCES BED_LEVEL=1 FLOW_CALIBRATE=0 TIME_LAPSE_CAMERA=1 END_UNLOAD_FILAMENT=[1,0,1,0]"
+        ]
+    );
+    let asked = printer.asked();
+    assert_eq!(
+        asked.last().unwrap(),
+        "POST /printer/print/start?filename=cube.gcode"
+    );
+    // Then the Device tab watches it to the end.
+    let mut seen = Vec::new();
+    loop {
+        let status = host.status().unwrap().unwrap();
+        seen.push((status.state.clone(), status.percent));
+        assert_eq!(status.filename, "cube.gcode");
+        if status.state == "complete" {
+            assert_eq!(status.left, 0);
+            break;
+        }
+        assert!(status.left > 0);
+        assert!(seen.len() < 10);
+    }
+    assert_eq!(
+        seen,
+        [
+            ("printing".to_owned(), 25),
+            ("printing".to_owned(), 50),
+            ("printing".to_owned(), 75),
+            ("complete".to_owned(), 100)
+        ]
+    );
+    // A second start while it prints is refused before the file goes up.
+    shared.lock().unwrap().state = "printing".into();
+    let again = host.upload(&sending, &Progress::default());
+    assert_eq!(again, Err(Failure::Error(BUSY.into())));
+}
+
+#[test]
+fn a_u1_that_refuses_the_map_or_the_start_says_so_and_keeps_the_file() {
+    for (setup, said) in [
+        (
+            mock::U1Setup {
+                refuse_script: true,
+                ..mock::U1Setup::default()
+            },
+            "the printer refused the toolhead mapping: HTTP 400: Unknown command",
+        ),
+        (
+            mock::U1Setup {
+                refuse_start: true,
+                ..mock::U1Setup::default()
+            },
+            "the printer refused the print start: HTTP 400: Unable to start print",
+        ),
+    ] {
+        let (printer, shared) = mock::u1(setup);
+        let host = u1_host(&printer);
+        let mut sending = upload("a.gcode", mock::gcode(5_000), true);
+        sending.options.mapping = vec![0];
+        let result = host.upload(&sending, &Progress::default());
+        assert_eq!(result, Err(Failure::Error(said.into())));
+        // print=false: the file stays on the printer for a start from Storage.
+        assert_eq!(
+            shared.lock().unwrap().files,
+            [("a.gcode".to_owned(), 5_000)]
+        );
+        assert_eq!(shared.lock().unwrap().state, "standby");
+    }
+}
+
+#[test]
+fn a_u1_that_wants_a_login_or_does_not_answer_is_not_sent_to() {
+    let (printer, _) = mock::u1(mock::U1Setup {
+        login_required: true,
+        ..mock::U1Setup::default()
+    });
+    let host = u1_host(&printer);
+    assert_eq!(
+        host.test(),
+        Err("The printer asks for a login, which this app cannot give yet.".into())
+    );
+    let closed = {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        listener.local_addr().unwrap().port()
+    };
+    let gone = SnapmakerLan::new(
+        &connection("octoprint", &format!("127.0.0.1:{closed}"), "Snapmaker U1"),
+        quick(),
+    )
+    .unwrap();
+    let error = gone.status().unwrap().unwrap_err();
+    assert!(
+        error.starts_with("Could not connect to the printer"),
+        "{error}"
+    );
+    assert!(gone.toolheads().unwrap().is_err());
+    let sent = gone.upload(
+        &upload("a.gcode", mock::gcode(100), true),
+        &Progress::default(),
+    );
+    assert!(matches!(sent, Err(Failure::Error(_))));
+}
+
+#[test]
+fn a_u1_with_a_key_never_says_the_key() {
+    let (printer, _) = mock::u1(mock::U1Setup {
+        key: Some("right-key"),
+        ..mock::U1Setup::default()
+    });
+    // KEY is "the-right-key": wrong for this printer.
+    let host = u1_host(&printer);
+    let said = [
+        host.test().unwrap_err(),
+        host.status().unwrap().unwrap_err(),
+        host.toolheads().unwrap().unwrap_err(),
+        format!(
+            "{:?}",
+            host.upload(
+                &upload("a.gcode", mock::gcode(100), true),
+                &Progress::default()
+            )
+        ),
+    ];
+    for text in &said {
+        assert!(text.contains("401"), "{text}");
+        assert!(!text.contains(KEY) && !text.contains("right-key"), "{text}");
+    }
 }

@@ -40,6 +40,7 @@ pub mod elegoo;
 pub mod kept;
 #[cfg(test)]
 pub mod mock;
+pub mod moonraker;
 pub mod octoprint;
 pub mod queue;
 pub mod snapmaker;
@@ -140,8 +141,57 @@ pub struct Options {
     /// Snapmaker U1: "Unload filaments after print".
     pub unload_at_end: bool,
     /// The filaments the plate prints in, from 0: the U1 is told to print
-    /// each with its own toolhead ("As sliced").
+    /// each with its own toolhead ("As sliced") when `mapping` is empty.
     pub filaments: Vec<usize>,
+    /// Snapmaker U1: the toolhead (from 0) that prints each of the file's
+    /// filaments, by the filament's index; -1 for one the file does not
+    /// use (SnapmakerLan.hpp `start_print_mapped`).
+    pub mapping: Vec<i32>,
+    /// Snapmaker U1, the bundled device page's "Print Preferences":
+    /// "Auto Leveling", "Extrusion Flow Calibration", "Time-lapse Camera"
+    /// (`BED_LEVEL`, `FLOW_CALIBRATE`, `TIME_LAPSE_CAMERA`), all off unless
+    /// ticked, as that page starts them.
+    pub bed_level: bool,
+    pub flow_calibrate: bool,
+    pub time_lapse: bool,
+}
+
+/// One of a printer's toolheads and what is loaded in it (SnapmakerLan.hpp
+/// `Toolhead`, read from `print_task_config`).
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct Toolhead {
+    pub index: usize,
+    pub filament_type: String,
+    pub sub_type: String,
+    pub vendor: String,
+    /// `#RRGGBB`, or empty when the printer gives none.
+    pub color: String,
+    /// `filament_exist`.
+    pub loaded: bool,
+    pub official: bool,
+    /// `extruder<N>.nozzle_diameter`, 0 when not given.
+    pub nozzle: f64,
+}
+
+/// What a printer is doing, as the Device tab shows it (SnapmakerLan.hpp
+/// `Status`, MoonrakerProgress.hpp).
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct Status {
+    /// `print_stats.state`: standby, printing, paused, complete,
+    /// cancelled, error.
+    pub state: String,
+    pub filename: String,
+    /// The printer's own message (`print_stats.message`).
+    pub message: String,
+    /// 0 to 100.
+    pub percent: u32,
+    /// Seconds left, 0 when unknown.
+    pub left: u32,
+    pub layer: u32,
+    pub total_layers: u32,
+    /// (temperature, target).
+    pub bed: Option<(f64, f64)>,
+    pub nozzles: Vec<(f64, f64)>,
 }
 
 /// How an upload is going, shared with whoever watches it; and the way to
@@ -211,6 +261,15 @@ pub trait Host: Send + Sync {
     }
     fn print(&self, _name: &str) -> Result<(), String> {
         Err("this printer's files cannot be printed from here".into())
+    }
+    /// The printer's toolheads and what each holds, when this host says.
+    fn toolheads(&self) -> Option<Result<Vec<Toolhead>, String>> {
+        None
+    }
+    /// What the printer is doing, when this host says. Asks only; never
+    /// tells the printer anything.
+    fn status(&self) -> Option<Result<Status, String>> {
+        None
     }
 }
 

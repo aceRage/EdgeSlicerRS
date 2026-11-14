@@ -42,7 +42,8 @@ use serde_json::Value;
 use crate::api::i18n::tr;
 
 use super::{
-    Connection, Failure, Form, Host, Http, Progress, Stored, Timeouts, Upload, http_error,
+    Answer, Connection, Failure, Form, Host, Http, Progress, Status, Stored, Timeouts, Toolhead,
+    Upload, http_error, moonraker,
 };
 
 /// Snapmaker's tool changers have four toolheads (SnapmakerTaskConfig.hpp
@@ -121,6 +122,36 @@ impl SnapmakerLan {
     }
 }
 
+/// The state of a Moonraker printer, with the facts of the file it is on
+/// (SnapmakerLan.cpp `file_meta_for`).
+pub fn moonraker_status(http: &Http) -> Result<Status, String> {
+    let answer = http.get(&moonraker::status_query())?;
+    if !answer.ok() {
+        return Err(http_error(&answer));
+    }
+    let status = answer
+        .json()
+        .and_then(|json| json.get("result").and_then(|r| r.get("status")).cloned())
+        .ok_or_else(|| "The printer's answer is not Moonraker's.".to_owned())?;
+    // The reference keeps the facts it found while the job ran for after
+    // it (SnapmakerLan.cpp `file_meta_for`); without that cache they are
+    // asked for whenever the printer names a file.
+    let file = moonraker::printing_file(&status);
+    let metadata = if !file.is_empty() {
+        http.get(&format!(
+            "server/files/metadata?filename={}",
+            encode(&file, false)
+        ))
+        .ok()
+        .filter(Answer::ok)
+        .and_then(|answer| answer.json())
+        .and_then(|json| json.get("result").cloned())
+    } else {
+        None
+    };
+    Ok(moonraker::status_of(&status, metadata.as_ref()))
+}
+
 /// Percent-encodes `text` for a query (`/` encoded) or a path (`/` kept).
 pub fn encode(text: &str, path: bool) -> String {
     let mut out = String::new();
@@ -136,37 +167,239 @@ pub fn encode(text: &str, path: bool) -> String {
     out
 }
 
-/// The toolhead map the U1's page sends before a start: each filament the
-/// plate prints in on its own toolhead, which toolheads are used, and the
-/// preferences the page sends with it (SnapmakerLan.cpp `mapping_script`,
-/// SnapmakerTaskConfig.cpp `end_unload_parameter`). Filaments past the
-/// fourth have no toolhead and are left out.
-pub fn mapping_script(filaments: &[usize], unload_at_end: bool) -> String {
-    let mut used: Vec<usize> = filaments
-        .iter()
-        .copied()
-        .filter(|filament| *filament < TOOLHEADS)
-        .collect();
-    used.sort_unstable();
-    used.dedup();
-    if used.is_empty() {
-        return String::new();
+/// The U1's own device page's "Print Preferences", as the macro takes
+/// them (`SET_PRINT_PREFERENCES`; the bundled page builds the line from
+/// its options `bed_level`, `flow_calibrate`, `time_lapse_camera`, each 0
+/// until ticked, in that order).
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct Preferences {
+    pub bed_level: bool,
+    pub flow_calibrate: bool,
+    pub time_lapse: bool,
+}
+
+/// Each filament the plate prints in on its own toolhead ("As sliced"):
+/// the mapping the app sent before a toolhead map could be chosen, and
+/// what a filament past the fourth has none in.
+pub fn identity_mapping(filaments: &[usize], count: usize) -> Vec<i32> {
+    let mut mapping = vec![-1; count.max(filaments.iter().map(|f| f + 1).max().unwrap_or(0))];
+    for filament in filaments {
+        if *filament < TOOLHEADS {
+            mapping[*filament] = *filament as i32;
+        }
     }
+    mapping
+}
+
+/// The macros for one mapping, without the start (SnapmakerLan.cpp
+/// `mapping_script`): `mapping[i]` the toolhead for the file's filament
+/// `i`, -1 for one it does not use; the toolheads used listed once each
+/// in the order the file first uses them; then the preferences, with
+/// `END_UNLOAD_FILAMENT` when "Unload filaments after print" is ticked
+/// (SnapmakerTaskConfig.cpp `end_unload_parameter`). The reference's own
+/// LAN route always sends the three preferences as 0; its device page
+/// sends what is ticked, and so does this.
+pub fn mapping_script(mapping: &[i32], preferences: Preferences, unload_at_end: bool) -> String {
     let mut script = String::new();
-    for filament in &used {
+    let mut used: Vec<i32> = Vec::new();
+    for (filament, toolhead) in mapping.iter().enumerate() {
+        if *toolhead < 0 {
+            continue;
+        }
         script +=
-            &format!("SET_PRINT_EXTRUDER_MAP CONFIG_EXTRUDER={filament} MAP_EXTRUDER={filament}\n");
+            &format!("SET_PRINT_EXTRUDER_MAP CONFIG_EXTRUDER={filament} MAP_EXTRUDER={toolhead}\n");
+        if !used.contains(toolhead) {
+            used.push(*toolhead);
+        }
     }
-    let list: Vec<String> = used.iter().map(usize::to_string).collect();
+    if script.is_empty() {
+        return script;
+    }
+    let list: Vec<String> = used.iter().map(i32::to_string).collect();
     script += &format!("SET_PRINT_USED_EXTRUDERS EXTRUDERS={}\n", list.join(","));
-    script += "SET_PRINT_PREFERENCES BED_LEVEL=0 FLOW_CALIBRATE=0 TIME_LAPSE_CAMERA=0";
+    let flag = |on: bool| if on { 1 } else { 0 };
+    script += &format!(
+        "SET_PRINT_PREFERENCES BED_LEVEL={} FLOW_CALIBRATE={} TIME_LAPSE_CAMERA={}",
+        flag(preferences.bed_level),
+        flag(preferences.flow_calibrate),
+        flag(preferences.time_lapse)
+    );
     if unload_at_end {
-        let flags: Vec<&str> = (0..TOOLHEADS)
+        let flags: Vec<&str> = (0..TOOLHEADS as i32)
             .map(|toolhead| if used.contains(&toolhead) { "1" } else { "0" })
             .collect();
         script += &format!(" END_UNLOAD_FILAMENT=[{}]", flags.join(","));
     }
     script
+}
+
+/// One filament of the sliced file (SnapmakerLan.hpp `FileFilament`).
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct FileFilament {
+    pub index: usize,
+    /// `#RRGGBB`.
+    pub color: String,
+    pub filament_type: String,
+    pub used: bool,
+}
+
+fn rgb_of(hex: &str) -> Option<[f64; 3]> {
+    let hex = hex.strip_prefix('#').unwrap_or(hex);
+    if hex.len() < 6 || !hex.is_char_boundary(6) {
+        return None;
+    }
+    let part = |i: usize| {
+        u8::from_str_radix(&hex[i * 2..i * 2 + 2], 16)
+            .ok()
+            .map(f64::from)
+    };
+    Some([part(0)?, part(1)?, part(2)?])
+}
+
+/// The "redmean" distance between two colours (SnapmakerLan.cpp
+/// `color_distance`); far when either is not a colour.
+fn color_distance(a: &str, b: &str) -> f64 {
+    let (Some(a), Some(b)) = (rgb_of(a), rgb_of(b)) else {
+        return 1e9;
+    };
+    let mean = (a[0] + b[0]) / 2.0;
+    let (dr, dg, db) = (a[0] - b[0], a[1] - b[1], a[2] - b[2]);
+    ((2.0 + mean / 256.0) * dr * dr + 4.0 * dg * dg + (2.0 + (255.0 - mean) / 256.0) * db * db)
+        .sqrt()
+}
+
+/// Which toolhead prints which filament, as the reference first offers it
+/// (SnapmakerLan.cpp `auto_match`): each used filament the nearest free
+/// loaded colour; a filament of exactly the same colour as one placed
+/// shares its toolhead; anything left the first loaded toolhead (0 when
+/// none is loaded). Type never decides; it only earns a warning.
+pub fn auto_match(filaments: &[FileFilament], heads: &[Toolhead]) -> Vec<i32> {
+    let mut out = vec![-1; filaments.len()];
+    let mut taken = vec![false; heads.len()];
+    for (i, filament) in filaments.iter().enumerate() {
+        if !filament.used {
+            continue;
+        }
+        let mut best = 1e9;
+        let mut pick = None;
+        for (h, head) in heads.iter().enumerate() {
+            if !head.loaded || taken[h] {
+                continue;
+            }
+            let distance = color_distance(&filament.color, &head.color);
+            if distance < best {
+                best = distance;
+                pick = Some(h);
+            }
+        }
+        if let Some(h) = pick {
+            out[i] = h as i32;
+            taken[h] = true;
+        }
+    }
+    for i in 0..filaments.len() {
+        if out[i] >= 0 || !filaments[i].used || filaments[i].color.is_empty() {
+            continue;
+        }
+        let twin = (0..filaments.len()).find(|&j| {
+            j != i && out[j] >= 0 && filaments[j].color.eq_ignore_ascii_case(&filaments[i].color)
+        });
+        if let Some(j) = twin {
+            out[i] = out[j];
+        }
+    }
+    let first_loaded = heads
+        .iter()
+        .position(|head| head.loaded)
+        .map_or(0, |h| h as i32);
+    for (i, filament) in filaments.iter().enumerate() {
+        if out[i] < 0 && filament.used {
+            out[i] = first_loaded;
+        }
+    }
+    out
+}
+
+/// Why a mapping cannot be sent, as the reference refuses it before the
+/// file goes up (RemoteSend.cpp `prepare_snapmaker` l.770–790): a used
+/// filament without a toolhead, a toolhead the printer has not got, and,
+/// unless `force`, a toolhead with nothing loaded.
+pub fn mapping_problem(
+    filaments: &[FileFilament],
+    mapping: &[i32],
+    heads: &[Toolhead],
+    printer: &str,
+    force: bool,
+) -> Option<String> {
+    for filament in filaments.iter().filter(|f| f.used) {
+        let toolhead = mapping.get(filament.index).copied().unwrap_or(-1);
+        if toolhead < 0 {
+            return Some(format!(
+                "Filament {} has no toolhead; every filament the file uses needs one.",
+                filament.index + 1
+            ));
+        }
+        let count = if heads.is_empty() {
+            TOOLHEADS
+        } else {
+            heads.len()
+        };
+        if toolhead as usize >= count {
+            return Some(format!(
+                "{printer} has {count} toolheads, so there is no toolhead {}.",
+                toolhead + 1
+            ));
+        }
+    }
+    if force {
+        return None;
+    }
+    for filament in filaments.iter().filter(|f| f.used) {
+        let toolhead = mapping[filament.index] as usize;
+        if heads.get(toolhead).is_some_and(|head| !head.loaded) {
+            return Some(format!(
+                "Toolhead {} is empty: load it or pick another.",
+                toolhead + 1
+            ));
+        }
+    }
+    None
+}
+
+/// What the person is told of a mapping without it being refused: a
+/// filament type that is not the one loaded (the reference: "type never
+/// decides - it only earns a warning").
+pub fn mapping_warnings(
+    filaments: &[FileFilament],
+    mapping: &[i32],
+    heads: &[Toolhead],
+) -> Vec<String> {
+    let mut out = Vec::new();
+    for filament in filaments.iter().filter(|f| f.used) {
+        let Some(head) = mapping
+            .get(filament.index)
+            .and_then(|t| usize::try_from(*t).ok())
+            .and_then(|t| heads.get(t))
+        else {
+            continue;
+        };
+        if head.loaded
+            && !head.filament_type.is_empty()
+            && !filament.filament_type.is_empty()
+            && !head
+                .filament_type
+                .eq_ignore_ascii_case(&filament.filament_type)
+        {
+            out.push(format!(
+                "Filament {} is {} but toolhead {} holds {}.",
+                filament.index + 1,
+                filament.filament_type,
+                head.index + 1,
+                head.filament_type
+            ));
+        }
+    }
+    out
 }
 
 /// The name a file is sent under: its last part only, `.gcode` added when
@@ -247,7 +480,18 @@ impl Host for SnapmakerLan {
         }
         // Checked again just before the start: the file took a while.
         self.idle()?;
-        let script = mapping_script(&upload.options.filaments, upload.options.unload_at_end);
+        let options = &upload.options;
+        let mapping = if options.mapping.is_empty() {
+            identity_mapping(&options.filaments, 0)
+        } else {
+            options.mapping.clone()
+        };
+        let preferences = Preferences {
+            bed_level: options.bed_level,
+            flow_calibrate: options.flow_calibrate,
+            time_lapse: options.time_lapse,
+        };
+        let script = mapping_script(&mapping, preferences, options.unload_at_end);
         if !script.is_empty() {
             // The printer answers a script only once it has run it.
             self.command(
@@ -293,6 +537,17 @@ impl Host for SnapmakerLan {
         } else {
             Err(http_error(&answer))
         }
+    }
+
+    fn toolheads(&self) -> Option<Result<Vec<Toolhead>, String>> {
+        Some(
+            self.result(&moonraker::toolheads_query())
+                .map(|result| moonraker::toolheads_of(&result["status"])),
+        )
+    }
+
+    fn status(&self) -> Option<Result<Status, String>> {
+        Some(moonraker_status(&self.http))
     }
 
     /// A file already on the printer: refused while it is busy

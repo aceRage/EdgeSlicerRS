@@ -19,6 +19,11 @@ const hostsState = {
   // Device: which part is shown, and what the frame was last pointed at.
   deviceTab: 'page',
   frameUrl: '',
+  // A U1's toolheads as last read for the send dialog, the mapping shown,
+  // and the Device tab's watch of the printer's state.
+  toolheads: null,
+  mapping: [],
+  statusTimer: null,
 };
 
 // The printer's address may be framed in this document: the served page
@@ -206,7 +211,10 @@ $('host-form').addEventListener('submit', (event) => {
 
 // ---- the print button ----
 
-const PRINT_ACTIONS = { send: 'Print', sliced: 'Export plate sliced file', all_sliced: 'Export all sliced file', export: 'Export G-code file' };
+const PRINT_ACTIONS = { send: 'Print', sliced: 'Export plate sliced file', all_sliced: 'Export all sliced file', export: 'Export G-code file', bambu_connect: 'Send to Bambu Connect' };
+
+// A Bambu Lab printer's project (its sliced file goes to Bambu Connect).
+const isBambu = () => Boolean(hostsState.info && hostsState.info.bambu);
 
 // The action the button does: the one picked last, kept from one run to
 // the next only with Preferences' "Remember last print action" (prefs.js);
@@ -216,6 +224,7 @@ function printAction() {
   const picked = Prefs.printAction();
   if (picked === 'send' && canSend()[0]) return 'send';
   if (picked === 'export' || picked === 'sliced' || picked === 'all_sliced') return picked;
+  if (picked === 'bambu_connect' && isBambu()) return picked;
   return canSend()[0] ? 'send' : 'export';
 }
 
@@ -231,6 +240,9 @@ $('export-more').addEventListener('click', (event) => {
     [t('Export plate sliced file'), choose('sliced'), { checked: action === 'sliced' }],
     [t('Export all sliced file'), choose('all_sliced'), { checked: action === 'all_sliced' }],
     [t('Export G-code file'), choose('export'), { checked: action === 'export' }],
+    // MainFrame.cpp l.2581: a Bambu Lab printer's sliced file to Bambu
+    // Connect (menu.js `sendToBambuConnect`).
+    ...(isBambu() ? [[t('Send to Bambu Connect'), choose('bambu_connect'), { checked: action === 'bambu_connect' }]] : []),
     null,
     [t('Print host upload queue'), () => attempt(openQueue)],
   ]);
@@ -275,6 +287,14 @@ async function openSend() {
   $('send-plate-a').onchange = plateWarn;
   $('send-plate-b').onchange = plateWarn;
   plateWarn();
+  // A U1: the toolheads for "Upload and Print", read from the printer
+  // while the dialog is open; the preferences off, as its page starts them.
+  const u1 = Boolean(info.toolheads && info.can_start);
+  $('send-u1').hidden = !u1;
+  hostsState.toolheads = null;
+  hostsState.mapping = [];
+  for (const id of ['send-bed-level', 'send-flow', 'send-time-lapse']) $(id).checked = false;
+  if (u1) loadToolheads(project.id, project.plate ?? undefined);
   $('send-device').checked = remembered.get('open_device_tab_post_upload') !== '0';
   $('send-print').hidden = !info.can_start;
   $('send-to').textContent = `To ${info.printer}, at ${info.connection.print_host}.`;
@@ -288,6 +308,59 @@ async function openSend() {
   field.setSelectionRange(0, dot > 0 ? dot : field.value.length);
   field.focus();
   await closed;
+}
+
+// ---- a U1's toolheads ----
+
+const swatch = (color) => el('span', { className: 'swatch', style: color ? `background:${color}` : '' });
+
+async function loadToolheads(project, plate, mapping) {
+  const note = $('send-map-note');
+  if (!mapping) {
+    note.className = 'quiet';
+    note.textContent = 'Reading what the toolheads hold…';
+    $('send-map').replaceChildren();
+  }
+  let answer;
+  try {
+    answer = await call('printer_toolheads', { project, plate, mapping });
+  } catch (error) {
+    hostsState.toolheads = null;
+    note.className = 'error';
+    note.textContent = `What the toolheads hold could not be read: ${error.message}`;
+    return;
+  }
+  hostsState.toolheads = answer;
+  hostsState.mapping = answer.mapping;
+  showToolheads();
+}
+
+function showToolheads() {
+  const answer = hostsState.toolheads;
+  if (!answer) return;
+  const heads = answer.toolheads;
+  const label = (head) => `${head.index + 1}: ${head.loaded ? [head.vendor, head.type, head.sub_type].filter(Boolean).join(' ') || '?' : t('Empty')}`;
+  $('send-map').replaceChildren(...answer.filaments.filter((filament) => filament.used).map((filament) => {
+    const select = el('select', { ariaLabel: `Toolhead for filament ${filament.index + 1}` });
+    fill(select, heads.map((head) => String(head.index)), String(hostsState.mapping[filament.index]), heads.map(label));
+    select.addEventListener('change', () => {
+      hostsState.mapping = hostsState.mapping.slice();
+      hostsState.mapping[filament.index] = Number(select.value);
+      const project = state.project;
+      attempt(() => loadToolheads(project.id, project.plate ?? undefined, hostsState.mapping));
+    });
+    const head = heads[hostsState.mapping[filament.index]];
+    return el('tr', {},
+      el('td', {}, swatch(filament.color), ` ${filament.index + 1} ${filament.type}`),
+      el('td', { textContent: '→' }),
+      el('td', {}, head ? swatch(head.loaded ? head.color : '') : '', ' ', select));
+  }));
+  const note = $('send-map-note');
+  const lines = [...answer.warnings];
+  if (answer.problem) lines.unshift(answer.problem);
+  if (answer.state === 'printing' || answer.state === 'paused') lines.unshift(`${answer.printer} is ${answer.state === 'paused' ? 'paused mid-print' : 'printing'}.`);
+  note.className = answer.problem ? 'warn' : 'quiet';
+  note.textContent = lines.join('\n') || 'Each filament on the toolhead nearest its colour; change any before "Upload and Print".';
 }
 
 // The reference's two questions about the name, asked before it is sent.
@@ -320,6 +393,18 @@ $('send-form').addEventListener('submit', (event) => {
     if (!$('send-elegoo').hidden) {
       remembered.set('elegoolink_timelapse', options.timelapse ? '1' : '0');
       remembered.set('elegoolink_heated_bed_leveling', options.leveling ? '1' : '0');
+    }
+    if (start && !$('send-u1').hidden) {
+      options.mapping = hostsState.mapping.length ? hostsState.mapping : undefined;
+      options.bed_level = $('send-bed-level').checked;
+      options.flow_calibrate = $('send-flow').checked;
+      options.time_lapse = $('send-time-lapse').checked;
+      // An empty toolhead: the reference refuses it unless told to go on.
+      const problem = hostsState.toolheads && hostsState.toolheads.problem;
+      if (problem && / is empty/.test(problem)) {
+        if (!(await confirmBox(t('Upload and Print'), `${problem}\nSend it all the same?`, t('Upload and Print'), t('Cancel')))) return;
+        options.force = true;
+      }
     }
     const toDevice = $('send-device').checked;
     remembered.set('open_device_tab_post_upload', toDevice ? '1' : '0');
@@ -454,6 +539,58 @@ function showPrinterPage() {
     $('device-frame').src = url;
   }
   if (hostsState.deviceTab === 'storage') showStorage();
+  watchStatus();
+}
+
+// The printer's state over the page, asked every few seconds while
+// Device is looked at (the reference's phone hub and its Printers tab ask
+// Moonraker the same way, SnapmakerLan.cpp `status`).
+const clock = (seconds) => {
+  const h = Math.floor(seconds / 3600);
+  const m = Math.round((seconds % 3600) / 60);
+  return h ? `${h}h${m}m` : `${m}m`;
+};
+
+function watchStatus() {
+  clearTimeout(hostsState.statusTimer);
+  const info = hostsState.info;
+  const shown = state.tab === 'device' && info && info.printer && info.status;
+  $('device-status').hidden = !shown;
+  if (!shown) return;
+  const project = activeId();
+  hostsState.statusTimer = setTimeout(async () => {
+    let status;
+    try {
+      status = await call('printer_status', { project });
+    } catch (error) {
+      status = { online: false, said: t('Offline'), error: error.message };
+    }
+    if (state.tab !== 'device' || activeId() !== project) return;
+    const line = $('device-status');
+    line.className = status.online ? `state-${status.state}` : 'error';
+    if (!status.known && status.known !== undefined) {
+      line.hidden = true;
+      return;
+    }
+    if (!status.online) {
+      line.textContent = status.said;
+      line.title = status.error || '';
+    } else {
+      const parts = [status.said];
+      if (status.filename) parts.push(status.filename);
+      if (status.state === 'printing' || status.state === 'paused' || status.state === 'complete') parts.push(`${status.percent}%`);
+      if (status.left) parts.push(`${clock(status.left)} left`);
+      if (status.total_layers) parts.push(`${t('Layer')} ${status.layer}/${status.total_layers}`);
+      if (status.bed) parts.push(`${t('Bed')} ${Math.round(status.bed[0])}/${Math.round(status.bed[1])} °C`);
+      // The toolheads being heated, with their number; else the first.
+      const nozzles = (status.nozzles || []).map((n, i) => [i, n]).filter(([, n]) => n[1] > 0);
+      const shown = nozzles.length ? nozzles : (status.nozzles || []).slice(0, 1).map((n) => [0, n]);
+      for (const [i, n] of shown) parts.push(`${status.nozzles.length > 1 ? `T${i + 1}` : t('Nozzle')} ${Math.round(n[0])}/${Math.round(n[1])} °C`);
+      line.textContent = parts.join(' · ');
+      line.title = status.message || '';
+    }
+    watchStatus();
+  }, $('device-status').textContent ? 3000 : 50);
 }
 
 $('device-tab-page').addEventListener('click', () => { hostsState.deviceTab = 'page'; showPrinterPage(); });

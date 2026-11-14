@@ -271,3 +271,221 @@ pub fn gcode(size: usize) -> Arc<Vec<u8>> {
     text.truncate(size);
     Arc::new(text)
 }
+
+/// How the mock U1 behaves.
+#[derive(Clone, Debug)]
+pub struct U1Setup {
+    /// `print_stats.state` before anything is started.
+    pub state: &'static str,
+    /// What each toolhead holds: type, `RRGGBBAA`, loaded.
+    pub toolheads: Vec<(&'static str, &'static str, bool)>,
+    /// The key it wants (`X-Api-Key`), if any.
+    pub key: Option<&'static str>,
+    pub login_required: bool,
+    /// Refuse the toolhead map, or the start.
+    pub refuse_script: bool,
+    pub refuse_start: bool,
+    /// Status queries a started print takes to finish.
+    pub steps: u64,
+}
+
+impl Default for U1Setup {
+    fn default() -> Self {
+        Self {
+            state: "standby",
+            toolheads: vec![
+                ("PLA", "FF0000FF", true),
+                ("PETG", "00FF00FF", true),
+                ("PLA", "0000FFFF", true),
+                ("", "", false),
+            ],
+            key: None,
+            login_required: false,
+            refuse_script: false,
+            refuse_start: false,
+            steps: 4,
+        }
+    }
+}
+
+/// What the mock U1 has been through.
+#[derive(Debug, Default)]
+pub struct U1State {
+    pub state: String,
+    /// The file it holds and prints, with its size.
+    pub files: Vec<(String, usize)>,
+    pub printing: Option<String>,
+    /// Status queries since the start.
+    pub polls: u64,
+    pub scripts: Vec<String>,
+}
+
+/// A Snapmaker U1 as its Moonraker answers over HTTP, from the
+/// reference's own requests (SnapmakerLan.cpp, PrinterStorage.cpp,
+/// MoonrakerProgress.hpp): `/server/info`, `/access/info`, the object
+/// queries (`print_stats`, `print_task_config`, `extruder*`, `heater_bed`,
+/// `virtual_sdcard`, `display_status`), `/server/files/upload`,
+/// `/server/files/metadata`, `/server/files/list`, a delete, the macros
+/// through `/printer/gcode/script` and `/printer/print/start`. A print
+/// started runs through `steps` status queries to "complete".
+pub fn u1(setup: U1Setup) -> (Printer, Arc<Mutex<U1State>>) {
+    let shared = Arc::new(Mutex::new(U1State {
+        state: setup.state.to_owned(),
+        ..U1State::default()
+    }));
+    let kept = shared.clone();
+    let printer = Printer::start(
+        Box::new(move |got: &Got, _: &[Got]| {
+            let unauthorised = || {
+                (
+                    401,
+                    serde_json::json!({ "error": { "code": 401, "message": "Unauthorized" } })
+                        .to_string(),
+                )
+            };
+            if let Some(key) = setup.key
+                && got.header("X-Api-Key") != Some(key)
+            {
+                return unauthorised();
+            }
+            let mut u1 = kept.lock().unwrap();
+            let url = got.url.as_str();
+            let (path, query) = url.split_once('?').unwrap_or((url, ""));
+            let arg = |name: &str| {
+                query.split('&').find_map(|pair| {
+                    let (key, value) = pair.split_once('=')?;
+                    (key == name).then(|| decode(value))
+                })
+            };
+            let ok = |result: Value| (200, serde_json::json!({ "result": result }).to_string());
+            match (got.method.as_str(), path) {
+                ("GET", "/server/info") => ok(serde_json::json!({ "klippy_state": "ready" })),
+                ("GET", "/access/info") => {
+                    ok(serde_json::json!({ "login_required": setup.login_required, "trusted": true }))
+                }
+                ("GET", "/printer/objects/query") => {
+                    let mut status = serde_json::Map::new();
+                    let total = u1
+                        .printing
+                        .as_ref()
+                        .and_then(|name| u1.files.iter().find(|(n, _)| n == name))
+                        .map_or(0, |(_, size)| *size as u64);
+                    if query.contains("virtual_sdcard") && u1.printing.is_some() {
+                        u1.polls += 1;
+                        if u1.polls >= setup.steps {
+                            u1.state = "complete".into();
+                        }
+                    }
+                    let position = if u1.state == "complete" {
+                        total + 1
+                    } else {
+                        total * u1.polls / setup.steps.max(1)
+                    };
+                    let printing = u1.printing.clone().unwrap_or_default();
+                    for object in query.split('&') {
+                        let value = match object {
+                            "print_stats" => serde_json::json!({
+                                "state": u1.state, "filename": printing, "print_duration": 60.0 * u1.polls as f64,
+                                "message": "", "info": { "current_layer": u1.polls * 10, "total_layer": setup.steps * 10 },
+                            }),
+                            "virtual_sdcard" => serde_json::json!({ "file_position": position, "file_path": format!("/home/lava/printer_data/gcodes/{printing}") }),
+                            "display_status" => serde_json::json!({ "progress": 0.0 }),
+                            "heater_bed" => serde_json::json!({ "temperature": 60.0, "target": 60.0 }),
+                            "print_task_config" => serde_json::json!({
+                                "filament_type": setup.toolheads.iter().map(|t| t.0).collect::<Vec<_>>(),
+                                "filament_color_rgba": setup.toolheads.iter().map(|t| t.1).collect::<Vec<_>>(),
+                                "filament_exist": setup.toolheads.iter().map(|t| t.2).collect::<Vec<_>>(),
+                            }),
+                            extruder if extruder.starts_with("extruder") => serde_json::json!({
+                                "temperature": 220.0, "target": 220.0, "nozzle_diameter": 0.4,
+                            }),
+                            _ => continue,
+                        };
+                        status.insert(object.to_owned(), value);
+                    }
+                    ok(serde_json::json!({ "status": status }))
+                }
+                ("POST", "/server/files/upload") => {
+                    let form = got.form();
+                    let Some((_, Some(name), bytes)) =
+                        form.into_iter().find(|(field, _, _)| field == "file")
+                    else {
+                        return (400, "{}".into());
+                    };
+                    u1.files.retain(|(n, _)| *n != name);
+                    u1.files.push((name.clone(), bytes.len()));
+                    (201, serde_json::json!({ "result": { "item": { "path": name } } }).to_string())
+                }
+                ("GET", "/server/files/metadata") => {
+                    let name = arg("filename").unwrap_or_default();
+                    match u1.files.iter().find(|(n, _)| *n == name) {
+                        Some((_, size)) => ok(serde_json::json!({
+                            "size": size, "gcode_start_byte": 0, "gcode_end_byte": size, "estimated_time": 1200.0,
+                        })),
+                        None => (404, serde_json::json!({ "error": { "code": 404, "message": "Metadata not available" } }).to_string()),
+                    }
+                }
+                ("GET", "/server/files/list") => ok(Value::Array(
+                    u1.files
+                        .iter()
+                        .enumerate()
+                        .map(|(i, (name, size))| serde_json::json!({ "path": name, "size": size, "modified": 100.0 + i as f64 }))
+                        .collect(),
+                )),
+                ("DELETE", _) if path.starts_with("/server/files/gcodes/") => {
+                    let name = decode(&path["/server/files/gcodes/".len()..]);
+                    let before = u1.files.len();
+                    u1.files.retain(|(n, _)| *n != name);
+                    if u1.files.len() == before {
+                        (404, serde_json::json!({ "error": { "code": 404, "message": "File does not exist" } }).to_string())
+                    } else {
+                        ok(serde_json::json!({ "item": { "path": name } }))
+                    }
+                }
+                ("POST", "/printer/gcode/script") => {
+                    if setup.refuse_script {
+                        return (400, serde_json::json!({ "error": { "code": 400, "message": "Unknown command" } }).to_string());
+                    }
+                    u1.scripts.push(arg("script").unwrap_or_default());
+                    ok(Value::from("ok"))
+                }
+                ("POST", "/printer/print/start") => {
+                    let name = arg("filename").unwrap_or_default();
+                    if setup.refuse_start || !u1.files.iter().any(|(n, _)| *n == name) {
+                        return (400, serde_json::json!({ "error": { "code": 400, "message": "Unable to start print" } }).to_string());
+                    }
+                    if u1.state == "printing" || u1.state == "paused" {
+                        return (400, serde_json::json!({ "error": { "code": 400, "message": "Printer is busy" } }).to_string());
+                    }
+                    u1.state = "printing".into();
+                    u1.printing = Some(name);
+                    u1.polls = 0;
+                    ok(Value::from("ok"))
+                }
+                _ => (404, serde_json::json!({ "error": { "code": 404, "message": "Not Found" } }).to_string()),
+            }
+        }),
+        None,
+    );
+    (printer, shared)
+}
+
+/// Percent-decoding of a query or path part.
+pub fn decode(text: &str) -> String {
+    let bytes = text.as_bytes();
+    let mut out = Vec::with_capacity(bytes.len());
+    let mut i = 0;
+    while i < bytes.len() {
+        if bytes[i] == b'%'
+            && i + 2 < bytes.len()
+            && let Ok(byte) = u8::from_str_radix(&text[i + 1..i + 3], 16)
+        {
+            out.push(byte);
+            i += 3;
+        } else {
+            out.push(if bytes[i] == b'+' { b' ' } else { bytes[i] });
+            i += 1;
+        }
+    }
+    String::from_utf8_lossy(&out).into_owned()
+}

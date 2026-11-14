@@ -15,14 +15,15 @@ use edge_config::Settings;
 use serde_json::{Value, json};
 
 use super::{Session, lock, needed};
+use crate::api::i18n::tr;
 use crate::hosts::{
-    self, Connection, HOST_TYPES, Options, Upload, elegoo,
+    self, Connection, HOST_TYPES, Options, Toolhead, Upload, elegoo,
     kept::{Key, Saved},
-    snapmaker,
+    snapmaker::{self, FileFilament},
 };
 
 /// The calls answered here.
-pub(super) const JSON: [&str; 11] = [
+pub(super) const JSON: [&str; 13] = [
     "print_host",
     "print_host_set",
     "print_host_test",
@@ -34,6 +35,8 @@ pub(super) const JSON: [&str; 11] = [
     "printer_files",
     "printer_file_delete",
     "printer_file_print",
+    "printer_toolheads",
+    "printer_status",
 ];
 
 /// The printer a project is on, as far as sending is concerned.
@@ -103,6 +106,8 @@ impl Session {
                 host.delete(needed(args, "name")?)?;
                 self.printer_files(args)
             }
+            "printer_toolheads" => self.printer_toolheads(args),
+            "printer_status" => self.printer_status(args),
             "printer_file_print" => {
                 let (host, _) = self.host(args)?;
                 host.print(needed(args, "name")?)?;
@@ -170,12 +175,21 @@ impl Session {
     /// device_url, route, offers { elegoo, unload }, bed_in_force, problem }`.
     fn print_host(&self, args: &Value) -> Result<Value, String> {
         let problem = lock(&self.hosts.kept).problem.clone();
+        // A Bambu Lab printer: the print button offers "Send to Bambu
+        // Connect" (MainFrame.cpp `available_print_actions`).
+        let bambu = {
+            let state = lock(&self.state);
+            let project = &state.projects[state.target(args)?];
+            super::export::is_bambu(&project.choices, project.file.as_deref())
+        };
         let host_types: Vec<Value> = HOST_TYPES
             .iter()
             .map(|(value, label, built)| json!({ "value": value, "label": label, "built": built }))
             .collect();
         let Some(printer) = self.printer(args)? else {
-            return Ok(json!({ "printer": null, "host_types": host_types, "problem": problem }));
+            return Ok(
+                json!({ "printer": null, "host_types": host_types, "problem": problem, "bambu": bambu }),
+            );
         };
         let (connection, from) = self.connection(&printer);
         let model = printer.model();
@@ -215,10 +229,14 @@ impl Session {
             "why_not": made.as_ref().err(),
             "can_start": made.as_ref().is_ok_and(|host| host.can_start()),
             "storage": route == "snapmaker",
+            // The U1's toolhead map and its state in Device.
+            "toolheads": route == "snapmaker",
+            "status": route == "snapmaker",
             "device_url": hosts::device_url(&connection),
             "route": route,
             "offers": { "elegoo": elegoo, "unload": unload },
             "problem": problem,
+            "bambu": bambu,
         }))
     }
 
@@ -360,6 +378,34 @@ impl Session {
             .shown()
             .to_owned();
         let flag = |key: &str| args["options"][key].as_bool().unwrap_or(false);
+        let filaments = self.plate_filaments(args, plate)?;
+        // "Upload and Print" to a U1: the toolhead of each filament, as
+        // chosen, else as the reference first offers it; checked against
+        // what the printer holds before anything is sent (RemoteSend.cpp
+        // `prepare_snapmaker`).
+        let mapping = if start && snapmaker::is_u1(&connection.printer_model) {
+            let file = self.file_filaments(&done.sliced.settings, &filaments);
+            let heads = match host.toolheads() {
+                Some(Ok(heads)) => heads,
+                Some(Err(error)) => return Err(error),
+                None => Vec::new(),
+            };
+            let mapping = match args["options"]["mapping"].as_array() {
+                Some(chosen) => chosen
+                    .iter()
+                    .map(|t| t.as_i64().map_or(-1, |t| t as i32))
+                    .collect(),
+                None => snapmaker::auto_match(&file, &heads),
+            };
+            if let Some(problem) =
+                snapmaker::mapping_problem(&file, &mapping, &heads, &printer.name, flag("force"))
+            {
+                return Err(problem);
+            }
+            mapping
+        } else {
+            Vec::new()
+        };
         let upload = Upload {
             name,
             data: Arc::new(gcode.text.clone()),
@@ -369,11 +415,103 @@ impl Session {
                 leveling: flag("leveling"),
                 smooth_plate: flag("smooth_plate"),
                 unload_at_end: flag("unload_at_end"),
-                filaments: self.plate_filaments(args, plate)?,
+                filaments,
+                mapping,
+                bed_level: flag("bed_level"),
+                flow_calibrate: flag("flow_calibrate"),
+                time_lapse: flag("time_lapse"),
             },
         };
         let id = self.hosts.queue.add(host, &shown, &printer.name, upload);
         Ok(json!({ "id": id, "queue": self.hosts.queue.listing() }))
+    }
+
+    /// The file's filaments, each with its colour and type and whether the
+    /// plate prints in it (RemoteSend.cpp `file_filaments_of`).
+    fn file_filaments(&self, settings: &Settings, used: &[usize]) -> Vec<FileFilament> {
+        let colours = settings.texts("filament_colour").unwrap_or_default();
+        let types = settings.texts("filament_type").unwrap_or_default();
+        let count = colours
+            .len()
+            .max(types.len())
+            .max(used.iter().map(|f| f + 1).max().unwrap_or(0));
+        (0..count)
+            .map(|index| FileFilament {
+                index,
+                color: colours.get(index).cloned().unwrap_or_default(),
+                filament_type: types.get(index).cloned().unwrap_or_default(),
+                used: used.contains(&index),
+            })
+            .collect()
+    }
+
+    /// What the U1's toolheads hold, set against the plate's filaments:
+    /// `{ printer, state, toolheads [{ index, type, sub_type, vendor, color,
+    /// loaded, nozzle }], filaments [{ index, color, type, used }], mapping,
+    /// warnings, problem }`. `mapping` given is checked; else the
+    /// reference's first offer is answered.
+    fn printer_toolheads(&self, args: &Value) -> Result<Value, String> {
+        let (done, plate) = self.done(args)?;
+        let (host, _) = self.host(args)?;
+        let printer = self
+            .printer(args)?
+            .ok_or("No printer is chosen for the project.")?;
+        let heads = host
+            .toolheads()
+            .ok_or("This printer does not say what its toolheads hold.")??;
+        let state = match host.status() {
+            Some(Ok(status)) => status.state,
+            _ => String::new(),
+        };
+        let used = self.plate_filaments(args, plate)?;
+        let file = self.file_filaments(&done.sliced.settings, &used);
+        let mapping: Vec<i32> = match args.get("mapping").and_then(Value::as_array) {
+            Some(chosen) => chosen
+                .iter()
+                .map(|t| t.as_i64().map_or(-1, |t| t as i32))
+                .collect(),
+            None => snapmaker::auto_match(&file, &heads),
+        };
+        let force = args.get("force").and_then(Value::as_bool).unwrap_or(false);
+        Ok(json!({
+            "printer": printer.name,
+            "state": state,
+            "toolheads": heads.iter().map(toolhead_json).collect::<Vec<_>>(),
+            "filaments": file.iter().map(|f| json!({ "index": f.index, "color": f.color, "type": f.filament_type, "used": f.used })).collect::<Vec<_>>(),
+            "mapping": mapping,
+            "warnings": snapmaker::mapping_warnings(&file, &mapping, &heads),
+            "problem": snapmaker::mapping_problem(&file, &mapping, &heads, &printer.name, force),
+        }))
+    }
+
+    /// What the printer is doing, for the Device tab: `{ online, state,
+    /// said, filename, message, percent, left, layer, total_layers, bed,
+    /// nozzles }`, or `{ online: false, error }` when it does not answer.
+    /// `{ known: false }` for a printer this app cannot ask.
+    fn printer_status(&self, args: &Value) -> Result<Value, String> {
+        let (host, _) = self.host(args)?;
+        let Some(answer) = host.status() else {
+            return Ok(json!({ "known": false }));
+        };
+        Ok(match answer {
+            Ok(status) => json!({
+                "known": true,
+                "online": true,
+                "state": status.state,
+                "said": tr(state_said(&status.state)),
+                "filename": status.filename,
+                "message": status.message,
+                "percent": status.percent,
+                "left": status.left,
+                "layer": status.layer,
+                "total_layers": status.total_layers,
+                "bed": status.bed.map(|(t, target)| json!([t, target])),
+                "nozzles": status.nozzles.iter().map(|(t, target)| json!([t, target])).collect::<Vec<_>>(),
+            }),
+            Err(error) => {
+                json!({ "known": true, "online": false, "said": tr("Offline"), "error": error })
+            }
+        })
     }
 
     /// The files on the printer: `{ files: [{ name, size, modified }] }`.
@@ -420,6 +558,32 @@ impl Session {
         origins.sort();
         origins.dedup();
         origins
+    }
+}
+
+fn toolhead_json(head: &Toolhead) -> Value {
+    json!({
+        "index": head.index,
+        "type": head.filament_type,
+        "sub_type": head.sub_type,
+        "vendor": head.vendor,
+        "color": head.color,
+        "loaded": head.loaded,
+        "official": head.official,
+        "nozzle": head.nozzle,
+    })
+}
+
+/// A Moonraker printer's state in words (`print_stats.state`).
+fn state_said(state: &str) -> &'static str {
+    match state {
+        "standby" => "Idle",
+        "printing" => "Printing",
+        "paused" => "Paused",
+        "complete" => "Finished",
+        "cancelled" => "Canceled",
+        "error" => "Error",
+        _ => "Unknown",
     }
 }
 

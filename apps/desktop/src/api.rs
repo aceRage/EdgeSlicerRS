@@ -3214,6 +3214,236 @@ mod tests {
         }
     }
 
+    /// A sliced plate on a U1 whose connection is a mock U1's address.
+    fn u1_session(
+        setup: crate::hosts::mock::U1Setup,
+        key: Option<&str>,
+    ) -> (
+        Arc<Session>,
+        crate::hosts::mock::Printer,
+        Arc<Mutex<crate::hosts::mock::U1State>>,
+    ) {
+        let (printer, shared) = crate::hosts::mock::u1(setup);
+        let session = Arc::new(Session::new(None));
+        let id = open(&session, SMALL);
+        choose_presets(&session, id, 1);
+        ask(&session, "slice", json!({}));
+        assert_eq!(wait(&session, id)["state"], "done");
+        let mut typed = json!({ "host_type": "octoprint", "print_host": printer.address() });
+        if let Some(key) = key {
+            typed["apikey"] = json!(key);
+        }
+        ask(&session, "print_host_set", typed);
+        (session, printer, shared)
+    }
+
+    fn queue_done(session: &Arc<Session>) -> Value {
+        loop {
+            let queue = ask(session, "print_queue", json!({}));
+            if queue["busy"] == false {
+                return queue;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+    }
+
+    #[test]
+    fn a_plate_goes_to_a_u1_and_prints_to_the_end() {
+        use crate::hosts::mock::U1Setup;
+        let (session, printer, shared) = u1_session(U1Setup::default(), None);
+        let host = ask(&session, "print_host", json!({}));
+        assert_eq!(
+            (host["toolheads"].clone(), host["status"].clone()),
+            (json!(true), json!(true))
+        );
+        // Before: idle.
+        let status = ask(&session, "printer_status", json!({}));
+        assert_eq!(
+            (status["online"].clone(), status["said"].clone()),
+            (json!(true), json!("Idle"))
+        );
+        // What the toolheads hold, and the reference's first offer for the
+        // plate's one filament.
+        let heads = ask(&session, "printer_toolheads", json!({}));
+        assert_eq!(heads["toolheads"].as_array().unwrap().len(), 4);
+        assert_eq!(heads["toolheads"][1]["type"], "PETG");
+        assert_eq!(heads["filaments"][0]["used"], true);
+        assert_eq!(
+            heads["mapping"].as_array().unwrap().len(),
+            heads["filaments"].as_array().unwrap().len()
+        );
+        assert_eq!(heads["problem"], Value::Null);
+        // The empty fourth toolhead is refused before anything is sent ...
+        let checked = ask(&session, "printer_toolheads", json!({ "mapping": [3] }));
+        assert_eq!(
+            checked["problem"],
+            "Toolhead 4 is empty: load it or pick another."
+        );
+        let name = ask(&session, "print_send_name", json!({}))["name"]
+            .as_str()
+            .unwrap()
+            .to_owned();
+        let said = refused(
+            &session,
+            "print_send",
+            json!({ "name": name, "start": true, "options": { "mapping": [3] } }),
+        );
+        assert_eq!(said, "Toolhead 4 is empty: load it or pick another.");
+        assert!(shared.lock().unwrap().files.is_empty(), "nothing was sent");
+        // ... and sent when the person says so; here to toolhead 2, with
+        // the preferences ticked.
+        let sent = ask(
+            &session,
+            "print_send",
+            json!({ "name": name, "start": true, "options": {
+                "mapping": [1], "bed_level": true, "flow_calibrate": true, "unload_at_end": false } }),
+        );
+        assert!(sent["id"].is_u64());
+        let queue = queue_done(&session);
+        let job = &queue["jobs"][0];
+        assert_eq!(job["said"], "Completed", "{queue}");
+        assert_eq!(job["message"], "The print was started.");
+        assert_eq!(
+            shared.lock().unwrap().scripts,
+            [
+                "SET_PRINT_EXTRUDER_MAP CONFIG_EXTRUDER=0 MAP_EXTRUDER=1\nSET_PRINT_USED_EXTRUDERS EXTRUDERS=1\nSET_PRINT_PREFERENCES BED_LEVEL=1 FLOW_CALIBRATE=1 TIME_LAPSE_CAMERA=0"
+            ]
+        );
+        assert!(
+            printer
+                .asked()
+                .last()
+                .unwrap()
+                .starts_with("POST /printer/print/start?filename=")
+        );
+        // Device follows it to the end.
+        let mut seen = Vec::new();
+        loop {
+            let status = ask(&session, "printer_status", json!({}));
+            seen.push((
+                status["said"].as_str().unwrap().to_owned(),
+                status["percent"].as_u64().unwrap(),
+            ));
+            assert_eq!(status["filename"], name.as_str());
+            if status["state"] == "complete" {
+                break;
+            }
+            assert!(status["left"].as_u64().unwrap() > 0);
+            assert!(seen.len() < 10, "{seen:?}");
+        }
+        assert_eq!(seen.last().unwrap(), &("Finished".to_owned(), 100));
+        assert_eq!(seen[0], ("Printing".to_owned(), 25));
+        // A second "Upload and Print" while it prints: refused, said in the
+        // queue, nothing sent.
+        shared.lock().unwrap().state = "printing".into();
+        let files_before = shared.lock().unwrap().files.clone();
+        ask(
+            &session,
+            "print_send",
+            json!({ "name": "second.gcode", "start": true, "options": { "mapping": [0] } }),
+        );
+        let queue = queue_done(&session);
+        let job = queue["jobs"].as_array().unwrap().last().unwrap().clone();
+        assert_eq!(job["said"], "Error");
+        assert!(
+            job["message"]
+                .as_str()
+                .unwrap()
+                .starts_with("Error uploading to print host:\nThe printer is busy"),
+            "{job}"
+        );
+        assert_eq!(shared.lock().unwrap().files, files_before);
+    }
+
+    #[test]
+    fn a_u1_that_is_not_there_is_said_to_be_offline() {
+        use crate::hosts::mock::U1Setup;
+        let (session, printer, _) = u1_session(U1Setup::default(), None);
+        drop(printer);
+        std::thread::sleep(std::time::Duration::from_millis(150));
+        let status = ask(&session, "printer_status", json!({}));
+        assert_eq!(status["online"], false);
+        assert_eq!(status["said"], "Offline");
+        assert!(
+            status["error"]
+                .as_str()
+                .unwrap()
+                .starts_with("Could not connect"),
+            "{status}"
+        );
+        let said = refused(&session, "printer_toolheads", json!({}));
+        assert!(said.starts_with("Could not connect"), "{said}");
+        let said = refused(
+            &session,
+            "print_send",
+            json!({ "name": "a.gcode", "start": true }),
+        );
+        assert!(said.starts_with("Could not connect"), "{said}");
+    }
+
+    /// The key typed for a printer reaches the printer and nothing else:
+    /// every answer and every error of every call the page can make about
+    /// printers is read for it.
+    #[test]
+    fn no_answer_to_the_page_holds_the_key() {
+        use crate::hosts::mock::U1Setup;
+        const SECRET: &str = "s3cr3t-key-value-7741";
+        // The right key, then a wrong one: the printer refuses it.
+        for (wanted, given) in [(SECRET, SECRET), ("another-key", SECRET)] {
+            let (session, printer, _) = u1_session(
+                U1Setup {
+                    key: Some(wanted),
+                    ..U1Setup::default()
+                },
+                Some(given),
+            );
+            let mut answers = Vec::new();
+            let mut record = |name: &str, args: Value| {
+                let text = match session.call(name, &args) {
+                    Ok(answer) => answer.to_string(),
+                    Err(error) => error,
+                };
+                answers.push(format!("{name}: {text}"));
+            };
+            record("print_host", json!({}));
+            record("print_host_test", json!({}));
+            record("print_host_test", json!({ "apikey": "typed-but-not-kept" }));
+            record("print_send_name", json!({}));
+            record("printer_toolheads", json!({}));
+            record("printer_status", json!({}));
+            record("printer_files", json!({}));
+            record("printer_file_print", json!({ "name": "nothing.gcode" }));
+            record("printer_file_delete", json!({ "name": "nothing.gcode" }));
+            record("print_send", json!({ "name": "a.gcode", "start": false }));
+            record(
+                "print_send",
+                json!({ "name": "b.gcode", "start": true, "options": { "mapping": [0] } }),
+            );
+            let _ = queue_done(&session);
+            record("print_queue", json!({}));
+            record(
+                "print_host_set",
+                json!({ "print_host_webui": format!("http://{}/ui", printer.address()) }),
+            );
+            record("print_host_set", json!({ "forget": true }));
+            for answer in &answers {
+                assert!(!answer.contains(SECRET), "{answer}");
+                assert!(!answer.contains("typed-but-not-kept"), "{answer}");
+            }
+            if wanted != given {
+                assert!(answers.iter().any(|a| a.contains("401")), "{answers:?}");
+            }
+            // The printer did get it, as a header.
+            assert!(
+                printer
+                    .got()
+                    .iter()
+                    .any(|got| got.header("X-Api-Key") == Some(given))
+            );
+            assert!(printer.got().iter().all(|got| !got.url.contains(SECRET)));
+        }
+    }
+
     #[test]
     fn a_plate_is_sent_to_a_printer_as_it_is_exported() {
         use crate::hosts::mock::{Got, Printer};

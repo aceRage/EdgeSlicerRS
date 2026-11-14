@@ -71,3 +71,12 @@ p.warn { margin: 0; color: var(--warn); }
 #storage-table tbody tr { cursor: default; }
 .storage-actions { display: flex; align-items: center; justify-content: flex-end; gap: var(--space-1); height: 40px; }
 #device-page .row { margin-top: var(--space-2); }
+
+/* A U1's toolheads in "Send G-code to printer host", and its state over Device. */
+.send-options h3 { margin: var(--space-2) 0 0; font-size: var(--size-label); color: var(--text-2); font-weight: 600; }
+.send-map td { padding: 2px var(--space-2) 2px 0; white-space: nowrap; }
+.send-map select { min-width: 12em; }
+#send-map-note { white-space: pre-line; margin: 0; }
+#device-status { flex: 0 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: var(--size-label); color: var(--text-2); }
+#device-status.state-printing { color: var(--accent); }
+#device-status.state-error, #device-status.error { color: var(--danger); }

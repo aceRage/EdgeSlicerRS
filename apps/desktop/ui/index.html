@@ -304,6 +304,7 @@
         <button type="button" role="tab" id="device-tab-storage" aria-selected="false" title="The G-code files on the printer">Storage</button>
       </div>
       <span id="device-address" class="quiet"></span>
+      <span id="device-status" hidden></span>
       <button type="button" id="device-reload" class="icon tool" title="Reload the printer's page" aria-label="Reload the printer's page">
         <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M13.5,8A5.5,5.5,0,1,1,11.9,4.1M12.5,1.5v3h-3"/></svg>
       </button>
@@ -461,6 +462,16 @@
       <label class="tick"><input type="radio" name="send-plate" id="send-plate-a" value="a"> Textured Build Plate (Side A)</label>
       <label class="tick"><input type="radio" name="send-plate" id="send-plate-b" value="b"> Smooth Build Plate (Side B)</label>
       <p id="send-plate-warn" class="warn" hidden>The selected bed type does not match the file. Please confirm before starting the print.</p>
+    </div>
+    <!-- A Snapmaker U1: which toolhead prints each filament, and the device page's "Print Preferences" (its bundled page, resources/web/flutter_web). -->
+    <div id="send-u1" class="send-options" hidden>
+      <h3>Toolheads</h3>
+      <table class="send-map"><tbody id="send-map"></tbody></table>
+      <p id="send-map-note" class="quiet"></p>
+      <h3>Print Preferences</h3>
+      <label class="tick"><input type="checkbox" id="send-bed-level"> Auto Leveling</label>
+      <label class="tick" title="When enabled, the printer will automatically calibrate flow compensation before printing. Recommended after each filament change."><input type="checkbox" id="send-flow"> Extrusion Flow Calibration</label>
+      <label class="tick"><input type="checkbox" id="send-time-lapse"> Time-lapse Camera</label>
     </div>
     <label class="tick"><input type="checkbox" id="send-device"> Switch to Device tab after upload.</label>
     <p id="send-to" class="quiet"></p>
