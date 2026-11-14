@@ -15,6 +15,7 @@ mod hosts;
 mod menubar;
 mod outside;
 mod serve;
+mod ultranet;
 
 use std::sync::Arc;
 

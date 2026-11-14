@@ -15,6 +15,7 @@
 //! [`Session::call_bytes`], which is `call` in every other way.
 
 mod arrange;
+mod bambu_lan;
 mod edit;
 mod export;
 mod filaments;
@@ -73,6 +74,8 @@ pub struct Session {
     cut_preview: Mutex<edit::Previews>,
     /// The printers' connections and the files being sent to them.
     hosts: Hosts,
+    /// Bambu Lab printers on the LAN, through the UltraNet bridge.
+    bambu: bambu_lan::Bambu,
     /// The language the page is shown in and the calls compose in.
     language: Mutex<Arc<i18n::Catalog>>,
 }
@@ -1035,6 +1038,11 @@ impl Session {
     /// the folder last chosen, else the ones beside this build.
     pub fn with_settings(startup: Option<PathBuf>, settings: Option<PathBuf>) -> Self {
         let kept = crate::hosts::kept::Kept::open(settings.clone());
+        let bambu = bambu_lan::Bambu::new(
+            bambu_lan::Bambu::found(settings.as_deref()),
+            settings.clone(),
+            crate::ultranet::client::Timeouts::default(),
+        );
         let users = presets::Users::open(settings.as_deref());
         let store = store::Store::open(settings);
         let backups_left = prefs::left_behind(&store);
@@ -1079,8 +1087,22 @@ impl Session {
                 queue: crate::hosts::queue::Queue::default(),
                 timeouts: crate::hosts::Timeouts::default(),
             },
+            bambu,
             language: Mutex::new(language),
         }
+    }
+
+    /// A session whose bridge is a test's (`ultranet::mock`), with short
+    /// waits.
+    #[cfg(test)]
+    pub(crate) fn with_bridge(
+        settings: Option<PathBuf>,
+        launcher: crate::ultranet::client::Launcher,
+        timeouts: crate::ultranet::client::Timeouts,
+    ) -> Self {
+        let mut session = Self::with_settings(None, settings.clone());
+        session.bambu = bambu_lan::Bambu::new(launcher, settings, timeouts);
+        session
     }
 
     /// Answers the page. An error is a sentence to show as it is.
@@ -1318,6 +1340,7 @@ impl Session {
             name if ticks::JSON.contains(&name) => self.ticks_json(name, args),
             name if filaments::JSON.contains(&name) => self.filaments_json(name, args),
             name if print_host::JSON.contains(&name) => self.print_host_json(name, args),
+            name if bambu_lan::JSON.contains(&name) => self.bambu_lan_json(name, args),
             name if scene::JSON.contains(&name) => self.scene_json(name, args),
             name if paint::JSON.contains(&name) => self.paint_json(name, args),
             name if scene::BYTES.contains(&name) => {

@@ -230,7 +230,7 @@ impl Kept {
 
 /// Written beside the file, then put in its place; `private` makes it
 /// readable by this user alone from the moment it is made.
-fn write_whole(file: &Path, bytes: &[u8], private: bool) -> std::io::Result<()> {
+pub(crate) fn write_whole(file: &Path, bytes: &[u8], private: bool) -> std::io::Result<()> {
     use std::io::Write;
     let beside = file.with_extension("json.new");
     let mut options = std::fs::OpenOptions::new();

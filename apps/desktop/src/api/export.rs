@@ -72,7 +72,7 @@ fn with_extension(path: &str, extension: &str) -> PathBuf {
 
 /// The pictures the page drew, by plate: `{ "2": { plate, small,
 /// no_light, top, pick } }`.
-fn pictures(args: &Value) -> Result<BTreeMap<u32, edge_engine::Pictures>, String> {
+pub(super) fn pictures(args: &Value) -> Result<BTreeMap<u32, edge_engine::Pictures>, String> {
     let mut out = BTreeMap::new();
     let Some(given) = args.get("pictures").and_then(Value::as_object) else {
         return Ok(out);
@@ -102,23 +102,23 @@ fn pictures(args: &Value) -> Result<BTreeMap<u32, edge_engine::Pictures>, String
 }
 
 /// A project ready to be written as a sliced file.
-struct SlicedProject {
-    file: Arc<super::File>,
-    choices: super::Choices,
+pub(super) struct SlicedProject {
+    pub(super) file: Arc<super::File>,
+    pub(super) choices: super::Choices,
     name: String,
     plate: Option<u32>,
     slices: Vec<(u32, Arc<Done>)>,
     /// The printer model's id in the vendor's files (`printer_model_id`).
-    model_id: Option<String>,
+    pub(super) model_id: Option<String>,
 }
 
 impl SlicedProject {
-    fn naming(&self) -> (&super::File, &str, Option<u32>) {
+    pub(super) fn naming(&self) -> (&super::File, &str, Option<u32>) {
         (&self.file, &self.name, self.plate)
     }
 
     /// Writes the sliced file to `path` with `saving`'s settings.
-    fn write(
+    pub(super) fn write(
         &self,
         path: &Path,
         saving: edge_engine::Saving,
@@ -153,7 +153,7 @@ impl SlicedProject {
 /// plate's for one plate of several (Plater.cpp
 /// `get_export_gcode_filename`), with `.gcode.3mf`; in the project's
 /// folder when `in_folder`.
-fn suggested_sliced(
+pub(super) fn suggested_sliced(
     file: &super::File,
     name: &str,
     plate: Option<u32>,
@@ -288,7 +288,7 @@ impl Session {
 
     /// The project a sliced file is written of, with the plates sliced
     /// that go in it: the plate shown, or (`all`) every plate sliced.
-    fn sliced_project(&self, args: &Value, all: bool) -> Result<SlicedProject, String> {
+    pub(super) fn sliced_project(&self, args: &Value, all: bool) -> Result<SlicedProject, String> {
         let state = lock(&self.state);
         let project = &state.projects[state.target(args)?];
         let file = project

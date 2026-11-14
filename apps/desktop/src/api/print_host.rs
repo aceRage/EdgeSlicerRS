@@ -339,7 +339,11 @@ impl Session {
     }
 
     /// The filaments a plate prints in, from 0.
-    fn plate_filaments(&self, args: &Value, plate: Option<u32>) -> Result<Vec<usize>, String> {
+    pub(super) fn plate_filaments(
+        &self,
+        args: &Value,
+        plate: Option<u32>,
+    ) -> Result<Vec<usize>, String> {
         let state = lock(&self.state);
         let project = &state.projects[state.target(args)?];
         let Some(file) = project.file.as_deref() else {
