@@ -1719,6 +1719,77 @@ and the spiral the clearance allows for takes `travel_slope` in degrees,
 which makes the check 2.3 mm stricter on a U1 (the reference accepts the
 tower at x 224 and 225, here refused).
 
+**The way to the prime tower, and the retractions round it** (2026-11-13,
+`edge-parity`). The reference's own tower (WipeTower2) lays its frame,
+fill, wall and brim with moves of its own: straight, without pulling the
+filament back or lifting, at the speed in force, each closed line from
+its corner nearest the nozzle, the wall as one with the filament pulled
+back only across each gap in it (WipeTower2.cpp `finish_layer`,
+`generate_path`); this engine went from line to line as for any travel,
+with a retraction and a lift each time, and now goes as the tower does.
+The way to the tower goes round the box of its first layer, grown by
+2 mm, to the gap in its wall (GCode.cpp `generate_path_to_wipe_tower`,
+`travel_to_tower_gap`), for a tool changed in place, a tool going over
+the tower to be changed, and onto the tower on a layer with no change;
+Bambu's tower, whose nozzle the reference takes in straight, is not
+routed. Not as the reference, on purpose: it goes in level with where the
+block starts, not through the gap, so it crosses the printed wall beside
+the gap (0.8 mm off it on `splitbands`' layer 15), and it takes the
+shorter way round by the sum of the squares of the stretches; here it
+goes in through the gap, the shorter way by length. A tool changed over
+the tower (`tool_change_on_wipe_tower`, the first change on a layer, one
+nozzle, a rammed filament) is changed where the reference changes it, in
+the corner of the space its block cleans and at the layer's height, the
+filament pushed back first (`append_tcr2`): it was changed 0.5 mm away,
+at the first row's start, and 0.4 mm up, still lifted. The change's
+retraction is one, the wipe within it, as there (it was a travel's and
+then the rest), and with one nozzle it carries on to the filament taken
+up (Extruder.cpp `m_share_retracted`). The next tool's preheat is placed
+as the reference's post-processor places it, the cooldown of a tool
+wanted again within `preheat_time` taken out (`; removed M104`), and the
+fans after a change are the layer's (they were the layer below's: on a
+P1S's second layer a change turned the part fan off for the rest of it).
+Fixtures: `splitbands` (`tools/make_fixture.py`, mcbrim_test.3mf's U1
+settings, ramming off) with `wipe_tower_no_sparse_layers` (ns) and
+`tool_change_on_wipe_tower` (on) each 0 and 1; mcbrim_test.3mf plates 1
+to 3; the P1S and A1 `twotone`. Retractions, travel to the tower (from
+the part, the change included) and back, in m, and the print's time as
+each file gives it, reference / `main` / now:
+
+| project | retractions | to the tower, m | back, m | time | template lines differing, `main` / now |
+| --- | --- | --- | --- | --- | --- |
+| `splitbands`, ns0 on0 | 239 / 390 / 235 | 9.0 / 7.2 / 7.6 | 7.5 / 7.7 / 7.9 | 17m59 / 15m54 / 15m42 | 803 / 756 |
+| `splitbands`, ns0 on1 | 248 / 400 / 244 | 9.0 / 7.2 / 7.6 | 7.5 / 7.7 / 7.9 | 18m00 / 15m54 / 15m43 | 709 / 670 |
+| `splitbands`, ns1 on0 | 236 / 218 / 208 | 2.1 / 2.0 / 2.3 | 1.7 / 1.7 / 1.7 | 14m47 / 15m13 / 15m14 | 523 / 513 |
+| `splitbands`, ns1 on1 | 245 / 228 / 218 | 2.1 / 2.0 / 2.3 | 1.7 / 1.7 / 1.7 | 14m48 / 15m13 / 15m15 | 439 / 429 |
+| mcbrim_test plate 1 | 2188 / 2120 / 2081 | 4.6 / 5.0 / 5.8 | 2.6 / 2.6 / 2.6 | 1h05m01 / 1h06m59 / 1h06m59 | 8768 / 8791 |
+| mcbrim_test plate 2 | 848 / 986 / 947 | 7.6 / 6.9 / 8.7 | 5.6 / 4.8 / 4.7 | 42m32 / 44m12 / 44m21 | 3396 / 3271 |
+| mcbrim_test plate 3 | 846 / 987 / 948 | 7.8 / 8.6 / 10.3 | 8.3 / 6.4 / 6.2 | 42m37 / 44m19 / 44m27 | 3440 / 3317 |
+| `twotone`, P1S | 185 / 206 / 185 | 27.7 / 27.7 / 27.7 | 2.8 / 2.8 / 2.8 | 50m47 / 50m21 / 50m20 | 292 / 143 |
+| `twotone`, A1 | 227 / 228 / 227 | 23.1 / 23.1 / 23.1 | 2.8 / 2.9 / 2.9 | 52m02 / 51m42 / 51m42 | 679 / 572 |
+
+By kind of move the retractions on the tower are now the reference's
+(`splitbands` ns0: 20 / 175 before / 24 there, the 4 left being gaps
+crossed there where the wall is begun elsewhere here; mcbrim plates
+56 / 56 and 100 / 100), as are those to it, from it, between islands of
+`splitbands` and round a change. What is left: on `splitbands` with no
+sparse layers the reference's 27 more are its old descent over the
+part, each with a retraction and a push back (aceRage/EdgeSlicer#1020,
+not copied); on the mcbrim plates the rest is between the part's own
+lines (gap fill, bottom surface, supports: 1949 here, 2056 there on
+plate 1; 725 / 626 on plate 2), not near the tower, so plate 1's total
+is further from the reference's though every kind of move at the tower
+is nearer. The tower's lines are still laid nearest first, not in the
+reference's order, and the tower is not turned end for end on alternate
+layers as the reference's is (WipeTower2.cpp `m_internal_rotation`), so
+on every other layer the nozzle comes in on the other side; with that,
+the way round and the travel to the tower differ in length (longer here
+on the mcbrim plates). The print times differ outside the tower (walls
+and fill at other speeds); the reference's own files timed here are as
+before (18m00, 14m48, 1h05m02, 42m32, 42m38, 51m21, 52m31), so the
+P1S's 34 s and the A1's 29 s over the reference's own figure (about
+1.5 s a change) are still not found.
+
 **Bambu Lab's prime tower against the C++ slicer** (2026-11-12,
 `edge-parity`; both files timed here, each the way its printer plans
 it). Before is `main` at 76a7430, which laid every tower as WipeTower2's;
