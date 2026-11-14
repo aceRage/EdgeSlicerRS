@@ -163,6 +163,31 @@ fn a_sliced_plate_goes_to_bambu_connect_as_the_reference_hands_it() {
     let settings: Value =
         serde_json::from_str(text(&all, "Metadata/project_settings.config")).unwrap();
     assert_eq!(settings["print_compatible_printers"], json!([A1_MINI]));
+    // What the printer and Bambu Connect read of the plate: the model's id
+    // from its vendor's file ("N1"), each filament's preset id as its AMS
+    // tray id, the whole weight (the A1 mini's G-code writes no total).
+    let info = text(&all, "Metadata/slice_info.config");
+    assert!(
+        info.contains(r#"<metadata key="printer_model_id" value="N1"/>"#),
+        "{info}"
+    );
+    assert!(!info.contains(r#"tray_info_idx="""#), "{info}");
+    assert!(
+        !info.contains(r#"<metadata key="weight" value=""/>"#),
+        "{info}"
+    );
+    let ids = settings["filament_ids"].as_array().unwrap();
+    assert!(
+        !ids.is_empty()
+            && ids
+                .iter()
+                .all(|id| id.as_str().is_some_and(|id| id.starts_with("GF"))),
+        "{ids:?}"
+    );
+    assert!(
+        info.contains(&format!(r#"tray_info_idx="{}""#, ids[0].as_str().unwrap())),
+        "{info}"
+    );
     // "Send all plates": the one plate there is.
     let all_answer = ask(&session, "bambu_connect_send", json!({ "all": true }));
     assert_eq!(all_answer["path"], answer["path"]);

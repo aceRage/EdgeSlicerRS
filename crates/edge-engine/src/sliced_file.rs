@@ -23,6 +23,11 @@ pub struct PlateSlice<'a> {
     pub gcode: &'a [u8],
     /// How long it prints, in seconds, as the G-code says.
     pub seconds: f64,
+    /// The printer model's id in its vendor's files ("N1" for the Bambu
+    /// Lab A1 mini; `Library::model_id`), which a Bambu printer and Bambu
+    /// Connect match the file by: `printer_model_id` (Plater.cpp
+    /// l.26748). Empty when the caller has no profiles to look in.
+    pub printer_model_id: Option<String>,
 }
 
 /// The extruder each of `filaments` prints from, from 1, as the reference
@@ -286,8 +291,7 @@ pub fn sliced_plate<'a>(slice: &PlateSlice<'a>, copies: &[(u32, String)]) -> Sli
             &["Standard", "High Flow"],
             extruders,
         ),
-        // Bambu Lab's model code; this app sends to no Bambu printer.
-        printer_model_id: String::new(),
+        printer_model_id: slice.printer_model_id.clone().unwrap_or_default(),
         nozzle_diameters: diameters
             .iter()
             .map(|value| format!("{value}"))
@@ -295,7 +299,13 @@ pub fn sliced_plate<'a>(slice: &PlateSlice<'a>, copies: &[(u32, String)]) -> Sli
             .join(","),
         timelapse_type: first("timelapse_type").parse().unwrap_or(0),
         prediction: slice.seconds.max(0.0) as u64,
-        weight: notes.total_g.filter(|grams| *grams != 0.0),
+        // The print's whole weight (`PrintStatistics::total_weight`): the
+        // G-code's total where it writes one, else the filaments' grams
+        // added up (a Bambu printer's G-code writes no total line).
+        weight: notes
+            .total_g
+            .or_else(|| Some(notes.used_g.iter().sum()))
+            .filter(|grams| *grams != 0.0),
         first_layer_time: notes.first_layer_seconds,
         support_used: flag("enable_support"),
         // Objects are not labelled for cancelling (edge-gcode notes it).

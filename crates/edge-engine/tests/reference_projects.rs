@@ -355,6 +355,22 @@ fn a_projects_plates_are_listed_with_what_is_on_each() {
 /// A vendor's printer models, as the printer selection lists them: the
 /// nozzles each is sold with, its picture, the presets made for it and
 /// the sizes of its usual one.
+/// A printer model's id, as the reference finds it for a sliced file's
+/// `printer_model_id` (Preset.cpp `get_printer_type`): any vendor's model
+/// of that name.
+#[test]
+fn a_printer_models_id_is_found_by_its_name() {
+    let library = Library::new(reference("resources/profiles"));
+    assert_eq!(library.model_id("Bambu Lab A1 mini").as_deref(), Some("N1"));
+    assert_eq!(
+        library.model_id("Bambu Lab X1 Carbon").as_deref(),
+        Some("BL-P001")
+    );
+    assert_eq!(library.model_id("Snapmaker U1").as_deref(), Some("SM_U1"));
+    assert_eq!(library.model_id("No Such Printer"), None);
+    assert_eq!(library.model_id(""), None);
+}
+
 #[test]
 fn a_vendors_printer_models_are_listed_with_their_presets() {
     let library = Library::new(reference("resources/profiles"));

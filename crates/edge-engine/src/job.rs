@@ -282,7 +282,7 @@ pub fn prepare(mut loaded: Loaded, chosen: &Chosen, overrides: &Overrides) -> Re
     if let Some((name, _)) = &chosen.machine {
         settings.insert("printer_settings_id", Value::One(name.clone()));
     }
-    if let Some((last, _)) = chosen.filaments.last() {
+    if let Some(last_chosen @ (last, _)) = chosen.filaments.last() {
         let names = (0..described)
             .map(|filament| {
                 chosen
@@ -293,6 +293,16 @@ pub fn prepare(mut loaded: Loaded, chosen: &Chosen, overrides: &Overrides) -> Re
             .cloned()
             .collect();
         settings.insert("filament_settings_id", Value::Many(names));
+        // Each filament preset's own id (its `filament_id`), as
+        // `full_fff_config` makes `filament_ids` (PresetBundle.cpp l.4547):
+        // what a Bambu printer's AMS is matched by (`tray_info_idx`).
+        let ids = (0..described)
+            .map(|filament| {
+                let (_, preset) = chosen.filaments.get(filament).unwrap_or(last_chosen);
+                preset.text("filament_id").unwrap_or_default().to_owned()
+            })
+            .collect();
+        settings.insert("filament_ids", Value::Many(ids));
     }
     let mut bed_type = BedType::Settled;
     if let Some(bed) = &overrides.bed_type {

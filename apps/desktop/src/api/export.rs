@@ -108,6 +108,8 @@ struct SlicedProject {
     name: String,
     plate: Option<u32>,
     slices: Vec<(u32, Arc<Done>)>,
+    /// The printer model's id in the vendor's files (`printer_model_id`).
+    model_id: Option<String>,
 }
 
 impl SlicedProject {
@@ -131,6 +133,7 @@ impl SlicedProject {
                 sliced: &done.sliced,
                 gcode: &gcode.text,
                 seconds: gcode.summary.seconds,
+                printer_model_id: self.model_id.clone(),
             });
         }
         let shown_plate = if all {
@@ -309,12 +312,19 @@ impl Session {
         if slices.is_empty() {
             return Err("nothing has been sliced yet".into());
         }
+        // Read from the profiles in use, as the reference reads its
+        // loaded vendors (Preset.cpp `get_printer_type`).
+        let model_id = state.library.as_ref().and_then(|library| {
+            let model = slices[0].1.sliced.settings.text("printer_model")?;
+            library.model_id(model.trim())
+        });
         Ok(SlicedProject {
             file,
             choices: project.choices.clone(),
             name: project.name.clone(),
             plate: project.plate,
             slices,
+            model_id,
         })
     }
 
