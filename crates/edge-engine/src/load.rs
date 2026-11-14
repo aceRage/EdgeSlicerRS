@@ -37,6 +37,10 @@ pub struct Loaded {
     /// For a project, each object on the plate by itself, for what depends
     /// on which object is which. Empty for a bare model, which is one object.
     pub objects: Vec<Mesh>,
+    /// Who each of those objects is, for labelling it in the G-code so a
+    /// printer can cancel it: its object and copy, its name and its
+    /// number in a sliced file. Empty for a bare model.
+    pub labels: Vec<InstanceLabel>,
     /// What is cut out of each of those objects (its negative parts): an
     /// empty mesh for an object with none.
     pub negatives: Vec<Mesh>,
@@ -66,6 +70,20 @@ pub struct Loaded {
     /// blocker or enforcer. Their printed parts are among `bodies`, one
     /// body a part, each tagged with its place here.
     pub own: Vec<OwnObject>,
+}
+
+/// Who one copy on the plate is, as the reference names and numbers it
+/// in the G-code that labels it for cancelling.
+#[derive(Clone, Debug, PartialEq)]
+pub struct InstanceLabel {
+    /// Its object's place in the project and its copy's in the object.
+    pub object: usize,
+    pub copy: usize,
+    /// Its object's name.
+    pub name: String,
+    /// Its number in a sliced file (`identify_id`), which a Bambu Lab
+    /// printer knows it by.
+    pub identify: u32,
 }
 
 /// An object on the plate that sets something for itself.
@@ -436,6 +454,16 @@ pub(crate) fn lone(path: &Path, solid: Mesh) -> Result<Loaded, Failure> {
         unread_paint: Vec::new(),
         precise_seams: false,
         objects: Vec::new(),
+        // One copy, named as the file is.
+        labels: vec![InstanceLabel {
+            object: 0,
+            copy: 0,
+            name: path
+                .file_name()
+                .map(|name| name.to_string_lossy().into_owned())
+                .unwrap_or_default(),
+            identify: 1,
+        }],
         negatives: Vec::new(),
         parts: Vec::new(),
         plate: 0,
@@ -470,6 +498,18 @@ pub(crate) fn placed(
     let mut objects = project.instance_meshes(plate);
     let mut negatives = project.instance_negatives(plate);
     let mut parts = project.instance_parts(plate);
+    let identify = edge_3mf::identify_numbers(project);
+    let labels = (project.instance_places(plate).into_iter())
+        .map(|at| InstanceLabel {
+            object: at.object,
+            copy: at.instance,
+            name: (project.objects[at.object].name.clone()).unwrap_or_default(),
+            identify: identify
+                .get(&(at.object, at.instance))
+                .copied()
+                .unwrap_or(0),
+        })
+        .collect();
     if let Some((x, y)) = origin {
         shift(&mut bodies, -x, -y);
         shift_meshes(objects.iter_mut(), -x, -y);
@@ -511,6 +551,7 @@ pub(crate) fn placed(
         unread_paint: project.unread_paint.clone(),
         precise_seams: project.has_precise_seams(plate),
         objects,
+        labels,
         negatives,
         parts,
         plate: plate.unwrap_or(0),

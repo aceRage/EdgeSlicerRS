@@ -237,6 +237,17 @@ pub fn prepare(mut loaded: Loaded, chosen: &Chosen, overrides: &Overrides) -> Re
             Some((*key, held))
         })
         .collect();
+    // A project that names its filaments' colours but holds no flushing
+    // volumes: the reference's command line works them out from the
+    // colours and sets the multiplier to 1 (Snapmaker_Orca.cpp l.3785,
+    // "compute the flush volume"), so what a change purges is what that
+    // colour needs and not the 4 × 4 default of 280 mm³ at 0.3.
+    let colours_only = project_settings
+        .as_ref()
+        .filter(|project| project.get("flush_volumes_matrix").is_none())
+        .and_then(|project| project.texts("filament_colour"))
+        .filter(|colours| !colours.is_empty())
+        .map(<[String]>::to_vec);
     // Later sources replace earlier ones: project, then the presets named.
     let mut settings = project_settings.unwrap_or_default();
     for preset in [
@@ -251,6 +262,21 @@ pub fn prepare(mut loaded: Loaded, chosen: &Chosen, overrides: &Overrides) -> Re
     }
     for (key, held) in own {
         settings.insert(key, held);
+    }
+    if let Some(colours) = colours_only {
+        let minimums = crate::flush::min_flush_volumes(&settings);
+        let support: Vec<bool> = settings
+            .texts("filament_is_support")
+            .unwrap_or_default()
+            .iter()
+            .map(|on| on.trim() == "1")
+            .collect();
+        let matrix = crate::flush::calculated(&colours, &minimums, &support);
+        settings.insert(
+            "flush_volumes_matrix",
+            Value::Many(matrix.iter().map(|volume| format!("{volume}")).collect()),
+        );
+        settings.insert("flush_multiplier", Value::One("1".to_owned()));
     }
     // What was set by hand comes over all of them.
     settings.overlay(&overrides.settings);
@@ -433,6 +459,45 @@ mod tests {
         };
         assert_eq!(said(loaded(false)), 0);
         assert_eq!(said(loaded(true)), 1);
+    }
+
+    #[test]
+    fn a_project_with_colours_and_no_flushing_volumes_has_them_worked_out() {
+        let project = |matrix: bool| {
+            let cube = edge_mesh::Mesh::from_triangle_soup(edge_mesh::primitives::cuboid(
+                [0.0; 3], [10.0; 3],
+            ));
+            let mut loaded = crate::load::lone(std::path::Path::new("cube.3mf"), cube).unwrap();
+            let mut settings = Settings::default();
+            let many =
+                |items: &[&str]| Value::Many(items.iter().map(|s| (*s).to_owned()).collect());
+            settings.insert("filament_colour", many(&["#FFFFFF", "#202020"]));
+            settings.insert("filament_diameter", many(&["1.75", "1.75"]));
+            // The A1 mini's: 92 mm³ less 18 mm retracted at the cut, 48.
+            settings.insert("nozzle_volume", Value::One("92".into()));
+            settings.insert("enable_long_retraction_when_cut", Value::One("2".into()));
+            settings.insert("long_retractions_when_cut", many(&["0"]));
+            settings.insert("filament_long_retractions_when_cut", many(&["1", "1"]));
+            settings.insert(
+                "filament_retraction_distances_when_cut",
+                many(&["18", "18"]),
+            );
+            if matrix {
+                settings.insert("flush_volumes_matrix", many(&["0", "5", "6", "0"]));
+            }
+            loaded.settings = Some(settings);
+            let job = prepare(loaded, &Chosen::default(), &Overrides::default()).unwrap();
+            let read = |key: &str| job.settings.texts(key).map(<[String]>::to_vec);
+            (read("flush_volumes_matrix"), read("flush_multiplier"))
+        };
+        // What the reference's command line wrote for this project.
+        let (matrix, multiplier) = project(false);
+        assert_eq!(matrix.unwrap(), ["0", "117", "557", "0"]);
+        assert_eq!(multiplier.unwrap(), ["1"]);
+        // One the project holds is kept.
+        let (matrix, multiplier) = project(true);
+        assert_eq!(matrix.unwrap(), ["0", "5", "6", "0"]);
+        assert_eq!(multiplier, None);
     }
 
     /// Two blocks side by side, the second in filament 2, with the U1's

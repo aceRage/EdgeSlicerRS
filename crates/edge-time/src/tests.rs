@@ -534,3 +534,33 @@ fn a_bambu_lab_file_is_timed_as_the_reference_times_it() {
     // A pause, in a Bambu Lab printer's words, stops the head.
     assert!(close(timed("; PAUSE_PRINTING\n", &bambu), 0.0));
 }
+
+#[test]
+fn the_labels_a_printer_cancels_objects_by_take_no_time() {
+    // Bambu Lab's, Klipper's and Marlin's, between two moves of a
+    // printing object: the two moves are timed as if they met with
+    // nothing between, Klipper not stopping for them as for a macro.
+    let moves = "G1 X10 F6000\nG1 X20\n";
+    let labelled = [
+        "G1 X10 F6000\n; stop printing object, unique label id: 8\nM625\n\
+         ; start printing object, unique label id: 9\nM624 AgAAAAAAAAA=\nG1 X20\n",
+        "G1 X10 F6000\nEXCLUDE_OBJECT_END NAME=a_id_0_copy_0\n\
+         EXCLUDE_OBJECT_START NAME=b_id_1_copy_0\nG1 X20\n",
+        "G1 X10 F6000\nM486 S-1\nM486 S1\nG1 X20\n",
+    ];
+    let limits = klipper(1000.0, 500.0);
+    let marlin = Limits {
+        flavor: Flavor::Other,
+        ..limits
+    };
+    for (limits, model) in [(&limits, Model::Klipper), (&marlin, Model::Reference)] {
+        let plain = estimate(moves, limits, model).seconds;
+        for text in labelled {
+            let found = estimate(text, limits, model).seconds;
+            assert!(
+                close(found, plain),
+                "{model:?} {text}: {found} against {plain}"
+            );
+        }
+    }
+}

@@ -1,6 +1,7 @@
 use edge_avoid::Detour;
 use edge_config::{ConfigError, FloatOrPercent, Settings, Value as Setting};
 use edge_extrusion::Flow;
+use edge_geom::Point2;
 use edge_template::{Value, Variables};
 
 use crate::{scarf::Scarf, seam::Seam, small_area::SmallArea};
@@ -329,6 +330,14 @@ pub struct PrintSettings {
     /// (`; FEATURE:`, `; CHANGE_LAYER`), the objects labelled for skipping,
     /// the settings block at the top.
     pub bambu: bool,
+    /// How the file labels each copy so the printer can cancel it
+    /// (GCode.cpp `m_enable_exclude_object`): on a Bambu Lab printer
+    /// always, elsewhere where `exclude_object` is on, in the commands of
+    /// the printer's firmware. None where nothing is labelled.
+    pub labels: Option<Labelling>,
+    /// Whether each copy is also named in comments where it starts and
+    /// stops (`gcode_label_objects`); only where copies are labelled.
+    pub label_comments: bool,
     /// Where each tool's nozzle sits off the first's, in mm
     /// (`extruder_offset`): every position written is taken back by it
     /// (GCode.cpp `point_to_gcode`). Bambu Lab's P1 and X1 have 0x2.
@@ -511,6 +520,8 @@ impl Default for PrintSettings {
             prime_tower: false,
             bambu_tower: false,
             bambu: false,
+            labels: None,
+            label_comments: true,
             extruder_offset: [0.0, 0.0],
             plate: Plate::default(),
             machine_envelope: None,
@@ -634,11 +645,6 @@ impl PrintSettings {
                 "the nozzle lifts over every surface",
             ),
             (
-                "exclude_object",
-                "0",
-                "objects are not labelled for cancelling",
-            ),
-            (
                 "slowdown_for_curled_perimeters",
                 "0",
                 "walls are not slowed over edges that have curled up",
@@ -649,6 +655,12 @@ impl PrintSettings {
             {
                 unsupported.push(format!("{key} \"{value}\": {instead}"));
             }
+        }
+        if settings.flag("exclude_object")?.unwrap_or(false) && labelling(settings)?.is_none() {
+            unsupported.push(format!(
+                "exclude_object: the firmware (gcode_flavor \"{}\") has no command for it, so objects are not labelled for cancelling",
+                settings.text("gcode_flavor").unwrap_or("marlin")
+            ));
         }
         let scarf = Scarf::read(settings, &mut unsupported)?;
         if first("internal_bridge_fan_speed")?.is_some_and(|speed| speed >= 0.0) {
@@ -1094,6 +1106,8 @@ impl PrintSettings {
                 .filter(|model| !model.is_empty())
                 .or(settings.text("printer_settings_id"))
                 .is_some_and(|name| name.starts_with("Bambu Lab")),
+            labels: labelling(settings)?,
+            label_comments: settings.flag("gcode_label_objects")?.unwrap_or(true),
             extruder_offset: settings
                 .texts("extruder_offset")
                 // As `ConfigOptionVector::get_at`: past the end, the first.
@@ -1273,6 +1287,46 @@ fn machine_envelope(settings: &Settings) -> Result<Option<String>, ConfigError> 
     Ok(Some(out))
 }
 
+/// The commands a file labels each copy with so the printer can cancel
+/// it (GCode.cpp `process_layer`, `set_object_info`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Labelling {
+    /// A Bambu Lab printer's: `M624` with the copy's place among the
+    /// plate's numbers as a bit in base 64, `M625`, and comments naming
+    /// its number; the numbers listed in the file's header.
+    Bambu,
+    /// Klipper's `EXCLUDE_OBJECT_DEFINE`, `_START` and `_END`, by name.
+    Klipper,
+    /// Marlin's `M486 S<n>`, the names given with `M486 A<name>`.
+    Marlin,
+    /// RepRapFirmware's `M486 S<n> A"<name>"`.
+    RepRap,
+}
+
+/// Whether and how a file labels its copies: on a Bambu Lab printer
+/// always (GCode.cpp `_do_export` turns it on whatever `exclude_object`
+/// says), elsewhere as `exclude_object` and the firmware say. A firmware
+/// with no command for it gets none, as there.
+fn labelling(settings: &Settings) -> Result<Option<Labelling>, ConfigError> {
+    let bambu = settings
+        .text("printer_model")
+        .filter(|model| !model.is_empty())
+        .or(settings.text("printer_settings_id"))
+        .is_some_and(|name| name.starts_with("Bambu Lab"));
+    if bambu {
+        return Ok(Some(Labelling::Bambu));
+    }
+    if !settings.flag("exclude_object")?.unwrap_or(false) {
+        return Ok(None);
+    }
+    Ok(match settings.text("gcode_flavor").unwrap_or("marlin") {
+        "klipper" => Some(Labelling::Klipper),
+        "marlin" | "marlin2" => Some(Labelling::Marlin),
+        "reprapfirmware" => Some(Labelling::RepRap),
+        _ => None,
+    })
+}
+
 /// Where in a layer the printer's timelapse G-code goes (GCode.cpp
 /// `process_layer`). A smooth timelapse's tower is not done (a note says
 /// so where set).
@@ -1316,6 +1370,37 @@ pub struct Plate {
     pub in_head_wrap_detect_zone: bool,
     /// Each object's box across the bed: min x, min y, max x, max y.
     pub objects: Vec<[f64; 4]>,
+    /// Each copy on the plate as the file labels it for cancelling, in
+    /// the order the reference numbers them (its objects in the
+    /// project's order, each one's copies in theirs). Empty for a print
+    /// whose copies are not known apart.
+    pub labels: Vec<ObjectLabel>,
+    /// Where the prime tower is set to stand (`wipe_tower_x`,
+    /// `wipe_tower_y`), which the copies a tool prints on a layer with a
+    /// tower are ordered from.
+    pub tower_at: Option<Point2>,
+}
+
+/// One copy on the plate as the file labels it, so a printer can cancel
+/// it (GCode.cpp `set_object_info`, `instance_name`).
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct ObjectLabel {
+    /// Its object's name.
+    pub name: String,
+    /// Its object's number among the plate's (`PrintObject::get_id`), its
+    /// copy's among the object's (`PrintInstance::id`) and its number
+    /// among all the plate's copies (`unique_id`).
+    pub object: usize,
+    pub copy: usize,
+    pub unique: usize,
+    /// The number a Bambu Lab printer knows it by (`identify_id`).
+    pub identify: u32,
+    /// The middle of its box across the bed, in mm.
+    pub centre: [f64; 2],
+    /// Its outline across the bed: the convex hull, thinned by
+    /// `exclude_object_tolerance` and rounded to 0.1 mm
+    /// (`PrintInstance::get_convex_hull_2d`).
+    pub hull: Vec<Point2>,
 }
 
 /// A template as the reference reads it from a preset: a backslash makes

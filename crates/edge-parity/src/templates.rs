@@ -7,9 +7,7 @@
 //!
 //! Left out on purpose, being different by design or not done here:
 //! progress (`M73`, which this engine writes at each layer and the
-//! reference wherever its figure changes); the labels of objects for
-//! skipping them (`; printing object`, `M624`/`M625`, `EXCLUDE_OBJECT_*`,
-//! not done); the line width and height tags; and, inside custom G-code, a
+//! reference wherever its figure changes); the line width and height tags; and, inside custom G-code, a
 //! feed rate already in force, which the reference's writer takes out and
 //! this engine writes as the template has it (both files are read the same
 //! way here).
@@ -99,10 +97,6 @@ pub fn sections(text: &str) -> Vec<Vec<String>> {
 /// Lines that are not compared (see the module's comment).
 fn left_out(line: &str) -> bool {
     [
-        "; printing object",
-        "; stop printing object",
-        "; start printing object",
-        "EXCLUDE_OBJECT",
         ";WIDTH:",
         ";HEIGHT:",
         ";Z:",
@@ -112,7 +106,6 @@ fn left_out(line: &str) -> bool {
     ]
     .iter()
     .any(|start| line.starts_with(start))
-        || matches!(line.split_whitespace().next(), Some("M624" | "M625"))
 }
 
 fn without_feedrate(line: &str) -> String {
@@ -284,7 +277,10 @@ mod tests {
                 "(layer change)",
                 "M991 S0 P0",
                 "(feature Outer wall)",
-                "M106 S255"
+                "M106 S255",
+                // An object's labels are compared too.
+                "; printing object A",
+                "M624 AQ=="
             ]
         );
     }
