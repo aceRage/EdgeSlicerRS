@@ -551,7 +551,7 @@ fn the_labels_a_printer_cancels_objects_by_take_no_time() {
     let limits = klipper(1000.0, 500.0);
     let marlin = Limits {
         flavor: Flavor::Other,
-        ..limits.clone()
+        ..limits
     };
     for (limits, model) in [(&limits, Model::Klipper), (&marlin, Model::Reference)] {
         let plain = estimate(moves, limits, model).seconds;
