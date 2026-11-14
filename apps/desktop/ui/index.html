@@ -14,6 +14,7 @@
 <link rel="stylesheet" href="edit.css">
 <link rel="stylesheet" href="paint.css">
 <link rel="stylesheet" href="hosts.css">
+<link rel="stylesheet" href="bambu.css">
 <link rel="stylesheet" href="menu.css">
 <link rel="stylesheet" href="presets.css">
 <link rel="stylesheet" href="setup.css">
@@ -345,6 +346,43 @@
       <p class="quiet" id="device-offline"></p>
       <div class="row"><button type="button" id="device-setup" hidden>Connect to printer</button></div>
     </div>
+    <!-- A Bambu Lab printer on the LAN, through the UltraNet bridge (bambu.js): the printer's state as
+         StatusPanel.cpp shows it ("Printing Progress", the temperatures, the AMS), pause, resume, stop. -->
+    <div id="device-bambu" hidden>
+      <div class="bambu-head">
+        <label for="bambu-printer" class="colon">Printer</label>
+        <select id="bambu-printer"></select>
+        <button type="button" id="bambu-add" title="Connect the printer using IP and access code">Add</button>
+        <button type="button" id="bambu-remove">Remove</button>
+        <button type="button" id="bambu-connect">Connect</button>
+        <span id="bambu-session" class="quiet" role="status"></span>
+      </div>
+      <div id="bambu-bridge" class="bambu-note" hidden>
+        <p id="bambu-bridge-text"></p>
+        <button type="button" id="bambu-retry">Retry</button>
+      </div>
+      <p id="bambu-none" class="quiet" hidden>No available printers</p>
+      <div id="bambu-panels" class="bambu-panels" hidden>
+        <section class="card bambu-card">
+          <h3 class="caps">Printing Progress</h3>
+          <p id="bambu-file" class="bambu-file"></p>
+          <div class="bambu-progress"><div class="queue-bar"><span id="bambu-bar"></span></div><span id="bambu-percent" class="num">N/A</span></div>
+          <p class="bambu-line"><span id="bambu-said"></span><span id="bambu-layer"></span><span id="bambu-left"></span></p>
+          <div class="row">
+            <button type="button" id="bambu-pause" disabled>Pause</button>
+            <button type="button" id="bambu-stop" disabled>Stop</button>
+          </div>
+        </section>
+        <section class="card bambu-card">
+          <h3 class="caps">Temperature</h3>
+          <dl id="bambu-temps" class="bambu-temps"></dl>
+        </section>
+        <section class="card bambu-card bambu-wide">
+          <h3 class="caps">AMS</h3>
+          <div id="bambu-ams" class="bambu-ams"></div>
+        </section>
+      </div>
+    </div>
   </section>
 </div>
 
@@ -486,6 +524,66 @@
       <button type="submit" value="upload" class="primary">Upload</button>
       <button type="submit" value="print" id="send-print">Upload and Print</button>
       <button type="submit" value="cancel" formnovalidate>Cancel</button>
+    </div>
+  </form>
+</dialog>
+
+<!-- "Connect the printer using IP and access code" (ReleaseNote.cpp `InputIpAddressDialog`, its "Manual Setup"):
+     a Bambu Lab printer added by its address, access code, serial and model; the code stays in the session. -->
+<dialog id="bambu-add-dialog" class="host-dialog" aria-labelledby="bambu-add-title">
+  <form method="dialog" id="bambu-add-form">
+    <h2 id="bambu-add-title">Connect the printer using IP and access code</h2>
+    <ol class="bambu-steps">
+      <li>Step 1, please confirm EdgeSlicer and your printer are in the same LAN.</li>
+      <li>Step 2, if the IP and Access Code below are different from the actual values on your printer, please correct them.</li>
+      <li>Step 3. Please obtain the device SN from the printer side; it is usually found in the device information on the printer screen.</li>
+    </ol>
+    <div class="card">
+      <div class="card-row"><label for="bambu-ip">IP</label><span class="host-field"><input id="bambu-ip" type="text" autocomplete="off" spellcheck="false" inputmode="decimal"></span></div>
+      <div class="card-row"><label for="bambu-code">Access Code</label><span class="host-field"><input id="bambu-code" type="password" autocomplete="off" spellcheck="false" maxlength="8"></span></div>
+      <div class="card-row"><label for="bambu-sn">SN</label><span class="host-field"><input id="bambu-sn" type="text" autocomplete="off" spellcheck="false" maxlength="15"></span></div>
+      <div class="card-row"><label for="bambu-model">Printer model</label><select id="bambu-model"></select></div>
+      <div class="card-row"><label for="bambu-name">Printer name</label><span class="host-field"><input id="bambu-name" type="text" autocomplete="off" spellcheck="false"></span></div>
+    </div>
+    <p class="quiet">Where to find your printer's IP and Access Code?</p>
+    <p id="bambu-add-result" role="status" hidden></p>
+    <div class="row end">
+      <button type="submit" value="ok" class="primary" id="bambu-add-ok" disabled>Connect</button>
+      <button type="submit" value="cancel" formnovalidate>Cancel</button>
+    </div>
+  </form>
+</dialog>
+
+<!-- "Send print job to" (SelectMachine.cpp `SelectMachineDialog`) for a Bambu Lab printer on the LAN: the printer,
+     the plate's bed, each filament's AMS slot, "Print Options", the reference's status line and checks, the send. -->
+<dialog id="bambu-send-dialog" class="host-dialog bambu-send" aria-labelledby="bambu-send-title">
+  <form method="dialog" id="bambu-send-form">
+    <h2 id="bambu-send-title">Send print job to</h2>
+    <div class="bambu-head">
+      <label for="bambu-send-printer" class="colon">Printer</label>
+      <select id="bambu-send-printer"></select>
+      <button type="button" id="bambu-send-refresh">Refresh</button>
+    </div>
+    <p id="bambu-send-bed" class="quiet"></p>
+    <button type="button" id="bambu-send-code" class="link" hidden>The printer refused the access code. Re-enter it</button>
+    <h3 class="caps">Filament</h3>
+    <div id="bambu-send-filaments" class="bambu-filaments"></div>
+    <p id="bambu-send-status" role="status"></p>
+    <h3 class="caps">Print Options</h3>
+    <div class="send-options">
+      <label class="tick" title="Bed Leveling"><input type="checkbox" id="bambu-opt-bed"> Bed Leveling</label>
+      <label class="tick" title="Automatic flow calibration using Micro Lidar"><input type="checkbox" id="bambu-opt-flow"> Flow Dynamics Calibration</label>
+      <label class="tick" title="Timelapse"><input type="checkbox" id="bambu-opt-timelapse"> Timelapse</label>
+      <label class="tick" id="bambu-opt-ams-row" title="Enable AMS"><input type="checkbox" id="bambu-opt-ams"> Enable AMS</label>
+    </div>
+    <div id="bambu-send-progress" class="bambu-sending" hidden>
+      <div class="queue-bar"><span id="bambu-send-bar"></span></div>
+      <p id="bambu-send-message"></p>
+      <p id="bambu-send-detail" class="quiet"></p>
+    </div>
+    <div class="row end">
+      <button type="button" id="bambu-send-go" class="primary" disabled>Send</button>
+      <button type="button" id="bambu-send-cancel">Cancel</button>
     </div>
   </form>
 </dialog>

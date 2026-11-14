@@ -496,6 +496,31 @@ The file prints exactly as it was sliced. Make sure the build plate is clear and
 Starting %s...	GUI/PrinterStoragePanel.cpp:738
 Print started: %s. Follow it on the printer page.	GUI/PrinterStoragePanel.cpp:742
 The print of "%s" did not start.	GUI/PrinterStoragePanel.cpp:745
+# A Bambu Lab printer over LAN (src/api/bambu_lan.rs, src/ultranet/send.rs).
+Network plug-in missing	GUI/GUI_App.cpp:5549
+Step 1, please confirm EdgeSlicer and your printer are in the same LAN.	GUI/ReleaseNote.cpp:1730
+Step 2, if the IP and Access Code below are different from the actual values on your printer, please correct them.	GUI/ReleaseNote.cpp:1731
+The printer refused the access code. Re-enter it	GUI/SelectMachine.cpp:348
+%s, no printer definition in this build	GUI/SelectMachine.cpp:1914
+This printer is not in Developer Mode, so it rejects commands from EdgeSlicer. Turn on LAN Only + Developer Mode on the printer.	GUI/BambuSendDiagnosis.cpp:131
+Newer Bambu firmware only accepts commands from software other than Bambu's own when both LAN Only Mode and Developer Mode are turned on in the printer's network settings. Turn both on, re-enter the access code the printer then shows on the Device tab, and send again.	GUI/BambuSendDiagnosis.cpp:169
+LAN send failed: could not connect to the printer (error %1%).	GUI/BambuSendDiagnosis.cpp:211
+Check that the printer is on and that this computer is on the same network (not a guest Wi-Fi, another VLAN or a VPN), and that no firewall blocks the printer's ports: MQTT 8883 and FTPS 990.	GUI/BambuSendDiagnosis.cpp:212
+LAN send failed: the printer rejected the access code (error %1%).	GUI/BambuSendDiagnosis.cpp:216
+The access code changes when LAN Only Mode is switched or the printer is reset. Read the current one from the printer's screen, re-enter it on the Device tab, then send again.	GUI/BambuSendDiagnosis.cpp:217
+LAN send failed: uploading the file to the printer failed (error %1%).	GUI/BambuSendDiagnosis.cpp:221
+Check that no firewall blocks FTPS (port 990) to the printer, that the access code is current, and that the microSD card has free space and is not damaged or write-protected.	GUI/BambuSendDiagnosis.cpp:222
+LAN send failed: the file was uploaded, but the printer did not take the print command (error %1%).	GUI/BambuSendDiagnosis.cpp:226
+The command goes over MQTT (port 8883). If the printer is connected on the Device tab, the most likely cause is the printer refusing it.	GUI/BambuSendDiagnosis.cpp:227
+The printer refused the print command from EdgeSlicer (error %1%).	GUI/BambuSendDiagnosis.cpp:231
+The print file exceeds the maximum allowable size (1GB) (error %1%).	GUI/BambuSendDiagnosis.cpp:235
+Simplify the model and slice again.	GUI/BambuSendDiagnosis.cpp:236
+Print file not found (error %1%).	GUI/BambuSendDiagnosis.cpp:239
+Slice again, then send.	GUI/BambuSendDiagnosis.cpp:240
+LAN send failed (error %1%).	GUI/BambuSendDiagnosis.cpp:243
+The network plug-in reported: %1%	GUI/BambuSendDiagnosis.cpp:245
+(There is no Bambu cloud fallback: EdgeSlicer's network plug-in prints over the local network only.)	GUI/BambuSendDiagnosis.cpp:249
+
 [own]
 # This app's own words on the static page, with no counterpart in the
 # C++: shown in English in every language.
@@ -750,3 +775,8 @@ Extrusion Flow Calibration	resources/web/flutter_web/main.*.js
 Time-lapse Camera	resources/web/flutter_web/main.*.js
 When enabled, the printer will automatically calibrate flow compensation before printing. Recommended after each filament change.	resources/web/flutter_web/main.*.js
 Toolheads
+# A Bambu Lab printer's state in Device, when it pauses (the reference shows
+# no word for it, only its Resume button).
+Paused
+# And its chamber's temperature (the reference shows an icon).
+Chamber

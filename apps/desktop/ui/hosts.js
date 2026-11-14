@@ -211,7 +211,7 @@ $('host-form').addEventListener('submit', (event) => {
 
 // ---- the print button ----
 
-const PRINT_ACTIONS = { send: 'Print', sliced: 'Export plate sliced file', all_sliced: 'Export all sliced file', export: 'Export G-code file', bambu_connect: 'Send to Bambu Connect' };
+const PRINT_ACTIONS = { bambu_print: 'Print plate', send: 'Print', sliced: 'Export plate sliced file', all_sliced: 'Export all sliced file', export: 'Export G-code file', bambu_connect: 'Send to Bambu Connect' };
 
 // A Bambu Lab printer's project (its sliced file goes to Bambu Connect).
 const isBambu = () => Boolean(hostsState.info && hostsState.info.bambu);
@@ -224,8 +224,10 @@ function printAction() {
   const picked = Prefs.printAction();
   if (picked === 'send' && canSend()[0]) return 'send';
   if (picked === 'export' || picked === 'sliced' || picked === 'all_sliced') return picked;
-  if (picked === 'bambu_connect' && isBambu()) return picked;
-  return canSend()[0] ? 'send' : 'export';
+  if ((picked === 'bambu_connect' || picked === 'bambu_print') && isBambu()) return picked;
+  if (canSend()[0]) return 'send';
+  // A Bambu Lab printer prints through the network plug-in ("Print plate").
+  return isBambu() ? 'bambu_print' : 'export';
 }
 
 $('export-more').addEventListener('click', (event) => {
@@ -234,6 +236,8 @@ $('export-more').addEventListener('click', (event) => {
   const choose = (what) => () => { Prefs.choosePrintAction(what); showButtons(); };
   const [can, why] = canSend();
   showMenu(box.right - 220, box.bottom + 4, [
+    // A Bambu Lab printer: "Print plate" through UltraNet (bambu.js).
+    ...(isBambu() ? [[t('Print plate'), choose('bambu_print'), { checked: action === 'bambu_print' }]] : []),
     [t('Print'), choose('send'), { checked: action === 'send', title: can ? 'Send the plate to the printer' : why }],
     // MainFrame.cpp `available_print_actions`: a printer not Bambu Lab's
     // is offered both sliced files as well.
@@ -507,6 +511,12 @@ $('queue-error').addEventListener('click', () => {
 // and its files in place of what the preset says of it. The frame is
 // pointed at the printer only here, when Device is looked at.
 function showPrinterPage() {
+  // A Bambu Lab printer: its own panel, through the UltraNet bridge (bambu.js).
+  if (isBambu() && typeof showBambuDevice === 'function') {
+    showBambuDevice();
+    return;
+  }
+  if (typeof hideBambuDevice === 'function') hideBambuDevice();
   const info = hostsState.info;
   const url = info && info.printer ? info.device_url : null;
   $('device-bar').hidden = !url;

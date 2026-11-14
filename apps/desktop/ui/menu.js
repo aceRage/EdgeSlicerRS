@@ -220,6 +220,7 @@ const Menu = (() => {
     say(fmt(t('Sent "%1%" to Bambu Connect. Choose the printer and start the print there.'), answer.name));
   }
   window.sendToBambuConnect = sendToBambuConnect;
+  window.slicedPictures = slicedPictures;
 
   // "Export Bambu 3MF..." (`open` false) and "Export && Open in Bambu
   // Studio..." (`open` true) (Plater.cpp `export_bambu_3mf`,
