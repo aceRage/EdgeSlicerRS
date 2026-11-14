@@ -1470,7 +1470,16 @@ feature filaments (`wall_filament`, `sparse_infill_filament`,
     change G-code is given `max_layer_z` as the highest layer begun.
     The flushing volumes and multiplier are set in the desktop app's
     "Flushing volumes" dialog, and a project's own come over a printer
-    profile's. Not done, and said in a note: ramming, cooling and
+    profile's. A project that names its filaments' colours but holds no
+    flushing volumes has them worked out from the colours, with the
+    multiplier 1, as the reference's command line does
+    (Snapmaker_Orca.cpp, "compute the flush volume"); before, it was
+    given the 280 mm³ default at 0.3, and an A1 mini's white and black
+    project flushed 34.9 mm at each change where the reference flushes
+    48.6 mm into black and 231.6 mm into white (9.44 g + 3.70 g of
+    filament there, 3.39 g + 3.29 g here, now 9.35 g + 3.70 g; what is
+    left is the start G-code's purge line, which the reference counts
+    and this engine does not). Not done, and said in a note: ramming, cooling and
     loading the filament on the tower (`enable_filament_ramming`, which
     neither printer uses), and flushing into infill, objects or support.
   - Which prime tower a print gets is chosen as the reference chooses it
