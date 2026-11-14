@@ -318,11 +318,18 @@
       <div id="device-storage" hidden>
         <div class="storage-head">
           <h2 id="storage-title">Files on the printer</h2>
+          <label for="storage-sort" class="colon">Sort by</label>
+          <select id="storage-sort">
+            <option value="newest">Newest first</option>
+            <option value="oldest">Oldest first</option>
+            <option value="name">Name</option>
+            <option value="size">Size</option>
+          </select>
           <button type="button" id="storage-refresh" title="List the printer's files again (F5)">Refresh</button>
         </div>
         <div class="storage-scroll">
           <table class="data-table" id="storage-table">
-            <thead><tr><th>Name</th><th class="num">Size</th><th>Modified</th><th></th></tr></thead>
+            <thead><tr><th>Name</th><th class="num">Print time</th><th>Filament</th><th class="num">Size</th><th>Modified</th><th></th></tr></thead>
             <tbody id="storage-body"></tbody>
           </table>
           <p id="storage-note" class="quiet"></p>

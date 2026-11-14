@@ -233,10 +233,21 @@ impl From<String> for Failure {
 /// A file on the printer, for the Device tab's "Storage".
 #[derive(Clone, Debug, PartialEq)]
 pub struct Stored {
+    /// Its path under the printer's G-code folder, `/` between folders.
     pub name: String,
     pub size: Option<u64>,
     /// Seconds since 1970.
     pub modified: Option<f64>,
+    /// G-code the printer can run (`.gcode`, `.g`, `.gco`); `.bgcode` and
+    /// `.3mf` are listed but not started (PrinterStorage.cpp
+    /// `is_printable_name`).
+    pub printable: bool,
+    /// What the slicer wrote into it, when the printer says
+    /// (`server/files/metadata`): seconds, millimetres, grams, types.
+    pub print_time: Option<u32>,
+    pub filament_mm: Option<f64>,
+    pub filament_g: Option<f64>,
+    pub filament_type: String,
 }
 
 /// One kind of print host.

@@ -952,3 +952,60 @@ fn a_u1_with_a_key_never_says_the_key() {
         assert!(!text.contains(KEY) && !text.contains("right-key"), "{text}");
     }
 }
+
+#[test]
+fn a_klipper_printer_behind_octo_klipper_shows_its_storage_and_state() {
+    // Any "Octo/Klipper" printer, not only a U1: the reference speaks
+    // Moonraker's file API to it (PrinterStorage.cpp `target_for_host`).
+    let (printer, shared) = mock::u1(mock::U1Setup::default());
+    {
+        let mut u1 = shared.lock().unwrap();
+        u1.files.push(("old.gcode".into(), 1000));
+        u1.files.push(("sub/new one.gcode".into(), 2000));
+        u1.files.push((".thumbs/old-32x32.png".into(), 10));
+        u1.files.push(("notes.txt".into(), 10));
+        u1.files.push(("part.3mf".into(), 10));
+    }
+    let host = OctoPrint::new(
+        &connection("octoprint", &printer.address(), "Voron 2.4"),
+        quick(),
+    )
+    .unwrap();
+    let files = host.files().unwrap().unwrap();
+    let names: Vec<(&str, bool)> = files
+        .iter()
+        .map(|f| (f.name.as_str(), f.printable))
+        .collect();
+    // Newest first; hidden folders and other files left out; a 3MF listed
+    // but not printable.
+    assert_eq!(
+        names,
+        [
+            ("part.3mf", false),
+            ("sub/new one.gcode", true),
+            ("old.gcode", true)
+        ]
+    );
+    assert_eq!(files[1].print_time, Some(1200));
+    assert_eq!(host.status().unwrap().unwrap().state, "standby");
+    host.print("old.gcode").unwrap();
+    assert_eq!(shared.lock().unwrap().state, "printing");
+    // While it prints, another start is refused.
+    assert_eq!(host.print("sub/new one.gcode"), Err(BUSY.into()));
+    host.delete("sub/new one.gcode").unwrap();
+    assert!(
+        printer
+            .asked()
+            .contains(&"DELETE /server/files/gcodes/sub/new%20one.gcode".to_owned())
+    );
+    let gone = host.delete("sub/new one.gcode").unwrap_err();
+    assert!(gone.starts_with("HTTP 404"), "{gone}");
+}
+
+#[test]
+fn an_octoprint_that_is_not_a_moonraker_has_no_storage() {
+    let printer = octoprint();
+    let host = OctoPrint::new(&connection("octoprint", &printer.address(), ""), quick()).unwrap();
+    let error = host.files().unwrap().unwrap_err();
+    assert!(error.starts_with("HTTP 404"), "{error}");
+}

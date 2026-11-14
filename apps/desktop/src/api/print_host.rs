@@ -23,7 +23,7 @@ use crate::hosts::{
 };
 
 /// The calls answered here.
-pub(super) const JSON: [&str; 13] = [
+pub(super) const JSON: [&str; 14] = [
     "print_host",
     "print_host_set",
     "print_host_test",
@@ -37,6 +37,7 @@ pub(super) const JSON: [&str; 13] = [
     "printer_file_print",
     "printer_toolheads",
     "printer_status",
+    "printer_file_check",
 ];
 
 /// The printer a project is on, as far as sending is concerned.
@@ -101,11 +102,8 @@ impl Session {
                 Ok(self.hosts.queue.listing())
             }
             "printer_files" => self.printer_files(args),
-            "printer_file_delete" => {
-                let (host, _) = self.host(args)?;
-                host.delete(needed(args, "name")?)?;
-                self.printer_files(args)
-            }
+            "printer_file_delete" => self.printer_file_delete(args),
+            "printer_file_check" => self.printer_file_check(args),
             "printer_toolheads" => self.printer_toolheads(args),
             "printer_status" => self.printer_status(args),
             "printer_file_print" => {
@@ -228,10 +226,13 @@ impl Session {
             "can_send": made.is_ok(),
             "why_not": made.as_ref().err(),
             "can_start": made.as_ref().is_ok_and(|host| host.can_start()),
-            "storage": route == "snapmaker",
-            // The U1's toolhead map and its state in Device.
+            // Storage (PrinterStorage.cpp `target_for_host`): Moonraker's
+            // file API for "Octo/Klipper"; else the reference's reason.
+            "storage": matches!(route, "snapmaker" | "octoprint"),
+            "storage_reason": storage_reason(&connection.host_type),
+            // The U1's toolhead map; the printer's state in Device.
             "toolheads": route == "snapmaker",
-            "status": route == "snapmaker",
+            "status": matches!(route, "snapmaker" | "octoprint"),
             "device_url": hosts::device_url(&connection),
             "route": route,
             "offers": { "elegoo": elegoo, "unload": unload },
@@ -514,18 +515,56 @@ impl Session {
         })
     }
 
-    /// The files on the printer: `{ files: [{ name, size, modified }] }`.
+    /// The files on the printer: `{ files: [{ name, size, modified,
+    /// printable, print_time, filament_mm, filament_g, filament_type }] }`.
+    /// A printer that answers 404 has no file API (the reference's
+    /// `Status::NotSupported`).
     fn printer_files(&self, args: &Value) -> Result<Value, String> {
         let (host, _) = self.host(args)?;
-        let files = host
+        let files = match host
             .files()
-            .ok_or("The files on this printer cannot be listed from here yet.")??;
+            .ok_or("The files on this printer cannot be listed from here yet.")?
+        {
+            Ok(files) => files,
+            Err(error) if error.starts_with("HTTP 404") => {
+                return Err(tr("Storage is not available for this printer."));
+            }
+            Err(error) => return Err(error),
+        };
         Ok(json!({
             "files": files
                 .iter()
-                .map(|file| json!({ "name": file.name, "size": file.size, "modified": file.modified }))
+                .map(|file| json!({
+                    "name": file.name, "size": file.size, "modified": file.modified,
+                    "printable": file.printable, "print_time": file.print_time,
+                    "filament_mm": file.filament_mm, "filament_g": file.filament_g,
+                    "filament_type": file.filament_type,
+                }))
                 .collect::<Vec<_>>(),
         }))
+    }
+
+    /// Before "Print" from Storage: what the printer is doing, and on
+    /// which file (PrinterStoragePanel.cpp `on_print`, `CheckStart`).
+    /// `{ state, current, busy }`.
+    fn printer_file_check(&self, args: &Value) -> Result<Value, String> {
+        let (host, _) = self.host(args)?;
+        let status = host
+            .status()
+            .ok_or("This printer does not say what it is doing.")??;
+        let busy = matches!(status.state.as_str(), "printing" | "paused");
+        Ok(json!({ "state": status.state, "current": status.filename, "busy": busy }))
+    }
+
+    /// "Delete": `{ gone }` when it was not there any more (404).
+    fn printer_file_delete(&self, args: &Value) -> Result<Value, String> {
+        let (host, _) = self.host(args)?;
+        let gone = match host.delete(needed(args, "name")?) {
+            Ok(()) => false,
+            Err(error) if error.starts_with("HTTP 404") => true,
+            Err(error) => return Err(error),
+        };
+        Ok(json!({ "gone": gone }))
     }
 }
 
@@ -571,6 +610,23 @@ fn toolhead_json(head: &Toolhead) -> Value {
         "loaded": head.loaded,
         "official": head.official,
         "nozzle": head.nozzle,
+    })
+}
+
+/// Why a printer has no "Storage" (PrinterStorage.cpp l.364–373).
+fn storage_reason(host_type: &str) -> Option<String> {
+    Some(match host_type {
+        "octoprint" => return None,
+        "elegoolink" => {
+            "Storage for the Centauri Carbon (its SDCP file commands) is not built yet.".into()
+        }
+        "flashforge" => "Flashforge printers are not supported by the Storage tab.".into(),
+        "prusalink" | "prusaconnect" => {
+            "PrusaLink and Prusa Connect printers are not supported by the Storage tab.".into()
+        }
+        other => format!(
+            "The Storage tab works with Klipper printers that run Moonraker; this printer's connection ({other}) has no file API it speaks."
+        ),
     })
 }
 

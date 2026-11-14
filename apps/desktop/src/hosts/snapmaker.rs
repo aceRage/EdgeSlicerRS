@@ -74,14 +74,7 @@ impl SnapmakerLan {
 
     /// A short GET answered with Moonraker's `result`.
     fn result(&self, path: &str) -> Result<Value, String> {
-        let answer = self.http.get(path)?;
-        if !answer.ok() {
-            return Err(http_error(&answer));
-        }
-        answer
-            .json()
-            .and_then(|json| json.get("result").cloned())
-            .ok_or_else(|| "The printer's answer is not Moonraker's.".to_owned())
+        moonraker::result(&self.http, path)
     }
 
     /// The printer's state (`print_stats.state`: standby, printing,
@@ -505,38 +498,11 @@ impl Host for SnapmakerLan {
     }
 
     fn files(&self) -> Option<Result<Vec<Stored>, String>> {
-        Some(self.result("server/files/list?root=gcodes").map(|result| {
-            let mut files: Vec<Stored> = result
-                .as_array()
-                .into_iter()
-                .flatten()
-                .filter_map(|file| {
-                    Some(Stored {
-                        name: file["path"].as_str()?.to_owned(),
-                        size: file["size"].as_u64(),
-                        modified: file["modified"].as_f64(),
-                    })
-                })
-                .collect();
-            // Newest first, as the printer's own list.
-            files.sort_by(|a, b| {
-                b.modified
-                    .partial_cmp(&a.modified)
-                    .unwrap_or(std::cmp::Ordering::Equal)
-            });
-            files
-        }))
+        Some(moonraker::list_files(&self.http))
     }
 
     fn delete(&self, name: &str) -> Result<(), String> {
-        let answer = self
-            .http
-            .delete(&format!("server/files/gcodes/{}", encode(name, true)))?;
-        if answer.ok() {
-            Ok(())
-        } else {
-            Err(http_error(&answer))
-        }
+        moonraker::delete_file(&self.http, name)
     }
 
     fn toolheads(&self) -> Option<Result<Vec<Toolhead>, String>> {

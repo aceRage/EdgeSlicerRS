@@ -5,16 +5,25 @@
 
 use crate::api::i18n::{fill, tr};
 
-use super::{Connection, Failure, Form, Host, Http, Progress, Timeouts, Upload, http_error};
+use super::{
+    Connection, Failure, Form, Host, Http, Progress, Status, Stored, Timeouts, Upload, http_error,
+    snapmaker::SnapmakerLan,
+};
 
 pub struct OctoPrint {
     pub http: Http,
+    /// The same printer asked as a Moonraker: the reference's Storage tab
+    /// and its printer lists speak Moonraker's API to an "Octo/Klipper"
+    /// host (PrinterStorage.cpp `target_for_host`, RemoteControl.cpp
+    /// `describe_hosts`); an OctoPrint that is not one answers 404.
+    moonraker: SnapmakerLan,
 }
 
 impl OctoPrint {
     pub fn new(connection: &Connection, timeouts: Timeouts) -> Result<Self, String> {
         Ok(Self {
             http: Http::new(connection, timeouts)?,
+            moonraker: SnapmakerLan::new(connection, timeouts)?,
         })
     }
 }
@@ -86,5 +95,21 @@ impl Host for OctoPrint {
     fn upload(&self, upload: &Upload, progress: &Progress) -> Result<(), Failure> {
         version(&self.http)?;
         upload_file(&self.http, upload, progress)
+    }
+
+    fn files(&self) -> Option<Result<Vec<Stored>, String>> {
+        self.moonraker.files()
+    }
+
+    fn delete(&self, name: &str) -> Result<(), String> {
+        self.moonraker.delete(name)
+    }
+
+    fn print(&self, name: &str) -> Result<(), String> {
+        self.moonraker.print(name)
+    }
+
+    fn status(&self) -> Option<Result<Status, String>> {
+        self.moonraker.status()
     }
 }

@@ -520,8 +520,9 @@ function showPrinterPage() {
   }
   $('device-address').textContent = url;
   $('device-address').title = info.from === 'kept' ? 'Kept for this printer preset' : 'As the printer preset gives it';
-  $('device-tab-storage').hidden = !info.storage;
-  if (!info.storage && hostsState.deviceTab === 'storage') hostsState.deviceTab = 'page';
+  // Shown for every printer page, with the reference's reason where it has no storage.
+  $('device-tab-storage').hidden = false;
+
   for (const [tab, name] of [[$('device-tab-page'), 'page'], [$('device-tab-storage'), 'storage']]) {
     tab.setAttribute('aria-selected', String(hostsState.deviceTab === name));
   }
@@ -608,47 +609,137 @@ $('device-reload').addEventListener('click', () => {
 $('storage-refresh').addEventListener('click', () => showStorage());
 
 let storageTurn = 0;
+// The files as last listed, shown in the order "Sort by" says.
+let storageFiles = [];
+
+// PrinterStorage.cpp `format_duration`, `format_filament`.
+function storageDuration(seconds) {
+  if (!seconds || seconds <= 0) return '';
+  if (seconds < 60) return '< 1m';
+  const days = Math.floor(seconds / 86400);
+  const hours = Math.floor((seconds % 86400) / 3600);
+  const minutes = Math.floor((seconds % 3600) / 60);
+  if (days) return `${days}d ${hours}h`;
+  if (hours) return `${hours}h ${minutes}m`;
+  return `${minutes}m`;
+}
+
+function storageFilament(file) {
+  const parts = [];
+  if (file.filament_mm) parts.push(`${(file.filament_mm / 1000).toFixed(2)} m`);
+  if (file.filament_g) parts.push(file.filament_g < 10 ? `${file.filament_g.toFixed(1)} g` : `${file.filament_g.toFixed(0)} g`);
+  return parts.join(', ');
+}
+
+function storageNote(text, kind = 'quiet') {
+  const note = $('storage-note');
+  note.className = kind;
+  note.textContent = text;
+}
+
 async function showStorage() {
   const turn = ++storageTurn;
-  const note = $('storage-note');
-  note.className = 'quiet';
-  note.textContent = 'Reading the printer\'s files...';
-  $('storage-title').textContent = hostsState.info ? `Files on ${hostsState.info.printer}` : t('Files on the printer');
-  let files;
+  const info = hostsState.info;
+  $('storage-title').textContent = info ? fmt(t('Files on %s'), info.printer) : t('Files on the printer');
+  if (info && !info.storage) {
+    $('storage-body').replaceChildren();
+    storageNote(info.storage_reason || t('Storage is not available for this printer.'));
+    return;
+  }
+  storageNote(t('Reading the printer\'s files...'));
   try {
-    ({ files } = await call('printer_files', { project: activeId() }));
+    ({ files: storageFiles } = await call('printer_files', { project: activeId() }));
   } catch (error) {
     if (turn !== storageTurn) return;
     $('storage-body').replaceChildren();
-    note.className = 'error';
-    note.textContent = `The printer's files could not be listed.\n${error.message}`;
+    storageNote(`${t('The printer\'s files could not be listed.')}\n${error.message}`, 'error');
     return;
   }
   if (turn !== storageTurn) return;
-  note.textContent = files.length ? '' : t('There are no G-code files on the printer.');
+  storageNote(storageFiles.length ? '' : t('There are no G-code files on the printer.'));
+  renderStorage();
+}
+
+function renderStorage() {
+  const order = $('storage-sort').value;
+  const files = storageFiles.slice().sort((a, b) => {
+    if (order === 'oldest') return (a.modified || 0) - (b.modified || 0);
+    if (order === 'name') return a.name.localeCompare(b.name);
+    if (order === 'size') return (b.size || 0) - (a.size || 0);
+    return (b.modified || 0) - (a.modified || 0);
+  });
+  const printer = hostsState.info ? hostsState.info.printer : '';
   $('storage-body').replaceChildren(...files.map((file) => {
-    const print = el('button', { type: 'button', textContent: t('Print'), title: t('Start printing this file on the printer (Enter)') });
+    const print = el('button', { type: 'button', textContent: t('Print'), title: t('Start printing this file on the printer (Enter)'), disabled: !file.printable });
     const remove = el('button', { type: 'button', textContent: t('Delete'), title: t('Delete this file from the printer (Delete)') });
-    print.addEventListener('click', () => attempt(async () => {
-      const yes = await confirmBox(t('Print'), `Start printing "${file.name}" on ${hostsState.info.printer}?`, t('Print'), t('Cancel'));
-      if (!yes) return;
-      await call('printer_file_print', { project: activeId(), name: file.name });
-      say(`${file.name} was started on ${hostsState.info.printer}.`);
-    }));
-    remove.addEventListener('click', () => attempt(async () => {
-      const yes = await confirmBox(t('Delete'), `Delete "${file.name}" from ${hostsState.info.printer}?\nThis cannot be undone.`, t('Delete'), t('Cancel'));
-      if (!yes) return;
-      await call('printer_file_delete', { project: activeId(), name: file.name });
-      await showStorage();
-    }));
+    print.addEventListener('click', () => attempt(() => storagePrint(file, printer)));
+    remove.addEventListener('click', () => attempt(() => storageDelete(file, printer)));
     const modified = file.modified ? new Date(file.modified * 1000).toLocaleString() : '';
+    const types = file.filament_type ? ` (${file.filament_type.split(';').filter(Boolean).join(', ')})` : '';
     return el('tr', {},
       el('td', { className: 'cut', textContent: file.name, title: file.name }),
+      el('td', { className: 'num', textContent: storageDuration(file.print_time) }),
+      el('td', { className: 'cut', textContent: storageFilament(file) + (storageFilament(file) ? types : ''), title: file.filament_type || '' }),
       el('td', { className: 'num', textContent: file.size === null ? '' : sizeText(file.size) }),
       el('td', { textContent: modified }),
       el('td', { className: 'storage-actions' }, print, remove));
   }));
 }
+
+// PrinterStoragePanel.cpp `on_delete`.
+async function storageDelete(file, printer) {
+  const yes = await confirmBox(t('Delete file'), fmt(t('Delete "%s" from %s?\nThis cannot be undone.'), file.name, printer), t('Delete'), t('Cancel'));
+  if (!yes) return;
+  storageNote(fmt(t('Deleting %s...'), file.name));
+  let answer;
+  try {
+    answer = await call('printer_file_delete', { project: activeId(), name: file.name });
+  } catch (error) {
+    storageNote('');
+    await inform(t('Delete file'), `${fmt(t('Could not delete "%s".'), file.name)}\n\n${error.message}`);
+    return;
+  }
+  storageFiles = storageFiles.filter((one) => one.name !== file.name);
+  renderStorage();
+  storageNote(fmt(answer.gone ? t('%s was already gone from the printer.') : t('Deleted %s.'), file.name));
+}
+
+// PrinterStoragePanel.cpp `on_print`: what the printer is doing first, a
+// print never over a running or paused job; then the question with what
+// the file holds; the printer is asked again just before it starts.
+async function storagePrint(file, printer) {
+  storageNote(t('Asking the printer whether it is free...'));
+  let check;
+  try {
+    check = await call('printer_file_check', { project: activeId(), name: file.name });
+  } catch (error) {
+    storageNote('');
+    await inform(t('Print'), `${t('The printer could not be asked whether it is free.')}\n\n${error.message}`);
+    return;
+  }
+  storageNote('');
+  if (check.busy) {
+    const what = check.state === 'paused' ? t('The printer has a paused print.') : t('The printer is printing.');
+    await inform(t('Print'), `${what}${check.current ? ` (${check.current})` : ''}\n${t('Finish or cancel that job before starting another one.')}`);
+    return;
+  }
+  let details = '';
+  if (file.print_time) details += `${t('Print time')}: ${storageDuration(file.print_time)}\n`;
+  if (storageFilament(file)) details += `${t('Filament')}: ${storageFilament(file)}${file.filament_type ? ` (${file.filament_type})` : ''}\n`;
+  const question = `${fmt(t('Start printing "%s" on %s?'), file.name, printer)}\n\n${details}${t('The file prints exactly as it was sliced. Make sure the build plate is clear and the filament the file was sliced for is loaded.')}`;
+  if (!(await confirmBox(t('Print'), question, t('Print'), t('Cancel')))) return;
+  storageNote(fmt(t('Starting %s...'), file.name));
+  try {
+    await call('printer_file_print', { project: activeId(), name: file.name });
+  } catch (error) {
+    storageNote('');
+    await inform(t('Print'), `${fmt(t('The print of "%s" did not start.'), file.name)}\n\n${error.message}`);
+    return;
+  }
+  storageNote(fmt(t('Print started: %s. Follow it on the printer page.'), file.name));
+}
+
+$('storage-sort').addEventListener('change', renderStorage);
 
 // What was sent before the page was loaded again is still in the queue.
 call('print_queue').then((queue) => {

@@ -7,7 +7,7 @@
 
 use serde_json::Value;
 
-use super::{Status, Toolhead};
+use super::{Http, Status, Stored, Toolhead, http_error, snapmaker::encode};
 
 /// Snapmaker's tool changers have four toolheads (SnapmakerTaskConfig.hpp
 /// `TOOLHEAD_COUNT`); the query asks for that many extruders.
@@ -175,6 +175,111 @@ pub fn status_of(status: &Value, metadata: Option<&Value>) -> Status {
         total_layers: number(&info["total_layer"]).unwrap_or(0.0) as u32,
         bed: pair(&status["heater_bed"]),
         nozzles,
+    }
+}
+
+// ---- the files on the printer (Utils/PrinterStorage.cpp) ----
+
+/// A short GET answered with Moonraker's `result`.
+pub fn result(http: &Http, path: &str) -> Result<Value, String> {
+    let answer = http.get(path)?;
+    if !answer.ok() {
+        return Err(http_error(&answer));
+    }
+    answer
+        .json()
+        .and_then(|json| json.get("result").cloned())
+        .ok_or_else(|| "The printer's answer is not Moonraker's.".to_owned())
+}
+
+fn ends_with(name: &str, extensions: &[&str]) -> bool {
+    let lower = name.to_lowercase();
+    extensions
+        .iter()
+        .any(|extension| lower.ends_with(extension))
+}
+
+/// `is_printable_name`.
+pub fn printable(name: &str) -> bool {
+    ends_with(name, &[".gcode", ".g", ".gco"])
+}
+
+/// What the Storage tab lists: printable names, `.bgcode` and `.3mf`, not
+/// under a hidden folder (`.thumbs/`), with a path it may hand back
+/// (`parse_file_list`, `valid_path`, `hidden_path`).
+pub fn files_of(list: &Value) -> Vec<Stored> {
+    list.as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(|item| {
+            let path = item["path"]
+                .as_str()
+                .or_else(|| item["filename"].as_str())?
+                .trim_start_matches('/');
+            let valid = !path.is_empty()
+                && path.len() <= 1024
+                && !path.ends_with('/')
+                && !path.contains('\\')
+                && !path.chars().any(char::is_control)
+                && path
+                    .split('/')
+                    .all(|part| !part.is_empty() && part != "." && part != "..");
+            let hidden = path.split('/').any(|part| part.starts_with('.'));
+            let listed = printable(path) || ends_with(path, &[".bgcode", ".3mf"]);
+            (valid && !hidden && listed).then(|| Stored {
+                name: path.to_owned(),
+                size: item["size"].as_f64().filter(|n| *n > 0.0).map(|n| n as u64),
+                modified: item["modified"].as_f64(),
+                printable: printable(path),
+                print_time: None,
+                filament_mm: None,
+                filament_g: None,
+                filament_type: String::new(),
+            })
+        })
+        .collect()
+}
+
+/// The printer's files with what the slicer wrote into each (the
+/// reference asks `server/files/metadata` for each card as it is shown;
+/// here for the first hundred).
+pub fn list_files(http: &Http) -> Result<Vec<Stored>, String> {
+    let mut files = files_of(&result(http, "server/files/list?root=gcodes")?);
+    for file in files.iter_mut().take(100) {
+        let Ok(meta) = result(
+            http,
+            &format!(
+                "server/files/metadata?filename={}",
+                encode(&file.name, false)
+            ),
+        ) else {
+            continue;
+        };
+        let positive = |key: &str| meta[key].as_f64().filter(|n| *n > 0.0);
+        file.print_time = positive("estimated_time").map(|t| t.round() as u32);
+        file.filament_mm = positive("filament_total");
+        file.filament_g = positive("filament_weight_total");
+        file.filament_type = meta["filament_type"]
+            .as_str()
+            .unwrap_or_default()
+            .to_owned();
+    }
+    // Newest first, the reference's first order.
+    files.sort_by(|a, b| {
+        b.modified
+            .partial_cmp(&a.modified)
+            .unwrap_or(std::cmp::Ordering::Equal)
+    });
+    Ok(files)
+}
+
+/// `DELETE server/files/gcodes/<path>`.
+pub fn delete_file(http: &Http, name: &str) -> Result<(), String> {
+    let answer = http.delete(&format!("server/files/gcodes/{}", encode(name, true)))?;
+    if answer.ok() {
+        Ok(())
+    } else {
+        Err(http_error(&answer))
     }
 }
 
