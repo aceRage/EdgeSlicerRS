@@ -1147,6 +1147,10 @@ $('export').addEventListener('click', () => attempt(async () => {
     await openSend();
     return;
   }
+  if (action === 'bambu_print') {
+    await openBambuSend();
+    return;
+  }
   if (action === 'sliced' || action === 'all_sliced') {
     await Menu.exportSliced(action === 'all_sliced');
     return;

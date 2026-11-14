@@ -199,10 +199,11 @@ impl Machine {
         let Ok(root) = serde_json::from_str::<Value>(message) else {
             return false;
         };
-        if let Some(info) = root.get("info") {
-            if info["command"] == "get_version" && info.get("module").is_some() {
-                self.versions = true;
-            }
+        if let Some(info) = root.get("info")
+            && info["command"] == "get_version"
+            && info.get("module").is_some()
+        {
+            self.versions = true;
         }
         let Some(print) = root.get("print") else {
             return false;

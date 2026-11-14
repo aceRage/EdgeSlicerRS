@@ -1,0 +1,59 @@
+/* A Bambu Lab printer over LAN (bambu.js): Device's panel, "Connect the
+   printer using IP and access code", "Send print job to". Only what is
+   theirs alone; everything else is the components of style.css and
+   hosts.css. No colour or size here that is not a token. */
+
+#device-bambu { display: flex; flex-direction: column; gap: var(--space-3); padding: var(--space-4); overflow: auto; height: 100%; box-sizing: border-box; }
+#device-bambu[hidden] { display: none; }
+
+.bambu-head { display: flex; flex-wrap: wrap; align-items: center; gap: var(--space-2); }
+.bambu-head > select { flex: 0 1 320px; width: auto; min-width: 200px; max-width: 100%; }
+#bambu-session { margin-left: var(--space-1); }
+#bambu-session.error { color: var(--danger); }
+
+.bambu-note { display: flex; align-items: center; gap: var(--space-3); padding: var(--space-3); border: 1px solid var(--line-2); border-left: 2px solid var(--warn); border-radius: var(--radius-l); background: var(--surface-raised); }
+.bambu-note[hidden] { display: none; }
+.bambu-note > p { flex: 1; margin: 0; }
+
+.bambu-panels { display: grid; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); gap: var(--space-3); align-items: start; }
+.bambu-panels[hidden] { display: none; }
+.bambu-card { display: flex; flex-direction: column; gap: var(--space-2); padding: var(--space-3); }
+.bambu-card h3 { margin: 0; }
+.bambu-wide { grid-column: 1 / -1; }
+.bambu-file { margin: 0; font-size: var(--size-title); overflow-wrap: anywhere; }
+.bambu-progress { display: flex; align-items: center; gap: var(--space-2); }
+.queue-bar > span { display: block; height: 100%; width: 0; background: var(--accent); transition: width 0.3s; }
+.bambu-line { display: flex; flex-wrap: wrap; gap: var(--space-3); margin: 0; color: var(--text-2); }
+.bambu-temps { display: grid; grid-template-columns: max-content 1fr; gap: var(--space-1) var(--space-3); margin: 0; }
+.bambu-temps dt { color: var(--text-2); }
+.bambu-temps dd { margin: 0; font-variant-numeric: tabular-nums; }
+
+.bambu-ams { display: flex; flex-wrap: wrap; gap: var(--space-3); }
+.bambu-unit { display: flex; gap: var(--space-2); }
+.bambu-tray { display: flex; flex-direction: column; align-items: center; gap: var(--space-1); min-width: 64px; padding: var(--space-2); border: 1px solid var(--line-2); border-radius: var(--radius-m); background: var(--surface-well); }
+.bambu-tray.active { border-color: var(--accent); }
+.bambu-tray.empty { color: var(--text-off); }
+.bambu-tray .swatch { width: 22px; height: 22px; }
+.bambu-tray-name { font-size: var(--size-small); color: var(--text-3); }
+.bambu-tray-type { font-size: var(--size-label); }
+
+.bambu-steps { margin: 0; padding-left: var(--space-4); display: flex; flex-direction: column; gap: var(--space-1); color: var(--text-2); font-size: var(--size-label); }
+#bambu-add-dialog .card-row > select { flex: 0 0 280px; max-width: 60%; }
+#bambu-add-result { margin: 0; }
+#bambu-add-result.error { color: var(--danger); }
+
+dialog.bambu-send { width: min(620px, calc(100vw - 32px)); }
+.bambu-filaments { display: flex; flex-direction: column; gap: var(--space-2); }
+.bambu-filament { display: flex; align-items: center; gap: var(--space-2); }
+.bambu-filament .swatch { width: 14px; height: 14px; }
+.bambu-type { min-width: 72px; }
+.bambu-filament > select { flex: 1; min-width: 0; }
+#bambu-send-status { margin: 0; }
+#bambu-send-status.warn { color: var(--warn); }
+#bambu-send-status.error, #bambu-send-message.error { color: var(--danger); }
+.bambu-sending { display: flex; flex-direction: column; gap: var(--space-1); }
+.bambu-sending[hidden] { display: none; }
+.bambu-sending .queue-bar, .bambu-progress .queue-bar { flex: none; height: 6px; }
+.bambu-sending .queue-bar { width: 100%; }
+.bambu-progress .queue-bar { flex: 1; }
+.bambu-sending p { margin: 0; white-space: pre-line; }
