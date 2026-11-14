@@ -14,12 +14,12 @@
 //!   (DeviceManager.cpp l.891, ColorSpaceConvert.cpp l.22), so its
 //!   "Lab" is not Lab and some nearest colours differ.
 //! - A tray picked keeps the distance it was picked at. The reference
-//!   copies the tray's own `distance` (DeviceManager.cpp l.1171), a
+//!   copies the tray's own `distance` (DeviceManager.cpp l.1170), a
 //!   `FilamentInfo` field never set, which the last fallback then
 //!   compares with 6000.
 //! - On a tie the filament's preset id is compared with the tray's own
 //!   (`tray_filaments` is a map by tray index, which the reference indexes
-//!   by column number, l.1149).
+//!   by column number, l.1156).
 //! - The blacklist's "Third Party" entries are for filaments not Bambu
 //!   Lab's: the reference compares the entry's own vendor with
 //!   "bambulab" (always true there, l.8691), and compares "Bambu Lab"
