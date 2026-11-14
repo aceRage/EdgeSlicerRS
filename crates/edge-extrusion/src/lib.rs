@@ -246,6 +246,11 @@ impl ExtrusionPath {
     /// paths are solid fill in everything but how short a stretch of
     /// one may be, which says nothing of the size of the area.
     pub const LOOPED: u32 = 1 << 31;
+    /// The part number of a prime tower's wall, in one piece or cut by
+    /// the gaps a nozzle comes in through: laid as one, from the corner
+    /// nearest the nozzle round the way it is drawn, crossing each gap
+    /// with the filament pulled back (WipeTower2.cpp `generate_path`).
+    pub const TOWER_WALL: u32 = 1;
 
     /// Whether the path is one of the loops an area is filled with
     /// ([`Self::LOOPED`]).

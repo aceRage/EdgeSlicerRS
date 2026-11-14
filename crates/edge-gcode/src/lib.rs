@@ -232,6 +232,9 @@ pub use edge_time::Model as TimeModel;
 /// Starts a line the writer leaves for itself where a tool is changed:
 /// the tool taken up and the temperature it prints at.
 const CHANGE_MARK: &[u8] = b";_TOOL_CHANGE ";
+/// Where the fans are set back to the layer's speeds after a tool change,
+/// replaced once the layer's speeds are known.
+const RESUME_FAN_MARK: &[u8] = b";_RESUME_FAN_SPEED\n";
 
 /// A support wall's hook is six line spacings long, so its two ends are
 /// never further apart than a little more than that.
@@ -240,6 +243,25 @@ const HOOK_REACH: f64 = 6.5;
 /// How fast a tool that has rammed its filament is taken clear of it, in
 /// mm a second (WipeTower2.cpp `toolchange_Unload`).
 const RAM_PARK_SPEED: f64 = 40.0;
+/// How fast the nozzle goes from a change's block on the prime tower to the
+/// tower's own lines, in mm/s (WipeTower2.cpp `merge_tcr`, `F7200`).
+const TOWER_MERGE_SPEED: f64 = 120.0;
+/// How fast it crosses a gap in the tower's wall, in mm/s (WipeTower2.cpp
+/// `generate_path`, `travel(..., 600.)`).
+const TOWER_GAP_SPEED: f64 = 10.0;
+
+/// How the nozzle comes to the start of one of the prime tower's own lines.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum TowerWay {
+    /// From the part: a travel of the print's.
+    Onto,
+    /// From the end of a change's block on the tower.
+    Merge,
+    /// From the line before, at the speed in force.
+    Glide,
+    /// Across a gap in the tower's wall.
+    Gap,
+}
 
 /// How many layers have their arcs fitted at once: enough to keep every
 /// thread busy, few enough that what is fitted is not held for the whole
@@ -703,41 +725,68 @@ pub fn write_timed(
         }
     }
     // A tool waiting its turn is kept cooler; it is told to warm up
-    // `preheat_time` before it is wanted, but never before the last
-    // thing said of its temperature, which would undo it.
+    // `preheat_time` before it is wanted, as the reference's
+    // post-processor tells it (GCodeProcessor.cpp `process_line_T`,
+    // `ExportLines::insert_lines`): looking back from the change no
+    // further than the last time the tool was taken up (its own `T`
+    // line) or the start of the print (`G28`, `G29`, `PRINT_START`,
+    // `START_PRINT`), where it is not told at all; a cooldown of the tool
+    // between there and the change is taken out (`; removed M104`), so
+    // a tool wanted again within `preheat_time` is not cooled at all.
+    let mut cut: Vec<(usize, usize)> = Vec::new();
     if let (Some((_, elapsed, ends)), Some(text)) = (&timed, text) {
+        let line_at = |index: usize| {
+            let from = if index == 0 { 0 } else { ends[index - 1] };
+            &text[from..ends[index]]
+        };
+        let command = |line: &str| -> String {
+            let code = line.split(';').next().unwrap_or_default();
+            code.split_whitespace()
+                .next()
+                .unwrap_or_default()
+                .to_owned()
+        };
         for (change, tool, temperature) in &changes {
             let wanted = &settings[*tool];
             if wanted.standby_temperature_delta.is_none() || wanted.preheat_time <= 0.0 {
                 continue;
             }
             let last = ends.partition_point(|end| *end <= *change);
-            let mentions = |line: &str| {
-                let code = line.split(';').next().unwrap_or_default();
-                let mut words = code.split_whitespace();
-                matches!(words.next(), Some("M104" | "M109"))
-                    && words.any(|word| {
-                        word.strip_prefix('T').and_then(|t| t.parse().ok()) == Some(*tool)
-                    })
-            };
-            let line_at = |index: usize| {
-                let from = if index == 0 { 0 } else { ends[index - 1] };
-                &text[from..ends[index]]
-            };
-            let earliest = (0..last)
-                .rev()
-                .find(|index| mentions(line_at(*index)))
-                .map_or(0, |index| index + 1);
             let at_change = if last == 0 { 0.0 } else { elapsed[last - 1] };
             let target = at_change - wanted.preheat_time;
-            // After the last line that ends before the moment wanted.
-            let line = elapsed[..last]
-                .partition_point(|seconds| *seconds < target)
-                .max(earliest)
-                .min(last);
-            // Nothing is put before the file's own first lines.
-            let executable = reached.first().map_or(0, |(at, _)| *at);
-            let at = (if line == 0 { 0 } else { ends[line - 1] }).max(executable);
+            let own = format!("T{tool}");
+            let stops = |line: &str| {
+                let command = command(line);
+                command == own
+                    || ["G28", "G29", "PRINT_START", "START_PRINT"]
+                        .iter()
+                        .any(|start| command.eq_ignore_ascii_case(start))
+            };
+            // Back over every line that ends after the moment wanted.
+            let mut line = last;
+            let mut cooled = Vec::new();
+            while line > 0 && elapsed[line - 1] > target && !stops(line_at(line - 1)) {
+                let text = line_at(line - 1);
+                let code = text.split(';').next().unwrap_or_default();
+                let mut words = code.split_whitespace();
+                if words.next() == Some("M104")
+                    && words.any(|word| word == own)
+                    && text.contains("cooldown")
+                {
+                    cooled.push(line - 1);
+                }
+                line -= 1;
+            }
+            cut.extend(cooled.iter().map(|index| {
+                let from = if *index == 0 { 0 } else { ends[index - 1] };
+                (from, ends[*index])
+            }));
+            // Back as far as the tool was last taken up, or the start:
+            // not told.
+            if line == 0 || line == last || stops(line_at(line - 1)) {
+                continue;
+            }
+            let at = ends[line - 1];
             let lead = at_change - gone(at).unwrap_or(at_change);
             slipped.push((
                 at,
@@ -765,12 +814,23 @@ pub fn write_timed(
             ),
         ));
     }
-    slipped.sort_by_key(|(at, _)| *at);
+    // Each cooldown taken out leaves the reference's note in its place.
+    cut.sort_unstable();
+    cut.dedup();
+    let mut slipped: Vec<(usize, usize, String)> = slipped
+        .into_iter()
+        .map(|(at, line)| (at, at, line))
+        .chain(
+            cut.into_iter()
+                .map(|(from, to)| (from, to, "; removed M104\n".to_owned())),
+        )
+        .collect();
+    slipped.sort_by_key(|(at, end, _)| (*at, *end));
     let mut from = 0;
-    for (at, line) in slipped {
+    for (at, end, line) in slipped {
         out.write_all(&whole[from..at])?;
         out.write_all(line.as_bytes())?;
-        from = at;
+        from = end;
     }
     out.write_all(&whole[from..])?;
     if writer.file.estimate_at.is_none() {
@@ -1698,10 +1758,11 @@ impl Writer<'_> {
         z: f64,
         cursor: usize,
         over: Option<Point2>,
+        enter: &[Point2],
         ram: Option<Ram<'_>>,
         low: Option<f64>,
         first: bool,
-    ) -> Result<(), GcodeError> {
+    ) -> Result<bool, GcodeError> {
         let from = self.state.tool;
         let s = self.settings;
         let framed = self.state.framing;
@@ -1738,6 +1799,7 @@ impl Writer<'_> {
             }
         }
         let ram = ram.filter(|_| self.state.primed);
+        let rammed = ram.is_some();
         // A tool of the reference's other tower changed where it is
         // (described below).
         let in_place =
@@ -1774,6 +1836,9 @@ impl Writer<'_> {
                         speed: ram.speed,
                         ..self.motion(line.role, &line.flow, self.state.first_layer)
                     };
+                    if index == 0 {
+                        self.tower_route(line.points[0], self.state.position)?;
+                    }
                     self.travel(line.points[0], false, None)?;
                     if index == 0
                         && let Some(tower) = low
@@ -1830,11 +1895,23 @@ impl Writer<'_> {
             // `tower_wipe` and `tower_lines`. The reference before
             // aceRage/EdgeSlicer#1020 went down to the tower's height
             // over the part first.
+            //
+            // Where the change is made over the tower, the nozzle goes
+            // round the tower to the gap in its wall, in through it to
+            // where the change's block starts, and down to the layer with
+            // the filament pushed back there (`append_tcr2`,
+            // `travel_to_tower_gap`, `unretract`), before the change pulls
+            // it back by the whole of the change's length.
             None => {
                 if let Some(over) =
                     over.filter(|_| self.state.primed && !s.bambu_tower && !in_place)
                 {
+                    self.tower_route(enter.first().copied().unwrap_or(over), self.state.position)?;
+                    for point in enter {
+                        self.travel(*point, false, None)?;
+                    }
                     self.travel(over, false, None)?;
+                    self.prime()?;
                 }
             }
         }
@@ -1852,10 +1929,11 @@ impl Writer<'_> {
         }
         // Pull the filament well back, wiping first as for any retraction.
         if self.state.primed && s.retract_length_toolchange > 0.0 {
-            if in_place {
-                // Where it is, the whole of it is the change's retraction,
-                // the wipe included (GCode.cpp `set_extruder`,
-                // `retract(true)`), not the usual one with more after.
+            if !rammed {
+                // The whole of it is the change's retraction, the wipe
+                // included (GCode.cpp `set_extruder`, `retract(true)`,
+                // `retract_for_toolchange`), not the usual one with more
+                // after; on Bambu's tower too (`append_tcr`).
                 self.retract_by(s.retract_length_toolchange, false)?;
             } else {
                 self.retract(false)?;
@@ -1898,17 +1976,32 @@ impl Writer<'_> {
         };
         self.swap(Some(from as i64), to, Some(layer), z, toolchange_z)?;
         self.state.flushed.select(to, self.all);
-        self.state.parked[from] = (self.state.retracted, self.state.retracted_length);
-        (self.state.retracted, self.state.retracted_length) = self.state.parked[to];
+        // Each nozzle keeps its own filament's retraction; with one nozzle
+        // for all the filaments it is the one retraction, carried on to
+        // the filament taken up (Extruder.cpp `m_share_retracted`, with
+        // `single_extruder_multi_material`), so the new filament is
+        // pushed on by as much as the change pulled back.
+        if !s.single_nozzle {
+            self.state.parked[from] = (self.state.retracted, self.state.retracted_length);
+            (self.state.retracted, self.state.retracted_length) = self.state.parked[to];
+        }
         self.state.tool = to;
         self.state.tool_changes += 1;
         self.state.summary.tool_changes += 1;
-        // The template may have touched the fans.
-        if let Some(speed) = self.state.auxiliary_fan {
-            writeln!(self.out, "M106 P2 S{speed}")?;
-        }
-        if let Some(speed) = self.state.fan {
-            writeln!(self.out, "M106 S{speed}")?;
+        // The template may have touched the fans: they are set back to
+        // the layer's speeds, which are known once the layer is laid out,
+        // as the reference's cooling sets them at `;_FORCE_RESUME_FAN_SPEED`
+        // (CoolingBuffer.cpp); not to the speeds in force, which before
+        // the layer's own are set are the layer below's.
+        self.out.extend_from_slice(RESUME_FAN_MARK);
+        // Bambu's tower: to where its block starts and down to the layer,
+        // the filament pushed back, straight after the change G-code and
+        // before the new filament's start G-code (GCode.cpp `append_tcr`,
+        // "Move to start pos", `unretract`).
+        if let Some(start) = over.filter(|_| framed && self.state.primed) {
+            self.settings = &self.all[to];
+            self.travel(start, false, None)?;
+            self.prime()?;
         }
         self.announce(to, layer == 0)?;
         // A Bambu Lab printer's change G-code leaves the nozzle cooler
@@ -1932,7 +2025,7 @@ impl Writer<'_> {
                 next.nozzle_temperature
             )?;
         }
-        Ok(())
+        Ok(in_place)
     }
 
     /// One physical layer: `parts` is what each filament prints on it, in
@@ -2057,6 +2150,7 @@ impl Writer<'_> {
         // Lay the layer out to see how long it takes; if that is too short
         // for it to cool, lay it out again, slower.
         let head = self.out.len();
+        let changes_before = self.state.tool_changes;
         let before = self.state.clone();
         self.slowdown = Slowdown::None;
         self.measured.clear();
@@ -2115,6 +2209,31 @@ impl Writer<'_> {
                 self.state.auxiliary_fan = Some(speed);
             }
         }
+        // Each tool change's fans, set back to the layer's speeds.
+        let resume = {
+            let mut text = String::new();
+            if let Some(speed) = self.state.auxiliary_fan {
+                text.push_str(&format!("M106 P2 S{speed}\n"));
+            }
+            if let Some(speed) = self.state.fan {
+                text.push_str(&format!("M106 S{speed}\n"));
+            }
+            text.into_bytes()
+        };
+        if self.state.tool_changes != changes_before {
+            let mut out = Vec::with_capacity(self.out.len());
+            let mut rest = &self.out[..];
+            while let Some(at) = rest
+                .windows(RESUME_FAN_MARK.len())
+                .position(|window| window == RESUME_FAN_MARK)
+            {
+                out.extend_from_slice(&rest[..at]);
+                out.extend_from_slice(&resume);
+                rest = &rest[at + RESUME_FAN_MARK.len()..];
+            }
+            out.extend_from_slice(rest);
+            self.out = out;
+        }
         self.out.splice(0..0, fans.into_bytes());
         Ok(())
     }
@@ -2158,19 +2277,61 @@ impl Writer<'_> {
                 // Bambu's tower frames the change it takes in comments
                 // (WipeTower.cpp `tool_change`).
                 self.state.framing = layer.wipe.is_some() && self.all[layer.filament].bambu_tower;
-                self.change_tool(
+                let before = self.state.position;
+                let in_place = self.change_tool(
                     layer.filament,
                     index,
                     layer.z,
                     cursor + offset,
                     over,
+                    layer.enter,
                     layer.ram,
                     low,
                     offset == 0,
                 )?;
-                // The new tool comes in through the gap in the tower's wall.
-                for point in layer.enter {
-                    self.travel(*point, false, None)?;
+                // A tool changed where it was comes round the tower and in
+                // through the gap in its wall (GCode.cpp `append_tcr2`, in
+                // place: `travel_to_tower_gap` after the change G-code).
+                // Not as the reference, on purpose: it goes round to where
+                // the block starts and in from there, level with the
+                // block's first row and so across the wall beside the gap
+                // (`travel_to_tower_gap` is given `start_wipe_pos`, not
+                // the gap); here it goes in through the gap, as that code
+                // is plainly for.
+                if in_place {
+                    let first =
+                        (layer.enter.first().copied()).or(layer.wipe.map(|wipe| wipe.start));
+                    // From where the change was made, where the change
+                    // G-code is not known to have moved the nozzle
+                    // (`pos_before_toolchange`).
+                    if let Some(first) = first {
+                        self.tower_route(first, self.state.position.or(before))?;
+                    }
+                    for point in layer.enter {
+                        self.travel(*point, false, None)?;
+                    }
+                } else if let Some(wipe) = layer.wipe.filter(|_| !self.settings.bambu_tower) {
+                    // Changed over the tower: on to where the block starts
+                    // and down to the layer, as the tower's own moves
+                    // (WipeTower2.cpp, the block's first move; GCode.cpp
+                    // `append_tcr2`, "Force restore layer Z"), with the
+                    // filament as the change left it.
+                    let length = self
+                        .state
+                        .position
+                        .map_or(0.0, |at| distance(at, wipe.start));
+                    let s = self.settings;
+                    self.go(wipe.start, None, s.travel_speed, length)?;
+                    if self.state.height != Some(layer.z) {
+                        self.feed(s.z_speed);
+                        let feed_word = self.feed_word();
+                        writeln!(self.out, "G1 Z{:.3}{feed_word}", layer.z)?;
+                        if let Some(height) = self.state.height {
+                            self.spend((height - layer.z).abs() / s.z_speed);
+                        }
+                        self.state.height = Some(layer.z);
+                    }
+                    self.state.pending_lift = None;
                 }
             }
             if let Some(wipe) = layer.wipe {
@@ -2182,7 +2343,7 @@ impl Writer<'_> {
                 .find(|wall| wall.role == Role::Perimeter)
                 .map(|wall| wall.flow);
             self.state.tower_first = layer.tower_first;
-            self.tower_lines(layer.tower, low)?;
+            self.tower_lines(layer.tower, low, layer.wipe.is_some())?;
             self.state.tower_first = false;
             // Straight up off the tower before going anywhere.
             self.leave_tower()?;
@@ -2769,28 +2930,287 @@ impl Writer<'_> {
 
     /// The prime tower's lines, nearest end first: they are given in the
     /// order they are meant to go down, and the next is always the nearest.
-    fn tower_lines(&mut self, paths: &[ExtrusionPath], low: Option<f64>) -> io::Result<()> {
-        let mut remaining: Vec<&ExtrusionPath> =
-            paths.iter().filter(|path| path.points.len() >= 2).collect();
-        while !remaining.is_empty() {
-            let ends = |path: &ExtrusionPath| [path.points[0], path.points[path.points.len() - 1]];
-            let nearest = self.nearest(remaining.iter().map(|path| ends(path).into_iter()));
-            let path = remaining.remove(nearest);
-            let [head, tail] = ends(path);
-            let reversed = self
-                .state
-                .position
-                .is_some_and(|at| distance(at, tail) < distance(at, head));
-            let mut points: Vec<Point2> = path.points.clone();
-            if reversed {
-                points.reverse();
+    /// The way round the prime tower to `to`, its gap, before the move
+    /// there: a port of GCode.cpp `generate_path_to_wipe_tower`, as
+    /// `travel_to_tower_gap` calls it for the reference's own tower
+    /// (WipeTower2) with gaps in its wall. The box round the tower's
+    /// first layer, grown by 2 mm, is gone round the shorter way to where
+    /// a line out of the gap, straight across the tower's side the gap is
+    /// on, meets it, so the nozzle comes in through the gap and not
+    /// across the wall. Nothing where the tower has no such box, the
+    /// nozzle is in it already or its place is not known, the grown box
+    /// is not all on the bed, or nothing is in the way. The points along
+    /// the way, `to` left out, are travels of the print's.
+    ///
+    /// Not as the reference, on purpose: it takes the shorter way round
+    /// by the sum of the squares of the stretches' lengths
+    /// (`calc_path_len`), which is not the length of the way; here it is
+    /// by their lengths.
+    fn tower_route(&mut self, to: Point2, from: Option<Point2>) -> io::Result<()> {
+        let s = self.settings;
+        let (Some([min_x, min_y, max_x, max_y]), Some(from)) = (s.tower_envelope, from) else {
+            return Ok(());
+        };
+        let (fx, fy) = (unscaled(from.x), unscaled(from.y));
+        if (min_x..=max_x).contains(&fx) && (min_y..=max_y).contains(&fy) {
+            return Ok(());
+        }
+        let grown = 2.0;
+        let corners = [
+            (min_x - grown, min_y - grown),
+            (max_x + grown, min_y - grown),
+            (max_x + grown, max_y + grown),
+            (min_x - grown, max_y + grown),
+        ];
+        // The grown box strictly inside the bed (ClipperLib `PointInPolygon`).
+        let on_bed = s.bed.is_some_and(|[a, b, c, d]| {
+            corners
+                .iter()
+                .all(|&(x, y)| x > a && x < c && y > b && y < d)
+        });
+        if !on_bed {
+            return Ok(());
+        }
+        let end = (unscaled(to.x), unscaled(to.y));
+        // Out of the gap across the side of the tower it is on.
+        let side = if end.0 < 0.5 * (min_x + max_x) {
+            -1.0
+        } else {
+            1.0
+        };
+        let edge = |index: usize| (corners[index], corners[(index + 1) % 4]);
+        let cross = |a: (f64, f64), b: (f64, f64)| a.0 * b.1 - a.1 * b.0;
+        let minus = |a: (f64, f64), b: (f64, f64)| (a.0 - b.0, a.1 - b.1);
+        // Where the ray from the gap meets the box.
+        let ray = (side, 0.0);
+        let out = (0..4).find_map(|index| {
+            let (b, c) = edge(index);
+            let along = minus(c, b);
+            let denominator = cross(ray, along);
+            if denominator.abs() < 1e-5 {
+                return None;
             }
-            if let Some(tower) = low.filter(|_| self.state.lowered.is_none()) {
-                self.travel(points[0], false, Some(path.role))?;
+            let start = minus(end, b);
+            let t1 = cross(along, start) / denominator;
+            let t2 = cross(ray, start) / denominator;
+            (t1 >= 0.0 && (0.0..=1.0).contains(&t2))
+                .then_some((index, (end.0 + t1 * ray.0, end.1 + t1 * ray.1)))
+        });
+        let Some((out_edge, out_point)) = out else {
+            return Ok(());
+        };
+        // Where the way from here to there first meets another side of the box.
+        let meets = (0..4).filter(|index| *index != out_edge).find_map(|index| {
+            let (a, b) = edge(index);
+            let (r, q) = (minus(out_point, (fx, fy)), minus(b, a));
+            let denominator = cross(r, q);
+            if denominator.abs() < 1e-12 {
+                return None;
+            }
+            let start = minus(a, (fx, fy));
+            let t = cross(start, q) / denominator;
+            let u = cross(start, r) / denominator;
+            ((0.0..=1.0).contains(&t) && (0.0..=1.0).contains(&u))
+                .then_some((index, (fx + t * r.0, fy + t * r.1)))
+        });
+        let mut way = Vec::new();
+        match meets {
+            None => way.push(out_point),
+            Some((in_edge, in_point)) => {
+                // Round by the corners one way or the other.
+                let round = |forward: bool| {
+                    let mut points = vec![in_point];
+                    let (mut at, last) = if forward {
+                        ((in_edge + 1) % 4, out_edge)
+                    } else {
+                        (in_edge, (out_edge + 1) % 4)
+                    };
+                    while at != last {
+                        points.push(corners[at]);
+                        at = if forward { (at + 1) % 4 } else { (at + 3) % 4 };
+                    }
+                    points.push(corners[last]);
+                    points.push(out_point);
+                    let length: f64 = points
+                        .windows(2)
+                        .map(|pair| (pair[1].0 - pair[0].0).hypot(pair[1].1 - pair[0].1))
+                        .sum();
+                    (points, length)
+                };
+                let (one, one_length) = round(true);
+                let (other, other_length) = round(false);
+                way = if one_length < other_length {
+                    one
+                } else {
+                    other
+                };
+            }
+        }
+        for (x, y) in way {
+            self.travel(Point2::from_mm(x, y), false, None)?;
+        }
+        Ok(())
+    }
+
+    /// The tower's own lines (its frame, fill, wall and brim), nearest
+    /// first. `after_block` is whether the nozzle is on the tower already,
+    /// at the end of a change's block on it.
+    ///
+    /// Once on the tower the nozzle goes from line to line as the
+    /// reference's tower writes its moves (WipeTower2.cpp `finish_layer`,
+    /// `WipeTowerWriter2::travel`): straight, without pulling the filament
+    /// back or lifting, at the speed in force; from a change's block to
+    /// the first of them at 120 mm/s (`merge_tcr`, `F7200`). A closed line
+    /// starts at its corner nearest the nozzle and goes round the way it
+    /// is drawn (`rectangle`, the brim's loops); the wall, whole or in
+    /// pieces ([`ExtrusionPath::TOWER_WALL`]), is laid as one from the
+    /// corner nearest the nozzle, and across each gap left in it the
+    /// filament is pulled back by its retraction length and the nozzle
+    /// crosses at 10 mm/s (`generate_path`). Only the move onto the tower
+    /// from the part is a travel of the print's, with its retraction.
+    fn tower_lines(
+        &mut self,
+        paths: &[ExtrusionPath],
+        low: Option<f64>,
+        after_block: bool,
+    ) -> io::Result<()> {
+        // The wall's pieces, in the order they go round, as one item.
+        let mut items: Vec<Vec<&ExtrusionPath>> = Vec::new();
+        for path in paths.iter().filter(|path| path.points.len() >= 2) {
+            match items.last_mut() {
+                Some(item)
+                    if path.part == ExtrusionPath::TOWER_WALL
+                        && item[0].part == ExtrusionPath::TOWER_WALL =>
+                {
+                    item.push(path);
+                }
+                _ => items.push(vec![path]),
+            }
+        }
+        let closed = |path: &ExtrusionPath| {
+            path.points.len() > 2 && path.points[0] == path.points[path.points.len() - 1]
+        };
+        let mut way = if after_block {
+            TowerWay::Merge
+        } else {
+            TowerWay::Onto
+        };
+        while !items.is_empty() {
+            // Where each item may be started: an open line at either end,
+            // a closed one or the wall at any corner.
+            let nearest = self.nearest(items.iter().map(|item| {
+                item.iter().flat_map(move |path| {
+                    let n = path.points.len();
+                    let open =
+                        !(item.len() > 1 || path.part == ExtrusionPath::TOWER_WALL || closed(path));
+                    let corners: &[Point2] = if open { &[] } else { &path.points[..n - 1] };
+                    let ends = if open {
+                        vec![path.points[0], path.points[n - 1]]
+                    } else {
+                        Vec::new()
+                    };
+                    corners.iter().copied().chain(ends)
+                })
+            }));
+            let item = items.remove(nearest);
+            let role = item[0].role;
+            let flow = item[0].flow;
+            // The runs to lay, each from where the last ended or across a gap.
+            let mut runs: Vec<Vec<Point2>> = Vec::new();
+            let at = self.state.position;
+            let near = |point: Point2| at.map_or(0.0, |at| distance(at, point));
+            if item.len() == 1 && item[0].part != ExtrusionPath::TOWER_WALL && !closed(item[0]) {
+                let mut points = item[0].points.clone();
+                if near(points[points.len() - 1]) < near(points[0]) {
+                    points.reverse();
+                }
+                runs.push(points);
+            } else {
+                // Every segment of it in turn, round from the nearest start.
+                let segments: Vec<(Point2, Point2)> = item
+                    .iter()
+                    .flat_map(|path| path.points.windows(2).map(|pair| (pair[0], pair[1])))
+                    .collect();
+                let first = (0..segments.len())
+                    .min_by(|a, b| near(segments[*a].0).total_cmp(&near(segments[*b].0)))
+                    .unwrap_or(0);
+                for step in 0..segments.len() {
+                    let (from, to) = segments[(first + step) % segments.len()];
+                    match runs.last_mut() {
+                        Some(run) if run[run.len() - 1] == from => run.push(to),
+                        _ => runs.push(vec![from, to]),
+                    }
+                }
+            }
+            for (index, run) in runs.iter().enumerate() {
+                if index > 0 {
+                    way = TowerWay::Gap;
+                }
+                self.tower_move(run[0], way, low, role)?;
+                self.lay_path(run, None, role, &flow, false)?;
+                way = TowerWay::Glide;
+            }
+        }
+        Ok(())
+    }
+
+    /// The move to the start of one of the tower's own lines, the way
+    /// given (described at [`Self::tower_lines`]); onto the tower it goes
+    /// down to it where it stands lower.
+    fn tower_move(
+        &mut self,
+        to: Point2,
+        way: TowerWay,
+        low: Option<f64>,
+        role: Role,
+    ) -> io::Result<()> {
+        let s = self.settings;
+        let lowering = low.filter(|_| self.state.lowered.is_none());
+        let at = (self.state.position).filter(|_| way != TowerWay::Onto && lowering.is_none());
+        let Some(at) = at else {
+            if way == TowerWay::Onto {
+                self.tower_route(to, self.state.position)?;
+            }
+            self.travel(to, false, Some(role))?;
+            if let Some(tower) = lowering {
                 self.lower_to_tower(tower)?;
             }
-            self.path(&points, path.role, &path.flow, false, false)?;
+            return Ok(());
+        };
+        let length = distance(at, to);
+        self.state.wipe_path.clear();
+        if length <= 0.0 {
+            return Ok(());
         }
+        match way {
+            TowerWay::Gap if s.retraction_length > 0.0 => {
+                self.tower_pull(true)?;
+                self.go(to, None, TOWER_GAP_SPEED, length)?;
+                self.tower_pull(false)?;
+            }
+            TowerWay::Gap => self.go(to, None, TOWER_GAP_SPEED, length)?,
+            TowerWay::Merge => self.go(to, None, TOWER_MERGE_SPEED, length)?,
+            _ => {
+                let speed = match self.state.feedrate.abs() {
+                    0.0 => s.travel_speed,
+                    feedrate => feedrate / 60.0,
+                };
+                self.go(to, None, speed, length)?;
+            }
+        }
+        Ok(())
+    }
+
+    /// The filament pulled back (`back`) or pushed on again by its
+    /// retraction length at its retraction speed, as the tower's writer
+    /// does it, with nothing else (WipeTower2.cpp `retract`).
+    fn tower_pull(&mut self, back: bool) -> io::Result<()> {
+        let s = self.settings;
+        let sign = if back { "-" } else { "" };
+        self.feed(s.retraction_speed);
+        let feed_word = self.feed_word();
+        writeln!(self.out, "G1 E{sign}{:.5}{feed_word}", s.retraction_length)?;
+        self.spend(s.retraction_length / s.retraction_speed);
         Ok(())
     }
 
@@ -2802,6 +3222,7 @@ impl Writer<'_> {
     /// retraction speed and with nothing else in between.
     fn tower_wipe(&mut self, wipe: TowerWipe<'_>, low: Option<f64>) -> io::Result<()> {
         let s = self.settings;
+        self.tower_route(wipe.start, self.state.position)?;
         self.travel(wipe.start, false, Some(Role::PrimeTower))?;
         if let Some(tower) = low {
             self.lower_to_tower(tower)?;

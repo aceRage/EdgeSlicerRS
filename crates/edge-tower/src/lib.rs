@@ -979,6 +979,13 @@ pub struct Tower {
     /// The ground the tower takes, ribs and brim included, as min x, min
     /// y, max x, max y in mm; none when there is no tower.
     pub footprint: Option<[f64; 4]>,
+    /// Where the nozzle goes round on its way into the tower through a
+    /// gap in its wall: the box round the middles of its first layer's
+    /// lines, brim and ribs included, as min x, min y, max x, max y in mm
+    /// (GCode.cpp `travel_to_tower_gap`, the first-layer envelope). Only
+    /// for a tower whose wall has gaps (`wipe_tower_wall_gap`) and is not
+    /// Bambu Lab's, whose nozzle goes in straight, as there.
+    pub envelope: Option<[f64; 4]>,
 }
 
 /// The speed of a block's next row, in mm/min, from the last
@@ -1311,6 +1318,7 @@ pub fn plan_changes(
     let mut tower = Tower {
         layers: vec![TowerLayer::default(); count],
         footprint: None,
+        envelope: None,
     };
     let Some(last) = changes.iter().rposition(|changes| !changes.is_empty()) else {
         return Ok(tower);
@@ -1563,7 +1571,18 @@ pub fn plan_changes(
             }
             let target = settings.wipe_target(slow(made + index));
             let mut feed = 0.33 * target;
-            let mut wipe = Wipe::new(at(x, y), wipe_flow);
+            // A block with nothing rammed starts where the reference's
+            // does, in the corner of the space it cleans (WipeTower2.cpp
+            // `emit_planned_tool_change`: `cleaning_box.ld` and the depth
+            // used before it), and the new nozzle moves to its first row
+            // from there; a nozzle changed over the tower is changed there.
+            let mut wipe = if whole {
+                let mut wipe = Wipe::new(at(line / 2.0, line / 2.0 + used), wipe_flow);
+                wipe.go(at(x, y), None);
+                wipe
+            } else {
+                Wipe::new(at(x, y), wipe_flow)
+            };
             // Every tool change but the tower's first layer's starts so
             // many rows further in, in turn (`stagger_offset_for`); what
             // it skips is filled at the end.
@@ -1759,11 +1778,20 @@ pub fn plan_changes(
                 ];
             }
         }
+        // The wall, whole or in pieces, known as the wall by its part
+        // number: the writer lays it as one, as the reference's
+        // (WipeTower2.cpp `generate_path`).
+        let wall_path = |points: Vec<Point2>| ExtrusionPath {
+            part: ExtrusionPath::TOWER_WALL,
+            ..path(points)
+        };
         if gaps.is_empty() {
-            finish.push(path(closed(&wall)));
+            finish.push(wall_path(closed(&wall)));
         } else {
             for piece in opened(&wall, &gaps, GAP_HALF * line) {
-                finish.push(path(piece.iter().map(|(x, y)| place(*x, *y)).collect()));
+                finish.push(wall_path(
+                    piece.iter().map(|(x, y)| place(*x, *y)).collect(),
+                ));
             }
         }
 
@@ -1818,7 +1846,7 @@ pub fn plan_changes(
     }
     // The ground it takes: its first layer, out to the edge of the lines.
     let half = line / 2.0;
-    tower.footprint = tower.layers[first_laid]
+    let middles = tower.layers[first_laid]
         .finish
         .iter()
         .flat_map(|path| &path.points)
@@ -1828,8 +1856,9 @@ pub fn plan_changes(
                 None => [x, y, x, y],
                 Some([a, b, c, d]) => [a.min(x), b.min(y), c.max(x), d.max(y)],
             })
-        })
-        .map(|[a, b, c, d]| [a - half, b - half, c + half, d + half]);
+        });
+    tower.footprint = middles.map(|[a, b, c, d]| [a - half, b - half, c + half, d + half]);
+    tower.envelope = middles.filter(|_| settings.wall_gap);
     Ok(tower)
 }
 
@@ -1923,8 +1952,16 @@ mod tests {
         // On the first layer it builds up to that layer's speed.
         let first = plan(&counts(&[1]), &[0.2], &settings).unwrap();
         let wipe = first.layers[0].changes[0].wipe.as_ref().unwrap();
-        let TowerStroke::Lay(_, speed) = wipe.strokes[0] else {
+        // The block starts in the corner of the space it cleans, half a
+        // line in (WipeTower2.cpp `cleaning_box.ld`), and goes to its
+        // first row from there.
+        let TowerStroke::Move(row, None) = wipe.strokes[0] else {
             panic!("{:?}", wipe.strokes[0]);
+        };
+        let ahead = unscaled(row.x) - unscaled(wipe.start.x);
+        assert!(ahead > 0.0 && ahead < 2.0 * settings.width, "{ahead}");
+        let TowerStroke::Lay(_, speed) = wipe.strokes[1] else {
+            panic!("{:?}", wipe.strokes[1]);
         };
         assert_eq!((speed * 60.0).round(), (0.33f32 * 1800.0).round() as f64);
     }
@@ -1992,12 +2029,16 @@ mod tests {
         let change = &tower.layers[1].changes[0];
         let wipe = change.wipe.as_ref().unwrap();
         let x = |point: &Point2| unscaled(point.x);
-        let start = x(&wipe.start);
+        // From the block's corner to its first row, and from there:
+        let TowerStroke::Move(row, None) = wipe.strokes[0] else {
+            panic!("{:?}", wipe.strokes[0]);
+        };
+        let start = x(&row);
         // 3 mm laid towards the far side, the filament pulled back, back
         // 4.5 mm at 600 mm/min and on 1.5 mm at 240, a square spiral of
         // two turns a line apart round where it is at 600 mm/min, then on
         // to 3 mm past it, the filament pushed on and the row laid.
-        let moves: Vec<(String, f64, f64)> = (wipe.strokes.iter())
+        let moves: Vec<(String, f64, f64)> = (wipe.strokes.iter().skip(1))
             .map(|stroke| match stroke {
                 TowerStroke::Lay(to, speed) => ("lay".into(), x(to) - start, *speed * 60.0),
                 TowerStroke::Move(to, speed) => {
@@ -2048,8 +2089,9 @@ mod tests {
         };
         let tower = plan(&counts(&[0, 1]), &[0.2; 2], &shut).unwrap();
         let strokes = &tower.layers[1].changes[0].wipe.as_ref().unwrap().strokes;
+        assert!(matches!(strokes[0], TowerStroke::Move(_, None)));
         assert!(
-            strokes
+            strokes[1..]
                 .iter()
                 .all(|stroke| matches!(stroke, TowerStroke::Lay(..)))
         );
