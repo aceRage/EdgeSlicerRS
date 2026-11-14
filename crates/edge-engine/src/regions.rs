@@ -1451,6 +1451,7 @@ pub(crate) mod tests {
                 solid: cube(15.0),
             }],
             objects: vec![cube(0.0), cube(15.0)],
+            labels: Vec::new(),
             negatives: vec![Mesh::default(), Mesh::default()],
             parts: Vec::new(),
             plate: 0,
