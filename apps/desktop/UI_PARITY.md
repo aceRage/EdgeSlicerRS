@@ -55,7 +55,14 @@ The last column reads:
   Filament" and deleting a printer of one's own with its presets, in
   section 8, with the rows of sections 2, 7 and 9 that point to them.
   Checked in the browser at 1280 dark English and 900 light German,
-  screenshots in `~/Dev/EdgeSlicerRS-shots/setup/`).
+  screenshots in `~/Dev/EdgeSlicerRS-shots/setup/`); device pass: a
+  print on a U1 from the plate to its end (the toolhead map, the U1's
+  print preferences, the printer's state in Device), Storage for every
+  Octo/Klipper printer, and a Bambu Lab printer's ways out of the app
+  ("Send to Bambu Connect", "Export Bambu 3MF", "Export && Open in Bambu
+  Studio"), in sections 2, 4, 15 and 17; everything that talks to a
+  printer checked against mock printers on 127.0.0.1 only, never a real
+  one (screenshots in `~/Dev/EdgeSlicerRS-shots/device/`).
 - **differs** — built, but on purpose not as the C++ does it; the cell says how.
 - **not yet** — not built, with what it waits for. Nothing in this column is
   shown in the page as a control that does nothing.
@@ -89,7 +96,7 @@ calls are listed in section 7.
 
 | C++ | Where | Here |
 | --- | --- | --- |
-| A notebook along the top: Home (icon only), "Prepare", "Preview", "Showcase", "Device", "Stream", "Printers", "Project", "Calibration" (and "Layerling" when installed). Order fixed in `MainTabs::Position` | `MainFrame::init_tabpanel`, `MainFrame::update_layout`, `MainTabs.hpp` | **added**: "Prepare", "Preview", "Device", with the C++ tab icons (`resources/images/tab_3d_active.svg`, `tab_preview_active.svg`, `tab_monitor_active.svg`). **not yet**: Home, Showcase, Stream, Printers, Project, Calibration |
+| A notebook along the top: Home (icon only), "Prepare", "Preview", "Showcase", "Device", "Stream", "Printers", "Project", "Calibration" (and "Layerling" when installed). Order fixed in `MainTabs::Position` | `MainFrame::init_tabpanel`, `MainFrame::update_layout`, `MainTabs.hpp` | **added**: "Prepare", "Preview", "Device", with the C++ tab icons (`resources/images/tab_3d_active.svg`, `tab_preview_active.svg`, `tab_monitor_active.svg`). **not yet**: Home, Showcase, Project, Calibration; Stream and Printers wait for a later pass (the owner's decision of 2026-11-13, section 4) |
 | Prepare, Preview and Showcase are one panel (the plater) added three times: the sidebar stays, the canvas changes | `MainFrame::update_layout` (`InsertPage` ×3), `MainTabs::hosts_plater` | **added**: Prepare and Preview share the sidebar and the stage |
 | The page opened at startup is Home or Prepare ("Default Page" preference, `default_page` 0 or 1) | `GUI_App.cpp` l.1628, `Preferences.cpp` l.1995 | **differs**: Prepare, there being no Home. **not yet**: the preference |
 | Selecting Preview slices the plate by itself when it holds printable objects and has no valid result; a plate that is slicing is shown as it is; an empty plate shows an empty bed with no message | `Plater::priv::set_current_panel` → `do_reslice` (Plater.cpp l.18070) | **added**: the same, on going to Preview and on picking another plate there. A plate whose slice failed is not sliced again by itself; its error is shown |
@@ -223,7 +230,7 @@ does with each option.
 | "Slice plate", with a menu: "Slice all", "Slice plate" (and "Filament arrangement..." on dual-nozzle Bambu printers); the button keeps the mode picked | `create_side_tools` l.2482 | **added**: the button and its menu, in the tab bar. Before: one "Slice" button in the sidebar. "Slice all" slices every plate that holds something and is not sliced yet, one after another (`slice` with `all`) |
 | "Slice plate" is off while slicing, when the plate's result is valid, or when the plate cannot be sliced; "Slice all" when no plate can be | `MainFrame::get_enable_slice_status` l.2672 | **added**: the same three rules. **not yet**: the blocks for mixed filament temperatures, a cold plate and zero flow ratio |
 | Progress as a notification on the canvas with the stage's text, a percentage and a cancel; "Slice ok." when done, "Slicing Canceled" when called off | `SlicingProgressNotification.cpp`, Plater.cpp l.18718, l.19108 | **added**: a note on the stage with the engine's stage, a bar, "Cancel", then "Slice ok." or "Slicing Canceled" (before: a bar in the sidebar). Cancel takes effect between stages, as before |
-| The print button and its menu: "Print plate", "Print all", "Print" (send to a print host), "Send", "Send all", "Export plate sliced file" [Ctrl+G], "Export all sliced file", "Export G-code file", "Send to Multi-device", "Send to Bambu Connect"; the last one used is remembered | `print_select_type_label` l.2378, `available_print_actions` l.2397 | **added**: "Export G-code file" for the plate shown (**had** as "Export G-code…"), on when the plate is sliced and its G-code was written. **added** (twelfth pass): the button with its menu, as the reference offers it for a printer that is not Bambu's: "Print" (send to the printer's host, section 4) and "Export G-code file"; the last one picked is remembered (by the page), "Print" not brought back for a printer that cannot be sent to (as the fork's `get_remembered_print_select`). "Print" opens "Send G-code to printer host" for the plate shown. **differs**: "Print host upload queue" is in the button's menu as well (the reference has it nowhere else either for a non-Bambu printer). File > Export > "Export G-code..." is the same export (section 17). **added** (twentieth pass): "Export plate sliced file" and "Export all sliced file" in the button's menu, in the reference's order (Print, the two sliced files, Export G-code file), as the fork offers them to every printer not Bambu Lab's (`available_print_actions`); "Export all sliced file" is on when every plate that holds something is sliced (`can_export_all_gcode`). **not yet**: "Print plate", "Send" and the rest are Bambu's or not offered by the fork for other printers |
+| The print button and its menu: "Print plate", "Print all", "Print" (send to a print host), "Send", "Send all", "Export plate sliced file" [Ctrl+G], "Export all sliced file", "Export G-code file", "Send to Multi-device", "Send to Bambu Connect"; the last one used is remembered | `print_select_type_label` l.2378, `available_print_actions` l.2397 | **added**: "Export G-code file" for the plate shown (**had** as "Export G-code…"), on when the plate is sliced and its G-code was written. **added** (twelfth pass): the button with its menu, as the reference offers it for a printer that is not Bambu's: "Print" (send to the printer's host, section 4) and "Export G-code file"; the last one picked is remembered (by the page), "Print" not brought back for a printer that cannot be sent to (as the fork's `get_remembered_print_select`). "Print" opens "Send G-code to printer host" for the plate shown. **differs**: "Print host upload queue" is in the button's menu as well (the reference has it nowhere else either for a non-Bambu printer). File > Export > "Export G-code..." is the same export (section 17). **added** (twentieth pass): "Export plate sliced file" and "Export all sliced file" in the button's menu, in the reference's order (Print, the two sliced files, Export G-code file), as the fork offers them to every printer not Bambu Lab's (`available_print_actions`); "Export all sliced file" is on when every plate that holds something is sliced (`can_export_all_gcode`). **added** (device pass): for a Bambu Lab printer "Send to Bambu Connect" after "Export G-code file" (MainFrame.cpp l.2581), File > Export's send (section 17) for the plate shown. **not yet**: "Print plate", "Print all", "Send", "Send all" (a Bambu printer's print through the network plug-in, section 4 "A Bambu Lab printer"), "Send to Multi-device" (Bambu's cloud) |
 | Ctrl+R slices the plate | `MainFrame` char hook l.771 | **added** |
 | Warnings and errors of a slice as notifications | `NotificationManager` | **had**, moved to Preview: "About this print" on the stage keeps the three kinds apart (what is wrong with this print; what was settled without being asked; the settings this engine does not follow yet) |
 
@@ -278,13 +285,17 @@ does with each option.
 | The web view loads the printer's own page: `print_host_webui` if the preset has it, else `print_host`, with `http://` put in front; a Snapmaker U1 gets Snapmaker's bundled device page, driven over MQTT or a websocket; a device picked from the per-model "Devices" list comes before the preset's address | Plater.cpp l.4304–4430, `MainFrame::load_printer_url` l.5286, `Utils/PrintHostDevices` | **added** (twelfth pass): the printer's page at "Device UI", else "Hostname, IP or URL", `http://` put in front, in a frame of its own (below, "The printer's page in the app"); the connection kept for the printer, else the preset's. The frame is first pointed at the printer when Device is looked at. **differs**: a U1 shows its own page at its address, not Snapmaker's bundled page (that page and its MQTT pairing are not in the source). **not yet**: the "Devices" list |
 | With no address: a page "Printer Connection" — "Please set up your printer connection to view the device." | `resources/web/orca/missing_connection.html` | **added**: the same words, the preset's facts, and "Connect to printer", which opens "Physical Printer" |
 | The API key is put into every request of the page (`X-API-Key`) | `PrinterWebView::SendAPIKey` l.473 | **not yet**, on purpose: the key is never handed to a page the app does not control. What it would take: a page that needs the key (a Moonraker with keys on, for its own page) would be shown through the session, which would fetch the printer's page and its requests itself and add the header, a proxy for one origin; or in the window, a second web view of the printer alone with a request hook (Tauri's `on_web_resource_request`, not on every platform). The page is told only whether a key is set, never the key |
-| Bar over the page: "Printer page" / "Storage" (the G-code files on the printer: "Name", "Print time", "Filament", "Size", "Modified"; "Print", "Delete"), and "Printer:" to pick among several printers of the model | `PrinterWebView.cpp`, `Utils/PrinterStorage.cpp` l.337, `PrinterStoragePanel.cpp` | **added** for a U1 (Moonraker): "Printer page" / "Storage", the files with "Name", "Size", "Modified", "Print" and "Delete" (each asked first: "Delete \"%s\" from %s?\nThis cannot be undone."), "Refresh"; "Print" refused while the printer prints, as `PrinterStorage` refuses it. The address, a button to load the page again, and "Connect to printer" in the bar. **not yet**: "Print time" and "Filament" (`/server/files/metadata` for each file), sorting, the details pane, "Printer:" (one printer for each preset here); "Storage" for the Centauri Carbon (SDCP commands 258, 259) |
+| Bar over the page: "Printer page" / "Storage" (the G-code files on the printer: "Name", "Print time", "Filament", "Size", "Modified"; "Print", "Delete"), and "Printer:" to pick among several printers of the model | `PrinterWebView.cpp`, `Utils/PrinterStorage.cpp` l.337, `PrinterStoragePanel.cpp` | **added** for a U1 (twelfth pass) and (device pass) for **every "Octo/Klipper" printer**, which the reference asks as a Moonraker (`target_for_host`: `octoprint`, `moonraker`): "Files on %s", "Sort by" ("Newest first", "Oldest first", "Name", "Size"), "Refresh", the columns "Name", "Print time", "Filament" (each file's `server/files/metadata`: `estimated_time`, `filament_total`, `filament_weight_total`, `filament_type`, written as `format_duration` and `format_filament` write them), "Size", "Modified"; the list as `parse_file_list` makes it (`.gcode`, `.g`, `.gco` printable, `.bgcode` and `.3mf` listed and not started, hidden folders left out). "Delete": "Delete file" / "Delete \"%s\" from %s?\nThis cannot be undone.", "Deleting %s...", "Deleted %s.", "%s was already gone from the printer." (404), "Could not delete \"%s\"."; "Print": "Asking the printer whether it is free...", then "The printer is printing." / "The printer has a paused print." with the file and "Finish or cancel that job before starting another one.", else "Start printing \"%s\" on %s?" with "Print time", "Filament" and "The file prints exactly as it was sliced. Make sure the build plate is clear and the filament the file was sliced for is loaded.", "Starting %s...", "Print started: %s. Follow it on the printer page." or "The print of \"%s\" did not start."; the printer is asked again just before it starts. An OctoPrint that is not a Moonraker answers 404: "Storage is not available for this printer."; another host type shows the tab with the reference's reason (Flashforge, PrusaLink, the rest). The address, a button to load the page again, and "Connect to printer" in the bar; and (device pass) the printer's state, next row. **not yet**: the details pane and the thumbnails (`metadata`'s `thumbnails`), the keys (Enter, Delete, F5); "Printer:" and the "Devices" list (below); "Storage" for the Centauri Carbon (SDCP commands 258, 259: `ElegooSdcpFiles.cpp`, with its CANVAS start check) |
+| The printer's state: the reference's phone hub and Printers tab ask a Moonraker printer `printer/objects/query?print_stats&display_status&virtual_sdcard&heater_bed&extruder…`, work the percent out as the U1's own device page does (the share of the G-code body read, `gcode_start_byte`..`gcode_end_byte` of the file's metadata, else `display_status`, else `virtual_sdcard`) and the time left as the slicer's estimate scaled by it | `SnapmakerLan.cpp` `status` l.795, `Utils/MoonrakerProgress.cpp`, `RemoteControl.cpp` `describe_hosts` | **added** (device pass) in Device's bar, for a U1 and every "Octo/Klipper" printer, asked every 3 s while Device is looked at: "Idle", "Printing", "Paused", "Finished", "Canceled", "Error", the file, the percent, the time left, "Layer" n/m, "Bed" and the toolheads being heated, °C; "Offline" (and why, as its tooltip) when it does not answer. **differs**: the reference shows none of this on the desktop's Device tab for a print host (its U1 page is Snapmaker's bundled page over MQTT; another printer has its own page); it is what its Printers tab and phone show. Only asked, never told: no pause, resume or stop here (the reference's Printers tab offers them for the preset's own Moonraker host) |
 | What the tab shows of the printer itself | the preset | **added**: name, vendor, model, nozzles, bed and height, G-code flavor, bed type in force, "Host Type" |
 | Where the address is set: "Physical Printer" ("Print Host upload": "Host Type", "Hostname, IP or URL", "Device UI", "Authorization Type", "API Key / Password", "HTTPS CA File", "User", "Password", "Test", "Browse ..."), and the "Devices" list for several printers of one model | `PhysicalPrinterDialog.cpp` l.127, l.596, `PrintHostDevicesDialog.cpp` | **added** (twelfth pass, `ui/hosts.js`): "Physical Printer" with "Print Host upload": "Host Type" (the types this app can send to, "Octo/Klipper" and "Elegoo Link", and the one in force if it is another, marked "(not yet)"), "Hostname, IP or URL" with "Test", "Device UI", "API Key / Password" (a field that shows only that a key is set; "Clear"), "HTTPS CA File" with "Browse ..." and the reference's hint; the reference's tooltips; "Test" tries what is typed before it is kept and says "Success!" and the host's own sentence, or its failure. Opened by "Connect to printer" on the Printer card (the fork's icon, `set_connection_tooltip`) and from Device. **differs**: the icon opens this dialog; in the fork it opens "Devices" with "Edit connection..." inside. "Use the preset's connection" takes a kept connection away. There is no name to save it under (the reference saves a physical printer preset; here it is kept for the printer preset, below). **not yet**: "Authorization Type", "User", "Password" (shown by the reference for PrusaLink only, which is not built), "Browse ..." for the address (Bonjour discovery), "Devices", "Printer" (`printhost_port`, Repetier and Obico), "Ignore HTTPS certificate revocation checks" (Windows) |
 | Where it is kept: the user's printer preset, and `<datadir>/hub/print_host_devices.json`; never the project (a saved 3MF has `print_host`, `print_host_webui`, `printhost_apikey` and the rest taken out, and they are ignored on load) | `libslic3r/Preset.cpp` l.1394, l.2710, `PresetBundle::full_config_secure` l.3220 | **differs**: kept for each printer preset in this app's data folder (section 8), the key in a file of its own; never in a project, which this app never writes them to. A printer without a kept connection uses its preset's (forty-seven vendor presets carry an address, for example Volumic's `192.168.0.60`) |
-| Sending: "Send G-code to printer host" ("Upload", "Upload and Print", the file name, "Switch to Device tab after upload."), and "Print host upload queue" | `PrintHostDialogs.cpp` l.515, l.1532, l.2358 | **added** (twelfth pass): "Send G-code to printer host", "Upload to Printer Host with the following filename:", the name offered as the reference offers it (the printer's `filename_format` filled in, `{print_time}` with the slice's time, folded to ASCII, the stem selected), "Please do not include the special characters …", the two questions before sending ("The filename '%s' contains special characters …", "Upload filename doesn't end with \".gcode\". …"), "Unload filaments after print" for Snapmaker's tool changers (ticked as the preset's `unload_filaments_at_end`), the Centauri Carbon's "Time-lapse", "Heated Bed Leveling", "Textured Build Plate (Side A)" / "Smooth Build Plate (Side B)" (the side the project's bed type means, and "The selected bed type does not match the file. …" when another is picked; the two ticks remembered), "Switch to Device tab after upload." (remembered), "Upload", "Upload and Print", "Cancel". The bytes sent are those "Export G-code file" writes. The queue: "ID", "Progress", "Status" ("Queued", "Uploading", "Error", "Canceling", "Canceled", "Completed"), "Host", "Size", "Filename", "Message", "Cancel selected", "Show error message", "Close"; one file after another; an error is shown as it happens ("Error uploading to print host:"). **differs**: the Centauri Carbon's options are in the same dialog under its name, with the two buttons (the reference's Elegoo dialog has an "Upload and Print" tick and one button); the queue says when a print was started. **not yet**: the "Group" and "Upload to storage" lists (Repetier, PrusaLink), the QIDI, Creality and Flashforge options, a toolhead map chosen by hand (the U1 is sent each filament on its own toolhead); "Ongoing uploads" asked when the window closes |
-| Bambu monitor: camera, "Printing Progress", "Pause" / "Resume" / "Stop", temperatures, AMS, speed; needs Bambu's network plug-in | `Monitor.cpp`, `StatusPanel` | **not yet**, and not planned before the print hosts |
-| Next to Device: "Stream" (cameras), "Printers" (every printer at a glance), the mobile hub | `StreamPanel`, `PrintersPanel`, `RemoteHub.cpp` | **not yet** |
+| Sending: "Send G-code to printer host" ("Upload", "Upload and Print", the file name, "Switch to Device tab after upload."), and "Print host upload queue" | `PrintHostDialogs.cpp` l.515, l.1532, l.2358 | **added** (twelfth pass): "Send G-code to printer host", "Upload to Printer Host with the following filename:", the name offered as the reference offers it (the printer's `filename_format` filled in, `{print_time}` with the slice's time, folded to ASCII, the stem selected), "Please do not include the special characters …", the two questions before sending ("The filename '%s' contains special characters …", "Upload filename doesn't end with \".gcode\". …"), "Unload filaments after print" for Snapmaker's tool changers (ticked as the preset's `unload_filaments_at_end`), the Centauri Carbon's "Time-lapse", "Heated Bed Leveling", "Textured Build Plate (Side A)" / "Smooth Build Plate (Side B)" (the side the project's bed type means, and "The selected bed type does not match the file. …" when another is picked; the two ticks remembered), "Switch to Device tab after upload." (remembered), "Upload", "Upload and Print", "Cancel". The bytes sent are those "Export G-code file" writes. The queue: "ID", "Progress", "Status" ("Queued", "Uploading", "Error", "Canceling", "Canceled", "Completed"), "Host", "Size", "Filename", "Message", "Cancel selected", "Show error message", "Close"; one file after another; an error is shown as it happens ("Error uploading to print host:"). **differs**: the Centauri Carbon's options are in the same dialog under its name, with the two buttons (the reference's Elegoo dialog has an "Upload and Print" tick and one button); the queue says when a print was started. **added** (device pass), for "Upload and Print" to a U1: the toolhead of each filament, and the U1's own page's "Print Preferences" ("Auto Leveling", "Extrusion Flow Calibration" with its explanation, "Time-lapse Camera"), below, "A print on a U1". **not yet**: the "Group" and "Upload to storage" lists (Repetier, PrusaLink), the QIDI, Creality and Flashforge options; "Ongoing uploads" asked when the window closes |
+| Bambu monitor: camera, "Printing Progress", "Pause" / "Resume" / "Stop", temperatures, AMS, speed; needs the network plug-in (Bambu's, or the owner's own UltraNet) | `Monitor.cpp`, `StatusPanel` | **not yet**: waits for the owner's decision on loading the plug-in from this app (below, "A Bambu Lab printer") |
+| Next to Device: "Stream" (cameras: `stream_center.html`, a page of the app's fed through the phone hub's relay: go2rtc for RTSP and ONVIF, MJPEG for Bambu P1, Elegoo's camera relay, Flashforge's `:8898/detail` probe) and "Printers" (every printer at a glance: the saved print-host devices of every model probed over Moonraker or PrusaLink, Elegoo's SDCP, the LAN Snapmakers, the Bambu printers of the device manager, with pause, resume and stop; `monitor.html`, `printer_cards.js`) | `StreamPanel.cpp`, `PrintersPanel.cpp`, `PrinterRowsBridge.cpp`, `RemoteAccess.cpp` `api_printers` l.2131 | **not yet**: a later pass (the owner's decision of 2026-11-13). What Printers would show of a print host is what Device's state line shows now, for each saved device |
+| The mobile hub (`RemoteHub.cpp`: phone access, its link, the hub's printer list and send) and everything tied to the Snapmaker account (the U1's cloud connect through Snapmaker's MQTT broker, the sign-in) | `RemoteHub.cpp`, `SSWCP.cpp`, `WebUserLoginDialog.cpp` | **not built, by decision**: vendor-account features are not to be built (the owner's decision of 2026-11-13); the U1 is reached over its own Moonraker on the local network |
+| "Print history": each plate's sends and exports (time, "Sent to printer", "Sent and started", "Uploaded only", "Exported to file", the printer, the connection, the file), kept in the project (`print_history`), recorded by every send path when it succeeded (`PlateHistoryRecorder::record`), shown in "Print history - %s" with "Clear history", "Not printed yet" and "This plate was changed after it was last sent to a printer." | `PlatePrintHistoryRecorder.cpp`, `PlatePrintHistoryDialog.cpp`, Plater.cpp l.30679 | **not yet**: it needs the project file to keep it (edge-3mf), a plate's entry point for the dialog, and each send to record; a later pass |
+| "Devices": several printers of one model, by address ("Add", "Edit", "Remove", "Test", "(last used)", a "Status" column), kept per printer model in `<datadir>/hub/print_host_devices.json`, the send dialog and Device preselecting the one last sent to | `Utils/PrintHostDevices.cpp`, `PrintHostDevicesDialog.cpp` | **not yet**: one connection for each printer preset here (the twelfth pass's `hosts::kept`); the store, the dialog and "Printer:" in Device's bar are a later pass |
 
 ### Sending to a printer: what is built
 
@@ -301,7 +312,7 @@ Print", Device); nothing looks for printers on the network.
 | Host type | Reached as | "Test" | "Upload" | "Upload and Print" | Ported from |
 | --- | --- | --- | --- | --- | --- |
 | "Octo/Klipper" (`octoprint`), a printer that is not a U1 | OctoPrint's API at the address, `X-Api-Key` | `GET api/version`: `api` in it, `text` (if any) starting "OctoPrint"; Moonraker's OctoPrint compatibility answers it | "Test", then `POST api/files/local`: `print`, `path`, `file` | the same with `print=true` | `Utils/OctoPrint.cpp` |
-| "Octo/Klipper" with a printer model naming "Snapmaker" and "U1" | Moonraker's own API at the address (port 80 on a U1), `X-Api-Key` if a key is set | `GET server/info` (`result`), `GET access/info` (a printer that wants a login is refused) | `POST server/files/upload`: `print=false`, `root=gcodes`, `file` | `GET printer/objects/query?print_stats` first (printing or paused: refused, nothing sent), the upload, `GET server/files/metadata` (the size must be the file's), `print_stats` again, the toolhead map (`SET_PRINT_EXTRUDER_MAP`… each filament on its own toolhead, `SET_PRINT_USED_EXTRUDERS`, `SET_PRINT_PREFERENCES … [END_UNLOAD_FILAMENT=[…]]`) by `POST printer/gcode/script?script=`, then `POST printer/print/start?filename=` | `GUI/SnapmakerLan.cpp`, `GUI/RemoteSend.cpp` l.2390, `GUI/SnapmakerTaskConfig.cpp`. The fork's own desktop path for a U1 is Snapmaker's bundled page over MQTT (`send_flow_for`), whose upload code is not in the source |
+| "Octo/Klipper" with a printer model naming "Snapmaker" and "U1" | Moonraker's own API at the address (port 80 on a U1), `X-Api-Key` if a key is set | `GET server/info` (`result`), `GET access/info` (a printer that wants a login is refused) | `POST server/files/upload`: `print=false`, `root=gcodes`, `file` | the toolheads read and the map checked first (below), `GET printer/objects/query?print_stats` (printing or paused: refused, nothing sent), the upload, `GET server/files/metadata` (the size must be the file's), `print_stats` again, the toolhead map (`SET_PRINT_EXTRUDER_MAP CONFIG_EXTRUDER=<filament> MAP_EXTRUDER=<toolhead>` for each, `SET_PRINT_USED_EXTRUDERS` in the order of first use, `SET_PRINT_PREFERENCES BED_LEVEL= FLOW_CALIBRATE= TIME_LAPSE_CAMERA= [END_UNLOAD_FILAMENT=[…]]`) by `POST printer/gcode/script?script=`, then `POST printer/print/start?filename=` | `GUI/SnapmakerLan.cpp`, `GUI/RemoteSend.cpp` l.2390, `GUI/SnapmakerTaskConfig.cpp`. The fork's own desktop path for a U1 is Snapmaker's bundled page over MQTT (`send_flow_for`), whose upload code is not in the source |
 | "Elegoo Link" (`elegoolink`), Centauri Carbon | its web server at the address; its websocket at `ws://<host>:3030/websocket` (SDCP) | OctoPrint's test, else `GET /` naming "ELEGOO" | OctoPrint's upload when it answers as OctoPrint; else `POST uploadFile/upload` in parts of 1 MiB (`Check`, `S-File-MD5`, `Offset`, `Uuid`, `TotalSize`, `File`), each answered `code: "000000"` | SDCP command 0 first (not idle: refused, nothing sent), the upload, command 0 each second while the printer checks the file (`CurrentStatus` 8, at most 60 s), command 128 (`Filename "/local/<name>"`, `Calibration_switch`, `PrintPlatformType`, `Tlp_Switch`), its `Ack` read (the reference's sentence for each) | `Utils/ElegooLink.cpp`, `Utils/ElegooStartPrint.hpp`. The Centauri Carbon 2 (`ElegooCc2`) is refused: not yet |
 
 Everything is timed (10 s to connect, 15 s for a question, 60 s for each
@@ -315,6 +326,144 @@ authorisation; about 600 lines), Duet (279), FlashAir (233), AstroBox
 ESP3D (175), CrealityPrint (604), Obico (219, a cloud), Flashforge (796),
 SimplyPrint (492, a cloud with OAuth). None is used by the printers this
 project is tested on; each is a class behind the same trait.
+
+### A print on a U1, step by step
+
+What the fork does from a sliced plate to a running print on a U1, and
+what is built here. The fork's own desktop path is the print button's
+"Print", then "Send G-code to printer host", then Snapmaker's bundled
+device page (`WebPreprintDialog`, a Flutter page in
+`resources/web/flutter_web` talking to the printer over MQTT through
+SSWCP). The same steps over the U1's Moonraker on the local network are
+the fork's phone route (`RemoteSend.cpp` `prepare_snapmaker`,
+`SnapmakerLan.cpp`), which is what is ported. Everything here was
+checked against a mock U1 on 127.0.0.1 (`hosts::mock::u1`: the U1's
+Moonraker as the reference's own requests and its bundled page read it),
+never against a printer.
+
+| Step | The reference | Here |
+| --- | --- | --- |
+| 1. The connection | "Physical Printer": the U1's address (it asks for no key: `/access/info` answers `login_required: false`) | **built** (twelfth pass); "Test" says "Connection to Moonraker works correctly." or why not; a U1 that wants a login is refused |
+| 2. Slice, then the print button's "Print" | `send_gcode_legacy` | **built** |
+| 3. "Send G-code to printer host": the name (`filename_format`), the two questions about it, "Unload filaments after print" (the preset's `unload_filaments_at_end`), "Switch to Device tab after upload.", "Upload" / "Upload and Print" | `PrintHostSendDialog`, Plater.cpp l.27495 | **built** |
+| 4. What the toolheads hold: `print_task_config` (`filament_type`, `filament_sub_type`, `filament_vendor`, `filament_color_rgba` else `filament_color`, `filament_exist`, `filament_official`) and each `extruder<N>.nozzle_diameter` | `SnapmakerLan.cpp` `toolheads_of` l.658 | **built**: read when the dialog opens ("Toolheads"), each toolhead as "n: vendor type sub-type" or "Empty" |
+| 5. The map: each used filament to the nearest free loaded colour (redmean), a filament of the same colour sharing its toolhead, the rest on the first loaded toolhead; the person may change it | `SnapmakerLan::auto_match` l.1305; the bundled page's own map | **built**, a list for each filament the plate prints in. **differs**: in the same dialog, where the reference opens its bundled page after it |
+| 6. Checks before anything is sent: a used filament without a toolhead, a toolhead the printer has not got, an empty toolhead (refused unless sent anyway); a filament type other than the one loaded is a warning only; a printer printing or paused; one that does not answer or wants a login | `prepare_snapmaker` l.770–790, `status_for_send` | **built**: "Toolhead %d is empty: load it or pick another." asked as "Send it all the same?"; "Filament %d is %s but toolhead %d holds %s." under the map; the rest refuse with the reason and nothing is sent. **not built**: a nozzle size check (the toolhead's `nozzle_diameter` is read, but the reference checks none before a send either: its title bar's "Synchronize nozzle information" is where nozzles are compared, section 2), a bed type check (the reference reads no bed sensor on the U1), a size limit (none in the reference) |
+| 7. "Print Preferences": "Auto Leveling", "Extrusion Flow Calibration", "Time-lapse Camera", each off until ticked | the bundled page (`main.*.js`: `bed_level`, `flow_calibrate`, `time_lapse_camera`, all `false` and 0 at first) | **built**, off each time, as the page starts them. **differs from the reference's own LAN route**, which always sends the three as 0 (`SnapmakerLan.cpp` l.1372): here what is ticked is sent as 1, as the bundled page sends it. The bundled page leaves the macro out for a firmware of 1.3.0 or later under a condition its minified code does not name; the LAN route always sends it, and so does this |
+| 8. The upload, in the "Print host upload queue" with its progress, "Cancel selected", errors as "Error uploading to print host:" and the printer's words | `PrintHostJobQueue`, `SnapmakerLan::upload` (`print=false`, so a failed start leaves the file) | **built** |
+| 9. Proof the file landed (`server/files/metadata`, its size), the printer asked again whether it is free, the macros, then `printer/print/start` | `start_print_mapped` l.1376 | **built**; the macros refused: "the printer refused the toolhead mapping: …"; the start refused: "the printer refused the print start: …"; the file stays on the printer either way |
+| 10. Confirmation: the start request answered (the reference waits for nothing more) | `start_print` | **built**: the queue's "Completed" with "The print was started.", and the status line's "… was uploaded to … and the print was started." |
+| 11. Device after the send ("Switch to Device tab after upload."): the reference shows its bundled page (MQTT) with the progress | `select_tab(tpMonitor)` | **built**: the printer's own page in its frame, and over it the state line (state, file, percent, time left, layer, temperatures), to "Finished" |
+| 12. Starting a file already on the printer again | Storage's "Print" | **built** (above) |
+| 13. Pause, resume, stop | the bundled page; the Printers tab | **not built**: the printer's own page has them |
+
+### A Bambu Lab printer
+
+What the fork offers a Bambu owner, and what is built here ("Send to
+Bambu Connect", "Export Bambu 3MF" and "Export && Open in Bambu Studio"
+are in sections 2, 15 and 17).
+
+**What a Bambu owner can do from this app now.**
+
+- Export a project Bambu Studio opens with its settings ("Export Bambu 3MF"), and hand it to Bambu
+  Studio ("Export & Open in Bambu Studio", from the window). From Bambu Studio they print as usual (its
+  own LAN, cloud or SD card paths, with Bambu's plug-in, which is Bambu Studio's, not ours).
+- Hand a sliced plate (or all plates) to their own Bambu Connect ("Send plate/all plates to Bambu
+  Connect"): Bambu Connect prints it with their Bambu account or over LAN. This needs the plate sliced
+  here on a Bambu Lab printer's presets and Bambu Connect installed.
+- Export the plate's sliced file (`.gcode.3mf`) or G-code and carry it on an SD card / USB stick to the
+  printer (File > Export, print button). The printer prints a `.gcode.3mf` from its storage menu.
+
+**What they cannot do.**
+
+- Print over LAN directly (the reference's "Print plate" / "Send" through `NetworkAgent`
+  `start_local_print`, `start_send_gcode_to_sdcard`), see the printer's status, AMS or camera on the
+  Device tab, or use Bambu's cloud: in the reference every one of these goes through Bambu's closed
+  network plug-in (`bambu_networking`, loaded by NetworkAgent.cpp l.361-410). This app loads no
+  plug-in and talks to no Bambu printer.
+
+The fork's own print to a Bambu printer ("Print plate" / "Send", the
+Device tab's monitor, AMS, camera) goes through the network plug-in: a
+native library loaded by `NetworkAgent.cpp` (`get_network_function`, 103
+entry points named `bambu_network_*`). The fork never downloads Bambu's
+plug-in; it ships its owner's own, **UltraNet**, a "clean-room
+Bambu/multi-vendor network plugin (drop-in bambu_networking)"
+(`src/CMakeLists.txt` l.97; built only when the private `src/ultranet`
+folder is there, which it is not in the pinned source). How the
+reference finds it: the library `bambu_networking` (`.dll`, `.dylib`,
+`.so`, `network_library_name()`) in `<datadir>/plugins/` beside a marker
+file `ultranet.txt` (`PluginGuard.cpp` `kUltraNetMarkerName`), copied
+there at start from the app's sidecar (`Contents/Resources/ultranet` in
+the macOS bundle, beside the exe on Windows, `bin/ultranet` in the
+AppImage; `GUI_App.cpp` l.3811–3890; `ultranet_keep_foreign_plugin`
+leaves a foreign one alone). `is_ultranet_plugin_installed()` then lets
+the Bambu paths run, LAN only (`PrintJob.cpp` l.580,
+`bambu_cloud_print_supported`).
+
+The print cycle through it, as `PrintJob.cpp`, `SelectMachine.cpp` and
+`DeviceManager.cpp` drive it, and where this app stands:
+
+| Step | The plug-in's entry point (as NetworkAgent.hpp declares it) | Here |
+| --- | --- | --- |
+| Load it, its version, an agent | `bambu_network_get_version`, `create_agent(log_dir)`, `init_log` | **not built** (the binding, below) |
+| Find printers on the LAN | `start_discovery`, `set_on_ssdp_msg_fn` | **not built**, and not to be: this app looks for no printer on the network; a printer would be added by its address |
+| Connect: the printer's serial, its IP, user `bblp`, the access code, TLS | `connect_printer(agent, dev_id, dev_ip, username, password, use_ssl)`, `set_on_local_connect_fn`, `set_on_local_message_fn` | **not built** |
+| Status and AMS: the printer's pushed reports | `send_message_to_printer` (`pushall`), the `on_local_message` callback | **not built** |
+| The send dialog: printer, plate, bed type, "Bed Leveling", "Flow Dynamics Calibration", "Timelapse", "Use AMS", the AMS map | `SelectMachineDialog`, then `PrintParams` (`task_bed_leveling`, `task_flow_cali`, `task_vibration_cali`, `task_layer_inspect`, `task_record_timelapse`, `task_use_ams`, `task_bed_type`, `ams_mapping`, `ams_mapping2`, `ams_mapping_info`, `nozzles_info`, `auto_bed_leveling`, `auto_flow_cali`, `auto_offset_cali`) | **not built** |
+| The file: the plate's sliced `.gcode.3mf` | `params.filename`, `config_filename`, `plate_index`, `ftp_folder` | **built** as a file (section 15, "The sliced file"); not sent |
+| Upload and start (LAN) | `start_local_print_with_record(agent, PrintParams, update, cancel, wait)`, else `start_local_print(agent, PrintParams, update, cancel)`; a file already on the printer `start_sdcard_print`; upload only `start_send_gcode_to_sdcard` | **not built** |
+| Pause, resume, stop, progress | `send_message_to_printer` with `print` commands | **not built** |
+
+**What loading it from this app would take (the owner's decision).**
+The plug-in's interface is a C++ one, not a C one: every entry point
+takes and returns `std::string` by value, the callbacks are
+`std::function` (`OnUpdateStatusFn`, `WasCancelledFn`, `OnWaitFn`,
+`OnMessageFn`…), and `PrintParams` is a struct of `std::string` and
+`bool` fields (bambu_networking.hpp l.235). Rust cannot call that
+directly: it needs the same C++ standard library and compiler the
+library was built with, on each system. The ways: (1) a small C shim, a
+C++ library built with UltraNet's toolchain that loads it and offers a
+plain C interface (`const char*`, function pointers) which Rust loads
+with `libloading`; that needs `unsafe`, denied workspace-wide, opted
+into locally by one crate with the reason; (2) UltraNet offering a C
+interface of its own; (3) UltraNet run as a separate process the app
+talks to over a local socket, with no foreign code in the app's
+process. Its licence and how it may be shipped are not in the pinned
+source (it is a private component); the reference ships it inside its
+own bundle. Nothing of it was loaded, copied or looked for on this
+machine, and the owner's data folder was not read.
+
+**What a direct LAN send without the plug-in would take** (read from the reference's source only; nothing was built, probed or fetched).
+
+From the reference's source: the plug-in is given, per print (`BBL::PrintParams`,
+bambu_networking.hpp l.235; RemoteSend.cpp l.417-440): the printer's serial (`dev_id`), its IP, user
+`bblp` and the printer's access code as password, the FTP folder for the model
+(`DeviceManager::get_ftp_folder`), whether to use TLS for FTP and for MQTT, the sliced `.gcode.3mf`, the
+plate number, the AMS mapping (`ams_mapping`, `ams_mapping2`, `ams_mapping_info`), nozzle info, bed
+type, and the task options (bed levelling, flow and vibration calibration, first-layer inspection,
+timelapse, use AMS). The reference names the ports in its diagnosis texts (BambuSendDiagnosis.cpp
+l.213-227): MQTT 8883 and FTPS 990; it dials the printer's broker at `<ip>:8883` with the access code
+(DeviceManager.cpp l.7151, `MachineObject::connect` l.3096). It does none of this itself: the MQTT
+session, the upload and the print command are the plug-in's. Its own rule on what a printer accepts
+(BambuSendDiagnosis.cpp l.122-133, DeviceManager.cpp l.3296-3340): a printer not in "LAN Only +
+Developer Mode" ("secured mode") rejects every unsigned command in the `print`, `upgrade` and `camera`
+namespaces and every `system` command but `get_*`; "EdgeSlicer does not sign". Status requests
+(`pushing`/`pushall`, `info`/`get_version`) are answered without a signature (BambuConnectStatus.hpp).
+
+So, without the plug-in, a send would be: (1) upload the `.gcode.3mf` over implicit FTPS on port 990
+(user `bblp`, the access code; the printer's own certificate, not one a system trusts) into the model's
+FTP folder; (2) over MQTT on TLS port 8883 (user `bblp`, the access code), publish a `print` /
+`project_file` command naming the file, the plate's G-code inside it and the task options to
+`device/<serial>/request`, and read `device/<serial>/report` for the answer and status. The exact topic
+names, the `project_file` fields and the certificate handling are not in the reference's source (they
+are the plug-in's); they are described in public community documentation (OpenBambuAPI), not checked
+here, and nothing was fetched. Step (2) is a `print` command, so it works only on a printer in LAN Only
++ Developer Mode: on a printer in the default (secured) mode it needs Bambu's signature, which only
+Bambu's own software (the plug-in, Bambu Connect) has. That is why the reference's own answer for such
+printers is Bambu Connect. Building it here would need: an FTPS client (implicit TLS, a certificate
+pinned or accepted per printer), an MQTT 3.1.1 client over TLS, the printer's serial and access code
+kept per printer (Rust-side, as API keys are), the AMS mapping from the plate's filaments, and tests
+against a fake printer on 127.0.0.1 (the reference has `tests/fake_bambu_status.py` for status).
 
 ### The printer's page in the app
 
@@ -476,13 +625,16 @@ the project is on.
 | `print_host_set` | `project?`, `host_type`, `print_host`, `print_host_webui`, `printhost_cafile`, `apikey?` (a new key; "" or null clears it; left out keeps it); or `forget: true` (back to the preset's) | as `print_host`. Refused, nothing kept: a host type that is not one, an address that cannot be read |
 | `print_host_test` | `project?` and the fields of `print_host_set` (as typed; what is left out is as kept) | `{ ok, message }`: the host's own sentence ("Connection to OctoPrint is working correctly.", "Could not connect to Moonraker: HTTP 401: Unauthorized") |
 | `print_send_name` | `project?`, `plate?` | `{ name }`: the name "Send G-code to printer host" offers |
-| `print_send` | `project?`, `plate?`, `name`, `start`, `options { unload_at_end, timelapse, leveling, smooth_plate }` | `{ id, queue }`: the plate's G-code (the bytes `export` writes) put in the queue |
+| `print_send` | `project?`, `plate?`, `name`, `start`, `options { unload_at_end, timelapse, leveling, smooth_plate, mapping?, force?, bed_level, flow_calibrate, time_lapse }` (a U1's toolhead for each filament, -1 for one not used; `force` sends to an empty toolhead) | `{ id, queue }`: the plate's G-code (the bytes `export` writes) put in the queue |
 | `print_queue` | — | `{ jobs: [{ id, name, host, printer, size, start, state (queued, uploading, error, canceling, canceled, completed), said, progress (0–100), stage, message }], busy }` |
 | `print_cancel` | `id` | as `print_queue`: a job waiting is not sent, one going is stopped |
 | `print_queue_clear` | — | as `print_queue`, without the jobs that are over |
-| `printer_files` | `project?` | `{ files: [{ name, size, modified }] }`, newest first; an error for a printer whose files cannot be listed here |
-| `printer_file_delete` | `project?`, `name` | as `printer_files` |
+| `printer_files` | `project?` | `{ files: [{ name, size, modified, printable, print_time, filament_mm, filament_g, filament_type }] }`, newest first; an error for a printer whose files cannot be listed here ("Storage is not available for this printer." for a 404) |
+| `printer_file_delete` | `project?`, `name` | `{ gone }`: true when the file was not there any more (device pass; it answered the list) |
+| `printer_file_check` | `project?`, `name` | `{ state, current, busy }`: what the printer is doing before Storage's "Print" (device pass) |
 | `printer_file_print` | `project?`, `name` | `{ started: true }`; refused while the printer prints |
+| `printer_toolheads` | `project?`, `plate?`, `mapping?`, `force?` | a U1's toolheads against the plate's filaments: `{ printer, state, toolheads [{ index, type, sub_type, vendor, color, loaded, official, nozzle }], filaments [{ index, color, type, used }], mapping (the reference's first offer, or the one given), warnings, problem }` (device pass) |
+| `printer_status` | `project?` | `{ known, online, state, said, filename, message, percent, left, layer, total_layers, bed, nozzles }`, or `{ known: true, online: false, said: "Offline", error }`; `{ known: false }` for a printer this app cannot ask (device pass) |
 | `scene` | `project?` | the project for Prepare in 3D: `{ project, key, bare, bed { box, shape, height, model, texture }, plates: [{ id, name, origin, locked }], plate, colours, objects: [{ id, name, mesh, vertices, triangles, bytes, filaments, filament, parts }], placings: [{ id, object, plate, printable, matrix (16 numbers, column by column), box, over }] }`. An object also has `own_filament` (the filament it is set to itself, or null: what its parts set to "default" print in), `part_list: [{ id, name, kind (part, negative, modifier, support_blocker, support_enforcer, precise_seam), filament, own (the part's own filament, or null for "default"), matrix (16 numbers, column by column: the part's own coordinates to the object's), box (round the part's own mesh), triangles ([first, how many] of the object's mesh), split (whether "Split" can be done to the part), settings (how many settings of its own it has that a part's pages offer) }]`, `settings` (as many of the object's own that an object's pages offer), `ranges: [{ min_z, max_z, layer_height, settings (its own besides its layer height) }]` (its height ranges, lowest first) and `split: { objects, parts }` (whether "Split to objects" and "Split to parts" can be done to it). A part's `id` stays its own through every edit that leaves it there. An object's `id` and a copy's (a placing's) `id` stay theirs through every edit; `mesh` is the number of the object's mesh, the same for as long as the mesh is; `filament` is the object's own when its parts agree; `over` says a copy reaches over the edge of its plate |
 | `scene_edit` | `project?`, `op` and what it takes (section 13) | `{ project, scene, done, made, note, part }`: the project and its scene as they then are, the edit's name in the history, the copies it made, something to tell the person or null, and the part it made (`part_add`) or null |
 | `item_settings` | `project?`, `object`, and `part` (a part's or a modifier's id) or `range` (a height range's place among the object's, from 0) | the settings of that object, part or height range: `{ project, kind: "process", item { kind (object, part, range), object, part, range, name, heights { min_z, max_z } \| null }, keys (what it may set, in the pages' order), values { key: value } (in force from over it: the object's for a part or a range, the project's for an object), set { key: value } (its own), changed, hidden, off (the rules, on its own settings), unread, unread_note (one sentence for all: what the engine does with them), why { key: sentence } (when they differ), notes, counts { page: number set } ("Frequent" among them), refused }`. Its own are changed by `scene_edit` (`item_set` and the rest, section 13) |
@@ -2817,11 +2969,38 @@ from what `edge_engine::sliced_file` reads off the slice and its G-code.
 | `filament_sequence.json`: every plate, the filaments in the order taken up, a nozzle 0 for each | `_add_filament_sequence_file_to_archive` | **added**: `mcbrim_test` plate 2's 51 filaments, in the reference's order |
 | The settings: `full_config_secure` with `print_compatible_printers` filled | Plater.cpp `export_3mf` | **differs**: the settings "Save Project" writes (section "The settings"), which the reference reads back the same |
 
+### The Bambu form
+
+"Export Bambu 3MF" (Plater.cpp `export_bambu_3mf`, bbs_3mf.cpp `bambu_compat`): the project written as
+"Save Project" writes it (`edge_3mf::write_bambu`, `Model::save_bambu`), these changed:
+
+| C++ | Where | Here |
+| --- | --- | --- |
+| `Application` "BambuStudio-02.08.00.00" (the Bambu Studio line the table was made from, patch 0), the same version in `project_settings.config`, the presets inside and `slice_info.config`'s `X-BBL-Client-Version` | `export_version`, `application_tag` | **added**, from the table's version |
+| Keys Bambu Studio does not keep left out: the generated table of 605 keys (type, nullable, variant class, enum values), the keys Bambu's own `handle_legacy` drops not listed | BambuKnownKeys.cpp | **added**: the table as data (`crates/edge-config/src/bambu/known.rs`, written by `tools/make_bambu_keys.py`, `--check` in the pin-bump rule); a twopart_groups U1 project loses 193 keys |
+| The 21 renamed keys and their value conversions (`only_one_wall_top` → `top_one_wall_type` "all top"/"not apply", `reduce_infill_retraction` → "Enabled"/"Disabled", `wipe_tower_wall_type` → `prime_tower_rib_wall`, a negative `ironing_angle` left out, `filament_colour_mode` 0/1 swapped, `filament_multi_colors` "\|" → " ", …); both spellings there: Bambu's name wins | BambuKeyAliases.cpp `make_aliases`, BambuExport.cpp l.650 | **added**, names from the generator, conversions ported by the reference's function names |
+| Enum values: the 86 generated rows and the 15 spellings (`rectilinear` → `zig-zag`, `lateral-lattice` → `2dlattice`, `organic` → `tree_organic`, `ensure_*` → `disabled/partial/enabled`, `left/right/aligned_front` → `aligned`); a value Bambu has not leaves the key out | `translate_enum` | **added** |
+| Types: a list to its first entry (said when they differed), a value to a list, rounding to whole numbers, "mm or %" resolved against `ratio_over` (37 options, + `seam_gap` of the nozzle), mm to Bambu's "%" (`seam_gap`, `wipe_speed`), "true"/"false" to 1/0, "nil" only where Bambu takes it | `fit_type` | **added**; numbers as `%.10g` |
+| The per-extruder-variant layout: printer variants from `extruder_type` + `nozzle_volume_type` when ours does not cover every extruder ("Hybrid" as "Standard"), print layout, one filament slot per (filament, distinct variant) with `filament_self_index` the filament, (normal, silent) pairs, per extruder, the packed flow-variant filament options, `process_flow_support` onto "High Flow" variants | `convert_project`, `fit_layout`, `source_slot` | **added** |
+| Paint penetration 0 written as the shell's depth (an object with its own shells gets its own); `enable_tower_interface_features` from the three tower interface options; `ooze_prevention` left out with a prime tower; `flush_volumes_matrix` repeated per extruder; `extruder_type`, `nozzle_volume_type`, `flush_multiplier` one per extruder; `extruder_nozzle_stats` left out when empty; `different_settings_to_system` in Bambu's names; `print_compatible_printers` present (empty list) | BambuExport.cpp | **added**. **not ported**: the folding of nozzle volume types newer than "TPU High Flow" for the legacy `extruder_nozzle_stats` (this app never fills it), the multi-diameter keys (`multi_nozzle_diameter_mode`, `filament_diameter_map`: no multi-diameter printing here) |
+| The presets inside the project converted (process as Print, filament as one filament, printer as Printer) | bbs_3mf.cpp l.9288 | **added**. **differs**: a preset here holds what differs from its parent (as the reference writes a project's own presets), the reference converts the preset's whole config; a preset that could not be read is left out |
+| Objects', parts' (a Precise Seam part's under its prefix) and height ranges' own settings converted; a plate's bed type Bambu has not left out | bbs_3mf.cpp l.9019, 9416, 9524, 9590 | **added** |
+| Left out: height patterns, showcase, CAD bodies, airbrush fields, texture displacement, Layerling design, pricing, a plate's print history and dual-nozzle confirmation | bbs_3mf.cpp `!m_bambu_compat` | **added** (by entry and key). **not yet**: per-triangle `paint_texture_*` attributes are written as read |
+| The report: dropped, renamed, converted, notes; "Exported for Bambu Studio: N ..." | `Report`, Plater.cpp l.25721 | **added** |
+
+Checked: unit tests key by key (edge-config `bambu::tests`, 15), the writer's form (edge-3mf
+`bambu::tests`, 3: tag, version, settings, object/part/range/plate, presets, own entries left out, the
+own form unchanged), the session (desktop `export::bambu_tests`, 2; `export::connect_tests`, 4;
+`outside::tests`, 10). In the browser (`--serve`, 1280 × 820, dark): "Export Bambu 3MF" on
+twopart_groups.3mf (U1, own settings) said "Exported for Bambu Studio: 193 settings not supported by
+Bambu Studio were left out."; on the A1 mini's presets, sliced, "Send plate to Bambu Connect" shown and
+on, and its box gave the file and the URL. Not checked: Bambu Studio opening the file (no Bambu Studio is
+run from here), Bambu Connect taking the URL, the window's `hand_off` (not clicked).
+
 ### Not yet
 
 - The project's own cover picture when it is saved (pictures are drawn
   for the sliced file only).
-- "Export Bambu 3MF".
 - Reading back, or keeping, what a project is saved with beyond the file:
   "Reopen the open projects at the next start", recent projects, crash
   backups.
@@ -3198,10 +3377,11 @@ its tooltip "not yet: …" saying what it waits for.
 | | Export ▸ "Export all objects as STLs..." | | built; on with objects |
 | | Export ▸ "Export as STEP..." | | off: STEP needs a CAD kernel |
 | | Export ▸ "Export Generic 3MF..." | | built (twentieth pass, section 2, "Files"); on with objects |
-| | Export ▸ "Export Bambu 3MF...", "Export && Open in Bambu Studio..." | | off: no Bambu Studio export |
+| | Export ▸ "Export Bambu 3MF..." | | built: the project in the form Bambu Studio reads as its own (section 15, "The Bambu form"); on with objects (`can_export_model`); the save dialog as "Save Project as..."; then the reference's notification in the status line: "Exported for Bambu Studio." or "Exported for Bambu Studio: %d settings not supported by Bambu Studio were left out." (N = distinct keys left out, project, presets and objects together). **differs**: the reference's log lines (one per scope, one per rename or conversion) are in the call's answer (`notes`), not in a log; the side-stabilizer warning is not given (there are no side stabilizers here) |
+| | Export ▸ "Export && Open in Bambu Studio..." | | built: the same export, then Bambu Studio is started with the file, by the window alone (main.rs `hand_off`, outside.rs `perform`): macOS `open -a BambuStudio <file>`, then `open -b com.bambulab.bambu-studio <file>`; Linux `bambu-studio <file>` when on PATH, else `flatpak run com.bambulab.BambuStudio <file>`; Windows App Paths `bambu-studio.exe` (HKLM/HKCU, both views), then `C:\Program Files\Bambu Studio\bambu-studio.exe`. Not found: "Bambu Studio not found" / "Bambu Studio was not found. The file was exported to %s."; failed: "Could not launch Bambu Studio" / "Failed to launch Bambu Studio (found at %s). The file was exported to %s.". In a browser (`--serve`) nothing is started: the commands are shown. **differs**: (1) on macOS `open`'s answer is waited for, so the bundle-id fallback is reached when the name is not registered (the reference counts `open` itself starting as Bambu Studio started, BambuStudioLauncher.cpp l.375-389, and never reaches it); (2) the boxes have "OK" alone: the reference's "Show in Folder" waits for folders to be shown in the system's file manager (off elsewhere too); (3) Windows: the Uninstall keys and the `.3mf` association (AssocQueryString) are ported as logic and tested but not read from the registry (**not yet**); (4) Preferences' "Bambu Studio path" (`bambu_studio_path`) is not offered (**not yet**) |
 | | Export ▸ "Export plate sliced file..." | Ctrl+G | built (twentieth pass, section 15, "The sliced file"); on when the plate shown is sliced and its G-code written (`can_export_gcode`) |
 | | Export ▸ "Export all plate sliced file..." | | built; on when every plate that holds something is sliced (`can_export_all_gcode`) |
-| | Export ▸ "Send plate to Bambu Connect", "Send all plates to Bambu Connect" | | not shown: the reference takes them out for a printer not Bambu's, and sending to Bambu is not this app's |
+| | Export ▸ "Send plate to Bambu Connect", "Send all plates to Bambu Connect" | | built: shown for a Bambu Lab printer alone (vendor "BBL", or a project's own settings naming a "Bambu Lab" model), as `show_bambu_connect_menu_items`; on when the plate (all plates) is sliced (`can_send_to_bambu_connect`). Writes exactly what "Export plate sliced file" writes (Application `BambuStudio-2.4.9.0` as for every sliced file) with `print_compatible_printers` filled (`fill_print_compatible_printers_for_export`: the printer's system preset where the list is empty), into `<system temp>/EdgeSlicerRS/bambu-connect/<name>.gcode.3mf` (files older than three days cleared), then the URL `bambu-connect://import-file?path=<encodeURIComponent(path)>&name=<encodeURIComponent(name)>&version=1.0.0`, opened by the window alone (`hand_off`). The reference's checks and words: "Slice the plate first, then send it to Bambu Connect." / "Slice all plates first, then send them to Bambu Connect.", Bambu Connect installed first ("Bambu Connect is not installed. ..." with "Open Bambu Connect page" / "Close"), "Bambu Connect could not be opened. ...", "Sent \"%1%\" to Bambu Connect. Choose the printer and start the print there.". **differs**: macOS detection reads `/Applications/Bambu Connect.app` and `~/Applications/Bambu Connect.app` `Info.plist` for the scheme rather than asking NSWorkspace (no AppKit here; found the installed one on this Mac); the folder is `EdgeSlicerRS/` not `EdgeSlicer/`; in a browser the URL and the file are shown, nothing is opened |
 | | Export ▸ "Export G-code..." | | wired: the print button's "Export G-code file" (section 2); on when the plate shown is sliced and its G-code written |
 | | Export ▸ "Export Preset Bundle..." | | wired (sixteenth pass): "Export Preset Bundle", the reference's five kinds ("Printer config bundle(.orca_printer)" and its note, "Filament bundle(.orca_filament)", "Printer presets(.zip)", "Filament presets(.zip)", "Process presets(.zip)"), the presets of the kind each ticked, "Export", then a folder; a zip already there is asked about in the reference's words; "Export successful" with the files written (`presetExport()`, `preset_export`) |
 | | "Preferences", "Themes...", "Costs..." (Windows, Linux) | Ctrl+P | as in the application menu |
@@ -3294,15 +3474,20 @@ What File > Export still waits for (shown, off):
 
 - "Export as STEP...": a CAD kernel to write solids (the reference's
   OpenCASCADE); the engine has triangles only.
-- "Export Bambu 3MF...", "Export && Open in Bambu Studio...": the settings
-  translated to Bambu Studio's names and versions (`BambuExport.cpp`, a
-  table of renamed and dropped options per Bambu Studio line), and for
-  the second, launching another application.
 - "Export Toolpaths as OBJ" is the G-code viewer's menu
   (`init_menubar_as_gcodeviewer` l.4417), not the editor's; not this app's.
 
 ### Errors found in the C++
 
+- BambuStudioLauncher.cpp l.375–389 (macOS): `open -a BambuStudio` is
+  counted as Bambu Studio started as soon as `open` itself starts; `open`
+  ends with 1 when no application of that name is registered, which is
+  never waited for, so the bundle-id fallback (`open -b
+  com.bambulab.bambu-studio`) is never tried and "Bambu Studio not found"
+  never said on macOS. Here `open`'s end is waited for.
+- Config.cpp l.95–101 `escape_strings_cstyle`: an item holding ";" is not
+  quoted, and `unescape_strings_cstyle` reads it back as two items (a
+  filament named "PLA;matte" in a part's settings). Here it is quoted.
 - MainFrame.cpp l.5187–5188, `open_recent_project`: the box for a recent
   project that is gone has one button (`wxOK | wxYES_DEFAULT`) but the
   entry is removed only when it answers `wxID_YES`, which it never does.
