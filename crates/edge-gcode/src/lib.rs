@@ -2150,6 +2150,7 @@ impl Writer<'_> {
         // Lay the layer out to see how long it takes; if that is too short
         // for it to cool, lay it out again, slower.
         let head = self.out.len();
+        let changes_before = self.state.tool_changes;
         let before = self.state.clone();
         self.slowdown = Slowdown::None;
         self.measured.clear();
@@ -2219,11 +2220,7 @@ impl Writer<'_> {
             }
             text.into_bytes()
         };
-        if self
-            .out
-            .windows(RESUME_FAN_MARK.len())
-            .any(|window| window == RESUME_FAN_MARK)
-        {
+        if self.state.tool_changes != changes_before {
             let mut out = Vec::with_capacity(self.out.len());
             let mut rest = &self.out[..];
             while let Some(at) = rest
