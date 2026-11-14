@@ -393,6 +393,7 @@ pub fn slice(job: Job, watch: &dyn Watcher) -> Result<Sliced, Failure> {
         remarks,
     } = job;
     let (mut bodies, objects, plate) = (loaded.bodies, loaded.objects, loaded.plate);
+    let instance_labels = loaded.labels;
     let negatives = loaded.negatives;
     let seam_parts = loaded.parts;
     let painted = loaded.painted;
@@ -2124,7 +2125,7 @@ pub fn slice(job: Job, watch: &dyn Watcher) -> Result<Sliced, Failure> {
         .flat_map(|ground| ground.contour.points.iter().copied())
         .collect();
     let brim = edge_adhesion::brim(&footings, &tower_ground, &adhesion, first_layer_height)?;
-    let plate_facts = plate_facts(
+    let mut plate_facts = plate_facts(
         PlateInput {
             beside,
             supports: &supports_beside,
@@ -2137,6 +2138,20 @@ pub fn slice(job: Job, watch: &dyn Watcher) -> Result<Sliced, Failure> {
         &settings,
         first_layer_height,
     )?;
+    // Each copy as the file labels it for cancelling: a bare model is
+    // one copy, of everything there is to slice.
+    let whole;
+    let meshes: Vec<&Mesh> = if objects.is_empty() {
+        whole = bodies.iter().fold(Mesh::default(), |mut all, body| {
+            all.append(&body.solid, &edge_mesh::Transform::IDENTITY);
+            all
+        });
+        vec![&whole]
+    } else {
+        objects.iter().collect()
+    };
+    plate_facts.labels = object_labels(&meshes, &instance_labels, &settings)?;
+    plate_facts.tower_at = Some(Point2::from_mm(tower_settings.x, tower_settings.y));
     let mut around: Vec<Vec<ExtrusionLoop>> = vec![Vec::new(); layers.len()];
     for (index, lines) in around.iter_mut().enumerate() {
         if adhesion.has_skirt(index) {
@@ -2475,6 +2490,8 @@ fn plate_facts(
         !edge_clip::clip_lines(&outlines, &zone)?.is_empty()
     };
     Ok(edge_gcode::Plate {
+        labels: Vec::new(),
+        tower_at: None,
         first_layer_box,
         first_layer_centre,
         in_head_wrap_detect_zone,
@@ -2489,6 +2506,65 @@ fn plate_facts(
             })
             .collect(),
     })
+}
+
+/// Each copy on the plate as the file labels it for cancelling (GCode.cpp
+/// `assign_object_and_instance_ids`, `PrintInstance::get_convex_hull_2d`):
+/// numbered object by object in the project's order, each one's copies in
+/// theirs, as the reference's print numbers them; its outline the convex
+/// hull of its mesh across the bed, thinned by `exclude_object_tolerance`
+/// and rounded to 0.1 mm; its middle that of its box. `meshes` and
+/// `labels` go together, copy by copy; with no labels nothing is
+/// labelled.
+fn object_labels(
+    meshes: &[&Mesh],
+    labels: &[crate::InstanceLabel],
+    settings: &Settings,
+) -> Result<Vec<edge_gcode::ObjectLabel>, Failure> {
+    if labels.len() != meshes.len() {
+        return Ok(Vec::new());
+    }
+    let tolerance = settings
+        .float("exclude_object_tolerance")?
+        .unwrap_or(0.5)
+        .max(0.0);
+    let mut order: Vec<usize> = (0..labels.len()).collect();
+    order.sort_by_key(|at| (labels[*at].object, labels[*at].copy));
+    let mut out: Vec<edge_gcode::ObjectLabel> = Vec::with_capacity(order.len());
+    let (mut object, mut last, mut copy) = (0, None, 0);
+    for (unique, at) in order.into_iter().enumerate() {
+        let label = &labels[at];
+        match last {
+            Some(previous) if previous == label.object => copy += 1,
+            Some(_) => {
+                object += 1;
+                copy = 0;
+            }
+            None => {}
+        }
+        last = Some(label.object);
+        let mesh = meshes[at];
+        let centre = mesh.bounds().map_or([0.0; 2], |(lo, hi)| {
+            [
+                (f64::from(lo[0]) + f64::from(hi[0])) / 2.0,
+                (f64::from(lo[1]) + f64::from(hi[1])) / 2.0,
+            ]
+        });
+        let corners = mesh
+            .vertices
+            .iter()
+            .map(|v| Point2::from_mm(f64::from(v[0]), f64::from(v[1])));
+        out.push(edge_gcode::ObjectLabel {
+            name: label.name.clone(),
+            object,
+            copy,
+            unique,
+            identify: label.identify,
+            centre,
+            hull: edge_gcode::label_outline(corners, tolerance),
+        });
+    }
+    Ok(out)
 }
 
 /// One object's first layer, as a sliced file's boxes give it.

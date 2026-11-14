@@ -1703,6 +1703,38 @@ tower is now moved from 15 x 220 to 15 x 192.194, as there, and is the
 reference's length (73.77 m). Still not done: the tower turned end for
 end on alternate layers.
 
+**Objects labelled for cancelling** (2026-11-13). Each copy on the plate
+is labelled in the file so a printer can cancel it while printing, as the
+reference labels them (GCode.cpp `process_layer`, `set_object_info`;
+`edge-gcode`'s `labels.rs`): on a Bambu Lab printer always (the reference
+turns it on there whatever `exclude_object` says), with `M624` and the
+copy's bit in base 64, `M625`, the comments naming its number and the
+numbers in the header (`; model label id:`), and the sliced file's
+`label_object_enabled` true; elsewhere where `exclude_object` is on, as
+the firmware takes it: Klipper's `EXCLUDE_OBJECT_DEFINE` (name, middle and
+outline, the convex hull thinned by `exclude_object_tolerance` and rounded
+to 0.1 mm), `_START` and `_END`; Marlin's `M486 S<n>`, `M486 A<name>`,
+`M486 S-1`; RepRapFirmware's `M486 S<n> A"<name>"`. Copies are named
+`<object>_id_<n>_copy_<m>`, numbered object by object in the project's
+order; a Bambu Lab printer knows them by the sliced file's `identify_id`.
+With labels on, each copy's brim (one it shares with another is printed
+first, belonging to none), support, walls and fill are printed between its
+start and stop, copy after copy; the skirt and the prime tower belong to
+none. The start is written with the copy's first travel, after the
+retraction; the stop with the next travel, at the layer change, or before
+a tool change. The `; printing object` comments (`gcode_label_objects`)
+go with the labels. Not as the reference, on purpose: where a tool is
+changed in place (the U1) the reference writes the stop after the change
+G-code, so a printer skipping that copy skips the retraction, wipe and lift
+before the change too; here the stop comes before the change. And the
+copies a tool prints on a layer with a prime tower are chained from the
+tower, as the reference means to, where it starts from the bed's corner
+(it makes its point from `wipe_tower_x` in millimetres taken as
+nanometres), so the copies come in another order there. With labels off
+(`exclude_object` off, not a Bambu Lab printer) nothing changes, and the
+`; printing object` comments are not written, where the reference writes
+them whenever `gcode_label_objects` is on.
+
 **A prime tower without sparse layers** (`wipe_tower_no_sparse_layers`,
 2026-11-12). Both towers leave out the layers with no tool change and
 stand only as tall as the layers they lay, each layer's top the sum of
@@ -1924,10 +1956,9 @@ own speed and length (`G1 E-1.853 F12232.572` there, `E-1.88 F15000`
 here); the tower's own comments on a layer with no change
 (`; CP EMPTY GRID`); on the A1 the fan speeds the cooling
 works out, and, above the tower, the timelapse picture the reference
-leaves out (below). Not done, and listed by the check as left out: the
-objects labelled for skipping (`M624`/`M625`, `; printing object`, and
-Klipper's `EXCLUDE_OBJECT_*`, which the U1's file lacks too), progress at
-each change of the figure (`M73`, here at each layer). The reference's
+leaves out (below). Not done, and listed by the check as left out:
+progress at each change of the figure (`M73`, here at each layer). The
+objects labelled for skipping are done since (below) and compared. The reference's
 own files timed here come to within 7 s on the cubes and 35 s on the
 two-filament prints (about 1.5 s a tool change, not yet found).
 
@@ -2044,7 +2075,7 @@ Not done in G-code: the older tree styles (`tree_slim`,
 rafts, brims inside holes, draft shields, seams put by Precise Seam
 parts (read as helpers, not printed, with a note), a fan speed of its own for bridges over infill, walls
 slowed over curled edges, preview pictures in the file
-(thumbnails), and object labels for cancelling (`EXCLUDE_OBJECT`). Bridge fill keeps its own speed along its whole
+(thumbnails). Bridge fill keeps its own speed along its whole
 length, where the reference also slows it near its anchors. A setting that asks for one of these is listed as a
 note when the file is written. A template that needs a variable not
 provided stops the export with the variable's name.

@@ -308,8 +308,15 @@ pub fn sliced_plate<'a>(slice: &PlateSlice<'a>, copies: &[(u32, String)]) -> Sli
             .filter(|grams| *grams != 0.0),
         first_layer_time: notes.first_layer_seconds,
         support_used: flag("enable_support"),
-        // Objects are not labelled for cancelling (edge-gcode notes it).
-        label_object_enabled: false,
+        // A Bambu Lab printer's copies are always labelled for skipping
+        // (`M624`/`M625`), and the reference says so here
+        // (GCode.cpp `_do_export`, `label_object_enabled`); on any other
+        // printer it says false, whatever the file has.
+        label_object_enabled: settings
+            .text("printer_model")
+            .filter(|model| !model.is_empty())
+            .or(settings.text("printer_settings_id"))
+            .is_some_and(|name| name.starts_with("Bambu Lab")),
         support_material_on_wipe_tower: notes.support_on_tower,
         has_filament_switcher: flag("has_filament_switcher"),
         filament_maps: maps.clone(),

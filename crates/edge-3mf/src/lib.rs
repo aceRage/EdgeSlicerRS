@@ -673,6 +673,30 @@ impl Project {
             .collect()
     }
 
+    /// Which object and copy each of [`Project::instance_meshes`] is, in
+    /// the same order: for naming and numbering the copies in G-code that
+    /// labels them for cancelling.
+    pub fn instance_places(&self, plate: Option<usize>) -> Vec<InstanceRef> {
+        let selected: Vec<InstanceRef> = match plate {
+            Some(index) => self.plates[index].instances.clone(),
+            None => (self.objects.iter().enumerate())
+                .flat_map(|(object, o)| {
+                    (0..o.instances.len()).map(move |instance| InstanceRef { object, instance })
+                })
+                .collect(),
+        };
+        selected
+            .into_iter()
+            .filter(|at| {
+                let object = &self.objects[at.object];
+                object.instances[at.instance].printable
+                    && (object.parts.iter()).any(|part| {
+                        part.kind == PartKind::Normal && !part.mesh.triangles.is_empty()
+                    })
+            })
+            .collect()
+    }
+
     /// Each printable instance on a plate (or in the whole project for
     /// `None`) as a mesh of its own, in world coordinates and in the order
     /// the plate lists them. Negative parts are left out. For what depends

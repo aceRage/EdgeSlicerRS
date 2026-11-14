@@ -62,7 +62,7 @@ pub use edge_slice::layering::EditAction;
 pub use followed::{Followed, followed, followed_in, settled};
 pub use job::{BedType, Chosen, Job, Overrides, Sourced, prepare, prepare_noted};
 pub use layering::{ObjectLayers, ProfileEdit};
-pub use load::{Loaded, Opened, OwnObject, OwnVolume, PlateInfo, open};
+pub use load::{InstanceLabel, Loaded, Opened, OwnObject, OwnVolume, PlateInfo, open};
 pub use model::SettingChange;
 pub use model::{
     ArrangeOptions, ArrangeScope, Arranged, Bed, BooleanFailure, CONNECTOR_HOLE_OVERLAP,

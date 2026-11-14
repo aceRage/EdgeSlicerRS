@@ -92,6 +92,7 @@ mod tests {
             precise_seams: false,
             own: Vec::new(),
             objects: Vec::new(),
+            labels: Vec::new(),
             negatives: Vec::new(),
             parts: Vec::new(),
             plate: 0,

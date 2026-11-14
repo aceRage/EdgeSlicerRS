@@ -3836,6 +3836,7 @@ fn the_plates_first_layer_and_the_filaments_reach_the_templates() {
             first_layer_centre: Some([128.0, 126.0]),
             in_head_wrap_detect_zone: true,
             objects: vec![[118.0, 118.0, 138.0, 138.0]],
+            ..Plate::default()
         },
         ..profile(&[(
             "start",
@@ -3977,4 +3978,94 @@ fn bambus_tower_frames_its_tool_change_and_ends_the_old_filament_first() {
     assert!(change.contains("G4 S0\nG92 E0\n; CP TOOLCHANGE END\n;------------------\n"));
     // The filament's end G-code is written once.
     assert_eq!(text.matches("; filament end gcode").count(), 2);
+}
+
+/// A copy labelled for cancelling, a 10 mm square at `x`.
+fn copy_at(name: &str, object: usize, identify: u32, x: f64) -> ObjectLabel {
+    ObjectLabel {
+        name: name.to_owned(),
+        object,
+        copy: 0,
+        unique: object,
+        identify,
+        centre: [x + 5.0, 5.0],
+        hull: [(x, 0.0), (x + 10.0, 0.0), (x + 10.0, 10.0), (x, 10.0)]
+            .map(|(x, y)| Point2::from_mm(x, y))
+            .to_vec(),
+    }
+}
+
+#[test]
+fn each_copy_is_labelled_round_its_own_islands() {
+    // Two squares 30 mm apart, the second's island given first.
+    let loops = [wall(30.0, 0.0, 10.0, 0), wall(0.0, 0.0, 10.0, 0)];
+    let fill = [
+        line((2.0, 5.0), (8.0, 5.0), Role::SolidInfill),
+        line((32.0, 5.0), (38.0, 5.0), Role::SolidInfill),
+    ];
+    let layers = one_layer(&loops, &[0..1, 1..2], &fill);
+    let labelled = |labels: Option<Labelling>, comments: bool| {
+        let mut settings = basic();
+        settings.labels = labels;
+        settings.label_comments = comments;
+        settings.plate.labels = vec![copy_at("a b", 0, 7, 0.0), copy_at("c", 1, 3, 30.0)];
+        print(&layers, &settings).0
+    };
+    let plain = print(&layers, &basic()).0;
+    // Nothing labelled: nothing written of it.
+    assert_eq!(labelled(None, true), plain);
+    let klipper = labelled(Some(Labelling::Klipper), false);
+    assert!(klipper.contains(
+        "EXCLUDE_OBJECT_DEFINE NAME=a_b_id_0_copy_0 CENTER=5,5 POLYGON=[[0,0],[10,0],[10,10],[0,10],[0,0]]\n"
+    ));
+    // Each copy's walls and fill between its start and its end, the
+    // copies one after the other, in the plate's order of them.
+    let marks: Vec<&str> = (klipper.lines())
+        .filter(|line| {
+            line.starts_with("EXCLUDE_OBJECT_START") || line.starts_with("EXCLUDE_OBJECT_END")
+        })
+        .collect();
+    assert_eq!(marks.len(), 4);
+    let between = |text: &str, from: &str, to: &str| -> Vec<f64> {
+        let start = text.find(from).unwrap();
+        let end = start + text[start..].find(to).unwrap();
+        moves(&text[start..end])
+            .filter_map(|line| word(line, 'X'))
+            .collect()
+    };
+    for (name, low) in [("a_b_id_0_copy_0", 0.0), ("c_id_1_copy_0", 30.0)] {
+        let xs = between(
+            &klipper,
+            &format!("EXCLUDE_OBJECT_START NAME={name}"),
+            &format!("EXCLUDE_OBJECT_END NAME={name}"),
+        );
+        assert!(!xs.is_empty());
+        assert!(
+            xs.iter().all(|x| (low - 1.0..=low + 11.0).contains(x)),
+            "{name}: {xs:?}"
+        );
+    }
+    // The same lines laid, the first copy's first.
+    let laid = |text: &str| -> f64 {
+        moves(text)
+            .filter_map(|line| word(line, 'E'))
+            .filter(|e| *e > 0.0)
+            .sum()
+    };
+    assert!((laid(&klipper) - laid(&plain)).abs() < 1e-9);
+    assert!(
+        klipper.find("NAME=a_b_id_0_copy_0\nG1").unwrap()
+            < klipper.find("START NAME=c_id").unwrap()
+    );
+    // Bambu Lab's: numbered in the header, each by its bit, with comments.
+    let bambu = labelled(Some(Labelling::Bambu), true);
+    assert!(bambu.contains("; model label id: 3,7\n"));
+    assert!(bambu.contains("; printing object a b id:0 copy 0\n"));
+    assert!(bambu.contains("; start printing object, unique label id: 7\nM624 AgAAAAAAAAA=\n"));
+    assert!(bambu.contains("; stop printing object, unique label id: 3\nM625\n"));
+    assert!(!bambu.contains("EXCLUDE_OBJECT"));
+    // Marlin's: each defined before the print, then by number.
+    let marlin = labelled(Some(Labelling::Marlin), false);
+    assert!(marlin.contains("M486 S0\nM486 Aa_b_id_0_copy_0\nM486 S-1\n"));
+    assert_eq!(marlin.matches("M486 S-1\n").count(), 4);
 }

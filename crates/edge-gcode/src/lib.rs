@@ -8,7 +8,7 @@
 //! It has not been run on a printer. Without a profile a generic preamble
 //! stands in and the output is only good for viewing.
 //!
-//! Not done: progress (`M73`) and object labels.
+//! Not done: progress (`M73`) as the reference places it.
 
 mod arc;
 mod avoid;
@@ -18,6 +18,7 @@ mod contour;
 mod cooling;
 mod flush;
 mod inside;
+mod labels;
 mod overhang;
 mod scarf;
 mod seam;
@@ -47,11 +48,13 @@ use rayon::prelude::*;
 
 pub use contour::Contours;
 pub use edge_avoid::{Detour, Slices};
+pub use labels::label_outline;
 pub use scarf::{Scarf, ScarfSeam};
 pub use seam::Seam;
 pub use seam_plan::{SeamMeasures, SeamMesh, SeamObject, SeamPart, SeamScene, measure_seams};
 pub use settings::{
-    Lift, OverhangFan, Plate, PrintSettings, Timelapse, WallDirection, WallOrder, gcode_template,
+    Labelling, Lift, ObjectLabel, OverhangFan, Plate, PrintSettings, Timelapse, WallDirection,
+    WallOrder, gcode_template,
 };
 
 #[derive(Debug, thiserror::Error)]
@@ -522,6 +525,7 @@ pub fn write_timed(
             },
             first_layer_seconds: 0.0,
             estimate_at: None,
+            defines: 0,
             first_layer_bed: layers
                 .iter()
                 .take_while(|layer| layer.z == layers[0].z)
@@ -596,7 +600,7 @@ pub fn write_timed(
     let mut whole = std::mem::take(&mut writer.out);
     let mut reached: Vec<(usize, f64)> = Vec::with_capacity(groups.len() + 1);
     if let Some(start) = find(&whole, EXECUTABLE_START) {
-        reached.push((start + EXECUTABLE_START.len(), 0.0));
+        reached.push((start + EXECUTABLE_START.len() + writer.file.defines, 0.0));
     }
     // Tool changes: where in the file, the tool taken up, its temperature.
     let mut changes: Vec<(usize, usize, f64)> = Vec::new();
@@ -1167,6 +1171,9 @@ struct FileInfo {
     estimate_at: Option<usize>,
     /// The hottest bed any filament of the first layer asks for.
     first_layer_bed: Option<f64>,
+    /// How long the copies' definitions are that follow the start of
+    /// the executable block, which the first progress line comes after.
+    defines: usize,
 }
 
 /// What tells one measured wall from another: where it starts and ends,
@@ -1321,9 +1328,76 @@ struct State {
     /// The height last said in the file (`Settings::own_heights`).
     height_tag: f64,
     summary: Summary,
+    /// What is still to be written of the labels of the copies (see
+    /// `labels.rs`): the start of the copy begun, with its first travel
+    /// or line, and the stop of the one finished, with the next travel.
+    label_start: Option<String>,
+    label_end: Option<String>,
 }
 
 impl Writer<'_> {
+    /// How the copies are labelled for cancelling, where they are and
+    /// there are copies to label.
+    fn labelling(&self) -> Option<Labelling> {
+        self.all
+            .first()
+            .and_then(|first| first.labels.filter(|_| !first.plate.labels.is_empty()))
+    }
+
+    /// The copies, as labelled.
+    fn copies(&self) -> &[ObjectLabel] {
+        self.all.first().map_or(&[], |first| &first.plate.labels)
+    }
+
+    /// Writes what is waiting of the labels: the stop of the copy just
+    /// finished, then the start of the next (GCodeWriter.cpp
+    /// `add_object_change_labels`). Extrusion is relative, so nothing is
+    /// reset after a stop.
+    fn flush_labels(&mut self) -> io::Result<()> {
+        if let Some(stop) = self.state.label_end.take() {
+            self.out.extend_from_slice(stop.as_bytes());
+        }
+        if let Some(start) = self.state.label_start.take() {
+            self.out.extend_from_slice(start.as_bytes());
+        }
+        Ok(())
+    }
+
+    /// A copy begins: its comment, and its start to be written with its
+    /// first travel or line.
+    fn begin_copy(&mut self, copy: usize) -> io::Result<()> {
+        let Some(how) = self.labelling() else {
+            return Ok(());
+        };
+        let label = &self.copies()[copy];
+        if self.all[0].label_comments {
+            let (named, _) = labels::comments(label);
+            self.out.extend_from_slice(named.as_bytes());
+        }
+        let (start, _) = labels::start_and_stop(how, self.copies(), copy);
+        self.state.label_start = Some(start);
+        Ok(())
+    }
+
+    /// A copy is done: its comment, and its stop to be written with the
+    /// next travel; none where its start never was, nothing having been
+    /// printed of it.
+    fn end_copy(&mut self, copy: usize) -> io::Result<()> {
+        let Some(how) = self.labelling() else {
+            return Ok(());
+        };
+        let label = &self.copies()[copy];
+        if self.all[0].label_comments {
+            let (_, stopped) = labels::comments(label);
+            self.out.extend_from_slice(stopped.as_bytes());
+        }
+        if self.state.label_start.take().is_none() {
+            let (_, stop) = labels::start_and_stop(how, self.copies(), copy);
+            self.state.label_end = Some(stop);
+        }
+        Ok(())
+    }
+
     fn preamble(&mut self, several: bool) -> Result<(), GcodeError> {
         let s = self.settings;
         let mut started = String::new();
@@ -1352,6 +1426,15 @@ impl Writer<'_> {
             self.file.estimate_at = Some(self.out.len());
         }
         writeln!(self.out, "; total layer number: {}", self.file.layers)?;
+        // A Bambu Lab printer's list of the copies it may skip, by number
+        // (GCode.cpp `_do_export`, "; model label id: ").
+        if self.labelling() == Some(Labelling::Bambu) {
+            let numbers: Vec<String> = labels::sorted_numbers(self.copies())
+                .iter()
+                .map(u32::to_string)
+                .collect();
+            writeln!(self.out, "; model label id: {}", numbers.join(","))?;
+        }
         for key in ["filament_density", "filament_diameter"] {
             if let Some((_, value)) = s.config.iter().find(|(name, _)| name == key) {
                 writeln!(self.out, "; {key}: {value}")?;
@@ -1388,6 +1471,13 @@ impl Writer<'_> {
             writeln!(self.out)?;
         }
         self.out.extend_from_slice(EXECUTABLE_START);
+        // Every copy as the firmware is told of it, ahead of the rest
+        // (GCode.cpp `set_object_info`).
+        if let Some(how) = self.labelling() {
+            let defines = labels::definitions(how, self.copies());
+            self.file.defines = defines.len();
+            self.out.extend_from_slice(defines.as_bytes());
+        }
         if let Some(envelope) = &s.machine_envelope {
             self.out.extend_from_slice(envelope.as_bytes());
         }
@@ -2071,6 +2161,9 @@ impl Writer<'_> {
         if s.retract_when_changing_layer {
             self.retract(true)?;
         }
+        // The last copy's stop, before the nozzle leaves the layer
+        // (GCode.cpp `change_layer`).
+        self.flush_labels()?;
         self.variables.set("layer_num", Value::Int(index as i64));
         self.state.pictured = false;
         if let Some((_, Timelapse::LayerStart { .. })) = &s.time_lapse {
@@ -2255,6 +2348,16 @@ impl Writer<'_> {
             {
                 self.timelapse(layer.z)?;
             }
+            // The stop of the copy the last tool printed, before the tool
+            // change and the tower, which belong to no copy (GCode.cpp
+            // `append_tcr`), and before the change's retraction, which a
+            // printer skipping the copy must still make. Not as the
+            // reference where the tool is changed in place
+            // (`append_tcr2`): it leaves the stop to the first travel
+            // after the change G-code, so the retraction, wipe and lift
+            // before the change are part of that copy and are skipped
+            // with it.
+            self.flush_labels()?;
             // To a prime tower, on it and away from it are moves outside
             // the part (GCode.cpp `append_tcr`: `use_external_mp_once`
             // before the move to the tower and after the tower). The
@@ -2348,41 +2451,6 @@ impl Writer<'_> {
             // Straight up off the tower before going anywhere.
             self.leave_tower()?;
             self.state.routing.outside_once |= towered;
-            // So are the moves to and between skirt and brim (GCode.cpp
-            // `use_external_mp` round each). From the first layer's
-            // skirt, and from a brim, the move to whatever is printed
-            // next goes straight (`disable_once`).
-            let mut before = None;
-            for around in layer.around {
-                let points = &around.polygon.points;
-                if points.len() < 3 {
-                    continue;
-                }
-                self.state.routing.kind = Kind::Outside;
-                if before == Some(Role::Skirt) && around.role != Role::Skirt {
-                    self.state.routing.straight_once |= self.state.first_layer;
-                }
-                before = Some(around.role);
-                // Skirt and brim start wherever is nearest.
-                let (edge, start) = match self.state.position {
-                    Some(at) => seam::project(points, at),
-                    None => (0, points[0]),
-                };
-                let mut path = seam::open_at(points, edge, start);
-                seam::clip_end(&mut path, self.settings.seam_gap);
-                self.path(&path, around.role, &around.flow, false, true)?;
-            }
-            self.state.routing.straight_once |= match before {
-                Some(Role::Skirt) => self.state.first_layer,
-                Some(_) => true,
-                None => false,
-            };
-            // Supports stand outside the part, and their moves are
-            // routed by its outline wherever they go (the reference's
-            // `is_support_layer`).
-            self.state.routing.kind = Kind::Support;
-            self.lines(&layer.support.iter().collect::<Vec<_>>(), &[])?;
-            self.state.routing.kind = Kind::Part;
             // Ironing has a fan speed of its own once the fan is on at
             // all (CoolingBuffer.cpp: not on the first layers it is
             // kept off for).
@@ -2391,18 +2459,88 @@ impl Writer<'_> {
                 .ironing_fan_speed
                 .filter(|_| index >= self.settings.close_fan_the_first_x_layers)
                 .map(cooling::pwm);
-            // A region with settings of its own lays its walls and fill by
-            // them: its speeds, accelerations and flow, as the reference
-            // reads them from the region (GCode.cpp `extrude_entity`
-            // takes the region's config for each extrusion). The tool's
-            // own come back after.
-            let own = self.settings;
-            if let Some(region) = layer.region.and_then(|at| self.regions.get(at)) {
-                self.settings = region;
+            let picture = traditional && !towered_layer;
+            let homes = homes(layer);
+            if self.labelling().is_none() {
+                let around: Vec<&ExtrusionLoop> = layer.around.iter().collect();
+                self.around(&around)?;
+                self.support(&layer.support.iter().collect::<Vec<_>>())?;
+                let islands: Vec<usize> = (0..layer.islands.len()).collect();
+                self.part_islands(layer, &homes, &islands, None, ironing_fan, picture)?;
+                continue;
             }
-            let laid = self.islands(layer, ironing_fan, traditional && !towered_layer);
-            self.settings = own;
-            laid?;
+            // Copies labelled for cancelling are printed one after
+            // another, each one's brim, support, walls and fill between
+            // its start and its stop (GCode.cpp `process_layer`, the
+            // loop over `instances_to_print`). The skirt, and a brim
+            // several copies share, come first, belonging to none.
+            let copies = self.copies().to_vec();
+            let brims: Vec<Option<usize>> = (layer.around.iter())
+                .map(|around| match around.role {
+                    Role::Skirt => None,
+                    _ => labels::brim_owner(&copies, around),
+                })
+                .collect();
+            let support_of: Vec<usize> = (layer.support.iter())
+                .map(|line| {
+                    line.points
+                        .first()
+                        .map_or(0, |at| labels::owner(&copies, *at))
+                })
+                .collect();
+            let island_of: Vec<usize> = (layer.islands.iter())
+                .map(|range| {
+                    let first = (layer.loops[range.clone()].iter())
+                        .find_map(|wall| wall.polygon.points.first().copied());
+                    first.map_or(0, |at| labels::owner(&copies, at))
+                })
+                .collect();
+            // Fill with no island of its own goes to the copy it lies on.
+            let loose_of: Vec<usize> = (layer.paths.iter().zip(&homes))
+                .map(|(path, home)| match *home == layer.islands.len() {
+                    true => path
+                        .points
+                        .first()
+                        .map_or(0, |at| labels::owner(&copies, *at)),
+                    false => island_of[*home],
+                })
+                .collect();
+            let shared: Vec<&ExtrusionLoop> = (layer.around.iter().zip(&brims))
+                .filter(|(_, owner)| owner.is_none())
+                .map(|(around, _)| around)
+                .collect();
+            self.around(&shared)?;
+            let mut present = vec![false; copies.len()];
+            for owner in brims.iter().flatten().chain(&support_of).chain(&island_of) {
+                present[*owner] = true;
+            }
+            for (owner, home) in loose_of.iter().zip(&homes) {
+                if *home == layer.islands.len() {
+                    present[*owner] = true;
+                }
+            }
+            let tower = (self.settings.prime_tower && self.file.filaments.len() > 1)
+                .then(|| self.settings.plate.tower_at.or(self.all[0].plate.tower_at))
+                .flatten();
+            for copy in labels::order(&copies, &present, tower) {
+                self.begin_copy(copy)?;
+                let own: Vec<&ExtrusionLoop> = (layer.around.iter().zip(&brims))
+                    .filter(|(_, owner)| **owner == Some(copy))
+                    .map(|(around, _)| around)
+                    .collect();
+                self.around(&own)?;
+                let support: Vec<&ExtrusionPath> = (layer.support.iter().zip(&support_of))
+                    .filter(|(_, owner)| **owner == copy)
+                    .map(|(line, _)| line)
+                    .collect();
+                self.support(&support)?;
+                let islands: Vec<usize> = (0..layer.islands.len())
+                    .filter(|island| island_of[*island] == copy)
+                    .collect();
+                let loose: Vec<bool> = loose_of.iter().map(|owner| *owner == copy).collect();
+                self.part_islands(layer, &homes, &islands, Some(&loose), ironing_fan, picture)?;
+                self.end_copy(copy)?;
+            }
         }
         if traditional && !towered_layer && !self.state.pictured {
             self.timelapse(parts[0].z)?;
@@ -2430,6 +2568,8 @@ impl Writer<'_> {
         if bambu && (*place == Timelapse::Traditional || s.retract_when_changing_layer) {
             self.retract(false)?;
         }
+        // The copy just done is not part of the picture's moves.
+        self.flush_labels()?;
         self.variables.set("layer_z", Value::Float(z));
         let text = self.custom("time_lapse_gcode", template)?;
         // Its moves count towards the layer's time for cooling, as the
@@ -2520,23 +2660,96 @@ impl Writer<'_> {
     /// last its ironing, over all of that (GCode.cpp `process_layer`).
     /// Fill in no island comes last. `ironing_fan` is the fan's speed
     /// while ironing, when ironing has one of its own on this layer.
-    fn islands(
+    /// Skirt and brim loops, nearest first (`layer.around`).
+    fn around(&mut self, loops: &[&ExtrusionLoop]) -> io::Result<()> {
+        // So are the moves to and between skirt and brim (GCode.cpp
+        // `use_external_mp` round each). From the first layer's
+        // skirt, and from a brim, the move to whatever is printed
+        // next goes straight (`disable_once`).
+        let mut before = None;
+        for around in loops {
+            let points = &around.polygon.points;
+            if points.len() < 3 {
+                continue;
+            }
+            self.state.routing.kind = Kind::Outside;
+            if before == Some(Role::Skirt) && around.role != Role::Skirt {
+                self.state.routing.straight_once |= self.state.first_layer;
+            }
+            before = Some(around.role);
+            // Skirt and brim start wherever is nearest.
+            let (edge, start) = match self.state.position {
+                Some(at) => seam::project(points, at),
+                None => (0, points[0]),
+            };
+            let mut path = seam::open_at(points, edge, start);
+            seam::clip_end(&mut path, self.settings.seam_gap);
+            self.path(&path, around.role, &around.flow, false, true)?;
+        }
+        self.state.routing.straight_once |= match before {
+            Some(Role::Skirt) => self.state.first_layer,
+            Some(_) => true,
+            None => false,
+        };
+        Ok(())
+    }
+
+    /// Support lines. Supports stand outside the part, and their moves
+    /// are routed by its outline wherever they go (the reference's
+    /// `is_support_layer`).
+    fn support(&mut self, lines: &[&ExtrusionPath]) -> io::Result<()> {
+        self.state.routing.kind = Kind::Support;
+        self.lines(lines, &[])?;
+        self.state.routing.kind = Kind::Part;
+        Ok(())
+    }
+
+    /// The islands `chosen` of a part, and of the fill with no island
+    /// of its own that `loose` picks (all of it for none), in the
+    /// settings of the part's region where it has its own.
+    fn part_islands(
         &mut self,
         layer: &Layer<'_>,
+        homes: &[usize],
+        chosen: &[usize],
+        loose: Option<&[bool]>,
         ironing_fan: Option<u8>,
         picture: bool,
     ) -> Result<(), GcodeError> {
-        let homes = homes(layer);
+        // A region with settings of its own lays its walls and fill by
+        // them: its speeds, accelerations and flow, as the reference
+        // reads them from the region (GCode.cpp `extrude_entity`
+        // takes the region's config for each extrusion). The tool's
+        // own come back after.
+        let own = self.settings;
+        if let Some(region) = layer.region.and_then(|at| self.regions.get(at)) {
+            self.settings = region;
+        }
+        let laid = self.islands(layer, homes, chosen, loose, ironing_fan, picture);
+        self.settings = own;
+        laid
+    }
+
+    fn islands(
+        &mut self,
+        layer: &Layer<'_>,
+        homes: &[usize],
+        chosen: &[usize],
+        loose: Option<&[bool]>,
+        ironing_fan: Option<u8>,
+        picture: bool,
+    ) -> Result<(), GcodeError> {
         let fill = |island: usize| -> Vec<&ExtrusionPath> {
-            layer
-                .paths
-                .iter()
-                .zip(&homes)
-                .filter(|(_, home)| **home == island)
-                .map(|(path, _)| path)
+            (layer.paths.iter().enumerate())
+                .zip(homes)
+                .filter(|((at, _), home)| {
+                    **home == island
+                        && (island < layer.islands.len() || loose.is_none_or(|loose| loose[*at]))
+                })
+                .map(|((_, path), _)| path)
                 .collect()
         };
-        let mut remaining: Vec<usize> = (0..layer.islands.len()).collect();
+        let mut remaining: Vec<usize> = chosen.to_vec();
         while !remaining.is_empty() {
             let nearest = self.nearest(remaining.iter().map(|&island| {
                 layer.loops[layer.islands[island].clone()]
@@ -4148,6 +4361,9 @@ impl Writer<'_> {
             // Nothing to wipe once the nozzle has moved off the line.
             self.state.wipe_path.clear();
         }
+        // A copy's labels, after the retraction and before the move
+        // (GCode.cpp `travel_to`).
+        self.flush_labels()?;
         self.state.routing.passed();
         // The lift is made over the first stretch of the way and the
         // rest is gone along at that height (GCode.cpp `travel_to`,
@@ -4693,6 +4909,9 @@ impl Writer<'_> {
     /// Brings the nozzle down to the layer and undoes a retraction, ready
     /// to extrude.
     fn prime(&mut self) -> io::Result<()> {
+        // A copy's labels, before the line it starts with (GCode.cpp
+        // `_extrude`), where no travel took them.
+        self.flush_labels()?;
         let s = self.settings;
         // The layer's height, or the foot of a scarf seam.
         let z = self.laying_height();
@@ -4759,6 +4978,7 @@ impl Writer<'_> {
             self.out.extend_from_slice(off.as_bytes());
         }
         self.retract(false)?;
+        self.flush_labels()?;
         writeln!(self.out, "M106 S0")?;
         if s.auxiliary_fan {
             writeln!(self.out, "M106 P2 S0")?;
