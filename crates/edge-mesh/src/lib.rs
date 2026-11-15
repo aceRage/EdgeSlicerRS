@@ -10,6 +10,7 @@ pub mod primitives;
 #[cfg(test)]
 mod raw;
 pub mod raycast;
+pub mod remesh;
 pub mod selector;
 pub mod simplify;
 pub mod split;

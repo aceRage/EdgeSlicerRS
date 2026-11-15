@@ -107,10 +107,24 @@ impl Model {
         mesh: Mesh,
         stat: MeshStat,
     ) -> Result<bool, Failure> {
+        self.set_part_meshes(bed, object, vec![(part, mesh, stat)])
+    }
+
+    /// [`Model::set_part_mesh`] for several parts of one object at once
+    /// ("Repair" of a whole object).
+    pub fn set_part_meshes(
+        &mut self,
+        bed: Option<&Bed>,
+        object: u64,
+        meshes: Vec<(u64, Mesh, MeshStat)>,
+    ) -> Result<bool, Failure> {
         let at = self.object_at(object)?;
-        let index = self.part_at(at, part)?;
-        if mesh.triangles.is_empty() {
-            return Err(refused("the new mesh has no triangles"));
+        let mut places = Vec::with_capacity(meshes.len());
+        for (part, mesh, _) in &meshes {
+            places.push(self.part_at(at, *part)?);
+            if mesh.triangles.is_empty() {
+                return Err(refused("the new mesh has no triangles"));
+            }
         }
         let shape = self.objects[at].shape.clone();
         let mut painted = false;
@@ -128,24 +142,75 @@ impl Model {
                     .fold(part.clone(), |part, kind| part.with_paint(kind, &[]))
             })
             .collect();
-        let old = &list[index];
-        let kept = old
-            .kept
-            .as_deref()
-            .cloned()
-            .unwrap_or_default()
-            .with_new_mesh(stat);
-        list[index] = Part {
-            mesh: Arc::new(mesh),
-            paint: None,
-            seam: None,
-            kept: Some(Arc::new(kept)),
-            ..old.clone()
-        };
+        for (index, (_, mesh, stat)) in places.into_iter().zip(meshes) {
+            let old = &list[index];
+            let kept = old
+                .kept
+                .as_deref()
+                .cloned()
+                .unwrap_or_default()
+                .with_new_mesh(stat);
+            list[index] = Part {
+                mesh: Arc::new(mesh),
+                paint: None,
+                seam: None,
+                kept: Some(Arc::new(kept)),
+                ..old.clone()
+            };
+        }
         self.settle(bed);
         let ids = shape.ids.clone();
         self.reshape(bed, at, list, ids);
         Ok(painted)
+    }
+
+    /// The printed parts of `object` a "Repair" of it is for, each with its
+    /// mesh: `parts`, those of them that are printed, or with none named
+    /// every printed part (`repair_by_remesh`: `is_model_part`).
+    pub fn printed_meshes(
+        &self,
+        object: u64,
+        parts: &[u64],
+    ) -> Result<Vec<(u64, Arc<Mesh>)>, Failure> {
+        let at = self.object_at(object)?;
+        let shape = &self.objects[at].shape;
+        Ok(shape
+            .parts
+            .iter()
+            .zip(&shape.ids)
+            .filter(|(part, id)| {
+                part.kind == edge_3mf::PartKind::Normal && (parts.is_empty() || parts.contains(id))
+            })
+            .map(|(part, id)| (*id, part.mesh.clone()))
+            .collect())
+    }
+
+    /// Which way the bed is in a part's own coordinates, as the object's
+    /// first copy stands (GUI_ObjectList.cpp `volume_bed_direction`): down
+    /// taken back through the part's and the copy's turn and size,
+    /// straight down when they cannot be undone.
+    pub fn part_bed_direction(&self, object: u64, part: u64) -> Result<[f64; 3], Failure> {
+        let at = self.object_at(object)?;
+        let index = self.part_at(at, part)?;
+        let object = &self.objects[at];
+        let mut world = object.shape.parts[index].transform;
+        if let Some(copy) = object.copies.first() {
+            world = world.then(&copy.transform());
+        }
+        world.rows[3] = [0.0; 3];
+        let down = [0.0, 0.0, -1.0];
+        if world.determinant().abs() < 1e-12 {
+            return Ok(down);
+        }
+        let Some(back) = world.inverse() else {
+            return Ok(down);
+        };
+        let d = back.apply(down);
+        let n = (d[0] * d[0] + d[1] * d[1] + d[2] * d[2]).sqrt();
+        if !n.is_finite() || n < 1e-12 {
+            return Ok(down);
+        }
+        Ok(d.map(|c| c / n))
     }
 
     /// What the object list's warning says of a part (`part`) or of the

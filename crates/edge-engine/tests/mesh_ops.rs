@@ -217,3 +217,31 @@ fn an_object_of_several_parts_needs_a_part_named() {
     let second = model.objects()[0].shape().part_ids()[1];
     assert_eq!(model.mesh_of_part(object, Some(second)).unwrap().0, second);
 }
+
+#[test]
+fn the_bed_is_found_in_a_parts_own_coordinates_and_a_repair_is_put_in() {
+    let dir = tempfile::tempdir().unwrap();
+    let (mut model, object, part) = opened(dir.path(), &sphere());
+    let down = model.part_bed_direction(object, part).unwrap();
+    assert!((down[2] + 1.0).abs() < 1e-12 && down[0].abs() < 1e-12 && down[1].abs() < 1e-12);
+    let printed = model.printed_meshes(object, &[]).unwrap();
+    assert_eq!(printed.len(), 1);
+    let (_, mesh) = &printed[0];
+    let (made, report) = edge_engine::remesh::remesh_with_options(
+        mesh,
+        &edge_engine::remesh::Options {
+            voxel_size: 0.5,
+            ..Default::default()
+        },
+        down,
+        &|| false,
+    )
+    .unwrap()
+    .unwrap();
+    assert!(report.triangles_after > 0);
+    model
+        .set_part_meshes(Some(&BED), object, vec![(part, made, MeshStat::default())])
+        .unwrap();
+    assert!(!model.mesh_errors(object, None).unwrap().shown());
+    assert!(lowest(&model).abs() < 1e-4);
+}

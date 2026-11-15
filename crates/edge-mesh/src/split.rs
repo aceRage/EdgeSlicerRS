@@ -110,6 +110,20 @@ pub fn is_splittable(mesh: &Mesh) -> bool {
 /// the reference turns one ("some source mesh parts may be incorrectly
 /// oriented").
 pub fn split(mesh: &Mesh) -> Vec<Mesh> {
+    let mut pieces = pieces(mesh);
+    for piece in &mut pieces {
+        if piece.signed_volume() < 0.0 {
+            for t in &mut piece.triangles {
+                t.swap(1, 2);
+            }
+        }
+    }
+    pieces
+}
+
+/// The pieces as they are, one inside out left so (`its_split`, which
+/// `TriangleMesh::split` turns the right way out after).
+pub fn pieces(mesh: &Mesh) -> Vec<Mesh> {
     // For each corner, the piece that last took it and where it is there.
     let mut image: Vec<(usize, u32)> = vec![(usize::MAX, 0); mesh.vertices.len()];
     patches(mesh, usize::MAX)
@@ -127,11 +141,6 @@ pub fn split(mesh: &Mesh) -> Vec<Mesh> {
                     image[v].1
                 });
                 piece.triangles.push(t);
-            }
-            if piece.signed_volume() < 0.0 {
-                for t in &mut piece.triangles {
-                    t.swap(1, 2);
-                }
             }
             piece
         })

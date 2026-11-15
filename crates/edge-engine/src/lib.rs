@@ -57,7 +57,7 @@ pub use edge_mesh::boolean::Cancel as BooleanCancel;
 pub use edge_mesh::boolean::Op as BooleanOp;
 /// Painting a mesh's triangles, and finding which one a line of sight
 /// meets, for the painting tools of whoever shows a model.
-pub use edge_mesh::{Mesh, raycast, selector, simplify};
+pub use edge_mesh::{Mesh, raycast, remesh, selector, simplify};
 pub use edge_slice::layering::EditAction;
 pub use followed::{Followed, followed, followed_in, settled};
 pub use job::{BedType, Chosen, Job, Overrides, Sourced, prepare, prepare_noted};
