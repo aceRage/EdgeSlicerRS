@@ -674,6 +674,7 @@ impl WallSettings {
             fuzzy: None,
             overhang_reverse: None,
             thin_walls: self.detect_thin_wall && self.arachne.is_none(),
+            spiral: false,
             arachne: self.arachne.map(|arachne| {
                 // Of the nozzle's diameter, and kept in single precision,
                 // as the reference keeps them (`make_paths_params`).

@@ -93,6 +93,10 @@ pub struct Params {
     /// middle, as wide as the part (`detect_thin_wall`). Classic walls
     /// only: walls of changing width do as much by themselves.
     pub thin_walls: bool,
+    /// A vase's layer above its bottom (`spiral_mode`): the outer wall is
+    /// one loop, round the largest of what it would go round
+    /// (PerimeterGenerator.cpp, `m_spiral_vase`).
+    pub spiral: bool,
 }
 
 /// What `overhang_reverse` goes by.
@@ -482,6 +486,19 @@ pub fn classic_between(
                         )?);
                     } else {
                         offsets.extend(edge_clip::offset(piece, -ext_width / 2, Join::MITER)?);
+                    }
+                }
+                // "Remove all but the largest area polygon": the wall
+                // goes round the largest piece, a full-width one before a
+                // narrow one. Not as the reference, which keeps one of
+                // each when there is one of each (its test is "more than
+                // one of either"): the vase is one loop.
+                if params.spiral && offsets.len() + narrow.len() > 1 {
+                    if offsets.is_empty() {
+                        keep_largest(&mut narrow);
+                    } else {
+                        keep_largest(&mut offsets);
+                        narrow.clear();
                     }
                 }
             } else {
@@ -1378,6 +1395,25 @@ fn fill_gaps(
 }
 
 /// One depth's loops: every outer boundary, then every hole.
+/// ExPolygon.cpp `keep_largest_contour_only`: the piece whose outline
+/// is largest, the first of equals.
+fn keep_largest(pieces: &mut Vec<ExPolygon>) {
+    if pieces.len() > 1 {
+        let mut best = 0;
+        let mut most = 0.0;
+        for (at, piece) in pieces.iter().enumerate() {
+            let area = piece.contour.signed_area_mm2();
+            if area > most {
+                most = area;
+                best = at;
+            }
+        }
+        let kept = pieces.swap_remove(best);
+        pieces.clear();
+        pieces.push(kept);
+    }
+}
+
 fn push_loops(loops: &mut Vec<ExtrusionLoop>, shells: &[ExPolygon], depth: usize, flow: Flow) {
     let role = if depth == 0 {
         Role::ExternalPerimeter
@@ -1444,6 +1480,7 @@ mod tests {
             fuzzy: None,
             overhang_reverse: None,
             thin_walls: false,
+            spiral: false,
         }
     }
 
@@ -2134,6 +2171,7 @@ mod tests {
         let fin = [block(0.0, 0.0, 10.0, 0.5)];
         let thin = Params {
             thin_walls: true,
+            spiral: false,
             ..params(2)
         };
         let walls = classic(&fin, &thin).unwrap();

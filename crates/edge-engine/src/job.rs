@@ -390,6 +390,13 @@ pub fn prepare(mut loaded: Loaded, chosen: &Chosen, overrides: &Overrides) -> Re
             }
         }
     }
+    // Vase mode forces its settings over everything, what was set by
+    // hand too, as the reference's command line normalizes the config
+    // after taking its options (`crate::spiral`).
+    crate::spiral::normalize(&mut settings)?;
+    let wall_loops = overrides
+        .wall_loops
+        .filter(|_| !matches!(crate::spiral::on(&settings), Ok(true)));
     Ok(Job {
         loaded,
         is_project,
@@ -398,7 +405,7 @@ pub fn prepare(mut loaded: Loaded, chosen: &Chosen, overrides: &Overrides) -> Re
         layer_height,
         first_layer_height,
         closing_radius,
-        wall_loops: overrides.wall_loops,
+        wall_loops,
         bed_type,
         remarks,
         calibration: overrides.calibration.clone(),
