@@ -2191,6 +2191,116 @@ fn a_mesh_boolean_is_one_step_selects_its_result_and_is_saved_and_sliced() {
     );
 }
 
+/// Any kind of volume goes into a Mesh Boolean, the result of the first
+/// one's kind; the last printed part is kept with the reference's words;
+/// "Mesh boolean" of the object menu makes its parts one, one step named
+/// "boolean".
+#[test]
+fn a_mesh_boolean_takes_any_volume_and_the_object_menu_makes_one_part() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = boxes(
+        &dir.path().join("pair.stl"),
+        &[
+            ([0.0; 3], [20.0; 3]),
+            ([10.0, 0.0, 0.0], [20.0; 3]),
+            ([60.0, 0.0, 0.0], [10.0; 3]),
+        ],
+    );
+    let session = Arc::new(Session::new(None));
+    let project = stl_project(&session, &path);
+    let scene = ask(&session, "scene", json!({}));
+    let object = scene["objects"][0]["id"].clone();
+    let answer = edit(
+        &session,
+        json!({ "project": project, "op": "split_parts", "object": object }),
+    );
+    let ids: Vec<Value> = part_list(&answer["scene"])
+        .iter()
+        .map(|part| part["id"].clone())
+        .collect();
+    // The second a modifier, the third a negative part: the first is the
+    // only printed part.
+    edit(
+        &session,
+        json!({ "project": project, "op": "part_type", "object": object, "parts": [ids[1]], "kind": "modifier" }),
+    );
+    let typed = edit(
+        &session,
+        json!({ "project": project, "op": "part_type", "object": object, "parts": [ids[2]], "kind": "negative" }),
+    );
+    let before = typed["project"]["edit"]["undo"].clone();
+    // The modifier united with the part: a modifier; the part stays.
+    let kept = json!({ "name": "boolean", "operation": "union", "source": ids[1], "tool": ids[0] });
+    let done = edit(
+        &session,
+        json!({ "project": project, "op": "mesh_boolean", "object": object,
+                "operation": "union", "source": ids[1], "tool": ids[0], "tool_state": kept }),
+    );
+    assert_eq!(done["done"], "Mesh Boolean");
+    assert_eq!(done["note"], "Deleting the last solid part is not allowed.");
+    let listed = part_list(&done["scene"]);
+    assert_eq!(listed.len(), 3);
+    assert_eq!(listed[1]["id"], done["part"]);
+    assert_eq!(listed[1]["kind"], "modifier");
+    assert_eq!(listed[1]["name"], "pair.stl_2 - union");
+    assert_eq!(listed[0]["id"], ids[0]);
+    // One step back, and the tool's state with it (`on_save`, `on_load`);
+    // made again, the tool as it was when the step was taken back.
+    let undone = ask(
+        &session,
+        "undo",
+        json!({ "project": project, "tool_state": null }),
+    );
+    assert_eq!(part_list(&undone["scene"])[1]["id"], ids[1]);
+    assert_eq!(undone["project"]["edit"]["undo"], before);
+    assert_eq!(undone["tool_state"], kept);
+    let redone = ask(&session, "redo", json!({ "project": project }));
+    assert!(redone["tool_state"].is_null());
+    assert!(redone.get("tool_state").is_some());
+    // Each side keeps its own, whatever the page says the second time.
+    let undone = ask(
+        &session,
+        "undo",
+        json!({ "project": project, "tool_state": { "name": "other" } }),
+    );
+    assert_eq!(undone["tool_state"], kept);
+    let redone = ask(&session, "redo", json!({ "project": project }));
+    assert!(redone["tool_state"].is_null());
+    ask(&session, "undo", json!({ "project": project }));
+
+    // "Mesh boolean" on the object: one printed part, the modifier gone.
+    let done = edit(
+        &session,
+        json!({ "project": project, "op": "mesh_boolean_object", "object": object }),
+    );
+    assert_eq!(done["done"], "boolean");
+    assert_eq!(done["project"]["edit"]["undo"], "boolean");
+    assert!(done["note"].is_null(), "{}", done["note"]);
+    let listed = part_list(&done["scene"]);
+    assert_eq!(listed.len(), 1);
+    assert_eq!(listed[0]["kind"], "part");
+    // It slices, and is saved and read back as one part.
+    sliced(&session, project, None);
+    let path = dir.path().join("object_boolean.3mf");
+    let saved = ask(
+        &session,
+        "project_save",
+        json!({ "project": project, "path": path.to_string_lossy(), "accept": true }),
+    );
+    assert_eq!(saved["saved"], true, "{saved}");
+    let other = Arc::new(Session::new(None));
+    let again = ask(
+        &other,
+        "project_open",
+        json!({ "path": path.to_string_lossy() }),
+    );
+    let scene = ask(&other, "scene", json!({ "project": again["id"] }));
+    assert_eq!(part_list(&scene).len(), 1);
+    // Back in one step.
+    let undone = ask(&session, "undo", json!({ "project": project }));
+    assert_eq!(part_list(&undone["scene"]).len(), 3);
+}
+
 /// A 30 × 20 × 10 box turned 27° about X and −41° about Y, as an STL.
 fn tilted_box(path: &Path) -> String {
     let (sa, ca) = 27f64.to_radians().sin_cos();

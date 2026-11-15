@@ -18,8 +18,12 @@
 //! - closed and consistently wound: every edge is run once each way by
 //!   exactly two triangles. A mesh that is not is first welded where its
 //!   open edges meet (corners at the same place made one, as the
-//!   reference's `MeshGL::Merge` does); one still open is refused with
-//!   [`InputError::NotClosed`], the reference's "does not bound a volume";
+//!   reference's `MeshGL::Merge` does), a triangle written twice the
+//!   same way kept once, and an edge with a corner of its neighbour lying
+//!   on it (a T-junction) split there: what the library refuses and the
+//!   reference gets past by handing the meshes to mcut instead. One still
+//!   open is refused with [`InputError::NotClosed`], the reference's "does
+//!   not bound a volume";
 //! - wound outward: a mesh whose volume comes out negative is turned the
 //!   right way out first (the reference's `orient_outward`).
 //!
@@ -73,6 +77,7 @@
 //! [`manifold-rust`]: https://github.com/larsbrubaker/manifold-rust
 
 pub mod check;
+mod mend;
 
 use manifold_rust::manifold::Manifold;
 use manifold_rust::types::{BooleanEngine, Error as LibraryError, MeshGL64, OpType};
@@ -208,12 +213,30 @@ impl Solid {
         if (mesh.vertices.iter().flatten()).any(|c| !c.is_finite()) {
             return Err(InputError::NotFinite);
         }
-        let manifold = import(mesh)?;
+        // What the library refuses and the reference's fallback gets past,
+        // put right where that does not move the surface (`mend`).
+        let mended;
+        let (manifold, mesh) = match import(mesh) {
+            Ok(manifold) => (manifold, mesh),
+            Err(InputError::NotClosed) => {
+                mended = mend::mend(mesh).ok_or(InputError::NotClosed)?;
+                (import(&mended)?, &mended)
+            }
+            Err(error) => return Err(error),
+        };
         if manifold.is_empty() {
             // Nothing but degenerate triangles.
             return Err(InputError::NotClosed);
         }
         if !manifold.has_self_intersections() {
+            // A shell enclosing material inside another that does (a body
+            // inside a body of one file): the material is counted twice,
+            // and the boolean would keep the inner shell as a wall inside
+            // the result. Their union is the solid meant.
+            let manifold = match nested_shells(mesh).then(|| union_of_shells(mesh)).flatten() {
+                Some(union) => union,
+                None => manifold,
+            };
             return Ok(Solid {
                 manifold,
                 self_intersecting: false,
@@ -424,6 +447,26 @@ fn import(mesh: &Mesh) -> Result<Manifold, InputError> {
         LibraryError::NonFiniteVertex => Err(InputError::NotFinite),
         _ => Err(InputError::NotClosed),
     }
+}
+
+/// Whether the mesh is of several shells, each enclosing material, one of
+/// them inside the box of another: then one may be inside the other.
+fn nested_shells(mesh: &Mesh) -> bool {
+    if !crate::split::is_splittable(mesh) {
+        return false;
+    }
+    let shells = crate::split::split(mesh);
+    let sum: f64 = shells.iter().map(Mesh::signed_volume).sum();
+    let whole = mesh.signed_volume().abs();
+    if (sum - whole).abs() > VOLUME_SLACK * whole {
+        // A cavity among them (`split` turns one the right way out).
+        return false;
+    }
+    let boxes: Vec<_> = shells.iter().filter_map(Mesh::bounds).collect();
+    let inside = |(lo, hi): &([f32; 3], [f32; 3]), (olo, ohi): &([f32; 3], [f32; 3])| {
+        (0..3).all(|i| lo[i] >= olo[i] && hi[i] <= ohi[i])
+    };
+    (0..boxes.len()).any(|i| (0..boxes.len()).any(|j| i != j && inside(&boxes[i], &boxes[j])))
 }
 
 /// A mesh of several shells, each clean and enclosing material (no

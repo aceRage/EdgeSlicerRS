@@ -131,6 +131,8 @@ fn benchy() {
         [hi[0] + 1.0, mid[1], mid[2]],
     );
     run("benchy_minus_box", &benchy, &corner, Op::Difference);
+    run("benchy_union_box", &benchy, &corner, Op::Union);
+    run("benchy_and_box", &benchy, &corner, Op::Intersection);
     // Through the cabin, across the hull.
     let through = cylinder_y(
         mid[0] - 2.0,
