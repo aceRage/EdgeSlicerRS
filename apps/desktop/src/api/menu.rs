@@ -780,7 +780,7 @@ static CALIBRATION: &[Node] = &[
         os: Os::All,
         items: INPUT_SHAPING,
     },
-    I(item("calibration.vfa", "VFA", "VFA", When::Always).waits(NO_CALIBRATION)),
+    I(item("calibration.vfa", "VFA", "VFA", When::Prepare)),
     I(item(
         "calibration.ironing",
         "Ironing flow",

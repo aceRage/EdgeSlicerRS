@@ -1630,6 +1630,60 @@ Not picked up, waiting for the pin bump (upstream's
 (#11861), every extruder's `max_layer_height` raised,
 `precise_z_height` and `enable_wrapping_detection` off.
 
+VFA (`calib_VFA`, the dialog `VFA_Test_Dlg`): "VFA test" with "Settings"
+("Start speed: " 40, "End speed: " 200, "Step: " 10, mm/s after each;
+"Auto-scale for nozzle" and "Auto-adjust to max volumetric speed", ticked,
+with their tooltips), "Wiki Guide: VFA", and its check ("Please input valid
+values: start > 10 …"). Then, as `on_start`: when the end speed is over
+what the filament's maximum volumetric speed lets the outer wall (its
+width, else the line width, else the nozzle) print at the tower's layer
+height (half the nozzle when sized, else the process's), with both ticks
+the layer height is lowered to the largest of the printer's processes'
+layer heights that reaches it, within the machine's limits ("The end speed
+(%.0f mm/s) exceeds …The layer height has been reduced to %.2f mm …"), or,
+when none does, to the smallest with the end speed lowered to the limit
+there, a whole number of steps ("Even at the smallest layer height … Continue?",
+Yes / No), or, with no process layer height, asked ("… Continue anyway?");
+with a tick off it is asked ("Enable "Auto-adjust" …" / "Enable
+"Auto-scale for nozzle" and "Auto-adjust" …"); No keeps the dialog open
+(calib.cpp `calib_vfa_plan`, `calib_vfa_speed_limit`, ported and checked
+by the session's test). **differs**: the candidates are the printer's
+system processes; the reference also takes the person's own compatible
+processes. The project "VFA test": `vfa/VFA.stl` cut at
+`5 × ((end - start) / step + 1)` mm less EPSILON, then sized to the nozzle
+(`nozzle / 0.4` across, each 5 mm block 25 layers of the test's layer
+height) when ticked; over the process `enable_overhang_speed` 0,
+`timelapse_type` traditional, `wall_loops` 1, `alternate_extra_wall` 0,
+`top_shell_layers` 0, `bottom_shell_layers` 1, `sparse_infill_density` 0%,
+`overhang_reverse` 0, `detect_thin_wall` 0, `spiral_mode` on, and when
+sized `initial_layer_print_height` the layer height; over the first
+filament `slow_down_layer_time` 0; over the printer `resonance_avoidance`
+0; on the object `layer_height` (when sized), `brim_type` outer_only,
+`brim_width` 3, `brim_object_gap` 0. **Ahead of the pin**: EdgeSlicer
+`5c07d87e33` (on the fork's main), `bottom_shell_thickness` 0 beside the
+one bottom layer, the option being at the pin and the vase's bottom
+following it there. At every layer the outer wall's speed is the
+stepped value (`calib_stepped_layer_value`: `lround((end - start) / step)
++ 1` bands over the layers, layers 0 and 1 at the start, single
+precision), `std::round`ed, laid over every region's settings as Max
+flowrate's is. Checked by the engine's test on a U1 and a Creality Ender-3
+V3 SE: 425 layers, the last laid again flat after itself (vase mode), every
+layer's wall at its band's speed where the filament melts it, never over
+it, the 17 bands each seen, band 1 from layer 25. The project saved and
+sliced by the pin as a plain vase (`edge-parity`): 426 layer changes in
+both at the same heights (the vase's last layer twice in both), extruded
+path 246.88 m in both, outer wall 241.75 m in both, wall length per layer
+within 0.00% on average; gap fill 0.07 m here and 0.05 m there and
+retractions 118 here and 86 there, all on the first, solid layer. That
+comparison found a difference in the walls of every print with no sparse
+fill, a vase's always: the reference does not look for gaps inside the
+innermost wall when `sparse_infill_density` is 0 (PerimeterGenerator.cpp,
+the loop's last run), where this engine did, so a vase's narrow fins took
+gap fill and its layers were no single loop to spiral; now as the
+reference (`edge-perimeter`, `gaps_inside`). Not picked up, waiting for
+the pin bump (upstream's `calib_VFA` since): the model as `vfa.drc`,
+`enable_wrapping_detection` and `precise_z_height` off.
+
 Checked: the engine's test slices "Pass 1" on a U1 and reads back that
 each tile's top surface feeds its own flow (+10%, -20%, +5% against
 `flowrate_0`, the median per mm within 0.2%), ten layers, and no note of
@@ -3868,7 +3922,8 @@ its tooltip "not yet: …" saying what it waits for.
 | | "Flow rate" ▸ "Pass 1", "Pass 2", "YOLO (Recommended)", "YOLO (perfectionist version)" | | built: on in Prepare; each makes its test at once, as the reference does (no dialog) |
 | | "Retraction test" | | built: on in Prepare; the dialog "Retraction test" |
 | | "Max flowrate" | | built: on in Prepare; the dialog "Max volumetric speed test" |
-| | "Stringing (temp × retraction)", "Cornering", "Input Shaping" ▸ ("Input Shaping Frequency", "Input Shaping Damping/zeta factor"), "VFA", "Ironing flow" | | off: "not yet: calibration models are not built" (the reference has the menu in the macOS bar and a title-bar menu elsewhere) |
+| | "VFA" | | built: on in Prepare; the dialog "VFA test" |
+| | "Stringing (temp × retraction)", "Cornering", "Input Shaping" ▸ ("Input Shaping Frequency", "Input Shaping Damping/zeta factor"), "Ironing flow" | | off: "not yet: calibration models are not built" (the reference has the menu in the macOS bar and a title-bar menu elsewhere) |
 | Account (macOS) | sign-in for Snapmaker, Bambu Lab, Flashforge | | not shown: the cloud is not this task |
 | Window (macOS) | "Minimize" [Cmd+M], "Zoom" | | the system's own, in the window; off in a browser |
 | | "Next Project", "Previous Project" | Cmd+Shift+] / [ | wired (`project_cycle`); on with two projects |

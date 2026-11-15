@@ -33,6 +33,8 @@ pub enum CalibMode {
     RetractionTower,
     /// `Calib_Vol_speed_Tower`: "Max flowrate".
     VolumetricSpeedTower,
+    /// `Calib_VFA_Tower`: "VFA".
+    VfaTower,
 }
 
 /// What the calibration's dialog asked for (calib.hpp `Calib_Params`).
@@ -48,6 +50,11 @@ pub struct CalibParams {
     /// "PA Pattern": the handles on the plate being sliced
     /// ([`CalibParams::on_plate`]), each pattern drawn round its own.
     pub handles: Vec<PatternHandle>,
+    /// "VFA": the layer height the tower prints at (0: half the nozzle),
+    /// which the dialog may lower (`vfa_layer_height`).
+    pub vfa_layer_height: f64,
+    /// "VFA": the model sized to the nozzle (`nozzle_based_resize`).
+    pub nozzle_based_resize: bool,
 }
 
 /// A "PA Pattern" handle cube on the plate being sliced: its box across
@@ -71,6 +78,8 @@ impl CalibParams {
             accelerations: Vec::new(),
             speeds: Vec::new(),
             handles: Vec::new(),
+            vfa_layer_height: 0.0,
+            nozzle_based_resize: true,
         }
     }
 
@@ -169,6 +178,11 @@ impl CalibParams {
             },
             CalibMode::VolumetricSpeedTower => CalibrationKind::VolumetricSpeedTower {
                 start: self.start,
+                step: self.step,
+            },
+            CalibMode::VfaTower => CalibrationKind::VfaTower {
+                start: self.start,
+                end: self.end,
                 step: self.step,
             },
         };
@@ -434,7 +448,8 @@ pub fn pressure_advance(
         }
         CalibMode::TemperatureTower
         | CalibMode::RetractionTower
-        | CalibMode::VolumetricSpeedTower => {
+        | CalibMode::VolumetricSpeedTower
+        | CalibMode::VfaTower => {
             return Err("that test is not a pressure advance test".into());
         }
         CalibMode::PressureAdvanceLine => {
@@ -1044,6 +1059,173 @@ pub fn max_flowrate(
         filament,
         printer,
         params: Some(speeds),
+        notes: Vec::new(),
+    })
+}
+
+/// The VFA tower's base: blocks of 5 mm, each 25 layers of 0.2 mm, made
+/// for a 0.4 mm nozzle (calib.hpp, Orca #14759).
+const VFA_LAYERS_PER_BLOCK: f64 = 25.0;
+const VFA_BASE_BLOCK_HEIGHT: f64 = 5.0;
+const VFA_BASE_NOZZLE_DIAMETER: f64 = 0.4;
+
+/// The fastest outer wall speed, mm/s, the filament's maximum volumetric
+/// speed allows a line of this width and layer height (calib.cpp
+/// `calib_vfa_speed_limit`).
+pub fn vfa_speed_limit(max_volumetric_speed: f64, line_width: f64, layer_height: f64) -> f64 {
+    let mm3_per_mm = line_mm3_per_mm(line_width, layer_height);
+    if mm3_per_mm > 0.0 {
+        max_volumetric_speed / mm3_per_mm
+    } else {
+        1e9
+    }
+}
+
+/// What the VFA dialog does when the end speed is over what the filament
+/// can melt at the tower's layer height (calib.hpp `CalibVfaPlan`).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum VfaPlan {
+    /// The end speed is reached at the default layer height.
+    Fits,
+    /// This layer height, one the printer's processes use, reaches it.
+    LayerHeightReduced(f64),
+    /// Even the smallest is too thick: that layer height, and the end
+    /// speed lowered to this (a whole number of steps).
+    EndSpeedLowered(f64, f64),
+    /// No process layer height to take.
+    NoCandidates,
+}
+
+/// calib.cpp `calib_vfa_plan`: the largest of the process layer heights
+/// (within the machine's limits, none above the default) that reaches the
+/// end speed; else the smallest, the end speed lowered to the limit there,
+/// snapped down to a step (at least `start + step`).
+#[allow(clippy::too_many_arguments)]
+pub fn vfa_plan(
+    start: f64,
+    end: f64,
+    step: f64,
+    default_layer_height: f64,
+    mut candidates: Vec<f64>,
+    machine_min_layer_height: f64,
+    machine_max_layer_height: f64,
+    max_volumetric_speed: f64,
+    line_width: f64,
+    nozzle_diameter: f64,
+) -> VfaPlan {
+    let limit = |height: f64| vfa_speed_limit(max_volumetric_speed, line_width, height);
+    if max_volumetric_speed <= 0.0 || nozzle_diameter <= 0.0 || end <= limit(default_layer_height) {
+        return VfaPlan::Fits;
+    }
+    candidates.retain(|&height| {
+        !(height <= 0.0
+            || (machine_min_layer_height > 0.0 && height < machine_min_layer_height - 1e-6)
+            || (machine_max_layer_height > 0.0 && height > machine_max_layer_height + 1e-6))
+    });
+    candidates.sort_by(f64::total_cmp);
+    candidates.dedup_by(|a, b| (*a - *b).abs() < 1e-6);
+    let Some(&smallest) = candidates.first() else {
+        return VfaPlan::NoCandidates;
+    };
+    for &height in candidates.iter().rev() {
+        if height > default_layer_height + 1e-6 {
+            continue;
+        }
+        if limit(height) >= end {
+            return VfaPlan::LayerHeightReduced(height);
+        }
+    }
+    let mut lowered = if step > 0.0 {
+        (limit(smallest) / step).floor() * step
+    } else {
+        limit(smallest)
+    };
+    if lowered < start + step {
+        lowered = start + step;
+    }
+    VfaPlan::EndSpeedLowered(smallest, lowered)
+}
+
+/// "VFA" (Plater.cpp `calib_VFA`): the VFA tower of 5 mm blocks, cut to
+/// one block a step (EPSILON under the block's top), sized to the nozzle
+/// with each block 25 layers of the test's layer height when asked
+/// (`nozzle_based_resize`); one wall, one bottom layer, vase mode. The
+/// slice then steps the outer wall's speed from `start` to `end` over the
+/// layers (`edge_gcode::calib::vfa_tower_speed`). `settings` are those the
+/// project starts from.
+pub fn vfa(
+    params: &CalibParams,
+    settings: &Settings,
+    calib_dir: &Path,
+    bed: Option<&Bed>,
+) -> Result<CalibProject, Failure> {
+    let mut model = load(calib_dir, "vfa/VFA.stl", bed)?;
+    let mut nozzle = nozzle_diameter(settings)?;
+    if nozzle <= 0.0 {
+        nozzle = VFA_BASE_NOZZLE_DIAMETER;
+    }
+    let layer_height = if params.vfa_layer_height > 0.0 {
+        params.vfa_layer_height
+    } else {
+        nozzle / 2.0
+    };
+    // Cut on the model as it is, at the base blocks' height; EPSILON under
+    // the block's top so the cut misses its flat face.
+    let height =
+        VFA_BASE_BLOCK_HEIGHT * ((params.end - params.start) / params.step + 1.0) - EPSILON;
+    if height < height_of(&model, bed)? {
+        cut(&mut model, bed, height, Keep::Lower)?;
+    }
+    if params.nozzle_based_resize {
+        let xy = nozzle / VFA_BASE_NOZZLE_DIAMETER;
+        let z = VFA_LAYERS_PER_BLOCK * layer_height / VFA_BASE_BLOCK_HEIGHT;
+        if (xy - 1.0).abs() > EPSILON || (z - 1.0).abs() > EPSILON {
+            scale_object(&mut model, bed, [xy, xy, z])?;
+        }
+    }
+    let mut process = pairs(&[
+        ("enable_overhang_speed", "0"),
+        ("timelapse_type", "0"),
+        ("wall_loops", "1"),
+        ("alternate_extra_wall", "0"),
+        ("top_shell_layers", "0"),
+        ("bottom_shell_layers", "1"),
+        // Ahead of the pin: EdgeSlicer 5c07d87e33 (on the fork's main):
+        // with one bottom layer, no bottom thickness either, which would
+        // add solid layers under the test (a vase's bottom follows it).
+        ("bottom_shell_thickness", "0"),
+        ("sparse_infill_density", "0%"),
+        ("overhang_reverse", "0"),
+        ("detect_thin_wall", "0"),
+        ("spiral_mode", "1"),
+    ]);
+    let layer_height_text = written(layer_height);
+    let mut own = vec![
+        ("brim_type", "outer_only"),
+        ("brim_width", "3"),
+        ("brim_object_gap", "0"),
+    ];
+    if params.nozzle_based_resize {
+        process.push((
+            "initial_layer_print_height".to_owned(),
+            layer_height_text.clone(),
+        ));
+        own.insert(0, ("layer_height", layer_height_text.as_str()));
+    }
+    set_on_object(&mut model, bed, &own, &mut process)?;
+    let mut made = params.clone();
+    made.vfa_layer_height = if params.nozzle_based_resize {
+        layer_height
+    } else {
+        0.0
+    };
+    Ok(CalibProject {
+        name: "VFA test".to_owned(),
+        model,
+        process,
+        filament: pairs(&[("slow_down_layer_time", "0")]),
+        printer: pairs(&[("resonance_avoidance", "0")]),
+        params: Some(made),
         notes: Vec::new(),
     })
 }

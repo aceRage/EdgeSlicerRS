@@ -586,8 +586,9 @@ fn the_retraction_tower_lengthens_its_retraction_every_mm() {
     }
 }
 
-/// The first F word of a layer's extruding moves after the calibration's
-/// place (the fan marker), in mm/s, and the layer's top.
+/// The first F word of a layer's extruding moves (an unretraction is
+/// not one) after the calibration's place (the fan marker), in mm/s, and
+/// the layer's top.
 fn wall_speeds(gcode: &str) -> Vec<(f64, Option<f64>)> {
     layers(gcode)
         .iter()
@@ -604,7 +605,10 @@ fn wall_speeds(gcode: &str) -> Vec<(f64, Option<f64>)> {
             let speed = after
                 .lines()
                 .filter(|line| {
-                    line.starts_with("G1 ") && line.contains(" E") && !line.contains(" E-")
+                    line.starts_with("G1 ")
+                        && line.contains(" X")
+                        && line.contains(" E")
+                        && !line.contains(" E-")
                 })
                 .find_map(|line| {
                     line.split_whitespace()
@@ -667,5 +671,75 @@ fn the_max_flowrate_tower_speeds_its_wall_up_with_the_height() {
             let expected = edge_gcode::calib::volumetric_tower_speed(speeds.start, speeds.step, *z);
             assert_eq!(*speed, Some(expected), "{machine} at {z}");
         }
+    }
+}
+
+#[test]
+fn the_vfa_tower_steps_its_wall_speed_block_by_block() {
+    for (vendor, machine) in [
+        ("Snapmaker", "Snapmaker U1 (0.4 nozzle)"),
+        ("Creality", "Creality Ender-3 V3 SE 0.4 nozzle"),
+    ] {
+        let chosen = presets(vendor, machine);
+        let settings = edge_engine::settled(&chosen, &Overrides::default(), None).unwrap();
+        let bed = bed(&settings);
+        let calib = reference("resources/calib");
+        // The dialog's defaults: 40 to 200 mm/s by 10, sized to the nozzle.
+        let params = CalibParams::new(CalibMode::VfaTower, 40.0, 200.0, 10.0);
+        let made = edge_engine::calib::vfa(&params, &settings, &calib, Some(&bed)).unwrap();
+        assert_eq!(made.name, "VFA test");
+        let process: std::collections::BTreeMap<&str, &str> = made
+            .process
+            .iter()
+            .map(|(k, v)| (k.as_str(), v.as_str()))
+            .collect();
+        assert_eq!(process["spiral_mode"], "1");
+        assert_eq!(process["bottom_shell_layers"], "1");
+        assert_eq!(process["bottom_shell_thickness"], "0");
+        assert_eq!(process["initial_layer_print_height"], "0.2");
+        let (gcode, notes) = slice_made(&chosen, &made);
+        if let Ok(dir) = std::env::var("EDGE_CALIB_DUMP") {
+            std::fs::write(
+                std::path::Path::new(&dir).join(format!("vfa_{vendor}.gcode")),
+                &gcode,
+            )
+            .unwrap();
+        }
+        assert!(notes.is_empty(), "{machine}: {notes:?}");
+        // 17 blocks of 5 mm (EPSILON under 85): 425 layers of 0.2, the
+        // last laid again after itself, flat, its layer change and all
+        // (SpiralVase.cpp: `transition_gcode` takes every line of it).
+        assert!(gcode.contains("; total layer number: 425"), "{machine}");
+        let mut by_layer = wall_speeds(&gcode);
+        assert_eq!(by_layer.len(), 426, "{machine}");
+        assert_eq!(by_layer[424].0, by_layer[425].0);
+        by_layer.truncate(425);
+        // What the filament can melt caps the wall (GCode.cpp `_extrude`).
+        let limit = |speed: f64| speed;
+        let count = by_layer.len();
+        let mut seen = std::collections::BTreeSet::new();
+        for (index, (z, speed)) in by_layer.iter().enumerate().skip(1) {
+            let expected = edge_gcode::calib::vfa_tower_speed(index, count, 40.0, 200.0, 10.0);
+            let speed = speed.unwrap();
+            assert!(
+                speed <= limit(expected) + 1e-9,
+                "{machine} at {z}: {speed} for {expected}"
+            );
+            seen.insert(expected as i64);
+            if expected <= 100.0 {
+                assert_eq!(speed, expected, "{machine} at {z}");
+            }
+        }
+        // Every band, 25 layers each: 40, 50, … 200.
+        assert_eq!(seen.len(), 17, "{seen:?}");
+        // Band 1 starts at layer floor(424 / 17) + 1 = 25: 50 mm/s.
+        assert_eq!(
+            edge_gcode::calib::vfa_tower_speed(25, count, 40.0, 200.0, 10.0),
+            50.0
+        );
+        assert_eq!(
+            edge_gcode::calib::vfa_tower_speed(24, count, 40.0, 200.0, 10.0),
+            40.0
+        );
     }
 }

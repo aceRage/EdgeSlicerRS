@@ -56,6 +56,7 @@ fn params(args: &Value) -> Result<CalibParams, String> {
         Some("temp_tower") => CalibMode::TemperatureTower,
         Some("retraction") => CalibMode::RetractionTower,
         Some("max_flowrate") => CalibMode::VolumetricSpeedTower,
+        Some("vfa") => CalibMode::VfaTower,
         Some(other) => return Err(format!("there is no calibration \"{other}\" yet")),
         None => return Err("test was not given".into()),
     };
@@ -106,6 +107,29 @@ fn params(args: &Value) -> Result<CalibParams, String> {
             )),
         };
     }
+    if mode == CalibMode::VfaTower {
+        // VFA_Test_Dlg::on_start.
+        let (start, end, step) = (number("start"), number("end"), number("step"));
+        let mut params = match (start, end, step) {
+            (Ok(start), Ok(end), Ok(step)) if start > 10.0 && step > 0.0 && end >= start + step => {
+                CalibParams::new(mode, start, end, step)
+            }
+            _ => {
+                return Err(super::i18n::tr(
+                    "Please input valid values:\nstart > 10\nstep >= 0\nend > start + step",
+                ));
+            }
+        };
+        // "Auto-scale for nozzle", and the layer height the dialog's
+        // check lowered to (0: half the nozzle).
+        params.nozzle_based_resize = args.get("resize").and_then(Value::as_bool) != Some(false);
+        params.vfa_layer_height = args
+            .get("layer_height")
+            .and_then(Value::as_f64)
+            .filter(|height| height.is_finite() && *height > 0.0)
+            .unwrap_or(0.0);
+        return Ok(params);
+    }
     let mut params = CalibParams::new(mode, number("start")?, number("end")?, number("step")?);
     params.print_numbers = args.get("print_numbers").and_then(Value::as_bool) == Some(true);
     params.accelerations = list("accelerations");
@@ -123,6 +147,122 @@ fn params(args: &Value) -> Result<CalibParams, String> {
 }
 
 impl Session {
+    /// The settings a calibration made now would start from: the shown
+    /// project's presets and what is set over them.
+    fn calibration_settings(&self) -> Result<(super::Choices, edge_config::Settings), String> {
+        let choices = {
+            let state = lock(&self.state);
+            let mut choices = state.projects[state.active_index()].choices.clone();
+            choices.from_presets = true;
+            choices.inside.clear();
+            choices
+        };
+        if choices.machine.is_none() {
+            return Err("choose a printer first: the test is made for it".into());
+        }
+        let basis = self.basis(&choices, None)?;
+        let set = settings::overrides(&choices, &basis);
+        let settled = edge_engine::settled(&basis.chosen, &set, None).map_err(|e| e.to_string())?;
+        Ok((choices, settled))
+    }
+
+    /// The VFA dialog's check before its test is made (`calib_vfa_check`,
+    /// VFA_Test_Dlg::on_start): whether the end speed is over what the
+    /// filament melts at the tower's layer height, and what is done then
+    /// (calib.cpp `calib_vfa_plan`), with the figures its messages give.
+    pub(super) fn calib_vfa_check(&self, args: &Value) -> Result<Value, String> {
+        let params = params(args)?;
+        let (choices, settled) = self.calibration_settings()?;
+        let first = |key: &str| -> f64 {
+            settled
+                .floats(key)
+                .ok()
+                .flatten()
+                .and_then(|values| values.first().copied().flatten())
+                .unwrap_or(0.0)
+        };
+        let mut nozzle = first("nozzle_diameter");
+        if nozzle <= 0.0 {
+            nozzle = 0.4;
+        }
+        let preset_layer = settled
+            .float("layer_height")
+            .ok()
+            .flatten()
+            .filter(|height| *height > 0.0)
+            .unwrap_or(nozzle / 2.0);
+        let default_layer = if params.nozzle_based_resize {
+            nozzle / 2.0
+        } else {
+            preset_layer
+        };
+        let max_volumetric = first("filament_max_volumetric_speed");
+        let width = |key: &str| -> f64 {
+            settled
+                .float_or_percent(key)
+                .ok()
+                .flatten()
+                .map_or(0.0, |width| width.resolve(nozzle))
+        };
+        let mut line_width = width("outer_wall_line_width");
+        if line_width <= 0.0 {
+            line_width = width("line_width");
+        }
+        if line_width <= 0.0 {
+            line_width = nozzle;
+        }
+        let limit = edge_engine::calib::vfa_speed_limit(max_volumetric, line_width, default_layer);
+        let over = max_volumetric > 0.0 && params.end > limit;
+        let mut answer = serde_json::json!({
+            "over": over,
+            "end": params.end,
+            "max_volumetric_speed": max_volumetric,
+            "limit": limit,
+            "default_layer_height": default_layer,
+        });
+        if over && params.nozzle_based_resize {
+            // The layer heights of the processes made for the printer.
+            let mut candidates = Vec::new();
+            if let (Some(vendor), Some(machine)) = (&choices.vendor, &choices.machine) {
+                let shelf = self.shelf(vendor)?;
+                let printer = self.system_printer(machine);
+                for process in shelf.processes_for(&printer) {
+                    if let Ok(own) = shelf.resolve(edge_config::Kind::Process, process)
+                        && let Ok(Some(height)) = own.float("layer_height")
+                        && height > 0.0
+                    {
+                        candidates.push(height);
+                    }
+                }
+            }
+            let plan = edge_engine::calib::vfa_plan(
+                params.start,
+                params.end,
+                params.step,
+                default_layer,
+                candidates,
+                first("min_layer_height"),
+                first("max_layer_height"),
+                max_volumetric,
+                line_width,
+                nozzle,
+            );
+            answer["plan"] = match plan {
+                edge_engine::calib::VfaPlan::Fits => serde_json::json!({ "kind": "fits" }),
+                edge_engine::calib::VfaPlan::LayerHeightReduced(height) => {
+                    serde_json::json!({ "kind": "layer_height", "layer_height": height })
+                }
+                edge_engine::calib::VfaPlan::EndSpeedLowered(height, end) => {
+                    serde_json::json!({ "kind": "end_speed", "layer_height": height, "end": end })
+                }
+                edge_engine::calib::VfaPlan::NoCandidates => {
+                    serde_json::json!({ "kind": "no_candidates" })
+                }
+            };
+        }
+        Ok(answer)
+    }
+
     /// Makes a calibration's project (`calibrate`): the strip's listing,
     /// with `id` the new project's, or `full` when the strip has no room.
     pub(super) fn calibrate(&self, args: &Value) -> Result<Value, String> {
@@ -175,6 +315,9 @@ impl Session {
                 }
                 CalibMode::VolumetricSpeedTower => {
                     edge_engine::calib::max_flowrate(params, &settled, bed.as_ref())
+                }
+                CalibMode::VfaTower => {
+                    edge_engine::calib::vfa(params, &settled, &calib_dir, bed.as_ref())
                 }
             },
             (None, None) => return Err("test was not given".into()),
@@ -616,6 +759,56 @@ mod tests {
         // 0.25, then 99 of 0.32, to 31.93.
         assert!(gcode.contains("; total layer number: 100"));
         assert!(gcode.contains(";Z:31.930"));
+        ask(&session, "undo", json!({ "project": id }));
+        let objects = ask(&session, "plate_view", json!({ "project": id }));
+        assert_eq!(objects["objects"].as_array().map_or(0, Vec::len), 0);
+    }
+
+    #[test]
+    fn the_vfa_test_is_checked_made_sliced_and_undone() {
+        for bad in [
+            json!({"test": "vfa", "start": 10, "end": 200, "step": 10}),
+            json!({"test": "vfa", "start": 40, "end": 200, "step": 0}),
+            json!({"test": "vfa", "start": 40, "end": 45, "step": 10}),
+        ] {
+            assert!(
+                params(&bad)
+                    .unwrap_err()
+                    .starts_with("Please input valid values"),
+                "{bad}"
+            );
+        }
+        let dir = tempfile::tempdir().unwrap();
+        let session = Arc::new(Session::new(None));
+        choose_presets(&session);
+        // The dialog's check: the U1's PLA melts too little for 200 mm/s
+        // at 0.2 mm; a thinner layer of its processes would.
+        let check = ask(
+            &session,
+            "calib_vfa_check",
+            json!({"test": "vfa", "start": 40, "end": 200, "step": 10, "resize": true}),
+        );
+        assert_eq!(check["default_layer_height"], 0.2, "{check}");
+        // The dialog's defaults: 40 to 200 mm/s by 10, sized to the nozzle.
+        let listing = ask(
+            &session,
+            "calibrate",
+            json!({"test": "vfa", "start": 40, "end": 200, "step": 10, "resize": true}),
+        );
+        let id = listing["id"].as_u64().unwrap();
+        let detail = ask(&session, "project", json!({}));
+        assert_eq!(detail["name"], "VFA test");
+        assert_eq!(detail["dirty"], true);
+        let choices = &detail["choices"];
+        assert_eq!(choices["over"]["spiral_mode"], "1", "{choices}");
+        assert_eq!(choices["over"]["bottom_shell_thickness"], "0");
+        assert_eq!(choices["over"]["initial_layer_print_height"], "0.2");
+        assert_eq!(choices["printer_over"]["resonance_avoidance"], "0");
+        assert_eq!(choices["filament_over"][0]["slow_down_layer_time"], "0");
+        dump(&session, id, "vfa.3mf");
+        let gcode = slice_and_read(&session, id, dir.path());
+        // 17 blocks of 5 mm: 425 layers of 0.2.
+        assert!(gcode.contains("; total layer number: 425"));
         ask(&session, "undo", json!({ "project": id }));
         let objects = ask(&session, "plate_view", json!({ "project": id }));
         assert_eq!(objects["objects"].as_array().map_or(0, Vec::len), 0);

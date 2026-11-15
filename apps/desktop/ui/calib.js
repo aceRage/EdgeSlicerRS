@@ -59,8 +59,9 @@ const Calib = (() => {
         if (event.submitter && event.submitter.value === 'cancel') return;
         event.preventDefault();
         const error = await take();
+        // '' keeps the dialog open with nothing said (a question answered No).
         if (error) await inform(dialog.querySelector('h2').textContent, error);
-        else dialog.close('ok');
+        else if (error !== '') dialog.close('ok');
       });
       dialog.showModal();
     });
@@ -295,6 +296,66 @@ const Calib = (() => {
     });
   }
 
+  // A tick with its words, and the tooltip on both (calib_dlg.cpp
+  // `add_scale_checkbox` and the rest).
+  function tick(label, tooltip, checked = true) {
+    const input = el('input', { type: 'checkbox', checked });
+    const row = el('label', { className: 'calib-field calib-tick', title: t(tooltip) }, input, el('span', { textContent: t(label) }));
+    return { row, input };
+  }
+
+  // "VFA test" (calib_dlg.cpp `VFA_Test_Dlg`).
+  function vfa() {
+    const resize = tick('Auto-scale for nozzle', 'This model is designed around a 0.4 mm nozzle with a 0.2 mm layer height.\nWhen the scaling option is enabled (recommended), it dynamically resizes to match your current nozzle diameter and an appropriate layer height, making the test both accurate and easy to read.\nTurn scaling off only if you wish to print the reference model exactly as-is.');
+    const adjust = tick('Auto-adjust to max volumetric speed', "If the end speed would exceed the filament's maximum volumetric speed, automatically lower the layer height (keeping standard values and staying within the machine's limits) to reach it. If even the minimum layer height is not enough, lower the end speed instead.");
+    const { dialog, fields } = threeNumbers({
+      title: 'VFA test',
+      labels: ['Start speed: ', 'End speed: ', `${t('Step')}: `],
+      unit: 'mm/s',
+      values: ['40', '200', shown(10)],
+      guide: ['Wiki Guide: VFA', 'https://github.com/SoftFever/OrcaSlicer/wiki/vfa-calib'],
+      extra: [resize, adjust],
+    });
+    const title = t('VFA test');
+    const yesNo = (text) => confirmBox(title, text, t('Yes'), t('No'));
+    return run(dialog, async () => {
+      const [start, end, step] = fields.map(readNumber);
+      const args = { test: 'vfa', start, end, step, resize: resize.input.checked };
+      try {
+        // on_start: the end speed against what the filament melts.
+        const check = await call('calib_vfa_check', args);
+        const clamp = (question) => yesNo(fmt(t("The end speed (%.0f mm/s) exceeds the filament's maximum volumetric speed (%.1f mm³/s), which limits the outer wall to about %.0f mm/s at this line width and layer height.\nSpeeds above this will be clamped, so the upper blocks of the tower will not print at the requested speed.\n\n%s"),
+          check.end, check.max_volumetric_speed, check.limit, question));
+        if (check.over) {
+          if (adjust.input.checked && resize.input.checked) {
+            const plan = check.plan || { kind: 'fits' };
+            if (plan.kind === 'layer_height') {
+              args.layer_height = plan.layer_height;
+              await inform(title, fmt(t("The end speed (%.0f mm/s) exceeds the filament's maximum volumetric speed (%.1f mm³/s) at the default layer height (%.2f mm).\n\nThe layer height has been reduced to %.2f mm (a value used by this printer's profiles) so the tower can reach the requested speed."),
+                check.end, check.max_volumetric_speed, check.default_layer_height, plan.layer_height));
+            } else if (plan.kind === 'end_speed') {
+              const go = await yesNo(fmt(t("Even at the smallest layer height used by this printer's profiles (%.2f mm) the end speed (%.0f mm/s) exceeds the filament's maximum volumetric speed (%.1f mm³/s).\n\nThe layer height will be set to %.2f mm and the end speed lowered to %.0f mm/s.\n\nContinue?"),
+                plan.layer_height, check.end, check.max_volumetric_speed, plan.layer_height, plan.end));
+              if (!go) return '';
+              args.end = plan.end;
+              args.layer_height = plan.layer_height;
+            } else if (plan.kind === 'no_candidates') {
+              if (!(await clamp(t('Continue anyway?')))) return '';
+            }
+          } else if (!(await clamp(resize.input.checked
+            ? t('Enable "Auto-adjust" to fix this automatically, or continue anyway?')
+            : t('Enable "Auto-scale for nozzle" and "Auto-adjust" to fix this automatically, or continue anyway?')))) {
+            return '';
+          }
+        }
+        await make(args);
+      } catch (error) {
+        return error.message;
+      }
+      return null;
+    });
+  }
+
   // "Flow rate" (MainFrame.cpp, Plater.cpp `calib_flowrate`): no dialog;
   // the menu item makes the test's project at once.
   function flowRate(test) {
@@ -308,5 +369,5 @@ const Calib = (() => {
     return openGuide('https://github.com/SoftFever/OrcaSlicer/wiki/Calibration');
   }
 
-  return { pressureAdvance, temperature, retraction, maxFlowrate, flowRate, tutorial, parseList };
+  return { pressureAdvance, temperature, retraction, maxFlowrate, vfa, flowRate, tutorial, parseList };
 })();

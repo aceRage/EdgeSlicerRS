@@ -438,6 +438,7 @@ const Menu = (() => {
       case 'calibration.temperature': return go(Calib.temperature);
       case 'calibration.retraction': return go(Calib.retraction);
       case 'calibration.max_flowrate': return go(Calib.maxFlowrate);
+      case 'calibration.vfa': return go(Calib.vfa);
       case 'calibration.pass1': return go(() => Calib.flowRate('flow_pass1'));
       case 'calibration.pass2': return go(() => Calib.flowRate('flow_pass2'));
       case 'calibration.yolo': return go(() => Calib.flowRate('flow_yolo'));
