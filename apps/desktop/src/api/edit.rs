@@ -89,6 +89,18 @@ struct Step {
     name: String,
     file: Option<Arc<File>>,
     filaments: Option<FilamentChoices>,
+    /// The page's tool as it was on this side of the step, when the page
+    /// said (`tool_state` of the edit, of undo and redo): the reference's
+    /// snapshot keeps the open gizmo and its state with the model
+    /// (GLGizmosManager.hpp `save`, `load`; GLGizmoMeshBoolean.cpp
+    /// `on_save`, `on_load`), and taking the step back or making it again
+    /// opens it as it was. `None` when the page did not say; `Some(null)`
+    /// for no tool.
+    tool: Option<Value>,
+    /// The tool on the other side of the step, once known: kept for when
+    /// the step comes back, as the reference's snapshots stay where they
+    /// are while undo and redo move between them.
+    other_tool: Option<Value>,
 }
 
 /// Puts an edit made to a project on its undo history, `before` being the
@@ -105,6 +117,8 @@ pub(super) fn push_step(
         name: name.to_owned(),
         file: before.clone(),
         filaments,
+        tool: None,
+        other_tool: None,
     });
     if history.undo.len() > DEPTH {
         history.undo.remove(0);
@@ -1785,6 +1799,11 @@ impl Session {
                 outcome.name = "Edit cut".into();
             }
             push_step(project, &outcome.name, before, None);
+            if let (Some(tool), Some(step)) =
+                (args.get("tool_state"), project.history.undo.last_mut())
+            {
+                step.tool = Some(tool.clone());
+            }
             if let Some(show) = outcome.show
                 && project
                     .file
@@ -2122,7 +2141,7 @@ impl Session {
 
     /// Takes the last edit back, or makes the last one taken back again.
     fn step(&self, args: &Value, back: bool) -> Result<Value, String> {
-        let (id, name) = {
+        let (id, name, tool) = {
             let mut state = lock(&self.state);
             let at = state.target(args)?;
             let project = &mut state.projects[at];
@@ -2159,15 +2178,24 @@ impl Session {
                 name: step.name.clone(),
                 file: before.clone(),
                 filaments: filaments.clone(),
+                // The tool on this side: as it was when the step was
+                // last here, else as the page has it now.
+                tool: step.other_tool.or_else(|| args.get("tool_state").cloned()),
+                other_tool: step.tool.clone(),
             });
             history.revision += 1;
             if filaments.is_some() {
                 project.forget();
             }
             settle(project, before.as_deref());
-            (project.id, step.name)
+            (project.id, step.name, step.tool)
         };
-        self.edited(id, json!({ "done": name }))
+        let mut more = json!({ "done": name });
+        // The tool to open as it was, when the page said what it was.
+        if let Some(tool) = tool {
+            more["tool_state"] = tool;
+        }
+        self.edited(id, more)
     }
 }
 

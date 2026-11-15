@@ -86,6 +86,42 @@
       if (o.tool !== null && !ids.has(o.tool)) o.tool = null;
     },
 
+    // ---- the undo history ----
+
+    // What the history keeps of the tool with a step (`on_save`): the
+    // copy, the operation, which slot a click fills, the two parts and
+    // each "Delete input".
+    state() {
+      const o = this.open;
+      return o ? { name: 'boolean', copy: o.copy, operation: o.operation, selecting: o.selecting, source: o.source, tool: o.tool, delete_input: { ...o.deleteInput } } : null;
+    },
+
+    // An undo or a redo brings the tool back as the step kept it
+    // (GLGizmosManager.hpp `load`, `on_load`): opened on its copy with its
+    // picks, or closed when the step was taken with no tool open.
+    restore(kept) {
+      const editor = this.editor;
+      if (!kept || kept.name !== 'boolean') {
+        if (this.open) editor.setTool(null);
+        return;
+      }
+      const data = this.data();
+      const placing = data && data.placings.find((one) => one.id === kept.copy);
+      if (!placing) return;
+      this.stage.select([kept.copy]);
+      if (editor.tool !== 'boolean') editor.setTool('boolean');
+      if (!this.open || this.open.copy !== kept.copy) return;
+      const o = this.open;
+      o.operation = kept.operation;
+      o.selecting = kept.selecting;
+      o.deleteInput = { difference: false, intersection: false, ...kept.delete_input };
+      const ids = new Set(this.parts().map((part) => part.id));
+      o.source = ids.has(kept.source) ? kept.source : null;
+      o.tool = ids.has(kept.tool) ? kept.tool : null;
+      editor.refresh();
+      this.stage.frame();
+    },
+
     // ---- the parts ----
 
     data() {
@@ -234,6 +270,8 @@
       const args = {
         op: 'mesh_boolean', object, source: o.source, tool: o.tool, operation,
         delete_input: operation === 'union' ? true : o.deleteInput[operation],
+        // The tool as it is, kept with the step (`on_save`).
+        tool_state: this.state(),
       };
       const done = await this.editor.commit(args, { part: true });
       // Done: nothing is picked, the first slot is next

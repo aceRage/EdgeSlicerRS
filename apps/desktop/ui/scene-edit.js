@@ -338,7 +338,12 @@
       if (!project || this.busy || !project.edit || !project.edit[which] || !this.editing()) return;
       this.busy = true;
       try {
-        this.take(await this.host.call(which, { project: project.id }));
+        // Mesh Boolean's state goes into the history with the step, and
+        // comes back with it (boolean.js `restore`).
+        const kept = GL.mesher && GL.mesher.active() ? GL.mesher.state() : null;
+        const answer = await this.host.call(which, { project: project.id, tool_state: kept });
+        this.take(answer);
+        if (GL.mesher && 'tool_state' in answer) GL.mesher.restore(answer.tool_state);
       } catch (error) {
         this.host.say(error.message, true);
       } finally {
