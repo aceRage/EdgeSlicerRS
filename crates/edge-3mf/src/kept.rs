@@ -26,6 +26,85 @@ use crate::{
 /// (` paint_color="4" paint_seam="8"`).
 pub type Extras = Vec<(u32, Box<str>)>;
 
+/// The errors repaired in a part's mesh (TriangleMesh.hpp `RepairedMeshErrors`),
+/// as a project file's `mesh_stat` carries them.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct MeshStat {
+    /// Edges joined by bringing their ends together.
+    pub edges_fixed: u32,
+    /// Triangles of no area taken out.
+    pub degenerate_facets: u32,
+    /// Triangles taken out, those of no area among them.
+    pub facets_removed: u32,
+    /// Triangles turned round.
+    pub facets_reversed: u32,
+    /// Edges shared by two triangles the wrong way round.
+    pub backwards_edges: u32,
+}
+
+impl MeshStat {
+    /// `RepairedMeshErrors::repaired`.
+    pub fn repaired(&self) -> bool {
+        self.count() > 0
+    }
+
+    /// The errors repaired, in all (`get_repaired_errors_count`).
+    pub fn count(&self) -> u64 {
+        [
+            self.edges_fixed,
+            self.degenerate_facets,
+            self.facets_removed,
+            self.facets_reversed,
+            self.backwards_edges,
+        ]
+        .iter()
+        .map(|&n| u64::from(n))
+        .sum()
+    }
+
+    /// `RepairedMeshErrors::merge`.
+    pub fn merge(&mut self, other: &MeshStat) {
+        self.edges_fixed += other.edges_fixed;
+        self.degenerate_facets += other.degenerate_facets;
+        self.facets_removed += other.facets_removed;
+        self.facets_reversed += other.facets_reversed;
+        self.backwards_edges += other.backwards_edges;
+    }
+
+    /// From `<mesh_stat edges_fixed=".." .../>` (bbs_3mf.cpp
+    /// `_handle_start_config_mesh_stat`: a figure missing is 0).
+    fn parse(raw: &str) -> MeshStat {
+        let figure = |name: &str| {
+            let key = format!(" {name}=\"");
+            raw.find(&key)
+                .and_then(|at| {
+                    let rest = &raw[at + key.len()..];
+                    rest[..rest.find('"')?].trim().parse::<i64>().ok()
+                })
+                .map_or(0, |n| u32::try_from(n.max(0)).unwrap_or(u32::MAX))
+        };
+        MeshStat {
+            edges_fixed: figure("edges_fixed"),
+            degenerate_facets: figure("degenerate_facets"),
+            facets_removed: figure("facets_removed"),
+            facets_reversed: figure("facets_reversed"),
+            backwards_edges: figure("backwards_edges"),
+        }
+    }
+
+    /// As bbs_3mf.cpp writes it.
+    fn written(&self) -> String {
+        format!(
+            r#"<mesh_stat edges_fixed="{}" degenerate_facets="{}" facets_removed="{}" facets_reversed="{}" backwards_edges="{}"/>"#,
+            self.edges_fixed,
+            self.degenerate_facets,
+            self.facets_removed,
+            self.facets_reversed,
+            self.backwards_edges
+        )
+    }
+}
+
 /// One child of an object, a part or a plate in
 /// `Metadata/model_settings.config`.
 #[derive(Clone, Debug, PartialEq)]
@@ -255,6 +334,42 @@ impl PartKept {
             read: None,
             painted_on: None,
             connector: None,
+        }
+    }
+
+    /// What the part's `mesh_stat` says was repaired in its mesh (bbs_3mf.cpp
+    /// `MESH_STAT_TAG`, read into `TriangleMeshStats::repaired_errors`); all
+    /// none when it has none or a figure is not a number.
+    pub fn mesh_stat(&self) -> MeshStat {
+        self.entries
+            .iter()
+            .find_map(|entry| match entry {
+                Entry::Raw(raw) if raw.starts_with("<mesh_stat") => Some(MeshStat::parse(raw)),
+                _ => None,
+            })
+            .unwrap_or_default()
+    }
+
+    /// The part with another mesh in place of its own (`ModelVolume::set_mesh`
+    /// after `Plater::clear_before_change_mesh`): what its triangles carried
+    /// is let go, as it was of the old triangles, and its `mesh_stat` is
+    /// `stat`, the new mesh's (the reference's `TriangleMesh(its, errors)`).
+    /// Its settings, kind and where it came from stay.
+    pub fn with_new_mesh(&self, stat: MeshStat) -> PartKept {
+        let mut entries: Vec<Entry> = self
+            .entries
+            .iter()
+            .filter(|entry| !matches!(entry, Entry::Raw(raw) if raw.starts_with("<mesh_stat")))
+            .cloned()
+            .collect();
+        entries.push(Entry::Raw(stat.written()));
+        PartKept {
+            subtype: self.subtype.clone(),
+            entries,
+            extras: None,
+            read: self.read.clone(),
+            painted_on: None,
+            connector: self.connector.clone(),
         }
     }
 

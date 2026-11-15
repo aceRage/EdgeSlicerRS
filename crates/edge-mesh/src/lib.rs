@@ -7,8 +7,11 @@ mod earcut;
 pub mod hull;
 pub mod obj;
 pub mod primitives;
+#[cfg(test)]
+mod raw;
 pub mod raycast;
 pub mod selector;
+pub mod simplify;
 pub mod split;
 pub mod stl;
 pub mod tidy;

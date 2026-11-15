@@ -59,6 +59,9 @@ mod mesh_boolean;
 
 #[path = "orient_job.rs"]
 mod orient_job;
+
+#[path = "mesh_ops.rs"]
+mod mesh_ops;
 pub use arrange::{ArrangeOptions, ArrangeScope, Arranged};
 pub use cut::{
     CONNECTOR_HOLE_OVERLAP, CUT_THICKNESS_MAX, Connector, ConnectorKind, ConnectorShape,
@@ -68,6 +71,7 @@ pub use cut::{
 pub use filaments::{FlushBasis, MAX_FILAMENTS, NEXT_COLOURS};
 pub use item_settings::SettingChange;
 pub use mesh_boolean::BooleanFailure;
+pub use mesh_ops::{MeshErrors, open_edges};
 pub use orient_job::{OrientScope, Oriented};
 pub use plates::{FIRST_LATER_LAYER, LAST_LAYER, LONGEST_PLATE_NAME, LayerSequence, PlateSettings};
 
