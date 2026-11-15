@@ -49,7 +49,7 @@
     // `is_single_full_instance`); cut.js.
     cut: { name: t('Cut'), key: 'c', one: true, cut: true, icon: 'M3.5,2.5h9v11h-9ZM1,8h14M12.5,5.5l2.5,2.5l-2.5,2.5' },
     // GLGizmoMeshBoolean.cpp: for one whole copy of an object of several
-    // parts (`on_is_activable`), here two printed ones; boolean.js.
+    // volumes of any kind (`on_is_activable`); boolean.js.
     boolean: { name: t('Mesh Boolean'), key: 'b', one: true, boolean: true, icon: 'M1.5,1.5h8v8h-8ZM6.5,6.5h8v8h-8Z' },
     // The painting tools (paint.js), each on one whole copy
     // (GLGizmoPainterBase.cpp `on_is_activable`: `is_single_full_instance`),
@@ -338,7 +338,12 @@
       if (!project || this.busy || !project.edit || !project.edit[which] || !this.editing()) return;
       this.busy = true;
       try {
-        this.take(await this.host.call(which, { project: project.id }));
+        // Mesh Boolean's state goes into the history with the step, and
+        // comes back with it (boolean.js `restore`).
+        const kept = GL.mesher && GL.mesher.active() ? GL.mesher.state() : null;
+        const answer = await this.host.call(which, { project: project.id, tool_state: kept });
+        this.take(answer);
+        if (GL.mesher && 'tool_state' in answer) GL.mesher.restore(answer.tool_state);
       } catch (error) {
         this.host.say(error.message, true);
       } finally {
@@ -529,7 +534,7 @@
       const one = Boolean(chosen) && (!TOOLS[tool].one || (chosen.copies.length === 1 && !this.partMode()));
       if (!one || !TOOLS[tool].boolean) return one;
       const object = this.data().objects[chosen.copies[0].object];
-      return (object.part_list || []).filter((part) => part.kind === 'part').length > 1;
+      return (object.part_list || []).length > 1;
     },
 
     setTool(tool) {
@@ -538,6 +543,8 @@
       // A painting tool opens on the copy selected and closes with the
       // tool (paint.js).
       const painter = GL.painter;
+      // Mesh Boolean opened straight from a painting tool keeps its section.
+      const section = tool === 'boolean' && painter && painter.active() ? painter.section() : null;
       if (painter && painter.active() && (!tool || !TOOLS[tool].paint || tool !== this.tool)) painter.close();
       if (painter && tool && TOOLS[tool].paint && tool !== this.tool) {
         const chosen = this.chosen();
@@ -547,7 +554,7 @@
       if (cutter && cutter.active() && tool !== 'cut') cutter.close();
       const mesher = GL.mesher;
       if (mesher && mesher.active() && tool !== 'boolean') mesher.close();
-      if (mesher && tool === 'boolean' && tool !== this.tool) mesher.start(this.chosen().copies[0]);
+      if (mesher && tool === 'boolean' && tool !== this.tool) mesher.start(this.chosen().copies[0], section);
       if (cutter && tool === 'cut' && tool !== this.tool) {
         const chosen = this.chosen();
         if (chosen) cutter.start(chosen.copies[0]);
@@ -624,6 +631,10 @@
         }],
         [`${t('Delete')} Del`, () => this.remove()],
         null,
+        // GUI_Factories.cpp `append_menu_item_merge_parts_to_single_part`
+        // (`create_extra_object_menu`; the part menu shown,
+        // `create_bbl_part_menu`, has none).
+        [t('Mesh boolean'), () => this.commit({ op: 'mesh_boolean_object', object: object.id }), { disabled: !object || !object.split.objects, title: t('Mesh boolean operations including union and subtraction') }],
         ...adding,
         // GUI_Factories.cpp `append_menu_item_layers_editing`, and "Edit
         // Process Settings" (`append_menu_item_edit_process`): objsettings.js.

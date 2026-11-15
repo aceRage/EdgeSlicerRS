@@ -89,6 +89,18 @@ struct Step {
     name: String,
     file: Option<Arc<File>>,
     filaments: Option<FilamentChoices>,
+    /// The page's tool as it was on this side of the step, when the page
+    /// said (`tool_state` of the edit, of undo and redo): the reference's
+    /// snapshot keeps the open gizmo and its state with the model
+    /// (GLGizmosManager.hpp `save`, `load`; GLGizmoMeshBoolean.cpp
+    /// `on_save`, `on_load`), and taking the step back or making it again
+    /// opens it as it was. `None` when the page did not say; `Some(null)`
+    /// for no tool.
+    tool: Option<Value>,
+    /// The tool on the other side of the step, once known: kept for when
+    /// the step comes back, as the reference's snapshots stay where they
+    /// are while undo and redo move between them.
+    other_tool: Option<Value>,
 }
 
 /// Puts an edit made to a project on its undo history, `before` being the
@@ -105,6 +117,8 @@ pub(super) fn push_step(
         name: name.to_owned(),
         file: before.clone(),
         filaments,
+        tool: None,
+        other_tool: None,
     });
     if history.undo.len() > DEPTH {
         history.undo.remove(0);
@@ -865,8 +879,9 @@ struct Outcome {
 /// (GLGizmoMeshBoolean.cpp `warning_text`), with why where the reference
 /// has words for it. A boolean that leaves nothing is said in the words of
 /// the fix to the reference (aceRage/EdgeSlicer#1005, `empty_text`): the
-/// pinned gizmo says it failed.
-fn mesh_boolean(model: &mut Model, bed: Option<&Bed>, args: &Value) -> Result<u64, String> {
+/// pinned gizmo says it failed. Also answers whether the tool was to go
+/// and stayed, being the object's last printed part.
+fn mesh_boolean(model: &mut Model, bed: Option<&Bed>, args: &Value) -> Result<(u64, bool), String> {
     use super::i18n::{fill, tr};
     use edge_engine::{BooleanFailure, BooleanOp};
     let op = match needed(args, "operation")? {
@@ -884,7 +899,7 @@ fn mesh_boolean(model: &mut Model, bed: Option<&Bed>, args: &Value) -> Result<u6
         whole(args, "source")?,
         whole(args, "tool")?,
     );
-    model
+    let made = model
         .mesh_boolean(bed, object, source, tool, op, delete)
         .map_err(|failure| match failure {
             BooleanFailure::Refused(why) => why.to_string(),
@@ -905,7 +920,12 @@ fn mesh_boolean(model: &mut Model, bed: Option<&Bed>, args: &Value) -> Result<u6
                 }
                 said
             }
-        })
+        })?;
+    let kept = (delete || op == BooleanOp::Union)
+        && (model.objects().iter())
+            .find(|each| each.id() == object)
+            .is_some_and(|each| each.shape().part_ids().contains(&tool));
+    Ok((made, kept))
 }
 
 /// A matrix as the page takes it: sixteen numbers, column by column.
@@ -1566,8 +1586,51 @@ impl Session {
             // "Mesh Boolean" (GLGizmoMeshBoolean.cpp `run_boolean`,
             // `generate_new_volume`): the result is selected after.
             "mesh_boolean" => {
-                outcome.part = Some(mesh_boolean(model, bed, args)?);
+                let (part, kept) = mesh_boolean(model, bed, args)?;
+                outcome.part = Some(part);
+                // The tool was the object's last printed part: the
+                // boolean stands and the part stays, as the reference's
+                // delete refuses it (`del_subobject_from_object`).
+                if kept {
+                    outcome.note = Some(super::i18n::tr(
+                        "Deleting the last solid part is not allowed.",
+                    ));
+                }
                 outcome.name = "Mesh Boolean".into();
+            }
+            // "Mesh boolean" of the object menu (GUI_ObjectList.cpp
+            // `ObjectList::boolean`): the object's
+            // parts made one; said when only its printed parts were kept
+            // (Plater.cpp `combine_mesh_fff`).
+            "mesh_boolean_object" => {
+                use super::i18n::{fill, tr};
+                use edge_engine::{BooleanInputError as InputError, ObjectBoolean};
+                let done = model
+                    .mesh_boolean_object(bed, whole(args, "object")?)
+                    .map_err(|why| tr(&why.to_string()))?;
+                if let ObjectBoolean::PositiveOnly { part } = done {
+                    let mut said = tr(
+                        "Unable to perform boolean operation on model meshes. Only positive parts will be kept. You may fix the meshes and try again.",
+                    );
+                    let reason = part.map(|(name, error)| {
+                        let words = match error {
+                            InputError::Empty => "Reason: part \"%1%\" is empty.",
+                            InputError::NotFinite | InputError::NotClosed => {
+                                "Reason: part \"%1%\" does not bound a volume."
+                            }
+                            InputError::SelfIntersecting => {
+                                "Reason: part \"%1%\" has self intersection."
+                            }
+                        };
+                        fill(&tr(words), &[&name])
+                    });
+                    if let Some(reason) = reason {
+                        said.push(' ');
+                        said.push_str(&reason);
+                    }
+                    outcome.note = Some(said);
+                }
+                outcome.name = "boolean".into();
             }
             // An object's, a part's or a height range's own settings, and
             // the height ranges (settings/items.rs).
@@ -1740,6 +1803,11 @@ impl Session {
             // `load_files` does ("ugly fix so we can exist pa calib mode").
             if text(args, "op") == Some("add") {
                 project.calibration = None;
+            }
+            if let (Some(tool), Some(step)) =
+                (args.get("tool_state"), project.history.undo.last_mut())
+            {
+                step.tool = Some(tool.clone());
             }
             if let Some(show) = outcome.show
                 && project
@@ -2078,7 +2146,7 @@ impl Session {
 
     /// Takes the last edit back, or makes the last one taken back again.
     fn step(&self, args: &Value, back: bool) -> Result<Value, String> {
-        let (id, name) = {
+        let (id, name, tool) = {
             let mut state = lock(&self.state);
             let at = state.target(args)?;
             let project = &mut state.projects[at];
@@ -2115,15 +2183,24 @@ impl Session {
                 name: step.name.clone(),
                 file: before.clone(),
                 filaments: filaments.clone(),
+                // The tool on this side: as it was when the step was
+                // last here, else as the page has it now.
+                tool: step.other_tool.or_else(|| args.get("tool_state").cloned()),
+                other_tool: step.tool.clone(),
             });
             history.revision += 1;
             if filaments.is_some() {
                 project.forget();
             }
             settle(project, before.as_deref());
-            (project.id, step.name)
+            (project.id, step.name, step.tool)
         };
-        self.edited(id, json!({ "done": name }))
+        let mut more = json!({ "done": name });
+        // The tool to open as it was, when the page said what it was.
+        if let Some(tool) = tool {
+            more["tool_state"] = tool;
+        }
+        self.edited(id, more)
     }
 }
 

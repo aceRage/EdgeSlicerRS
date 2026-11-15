@@ -732,6 +732,14 @@
       this.stage.frame();
     },
 
+    // The section the tool cuts its copy by, for the Mesh Boolean tool
+    // opened straight from this one (the two share the reference's
+    // `ObjectClipper`): { copy, plane }, or null.
+    section() {
+      const plane = this.clipPlane();
+      return plane ? { copy: this.open.copy, plane } : null;
+    },
+
     clipPlane() {
       const open = this.open;
       if (!open) return null;

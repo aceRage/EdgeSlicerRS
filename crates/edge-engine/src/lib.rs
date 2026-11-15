@@ -55,6 +55,8 @@ pub use edge_3mf::{
 pub use edge_mesh::Transform;
 /// Stops a mesh boolean under way (a curved cut's preview).
 pub use edge_mesh::boolean::Cancel as BooleanCancel;
+/// Why a part cannot go into a boolean ("Mesh boolean"'s reasons).
+pub use edge_mesh::boolean::InputError as BooleanInputError;
 pub use edge_mesh::boolean::Op as BooleanOp;
 /// Painting a mesh's triangles, and finding which one a line of sight
 /// meets, for the painting tools of whoever shows a model.
@@ -70,9 +72,9 @@ pub use model::{
     CUT_THICKNESS_MAX, Changed, Connector, ConnectorKind, ConnectorShape, ConnectorStyle, CutDone,
     CutEdit, CutOptions, CutPieces, CutSection, CutThickness, DrawnCut, FIRST_LATER_LAYER, FaceHit,
     FlushBasis, Groove, LAST_LAYER, LONGEST_PLATE_NAME, LayerSequence, Look, MAX_FILAMENTS,
-    MAX_PLATES, Model, ModelCopy, ModelObject, ModelPlate, NEXT_COLOURS, NewPart, OrientScope,
-    Oriented, PlateSettings, PlateStamp, Prepared, Reach, Saved, Saving, Shape, connector_mesh,
-    own_settings, project_settings,
+    MAX_PLATES, Model, ModelCopy, ModelObject, ModelPlate, NEXT_COLOURS, NewPart, ObjectBoolean,
+    OrientScope, Oriented, PlateSettings, PlateStamp, Prepared, Reach, Saved, Saving, Shape,
+    connector_mesh, own_settings, project_settings,
 };
 pub use pipeline::{FirstLayer, Gcode, Sliced, Timings, slice};
 pub use presets::{Library, ModelPreset, PrinterModel, Shelf};
