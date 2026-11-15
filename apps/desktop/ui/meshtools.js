@@ -1,7 +1,9 @@
 'use strict';
 
 // A part's mesh operations, from the object and part menus
-// (GUI_Factories.cpp): "Simplify Model" (Gizmos/GLGizmoSimplify.cpp), and
+// (GUI_Factories.cpp): "Repair/Remesh" (GUI_ObjectList.cpp
+// `repair_by_remesh`, RemeshDialog.cpp), "Simplify Model"
+// (Gizmos/GLGizmoSimplify.cpp), and
 // the object list's warning of a mesh's errors (GUI_ObjectList.cpp
 // `get_mesh_errors_info`).
 //
@@ -64,12 +66,24 @@
     // "Simplify Model" (`append_menu_item_simplify`), for the object menu
     // (`can_simplify`: an object selected, the tool not open).
     objectItems(object) {
-      return [[t('Simplify Model'), () => this.start(object, null), { disabled: !object || this.active() }]];
+      return [
+        this.repairItem(object, []),
+        [t('Simplify Model'), () => this.start(object, null), { disabled: !object || this.active() }],
+      ];
+    },
+
+    // "Repair/Remesh" (`append_menu_item_fix_through_netfabb`), for an
+    // object (every printed part of it) or the parts selected.
+    repairItem(object, parts) {
+      return [t('Repair/Remesh'), () => this.repair(object, parts), { title: t('Rebuild the selected parts as watertight meshes (detail below ~0.1mm may be lost)'), disabled: !object || this.repairing }];
     },
 
     // The same in the part menu, for the one part selected.
     partItems(object, parts) {
-      return [[t('Simplify Model'), () => this.start(object, parts.length === 1 ? parts[0] : -1), { disabled: this.active() }]];
+      return [
+        this.repairItem(object, parts),
+        [t('Simplify Model'), () => this.start(object, parts.length === 1 ? parts[0] : -1), { disabled: this.active() }],
+      ];
     },
 
     // ---- the object list's warning ----
@@ -379,6 +393,154 @@
       cancel.addEventListener('click', () => this.close());
       rows.push(el('div', { className: 'cut-foot simplify-foot' }, bar, percent, apply, cancel));
       node.replaceChildren(...rows);
+    },
+
+    // ---- "Repair/Remesh" ----
+
+    // The options as last chosen (RemeshDialog.cpp `load_from_config`):
+    // the voxel size the part's own until one is chosen.
+    remeshOptions(auto) {
+      let kept = {};
+      try { kept = JSON.parse(this.host.remembered.get('remesh') || '{}') || {}; } catch { kept = {}; }
+      const clamp = (v, lo, hi) => Math.min(Math.max(v, lo), hi);
+      const number = (v, or) => (typeof v === 'number' && Number.isFinite(v) ? v : or);
+      return {
+        voxel_size: clamp(number(kept.voxel_size, auto), 0.02, 5),
+        keep_bottom_flat: kept.keep_bottom_flat ?? true,
+        bottom_margin: clamp(number(kept.bottom_margin, 0), 0, 50),
+        preserve_sharp_edges: kept.preserve_sharp_edges ?? true,
+        sharp_feature_angle: clamp(number(kept.sharp_feature_angle, 45), 5, 175),
+      };
+    },
+
+    // `repair_by_remesh`: the dialog, then the parts rebuilt as one step.
+    async repair(objectId, parts) {
+      if (!this.init() || this.repairing) return;
+      const project = this.host.project();
+      let info;
+      try {
+        info = await this.host.call('mesh_repair_info', { project: project.id, object: objectId, parts });
+      } catch (error) {
+        this.host.say(error.message, true);
+        return;
+      }
+      if (!info.parts) return;
+      const options = await this.remeshDialog(info);
+      if (!options) return;
+      this.close();
+      this.repairing = true;
+      const done = { running: true };
+      const report = async () => {
+        while (done.running) {
+          try {
+            const answer = await this.host.call('mesh_progress', {});
+            if (done.running && answer.running) this.host.say(`${t('Repair by remeshing')}: ${answer.progress}%`, false);
+          } catch (error) { /* said when it ends */ }
+          await new Promise((wait) => setTimeout(wait, POLL_MS * 2));
+        }
+      };
+      this.host.say(`${t('Repair by remeshing')}…`, false);
+      report();
+      try {
+        const answer = await this.host.call('mesh_repair', { project: project.id, object: objectId, parts, options });
+        done.running = false;
+        this.editor.take(answer);
+      } catch (error) {
+        done.running = false;
+        this.host.say(error.message, true);
+      } finally {
+        this.repairing = false;
+        this.editor.refresh();
+      }
+    },
+
+    // RemeshDialog.cpp: answers the options, or null for "Cancel".
+    remeshDialog(info) {
+      const { el } = this.host;
+      const o = this.remeshOptions(info.auto_voxel);
+      const dialog = el('dialog', { className: 'remesh-dialog' });
+      dialog.setAttribute('aria-label', t('Repair by remeshing'));
+      const form = el('form', { method: 'dialog' });
+      const input = (value, unit, tip) => {
+        // `num_str`: three figures.
+        const field = el('input', { type: 'number', step: 'any', value: String(Number(value.toPrecision(3))), className: 'remesh-number' });
+        const node = el('span', { className: 'unit remesh-unit', title: tip }, field, el('span', { textContent: t(unit) }));
+        return [field, node];
+      };
+      const flatTip = t('Voxel remeshing reconstructs the surface on a fixed grid, which leaves a flat base rippled and rounds off its outline by up to a voxel - the first layer is then no longer flush with the bed. With this on, the part is cut just above its base, only the upper piece is remeshed, and the untouched bottom slab is joined back on, so the base comes through exactly as it went in.\n\nParts with no flat base are remeshed whole, as before.');
+      const sharpTip = t('The distance field averages both faces together within about a voxel of a hard edge, so corners come back filleted. With this on, the edges of the original part are found first, and any rebuilt vertex that lands within a voxel of one is pulled back onto it.');
+      const voxelTip = fmt(t('How coarse the rebuild is. The mesh is re-created as the surface of its distance field on a grid of this spacing, so detail smaller than one voxel is lost and a smaller value means more triangles and a slower repair.\n\nThe value for this part chosen automatically is %s mm.'), String(Number(info.auto_voxel.toPrecision(3))));
+      const [voxel, voxelNode] = input(o.voxel_size, 'mm', voxelTip);
+      // The part's own size, untouched, stays each part's own.
+      const untouched = o.voxel_size === info.auto_voxel ? voxel.value : null;
+      const flat = el('input', { type: 'checkbox', checked: o.keep_bottom_flat, title: flatTip });
+      const [margin, marginNode] = input(o.bottom_margin > 0 ? o.bottom_margin : 2.5 * o.voxel_size, 'mm', t('How much of the original base is kept untouched. Leave it at a couple of voxels: too thin and the cut runs through the rounding the remesh would have added anyway, too thick and a sloped wall picks up a visible seam where the two pieces meet.'));
+      const sharp = el('input', { type: 'checkbox', checked: o.preserve_sharp_edges, title: sharpTip });
+      const [angle, angleNode] = input(o.sharp_feature_angle, 'deg', t('Two faces meeting at more than this angle count as a hard edge. Lower values protect gentler creases as well; higher values protect only the crispest corners.'));
+      const preview = el('p', { className: 'remesh-preview' });
+      const read = (field, or) => { const v = Number(field.value); return field.value.trim() && Number.isFinite(v) ? v : or; };
+      // `update_preview`: about two triangles a voxel of surface, to two
+      // figures.
+      const update = () => {
+        margin.disabled = !flat.checked;
+        angle.disabled = !sharp.checked;
+        const size = Math.min(Math.max(read(voxel, o.voxel_size), 0.02), 5);
+        if (!info.triangles || info.area <= 0 || size <= 0) {
+          preview.textContent = fmt(t('Triangles: %llu'), info.triangles);
+          return;
+        }
+        let estimate = 2 * info.area / (size * size);
+        if (estimate >= 10) {
+          const magnitude = 10 ** (Math.floor(Math.log10(estimate)) - 1);
+          estimate = Math.round(estimate / magnitude) * magnitude;
+        }
+        preview.textContent = fmt(t('Triangles: %llu -> about %llu'), info.triangles, Math.round(estimate));
+      };
+      for (const node of [voxel, margin, angle]) node.addEventListener('input', update);
+      flat.addEventListener('change', update);
+      sharp.addEventListener('change', update);
+      const row = (label, control, tip) => el('label', { className: 'remesh-row', title: tip || '' }, el('span', { textContent: `${t(label)}:` }), control);
+      const ok = el('button', { type: 'submit', value: 'ok', className: 'primary', textContent: t('Remesh') });
+      const cancel = el('button', { type: 'submit', value: 'cancel', formNoValidate: true, textContent: t('Cancel') });
+      form.append(
+        el('h2', { textContent: t('Repair by remeshing') }),
+        el('div', { className: 'remesh-grid' },
+          row('Voxel size', voxelNode, voxelTip),
+          row('Keep the bottom flat', flat, flatTip),
+          row('Bottom slab height', marginNode),
+          row('Preserve sharp edges', sharp, sharpTip),
+          row('Feature angle', angleNode)),
+        preview,
+        el('p', { className: 'quiet remesh-note', textContent: t('Painted supports, seams and colours are cleared by a remesh.') }),
+        el('div', { className: 'row end' }, ok, cancel),
+      );
+      dialog.append(form);
+      document.body.append(dialog);
+      update();
+      return new Promise((resolve) => {
+        dialog.addEventListener('close', () => {
+          const auto = untouched !== null && voxel.value === untouched;
+          const chosen = dialog.returnValue === 'ok' ? {
+            voxel_size: auto ? 0 : Math.min(Math.max(read(voxel, o.voxel_size), 0.02), 5),
+            keep_bottom_flat: flat.checked,
+            bottom_margin: Math.min(Math.max(read(margin, o.bottom_margin), 0), 50),
+            preserve_sharp_edges: sharp.checked,
+            sharp_feature_angle: Math.min(Math.max(read(angle, o.sharp_feature_angle), 5), 175),
+          } : null;
+          // `save_to_config`, on "Remesh"; an untouched size is not kept,
+          // so the next part is offered its own again.
+          if (chosen) {
+            const kept = { ...chosen };
+            if (auto) delete kept.voxel_size;
+            this.host.remembered.set('remesh', JSON.stringify(kept));
+          }
+          dialog.remove();
+          resolve(chosen);
+        }, { once: true });
+        dialog.returnValue = 'cancel';
+        dialog.showModal();
+        voxel.focus();
+      });
     },
 
     // ---- the suggestion for big meshes ----

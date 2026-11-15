@@ -520,6 +520,22 @@ Slice again, then send.	GUI/BambuSendDiagnosis.cpp:240
 LAN send failed (error %1%).	GUI/BambuSendDiagnosis.cpp:243
 The network plug-in reported: %1%	GUI/BambuSendDiagnosis.cpp:245
 (There is no Bambu cloud fallback: EdgeSlicer's network plug-in prints over the local network only.)	GUI/BambuSendDiagnosis.cpp:249
+Repair/Remesh	GUI/GUI_Factories.cpp:1192
+Rebuild the selected parts as watertight meshes (detail below ~0.1mm may be lost)	GUI/GUI_Factories.cpp:1192
+Repaired %1% part(s) by remeshing.	GUI/GUI_ObjectList.cpp:6556
+Repaired %1% part(s), %2% failed.	GUI/GUI_ObjectList.cpp:6557
+Triangles: %1% -> %2%.	GUI/GUI_ObjectList.cpp:6559
+%1% part(s) had no flat bottom to protect.	GUI/GUI_ObjectList.cpp:6566
+Repair by remeshing	GUI/RemeshDialog.cpp:63
+How coarse the rebuild is. The mesh is re-created as the surface of its distance field on a grid of this spacing, so detail smaller than one voxel is lost and a smaller value means more triangles and a slower repair.\n\nThe value for this part chosen automatically is %s mm.	GUI/RemeshDialog.cpp:101
+Voxel remeshing reconstructs the surface on a fixed grid, which leaves a flat base rippled and rounds off its outline by up to a voxel - the first layer is then no longer flush with the bed. With this on, the part is cut just above its base, only the upper piece is remeshed, and the untouched bottom slab is joined back on, so the base comes through exactly as it went in.\n\nParts with no flat base are remeshed whole, as before.	GUI/RemeshDialog.cpp:111
+How much of the original base is kept untouched. Leave it at a couple of voxels: too thin and the cut runs through the rounding the remesh would have added anyway, too thick and a sloped wall picks up a visible seam where the two pieces meet.	GUI/RemeshDialog.cpp:133
+The distance field averages both faces together within about a voxel of a hard edge, so corners come back filleted. With this on, the edges of the original part are found first, and any rebuilt vertex that lands within a voxel of one is pulled back onto it.	GUI/RemeshDialog.cpp:148
+Two faces meeting at more than this angle count as a hard edge. Lower values protect gentler creases as well; higher values protect only the crispest corners.	GUI/RemeshDialog.cpp:166
+Painted supports, seams and colours are cleared by a remesh.	GUI/RemeshDialog.cpp:187
+Remesh	GUI/RemeshDialog.cpp:195
+Triangles: %llu	GUI/RemeshDialog.cpp:248
+Triangles: %llu -> about %llu	GUI/RemeshDialog.cpp:256
 
 [own]
 # This app's own words on the static page, with no counterpart in the

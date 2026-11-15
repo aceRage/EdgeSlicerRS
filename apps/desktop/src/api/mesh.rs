@@ -18,17 +18,24 @@ use std::sync::{
     atomic::{AtomicBool, AtomicI32, Ordering},
 };
 
-use edge_engine::{MeshErrors, MeshStat, simplify};
+use edge_engine::{MeshErrors, MeshStat, remesh, simplify};
 use serde_json::{Value, json};
 
-use super::{File, Session, edit::push_step, lock, whole};
+use super::{
+    File, Session,
+    edit::push_step,
+    i18n::{fill, tr},
+    lock, whole,
+};
 
 /// The calls answered here.
-pub(super) const JSON: [&str; 4] = [
+pub(super) const JSON: [&str; 6] = [
     "mesh_simplify",
     "mesh_progress",
     "mesh_cancel",
     "mesh_apply",
+    "mesh_repair_info",
+    "mesh_repair",
 ];
 
 /// The calls here answered in bytes.
@@ -63,6 +70,33 @@ struct Held {
     stat: MeshStat,
     /// The filament the part prints in, to draw it in its colour.
     filament: u8,
+}
+
+/// The parts a call names (`parts`), none for all.
+fn part_ids(args: &Value) -> Vec<u64> {
+    args.get("parts")
+        .and_then(Value::as_array)
+        .map(|list| list.iter().filter_map(Value::as_u64).collect())
+        .unwrap_or_default()
+}
+
+/// A mesh's surface area in mm² (`repair_by_remesh`, for the dialog's
+/// estimate of the triangles a remesh makes).
+fn area(mesh: &edge_engine::Mesh) -> f64 {
+    mesh.triangles
+        .iter()
+        .map(|t| {
+            let [a, b, c] = t.map(|i| mesh.vertices[i as usize]);
+            let u = [b[0] - a[0], b[1] - a[1], b[2] - a[2]];
+            let w = [c[0] - a[0], c[1] - a[1], c[2] - a[2]];
+            let n = [
+                u[1] * w[2] - u[2] * w[1],
+                u[2] * w[0] - u[0] * w[2],
+                u[0] * w[1] - u[1] * w[0],
+            ];
+            0.5 * f64::from((n[0] * n[0] + n[1] * n[1] + n[2] * n[2]).sqrt())
+        })
+        .sum()
 }
 
 /// The filament a part prints in, for drawing it.
@@ -113,6 +147,8 @@ impl Session {
                 Ok(json!({}))
             }
             "mesh_apply" => self.mesh_apply(args),
+            "mesh_repair_info" => self.mesh_repair_info(args),
+            "mesh_repair" => self.mesh_repair(args),
             other => Err(format!("there is no call named {other}")),
         }
     }
@@ -235,6 +271,152 @@ impl Session {
             "original": mesh.triangles.len(),
             "triangles": triangles,
         }))
+    }
+
+    /// The parts a "Repair" is for (`object`, `parts`: none for every
+    /// printed part of it), and what its dialog shows of the first
+    /// (`repair_by_remesh`): `{ parts, auto_voxel, triangles, area }`, the
+    /// voxel size chosen for it, its triangles and its surface's area in mm².
+    fn mesh_repair_info(&self, args: &Value) -> Result<Value, String> {
+        let stage = self.stage_of(args)?;
+        let file = stage.file.clone().ok_or("the project has no model")?;
+        let targets = file
+            .model
+            .printed_meshes(whole(args, "object")?, &part_ids(args))
+            .map_err(|error| error.to_string())?;
+        let Some((_, first)) = targets.first() else {
+            return Ok(json!({ "parts": 0, "auto_voxel": 0.1, "triangles": 0, "area": 0.0 }));
+        };
+        Ok(json!({
+            "parts": targets.len(),
+            "auto_voxel": remesh::auto_voxel_size(first),
+            "triangles": first.triangles.len(),
+            "area": area(first),
+        }))
+    }
+
+    /// "Repair/Remesh" (`repair_by_remesh`): each part named (none: every
+    /// printed part of `object`) rebuilt with `options` (as the dialog has
+    /// them: `voxel_size`, `keep_bottom_flat`, `bottom_margin`,
+    /// `preserve_sharp_edges`, `sharp_feature_angle`), put in as one step,
+    /// "Repair by remeshing", while `mesh_progress` says how far it has got.
+    /// A voxel size left at the first part's own is each part's own. Answers
+    /// as `scene_edit`, `note` the reference's words on what was done.
+    fn mesh_repair(&self, args: &Value) -> Result<Value, String> {
+        let stage = self.stage_of(args)?;
+        let file = stage.file.clone().ok_or("the project has no model")?;
+        let object = whole(args, "object")?;
+        let targets = file
+            .model
+            .printed_meshes(object, &part_ids(args))
+            .map_err(|error| error.to_string())?;
+        if targets.is_empty() {
+            return Err("there is no printed part to repair".into());
+        }
+        let given = args.get("options").cloned().unwrap_or(Value::Null);
+        let number = |key: &str, or: f64| given.get(key).and_then(Value::as_f64).unwrap_or(or);
+        let flag = |key: &str, or: bool| given.get(key).and_then(Value::as_bool).unwrap_or(or);
+        let defaults = remesh::Options::default();
+        let mut options = remesh::Options {
+            // 0: each part's own.
+            voxel_size: match number("voxel_size", 0.0) {
+                size if size <= 0.0 => 0.0,
+                size => size.clamp(remesh::VOXEL_MIN, remesh::VOXEL_MAX),
+            },
+            keep_bottom_flat: flag("keep_bottom_flat", defaults.keep_bottom_flat),
+            bottom_margin: number("bottom_margin", 0.0).clamp(0.0, remesh::BOTTOM_MARGIN_MAX),
+            preserve_sharp_edges: flag("preserve_sharp_edges", defaults.preserve_sharp_edges),
+            sharp_feature_angle: number("sharp_feature_angle", defaults.sharp_feature_angle)
+                .clamp(remesh::ANGLE_MIN, remesh::ANGLE_MAX),
+        };
+        // A voxel size left at the first part's own is each part's own.
+        if (options.voxel_size - remesh::auto_voxel_size(&targets[0].1)).abs() < 1e-9 {
+            options.voxel_size = 0.0;
+        }
+        let (id, cancel, progress) = self.mesh_start();
+        let mut made = Vec::new();
+        let (mut before, mut after, mut failed, mut declined) = (0usize, 0usize, 0usize, 0usize);
+        for (at, (part, mesh)) in targets.iter().enumerate() {
+            progress.store((at * 100 / targets.len()) as i32, Ordering::Relaxed);
+            let bed = file
+                .model
+                .part_bed_direction(object, *part)
+                .map_err(|error| error.to_string())?;
+            match remesh::remesh_with_options(mesh, &options, bed, &|| {
+                cancel.load(Ordering::Relaxed)
+            }) {
+                Ok(Some((mesh, report))) => {
+                    before += report.triangles_before;
+                    after += report.triangles_after;
+                    if report.fell_back {
+                        declined += 1;
+                    }
+                    made.push((*part, mesh, MeshStat::default()));
+                }
+                Ok(None) => failed += 1,
+                Err(_) => {
+                    self.mesh_finish(id, None, &cancel).ok();
+                    return Err("stopped".into());
+                }
+            }
+        }
+        self.mesh_finish(id, None, &cancel).ok();
+        if cancel.load(Ordering::Relaxed) {
+            return Err("stopped".into());
+        }
+        let repaired = made.len();
+        // GUI_ObjectList.cpp `repair_by_remesh`, the notification.
+        let mut note = if failed == 0 {
+            fill(&tr("Repaired %1% part(s) by remeshing."), &[&repaired])
+        } else {
+            fill(
+                &tr("Repaired %1% part(s), %2% failed."),
+                &[&repaired, &failed],
+            )
+        };
+        if repaired > 0 {
+            note.push(' ');
+            note.push_str(&fill(&tr("Triangles: %1% -> %2%."), &[&before, &after]));
+        }
+        if options.keep_bottom_flat && declined > 0 {
+            note.push(' ');
+            note.push_str(&fill(
+                &tr("%1% part(s) had no flat bottom to protect."),
+                &[&declined],
+            ));
+        }
+        if made.is_empty() {
+            return Err(note);
+        }
+        let mut model = file.model.clone();
+        let painted = model
+            .set_part_meshes(stage.bed().as_ref(), object, made)
+            .map_err(|error| error.to_string())?;
+        let step = "Repair by remeshing";
+        {
+            let mut state = lock(&self.state);
+            let at = state
+                .index_of(stage.id)
+                .ok_or_else(|| format!("there is no project {}", stage.id))?;
+            let project = &mut state.projects[at];
+            if !project
+                .file
+                .as_ref()
+                .is_some_and(|now| Arc::ptr_eq(now, &file))
+            {
+                return Err("the project changed meanwhile; nothing was done".into());
+            }
+            let before = project.file.replace(Arc::new(File::of(model)));
+            push_step(project, step, before, None);
+        }
+        // Plater.cpp `clear_before_change_mesh`, said before the result.
+        if painted {
+            note = format!(
+                "{}\n{note}",
+                tr("Custom supports and color painting were removed before repairing.")
+            );
+        }
+        self.edited(stage.id, json!({ "done": step, "note": note }))
     }
 
     /// Puts the result numbered `id` in place of its part, as one step of

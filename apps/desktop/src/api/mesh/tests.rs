@@ -142,3 +142,101 @@ fn a_simplify_is_called_off() {
     assert_eq!(worker.join().unwrap().unwrap_err(), "stopped");
     assert_eq!(ask(&session, "mesh_progress", json!({}))["running"], false);
 }
+
+/// A sphere of radius 8 about (0, 0, 8), with `holes` triangles taken out.
+fn ball_stl(dir: &Path, holes: usize) -> String {
+    let (rings, sectors) = (24usize, 48usize);
+    let point = |ring: usize, sector: usize| -> [f32; 3] {
+        if ring == 0 || ring == rings {
+            return [0.0, 0.0, if ring == 0 { 16.0 } else { 0.0 }];
+        }
+        let theta = std::f64::consts::PI * ring as f64 / rings as f64;
+        let phi = 2.0 * std::f64::consts::PI * (sector % sectors) as f64 / sectors as f64;
+        [
+            (8.0 * theta.sin() * phi.cos()) as f32,
+            (8.0 * theta.sin() * phi.sin()) as f32,
+            (8.0 + 8.0 * theta.cos()) as f32,
+        ]
+    };
+    let mut soup = Vec::new();
+    for ring in 0..rings {
+        for sector in 0..sectors {
+            let (a, b) = (point(ring, sector), point(ring, sector + 1));
+            let (c, d) = (point(ring + 1, sector + 1), point(ring + 1, sector));
+            if ring > 0 {
+                soup.push([a, d, b]);
+            }
+            if ring + 1 < rings {
+                soup.push([b, d, c]);
+            }
+        }
+    }
+    let mut mesh = edge_engine::Mesh::from_triangle_soup(soup);
+    mesh.triangles.drain(500..500 + holes);
+    let path = dir.join("ball.stl");
+    std::fs::write(&path, binary_stl(&mesh)).unwrap();
+    path.to_string_lossy().into_owned()
+}
+
+#[test]
+fn a_part_with_a_hole_is_repaired_by_remeshing_as_one_step() {
+    let dir = tempfile::tempdir().unwrap();
+    let session = Arc::new(Session::new(None));
+    ask(
+        &session,
+        "project_open",
+        json!({ "path": ball_stl(dir.path(), 3) }),
+    );
+    let scene = ask(&session, "scene", json!({}));
+    let object = &scene["objects"][0];
+    let id = object["id"].clone();
+    // The warning: the hole's rim is left open.
+    assert_eq!(object["errors"]["open_edges"], 5, "{}", object["errors"]);
+    assert_eq!(object["errors"]["repaired"], 0);
+
+    let info = ask(&session, "mesh_repair_info", json!({ "object": id }));
+    assert_eq!(info["parts"], 1);
+    // The diagonal of a 16 mm box over 300.
+    let auto = info["auto_voxel"].as_f64().unwrap();
+    assert!((auto - 16.0 * 3f64.sqrt() / 300.0).abs() < 1e-6, "{auto}");
+    assert!(info["area"].as_f64().unwrap() > 780.0);
+
+    let answer = ask(
+        &session,
+        "mesh_repair",
+        json!({ "object": id, "options": { "voxel_size": auto, "keep_bottom_flat": true, "preserve_sharp_edges": true, "sharp_feature_angle": 45.0 } }),
+    );
+    assert_eq!(answer["done"], "Repair by remeshing");
+    assert_eq!(answer["project"]["edit"]["undo"], "Repair by remeshing");
+    let note = answer["note"].as_str().unwrap();
+    assert!(
+        note.starts_with("Repaired 1 part(s) by remeshing. Triangles: "),
+        "{note}"
+    );
+    // A round bottom: no flat base to keep.
+    assert!(
+        note.ends_with("1 part(s) had no flat bottom to protect."),
+        "{note}"
+    );
+    let now = &answer["scene"]["objects"][0];
+    assert_eq!(now["errors"], Value::Null, "{}", now["errors"]);
+    assert_eq!(ask(&session, "mesh_progress", json!({}))["running"], false);
+
+    let undone = ask(&session, "undo", json!({}));
+    assert_eq!(undone["scene"]["objects"][0]["errors"]["open_edges"], 5);
+}
+
+fn binary_stl(mesh: &edge_engine::Mesh) -> Vec<u8> {
+    let mut out = vec![0u8; 80];
+    out.extend((mesh.triangles.len() as u32).to_le_bytes());
+    for t in &mesh.triangles {
+        out.extend([0u8; 12]);
+        for &v in t {
+            for c in mesh.vertices[v as usize] {
+                out.extend(c.to_le_bytes());
+            }
+        }
+        out.extend([0u8; 2]);
+    }
+    out
+}

@@ -1458,7 +1458,7 @@ sequence is not the project's, as the reference does (ArrangeJob.cpp
 | Del or Backspace deletes what is selected | `Plater::remove_selected` l.25120, GUI_ObjectList.cpp l.4586 | **added** |
 | The list and the canvas show one selection | `ObjectList::update_selections`, `update_selections_on_canvas` | **added**, both ways, parts as well as objects |
 | Selection modes: instances or volumes, one at a time; Alt picks the volume mode for a click (`set_volume_selection_mode(evt.AltDown() ? Volume : Instance)`), Alt+Shift adds a volume of the same instance or takes it away | GLCanvas3D.cpp l.6444–6510, `Selection::add_volumes` | **added**: Alt with a click selects the part under the pointer (picked by drawing that copy's parts each in a colour of its own), Alt+Shift adds or takes away a part of the same copy, a click without Alt selects the object again. The part is marked as the object is, its outline and the corners of its box. Parts are of one object; while they are selected, nothing else is |
-| The right button: the object's menu ("Delete", "Clone", "Printable", "Rename", "Fill bed with copies", "Set as an individual object", "Mirror", "Split", the settings…) | `GUI_Factories.cpp` l.649–1181 | **added**: "Delete" [Del], "Clone" [Ctrl+K], "Printable", "Rename", and the "Split" and "Mirror" sub-menus (below). **not yet**: the rest (see "Left for later") |
+| The right button: the object's menu ("Delete", "Clone", "Printable", "Rename", "Fill bed with copies", "Set as an individual object", "Mirror", "Split", the settings…) | `GUI_Factories.cpp` l.649–1181 | **added**: "Delete" [Del], "Clone" [Ctrl+K], "Printable", "Rename", and the "Split" and "Mirror" sub-menus (below); "Repair/Remesh" and "Simplify Model" (section 13, "Repair/Remesh" and "Simplify"). **not yet**: the rest (see "Left for later") |
 | Ctrl+C / Ctrl+V copy and paste objects; Ctrl+K "Clone" asks how many | `Plater::copy_selection_to_clipboard` l.29941, `paste_from_clipboard`, `clone_selection` l.29965 | **added**: Ctrl+C notes what is selected, Ctrl+V puts a copy of each on the plate shown, Ctrl+K one beside each. **differs**: Ctrl+K makes one clone at a press and asks nothing; the clipboard is the page's, not the system's. **not yet**: Ctrl+X |
 | A clone or a paste is put on a free place found by the arranger | `Plater::find_new_position` l.16128, `Selection::paste_objects_from_clipboard` l.3384 | **differs**: the free place nearest what it was made of, by the boxes round the copies, 6 mm apart; beside the plates when the plate has no room |
 
@@ -1781,6 +1781,50 @@ Extra low's error (`Configuration::max_error = 1.`, GLGizmoSimplify.hpp
 l.62), so what it shows on opening is not what the slider says (the same on
 the fork's main).
 
+### Repair/Remesh, and the object list's mesh warning
+
+Read from `GUI_Factories.cpp` (`append_menu_item_fix_through_netfabb`),
+`GUI_ObjectList.cpp` (`repair_by_remesh`, `volume_bed_direction`,
+`get_mesh_errors_info`, `fix_through_netfabb`), `RemeshDialog.cpp`,
+`libslic3r/MeshRemesh.cpp/.hpp`, `MeshRepair.hpp`, `MeshRepairStub.cpp`,
+`OpenVDBUtils.cpp` (`remesh_by_voxels`, `mesh_to_grid`, `grid_to_mesh`),
+`QuadRemesh.hpp`, `TriangleMesh.cpp` (`fill_initial_stats`,
+`trianglemesh_repair_on_import`), `Model.cpp` (`get_object_stl_stats`) and
+`Format/bbs_3mf.cpp` (`mesh_stat`). The mesh's side is `edge_mesh::remesh`;
+the model's `Model::set_part_meshes`, `printed_meshes`, `part_bed_direction`
+and `Shape::part_errors` (`mesh_ops.rs`); the session's `mesh_repair_info`
+and `mesh_repair`; the page's `ui/meshtools.js`.
+
+What the reference repairs with. On every platform, "Repair/Remesh"
+rebuilds the parts from their signed distance field (OpenVDB), with the
+options of "Repair by remeshing" (MeshRemesh.cpp); "Round all edges..."
+(the same field, opened and closed) and "Quad remesh..." (QuadriFlow) stand
+beside it when the build has those libraries, which the pinned macOS build
+has. "Fix model" (Windows 10's repair service) is on Windows only and is
+not offered elsewhere. `MeshRepairStub.cpp` is only what a build without
+OpenVDB links, and it hides the entries it cannot do. So "Repair" here is
+"Repair/Remesh", and "Remesh" is that same rebuild: the reference has no
+remesh of its own besides it but the quad one.
+
+| C++ | Where | Here |
+| --- | --- | --- |
+| "Repair/Remesh" ("Rebuild the selected parts as watertight meshes (detail below ~0.1mm may be lost)") in the object menu and the part menu, before "Simplify Model"; for the object's printed parts or the parts selected | `append_menu_item_fix_through_netfabb`, `repair_by_remesh` | **added** |
+| "Repair by remeshing": "Voxel size:" (the part's own: its box's diagonal over 300, 0.05 to 0.3 mm; shown to three figures), "Keep the bottom flat:", "Bottom slab height:" (2.5 voxels), "Preserve sharp edges:", "Feature angle:" (45°), each with its tooltip; "Triangles: %llu -> about %llu" (two triangles a voxel of surface, to two figures); "Painted supports, seams and colours are cleared by a remesh."; "Remesh", "Cancel"; the choices kept for next time; the clamps 0.02–5 mm, 0–50 mm, 5–175° | RemeshDialog.cpp | **added**, a dialog of the page, the choices kept in the page's own store. **differs**: a voxel size left at the part's own is each part's own and is not kept. The reference means the same (`repair_by_remesh` compares the field with the part's size) but shows the size to three figures and reads that back, so the comparison does not hold (0.0924 is not 0.092376) and the rounded size is kept and offered for every part after (GUI_ObjectList.cpp l.6494, RemeshDialog.cpp l.24) |
+| Each part rebuilt in its own frame, the bed's way found through the first instance (`volume_bed_direction`); the base kept flat by cutting a slab off, remeshing the rest and joining the slab back by a union, the whole part remeshed with the reason when there is no flat base; the corners within a voxel of a sharp edge (or of an open one) pulled onto it | `remesh_with_options`, `remesh_keep_flat_bottom`, `snap_to_sharp_edges` | **added**, as the reference has it (`edge_mesh::remesh`); the sharp edges taken in the order of their corners where the reference takes its hash map's |
+| The field and its surface: OpenVDB's `meshToVolume` on each shell of volume (a band of three voxels), `csgUnion`, `levelSetRebuild`, `volumeToMesh` at no adaptivity, its quads cut in two, turned outward | OpenVDBUtils.cpp `remesh_by_voxels`, `mesh_to_grid`, `grid_to_mesh` | **differs**: done here without OpenVDB (`edge_mesh::remesh::voxel_remesh`): the same band and steps, inside told by a vote of rays along the three axes, a point per crossed cell (one per patch of it) and a quad per crossed edge, walked so it is closed. The result is of the same kind, not the same triangles. Where every shell is of no volume the reference falls back on the whole mesh without its voxel scale (OpenVDBUtils.cpp l.88), an obvious slip; here at the size asked |
+| One step "Repair by remeshing"; the paint of every part of the object let go ("Custom supports and color painting were removed before repairing."); then "Repaired %1% part(s) by remeshing." or "Repaired %1% part(s), %2% failed.", " Triangles: %1% -> %2%.", " %1% part(s) had no flat bottom to protect." | `repair_by_remesh`, `clear_before_change_mesh` | **added** (`mesh_repair`, its progress from `mesh_progress` said in the status line); the reference shows a busy cursor while it works |
+| The object list's warning icon on an object or a part whose mesh has open edges or repaired errors; its tooltip "%1$d error repaired" / "%1$d errors repaired", "Remaining errors:", then "%1$d non-manifold edge" / "%1$d non-manifold edges"; an object's figures summed over its parts | `get_mesh_errors_info`, `get_object_stl_stats`, `fill_initial_stats` | **added**: the open edges counted as `its_num_open_edges` counts them, the repaired errors read from (and written back to) the part's `mesh_stat`. The reference's "Click the icon to repair model object" is Windows only, and not here |
+| What a mesh gets when it is read: an STL goes through admesh's repair (`trianglemesh_repair_on_import`: faces matched exactly and then nearby, unconnected faces taken out, normals turned to agree, the volume made positive); its counts are not kept (`from_stl`'s copy of them is `#if 0`), so an STL shows no repaired errors, only its open edges | TriangleMesh.cpp | **not yet**: the reader here joins corners that are bit-identical and turns an inside-out mesh round; admesh's nearby matching and normal fixing are not ported, so a broken STL can show other open edges than the reference's |
+| "Round all edges...", "Quad remesh..." | GUI_Factories.cpp l.1203, l.1217 | **not yet**: the first is an OpenVDB filter (the field opened and closed), the second QuadriFlow, a library of its own (a field-aligned quad remesher with a min-cost flow); neither is built here |
+| "Fix model" (Windows 10's repair service, and the warning icon's click) | `fix_through_netfabb` | Windows only in the reference; not here |
+
+**Seen** in the page (`--serve`): a sphere STL with three triangles taken
+out shows the warning ("Remaining errors:", "5 non-manifold edges");
+"Repair/Remesh" opens the dialog with 0.0924 mm and "Triangles: 2205 ->
+about 190000"; at 0.3 mm it gives "Repaired 1 part(s) by remeshing.
+Triangles: 2205 -> 26732. 1 part(s) had no flat bottom to protect.", the
+warning gone, one undo step "Repair by remeshing", and the plate slices.
+
 ### The main toolbar
 
 Over the stage, in the middle (`.toolbar`, STYLE.md). A tool that cannot be
@@ -1904,7 +1948,7 @@ shows; `part_menu`; `append_menu_items_add_volume`;
 
 | C++ | Where | Here |
 | --- | --- | --- |
-| The part menu: "Delete", "Edit text", "Repair", "Simplify", "Center", "Drop", "Mirror", "Hide"/"Show", "Separate", "Split" ("To objects", "To parts", "By painted colour"), "Edit in Parameter Table", "Change type", "Reload from disk", "Replace with STL", "Edit in Blender", "Edit in FreeCAD", "Fillet / chamfer", "Export as one STL", then "Change Filament", "Override paint", the support groups, "Precise Seam Type" | GUI_Factories.cpp l.2539–2585, l.2998 | **added**: "Delete", "Center", "Drop" (both "Move Object" steps), "Mirror" ▸ "Along X axis"…, "Split" ▸ "To objects" (off, as the C++ has it for a part) and "To parts", "Change type", "Change Filament" ("Default" and each filament by its preset's name; "Set Filament for selected items" for several; only with more than one filament, for parts and modifiers), "Simplify Model" (the reference's words for "Simplify"; section 13, "Simplify"). **differs**: "Change type" is a sub-menu of the six kinds, where the C++ asks in a dialog ("Choose part type", "Type:"); "Split" is on whenever "To parts" can be done (see "Errors found in the C++"). **not yet**: the rest (each needs something the model does not have: text and SVG parts, mesh repair, hiding, a part made an object of its own, the table of "Edit in Parameter Table", reloading from a file, exporting). "Rename" is not in the C++'s shown part menu either; a double click or F2 renames |
+| The part menu: "Delete", "Edit text", "Repair", "Simplify", "Center", "Drop", "Mirror", "Hide"/"Show", "Separate", "Split" ("To objects", "To parts", "By painted colour"), "Edit in Parameter Table", "Change type", "Reload from disk", "Replace with STL", "Edit in Blender", "Edit in FreeCAD", "Fillet / chamfer", "Export as one STL", then "Change Filament", "Override paint", the support groups, "Precise Seam Type" | GUI_Factories.cpp l.2539–2585, l.2998 | **added**: "Delete", "Center", "Drop" (both "Move Object" steps), "Mirror" ▸ "Along X axis"…, "Split" ▸ "To objects" (off, as the C++ has it for a part) and "To parts", "Change type", "Change Filament" ("Default" and each filament by its preset's name; "Set Filament for selected items" for several; only with more than one filament, for parts and modifiers), "Repair/Remesh" (section 13, "Repair/Remesh"), "Simplify Model" (the reference's words for "Simplify"; section 13, "Simplify"). **differs**: "Change type" is a sub-menu of the six kinds, where the C++ asks in a dialog ("Choose part type", "Type:"); "Split" is on whenever "To parts" can be done (see "Errors found in the C++"). **not yet**: the rest (each needs something the model does not have: text and SVG parts, hiding, a part made an object of its own, the table of "Edit in Parameter Table", reloading from a file, exporting). "Rename" is not in the C++'s shown part menu either; a double click or F2 renames |
 | "Height range Modifier" (no tooltip) after them, and "Edit Process Settings" after "Printable" | GUI_Factories.cpp l.967, l.3262 | **added** (eighteenth pass): "Height range Modifier" gives an object without ranges one from 0 to 2 mm, selects "Layers" and turns the Process section to "Objects"; "Edit Process Settings" turns it to "Objects" for what is selected. **not yet**: "Color Pattern...", "Edit in Parameter Table" (the table, section 2) |
 | "Add part", "Add negative part", "Add modifier", "Add support blocker", "Add support enforcer", "Add precise seam" in the object's menu, each "Load..." and the generic shapes "Cube", "Cylinder", "Sphere", "Cone", "Disc", "Torus", text, SVG… | GUI_Factories.cpp l.426, l.659, l.922 | **added**: the first five, each with "Load..." (an STL's or a 3MF's printed geometry, as it stands in its file, named after it: "Load Part" / "Load Modifier") and "Cube" (a tenth of the bed's greater side, square to the bed, beside the right front corner of the object's box at its foot: "Add primitive", named "Generic-Cube"). The part made is selected. **not yet**: "Add precise seam", "Height range Modifier", "Color Pattern...", and "Cylinder", "Sphere", "Cone", "Disc", "Torus" and the rest, which wait for `edge_mesh::primitives` to make them (it makes boxes only) |
 | A new model part takes the object's `extruder` as its own; any other kind none | GUI_ObjectList.cpp l.2416–2421, l.2529–2534 | **added** |
@@ -2180,6 +2224,26 @@ and then gone through with the mouse. The screenshots are under the
 session's scratch folder, `ui_plates/shots/`.
 
 ### Errors found in the C++
+- Gizmos/GLGizmoSimplify.hpp l.62 and .cpp l.280: the configuration's
+  `max_error` starts at 1 (Extra low's) while the "Detail level" slider
+  starts at `reduction = 2` (Medium, 0.1); the first preview after opening
+  is Extra low's under a slider that says Medium, until the slider is
+  moved. Read, not run (the gizmo is the window's); the same on the fork's
+  main.
+- GUI_ObjectList.cpp l.6494 with RemeshDialog.cpp l.24: "an untouched
+  voxel field means auto" compares the dialog's value with the part's own
+  size to 1e-9, but the field shows and reads back `%.3g`, so the two
+  never match unless the size is 0.05 or 0.3 exactly; every part of a
+  multi-part repair takes the first part's size, and the rounded size is
+  saved and offered for every later part. Read, not run; the same on the
+  fork's main (l.6508).
+- OpenVDBUtils.cpp l.88–92 (`mesh_to_grid`): when every shell is dropped
+  for having no volume, the fallback builds the grid from the whole mesh
+  with `TriangleMeshDataAdapter{mesh}`, whose voxel scale defaults to 1,
+  so the field is one voxel a millimetre whatever size was asked, and the
+  grid's `voxel_scale` metadata (set after) then divides the result's
+  coordinates by the scale asked. Read, not run; the same on the fork's
+  main (l.91).
 - Jobs/OrientJob.cpp l.126–132 (`prepare_partplate`): `obj_sel[oidx] =
   plate->contain_instance(oidx, inst_idx)` is set for each instance in
   turn, so an object counts as on the plate by its last instance only;
