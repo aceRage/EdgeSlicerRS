@@ -262,6 +262,23 @@ dialog.plate-settings .row.end .grow { flex: 1; align-self: center; }
 /* Each slot's mark is round, so it is not taken for a tick box. */
 .boolean-panel .cut-marker { border-radius: 50%; }
 
+/* ---- "Simplify" (meshtools.js): its panel, and the note on a big mesh ---- */
+.simplify-panel hr { border: 0; border-top: 1px solid var(--line-2); margin: var(--space-1) 0; }
+.simplify-panel input[type="range"] { flex: 1 1 auto; width: auto; min-width: 60px; }
+.simplify-panel .cut-row { grid-template-columns: minmax(120px, auto) minmax(0, 1fr); }
+.simplify-panel .simplify-choice { display: flex; flex-direction: row; align-items: center; gap: var(--space-1); white-space: nowrap; }
+.simplify-value { min-width: 4.5em; font: var(--size-small) var(--font-mono); }
+.simplify-number { width: 72px; height: var(--control-s); font-size: var(--size-small); }
+.simplify-count { text-align: right; font-size: var(--size-small); }
+.simplify-foot { align-items: center; }
+.simplify-progress { flex: 1 1 auto; height: 6px; border-radius: 3px; background: var(--accent-soft); overflow: hidden; }
+.simplify-progress > span { display: block; height: 100%; background: var(--accent); }
+.simplify-notices { position: absolute; left: var(--stage-left, 16px); bottom: var(--stage-inset); z-index: var(--z-overlay); display: grid; gap: var(--space-2); max-width: min(520px, calc(100% - 32px)); }
+.simplify-notice { display: flex; align-items: center; gap: var(--space-2); padding: var(--space-2) var(--space-3); border-left: 3px solid var(--warn); }
+.simplify-notice button.link { color: var(--accent); background: none; border: 0; padding: 0; text-decoration: underline; cursor: pointer; }
+/* The object list's warning of a mesh's errors (`get_mesh_errors_info`). */
+.obj-warning { color: var(--warn); margin-right: 4px; cursor: help; }
+
 /* ---- "Variable layer height" (vlh.js): the bar at the stage's right
    edge and its panel ---- */
 .vlh-bar { position: absolute; right: var(--stage-inset); z-index: var(--z-overlay); padding: 0; cursor: ns-resize; touch-action: none; }

@@ -674,6 +674,7 @@ impl Session {
                             "triangles": mesh.parts.get(at),
                             "split": object.shape().part_splits(at),
                             "settings": own_count(&part.settings(), ItemKind::Part),
+                            "errors": super::mesh::errors_json(&object.shape().part_errors()[at]),
                         })
                     }).collect::<Vec<_>>(),
                     // How many settings of its own it has that its pages
@@ -698,6 +699,8 @@ impl Session {
                         "objects": object.shape().splits_to_objects(),
                         "parts": object.shape().splits_to_parts(),
                     },
+                    // The object list's warning (`get_mesh_errors_info`).
+                    "errors": super::mesh::errors_json(&object.shape().errors()),
                 })
             })
             .collect();

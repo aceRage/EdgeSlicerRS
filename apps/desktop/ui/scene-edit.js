@@ -552,6 +552,7 @@
         const chosen = this.chosen();
         if (chosen) cutter.start(chosen.copies[0]);
       }
+      if (tool && GL.meshTools) GL.meshTools.close();
       this.tool = tool;
       this.hot = null;
       this.fields.of = '';
@@ -632,6 +633,7 @@
         [`${t('Clone')} Ctrl+K`, () => this.clone([...selection])],
         [t('Printable'), () => this.commit({ op: 'printable', copies: [...selection], value: !printable }), { checked: printable }],
         [window.ObjectSettings.WORDS.editProcess, () => window.ObjectSettings.editProcess(), { title: window.ObjectSettings.WORDS.editProcess }],
+        ...(GL.meshTools && object ? GL.meshTools.objectItems(object.id) : []),
       ];
       if (copies.length === 1 && GL.objects) items.push([t('Rename'), () => GL.objects.rename(data.objects[copies[0].object].id)]);
       // "Edit cut..." and "Copy cut to...", for an object a cut kept
@@ -666,7 +668,7 @@
     // The menu of the parts selected (GUI_Factories.cpp
     // `create_bbl_part_menu`, the one the object list shows, and
     // `part_menu`). What the model cannot do yet is left out: "Edit
-    // text", "Repair", "Simplify", "Separate", "Reload from disk" and the
+    // text", "Repair", "Separate", "Reload from disk" and the
     // rest (UI_PARITY.md, section 13).
     partMenu(x, y) {
       const items = this.partItems();
@@ -692,6 +694,7 @@
       const own = items.length === 1 ? items[0].part.own : undefined;
       const menu = [
         [`${t('Delete')} Del`, () => this.remove(), { title: t('Delete the selected object') }],
+        ...(GL.meshTools ? GL.meshTools.partItems(object, ids) : []),
         [t('Center'), shift(centre && middle ? [middle[0] - centre[0], middle[1] - centre[1], 0] : [0, 0, 0]), { disabled: centred }],
         [t('Drop'), shift([0, 0, box ? -box[0][2] : 0]), { disabled: !box || Math.abs(box[0][2]) <= 0.001 }],
         [t('Mirror'), null, {
@@ -798,6 +801,7 @@
     sceneChanged() {
       if (this.tool && !this.usable(this.tool)) this.setTool(null);
       this.followCut();
+      if (GL.meshTools) GL.meshTools.follow();
       if (GL.painter) GL.painter.keep();
       this.refresh();
       if (GL.objects) GL.objects.render();
@@ -815,6 +819,7 @@
     selectionChanged() {
       if (this.tool && !this.usable(this.tool)) this.setTool(null);
       this.followCut();
+      if (GL.meshTools) GL.meshTools.follow();
       this.fields.of = '';
       this.refresh();
       if (GL.objects) GL.objects.mark();
@@ -1216,6 +1221,7 @@
       // The plate's own tools stand beside the plate shown.
       if (GL.plateTools) GL.plateTools.place(frame);
       if (GL.painter && GL.painter.active()) { GL.painter.draw(frame); return; }
+      if (GL.meshTools && GL.meshTools.active()) GL.meshTools.draw(frame);
       const chosen = this.tool && this.editing() ? this.chosen() : null;
       if (!chosen) return;
       const r = this.stage.renderer;

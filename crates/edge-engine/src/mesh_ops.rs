@@ -24,7 +24,7 @@ use std::sync::Arc;
 use edge_3mf::{MeshStat, PaintKind, Part};
 use edge_mesh::Mesh;
 
-use super::{Bed, Model, refused};
+use super::{Bed, Model, Shape, refused};
 use crate::Failure;
 
 /// What the object list's warning says of a part or an object
@@ -154,25 +154,40 @@ impl Model {
     pub fn mesh_errors(&self, object: u64, part: Option<u64>) -> Result<MeshErrors, Failure> {
         let at = self.object_at(object)?;
         let shape = &self.objects[at].shape;
-        let of = |part: &Part| MeshErrors {
-            open_edges: open_edges(&part.mesh),
-            repaired: part
-                .kept
-                .as_deref()
-                .map(|kept| kept.mesh_stat())
-                .unwrap_or_default(),
-        };
         match part {
-            Some(part) => Ok(of(&shape.parts[self.part_at(at, part)?])),
-            None => Ok(shape
-                .parts
-                .iter()
-                .fold(MeshErrors::default(), |mut sum, part| {
-                    let one = of(part);
-                    sum.open_edges += one.open_edges;
-                    sum.repaired.merge(&one.repaired);
-                    sum
-                })),
+            Some(part) => Ok(shape.part_errors()[self.part_at(at, part)?]),
+            None => Ok(shape.errors()),
         }
+    }
+}
+
+impl Shape {
+    /// What each part's statistics say, in order (`TriangleMesh::stats`):
+    /// its open edges, and what its file says was repaired.
+    pub fn part_errors(&self) -> &[MeshErrors] {
+        self.errors.get_or_init(|| {
+            self.parts
+                .iter()
+                .map(|part| MeshErrors {
+                    open_edges: open_edges(&part.mesh),
+                    repaired: part
+                        .kept
+                        .as_deref()
+                        .map(|kept| kept.mesh_stat())
+                        .unwrap_or_default(),
+                })
+                .collect()
+        })
+    }
+
+    /// The whole object's: every part's summed.
+    pub fn errors(&self) -> MeshErrors {
+        self.part_errors()
+            .iter()
+            .fold(MeshErrors::default(), |mut sum, one| {
+                sum.open_edges += one.open_edges;
+                sum.repaired.merge(&one.repaired);
+                sum
+            })
     }
 }

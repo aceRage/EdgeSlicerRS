@@ -192,6 +192,9 @@ pub struct Shape {
     /// A tree of boxes round each printed part's triangles, for what a
     /// line of sight meets ("Cut"'s "Pick face"), made when first asked.
     trees: OnceLock<Vec<Option<edge_mesh::raycast::Tree>>>,
+    /// What each part's mesh statistics say (mesh_ops.rs), worked out
+    /// when first asked.
+    errors: OnceLock<Vec<MeshErrors>>,
 }
 
 impl Shape {
@@ -211,6 +214,7 @@ impl Shape {
             hull: OnceLock::new(),
             pieces: OnceLock::new(),
             trees: OnceLock::new(),
+            errors: OnceLock::new(),
         })
     }
 
