@@ -15,6 +15,10 @@ use std::{
 use serde_json::{Value, json};
 
 use super::Session;
+use crate::secrets::{
+    self, FileStore, Memory, Refusing, Secrets, System,
+    tests::{Asked, Counted},
+};
 use crate::ultranet::{
     client::Timeouts,
     mock::{Mock, Setup},
@@ -50,6 +54,21 @@ struct Probe {
 }
 
 impl Probe {
+    /// A session over `dir`'s settings, its codes in `secrets`.
+    fn with_store(mock: &Mock, dir: tempfile::TempDir, secrets: Box<dyn Secrets>) -> Self {
+        let session = Session::with_bridge_and_secrets(
+            Some(dir.path().to_owned()),
+            mock.launcher(),
+            quick(),
+            secrets,
+        );
+        Probe {
+            session: Arc::new(session),
+            answers: Mutex::new(Vec::new()),
+            _dir: dir,
+        }
+    }
+
     fn new(mock: Option<&Mock>) -> Self {
         let dir = tempfile::tempdir().unwrap();
         let session = match mock {
@@ -584,4 +603,247 @@ fn bambu_pet_cf_in_an_ams_slot_is_refused_as_1039_decides() {
     );
     assert_eq!(again["confirm"]["blocking"], true);
     assert!(mock.requests("start_local_print").is_empty());
+}
+
+// ---- where the code is kept (crate::secrets) ----
+
+/// The system's store as a test has it: an item on `keyring-core`'s mock
+/// store, never the real keychain.
+fn mock_keychain(store: &Arc<keyring_core::mock::Store>) -> (Box<dyn Secrets>, Arc<Mutex<Asked>>) {
+    let (item, asked) = Counted::on(store.clone());
+    (Box::new(System::new(Box::new(item))), asked)
+}
+
+#[test]
+fn no_answer_holds_the_code_whichever_store_keeps_it() {
+    type Made = fn(&Path) -> Box<dyn Secrets>;
+    let stores: [(&str, Made); 4] = [
+        ("memory", |_| Box::new(Memory::default())),
+        ("file", |dir| {
+            Box::new(FileStore::new(Some(dir.join(secrets::FILE))))
+        }),
+        ("system", |_| {
+            mock_keychain(&keyring_core::mock::Store::new().unwrap()).0
+        }),
+        ("refused", |_| {
+            Box::new(System::new(Box::new(Refusing(
+                "the keychain is locked".into(),
+            ))))
+        }),
+    ];
+    for (name, store) in stores {
+        // A bridge that echoes the code it is given.
+        let mock = Mock::new(Setup {
+            echo_code: true,
+            ..Setup::default()
+        });
+        let dir = tempfile::tempdir().unwrap();
+        let secrets = store(dir.path());
+        let probe = Probe::with_store(&mock, dir, secrets);
+        probe.add_printer(WRONG);
+        let state = probe.ask("bambu_connect", json!({}));
+        assert_eq!(state["refused"], true, "{name}: {state}");
+        probe.ask(
+            "bambu_printer_code",
+            json!({ "dev_id": SERIAL, "access_code": CODE }),
+        );
+        probe.connected();
+        let printers = probe.ask("bambu_printers", json!({}));
+        assert_eq!(printers["printers"][0]["has_access_code"], true, "{name}");
+        let kept_in = if name == "refused" { "file" } else { name };
+        assert_eq!(printers["secrets"]["kept_in"], kept_in, "{name}");
+        assert_eq!(
+            printers["secrets"]["notice"].is_string(),
+            name == "refused",
+            "{name}: {printers}"
+        );
+        // The plain list says there is a code, never what it is.
+        let plain = std::fs::read_to_string(probe._dir.path().join("bambu_printers.json")).unwrap();
+        assert!(!plain.contains(CODE) && !plain.contains(WRONG), "{plain}");
+        assert!(plain.contains("\"access_code_kept\": true"), "{plain}");
+        probe.ask("bambu_printer_remove", json!({ "dev_id": SERIAL }));
+        probe.never_said_a_code();
+        let connects = mock.requests("connect_printer");
+        assert_eq!(connects.last().unwrap()["password"], CODE, "{name}");
+    }
+}
+
+#[test]
+fn the_keychain_is_asked_only_when_a_code_is_needed_and_once_a_run() {
+    let mock = Mock::new(Setup::default());
+    let store = keyring_core::mock::Store::new().unwrap();
+    let dir = tempfile::tempdir().unwrap();
+    let kept = dir.path().to_owned();
+    {
+        // The first run adds the printer: one write, nothing read but the
+        // empty store.
+        let (secrets, asked) = mock_keychain(&store);
+        let probe = Probe::with_store(&mock, dir, secrets);
+        probe.add_printer(CODE);
+        let asked = asked.lock().unwrap();
+        assert_eq!((asked.reads, asked.writes), (1, 1));
+        assert!(
+            !kept.join(secrets::FILE).exists(),
+            "no file beside the store"
+        );
+        // The folder outlives this run.
+        let Probe { _dir, .. } = probe;
+        let _ = _dir.keep();
+    }
+    // The next run: the app starting, Device opened, the state looked at,
+    // the send dialog opened without connecting: the store is not asked.
+    let (secrets, asked) = mock_keychain(&store);
+    let session = Arc::new(Session::with_bridge_and_secrets(
+        Some(kept.clone()),
+        mock.launcher(),
+        quick(),
+        secrets,
+    ));
+    let ask = |name: &str, args: Value| {
+        session
+            .call(name, &args)
+            .unwrap_or_else(|error| panic!("{name}: {error}"))
+    };
+    let printers = ask("bambu_printers", json!({}));
+    assert_eq!(printers["printers"][0]["has_access_code"], true);
+    assert_eq!(
+        printers["secrets"]["at_hand"], false,
+        "the page does not dial by itself"
+    );
+    ask("bambu_state", json!({ "redial": true }));
+    ask("bambu_bridge", json!({}));
+    assert_eq!(
+        asked.lock().unwrap().reads,
+        0,
+        "nothing read before Connect"
+    );
+    // Connect: read once; again, and the state, read nothing more.
+    let state = ask("bambu_connect", json!({}));
+    assert_eq!(state["session"], "connected", "{state}");
+    ask("bambu_connect", json!({}));
+    ask("bambu_state", json!({ "redial": true }));
+    let printers = ask("bambu_printers", json!({}));
+    assert_eq!(printers["secrets"]["at_hand"], true);
+    {
+        let asked = asked.lock().unwrap();
+        assert_eq!((asked.reads, asked.writes), (1, 0), "one read, no write");
+    }
+    // The same code entered again writes nothing; a new one writes once.
+    ask(
+        "bambu_printer_code",
+        json!({ "dev_id": SERIAL, "access_code": CODE }),
+    );
+    assert_eq!(asked.lock().unwrap().writes, 0);
+    ask(
+        "bambu_printer_code",
+        json!({ "dev_id": SERIAL, "access_code": "ABCDEFGH" }),
+    );
+    assert_eq!(asked.lock().unwrap().writes, 1);
+    // Removing the printer removes its code: the item goes with the last.
+    ask("bambu_printer_remove", json!({ "dev_id": SERIAL }));
+    assert_eq!(asked.lock().unwrap().removes, 1);
+    let (mut later, _) = mock_keychain(&store);
+    assert_eq!(later.get(SERIAL).unwrap(), None);
+    let _ = std::fs::remove_dir_all(&kept);
+}
+
+/// A data folder as a version before the system store left it: the
+/// printer listed without saying it has a code, the code in the file.
+fn kept_before(dir: &Path) {
+    std::fs::write(
+        dir.join("bambu_printers.json"),
+        format!(
+            r#"{{"version":1,"selected":"{SERIAL}","print":{{}},"printers":[{{"dev_id":"{SERIAL}","dev_name":"Workshop P1S","dev_ip":"192.168.1.20","printer_type":"C12"}}]}}"#
+        ),
+    )
+    .unwrap();
+    std::fs::write(
+        dir.join(secrets::FILE),
+        format!(r#"{{"{SERIAL}":{{"access_code":"{CODE}"}}}}"#),
+    )
+    .unwrap();
+}
+
+#[test]
+fn codes_in_the_old_file_move_to_the_system_store_on_first_use() {
+    let mock = Mock::new(Setup::default());
+    let store = keyring_core::mock::Store::new().unwrap();
+    let dir = tempfile::tempdir().unwrap();
+    kept_before(dir.path());
+    let (secrets, asked) = mock_keychain(&store);
+    let probe = Probe::with_store(&mock, dir, secrets);
+    // Listed with its code, nothing moved yet.
+    let printers = probe.ask("bambu_printers", json!({}));
+    assert_eq!(printers["printers"][0]["has_access_code"], true);
+    assert_eq!(asked.lock().unwrap().reads, 0);
+    let file = probe._dir.path().join(secrets::FILE);
+    assert!(file.exists());
+    // Connect moves it: written, read back, the file removed.
+    probe.connected();
+    assert!(!file.exists(), "the file goes once the store gave it back");
+    let (mut later, _) = mock_keychain(&store);
+    assert_eq!(later.get(SERIAL).unwrap().as_deref(), Some(CODE));
+    let printers = probe.ask("bambu_printers", json!({}));
+    assert_eq!(printers["secrets"]["notice"], Value::Null);
+    assert_eq!(printers["secrets"]["kept_in"], "system");
+    probe.never_said_a_code();
+}
+
+#[test]
+fn a_move_the_store_does_not_give_back_leaves_the_file_and_says_so() {
+    let mock = Mock::new(Setup::default());
+    let dir = tempfile::tempdir().unwrap();
+    kept_before(dir.path());
+    let (item, asked) = Counted::new();
+    asked.lock().unwrap().forgetful = true;
+    let probe = Probe::with_store(&mock, dir, Box::new(System::new(Box::new(item))));
+    let file = probe._dir.path().join(secrets::FILE);
+    let before = std::fs::read_to_string(&file).unwrap();
+    // Still connects, with the code from the file.
+    probe.connected();
+    assert_eq!(std::fs::read_to_string(&file).unwrap(), before, "untouched");
+    let printers = probe.ask("bambu_printers", json!({}));
+    let notice = printers["secrets"]["notice"].as_str().unwrap();
+    assert!(
+        notice.starts_with("The access codes kept in a file could not be moved to ")
+            && notice.contains("it did not give back what was written")
+            && notice.ends_with(
+                "They stay in the file on this computer, readable by your user account only."
+            ),
+        "{notice}"
+    );
+    assert_eq!(printers["secrets"]["kept_in"], "file");
+    probe.never_said_a_code();
+}
+
+#[test]
+fn a_store_that_refuses_gives_way_to_the_file_and_says_so() {
+    let mock = Mock::new(Setup::default());
+    let dir = tempfile::tempdir().unwrap();
+    let probe = Probe::with_store(
+        &mock,
+        dir,
+        Box::new(System::new(Box::new(Refusing(
+            "the macOS Keychain did not allow it (User canceled the operation.)".into(),
+        )))),
+    );
+    // Nothing said before anything was asked of it.
+    let printers = probe.ask("bambu_printers", json!({}));
+    assert_eq!(printers["secrets"]["notice"], Value::Null);
+    probe.add_printer(CODE);
+    let printers = probe.ask("bambu_printers", json!({}));
+    let notice = printers["secrets"]["notice"].as_str().unwrap();
+    assert!(
+        notice.ends_with(
+            "could not be used: the macOS Keychain did not allow it (User canceled the operation.). Access codes are kept in a file on this computer instead, readable by your user account only."
+        ),
+        "{notice}"
+    );
+    assert!(
+        std::fs::read_to_string(probe._dir.path().join(secrets::FILE))
+            .unwrap()
+            .contains(CODE)
+    );
+    probe.connected();
+    probe.never_said_a_code();
 }

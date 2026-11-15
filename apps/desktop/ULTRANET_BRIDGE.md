@@ -340,11 +340,52 @@ read, in English, **never** holding an access code.
   it is not there either (the reference's `NetworkAgent::connect_printer`
   logs it on failure, `NetworkAgent.cpp` l.1071; the bridge must not copy
   that).
-- This app keeps it in a file of its data folder readable by this user only
-  (mode 0600; `bambu_printers_secrets.json`), apart from the printer's other
-  facts, never in a project, never in an answer to its page, never in a log.
-  It removes it from anything the bridge says before showing it (in case a
-  bridge or a plug-in echoes it).
+- This app keeps it in the operating system's store (`src/secrets.rs`): the
+  macOS login keychain, Windows Credential Manager, the Secret Service on
+  Linux, through the `keyring-core` crate. Every printer's code is in ONE
+  item (service `EdgeSlicerRS`, account `Bambu Lab access codes`, JSON
+  `{ "version": 1, "codes": { "<serial>": "<code>" } }`), so one answer to
+  the system covers every printer. The list of printers
+  (`bambu_printers.json`) says whether each has a code
+  (`access_code_kept`), never the code.
+- The store is read only when a code is needed: "Connect", a send (the
+  "Send print job to" dialog connects), a code added, changed or removed,
+  or a printer with a code removed; never when the app starts or the
+  Device tab opens (the page dials a printer by itself only when the code
+  is already at hand, `bambu_printers` `secrets.at_hand`). What it gave is
+  kept for the run: at most one read of the store, and so at most one
+  macOS prompt to read, a run. It is written only when a code is added,
+  changed or removed.
+- Where the system's store is not there or refuses (no Secret Service on
+  Linux, a locked keychain, access denied at the prompt, `--serve` with no
+  session to ask in), the code is kept for the rest of the run in a file of
+  the data folder readable by this user only (mode 0600;
+  `bambu_printers_secrets.json`), and the Device panel says so in plain
+  words (`bambu_printers` `secrets.notice`). There is no setting for it
+  (the reference has none: it keeps the code in `app_config`, in plain
+  text).
+- That file is also where versions before the system's store kept the
+  codes. The first time the store is used, the file's codes are written to
+  it, read back, and the file is removed only when the store gave back the
+  same codes; otherwise the file is left as it is, used for the run, and
+  that is said. Removing a printer removes its code from the store.
+- `EDGE_SECRETS` chooses another store: `file`, `memory` (for the run) or
+  `unavailable` (a system store that refuses all, to see the fallback).
+  The tests use the file, memory, or the system store's code on
+  `keyring-core`'s mock store; a test build cannot reach the real one.
+- The code is never in a project, never in an answer to the page, never in
+  a log. The app removes it from anything the bridge says before showing
+  it (in case a bridge or a plug-in echoes it).
+- On macOS the keychain asks the person ("EdgeSlicerRS wants to use your
+  confidential information stored in "EdgeSlicerRS" in your keychain")
+  when a program not on the item's access list reads or changes it; the
+  program that made the item is on the list. A development build is
+  signed ad hoc and so is a new program to the keychain after every
+  rebuild: it is asked again even after "Always Allow". A release build
+  keeps "Always Allow" across updates when every version is signed with
+  the same Developer ID (the item's access list names the program by its
+  designated requirement: the bundle identifier and the team), and the
+  bundle identifier stays the same.
 
 ## 11. Security model
 

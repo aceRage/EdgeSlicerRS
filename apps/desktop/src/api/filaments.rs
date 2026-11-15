@@ -115,6 +115,51 @@ impl Session {
         }
     }
 
+    /// The flushing volumes (n × n) and multiplier a slice works out from
+    /// the colours for a project that names its filaments' colours but
+    /// holds no volumes (`edge_engine::prepare`, as the reference's command
+    /// line does): the settled settings' own, so that the dialog shows and
+    /// an edit starts from what is sliced. None for any other project.
+    ///
+    /// **Differs** from the reference's window, which gives such a project
+    /// the default 280 mm³ from each to each at a multiplier of 0.3 when it
+    /// opens it (PresetBundle.cpp `load_config_file_config`, `project_config`
+    /// from the defaults) and works volumes out only when a colour changes,
+    /// a filament is added or "Re-calculate" is pressed: it shows, slices
+    /// and saves that under-purge. The app slices what the command line
+    /// slices (PR 110) and shows and saves the same.
+    fn worked_out_flushing(
+        &self,
+        choices: &Choices,
+        file: Option<&File>,
+        model: &Model,
+    ) -> Option<(Vec<f64>, f64)> {
+        if !model.flushing_from_colours() {
+            return None;
+        }
+        let basis = self.basis(choices, file).ok()?;
+        let overrides = settings::overrides(choices, &basis);
+        let settled =
+            edge_engine::settled(&basis.chosen, &overrides, basis.project.as_deref()).ok()?;
+        let matrix: Vec<f64> = settled
+            .floats("flush_volumes_matrix")
+            .ok()
+            .flatten()?
+            .into_iter()
+            .map(|volume| volume.unwrap_or(0.0))
+            .collect();
+        let multiplier = settled
+            .floats("flush_multiplier")
+            .ok()
+            .flatten()
+            .and_then(|values| values.first().copied().flatten())?;
+        // A filament past the colours named (one an object prints in) as
+        // the list is laid out for it.
+        let (_, vector) = model.flush_volumes();
+        let (matrix, _) = edge_engine::flush::resized(&matrix, &vector, model.filament_count());
+        Some((matrix, multiplier))
+    }
+
     /// What the "Flushing volumes" dialog shows (Plater.cpp, the button in
     /// the head of the filaments; WipeTowerDialog.cpp `WipingDialog`): the
     /// filaments' colours, the volumes from each to each before the
@@ -134,10 +179,14 @@ impl Session {
         };
         let count = model.filament_count();
         let basis = self.flush_basis(&choices, stage.file.as_deref(), count);
-        let (matrix, _) = model.flush_volumes();
+        let worked_out = self.worked_out_flushing(&choices, stage.file.as_deref(), &model);
+        let (matrix, held) = match worked_out {
+            Some((matrix, multiplier)) => (matrix, Some(multiplier)),
+            None => (model.flush_volumes().0, model.flush_multiplier()),
+        };
         // What a slice reads: the project's own, else the presets', else
         // the reference's default.
-        let multiplier = model.flush_multiplier().or_else(|| {
+        let multiplier = held.or_else(|| {
             let basis = self.basis(&choices, stage.file.as_deref()).ok()?;
             let overrides = settings::overrides(&choices, &basis);
             let settled =
@@ -222,6 +271,10 @@ impl Session {
             )
         };
         // Worked out with the session free: it may read presets.
+        let worked_out = match op {
+            "apply_all" => None,
+            _ => self.worked_out_flushing(&choices, stage.file.as_deref(), &model),
+        };
         let basis = match op {
             "add" => Some(self.flush_basis(&choices, stage.file.as_deref(), count + 1)),
             "colour" => Some(self.flush_basis(&choices, stage.file.as_deref(), count)),
@@ -231,6 +284,17 @@ impl Session {
         // chosen here.
         let named = !wanted.presets.is_empty();
         wanted.presets = spread(&wanted.presets, count);
+        // A project whose volumes a slice works out from the colours is
+        // given them first, so the edit starts from what was sliced (and a
+        // colour changed recalculates its own row and column, the others
+        // kept).
+        if let Some((matrix, multiplier)) = &worked_out
+            && op != "flush"
+        {
+            model
+                .set_flush_volumes(bed.as_ref(), matrix, *multiplier)
+                .map_err(|e| e.to_string())?;
+        }
         let mut used_colour = false;
         let done = match op {
             "add" => {
@@ -297,8 +361,11 @@ impl Session {
                     .get("multiplier")
                     .and_then(Value::as_f64)
                     .ok_or("multiplier: a number is needed")?;
-                let (now, _) = model.flush_volumes();
-                if now == matrix && model.flush_multiplier() == Some(multiplier) {
+                let (now, held) = match &worked_out {
+                    Some((matrix, multiplier)) => (matrix.clone(), Some(*multiplier)),
+                    None => (model.flush_volumes().0, model.flush_multiplier()),
+                };
+                if now == matrix && held == Some(multiplier) {
                     return self.edited(stage.id, json!({ "done": null }));
                 }
                 model
