@@ -249,10 +249,7 @@ pub fn prepare(mut loaded: Loaded, chosen: &Chosen, overrides: &Overrides) -> Re
     // colour needs and not the 4 × 4 default of 280 mm³ at 0.3.
     let colours_only = project_settings
         .as_ref()
-        .filter(|project| project.get("flush_volumes_matrix").is_none())
-        .and_then(|project| project.texts("filament_colour"))
-        .filter(|colours| !colours.is_empty())
-        .map(<[String]>::to_vec);
+        .and_then(crate::flush::colours_without_matrix);
     // Later sources replace earlier ones: project, then the presets named.
     let mut settings = project_settings.unwrap_or_default();
     for preset in [

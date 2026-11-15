@@ -34,6 +34,25 @@ tungstenite = { version = "0.30.0", default-features = false, features = ["hands
 # time-outs of each kind and TLS through rustls, for "HTTPS CA File".
 ureq = { version = "3.5.1", default-features = false, features = ["rustls"] }
 
+# Bambu Lab access codes in the system's store (`src/secrets`): the
+# common interface here, one store for each system below. Only the
+# back-ends this app uses, versions pinned; MIT OR Apache-2.0.
+keyring-core = "=1.0.1"
+
+[target.'cfg(target_os = "macos")'.dependencies]
+# The login keychain (Security.framework's file-based keychain), which
+# needs no entitlement; not the data-protection keychain ("protected").
+apple-native-keyring-store = { version = "=1.0.2", default-features = false, features = ["keychain"] }
+
+[target.'cfg(target_os = "windows")'.dependencies]
+# Windows Credential Manager; without its search (regex).
+windows-native-keyring-store = { version = "=1.1.0", default-features = false }
+
+[target.'cfg(all(unix, not(target_os = "macos")))'.dependencies]
+# The Secret Service over D-Bus, in Rust (zbus; no libdbus to build
+# against), its session encrypted in Rust.
+zbus-secret-service-keyring-store = { version = "=1.0.1", default-features = false, features = ["crypto-rust"] }
+
 [dev-dependencies]
 # A folder of its own for each test's settings and profiles.
 tempfile = "3"

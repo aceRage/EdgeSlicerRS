@@ -107,8 +107,13 @@ fn escaped(text: &str) -> String {
 
 /// A setting as the reference writes it in a G-code file's settings
 /// block (Config.cpp `serialize`): a list of numbers joined by commas, a
-/// list of texts by semicolons with any that hold spaces or escapes in
-/// quotes (`escape_strings_cstyle`).
+/// list of texts by semicolons with any that hold spaces, escapes or a
+/// semicolon in quotes (`escape_strings_cstyle`). **Differs** from the
+/// pinned reference over the semicolon: there (Config.cpp l.95-101) an
+/// item holding one ("brim_type;enable_support" in
+/// `different_settings_to_system`) is written bare and read back as
+/// several; aceRage/EdgeSlicer#1035 fixes it as written here.
+/// [`deserialized`] reads both forms.
 pub fn serialized(key: &str, value: &Value) -> String {
     match value {
         Value::One(text) => escaped(text),
@@ -123,7 +128,7 @@ pub fn serialized(key: &str, value: &Value) -> String {
                     let quoted = (items.len() == 1 && item.is_empty())
                         || item
                             .chars()
-                            .any(|c| matches!(c, ' ' | '\t' | '\\' | '"' | '\r' | '\n'));
+                            .any(|c| matches!(c, ' ' | '\t' | ';' | '\\' | '"' | '\r' | '\n'));
                     if quoted {
                         format!("\"{}\"", escaped(&item))
                     } else {
@@ -137,11 +142,14 @@ pub fn serialized(key: &str, value: &Value) -> String {
 }
 
 /// The reverse of [`serialized`], as far as the text allows: a value in
-/// quotes, or with semicolons and no spaces, is a list of texts; two or
+/// quotes, or with semicolons and no spaces, is a list of texts (an item
+/// in quotes keeps its semicolons, as written since aceRage/EdgeSlicer#1035;
+/// one written bare before it reads, as in the reference, as several); two or
 /// more numbers between commas are a list of numbers; anything else is
 /// one value.
 pub fn deserialized(text: &str) -> Value {
-    let texts = text.starts_with('"') || (text.contains(';') && !text.contains(' '));
+    let texts = text.starts_with('"')
+        || (text.contains(';') && (!text.contains(' ') || spaces_only_quoted(text)));
     if texts {
         let mut items = Vec::new();
         let mut rest = text;
@@ -181,6 +189,45 @@ pub fn deserialized(text: &str) -> Value {
         return Value::Many(pieces.into_iter().map(str::to_owned).collect());
     }
     Value::One(text.to_owned())
+}
+
+/// Whether `text` is a list of texts whose spaces are all inside quoted
+/// items: a bare item, written by a version before
+/// aceRage/EdgeSlicer#1035, beside one quoted for its spaces
+/// (`brim_type;enable_support;"Generic PLA @System"`). A G-code with a
+/// comment (`G28 ; home`) has a space outside quotes and stays one text.
+fn spaces_only_quoted(text: &str) -> bool {
+    let mut rest = text;
+    let mut quoted_any = false;
+    loop {
+        if let Some(quoted) = rest.strip_prefix('"') {
+            let mut end = None;
+            let mut escape = false;
+            for (at, c) in quoted.char_indices() {
+                if escape {
+                    escape = false;
+                } else if c == '\\' {
+                    escape = true;
+                } else if c == '"' {
+                    end = Some(at);
+                    break;
+                }
+            }
+            let Some(end) = end else { return false };
+            quoted_any = true;
+            rest = &quoted[end + 1..];
+        } else {
+            let end = rest.find(';').unwrap_or(rest.len());
+            if rest[..end].contains([' ', '\t', '"']) {
+                return false;
+            }
+            rest = &rest[end..];
+        }
+        match rest.strip_prefix(';') {
+            Some(after) => rest = after,
+            None => return rest.is_empty() && quoted_any,
+        }
+    }
 }
 
 #[cfg(test)]
@@ -253,6 +300,8 @@ mod tests {
         assert_eq!(many(&["Generic PLA", "PETG"]), "\"Generic PLA\";PETG");
         assert_eq!(many(&["", ""]), ";");
         assert_eq!(many(&[""]), "\"\"");
+        // An item holding the separator is quoted (aceRage/EdgeSlicer#1035).
+        assert_eq!(many(&["PLA;HS", "PETG"]), "\"PLA;HS\";PETG");
         assert_eq!(
             serialized(
                 "z_hop_types",
@@ -260,5 +309,63 @@ mod tests {
             ),
             "Auto Lift,Auto Lift"
         );
+    }
+
+    /// aceRage/EdgeSlicer#1035's cases: a list item holding ";" written and
+    /// read back as one item; a list written before the fix (bare) and a
+    /// quoted one with escapes read as the reference reads them.
+    #[test]
+    fn a_list_item_holding_a_semicolon_reads_back_as_one_item() {
+        let cases: [&[&str]; 5] = [
+            &["PLA;HS", "PETG"],
+            &["M106 S255", "M107;fan off"],
+            &["a;b;c"],
+            &["", "x;y", ""],
+            &[
+                "brim_type;enable_support;initial_layer_print_height",
+                "",
+                "machine_start_gcode;z_hop",
+            ],
+        ];
+        for items in cases {
+            let value = Value::Many(items.iter().map(|item| (*item).to_owned()).collect());
+            let written = serialized("different_settings_to_system", &value);
+            let Value::Many(read) = deserialized(&written) else {
+                panic!("{written} read as one value");
+            };
+            let read: Vec<String> = read.iter().map(|item| unescaped(item)).collect();
+            assert_eq!(read, items, "{written}");
+        }
+        assert_eq!(
+            serialized(
+                "different_settings_to_system",
+                &Value::Many(vec![
+                    "brim_type;enable_support".into(),
+                    "".into(),
+                    "machine_start_gcode;z_hop".into()
+                ])
+            ),
+            "\"brim_type;enable_support\";;\"machine_start_gcode;z_hop\""
+        );
+        // Written before the fix: the items split apart, as the reference reads them.
+        assert_eq!(
+            deserialized("brim_type;enable_support;;\"Generic PLA @System\";z_hop"),
+            Value::Many(
+                [
+                    "brim_type",
+                    "enable_support",
+                    "",
+                    "Generic PLA @System",
+                    "z_hop"
+                ]
+                .map(str::to_owned)
+                .to_vec()
+            )
+        );
+        let Value::Many(read) = deserialized("\"M107\\nG92 E0\";\"say \\\"hi\\\"\"") else {
+            panic!("not a list");
+        };
+        let read: Vec<String> = read.iter().map(|item| unescaped(item)).collect();
+        assert_eq!(read, ["M107\nG92 E0", "say \"hi\""]);
     }
 }

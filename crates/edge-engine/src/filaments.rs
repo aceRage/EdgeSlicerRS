@@ -120,6 +120,16 @@ impl Model {
         )
     }
 
+    /// Whether a slice works its flushing volumes out from the colours:
+    /// its settings name the filaments' colours but hold no volumes
+    /// ([`flush::colours_without_matrix`]). Until they are set, what it is
+    /// sliced with is the settled settings' `flush_volumes_matrix` and a
+    /// multiplier of 1, not [`Model::flush_volumes`]' defaults.
+    pub fn flushing_from_colours(&self) -> bool {
+        self.underlying()
+            .is_some_and(|settings| flush::colours_without_matrix(settings).is_some())
+    }
+
     /// The flushing multiplier the project holds (`flush_multiplier`, a
     /// project setting in the reference), none where it holds none.
     pub fn flush_multiplier(&self) -> Option<f64> {
