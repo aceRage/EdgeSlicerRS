@@ -556,3 +556,42 @@ Bambu Lab printer", lists each step):
    `{"print":{"command":"pause"|"resume"|"stop","param":"","sequence_id":"<n>"}}`,
    qos 1 (`MachineObject::command_task_*`); stop only after "Are you sure you
    want to cancel this print?".
+6. The Device page (device-pages pass), all through the
+   `send_message_to_printer` this protocol already has, each only after the
+   person confirmed it: `gcode_line` for `M104 S` / `M140 S` (targets),
+   `M106 P<1|2|3> S<0..255>` (fans), the jog block of
+   `command_axis_control`, `G28` (home), `M83` / `G0 E` (extruder);
+   `print_speed` (levels 1-4); `set_ctt` (chamber, only when the printer
+   reports `support_chamber_temp_edit`); `system.ledctrl` for
+   `chamber_light`. Read from the reports already forwarded: the fans
+   (`cooling_fan_speed`, `big_fan1_speed`, `big_fan2_speed`, `fan_gear`),
+   `spd_lvl`, `lights_report`, `home_flag`, `stg_cur`, `hms`, and the
+   `get_version` answer's `module` list ("Update"'s versions). No new
+   message was needed for these.
+
+## 15. Proposed for a later protocol minor (not part of protocol 1.0)
+
+**Proposed, not in force.** Nothing below is sent by this app, and a bridge
+of protocol 1.0 need not answer it; each would be an addition an older
+reader can ignore (section 4: `minor`), offered in `methods` / `events`
+when a bridge has it. Written down so the Bambu Device page's remaining
+parts (UI_PARITY.md section 4, "One Device page for every printer family")
+have a contract to be built against. Each keeps section 11's model: nothing
+listens, the access code stays on the pipe, no cloud, no discovery.
+
+| Proposed | Params / result | Plug-in / reference | For |
+| --- | --- | --- | --- |
+| `camera_start` (method) | `dev_id`; result `{ret, kind}` with `kind` "jpeg" (P1, A1: the BambuSource tunnel on port 6000) or "rtsps" (X1, H2, P2S: `rtsps://bblp:<code>@<ip>:322/streaming/live/1`), the stream opened by the bridge with the code it already holds | `MediaPlayCtrl.cpp` l.340-354; the `Bambu_*` tunnel functions of BambuSource (not in the plug-in's `bambu_network_*` entry points: the bridge would load BambuSource too, or UltraNet would offer its own) | "Camera" |
+| `camera_frame` (event) | `dev_id`, `seq`, `jpeg` (base64 of one JPEG frame; for "rtsps" the bridge decodes and re-encodes, at most 2 frames a second) | | the page shows the latest frame in an `<img>` of the app's own origin (a `data:` URL), never the printer's address |
+| `camera_stop` (method) | `dev_id`; result `{}` | | Device not looked at any more |
+| `files_list` (method) | `dev_id`, `type` ("timelapse", "video", "model"), `storage` ("external", "internal"); result `{ret, files: [{name, path, time, size}]}` | `PrinterFileSystem` `LIST_INFO` (0x0001) over the same tunnel (`MediaFilePanel.cpp`) | "Storage" |
+| `files_delete` (method) | `dev_id`, `paths`; result `{ret}` | `FILE_DEL` (0x0003) | "Storage" "Delete", after the reference's "Do you want to delete the file '%s' from printer?" |
+| `files_download` (method, a job) | `dev_id`, `path`, `to` (a path under the system's temporary folder the app names); `job_status` with the percent, `job_done` | `FILE_DOWNLOAD` (0x0004) | "Storage" "Download"; the model's "Print" (`start_sdcard_print` is in protocol 1 already) |
+
+Not proposed, on purpose: the firmware list and its download (`get_printer_firmware`,
+"Update firmware"): the list of firmware is a call to Bambu's cloud, which this
+protocol leaves out (section 5); a LAN-only `upgrade` `start` needs a URL from
+it. "Update" shows the versions the printer reports (`get_version`), and says
+updating is not built. The HMS texts come from the reference's own
+`resources/hms` files; their daily refresh from Bambu's cloud is not proposed
+either.
