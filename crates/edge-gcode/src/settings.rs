@@ -2078,7 +2078,8 @@ mod tests {
                     "accel_to_decel_factor": "50%", "retraction_length": ["0.8", "nil"],
                     "machine_end_gcode": "PRINT_END\nTIMELAPSE_STOP",
                     "printhost_apikey": "secret", "print_host": "192.168.1.20",
-                    "printhost_password": "secret", "name": "project_settings", "from": "project"}"#,
+                    "printhost_password": "secret", "name": "project_settings", "from": "project",
+                    "different_settings_to_system": ["brim_type;enable_support", "", "z_hop"]}"#,
             )
             .unwrap(),
         )
@@ -2092,6 +2093,12 @@ mod tests {
             listed,
             [
                 ("accel_to_decel_factor", "50%"),
+                // An entry holding ";" in quotes (aceRage/EdgeSlicer#1035),
+                // so it reads back as one.
+                (
+                    "different_settings_to_system",
+                    "\"brim_type;enable_support\";;z_hop"
+                ),
                 ("filament_notes", ";"),
                 ("filament_settings_id", "\"Generic PLA\";\"Generic PETG\""),
                 ("filament_type", "PLA;PETG"),

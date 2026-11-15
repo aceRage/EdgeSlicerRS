@@ -7,8 +7,8 @@
 use std::path::{Path, PathBuf};
 
 use edge_engine::{
-    Bed, BooleanFailure, BooleanOp, Chosen, Model, NewPart, Overrides, PartKind, Saving, Transform,
-    Unwatched,
+    Bed, BooleanFailure, BooleanInputError, BooleanOp, Chosen, Model, NewPart, ObjectBoolean,
+    Overrides, PartKind, Saving, Transform, Unwatched,
 };
 use edge_mesh::{Mesh, boolean::check, primitives::cuboid};
 
@@ -263,22 +263,231 @@ fn a_failed_boolean_leaves_the_model_untouched() {
     assert_eq!(model.objects()[0].copies()[0].reach(), reach);
 }
 
-/// Only printed parts, two of them, of the object named.
+/// The same part twice is refused.
 #[test]
-fn a_modifier_or_the_same_part_twice_is_refused() {
+fn the_same_part_twice_is_refused() {
     let dir = tempfile::tempdir().unwrap();
-    let (mut model, object, a, b) = two_cubes(dir.path(), Transform::translation([10.0, 0.0, 0.0]));
+    let (mut model, object, a, _) = two_cubes(dir.path(), Transform::translation([10.0, 0.0, 0.0]));
     assert!(matches!(
         model.mesh_boolean(Some(&BED), object, a, a, BooleanOp::Union, true),
         Err(BooleanFailure::Refused(_))
     ));
+}
+
+/// Any kind of volume can be taken, as the reference's gizmo takes any;
+/// the result is of the first one's kind, keeps its settings, and the
+/// last printed part is not deleted (`del_subobject_from_object`).
+#[test]
+fn any_kind_of_volume_is_taken_and_the_result_is_the_first_ones_kind() {
+    let dir = tempfile::tempdir().unwrap();
+    // (B's kind, B first?, operation, delete input, result's kind,
+    // volume, whether the tool is left)
+    let cases = [
+        // A part less a negative part: a part with the hole; the
+        // negative part goes.
+        (
+            PartKind::Negative,
+            false,
+            BooleanOp::Difference,
+            true,
+            PartKind::Normal,
+            4000.0,
+            false,
+        ),
+        // A modifier united with the only printed part: a modifier the
+        // size of both; the part stays, being the last solid one.
+        (
+            PartKind::Modifier,
+            true,
+            BooleanOp::Union,
+            true,
+            PartKind::Modifier,
+            12000.0,
+            true,
+        ),
+        // A negative part intersected with the part, kept.
+        (
+            PartKind::Negative,
+            true,
+            BooleanOp::Intersection,
+            false,
+            PartKind::Negative,
+            4000.0,
+            true,
+        ),
+        // A support blocker less the part.
+        (
+            PartKind::SupportBlocker,
+            true,
+            BooleanOp::Difference,
+            true,
+            PartKind::SupportBlocker,
+            4000.0,
+            true,
+        ),
+        // A part united with a support enforcer, which goes.
+        (
+            PartKind::SupportEnforcer,
+            false,
+            BooleanOp::Union,
+            true,
+            PartKind::Normal,
+            12000.0,
+            false,
+        ),
+    ];
+    for (kind, b_first, op, delete, made_kind, volume, tool_left) in cases {
+        let (mut model, object, a, b) =
+            two_cubes(dir.path(), Transform::translation([10.0, 0.0, 0.0]));
+        model.set_part_kind(Some(&BED), object, &[b], kind).unwrap();
+        let (source, tool) = if b_first { (b, a) } else { (a, b) };
+        let made = model
+            .mesh_boolean(Some(&BED), object, source, tool, op, delete)
+            .unwrap_or_else(|why| panic!("{kind:?} {op:?}: {why}"));
+        let shape = model.objects()[0].shape().clone();
+        let at = shape.part_ids().iter().position(|id| *id == made).unwrap();
+        let part = &shape.parts()[at];
+        assert_eq!(part.kind, made_kind, "{kind:?} {op:?}");
+        assert!(check::defects(&part.mesh).is_clean());
+        near(volume_in_object(&model, at), volume);
+        assert_eq!(
+            shape.part_ids().contains(&tool),
+            tool_left,
+            "{kind:?} {op:?}"
+        );
+        if tool_left {
+            assert_eq!(shape.parts().len(), 2);
+        }
+        keep(&model, &format!("kinds_{kind:?}_{op:?}.3mf").to_lowercase());
+    }
+}
+
+/// "Mesh boolean" on an object: its printed parts united and its negative
+/// parts taken away, in order; its modifier goes; one part is left, where
+/// the parts were.
+#[test]
+fn mesh_boolean_on_an_object_makes_its_parts_one() {
+    let dir = tempfile::tempdir().unwrap();
+    let (mut model, object, _, _) = two_cubes(dir.path(), Transform::translation([10.0, 0.0, 0.0]));
+    let add = |model: &mut Model, name: &str, kind, low: [f32; 3], high: [f32; 3]| {
+        model
+            .add_part(
+                Some(&BED),
+                object,
+                NewPart {
+                    name: name.into(),
+                    kind,
+                    mesh: cube(low, high),
+                    transform: Transform::IDENTITY,
+                },
+            )
+            .unwrap()
+    };
+    // A 4 x 4 hole through the union, and a modifier.
+    add(
+        &mut model,
+        "hole",
+        PartKind::Negative,
+        [13.0, 8.0, -1.0],
+        [17.0, 12.0, 21.0],
+    );
+    add(&mut model, "mod", PartKind::Modifier, [0.0; 3], [5.0; 3]);
+    let reach = model.objects()[0].copies()[0].reach();
+    let done = model.mesh_boolean_object(Some(&BED), object).unwrap();
+    assert_eq!(done, ObjectBoolean::Done);
+    let shape = model.objects()[0].shape().clone();
+    assert_eq!(shape.parts().len(), 1);
+    let part = &shape.parts()[0];
+    assert_eq!(part.kind, PartKind::Normal);
+    assert!(check::defects(&part.mesh).is_clean());
+    near(volume_in_object(&model, 0), 12000.0 - 4.0 * 4.0 * 20.0);
+    let (low, high) = box_in_object(&model, 0);
+    for axis in 0..3 {
+        assert!((f64::from(low[axis])).abs() < 1e-4);
+        assert!((f64::from(high[axis]) - [30.0, 20.0, 20.0][axis]).abs() < 1e-4);
+    }
+    // The copy stands where it stood.
+    assert_eq!(model.objects()[0].copies()[0].reach(), reach);
+    keep(&model, "object_boolean.3mf");
+    // An object of one part of one piece has nothing to make one.
+    assert!(model.mesh_boolean_object(Some(&BED), object).is_err());
+}
+
+/// When the boolean cannot be done, the object is its printed parts alone,
+/// put together without one, and the part refused is named with why.
+#[test]
+fn mesh_boolean_on_an_object_keeps_the_printed_parts_when_it_cannot_be_done() {
+    let dir = tempfile::tempdir().unwrap();
+    let (mut model, object, _, _) = two_cubes(dir.path(), Transform::translation([30.0, 0.0, 0.0]));
+    let mut open = cube([5.0, 5.0, -1.0], [8.0, 8.0, 21.0]);
+    open.triangles.truncate(10);
     model
-        .set_part_kind(Some(&BED), object, &[b], PartKind::Modifier)
+        .add_part(
+            Some(&BED),
+            object,
+            NewPart {
+                name: "Open".into(),
+                kind: PartKind::Negative,
+                mesh: open,
+                transform: Transform::IDENTITY,
+            },
+        )
         .unwrap();
-    assert!(matches!(
-        model.mesh_boolean(Some(&BED), object, a, b, BooleanOp::Union, true),
-        Err(BooleanFailure::Refused(_))
-    ));
+    let done = model.mesh_boolean_object(Some(&BED), object).unwrap();
+    assert_eq!(
+        done,
+        ObjectBoolean::PositiveOnly {
+            part: Some(("Open".into(), BooleanInputError::NotClosed))
+        }
+    );
+    let shape = model.objects()[0].shape().clone();
+    assert_eq!(shape.parts().len(), 1);
+    near(volume_in_object(&model, 0), 16000.0);
+}
+
+/// A hollow part (a shell wound inward inside its outer one) with a
+/// negative part through it: the bar is taken from the solid, the void
+/// stays a void (the fixed reference, aceRage/EdgeSlicer#1005, whose test
+/// this is: 20³ − 10³ − 4 × 4 × 10).
+#[test]
+fn a_hollow_part_with_a_negative_part_is_cut() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("hollow.stl");
+    let mut hollow = cube([0.0; 3], [20.0; 3]);
+    let mut inner = cube([5.0; 3], [15.0; 3]);
+    for t in &mut inner.triangles {
+        t.swap(1, 2);
+    }
+    hollow.append(&inner, &Transform::IDENTITY);
+    std::fs::write(&path, edge_mesh::stl::to_binary(&hollow)).unwrap();
+    let mut model = Model::open(&path).unwrap();
+    let object = model.objects()[0].id();
+    let (low, _) = model.objects()[0].shape().parts()[0].mesh.bounds().unwrap();
+    let at = |p: [f32; 3]| std::array::from_fn(|i| low[i] + p[i]);
+    model
+        .add_part(
+            Some(&BED),
+            object,
+            NewPart {
+                name: "bar".into(),
+                kind: PartKind::Negative,
+                mesh: cube(at([8.0, 8.0, -5.0]), at([12.0, 12.0, 25.0])),
+                transform: Transform::IDENTITY,
+            },
+        )
+        .unwrap();
+    let expected = 8000.0 - 1000.0 - 160.0;
+    // The export.
+    let exported = edge_engine::export::model_mesh(&model);
+    assert!(exported.uncut.is_empty());
+    assert!(check::defects(&exported.mesh).is_clean());
+    near(exported.mesh.signed_volume(), expected);
+    // And "Mesh boolean" on the object.
+    assert_eq!(
+        model.mesh_boolean_object(Some(&BED), object).unwrap(),
+        ObjectBoolean::Done
+    );
+    near(volume_in_object(&model, 0), expected);
 }
 
 fn sliced(model: &Model) -> String {
