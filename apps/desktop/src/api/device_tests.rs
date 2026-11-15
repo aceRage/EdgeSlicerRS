@@ -869,3 +869,244 @@ fn a_moonraker_that_does_not_answer_or_wants_another_key_is_offline_without_the_
     probe.confirmed(json!({ "action": "light", "on": true }));
     probe.never_said(KEY);
 }
+
+// ---- OctoPrint ----
+
+#[test]
+fn an_octoprint_is_drawn_from_its_own_api_with_its_camera() {
+    let (printer, shared) = hosts_mock::octoprint(KEY);
+    let probe = Probe::on_host(OTHER, &printer.address(), Some(KEY));
+    assert_eq!(
+        probe.ask("device_info", json!({}))["family"],
+        "octo_klipper"
+    );
+    let read = probe.read();
+    let caps = &read["caps"];
+    assert_eq!(caps["family"], "octoprint");
+    assert_eq!(ids(&caps["heaters"], "id"), ["tool0", "bed"]);
+    assert_eq!(ids(&caps["heaters"], "label"), ["Nozzle", "Bed"]);
+    assert_eq!(ids(&caps["fans"], "label"), ["Part"]);
+    assert_eq!(
+        caps["speed"],
+        json!({ "kind": "percent", "min": 50, "max": 200 })
+    );
+    assert_eq!(
+        (
+            caps["light"].clone(),
+            caps["slots"].clone(),
+            caps["camera"].clone()
+        ),
+        (json!(false), Value::Null, json!(true))
+    );
+    let r = &read["reading"];
+    assert_eq!(
+        (r["state"].clone(), r["said"].clone(), r["message"].clone()),
+        (json!("idle"), json!("Idle"), json!("Operational"))
+    );
+    assert_eq!(
+        r["camera"],
+        format!("http://{}/webcam/?action=stream", printer.address())
+    );
+    // OctoPrint reports no fan speed and no speed factor: shown as not known.
+    assert_eq!(
+        (r["fans"].clone(), r["speed"].clone()),
+        (json!([]), Value::Null)
+    );
+    // Every command, asked first, as OctoPrint's API takes it.
+    let asked = probe.ask(
+        "device_command",
+        json!({ "action": "temperature", "heater": "tool0", "target": 215 }),
+    );
+    assert!(asked["confirm"].is_object());
+    assert!(
+        shared.lock().unwrap().posts.is_empty(),
+        "nothing is sent before it is confirmed"
+    );
+    probe.confirmed(json!({ "action": "temperature", "heater": "tool0", "target": 215 }));
+    probe.confirmed(json!({ "action": "temperature", "heater": "bed", "target": 60 }));
+    probe.confirmed(json!({ "action": "fan", "fan": "fan", "percent": 50 }));
+    probe.confirmed(json!({ "action": "speed", "value": 150 }));
+    probe.confirmed(json!({ "action": "jog", "axis": "y", "mm": -10 }));
+    probe.confirmed(json!({ "action": "home" }));
+    probe.confirmed(json!({ "action": "extrude", "mm": -10 }));
+    let posts = shared.lock().unwrap().posts.clone();
+    assert_eq!(
+        posts,
+        [
+            (
+                "/api/printer/tool".to_owned(),
+                json!({ "command": "target", "targets": { "tool0": 215.0 } })
+            ),
+            (
+                "/api/printer/bed".to_owned(),
+                json!({ "command": "target", "target": 60.0 })
+            ),
+            (
+                "/api/printer/command".to_owned(),
+                json!({ "commands": ["M106 S128"] })
+            ),
+            (
+                "/api/printer/printhead".to_owned(),
+                json!({ "command": "feedrate", "factor": 150 })
+            ),
+            (
+                "/api/printer/printhead".to_owned(),
+                json!({ "command": "jog", "y": -10.0 })
+            ),
+            (
+                "/api/printer/printhead".to_owned(),
+                json!({ "command": "home", "axes": ["x", "y", "z"] })
+            ),
+            (
+                "/api/printer/tool".to_owned(),
+                json!({ "command": "extrude", "amount": -10.0 })
+            ),
+        ]
+    );
+    assert_eq!(
+        probe.read()["reading"]["heaters"][0],
+        json!({ "id": "tool0", "now": 215.0, "target": 215.0 })
+    );
+    assert_eq!(
+        probe.refused("device_command", json!({ "action": "light", "on": true })),
+        "This printer cannot do that from here."
+    );
+    probe.never_said(KEY);
+}
+
+#[test]
+fn an_octoprint_print_is_paused_resumed_and_cancelled_and_its_files_are_its_own() {
+    let (printer, shared) = hosts_mock::octoprint(KEY);
+    let probe = Probe::on_host(OTHER, &printer.address(), Some(KEY));
+    assert_eq!(
+        probe.refused("device_command", json!({ "action": "pause" })),
+        "The printer is not printing, so there is nothing to pause."
+    );
+    // Storage: OctoPrint's own file list, as it is not a Moonraker.
+    let files = probe.ask("printer_files", json!({}));
+    let names: Vec<&str> = files["files"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|f| f["name"].as_str().unwrap())
+        .collect();
+    assert_eq!(names, ["cube.gcode", "sub/vase.gcode"]);
+    assert_eq!(
+        (
+            files["files"][0]["print_time"].clone(),
+            files["files"][0]["filament_mm"].clone()
+        ),
+        (json!(1234), json!(2500.0))
+    );
+    assert_eq!(
+        probe.ask("printer_file_delete", json!({ "name": "sub/vase.gcode" }))["gone"],
+        false
+    );
+    assert_eq!(
+        probe.ask("printer_file_delete", json!({ "name": "sub/vase.gcode" }))["gone"],
+        true
+    );
+    assert_eq!(
+        probe.ask("printer_file_check", json!({ "name": "cube.gcode" }))["busy"],
+        false
+    );
+    probe.ask("printer_file_print", json!({ "name": "cube.gcode" }));
+    let r = probe.read()["reading"].clone();
+    assert_eq!(
+        (
+            r["state"].clone(),
+            r["file"].clone(),
+            r["percent"].clone(),
+            r["left"].clone()
+        ),
+        (
+            json!("printing"),
+            json!("cube.gcode"),
+            json!(43),
+            json!(1800)
+        )
+    );
+    // Printing: Storage's Print is refused, the axes too.
+    assert!(
+        probe
+            .refused("printer_file_print", json!({ "name": "cube.gcode" }))
+            .starts_with("The printer is busy")
+    );
+    assert_eq!(
+        probe.refused("device_command", json!({ "action": "home" })),
+        "The printer is printing: the axes and the extruder cannot be moved now."
+    );
+    probe.confirmed(json!({ "action": "pause" }));
+    assert_eq!(probe.read()["reading"]["state"], "paused");
+    probe.confirmed(json!({ "action": "resume" }));
+    probe.confirmed(json!({ "action": "stop" }));
+    assert_eq!(probe.read()["reading"]["state"], "idle");
+    let jobs: Vec<Value> = shared
+        .lock()
+        .unwrap()
+        .posts
+        .iter()
+        .filter(|(p, _)| p == "/api/job")
+        .map(|(_, b)| b.clone())
+        .collect();
+    assert_eq!(
+        jobs,
+        [
+            json!({ "command": "pause", "action": "pause" }),
+            json!({ "command": "pause", "action": "resume" }),
+            json!({ "command": "cancel" })
+        ]
+    );
+    probe.never_said(KEY);
+}
+
+#[test]
+fn an_octoprint_without_its_printer_or_with_a_wrong_key_says_so_without_the_key() {
+    let (printer, shared) = hosts_mock::octoprint(KEY);
+    shared.lock().unwrap().disconnected = true;
+    let probe = Probe::on_host(OTHER, &printer.address(), Some(KEY));
+    let read = probe.read();
+    assert_eq!(
+        (
+            read["reading"]["state"].clone(),
+            read["reading"]["said"].clone()
+        ),
+        (json!("error"), json!("Offline"))
+    );
+    assert_eq!(
+        read["reading"]["message"],
+        "OctoPrint answers, but no printer is connected to it."
+    );
+    // Not printing: nothing to stop; a heater: OctoPrint refuses (409).
+    assert_eq!(
+        probe.refused("device_command", json!({ "action": "stop" })),
+        "The printer is not printing, so there is nothing to stop."
+    );
+    assert!(
+        probe
+            .refused(
+                "device_command",
+                json!({ "action": "temperature", "heater": "bed", "target": 50, "confirmed": true })
+            )
+            .starts_with("HTTP 409")
+    );
+    // A wrong key: 403, nothing sent, the key in no answer.
+    let probe = Probe::on_host(OTHER, &printer.address(), Some("not-the-key"));
+    let read = probe.read();
+    assert_eq!(read["online"], false);
+    assert!(
+        read["error"].as_str().unwrap().starts_with("HTTP 403"),
+        "{read}"
+    );
+    assert!(
+        probe
+            .refused(
+                "device_command",
+                json!({ "action": "home", "confirmed": true })
+            )
+            .starts_with("HTTP 403")
+    );
+    assert!(shared.lock().unwrap().posts.is_empty());
+    probe.never_said("not-the-key");
+    probe.never_said(KEY);
+}

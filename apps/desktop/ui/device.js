@@ -102,11 +102,12 @@ function drawProgress(caps, r, answer) {
   $('dv-bar').style.width = `${percent ?? 0}%`;
   $('dv-percent').textContent = percent === null ? t('N/A') : `${percent}%`;
   $('dv-said').textContent = r ? r.said : answer.said;
+  // A printer that says nothing of layers has no layer line.
   $('dv-layer').textContent = r && r.total_layers
     ? t('Layer: %d/%d').replace('%d', r.layer ?? 0).replace('%d', r.total_layers)
-    : t('Layer: %s').replace('%s', t('N/A'));
+    : '';
   $('dv-left').textContent = r && r.left_text ? `-${r.left_text}` : '';
-  const message = r ? r.message : answer.error;
+  const message = r ? (r.message === r.said ? '' : r.message) : answer.error;
   $('dv-message').hidden = !message;
   $('dv-message').textContent = message || '';
   $('dv-message').className = r ? 'quiet' : 'error';

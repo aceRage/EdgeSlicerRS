@@ -605,3 +605,157 @@ pub fn decode(text: &str) -> String {
     }
     String::from_utf8_lossy(&out).into_owned()
 }
+
+/// What the mock OctoPrint has been through.
+#[derive(Debug, Default)]
+pub struct OctoState {
+    /// No printer connected to OctoPrint: `api/printer` answers 409.
+    pub disconnected: bool,
+    pub printing: bool,
+    pub paused: bool,
+    pub file: String,
+    pub files: Vec<(String, u64)>,
+    /// tool0, bed targets.
+    pub targets: std::collections::HashMap<String, f64>,
+    /// Every command it was sent: (path, body).
+    pub posts: Vec<(String, Value)>,
+}
+
+/// OctoPrint as its REST API answers (1.9): `api/version`, `api/printer`
+/// (409 with no printer connected), `api/job`, the commands of
+/// `api/job`, `api/printer/tool|bed|chamber|printhead|command`,
+/// `api/settings` (a webcam on the same address), `api/files`. Not a
+/// Moonraker: `server/info` is 404. 403 without the right key.
+pub fn octoprint(key: &'static str) -> (Printer, Arc<Mutex<OctoState>>) {
+    let shared = Arc::new(Mutex::new(OctoState {
+        files: vec![
+            ("cube.gcode".into(), 120_000),
+            ("sub/vase.gcode".into(), 80_000),
+        ],
+        ..OctoState::default()
+    }));
+    let kept = shared.clone();
+    let printer = Printer::start(
+        Box::new(move |got: &Got, _: &[Got]| {
+            if got.header("X-Api-Key") != Some(key) {
+                return (403, "Invalid API key".into());
+            }
+            let mut octo = kept.lock().unwrap();
+            let url = got.url.as_str();
+            let path = url.split_once('?').map_or(url, |(p, _)| p);
+            let body: Value = serde_json::from_slice(&got.body).unwrap_or_default();
+            let json = |value: Value| (200, value.to_string());
+            match (got.method.as_str(), path) {
+                ("GET", "/api/version") => json(
+                    serde_json::json!({ "api": "0.1", "server": "1.9.0", "text": "OctoPrint 1.9.0" }),
+                ),
+                ("GET", "/api/printer") => {
+                    if octo.disconnected {
+                        return (409, "Printer is not operational".into());
+                    }
+                    let temp = |name: &str, idle: f64| {
+                        let target = octo.targets.get(name).copied().unwrap_or(0.0);
+                        serde_json::json!({ "actual": if target > 0.0 { target } else { idle }, "target": target })
+                    };
+                    json(serde_json::json!({
+                        "temperature": { "tool0": temp("tool0", 24.0), "bed": temp("bed", 23.0) },
+                        "state": { "text": if octo.paused { "Paused" } else if octo.printing { "Printing" } else { "Operational" },
+                                   "flags": { "operational": true, "printing": octo.printing && !octo.paused, "paused": octo.paused,
+                                              "cancelling": false, "pausing": false, "error": false, "ready": !octo.printing } },
+                    }))
+                }
+                ("GET", "/api/job") => json(serde_json::json!({
+                    "job": { "file": { "name": octo.file } },
+                    "progress": { "completion": if octo.printing { 42.5 } else { 0.0 }, "printTimeLeft": if octo.printing { 1800 } else { 0 } },
+                    "state": "Operational",
+                })),
+                ("GET", "/api/settings") => json(
+                    serde_json::json!({ "webcam": { "webcamEnabled": true, "streamUrl": "/webcam/?action=stream" } }),
+                ),
+                ("GET", "/api/files/local") => json(serde_json::json!({ "files": [
+                    { "type": "machinecode", "name": "cube.gcode", "path": "cube.gcode", "size": octo.files.iter().find(|f| f.0 == "cube.gcode").map(|f| f.1), "date": 1_763_000_100,
+                      "gcodeAnalysis": { "estimatedPrintTime": 1234.0, "filament": { "tool0": { "length": 2500.0 } } } },
+                    { "type": "folder", "name": "sub", "path": "sub", "children": octo.files.iter().filter(|f| f.0.starts_with("sub/")).map(|f| serde_json::json!({
+                        "type": "machinecode", "name": f.0.trim_start_matches("sub/"), "path": f.0, "size": f.1, "date": 1_763_000_000 })).collect::<Vec<_>>() },
+                ] })),
+                ("DELETE", _) if path.starts_with("/api/files/local/") => {
+                    let name = decode(&path["/api/files/local/".len()..]);
+                    let before = octo.files.len();
+                    octo.files.retain(|f| f.0 != name);
+                    if octo.files.len() == before {
+                        (404, "File not found".into())
+                    } else {
+                        (204, String::new())
+                    }
+                }
+                ("POST", _) if path.starts_with("/api/files/local/") => {
+                    let name = decode(&path["/api/files/local/".len()..]);
+                    if !octo.files.iter().any(|f| f.0 == name) {
+                        return (404, "File not found".into());
+                    }
+                    if body["command"] == "select" && body["print"] == true {
+                        if octo.printing {
+                            return (409, "Printer is busy".into());
+                        }
+                        octo.printing = true;
+                        octo.file = name.rsplit('/').next().unwrap_or_default().to_owned();
+                    }
+                    octo.posts.push((path.to_owned(), body));
+                    (204, String::new())
+                }
+                ("POST", "/api/job") => {
+                    let ok = match (body["command"].as_str(), body["action"].as_str()) {
+                        (Some("pause"), Some("pause")) if octo.printing && !octo.paused => {
+                            octo.paused = true;
+                            true
+                        }
+                        (Some("pause"), Some("resume")) if octo.paused => {
+                            octo.paused = false;
+                            true
+                        }
+                        (Some("cancel"), _) if octo.printing => {
+                            octo.printing = false;
+                            octo.paused = false;
+                            true
+                        }
+                        _ => false,
+                    };
+                    if !ok {
+                        return (409, "Printer is not printing".into());
+                    }
+                    octo.posts.push((path.to_owned(), body));
+                    (204, String::new())
+                }
+                (
+                    "POST",
+                    "/api/printer/tool"
+                    | "/api/printer/bed"
+                    | "/api/printer/chamber"
+                    | "/api/printer/printhead"
+                    | "/api/printer/command",
+                ) => {
+                    if octo.disconnected {
+                        return (409, "Printer is not operational".into());
+                    }
+                    if body["command"] == "target" {
+                        if let Some(targets) = body["targets"].as_object() {
+                            for (tool, t) in targets {
+                                octo.targets.insert(tool.clone(), t.as_f64().unwrap_or(0.0));
+                            }
+                        } else {
+                            octo.targets.insert(
+                                path.rsplit('/').next().unwrap_or_default().to_owned(),
+                                body["target"].as_f64().unwrap_or(0.0),
+                            );
+                        }
+                    }
+                    octo.posts.push((path.to_owned(), body));
+                    (204, String::new())
+                }
+                _ => (404, "Not Found".into()),
+            }
+        }),
+        None,
+    );
+    (printer, shared)
+}

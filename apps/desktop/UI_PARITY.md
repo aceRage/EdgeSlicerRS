@@ -465,6 +465,23 @@ printers on 127.0.0.1. None was ever sent to a printer.
   `stream_center.html`) and is not shown. **beyond the reference**: the
   reference shows a U1 Snapmaker's closed page and another Klipper
   printer its own web page; both keep "Printer page" and "Storage" here.
+- **OctoPrint** (`src/device/octo.rs`): an "Octo/Klipper" host that is not
+  a Moonraker (`server/info` 404) and answers `api/version` as OctoPrint.
+  Its published REST API: `api/printer` (the state's flags, `tool0`.., `bed`,
+  `chamber`; 409 when no printer is connected to OctoPrint, said as
+  "Offline" with why), `api/job` (file, `completion`, `printTimeLeft`),
+  `POST api/job` (`pause` with `action` `pause` / `resume`, `cancel`),
+  `api/printer/tool` (`target`, `extrude`), `api/printer/bed` and
+  `chamber` (`target`), `api/printer/printhead` (`jog`, `home`, `feedrate`
+  50-200 %), `api/printer/command` (`M106 S` for the part fan, whose speed
+  OctoPrint does not report: "N/A"), `api/settings` (`webcam.streamUrl`,
+  shown as Moonraker's is). "Storage" uses OctoPrint's `api/files/local`
+  (`recursive`, `gcodeAnalysis`), `DELETE api/files/local/<path>` and
+  `select` with `print` (refused while it prints) when Moonraker's file API
+  answers 404. **beyond the reference**: its OctoPrint class has only
+  `api/version` and the upload, and Device shows OctoPrint's own page; the
+  calls here are OctoPrint's documentation's, checked against a mock of it
+  only.
 
 ### Sending to a printer: what is built
 
