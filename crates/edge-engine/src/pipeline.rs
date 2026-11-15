@@ -2783,9 +2783,28 @@ impl Sliced {
             print.own_heights = self.below.is_some();
         }
         if let Some(params) = &self.calibration {
-            let calibration = params.for_writer(&self.settings, self.print.bambu);
+            let mut calibration = params.for_writer(&self.settings, self.print.bambu)?;
+            if let (edge_gcode::CalibrationKind::PressureAdvancePattern(_), Some(first)) =
+                (&calibration.kind, prints.first())
+            {
+                let pen = edge_gcode::Pen::of(first, &calibration);
+                calibration.kind = edge_gcode::CalibrationKind::PressureAdvancePattern(
+                    params.pattern_layers(&self.settings, &pen)?,
+                );
+            }
+            // "PA Line" prints no object: the start G-code's first layer
+            // is the test's (GCode.cpp `_do_export`, Orca #14440).
+            let first_layer_box = match &calibration.kind {
+                edge_gcode::CalibrationKind::PressureAdvanceLine(test) => {
+                    Some(test.first_layer_box())
+                }
+                _ => None,
+            };
             for print in &mut prints {
                 print.calibration = Some(calibration.clone());
+                if let Some(first) = first_layer_box {
+                    print.plate.first_layer_box = Some(first);
+                }
             }
         }
         // A region with settings of its own lays its walls and fill by

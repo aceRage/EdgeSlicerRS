@@ -12,6 +12,11 @@ pub struct Calibration {
     pub kind: CalibrationKind,
     /// How the printer is told its pressure advance.
     pub firmware: AdvanceFirmware,
+    /// `gcode_comments`: the reference's writer comments its own moves.
+    pub comments: bool,
+    /// `machine_max_jerk_x`, `_y`, `_z`, `_e`, which a jerk the test sets
+    /// is held to.
+    pub max_jerk: [f64; 4],
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -23,6 +28,13 @@ pub enum CalibrationKind {
     /// `Calib_Temp_Tower`: the nozzle 5 °C cooler every 10 mm up from
     /// `start`, set at every layer.
     TemperatureTower { start: f64 },
+    /// `Calib_PA_Line`: lines drawn in place of the objects' layers
+    /// (`calib_draw.rs`).
+    PressureAdvanceLine(Box<crate::calib_draw::PaLine>),
+    /// `Calib_PA_Pattern`: what each of the first layers carries in place
+    /// of the plate's custom G-code, with the filament it feeds, every
+    /// test's together (`calib_draw::pa_pattern`).
+    PressureAdvancePattern(Vec<(String, f64)>),
 }
 
 /// How a firmware is told its pressure advance (GCodeWriter.cpp
@@ -152,6 +164,9 @@ pub(crate) fn at_layer(
         CalibrationKind::TemperatureTower { start } => {
             temperature_line(tower_temperature(start, z), tool, calibration.firmware)
         }
+        CalibrationKind::PressureAdvanceLine(_) | CalibrationKind::PressureAdvancePattern(_) => {
+            String::new()
+        }
     }
 }
 
@@ -161,6 +176,38 @@ pub(crate) fn at_layer(
 pub fn tower_temperature(start: f64, z: f64) -> u32 {
     let offset = f64::from((z / 10.001) as u32 * 5);
     (start - offset).max(0.0) as u32
+}
+
+/// Plastic laid per mm of a line (Flow.cpp `Flow::mm3_per_mm`): the
+/// reference's flow keeps its width and height in single precision and
+/// gives the result in single precision too.
+pub fn line_mm3_per_mm(width: f64, height: f64) -> f64 {
+    let (width, height) = (f64::from(width as f32), f64::from(height as f32));
+    f64::from((height * (width - height * (1.0 - 0.25 * std::f64::consts::PI))) as f32)
+}
+
+/// The speed to print a pressure advance test at, mm/s (calib.cpp
+/// `CalibPressureAdvance::find_optimal_PA_speed`): the outer wall speed,
+/// at least 100 mm/s, held to what the filament's maximum volumetric speed
+/// allows for a line of this width (0: 1.125 nozzles, Flow.cpp
+/// `auto_extrusion_width`) and height, rounded down.
+pub fn optimal_pa_speed(
+    max_volumetric_speed: f64,
+    outer_wall_speed: f64,
+    nozzle_diameter: f64,
+    line_width: f64,
+    layer_height: f64,
+) -> f64 {
+    let line_width = if line_width <= 0.0 {
+        f64::from(1.125_f32 * nozzle_diameter as f32)
+    } else {
+        line_width
+    };
+    let speed = 100.0_f64
+        .max(outer_wall_speed)
+        .min(max_volumetric_speed / line_mm3_per_mm(line_width, layer_height));
+    // Returned as a float by the reference.
+    f64::from(speed.floor() as f32)
 }
 
 /// A number as C++ streams print it with `std::setprecision(digits)`

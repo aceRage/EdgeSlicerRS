@@ -13,6 +13,7 @@
 mod arc;
 mod avoid;
 pub mod calib;
+mod calib_draw;
 mod chain;
 mod circle;
 mod contour;
@@ -48,6 +49,7 @@ use edge_template::{TemplateError, Value, Variables, stream_double};
 use rayon::prelude::*;
 
 pub use calib::{AdvanceFirmware, Calibration, CalibrationKind};
+pub use calib_draw::{HANDLE_SIZE as PA_HANDLE_SIZE, PaLine, PaPattern, Pen, pa_pattern};
 pub use contour::Contours;
 pub use edge_avoid::{Detour, Slices};
 pub use labels::label_outline;
@@ -593,7 +595,18 @@ pub fn write_timed(
     };
     let several = layers.iter().any(|layer| layer.filament > 0);
     writer.preamble(several)?;
-    if writer.settings.bambu {
+    // "PA Line" draws its lines in place of the objects' layers (GCode.cpp
+    // `_do_export`, `Calib_PA_Line`): the spaghetti detector is not opened
+    // for it either.
+    let pa_line = match writer.settings.calibration.as_ref().map(|c| (&c.kind, c)) {
+        Some((CalibrationKind::PressureAdvanceLine(test), calibration)) => {
+            Some((test.clone(), calibration.clone()))
+        }
+        _ => None,
+    };
+    if let Some((test, calibration)) = &pa_line {
+        writer.draw_pa_line(test, calibration)?;
+    } else if writer.settings.bambu {
         // GCode.cpp `_do_export`, after the first tool is taken up.
         writeln!(writer.out, "M981 S1 P20000 ;open spaghetti detector")?;
     }
@@ -613,7 +626,12 @@ pub fn write_timed(
     let mut thinned = simplify::Thinned::default();
     let mut thinned_from = 0;
     let started = Instant::now();
-    for (index, group) in groups.iter().enumerate() {
+    let laid = if pa_line.is_some() {
+        &groups[..0]
+    } else {
+        &groups[..]
+    };
+    for (index, group) in laid.iter().enumerate() {
         writer.out.clear();
         reached.push((whole.len(), writer.state.summary.seconds));
         if index == 1 {
@@ -2232,7 +2250,22 @@ impl Writer<'_> {
         }
         // What the person set at this layer, after the layer change and
         // whatever the second layer resets, before anything is printed.
-        if let Some(code) = self.codes.iter().find(|code| code.z == layer.z) {
+        // "PA Pattern" puts its own in their place (Plater.cpp
+        // `_calib_pa_pattern_gen_gcode` replaces the plate's).
+        if let Some(CalibrationKind::PressureAdvancePattern(layers)) =
+            s.calibration.as_ref().map(|calibration| &calibration.kind)
+        {
+            if let Some((text, fed)) = layers.get(index) {
+                write!(self.out, "{}\n{text}\n", self.tags().custom)?;
+                let volume = fed * PI * (s.filament_diameter / 2.0).powi(2);
+                self.state.summary.filament_mm += fed;
+                self.state.summary.filament_mm3 += volume;
+                if let Some(used) = self.state.used.get_mut(self.state.tool) {
+                    used.0 += fed;
+                    used.1 += volume;
+                }
+            }
+        } else if let Some(code) = self.codes.iter().find(|code| code.z == layer.z) {
             self.layer_code(&code.code)?;
         }
         self.state.first_layer = index == 0;
@@ -4982,6 +5015,39 @@ impl Writer<'_> {
         } else {
             String::new()
         }
+    }
+
+    /// "PA Line" (`calib_draw.rs`), drawn with the reference's writer from
+    /// where the start G-code left the nozzle; afterwards the writer goes
+    /// on from where the drawing left it.
+    fn draw_pa_line(
+        &mut self,
+        test: &calib_draw::PaLine,
+        calibration: &Calibration,
+    ) -> io::Result<()> {
+        let s = self.settings;
+        let pen = calib_draw::Pen::of(s, calibration);
+        let known = (self.state.acceleration > 0.0).then_some(self.state.acceleration);
+        let (text, fed, retracted, top) = calib_draw::pa_line(test, &pen, known);
+        self.out.extend_from_slice(text.as_bytes());
+        let volume = fed * PI * (s.filament_diameter / 2.0).powi(2);
+        self.state.summary.filament_mm += fed;
+        self.state.summary.filament_mm3 += volume;
+        if let Some(used) = self.state.used.get_mut(self.state.tool) {
+            used.0 += fed;
+            used.1 += volume;
+        }
+        self.state.primed = true;
+        self.state.retracted = retracted > 0.0;
+        self.state.retracted_length = retracted;
+        // Where the nozzle is is not known to the writer; its next move
+        // says it whole.
+        self.state.position = None;
+        self.state.feedrate = 0.0;
+        self.state.z = top;
+        self.state.height = Some(top);
+        self.state.max_z = top;
+        Ok(())
     }
 
     fn finish(&mut self) -> Result<Summary, GcodeError> {
