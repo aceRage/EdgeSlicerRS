@@ -11,6 +11,7 @@
 //! here prints or touches a window; a [`Watcher`] is told how far the
 //! work has got and may stop it.
 
+pub mod calib;
 mod clock;
 mod contour;
 pub mod curved;

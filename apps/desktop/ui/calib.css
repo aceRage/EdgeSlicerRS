@@ -1,0 +1,33 @@
+/* The Calibration menu's dialogs (calib.js): groups of a legend and a few
+   rows, each a label and a short field. */
+
+.calib-dialog { width: min(420px, calc(100vw - 32px)); }
+.calib-group {
+  margin: 0;
+  padding: var(--space-2) var(--space-3) var(--space-3);
+  border: 1px solid var(--line-1);
+  border-radius: var(--radius-m);
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+}
+.calib-group legend {
+  padding: 0 var(--space-1);
+  color: var(--text-2);
+  font-size: var(--size-label);
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+.calib-radios { display: flex; flex-wrap: wrap; gap: var(--space-2) var(--space-4); }
+.calib-radios label { display: inline-flex; flex-direction: row; align-items: center; gap: var(--space-1); color: var(--text-1); }
+.calib-radios label:has(input:disabled) { color: var(--text-3); }
+.calib-field { display: grid; grid-template-columns: minmax(120px, auto) 1fr auto; align-items: center; gap: var(--space-2); }
+.calib-field > span:first-child { color: var(--text-2); }
+.calib-field input[type="text"] { width: 100%; font-family: var(--font-mono); }
+.calib-field input[type="checkbox"] { justify-self: start; }
+.calib-field:has(input:disabled) > span:first-child { color: var(--text-3); }
+.calib-links { display: flex; flex-direction: column; gap: var(--space-1); }
+.calib-links a { color: var(--accent); font-size: var(--size-label); }
+.calib-two { display: grid; grid-template-columns: 1fr 1fr; }
+.calib-field input:disabled { opacity: 0.45; }

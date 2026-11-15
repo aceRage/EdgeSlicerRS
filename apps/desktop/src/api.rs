@@ -16,6 +16,7 @@
 
 mod arrange;
 mod bambu_lan;
+mod calib;
 mod edit;
 mod export;
 mod filaments;
@@ -157,6 +158,10 @@ struct Project {
     /// first got, for a model read later that has no settings of its own
     /// (PresetBundle.cpp `load_selections`): colours, matrix, vector.
     remembered: Option<printers::Lists>,
+    /// The calibration it was made for, which each slice changes from
+    /// layer to layer (`calib.rs`); let go when a model is added to it,
+    /// as the reference's `load_files` lets it go. Not saved.
+    calibration: Option<edge_engine::calib::CalibParams>,
 }
 
 /// A project's model as it stands at one moment: as it was opened, or as
@@ -578,6 +583,7 @@ impl Project {
             failures: BTreeMap::new(),
             footprints: HashMap::new(),
             remembered: None,
+            calibration: None,
         }
     }
 
@@ -1245,6 +1251,7 @@ impl Session {
                 Ok(state.projects[state.target(args)?].detail())
             }
             "project_new" => Ok(self.project_new()),
+            "calibrate" => self.calibrate(args),
             "project_open" => {
                 let path = Path::new(needed(args, "path")?);
                 let answer = self.project_open(path)?;
@@ -2004,7 +2011,7 @@ impl Session {
     /// something and is not sliced yet, one after another.
     fn slice(self: &Arc<Self>, args: &Value) -> Result<Value, String> {
         let all = args.get("all").and_then(Value::as_bool).unwrap_or(false);
-        let (id, file, choices, plates) = {
+        let (id, file, choices, plates, calibration) = {
             let state = lock(&self.state);
             let project = &state.projects[state.target(args)?];
             let file = project
@@ -2033,7 +2040,13 @@ impl Session {
             if plates.is_empty() {
                 return Err("every plate that holds something is sliced already".into());
             }
-            (project.id, file, project.choices.clone(), plates)
+            (
+                project.id,
+                file,
+                project.choices.clone(),
+                plates,
+                project.calibration.clone(),
+            )
         };
         // A plate with an object reaching over its edge is not sliced
         // until the object is wholly on it or off it (Plater.cpp
@@ -2052,7 +2065,8 @@ impl Session {
         // The presets are found before anything starts, so a name that
         // is not there is said at once.
         let basis = self.basis(&choices, Some(&file))?;
-        let overrides = settings::overrides(&choices, &basis);
+        let mut overrides = settings::overrides(&choices, &basis);
+        overrides.calibration = calibration;
         let chosen = basis.chosen;
 
         let (work, run) = {

@@ -1799,6 +1799,11 @@ impl Session {
                 outcome.name = "Edit cut".into();
             }
             push_step(project, &outcome.name, before, None);
+            // A model added lets the calibration go, as the reference's
+            // `load_files` does ("ugly fix so we can exist pa calib mode").
+            if text(args, "op") == Some("add") {
+                project.calibration = None;
+            }
             if let (Some(tool), Some(step)) =
                 (args.get("tool_state"), project.history.undo.last_mut())
             {
