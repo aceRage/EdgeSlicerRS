@@ -1479,7 +1479,14 @@ feature filaments (`wall_filament`, `sparse_infill_filament`,
     48.6 mm into black and 231.6 mm into white (9.44 g + 3.70 g of
     filament there, 3.39 g + 3.29 g here, now 9.35 g + 3.70 g; what is
     left is the start G-code's purge line, which the reference counts
-    and this engine does not). Not done, and said in a note: ramming, cooling and
+    and this engine does not). The desktop app's dialog shows such a
+    project the volumes worked out and the multiplier 1, which a slice
+    uses; an edit of its filaments starts from them and a save writes them
+    (`flush_volumes_matrix`, `flush_multiplier`), as the command line's
+    project export would. The reference's window instead gives such a
+    project the 280 mm³ default at 0.3 when it opens it, and works volumes
+    out only when a colour changes, a filament is added or "Re-calculate"
+    is pressed; that under-purge is not followed. Not done, and said in a note: ramming, cooling and
     loading the filament on the tower (`enable_filament_ramming`, which
     neither printer uses), and flushing into infill, objects or support.
   - Which prime tower a print gets is chosen as the reference chooses it
