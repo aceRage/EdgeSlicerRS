@@ -263,22 +263,103 @@ fn a_failed_boolean_leaves_the_model_untouched() {
     assert_eq!(model.objects()[0].copies()[0].reach(), reach);
 }
 
-/// Only printed parts, two of them, of the object named.
+/// The same part twice is refused.
 #[test]
-fn a_modifier_or_the_same_part_twice_is_refused() {
+fn the_same_part_twice_is_refused() {
     let dir = tempfile::tempdir().unwrap();
-    let (mut model, object, a, b) = two_cubes(dir.path(), Transform::translation([10.0, 0.0, 0.0]));
+    let (mut model, object, a, _) = two_cubes(dir.path(), Transform::translation([10.0, 0.0, 0.0]));
     assert!(matches!(
         model.mesh_boolean(Some(&BED), object, a, a, BooleanOp::Union, true),
         Err(BooleanFailure::Refused(_))
     ));
-    model
-        .set_part_kind(Some(&BED), object, &[b], PartKind::Modifier)
-        .unwrap();
-    assert!(matches!(
-        model.mesh_boolean(Some(&BED), object, a, b, BooleanOp::Union, true),
-        Err(BooleanFailure::Refused(_))
-    ));
+}
+
+/// Any kind of volume can be taken, as the reference's gizmo takes any;
+/// the result is of the first one's kind, keeps its settings, and the
+/// last printed part is not deleted (`del_subobject_from_object`).
+#[test]
+fn any_kind_of_volume_is_taken_and_the_result_is_the_first_ones_kind() {
+    let dir = tempfile::tempdir().unwrap();
+    // (B's kind, B first?, operation, delete input, result's kind,
+    // volume, whether the tool is left)
+    let cases = [
+        // A part less a negative part: a part with the hole; the
+        // negative part goes.
+        (
+            PartKind::Negative,
+            false,
+            BooleanOp::Difference,
+            true,
+            PartKind::Normal,
+            4000.0,
+            false,
+        ),
+        // A modifier united with the only printed part: a modifier the
+        // size of both; the part stays, being the last solid one.
+        (
+            PartKind::Modifier,
+            true,
+            BooleanOp::Union,
+            true,
+            PartKind::Modifier,
+            12000.0,
+            true,
+        ),
+        // A negative part intersected with the part, kept.
+        (
+            PartKind::Negative,
+            true,
+            BooleanOp::Intersection,
+            false,
+            PartKind::Negative,
+            4000.0,
+            true,
+        ),
+        // A support blocker less the part.
+        (
+            PartKind::SupportBlocker,
+            true,
+            BooleanOp::Difference,
+            true,
+            PartKind::SupportBlocker,
+            4000.0,
+            true,
+        ),
+        // A part united with a support enforcer, which goes.
+        (
+            PartKind::SupportEnforcer,
+            false,
+            BooleanOp::Union,
+            true,
+            PartKind::Normal,
+            12000.0,
+            false,
+        ),
+    ];
+    for (kind, b_first, op, delete, made_kind, volume, tool_left) in cases {
+        let (mut model, object, a, b) =
+            two_cubes(dir.path(), Transform::translation([10.0, 0.0, 0.0]));
+        model.set_part_kind(Some(&BED), object, &[b], kind).unwrap();
+        let (source, tool) = if b_first { (b, a) } else { (a, b) };
+        let made = model
+            .mesh_boolean(Some(&BED), object, source, tool, op, delete)
+            .unwrap_or_else(|why| panic!("{kind:?} {op:?}: {why}"));
+        let shape = model.objects()[0].shape().clone();
+        let at = shape.part_ids().iter().position(|id| *id == made).unwrap();
+        let part = &shape.parts()[at];
+        assert_eq!(part.kind, made_kind, "{kind:?} {op:?}");
+        assert!(check::defects(&part.mesh).is_clean());
+        near(volume_in_object(&model, at), volume);
+        assert_eq!(
+            shape.part_ids().contains(&tool),
+            tool_left,
+            "{kind:?} {op:?}"
+        );
+        if tool_left {
+            assert_eq!(shape.parts().len(), 2);
+        }
+        keep(&model, &format!("kinds_{kind:?}_{op:?}.3mf").to_lowercase());
+    }
 }
 
 fn sliced(model: &Model) -> String {

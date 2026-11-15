@@ -865,8 +865,9 @@ struct Outcome {
 /// (GLGizmoMeshBoolean.cpp `warning_text`), with why where the reference
 /// has words for it. A boolean that leaves nothing is said in the words of
 /// the fix to the reference (aceRage/EdgeSlicer#1005, `empty_text`): the
-/// pinned gizmo says it failed.
-fn mesh_boolean(model: &mut Model, bed: Option<&Bed>, args: &Value) -> Result<u64, String> {
+/// pinned gizmo says it failed. Also answers whether the tool was to go
+/// and stayed, being the object's last printed part.
+fn mesh_boolean(model: &mut Model, bed: Option<&Bed>, args: &Value) -> Result<(u64, bool), String> {
     use super::i18n::{fill, tr};
     use edge_engine::{BooleanFailure, BooleanOp};
     let op = match needed(args, "operation")? {
@@ -884,7 +885,7 @@ fn mesh_boolean(model: &mut Model, bed: Option<&Bed>, args: &Value) -> Result<u6
         whole(args, "source")?,
         whole(args, "tool")?,
     );
-    model
+    let made = model
         .mesh_boolean(bed, object, source, tool, op, delete)
         .map_err(|failure| match failure {
             BooleanFailure::Refused(why) => why.to_string(),
@@ -905,7 +906,12 @@ fn mesh_boolean(model: &mut Model, bed: Option<&Bed>, args: &Value) -> Result<u6
                 }
                 said
             }
-        })
+        })?;
+    let kept = (delete || op == BooleanOp::Union)
+        && (model.objects().iter())
+            .find(|each| each.id() == object)
+            .is_some_and(|each| each.shape().part_ids().contains(&tool));
+    Ok((made, kept))
 }
 
 /// A matrix as the page takes it: sixteen numbers, column by column.
@@ -1566,7 +1572,16 @@ impl Session {
             // "Mesh Boolean" (GLGizmoMeshBoolean.cpp `run_boolean`,
             // `generate_new_volume`): the result is selected after.
             "mesh_boolean" => {
-                outcome.part = Some(mesh_boolean(model, bed, args)?);
+                let (part, kept) = mesh_boolean(model, bed, args)?;
+                outcome.part = Some(part);
+                // The tool was the object's last printed part: the
+                // boolean stands and the part stays, as the reference's
+                // delete refuses it (`del_subobject_from_object`).
+                if kept {
+                    outcome.note = Some(super::i18n::tr(
+                        "Deleting the last solid part is not allowed.",
+                    ));
+                }
                 outcome.name = "Mesh Boolean".into();
             }
             // An object's, a part's or a height range's own settings, and

@@ -16,9 +16,23 @@
 //!   "<first part's name> - union" ("difference", "intersection"), keeps
 //!   the first part's kind, filament and settings, and drops what was
 //!   painted on it;
+//! - any of the object's volumes can be taken, whatever its kind (the
+//!   gizmo casts its ray on every volume, its `is_model_part` test
+//!   commented out): a modifier, a negative part, a support blocker or
+//!   enforcer as well as a printed part. The result is of the first one's
+//!   kind, so a modifier united with a part is a modifier the size of
+//!   both, a part less a negative part a part with the hole;
 //! - the second part is deleted for a union, and for the others when
-//!   "Delete input" is ticked;
-//! - all of it is one edit ("Mesh Boolean" in the undo history).
+//!   "Delete input" is ticked, unless it is the object's last printed
+//!   part: then it stays, the boolean is kept, and the caller says the
+//!   reference's "Deleting the last solid part is not allowed."
+//!   (GUI_ObjectList.cpp `del_subobject_from_object`, which the gizmo's
+//!   delete goes through);
+//! - all of it is one edit ("Mesh Boolean" in the undo history). The
+//!   reference takes a second snapshot, "Delete part", when it deletes
+//!   the second part (`del_subobject_from_object`), so its undo brings the
+//!   second part back first and the boolean with a second undo; here one
+//!   undo takes back the whole tool's edit, as the gizmo plainly means.
 //!
 //! Where this differs, on purpose:
 //!
@@ -27,11 +41,6 @@
 //!   and changes nothing; the reference counts it as a failure, "Unable to
 //!   perform boolean operation on selected parts" (fixed in
 //!   aceRage/EdgeSlicer#1005, whose words are used);
-//! - only printed parts can be taken. The reference lets any volume be
-//!   picked, a modifier or a negative part too, and makes the result of
-//!   the first one's kind: a modifier's region added to a part as solid,
-//!   or a part's material cut out of a negative part, which is not what a
-//!   boolean of solids is for;
 //! - the airbrush paint the reference carries onto the result
 //!   (`airbrush_carry_field`) is not, as this engine has no airbrush.
 
@@ -49,8 +58,8 @@ use crate::Failure;
 /// Why a boolean of two parts made no change.
 #[derive(Debug)]
 pub enum BooleanFailure {
-    /// The parts named cannot be taken: not of the object, the same part
-    /// twice, or not printed parts.
+    /// The parts named cannot be taken: not of the object, or the same
+    /// part twice.
     Refused(Failure),
     /// The boolean was done and leaves nothing.
     Empty,
@@ -95,9 +104,11 @@ fn in_object(part: &Part) -> Mesh {
 impl Model {
     /// "Mesh Boolean": parts `source` and `tool` of `object` made one by
     /// `op`, the result in `source`'s place; `tool` deleted when
-    /// `delete_tool` (always for a union, as the reference's gizmo does).
-    /// Answers the result's part number. On any failure the model is as
-    /// it was. See the module's words.
+    /// `delete_tool` (always for a union, as the reference's gizmo does),
+    /// unless it is the object's last printed part, when it is kept (the
+    /// caller can tell by `tool` still being there). Answers the result's
+    /// part number. On any failure the model is as it was. See the
+    /// module's words.
     pub fn mesh_boolean(
         &mut self,
         bed: Option<&Bed>,
@@ -117,11 +128,6 @@ impl Model {
         }
         let shape = self.objects[at].shape.clone();
         let (a, b) = (&shape.parts[first], &shape.parts[second]);
-        if a.kind != PartKind::Normal || b.kind != PartKind::Normal {
-            return Err(BooleanFailure::Refused(refused(
-                "only printed parts can be booleaned",
-            )));
-        }
         let object_name = self.name_of(at);
         let name_of = |part: &Part| {
             part.name
@@ -170,7 +176,10 @@ impl Model {
         let mut ids = shape.ids.clone();
         list[first] = made;
         ids[first] = id;
-        if delete_tool || op == Op::Union {
+        // The last printed part is not deleted (`del_subobject_from_object`).
+        let solid_left = (list.iter().enumerate())
+            .any(|(index, part)| index != second && part.kind == PartKind::Normal);
+        if (delete_tool || op == Op::Union) && (b.kind != PartKind::Normal || solid_left) {
             list.remove(second);
             ids.remove(second);
             self.last_part_to_object(at, &mut list);

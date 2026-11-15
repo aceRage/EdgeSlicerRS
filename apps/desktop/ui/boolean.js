@@ -11,11 +11,17 @@
 // `scene_edit` (`mesh_boolean`); the part made is selected after, which
 // closes the tool, as the reference selects it in the object list.
 //
-// Where this differs, on purpose (UI_PARITY.md, section 13, "Mesh
-// Boolean"): only printed parts can be picked, and the tool is for an
-// object with two of them; "Delete input" starts unticked each time the
-// tool opens (the reference means to reset it, `on_set_state`, but sets
-// local variables of the same names instead).
+// Any of the object's volumes can be picked, a modifier, a negative part,
+// a support blocker or enforcer as well as a printed part, as the
+// reference casts its ray on every volume; the result is of the first
+// one's kind. While the tool is open the copy is drawn alone, every other
+// copy and object hidden (`InstancesHider`); a section the painting tool
+// it was opened from cut the copy by stays, as the two share the
+// reference's `ObjectClipper`: the copy is drawn cut and a click goes
+// through what is cut away. The tool has no control of its own for it.
+// "Delete input" starts unticked each time the tool opens, as the fix to
+// the reference has it (aceRage/EdgeSlicer#1023: the pinned `on_set_state`
+// set local variables of the same names instead).
 (function (GL) {
   const M = GL.math;
 
@@ -52,7 +58,7 @@
 
     // `on_set_state`, On: nothing picked, "Union", the first slot next.
     start(placing) {
-      this.open = { copy: placing.id, object: placing.object, operation: 'union', selecting: 'source', source: null, tool: null, deleteInput: { difference: false, intersection: false } };
+      this.open = { copy: placing.id, object: placing.object, operation: 'union', selecting: 'source', source: null, tool: null, deleteInput: { difference: false, intersection: false }, clip: null };
       this.stage.frame();
     },
 
@@ -70,7 +76,7 @@
       if (!placing) { this.close(); return; }
       if (placing.id !== o.copy) { this.start(placing); return; }
       o.object = placing.object;
-      const ids = new Set(this.printed().map((part) => part.id));
+      const ids = new Set(this.parts().map((part) => part.id));
       if (o.source !== null && !ids.has(o.source)) o.source = null;
       if (o.tool !== null && !ids.has(o.tool)) o.tool = null;
     },
@@ -93,13 +99,13 @@
       return data && placing ? (data.objects[placing.object].part_list || []).map((part, at) => ({ ...part, at })) : [];
     },
 
-    // The parts that can be picked: printed parts.
-    printed() {
-      return this.partList().filter((part) => part.kind === 'part');
+    // The parts that can be picked: every volume of the object.
+    parts() {
+      return this.partList();
     },
 
     part(id) {
-      return id === null ? null : this.printed().find((part) => part.id === id) || null;
+      return id === null ? null : this.parts().find((part) => part.id === id) || null;
     },
 
     // `set_src_volume`, `set_tool_volume`: a part picked for one slot is
@@ -111,19 +117,23 @@
       if (o[other] === id) o[other] = null;
     },
 
-    // The printed part under a pixel, nearest the eye (`gizmo_event`, its
-    // ray cast on every part of the object), or null.
+    // The part under a pixel, nearest the eye, what the section cuts away
+    // left out (`gizmo_event`, its ray cast on every volume of the object
+    // with the clipper's plane), or null.
     partAt(x, y) {
       const placing = this.placing();
       const scene = this.stage.scene;
       const mesh = placing && scene.meshOf(placing.object);
       if (!mesh) return null;
-      const parts = this.printed();
+      const parts = this.parts();
       const r = this.stage.renderer;
       const frame = this.stage.matrices();
+      const clip = this.open.clip;
       const hit = r.pick(x, y, frame.projection, (projection) => {
-        const matrix = M.multiply(M.multiply(projection, frame.view), placing.matrix);
-        parts.forEach((part, at) => r.drawFlat(mesh, matrix, GL.Renderer.pickColour(at + 1), undefined, part.triangles));
+        parts.forEach((part, at) => {
+          if (!part.triangles) return;
+          r.drawMesh(mesh, { view: frame.view, projection }, placing.matrix, { tint: GL.Renderer.pickColour(at + 1), clip, emission: -1, range: part.triangles });
+        });
       });
       return hit ? parts[hit - 1] || null : null;
     },
@@ -134,7 +144,7 @@
     grab(x, y) {
       if (!this.open || this.editor.busy) return null;
       const part = this.partAt(x, y);
-      // Off the object's printed parts the view turns, as with no tool.
+      // Off the object's parts the view turns, as with no tool.
       if (!part) return null;
       return {
         kind: 'boolean',
@@ -259,7 +269,7 @@
       }
       rows.push(modes);
       const difference = o.operation === 'difference';
-      const printed = this.printed();
+      const parts = this.parts();
       // A slot: its caption, "Select" (or "1 selected"), which is pressed
       // while a click fills it, the part's name with ✕, and "Pick from
       // list".
@@ -279,7 +289,7 @@
         const list = el('select', { disabled: busy });
         list.setAttribute('aria-label', `${caption}: ${t('Pick from list')}`);
         list.append(new Option(t('Pick from list'), ''));
-        for (const each of printed) list.append(new Option(each.name || `${each.at + 1}`, String(each.id)));
+        for (const each of parts) list.append(new Option(each.name || `${each.at + 1}`, String(each.id)));
         list.value = part ? String(part.id) : '';
         list.addEventListener('change', () => {
           if (!list.value) return;

@@ -49,7 +49,7 @@
     // `is_single_full_instance`); cut.js.
     cut: { name: t('Cut'), key: 'c', one: true, cut: true, icon: 'M3.5,2.5h9v11h-9ZM1,8h14M12.5,5.5l2.5,2.5l-2.5,2.5' },
     // GLGizmoMeshBoolean.cpp: for one whole copy of an object of several
-    // parts (`on_is_activable`), here two printed ones; boolean.js.
+    // volumes of any kind (`on_is_activable`); boolean.js.
     boolean: { name: t('Mesh Boolean'), key: 'b', one: true, boolean: true, icon: 'M1.5,1.5h8v8h-8ZM6.5,6.5h8v8h-8Z' },
     // The painting tools (paint.js), each on one whole copy
     // (GLGizmoPainterBase.cpp `on_is_activable`: `is_single_full_instance`),
@@ -529,7 +529,7 @@
       const one = Boolean(chosen) && (!TOOLS[tool].one || (chosen.copies.length === 1 && !this.partMode()));
       if (!one || !TOOLS[tool].boolean) return one;
       const object = this.data().objects[chosen.copies[0].object];
-      return (object.part_list || []).filter((part) => part.kind === 'part').length > 1;
+      return (object.part_list || []).length > 1;
     },
 
     setTool(tool) {
