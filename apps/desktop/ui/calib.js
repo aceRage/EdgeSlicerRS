@@ -225,6 +225,41 @@ const Calib = (() => {
     });
   }
 
+  // "Retraction test" (calib_dlg.cpp `Retraction_Test_Dlg`).
+  function retraction() {
+    const start = field('Start retraction length: ', 'mm');
+    const end = field('End retraction length: ', 'mm');
+    const step = field(`${t('Step')}: `, 'mm');
+    start.input.value = '0';
+    end.input.value = '2';
+    step.input.value = shown(0.1);
+    const link = el('a', { href: 'https://github.com/SoftFever/OrcaSlicer/wiki/retraction-calib', textContent: t('Wiki Guide: Retraction Calibration') });
+    link.addEventListener('click', (event) => { event.preventDefault(); attempt(() => openGuide(link.href)); });
+    const dialog = el('dialog', { className: 'calib-dialog' }, el('form', { method: 'dialog' },
+      el('h2', { textContent: t('Retraction test') }),
+      group('Settings', start.row, end.row, step.row),
+      el('div', { className: 'calib-links' }, link),
+      el('div', { className: 'row end' },
+        el('button', { type: 'submit', value: 'ok', className: 'primary', textContent: t('OK') }),
+        el('button', { type: 'submit', value: 'cancel', formNoValidate: true, textContent: t('Cancel') }))));
+    return run(dialog, async () => {
+      // on_start: three numbers (`ToDouble`); the session checks them.
+      const read = (f) => (f.input.value.trim() === '' ? null : Number(f.input.value));
+      try {
+        await make({ test: 'retraction', start: read(start), end: read(end), step: read(step) });
+      } catch (error) {
+        return error.message;
+      }
+      return null;
+    });
+  }
+
+  // "Flow rate" (MainFrame.cpp, Plater.cpp `calib_flowrate`): no dialog;
+  // the menu item makes the test's project at once.
+  function flowRate(test) {
+    return make({ test });
+  }
+
   // "Tutorial" (MainFrame.cpp): the calibration guide. The reference sends
   // a person in China to a mirror by the country kept in its settings;
   // this app keeps no country.
@@ -232,5 +267,5 @@ const Calib = (() => {
     return openGuide('https://github.com/SoftFever/OrcaSlicer/wiki/Calibration');
   }
 
-  return { pressureAdvance, temperature, tutorial, parseList };
+  return { pressureAdvance, temperature, retraction, flowRate, tutorial, parseList };
 })();

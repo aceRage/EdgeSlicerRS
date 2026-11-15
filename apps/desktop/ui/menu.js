@@ -436,6 +436,11 @@ const Menu = (() => {
         return go(() => cycleProject(id === 'window.next' ? 1 : -1));
       case 'calibration.pressure_advance': return go(Calib.pressureAdvance);
       case 'calibration.temperature': return go(Calib.temperature);
+      case 'calibration.retraction': return go(Calib.retraction);
+      case 'calibration.pass1': return go(() => Calib.flowRate('flow_pass1'));
+      case 'calibration.pass2': return go(() => Calib.flowRate('flow_pass2'));
+      case 'calibration.yolo': return go(() => Calib.flowRate('flow_yolo'));
+      case 'calibration.yolo_perfectionist': return go(() => Calib.flowRate('flow_yolo_perfectionist'));
       case 'calibration.tutorial': return go(Calib.tutorial);
       case 'help.shortcuts': return go(showShortcuts);
       case 'help.wizard': return go(() => openPrinterSelection({ wizard: true }));

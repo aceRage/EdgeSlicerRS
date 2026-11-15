@@ -230,6 +230,20 @@ hand, and its file dialogs, slicing and layer view worked, with G-code
 byte for byte the command line's but for the time in its first line. Not built on
 Windows or Linux.
 
+The Calibration menu (`edge_engine::calib`, `edge_gcode::calib`,
+`apps/desktop/src/api/calib.rs`, `ui/calib.js`; UI_PARITY.md section 12,
+"Calibration prints") makes the reference's test prints as projects of
+their own: Temperature, Pressure advance (PA Tower, PA Line, PA Pattern),
+Flow rate (Pass 1, Pass 2 and the two YOLO tests, each tile an object with
+its own flow ratio) and the Retraction test. The reference's command line
+cannot make them, so each is checked by reading its G-code back against
+the reference's formulas, layer by layer, on a Klipper and a Marlin
+printer; the flow rate tiles, being an ordinary print, were also saved and
+sliced by the reference. Stringing (temp × retraction), Max flowrate,
+Cornering, Input Shaping, VFA and Ironing flow are not built yet; Max
+flowrate, Cornering, Input Shaping and VFA are vase-mode prints, and vase
+mode (`spiral_mode`) is not followed by this engine yet.
+
 ## Status
 
 Working:
@@ -822,7 +836,14 @@ feature filaments (`wall_filament`, `sparse_infill_filament`,
   `bottom_surface_pattern` and `internal_solid_infill_pattern` say whether
   lines are joined (`monotonic`, `rectilinear`) or left separate
   (`monotonicline`); any other pattern is laid as joined lines, with a
-  note. Both monotonic patterns are swept from one side of the area to
+  note, but `archimedeanchords` on a top surface, which is laid as the
+  reference lays it (FillPlanePath.cpp: the spiral about the middle of the
+  surface's own bounds, a quarter turn on from `solid_infill_direction`,
+  cut to the surface; `top_surface_fill_order` other than the default and
+  `center_of_surface_pattern` other than `each_surface` are noted), and in
+  the flow rate calibration's order where an object sets
+  `calib_flowrate_topinfill_special_order` (the chords, then the spiral in
+  the middle from the inside out). Both monotonic patterns are swept from one side of the area to
   the other, so that no line goes down between two already laid, which
   shows on a surface: the area falls into regions that can each be
   zigzagged in one go, and a region waits for everything beside its

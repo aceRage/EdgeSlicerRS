@@ -1363,10 +1363,10 @@ to each slice of that project (`Overrides::calibration`).
 | What | The reference | Here |
 | --- | --- | --- |
 | The project | `new_project(false, false, name)`: the shown project replaced, after "Save changes?" and "Some presets are modified." (keep / discard) | **differs**: a new project in the strip beside the shown one, which stays open (the shown one taken when it is new and untouched, as "New Project" does; "the strip is full" asked as "New Project" asks). It starts from the shown project's presets and what was set over them, as the reference's "Keep". Nothing is asked |
-| Its name | "Pressure Advance Test" (not translated) | the same, the strip's name |
+| Its name | "Pressure Advance Test", "Nozzle temperature test", "Flowrate Test - Pass1" and the rest (not translated) | the same, the strip's name |
 | Its model | `add_model`, one step to undo ("Import Object") | the same: undo takes the model away, what was set over the presets stays (as the reference's preset changes stay) |
 | The test's values | on the print, in memory; let go by `load_files` (any model added) | on the project, in memory; let go when a model is added ("Import"); not saved, as the reference does not save them: a project saved and opened again slices without them |
-| A setting the test puts on the object that this engine does not follow on an object | on the object | **differs**: on the process instead (the test's project has that one object, so the print is the same) |
+| A setting the test puts on the object that this engine does not follow on an object | on the object | **differs**: on the process instead, which prints the same because the test's project holds only the test's objects and the setting is the same on each of them. A setting that differed from object to object and were not followed would be an error, never moved (none does: the flow rate tiles' `print_flow_ratio` is followed) |
 
 Pressure advance (`calib_pa`, `_calib_pa_tower`), the "PA Tower" method:
 `tower_with_seam.stl`, cut at `ceil((end - start) / step) + 1` mm; over
@@ -1448,6 +1448,10 @@ only kind this engine writes), the reference's formatter trimming zeros.
   counted). **Ahead of the pin**: from OrcaSlicer `dfb93e0332` (#14473),
   the extrusion reset before the last `set_pressure_advance`; with relative
   extrusion it writes nothing.
+  Seen in the browser (calibration pass 3): "PA Pattern" with speeds 100,
+  150 and accelerations 3000, 6000 makes one plate, "Plate 1", holding the
+  four handles `pa_pattern_100_3000` … `pa_pattern_150_6000`; no empty
+  second plate is left.
 
 Temperature (`calib_temp`): `temperature_tower.stl` (10 mm blocks, 350
 °C at the foot, 5 °C less each block up), cut above the block of the end
@@ -1472,6 +1476,114 @@ step: " (5, off), °C after each, the check on leaving a field ("Supported
 range: 170℃ - 350℃", untranslated as in the reference, the value brought
 in and rounded down to 5), the check on OK ("Please input valid values:
 …"), "Wiki Guide: Temperature Calibration".
+
+Flow rate (`calib_flowrate`, `adjust_settings_for_flowrate_calib`; no
+dialog, each menu item makes its test at once): "Pass 1"
+(`flowrate-test-pass1.3mf`, nine tiles `flowrate_m20` … `flowrate_20`),
+"Pass 2" (`flowrate-test-pass2.3mf`, `flowrate_0` … `flowrate_m9`), "YOLO
+(Recommended)" (`Orca-LinearFlow.3mf`, eleven tiles 0.01 of flow ratio
+apart) and "YOLO (perfectionist version)" (`Orca-LinearFlow_fine.3mf`,
+sixteen tiles 0.005 apart); the projects "Flowrate Test - Pass1", "Flowrate
+Test - Pass2", "Orca YOLO Flow Calibration" and "Orca YOLO Flow Calibration -
+Perfectionist version". The file's tiles, each an object of its own, where
+the file places them, the group in the middle of the bed (`load_files`,
+`center_instances_around_point`), then sized about the group's middle:
+ten layers high (`(first layer + 9 × layer) / 2` of the 2 mm tile, the
+layer half a nozzle, the first layer at least that) and, for a nozzle over
+0.72 mm, `nozzle / 0.6` across too; each stood on the bed. On every tile
+its own `print_flow_ratio` (the name after `flowrate_`, `m` a minus, read
+as a float: `1 + modifier / 100` for the passes, `(filament flow ratio +
+modifier) / filament flow ratio` for YOLO) and the same `wall_loops` 1,
+`only_one_wall_top` 1, `thick_internal_bridges` 0, `sparse_infill_density`
+35%, `min_width_top_surface` 100%, `bottom_shell_layers` 2,
+`top_shell_layers` 5, the shell thicknesses 0, `detect_thin_wall` 1,
+`filter_out_gap_fill` 0, `sparse_infill_pattern` rectilinear,
+`top_surface_line_width` and `internal_solid_infill_line_width` 1.2
+nozzles (in single precision, as the reference sets them: 0.48000002 for a
+0.4 nozzle), `top_surface_pattern` archimedeanchords,
+`top_solid_infill_flow_ratio` 1, `infill_direction` 45,
+`solid_infill_direction` 135, `align_infill_direction_to_model` 1,
+`ironing_type` no ironing, `internal_solid_infill_speed` and
+`top_surface_speed` held to what the filament's maximum volumetric speed
+allows a 1.2-nozzle line half a nozzle high at the greatest flow a tile
+prints (rounded down), `gap_fill_target` nowhere and
+`calib_flowrate_topinfill_special_order` 1. Of those, `enable_extra_bridge_layer`
+disabled, `internal_bridge_density` 100%, `undertop_surface_pattern`
+default, `center_of_surface_pattern` each_surface, `separated_infills` 0,
+`seam_slope_type` none and `top_surface_fill_order` default are not
+followed set on an object here, are the same on every tile, and go over
+the process (as above). Over the process too, as in the reference,
+`max_volumetric_extrusion_rate_slope` 0, `layer_height` half a nozzle,
+`alternate_extra_wall` 0, `initial_layer_print_height`,
+`reduce_crossing_wall` 1, `spiral_mode` 0; over the printer
+`resonance_avoidance` 0. Nothing is kept on the print for the slice: it is
+an ordinary one. The tiles' tops are laid with Archimedean chords
+(FillPlanePath.cpp, built for this: the spiral about the middle of each
+top's own bounds, a quarter turn on from `solid_infill_direction`, the
+same on every layer), in the calibration's order (`calib_flowrate_topinfill_special_order`:
+the chords first, then the longest piece, the spiral in the middle, from
+the inside out, nothing turned round or reordered after). **differs**: the
+reference orders the chords with `chain_polylines` (a greedy chain
+improved by exchanging pairs); here each next chord is the one with an end
+nearest the last one's end, which changes only the travel between them.
+**not followed**: with `print_sequence` "by object" the reference arranges
+the tiles apart for the extruder's clearance; this engine prints every
+object together, layer by layer (the slice says so), and leaves them as
+the file places them. The filament's flow ratio and maximum volumetric
+speed are the first filament's first (Standard) value, as the earlier
+tests read them; the reference reads the column of the flow type the plate
+slices with (`calib_filament_flow_values`), which differs only for a High
+Flow filament on a printer that has them.
+
+Retraction test (`calib_retraction`, the dialog `Retraction_Test_Dlg`):
+"Retraction test" with "Settings" ("Start retraction length: " 0, "End
+retraction length: " 2, "Step: " 0.1, mm after each), "Wiki Guide:
+Retraction Calibration", and its check ("Please input valid values:
+start > 0 …": start under 0, a step not over 0, or an end under start +
+step). The project "Retraction test": `retraction_tower.stl`, cut at
+`1.4 + (end - start) / step` mm; a layer height the nozzle can print (0.05
+to a 0.1 nozzle, 0.1 to 0.2, else 0.2; Orca #11835) on the object and as
+the first layer's over the process, the printer's first
+`max_layer_height` raised to it where under it; over the process
+`wipe_inward` 0; over the printer `resonance_avoidance` 0 and
+`use_firmware_retraction` 0; on the object `wall_loops` 2,
+`top_shell_layers` 0, `bottom_shell_layers` 3, `sparse_infill_density` 0%,
+`alternate_extra_wall` 0, `wall_sequence` inner wall/outer wall,
+`overhang_reverse` 0, and `seam_position` aligned over the process (as
+above). **Ahead of the pin**: OrcaSlicer `5302f703c0` (#15543),
+`seam_slope_type` none, so that a scarf seam does not hide the retraction
+(over the process, as above). At every layer, after the fan marker, `;
+Calib_Retraction_tower: Z_HEIGHT: <top>, length:<length>` (`%g`), and from
+then on every retraction, its wipe's share and the move up or down at a
+layer change, is that length: `start + floor(max(0, top - 0.4)) × step`
+(GCode.cpp `process_layer`). The retraction at the layer change itself is
+made before the new length is set, as there. The layer's top is the sum
+of its layers' heights as the reference adds them (the height in single
+precision): the seventh layer's top, a little over 1.4, already gives one
+step. Checked by the engine's test on a U1 (Klipper) and a Creality Ender-3
+V3 SE (Marlin): every layer's line, and each retraction's length read back
+from the push that follows it (a wipe splits the pull), 57 layers for 0 to
+1 mm by 0.1; and by the session's (the check, the settings shown changed,
+107 layers for the dialog's defaults, the last line `Z_HEIGHT: 21.4,
+length:2.1`, undo). The dialog was seen in the browser at 1280 dark,
+English (the pane drew it at 800 wide) and at 900 light, German, with its
+check. Not picked up, waiting for the pin bump (upstream's
+`calib_retraction` since): the project named "Retraction", the model as
+`retraction_tower.drc`, `enable_wrapping_detection`,
+`retract_after_outer_wall` and `precise_z_height` off, every extruder's
+`max_layer_height` raised, and the cut EPSILON lower.
+
+Checked: the engine's test slices "Pass 1" on a U1 and reads back that
+each tile's top surface feeds its own flow (+10%, -20%, +5% against
+`flowrate_0`, the median per mm within 0.2%), ten layers, and no note of
+anything not followed; the session's test makes all four (their names,
+the settings shown changed, the tile counts 9, 10, 11 and 16), slices
+"Pass 1", saves it and undoes it. The project saved was then sliced by the
+reference (`edge-parity`, the pin's build): the same 10 layers, the top
+surface 18.24 m in both, every feature's length within 0.6% (sparse
+infill), speeds, widths and flows the same; the spiral in the middle of a
+tile 669.04 mm there and 669.08 here, from the same middle point; travel
++10% here (the order objects are visited in, which is not this test's).
 
 Checked by the engine's tests (`crates/edge-engine/tests/calib.rs`: the
 G-code of a U1 and of a Marlin printer read back, the value at each layer
@@ -3696,7 +3808,9 @@ its tooltip "not yet: …" saying what it waits for.
 | Calibration | "Temperature" | | built (calibration pass, section 12, "Calibration prints"): on in Prepare; the dialog "Temperature calibration" |
 | | "Pressure advance" | | built: on in Prepare; the dialog "PA Calibration" with its three methods, "PA Tower", "PA Line" and "PA Pattern" |
 | | "Tutorial" | | built: the reference's guide page (`https://github.com/SoftFever/OrcaSlicer/wiki/Calibration`), opened by the window; a browser shows the address. **differs**: no mirror for a person in China (the reference picks it by the country it keeps; this app keeps none) |
-| | "Flow rate" ▸ ("Pass 1", "Pass 2", "YOLO (Recommended)", "YOLO (perfectionist version)"), "Retraction test", "Stringing (temp × retraction)", "Max flowrate", "Cornering", "Input Shaping" ▸ ("Input Shaping Frequency", "Input Shaping Damping/zeta factor"), "VFA", "Ironing flow" | | off: "not yet: calibration models are not built" (the reference has the menu in the macOS bar and a title-bar menu elsewhere) |
+| | "Flow rate" ▸ "Pass 1", "Pass 2", "YOLO (Recommended)", "YOLO (perfectionist version)" | | built: on in Prepare; each makes its test at once, as the reference does (no dialog) |
+| | "Retraction test" | | built: on in Prepare; the dialog "Retraction test" |
+| | "Stringing (temp × retraction)", "Max flowrate", "Cornering", "Input Shaping" ▸ ("Input Shaping Frequency", "Input Shaping Damping/zeta factor"), "VFA", "Ironing flow" | | off: "not yet: calibration models are not built" (the reference has the menu in the macOS bar and a title-bar menu elsewhere) |
 | Account (macOS) | sign-in for Snapmaker, Bambu Lab, Flashforge | | not shown: the cloud is not this task |
 | Window (macOS) | "Minimize" [Cmd+M], "Zoom" | | the system's own, in the window; off in a browser |
 | | "Next Project", "Previous Project" | Cmd+Shift+] / [ | wired (`project_cycle`); on with two projects |

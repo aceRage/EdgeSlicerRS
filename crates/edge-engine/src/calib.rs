@@ -16,7 +16,7 @@ use std::path::Path;
 use edge_config::Settings;
 use edge_gcode::{AdvanceFirmware, Calibration, CalibrationKind};
 
-use crate::{Bed, CutOptions, Failure, Model, Transform};
+use crate::{Bed, CutOptions, Failure, Model, Reach, Transform};
 
 /// Which calibration (calib.hpp `CalibMode`), of those built.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -29,6 +29,8 @@ pub enum CalibMode {
     PressureAdvanceLine,
     /// `Calib_PA_Pattern`.
     PressureAdvancePattern,
+    /// `Calib_Retraction_tower`.
+    RetractionTower,
 }
 
 /// What the calibration's dialog asked for (calib.hpp `Calib_Params`).
@@ -159,6 +161,10 @@ impl CalibParams {
             CalibMode::PressureAdvancePattern => {
                 CalibrationKind::PressureAdvancePattern(Vec::new())
             }
+            CalibMode::RetractionTower => CalibrationKind::RetractionTower {
+                start: self.start,
+                step: self.step,
+            },
         };
         let jerk = |axis: &str| -> Result<f64, Failure> {
             Ok(first_number(settings, &format!("machine_max_jerk_{axis}"))?.unwrap_or(0.0))
@@ -231,7 +237,10 @@ pub struct CalibProject {
     pub process: Vec<(String, String)>,
     pub filament: Vec<(String, String)>,
     pub printer: Vec<(String, String)>,
-    pub params: CalibParams,
+    /// What the slice is to do with it: none for a test whose slice is an
+    /// ordinary one (the flow rate tiles: Plater.cpp `calib_flowrate`
+    /// keeps no parameters on the print).
+    pub params: Option<CalibParams>,
     /// What the reference says in its notifications while making it, as
     /// message id and the value it is followed by.
     pub notes: Vec<(String, String)>,
@@ -417,8 +426,8 @@ pub fn pressure_advance(
             notes = made.notes;
             made.model
         }
-        CalibMode::TemperatureTower => {
-            return Err("the temperature tower is made by `temperature`".into());
+        CalibMode::TemperatureTower | CalibMode::RetractionTower => {
+            return Err("that test is not a pressure advance test".into());
         }
         CalibMode::PressureAdvanceLine => {
             // Plater.cpp `calib_pa`: the model only stands for the test,
@@ -441,7 +450,7 @@ pub fn pressure_advance(
         process,
         filament,
         printer,
-        params: params.clone(),
+        params: Some(params.clone()),
         notes,
     })
 }
@@ -772,13 +781,403 @@ pub fn temperature(
         process,
         filament,
         printer: pairs(&[("resonance_avoidance", "0")]),
-        params: params.clone(),
+        params: Some(params.clone()),
         notes,
     })
 }
 
 /// Settings set on one side or another.
 type Set = Vec<(String, String)>;
+
+/// "Retraction test" (Plater.cpp `calib_retraction`): the retraction
+/// tower, a layer height the nozzle can print (Orca #11835), two walls, no
+/// top or fill, cut to `1.4 + (end - start) / step` mm; the slice then
+/// lengthens the retraction by `step` every mm above its 0.4 mm base
+/// (`edge_gcode::calib::tower_retraction`). `settings` are those the
+/// project starts from.
+pub fn retraction(
+    params: &CalibParams,
+    settings: &Settings,
+    calib_dir: &Path,
+    bed: Option<&Bed>,
+) -> Result<CalibProject, Failure> {
+    let mut model = load(calib_dir, "retraction/retraction_tower.stl", bed)?;
+    let nozzle = nozzle_diameter(settings)?;
+    let layer_height = if nozzle <= 0.1 {
+        "0.05"
+    } else if nozzle <= 0.2 {
+        "0.1"
+    } else {
+        "0.2"
+    };
+    let height: f64 = layer_height.parse()?;
+    let mut process = pairs(&[
+        ("wipe_inward", "0"),
+        ("initial_layer_print_height", layer_height),
+    ]);
+    let mut printer = Vec::new();
+    // The printer's first extruder's greatest layer height raised to the
+    // test's, where it is under it.
+    if let Some(most) = settings.floats("max_layer_height")?
+        && let Some(Some(first)) = most.first()
+        && *first < height
+    {
+        let mut values: Vec<String> = most
+            .iter()
+            .map(|value| value.map_or_else(|| "nil".to_owned(), written))
+            .collect();
+        values[0] = layer_height.to_owned();
+        printer.push(("max_layer_height".to_owned(), values.join(",")));
+    }
+    printer.extend(pairs(&[
+        ("resonance_avoidance", "0"),
+        ("use_firmware_retraction", "0"),
+    ]));
+    set_on_object(
+        &mut model,
+        bed,
+        &[
+            ("wall_loops", "2"),
+            ("top_shell_layers", "0"),
+            ("bottom_shell_layers", "3"),
+            ("sparse_infill_density", "0%"),
+            ("layer_height", layer_height),
+            ("alternate_extra_wall", "0"),
+            ("seam_position", "aligned"),
+            ("wall_sequence", "inner wall/outer wall"),
+            ("overhang_reverse", "0"),
+            // Ahead of the pin: OrcaSlicer 5302f703c0 (#15543), no scarf
+            // seam, whose sloped start hides the retraction's effect.
+            ("seam_slope_type", "none"),
+        ],
+        &mut process,
+    )?;
+    let cut_at = 1.0 + 0.4 + (params.end - params.start) / params.step;
+    if cut_at < height_of(&model, bed)? {
+        cut(&mut model, bed, cut_at, Keep::Lower)?;
+    }
+    Ok(CalibProject {
+        name: "Retraction test".to_owned(),
+        model,
+        process,
+        filament: Vec::new(),
+        printer,
+        params: Some(params.clone()),
+        notes: Vec::new(),
+    })
+}
+
+/// Which of the Flow rate menu's tests (Plater.cpp `calib_flowrate`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum FlowTest {
+    /// "Pass 1": tiles from -20 % to +20 % flow.
+    Pass1,
+    /// "Pass 2": tiles from 0 to -9 %.
+    Pass2,
+    /// "YOLO (Recommended)": tiles 0.01 of flow ratio apart.
+    Yolo,
+    /// "YOLO (perfectionist version)": tiles 0.005 apart.
+    YoloPerfectionist,
+}
+
+impl FlowTest {
+    /// Whether the tiles step the flow ratio itself (`is_linear`), and the
+    /// pass (1 or 2).
+    fn linear_pass(self) -> (bool, i32) {
+        match self {
+            Self::Pass1 => (false, 1),
+            Self::Pass2 => (false, 2),
+            Self::Yolo => (true, 1),
+            Self::YoloPerfectionist => (true, 2),
+        }
+    }
+}
+
+/// The flow ratio the tile named `flowrate_<modifier>` prints with
+/// (Plater.cpp `adjust_settings_for_flowrate_calib`): the modifier is
+/// read after the name's 9 letters, an `m` as a minus, as a float (`stof`,
+/// 1 when it cannot be read); the YOLO tiles add it to the filament's
+/// flow ratio, the passes take it as a percentage.
+pub fn tile_flow_ratio(name: &str, linear: bool, filament_flow_ratio: f64) -> f64 {
+    let mut modifier = name.get(9..).unwrap_or("").to_owned();
+    if modifier.starts_with('m') {
+        modifier.replace_range(0..1, "-");
+    }
+    // `stof` reads the longest number at the start.
+    let read = (1..=modifier.len())
+        .rev()
+        .find_map(|end| modifier.get(..end)?.parse::<f32>().ok())
+        .unwrap_or(1.0);
+    if linear {
+        (filament_flow_ratio + f64::from(read)) / filament_flow_ratio
+    } else {
+        f64::from(1.0_f32 + read / 100.0)
+    }
+}
+
+/// The settings Plater.cpp `adjust_settings_for_flowrate_calib` sets on
+/// each tile, but the tile's own flow ratio; the speeds are worked out by
+/// [`flow_tile_speeds`].
+fn flow_tile_settings(nozzle: f32, internal_solid: f64, top: f64) -> Vec<(&'static str, String)> {
+    let wide = format!("{}", nozzle * 1.2);
+    let mut own: Vec<(&'static str, String)> = [
+        ("wall_loops", "1"),
+        ("only_one_wall_top", "1"),
+        ("thick_internal_bridges", "0"),
+        ("enable_extra_bridge_layer", "disabled"),
+        ("internal_bridge_density", "100%"),
+        ("sparse_infill_density", "35%"),
+        ("min_width_top_surface", "100%"),
+        ("bottom_shell_layers", "2"),
+        ("top_shell_layers", "5"),
+        ("top_shell_thickness", "0"),
+        ("bottom_shell_thickness", "0"),
+        ("detect_thin_wall", "1"),
+        ("filter_out_gap_fill", "0"),
+        ("sparse_infill_pattern", "rectilinear"),
+    ]
+    .into_iter()
+    .map(|(key, value)| (key, value.to_owned()))
+    .collect();
+    own.push(("top_surface_line_width", wide.clone()));
+    own.push(("internal_solid_infill_line_width", wide));
+    for (key, value) in [
+        ("top_surface_pattern", "archimedeanchords"),
+        // `ipCount`, which this setting writes "default".
+        ("undertop_surface_pattern", "default"),
+        ("top_solid_infill_flow_ratio", "1"),
+        ("infill_direction", "45"),
+        ("solid_infill_direction", "135"),
+        ("center_of_surface_pattern", "each_surface"),
+        ("separated_infills", "0"),
+        ("align_infill_direction_to_model", "1"),
+        ("ironing_type", "no ironing"),
+    ] {
+        own.push((key, value.to_owned()));
+    }
+    own.push(("internal_solid_infill_speed", written(internal_solid)));
+    own.push(("top_surface_speed", written(top)));
+    for (key, value) in [
+        ("seam_slope_type", "none"),
+        ("gap_fill_target", "nowhere"),
+        ("calib_flowrate_topinfill_special_order", "1"),
+        ("top_surface_fill_order", "default"),
+    ] {
+        own.push((key, value.to_owned()));
+    }
+    own
+}
+
+/// The speeds the tiles' solid fill and top surfaces are held to, mm/s
+/// (`adjust_settings_for_flowrate_calib`): what the filament's maximum
+/// volumetric speed allows for a line 1.2 nozzles wide at half a nozzle
+/// high, at the greatest flow any tile prints with, rounded down.
+#[allow(clippy::too_many_arguments)]
+pub fn flow_tile_speeds(
+    linear: bool,
+    pass: i32,
+    nozzle: f32,
+    layer_height: f64,
+    flow_ratio: f64,
+    max_volumetric_speed: f64,
+    internal_solid_speed: f64,
+    top_surface_speed: f64,
+) -> (f64, f64) {
+    let infill = line_mm3_per_mm(f64::from(nozzle * 1.2), layer_height);
+    let fastest = if linear {
+        max_volumetric_speed
+            / (infill * (flow_ratio + if pass == 2 { 0.035 } else { 0.05 }) / flow_ratio)
+    } else {
+        max_volumetric_speed / (infill * if pass == 1 { 1.2 } else { 1.0 })
+    };
+    (
+        internal_solid_speed.min(fastest).floor(),
+        top_surface_speed.min(fastest).floor(),
+    )
+}
+
+/// "Flow rate" (Plater.cpp `calib_flowrate`,
+/// `adjust_settings_for_flowrate_calib`): the test's tiles, each an
+/// object of its own with its own flow ratio, as the file places them in
+/// the middle of the bed; sized in height to ten layers of half a nozzle
+/// (and across, for a nozzle over 0.72 mm); a top of Archimedean chords
+/// whose ridge is read. `settings` are those the project starts from.
+///
+/// Every tile carries the same settings but its flow ratio. Of those, the
+/// ones this engine does not follow set on an object go over the process
+/// instead, which for the test's project, of these tiles alone, prints
+/// the same; one that differs from tile to tile and is not followed would
+/// be an error (none does: `print_flow_ratio` is followed).
+pub fn flow_rate(
+    test: FlowTest,
+    settings: &Settings,
+    calib_dir: &Path,
+    bed: Option<&Bed>,
+) -> Result<CalibProject, Failure> {
+    let (linear, pass) = test.linear_pass();
+    let (name, file) = match test {
+        FlowTest::Pass1 => ("Flowrate Test - Pass1", "flowrate-test-pass1.3mf"),
+        FlowTest::Pass2 => ("Flowrate Test - Pass2", "flowrate-test-pass2.3mf"),
+        FlowTest::Yolo => ("Orca YOLO Flow Calibration", "Orca-LinearFlow.3mf"),
+        FlowTest::YoloPerfectionist => (
+            "Orca YOLO Flow Calibration - Perfectionist version",
+            "Orca-LinearFlow_fine.3mf",
+        ),
+    };
+    let path = calib_dir.join("filament_flow").join(file);
+    let read = Model::open(&path).map_err(|error| -> Failure {
+        format!(
+            "the calibration model {} could not be read: {error}",
+            path.display()
+        )
+        .into()
+    })?;
+    // Sized for a 0.6 nozzle across, and ten layers high.
+    let nozzle = nozzle_diameter(settings)? as f32;
+    let xy_scale = nozzle / 0.6;
+    let layer_height = f64::from(nozzle) / 2.0;
+    let first_layer_height = settings
+        .float("initial_layer_print_height")?
+        .unwrap_or(0.2)
+        .max(layer_height);
+    let z_scale = ((first_layer_height + 9.0 * layer_height) / 2.0) as f32;
+    let across = if xy_scale > 1.2 { xy_scale } else { 1.0 };
+    let scale = [f64::from(across), f64::from(across), f64::from(z_scale)];
+
+    // The tiles where the file has them, the group in the middle of the
+    // bed (Plater.cpp `load_files`, `center_instances_around_point`), then
+    // sized about the group's middle.
+    let centre = |reach: &Reach| {
+        [
+            (reach[0][0] + reach[1][0]) / 2.0,
+            (reach[0][1] + reach[1][1]) / 2.0,
+        ]
+    };
+    let mut placed: Vec<[f64; 2]> = Vec::new();
+    let mut group: Option<Reach> = None;
+    for object in read.objects() {
+        let reach = object
+            .copies()
+            .first()
+            .and_then(|copy| copy.reach())
+            .ok_or("a flow rate tile has no printed material")?;
+        placed.push(centre(&reach));
+        group = Some(match group {
+            None => reach,
+            Some([low, high]) => [
+                std::array::from_fn(|axis| low[axis].min(reach[0][axis])),
+                std::array::from_fn(|axis| high[axis].max(reach[1][axis])),
+            ],
+        });
+    }
+    let group = group.ok_or("the flow rate test has no tiles")?;
+    let middle = centre(&group);
+    let target = match bed {
+        Some(bed) => [
+            (bed.min[0] + bed.max[0]) / 2.0,
+            (bed.min[1] + bed.max[1]) / 2.0,
+        ],
+        None => middle,
+    };
+    let mut model = Model::new();
+    let copies = model.import(bed, &read, None)?;
+    let mut moves = Vec::new();
+    for (copy, at) in copies.iter().zip(&placed) {
+        let Some((scene, Some(reach))) = model.in_scene(bed, *copy) else {
+            return Err("a flow rate tile has no printed material".into());
+        };
+        let here = centre(&reach);
+        let mut sized = scene.then(&Transform::translation([-here[0], -here[1], 0.0]));
+        sized = sized.then(&Transform {
+            rows: [
+                [scale[0], 0.0, 0.0],
+                [0.0, scale[1], 0.0],
+                [0.0, 0.0, scale[2]],
+                [0.0; 3],
+            ],
+        });
+        sized = sized.then(&Transform::translation([
+            target[0] + scale[0] * (at[0] - middle[0]),
+            target[1] + scale[1] * (at[1] - middle[1]),
+            0.0,
+        ]));
+        moves.push((*copy, sized));
+    }
+    // Each stood on the bed as it was.
+    model.set_transforms(bed, &moves)?;
+
+    // The speeds every tile is held to.
+    let flow_ratio = filament_number(settings, "filament_flow_ratio", 0)?;
+    let flow_ratio = if flow_ratio > 0.0 { flow_ratio } else { 1.0 };
+    let (internal_solid, top) = flow_tile_speeds(
+        linear,
+        pass,
+        nozzle,
+        layer_height,
+        flow_ratio,
+        filament_number(settings, "filament_max_volumetric_speed", 0)?,
+        process_number(settings, "internal_solid_infill_speed")?,
+        process_number(settings, "top_surface_speed")?,
+    );
+    let own = flow_tile_settings(nozzle, internal_solid, top);
+    let mut process: Set = Vec::new();
+    for (key, value) in &own {
+        if !crate::settable(key).followed_on_object {
+            // The same on every tile: over the process.
+            process.push(((*key).to_owned(), value.clone()));
+        }
+    }
+    if !crate::settable("print_flow_ratio").followed_on_object {
+        return Err("print_flow_ratio is not followed set on an object, so the tiles cannot each print their own flow".into());
+    }
+    let objects: Vec<(u64, String)> = model
+        .objects()
+        .iter()
+        .map(|object| (object.id(), object.name().to_owned()))
+        .collect();
+    for (object, name) in objects {
+        let mut on_object: Vec<(String, Option<String>)> = own
+            .iter()
+            .filter(|(key, _)| crate::settable(key).followed_on_object)
+            .map(|(key, value)| ((*key).to_owned(), Some(value.clone())))
+            .collect();
+        on_object.push((
+            "print_flow_ratio".to_owned(),
+            Some(written(tile_flow_ratio(&name, linear, flow_ratio))),
+        ));
+        model.set_object_settings(bed, object, &on_object)?;
+    }
+    process.extend(pairs(&[("max_volumetric_extrusion_rate_slope", "0")]));
+    // Half a single-precision nozzle: written as that float is.
+    let half_nozzle = format!("{}", nozzle / 2.0);
+    process.push(("layer_height".to_owned(), half_nozzle.clone()));
+    process.extend(pairs(&[("alternate_extra_wall", "0")]));
+    process.push((
+        "initial_layer_print_height".to_owned(),
+        if first_layer_height == layer_height {
+            half_nozzle
+        } else {
+            written(first_layer_height)
+        },
+    ));
+    // `spiral_mode` off: the tiles are read by their tops, which vase
+    // mode does not print. (Printing them object by object, which the
+    // reference then arranges for, is not followed here: the slice says
+    // so, and prints them together, as the file places them.)
+    process.extend(pairs(&[
+        ("reduce_crossing_wall", "1"),
+        ("spiral_mode", "0"),
+    ]));
+    Ok(CalibProject {
+        name: name.to_owned(),
+        model,
+        process,
+        filament: Vec::new(),
+        printer: pairs(&[("resonance_avoidance", "0")]),
+        params: None,
+        notes: Vec::new(),
+    })
+}
 
 /// Plater.cpp `_calib_pa_tower`: the tower with its seam groove, walls at
 /// the test's speed, no top, bottom or fill, ear brim; cut to one mm a

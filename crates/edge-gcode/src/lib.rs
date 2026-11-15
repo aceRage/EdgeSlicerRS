@@ -1323,6 +1323,10 @@ struct State {
     retracted: bool,
     /// How far the filament is pulled back while `retracted`.
     retracted_length: f64,
+    /// The retraction length a calibration sets from a layer on, in place
+    /// of the filament's (GCode.cpp `process_layer`,
+    /// `Calib_Retraction_tower`: `writer().config.apply`).
+    calibration_retraction: Option<f64>,
     /// Whether the nozzle holds molten plastic that would ooze on a travel:
     /// true once anything is extruded, or once the machine's start G-code
     /// has run, since that purges.
@@ -2208,6 +2212,9 @@ impl Writer<'_> {
             let tool = (self.all.len() > 1 && !s.single_nozzle).then_some(self.state.tool);
             let text = calib::at_layer(calibration, index, self.layer_count, layer.z, tool);
             self.out.extend_from_slice(text.as_bytes());
+            if let Some(length) = calib::retraction_at(calibration, layer.z) {
+                self.state.calibration_retraction = Some(length);
+            }
         }
         if index == 1 {
             // GCode.cpp `process_layer`, the second layer's things: power
@@ -3662,15 +3669,16 @@ impl Writer<'_> {
     /// already it stays so.
     fn plunge(&mut self, z: f64) -> io::Result<()> {
         let s = self.settings;
-        let pulled = !self.state.retracted && self.state.primed && s.retraction_length > 0.0;
+        let length = self.retraction_length();
+        let pulled = !self.state.retracted && self.state.primed && length > 0.0;
         if pulled {
             self.feed(s.retraction_speed);
             let feed_word = self.feed_word();
-            writeln!(self.out, "G1 E-{:.5}{feed_word}", s.retraction_length)?;
+            writeln!(self.out, "G1 E-{length:.5}{feed_word}")?;
             self.state.retracted = true;
-            self.state.retracted_length = s.retraction_length;
+            self.state.retracted_length = length;
             self.state.summary.retractions += 1;
-            self.spend(s.retraction_length / s.retraction_speed);
+            self.spend(length / s.retraction_speed);
         }
         self.state.pending_lift = None;
         if self.state.height != Some(z) {
@@ -4849,7 +4857,15 @@ impl Writer<'_> {
     /// if the profile asks, and decides whether the next travel lifts.
     /// `layer_change` says the retraction is the one between layers.
     fn retract(&mut self, layer_change: bool) -> io::Result<()> {
-        self.retract_by(self.settings.retraction_length, layer_change)
+        self.retract_by(self.retraction_length(), layer_change)
+    }
+
+    /// The filament's retraction length, or what a calibration has set in
+    /// its place.
+    fn retraction_length(&self) -> f64 {
+        self.state
+            .calibration_retraction
+            .unwrap_or(self.settings.retraction_length)
     }
 
     /// [`Self::retract`] by `total` mm rather than the filament's

@@ -181,6 +181,13 @@ pub struct InfillSettings {
     pub top_joined: bool,
     pub bottom_joined: bool,
     pub solid_joined: bool,
+    /// Whether a top surface is laid with Archimedean chords
+    /// (`top_surface_pattern` `archimedeanchords`) rather than lines.
+    pub top_archimedean: bool,
+    /// Whether such a surface keeps the flow rate calibration's order:
+    /// chords first, the middle spiral last and from the inside out
+    /// (`calib_flowrate_topinfill_special_order`).
+    pub flow_calib_order: bool,
     /// Whether each is swept from one side to the other, no line laid
     /// between two already down: so for `monotonic` and `monotonicline`,
     /// not for `rectilinear`.
@@ -277,6 +284,8 @@ impl Default for InfillSettings {
             top_joined: false,
             bottom_joined: true,
             solid_joined: true,
+            top_archimedean: false,
+            flow_calib_order: false,
             ensure_vertical_shells: true,
             elephant_foot_density: 1.0,
             elephant_foot_layers: 1,
@@ -430,10 +439,53 @@ impl InfillSettings {
                 (true, false)
             }
         };
-        let (top_joined, top_ordered) = joined(
-            "top_surface_pattern",
-            (defaults.top_joined, defaults.top_ordered),
-        );
+        // Archimedean chords are laid on a top surface as the reference
+        // lays them (FillPlanePath.cpp); every other pattern but the
+        // straight lines above is said.
+        let top_archimedean = settings
+            .texts("top_surface_pattern")
+            .and_then(|pattern| pattern.first())
+            .is_some_and(|pattern| pattern == "archimedeanchords");
+        let (top_joined, top_ordered) = if top_archimedean {
+            (defaults.top_joined, defaults.top_ordered)
+        } else {
+            joined(
+                "top_surface_pattern",
+                (defaults.top_joined, defaults.top_ordered),
+            )
+        };
+        // The flow rate calibration's order for its top surfaces
+        // (`calib_flowrate_topinfill_special_order`, set on its tiles by
+        // Plater.cpp `adjust_settings_for_flowrate_calib`): the chords
+        // first, then the spiral in the middle from the inside out. The
+        // reference follows it only while the surface's fill order is
+        // the default (FillPlanePath.cpp). Read whatever the pattern, so
+        // that it is followed set on an object.
+        let fill_order = settings
+            .text("top_surface_fill_order")
+            .unwrap_or("default")
+            .to_owned();
+        let flow_calib_order =
+            flag("calib_flowrate_topinfill_special_order", false)? && fill_order == "default";
+        let centre = settings
+            .text("center_of_surface_pattern")
+            .unwrap_or("each_surface")
+            .to_owned();
+        let mut spiral_notes = Vec::new();
+        if top_archimedean {
+            // Only the default order, and the spiral turning about each
+            // surface's own middle, are ported.
+            if fill_order != "default" {
+                spiral_notes.push(format!(
+                    "top_surface_fill_order \"{fill_order}\": the top surface's chords are laid in the order travel is least"
+                ));
+            }
+            if centre != "each_surface" {
+                spiral_notes.push(format!(
+                    "center_of_surface_pattern \"{centre}\": each top surface's spiral turns about that surface's own middle"
+                ));
+            }
+        }
         let (bottom_joined, bottom_ordered) = joined(
             "bottom_surface_pattern",
             (defaults.bottom_joined, defaults.bottom_ordered),
@@ -442,6 +494,7 @@ impl InfillSettings {
             "internal_solid_infill_pattern",
             (defaults.solid_joined, defaults.solid_ordered),
         );
+        unsupported.extend(spiral_notes);
         // The reference has a different way of laying shells for each
         // other value; only this one is ported. Bambu Studio's projects
         // say "enabled" for it, and older ones "1", which the reference
@@ -606,6 +659,8 @@ impl InfillSettings {
             },
             filter_out_gap_fill: number("filter_out_gap_fill", defaults.filter_out_gap_fill)?,
             top_joined,
+            top_archimedean,
+            flow_calib_order,
             bottom_joined,
             solid_joined,
             ensure_vertical_shells,
@@ -871,6 +926,8 @@ impl InfillSettings {
             cross_step: self.infill_shift_step,
             overhang_lean: self.infill_overhang_angle.to_radians(),
             top_joined: self.top_joined,
+            top_archimedean: self.top_archimedean,
+            flow_calib_order: self.flow_calib_order,
             bottom_joined: self.bottom_joined,
             solid_joined: self.solid_joined,
             top_ordered: self.top_ordered,
@@ -1090,6 +1147,24 @@ mod tests {
         let other = read(r#"{"top_surface_pattern": "concentric"}"#).unwrap();
         assert!(other.top_joined && !other.top_ordered);
         assert!(other.unsupported[0].starts_with("top_surface_pattern \"concentric\""));
+        // Archimedean chords on a top are laid as such; only the default
+        // order and each surface's own middle are.
+        let chords = read(r#"{"top_surface_pattern": "archimedeanchords"}"#).unwrap();
+        assert!(chords.top_archimedean && chords.unsupported.is_empty());
+        let outward = read(
+            r#"{"top_surface_pattern": "archimedeanchords", "top_surface_fill_order": "outward",
+                "calib_flowrate_topinfill_special_order": "1"}"#,
+        )
+        .unwrap();
+        assert!(outward.unsupported[0].starts_with("top_surface_fill_order \"outward\""));
+        // The calibration's order gives way to an order set by hand, as
+        // in the reference.
+        assert!(!outward.flow_calib_order);
+        let calibration = read(
+            r#"{"top_surface_pattern": "archimedeanchords", "calib_flowrate_topinfill_special_order": "1"}"#,
+        )
+        .unwrap();
+        assert!(calibration.flow_calib_order);
     }
 
     #[test]

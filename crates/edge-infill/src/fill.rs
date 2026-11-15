@@ -72,6 +72,10 @@ pub struct FillParams {
     pub top_joined: bool,
     pub bottom_joined: bool,
     pub solid_joined: bool,
+    /// A top surface laid with Archimedean chords, and whether in the
+    /// flow rate calibration's order ([`crate::InfillSettings`]).
+    pub top_archimedean: bool,
+    pub flow_calib_order: bool,
     /// Whether each of those is swept from one side to the other so that
     /// no line is laid between two already down (the reference's
     /// `monotonic` and `monotonicline`; `rectilinear` is not).
@@ -274,6 +278,11 @@ enum Lay {
     /// cut to it half a spacing in, and joined and anchored along that
     /// outline like the crossing lines.
     Curved,
+    /// A top surface of Archimedean chords (FillPlanePath.cpp, with
+    /// `center_of_surface_pattern` at `each_surface`): the spiral turns
+    /// about the middle of the area's own bounds, cut to the area half a
+    /// spacing in; the pieces are not joined.
+    Spiral,
     /// Solid lines and bridges as `FillRectilinear.cpp` lays them: run
     /// to within `LINES_INSET` of the edge, and turned half a spacing
     /// inside it where they are joined; a line that does not come half
@@ -482,6 +491,16 @@ pub fn fill_within(
                     &sweep_angles,
                 ),
             },
+            // Archimedean chords keep their direction from layer to
+            // layer (FillPlanePath.hpp `_layer_angle` is 0) and are a
+            // quarter turn on from the fill's (`_infill_direction`).
+            SurfaceKind::Top if params.top_archimedean => (
+                params.top,
+                Role::TopSolidInfill,
+                params.top.spacing,
+                Lay::Spiral,
+                &[params.solid_angle + FRAC_PI_2],
+            ),
             SurfaceKind::Top => (
                 params.top,
                 Role::TopSolidInfill,
@@ -800,6 +819,29 @@ pub fn fill_within(
                     }
                 }
             }
+            Lay::Spiral => {
+                let line = flow.scaled_spacing();
+                let inside =
+                    edge_clip::offset(std::slice::from_ref(&surface.area), -line / 2, Join::MITER)?;
+                // `_infill_direction` works the angle in single precision.
+                let angle = f64::from(params.solid_angle as f32 + std::f32::consts::FRAC_PI_2);
+                for chords in spiral_chords(&inside, angle, flow.spacing, params.flow_calib_order)?
+                {
+                    for (index, points) in chords.into_iter().enumerate() {
+                        paths.push(ExtrusionPath {
+                            points,
+                            role,
+                            flow,
+                            // In the calibration's order every piece
+                            // follows the one before, from its first
+                            // point (FillBase.cpp: `no_sort`, and
+                            // `set_reverse`, which forbids turning).
+                            in_turn: params.flow_calib_order && index > 0,
+                            part,
+                        });
+                    }
+                }
+            }
             Lay::Anchored => {
                 let line = flow.scaled_spacing();
                 let inside =
@@ -1059,6 +1101,152 @@ fn told_apart(
 /// that the first line and the last lie half a pitch inside the edges
 /// with none left over (FillBase.cpp `Fill::_adjust_solid_spacing`,
 /// with its rounding down to whole units).
+/// A point turned by `angle` about the origin and rounded to whole units,
+/// as the reference turns its polygons (MultiPoint.cpp `rotate`).
+fn rotated(point: Point2, angle: f64) -> Point2 {
+    let (sin, cos) = angle.sin_cos();
+    let (x, y) = (point.x as f64, point.y as f64);
+    Point2 {
+        x: (cos * x - sin * y).round() as i64,
+        y: (cos * y + sin * x).round() as i64,
+    }
+}
+
+/// The pieces of an Archimedean spiral that fill each of `areas`, which
+/// are already half a spacing in from the surface's edge
+/// (FillPlanePath.cpp `_fill_surface_single`, for a solid surface with
+/// `center_of_surface_pattern` at `each_surface`): the area is turned by
+/// `-angle`, the spiral laid about the middle of its bounds (grown by
+/// `SCALED_EPSILON`) and cut to it, and the pieces turned back.
+///
+/// With `calibration` (`calib_flowrate_topinfill_special_order`) the
+/// longest piece, the spiral in the middle, comes last and runs from the
+/// inside out, after the chords round it. The reference orders the
+/// chords with `chain_polylines` (a greedy chain improved by exchanging
+/// pairs); here each next chord is the one with an end nearest the last
+/// one's end. Which chord comes when only changes the travel between
+/// them, not what is laid.
+fn spiral_chords(
+    areas: &[ExPolygon],
+    angle: f64,
+    spacing: f64,
+    calibration: bool,
+) -> Result<Vec<Vec<Vec<Point2>>>, FillError> {
+    /// libslic3r's `SCALED_EPSILON`.
+    const SCALED_EPSILON: i64 = 100;
+    let length = |piece: &[Point2]| -> f64 {
+        piece
+            .windows(2)
+            .map(|pair| ((pair[1].x - pair[0].x) as f64).hypot((pair[1].y - pair[0].y) as f64))
+            .sum()
+    };
+    let mut out = Vec::new();
+    for area in areas {
+        let turn = |polygon: &edge_geom::Polygon| edge_geom::Polygon {
+            points: polygon.points.iter().map(|&p| rotated(p, -angle)).collect(),
+        };
+        let area = ExPolygon {
+            contour: turn(&area.contour),
+            holes: area.holes.iter().map(turn).collect(),
+        };
+        let Some(&first) = area.contour.points.first() else {
+            continue;
+        };
+        let (low, high) = area
+            .contour
+            .points
+            .iter()
+            .fold((first, first), |(low, high), p| {
+                (
+                    Point2 {
+                        x: low.x.min(p.x),
+                        y: low.y.min(p.y),
+                    },
+                    Point2 {
+                        x: high.x.max(p.x),
+                        y: high.y.max(p.y),
+                    },
+                )
+            });
+        let bounds = (
+            Point2 {
+                x: low.x - SCALED_EPSILON,
+                y: low.y - SCALED_EPSILON,
+            },
+            Point2 {
+                x: high.x + SCALED_EPSILON,
+                y: high.y + SCALED_EPSILON,
+            },
+        );
+        let pattern = curves::plane_path(curves::Curve::Archimedean, bounds, spacing, 1.0);
+        if pattern.first().is_none_or(|line| line.len() < 2) {
+            continue;
+        }
+        let mut pieces = edge_clip::clip_lines(&pattern, std::slice::from_ref(&area))?;
+        pieces.retain(|piece| piece.len() >= 2);
+        if pieces.is_empty() {
+            continue;
+        }
+        if calibration {
+            // The first of the longest (`std::max_element`).
+            let mut longest = 0;
+            for (at, piece) in pieces.iter().enumerate() {
+                if length(piece) > length(&pieces[longest]) {
+                    longest = at;
+                }
+            }
+            let mut spiral = pieces.remove(longest);
+            // The spiral's middle is where the pattern was laid about.
+            let middle = Point2 {
+                x: (bounds.0.x + bounds.1.x) / 2,
+                y: (bounds.0.y + bounds.1.y) / 2,
+            };
+            let far = |p: Point2| {
+                let (x, y) = ((p.x - middle.x) as f64, (p.y - middle.y) as f64);
+                x * x + y * y
+            };
+            if far(spiral[0]) > far(spiral[spiral.len() - 1]) {
+                spiral.reverse();
+            }
+            let mut chained: Vec<Vec<Point2>> = Vec::with_capacity(pieces.len() + 1);
+            let mut left = pieces;
+            if !left.is_empty() {
+                chained.push(left.remove(0));
+            }
+            while !left.is_empty() {
+                let last = &chained[chained.len() - 1];
+                let at = last[last.len() - 1];
+                let apart = |p: Point2| {
+                    let (x, y) = ((p.x - at.x) as f64, (p.y - at.y) as f64);
+                    x * x + y * y
+                };
+                let mut best = (0, false, f64::MAX);
+                for (index, piece) in left.iter().enumerate() {
+                    for (turned, end) in [(false, piece[0]), (true, piece[piece.len() - 1])] {
+                        if apart(end) < best.2 {
+                            best = (index, turned, apart(end));
+                        }
+                    }
+                }
+                let mut next = left.remove(best.0);
+                if best.1 {
+                    next.reverse();
+                }
+                chained.push(next);
+            }
+            chained.push(spiral);
+            pieces = chained;
+        }
+        out.push(
+            pieces
+                .into_iter()
+                .map(|piece| piece.into_iter().map(|p| rotated(p, angle)).collect())
+                .collect(),
+        );
+    }
+    Ok(out)
+}
+
 fn fitted_pitch(width: f64, pitch: f64) -> f64 {
     // libslic3r's `EPSILON`, taken off the width as the reference takes
     // it: a width of exactly so many pitches counts one interval fewer.
@@ -1173,6 +1361,57 @@ mod tests {
         }
     }
 
+    #[test]
+    fn a_top_of_archimedean_chords_is_a_spiral_about_its_own_middle() {
+        let base = FillParams {
+            top_archimedean: true,
+            ..params(Pattern::Grid, 0.2)
+        };
+        let length = |path: &ExtrusionPath| -> f64 {
+            path.points
+                .windows(2)
+                .map(|pair| ((pair[1].x - pair[0].x) as f64).hypot((pair[1].y - pair[0].y) as f64))
+                .sum()
+        };
+        // A 30 by 10 mm top: the spiral fills the middle 10 by 10 mm whole,
+        // the chords the ends.
+        let top = |params: &FillParams| {
+            let mut wide = surface(SurfaceKind::Top, 10.0);
+            for point in &mut wide.area.contour.points {
+                point.x *= 3;
+            }
+            fill(&[wide], 3, params).unwrap()
+        };
+        let any = top(&base);
+        assert!(any.len() > 2, "{}", any.len());
+        assert!(
+            any.iter()
+                .all(|path| path.role == Role::TopSolidInfill && !path.in_turn)
+        );
+        // On every layer the same: the chords keep their direction.
+        let mut other = surface(SurfaceKind::Top, 10.0);
+        for point in &mut other.area.contour.points {
+            point.x *= 3;
+        }
+        assert_eq!(fill(&[other], 4, &base).unwrap(), any);
+        // In the flow rate calibration's order: the chords, then the
+        // longest piece, the spiral, last and from the middle outwards;
+        // nothing reordered or turned round after.
+        let calibration = top(&FillParams {
+            flow_calib_order: true,
+            ..base
+        });
+        assert_eq!(calibration.len(), any.len());
+        assert!(!calibration[0].in_turn && calibration[1..].iter().all(|path| path.in_turn));
+        let spiral = calibration.last().unwrap();
+        let longest = calibration.iter().map(length).fold(0.0, f64::max);
+        assert_eq!(length(spiral), longest);
+        let middle = Point2::from_mm(15.0, 5.0);
+        let off = |p: Point2| ((p.x - middle.x) as f64).hypot((p.y - middle.y) as f64) / 1e6;
+        assert!(off(spiral.points[0]) < 0.5, "{}", off(spiral.points[0]));
+        assert!(off(*spiral.points.last().unwrap()) > 4.0);
+    }
+
     fn params(pattern: Pattern, density: f64) -> FillParams {
         let flow = Flow::new(0.45, 0.2, 0.4).unwrap();
         let top = Flow::new(0.4, 0.2, 0.4).unwrap();
@@ -1198,6 +1437,8 @@ mod tests {
             cross_step: 0.4,
             overhang_lean: 60f64.to_radians(),
             top_joined: false,
+            top_archimedean: false,
+            flow_calib_order: false,
             bottom_joined: true,
             solid_joined: true,
             top_ordered: true,

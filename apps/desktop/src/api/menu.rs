@@ -689,31 +689,27 @@ static FLOW_RATE: &[Node] = &[
         "calibration.pass1",
         "Pass 1",
         "Flow rate test - Pass 1",
-        When::Always,
-    )
-    .waits(NO_CALIBRATION)),
+        When::Prepare,
+    )),
     I(item(
         "calibration.pass2",
         "Pass 2",
         "Flow rate test - Pass 2",
-        When::Always,
-    )
-    .waits(NO_CALIBRATION)),
+        When::Prepare,
+    )),
     Line,
     I(item(
         "calibration.yolo",
         "YOLO (Recommended)",
         "Orca YOLO flowrate calibration, 0.01 step",
-        When::Always,
-    )
-    .waits(NO_CALIBRATION)),
+        When::Prepare,
+    )),
     I(item(
         "calibration.yolo_perfectionist",
         "YOLO (perfectionist version)",
         "Orca YOLO flowrate calibration, 0.005 step",
-        When::Always,
-    )
-    .waits(NO_CALIBRATION)),
+        When::Prepare,
+    )),
 ];
 
 static INPUT_SHAPING: &[Node] = &[
@@ -756,9 +752,8 @@ static CALIBRATION: &[Node] = &[
         "calibration.retraction",
         "Retraction test",
         "Retraction test",
-        When::Always,
-    )
-    .waits(NO_CALIBRATION)),
+        When::Prepare,
+    )),
     I(item(
         "calibration.stringing",
         "Stringing (temp × retraction)",

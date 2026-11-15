@@ -538,6 +538,7 @@ Painted supports, seams and colours are cleared by a remesh.	GUI/RemeshDialog.cp
 Remesh	GUI/RemeshDialog.cpp:195
 Triangles: %llu	GUI/RemeshDialog.cpp:248
 Triangles: %llu -> about %llu	GUI/RemeshDialog.cpp:256
+Wiki Guide: Retraction Calibration	GUI/calib_dlg.cpp:941
 
 [own]
 # This app's own words on the static page, with no counterpart in the
