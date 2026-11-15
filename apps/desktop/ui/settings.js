@@ -699,9 +699,17 @@ async function setSettings(book, args) {
   if (book.kind === 'item') { await itemSet(book, args); return; }
   const project = state.project;
   const asked = ++book.asked;
-  const answer = book.kind === 'process'
+  let answer = book.kind === 'process'
     ? await call('process_set', { project: project.id, ...args })
     : await call('settings_set', { project: project.id, ...askFor(book), ...args });
+  // A setting the reference asks about before it is changed ("Spiral
+  // vase" where the settings do not suit a vase): Yes or No, and the
+  // same call again with the answer (ConfigManipulation.cpp).
+  if (answer && answer.question) {
+    const yes = await confirmBox(t('Warning'), answer.question.text, t('Yes'), t('No'));
+    if (project.id !== activeId()) return;
+    answer = await call('process_set', { project: project.id, ...args, answer: yes ? 'yes' : 'no' });
+  }
   if (project.id !== activeId()) return;
   if (takeAnswer(book, answer, asked)) {
     showSettingsPage(book);

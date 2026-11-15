@@ -440,16 +440,16 @@ fn what_the_engine_does_with_an_option_is_its_own_answer() {
     assert!(!listed(&last, "unread", "unsupported_wall_last"));
     assert_eq!(last["notes"].get("unsupported_wall_last"), None);
     // Read, and not done as asked: followed with the engine's own note.
-    let vase = ask(
+    let shield = ask(
         &session,
         "process_set",
-        json!({ "key": "spiral_mode", "value": true }),
+        json!({ "key": "draft_shield", "value": "enabled" }),
     );
     assert!(
-        vase["notes"]["spiral_mode"][0]
+        shield["notes"]["draft_shield"][0]
             .as_str()
             .unwrap()
-            .contains("vase mode is not followed")
+            .contains("the skirt keeps to skirt_height")
     );
     // The same is said with the print: the engine's notes, and after
     // them what was set here that the slice never asked for.
@@ -464,7 +464,7 @@ fn what_the_engine_does_with_an_option_is_its_own_answer() {
         .collect();
     assert!(
         gaps.iter()
-            .any(|gap| gap.contains("vase mode is not followed")),
+            .any(|gap| gap.contains("the skirt keeps to skirt_height")),
         "{gaps:?}"
     );
     assert!(
@@ -655,4 +655,53 @@ fn values_are_shown_and_held_in_the_shape_the_settings_have() {
         held(option("layer_height"), "0.3", Some(&one("0.2"))),
         one("0.3")
     );
+}
+
+#[test]
+fn ticking_spiral_vase_asks_first_and_yes_or_no_does_what_the_reference_does() {
+    let session = Arc::new(Session::new(None));
+    let id = on_presets(&session);
+    let tick = |answer: Option<&str>| {
+        let mut args = json!({ "project": id, "key": "spiral_mode", "value": true });
+        if let Some(answer) = answer {
+            args["answer"] = json!(answer);
+        }
+        ask(&session, "process_set", args)
+    };
+    // The U1's process has two walls, top layers and fill: asked, in the
+    // reference's words, and nothing changed yet.
+    let asked = tick(None);
+    let text = asked["question"]["text"].as_str().unwrap();
+    assert!(text.starts_with(
+        "Spiral mode only works when wall loops is 1, support is disabled, top shell layers is 0, sparse infill density is 0 and timelapse type is traditional. Side stabilizers must be off too."
+    ));
+    // The English catalog's words for the message id.
+    assert!(
+        text.ends_with("No  - Cancel enabling spiral mode"),
+        "{text}"
+    );
+    let now = ask(&session, "process", json!({ "project": id }));
+    assert_eq!(now["set"].get("spiral_mode"), None);
+    // No: vase mode stays off.
+    let no = tick(Some("no"));
+    assert_ne!(no["set"].get("spiral_mode"), Some(&json!("1")));
+    assert_eq!(no["set"].get("wall_loops"), None);
+    // Yes: on, with what a vase needs.
+    let yes = tick(Some("yes"));
+    assert_eq!(yes["set"]["spiral_mode"], "1");
+    assert_eq!(yes["set"]["wall_loops"], "1");
+    assert_eq!(yes["set"]["top_shell_layers"], "0");
+    assert_eq!(yes["set"]["sparse_infill_density"], "0%");
+    // Nothing is said of vase mode now that the engine follows it.
+    assert_eq!(yes["notes"].get("spiral_mode"), None);
+    assert!(!listed(&yes, "unread", "spiral_mode"));
+    // Turned off and on again, the settings now suit a vase: not asked.
+    ask(
+        &session,
+        "process_set",
+        json!({ "project": id, "key": "spiral_mode", "value": false }),
+    );
+    let again = tick(None);
+    assert!(again.get("question").is_none());
+    assert_eq!(again["set"]["spiral_mode"], "1");
 }

@@ -1282,7 +1282,7 @@ infill there is printed in the painted filament. The rules showing each
 paint depth option only for its mode are the reference's
 (ConfigManipulation.cpp l.1400–1421, `rules.rs`).
 
-Turned on, three more are read with a note: `spiral_mode`, `raft_layers`,
+Turned on, two more are read with a note: `raft_layers`,
 `draft_shield`; and `print_sequence` (read since the tenth pass) has one at
 "by object", which is not followed: every object is printed together, layer
 by layer. `zaa_enabled` turned on is followed, and its
@@ -1298,6 +1298,20 @@ The same is said with the print. A real slice notes what it reads too
 (`prepare_noted`), and "About this print" lists, after the engine's notes,
 each setting set by hand that nothing read: `hollow_interior "1": not read by
 the engine; it changes nothing in this print`.
+
+### Spiral vase
+
+`spiral_mode` is followed (the engine's `spiral.rs` and edge-gcode's
+`spiral_vase.rs`, a port of SpiralVase.cpp), and the note that it was not
+is gone; `spiral_mode_smooth`, `spiral_mode_max_xy_smoothing`,
+`spiral_starting_flow_ratio` and `spiral_finishing_flow_ratio` are read
+with it on, and shown only then (the rules, as before).
+
+| C++ | Where | Here |
+| --- | --- | --- |
+| Ticking "Spiral vase" where wall loops is not 1, top shell layers not 0, sparse infill density not 0, support or forced support layers on, "Detect thin wall" or "Reverse on even" on, side stabilizers on, the wall direction not Auto or the timelapse not Traditional: a warning, "Spiral mode only works when wall loops is 1, support is disabled, top shell layers is 0, sparse infill density is 0 and timelapse type is traditional." "Side stabilizers must be off too." (" But machines with I3 structure will not generate timelapse videos." on an I3 printer) and "Change these settings automatically?\nYes - Change these settings and enable spiral mode automatically\nNo  - Give up using spiral mode this time", Yes and No | ConfigManipulation.cpp `update_print_fff_config` l.461, `show_spiral_mode_settings_dialog` l.1519 | **added** on the process pages: `process_set` of `spiral_mode` answers `{ question: { key, text, answers } }` and changes nothing; the page asks (`confirmBox`) and calls again with `answer`. Yes sets the box and wall loops 1, top shell layers 0, sparse infill density 0 %, support off, forced support layers 0, "Detect thin wall" and "Reverse on even" off, stabilizers off, wall direction Auto, timelapse Traditional (each where the process pages have it); No leaves the box clear. Not asked where the settings already suit. Test: `ticking_spiral_vase_asks_first_and_yes_or_no_does_what_the_reference_does`; seen in the browser pane |
+| The same question from "Customize current plate" (always, as a confirmation) and from an object's settings (an OK only) | PartPlate.cpp `set_spiral_vase_mode` l.334, l.5132 | **not yet**: the plate's and an object's vase mode are set without it |
+| Preview of a vase: every layer above the bottom one ramp, no travel between layers; the layers slider steps a layer at a time by the `;LAYER_CHANGE` tags (the reference detects layers by tag in vase mode, GCodeProcessor.cpp l.991) | GCodeViewer, libvgcode `spiral_vase_mode` | **had**: the preview reads layers by their tags already (`toolpath.rs`); a star vase of 151 layers seen to step 1…151 with one path a layer. **not yet**: libvgcode's vase-only drawing of the lowest layer shown (`kept_vertex`) |
 
 ### On an object, a part, a height range
 
