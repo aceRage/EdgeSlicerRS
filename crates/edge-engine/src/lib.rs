@@ -72,8 +72,8 @@ pub use model::{
     CutEdit, CutOptions, CutPieces, CutSection, CutThickness, DrawnCut, FIRST_LATER_LAYER, FaceHit,
     FlushBasis, Groove, LAST_LAYER, LONGEST_PLATE_NAME, LayerSequence, Look, MAX_FILAMENTS,
     MAX_PLATES, MeshErrors, Model, ModelCopy, ModelObject, ModelPlate, NEXT_COLOURS, NewPart,
-    ObjectBoolean, OrientScope, Oriented, PlateSettings, PlateStamp, Prepared, Reach, Saved, Saving,
-    Shape, connector_mesh, open_edges, own_settings, project_settings,
+    ObjectBoolean, OrientScope, Oriented, PlateSettings, PlateStamp, Prepared, Reach, Saved,
+    Saving, Shape, connector_mesh, open_edges, own_settings, project_settings,
 };
 pub use pipeline::{FirstLayer, Gcode, Sliced, Timings, slice};
 pub use presets::{Library, ModelPreset, PrinterModel, Shelf};
