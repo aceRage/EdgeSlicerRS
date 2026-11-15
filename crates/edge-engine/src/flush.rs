@@ -107,6 +107,20 @@ pub fn calc_flush_vol(from: &str, to: &str, min: i32, max: i32) -> i32 {
     (volume as i32).min(max)
 }
 
+/// The filaments' colours of a project that names them but holds no
+/// flushing volumes: the reference's command line works its volumes out
+/// from them (Snapmaker_Orca.cpp l.3785), and so does a slice here
+/// (`prepare`). None for any other project.
+pub fn colours_without_matrix(project: &Settings) -> Option<Vec<String>> {
+    if project.get("flush_volumes_matrix").is_some() {
+        return None;
+    }
+    project
+        .texts("filament_colour")
+        .filter(|colours| !colours.is_empty())
+        .map(<[String]>::to_vec)
+}
+
 /// Plater.cpp `get_min_flush_volumes`: for each filament, the nozzle's
 /// volume less what a long retraction when cutting takes back out of it.
 pub fn min_flush_volumes(settings: &Settings) -> Vec<i32> {

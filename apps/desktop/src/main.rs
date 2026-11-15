@@ -14,6 +14,7 @@ mod api;
 mod hosts;
 mod menubar;
 mod outside;
+mod secrets;
 mod serve;
 mod ultranet;
 

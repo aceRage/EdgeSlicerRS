@@ -512,3 +512,135 @@ fn the_flushing_volumes_dialog_reads_recalculates_and_sets_in_one_step() {
     assert_eq!(kept["matrix"], json!(doubled));
     assert_eq!(kept["multiplier"], 0.5);
 }
+
+/// `THREE_PLATES` as a project made elsewhere may come: its filaments'
+/// colours named, no flushing volumes and no multiplier.
+fn without_flushing_volumes(dir: &Path) -> std::path::PathBuf {
+    use std::io::{Read, Write};
+    let mut from =
+        zip::ZipArchive::new(std::fs::File::open(reference(THREE_PLATES)).unwrap()).unwrap();
+    let path = dir.join("no_matrix.3mf");
+    let mut to = zip::ZipWriter::new(std::fs::File::create(&path).unwrap());
+    let stored =
+        zip::write::SimpleFileOptions::default().compression_method(zip::CompressionMethod::Stored);
+    for at in 0..from.len() {
+        let mut entry = from.by_index(at).unwrap();
+        let name = entry.name().unwrap().into_owned();
+        let mut bytes = Vec::new();
+        entry.read_to_end(&mut bytes).unwrap();
+        if name == "Metadata/project_settings.config" {
+            let mut settings: serde_json::Map<String, Value> =
+                serde_json::from_slice(&bytes).unwrap();
+            settings.remove("flush_volumes_matrix");
+            settings.remove("flush_multiplier");
+            bytes = serde_json::to_vec_pretty(&settings).unwrap();
+        }
+        to.start_file(name, stored).unwrap();
+        to.write_all(&bytes).unwrap();
+    }
+    to.finish().unwrap();
+    path
+}
+
+fn numbers(value: &Value) -> Vec<f64> {
+    value
+        .as_array()
+        .unwrap_or_else(|| panic!("{value} is not a list"))
+        .iter()
+        .map(|item| item.as_f64().unwrap())
+        .collect()
+}
+
+/// Read as the G-code lists them (`0,117,557,0`).
+fn listed_numbers(text: &str) -> Vec<f64> {
+    text.split(',').map(|item| item.parse().unwrap()).collect()
+}
+
+#[test]
+fn a_project_without_flushing_volumes_shows_slices_and_saves_those_worked_out() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = without_flushing_volumes(dir.path());
+    let session = Arc::new(Session::new(None));
+    let id = open(&session, &path);
+    // The dialog shows what a slice works out from the colours, at a
+    // multiplier of 1, not the default 280 mm³ at 0.3.
+    let shown = ask(&session, "flush_volumes", json!({ "project": id }));
+    assert_eq!(shown["count"], 7);
+    let matrix = numbers(&shown["matrix"]);
+    assert_eq!(matrix.len(), 49);
+    assert_eq!(shown["multiplier"], 1.0);
+    assert!(
+        matrix
+            .iter()
+            .any(|volume| *volume != 280.0 && *volume > 0.0)
+    );
+    let colours = texts(&shown["colours"]);
+    let calc = ask(
+        &session,
+        "flush_calc",
+        json!({ "project": id, "colours": colours }),
+    );
+    assert_eq!(
+        calc["matrix"], shown["matrix"],
+        "Re-calculate gives the same"
+    );
+    // ... and is what the slice used.
+    sliced(&session, id, Some(1));
+    let text = gcode(&session, id, dir.path());
+    assert_eq!(
+        listed_numbers(listed(&text, "flush_volumes_matrix").unwrap()),
+        matrix
+    );
+    assert_eq!(listed(&text, "flush_multiplier"), Some("1"));
+
+    // Saved untouched, the file holds them; opened again, the same.
+    let saved = dir.path().join("saved.3mf");
+    ask(
+        &session,
+        "project_save",
+        json!({ "project": id, "path": saved, "accept": true }),
+    );
+    let mut archive = zip::ZipArchive::new(std::fs::File::open(&saved).unwrap()).unwrap();
+    let settings: Value =
+        serde_json::from_reader(archive.by_name("Metadata/project_settings.config").unwrap())
+            .unwrap();
+    let file_matrix: Vec<f64> = texts(&settings["flush_volumes_matrix"])
+        .iter()
+        .map(|item| item.parse().unwrap())
+        .collect();
+    assert_eq!(file_matrix, matrix);
+    assert_eq!(settings["flush_multiplier"], "1");
+    let again = Arc::new(Session::new(None));
+    let reopened = open(&again, &saved);
+    let kept = ask(&again, "flush_volumes", json!({ "project": reopened }));
+    assert_eq!(kept["matrix"], shown["matrix"]);
+    assert_eq!(kept["multiplier"], 1.0);
+
+    // A colour changed works out its own row and column again; every other
+    // pair keeps what was sliced, and the multiplier stays 1.
+    filaments(
+        &session,
+        id,
+        json!({ "op": "colour", "filament": 2, "colour": "#FFFFFF" }),
+    );
+    let after = ask(&session, "flush_volumes", json!({ "project": id }));
+    let now = numbers(&after["matrix"]);
+    assert_eq!(after["multiplier"], 1.0);
+    for from in 0..7 {
+        for to in 0..7 {
+            if from != 1 && to != 1 {
+                assert_eq!(now[from * 7 + to], matrix[from * 7 + to], "{from} to {to}");
+            }
+        }
+    }
+    assert_ne!(now[1], matrix[1], "black to the new white flushes more");
+    // OK on the dialog as it was opened changes nothing.
+    let session = Arc::new(Session::new(None));
+    let id = open(&session, &path);
+    let same = filaments(
+        &session,
+        id,
+        json!({ "op": "flush", "matrix": matrix, "multiplier": 1.0 }),
+    );
+    assert_eq!(same["done"], Value::Null);
+}

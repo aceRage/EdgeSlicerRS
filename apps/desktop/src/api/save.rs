@@ -71,10 +71,15 @@ impl Session {
             || choices.filament_over.iter().any(|own| !own.is_empty())
             || !choices.printer_over.is_empty()
             || choices.bed_type.is_some();
+        // A project that names its colours but holds no flushing volumes
+        // is sliced with volumes worked out from them; it is saved with
+        // them, as the reference's command line saves what it sliced, so
+        // the file holds what the Flushing volumes dialog showed.
+        let from_colours = file.is_some_and(|file| file.model.flushing_from_colours());
         if !choices.from_presets
             && let Some(own) = &own
         {
-            if !set_by_hand {
+            if !set_by_hand && !from_colours {
                 return Ok(Saving::Own);
             }
             let basis = self.basis(choices, file)?;
@@ -82,6 +87,13 @@ impl Session {
             let settled = edge_engine::settled(&basis.chosen, &overrides, Some(own))
                 .map_err(|e| e.to_string())?;
             let mut settings = edge_engine::own_settings(own, &settled, &changed(choices));
+            if from_colours {
+                for key in ["flush_volumes_matrix", "flush_multiplier"] {
+                    if let Some(value) = settled.get(key) {
+                        settings.insert(key, value.clone());
+                    }
+                }
+            }
             if let Some(bed) = &choices.bed_type {
                 settings.insert("curr_bed_type", edge_config::Value::One(bed.clone()));
             }

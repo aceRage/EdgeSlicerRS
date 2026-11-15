@@ -45,6 +45,14 @@ function bambuBridgeNote(bridge) {
   $('bambu-retry').hidden = !['failed', 'gave_up', 'refused'].includes(bridge.state);
 }
 
+// Where the access codes are kept, when it is not the system's store as
+// it should be (the store refused, or the codes could not be moved).
+function bambuSecretsNote(printers) {
+  const notice = printers && printers.secrets && printers.secrets.notice;
+  $('bambu-secrets').hidden = !notice;
+  $('bambu-secrets-text').textContent = notice || '';
+}
+
 // ---- Device ----
 
 // Called by `showPrinterPage` (hosts.js) for a Bambu Lab printer's
@@ -66,11 +74,15 @@ async function showBambuDevice() {
   $('bambu-remove').disabled = none;
   $('bambu-connect').disabled = none;
   bambuBridgeNote(printers.bridge);
+  bambuSecretsNote(printers);
   if (none || state.tab !== 'device') return;
   // Looked at: the printer is dialled, once, as the reference dials the
-  // printer it selects. A bridge that is absent is not started.
+  // printer it selects. A bridge that is absent is not started. Only where
+  // the code is at hand: the system's store is read at the person's first
+  // Connect or send, never because a page was looked at (reading it may
+  // make the system ask them).
   const selected = printers.printers.find((p) => p.selected);
-  if (selected && selected.has_access_code && printers.bridge.state !== 'absent' && !bambuState.dialled.has(selected.dev_id)) {
+  if (selected && selected.has_access_code && printers.secrets.at_hand && printers.bridge.state !== 'absent' && !bambuState.dialled.has(selected.dev_id)) {
     bambuState.dialled.add(selected.dev_id);
     $('bambu-session').textContent = t('connecting...');
     try {
@@ -150,6 +162,7 @@ $('bambu-printer').addEventListener('change', () => attempt(async () => {
 $('bambu-connect').addEventListener('click', () => attempt(async () => {
   $('bambu-session').textContent = t('connecting...');
   drawBambu(await call('bambu_connect', {}));
+  bambuSecretsNote(await bambuPrinters());
 }));
 $('bambu-retry').addEventListener('click', () => attempt(async () => {
   bambuBridgeNote((await call('bambu_bridge', { retry: true })));

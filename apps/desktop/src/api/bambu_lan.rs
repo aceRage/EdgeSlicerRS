@@ -64,10 +64,16 @@ pub(super) struct Bambu {
 }
 
 impl Bambu {
-    pub(super) fn new(launcher: Launcher, settings: Option<PathBuf>, timeouts: Timeouts) -> Self {
-        let kept = Kept::open(settings.clone());
+    /// The printers kept in `settings`, their codes in `secrets` (not read
+    /// until one is needed).
+    pub(super) fn new(
+        launcher: Launcher,
+        settings: Option<PathBuf>,
+        timeouts: Timeouts,
+        secrets: Box<dyn crate::secrets::Secrets>,
+    ) -> Self {
+        let kept = Kept::open(settings.clone(), secrets);
         let client = Arc::new(Client::new(launcher, settings, timeouts));
-        client.set_codes(kept.codes());
         Bambu {
             client,
             kept: Mutex::new(kept),
@@ -300,7 +306,7 @@ impl Session {
                     "ip": p.ip,
                     "model": p.model,
                     "model_name": models.iter().find(|m| m.id == p.model).map(|m| m.name.clone()),
-                    "has_access_code": kept.code(&p.dev_id).is_some(),
+                    "has_access_code": kept.has_code(&p.dev_id),
                     "selected": kept.selected.as_deref() == Some(p.dev_id.as_str()),
                 })
             })
@@ -310,6 +316,19 @@ impl Session {
             "selected": kept.selected,
             "models": models.iter().map(|m| json!({ "id": m.id, "name": m.name })).collect::<Vec<_>>(),
             "problem": kept.problem,
+            // Where the codes are kept, said when it is not the system's
+            // store as it should be; and whether a code can be had without
+            // asking the system's store (which may ask the person), so the
+            // page dials a printer by itself only then.
+            "secrets": {
+                "notice": kept.notice,
+                "at_hand": kept.codes_at_hand(),
+                "kept_in": match kept.store() {
+                    crate::secrets::Kind::System | crate::secrets::Kind::Unavailable => "system",
+                    crate::secrets::Kind::File => "file",
+                    crate::secrets::Kind::Memory => "memory",
+                },
+            },
             "bridge": self.bridge_json(),
         }))
     }
@@ -391,7 +410,7 @@ impl Session {
     }
 
     /// The printer named, else the one selected.
-    fn bambu_printer(&self, args: &Value) -> Result<(Printer, Option<String>), String> {
+    fn bambu_printer(&self, args: &Value) -> Result<Printer, String> {
         let kept = lock(&self.bambu.kept);
         let dev_id = args
             .get("dev_id")
@@ -399,19 +418,26 @@ impl Session {
             .map(str::to_owned)
             .or_else(|| kept.selected.clone())
             .ok_or_else(|| tr("No available printers"))?;
-        let printer = kept
-            .get(&dev_id)
+        kept.get(&dev_id)
             .cloned()
-            .ok_or("There is no such printer.")?;
-        let code = kept.code(&dev_id).map(str::to_owned);
-        Ok((printer, code))
+            .ok_or_else(|| "There is no such printer.".into())
+    }
+
+    /// A printer's access code, read from where codes are kept the first
+    /// time one is needed (which may make the system ask the person), and
+    /// handed to the bridge's list of what it must never say.
+    fn bambu_code(&self, dev_id: &str) -> Result<Option<String>, String> {
+        let mut kept = lock(&self.bambu.kept);
+        let code = kept.code(dev_id)?;
+        self.bambu.client.set_codes(kept.codes());
+        Ok(code)
     }
 
     /// Dials the printer (`MachineObject::connect`), starting the bridge if
     /// need be; answers as `bambu_state`.
     fn bambu_connect(&self, args: &Value) -> Result<Value, String> {
-        let (printer, code) = self.bambu_printer(args)?;
-        let Some(code) = code else {
+        let printer = self.bambu_printer(args)?;
+        let Some(code) = self.bambu_code(&printer.dev_id)? else {
             return Err("Not sent: no access code has been entered for this printer.".into());
         };
         // Started here: a bridge that is absent or refused is said, nothing tried.
@@ -441,14 +467,15 @@ impl Session {
     /// of the bridge, but re-dials a session that was lost (the reference's
     /// reconnect, `LanReconnectLadder`) when `redial` is given.
     fn bambu_state(&self, args: &Value) -> Result<Value, String> {
-        let (printer, code) = self.bambu_printer(args)?;
+        let printer = self.bambu_printer(args)?;
         let client = &self.bambu.client;
         let remote = client.remote(&printer.dev_id);
+        // A session lost was dialled with the code, which is at hand.
         if args.get("redial").and_then(Value::as_bool) == Some(true)
             && remote.session == Link::Lost
             && remote.since.elapsed() > Duration::from_secs(10)
             && client.state() == State::Running
-            && let Some(code) = code
+            && let Some(code) = self.bambu_code(&printer.dev_id)?
         {
             client.forget(&printer.dev_id);
             let _ = client.connect(&printer.dev_id, &printer.ip, &code);
@@ -807,7 +834,7 @@ impl Session {
     fn bambu_send_prepare(&self, args: &Value) -> Result<Value, String> {
         self.bambu_project(args)?;
         let printers_list = self.bambu_printers()?;
-        let printer = self.bambu_printer(args).ok().map(|(p, _)| p);
+        let printer = self.bambu_printer(args).ok();
         let plate = self.bambu_plate(args).ok();
         let options = lock(&self.bambu.kept).options.clone();
         let on = |o: Option<bool>| o.unwrap_or(true);
@@ -905,8 +932,10 @@ impl Session {
     /// the sliced file written and the send started: `{ task }`.
     fn bambu_send(&self, args: &Value) -> Result<Value, String> {
         self.bambu_project(args)?;
-        let (printer, code) = self.bambu_printer(args)?;
-        let code = code.ok_or("Not sent: no access code has been entered for this printer.")?;
+        let printer = self.bambu_printer(args)?;
+        let code = self
+            .bambu_code(&printer.dev_id)?
+            .ok_or("Not sent: no access code has been entered for this printer.")?;
         let plate = self.bambu_plate(args)?;
         let machine = self.bambu.client.remote(&printer.dev_id).machine;
         let flag = |key: &str, default: bool| args["options"][key].as_bool().unwrap_or(default);
@@ -1158,7 +1187,7 @@ impl Session {
     /// stop only once confirmed ("Cancel print", "Are you sure you want to
     /// cancel this print?").
     fn bambu_control(&self, args: &Value) -> Result<Value, String> {
-        let (printer, _) = self.bambu_printer(args)?;
+        let printer = self.bambu_printer(args)?;
         let action = needed(args, "action")?;
         let command = match action {
             "pause" => "pause",
