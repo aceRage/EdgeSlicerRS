@@ -155,6 +155,9 @@ impl Session {
                 }
                 Box::new(device::sdcp::Sdcp { link })
             }
+            "prusalink" | "prusaconnect" => Box::new(device::prusalink::PrusaLink {
+                http: Http::new(&connection, timeouts)?,
+            }),
             _ => return Ok(None),
         };
         Ok(Some(Found {
@@ -179,6 +182,7 @@ impl Session {
             "octoprint" if snapmaker::is_u1(&connection.printer_model) => "u1",
             "octoprint" => "octo_klipper",
             "elegoolink" if !hosts::elegoo::is_cc2(&connection.printer_model) => "elegoo",
+            "prusalink" | "prusaconnect" => "prusalink",
             _ => {
                 return Ok(
                     json!({ "native": false, "family": connection.host_type, "printer": printer.name }),

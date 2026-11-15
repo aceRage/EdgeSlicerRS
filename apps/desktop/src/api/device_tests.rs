@@ -1312,3 +1312,106 @@ fn a_centauri_carbon_is_drawn_and_driven_as_the_forks_sdcp_monitor_does() {
         (json!(false), json!("Offline"))
     );
 }
+
+// ---- PrusaLink ----
+
+#[test]
+fn a_prusalink_printer_is_shown_read_only_as_the_forks_status_reads_it() {
+    let printing = Arc::new(std::sync::atomic::AtomicBool::new(true));
+    let flag = printing.clone();
+    let printer = hosts_mock::Printer::start(
+        Box::new(move |got: &hosts_mock::Got, _: &[hosts_mock::Got]| {
+            if got.header("X-Api-Key") != Some(KEY) {
+                return (401, "Unauthorized".into());
+            }
+            let on = flag.load(std::sync::atomic::Ordering::SeqCst);
+            match got.url.as_str() {
+                "/api/v1/status" => (200, json!({
+                    "printer": { "state": if on { "PRINTING" } else { "IDLE" }, "temp_nozzle": 214.8, "target_nozzle": 215.0, "temp_bed": 59.9, "target_bed": 60.0 },
+                    "job": if on { json!({ "id": 7, "progress": 41.0, "time_remaining": 2460 }) } else { json!({}) },
+                }).to_string()),
+                "/api/v1/job" => (200, json!({ "id": 7, "state": "PRINTING", "progress": 42.0, "time_remaining": 2400,
+                    "file": { "name": "BENCHY~1.BGC", "display_name": "benchy_0.4n_0.2mm.bgcode" } }).to_string()),
+                _ => (404, "Not Found".into()),
+            }
+        }),
+        None,
+    );
+    let probe = Probe::plain();
+    probe.project("Snapmaker", OTHER);
+    probe.ask(
+        "print_host_set",
+        json!({ "host_type": "prusalink", "print_host": printer.address(), "apikey": KEY }),
+    );
+    assert_eq!(probe.ask("device_info", json!({}))["family"], "prusalink");
+    let read = probe.read();
+    let caps = &read["caps"];
+    assert_eq!(caps["family"], "prusalink");
+    assert_eq!(ids(&caps["heaters"], "label"), ["Nozzle", "Bed"]);
+    // No command in the reference's code: nothing drawn but the readings.
+    assert_eq!(
+        (
+            caps["pause"].clone(),
+            caps["stop"].clone(),
+            caps["fans"].clone(),
+            caps["jog"].clone(),
+            caps["light"].clone()
+        ),
+        (
+            json!(false),
+            json!(false),
+            json!([]),
+            Value::Null,
+            json!(false)
+        )
+    );
+    let r = &read["reading"];
+    assert_eq!(
+        (
+            r["state"].clone(),
+            r["file"].clone(),
+            r["percent"].clone(),
+            r["left"].clone()
+        ),
+        (
+            json!("printing"),
+            json!("benchy_0.4n_0.2mm.bgcode"),
+            json!(42),
+            json!(2400)
+        )
+    );
+    assert_eq!(
+        r["heaters"][0],
+        json!({ "id": "nozzle", "now": 214.8, "target": 215.0 })
+    );
+    for action in [
+        json!({ "action": "pause" }),
+        json!({ "action": "stop" }),
+        json!({ "action": "temperature", "heater": "bed", "target": 50 }),
+    ] {
+        assert_eq!(
+            probe.refused("device_command", action),
+            "This printer cannot do that from here."
+        );
+    }
+    // Idle: one request a reading (no job asked).
+    printing.store(false, std::sync::atomic::Ordering::SeqCst);
+    let before = printer.asked().len();
+    let r = probe.read()["reading"].clone();
+    assert_eq!(
+        (r["state"].clone(), r["file"].clone(), r["percent"].clone()),
+        (json!("idle"), json!(""), Value::Null)
+    );
+    assert_eq!(printer.asked().len() - before, 1);
+    probe.never_said(KEY);
+    // A wrong key: offline with the printer's 401, the key in no answer.
+    let probe = Probe::plain();
+    probe.project("Snapmaker", OTHER);
+    probe.ask("print_host_set", json!({ "host_type": "prusalink", "print_host": printer.address(), "apikey": "wrong-key-1" }));
+    let read = probe.read();
+    assert!(
+        read["error"].as_str().unwrap().starts_with("HTTP 401"),
+        "{read}"
+    );
+    probe.never_said("wrong-key-1");
+}

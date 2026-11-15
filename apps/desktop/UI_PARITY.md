@@ -499,6 +499,28 @@ printers on 127.0.0.1. None was ever sent to a printer.
   page, which the page may not frame), "Storage" (commands 258, 259), the
   CANVAS (324). **beyond the reference**, whose Device tab shows the
   printer's own page and the CANVAS card.
+- **PrusaLink** and Prusa Connect's local PrusaLink (`src/device/prusalink.rs`):
+  read as the fork's Printers tab reads it (`Utils/PrusaLinkStatus.cpp`):
+  `api/v1/status` (`printer.state` as `to_klipper_state`, nozzle and bed with
+  their targets, the job's `progress` and `time_remaining`), and
+  `api/v1/job` for the file (`display_name`, else `name`) only while a job
+  is loaded; the key in `X-Api-Key` (`PrusaLink::set_auth`). Readings only:
+  the reference's code sends PrusaLink no command, so none is drawn. **not
+  built**: the digest login ("Authorization Type" user), "Storage". **beyond
+  the reference** (its Device tab shows the printer's own page).
+- **Duet / RepRapFirmware**: **not built**. The reference's `Duet.cpp`
+  uploads and starts (`rr_connect`, `rr_upload`, `rr_gcode` with `M32`, or
+  DSF's `machine/file`, `machine/code`) and reads no status; a status page
+  would need the object model (`rr_model`, `machine/status`), which the
+  reference's code does not read. Device keeps the printer's own page.
+- **Flashforge**: **not built**. Every reading and command of the
+  reference's Flashforge pages goes through the closed `FlashNetwork.dll`;
+  its upload host (`Utils/Flashforge.cpp`) reads only the material slots
+  of `POST :8898/detail`, which needs the printer's serial number and check
+  code, fields this app's connection has not got. Device keeps the
+  printer's own page.
+- Every family keeps "Printer page" (the printer's own page, without the
+  key) where it has an address, and "Storage" as before.
 
 ### Sending to a printer: what is built
 

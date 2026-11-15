@@ -21,6 +21,7 @@ use crate::api::i18n::{fill, tr};
 pub mod bambu;
 pub mod klipper;
 pub mod octo;
+pub mod prusalink;
 pub mod sdcp;
 #[cfg(test)]
 mod tests;
