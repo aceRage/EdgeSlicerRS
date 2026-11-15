@@ -163,6 +163,8 @@
         if (!ids.every((id) => GL.edit.stage.selection().has(id)) || GL.edit.stage.parts().size) GL.edit.stage.select(ids);
         GL.edit.menu(event.clientX, event.clientY);
       });
+      const warn = !row.child && GL.meshTools ? GL.meshTools.warning(row.object.errors) : null;
+      if (warn) name.prepend(warn);
       const cell = row.child ? name : this.named(name, row.object.settings, { object: row.object.id });
       const node = el('div', { className: `obj-row${row.child ? ' child' : ''}${printable ? '' : ' off'}` }, cell, eye);
       node.setAttribute('role', 'treeitem');
@@ -202,6 +204,8 @@
       const kind = PART_KINDS[part.kind] || t('Part');
       const label = part.name || `${kind} ${row.number}`;
       const name = el('button', { type: 'button', className: 'obj-name', title: `${label}\n${kind}` }, icon(KIND_ICONS[part.kind] || KIND_ICONS.part), el('span', { className: 'obj-label', textContent: label }));
+      const warn = GL.meshTools ? GL.meshTools.warning(part.errors) : null;
+      if (warn) name.prepend(warn);
       const node = el('div', { className: `obj-row child part${part.kind === 'part' ? '' : ' helper'}` }, this.named(name, part.settings, { object: row.object.id, part: part.id }), el('span'));
       name.addEventListener('click', (event) => this.pick(node, event));
       name.addEventListener('dblclick', () => this.renamePart(row.object.id, part.id));

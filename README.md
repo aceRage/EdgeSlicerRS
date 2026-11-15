@@ -4309,6 +4309,42 @@ or its bottom), where the reference's pick is the order of its hash map and
 this engine takes the first found. Benchy is oriented in about 18 ms here
 (56 ms on one thread); the reference's command line takes about 150 ms.
 
+### Simplify and Repair/Remesh
+
+`edge_mesh::simplify` is the reference's quadric edge collapse
+(QuadricEdgeCollapse.cpp) to the bit. It was checked against the
+reference's own file built on its own at the pinned commit with the
+reference's flags (`-O3`, the bundled Eigen, clang's default
+`-ffp-contract=on`), fed the same raw mesh: frog legs (to 5 % and at errors
+0.1, 0.001 and 1), the reference's trouble case, 3DBenchy (to 50 %, to
+2 000 triangles, at Medium, Extra high and Extra low), the Stanford Bunny
+and a Benchy subdivided twice (3.6M triangles) all came out byte for byte
+the same. Two things had to be matched for that: Eigen sums a `float`
+3-vector as `a0 + (a1 + a2)` (its four-wide packet does not fit), and clang
+fuses `a * b + c` within one expression into a fused multiply-add, which
+the port writes out with `mul_add` where the reference's expressions are
+fused. The runs of triangles round each corner are moved to the end of
+their array when they outgrow it instead of shifting every later run,
+which keeps the result and the time on many small even triangles.
+
+Seconds, this engine / the reference's code (one thread each; the
+reference works out normals and errors on several, a small part):
+
+| Mesh | Settings | Here | Reference's code |
+| --- | --- | --- | --- |
+| 3DBenchy, 225 154 triangles | Medium (0.1) | 0.34 | 0.39 |
+| 3DBenchy | to 50 % | 0.19 | 0.25 |
+| Benchy subdivided, 3 602 464 | to 50 % | 5.8 | 195 |
+| Benchy subdivided | Medium | 10.0 | 283 |
+
+`edge_mesh::remesh` is the reference's "Repair/Remesh" (MeshRemesh.cpp:
+flat base, sharp edges, its clamps), with the signed distance field and
+its surface done here rather than by OpenVDB, so its triangles are not
+the reference's (apps/desktop/UI_PARITY.md, section 13). On 3DBenchy at
+its own voxel size (0.276 mm) it takes 2.6 s and gives 296 058 triangles,
+closed, its base the Benchy's own, 13 379 corners snapped to sharp edges,
+the volume 15 550.5 mm³ to 15 540.4; on the subdivided Benchy 6.2 s.
+
 ## Print time against the reference
 
 2026-11-11, U1 presets unless said. Each file is timed here by

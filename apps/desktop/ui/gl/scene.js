@@ -457,6 +457,15 @@
           }
           return;
         }
+        // "Simplify" draws its preview in place of a part (meshtools.js).
+        const replacing = this.replacing && this.replacing.copy === placing.id ? this.replacing : null;
+        if (replacing) {
+          for (const part of this.data.objects[placing.object].part_list || []) {
+            if (!part.triangles || (replacing.part && part.triangles[0] === replacing.part[0])) continue;
+            r.drawMesh(mesh, frame, placing.matrix, { palette: this.palette, pass, volume, range: part.triangles });
+          }
+          return;
+        }
         for (const piece of this.pieces(placing)) {
           r.drawMesh(mesh, frame, piece.matrix, {
             palette: this.palette,
