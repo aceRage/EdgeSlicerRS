@@ -177,10 +177,19 @@
       if (!o) { this.suggest(); return; }
       const there = this.target();
       if (!there) { this.close(); return; }
+      // Nothing selected: it closes; another object selected: it starts
+      // afresh on it (`on_render_input_window`).
       const copy = [...this.stage.selection()][0];
       const data = this.data();
       const chosen = data.placings.find((each) => each.id === copy);
-      if (chosen && data.objects[chosen.object].id !== o.object) { this.close(); return; }
+      if (!chosen) { this.close(); return; }
+      const object = data.objects[chosen.object];
+      if (object.id !== o.object) {
+        // Another object of one part: it starts again on that one.
+        if ((object.part_list || []).length === 1) this.start(object.id, null);
+        else this.close();
+        return;
+      }
       this.stage.scene.replacing = this.replacing();
       this.panel();
       this.suggest();
