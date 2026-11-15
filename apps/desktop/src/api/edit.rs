@@ -1584,6 +1584,40 @@ impl Session {
                 }
                 outcome.name = "Mesh Boolean".into();
             }
+            // "Mesh boolean" of the object menu (GUI_ObjectList.cpp
+            // `ObjectList::boolean`): the object's
+            // parts made one; said when only its printed parts were kept
+            // (Plater.cpp `combine_mesh_fff`).
+            "mesh_boolean_object" => {
+                use super::i18n::{fill, tr};
+                use edge_engine::{BooleanInputError as InputError, ObjectBoolean};
+                let done = model
+                    .mesh_boolean_object(bed, whole(args, "object")?)
+                    .map_err(|why| tr(&why.to_string()))?;
+                if let ObjectBoolean::PositiveOnly { part } = done {
+                    let mut said = tr(
+                        "Unable to perform boolean operation on model meshes. Only positive parts will be kept. You may fix the meshes and try again.",
+                    );
+                    let reason = part.map(|(name, error)| {
+                        let words = match error {
+                            InputError::Empty => "Reason: part \"%1%\" is empty.",
+                            InputError::NotFinite | InputError::NotClosed => {
+                                "Reason: part \"%1%\" does not bound a volume."
+                            }
+                            InputError::SelfIntersecting => {
+                                "Reason: part \"%1%\" has self intersection."
+                            }
+                        };
+                        fill(&tr(words), &[&name])
+                    });
+                    if let Some(reason) = reason {
+                        said.push(' ');
+                        said.push_str(&reason);
+                    }
+                    outcome.note = Some(said);
+                }
+                outcome.name = "boolean".into();
+            }
             // An object's, a part's or a height range's own settings, and
             // the height ranges (settings/items.rs).
             op if items::OPS.contains(&op) => {

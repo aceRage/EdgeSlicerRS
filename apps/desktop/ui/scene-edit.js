@@ -626,6 +626,10 @@
         }],
         [`${t('Delete')} Del`, () => this.remove()],
         null,
+        // GUI_Factories.cpp `append_menu_item_merge_parts_to_single_part`
+        // (`create_extra_object_menu`; the part menu shown,
+        // `create_bbl_part_menu`, has none).
+        [t('Mesh boolean'), () => this.commit({ op: 'mesh_boolean_object', object: object.id }), { disabled: !object || !object.split.objects, title: t('Mesh boolean operations including union and subtraction') }],
         ...adding,
         // GUI_Factories.cpp `append_menu_item_layers_editing`, and "Edit
         // Process Settings" (`append_menu_item_edit_process`): objsettings.js.

@@ -49,7 +49,7 @@ use std::sync::Arc;
 use edge_3mf::{Part, PartKind};
 use edge_mesh::{
     Mesh, Transform,
-    boolean::{BooleanError, InputError, Op, Operand},
+    boolean::{self, BooleanError, InputError, Op, Operand},
 };
 
 use super::{Bed, Model, fresh, refused};
@@ -82,6 +82,21 @@ impl std::fmt::Display for BooleanFailure {
 }
 
 impl std::error::Error for BooleanFailure {}
+
+/// What "Mesh boolean" on an object came to ([`Model::mesh_boolean_object`]).
+#[derive(Debug, PartialEq)]
+pub enum ObjectBoolean {
+    /// Its printed parts united and its negative parts taken away.
+    Done,
+    /// The boolean could not be done: the object is its printed parts
+    /// alone, put together without a boolean, and the caller says the
+    /// reference's "Unable to perform boolean operation on model meshes.
+    /// Only positive parts will be kept. You may fix the meshes and try
+    /// again." `part`: the part refused and why, where that is the reason
+    /// (`check_csgmesh_booleans`: "Reason: part "%1%" is empty." and the
+    /// rest).
+    PositiveOnly { part: Option<(String, InputError)> },
+}
 
 /// What the result of a boolean is called after its first part's name
 /// (GLGizmoMeshBoolean.cpp `generate_new_volume`).
@@ -186,5 +201,117 @@ impl Model {
         }
         self.reshape(bed, at, list, ids);
         Ok(id)
+    }
+}
+
+impl Model {
+    /// "Mesh boolean" on an object (GUI_Factories.cpp
+    /// `append_menu_item_merge_parts_to_single_part`, GUI_ObjectList.cpp
+    /// `ObjectList::boolean`, Plater.cpp `combine_mesh_fff`): its printed
+    /// parts united and its negative parts taken away, in the parts'
+    /// order ([`edge_mesh::boolean::csg`], where the reference has mcut on
+    /// `model_to_csgmesh`), made the object's one part; its modifiers,
+    /// support blockers and enforcers, and every part's own settings and
+    /// paint, go. For an object of more than one part, or of one part of
+    /// several pieces (`can_mesh_boolean`); one undo step, "boolean".
+    ///
+    /// When the boolean cannot be done, the object is made of its printed
+    /// parts put together without one, as the reference does, and that is
+    /// answered for the caller to say ([`ObjectBoolean::PositiveOnly`]).
+    ///
+    /// Where this differs, on purpose: the reference makes a new object at
+    /// the end of the list, with the old one's name and settings, and
+    /// deletes the old one; its mesh is every copy's, put together in the
+    /// project's coordinates, and it has one copy. Here the object keeps
+    /// its place, its copies and what its file held of it (its height
+    /// ranges too); the result is made once, in the object's coordinates,
+    /// and each copy stands where it stood, as "merge parts into one part"
+    /// is plainly meant. The object's copies being put together into one
+    /// mesh comes of the reference calling its export's helper with every
+    /// copy (`combine_mesh_fff(mo, -1, ...)`), not of the menu's purpose.
+    pub fn mesh_boolean_object(
+        &mut self,
+        bed: Option<&Bed>,
+        object: u64,
+    ) -> Result<ObjectBoolean, Failure> {
+        let at = self.object_at(object)?;
+        let shape = self.objects[at].shape.clone();
+        if !shape.splits_to_objects() {
+            return Err(refused(
+                "Mesh boolean is for an object of more than one part, or of one part of several pieces",
+            ));
+        }
+        let object_name = self.name_of(at);
+        let name_of = |part: &Part| {
+            part.name
+                .clone()
+                .filter(|name| !name.is_empty())
+                .unwrap_or_else(|| object_name.clone())
+        };
+        // `model_to_csgmesh` with `mpartsPositive | mpartsNegative`.
+        let chosen: Vec<(Op, Mesh, &Part)> = (shape.parts.iter())
+            .filter_map(|part| {
+                let op = match part.kind {
+                    PartKind::Normal => Op::Union,
+                    PartKind::Negative => Op::Difference,
+                    _ => return None,
+                };
+                Some((op, in_object(part), part))
+            })
+            .collect();
+        let made = boolean::csg(
+            chosen.iter().map(|(op, mesh, _)| (*op, mesh)),
+            &boolean::Options::default(),
+        );
+        let (mesh, outcome) = match made {
+            Ok(mesh) if !mesh.triangles.is_empty() => (mesh, ObjectBoolean::Done),
+            failed => {
+                let part = match failed {
+                    Err(boolean::CsgError {
+                        part,
+                        error: BooleanError::Input { error, .. },
+                    }) => chosen.get(part).map(|(_, _, held)| (name_of(held), error)),
+                    _ => None,
+                };
+                // `csgmesh_merge_positive_parts`: the printed parts side by
+                // side.
+                let mut mesh = Mesh::default();
+                for (op, placed, _) in &chosen {
+                    if *op == Op::Union {
+                        mesh.append(placed, &Transform::IDENTITY);
+                    }
+                }
+                (mesh, ObjectBoolean::PositiveOnly { part })
+            }
+        };
+        let Some((low, high)) = mesh.bounds() else {
+            return Err(refused("the object has no printed part"));
+        };
+        let middle: [f64; 3] =
+            std::array::from_fn(|axis| (f64::from(low[axis]) + f64::from(high[axis])) / 2.0);
+        let mut mesh = mesh;
+        for vertex in &mut mesh.vertices {
+            for axis in 0..3 {
+                vertex[axis] = (f64::from(vertex[axis]) - middle[axis]) as f32;
+            }
+        }
+        self.settle(bed);
+        // A new volume (`add_volume`): a printed part with nothing of its
+        // own, in the object's filament.
+        let filament = self.objects[at].default_filament();
+        let made = Part {
+            kept: None,
+            name: Some(object_name.clone()),
+            kind: PartKind::Normal,
+            filament,
+            own_filament: None,
+            mesh: Arc::new(mesh),
+            paint: None,
+            seam: None,
+            transform: Transform::translation(middle),
+            decoration: false,
+        };
+        self.reshape(bed, at, vec![made], vec![fresh()]);
+        Ok(outcome)
     }
 }

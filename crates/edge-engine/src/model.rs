@@ -67,7 +67,7 @@ pub use cut::{
 };
 pub use filaments::{FlushBasis, MAX_FILAMENTS, NEXT_COLOURS};
 pub use item_settings::SettingChange;
-pub use mesh_boolean::BooleanFailure;
+pub use mesh_boolean::{BooleanFailure, ObjectBoolean};
 pub use orient_job::{OrientScope, Oriented};
 pub use plates::{FIRST_LATER_LAYER, LAST_LAYER, LONGEST_PLATE_NAME, LayerSequence, PlateSettings};
 
