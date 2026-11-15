@@ -1038,10 +1038,14 @@ impl Session {
     /// the folder last chosen, else the ones beside this build.
     pub fn with_settings(startup: Option<PathBuf>, settings: Option<PathBuf>) -> Self {
         let kept = crate::hosts::kept::Kept::open(settings.clone());
+        // Bambu Lab access codes: the system's store in the real app, read
+        // only when one is needed (`crate::secrets`); `EDGE_SECRETS` says
+        // otherwise, and a test build never has the system's.
         let bambu = bambu_lan::Bambu::new(
             bambu_lan::Bambu::found(settings.as_deref()),
             settings.clone(),
             crate::ultranet::client::Timeouts::default(),
+            crate::secrets::open(crate::secrets::Kind::chosen(), settings.as_deref()),
         );
         let users = presets::Users::open(settings.as_deref());
         let store = store::Store::open(settings);
@@ -1100,8 +1104,20 @@ impl Session {
         launcher: crate::ultranet::client::Launcher,
         timeouts: crate::ultranet::client::Timeouts,
     ) -> Self {
+        let secrets = crate::secrets::open(crate::secrets::Kind::File, settings.as_deref());
+        Self::with_bridge_and_secrets(settings, launcher, timeouts, secrets)
+    }
+
+    /// The same, its access codes in `secrets`.
+    #[cfg(test)]
+    pub(crate) fn with_bridge_and_secrets(
+        settings: Option<PathBuf>,
+        launcher: crate::ultranet::client::Launcher,
+        timeouts: crate::ultranet::client::Timeouts,
+        secrets: Box<dyn crate::secrets::Secrets>,
+    ) -> Self {
         let mut session = Self::with_settings(None, settings.clone());
-        session.bambu = bambu_lan::Bambu::new(launcher, settings, timeouts);
+        session.bambu = bambu_lan::Bambu::new(launcher, settings, timeouts, secrets);
         session
     }
 

@@ -148,7 +148,12 @@ the controls it is built from are described in `apps/desktop/ui/STYLE.md`.
   Extrusion Flow Calibration, Time-lapse Camera). A Bambu Lab printer's
   plate goes to the person's own Bambu Connect ("Send to Bambu
   Connect") or to Bambu Studio ("Export Bambu 3MF", "Export && Open in
-  Bambu Studio"); the app itself talks to no Bambu printer.
+  Bambu Studio"); the app itself talks to no Bambu printer but
+  through the UltraNet bridge (`apps/desktop/ULTRANET_BRIDGE.md`), whose
+  access codes the app keeps in the system's store (macOS Keychain,
+  Windows Credential Manager, the Secret Service: one item for every
+  printer, read at the first Connect or send of a run and not before),
+  else, saying so in Device, in a file readable by the user alone.
 - **Device**: with a connection, the printer's own page in an isolated
   frame, the printer's state over it (printing, percent, time left,
   layer, temperatures, or offline), and for a U1 or any Octo/Klipper

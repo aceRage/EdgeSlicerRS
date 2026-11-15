@@ -17,14 +17,13 @@
 //!   files have modes; on Windows the folder is the user's own
 //!   `%APPDATA%`). The page is only told whether a key is set.
 //!
-//! Why a file and not the system's keychain: a build of this app is not
-//! signed, so macOS's keychain would ask the person each time a new build
-//! reads its own entry; the keychain is one per user, where the settings
-//! follow `EDGE_DESKTOP_DATA` (the tests, a second copy of the app); and
-//! the reference keeps the same key in plain text in the preset and in
-//! `print_host_devices.json` (PrintHostDevices.cpp l.173). A keychain can
-//! take this file's place behind `secret` and `set` when the app is
-//! signed.
+//! Not yet in the system's keychain, where the Bambu Lab access codes are
+//! (`crate::secrets`): the reference keeps the same key in plain text in
+//! the preset and in `print_host_devices.json` (PrintHostDevices.cpp
+//! l.173). Moving it there means a second item (or the codes' one) read
+//! lazily before an upload or "Test", whether a key is kept said in
+//! `print_hosts.json`, and the same move of this file's keys; left for the
+//! owner (UI_PARITY).
 //!
 //! Both are written whole or not at all; a file that cannot be read is
 //! said and left as it is until something is saved, then set aside.

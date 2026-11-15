@@ -5,26 +5,30 @@
 //! update_local_machine`: its serial, name, address, model) and its access
 //! code in `app_config`'s `access_code` / `user_access_code` sections, by
 //! serial (DeviceManager.cpp l.509-541), in the same plain file. Here the
-//! printers are in `bambu_printers.json` of this app's data folder and the
-//! codes apart in `bambu_printers_secrets.json`, readable by this user
-//! alone (as `hosts::kept` keeps a print host's key). The code never leaves
-//! the Rust side: the page is told whether there is one.
+//! printers are in `bambu_printers.json` of this app's data folder, with
+//! whether each has a code but not the code, and the codes in the
+//! system's store (`crate::secrets`: the macOS Keychain, Windows Credential
+//! Manager, the Secret Service), else in `bambu_printers_secrets.json`,
+//! readable by this user alone. The store is read only when a code is
+//! needed (connect, send) or changed, never when the app starts or a page
+//! is looked at, and what it gave is kept for the run. The code never
+//! leaves the Rust side: the page is told whether there is one.
 //!
 //! The print options of "Send print job to" are remembered here too, as the
 //! reference keeps them in `app_config`'s `print` section ("bed_leveling",
 //! "flow_cali", "timelapse": SelectMachine.cpp l.902-929).
 
 use std::{
-    collections::BTreeMap,
+    collections::{BTreeMap, BTreeSet},
     path::{Path, PathBuf},
 };
 
 use serde_json::{Map, Value, json};
 
 use crate::hosts::kept::write_whole;
+use crate::secrets::{self, FILE as SECRETS, FileStore, Kind, Memory, Refused, Secrets};
 
 const FILE: &str = "bambu_printers.json";
-const SECRETS: &str = "bambu_printers_secrets.json";
 
 /// A printer added by its address (`BBLocalMachine`).
 #[derive(Clone, Debug, Default, PartialEq)]
@@ -45,15 +49,37 @@ pub struct Options {
     pub timelapse: Option<bool>,
 }
 
-#[derive(Debug, Default)]
 pub struct Kept {
     dir: Option<PathBuf>,
     pub printers: Vec<Printer>,
-    codes: BTreeMap<String, String>,
+    /// The printers whose code is kept (in the store, not here).
+    coded: BTreeSet<String>,
+    /// The codes read or set this run: handed to the bridge, and taken out
+    /// of anything it says.
+    known: BTreeMap<String, String>,
+    secrets: Box<dyn Secrets>,
+    /// The system's store has been asked something this run.
+    asked: bool,
+    /// The codes of the old file have been looked at this run.
+    moved: bool,
     pub selected: Option<String>,
     pub options: Options,
     /// Why a file could not be read.
     pub problem: Option<String>,
+    /// Where the codes are kept when not where they should be, or what
+    /// went wrong moving them: said in the Device panel.
+    pub notice: Option<String>,
+}
+
+impl std::fmt::Debug for Kept {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        // Never the codes.
+        f.debug_struct("Kept")
+            .field("printers", &self.printers)
+            .field("coded", &self.coded)
+            .field("store", &self.secrets.kind())
+            .finish_non_exhaustive()
+    }
 }
 
 fn text(value: &Value, key: &str) -> String {
@@ -61,11 +87,21 @@ fn text(value: &Value, key: &str) -> String {
 }
 
 impl Kept {
-    /// What is kept in `dir`; with none, for the run only.
-    pub fn open(dir: Option<PathBuf>) -> Self {
+    /// What is kept in `dir`; with none, for the run only. The codes are
+    /// in `secrets`, not read here.
+    pub fn open(dir: Option<PathBuf>, secrets: Box<dyn Secrets>) -> Self {
         let mut kept = Kept {
             dir: dir.clone(),
-            ..Kept::default()
+            printers: Vec::new(),
+            coded: BTreeSet::new(),
+            known: BTreeMap::new(),
+            secrets,
+            asked: false,
+            moved: false,
+            selected: None,
+            options: Options::default(),
+            problem: None,
+            notice: None,
         };
         let Some(dir) = dir else { return kept };
         if let Some(root) = kept.read(&dir.join(FILE)) {
@@ -76,9 +112,13 @@ impl Kept {
                     ip: text(entry, "dev_ip"),
                     model: text(entry, "printer_type"),
                 };
-                if !printer.dev_id.is_empty() {
-                    kept.printers.push(printer);
+                if printer.dev_id.is_empty() {
+                    continue;
                 }
+                if entry["access_code_kept"].as_bool() == Some(true) {
+                    kept.coded.insert(printer.dev_id.clone());
+                }
+                kept.printers.push(printer);
             }
             kept.selected = root["selected"].as_str().map(str::to_owned);
             let option = |key: &str| root["print"][key].as_bool();
@@ -88,15 +128,12 @@ impl Kept {
                 timelapse: option("timelapse"),
             };
         }
-        if let Some(root) = kept.read(&dir.join(SECRETS))
-            && let Some(map) = root.as_object()
-        {
-            for (dev_id, entry) in map {
-                let code = text(entry, "access_code");
-                if !code.is_empty() {
-                    kept.codes.insert(dev_id.clone(), code);
-                }
-            }
+        // The codes' file: which printers it has a code for (a list kept
+        // before the system's store said nothing of them). Its codes are
+        // not kept from here.
+        match secrets::read_file(&dir.join(SECRETS)) {
+            Ok(codes) => kept.coded.extend(codes.into_keys()),
+            Err(Refused(why)) => kept.problem = Some(why),
         }
         kept
     }
@@ -128,63 +165,204 @@ impl Kept {
             .find(|printer| printer.dev_id == dev_id)
     }
 
-    /// The access code of a printer. Handed to the bridge only.
-    pub fn code(&self, dev_id: &str) -> Option<&str> {
-        self.codes.get(dev_id).map(String::as_str)
+    /// Whether a code is kept for the printer: said without reading it.
+    pub fn has_code(&self, dev_id: &str) -> bool {
+        self.coded.contains(dev_id)
     }
 
-    /// Every code kept: what is taken out of anything the bridge says.
+    /// Whether a code can be had without asking the system's store (which
+    /// may ask the person): it is not the store, or it was asked this run.
+    pub fn codes_at_hand(&self) -> bool {
+        !self.secrets.kind().is_system() || self.asked
+    }
+
+    /// Which store the codes are in now.
+    pub fn store(&self) -> Kind {
+        self.secrets.kind()
+    }
+
+    /// The access code of a printer, read from the store the first time
+    /// one is needed. Handed to the bridge only.
+    pub fn code(&mut self, dev_id: &str) -> Result<Option<String>, String> {
+        if !self.coded.contains(dev_id) {
+            return Ok(None);
+        }
+        if let Some(code) = self.known.get(dev_id) {
+            return Ok(Some(code.clone()));
+        }
+        self.move_old_codes();
+        let code = self.with_store(|store| store.get(dev_id))?;
+        if let Some(code) = &code {
+            self.known.insert(dev_id.to_owned(), code.clone());
+        }
+        Ok(code)
+    }
+
+    /// Every code read or set this run: what is taken out of anything the
+    /// bridge says (it has been handed no other).
     pub fn codes(&self) -> Vec<String> {
-        self.codes.values().cloned().collect()
+        self.known.values().cloned().collect()
+    }
+
+    /// Does `what` on the store; where the system's store refuses, the
+    /// codes are kept in the file from then on, and that is said.
+    fn with_store<T>(
+        &mut self,
+        what: impl Fn(&mut dyn Secrets) -> Result<T, Refused>,
+    ) -> Result<T, String> {
+        let system = self.secrets.kind().is_system();
+        if system {
+            self.asked = true;
+        }
+        match what(self.secrets.as_mut()) {
+            Ok(done) => Ok(done),
+            Err(Refused(why)) if system => {
+                self.fall_back(&why);
+                what(self.secrets.as_mut())
+                    .map_err(|Refused(why)| format!("The access code could not be saved ({why})"))
+            }
+            Err(Refused(why)) => Err(format!("The access code could not be saved ({why})")),
+        }
+    }
+
+    /// The file in place of the system's store, for the rest of the run.
+    fn fall_back(&mut self, why: &str) {
+        self.secrets = match &self.dir {
+            Some(dir) => Box::new(FileStore::new(Some(dir.join(SECRETS)))),
+            None => Box::new(Memory::default()),
+        };
+        let kept = if self.dir.is_some() {
+            "Access codes are kept in a file on this computer instead, readable by your user account only."
+        } else {
+            "Access codes are kept for this run only."
+        };
+        self.notice = Some(format!(
+            "{} could not be used: {why}. {kept}",
+            first_upper(secrets::system_name())
+        ));
+    }
+
+    /// The first time the system's store is used: the codes of the file
+    /// they were kept in before go into the store, and the file is removed
+    /// once the store gave the same back. Where it does not, the file stays
+    /// as it is, is used for the run, and that is said.
+    fn move_old_codes(&mut self) {
+        if self.moved || !self.secrets.kind().is_system() {
+            return;
+        }
+        self.moved = true;
+        let Some(dir) = self.dir.clone() else { return };
+        let file = dir.join(SECRETS);
+        let old = match secrets::read_file(&file) {
+            Ok(old) => old,
+            Err(Refused(why)) => {
+                self.notice = Some(format!(
+                    "The access codes kept in a file could not be moved to {}: {why}. The file is left as it is.",
+                    secrets::system_name()
+                ));
+                return;
+            }
+        };
+        if old.is_empty() {
+            return;
+        }
+        self.asked = true;
+        let checked = self.secrets.set_many(&old).and_then(|()| {
+            self.secrets.reread();
+            for (id, code) in &old {
+                if self.secrets.get(id)?.as_deref() != Some(code.as_str()) {
+                    return Err(Refused("it did not give back what was written".into()));
+                }
+            }
+            Ok(())
+        });
+        match checked {
+            Ok(()) => {
+                if let Err(error) = std::fs::remove_file(&file) {
+                    self.notice = Some(format!(
+                        "The access codes were moved to {}, but the file they were kept in could not be removed ({}).",
+                        secrets::system_name(),
+                        error.kind()
+                    ));
+                }
+            }
+            Err(Refused(why)) => {
+                self.fall_back(&why);
+                self.notice = Some(format!(
+                    "The access codes kept in a file could not be moved to {}: {why}. They stay in the file on this computer, readable by your user account only.",
+                    secrets::system_name()
+                ));
+            }
+        }
     }
 
     /// Adds a printer, or changes the one of that serial; `code` replaces
-    /// its access code when given.
+    /// its access code when given (the store is written only when it is a
+    /// new code).
     pub fn put(&mut self, printer: Printer, code: Option<String>) -> Result<(), String> {
         let mut printers = self.printers.clone();
-        let mut codes = self.codes.clone();
         match printers.iter_mut().find(|p| p.dev_id == printer.dev_id) {
             Some(was) => *was = printer.clone(),
             None => printers.push(printer.clone()),
         }
-        if let Some(code) = code {
-            codes.insert(printer.dev_id.clone(), code);
+        let mut coded = self.coded.clone();
+        if let Some(code) = code
+            && self.known.get(&printer.dev_id) != Some(&code)
+        {
+            self.move_old_codes();
+            let dev_id = printer.dev_id.clone();
+            self.with_store(|store| store.set(&dev_id, &code))?;
+            self.known.insert(dev_id.clone(), code);
+            coded.insert(dev_id);
         }
-        self.write(&printers, &codes, self.selected.as_deref(), &self.options)?;
+        self.write(&printers, &coded, self.selected.as_deref(), &self.options)?;
         self.printers = printers;
-        self.codes = codes;
+        self.coded = coded;
+        Ok(())
+    }
+
+    /// Takes a printer's code out of the store, where one is kept.
+    fn delete_code(&mut self, dev_id: &str) -> Result<(), String> {
+        if !self.coded.contains(dev_id) {
+            return Ok(());
+        }
+        self.move_old_codes();
+        self.with_store(|store| store.delete(dev_id))?;
+        self.known.remove(dev_id);
         Ok(())
     }
 
     /// Forgets a printer, its code with it.
     pub fn remove(&mut self, dev_id: &str) -> Result<(), String> {
+        self.delete_code(dev_id)?;
         let printers: Vec<Printer> = self
             .printers
             .iter()
             .filter(|p| p.dev_id != dev_id)
             .cloned()
             .collect();
-        let mut codes = self.codes.clone();
-        codes.remove(dev_id);
+        let mut coded = self.coded.clone();
+        coded.remove(dev_id);
         let selected = self.selected.clone().filter(|s| s != dev_id);
-        self.write(&printers, &codes, selected.as_deref(), &self.options)?;
+        self.write(&printers, &coded, selected.as_deref(), &self.options)?;
         self.printers = printers;
-        self.codes = codes;
+        self.coded = coded;
         self.selected = selected;
         Ok(())
     }
 
     /// Forgets a printer's code (the printer refused it: `erase_user_access_code`).
     pub fn forget_code(&mut self, dev_id: &str) -> Result<(), String> {
-        let mut codes = self.codes.clone();
-        codes.remove(dev_id);
+        self.delete_code(dev_id)?;
+        let mut coded = self.coded.clone();
+        coded.remove(dev_id);
         self.write(
             &self.printers,
-            &codes,
+            &coded,
             self.selected.as_deref(),
             &self.options,
         )?;
-        self.codes = codes;
+        self.coded = coded;
         Ok(())
     }
 
@@ -192,7 +370,7 @@ impl Kept {
         if self.selected.as_deref() == Some(dev_id) {
             return Ok(());
         }
-        self.write(&self.printers, &self.codes, Some(dev_id), &self.options)?;
+        self.write(&self.printers, &self.coded, Some(dev_id), &self.options)?;
         self.selected = Some(dev_id.to_owned());
         Ok(())
     }
@@ -200,7 +378,7 @@ impl Kept {
     pub fn set_options(&mut self, options: Options) -> Result<(), String> {
         self.write(
             &self.printers,
-            &self.codes,
+            &self.coded,
             self.selected.as_deref(),
             &options,
         )?;
@@ -208,10 +386,11 @@ impl Kept {
         Ok(())
     }
 
+    /// The list of printers, with whether each has a code, never the code.
     fn write(
         &self,
         printers: &[Printer],
-        codes: &BTreeMap<String, String>,
+        coded: &BTreeSet<String>,
         selected: Option<&str>,
         options: &Options,
     ) -> Result<(), String> {
@@ -223,7 +402,10 @@ impl Kept {
         let list: Vec<Value> = printers
             .iter()
             .map(|p| {
-                json!({ "dev_id": p.dev_id, "dev_name": p.name, "dev_ip": p.ip, "printer_type": p.model })
+                json!({
+                    "dev_id": p.dev_id, "dev_name": p.name, "dev_ip": p.ip, "printer_type": p.model,
+                    "access_code_kept": coded.contains(&p.dev_id),
+                })
             })
             .collect();
         let mut print = Map::new();
@@ -238,16 +420,16 @@ impl Kept {
         }
         let root = json!({ "version": 1, "selected": selected, "print": print, "printers": list });
         let text = serde_json::to_string_pretty(&root).expect("plain JSON");
-        write_whole(&dir.join(FILE), text.as_bytes(), false)
-            .map_err(|error| failed(FILE, error))?;
-        let secrets: Map<String, Value> = codes
-            .iter()
-            .map(|(dev_id, code)| (dev_id.clone(), json!({ "access_code": code })))
-            .collect();
-        let text = serde_json::to_string_pretty(&Value::Object(secrets)).expect("plain JSON");
-        write_whole(&dir.join(SECRETS), text.as_bytes(), true)
-            .map_err(|error| failed(SECRETS, error))
+        write_whole(&dir.join(FILE), text.as_bytes(), false).map_err(|error| failed(FILE, error))
     }
+}
+
+fn first_upper(text: &str) -> String {
+    let mut chars = text.chars();
+    chars
+        .next()
+        .map(|first| first.to_uppercase().chain(chars).collect())
+        .unwrap_or_default()
 }
 
 /// A printer model of the reference's (`resources/printers/<id>.json`,
