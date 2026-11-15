@@ -491,6 +491,7 @@ name = "edge-mesh"
 version = "0.0.0"
 dependencies = [
  "manifold-rust",
+ "rayon",
  "rustc-hash",
  "thiserror",
 ]

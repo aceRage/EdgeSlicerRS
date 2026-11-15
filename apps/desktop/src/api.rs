@@ -21,6 +21,7 @@ mod export;
 mod filaments;
 mod layout;
 mod menu;
+mod mesh;
 mod paint;
 mod prefs;
 mod preset_files;
@@ -72,6 +73,8 @@ pub struct Session {
     /// "Cut"'s curved previews: the copy's parts made ready for them, the
     /// one under way (to stop), the last made.
     cut_preview: Mutex<edit::Previews>,
+    /// The mesh operation under way and the last result ("Simplify").
+    mesh_jobs: Mutex<mesh::Jobs>,
     /// The printers' connections and the files being sent to them.
     hosts: Hosts,
     /// Bambu Lab printers on the LAN, through the UltraNet bridge.
@@ -1086,6 +1089,7 @@ impl Session {
             scene: scene::Cache::default(),
             paint: paint::Cache::default(),
             cut_preview: Mutex::default(),
+            mesh_jobs: Mutex::default(),
             hosts: Hosts {
                 kept: Mutex::new(kept),
                 queue: crate::hosts::queue::Queue::default(),
@@ -1143,6 +1147,7 @@ impl Session {
             name if scene::BYTES.contains(&name) => self.scene_bytes(name, args),
             name if paint::BYTES.contains(&name) => self.paint_bytes(name, args),
             name if edit::BYTES.contains(&name) => self.edit_bytes(name, args),
+            name if mesh::BYTES.contains(&name) => self.mesh_bytes(name, args),
             other => Err(format!(
                 "there is no call named {other} that answers in bytes"
             )),
@@ -1352,6 +1357,7 @@ impl Session {
             name if export::JSON.contains(&name) => self.export_json(name, args),
             name if prefs::JSON.contains(&name) => self.prefs_json(name, args),
             name if edit::JSON.contains(&name) => self.edit_json(name, args),
+            name if mesh::JSON.contains(&name) => self.mesh_json(name, args),
             "item_settings" | "layer_profile" => self.items_json(name, args),
             name if ticks::JSON.contains(&name) => self.ticks_json(name, args),
             name if filaments::JSON.contains(&name) => self.filaments_json(name, args),

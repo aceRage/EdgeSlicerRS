@@ -48,8 +48,8 @@ use std::{error::Error, fmt};
 pub use clock::timestamp;
 pub use edge_3mf::{
     CustomGcode, CustomItem, CustomKind, CustomMode, CutRecipe, InsidePreset, InsideUnread,
-    LayerRange, Layout, PaintKind, PartKind, Pictures, RecipeDrawn, RecipeGroove, RecipeKind,
-    RecipeSheet, gcode_md5,
+    LayerRange, Layout, MeshStat, PaintKind, PartKind, Pictures, RecipeDrawn, RecipeGroove,
+    RecipeKind, RecipeSheet, gcode_md5,
 };
 pub use edge_mesh::Transform;
 /// Stops a mesh boolean under way (a curved cut's preview).
@@ -59,7 +59,7 @@ pub use edge_mesh::boolean::InputError as BooleanInputError;
 pub use edge_mesh::boolean::Op as BooleanOp;
 /// Painting a mesh's triangles, and finding which one a line of sight
 /// meets, for the painting tools of whoever shows a model.
-pub use edge_mesh::{Mesh, raycast, selector};
+pub use edge_mesh::{Mesh, raycast, remesh, selector, simplify};
 pub use edge_slice::layering::EditAction;
 pub use followed::{Followed, followed, followed_in, settled};
 pub use job::{BedType, Chosen, Job, Overrides, Sourced, prepare, prepare_noted};
@@ -71,9 +71,9 @@ pub use model::{
     CUT_THICKNESS_MAX, Changed, Connector, ConnectorKind, ConnectorShape, ConnectorStyle, CutDone,
     CutEdit, CutOptions, CutPieces, CutSection, CutThickness, DrawnCut, FIRST_LATER_LAYER, FaceHit,
     FlushBasis, Groove, LAST_LAYER, LONGEST_PLATE_NAME, LayerSequence, Look, MAX_FILAMENTS,
-    MAX_PLATES, Model, ModelCopy, ModelObject, ModelPlate, NEXT_COLOURS, NewPart, ObjectBoolean,
-    OrientScope, Oriented, PlateSettings, PlateStamp, Prepared, Reach, Saved, Saving, Shape,
-    connector_mesh, own_settings, project_settings,
+    MAX_PLATES, MeshErrors, Model, ModelCopy, ModelObject, ModelPlate, NEXT_COLOURS, NewPart,
+    ObjectBoolean, OrientScope, Oriented, PlateSettings, PlateStamp, Prepared, Reach, Saved,
+    Saving, Shape, connector_mesh, open_edges, own_settings, project_settings,
 };
 pub use pipeline::{FirstLayer, Gcode, Sliced, Timings, slice};
 pub use presets::{Library, ModelPreset, PrinterModel, Shelf};

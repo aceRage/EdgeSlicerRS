@@ -37,7 +37,8 @@ pub use bambu::write_bambu;
 pub use custom_gcode::{CustomGcode, CustomItem, CustomKind, CustomMode};
 pub use inside::{InsidePreset, InsideUnread, inside_entries};
 pub use kept::{
-    CutConnectorInfo, CutId, Entry, Extras, Kept, LayerRange, Left, ObjectKept, PartKept, PlateKept,
+    CutConnectorInfo, CutId, Entry, Extras, Kept, LayerRange, Left, MeshStat, ObjectKept, PartKept,
+    PlateKept,
 };
 use model::{ModelFile, RawObject, Shape};
 use model_settings::{ModelSettings, ObjectSettings};
