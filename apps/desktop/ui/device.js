@@ -145,7 +145,8 @@ function drawHeaters(caps, r) {
   for (const heater of caps.heaters) {
     const reading = r ? r.heaters.find((h) => h.id === heater.id) : null;
     const now = box.querySelector(`.dv-now[data-heater="${heater.id}"]`);
-    if (now) now.textContent = reading ? `${Math.round(reading.now)} °C` : t('N/A');
+    // A heater that is only read shows its target beside it.
+    if (now) now.textContent = reading ? (heater.settable || !reading.target ? `${Math.round(reading.now)} °C` : heaterText(reading)) : t('N/A');
     const input = box.querySelector(`input[data-heater="${heater.id}"]`);
     // As TempInput: the target is not written over while it is typed in.
     if (input && document.activeElement !== input) input.value = reading ? Math.round(reading.target) : '';

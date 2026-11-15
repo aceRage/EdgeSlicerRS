@@ -235,7 +235,8 @@ impl Session {
             "status": matches!(route, "snapmaker" | "octoprint"),
             // The native Device page (src/device): a U1, and a Klipper or an
             // OctoPrint behind "Octo/Klipper".
-            "native": matches!(route, "snapmaker" | "octoprint"),
+            "native": matches!(route, "snapmaker" | "octoprint")
+                || (route == "elegoolink" && !elegoo::is_cc2(&model)),
             "device_url": hosts::device_url(&connection),
             "route": route,
             "offers": { "elegoo": elegoo, "unload": unload },

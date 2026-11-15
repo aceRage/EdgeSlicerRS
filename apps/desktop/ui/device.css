@@ -18,7 +18,7 @@
 
 .dv-rows { display: flex; flex-direction: column; gap: var(--space-1); }
 .dv-rows:empty { display: none; }
-.dv-row { display: grid; grid-template-columns: minmax(80px, 1fr) 72px 96px 24px; align-items: center; gap: var(--space-2); min-height: var(--control-m); }
+.dv-row { display: grid; grid-template-columns: minmax(80px, 1fr) 104px 96px 24px; align-items: center; gap: var(--space-2); min-height: var(--control-m); }
 .dv-row[hidden] { display: none; }
 .dv-row > select, .dv-row > input, #dv-speed-box > * { width: 100%; }
 .dv-label, .dv-row > label { color: var(--text-2); }

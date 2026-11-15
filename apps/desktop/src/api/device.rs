@@ -143,6 +143,18 @@ impl Session {
                     http: Http::new(&connection, timeouts)?,
                 }),
             },
+            "elegoolink" if !hosts::elegoo::is_cc2(&connection.printer_model) => {
+                #[cfg_attr(not(test), allow(unused_mut))]
+                let mut link = hosts::elegoo::ElegooLink::new(&connection, timeouts)?;
+                #[cfg(test)]
+                {
+                    let port = tests::SDCP_PORT.load(std::sync::atomic::Ordering::SeqCst);
+                    if port != 0 {
+                        link.ws_port = port;
+                    }
+                }
+                Box::new(device::sdcp::Sdcp { link })
+            }
             _ => return Ok(None),
         };
         Ok(Some(Found {
@@ -166,6 +178,7 @@ impl Session {
         let family = match connection.host_type.as_str() {
             "octoprint" if snapmaker::is_u1(&connection.printer_model) => "u1",
             "octoprint" => "octo_klipper",
+            "elegoolink" if !hosts::elegoo::is_cc2(&connection.printer_model) => "elegoo",
             _ => {
                 return Ok(
                     json!({ "native": false, "family": connection.host_type, "printer": printer.name }),

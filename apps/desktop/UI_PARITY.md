@@ -482,6 +482,23 @@ printers on 127.0.0.1. None was ever sent to a printer.
   `api/version` and the upload, and Device shows OctoPrint's own page; the
   calls here are OctoPrint's documentation's, checked against a mock of it
   only.
+- **Elegoo Centauri Carbon** (the first; `src/device/sdcp.rs`, an "Elegoo
+  Link" host whose model is not the Centauri Carbon 2): SDCP over its
+  websocket (`ws://<host>:3030/websocket`, a connection for each question),
+  as the fork's own C++ reads and drives it for its Printers tab and phone
+  hub (`Utils/ElegooSdcp.cpp`, `ElegooSdcpMonitor.cpp`): command 0's status
+  (`CurrentStatus`, `PrintInfo`: state as `hub_state`, file, `Progress`,
+  layers, `TotalTicks - CurrentTicks` left; nozzle, bed and box
+  temperatures with their targets; `CurrentFanSpeed` (`ModeFan` read too);
+  `LightStatus.SecondLight`), pause 129, resume 131, stop 130 and their
+  `Ack`, fans and light through 403 (`TargetFanSpeed`, `LightStatus` with
+  `RgbLight`). Temperatures are readings only, as the fork leaves them
+  (`caps`: the CC1's command table has them commented out); no axes (SDCP
+  as the reference uses it has none). **not built**: the camera (command
+  386 gives `http://<host>:3031/video`, another origin than the printer's
+  page, which the page may not frame), "Storage" (commands 258, 259), the
+  CANVAS (324). **beyond the reference**, whose Device tab shows the
+  printer's own page and the CANVAS card.
 
 ### Sending to a printer: what is built
 

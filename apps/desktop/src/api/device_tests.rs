@@ -1110,3 +1110,205 @@ fn an_octoprint_without_its_printer_or_with_a_wrong_key_says_so_without_the_key(
     probe.never_said("not-the-key");
     probe.never_said(KEY);
 }
+
+// ---- Elegoo Centauri Carbon (SDCP) ----
+
+/// The SDCP websocket's port for the session's adapter (the printer's
+/// own is 3030); set by the one test that uses it.
+pub(super) static SDCP_PORT: std::sync::atomic::AtomicU16 = std::sync::atomic::AtomicU16::new(0);
+
+const CC1: &str = "Elegoo Centauri Carbon 0.4 nozzle";
+
+#[derive(Default)]
+struct Centauri {
+    machine: i64,
+    print: i64,
+    fans: [i64; 3],
+    light: i64,
+    commands: Vec<Value>,
+}
+
+fn centauri_socket(shared: Arc<Mutex<Centauri>>) -> hosts_mock::Socket {
+    hosts_mock::Socket::start(Box::new(move |message: &Value, _| {
+        let mut cc = shared.lock().unwrap();
+        let data = &message["Data"];
+        let cmd = data["Cmd"].as_i64().unwrap_or(-1);
+        if cmd == 0 {
+            return Some(json!({ "Status": {
+                "CurrentStatus": [cc.machine],
+                "PrintInfo": { "Status": cc.print, "CurrentLayer": 30, "TotalLayer": 120, "CurrentTicks": 600, "TotalTicks": 2400,
+                               "Progress": 25, "Filename": "boat.gcode", "PrintSpeedPct": 100 },
+                "TempOfNozzle": 219.6, "TempTargetNozzle": 220, "TempOfHotbed": 59.8, "TempTargetHotbed": 60, "TempOfBox": 31.0,
+                "CurrentFanSpeed": { "ModelFan": cc.fans[0], "AuxiliaryFan": cc.fans[1], "BoxFan": cc.fans[2] },
+                "LightStatus": { "SecondLight": cc.light, "RgbLight": [0, 0, 0] },
+            }, "MainboardID": "mock", "Topic": "sdcp/status/mock" }));
+        }
+        cc.commands.push(data.clone());
+        let ack = match cmd {
+            129 if cc.print == 13 => {
+                cc.print = 6;
+                0
+            }
+            131 if cc.print == 6 => {
+                cc.print = 13;
+                0
+            }
+            130 if cc.machine == 1 => {
+                cc.print = 8;
+                cc.machine = 0;
+                0
+            }
+            403 => {
+                if let Some(fans) = data["Data"]["TargetFanSpeed"].as_object() {
+                    for (key, v) in fans {
+                        let at = ["ModelFan", "AuxiliaryFan", "BoxFan"]
+                            .iter()
+                            .position(|k| k == key)
+                            .unwrap();
+                        cc.fans[at] = v.as_i64().unwrap();
+                    }
+                }
+                if let Some(on) = data["Data"]["LightStatus"]["SecondLight"].as_i64() {
+                    cc.light = on;
+                }
+                0
+            }
+            _ => 1,
+        };
+        Some(
+            json!({ "Id": "", "Data": { "Cmd": cmd, "Data": { "Ack": ack }, "RequestID": data["RequestID"], "MainboardID": "mock" } }),
+        )
+    }))
+}
+
+#[test]
+fn a_centauri_carbon_is_drawn_and_driven_as_the_forks_sdcp_monitor_does() {
+    let shared = Arc::new(Mutex::new(Centauri {
+        machine: 1,
+        print: 13,
+        ..Centauri::default()
+    }));
+    let socket = centauri_socket(shared.clone());
+    SDCP_PORT.store(socket.port, std::sync::atomic::Ordering::SeqCst);
+    let probe = Probe::plain();
+    probe.project("Elegoo", CC1);
+    probe.ask(
+        "print_host_set",
+        json!({ "host_type": "elegoolink", "print_host": "127.0.0.1" }),
+    );
+    assert_eq!(probe.ask("device_info", json!({}))["family"], "elegoo");
+    assert_eq!(probe.ask("print_host", json!({}))["native"], true);
+    let read = probe.read();
+    let caps = &read["caps"];
+    assert_eq!(caps["family"], "elegoo");
+    assert_eq!(ids(&caps["heaters"], "label"), ["Nozzle", "Bed", "Chamber"]);
+    // Readings only, as the fork's CC1 caps say.
+    assert!(
+        caps["heaters"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|h| h["settable"] == false)
+    );
+    assert_eq!(ids(&caps["fans"], "id"), ["part", "aux", "chamber"]);
+    assert_eq!(
+        (
+            caps["light"].clone(),
+            caps["jog"].clone(),
+            caps["speed"].clone()
+        ),
+        (json!(true), Value::Null, Value::Null)
+    );
+    let r = &read["reading"];
+    assert_eq!(
+        (
+            r["state"].clone(),
+            r["file"].clone(),
+            r["percent"].clone(),
+            r["left"].clone(),
+            r["layer"].clone(),
+            r["total_layers"].clone()
+        ),
+        (
+            json!("printing"),
+            json!("boat.gcode"),
+            json!(25),
+            json!(1800),
+            json!(30),
+            json!(120)
+        )
+    );
+    assert_eq!(
+        r["heaters"][0],
+        json!({ "id": "nozzle", "now": 219.6, "target": 220.0 })
+    );
+    // Commands: asked first, then SDCP 129 / 131 / 130 and 403.
+    assert_eq!(
+        probe.refused(
+            "device_command",
+            json!({ "action": "temperature", "heater": "bed", "target": 70 })
+        ),
+        "This printer cannot do that from here."
+    );
+    assert_eq!(
+        probe.refused("device_command", json!({ "action": "home" })),
+        "This printer cannot do that from here."
+    );
+    let asked = probe.ask("device_command", json!({ "action": "pause" }));
+    assert!(asked["confirm"].is_object());
+    assert!(
+        shared.lock().unwrap().commands.is_empty(),
+        "nothing sent before it is confirmed"
+    );
+    probe.confirmed(json!({ "action": "pause" }));
+    assert_eq!(probe.read()["reading"]["state"], "paused");
+    probe.confirmed(json!({ "action": "resume" }));
+    probe.confirmed(json!({ "action": "fan", "fan": "chamber", "percent": 70 }));
+    probe.confirmed(json!({ "action": "light", "on": true }));
+    let r = probe.read()["reading"].clone();
+    assert_eq!(
+        (r["fans"][2]["percent"].clone(), r["light"].clone()),
+        (json!(70), json!(true))
+    );
+    probe.confirmed(json!({ "action": "stop" }));
+    assert_eq!(probe.read()["reading"]["state"], "cancelled");
+    let sent: Vec<(i64, Value)> = shared
+        .lock()
+        .unwrap()
+        .commands
+        .iter()
+        .map(|d| (d["Cmd"].as_i64().unwrap(), d["Data"].clone()))
+        .collect();
+    assert_eq!(
+        sent,
+        [
+            (129, json!({})),
+            (131, json!({})),
+            (403, json!({ "TargetFanSpeed": { "BoxFan": 70 } })),
+            (
+                403,
+                json!({ "LightStatus": { "SecondLight": 1, "RgbLight": [255, 255, 255] } })
+            ),
+            (130, json!({})),
+        ]
+    );
+    // A refused command says the printer's answer.
+    assert_eq!(
+        probe.refused("device_command", json!({ "action": "stop" })),
+        "The printer is not printing, so there is nothing to stop."
+    );
+    // Nothing on the port: offline.
+    drop(socket);
+    std::thread::sleep(Duration::from_millis(200));
+    let closed = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    SDCP_PORT.store(
+        closed.local_addr().unwrap().port(),
+        std::sync::atomic::Ordering::SeqCst,
+    );
+    drop(closed);
+    let read = probe.ask("device_read", json!({ "refresh": true }));
+    assert_eq!(
+        (read["online"].clone(), read["said"].clone()),
+        (json!(false), json!("Offline"))
+    );
+}
