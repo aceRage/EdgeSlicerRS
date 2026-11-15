@@ -1755,6 +1755,60 @@ the last layer's flat copy 17.4% shorter here (the one layer that
 differs). Not picked up, waiting for the pin bump (upstream's since): the models
 as `.drc`, `precise_z_height` off.
 
+Cornering (`Calib_Cornering`, the dialog `Cornering_Test_Dlg`): "Cornering
+test" with "Test model" ("Ringing Tower", "Fast Tower", "SCV-V2"),
+"Cornering settings" ("Start: ", "End: "; on Marlin 2 with a junction
+deviation 0.000 to 0.250 mm, else jerk 1.000 to 15.000 mm/s), the note
+("Note: Lower values = sharper corners but slower speeds." and for Marlin 2
+"Marlin 2 Junction Deviation detected: …" / "Marlin 2 Classic Jerk
+detected: …", for RepRapFirmware "RepRap detected: Jerk in mm/s. …"),
+"Wiki Guide: Cornering Calibration"; its check ("Please input valid values:
+(0 <= Cornering <= %s)", 1.000 for junction deviation, else 100.000) and
+past 0.3 (junction deviation) or 20 its warning ("NOTE: High values may
+cause Layer shift (>%s)"), said, then made. The project "Cornering test":
+the model picked; for junction deviation `machine_max_junction_deviation`
+the end and `default_junction_deviation` 0, else `machine_max_jerk_x` and
+`_y` the end and `default_jerk` 0; over the printer `resonance_avoidance`
+0 and, but on Klipper (EdgeSlicer: `SET_INPUT_SHAPER` stays in force on
+the printer), `input_shaping_emit` on with `input_shaping_type` Disable;
+over the first filament `slow_down_layer_time`, `slow_down_min_speed` 0,
+`slow_down_for_layer_cooling` off, `filament_max_volumetric_speed` at least
+200 and pressure advance on at 0 where off; over the process as the input
+shaping tests but the speed and acceleration (`calib_machine_motion_limits`
+with 200 mm/s and 2000 mm/s² where unset) and no `accel_to_decel`; on
+the object the brim. **Ahead of the pin**: EdgeSlicer `5c07d87e33`,
+`bottom_shell_thickness` 0. At every layer (GCode.cpp `process_layer`):
+Marlin 2 with a junction deviation `M205 J` to three places, held to the
+machine's (`set_junction_deviation`), else the jerk
+(`set_jerk_xy`): Klipper `SET_VELOCITY_LIMIT SQUARE_CORNER_VELOCITY=`,
+Repetier `M207 X`, else `M205 X… Y…`, `%g`, held to the machine's x and y
+jerk as the writer keeps them (`std::lrint`, whole numbers), with a Bambu
+Lab printer's `Z… E…` (two digits) beside it, and only when it changes
+(`m_last_jerk`); the value spread from start on the third layer to end on
+the last. The input shaper turned off is told before the print, as
+`input_shaping_emit` asks of any print now (GCode.cpp
+`print_machine_envelope`, `write_input_shaping`, built for this): Marlin
+2 `M593 F0.00 D0.000`, RepRapFirmware `M593 F0.00 S0.000`, Klipper
+`SET_INPUT_SHAPER …`, each axis's frequency, damping and type as set (one
+line for RepRapFirmware and for Disable), never for Marlin before 2 or a
+Bambu Lab printer; with `emit_machine_limits_to_gcode` off only Klipper is
+told it, as there. Checked by the engine's test on a U1 (Klipper), a
+Creality Ender-3 V3 SE (Marlin 2, jerk; and with a junction deviation of
+0.08 set, `M205 J`) and a Bambu Lab X1 Carbon (`M205 X… Y… Z3 E2.5`), 500
+layers each, every layer's line against the formula and `M593 F0.00
+D0.000` before the print on the Ender; by hand, 1 to 15 over 100 layers is
+1 + 14/97 on the fourth, a jerk of 12.6 held to a machine's 12 writes
+`M205 X12 Y12`, a deviation of 0.3 held to 0.25 `M205 J0.250`; and by the
+session's (the check, the settings shown changed, slice, undo). The
+project (SCV-V2 on a U1) saved and sliced by the pin as a plain vase
+(`edge-parity`): 501 layers in both, extruded path 205.93 m there and
+205.92 here, outer wall 196.31 and 196.30 m, wall length per layer within
+0.00%; the first layer's bottom is laid with 121 retractions here and 63
+there (its fill's order). Not picked up, waiting for the pin bump: Orca
+#13253's maximum of 0.3 (from 1.0) and warning from 0.25 (from 0.3) for
+junction deviation, the models as `.drc`, `precise_z_height` off, and
+input shaping turned off on Klipper too.
+
 Checked: the engine's test slices "Pass 1" on a U1 and reads back that
 each tile's top surface feeds its own flow (+10%, -20%, +5% against
 `flowrate_0`, the median per mm within 0.2%), ten layers, and no note of
@@ -3995,7 +4049,8 @@ its tooltip "not yet: …" saying what it waits for.
 | | "Max flowrate" | | built: on in Prepare; the dialog "Max volumetric speed test" |
 | | "VFA" | | built: on in Prepare; the dialog "VFA test" |
 | | "Input Shaping" ▸ "Input Shaping Frequency", "Input Shaping Damping/zeta factor" | | built: on in Prepare; the dialogs "Input shaping Frequency test" and "Input shaping Damp test" |
-| | "Stringing (temp × retraction)", "Cornering", "Ironing flow" | | off: "not yet: calibration models are not built" (the reference has the menu in the macOS bar and a title-bar menu elsewhere) |
+| | "Cornering" | | built: on in Prepare; the dialog "Cornering test" |
+| | "Stringing (temp × retraction)", "Ironing flow" | | off: "not yet: calibration models are not built" (the reference has the menu in the macOS bar and a title-bar menu elsewhere) |
 | Account (macOS) | sign-in for Snapmaker, Bambu Lab, Flashforge | | not shown: the cloud is not this task |
 | Window (macOS) | "Minimize" [Cmd+M], "Zoom" | | the system's own, in the window; off in a browser |
 | | "Next Project", "Previous Project" | Cmd+Shift+] / [ | wired (`project_cycle`); on with two projects |

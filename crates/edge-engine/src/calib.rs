@@ -39,6 +39,8 @@ pub enum CalibMode {
     InputShapingFrequency,
     /// `Calib_Input_shaping_damp`: "Input Shaping Damping/zeta factor".
     InputShapingDamping,
+    /// `Calib_Cornering`: "Cornering".
+    Cornering,
 }
 
 /// What the calibration's dialog asked for (calib.hpp `Calib_Params`).
@@ -214,6 +216,11 @@ impl CalibParams {
                     shaper: self.shaper_type.clone(),
                 }
             }
+            CalibMode::Cornering => CalibrationKind::Cornering {
+                start: self.start,
+                end: self.end,
+                corner: corner(settings, bambu)?,
+            },
             CalibMode::InputShapingDamping => {
                 let firmware = edge_gcode::ShaperFirmware::of(settings.text("gcode_flavor"))?;
                 CalibrationKind::InputShapingDamping {
@@ -490,7 +497,8 @@ pub fn pressure_advance(
         | CalibMode::VolumetricSpeedTower
         | CalibMode::VfaTower
         | CalibMode::InputShapingFrequency
-        | CalibMode::InputShapingDamping => {
+        | CalibMode::InputShapingDamping
+        | CalibMode::Cornering => {
             return Err("that test is not a pressure advance test".into());
         }
         CalibMode::PressureAdvanceLine => {
@@ -1414,6 +1422,132 @@ pub fn input_shaping(
     )?;
     Ok(CalibProject {
         name: name.to_owned(),
+        model,
+        process,
+        filament,
+        printer,
+        params: Some(params.clone()),
+        notes: Vec::new(),
+    })
+}
+
+/// How the cornering test tells this printer its corner speed (GCode.cpp
+/// `process_layer`, `Calib_Cornering`; GCodeWriter.cpp
+/// `apply_print_config` for the limits it is held to).
+fn corner(settings: &Settings, bambu: bool) -> Result<edge_gcode::Corner, Failure> {
+    let flavor = settings.text("gcode_flavor").unwrap_or("marlin");
+    let first =
+        |key: &str| -> Result<f64, Failure> { Ok(first_number(settings, key)?.unwrap_or(0.0)) };
+    if junction_deviation(settings)? {
+        return Ok(edge_gcode::Corner::JunctionDeviation {
+            max: first("machine_max_junction_deviation")?,
+        });
+    }
+    // The machine's x and y jerk as the writer keeps them: `std::lrint`
+    // (to the nearest whole number, halves to even) for the flavours that
+    // use the machine limits, else none.
+    let mach_limits = matches!(flavor, "marlin" | "marlin2" | "klipper" | "reprapfirmware");
+    let kept = |value: f64| {
+        if mach_limits {
+            value.round_ties_even()
+        } else {
+            0.0
+        }
+    };
+    Ok(edge_gcode::Corner::Jerk {
+        form: match flavor {
+            "klipper" => edge_gcode::JerkForm::Klipper,
+            "repetier" => edge_gcode::JerkForm::Repetier,
+            _ => edge_gcode::JerkForm::Marlin,
+        },
+        max: [
+            kept(first("machine_max_jerk_x")?),
+            kept(first("machine_max_jerk_y")?),
+        ],
+        bambu: bambu
+            .then(|| -> Result<[f64; 2], Failure> {
+                Ok([first("machine_max_jerk_z")?, first("machine_max_jerk_e")?])
+            })
+            .transpose()?,
+    })
+}
+
+/// "Cornering" (Plater.cpp `Calib_Cornering`): the ringing tower, the fast
+/// tower or SCV-V2, one wall, one bottom layer, vase mode, at the
+/// machine's top speed and acceleration, its jerk (or junction deviation)
+/// limit at the test's end; the slice then spreads the corner speed from
+/// `start` to `end` over the layers. `settings` are those the project
+/// starts from.
+pub fn cornering(
+    params: &CalibParams,
+    settings: &Settings,
+    calib_dir: &Path,
+    bed: Option<&Bed>,
+) -> Result<CalibProject, Failure> {
+    let mut model = shaping_model(calib_dir, params.test_model, bed)?;
+    let end = written(params.end);
+    let mut process: Set = Vec::new();
+    let mut printer: Set = Vec::new();
+    if junction_deviation(settings)? {
+        printer.push(("machine_max_junction_deviation".to_owned(), end.clone()));
+        process.push(("default_junction_deviation".to_owned(), "0".to_owned()));
+    } else {
+        printer.push(("machine_max_jerk_x".to_owned(), end.clone()));
+        printer.push(("machine_max_jerk_y".to_owned(), end));
+        process.push(("default_jerk".to_owned(), "0".to_owned()));
+    }
+    printer.push(("resonance_avoidance".to_owned(), "0".to_owned()));
+    // EdgeSlicer: a Klipper printer's input shaping is left as it is set
+    // (SET_INPUT_SHAPER stays in force on the printer until a restart);
+    // every other is told to turn it off for the test.
+    if settings.text("gcode_flavor") != Some("klipper") {
+        printer.extend(pairs(&[
+            ("input_shaping_emit", "1"),
+            ("input_shaping_type", "Disable"),
+        ]));
+    }
+    let max_volumetric = filament_number(settings, "filament_max_volumetric_speed", 0)?;
+    let mut filament = pairs(&[
+        ("slow_down_layer_time", "0"),
+        ("slow_down_min_speed", "0"),
+        ("slow_down_for_layer_cooling", "0"),
+    ]);
+    // Orca #13658: never lower the filament's own limit.
+    filament.push((
+        "filament_max_volumetric_speed".to_owned(),
+        written(max_volumetric.max(200.0)),
+    ));
+    pressure_advance_if_off(settings, &mut filament)?;
+    let (speed, acceleration) = motion_limits(settings, 200.0, 2000.0)?;
+    process.extend(pairs(&[
+        ("enable_overhang_speed", "0"),
+        ("timelapse_type", "0"),
+        ("wall_loops", "1"),
+        ("top_shell_layers", "0"),
+        ("bottom_shell_layers", "1"),
+        // Ahead of the pin: EdgeSlicer 5c07d87e33 (on the fork's main).
+        ("bottom_shell_thickness", "0"),
+        ("sparse_infill_density", "0%"),
+        ("detect_thin_wall", "0"),
+        ("spiral_mode", "1"),
+        ("spiral_mode_smooth", "0"),
+        ("bottom_surface_pattern", "rectilinear"),
+    ]));
+    process.push(("outer_wall_speed".to_owned(), written(speed)));
+    process.push(("default_acceleration".to_owned(), written(acceleration)));
+    process.push(("outer_wall_acceleration".to_owned(), written(acceleration)));
+    set_on_object(
+        &mut model,
+        bed,
+        &[
+            ("brim_type", "outer_only"),
+            ("brim_width", "3"),
+            ("brim_object_gap", "0"),
+        ],
+        &mut process,
+    )?;
+    Ok(CalibProject {
+        name: "Cornering test".to_owned(),
         model,
         process,
         filament,

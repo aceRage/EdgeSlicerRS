@@ -769,9 +769,8 @@ static CALIBRATION: &[Node] = &[
         "calibration.cornering",
         "Cornering",
         "Cornering calibration",
-        When::Always,
-    )
-    .waits(NO_CALIBRATION)),
+        When::Prepare,
+    )),
     Node::Menu {
         id: "calibration.input_shaping",
         label: "Input Shaping",

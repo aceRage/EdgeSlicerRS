@@ -56,6 +56,13 @@ pub enum CalibrationKind {
         y: (f64, f64),
         shaper: String,
     },
+    /// `Calib_Cornering`: the corner speed from `start` to `end` over the
+    /// layers ([`spread_layer_value`]), in the printer's words.
+    Cornering {
+        start: f64,
+        end: f64,
+        corner: Corner,
+    },
     /// `Calib_Input_shaping_damp`: the shaper's type and each axis's
     /// frequency on the second layer, the damping from `start` to `end`
     /// over the layers.
@@ -66,6 +73,92 @@ pub enum CalibrationKind {
         end: f64,
         shaper: String,
     },
+}
+
+/// How the cornering test tells the printer its corner speed at each
+/// layer (GCode.cpp `process_layer`, `Calib_Cornering`).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum Corner {
+    /// Marlin 2 with a junction deviation: `M205 J…` (GCodeWriter.cpp
+    /// `set_junction_deviation`), held to the machine's.
+    JunctionDeviation { max: f64 },
+    /// Every other: the jerk (GCodeWriter.cpp `set_jerk_xy`): Klipper's
+    /// `SET_VELOCITY_LIMIT SQUARE_CORNER_VELOCITY=`, Repetier's `M207 X`,
+    /// else `M205 X… Y…`, held to the machine's x and y jerk (`max`, as
+    /// the writer keeps them: whole numbers, `lrint`, for the flavours
+    /// that use the machine limits, else 0); a Bambu Lab printer is told
+    /// its z and e jerk beside it (`bambu`).
+    Jerk {
+        form: JerkForm,
+        max: [f64; 2],
+        bambu: Option<[f64; 2]>,
+    },
+}
+
+/// The words a jerk is set with.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum JerkForm {
+    Klipper,
+    Repetier,
+    Marlin,
+}
+
+/// GCodeWriter.cpp `set_jerk_xy`: nothing under 0.01 or for the jerk last
+/// set (`last`, which it then holds).
+pub fn jerk_line(
+    jerk: f64,
+    last: &mut f64,
+    form: JerkForm,
+    max: [f64; 2],
+    bambu: Option<[f64; 2]>,
+    comments: bool,
+) -> String {
+    use std::fmt::Write as _;
+    if jerk < 0.01 || (jerk - *last).abs() < 1e-4 {
+        return String::new();
+    }
+    *last = jerk;
+    let held = |limit: f64, jerk: f64| {
+        if limit > 0.0 && jerk > limit {
+            limit
+        } else {
+            jerk
+        }
+    };
+    let mut text = match form {
+        JerkForm::Klipper => format!(
+            "SET_VELOCITY_LIMIT SQUARE_CORNER_VELOCITY={}",
+            general(held(max[1], held(max[0], jerk)), 6)
+        ),
+        JerkForm::Repetier => format!("M207 X{}", general(held(max[1], held(max[0], jerk)), 6)),
+        JerkForm::Marlin => format!(
+            "M205 X{} Y{}",
+            general(held(max[0], jerk), 6),
+            general(held(max[1], jerk), 6)
+        ),
+    };
+    if let Some([z, e]) = bambu {
+        let _ = write!(text, " Z{} E{}", general(z, 2), general(e, 2));
+    }
+    if comments {
+        text.push_str(" ; adjust jerk");
+    }
+    text.push('\n');
+    text
+}
+
+/// GCodeWriter.cpp `set_junction_deviation`: `M205 J` to three places,
+/// held to the machine's, for a deviation and a machine's over 0.
+pub fn junction_deviation_line(deviation: f64, max: f64, comments: bool) -> String {
+    if deviation <= 0.0 || max <= 0.0 {
+        return String::new();
+    }
+    let comment = if comments {
+        " ; Junction Deviation"
+    } else {
+        ""
+    };
+    format!("M205 J{:.3}{comment}\n", deviation.min(max))
 }
 
 /// How a firmware is told its input shaper (GCodeWriter.cpp
@@ -383,7 +476,30 @@ fn at_layer_plain(
         | CalibrationKind::VolumetricSpeedTower { .. }
         | CalibrationKind::VfaTower { .. }
         | CalibrationKind::InputShapingFrequency { .. }
-        | CalibrationKind::InputShapingDamping { .. } => String::new(),
+        | CalibrationKind::InputShapingDamping { .. }
+        | CalibrationKind::Cornering { .. } => String::new(),
+    }
+}
+
+/// What the cornering test writes at the change to layer `index` of
+/// `count`; `last_jerk` is the writer's jerk last set (`m_last_jerk`).
+pub(crate) fn corner_at(
+    calibration: &Calibration,
+    index: usize,
+    count: usize,
+    last_jerk: &mut f64,
+) -> String {
+    let CalibrationKind::Cornering { start, end, corner } = &calibration.kind else {
+        return String::new();
+    };
+    let value = f64::from(spread_layer_value(index, count, *start as f32, *end as f32));
+    match corner {
+        Corner::JunctionDeviation { max } => {
+            junction_deviation_line(value, *max, calibration.comments)
+        }
+        Corner::Jerk { form, max, bambu } => {
+            jerk_line(value, last_jerk, *form, *max, *bambu, calibration.comments)
+        }
     }
 }
 

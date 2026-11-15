@@ -59,6 +59,7 @@ fn params(args: &Value) -> Result<CalibParams, String> {
         Some("vfa") => CalibMode::VfaTower,
         Some("shaping_frequency") => CalibMode::InputShapingFrequency,
         Some("shaping_damping") => CalibMode::InputShapingDamping,
+        Some("cornering") => CalibMode::Cornering,
         Some(other) => return Err(format!("there is no calibration \"{other}\" yet")),
         None => return Err("test was not given".into()),
     };
@@ -114,6 +115,27 @@ fn params(args: &Value) -> Result<CalibParams, String> {
         CalibMode::InputShapingFrequency | CalibMode::InputShapingDamping
     ) {
         return shaping_params(mode, args);
+    }
+    if mode == CalibMode::Cornering {
+        // Cornering_Test_Dlg::on_start: junction deviation (mm) up to 1,
+        // else jerk (mm/s) up to 100.
+        let deviation = args.get("junction_deviation").and_then(Value::as_bool) == Some(true);
+        let most = if deviation { 1.0 } else { 100.0 };
+        let (start, end) = (number("start"), number("end"));
+        return match (start, end) {
+            (Ok(start), Ok(end)) if start >= 0.0 && end <= most && start < end => {
+                let mut params = CalibParams::new(mode, start, end, 0.1);
+                params.test_model = args
+                    .get("model")
+                    .and_then(Value::as_u64)
+                    .map_or(0, |model| model.min(2) as u32);
+                Ok(params)
+            }
+            _ => Err(super::i18n::fill(
+                &super::i18n::tr("Please input valid values:\n(0 <= Cornering <= %s)"),
+                &[&format!("{most:.3}")],
+            )),
+        };
     }
     if mode == CalibMode::VfaTower {
         // VFA_Test_Dlg::on_start.
@@ -439,6 +461,9 @@ impl Session {
                 }
                 CalibMode::InputShapingFrequency | CalibMode::InputShapingDamping => {
                     edge_engine::calib::input_shaping(params, &settled, &calib_dir, bed.as_ref())
+                }
+                CalibMode::Cornering => {
+                    edge_engine::calib::cornering(params, &settled, &calib_dir, bed.as_ref())
                 }
             },
             (None, None) => return Err("test was not given".into()),
@@ -1028,5 +1053,64 @@ mod tests {
         assert!(gcode.contains("SET_INPUT_SHAPER SHAPER_TYPE=ZV SHAPER_FREQ_X=30.00"));
         assert!(gcode.contains("SET_INPUT_SHAPER SHAPER_TYPE=ZV SHAPER_FREQ_Y=42.50"));
         assert!(gcode.contains("SET_INPUT_SHAPER DAMPING_RATIO_X=0.400 DAMPING_RATIO_Y=0.400"));
+    }
+
+    #[test]
+    fn the_cornering_test_is_checked_made_sliced_and_undone() {
+        for (bad, most) in [
+            (
+                json!({"test": "cornering", "start": -1, "end": 15}),
+                "100.000",
+            ),
+            (
+                json!({"test": "cornering", "start": 1, "end": 101}),
+                "100.000",
+            ),
+            (
+                json!({"test": "cornering", "start": 15, "end": 15}),
+                "100.000",
+            ),
+            (
+                json!({"test": "cornering", "junction_deviation": true, "start": 0, "end": 1.2}),
+                "1.000",
+            ),
+        ] {
+            assert_eq!(
+                params(&bad).unwrap_err(),
+                format!("Please input valid values:\n(0 <= Cornering <= {most})"),
+                "{bad}"
+            );
+        }
+        let dir = tempfile::tempdir().unwrap();
+        let session = Arc::new(Session::new(None));
+        choose_presets(&session);
+        // The dialog's defaults on a Klipper printer: jerk 1 to 15 mm/s.
+        let listing = ask(
+            &session,
+            "calibrate",
+            json!({"test": "cornering", "model": 2, "start": 1, "end": 15}),
+        );
+        let id = listing["id"].as_u64().unwrap();
+        let detail = ask(&session, "project", json!({}));
+        assert_eq!(detail["name"], "Cornering test");
+        assert_eq!(detail["dirty"], true);
+        let choices = &detail["choices"];
+        assert_eq!(choices["over"]["spiral_mode"], "1", "{choices}");
+        assert_eq!(choices["over"]["default_jerk"], "0");
+        assert_eq!(choices["printer_over"]["machine_max_jerk_x"], "15");
+        assert_eq!(choices["printer_over"]["machine_max_jerk_y"], "15");
+        // A Klipper printer's input shaping is left as it is.
+        assert!(choices["printer_over"].get("input_shaping_emit").is_none());
+        assert_eq!(
+            choices["filament_over"][0]["filament_max_volumetric_speed"],
+            "200"
+        );
+        dump(&session, id, "cornering.3mf");
+        let gcode = slice_and_read(&session, id, dir.path());
+        assert!(gcode.contains("SET_VELOCITY_LIMIT SQUARE_CORNER_VELOCITY=1\n"));
+        assert!(gcode.contains("SET_VELOCITY_LIMIT SQUARE_CORNER_VELOCITY=15\n"));
+        ask(&session, "undo", json!({ "project": id }));
+        let objects = ask(&session, "plate_view", json!({ "project": id }));
+        assert_eq!(objects["objects"].as_array().map_or(0, Vec::len), 0);
     }
 }

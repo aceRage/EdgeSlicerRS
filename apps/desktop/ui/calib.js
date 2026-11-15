@@ -446,6 +446,59 @@ const Calib = (() => {
     });
   }
 
+  // "Cornering test" (calib_dlg.cpp `Cornering_Test_Dlg`): junction
+  // deviation (mm) on Marlin 2 with one set, else the jerk (mm/s).
+  async function cornering() {
+    const printer = await call('calib_printer');
+    const deviation = printer.junction_deviation;
+    const model = radios('calib-model', ['Ringing Tower', 'Fast Tower', 'SCV-V2'], 0);
+    const unit = deviation ? 'mm' : 'mm/s';
+    const start = field('Start: ', unit);
+    const end = field('End: ', unit);
+    start.input.value = (deviation ? 0 : 1).toFixed(3);
+    end.input.value = (deviation ? 0.25 : 15).toFixed(3);
+    let note = t('Note: Lower values = sharper corners but slower speeds.\n');
+    if (printer.flavor === 'marlin2') {
+      note += deviation
+        ? t("Marlin 2 Junction Deviation detected:\nTo test Classic Jerk, set 'Maximum Junction Deviation' in Motion ability to 0.")
+        : t("Marlin 2 Classic Jerk detected:\nTo test Junction Deviation, set 'Maximum Junction Deviation' in Motion ability to a value > 0.");
+    } else if (printer.flavor === 'reprapfirmware') {
+      note += t('RepRap detected: Jerk in mm/s.\nOrcaSlicer will convert the values to mm/min when necessary.');
+    }
+    const url = 'https://github.com/SoftFever/OrcaSlicer/wiki/cornering-calib';
+    const link = el('a', { href: url, textContent: t('Wiki Guide: Cornering Calibration') });
+    link.addEventListener('click', (event) => { event.preventDefault(); attempt(() => openGuide(url)); });
+    const dialog = el('dialog', { className: 'calib-dialog' }, el('form', { method: 'dialog' },
+      el('h2', { textContent: t('Cornering test') }),
+      group('Test model', model),
+      group('Cornering settings', el('div', { className: 'calib-pair' }, start.row, end.row),
+        el('p', { className: 'quiet calib-note', textContent: note })),
+      el('div', { className: 'calib-links' }, link),
+      el('div', { className: 'row end' },
+        el('button', { type: 'submit', value: 'ok', className: 'primary', textContent: t('OK') }),
+        el('button', { type: 'submit', value: 'cancel', formNoValidate: true, textContent: t('Cancel') }))));
+    return run(dialog, async () => {
+      const args = {
+        test: 'cornering', junction_deviation: deviation,
+        model: Number(model.querySelector('input:checked').value),
+        start: readNumber(start), end: readNumber(end),
+      };
+      // on_start: past the warning's threshold it is said, then made.
+      const warning = deviation ? 0.3 : 20;
+      const most = deviation ? 1 : 100;
+      if (Number.isFinite(args.end) && Number.isFinite(args.start) && args.start >= 0 && args.start < args.end
+          && args.end <= most && args.end > warning) {
+        await inform(t('Cornering test'), fmt(t('NOTE: High values may cause Layer shift (>%s)'), warning.toFixed(3)));
+      }
+      try {
+        await make(args);
+      } catch (error) {
+        return error.message;
+      }
+      return null;
+    });
+  }
+
   // "Flow rate" (MainFrame.cpp, Plater.cpp `calib_flowrate`): no dialog;
   // the menu item makes the test's project at once.
   function flowRate(test) {
@@ -459,5 +512,5 @@ const Calib = (() => {
     return openGuide('https://github.com/SoftFever/OrcaSlicer/wiki/Calibration');
   }
 
-  return { pressureAdvance, temperature, retraction, maxFlowrate, vfa, inputShaping, flowRate, tutorial, parseList };
+  return { pressureAdvance, temperature, retraction, maxFlowrate, vfa, inputShaping, cornering, flowRate, tutorial, parseList };
 })();

@@ -49,7 +49,7 @@ use edge_geom::{ExPolygon, Point2, scaled, unscaled};
 use edge_template::{TemplateError, Value, Variables, stream_double};
 use rayon::prelude::*;
 
-pub use calib::{AdvanceFirmware, Calibration, CalibrationKind, ShaperFirmware};
+pub use calib::{AdvanceFirmware, Calibration, CalibrationKind, Corner, JerkForm, ShaperFirmware};
 pub use calib_draw::{HANDLE_SIZE as PA_HANDLE_SIZE, PaLine, PaPattern, Pen, pa_pattern};
 pub use contour::Contours;
 pub use edge_avoid::{Detour, Slices};
@@ -1367,6 +1367,9 @@ struct State {
     /// of the process's (GCode.cpp `process_layer`, `Calib_VFA_Tower` and
     /// `Calib_Vol_speed_Tower`: `m_calib_config`).
     calibration_outer_wall_speed: Option<f64>,
+    /// The jerk the cornering calibration last set (GCodeWriter.cpp
+    /// `m_last_jerk`; nothing else here sets a jerk).
+    calibration_jerk: f64,
     /// Whether the nozzle holds molten plastic that would ooze on a travel:
     /// true once anything is extruded, or once the machine's start G-code
     /// has run, since that purges.
@@ -2266,6 +2269,13 @@ impl Writer<'_> {
             let tool = (self.all.len() > 1 && !s.single_nozzle).then_some(self.state.tool);
             let text = calib::at_layer(calibration, index, self.layer_count, layer.z, tool);
             self.out.extend_from_slice(text.as_bytes());
+            let corner = calib::corner_at(
+                calibration,
+                index,
+                self.layer_count,
+                &mut self.state.calibration_jerk,
+            );
+            self.out.extend_from_slice(corner.as_bytes());
             if let Some(length) = calib::retraction_at(calibration, layer.z) {
                 self.state.calibration_retraction = Some(length);
             }

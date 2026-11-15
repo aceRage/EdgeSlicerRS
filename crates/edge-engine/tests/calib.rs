@@ -993,3 +993,142 @@ fn the_input_shaping_damping_test_spreads_the_damping_over_the_layers() {
         );
     }
 }
+
+#[test]
+fn the_cornering_test_spreads_the_corner_speed_over_the_layers() {
+    let jd = {
+        let mut base = Settings::default();
+        base.insert(
+            "machine_max_junction_deviation".to_owned(),
+            Value::Many(vec!["0.08".to_owned(), "0".to_owned()]),
+        );
+        base
+    };
+    for (label, vendor, machine, base, start, end) in [
+        (
+            "klipper",
+            "Snapmaker",
+            "Snapmaker U1 (0.4 nozzle)",
+            Settings::default(),
+            1.0,
+            15.0,
+        ),
+        (
+            "marlin",
+            "Creality",
+            "Creality Ender-3 V3 SE 0.4 nozzle",
+            Settings::default(),
+            1.0,
+            15.0,
+        ),
+        (
+            "junction",
+            "Creality",
+            "Creality Ender-3 V3 SE 0.4 nozzle",
+            jd,
+            0.0,
+            0.25,
+        ),
+        (
+            "bambu",
+            "BBL",
+            "Bambu Lab X1 Carbon 0.4 nozzle",
+            Settings::default(),
+            1.0,
+            15.0,
+        ),
+    ] {
+        let chosen = presets(vendor, machine);
+        let mut params = CalibParams::new(CalibMode::Cornering, start, end, 0.1);
+        params.test_model = 2;
+        let calib = reference("resources/calib");
+        let (made, gcode) = made_and_sliced(&chosen, &base, |settings, bed| {
+            edge_engine::calib::cornering(&params, settings, &calib, Some(bed))
+        })
+        .unwrap();
+        if let Ok(dir) = std::env::var("EDGE_CALIB_DUMP") {
+            std::fs::write(
+                std::path::Path::new(&dir).join(format!("cornering_{label}.gcode")),
+                &gcode,
+            )
+            .unwrap();
+        }
+        assert_eq!(made.name, "Cornering test");
+        let printer: std::collections::BTreeMap<&str, &str> = made
+            .printer
+            .iter()
+            .map(|(k, v)| (k.as_str(), v.as_str()))
+            .collect();
+        if label == "junction" {
+            assert_eq!(printer["machine_max_junction_deviation"], "0.25");
+        } else {
+            assert_eq!(printer["machine_max_jerk_x"], "15");
+        }
+        // Input shaping turned off for the test but on Klipper.
+        assert_eq!(
+            printer.get("input_shaping_type").copied(),
+            (label != "klipper").then_some("Disable")
+        );
+        if label == "marlin" || label == "junction" {
+            // Told before the print (GCode.cpp `print_machine_envelope`).
+            assert!(gcode.contains("\nM593 F0.00 D0.000\n"), "{label}");
+        }
+        let count: usize = gcode
+            .lines()
+            .find_map(|line| line.strip_prefix("; total layer number: "))
+            .unwrap()
+            .parse()
+            .unwrap();
+        let lines = per_layer_lines(&gcode, &["SET_VELOCITY_LIMIT SQUARE", "M205"]);
+        let mut last = 0.0_f64;
+        for (index, found) in lines.iter().enumerate().take(count) {
+            let value = f64::from(edge_gcode::calib::spread_layer_value(
+                index,
+                count,
+                start as f32,
+                end as f32,
+            ));
+            let shown = edge_gcode::calib::general(value, 6);
+            let expected: Vec<String> = match label {
+                // Every layer, to three places, held to the machine's.
+                "junction" if value > 0.0 => vec![format!("M205 J{value:.3}")],
+                "junction" => Vec::new(),
+                // Only when it changes (`m_last_jerk`).
+                _ if (value - last).abs() < 1e-4 => Vec::new(),
+                "klipper" => vec![format!("SET_VELOCITY_LIMIT SQUARE_CORNER_VELOCITY={shown}")],
+                "marlin" => vec![format!("M205 X{shown} Y{shown}")],
+                _ => vec![format!("M205 X{shown} Y{shown} Z3 E2.5")],
+            };
+            if label != "junction" && (value - last).abs() >= 1e-4 {
+                last = value;
+            }
+            assert_eq!(found, &expected, "{label} layer {index}");
+        }
+    }
+    // Worked by hand: 1 to 15 over 100 layers, the third at 1 and each
+    // after 14 / 97 more; the last at 15.
+    assert_eq!(
+        edge_gcode::calib::spread_layer_value(3, 100, 1.0, 15.0),
+        1.0 + 14.0 / 97.0
+    );
+    assert_eq!(
+        edge_gcode::calib::spread_layer_value(99, 100, 1.0, 15.0),
+        15.0
+    );
+    let mut last = 0.0;
+    assert_eq!(
+        edge_gcode::calib::jerk_line(
+            12.6,
+            &mut last,
+            edge_gcode::JerkForm::Marlin,
+            [12.0, 12.0],
+            None,
+            false
+        ),
+        "M205 X12 Y12\n"
+    );
+    assert_eq!(
+        edge_gcode::calib::junction_deviation_line(0.3, 0.25, true),
+        "M205 J0.250 ; Junction Deviation\n"
+    );
+}
