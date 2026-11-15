@@ -38,7 +38,13 @@ fn bed(settings: &Settings) -> Bed {
 fn overrides(made: &CalibProject) -> Overrides {
     let mut settings = Settings::default();
     for (key, value) in made.process.iter().chain(&made.printer) {
-        settings.insert(key.clone(), Value::One(value.clone()));
+        // A list as the pages hold it, its values by commas.
+        let value = if value.contains(',') {
+            Value::Many(value.split(',').map(str::to_owned).collect())
+        } else {
+            Value::One(value.clone())
+        };
+        settings.insert(key.clone(), value);
     }
     let mut filament = Settings::default();
     for (key, value) in &made.filament {
@@ -577,5 +583,89 @@ fn the_retraction_tower_lengthens_its_retraction_every_mm() {
             pulls.iter().any(|pull| (pull - 1.1).abs() < 1e-5),
             "{pulls:?}"
         );
+    }
+}
+
+/// The first F word of a layer's extruding moves after the calibration's
+/// place (the fan marker), in mm/s, and the layer's top.
+fn wall_speeds(gcode: &str) -> Vec<(f64, Option<f64>)> {
+    layers(gcode)
+        .iter()
+        .map(|text| {
+            let z: f64 = text
+                .lines()
+                .find_map(|line| line.strip_prefix(";Z:"))
+                .unwrap()
+                .parse()
+                .unwrap();
+            let after = text
+                .split_once(";_SET_FAN_SPEED_CHANGING_LAYER\n")
+                .map_or(*text, |(_, rest)| rest);
+            let speed = after
+                .lines()
+                .filter(|line| {
+                    line.starts_with("G1 ") && line.contains(" E") && !line.contains(" E-")
+                })
+                .find_map(|line| {
+                    line.split_whitespace()
+                        .find_map(|word| word.strip_prefix('F'))
+                        .map(|f| f.parse::<f64>().unwrap() / 60.0)
+                });
+            (z, speed)
+        })
+        .collect()
+}
+
+#[test]
+fn the_max_flowrate_tower_speeds_its_wall_up_with_the_height() {
+    for (vendor, machine) in [
+        ("Snapmaker", "Snapmaker U1 (0.4 nozzle)"),
+        ("Creality", "Creality Ender-3 V3 SE 0.4 nozzle"),
+    ] {
+        let chosen = presets(vendor, machine);
+        let settings = edge_engine::settled(&chosen, &Overrides::default(), None).unwrap();
+        let bed = bed(&settings);
+        // The dialog's defaults: 5 to 20 mm³/s by 0.5.
+        let params = CalibParams::new(CalibMode::VolumetricSpeedTower, 5.0, 20.0, 0.5);
+        let made = edge_engine::calib::max_flowrate(&params, &settings, Some(&bed)).unwrap();
+        assert_eq!(made.name, "Max volumetric speed test");
+        // Plater.cpp: a 0.7 mm line 0.32 mm high (Flow.cpp `mm3_per_mm`,
+        // in single precision: 0.32 × (0.7 - 0.32 × (1 - π/4)) =
+        // 0.20203 mm³/mm), times the filament's flow ratio.
+        let flow_ratio = settings.floats("filament_flow_ratio").unwrap().unwrap()[0].unwrap();
+        let mm3 = edge_engine::calib::line_mm3_per_mm(0.7, 0.32) * flow_ratio;
+        let speeds = made.params.clone().unwrap();
+        assert!((speeds.start - 5.0 / mm3).abs() < 1e-9);
+        assert!((speeds.step - 0.5 / mm3).abs() < 1e-9);
+        let process: std::collections::BTreeMap<&str, &str> = made
+            .process
+            .iter()
+            .map(|(k, v)| (k.as_str(), v.as_str()))
+            .collect();
+        assert_eq!(process["spiral_mode"], "1");
+        assert_eq!(process["timelapse_type"], "0");
+        assert!(
+            made.filament
+                .contains(&("slow_down_layer_time".into(), "0".into()))
+        );
+        let (gcode, notes) = slice_made(&chosen, &made);
+        if let Ok(dir) = std::env::var("EDGE_CALIB_DUMP") {
+            std::fs::write(
+                std::path::Path::new(&dir).join(format!("max_flowrate_{vendor}.gcode")),
+                &gcode,
+            )
+            .unwrap();
+        }
+        // Nothing it sets goes unfollowed.
+        assert!(notes.is_empty(), "{machine}: {notes:?}");
+        // Cut at (20 - 5 + 1) / 0.5 = 32 mm: 100 layers of 0.32.
+        let by_layer = wall_speeds(&gcode);
+        let top = by_layer.last().unwrap().0;
+        assert!((top - 32.0).abs() < 0.33, "{machine}: {top}");
+        // From the second layer on, the wall at `round(start + z × step)`.
+        for (z, speed) in by_layer.iter().skip(1) {
+            let expected = edge_gcode::calib::volumetric_tower_speed(speeds.start, speeds.step, *z);
+            assert_eq!(*speed, Some(expected), "{machine} at {z}");
+        }
     }
 }

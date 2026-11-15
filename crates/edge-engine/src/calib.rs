@@ -31,6 +31,8 @@ pub enum CalibMode {
     PressureAdvancePattern,
     /// `Calib_Retraction_tower`.
     RetractionTower,
+    /// `Calib_Vol_speed_Tower`: "Max flowrate".
+    VolumetricSpeedTower,
 }
 
 /// What the calibration's dialog asked for (calib.hpp `Calib_Params`).
@@ -162,6 +164,10 @@ impl CalibParams {
                 CalibrationKind::PressureAdvancePattern(Vec::new())
             }
             CalibMode::RetractionTower => CalibrationKind::RetractionTower {
+                start: self.start,
+                step: self.step,
+            },
+            CalibMode::VolumetricSpeedTower => CalibrationKind::VolumetricSpeedTower {
                 start: self.start,
                 step: self.step,
             },
@@ -426,7 +432,9 @@ pub fn pressure_advance(
             notes = made.notes;
             made.model
         }
-        CalibMode::TemperatureTower | CalibMode::RetractionTower => {
+        CalibMode::TemperatureTower
+        | CalibMode::RetractionTower
+        | CalibMode::VolumetricSpeedTower => {
             return Err("that test is not a pressure advance test".into());
         }
         CalibMode::PressureAdvanceLine => {
@@ -863,6 +871,179 @@ pub fn retraction(
         filament: Vec::new(),
         printer,
         params: Some(params.clone()),
+        notes: Vec::new(),
+    })
+}
+
+/// The reference's "Max flowrate" model, `volumetric_speed/
+/// SpeedTestStructure.step`, as its STEP reader makes it a mesh: this
+/// engine reads no STEP file, so the mesh is kept here, made once by the
+/// pin's command line (`--export-stl`, which tessellates with the GUI's
+/// defaults, a linear deflection of 0.003 mm and an angle of 0.5,
+/// `load_step`): 70036 triangles, 180 × 100 × 280 mm.
+const SPEED_TEST_STRUCTURE: &[u8] = include_bytes!("../calib/SpeedTestStructure.stl");
+
+/// Scales the model's one object about its middle, its foot kept on the
+/// bed (`ModelObject::scale`, then `ensure_on_bed`).
+fn scale_object(model: &mut Model, bed: Option<&Bed>, scale: [f64; 3]) -> Result<(), Failure> {
+    let copy = model
+        .objects()
+        .first()
+        .and_then(|object| object.copies().first())
+        .map(|copy| copy.id())
+        .ok_or("the calibration model has nothing in it")?;
+    let Some((scene, Some([low, high]))) = model.in_scene(bed, copy) else {
+        return Err("the calibration model has no printed material".into());
+    };
+    let middle = [(low[0] + high[0]) / 2.0, (low[1] + high[1]) / 2.0, low[2]];
+    let sized = scene
+        .then(&Transform::translation([
+            -middle[0], -middle[1], -middle[2],
+        ]))
+        .then(&Transform {
+            rows: [
+                [scale[0], 0.0, 0.0],
+                [0.0, scale[1], 0.0],
+                [0.0, 0.0, scale[2]],
+                [0.0; 3],
+            ],
+        })
+        .then(&Transform::translation(middle));
+    model.set_transforms(bed, &[(copy, sized)])
+}
+
+/// The printable area's box (min x, min y, max x, max y).
+fn bed_box(settings: &Settings) -> Result<[f64; 4], Failure> {
+    let mut bed: Option<[f64; 4]> = None;
+    for corner in settings.texts("printable_area").unwrap_or(&[]) {
+        let (x, y) = corner
+            .split_once('x')
+            .ok_or_else(|| format!("printable_area: {corner} is not a corner"))?;
+        let (x, y): (f64, f64) = (x.trim().parse()?, y.trim().parse()?);
+        let [a, b, c, d] = bed.unwrap_or([x, y, x, y]);
+        bed = Some([a.min(x), b.min(y), c.max(x), d.max(y)]);
+    }
+    Ok(bed.ok_or("the printer has no printable_area")?)
+}
+
+/// The printer's first `max_layer_height` raised to `height` where it is
+/// under it, as a printer setting; none when it is not.
+fn raised_max_layer_height(
+    settings: &Settings,
+    height: f64,
+) -> Result<Option<(String, String)>, Failure> {
+    if let Some(most) = settings.floats("max_layer_height")?
+        && let Some(Some(first)) = most.first()
+        && *first < height
+    {
+        let mut values: Vec<String> = most
+            .iter()
+            .map(|value| value.map_or_else(|| "nil".to_owned(), written))
+            .collect();
+        values[0] = written(height);
+        return Ok(Some(("max_layer_height".to_owned(), values.join(","))));
+    }
+    Ok(None)
+}
+
+/// "Max flowrate" (Plater.cpp `calib_max_vol_speed`): the speed test
+/// structure, narrowed to the bed when wider, one wall 1.75 nozzles wide in
+/// layers of 0.8 nozzle, printed as a vase; cut to `(end - start + 1) /
+/// step` mm. The slice then speeds the outer wall up with the height so
+/// that it melts `start` mm³/s at the bed and `step` more each mm
+/// (`edge_gcode::calib::volumetric_tower_speed`). `settings` are those the
+/// project starts from.
+pub fn max_flowrate(
+    params: &CalibParams,
+    settings: &Settings,
+    bed: Option<&Bed>,
+) -> Result<CalibProject, Failure> {
+    let mesh = edge_mesh::stl::parse(SPEED_TEST_STRUCTURE)
+        .map_err(|error| format!("the speed test structure could not be read: {error}"))?;
+    let mut model = Model::new();
+    model.import(
+        bed,
+        &Model::from(crate::load::Opened::mesh("SpeedTestStructure", mesh)),
+        None,
+    )?;
+    // Narrowed to the bed less 10 mm, in X only.
+    let area = bed_box(settings)?;
+    let width = {
+        let copy = model.objects()[0].copies()[0].id();
+        match model.in_scene(bed, copy) {
+            Some((_, Some([low, high]))) => high[0] - low[0],
+            _ => return Err("the speed test structure has no printed material".into()),
+        }
+    };
+    let narrow = (area[2] - area[0] - 10.0) / width;
+    if narrow < 1.0 {
+        scale_object(&mut model, bed, [narrow, 1.0, 1.0])?;
+    }
+    let nozzle = nozzle_diameter(settings)?;
+    let line_width = nozzle * 1.75;
+    let layer_height = nozzle * 0.8;
+    let mut printer = Vec::new();
+    printer.extend(raised_max_layer_height(settings, layer_height)?);
+    printer.push(("resonance_avoidance".to_owned(), "0".to_owned()));
+    // Orca #13658: never lower the filament's own limit.
+    let max_volumetric = filament_number(settings, "filament_max_volumetric_speed", 0)?;
+    let filament = vec![
+        (
+            "filament_max_volumetric_speed".to_owned(),
+            written(max_volumetric.max(200.0)),
+        ),
+        ("slow_down_layer_time".to_owned(), "0".to_owned()),
+    ];
+    let mut process = Vec::new();
+    let line_width_text = written(line_width);
+    let layer_height_text = written(layer_height);
+    set_on_object(
+        &mut model,
+        bed,
+        &[
+            ("enable_overhang_speed", "0"),
+            ("wall_loops", "1"),
+            ("alternate_extra_wall", "0"),
+            ("top_shell_layers", "0"),
+            ("bottom_shell_layers", "0"),
+            ("sparse_infill_density", "0%"),
+            ("overhang_reverse", "0"),
+            ("outer_wall_line_width", line_width_text.as_str()),
+            ("layer_height", layer_height_text.as_str()),
+            ("brim_type", "outer_and_inner"),
+            ("brim_width", "5"),
+            ("brim_object_gap", "0"),
+        ],
+        &mut process,
+    )?;
+    process.extend(pairs(&[
+        ("timelapse_type", "0"),
+        ("spiral_mode", "1"),
+        ("max_volumetric_extrusion_rate_slope", "0"),
+    ]));
+    // Cut the top: `(end - start + 1) / step` mm.
+    let height = (params.end - params.start + 1.0) / params.step;
+    if height < height_of(&model, bed)? {
+        cut(&mut model, bed, height, Keep::Lower)?;
+    }
+    // The volumetric speeds as the outer wall's speeds: over the plastic
+    // the line lays per mm, at the filament's flow ratio.
+    let flow_ratio = filament_number(settings, "filament_flow_ratio", 0)?;
+    let mm3_per_mm = line_mm3_per_mm(line_width, layer_height) * flow_ratio;
+    if mm3_per_mm <= 0.0 {
+        return Err("Max flowrate: the line lays no plastic (filament_flow_ratio is 0)".into());
+    }
+    let mut speeds = params.clone();
+    speeds.start = params.start / mm3_per_mm;
+    speeds.end = params.end / mm3_per_mm;
+    speeds.step = params.step / mm3_per_mm;
+    Ok(CalibProject {
+        name: "Max volumetric speed test".to_owned(),
+        model,
+        process,
+        filament,
+        printer,
+        params: Some(speeds),
         notes: Vec::new(),
     })
 }

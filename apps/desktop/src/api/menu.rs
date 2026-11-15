@@ -765,9 +765,8 @@ static CALIBRATION: &[Node] = &[
         "calibration.max_flowrate",
         "Max flowrate",
         "Max flowrate",
-        When::Always,
-    )
-    .waits(NO_CALIBRATION)),
+        When::Prepare,
+    )),
     I(item(
         "calibration.cornering",
         "Cornering",

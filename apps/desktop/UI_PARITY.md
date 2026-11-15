@@ -1587,6 +1587,49 @@ check. Not picked up, waiting for the pin bump (upstream's
 `retract_after_outer_wall` and `precise_z_height` off, every extruder's
 `max_layer_height` raised, and the cut EPSILON lower.
 
+Max flowrate (`calib_max_vol_speed`, the dialog
+`MaxVolumetricSpeed_Test_Dlg`): "Max volumetric speed test" with
+"Settings" ("Start volumetric speed: " 5, "End volumetric speed: " 20,
+"Step: " 0.5, mm³/s after each), "Wiki Guide: Volumetric Speed
+Calibration", and its check ("Please input valid values: start > 0 …":
+start not over 0, step not over 0, or end under start + step). The project
+"Max volumetric speed test": the reference's `SpeedTestStructure.step`,
+which this engine cannot read (it reads no STEP file), as the pin's own
+STEP reader makes it a mesh: tessellated once by the pin's command line
+(`--export-stl`, linear deflection 0.003 mm and angle 0.5, the GUI's
+defaults) and kept in the engine (`crates/edge-engine/calib/
+SpeedTestStructure.stl`, 70036 triangles); narrowed in X to the bed's
+width less 10 mm when wider; cut at `(end - start + 1) / step` mm. Over
+the process `timelapse_type` traditional, `spiral_mode` on,
+`max_volumetric_extrusion_rate_slope` 0; over the first filament
+`filament_max_volumetric_speed` at least 200 (Orca #13658: never lowered)
+and `slow_down_layer_time` 0; over the printer `resonance_avoidance` 0 and
+the first extruder's `max_layer_height` raised to the test's layer where
+under it (a list of the extruders' values is shown as each extruder's
+own, `key#extruder`, where it changed); on the object
+`enable_overhang_speed` 0, `wall_loops` 1, `alternate_extra_wall` 0,
+`top_shell_layers` and `bottom_shell_layers` 0, `sparse_infill_density`
+0%, `overhang_reverse` 0, `outer_wall_line_width` 1.75 nozzles,
+`layer_height` 0.8 nozzle, `brim_type` outer_and_inner, `brim_width` 5,
+`brim_object_gap` 0. At every layer the outer wall's speed is
+`round(start' + z × step')` mm/s, z the layer's top and the dialog's
+values divided by the line's mm³ per mm times the filament's flow ratio
+(GCode.cpp `process_layer`, `m_calib_config` laid over every region's
+settings in `_extrude`); no line is written for it, the moves' F carries
+it. The vase is laid as vase mode lays any (`spiral_vase.rs`): the speed
+set at the layer change, before the spiral's ramp. Checked by the
+engine's test on a U1 and a Creality Ender-3 V3 SE (every layer's first
+wall speed against the formula, no setting left unfollowed) and the
+session's (the check, the settings shown changed, 100 layers, undo). The
+project saved and sliced by the pin's command line as a plain vase
+(`edge-parity`): 101 layers in both at the same heights, extruded path
+126.44 m in both, outer wall 114.90 m and brim 11.54 m in both, wall
+length per layer within 0.00% and each layer's extent within 0.006 mm.
+Not picked up, waiting for the pin bump (upstream's
+`calib_max_vol_speed` since): the model as `SpeedTestStructure.drc`
+(#11861), every extruder's `max_layer_height` raised,
+`precise_z_height` and `enable_wrapping_detection` off.
+
 Checked: the engine's test slices "Pass 1" on a U1 and reads back that
 each tile's top surface feeds its own flow (+10%, -20%, +5% against
 `flowrate_0`, the median per mm within 0.2%), ten layers, and no note of
@@ -3824,7 +3867,8 @@ its tooltip "not yet: …" saying what it waits for.
 | | "Tutorial" | | built: the reference's guide page (`https://github.com/SoftFever/OrcaSlicer/wiki/Calibration`), opened by the window; a browser shows the address. **differs**: no mirror for a person in China (the reference picks it by the country it keeps; this app keeps none) |
 | | "Flow rate" ▸ "Pass 1", "Pass 2", "YOLO (Recommended)", "YOLO (perfectionist version)" | | built: on in Prepare; each makes its test at once, as the reference does (no dialog) |
 | | "Retraction test" | | built: on in Prepare; the dialog "Retraction test" |
-| | "Stringing (temp × retraction)", "Max flowrate", "Cornering", "Input Shaping" ▸ ("Input Shaping Frequency", "Input Shaping Damping/zeta factor"), "VFA", "Ironing flow" | | off: "not yet: calibration models are not built" (the reference has the menu in the macOS bar and a title-bar menu elsewhere) |
+| | "Max flowrate" | | built: on in Prepare; the dialog "Max volumetric speed test" |
+| | "Stringing (temp × retraction)", "Cornering", "Input Shaping" ▸ ("Input Shaping Frequency", "Input Shaping Damping/zeta factor"), "VFA", "Ironing flow" | | off: "not yet: calibration models are not built" (the reference has the menu in the macOS bar and a title-bar menu elsewhere) |
 | Account (macOS) | sign-in for Snapmaker, Bambu Lab, Flashforge | | not shown: the cloud is not this task |
 | Window (macOS) | "Minimize" [Cmd+M], "Zoom" | | the system's own, in the window; off in a browser |
 | | "Next Project", "Previous Project" | Cmd+Shift+] / [ | wired (`project_cycle`); on with two projects |

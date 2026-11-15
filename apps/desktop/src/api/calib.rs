@@ -55,6 +55,7 @@ fn params(args: &Value) -> Result<CalibParams, String> {
         Some("pa_pattern") => CalibMode::PressureAdvancePattern,
         Some("temp_tower") => CalibMode::TemperatureTower,
         Some("retraction") => CalibMode::RetractionTower,
+        Some("max_flowrate") => CalibMode::VolumetricSpeedTower,
         Some(other) => return Err(format!("there is no calibration \"{other}\" yet")),
         None => return Err("test was not given".into()),
     };
@@ -86,6 +87,18 @@ fn params(args: &Value) -> Result<CalibParams, String> {
         let (start, end, step) = (number("start"), number("end"), number("step"));
         return match (start, end, step) {
             (Ok(start), Ok(end), Ok(step)) if start >= 0.0 && step > 0.0 && end >= start + step => {
+                Ok(CalibParams::new(mode, start, end, step))
+            }
+            _ => Err(super::i18n::tr(
+                "Please input valid values:\nstart > 0\nstep >= 0\nend > start + step",
+            )),
+        };
+    }
+    if mode == CalibMode::VolumetricSpeedTower {
+        // MaxVolumetricSpeed_Test_Dlg::on_start.
+        let (start, end, step) = (number("start"), number("end"), number("step"));
+        return match (start, end, step) {
+            (Ok(start), Ok(end), Ok(step)) if start > 0.0 && step > 0.0 && end >= start + step => {
                 Ok(CalibParams::new(mode, start, end, step))
             }
             _ => Err(super::i18n::tr(
@@ -160,6 +173,9 @@ impl Session {
                 CalibMode::RetractionTower => {
                     edge_engine::calib::retraction(params, &settled, &calib_dir, bed.as_ref())
                 }
+                CalibMode::VolumetricSpeedTower => {
+                    edge_engine::calib::max_flowrate(params, &settled, bed.as_ref())
+                }
             },
             (None, None) => return Err("test was not given".into()),
         }
@@ -195,7 +211,21 @@ impl Session {
             choices.over.insert(key.clone(), value.clone());
         }
         for (key, value) in &made.printer {
-            choices.printer_over.insert(key.clone(), value.clone());
+            if value.contains(',') {
+                // A list of the extruders' values, as the engine writes it:
+                // the pages hold each extruder's own (`key#extruder`), set
+                // where it differs from the printer's.
+                let had = settled.texts(key).unwrap_or(&[]);
+                for (extruder, own) in value.split(',').enumerate() {
+                    if had.get(extruder).map(String::as_str) != Some(own) {
+                        choices
+                            .printer_over
+                            .insert(format!("{key}#{extruder}"), own.to_owned());
+                    }
+                }
+            } else {
+                choices.printer_over.insert(key.clone(), value.clone());
+            }
         }
         if !made.filament.is_empty() {
             if choices.filament_over.is_empty() {
@@ -522,6 +552,70 @@ mod tests {
         // 1.4 + 20 = 21.4 mm: the tower is 40 mm high, so cut; 107 layers.
         assert_eq!(gcode.matches(";LAYER_CHANGE").count(), 107);
         assert!(gcode.contains("; Calib_Retraction_tower: Z_HEIGHT: 21.4, length:2.1"));
+        ask(&session, "undo", json!({ "project": id }));
+        let objects = ask(&session, "plate_view", json!({ "project": id }));
+        assert_eq!(objects["objects"].as_array().map_or(0, Vec::len), 0);
+    }
+
+    /// Saves a test's project where `EDGE_CALIB_DUMP` says, for the
+    /// reference to slice as a plain print (`edge-parity`).
+    fn dump(session: &Arc<Session>, id: u64, name: &str) {
+        if let Ok(out) = std::env::var("EDGE_CALIB_DUMP") {
+            ask(
+                session,
+                "project_save",
+                json!({ "project": id, "path": std::path::Path::new(&out).join(name).to_string_lossy() }),
+            );
+        }
+    }
+
+    #[test]
+    fn the_max_flowrate_test_is_checked_made_sliced_and_undone() {
+        for bad in [
+            json!({"test": "max_flowrate", "start": 0, "end": 20, "step": 0.5}),
+            json!({"test": "max_flowrate", "start": 5, "end": 20, "step": 0}),
+            json!({"test": "max_flowrate", "start": 5, "end": 5.2, "step": 0.5}),
+        ] {
+            assert!(
+                params(&bad)
+                    .unwrap_err()
+                    .starts_with("Please input valid values"),
+                "{bad}"
+            );
+        }
+        let dir = tempfile::tempdir().unwrap();
+        let session = Arc::new(Session::new(None));
+        choose_presets(&session);
+        // The dialog's defaults: 5 to 20 mm³/s by 0.5.
+        let listing = ask(
+            &session,
+            "calibrate",
+            json!({"test": "max_flowrate", "start": 5, "end": 20, "step": 0.5}),
+        );
+        let id = listing["id"].as_u64().unwrap();
+        let detail = ask(&session, "project", json!({}));
+        assert_eq!(detail["name"], "Max volumetric speed test");
+        assert_eq!(detail["dirty"], true);
+        let choices = &detail["choices"];
+        assert_eq!(choices["over"]["spiral_mode"], "1", "{choices}");
+        assert_eq!(choices["over"]["timelapse_type"], "0");
+        assert_eq!(choices["printer_over"]["resonance_avoidance"], "0");
+        assert_eq!(choices["filament_over"][0]["slow_down_layer_time"], "0");
+        assert_eq!(
+            choices["filament_over"][0]["filament_max_volumetric_speed"],
+            "200"
+        );
+        // The U1's greatest layer, 0.32, is under the test's 0.4 × 0.8 in
+        // double precision (0.32000000000000006), so the reference raises
+        // it, to what is written 0.32 again: nothing shown changed.
+        assert!(choices["printer_over"].get("max_layer_height#0").is_none());
+        assert!(choices["printer_over"].get("max_layer_height").is_none());
+        dump(&session, id, "max_flowrate.3mf");
+        let gcode = slice_and_read(&session, id, dir.path());
+        // Cut at (20 - 5 + 1) / 0.5 = 32 mm: the U1's first layer of
+        // 0.25, then 99 of 0.32, to 31.93.
+        assert!(gcode.contains("; total layer number: 100"));
+        assert!(gcode.contains(";Z:31.930"));
         ask(&session, "undo", json!({ "project": id }));
         let objects = ask(&session, "plate_view", json!({ "project": id }));
         assert_eq!(objects["objects"].as_array().map_or(0, Vec::len), 0);

@@ -38,6 +38,14 @@ pub enum CalibrationKind {
     /// `Calib_Retraction_tower`: the retraction length `start`, `step`
     /// more for each whole mm above 0.4 mm ([`tower_retraction`]).
     RetractionTower { start: f64, step: f64 },
+    /// `Calib_Vol_speed_Tower`: the outer wall's speed `start + z × step`
+    /// mm/s at a layer whose top is at `z`, rounded (the volumetric
+    /// speeds asked for, already divided by the line's mm³ per mm).
+    VolumetricSpeedTower { start: f64, step: f64 },
+    /// `Calib_VFA_Tower`: the outer wall's speed in equal bands of `step`
+    /// from `start` to `end`, spread over the layers
+    /// ([`stepped_layer_value`]), rounded.
+    VfaTower { start: f64, end: f64, step: f64 },
 }
 
 /// How a firmware is told its pressure advance (GCodeWriter.cpp
@@ -172,10 +180,49 @@ pub(crate) fn at_layer(
             general(z, 6),
             general(tower_retraction(start, step, z), 6)
         ),
-        CalibrationKind::PressureAdvanceLine(_) | CalibrationKind::PressureAdvancePattern(_) => {
-            String::new()
-        }
+        CalibrationKind::PressureAdvanceLine(_)
+        | CalibrationKind::PressureAdvancePattern(_)
+        | CalibrationKind::VolumetricSpeedTower { .. }
+        | CalibrationKind::VfaTower { .. } => String::new(),
     }
+}
+
+/// The outer wall's speed a calibration sets at the change to layer
+/// `index` (from 0) of `count`, whose top is at `z` mm, in place of the
+/// process's (GCode.cpp `process_layer`: `m_calib_config`'s
+/// `outer_wall_speed`, which `_extrude` lays over each region's settings).
+pub(crate) fn outer_wall_speed_at(
+    calibration: &Calibration,
+    index: usize,
+    count: usize,
+    z: f64,
+) -> Option<f64> {
+    match calibration.kind {
+        CalibrationKind::VolumetricSpeedTower { start, step } => {
+            Some(volumetric_tower_speed(start, step, z))
+        }
+        CalibrationKind::VfaTower { start, end, step } => {
+            Some(vfa_tower_speed(index, count, start, end, step))
+        }
+        _ => None,
+    }
+}
+
+/// The volumetric speed tower's outer wall speed at a layer whose top is
+/// at `z` mm (GCode.cpp `process_layer`, `Calib_Vol_speed_Tower`): `start +
+/// z × step`, `std::round`ed. `start` and `step` are mm/s, the volumetric
+/// speeds asked for over the line's mm³ per mm (Plater.cpp
+/// `calib_max_vol_speed`).
+pub fn volumetric_tower_speed(start: f64, step: f64, z: f64) -> f64 {
+    // `std::round`: halves away from zero, as Rust's `round`.
+    (start + z * step).round()
+}
+
+/// The VFA tower's outer wall speed at layer `index` of `count` (GCode.cpp
+/// `process_layer`, `Calib_VFA_Tower`): the stepped value, worked in
+/// single precision, `std::round`ed as a float.
+pub fn vfa_tower_speed(index: usize, count: usize, start: f64, end: f64, step: f64) -> f64 {
+    f64::from(stepped_layer_value(index, count, start as f32, end as f32, step as f32).round())
 }
 
 /// The retraction length a calibration sets from the layer whose top is at

@@ -254,6 +254,47 @@ const Calib = (() => {
     });
   }
 
+  // A dialog of three numbers with units and a guide (calib_dlg.cpp
+  // `MaxVolumetricSpeed_Test_Dlg`, `VFA_Test_Dlg`): its fields, then the
+  // test made from what they hold (`ToDouble`; the session checks them).
+  function threeNumbers({ title, labels, unit, values, guide, test, extra = [] }) {
+    const fields = labels.map((label) => field(label, unit));
+    fields.forEach((f, index) => { f.input.value = values[index]; });
+    const link = el('a', { href: guide[1], textContent: t(guide[0]) });
+    link.addEventListener('click', (event) => { event.preventDefault(); attempt(() => openGuide(link.href)); });
+    const dialog = el('dialog', { className: 'calib-dialog' }, el('form', { method: 'dialog' },
+      el('h2', { textContent: t(title) }),
+      group('Settings', ...fields.map((f) => f.row), ...extra.map((e) => e.row)),
+      el('div', { className: 'calib-links' }, link),
+      el('div', { className: 'row end' },
+        el('button', { type: 'submit', value: 'ok', className: 'primary', textContent: t('OK') }),
+        el('button', { type: 'submit', value: 'cancel', formNoValidate: true, textContent: t('Cancel') }))));
+    return { dialog, fields };
+  }
+
+  // A number as `wxString::ToDouble` reads it: the whole text, or nothing.
+  const readNumber = (f) => (f.input.value.trim() === '' ? null : Number(f.input.value));
+
+  // "Max volumetric speed test" (calib_dlg.cpp `MaxVolumetricSpeed_Test_Dlg`).
+  function maxFlowrate() {
+    const { dialog, fields } = threeNumbers({
+      title: 'Max volumetric speed test',
+      labels: ['Start volumetric speed: ', 'End volumetric speed: ', `${t('Step')}: `],
+      unit: 'mm\u00b3/s',
+      values: ['5', '20', shown(0.5)],
+      guide: ['Wiki Guide: Volumetric Speed Calibration', 'https://github.com/SoftFever/OrcaSlicer/wiki/volumetric-speed-calib'],
+    });
+    return run(dialog, async () => {
+      const [start, end, step] = fields.map(readNumber);
+      try {
+        await make({ test: 'max_flowrate', start, end, step });
+      } catch (error) {
+        return error.message;
+      }
+      return null;
+    });
+  }
+
   // "Flow rate" (MainFrame.cpp, Plater.cpp `calib_flowrate`): no dialog;
   // the menu item makes the test's project at once.
   function flowRate(test) {
@@ -267,5 +308,5 @@ const Calib = (() => {
     return openGuide('https://github.com/SoftFever/OrcaSlicer/wiki/Calibration');
   }
 
-  return { pressureAdvance, temperature, retraction, flowRate, tutorial, parseList };
+  return { pressureAdvance, temperature, retraction, maxFlowrate, flowRate, tutorial, parseList };
 })();
