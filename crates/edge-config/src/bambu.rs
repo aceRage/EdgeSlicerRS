@@ -1354,8 +1354,9 @@ fn escape_cstyle(text: &str) -> String {
 }
 
 /// `escape_strings_cstyle`: each in quotes where it needs them, joined by
-/// ";". **Differs**: one holding a ";" is quoted too; the reference's
-/// (Config.cpp l.95–101) is not, and is then read back as two.
+/// ";". **Differs**: one holding a ";" is quoted too; the pinned
+/// reference's (Config.cpp l.95–101) is not, and is then read back as two
+/// (fixed as here by aceRage/EdgeSlicer#1035).
 fn escape_strings_cstyle(items: &[String]) -> String {
     let alone = items.len() == 1;
     items
