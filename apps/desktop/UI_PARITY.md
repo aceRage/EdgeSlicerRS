@@ -1448,6 +1448,10 @@ only kind this engine writes), the reference's formatter trimming zeros.
   counted). **Ahead of the pin**: from OrcaSlicer `dfb93e0332` (#14473),
   the extrusion reset before the last `set_pressure_advance`; with relative
   extrusion it writes nothing.
+  Seen in the browser (calibration pass 3): "PA Pattern" with speeds 100,
+  150 and accelerations 3000, 6000 makes one plate, "Plate 1", holding the
+  four handles `pa_pattern_100_3000` … `pa_pattern_150_6000`; no empty
+  second plate is left.
 
 Temperature (`calib_temp`): `temperature_tower.stl` (10 mm blocks, 350
 °C at the foot, 5 °C less each block up), cut above the block of the end
@@ -1530,6 +1534,44 @@ speed are the first filament's first (Standard) value, as the earlier
 tests read them; the reference reads the column of the flow type the plate
 slices with (`calib_filament_flow_values`), which differs only for a High
 Flow filament on a printer that has them.
+
+Retraction test (`calib_retraction`, the dialog `Retraction_Test_Dlg`):
+"Retraction test" with "Settings" ("Start retraction length: " 0, "End
+retraction length: " 2, "Step: " 0.1, mm after each), "Wiki Guide:
+Retraction Calibration", and its check ("Please input valid values:
+start > 0 …": start under 0, a step not over 0, or an end under start +
+step). The project "Retraction test": `retraction_tower.stl`, cut at
+`1.4 + (end - start) / step` mm; a layer height the nozzle can print (0.05
+to a 0.1 nozzle, 0.1 to 0.2, else 0.2; Orca #11835) on the object and as
+the first layer's over the process, the printer's first
+`max_layer_height` raised to it where under it; over the process
+`wipe_inward` 0; over the printer `resonance_avoidance` 0 and
+`use_firmware_retraction` 0; on the object `wall_loops` 2,
+`top_shell_layers` 0, `bottom_shell_layers` 3, `sparse_infill_density` 0%,
+`alternate_extra_wall` 0, `wall_sequence` inner wall/outer wall,
+`overhang_reverse` 0, and `seam_position` aligned over the process (as
+above). **Ahead of the pin**: OrcaSlicer `5302f703c0` (#15543),
+`seam_slope_type` none, so that a scarf seam does not hide the retraction
+(over the process, as above). At every layer, after the fan marker, `;
+Calib_Retraction_tower: Z_HEIGHT: <top>, length:<length>` (`%g`), and from
+then on every retraction, its wipe's share and the move up or down at a
+layer change, is that length: `start + floor(max(0, top - 0.4)) × step`
+(GCode.cpp `process_layer`). The retraction at the layer change itself is
+made before the new length is set, as there. The layer's top is the sum
+of its layers' heights as the reference adds them (the height in single
+precision): the seventh layer's top, a little over 1.4, already gives one
+step. Checked by the engine's test on a U1 (Klipper) and a Creality Ender-3
+V3 SE (Marlin): every layer's line, and each retraction's length read back
+from the push that follows it (a wipe splits the pull), 57 layers for 0 to
+1 mm by 0.1; and by the session's (the check, the settings shown changed,
+107 layers for the dialog's defaults, the last line `Z_HEIGHT: 21.4,
+length:2.1`, undo). The dialog was seen in the browser at 1280 dark,
+English (the pane drew it at 800 wide) and at 900 light, German, with its
+check. Not picked up, waiting for the pin bump (upstream's
+`calib_retraction` since): the project named "Retraction", the model as
+`retraction_tower.drc`, `enable_wrapping_detection`,
+`retract_after_outer_wall` and `precise_z_height` off, every extruder's
+`max_layer_height` raised, and the cut EPSILON lower.
 
 Checked: the engine's test slices "Pass 1" on a U1 and reads back that
 each tile's top surface feeds its own flow (+10%, -20%, +5% against
@@ -3767,7 +3809,8 @@ its tooltip "not yet: …" saying what it waits for.
 | | "Pressure advance" | | built: on in Prepare; the dialog "PA Calibration" with its three methods, "PA Tower", "PA Line" and "PA Pattern" |
 | | "Tutorial" | | built: the reference's guide page (`https://github.com/SoftFever/OrcaSlicer/wiki/Calibration`), opened by the window; a browser shows the address. **differs**: no mirror for a person in China (the reference picks it by the country it keeps; this app keeps none) |
 | | "Flow rate" ▸ "Pass 1", "Pass 2", "YOLO (Recommended)", "YOLO (perfectionist version)" | | built: on in Prepare; each makes its test at once, as the reference does (no dialog) |
-| | "Retraction test", "Stringing (temp × retraction)", "Max flowrate", "Cornering", "Input Shaping" ▸ ("Input Shaping Frequency", "Input Shaping Damping/zeta factor"), "VFA", "Ironing flow" | | off: "not yet: calibration models are not built" (the reference has the menu in the macOS bar and a title-bar menu elsewhere) |
+| | "Retraction test" | | built: on in Prepare; the dialog "Retraction test" |
+| | "Stringing (temp × retraction)", "Max flowrate", "Cornering", "Input Shaping" ▸ ("Input Shaping Frequency", "Input Shaping Damping/zeta factor"), "VFA", "Ironing flow" | | off: "not yet: calibration models are not built" (the reference has the menu in the macOS bar and a title-bar menu elsewhere) |
 | Account (macOS) | sign-in for Snapmaker, Bambu Lab, Flashforge | | not shown: the cloud is not this task |
 | Window (macOS) | "Minimize" [Cmd+M], "Zoom" | | the system's own, in the window; off in a browser |
 | | "Next Project", "Previous Project" | Cmd+Shift+] / [ | wired (`project_cycle`); on with two projects |

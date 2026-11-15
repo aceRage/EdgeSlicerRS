@@ -35,6 +35,9 @@ pub enum CalibrationKind {
     /// of the plate's custom G-code, with the filament it feeds, every
     /// test's together (`calib_draw::pa_pattern`).
     PressureAdvancePattern(Vec<(String, f64)>),
+    /// `Calib_Retraction_tower`: the retraction length `start`, `step`
+    /// more for each whole mm above 0.4 mm ([`tower_retraction`]).
+    RetractionTower { start: f64, step: f64 },
 }
 
 /// How a firmware is told its pressure advance (GCodeWriter.cpp
@@ -164,10 +167,31 @@ pub(crate) fn at_layer(
         CalibrationKind::TemperatureTower { start } => {
             temperature_line(tower_temperature(start, z), tool, calibration.firmware)
         }
+        CalibrationKind::RetractionTower { start, step } => format!(
+            "; Calib_Retraction_tower: Z_HEIGHT: {}, length:{}\n",
+            general(z, 6),
+            general(tower_retraction(start, step, z), 6)
+        ),
         CalibrationKind::PressureAdvanceLine(_) | CalibrationKind::PressureAdvancePattern(_) => {
             String::new()
         }
     }
+}
+
+/// The retraction length a calibration sets from the layer whose top is at
+/// `z` on, in place of the filament's.
+pub(crate) fn retraction_at(calibration: &Calibration, z: f64) -> Option<f64> {
+    match calibration.kind {
+        CalibrationKind::RetractionTower { start, step } => Some(tower_retraction(start, step, z)),
+        _ => None,
+    }
+}
+
+/// The retraction tower's length at a layer whose top is at `z` mm
+/// (GCode.cpp `process_layer`, `Calib_Retraction_tower`): `start`, and
+/// `step` more for each whole mm above 0.4 mm, the tower's base.
+pub fn tower_retraction(start: f64, step: f64, z: f64) -> f64 {
+    start + (z - 0.4).max(0.0).floor() * step
 }
 
 /// The temperature tower's temperature at a layer whose top is at `z`
@@ -315,6 +339,33 @@ mod tests {
             temperature_line(225, None, AdvanceFirmware::Mach3),
             "M104 P225 ; set nozzle temperature\n"
         );
+    }
+
+    #[test]
+    fn the_retraction_tower_lengthens_its_retraction_every_mm() {
+        // GCode.cpp: start + floor(max(0, print_z - 0.4)) * step.
+        assert_eq!(tower_retraction(0.0, 0.1, 0.2), 0.0);
+        assert_eq!(tower_retraction(0.0, 0.1, 1.2), 0.0);
+        // 1.4 - 0.4 is just under 1 in double precision, in the
+        // reference's arithmetic as here.
+        assert_eq!(tower_retraction(0.0, 0.1, 1.4), 0.0);
+        assert_eq!(tower_retraction(0.0, 0.1, 1.6), 0.1);
+        assert_eq!(tower_retraction(0.5, 0.25, 9.6), 0.5 + 9.0 * 0.25);
+        let tower = Calibration {
+            kind: CalibrationKind::RetractionTower {
+                start: 0.0,
+                step: 0.1,
+            },
+            firmware: AdvanceFirmware::Klipper,
+            comments: false,
+            max_jerk: [0.0; 4],
+        };
+        // `%g` of each.
+        assert_eq!(
+            at_layer(&tower, 12, 100, 2.6, None),
+            "; Calib_Retraction_tower: Z_HEIGHT: 2.6, length:0.2\n"
+        );
+        assert_eq!(retraction_at(&tower, 2.6), Some(0.2));
     }
 
     #[test]

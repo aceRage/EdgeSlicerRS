@@ -54,6 +54,7 @@ fn params(args: &Value) -> Result<CalibParams, String> {
         Some("pa_line") => CalibMode::PressureAdvanceLine,
         Some("pa_pattern") => CalibMode::PressureAdvancePattern,
         Some("temp_tower") => CalibMode::TemperatureTower,
+        Some("retraction") => CalibMode::RetractionTower,
         Some(other) => return Err(format!("there is no calibration \"{other}\" yet")),
         None => return Err("test was not given".into()),
     };
@@ -79,6 +80,18 @@ fn params(args: &Value) -> Result<CalibParams, String> {
             end.unwrap_or(0.0),
             5.0,
         ));
+    }
+    if mode == CalibMode::RetractionTower {
+        // Retraction_Test_Dlg::on_start.
+        let (start, end, step) = (number("start"), number("end"), number("step"));
+        return match (start, end, step) {
+            (Ok(start), Ok(end), Ok(step)) if start >= 0.0 && step > 0.0 && end >= start + step => {
+                Ok(CalibParams::new(mode, start, end, step))
+            }
+            _ => Err(super::i18n::tr(
+                "Please input valid values:\nstart > 0\nstep >= 0\nend > start + step",
+            )),
+        };
     }
     let mut params = CalibParams::new(mode, number("start")?, number("end")?, number("step")?);
     params.print_numbers = args.get("print_numbers").and_then(Value::as_bool) == Some(true);
@@ -143,6 +156,9 @@ impl Session {
                 }
                 CalibMode::TemperatureTower => {
                     edge_engine::calib::temperature(params, &calib_dir, bed.as_ref())
+                }
+                CalibMode::RetractionTower => {
+                    edge_engine::calib::retraction(params, &settled, &calib_dir, bed.as_ref())
                 }
             },
             (None, None) => return Err("test was not given".into()),
@@ -467,5 +483,47 @@ mod tests {
                 assert_eq!(detail["choices"]["over"]["layer_height"], "0.2");
             }
         }
+    }
+
+    #[test]
+    fn the_retraction_test_is_checked_made_sliced_and_undone() {
+        for bad in [
+            json!({"test": "retraction", "start": -1, "end": 2, "step": 0.1}),
+            json!({"test": "retraction", "start": 0, "end": 2, "step": 0}),
+            json!({"test": "retraction", "start": 0, "end": 0.05, "step": 0.1}),
+            json!({"test": "retraction", "start": 0, "end": 2}),
+        ] {
+            assert!(
+                params(&bad)
+                    .unwrap_err()
+                    .starts_with("Please input valid values"),
+                "{bad}"
+            );
+        }
+        let dir = tempfile::tempdir().unwrap();
+        let session = Arc::new(Session::new(None));
+        choose_presets(&session);
+        // The dialog's defaults: 0 to 2 by 0.1.
+        let listing = ask(
+            &session,
+            "calibrate",
+            json!({"test": "retraction", "start": 0, "end": 2, "step": 0.1}),
+        );
+        let id = listing["id"].as_u64().unwrap();
+        let detail = ask(&session, "project", json!({}));
+        assert_eq!(detail["name"], "Retraction test");
+        assert_eq!(detail["dirty"], true);
+        let choices = &detail["choices"];
+        assert_eq!(choices["over"]["wipe_inward"], "0", "{choices}");
+        assert_eq!(choices["over"]["initial_layer_print_height"], "0.2");
+        assert_eq!(choices["over"]["seam_slope_type"], "none");
+        assert_eq!(choices["printer_over"]["use_firmware_retraction"], "0");
+        let gcode = slice_and_read(&session, id, dir.path());
+        // 1.4 + 20 = 21.4 mm: the tower is 40 mm high, so cut; 107 layers.
+        assert_eq!(gcode.matches(";LAYER_CHANGE").count(), 107);
+        assert!(gcode.contains("; Calib_Retraction_tower: Z_HEIGHT: 21.4, length:2.1"));
+        ask(&session, "undo", json!({ "project": id }));
+        let objects = ask(&session, "plate_view", json!({ "project": id }));
+        assert_eq!(objects["objects"].as_array().map_or(0, Vec::len), 0);
     }
 }

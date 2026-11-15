@@ -29,6 +29,8 @@ pub enum CalibMode {
     PressureAdvanceLine,
     /// `Calib_PA_Pattern`.
     PressureAdvancePattern,
+    /// `Calib_Retraction_tower`.
+    RetractionTower,
 }
 
 /// What the calibration's dialog asked for (calib.hpp `Calib_Params`).
@@ -159,6 +161,10 @@ impl CalibParams {
             CalibMode::PressureAdvancePattern => {
                 CalibrationKind::PressureAdvancePattern(Vec::new())
             }
+            CalibMode::RetractionTower => CalibrationKind::RetractionTower {
+                start: self.start,
+                step: self.step,
+            },
         };
         let jerk = |axis: &str| -> Result<f64, Failure> {
             Ok(first_number(settings, &format!("machine_max_jerk_{axis}"))?.unwrap_or(0.0))
@@ -420,8 +426,8 @@ pub fn pressure_advance(
             notes = made.notes;
             made.model
         }
-        CalibMode::TemperatureTower => {
-            return Err("the temperature tower is made by `temperature`".into());
+        CalibMode::TemperatureTower | CalibMode::RetractionTower => {
+            return Err("that test is not a pressure advance test".into());
         }
         CalibMode::PressureAdvanceLine => {
             // Plater.cpp `calib_pa`: the model only stands for the test,
@@ -782,6 +788,84 @@ pub fn temperature(
 
 /// Settings set on one side or another.
 type Set = Vec<(String, String)>;
+
+/// "Retraction test" (Plater.cpp `calib_retraction`): the retraction
+/// tower, a layer height the nozzle can print (Orca #11835), two walls, no
+/// top or fill, cut to `1.4 + (end - start) / step` mm; the slice then
+/// lengthens the retraction by `step` every mm above its 0.4 mm base
+/// (`edge_gcode::calib::tower_retraction`). `settings` are those the
+/// project starts from.
+pub fn retraction(
+    params: &CalibParams,
+    settings: &Settings,
+    calib_dir: &Path,
+    bed: Option<&Bed>,
+) -> Result<CalibProject, Failure> {
+    let mut model = load(calib_dir, "retraction/retraction_tower.stl", bed)?;
+    let nozzle = nozzle_diameter(settings)?;
+    let layer_height = if nozzle <= 0.1 {
+        "0.05"
+    } else if nozzle <= 0.2 {
+        "0.1"
+    } else {
+        "0.2"
+    };
+    let height: f64 = layer_height.parse()?;
+    let mut process = pairs(&[
+        ("wipe_inward", "0"),
+        ("initial_layer_print_height", layer_height),
+    ]);
+    let mut printer = Vec::new();
+    // The printer's first extruder's greatest layer height raised to the
+    // test's, where it is under it.
+    if let Some(most) = settings.floats("max_layer_height")?
+        && let Some(Some(first)) = most.first()
+        && *first < height
+    {
+        let mut values: Vec<String> = most
+            .iter()
+            .map(|value| value.map_or_else(|| "nil".to_owned(), written))
+            .collect();
+        values[0] = layer_height.to_owned();
+        printer.push(("max_layer_height".to_owned(), values.join(",")));
+    }
+    printer.extend(pairs(&[
+        ("resonance_avoidance", "0"),
+        ("use_firmware_retraction", "0"),
+    ]));
+    set_on_object(
+        &mut model,
+        bed,
+        &[
+            ("wall_loops", "2"),
+            ("top_shell_layers", "0"),
+            ("bottom_shell_layers", "3"),
+            ("sparse_infill_density", "0%"),
+            ("layer_height", layer_height),
+            ("alternate_extra_wall", "0"),
+            ("seam_position", "aligned"),
+            ("wall_sequence", "inner wall/outer wall"),
+            ("overhang_reverse", "0"),
+            // Ahead of the pin: OrcaSlicer 5302f703c0 (#15543), no scarf
+            // seam, whose sloped start hides the retraction's effect.
+            ("seam_slope_type", "none"),
+        ],
+        &mut process,
+    )?;
+    let cut_at = 1.0 + 0.4 + (params.end - params.start) / params.step;
+    if cut_at < height_of(&model, bed)? {
+        cut(&mut model, bed, cut_at, Keep::Lower)?;
+    }
+    Ok(CalibProject {
+        name: "Retraction test".to_owned(),
+        model,
+        process,
+        filament: Vec::new(),
+        printer,
+        params: Some(params.clone()),
+        notes: Vec::new(),
+    })
+}
 
 /// Which of the Flow rate menu's tests (Plater.cpp `calib_flowrate`).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

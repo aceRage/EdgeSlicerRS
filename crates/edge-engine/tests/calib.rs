@@ -59,6 +59,9 @@ fn sliced_gcode(chosen: &Chosen, params: &CalibParams) -> (CalibProject, String)
     let calib = reference("resources/calib");
     let made = match params.mode {
         CalibMode::TemperatureTower => edge_engine::calib::temperature(params, &calib, Some(&bed)),
+        CalibMode::RetractionTower => {
+            edge_engine::calib::retraction(params, &settings, &calib, Some(&bed))
+        }
         _ => edge_engine::calib::pressure_advance(params, &settings, &calib, Some(&bed)),
     }
     .unwrap();
@@ -465,5 +468,114 @@ fn the_flow_rate_tiles_each_print_their_own_flow() {
     ] {
         let got = per_mm(name) / base;
         assert!((got - ratio).abs() < 0.002, "{name}: {got}");
+    }
+}
+
+/// The tower's layers' tops and how far the filament is pushed back on
+/// after each retraction on them (`G1 E<length>`): the whole retraction,
+/// which a wipe splits into parts.
+fn retractions_by_layer(gcode: &str) -> Vec<(f64, Vec<f64>)> {
+    layers(gcode)
+        .iter()
+        .map(|text| {
+            let z: f64 = text
+                .lines()
+                .find_map(|line| line.strip_prefix(";Z:"))
+                .unwrap()
+                .parse()
+                .unwrap();
+            let pulls = text
+                .lines()
+                .filter_map(|line| line.strip_prefix("G1 E"))
+                .filter(|rest| !rest.starts_with('-'))
+                .map(|rest| rest.split_whitespace().next().unwrap().parse().unwrap())
+                .collect();
+            (z, pulls)
+        })
+        .collect()
+}
+
+#[test]
+fn the_retraction_tower_lengthens_its_retraction_every_mm() {
+    for (vendor, machine) in [
+        ("Snapmaker", "Snapmaker U1 (0.4 nozzle)"),
+        ("Creality", "Creality Ender-3 V3 SE 0.4 nozzle"),
+    ] {
+        let chosen = presets(vendor, machine);
+        // 0 to 1 mm by 0.1: cut at 1.4 + 10 = 11.4 mm.
+        let params = CalibParams::new(CalibMode::RetractionTower, 0.0, 1.0, 0.1);
+        let (made, gcode) = sliced_gcode(&chosen, &params);
+        if let Ok(dir) = std::env::var("EDGE_CALIB_DUMP") {
+            std::fs::write(
+                std::path::Path::new(&dir).join(format!("retraction_{vendor}.gcode")),
+                &gcode,
+            )
+            .unwrap();
+        }
+        assert_eq!(made.name, "Retraction test");
+        let process: std::collections::BTreeMap<&str, &str> = made
+            .process
+            .iter()
+            .map(|(k, v)| (k.as_str(), v.as_str()))
+            .collect();
+        assert_eq!(process["initial_layer_print_height"], "0.2");
+        assert_eq!(process["wipe_inward"], "0");
+        // Not followed on an object: over the process (one object).
+        assert_eq!(process["seam_position"], "aligned");
+        assert_eq!(process["seam_slope_type"], "none");
+        assert!(
+            made.printer
+                .contains(&("use_firmware_retraction".into(), "0".into()))
+        );
+        let by_layer = retractions_by_layer(&gcode);
+        // 11.4 mm at 0.2: 57 layers.
+        assert_eq!(by_layer.len(), 57, "{machine}");
+        // The layers' tops as the reference adds them up (Slicing.cpp
+        // `generate_object_layers`: `print_z += height`, the height kept
+        // in single precision), which the length is worked from: the
+        // seventh layer's top is a little over 1.4 there, so its length
+        // is already 0.1.
+        let mut tops = vec![0.2_f64];
+        while tops.len() < by_layer.len() {
+            tops.push(tops[tops.len() - 1] + f64::from(0.2_f32));
+        }
+        for (index, text) in layers(&gcode).iter().enumerate() {
+            let z = tops[index];
+            assert!((z - by_layer[index].0).abs() < 1e-6);
+            let after = text
+                .split_once(";_SET_FAN_SPEED_CHANGING_LAYER\n")
+                .unwrap()
+                .1;
+            // GCode.cpp: written after the fan marker, `%g` of each.
+            let length = edge_gcode::calib::tower_retraction(0.0, 0.1, z);
+            assert_eq!(
+                after.lines().next().unwrap(),
+                format!(
+                    "; Calib_Retraction_tower: Z_HEIGHT: {}, length:{}",
+                    edge_gcode::calib::general(z, 6),
+                    edge_gcode::calib::general(length, 6)
+                ),
+                "{machine} at {z}"
+            );
+        }
+        // Every retraction on a layer is that layer's length, but for the
+        // one at the layer change, made before the new length is set.
+        for (index, (z, pulls)) in by_layer.iter().enumerate().skip(1) {
+            let length = edge_gcode::calib::tower_retraction(0.0, 0.1, tops[index]);
+            let previous = edge_gcode::calib::tower_retraction(0.0, 0.1, tops[index - 1]);
+            for pull in pulls {
+                assert!(
+                    (pull - length).abs() < 1e-5 || (pull - previous).abs() < 1e-5,
+                    "{machine} at {z}: {pull} for {length}"
+                );
+            }
+        }
+        // The top: at 11.4, 11 steps of 0.1 (1.1 mm).
+        let (z, pulls) = by_layer.last().unwrap();
+        assert!((z - 11.4).abs() < 1e-6);
+        assert!(
+            pulls.iter().any(|pull| (pull - 1.1).abs() < 1e-5),
+            "{pulls:?}"
+        );
     }
 }

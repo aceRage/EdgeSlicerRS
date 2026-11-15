@@ -752,9 +752,8 @@ static CALIBRATION: &[Node] = &[
         "calibration.retraction",
         "Retraction test",
         "Retraction test",
-        When::Always,
-    )
-    .waits(NO_CALIBRATION)),
+        When::Prepare,
+    )),
     I(item(
         "calibration.stringing",
         "Stringing (temp × retraction)",
