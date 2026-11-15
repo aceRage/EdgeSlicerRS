@@ -761,7 +761,6 @@ not yet: settings are not read from a G-code file
 not yet: slices are not compared
 not yet: the app follows the system's dark or light
 not yet: the app has one window
-not yet: this method is not built
 not yet: the app keeps no logs
 not yet: the firewall is not checked
 not yet: the scene has no X-ray view

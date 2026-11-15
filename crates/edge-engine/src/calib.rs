@@ -25,6 +25,10 @@ pub enum CalibMode {
     PressureAdvanceTower,
     /// `Calib_Temp_Tower`.
     TemperatureTower,
+    /// `Calib_PA_Line`.
+    PressureAdvanceLine,
+    /// `Calib_PA_Pattern`.
+    PressureAdvancePattern,
 }
 
 /// What the calibration's dialog asked for (calib.hpp `Calib_Params`).
@@ -37,6 +41,19 @@ pub struct CalibParams {
     pub print_numbers: bool,
     pub accelerations: Vec<f64>,
     pub speeds: Vec<f64>,
+    /// "PA Pattern": the handles on the plate being sliced
+    /// ([`CalibParams::on_plate`]), each pattern drawn round its own.
+    pub handles: Vec<PatternHandle>,
+}
+
+/// A "PA Pattern" handle cube on the plate being sliced: its box across
+/// the plate (min x, min y, max x, max y) and the speed and acceleration
+/// it carries of its own, when it does.
+#[derive(Clone, Debug, PartialEq)]
+pub struct PatternHandle {
+    pub reach: [f64; 4],
+    pub speed: Option<f64>,
+    pub acceleration: Option<f64>,
 }
 
 impl CalibParams {
@@ -49,11 +66,84 @@ impl CalibParams {
             print_numbers: false,
             accelerations: Vec::new(),
             speeds: Vec::new(),
+            handles: Vec::new(),
         }
     }
 
+    /// The parameters for slicing `plate` of `model`: for "PA Pattern",
+    /// with the handles standing on it where they now stand (Plater.cpp
+    /// `_calib_pa_pattern_gen_gcode`, run before each slice).
+    pub fn on_plate(&self, model: &Model, plate: Option<u32>) -> CalibParams {
+        let mut params = self.clone();
+        if self.mode != CalibMode::PressureAdvancePattern {
+            return params;
+        }
+        let number = |object: &crate::ModelObject, key: &str| {
+            object
+                .settings()
+                .iter()
+                .find(|(own, _)| own == key)
+                .and_then(|(_, value)| value.split(',').next()?.trim().parse().ok())
+        };
+        params.handles = model
+            .objects()
+            .iter()
+            .filter(|object| object.name().starts_with("pa_pattern_"))
+            .filter_map(|object| {
+                let copy = object.copies().first()?;
+                let on = model
+                    .plate_of(copy.id())
+                    .and_then(|at| model.plates().get(at))
+                    .map(|plate| plate.id());
+                if plate.is_some() && on != plate {
+                    return None;
+                }
+                let [low, high] = copy.reach()?;
+                Some(PatternHandle {
+                    reach: [low[0], low[1], high[0], high[1]],
+                    speed: number(object, "outer_wall_speed"),
+                    acceleration: number(object, "outer_wall_acceleration"),
+                })
+            })
+            .collect();
+        params
+    }
+
+    /// "PA Pattern": the G-code each of the first layers carries, every
+    /// handle's pattern together (Plater.cpp `_calib_pa_pattern_gen_gcode`,
+    /// `CalibPressureAdvancePattern::generate_custom_gcodes`).
+    pub fn pattern_layers(
+        &self,
+        settings: &Settings,
+        pen: &edge_gcode::Pen,
+    ) -> Result<Vec<(String, f64)>, Failure> {
+        let nozzle = nozzle_diameter(settings)?;
+        let mut layers: Vec<(String, f64)> = Vec::new();
+        for handle in &self.handles {
+            let speed = match handle.speed {
+                Some(speed) => speed,
+                None => process_number(settings, "outer_wall_speed")?,
+            };
+            let acceleration = match handle.acceleration {
+                Some(acceleration) => acceleration,
+                None => process_number(settings, "outer_wall_acceleration")?,
+            };
+            let test = pattern_test(self, settings, nozzle, speed, acceleration, handle.reach)?;
+            for (at, (text, fed)) in edge_gcode::pa_pattern(&test, pen).into_iter().enumerate() {
+                match layers.get_mut(at) {
+                    Some(layer) => {
+                        layer.0.push_str(&text);
+                        layer.1 += fed;
+                    }
+                    None => layers.push((text, fed)),
+                }
+            }
+        }
+        Ok(layers)
+    }
+
     /// What the writer does with it, for a printer of these settings.
-    pub fn for_writer(&self, settings: &Settings, bambu: bool) -> Calibration {
+    pub fn for_writer(&self, settings: &Settings, bambu: bool) -> Result<Calibration, Failure> {
         let firmware = AdvanceFirmware::of(settings.text("gcode_flavor"), bambu);
         let kind = match self.mode {
             CalibMode::PressureAdvanceTower => CalibrationKind::PressureAdvanceTower {
@@ -62,8 +152,70 @@ impl CalibParams {
                 step: self.step,
             },
             CalibMode::TemperatureTower => CalibrationKind::TemperatureTower { start: self.start },
+            CalibMode::PressureAdvanceLine => {
+                CalibrationKind::PressureAdvanceLine(Box::new(self.pa_line(settings)?))
+            }
+            // Made by the slice from its objects ([`Self::pa_pattern`]).
+            CalibMode::PressureAdvancePattern => {
+                CalibrationKind::PressureAdvancePattern(Vec::new())
+            }
         };
-        Calibration { kind, firmware }
+        let jerk = |axis: &str| -> Result<f64, Failure> {
+            Ok(first_number(settings, &format!("machine_max_jerk_{axis}"))?.unwrap_or(0.0))
+        };
+        Ok(Calibration {
+            kind,
+            firmware,
+            comments: settings.flag("gcode_comments")?.unwrap_or(false),
+            max_jerk: [jerk("x")?, jerk("y")?, jerk("z")?, jerk("e")?],
+        })
+    }
+
+    /// What "PA Line" draws with (GCode.cpp `_do_export`,
+    /// `CalibPressureAdvanceLine`), from the slice's settings and the
+    /// first filament's.
+    fn pa_line(&self, settings: &Settings) -> Result<edge_gcode::PaLine, Failure> {
+        let corners = settings.texts("printable_area").unwrap_or(&[]);
+        let mut bed: Option<[f64; 4]> = None;
+        for corner in corners {
+            let (x, y) = corner
+                .split_once('x')
+                .ok_or_else(|| format!("printable_area: {corner} is not a corner"))?;
+            let (x, y): (f64, f64) = (x.trim().parse()?, y.trim().parse()?);
+            let [a, b, c, d] = bed.unwrap_or([x, y, x, y]);
+            bed = Some([a.min(x), b.min(y), c.max(x), d.max(y)]);
+        }
+        let bed = bed.ok_or("PA Line: the printer has no printable_area")?;
+        let nozzle = nozzle_diameter(settings)?;
+        let layer_height = settings
+            .float_or_percent("initial_layer_print_height")?
+            .map_or(0.2, |h| h.resolve(nozzle));
+        let diameter = filament_number(settings, "filament_diameter", 0)?;
+        let filament_flow = filament_number(settings, "filament_flow_ratio", 0)?;
+        let print_flow = settings.float("print_flow_ratio")?.unwrap_or(1.0);
+        let area = std::f64::consts::PI * (diameter / 2.0).powi(2);
+        let mut line = edge_gcode::PaLine {
+            start: self.start,
+            step: self.step,
+            count: ((self.end - self.start) / self.step).ceil().round() as i64 + 1,
+            print_numbers: self.print_numbers,
+            bed,
+            delta: corners.len() > 4,
+            nozzle_diameter: nozzle,
+            layer_height,
+            e_per_mm3: if area > 0.0 {
+                print_flow * filament_flow / area
+            } else {
+                0.0
+            },
+            fast: 0.0,
+            acceleration: first_number(settings, "outer_wall_acceleration")?.unwrap_or(0.0),
+            jerk: first_number(settings, "outer_wall_jerk")?.unwrap_or(0.0),
+        };
+        // Orca #16882: capped by the volumetric speed of the filament the
+        // test prints with.
+        line.fast = optimal_pa_speed(settings, line.line_width(), layer_height, 0)?;
+        Ok(line)
     }
 }
 
@@ -80,6 +232,9 @@ pub struct CalibProject {
     pub filament: Vec<(String, String)>,
     pub printer: Vec<(String, String)>,
     pub params: CalibParams,
+    /// What the reference says in its notifications while making it, as
+    /// message id and the value it is followed by.
+    pub notes: Vec<(String, String)>,
 }
 
 /// The first nozzle's diameter.
@@ -104,43 +259,31 @@ fn width(settings: &Settings, key: &str, nozzle: f64) -> Result<f64, Failure> {
         .map_or(0.0, |width| width.resolve(nozzle)))
 }
 
-/// Plastic laid per mm of a line (Flow.cpp `Flow::mm3_per_mm`): the
-/// reference's flow keeps its width and height in single precision and
-/// gives the result in single precision too.
-pub fn line_mm3_per_mm(width: f64, height: f64) -> f64 {
-    let (width, height) = (f64::from(width as f32), f64::from(height as f32));
-    f64::from((height * (width - height * (1.0 - 0.25 * std::f64::consts::PI))) as f32)
+pub use edge_gcode::calib::line_mm3_per_mm;
+
+/// The first entry of a filament's list of numbers.
+fn filament_number(settings: &Settings, key: &str, filament: usize) -> Result<f64, Failure> {
+    Ok(settings
+        .floats(key)?
+        .and_then(|values| values.get(filament).or(values.last()).copied().flatten())
+        .unwrap_or(0.0))
 }
 
-/// The speed to print the pressure advance test at (calib.cpp
-/// `CalibPressureAdvance::find_optimal_PA_speed`): the outer wall speed,
-/// at least 100 mm/s, held to what the filament's maximum volumetric
-/// speed allows for a line of this width and height, rounded down. A
-/// width of 0 is the reference's automatic one (Flow.cpp
-/// `auto_extrusion_width`, `frPerimeter`).
+/// The speed to print the pressure advance test at
+/// ([`edge_gcode::calib::optimal_pa_speed`]) for these settings.
 pub fn optimal_pa_speed(
     settings: &Settings,
     line_width: f64,
     layer_height: f64,
     filament: usize,
 ) -> Result<f64, Failure> {
-    const SUGGESTED_MIN_SPEED: f64 = 100.0;
-    let max_volumetric = settings
-        .floats("filament_max_volumetric_speed")?
-        .and_then(|values| values.get(filament).or(values.last()).copied().flatten())
-        .unwrap_or(0.0);
-    let nozzle = nozzle_diameter(settings)? as f32;
-    let line_width = if line_width <= 0.0 {
-        f64::from(1.125_f32 * nozzle)
-    } else {
-        line_width
-    };
-    let outer_wall_speed = first_number(settings, "outer_wall_speed")?.unwrap_or(0.0);
-    let speed = SUGGESTED_MIN_SPEED
-        .max(outer_wall_speed)
-        .min(max_volumetric / line_mm3_per_mm(line_width, layer_height));
-    // Returned as a float by the reference.
-    Ok(f64::from((speed.floor()) as f32))
+    Ok(edge_gcode::calib::optimal_pa_speed(
+        filament_number(settings, "filament_max_volumetric_speed", filament)?,
+        first_number(settings, "outer_wall_speed")?.unwrap_or(0.0),
+        nozzle_diameter(settings)?,
+        line_width,
+        layer_height,
+    ))
 }
 
 /// A number as the reference's options write it: `2`, `0.4`, `120`.
@@ -263,10 +406,25 @@ pub fn pressure_advance(
     // `calib_pa`, for every method.
     let mut process = pairs(&[("overhang_reverse", "0")]);
     let filament;
-    let printer = pairs(&[("resonance_avoidance", "0")]);
+    let mut printer = pairs(&[("resonance_avoidance", "0")]);
+    let mut notes = Vec::new();
     let model = match params.mode {
+        CalibMode::PressureAdvancePattern => {
+            let made = pa_pattern(params, settings, bed)?;
+            process.extend(made.process);
+            printer.extend(made.printer);
+            filament = made.filament;
+            notes = made.notes;
+            made.model
+        }
         CalibMode::TemperatureTower => {
             return Err("the temperature tower is made by `temperature`".into());
+        }
+        CalibMode::PressureAdvanceLine => {
+            // Plater.cpp `calib_pa`: the model only stands for the test,
+            // which GCode.cpp draws in place of its layers.
+            filament = Vec::new();
+            load(calib_dir, "pressure_advance/pressure_advance_test.stl", bed)?
         }
         CalibMode::PressureAdvanceTower => {
             let (model, process_more, filament_more) = pa_tower(params, settings, calib_dir, bed)?;
@@ -284,6 +442,274 @@ pub fn pressure_advance(
         filament,
         printer,
         params: params.clone(),
+        notes,
+    })
+}
+
+/// What "PA Pattern" sets and stands on the plate.
+struct Pattern {
+    model: Model,
+    process: Set,
+    filament: Set,
+    printer: Set,
+    notes: Vec<(String, String)>,
+}
+
+/// Whether the printer takes Marlin's junction deviation (Plater.cpp
+/// `has_junction_deviation`).
+fn junction_deviation(settings: &Settings) -> Result<bool, Failure> {
+    Ok(settings.text("gcode_flavor") == Some("marlin2")
+        && first_number(settings, "machine_max_junction_deviation")?.unwrap_or(0.0) > 0.0)
+}
+
+/// A process setting's first value, or 0.
+fn process_number(settings: &Settings, key: &str) -> Result<f64, Failure> {
+    Ok(first_number(settings, key)?.unwrap_or(0.0))
+}
+
+/// The geometry of one pattern for the settings the test prints with,
+/// its handle at `handle` (min x, min y, max x, max y).
+#[allow(clippy::too_many_arguments)]
+fn pattern_test(
+    params: &CalibParams,
+    settings: &Settings,
+    nozzle: f64,
+    speed: f64,
+    acceleration: f64,
+    handle: [f64; 4],
+) -> Result<edge_gcode::PaPattern, Failure> {
+    let diameter = filament_number(settings, "filament_diameter", 0)?;
+    let flow_ratio = filament_number(settings, "filament_flow_ratio", 0)?;
+    let area = std::f64::consts::PI * (diameter / 2.0).powi(2);
+    let width = |key: &str| -> Result<f64, Failure> {
+        // 0 is "auto" (calib.hpp `line_width`): `frExternalPerimeter`.
+        let set = settings
+            .float_or_percent(key)?
+            .map_or(0.0, |w| w.resolve(nozzle));
+        Ok(if set > 0.0 {
+            set
+        } else {
+            f64::from(1.125_f32 * nozzle as f32)
+        })
+    };
+    let height = |key: &str| -> Result<f64, Failure> {
+        Ok(settings
+            .float_or_percent(key)?
+            .map_or(0.2, |h| h.resolve(nozzle)))
+    };
+    Ok(edge_gcode::PaPattern {
+        start: params.start,
+        end: params.end,
+        step: params.step,
+        nozzle_diameter: nozzle,
+        line_width: width("line_width")?,
+        first_line_width: width("initial_layer_line_width")?,
+        layer_height: height("layer_height")?,
+        first_layer_height: height("initial_layer_print_height")?,
+        walls: settings.integer("wall_loops")?.unwrap_or(3) as i32,
+        first_speed: process_number(settings, "initial_layer_speed")?,
+        speed,
+        acceleration,
+        z_hop: first_number(settings, "z_hop")?.unwrap_or(0.0),
+        e_per_mm3: if area > 0.0 { flow_ratio / area } else { 0.0 },
+        flow_ratio,
+        handle,
+    })
+}
+
+/// Plater.cpp `_calib_pa_pattern`: the settings the pattern prints with,
+/// then one 5 mm "handle" cube for each speed and acceleration, standing
+/// where the reference's arrangement of the patterns puts it; the slice
+/// draws each pattern round its handle ([`CalibParams::pa_pattern`]).
+fn pa_pattern(
+    params: &CalibParams,
+    presets: &Settings,
+    bed: Option<&Bed>,
+) -> Result<Pattern, Failure> {
+    let nozzle = nozzle_diameter(presets)?;
+    let mut process: Set = Vec::new();
+    let filament = pairs(&[
+        ("filament_retract_when_changing_layer", "0"),
+        ("filament_wipe", "0"),
+    ]);
+    let printer = pairs(&[("wipe", "0"), ("retract_when_changing_layer", "0")]);
+    let mut notes = Vec::new();
+    // The acceleration: the outer wall's, else the inner wall's, else
+    // the default; with several asked for, the greatest.
+    let mut accel = process_number(presets, "outer_wall_acceleration")?;
+    if accel == 0.0 {
+        accel = process_number(presets, "inner_wall_acceleration")?;
+    }
+    if accel == 0.0 {
+        accel = process_number(presets, "default_acceleration")?;
+    }
+    let accels = if params.accelerations.is_empty() {
+        notes.push((
+            "No accelerations provided for calibration. Use default acceleration value ".to_owned(),
+            format!("{}mm/s²", accel.trunc() as i64),
+        ));
+        vec![accel]
+    } else {
+        accel = params
+            .accelerations
+            .iter()
+            .copied()
+            .fold(f64::MIN, f64::max);
+        params.accelerations.clone()
+    };
+    process.push(("outer_wall_acceleration".to_owned(), written(accel)));
+    process.push(("print_sequence".to_owned(), "by layer".to_owned()));
+    let deviation = junction_deviation(presets)?;
+    if !deviation && process_number(presets, "default_jerk")? > 0.0 {
+        let mut jerk = process_number(presets, "outer_wall_jerk")?;
+        if jerk == 0.0 {
+            jerk = process_number(presets, "inner_wall_jerk")?;
+        }
+        if jerk == 0.0 {
+            jerk = process_number(presets, "default_jerk")?;
+        }
+        for key in [
+            "default_jerk",
+            "outer_wall_jerk",
+            "inner_wall_jerk",
+            "top_surface_jerk",
+            "infill_jerk",
+            "travel_jerk",
+        ] {
+            process.push((key.to_owned(), written(jerk)));
+        }
+    }
+    if deviation {
+        process.push(("default_junction_deviation".to_owned(), "0".to_owned()));
+    }
+    // `SuggestedConfigCalibPAPattern`.
+    let line_width = nozzle * 112.5 / 100.0;
+    process.push(("initial_layer_speed".to_owned(), "30".to_owned()));
+    process.push(("line_width".to_owned(), written(line_width)));
+    process.push((
+        "initial_layer_line_width".to_owned(),
+        written(nozzle * 140.0 / 100.0),
+    ));
+    process.push(("skirt_loops".to_owned(), "0".to_owned()));
+    process.push(("wall_loops".to_owned(), "3".to_owned()));
+    process.push(("brim_type".to_owned(), "no_brim".to_owned()));
+    // The settings as they now stand, for the test's speed and size.
+    let mut settings = presets.clone();
+    for (key, value) in &process {
+        settings.insert(key.clone(), edge_config::Value::One(value.clone()));
+    }
+    let layer_height = settings
+        .float_or_percent("layer_height")?
+        .map_or(0.2, |h| h.resolve(nozzle));
+    let speeds = if params.speeds.is_empty() {
+        let speed = optimal_pa_speed(&settings, line_width, layer_height, 0)?;
+        process.push(("outer_wall_speed".to_owned(), written(speed)));
+        notes.push((
+            "No speeds provided for calibration. Use default optimal speed ".to_owned(),
+            format!("{}mm/s", speed.trunc() as i64),
+        ));
+        vec![speed]
+    } else {
+        if params.speeds.len() == 1 {
+            process.push(("outer_wall_speed".to_owned(), written(params.speeds[0])));
+        }
+        params.speeds.clone()
+    };
+    // Each test's place: the patterns, 4 mm apart, arranged on the bed as
+    // the reference arranges them, the largest acceleration's size for
+    // all (`_calib_pa_pattern`).
+    let geometry = pattern_test(params, &settings, nozzle, speeds[0], accel, [0.0; 4])?;
+    let tests = speeds.len() * accels.len();
+    let (w, d, z) = (
+        geometry.print_size_x() + 4.0,
+        geometry.print_size_y() + 4.0,
+        geometry.max_layer_z(),
+    );
+    let block = |w: f64, d: f64, name: &str| -> Model {
+        let soup = edge_mesh::primitives::cuboid(
+            [-(w / 2.0) as f32, -(d / 2.0) as f32, 0.0],
+            [(w / 2.0) as f32, (d / 2.0) as f32, z as f32],
+        );
+        Model::from(crate::load::Opened::mesh(
+            name,
+            edge_mesh::Mesh::from_triangle_soup(soup),
+        ))
+    };
+    let mut places = Model::new();
+    let footprint = block(w, d, "Cube");
+    for _ in 0..tests {
+        places.import(bed, &footprint, None)?;
+    }
+    if tests > 1 {
+        places.arrange(bed, None)?;
+    }
+    let offset = geometry.handle_offset();
+    let handle = block(
+        edge_gcode::PA_HANDLE_SIZE,
+        edge_gcode::PA_HANDLE_SIZE,
+        "Cube",
+    );
+    let mut model = Model::new();
+    for (index, object) in places.objects().iter().enumerate() {
+        let copy = object.copies()[0].id();
+        let Some((_, Some([low, high]))) = places.in_scene(bed, copy) else {
+            return Err("PA Pattern: a pattern has no place".into());
+        };
+        let centre = [(low[0] + high[0]) / 2.0, (low[1] + high[1]) / 2.0];
+        // On the plate the arrangement put it on, made when it is not there yet.
+        let plate = match places.plate_of(copy) {
+            // The first plate is the one a model's first import makes.
+            Some(0) | None => None,
+            Some(at) => {
+                while model.plates().len() <= at {
+                    model.add_plate(bed)?;
+                }
+                Some(model.plates()[at].id())
+            }
+        };
+        let made = model.import(bed, &handle, plate)?;
+        let at = made[0];
+        let speed = speeds[index % speeds.len()];
+        let accel_here = accels[index / speeds.len()];
+        let to = Transform::translation([centre[0] + offset[0], centre[1] + offset[1], 0.0]);
+        let scene = model
+            .in_scene(bed, at)
+            .map(|(scene, _)| scene)
+            .unwrap_or(Transform::IDENTITY);
+        // Where it stands in the scene, its own turn and size kept.
+        let mut standing = scene;
+        standing.rows[3] = to.rows[3];
+        model.set_transforms(bed, &[(at, standing)])?;
+        let object = model
+            .objects()
+            .last()
+            .map(|object| object.id())
+            .ok_or("PA Pattern: no handle")?;
+        model.rename(
+            bed,
+            object,
+            &format!("pa_pattern_{}_{}", speed as i64, accel_here as i64),
+        )?;
+        let mut own = Vec::new();
+        if speeds.len() > 1 {
+            own.push(("outer_wall_speed".to_owned(), Some(written(speed))));
+        }
+        if accels.len() > 1 {
+            own.push((
+                "outer_wall_acceleration".to_owned(),
+                Some(written(accel_here)),
+            ));
+        }
+        if !own.is_empty() {
+            model.set_object_settings(bed, object, &own)?;
+        }
+    }
+    Ok(Pattern {
+        model,
+        process,
+        filament,
+        printer,
+        notes,
     })
 }
 
@@ -339,6 +765,7 @@ pub fn temperature(
             cut(&mut model, bed, height, Keep::Upper)?;
         }
     }
+    let notes = Vec::new();
     Ok(CalibProject {
         name: "Nozzle temperature test".to_owned(),
         model,
@@ -346,6 +773,7 @@ pub fn temperature(
         filament,
         printer: pairs(&[("resonance_avoidance", "0")]),
         params: params.clone(),
+        notes,
     })
 }
 

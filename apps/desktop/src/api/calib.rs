@@ -39,6 +39,8 @@ fn params(args: &Value) -> Result<CalibParams, String> {
     };
     let mode = match args.get("test").and_then(Value::as_str) {
         Some("pa_tower") => CalibMode::PressureAdvanceTower,
+        Some("pa_line") => CalibMode::PressureAdvanceLine,
+        Some("pa_pattern") => CalibMode::PressureAdvancePattern,
         Some("temp_tower") => CalibMode::TemperatureTower,
         Some(other) => return Err(format!("there is no calibration \"{other}\" yet")),
         None => return Err("test was not given".into()),
@@ -114,7 +116,9 @@ impl Session {
         let settled = edge_engine::settled(&basis.chosen, &set, None).map_err(|e| e.to_string())?;
         let bed = super::bed_of(&settled).map(edge_engine::Bed::of);
         let made = match params.mode {
-            CalibMode::PressureAdvanceTower => {
+            CalibMode::PressureAdvanceTower
+            | CalibMode::PressureAdvanceLine
+            | CalibMode::PressureAdvancePattern => {
                 edge_engine::calib::pressure_advance(&params, &settled, &calib_dir, bed.as_ref())
             }
             CalibMode::TemperatureTower => {
@@ -123,6 +127,18 @@ impl Session {
         }
         .map_err(|e| e.to_string())?;
 
+        // The reference's notifications while it made the test.
+        let notes: Vec<String> = made
+            .notes
+            .iter()
+            .map(|(said, value)| {
+                format!(
+                    "{}\n{}{value}",
+                    super::i18n::tr("INFO:"),
+                    super::i18n::tr(said)
+                )
+            })
+            .collect();
         let mut state = lock(&self.state);
         let shown = state.active_index();
         let at = if state.projects[shown].blank() {
@@ -163,7 +179,7 @@ impl Session {
         project.calibration = Some(made.params);
         let id = project.id;
         state.active = id;
-        Ok(state.listing_with(serde_json::json!({ "id": id })))
+        Ok(state.listing_with(serde_json::json!({ "id": id, "notes": notes })))
     }
 }
 
@@ -338,5 +354,44 @@ mod tests {
                 "{temperature}"
             );
         }
+    }
+
+    #[test]
+    fn the_pa_pattern_stands_a_handle_for_each_speed_and_acceleration() {
+        let dir = tempfile::tempdir().unwrap();
+        let session = Arc::new(Session::new(None));
+        choose_presets(&session);
+        let listing = ask(
+            &session,
+            "calibrate",
+            json!({"test": "pa_pattern", "start": 0, "end": 0.04, "step": 0.005,
+                   "speeds": [100, 150], "accelerations": [3000, 6000]}),
+        );
+        let id = listing["id"].as_u64().unwrap();
+        assert_eq!(listing["notes"], json!([]));
+        let detail = ask(&session, "project", json!({}));
+        assert_eq!(detail["choices"]["over"]["wall_loops"], "3");
+        assert_eq!(detail["choices"]["over"]["outer_wall_acceleration"], "6000");
+        let gcode = slice_and_read(&session, id, dir.path());
+        // Four patterns of 9 blocks each, on each of the four layers.
+        let starts = gcode
+            .matches("; start pressure advance pattern for layer")
+            .count();
+        assert_eq!(starts, 4 * 4, "patterns");
+        assert!(gcode.contains("SET_VELOCITY_LIMIT ACCEL=3000"));
+        assert!(gcode.contains("SET_VELOCITY_LIMIT ACCEL=6000"));
+        // The line test, with no speed given: said as the reference says it.
+        let listing = ask(
+            &session,
+            "calibrate",
+            json!({"test": "pa_line", "start": 0, "end": 0.02, "step": 0.002, "print_numbers": false}),
+        );
+        let line = listing["id"].as_u64().unwrap();
+        let gcode = slice_and_read(&session, line, dir.path());
+        assert_eq!(
+            gcode.matches("SET_PRESSURE_ADVANCE").count(),
+            1 + 11 + 1 + 1
+        );
+        assert!(!gcode.contains(";LAYER_CHANGE"));
     }
 }

@@ -1398,10 +1398,56 @@ numbers", "Accelerations: ", "Speeds: " with their tooltips), the
 reference's defaults for each extruder type and method (`reset_params`),
 its check ("Please input valid values: …", and Orca #11493's "Acceleration
 values must be greater than speed values. …"), the two guides' links (the
-window opens them; a browser shows the address). **not yet**: "PA Line"
-and "PA Pattern", which draw their own moves with the reference's G-code
-writer (calib.cpp `CalibPressureAdvanceLine`, `CalibPressureAdvancePattern`);
-off in the dialog.
+window opens them; a browser shows the address).
+
+"PA Line" and "PA Pattern" draw their own moves with the part of the
+reference's G-code writer they use, ported (`edge_gcode` `calib_draw.rs`:
+`travel_to_xy`, `travel_to_z`, `extrude_to_xy`, `set_speed`, `retract`,
+`unretract`, `reset_e`, `set_print_acceleration`, `set_jerk_xy`; calib.cpp
+`move_to`, `draw_line`, `draw_box` with its 45° fill, `draw_digit`,
+`draw_number`). Their numbers are written as the rest of the file is (X, Y,
+Z to the thousandth, E to five places, F whole; relative extrusion, the
+only kind this engine writes), the reference's formatter trimming zeros.
+
+- "PA Line" (`CalibPressureAdvanceLine`): `pressure_advance_test.stl`
+  stands for the test and is sliced, but its layers are not printed: after
+  the start G-code the outer wall's acceleration and jerk (when set) and
+  the lines are drawn in their place (GCode.cpp `_do_export`), the
+  spaghetti detector not opened. The lines: an anchor at PA 0, then
+  `ceil((end - start) / step) + 1` lines 3.5 mm apart (at most
+  `(bed depth - 10) / 3.5`), each 20 mm slow, 40 mm fast (less on a bed
+  under 120 mm), 20 mm slow, at its own PA, the first with the right
+  anchor at PA 0; 1.5 nozzles wide (1.05 above 0.51 mm), the first layer's
+  height; fast `find_optimal_PA_speed` for that line, slow a tenth (at
+  least 10 mm/s, five under fast at most); with "Print numbers" the box
+  beside them and every other line's PA on the second layer.
+  `first_layer_print_min` / `_max` / `_size` are the bed's box less 25 mm,
+  its X held to the test's extent (Orca #14440's `print_extents`).
+- "PA Pattern" (`_calib_pa_pattern`, `CalibPressureAdvancePattern`): over
+  the presets `filament_retract_when_changing_layer` 0, `filament_wipe` 0,
+  `wipe` 0, `retract_when_changing_layer` 0, `outer_wall_acceleration`
+  (the outer wall's, else the inner wall's, else the default; the greatest
+  asked for), `print_sequence` by layer, the jerks (when `default_jerk` is
+  set and the printer has no junction deviation) or
+  `default_junction_deviation` 0, `initial_layer_speed` 30, `line_width`
+  1.125 and `initial_layer_line_width` 1.4 nozzles, `skirt_loops` 0,
+  `wall_loops` 3, `brim_type` no_brim, `outer_wall_speed` (the test's
+  speed with one asked for; `find_optimal_PA_speed` with none). Then one 5
+  mm "handle" cube, as tall as the four layers, for each speed and
+  acceleration, named `pa_pattern_<speed>_<acceleration>` and carrying its
+  own speed and acceleration where several were asked for, each where the
+  reference's arrangement of the patterns (each pattern's size and 4 mm)
+  puts it, by this app's port of that arranger. The reference's
+  notifications are said in the status line ("INFO:" "No accelerations
+  provided for calibration. Use default acceleration value " / "No speeds
+  provided for calibration. Use default optimal speed " and the value).
+  Each slice draws every handle's pattern round it where it now stands,
+  with its own speed and acceleration, as the G-code of the first four
+  layers in place of the plate's custom G-code (Plater.cpp
+  `_calib_pa_pattern_gen_gcode`, run before each slice; its filament
+  counted). **Ahead of the pin**: from OrcaSlicer `dfb93e0332` (#14473),
+  the extrusion reset before the last `set_pressure_advance`; with relative
+  extrusion it writes nothing.
 
 Temperature (`calib_temp`): `temperature_tower.stl` (10 mm blocks, 350
 °C at the foot, 5 °C less each block up), cut above the block of the end
@@ -3648,7 +3694,7 @@ its tooltip "not yet: …" saying what it waits for.
 | | "Compare Slices...", "Compare with Previous Slice" | | off: slices are not compared |
 | | "Mobile Hub..." (macOS) | | off: there is no Mobile Hub |
 | Calibration | "Temperature" | | built (calibration pass, section 12, "Calibration prints"): on in Prepare; the dialog "Temperature calibration" |
-| | "Pressure advance" | | built: on in Prepare; the dialog "PA Calibration" with the "PA Tower" method. Its "PA Line" and "PA Pattern" are in the dialog, off, with the tooltip "not yet: this method is not built" |
+| | "Pressure advance" | | built: on in Prepare; the dialog "PA Calibration" with its three methods, "PA Tower", "PA Line" and "PA Pattern" |
 | | "Tutorial" | | built: the reference's guide page (`https://github.com/SoftFever/OrcaSlicer/wiki/Calibration`), opened by the window; a browser shows the address. **differs**: no mirror for a person in China (the reference picks it by the country it keeps; this app keeps none) |
 | | "Flow rate" ▸ ("Pass 1", "Pass 2", "YOLO (Recommended)", "YOLO (perfectionist version)"), "Retraction test", "Stringing (temp × retraction)", "Max flowrate", "Cornering", "Input Shaping" ▸ ("Input Shaping Frequency", "Input Shaping Damping/zeta factor"), "VFA", "Ironing flow" | | off: "not yet: calibration models are not built" (the reference has the menu in the macOS bar and a title-bar menu elsewhere) |
 | Account (macOS) | sign-in for Snapmaker, Bambu Lab, Flashforge | | not shown: the cloud is not this task |

@@ -62,8 +62,16 @@ fn sliced_gcode(chosen: &Chosen, params: &CalibParams) -> (CalibProject, String)
         _ => edge_engine::calib::pressure_advance(params, &settings, &calib, Some(&bed)),
     }
     .unwrap();
-    let loaded = made.model.place(None).unwrap();
-    let job = edge_engine::prepare(loaded, chosen, &overrides(&made)).unwrap();
+    let loaded = made
+        .model
+        .place(made.model.plates().first().map(|plate| plate.id()))
+        .unwrap();
+    let mut set = overrides(&made);
+    set.calibration = Some(made.params.on_plate(
+        &made.model,
+        made.model.plates().first().map(|plate| plate.id()),
+    ));
+    let job = edge_engine::prepare(loaded, chosen, &set).unwrap();
     let sliced = edge_engine::slice(job, &Unwatched).unwrap();
     let text = sliced.gcode("1970-01-01 at 00:00:01 UTC").unwrap().text;
     (made, String::from_utf8(text).unwrap())
@@ -209,4 +217,78 @@ fn the_temperature_tower_cools_its_nozzle_block_by_block() {
             .unwrap()
             .contains("M104 S220 ; set nozzle temperature")
     );
+}
+
+#[test]
+fn the_pa_line_is_drawn_in_place_of_the_model() {
+    let chosen = presets("Snapmaker", "Snapmaker U1 (0.4 nozzle)");
+    let mut params = CalibParams::new(CalibMode::PressureAdvanceLine, 0.0, 0.1, 0.002);
+    params.print_numbers = true;
+    let (_, gcode) = sliced_gcode(&chosen, &params);
+    // No layer of the model: the test's two (its numbers on the second).
+    assert_eq!(
+        gcode.matches(";LAYER_CHANGE").count(),
+        1,
+        "the numbers' layer"
+    );
+    // calib.cpp `print_pa_lines`: 0 for the anchor, then each line's own,
+    // 0 again: 51 lines on a 270 mm bed, (270 - 10) / 3.5 = 74 at most.
+    let advances: Vec<&str> = gcode
+        .lines()
+        .filter(|line| line.starts_with("SET_PRESSURE_ADVANCE"))
+        .collect();
+    assert_eq!(advances.len(), 1 + 51 + 1 + 1, "{advances:?}");
+    assert_eq!(
+        advances[1],
+        "SET_PRESSURE_ADVANCE ADVANCE=0; Override pressure advance value"
+    );
+    assert_eq!(
+        advances[2],
+        "SET_PRESSURE_ADVANCE ADVANCE=0; Override pressure advance value"
+    );
+    assert_eq!(
+        advances[3],
+        "SET_PRESSURE_ADVANCE ADVANCE=0.002; Override pressure advance value"
+    );
+    assert_eq!(
+        advances[52],
+        "SET_PRESSURE_ADVANCE ADVANCE=0.1; Override pressure advance value"
+    );
+    // The end G-code follows.
+    assert!(gcode.contains("; filament used [mm]"));
+}
+
+#[test]
+fn the_pa_pattern_draws_round_its_handle_on_the_first_four_layers() {
+    let chosen = presets("Snapmaker", "Snapmaker U1 (0.4 nozzle)");
+    let params = CalibParams::new(CalibMode::PressureAdvancePattern, 0.0, 0.08, 0.005);
+    let (made, gcode) = sliced_gcode(&chosen, &params);
+    let names: Vec<&str> = made
+        .model
+        .objects()
+        .iter()
+        .map(|object| object.name())
+        .collect();
+    assert_eq!(names.len(), 1);
+    assert!(names[0].starts_with("pa_pattern_"), "{names:?}");
+    assert!(
+        made.notes
+            .iter()
+            .any(|(said, _)| said.starts_with("No speeds provided"))
+    );
+    let layers = layers(&gcode);
+    assert_eq!(layers.len(), 4, "the handle's four layers");
+    for (index, text) in layers.iter().enumerate() {
+        assert!(
+            text.contains(";CUSTOM_GCODE\n; start pressure advance pattern for layer\n"),
+            "layer {index}"
+        );
+        for j in 0..17 {
+            let value = edge_gcode::calib::general(f64::from(j) * 0.005, 4);
+            assert!(
+                text.contains(&format!("ADVANCE={value}; Override")),
+                "{index} {j}"
+            );
+        }
+    }
 }

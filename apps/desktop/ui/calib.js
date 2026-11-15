@@ -77,6 +77,8 @@ const Calib = (() => {
     if (state.tab === 'device') state.tab = 'prepare';
     state.project = null;
     await applyListing(listing);
+    // The reference's notifications (no acceleration or speed given).
+    if (listing.notes && listing.notes.length) say(listing.notes.join('\n'));
     return null;
   }
 
@@ -84,13 +86,6 @@ const Calib = (() => {
   function pressureAdvance() {
     const extruder = radios('calib-extruder', ['DDE', 'Bowden'], 0);
     const method = radios('calib-method', ['PA Tower', 'PA Line', 'PA Pattern'], 0);
-    // The methods not built yet stay in the list, off.
-    for (const input of method.querySelectorAll('input')) {
-      if (input.value !== '0') {
-        input.disabled = true;
-        input.parentElement.title = t('not yet: this method is not built');
-      }
-    }
     const start = field('Start PA: ');
     const end = field('End PA: ');
     const step = field('PA step: ');

@@ -976,6 +976,19 @@ fn slice_plate(
     // What the slice asks for by name is noted, so that a setting set by
     // hand that nothing read can be said with the print.
     let reads = edge_config::Reads::default();
+    // A calibration's own for this plate ("PA Pattern" draws round the
+    // handles standing on it).
+    let placed;
+    let overrides = match &overrides.calibration {
+        Some(calibration) => {
+            placed = Overrides {
+                calibration: Some(calibration.on_plate(&file.model, plate)),
+                ..overrides.clone()
+            };
+            &placed
+        }
+        None => overrides,
+    };
     let job = edge_engine::prepare_noted(loaded, chosen, overrides, &reads)?;
     let bed_type = job.bed_type.clone();
     let sliced = edge_engine::slice(job, &Watch(work))?;

@@ -13,6 +13,16 @@ pub struct Opened {
     pub(crate) held: Held,
 }
 
+impl Opened {
+    /// A mesh made here, as if read from a file of that name.
+    pub(crate) fn mesh(name: &str, mesh: Mesh) -> Self {
+        Self {
+            path: PathBuf::from(name),
+            held: Held::Model(mesh),
+        }
+    }
+}
+
 pub(crate) enum Held {
     Model(Mesh),
     Project {
