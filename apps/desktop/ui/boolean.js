@@ -57,13 +57,18 @@
     },
 
     // `on_set_state`, On: nothing picked, "Union", the first slot next.
-    start(placing) {
-      this.open = { copy: placing.id, object: placing.object, operation: 'union', selecting: 'source', source: null, tool: null, deleteInput: { difference: false, intersection: false }, clip: null };
+    // `section`: the painting tool's plane ({ copy, plane: { normal,
+    // offset } }) when the tool opens straight from one.
+    start(placing, section = null) {
+      const plane = section && section.copy === placing.id ? section.plane : null;
+      this.open = { copy: placing.id, object: placing.object, operation: 'union', selecting: 'source', source: null, tool: null, deleteInput: { difference: false, intersection: false }, clip: plane ? [...plane.normal, plane.offset] : null };
+      this.stage.scene.isolated = { copy: placing.id, clip: this.open.clip };
       this.stage.frame();
     },
 
     close() {
       this.open = null;
+      this.stage.scene.isolated = null;
       this.dropBoxes();
       if (this.panelNode) this.panelNode.hidden = true;
     },

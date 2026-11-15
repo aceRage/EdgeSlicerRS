@@ -538,6 +538,8 @@
       // A painting tool opens on the copy selected and closes with the
       // tool (paint.js).
       const painter = GL.painter;
+      // Mesh Boolean opened straight from a painting tool keeps its section.
+      const section = tool === 'boolean' && painter && painter.active() ? painter.section() : null;
       if (painter && painter.active() && (!tool || !TOOLS[tool].paint || tool !== this.tool)) painter.close();
       if (painter && tool && TOOLS[tool].paint && tool !== this.tool) {
         const chosen = this.chosen();
@@ -547,7 +549,7 @@
       if (cutter && cutter.active() && tool !== 'cut') cutter.close();
       const mesher = GL.mesher;
       if (mesher && mesher.active() && tool !== 'boolean') mesher.close();
-      if (mesher && tool === 'boolean' && tool !== this.tool) mesher.start(this.chosen().copies[0]);
+      if (mesher && tool === 'boolean' && tool !== this.tool) mesher.start(this.chosen().copies[0], section);
       if (cutter && tool === 'cut' && tool !== this.tool) {
         const chosen = this.chosen();
         if (chosen) cutter.start(chosen.copies[0]);

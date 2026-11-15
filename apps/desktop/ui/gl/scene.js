@@ -137,10 +137,15 @@
       // object's coordinates to where the part now is in them.
       this.moving = null;
       // The copy a painting tool is open on, which the tool draws:
-      // { object (its index), copy (its id) }. The object's other copies are
-      // not drawn meanwhile (GLGizmosCommon.cpp `InstancesHider`), and of
-      // the copy only what is not printed (modifiers and the rest).
+      // { object (its index), copy (its id) }. Every other copy and object
+      // is not drawn meanwhile (GLGizmosCommon.cpp `InstancesHider`), and
+      // of the copy only what is not printed (modifiers and the rest).
       this.painting = null;
+      // The copy the Mesh Boolean tool is open on: { copy (its id), clip
+      // ([normal, offset] or null) }. Every other copy and object is not
+      // drawn meanwhile (`InstancesHider`, which shows the active instance
+      // alone), and the copy is cut by the section it took over, if any.
+      this.isolated = null;
     }
 
     get background() { return themed(BACKGROUND); }
@@ -407,6 +412,11 @@
         const mesh = this.meshOf(placing.object);
         if (!mesh) return;
         const volume = placing.plate !== null || this.plates.length === 1 ? this.plateVolume(placing.plate) : null;
+        if (this.isolated && placing.id !== this.isolated.copy) return;
+        // A painting tool hides every other object as well
+        // (`InstancesHider`: `toggle_model_objects_visibility(false)`, then
+        // the active instance alone shown).
+        if (this.painting && placing.object !== this.painting.object) return;
         const painting = this.painting && this.painting.object === placing.object;
         if (painting) {
           if (placing.id !== this.painting.copy) return;
@@ -455,6 +465,7 @@
             pass,
             volume,
             range: piece.range,
+            clip: this.isolated ? this.isolated.clip : null,
           });
         }
       });
@@ -536,6 +547,7 @@
         }
         this.data.placings.forEach((placing, index) => {
           const mesh = this.meshOf(placing.object);
+          if (this.isolated && placing.id !== this.isolated.copy) return;
           if (mesh) r.drawFlat(mesh, M.multiply(matrix, placing.matrix), GL.Renderer.pickColour(index + 1));
         });
       });
