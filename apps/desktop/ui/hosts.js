@@ -17,7 +17,7 @@ const hostsState = {
   selected: null,
   queueTimer: null,
   // Device: which part is shown, and what the frame was last pointed at.
-  deviceTab: 'page',
+  deviceTab: 'status',
   frameUrl: '',
   // A U1's toolheads as last read for the send dialog, the mapping shown;
   // whether Device shows the native page.

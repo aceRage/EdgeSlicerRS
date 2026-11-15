@@ -36,7 +36,10 @@ function watchDevice(refresh = false) {
     refresh = true;
   }
   const looking = () => state.tab === 'device' && hostsState.native && activeId() === project;
-  if (!looking()) return;
+  if (!looking()) {
+    stopCamera();
+    return;
+  }
   deviceState.timer = setTimeout(async () => {
     let answer;
     try {
@@ -52,6 +55,14 @@ function watchDevice(refresh = false) {
 
 function stopDevice() {
   clearTimeout(deviceState.timer);
+  stopCamera();
+}
+
+// The stream is let go as soon as Device is not looked at.
+function stopCamera() {
+  if (!$('dv-camera').dataset.src) return;
+  delete $('dv-camera').dataset.src;
+  $('dv-camera').removeAttribute('src');
 }
 
 // ---- drawing ----
@@ -237,7 +248,7 @@ function drawSlots(caps, r) {
   $('dv-slots-title').textContent = caps.slots === 'ams' ? t('AMS') : t('Toolheads');
   const groups = r ? r.slots : [];
   const units = groups.map((group) => el('div', { className: 'dv-unit' },
-    el('span', { className: 'quiet dv-unit-name', textContent: group.name }),
+    el('span', { className: 'quiet dv-unit-name', textContent: group.name === $('dv-slots-title').textContent ? '' : group.name }),
     el('div', { className: 'bambu-unit' }, ...group.slots.map((slot) => el('div', {
       className: `bambu-tray${slot.active ? ' active' : ''}${slot.loaded ? '' : ' empty'}`,
       title: [slot.name, slot.loaded ? slot.type : t('Empty'), slot.detail, slot.remain >= 0 ? `${slot.remain}%` : ''].filter(Boolean).join(' '),
@@ -249,7 +260,8 @@ function drawSlots(caps, r) {
 }
 
 // The camera: a plain stream the printer names, in a frame of its own
-// (no scripts), only where the page may frame its address.
+// (no scripts: the sandbox allows its own origin only, which a browser
+// needs to show the stream), only where the page may frame its address.
 function drawCamera(caps, r) {
   const url = caps.camera && r && r.camera && framable(r.camera) ? r.camera : null;
   $('dv-camera-card').hidden = !url;
@@ -257,10 +269,7 @@ function drawCamera(caps, r) {
     $('dv-camera').dataset.src = url;
     $('dv-camera').src = url;
   }
-  if (!url && $('dv-camera').dataset.src) {
-    delete $('dv-camera').dataset.src;
-    $('dv-camera').removeAttribute('src');
-  }
+  if (!url) stopCamera();
 }
 
 function drawHms(r) {

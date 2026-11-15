@@ -287,7 +287,30 @@ pub struct U1Setup {
     pub refuse_start: bool,
     /// Status queries a started print takes to finish.
     pub steps: u64,
+    /// `printer/objects/list` (a U1's, unless a test gives another
+    /// Klipper's) and its webcam: (service, stream URL).
+    pub objects: Vec<&'static str>,
+    pub webcam: Option<(&'static str, &'static str)>,
 }
+
+/// A U1's objects, as the reference queries them (SnapmakerLan.cpp l.803).
+pub const U1_OBJECTS: [&str; 15] = [
+    "print_stats",
+    "display_status",
+    "virtual_sdcard",
+    "heater_bed",
+    "extruder",
+    "extruder1",
+    "extruder2",
+    "extruder3",
+    "print_task_config",
+    "gcode_move",
+    "toolhead",
+    "fan",
+    "led cavity_led",
+    "fan_generic cavity_fan",
+    "configfile",
+];
 
 impl Default for U1Setup {
     fn default() -> Self {
@@ -304,6 +327,8 @@ impl Default for U1Setup {
             refuse_script: false,
             refuse_start: false,
             steps: 4,
+            objects: U1_OBJECTS.to_vec(),
+            webcam: Some(("webrtc-camerastreamer", "/webcam/webrtc")),
         }
     }
 }
@@ -318,6 +343,51 @@ pub struct U1State {
     /// Status queries since the start.
     pub polls: u64,
     pub scripts: Vec<String>,
+    /// What the Device page set: each heater's target, each fan (0..1),
+    /// the speed factor, the LED, the homed axes; and the print commands.
+    pub targets: std::collections::HashMap<String, f64>,
+    pub fans: std::collections::HashMap<String, f64>,
+    pub speed_factor: f64,
+    pub led: bool,
+    pub homed: String,
+    pub commands: Vec<String>,
+}
+
+/// What a script the Device page sends does to the mock's state.
+fn run_script(u1: &mut U1State, script: &str) {
+    let word = |line: &str, key: &str| {
+        line.split_whitespace()
+            .find_map(|w| w.strip_prefix(key))
+            .map(str::to_owned)
+    };
+    for line in script.lines() {
+        let number = |key: &str| {
+            word(line, key)
+                .and_then(|v| v.parse::<f64>().ok())
+                .unwrap_or(0.0)
+        };
+        if line.starts_with("SET_HEATER_TEMPERATURE") {
+            let heater = word(line, "HEATER=").unwrap_or_default();
+            let object = if heater == "heater_bed" || heater.starts_with("extruder") {
+                heater
+            } else {
+                format!("heater_generic {heater}")
+            };
+            u1.targets.insert(object, number("TARGET="));
+        } else if line.starts_with("M106") {
+            u1.fans.insert("fan".into(), number("S") / 255.0);
+        } else if line.starts_with("SET_FAN_SPEED") {
+            let fan = word(line, "FAN=").unwrap_or_default();
+            u1.fans
+                .insert(format!("fan_generic {fan}"), number("SPEED="));
+        } else if line.starts_with("M220") {
+            u1.speed_factor = number("S") / 100.0;
+        } else if line.starts_with("SET_LED") {
+            u1.led = number("WHITE=") > 0.0;
+        } else if line.starts_with("G28") {
+            u1.homed = "xyz".into();
+        }
+    }
 }
 
 /// A Snapmaker U1 as its Moonraker answers over HTTP, from the
@@ -331,6 +401,7 @@ pub struct U1State {
 pub fn u1(setup: U1Setup) -> (Printer, Arc<Mutex<U1State>>) {
     let shared = Arc::new(Mutex::new(U1State {
         state: setup.state.to_owned(),
+        speed_factor: 1.0,
         ..U1State::default()
     }));
     let kept = shared.clone();
@@ -370,7 +441,7 @@ pub fn u1(setup: U1Setup) -> (Printer, Arc<Mutex<U1State>>) {
                         .as_ref()
                         .and_then(|name| u1.files.iter().find(|(n, _)| n == name))
                         .map_or(0, |(_, size)| *size as u64);
-                    if query.contains("virtual_sdcard") && u1.printing.is_some() {
+                    if query.contains("virtual_sdcard") && u1.printing.is_some() && u1.state == "printing" {
                         u1.polls += 1;
                         if u1.polls >= setup.steps {
                             u1.state = "complete".into();
@@ -383,6 +454,8 @@ pub fn u1(setup: U1Setup) -> (Printer, Arc<Mutex<U1State>>) {
                     };
                     let printing = u1.printing.clone().unwrap_or_default();
                     for object in query.split('&') {
+                        let object = decode(object.split('=').next().unwrap_or_default());
+                        let object = object.as_str();
                         let value = match object {
                             "print_stats" => serde_json::json!({
                                 "state": u1.state, "filename": printing, "print_duration": 60.0 * u1.polls as f64,
@@ -390,15 +463,37 @@ pub fn u1(setup: U1Setup) -> (Printer, Arc<Mutex<U1State>>) {
                             }),
                             "virtual_sdcard" => serde_json::json!({ "file_position": position, "file_path": format!("/home/lava/printer_data/gcodes/{printing}") }),
                             "display_status" => serde_json::json!({ "progress": 0.0 }),
-                            "heater_bed" => serde_json::json!({ "temperature": 60.0, "target": 60.0 }),
+                            "heater_bed" => {
+                                let target = u1.targets.get("heater_bed").copied().unwrap_or(60.0);
+                                serde_json::json!({ "temperature": target.max(22.0), "target": target })
+                            }
                             "print_task_config" => serde_json::json!({
                                 "filament_type": setup.toolheads.iter().map(|t| t.0).collect::<Vec<_>>(),
                                 "filament_color_rgba": setup.toolheads.iter().map(|t| t.1).collect::<Vec<_>>(),
                                 "filament_exist": setup.toolheads.iter().map(|t| t.2).collect::<Vec<_>>(),
                             }),
-                            extruder if extruder.starts_with("extruder") => serde_json::json!({
-                                "temperature": 220.0, "target": 220.0, "nozzle_diameter": 0.4,
-                            }),
+                            extruder if extruder.starts_with("extruder") => {
+                                let target = u1.targets.get(extruder).copied().unwrap_or(0.0);
+                                serde_json::json!({
+                                    "temperature": if target > 0.0 { target } else { 25.0 }, "target": target, "nozzle_diameter": 0.4,
+                                })
+                            }
+                            generic if generic.starts_with("heater_generic ") => {
+                                let target = u1.targets.get(generic).copied().unwrap_or(0.0);
+                                serde_json::json!({ "temperature": if target > 0.0 { target } else { 24.0 }, "target": target })
+                            }
+                            "fan" => serde_json::json!({ "speed": u1.fans.get("fan").copied().unwrap_or(0.0) }),
+                            generic if generic.starts_with("fan_generic ") => serde_json::json!({ "speed": u1.fans.get(generic).copied().unwrap_or(0.0) }),
+                            led if led.starts_with("led ") => {
+                                let v = if u1.led { 1.0 } else { 0.0 };
+                                serde_json::json!({ "color_data": [[0.0, 0.0, 0.0, v]] })
+                            }
+                            "gcode_move" => serde_json::json!({ "speed_factor": u1.speed_factor }),
+                            "toolhead" => serde_json::json!({ "homed_axes": u1.homed }),
+                            "configfile" => serde_json::json!({ "settings": {
+                                "extruder": { "max_temp": 285.0 }, "heater_bed": { "max_temp": 110.0 },
+                                "heater_generic chamber": { "max_temp": 65.0 },
+                            } }),
                             _ => continue,
                         };
                         status.insert(object.to_owned(), value);
@@ -446,7 +541,28 @@ pub fn u1(setup: U1Setup) -> (Printer, Arc<Mutex<U1State>>) {
                     if setup.refuse_script {
                         return (400, serde_json::json!({ "error": { "code": 400, "message": "Unknown command" } }).to_string());
                     }
-                    u1.scripts.push(arg("script").unwrap_or_default());
+                    let script = arg("script").unwrap_or_default();
+                    run_script(&mut u1, &script);
+                    u1.scripts.push(script);
+                    ok(Value::from("ok"))
+                }
+                ("GET", "/printer/objects/list") => ok(serde_json::json!({ "objects": setup.objects })),
+                ("GET", "/server/webcams/list") => ok(serde_json::json!({ "webcams": setup.webcam.iter().map(|(service, url)| serde_json::json!({
+                    "name": "cam", "enabled": true, "service": service, "stream_url": url, "snapshot_url": "/webcam/?action=snapshot",
+                })).collect::<Vec<_>>() })),
+                ("GET", "/webcam/") => (200, "mjpeg".into()),
+                ("POST", "/printer/print/pause" | "/printer/print/resume" | "/printer/print/cancel") => {
+                    let action = path.rsplit('/').next().unwrap_or_default().to_owned();
+                    let (from, to) = match action.as_str() {
+                        "pause" => ("printing", "paused"),
+                        "resume" => ("paused", "printing"),
+                        _ => ("", "cancelled"),
+                    };
+                    if (!from.is_empty() && u1.state != from) || (from.is_empty() && !matches!(u1.state.as_str(), "printing" | "paused")) {
+                        return (400, serde_json::json!({ "error": { "code": 400, "message": format!("Cannot {action}: not printing") } }).to_string());
+                    }
+                    u1.state = to.into();
+                    u1.commands.push(action);
                     ok(Value::from("ok"))
                 }
                 ("POST", "/printer/print/start") => {

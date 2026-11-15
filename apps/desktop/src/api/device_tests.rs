@@ -22,6 +22,7 @@ use crate::ultranet::{
 const SMALL: &str = "tests/data/support_corpus/twopart_groups.3mf";
 const P1S: &str = "Bambu Lab P1S 0.4 nozzle";
 const CODE: &str = "12345678";
+const KEY: &str = "the-right-key";
 
 fn reference(path: &str) -> std::path::PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR"))
@@ -52,6 +53,37 @@ impl Probe {
             answers: Mutex::new(Vec::new()),
             _dir: dir,
         }
+    }
+
+    /// A session whose print hosts answer quickly.
+    fn plain() -> Self {
+        let dir = tempfile::tempdir().unwrap();
+        let mut session = Session::with_settings(None, Some(dir.path().to_owned()));
+        session.hosts.timeouts = crate::hosts::Timeouts {
+            connect: Duration::from_secs(2),
+            ask: Duration::from_millis(800),
+            write: Duration::from_secs(2),
+            answer: Duration::from_millis(800),
+            start: Duration::from_secs(3),
+        };
+        Probe {
+            session: Arc::new(session),
+            answers: Mutex::new(Vec::new()),
+            _dir: dir,
+        }
+    }
+
+    /// A project on a Snapmaker `machine` whose "Octo/Klipper" connection
+    /// is `address`, with `key`.
+    fn on_host(machine: &str, address: &str, key: Option<&str>) -> Self {
+        let probe = Probe::plain();
+        probe.project("Snapmaker", machine);
+        let mut typed = json!({ "host_type": "octoprint", "print_host": address });
+        if let Some(key) = key {
+            typed["apikey"] = json!(key);
+        }
+        probe.ask("print_host_set", typed);
+        probe
     }
 
     fn call(&self, name: &str, args: Value) -> Result<Value, String> {
@@ -473,4 +505,367 @@ fn a_bambu_printer_not_in_developer_mode_or_not_connected_is_sent_nothing() {
     assert_eq!(state["session"], "failed");
     assert_eq!(probe.read()["online"], false);
     probe.never_said("87654321");
+}
+
+// ---- Moonraker: the Snapmaker U1, and any other Klipper ----
+
+const U1: &str = "Snapmaker U1 (0.4 nozzle)";
+const OTHER: &str = "Snapmaker Artisan (0.4 nozzle)";
+
+use crate::hosts::mock::{self as hosts_mock, U1Setup};
+
+fn ids(list: &Value, key: &str) -> Vec<String> {
+    list.as_array()
+        .unwrap()
+        .iter()
+        .map(|item| item[key].as_str().unwrap().to_owned())
+        .collect()
+}
+
+#[test]
+fn a_u1_is_drawn_with_its_four_toolheads_and_what_they_hold() {
+    let (printer, _) = hosts_mock::u1(U1Setup::default());
+    let probe = Probe::on_host(U1, &printer.address(), None);
+    assert_eq!(probe.ask("device_info", json!({}))["family"], "u1");
+    let read = probe.read();
+    let caps = &read["caps"];
+    assert_eq!(caps["family"], "u1");
+    assert_eq!(
+        ids(&caps["heaters"], "id"),
+        [
+            "extruder",
+            "extruder1",
+            "extruder2",
+            "extruder3",
+            "heater_bed"
+        ]
+    );
+    assert_eq!(
+        ids(&caps["heaters"], "label"),
+        ["T1", "T2", "T3", "T4", "Bed"]
+    );
+    // The fork's limits for a U1, not its configfile's.
+    assert_eq!(
+        (
+            caps["heaters"][0]["max"].clone(),
+            caps["heaters"][4]["max"].clone()
+        ),
+        (json!(300.0), json!(100.0))
+    );
+    assert_eq!(ids(&caps["fans"], "label"), ["Part", "Cham"]);
+    assert_eq!(
+        caps["speed"],
+        json!({ "kind": "percent", "min": 50, "max": 150 })
+    );
+    assert_eq!(
+        (
+            caps["light"].clone(),
+            caps["slots"].clone(),
+            caps["jog"]["z_label"].clone()
+        ),
+        (json!(true), json!("toolheads"), json!("Z"))
+    );
+    // Its webcam is WebRTC: not shown.
+    assert_eq!(caps["camera"], false);
+    let r = &read["reading"];
+    assert_eq!(
+        (r["state"].clone(), r["said"].clone()),
+        (json!("idle"), json!("Idle"))
+    );
+    assert_eq!(r["slots"][0]["name"], "Toolheads");
+    let heads = &r["slots"][0]["slots"];
+    assert_eq!(
+        (
+            heads[1]["name"].clone(),
+            heads[1]["type"].clone(),
+            heads[1]["color"].clone(),
+            heads[1]["loaded"].clone()
+        ),
+        (json!("T2"), json!("PETG"), json!("#00FF00"), json!(true))
+    );
+    assert_eq!(heads[3]["loaded"], false);
+    assert_eq!(
+        (r["speed"].clone(), r["light"].clone(), r["homed"].clone()),
+        (json!(100), json!(false), json!(""))
+    );
+    assert_eq!(
+        r["heaters"][4],
+        json!({ "id": "heater_bed", "now": 60.0, "target": 60.0 })
+    );
+}
+
+#[test]
+fn every_u1_command_is_asked_first_and_sent_as_the_fork_sends_it() {
+    let (printer, shared) = hosts_mock::u1(U1Setup::default());
+    let probe = Probe::on_host(U1, &printer.address(), None);
+    let scripts = || shared.lock().unwrap().scripts.clone();
+    let asked = probe.ask(
+        "device_command",
+        json!({ "action": "temperature", "heater": "extruder1", "target": 210 }),
+    );
+    assert_eq!(
+        asked["confirm"]["lines"][0],
+        format!("Set T2 to 210 °C on {U1}?")
+    );
+    assert!(
+        scripts().is_empty(),
+        "nothing is sent before it is confirmed"
+    );
+    probe.confirmed(json!({ "action": "temperature", "heater": "extruder1", "target": 210 }));
+    let confirm =
+        probe.confirmed(json!({ "action": "temperature", "heater": "heater_bed", "target": 150 }));
+    assert_eq!(confirm["lines"][0], format!("Set Bed to 100 °C on {U1}?"));
+    probe.confirmed(json!({ "action": "fan", "fan": "fan", "percent": 50 }));
+    probe.confirmed(json!({ "action": "fan", "fan": "fan_generic cavity_fan", "percent": 30 }));
+    let confirm = probe.confirmed(json!({ "action": "speed", "value": 200 }));
+    assert_eq!(confirm["lines"][0], format!("Set Speed to 150 % on {U1}?"));
+    probe.confirmed(json!({ "action": "light", "on": true }));
+    probe.confirmed(json!({ "action": "jog", "axis": "x", "mm": 10 }));
+    probe.confirmed(json!({ "action": "jog", "axis": "z", "mm": -1 }));
+    probe.confirmed(json!({ "action": "home" }));
+    // T1 is cold (25 °C): the reference's warning first.
+    let asked = probe.ask("device_command", json!({ "action": "extrude", "mm": 10 }));
+    assert_eq!(
+        (
+            asked["confirm"]["title"].clone(),
+            asked["confirm"]["ok"].clone()
+        ),
+        (json!("Warning"), json!("Still load"))
+    );
+    probe.confirmed(json!({ "action": "extrude", "mm": 10 }));
+    assert_eq!(
+        scripts(),
+        [
+            "SET_HEATER_TEMPERATURE HEATER=extruder1 TARGET=210",
+            "SET_HEATER_TEMPERATURE HEATER=heater_bed TARGET=100",
+            "M106 S128",
+            "SET_FAN_SPEED FAN=cavity_fan SPEED=0.30",
+            "M220 S150",
+            "SET_LED LED=cavity_led WHITE=1",
+            "G91\nG1 X10 F3600\nG90",
+            "G91\nG1 Z-1 F1800\nG90",
+            "G28",
+            "M83\nG1 E10 F300",
+        ]
+    );
+    let r = probe.read()["reading"].clone();
+    assert_eq!(
+        (
+            r["heaters"][1]["target"].clone(),
+            r["heaters"][4]["target"].clone()
+        ),
+        (json!(210.0), json!(100.0))
+    );
+    assert_eq!(
+        r["fans"],
+        json!([{ "id": "fan", "percent": 50 }, { "id": "fan_generic cavity_fan", "percent": 30 }])
+    );
+    assert_eq!(
+        (r["speed"].clone(), r["light"].clone(), r["homed"].clone()),
+        (json!(150), json!(true), json!("xyz"))
+    );
+    // What it has not got.
+    assert_eq!(
+        probe.refused(
+            "device_command",
+            json!({ "action": "temperature", "heater": "chamber", "target": 40 })
+        ),
+        "This printer cannot do that from here."
+    );
+    assert_eq!(
+        probe.refused(
+            "device_command",
+            json!({ "action": "fan", "fan": "fan_generic exhaust", "percent": 40 })
+        ),
+        "This printer cannot do that from here."
+    );
+}
+
+#[test]
+fn a_u1_print_is_paused_resumed_and_cancelled_only_when_it_can_be() {
+    let (printer, shared) = hosts_mock::u1(U1Setup {
+        steps: 1000,
+        ..U1Setup::default()
+    });
+    let probe = Probe::on_host(U1, &printer.address(), None);
+    assert_eq!(
+        probe.refused("device_command", json!({ "action": "pause" })),
+        "The printer is not printing, so there is nothing to pause."
+    );
+    assert_eq!(
+        probe.refused("device_command", json!({ "action": "stop" })),
+        "The printer is not printing, so there is nothing to stop."
+    );
+    {
+        let mut u1 = shared.lock().unwrap();
+        u1.files.push(("cube.gcode".into(), 1000));
+        u1.printing = Some("cube.gcode".into());
+        u1.state = "printing".into();
+    }
+    let r = probe.read()["reading"].clone();
+    assert_eq!(
+        (r["state"].clone(), r["file"].clone()),
+        (json!("printing"), json!("cube.gcode"))
+    );
+    assert!(r["percent"].is_u64() && r["total_layers"] == 10000, "{r}");
+    assert_eq!(
+        probe.refused(
+            "device_command",
+            json!({ "action": "jog", "axis": "x", "mm": 1 })
+        ),
+        "The printer is printing: the axes and the extruder cannot be moved now."
+    );
+    assert_eq!(
+        probe.refused("device_command", json!({ "action": "resume" })),
+        "The printer has no paused print to resume."
+    );
+    probe.confirmed(json!({ "action": "pause" }));
+    assert_eq!(probe.read()["reading"]["state"], "paused");
+    // Paused: the axes may move again (the reference turns them on).
+    assert!(probe.ask("device_command", json!({ "action": "home" }))["confirm"].is_object());
+    probe.confirmed(json!({ "action": "resume" }));
+    let confirm = probe.confirmed(json!({ "action": "stop" }));
+    assert_eq!(
+        confirm["lines"][0],
+        "Are you sure you want to cancel this print?"
+    );
+    assert_eq!(probe.read()["reading"]["state"], "cancelled");
+    assert_eq!(
+        shared.lock().unwrap().commands,
+        ["pause", "resume", "cancel"]
+    );
+    let asked: Vec<String> = printer
+        .asked()
+        .into_iter()
+        .filter(|a| a.starts_with("POST /printer/print/"))
+        .collect();
+    assert_eq!(
+        asked,
+        [
+            "POST /printer/print/pause",
+            "POST /printer/print/resume",
+            "POST /printer/print/cancel"
+        ]
+    );
+}
+
+#[test]
+fn a_klipper_printer_is_drawn_from_its_own_objects_with_its_camera() {
+    let setup = U1Setup {
+        objects: vec![
+            "print_stats",
+            "display_status",
+            "virtual_sdcard",
+            "heater_bed",
+            "extruder",
+            "heater_generic chamber",
+            "fan",
+            "fan_generic exhaust",
+            "led status",
+            "gcode_move",
+            "toolhead",
+            "configfile",
+        ],
+        webcam: Some(("mjpegstreamer-adaptive", "/webcam/?action=stream")),
+        ..U1Setup::default()
+    };
+    let (printer, shared) = hosts_mock::u1(setup);
+    let probe = Probe::on_host(OTHER, &printer.address(), None);
+    assert_eq!(
+        probe.ask("device_info", json!({}))["family"],
+        "octo_klipper"
+    );
+    let read = probe.read();
+    let caps = &read["caps"];
+    assert_eq!(caps["family"], "klipper");
+    assert_eq!(ids(&caps["heaters"], "label"), ["Nozzle", "Bed", "Chamber"]);
+    // Its own limits (configfile).
+    let max: Vec<f64> = caps["heaters"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|h| h["max"].as_f64().unwrap())
+        .collect();
+    assert_eq!(max, [285.0, 110.0, 65.0]);
+    assert_eq!(ids(&caps["fans"], "label"), ["Part", "exhaust"]);
+    assert_eq!(
+        caps["speed"],
+        json!({ "kind": "percent", "min": 10, "max": 300 })
+    );
+    assert_eq!(
+        (caps["slots"].clone(), caps["camera"].clone()),
+        (Value::Null, json!(true))
+    );
+    assert_eq!(
+        read["reading"]["camera"],
+        format!("http://{}/webcam/?action=stream", printer.address())
+    );
+    probe.confirmed(
+        json!({ "action": "temperature", "heater": "heater_generic chamber", "target": 50 }),
+    );
+    probe.confirmed(json!({ "action": "fan", "fan": "fan_generic exhaust", "percent": 100 }));
+    probe.confirmed(json!({ "action": "light", "on": false }));
+    assert_eq!(
+        shared.lock().unwrap().scripts,
+        [
+            "SET_HEATER_TEMPERATURE HEATER=chamber TARGET=50",
+            "SET_FAN_SPEED FAN=exhaust SPEED=1.00",
+            "SET_LED LED=status WHITE=0"
+        ]
+    );
+    let r = probe.read()["reading"].clone();
+    assert_eq!(
+        r["heaters"][2],
+        json!({ "id": "heater_generic chamber", "now": 50.0, "target": 50.0 })
+    );
+}
+
+#[test]
+fn a_moonraker_that_does_not_answer_or_wants_another_key_is_offline_without_the_key() {
+    // Nothing on the port.
+    let closed = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let address = closed.local_addr().unwrap().to_string();
+    drop(closed);
+    let probe = Probe::on_host(U1, &address, None);
+    let read = probe.read();
+    assert_eq!(
+        (read["online"].clone(), read["said"].clone()),
+        (json!(false), json!("Offline"))
+    );
+    assert!(
+        probe
+            .refused("device_command", json!({ "action": "home" }))
+            .contains("Could not connect")
+    );
+    // A printer that hangs.
+    let silent = hosts_mock::Silent::start();
+    let probe = Probe::on_host(U1, &format!("127.0.0.1:{}", silent.port), None);
+    assert_eq!(probe.read()["online"], false);
+    // A key the printer does not take: 401, and the key in no answer.
+    let (printer, shared) = hosts_mock::u1(U1Setup {
+        key: Some(KEY),
+        ..U1Setup::default()
+    });
+    let probe = Probe::on_host(U1, &printer.address(), Some("a-wrong-key"));
+    let read = probe.read();
+    assert_eq!(read["online"], false);
+    assert!(
+        read["error"].as_str().unwrap().starts_with("HTTP 401"),
+        "{read}"
+    );
+    assert!(
+        probe
+            .refused(
+                "device_command",
+                json!({ "action": "light", "on": true, "confirmed": true })
+            )
+            .starts_with("HTTP 401")
+    );
+    assert!(shared.lock().unwrap().scripts.is_empty());
+    probe.never_said("a-wrong-key");
+    // The right key: it answers, and the key is in no answer either.
+    let probe = Probe::on_host(U1, &printer.address(), Some(KEY));
+    assert!(probe.read()["reading"].is_object());
+    probe.confirmed(json!({ "action": "light", "on": true }));
+    probe.never_said(KEY);
 }

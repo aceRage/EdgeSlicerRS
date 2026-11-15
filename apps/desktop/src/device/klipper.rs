@@ -297,8 +297,10 @@ impl Device for Klipper {
             file: status.filename,
             percent: (on_job || state == "finished").then_some(status.percent),
             left: on_job.then_some(status.left).filter(|l| *l > 0),
-            layer: (status.total_layers > 0).then_some(status.layer),
-            total_layers: (status.total_layers > 0).then_some(status.total_layers),
+            layer: (status.total_layers > 0 && (on_job || state == "finished"))
+                .then_some(status.layer),
+            total_layers: (status.total_layers > 0 && (on_job || state == "finished"))
+                .then_some(status.total_layers),
             message: status.message,
             heaters,
             fans,

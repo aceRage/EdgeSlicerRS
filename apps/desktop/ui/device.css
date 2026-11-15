@@ -44,3 +44,4 @@
 .dv-hms-level { color: var(--text-2); font-size: var(--size-label); }
 .dv-hms-text { overflow-wrap: anywhere; }
 #device-update dl { max-width: 640px; }
+.dv-unit-name:empty { display: none; }
