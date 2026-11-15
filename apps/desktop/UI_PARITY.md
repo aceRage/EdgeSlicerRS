@@ -1684,6 +1684,77 @@ reference (`edge-perimeter`, `gaps_inside`). Not picked up, waiting for
 the pin bump (upstream's `calib_VFA` since): the model as `vfa.drc`,
 `enable_wrapping_detection` and `precise_z_height` off.
 
+Input shaping (`calib_input_shaping_freq`, `calib_input_shaping_damp`;
+the dialogs `Input_Shaping_Freq_Test_Dlg`, `Input_Shaping_Damp_Test_Dlg`):
+"Input shaping Frequency test" and "Input shaping Damp test", each with
+"Test model" ("Ringing Tower", "Fast Tower"), "Input shaper type" (the
+types the printer's firmware is offered, `input_shaper_types_for_flavor`
+less "Disable": Klipper "Default", "ZV", "MZV", "ZVD", "EI", "2HUMP_EI",
+"3HUMP_EI"; RepRapFirmware "Default", "MZV", "ZVD", "ZVDD", "ZVDDD",
+"EI2", "EI3", "DAA"; Marlin 2 "ZV"; else "Default"; the first picked) and
+the firmware's note (untranslated, as there), "Frequency settings":
+the frequency test's "X Start / End: " and "Y Start / End: " (15, 110 Hz)
+and "Damp: " (0.150) with "Recommended: Set Damp to 0. …"; the damping
+test's "Frequency X / Y: " (30, 30 Hz) and "Damp Start / End: " (0.000,
+0.400) with "Note: Use previously calculated frequencies."; for
+RepRapFirmware one frequency (range) for both axes ("Frequency (Start /
+End): ", "Frequency: ", with the tooltips "RepRap firmware uses the same
+frequency …"); "Wiki Guide: Input Shaping Calibration"; and the checks
+("Please input valid values: (0 < FreqStart < FreqEnd < 500)", "Please input
+a valid damping factor (0 < Damping/zeta factor <= 1)"; "Please input valid
+values: (0 < Freq < 500)", "Please input a valid damping factor (0 <=
+DampingStart < DampingEnd <= 1)"). The projects "Input shaping Frequency
+test" and "Input shaping Damping test": `ringing_tower.stl` or
+`fast_tower_test.stl`; for Marlin 2 with junction deviation
+`machine_max_junction_deviation` at least 0.25 and `default_junction_deviation`
+0, else `machine_max_jerk_x` and `_y` at least 5 (Klipper) or 10 and
+`default_jerk` 0; over the printer `resonance_avoidance` 0 and
+`input_shaping_emit` 0; over the first filament `slow_down_layer_time`,
+`slow_down_min_speed` 0 and `slow_down_for_layer_cooling` off, and, when
+its pressure advance is off (every U1 filament), `enable_pressure_advance`
+on, `pressure_advance` 0 and `adaptive_pressure_advance` off (Orca
+#11178); over the process `enable_overhang_speed` 0, `accel_to_decel_enable`
+on at 100%, `timelapse_type` traditional, `wall_loops` 1, `top_shell_layers`
+0, `bottom_shell_layers` 1, `sparse_infill_density` 0%, `detect_thin_wall`
+0, `spiral_mode` on, `spiral_mode_smooth` off, `bottom_surface_pattern`
+rectilinear, `outer_wall_speed` the slower of X's and Y's top speed and
+`default_acceleration` and `outer_wall_acceleration` the printing
+acceleration (`calib_machine_motion_limits`, 200 mm/s and 20000 mm/s²
+where unset); on the object `brim_type` outer_only, `brim_width` 3,
+`brim_object_gap` 0. **Ahead of the pin**: EdgeSlicer `5c07d87e33`,
+`bottom_shell_thickness` 0. At every layer, after the fan marker
+(GCode.cpp `process_layer`; GCodeWriter.cpp `set_input_shaping`): the
+frequency test's second layer the type and damping on both axes, every
+other the frequency of both axes (or of each, when their ranges differ),
+spread from the start on the third layer to the end on the last
+(`interpolate_value_across_layers` without a step, single precision); the
+damping test's second layer the type and each axis's frequency, every
+other the damping spread so. In each firmware's words: Klipper
+`SET_INPUT_SHAPER SHAPER_TYPE=… SHAPER_FREQ_X=…`/`DAMPING_RATIO_X=…` (both
+axes for A), RepRapFirmware `M593 P"…" F… S…` (no type for Default and
+DAA), Marlin 2 `M593 [X|Y] F… D…`; the frequency to two places, the
+damping to three, each only when over 0; "; Override input shaping" with
+`gcode_comments`. Marlin before 2 (every Bambu Lab printer) is refused
+("Input shaping is not supported by Marlin < 2.1.2. …"), and any other
+firmware ("Input shaping is only supported by Klipper, RepRapFirmware and
+Marlin 2"), as the reference's writer refuses them. In vase mode the line
+comes after the move up to the layer below's height that the spiral
+starts from and before its ramp, as there, and the last layer's flat copy
+carries it again. Checked by the engine's tests on a U1 (Klipper), a
+Creality Ender-3 V3 SE (Marlin 2) and the U1 told it is RepRapFirmware
+(no shipped RepRapFirmware printer has filaments of its own here):
+every layer's lines against the formulas, the second layer's in each
+firmware's form, the frequency 15 Hz on the first three layers, 62.5 at the
+middle of 103 and 110 at the top; and a Bambu Lab X1 Carbon refused. And
+by the session's (the checks, the printer's types, the settings shown
+changed, slice, undo). The projects saved and sliced by the pin as plain
+vases (`edge-parity`): the ringing tower 301 layers in both, extruded path
+165.73 m and outer wall 159.50 m in both, wall length per layer within
+0.00%; the fast tower 301 layers in both, 53.88 m there and 53.85 here,
+the last layer's flat copy 17.4% shorter here (the one layer that
+differs). Not picked up, waiting for the pin bump (upstream's since): the models
+as `.drc`, `precise_z_height` off.
+
 Checked: the engine's test slices "Pass 1" on a U1 and reads back that
 each tile's top surface feeds its own flow (+10%, -20%, +5% against
 `flowrate_0`, the median per mm within 0.2%), ten layers, and no note of
@@ -3923,7 +3994,8 @@ its tooltip "not yet: …" saying what it waits for.
 | | "Retraction test" | | built: on in Prepare; the dialog "Retraction test" |
 | | "Max flowrate" | | built: on in Prepare; the dialog "Max volumetric speed test" |
 | | "VFA" | | built: on in Prepare; the dialog "VFA test" |
-| | "Stringing (temp × retraction)", "Cornering", "Input Shaping" ▸ ("Input Shaping Frequency", "Input Shaping Damping/zeta factor"), "Ironing flow" | | off: "not yet: calibration models are not built" (the reference has the menu in the macOS bar and a title-bar menu elsewhere) |
+| | "Input Shaping" ▸ "Input Shaping Frequency", "Input Shaping Damping/zeta factor" | | built: on in Prepare; the dialogs "Input shaping Frequency test" and "Input shaping Damp test" |
+| | "Stringing (temp × retraction)", "Cornering", "Ironing flow" | | off: "not yet: calibration models are not built" (the reference has the menu in the macOS bar and a title-bar menu elsewhere) |
 | Account (macOS) | sign-in for Snapmaker, Bambu Lab, Flashforge | | not shown: the cloud is not this task |
 | Window (macOS) | "Minimize" [Cmd+M], "Zoom" | | the system's own, in the window; off in a browser |
 | | "Next Project", "Previous Project" | Cmd+Shift+] / [ | wired (`project_cycle`); on with two projects |

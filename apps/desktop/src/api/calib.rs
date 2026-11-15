@@ -57,6 +57,8 @@ fn params(args: &Value) -> Result<CalibParams, String> {
         Some("retraction") => CalibMode::RetractionTower,
         Some("max_flowrate") => CalibMode::VolumetricSpeedTower,
         Some("vfa") => CalibMode::VfaTower,
+        Some("shaping_frequency") => CalibMode::InputShapingFrequency,
+        Some("shaping_damping") => CalibMode::InputShapingDamping,
         Some(other) => return Err(format!("there is no calibration \"{other}\" yet")),
         None => return Err("test was not given".into()),
     };
@@ -107,6 +109,12 @@ fn params(args: &Value) -> Result<CalibParams, String> {
             )),
         };
     }
+    if matches!(
+        mode,
+        CalibMode::InputShapingFrequency | CalibMode::InputShapingDamping
+    ) {
+        return shaping_params(mode, args);
+    }
     if mode == CalibMode::VfaTower {
         // VFA_Test_Dlg::on_start.
         let (start, end, step) = (number("start"), number("end"), number("step"));
@@ -146,7 +154,117 @@ fn params(args: &Value) -> Result<CalibParams, String> {
     Ok(params)
 }
 
+/// The input shaping dialogs' values and their checks
+/// (`Input_Shaping_Freq_Test_Dlg::on_start`,
+/// `Input_Shaping_Damp_Test_Dlg::on_start`). RepRapFirmware (`reprap`)
+/// takes one frequency (range) for both axes.
+fn shaping_params(mode: CalibMode, args: &Value) -> Result<CalibParams, String> {
+    let number = |key: &str| {
+        args.get(key)
+            .and_then(Value::as_f64)
+            .filter(|n| n.is_finite())
+    };
+    let reprap = args.get("reprap").and_then(Value::as_bool) == Some(true);
+    let mut params = CalibParams::new(mode, 0.0, 1.0, 0.1);
+    params.test_model = u32::from(args.get("model").and_then(Value::as_u64) == Some(1));
+    params.shaper_type = args
+        .get("shaper")
+        .and_then(Value::as_str)
+        .unwrap_or_default()
+        .to_owned();
+    if mode == CalibMode::InputShapingFrequency {
+        let (x0, x1) = (number("freq_start_x"), number("freq_end_x"));
+        let (y0, y1) = if reprap {
+            (x0, x1)
+        } else {
+            (number("freq_start_y"), number("freq_end_y"))
+        };
+        let damp = number("damping");
+        let (Some(x0), Some(x1), Some(y0), Some(y1), Some(damp)) = (x0, x1, y0, y1, damp) else {
+            return Err(super::i18n::tr(
+                "Please input valid values:\n(0 < FreqStart < FreqEnd < 500)",
+            ));
+        };
+        if x0 < 0.0
+            || x1 > 500.0
+            || (!reprap && (y0 < 0.0 || y1 > 500.0))
+            || x0 >= x1
+            || (!reprap && y0 >= y1)
+        {
+            return Err(super::i18n::tr(
+                "Please input valid values:\n(0 < FreqStart < FreqEnd < 500)",
+            ));
+        }
+        if !(0.0..1.0).contains(&damp) {
+            return Err(super::i18n::tr(
+                "Please input a valid damping factor (0 < Damping/zeta factor <= 1)",
+            ));
+        }
+        params.freq_x = (x0, x1);
+        params.freq_y = (y0, y1);
+        params.start = damp;
+    } else {
+        let x = number("freq_x");
+        let y = if reprap { x } else { number("freq_y") };
+        let (start, end) = (number("damping_start"), number("damping_end"));
+        let (Some(x), Some(y), Some(start), Some(end)) = (x, y, start, end) else {
+            return Err(super::i18n::tr(
+                "Please input valid values:\n(0 < Freq < 500)",
+            ));
+        };
+        if !(0.0..=500.0).contains(&x) || (!reprap && !(0.0..=500.0).contains(&y)) {
+            return Err(super::i18n::tr(
+                "Please input valid values:\n(0 < Freq < 500)",
+            ));
+        }
+        if start < 0.0 || end > 1.0 || start >= end {
+            return Err(super::i18n::tr(
+                "Please input a valid damping factor (0 <= DampingStart < DampingEnd <= 1)",
+            ));
+        }
+        params.freq_x = (x, 1.0);
+        params.freq_y = (y, 1.0);
+        params.start = start;
+        params.end = end;
+    }
+    Ok(params)
+}
+
+/// The input shaper types a firmware is offered (Tab.cpp
+/// `input_shaper_types_for_flavor`, "Disable" left out as calib_dlg.cpp
+/// `get_shaper_type_values` leaves it), as `input_shaping_type` writes them.
+fn shaper_types(flavor: Option<&str>) -> &'static [&'static str] {
+    match flavor {
+        Some("klipper") => &["Default", "ZV", "MZV", "ZVD", "EI", "2HUMP_EI", "3HUMP_EI"],
+        Some("reprapfirmware") => &[
+            "Default", "MZV", "ZVD", "ZVDD", "ZVDDD", "EI2", "EI3", "DAA",
+        ],
+        Some("marlin2") => &["ZV"],
+        _ => &["Default"],
+    }
+}
+
 impl Session {
+    /// What a calibration dialog shows that depends on the printer
+    /// (`calib_printer`): its `gcode_flavor`, the input shaper types it is
+    /// offered, and whether it corners by junction deviation (Marlin 2
+    /// with `machine_max_junction_deviation` over 0).
+    pub(super) fn calib_printer(&self) -> Result<Value, String> {
+        let (_, settled) = self.calibration_settings()?;
+        let flavor = settled.text("gcode_flavor").map(str::to_owned);
+        let deviation = settled
+            .floats("machine_max_junction_deviation")
+            .ok()
+            .flatten()
+            .and_then(|values| values.first().copied().flatten())
+            .unwrap_or(0.0);
+        Ok(serde_json::json!({
+            "flavor": flavor,
+            "shaper_types": shaper_types(flavor.as_deref()),
+            "junction_deviation": flavor.as_deref() == Some("marlin2") && deviation > 0.0,
+        }))
+    }
+
     /// The settings a calibration made now would start from: the shown
     /// project's presets and what is set over them.
     fn calibration_settings(&self) -> Result<(super::Choices, edge_config::Settings), String> {
@@ -318,6 +436,9 @@ impl Session {
                 }
                 CalibMode::VfaTower => {
                     edge_engine::calib::vfa(params, &settled, &calib_dir, bed.as_ref())
+                }
+                CalibMode::InputShapingFrequency | CalibMode::InputShapingDamping => {
+                    edge_engine::calib::input_shaping(params, &settled, &calib_dir, bed.as_ref())
                 }
             },
             (None, None) => return Err("test was not given".into()),
@@ -812,5 +933,100 @@ mod tests {
         ask(&session, "undo", json!({ "project": id }));
         let objects = ask(&session, "plate_view", json!({ "project": id }));
         assert_eq!(objects["objects"].as_array().map_or(0, Vec::len), 0);
+    }
+
+    #[test]
+    fn the_input_shaping_tests_are_checked_made_sliced_and_undone() {
+        for bad in [
+            json!({"test": "shaping_frequency", "freq_start_x": 110, "freq_end_x": 15,
+                   "freq_start_y": 15, "freq_end_y": 110, "damping": 0.15}),
+            json!({"test": "shaping_frequency", "freq_start_x": 15, "freq_end_x": 510,
+                   "freq_start_y": 15, "freq_end_y": 110, "damping": 0.15}),
+            json!({"test": "shaping_damping", "freq_x": 600, "freq_y": 30,
+                   "damping_start": 0, "damping_end": 0.4}),
+        ] {
+            assert!(
+                params(&bad)
+                    .unwrap_err()
+                    .starts_with("Please input valid values"),
+                "{bad}"
+            );
+        }
+        let damp = params(
+            &json!({"test": "shaping_frequency", "freq_start_x": 15, "freq_end_x": 110,
+                   "freq_start_y": 15, "freq_end_y": 110, "damping": 1}),
+        );
+        assert!(
+            damp.unwrap_err()
+                .starts_with("Please input a valid damping factor")
+        );
+        let damp = params(
+            &json!({"test": "shaping_damping", "freq_x": 30, "freq_y": 30,
+                   "damping_start": 0.4, "damping_end": 0.4}),
+        );
+        assert!(
+            damp.unwrap_err()
+                .starts_with("Please input a valid damping factor")
+        );
+        // RepRapFirmware: one range for both axes.
+        let one = params(
+            &json!({"test": "shaping_frequency", "reprap": true, "freq_start_x": 20,
+                   "freq_end_x": 90, "damping": 0}),
+        )
+        .unwrap();
+        assert_eq!((one.freq_x, one.freq_y), ((20.0, 90.0), (20.0, 90.0)));
+
+        let dir = tempfile::tempdir().unwrap();
+        let session = Arc::new(Session::new(None));
+        choose_presets(&session);
+        let printer = ask(&session, "calib_printer", json!({}));
+        assert_eq!(printer["flavor"], "klipper");
+        assert_eq!(
+            printer["shaper_types"],
+            json!(["Default", "ZV", "MZV", "ZVD", "EI", "2HUMP_EI", "3HUMP_EI"])
+        );
+        assert_eq!(printer["junction_deviation"], false);
+        // The dialog's defaults, the first type.
+        let listing = ask(
+            &session,
+            "calibrate",
+            json!({"test": "shaping_frequency", "model": 0, "shaper": "Default",
+                   "freq_start_x": 15, "freq_end_x": 110, "freq_start_y": 15, "freq_end_y": 110,
+                   "damping": 0.15}),
+        );
+        let id = listing["id"].as_u64().unwrap();
+        let detail = ask(&session, "project", json!({}));
+        assert_eq!(detail["name"], "Input shaping Frequency test");
+        assert_eq!(detail["dirty"], true);
+        let choices = &detail["choices"];
+        assert_eq!(choices["over"]["spiral_mode"], "1", "{choices}");
+        assert_eq!(choices["over"]["default_jerk"], "0");
+        assert_eq!(choices["over"]["accel_to_decel_factor"], "100%");
+        assert_eq!(choices["printer_over"]["input_shaping_emit"], "0");
+        // The U1's PLA has pressure advance off: on at 0 for the test.
+        assert_eq!(choices["filament_over"][0]["enable_pressure_advance"], "1");
+        assert_eq!(choices["filament_over"][0]["pressure_advance"], "0");
+        dump(&session, id, "shaping_frequency.3mf");
+        let gcode = slice_and_read(&session, id, dir.path());
+        assert!(gcode.contains("SET_INPUT_SHAPER DAMPING_RATIO_X=0.150 DAMPING_RATIO_Y=0.150"));
+        assert!(gcode.contains("SET_INPUT_SHAPER SHAPER_FREQ_X=110.00 SHAPER_FREQ_Y=110.00"));
+        ask(&session, "undo", json!({ "project": id }));
+        let objects = ask(&session, "plate_view", json!({ "project": id }));
+        assert_eq!(objects["objects"].as_array().map_or(0, Vec::len), 0);
+
+        let listing = ask(
+            &session,
+            "calibrate",
+            json!({"test": "shaping_damping", "model": 1, "shaper": "ZV",
+                   "freq_x": 30, "freq_y": 42.5, "damping_start": 0, "damping_end": 0.4}),
+        );
+        let id = listing["id"].as_u64().unwrap();
+        let detail = ask(&session, "project", json!({ "project": id }));
+        assert_eq!(detail["name"], "Input shaping Damping test");
+        dump(&session, id, "shaping_damping.3mf");
+        let gcode = slice_and_read(&session, id, dir.path());
+        assert!(gcode.contains("SET_INPUT_SHAPER SHAPER_TYPE=ZV SHAPER_FREQ_X=30.00"));
+        assert!(gcode.contains("SET_INPUT_SHAPER SHAPER_TYPE=ZV SHAPER_FREQ_Y=42.50"));
+        assert!(gcode.contains("SET_INPUT_SHAPER DAMPING_RATIO_X=0.400 DAMPING_RATIO_Y=0.400"));
     }
 }

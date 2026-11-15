@@ -49,7 +49,7 @@ use edge_geom::{ExPolygon, Point2, scaled, unscaled};
 use edge_template::{TemplateError, Value, Variables, stream_double};
 use rayon::prelude::*;
 
-pub use calib::{AdvanceFirmware, Calibration, CalibrationKind};
+pub use calib::{AdvanceFirmware, Calibration, CalibrationKind, ShaperFirmware};
 pub use calib_draw::{HANDLE_SIZE as PA_HANDLE_SIZE, PaLine, PaPattern, Pen, pa_pattern};
 pub use contour::Contours;
 pub use edge_avoid::{Detour, Slices};

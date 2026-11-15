@@ -46,6 +46,152 @@ pub enum CalibrationKind {
     /// from `start` to `end`, spread over the layers
     /// ([`stepped_layer_value`]), rounded.
     VfaTower { start: f64, end: f64, step: f64 },
+    /// `Calib_Input_shaping_freq`: the shaper's type and damping on the
+    /// second layer, the frequency from `x.0` to `x.1` (and `y.0` to
+    /// `y.1`) over the layers ([`spread_layer_value`]).
+    InputShapingFrequency {
+        firmware: ShaperFirmware,
+        damping: f64,
+        x: (f64, f64),
+        y: (f64, f64),
+        shaper: String,
+    },
+    /// `Calib_Input_shaping_damp`: the shaper's type and each axis's
+    /// frequency on the second layer, the damping from `start` to `end`
+    /// over the layers.
+    InputShapingDamping {
+        firmware: ShaperFirmware,
+        frequency: (f64, f64),
+        start: f64,
+        end: f64,
+        shaper: String,
+    },
+}
+
+/// How a firmware is told its input shaper (GCodeWriter.cpp
+/// `set_input_shaping`), by `gcode_flavor` alone.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ShaperFirmware {
+    /// `SET_INPUT_SHAPER`.
+    Klipper,
+    /// `M593 P"…" F… S…`.
+    RepRapFirmware,
+    /// Marlin 2: `M593 X|Y F… D…`.
+    Marlin,
+}
+
+impl ShaperFirmware {
+    /// The firmware of a `gcode_flavor`, or the reference's refusal
+    /// (GCodeWriter.cpp `set_input_shaping`, which throws).
+    pub fn of(flavor: Option<&str>) -> Result<Self, String> {
+        match flavor {
+            Some("klipper") => Ok(Self::Klipper),
+            Some("reprapfirmware") => Ok(Self::RepRapFirmware),
+            Some("marlin2") => Ok(Self::Marlin),
+            Some("marlin") | None => Err("Input shaping is not supported by Marlin < 2.1.2.\nCheck your firmware version and update your G-code flavor to 'Marlin 2'".to_owned()),
+            Some(_) => Err("Input shaping is only supported by Klipper, RepRapFirmware and Marlin 2".to_owned()),
+        }
+    }
+}
+
+/// The line that sets the input shaper (GCodeWriter.cpp
+/// `set_input_shaping`): for `axis` X, Y or A (both), `damp` and `freq`
+/// in single precision, each written only when over 0, and `shaper` its
+/// type ("Default" and "" none; "Disable" turns shaping off, both axes at
+/// 0). Nothing when there is nothing to say. The reference throws for a
+/// frequency under 0, a damping outside 0 to 1, or another axis.
+pub fn input_shaping_line(
+    firmware: ShaperFirmware,
+    axis: char,
+    damp: f32,
+    freq: f32,
+    shaper: &str,
+    comments: bool,
+) -> Result<String, String> {
+    use std::fmt::Write as _;
+    let disable = shaper == "Disable";
+    let (axis, damp, freq, shaper) = if disable {
+        ('A', 0.0_f32, 0.0_f32, "Default")
+    } else {
+        if freq < 0.0 || damp < 0.0 || damp > 1.0 || !matches!(axis, 'X' | 'Y' | 'Z' | 'A') {
+            return Err(format!(
+                "Invalid input shaping parameters: axis={axis}, freq={freq:.6}, damp={damp:.6}"
+            ));
+        }
+        (axis, damp, freq, shaper)
+    };
+    let mut params = String::new();
+    let line = match firmware {
+        ShaperFirmware::Klipper => {
+            if !shaper.is_empty() && shaper != "Default" {
+                let _ = write!(params, " SHAPER_TYPE={shaper}");
+            }
+            if axis != 'A' {
+                if freq > 0.0 {
+                    let _ = write!(params, " SHAPER_FREQ_{axis}={freq:.2}");
+                }
+                if damp > 0.0 {
+                    let _ = write!(params, " DAMPING_RATIO_{axis}={damp:.3}");
+                }
+            } else {
+                if freq > 0.0 || disable {
+                    let _ = write!(params, " SHAPER_FREQ_X={freq:.2} SHAPER_FREQ_Y={freq:.2}");
+                }
+                if damp > 0.0 || disable {
+                    let _ = write!(
+                        params,
+                        " DAMPING_RATIO_X={damp:.3} DAMPING_RATIO_Y={damp:.3}"
+                    );
+                }
+            }
+            "SET_INPUT_SHAPER"
+        }
+        ShaperFirmware::RepRapFirmware => {
+            if !shaper.is_empty() && shaper != "Default" && shaper != "DAA" {
+                let _ = write!(params, " P\"{shaper}\"");
+            }
+            if freq > 0.0 || disable {
+                let _ = write!(params, " F{freq:.2}");
+            }
+            if damp > 0.0 || disable {
+                let _ = write!(params, " S{damp:.3}");
+            }
+            "M593"
+        }
+        ShaperFirmware::Marlin => {
+            if axis != 'A' {
+                let _ = write!(params, " {axis}");
+            }
+            if freq > 0.0 || disable {
+                let _ = write!(params, " F{freq:.2}");
+            }
+            if damp > 0.0 || disable {
+                let _ = write!(params, " D{damp:.3}");
+            }
+            "M593"
+        }
+    };
+    if params.is_empty() {
+        return Ok(String::new());
+    }
+    let comment = if comments {
+        " ; Override input shaping"
+    } else {
+        ""
+    };
+    Ok(format!("{line}{params}{comment}\n"))
+}
+
+/// A value spread evenly over the layers from the third on (GCode.cpp
+/// `interpolate_value_across_layers` without a step): `start` on the
+/// second layer (index 1), then `start` to `end` from index 2 to the last,
+/// in single precision; index 0 is before the spread, at `start`.
+pub fn spread_layer_value(index: usize, count: usize, start: f32, end: f32) -> f32 {
+    if index == 1 {
+        return start;
+    }
+    let ratio = ((index as f32 - 2.0) / (count as f32 - 3.0)).clamp(0.0, 1.0);
+    start + ratio * (end - start)
 }
 
 /// How a firmware is told its pressure advance (GCodeWriter.cpp
@@ -167,6 +313,58 @@ pub(crate) fn at_layer(
     z: f64,
     tool: Option<usize>,
 ) -> String {
+    // The input shaper's values are checked when the calibration is made
+    // (`edge_engine::calib`), as the dialogs check them; a line refused
+    // here would write nothing.
+    let shaping = |firmware, axis, damp: f32, freq: f32, shaper: &str| {
+        input_shaping_line(firmware, axis, damp, freq, shaper, calibration.comments)
+            .unwrap_or_default()
+    };
+    match &calibration.kind {
+        CalibrationKind::InputShapingFrequency {
+            firmware,
+            damping,
+            x,
+            y,
+            shaper,
+        } => {
+            if index == 1 {
+                shaping(*firmware, 'A', *damping as f32, 0.0, shaper)
+            } else if x == y {
+                let freq = spread_layer_value(index, count, x.0 as f32, x.1 as f32);
+                shaping(*firmware, 'A', 0.0, freq, "")
+            } else {
+                let fx = spread_layer_value(index, count, x.0 as f32, x.1 as f32);
+                let fy = spread_layer_value(index, count, y.0 as f32, y.1 as f32);
+                shaping(*firmware, 'X', 0.0, fx, "") + &shaping(*firmware, 'Y', 0.0, fy, "")
+            }
+        }
+        CalibrationKind::InputShapingDamping {
+            firmware,
+            frequency,
+            start,
+            end,
+            shaper,
+        } => {
+            if index == 1 {
+                shaping(*firmware, 'X', 0.0, frequency.0 as f32, shaper)
+                    + &shaping(*firmware, 'Y', 0.0, frequency.1 as f32, shaper)
+            } else {
+                let damp = spread_layer_value(index, count, *start as f32, *end as f32);
+                shaping(*firmware, 'A', damp, 0.0, "")
+            }
+        }
+        _ => at_layer_plain(calibration, index, count, z, tool),
+    }
+}
+
+fn at_layer_plain(
+    calibration: &Calibration,
+    index: usize,
+    count: usize,
+    z: f64,
+    tool: Option<usize>,
+) -> String {
     match calibration.kind {
         CalibrationKind::PressureAdvanceTower { start, end, step } => {
             let advance = stepped_layer_value(index, count, start as f32, end as f32, step as f32);
@@ -183,7 +381,9 @@ pub(crate) fn at_layer(
         CalibrationKind::PressureAdvanceLine(_)
         | CalibrationKind::PressureAdvancePattern(_)
         | CalibrationKind::VolumetricSpeedTower { .. }
-        | CalibrationKind::VfaTower { .. } => String::new(),
+        | CalibrationKind::VfaTower { .. }
+        | CalibrationKind::InputShapingFrequency { .. }
+        | CalibrationKind::InputShapingDamping { .. } => String::new(),
     }
 }
 

@@ -22,7 +22,15 @@ fn presets(vendor: &str, machine: &str) -> Chosen {
     let library = Library::new(reference("resources/profiles"));
     let shelf = library.shelf(vendor).unwrap();
     let (process, filament) = shelf.usual_for(machine);
-    let filament = filament.unwrap();
+    // A printer with no usual filament: the first made for it.
+    let filament = filament
+        .or_else(|| {
+            shelf
+                .filaments_for(machine)
+                .first()
+                .map(|name| (*name).to_owned())
+        })
+        .unwrap();
     shelf
         .choose(Some(machine), process.as_deref(), &[filament.as_str()])
         .unwrap()
@@ -740,6 +748,248 @@ fn the_vfa_tower_steps_its_wall_speed_block_by_block() {
         assert_eq!(
             edge_gcode::calib::vfa_tower_speed(24, count, 40.0, 200.0, 10.0),
             40.0
+        );
+    }
+}
+
+/// Makes a calibration for the printer, with `base` set over its presets
+/// first (as the shown project's own changes would be), and slices it.
+fn made_and_sliced(
+    chosen: &Chosen,
+    base: &Settings,
+    make: impl Fn(&Settings, &Bed) -> Result<CalibProject, edge_engine::Failure>,
+) -> Result<(CalibProject, String), edge_engine::Failure> {
+    let over = Overrides {
+        settings: base.clone(),
+        ..Overrides::default()
+    };
+    let settings = edge_engine::settled(chosen, &over, None)?;
+    let bed = bed(&settings);
+    let made = make(&settings, &bed)?;
+    let loaded = made
+        .model
+        .place(made.model.plates().first().map(|plate| plate.id()))?;
+    let mut set = overrides(&made);
+    for (key, value) in base.iter() {
+        if set.settings.get(key).is_none() {
+            set.settings.insert(key.to_owned(), value.clone());
+        }
+    }
+    let job = edge_engine::prepare(loaded, chosen, &set)?;
+    let sliced = edge_engine::slice(job, &Unwatched)?;
+    let text = sliced.gcode("1970-01-01 at 00:00:01 UTC")?.text;
+    Ok((made, String::from_utf8(text).unwrap()))
+}
+
+/// The lines after each layer's fan marker that a calibration wrote,
+/// those starting with one of `starts`; and whether each came before the
+/// layer's first extruding move.
+fn per_layer_lines<'a>(gcode: &'a str, starts: &[&str]) -> Vec<Vec<&'a str>> {
+    layers(gcode)
+        .iter()
+        .map(|text| {
+            let after = text
+                .split_once(";_SET_FAN_SPEED_CHANGING_LAYER\n")
+                .map_or(*text, |(_, rest)| rest);
+            let mut found = Vec::new();
+            for line in after.lines() {
+                if line.starts_with("G1 ") && line.contains(" X") && line.contains(" E") {
+                    break;
+                }
+                if starts.iter().any(|start| line.starts_with(start)) {
+                    found.push(line);
+                }
+            }
+            found
+        })
+        .collect()
+}
+
+#[test]
+fn the_input_shaping_frequency_test_spreads_the_frequency_over_the_layers() {
+    for (vendor, machine, shaper, first_line) in [
+        (
+            "Snapmaker",
+            "Snapmaker U1 (0.4 nozzle)",
+            "MZV",
+            "SET_INPUT_SHAPER SHAPER_TYPE=MZV DAMPING_RATIO_X=0.150 DAMPING_RATIO_Y=0.150",
+        ),
+        (
+            "Creality",
+            "Creality Ender-3 V3 SE 0.4 nozzle",
+            "ZV",
+            "M593 D0.150",
+        ),
+        // RepRapFirmware: no shipped printer of it has filaments of its
+        // own vendor's here, so the U1 told it is one.
+        (
+            "RepRapFirmware",
+            "Snapmaker U1 (0.4 nozzle)",
+            "MZV",
+            "M593 P\"MZV\" S0.150",
+        ),
+    ] {
+        let rrf = vendor == "RepRapFirmware";
+        let chosen = presets(if rrf { "Snapmaker" } else { vendor }, machine);
+        let mut base = Settings::default();
+        if rrf {
+            base.insert(
+                "gcode_flavor".to_owned(),
+                Value::One("reprapfirmware".to_owned()),
+            );
+        }
+        // The dialog's defaults: 15 to 110 Hz on both axes, damping 0.15.
+        let mut params = CalibParams::new(CalibMode::InputShapingFrequency, 0.15, 1.0, 0.1);
+        params.freq_x = (15.0, 110.0);
+        params.freq_y = (15.0, 110.0);
+        params.shaper_type = shaper.to_owned();
+        let calib = reference("resources/calib");
+        let (made, gcode) = made_and_sliced(&chosen, &base, |settings, bed| {
+            edge_engine::calib::input_shaping(&params, settings, &calib, Some(bed))
+        })
+        .unwrap();
+        if let Ok(dir) = std::env::var("EDGE_CALIB_DUMP") {
+            std::fs::write(
+                std::path::Path::new(&dir).join(format!("shaping_freq_{vendor}.gcode")),
+                &gcode,
+            )
+            .unwrap();
+        }
+        assert_eq!(made.name, "Input shaping Frequency test");
+        let process: std::collections::BTreeMap<&str, &str> = made
+            .process
+            .iter()
+            .map(|(k, v)| (k.as_str(), v.as_str()))
+            .collect();
+        assert_eq!(process["spiral_mode"], "1");
+        assert_eq!(process["default_jerk"], "0");
+        let count: usize = gcode
+            .lines()
+            .find_map(|line| line.strip_prefix("; total layer number: "))
+            .unwrap()
+            .parse()
+            .unwrap();
+        let lines = per_layer_lines(&gcode, &["SET_INPUT_SHAPER", "M593"]);
+        assert!(lines.len() >= count, "{machine}");
+        let marlin = vendor == "Creality";
+        for (index, found) in lines.iter().enumerate().take(count) {
+            if index == 1 {
+                assert_eq!(found, &[first_line], "{machine}");
+                continue;
+            }
+            // From 15 to 110 over the layers from the third on, in single
+            // precision (GCode.cpp `interpolate_value_across_layers`).
+            let freq = edge_gcode::calib::spread_layer_value(index, count, 15.0, 110.0);
+            let expected = if rrf || marlin {
+                format!("M593 F{freq:.2}")
+            } else {
+                format!("SET_INPUT_SHAPER SHAPER_FREQ_X={freq:.2} SHAPER_FREQ_Y={freq:.2}")
+            };
+            assert_eq!(found, &[expected.as_str()], "{machine} layer {index}");
+        }
+        // Worked by hand: the first layers at 15 Hz, the last at 110; the
+        // middle of n layers, index 2 + (n - 3) / 2, at 62.5.
+        assert_eq!(
+            edge_gcode::calib::spread_layer_value(0, 103, 15.0, 110.0),
+            15.0
+        );
+        assert_eq!(
+            edge_gcode::calib::spread_layer_value(2, 103, 15.0, 110.0),
+            15.0
+        );
+        assert_eq!(
+            edge_gcode::calib::spread_layer_value(52, 103, 15.0, 110.0),
+            62.5
+        );
+        assert_eq!(
+            edge_gcode::calib::spread_layer_value(102, 103, 15.0, 110.0),
+            110.0
+        );
+    }
+    // A Bambu Lab printer (Marlin before 2 to the reference's writer)
+    // takes no input shaping: refused, as the reference's writer refuses.
+    let chosen = presets("BBL", "Bambu Lab X1 Carbon 0.4 nozzle");
+    let params = CalibParams::new(CalibMode::InputShapingFrequency, 0.15, 1.0, 0.1);
+    let calib = reference("resources/calib");
+    let refused = made_and_sliced(&chosen, &Settings::default(), |settings, bed| {
+        edge_engine::calib::input_shaping(&params, settings, &calib, Some(bed))
+    })
+    .unwrap_err()
+    .to_string();
+    assert!(
+        refused.starts_with("Input shaping is not supported by Marlin < 2.1.2."),
+        "{refused}"
+    );
+}
+
+#[test]
+fn the_input_shaping_damping_test_spreads_the_damping_over_the_layers() {
+    for (vendor, machine, shaper, first_lines) in [
+        (
+            "Snapmaker",
+            "Snapmaker U1 (0.4 nozzle)",
+            "ZV",
+            vec![
+                "SET_INPUT_SHAPER SHAPER_TYPE=ZV SHAPER_FREQ_X=30.00",
+                "SET_INPUT_SHAPER SHAPER_TYPE=ZV SHAPER_FREQ_Y=42.50",
+            ],
+        ),
+        (
+            "Creality",
+            "Creality Ender-3 V3 SE 0.4 nozzle",
+            "ZV",
+            vec!["M593 X F30.00", "M593 Y F42.50"],
+        ),
+    ] {
+        let chosen = presets(vendor, machine);
+        // Frequencies 30 and 42.5 Hz, damping 0 to 0.4 (the dialog's).
+        let mut params = CalibParams::new(CalibMode::InputShapingDamping, 0.0, 0.4, 0.1);
+        params.freq_x = (30.0, 1.0);
+        params.freq_y = (42.5, 1.0);
+        params.shaper_type = shaper.to_owned();
+        params.test_model = 1;
+        let calib = reference("resources/calib");
+        let (made, gcode) = made_and_sliced(&chosen, &Settings::default(), |settings, bed| {
+            edge_engine::calib::input_shaping(&params, settings, &calib, Some(bed))
+        })
+        .unwrap();
+        if let Ok(dir) = std::env::var("EDGE_CALIB_DUMP") {
+            std::fs::write(
+                std::path::Path::new(&dir).join(format!("shaping_damp_{vendor}.gcode")),
+                &gcode,
+            )
+            .unwrap();
+        }
+        assert_eq!(made.name, "Input shaping Damping test");
+        let count: usize = gcode
+            .lines()
+            .find_map(|line| line.strip_prefix("; total layer number: "))
+            .unwrap()
+            .parse()
+            .unwrap();
+        let lines = per_layer_lines(&gcode, &["SET_INPUT_SHAPER", "M593"]);
+        for (index, found) in lines.iter().enumerate().take(count) {
+            if index == 1 {
+                assert_eq!(found, &first_lines, "{machine}");
+                continue;
+            }
+            let damp = edge_gcode::calib::spread_layer_value(index, count, 0.0, 0.4);
+            // A damping of 0 is not written (`damp > 0`): nothing at all.
+            let expected: Vec<String> = if damp > 0.0 {
+                vec![if vendor == "Creality" {
+                    format!("M593 D{damp:.3}")
+                } else {
+                    format!("SET_INPUT_SHAPER DAMPING_RATIO_X={damp:.3} DAMPING_RATIO_Y={damp:.3}")
+                }]
+            } else {
+                Vec::new()
+            };
+            assert_eq!(found, &expected, "{machine} layer {index}");
+        }
+        // The top layer at 0.4.
+        assert_eq!(
+            edge_gcode::calib::spread_layer_value(count - 1, count, 0.0, 0.4),
+            0.4
         );
     }
 }

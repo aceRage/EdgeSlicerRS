@@ -35,6 +35,10 @@ pub enum CalibMode {
     VolumetricSpeedTower,
     /// `Calib_VFA_Tower`: "VFA".
     VfaTower,
+    /// `Calib_Input_shaping_freq`: "Input Shaping Frequency".
+    InputShapingFrequency,
+    /// `Calib_Input_shaping_damp`: "Input Shaping Damping/zeta factor".
+    InputShapingDamping,
 }
 
 /// What the calibration's dialog asked for (calib.hpp `Calib_Params`).
@@ -55,6 +59,17 @@ pub struct CalibParams {
     pub vfa_layer_height: f64,
     /// "VFA": the model sized to the nozzle (`nozzle_based_resize`).
     pub nozzle_based_resize: bool,
+    /// Input shaping: the frequencies from and to, of X and of Y
+    /// (`freqStartX`, `freqEndX`, `freqStartY`, `freqEndY`); the damping
+    /// test takes each axis's start.
+    pub freq_x: (f64, f64),
+    pub freq_y: (f64, f64),
+    /// Input shaping and cornering: the model (`test_model`): 0 the
+    /// ringing tower, 1 the fast tower, 2 (cornering) SCV-V2.
+    pub test_model: u32,
+    /// Input shaping: the shaper's type as the printer's
+    /// `input_shaping_type` writes it ("Default", "MZV", …).
+    pub shaper_type: String,
 }
 
 /// A "PA Pattern" handle cube on the plate being sliced: its box across
@@ -80,6 +95,10 @@ impl CalibParams {
             handles: Vec::new(),
             vfa_layer_height: 0.0,
             nozzle_based_resize: true,
+            freq_x: (0.0, 1.0),
+            freq_y: (0.0, 1.0),
+            test_model: 0,
+            shaper_type: String::new(),
         }
     }
 
@@ -185,6 +204,26 @@ impl CalibParams {
                 end: self.end,
                 step: self.step,
             },
+            CalibMode::InputShapingFrequency => {
+                let firmware = edge_gcode::ShaperFirmware::of(settings.text("gcode_flavor"))?;
+                CalibrationKind::InputShapingFrequency {
+                    firmware,
+                    damping: self.start,
+                    x: self.freq_x,
+                    y: self.freq_y,
+                    shaper: self.shaper_type.clone(),
+                }
+            }
+            CalibMode::InputShapingDamping => {
+                let firmware = edge_gcode::ShaperFirmware::of(settings.text("gcode_flavor"))?;
+                CalibrationKind::InputShapingDamping {
+                    firmware,
+                    frequency: (self.freq_x.0, self.freq_y.0),
+                    start: self.start,
+                    end: self.end,
+                    shaper: self.shaper_type.clone(),
+                }
+            }
         };
         let jerk = |axis: &str| -> Result<f64, Failure> {
             Ok(first_number(settings, &format!("machine_max_jerk_{axis}"))?.unwrap_or(0.0))
@@ -449,7 +488,9 @@ pub fn pressure_advance(
         CalibMode::TemperatureTower
         | CalibMode::RetractionTower
         | CalibMode::VolumetricSpeedTower
-        | CalibMode::VfaTower => {
+        | CalibMode::VfaTower
+        | CalibMode::InputShapingFrequency
+        | CalibMode::InputShapingDamping => {
             return Err("that test is not a pressure advance test".into());
         }
         CalibMode::PressureAdvanceLine => {
@@ -1226,6 +1267,158 @@ pub fn vfa(
         filament: pairs(&[("slow_down_layer_time", "0")]),
         printer: pairs(&[("resonance_avoidance", "0")]),
         params: Some(made),
+        notes: Vec::new(),
+    })
+}
+
+/// The machine's motion limits a tower prints at (calib.cpp
+/// `calib_machine_motion_limits`): the slower of X's and Y's top speeds
+/// and the printing acceleration, each `fallback` where not set.
+fn motion_limits(
+    settings: &Settings,
+    fallback_speed: f64,
+    fallback_acceleration: f64,
+) -> Result<(f64, f64), Failure> {
+    let first =
+        |key: &str| -> Result<f64, Failure> { Ok(first_number(settings, key)?.unwrap_or(0.0)) };
+    let (x, y) = (first("machine_max_speed_x")?, first("machine_max_speed_y")?);
+    let acceleration = first("machine_max_acceleration_extruding")?;
+    Ok((
+        if x > 0.0 && y > 0.0 {
+            x.min(y)
+        } else {
+            fallback_speed
+        },
+        if acceleration > 0.0 {
+            acceleration
+        } else {
+            fallback_acceleration
+        },
+    ))
+}
+
+/// PresetFlowVariant.hpp `calib_enable_pressure_advance_if_off` (Orca
+/// #11178): a filament with pressure advance off gets it on at 0, adaptive
+/// off, for the test; one with it on keeps its own.
+fn pressure_advance_if_off(settings: &Settings, filament: &mut Set) -> Result<(), Failure> {
+    let on = settings
+        .texts("enable_pressure_advance")
+        .and_then(|values| values.first())
+        .is_some_and(|value| value == "1");
+    if !on {
+        filament.extend(pairs(&[
+            ("enable_pressure_advance", "1"),
+            ("pressure_advance", "0"),
+            ("adaptive_pressure_advance", "0"),
+        ]));
+    }
+    Ok(())
+}
+
+/// The towers the input shaping and cornering tests print: 0 the ringing
+/// tower, 1 the fast tower, 2 SCV-V2 (cornering only).
+fn shaping_model(calib_dir: &Path, test_model: u32, bed: Option<&Bed>) -> Result<Model, Failure> {
+    load(
+        calib_dir,
+        match test_model {
+            0 => "input_shaping/ringing_tower.stl",
+            1 => "input_shaping/fast_tower_test.stl",
+            _ => "cornering/SCV-V2.stl",
+        },
+        bed,
+    )
+}
+
+/// "Input Shaping Frequency" and "Input Shaping Damping/zeta factor"
+/// (Plater.cpp `calib_input_shaping_freq`, `calib_input_shaping_damp`):
+/// the ringing or the fast tower, one wall, one bottom layer, vase mode,
+/// at the machine's top speed and acceleration, its jerk (or junction
+/// deviation) loosened; the slice then sets the shaper at each layer
+/// (`edge_gcode::calib::input_shaping_line`). `settings` are those the
+/// project starts from.
+pub fn input_shaping(
+    params: &CalibParams,
+    settings: &Settings,
+    calib_dir: &Path,
+    bed: Option<&Bed>,
+) -> Result<CalibProject, Failure> {
+    let name = match params.mode {
+        CalibMode::InputShapingFrequency => "Input shaping Frequency test",
+        CalibMode::InputShapingDamping => "Input shaping Damping test",
+        _ => return Err("that test is not an input shaping test".into()),
+    };
+    // The firmware is told the shaper per layer; one that cannot be is
+    // refused as the reference's writer refuses it, before anything.
+    edge_gcode::ShaperFirmware::of(settings.text("gcode_flavor"))?;
+    let mut model = shaping_model(calib_dir, params.test_model.min(1), bed)?;
+    let mut process: Set = Vec::new();
+    let mut printer: Set = Vec::new();
+    let klipper = settings.text("gcode_flavor") == Some("klipper");
+    if junction_deviation(settings)? {
+        let deviation = first_number(settings, "machine_max_junction_deviation")?.unwrap_or(0.0);
+        printer.push((
+            "machine_max_junction_deviation".to_owned(),
+            written(deviation.max(0.25)),
+        ));
+        process.push(("default_junction_deviation".to_owned(), "0".to_owned()));
+    } else {
+        let jerk = if klipper { 5.0 } else { 10.0 };
+        for axis in ["x", "y"] {
+            let key = format!("machine_max_jerk_{axis}");
+            let had = first_number(settings, &key)?.unwrap_or(0.0);
+            printer.push((key, written(had.max(jerk))));
+        }
+        process.push(("default_jerk".to_owned(), "0".to_owned()));
+    }
+    printer.extend(pairs(&[
+        ("resonance_avoidance", "0"),
+        ("input_shaping_emit", "0"),
+    ]));
+    let mut filament = pairs(&[
+        ("slow_down_layer_time", "0"),
+        ("slow_down_min_speed", "0"),
+        ("slow_down_for_layer_cooling", "0"),
+    ]);
+    pressure_advance_if_off(settings, &mut filament)?;
+    let (speed, acceleration) = motion_limits(settings, 200.0, 20000.0)?;
+    process.extend(pairs(&[
+        ("enable_overhang_speed", "0"),
+        // A 100% factor sends Klipper MINIMUM_CRUISE_RATIO=0 with every
+        // acceleration change, for the whole test.
+        ("accel_to_decel_enable", "1"),
+        ("accel_to_decel_factor", "100%"),
+        ("timelapse_type", "0"),
+        ("wall_loops", "1"),
+        ("top_shell_layers", "0"),
+        ("bottom_shell_layers", "1"),
+        // Ahead of the pin: EdgeSlicer 5c07d87e33 (on the fork's main).
+        ("bottom_shell_thickness", "0"),
+        ("sparse_infill_density", "0%"),
+        ("detect_thin_wall", "0"),
+        ("spiral_mode", "1"),
+        ("spiral_mode_smooth", "0"),
+        ("bottom_surface_pattern", "rectilinear"),
+    ]));
+    process.push(("outer_wall_speed".to_owned(), written(speed)));
+    process.push(("default_acceleration".to_owned(), written(acceleration)));
+    process.push(("outer_wall_acceleration".to_owned(), written(acceleration)));
+    set_on_object(
+        &mut model,
+        bed,
+        &[
+            ("brim_type", "outer_only"),
+            ("brim_width", "3"),
+            ("brim_object_gap", "0"),
+        ],
+        &mut process,
+    )?;
+    Ok(CalibProject {
+        name: name.to_owned(),
+        model,
+        process,
+        filament,
+        printer,
+        params: Some(params.clone()),
         notes: Vec::new(),
     })
 }

@@ -356,6 +356,96 @@ const Calib = (() => {
     });
   }
 
+  // A row of two numbers after one label (the input shaping dialogs'
+  // "X Start / End: " and the rest), each with its unit.
+  function pair(label, unit, values) {
+    const inputs = values.map((value) => el('input', { type: 'text', inputMode: 'decimal', autocomplete: 'off', spellcheck: false, value }));
+    const row = el('div', { className: 'calib-field' }, el('span', { textContent: label }),
+      ...inputs.flatMap((input) => [input, el('span', { className: 'quiet', textContent: unit })]));
+    return { row, inputs };
+  }
+
+  // The firmware's note under the shaper types (calib_dlg.cpp; not
+  // translated there).
+  function firmwareNote(flavor, fallback) {
+    switch (flavor) {
+      case 'marlin2': case 'marlin': return 'Marlin version => 2.1.2\nFixed-Time motion not yet implemented.';
+      case 'klipper': return 'Klipper version => 0.9.0';
+      case 'reprapfirmware': return 'RepRap firmware version => 3.4.0\nCheck your firmware documentation for supported shaper types.';
+      default: return fallback;
+    }
+  }
+
+  // "Input shaping Frequency test" and "Input shaping Damp test"
+  // (calib_dlg.cpp `Input_Shaping_Freq_Test_Dlg`, `Input_Shaping_Damp_Test_Dlg`).
+  async function inputShaping(damping) {
+    const printer = await call('calib_printer');
+    const reprap = printer.flavor === 'reprapfirmware';
+    const model = radios('calib-model', ['Ringing Tower', 'Fast Tower'], 0);
+    const types = el('div', { className: 'calib-radios calib-two', role: 'radiogroup' }, ...printer.shaper_types.map((type, index) =>
+      el('label', {}, el('input', { type: 'radio', name: 'calib-shaper', value: type, checked: index === 0 }), type)));
+    const note = el('p', { className: 'quiet calib-note', textContent: firmwareNote(printer.flavor, damping ? 'Check firmware compatibility.' : 'Please ensure the selected type is compatible with your firmware version.') });
+    let settings;
+    let read;
+    if (!damping) {
+      const x = pair(reprap ? t('Frequency (Start / End): ') : `X ${t('Start / End')}: `, 'Hz', ['15', '110']);
+      const y = pair(`Y ${t('Start / End')}: `, 'Hz', ['15', '110']);
+      if (reprap) {
+        y.row.hidden = true;
+        for (const input of x.inputs) input.title = t('RepRap firmware uses the same frequency range for both axes.');
+      }
+      const damp = field('Damp: ');
+      damp.input.value = (0.15).toFixed(3);
+      settings = group('Frequency settings', x.row, y.row, damp.row,
+        el('p', { className: 'quiet calib-note', textContent: t("Recommended: Set Damp to 0.\nThis will use the printer's default or saved value.") }));
+      read = () => ({
+        freq_start_x: readNumber({ input: x.inputs[0] }), freq_end_x: readNumber({ input: x.inputs[1] }),
+        freq_start_y: readNumber({ input: y.inputs[0] }), freq_end_y: readNumber({ input: y.inputs[1] }),
+        damping: readNumber(damp),
+      });
+    } else {
+      const freq = pair(reprap ? t('Frequency: ') : `${t('Frequency')} X / Y: `, 'Hz', ['30', '30']);
+      if (reprap) {
+        freq.inputs[1].hidden = true;
+        freq.row.lastChild.hidden = true;
+        freq.inputs[0].title = t('RepRap firmware uses the same frequency for both axes.');
+      }
+      const damp = pair(`${t('Damp')} ${t('Start / End')}: `, '', [(0).toFixed(3), (0.4).toFixed(3)]);
+      settings = group('Frequency settings', freq.row, damp.row,
+        el('p', { className: 'quiet calib-note', textContent: t('Note: Use previously calculated frequencies.') }));
+      read = () => ({
+        freq_x: readNumber({ input: freq.inputs[0] }), freq_y: readNumber({ input: freq.inputs[1] }),
+        damping_start: readNumber({ input: damp.inputs[0] }), damping_end: readNumber({ input: damp.inputs[1] }),
+      });
+    }
+    const url = 'https://github.com/SoftFever/OrcaSlicer/wiki/input-shaping-calib';
+    const link = el('a', { href: url, textContent: t('Wiki Guide: Input Shaping Calibration') });
+    link.addEventListener('click', (event) => { event.preventDefault(); attempt(() => openGuide(url)); });
+    const title = damping ? 'Input shaping Damp test' : 'Input shaping Frequency test';
+    const dialog = el('dialog', { className: 'calib-dialog' }, el('form', { method: 'dialog' },
+      el('h2', { textContent: t(title) }),
+      group('Test model', model),
+      group('Input shaper type', types, note),
+      settings,
+      el('div', { className: 'calib-links' }, link),
+      el('div', { className: 'row end' },
+        el('button', { type: 'submit', value: 'ok', className: 'primary', textContent: t('OK') }),
+        el('button', { type: 'submit', value: 'cancel', formNoValidate: true, textContent: t('Cancel') }))));
+    return run(dialog, async () => {
+      const shaper = types.querySelector('input:checked');
+      try {
+        await make({
+          test: damping ? 'shaping_damping' : 'shaping_frequency', reprap,
+          model: Number(model.querySelector('input:checked').value),
+          shaper: shaper ? shaper.value : '', ...read(),
+        });
+      } catch (error) {
+        return error.message;
+      }
+      return null;
+    });
+  }
+
   // "Flow rate" (MainFrame.cpp, Plater.cpp `calib_flowrate`): no dialog;
   // the menu item makes the test's project at once.
   function flowRate(test) {
@@ -369,5 +459,5 @@ const Calib = (() => {
     return openGuide('https://github.com/SoftFever/OrcaSlicer/wiki/Calibration');
   }
 
-  return { pressureAdvance, temperature, retraction, maxFlowrate, vfa, flowRate, tutorial, parseList };
+  return { pressureAdvance, temperature, retraction, maxFlowrate, vfa, inputShaping, flowRate, tutorial, parseList };
 })();

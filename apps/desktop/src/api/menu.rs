@@ -717,16 +717,14 @@ static INPUT_SHAPING: &[Node] = &[
         "calibration.shaping_frequency",
         "Input Shaping Frequency",
         "Input Shaping Frequency",
-        When::Always,
-    )
-    .waits(NO_CALIBRATION)),
+        When::Prepare,
+    )),
     I(item(
         "calibration.shaping_damping",
         "Input Shaping Damping/zeta factor",
         "Input Shaping Damping/zeta factor",
-        When::Always,
-    )
-    .waits(NO_CALIBRATION)),
+        When::Prepare,
+    )),
 ];
 
 static CALIBRATION: &[Node] = &[
