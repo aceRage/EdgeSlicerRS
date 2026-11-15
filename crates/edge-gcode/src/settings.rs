@@ -384,6 +384,9 @@ pub struct PrintSettings {
     /// line's height is said where it changes, as the reference says it
     /// (GCode.cpp `_extrude`, the Height tag), not only the layer's.
     pub own_heights: bool,
+    /// A calibration print's change from layer to layer (`calib.rs`);
+    /// none for any other print.
+    pub calibration: Option<crate::calib::Calibration>,
 
     /// Settings present in the input that export does not honour yet, each
     /// with what is done instead.
@@ -536,6 +539,7 @@ impl Default for PrintSettings {
             config: Vec::new(),
             produced_at: None,
             own_heights: false,
+            calibration: None,
             unsupported: Vec::new(),
         }
     }
@@ -1208,6 +1212,7 @@ impl PrintSettings {
             },
             produced_at: None,
             own_heights: false,
+            calibration: None,
             unsupported,
         })
     }

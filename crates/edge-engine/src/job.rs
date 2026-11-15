@@ -40,6 +40,9 @@ pub struct Overrides {
     /// extruder n + 1's own entry of the printer's lists with a value for
     /// each extruder (`retraction_length`, `nozzle_diameter`).
     pub extruders: Vec<Settings>,
+    /// The calibration the project was made for, which the slice changes
+    /// from layer to layer ([`crate::calib`]); none for any other print.
+    pub calibration: Option<crate::calib::CalibParams>,
 }
 
 /// A slicing setting's value and where it came from.
@@ -73,6 +76,8 @@ pub struct Job {
     pub bed_type: BedType,
     /// Things settled here that the person should know of, as sentences.
     pub remarks: Vec<String>,
+    /// [`Overrides::calibration`].
+    pub calibration: Option<crate::calib::CalibParams>,
 }
 
 /// Each filament's flow (`filament_volume_type`): as set by hand, else as
@@ -399,6 +404,7 @@ pub fn prepare(mut loaded: Loaded, chosen: &Chosen, overrides: &Overrides) -> Re
         wall_loops: overrides.wall_loops,
         bed_type,
         remarks,
+        calibration: overrides.calibration.clone(),
     })
 }
 

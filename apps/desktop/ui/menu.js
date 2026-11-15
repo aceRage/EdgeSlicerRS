@@ -434,6 +434,9 @@ const Menu = (() => {
         return true;
       case 'window.next': case 'window.previous':
         return go(() => cycleProject(id === 'window.next' ? 1 : -1));
+      case 'calibration.pressure_advance': return go(Calib.pressureAdvance);
+      case 'calibration.temperature': return go(Calib.temperature);
+      case 'calibration.tutorial': return go(Calib.tutorial);
       case 'help.shortcuts': return go(showShortcuts);
       case 'help.wizard': return go(() => openPrinterSelection({ wizard: true }));
       case 'app.about': case 'help.about': return go(showAbout);

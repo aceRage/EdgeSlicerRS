@@ -113,6 +113,8 @@ pub enum When {
     Plater,
     /// Prepare, Import: not while slicing.
     PrepareIdle,
+    /// Prepare (`is_view3D_shown`): the Calibration menu.
+    Prepare,
     /// Preview.
     Preview,
     /// The plate shown is sliced and its G-code was written
@@ -736,9 +738,8 @@ static CALIBRATION: &[Node] = &[
         "calibration.temperature",
         "Temperature",
         "Temperature Calibration",
-        When::Always,
-    )
-    .waits(NO_CALIBRATION)),
+        When::Prepare,
+    )),
     Node::Menu {
         id: "calibration.flow_rate",
         label: "Flow rate",
@@ -749,9 +750,8 @@ static CALIBRATION: &[Node] = &[
         "calibration.pressure_advance",
         "Pressure advance",
         "Pressure advance",
-        When::Always,
-    )
-    .waits(NO_CALIBRATION)),
+        When::Prepare,
+    )),
     I(item(
         "calibration.retraction",
         "Retraction test",
@@ -798,9 +798,8 @@ static CALIBRATION: &[Node] = &[
         "calibration.tutorial",
         "Tutorial",
         "Calibration help",
-        When::Always,
-    )
-    .waits(NO_CALIBRATION)),
+        When::Prepare,
+    )),
 ];
 
 static WINDOW: &[Node] = &[
@@ -1141,6 +1140,7 @@ pub fn enabled(item: &Item, page: &PageState, session: &SessionState) -> bool {
         When::Redo => prepare && session.redo.is_some(),
         When::Plater => plater,
         When::PrepareIdle => prepare && !session.slicing,
+        When::Prepare => prepare,
         When::Preview => page.tab == "preview",
         When::Gcode => plater && session.gcode && !session.slicing,
         When::AllGcode => plater && session.all_gcode && !session.slicing,

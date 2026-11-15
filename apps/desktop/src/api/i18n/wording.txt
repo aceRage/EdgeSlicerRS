@@ -520,6 +520,8 @@ Slice again, then send.	GUI/BambuSendDiagnosis.cpp:240
 LAN send failed (error %1%).	GUI/BambuSendDiagnosis.cpp:243
 The network plug-in reported: %1%	GUI/BambuSendDiagnosis.cpp:245
 (There is no Bambu cloud fallback: EdgeSlicer's network plug-in prints over the local network only.)	GUI/BambuSendDiagnosis.cpp:249
+Acceleration values must be greater than speed values.\nPlease verify the inputs.	GUI/calib_dlg.cpp:329
+Wiki Guide: Temperature Calibration	GUI/calib_dlg.cpp:436
 
 [own]
 # This app's own words on the static page, with no counterpart in the
@@ -743,6 +745,7 @@ not yet: settings are not read from a G-code file
 not yet: slices are not compared
 not yet: the app follows the system's dark or light
 not yet: the app has one window
+not yet: this method is not built
 not yet: the app keeps no logs
 not yet: the firewall is not checked
 not yet: the scene has no X-ray view

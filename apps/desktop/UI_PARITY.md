@@ -1343,6 +1343,96 @@ by the engine set on" that kind. The engine's answer, by family (README,
 | wall, sparse and solid infill filaments | noted (each prints in the region's own filament) | noted | noted |
 | holes to polyholes, `make_overhang_printable`, Z contouring, scarf seams, bridges over sparse fill | noted | noted | noted |
 
+### Calibration prints
+
+The Calibration menu's tests (Plater.cpp `calib_pa` and the rest,
+calib.cpp, GCode.cpp `process_layer`). The engine makes each
+(`edge_engine::calib`): the model the reference loads from its
+`resources/calib` (found beside the profiles, `<profiles>/../calib`),
+stood in the middle of the bed, cut as the reference cuts it
+(`cut_horizontal`), the settings it sets over the process, the first
+filament and the printer presets, and on the object; and what the slice
+writes at each layer (`edge_gcode::calib`, written after the layer change
+G-code and the fan marker, before the second layer's things, as
+`process_layer` writes it). The session (`src/api/calib.rs`, the call
+`calibrate`) makes it a project and sets what the test sets over the
+presets as if set by hand on the pages (`over`, `filament_over`,
+`printer_over`), so the pages show them changed; the test's own values go
+to each slice of that project (`Overrides::calibration`).
+
+| What | The reference | Here |
+| --- | --- | --- |
+| The project | `new_project(false, false, name)`: the shown project replaced, after "Save changes?" and "Some presets are modified." (keep / discard) | **differs**: a new project in the strip beside the shown one, which stays open (the shown one taken when it is new and untouched, as "New Project" does; "the strip is full" asked as "New Project" asks). It starts from the shown project's presets and what was set over them, as the reference's "Keep". Nothing is asked |
+| Its name | "Pressure Advance Test" (not translated) | the same, the strip's name |
+| Its model | `add_model`, one step to undo ("Import Object") | the same: undo takes the model away, what was set over the presets stays (as the reference's preset changes stay) |
+| The test's values | on the print, in memory; let go by `load_files` (any model added) | on the project, in memory; let go when a model is added ("Import"); not saved, as the reference does not save them: a project saved and opened again slices without them |
+| A setting the test puts on the object that this engine does not follow on an object | on the object | **differs**: on the process instead (the test's project has that one object, so the print is the same) |
+
+Pressure advance (`calib_pa`, `_calib_pa_tower`), the "PA Tower" method:
+`tower_with_seam.stl`, cut at `ceil((end - start) / step) + 1` mm; over
+the process `overhang_reverse` 0, `max_volumetric_extrusion_rate_slope`
+0, `wipe_inward` 0; over the first filament `slow_down_layer_time` 1;
+over the printer `resonance_avoidance` 0; on the object
+`alternate_extra_wall` 0, `outer_wall_speed` and `inner_wall_speed` at
+the test's speed (`find_optimal_PA_speed`: the outer wall speed, at least
+100 mm/s, held to the filament's maximum volumetric speed for a line of the
+process's width, 0 being 1.125 × the nozzle, and layer height; rounded
+down), `wall_loops` 2, `top_shell_layers` 0, `bottom_shell_layers` 0,
+`sparse_infill_density` 0%, `brim_type` brim_ears, `brim_object_gap` 0,
+`brim_width` 6; and `seam_position` back, `brim_ears_max_angle` 135 and
+`seam_slope_type` none, which go over the process (as above).
+`brim_ears_max_angle` is then said after the slice among the settings the
+engine does not read (its ear brim takes no angle). At each layer the pressure advance of its band
+(`calib_stepped_layer_value`: `lround(|end - start| / step) + 1` bands
+spread over the layers, layers 0 and 1 at the start), in the firmware's
+words (`GCodeWriter::set_pressure_advance`: Bambu Lab `M900 K… L1000 M10`,
+Klipper `SET_PRESSURE_ADVANCE ADVANCE=…`, RepRapFirmware `M572 D0 S…`,
+Repetier `M233 X… Y…`, else `M900 K…`; four significant digits). A
+Snapmaker U1 is treated as any Klipper printer, as the reference treats it:
+its PA test sends `SET_PRESSURE_ADVANCE` at every layer whatever the
+filament's `enable_pressure_advance` (off in the U1's filament profiles),
+which overrides the U1's own flow calibration for the test. The dialog:
+"Extruder type" ("DDE", "Bowden"), "Method" ("PA Tower", "PA Line",
+"PA Pattern"), "Settings" ("Start PA: ", "End PA: ", "PA step: ", "Print
+numbers", "Accelerations: ", "Speeds: " with their tooltips), the
+reference's defaults for each extruder type and method (`reset_params`),
+its check ("Please input valid values: …", and Orca #11493's "Acceleration
+values must be greater than speed values. …"), the two guides' links (the
+window opens them; a browser shows the address). **not yet**: "PA Line"
+and "PA Pattern", which draw their own moves with the reference's G-code
+writer (calib.cpp `CalibPressureAdvanceLine`, `CalibPressureAdvancePattern`);
+off in the dialog.
+
+Temperature (`calib_temp`): `temperature_tower.stl` (10 mm blocks, 350
+°C at the foot, 5 °C less each block up), cut above the block of the end
+temperature (`lround((350 - end) / 5 + 1)` blocks, EPSILON over their top,
+the part below kept) and below the block of the start (`lround((350 -
+start) / 5)` blocks, EPSILON over, the part above kept, which stands on the
+bed); the project "Nozzle temperature test"; over the first filament
+`nozzle_temperature` and `nozzle_temperature_initial_layer` the start; over
+the printer `resonance_avoidance` 0; on the object `brim_type` outer_only,
+`brim_width` 5, `brim_object_gap` 0, `alternate_extra_wall` 0,
+`seam_slope_type` none (over the process, as above), `overhang_reverse` 0.
+At every layer `M104 S<start - 5 × floor(top / 10.001)> ; set nozzle
+temperature` (RepRapFirmware `G10`, Mach3 and Machinekit `P`; the tool
+named as the second layer's temperature names it). As in the reference, a
+layer is given the temperature of the block its top is in: with a first
+layer of 0.25 mm the tower's layers end 0.05 mm above each block, and the
+layer that crosses a block's top, and the tower's last, print 5 °C cooler
+than the block they mostly lie in. The dialog: "Filament type" ("PLA",
+"ABS/ASA", "PETG", "PCTG", "TPU", "PA-CF", "PET-CF", "Custom", each with
+the reference's start and end), "Start temp: ", "End temp: ", "Temp
+step: " (5, off), °C after each, the check on leaving a field ("Supported
+range: 170℃ - 350℃", untranslated as in the reference, the value brought
+in and rounded down to 5), the check on OK ("Please input valid values:
+…"), "Wiki Guide: Temperature Calibration".
+
+Checked by the engine's tests (`crates/edge-engine/tests/calib.rs`: the
+G-code of a U1 and of a Marlin printer read back, the value at each layer
+against the reference's formula worked by hand) and the session's
+(`src/api/calib.rs`). The reference's command line cannot make these
+prints (it has no calibration options), so no file of its is compared.
+
 The two lists of what may be set where, the pages' (the reference's tabs,
 `settings_pages.json`) and the engine's (`PrintObjectConfig` and
 `PrintRegionConfig`), agree but in two ways. `fuzzy_skin_skip_overhangs`
@@ -3452,7 +3542,10 @@ its tooltip "not yet: …" saying what it waits for.
 | | "Show &Overhang", "X-Ray", "Realistic View", "Show Center of Mass" | | off: each waits for the scene to draw it |
 | | "Compare Slices...", "Compare with Previous Slice" | | off: slices are not compared |
 | | "Mobile Hub..." (macOS) | | off: there is no Mobile Hub |
-| Calibration | "Temperature", "Flow rate" ▸ ("Pass 1", "Pass 2", "YOLO (Recommended)", "YOLO (perfectionist version)"), "Pressure advance", "Retraction test", "Stringing (temp × retraction)", "Max flowrate", "Cornering", "Input Shaping" ▸ ("Input Shaping Frequency", "Input Shaping Damping/zeta factor"), "VFA", "Ironing flow", "Tutorial" | | off: calibration models are not built (the reference has the menu in the macOS bar and a title-bar menu elsewhere) |
+| Calibration | "Temperature" | | built (calibration pass, section 12, "Calibration prints"): on in Prepare; the dialog "Temperature calibration" |
+| | "Pressure advance" | | built: on in Prepare; the dialog "PA Calibration" with the "PA Tower" method. Its "PA Line" and "PA Pattern" are in the dialog, off, with the tooltip "not yet: this method is not built" |
+| | "Tutorial" | | built: the reference's guide page (`https://github.com/SoftFever/OrcaSlicer/wiki/Calibration`), opened by the window; a browser shows the address. **differs**: no mirror for a person in China (the reference picks it by the country it keeps; this app keeps none) |
+| | "Flow rate" ▸ ("Pass 1", "Pass 2", "YOLO (Recommended)", "YOLO (perfectionist version)"), "Retraction test", "Stringing (temp × retraction)", "Max flowrate", "Cornering", "Input Shaping" ▸ ("Input Shaping Frequency", "Input Shaping Damping/zeta factor"), "VFA", "Ironing flow" | | off: "not yet: calibration models are not built" (the reference has the menu in the macOS bar and a title-bar menu elsewhere) |
 | Account (macOS) | sign-in for Snapmaker, Bambu Lab, Flashforge | | not shown: the cloud is not this task |
 | Window (macOS) | "Minimize" [Cmd+M], "Zoom" | | the system's own, in the window; off in a browser |
 | | "Next Project", "Previous Project" | Cmd+Shift+] / [ | wired (`project_cycle`); on with two projects |

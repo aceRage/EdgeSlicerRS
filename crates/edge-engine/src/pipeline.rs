@@ -205,6 +205,9 @@ pub struct Sliced {
     pub(crate) entries: Vec<Entry>,
     /// Things settled before slicing that the person should know of.
     pub remarks: Vec<String>,
+    /// The calibration sliced for, which the G-code changes from layer
+    /// to layer.
+    pub calibration: Option<crate::calib::CalibParams>,
     pub timings: Timings,
     /// The G-code the person set at layers, by the layer's top, and what
     /// of what was set there is not done (`crate::layer_codes`).
@@ -391,6 +394,7 @@ pub fn slice(job: Job, watch: &dyn Watcher) -> Result<Sliced, Failure> {
         wall_loops,
         bed_type: _,
         remarks,
+        calibration,
     } = job;
     let (mut bodies, objects, plate) = (loaded.bodies, loaded.objects, loaded.plate);
     let instance_labels = loaded.labels;
@@ -2289,6 +2293,7 @@ pub fn slice(job: Job, watch: &dyn Watcher) -> Result<Sliced, Failure> {
         paint_notes,
         entries,
         remarks,
+        calibration,
         timings: Timings {
             slice: slice_time,
             cut: cut_time,
@@ -2777,6 +2782,12 @@ impl Sliced {
             print.tower_envelope = self.tower.envelope;
             print.own_heights = self.below.is_some();
         }
+        if let Some(params) = &self.calibration {
+            let calibration = params.for_writer(&self.settings, self.print.bambu);
+            for print in &mut prints {
+                print.calibration = Some(calibration.clone());
+            }
+        }
         // A region with settings of its own lays its walls and fill by
         // them; each such region's place among these, by region.
         let mut region_prints: Vec<PrintSettings> = Vec::new();
@@ -2787,6 +2798,7 @@ impl Sliced {
                     let mut print = PrintSettings::for_filament(&region.settings, filament - 1)?;
                     print.produced_at = Some(produced_at.to_owned());
                     print.own_heights = self.below.is_some();
+                    print.calibration = prints.first().and_then(|first| first.calibration.clone());
                     region_prints.push(print);
                     Some(region_prints.len() - 1)
                 }

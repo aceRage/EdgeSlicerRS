@@ -12,6 +12,7 @@
 
 mod arc;
 mod avoid;
+pub mod calib;
 mod chain;
 mod circle;
 mod contour;
@@ -46,6 +47,7 @@ use edge_geom::{ExPolygon, Point2, scaled, unscaled};
 use edge_template::{TemplateError, Value, Variables, stream_double};
 use rayon::prelude::*;
 
+pub use calib::{AdvanceFirmware, Calibration, CalibrationKind};
 pub use contour::Contours;
 pub use edge_avoid::{Detour, Slices};
 pub use labels::label_outline;
@@ -587,6 +589,7 @@ pub fn write_timed(
         contoured: HashMap::new(),
         contour_speed: contours.speed_scaling,
         codes,
+        layer_count: groups.len(),
     };
     let several = layers.iter().any(|layer| layer.filament > 0);
     writer.preamble(several)?;
@@ -1150,6 +1153,10 @@ struct Writer<'a> {
     /// slowed for its height (`contour.rs`).
     contoured: HashMap<usize, std::sync::Arc<edge_contour::Profile>>,
     contour_speed: bool,
+    /// How many layers the print has, all filaments' together, which a
+    /// calibration's per-layer values are spread over (GCode.cpp
+    /// `m_layer_count`).
+    layer_count: usize,
 }
 
 /// What the file says about the print outside its G-code.
@@ -2175,6 +2182,15 @@ impl Writer<'_> {
         // Where the reference's cooling sets the layer's fan; a marker in
         // the file, as there (GCode.cpp `process_layer`).
         writeln!(self.out, ";_SET_FAN_SPEED_CHANGING_LAYER")?;
+        // A calibration print's change at this layer, before the second
+        // layer's things (GCode.cpp `process_layer`).
+        if let Some(calibration) = &s.calibration {
+            // The tool is named as the second layer's temperature names
+            // it (GCodeWriter.cpp `set_temperature`).
+            let tool = (self.all.len() > 1 && !s.single_nozzle).then_some(self.state.tool);
+            let text = calib::at_layer(calibration, index, self.layer_count, layer.z, tool);
+            self.out.extend_from_slice(text.as_bytes());
+        }
         if index == 1 {
             // GCode.cpp `process_layer`, the second layer's things: power
             // loss recovery as the printer asks, and a Bambu Lab printer's

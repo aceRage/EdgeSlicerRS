@@ -79,8 +79,11 @@ const PRESETS: [(&str, &str); 4] = [
 ];
 /// The menu bar: what its entries do and its keys, and the bar itself in
 /// a browser.
-const MENU: [(&str, &str); 3] = [
+const MENU: [(&str, &str); 5] = [
     ("menu.js", include_str!("../ui/menu.js")),
+    // The Calibration menu's dialogs (calib.rs).
+    ("calib.js", include_str!("../ui/calib.js")),
+    ("calib.css", include_str!("../ui/calib.css")),
     // Preferences (prefs.rs).
     ("prefs.js", include_str!("../ui/prefs.js")),
     ("menu.css", include_str!("../ui/menu.css")),
