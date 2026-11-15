@@ -47,7 +47,7 @@ fn overrides(made: &CalibProject) -> Overrides {
     Overrides {
         settings,
         filaments: vec![filament],
-        calibration: Some(made.params.clone()),
+        calibration: made.params.clone(),
         ..Overrides::default()
     }
 }
@@ -62,19 +62,29 @@ fn sliced_gcode(chosen: &Chosen, params: &CalibParams) -> (CalibProject, String)
         _ => edge_engine::calib::pressure_advance(params, &settings, &calib, Some(&bed)),
     }
     .unwrap();
+    let gcode = slice_made(chosen, &made).0;
+    (made, gcode)
+}
+
+/// Slices a calibration's project as made: its G-code and the slice's
+/// notes.
+fn slice_made(chosen: &Chosen, made: &CalibProject) -> (String, Vec<String>) {
     let loaded = made
         .model
         .place(made.model.plates().first().map(|plate| plate.id()))
         .unwrap();
-    let mut set = overrides(&made);
-    set.calibration = Some(made.params.on_plate(
-        &made.model,
-        made.model.plates().first().map(|plate| plate.id()),
-    ));
+    let mut set = overrides(made);
+    set.calibration = made.params.as_ref().map(|params| {
+        params.on_plate(
+            &made.model,
+            made.model.plates().first().map(|plate| plate.id()),
+        )
+    });
     let job = edge_engine::prepare(loaded, chosen, &set).unwrap();
     let sliced = edge_engine::slice(job, &Unwatched).unwrap();
+    let notes = sliced.gaps();
     let text = sliced.gcode("1970-01-01 at 00:00:01 UTC").unwrap().text;
-    (made, String::from_utf8(text).unwrap())
+    (String::from_utf8(text).unwrap(), notes)
 }
 
 /// Each layer's text, from its `;LAYER_CHANGE` on.
@@ -290,5 +300,170 @@ fn the_pa_pattern_draws_round_its_handle_on_the_first_four_layers() {
                 "{index} {j}"
             );
         }
+    }
+}
+
+/// Each object's moves of a kind over a mm long, by the object's name:
+/// the filament each feeds per mm, from the G-code's object markers
+/// (`EXCLUDE_OBJECT_START NAME=…`) and `;TYPE:` lines.
+fn fed_per_mm(gcode: &str, kind: &str) -> std::collections::BTreeMap<String, Vec<f64>> {
+    let mut out = std::collections::BTreeMap::new();
+    let (mut object, mut typed) = (String::new(), false);
+    let (mut x, mut y) = (0.0_f64, 0.0_f64);
+    for line in gcode.lines() {
+        if let Some(name) = line.strip_prefix("EXCLUDE_OBJECT_START NAME=") {
+            object = name.split("_id_").next().unwrap_or(name).to_owned();
+        } else if line.starts_with("EXCLUDE_OBJECT_END") {
+            object.clear();
+        } else if let Some(role) = line.strip_prefix(";TYPE:") {
+            typed = role == kind;
+        } else if line.starts_with("G1 ") || line.starts_with("G0 ") {
+            let word = |letter: char| {
+                line.split_whitespace()
+                    .find_map(|w| w.strip_prefix(letter)?.parse::<f64>().ok())
+            };
+            let (nx, ny) = (word('X').unwrap_or(x), word('Y').unwrap_or(y));
+            if let Some(e) = word('E')
+                && e > 0.0
+                && typed
+                && !object.is_empty()
+            {
+                let length = (nx - x).hypot(ny - y);
+                if length > 1.0 {
+                    out.entry(object.clone())
+                        .or_insert_with(Vec::new)
+                        .push(e / length);
+                }
+            }
+            (x, y) = (nx, ny);
+        }
+    }
+    out
+}
+
+#[test]
+fn the_flow_rate_tiles_each_print_their_own_flow() {
+    use edge_engine::calib::FlowTest;
+    let chosen = presets("Snapmaker", "Snapmaker U1 (0.4 nozzle)");
+    let settings = edge_engine::settled(&chosen, &Overrides::default(), None).unwrap();
+    let bed = bed(&settings);
+    let made = edge_engine::calib::flow_rate(
+        FlowTest::Pass1,
+        &settings,
+        &reference("resources/calib"),
+        Some(&bed),
+    )
+    .unwrap();
+    assert_eq!(made.name, "Flowrate Test - Pass1");
+    assert!(made.params.is_none());
+    // Nine tiles, in the file's order, each its own flow ratio:
+    // 1 + modifier / 100 (Plater.cpp, pass 1 and 2).
+    let names: Vec<&str> = made.model.objects().iter().map(|o| o.name()).collect();
+    assert_eq!(
+        names,
+        [
+            "flowrate_0",
+            "flowrate_10",
+            "flowrate_15",
+            "flowrate_20",
+            "flowrate_5",
+            "flowrate_m10",
+            "flowrate_m15",
+            "flowrate_m20",
+            "flowrate_m5"
+        ]
+    );
+    let own = |object: usize, key: &str| -> String {
+        made.model.objects()[object]
+            .settings()
+            .iter()
+            .find(|(own, _)| own == key)
+            .map(|(_, value)| value.clone())
+            .unwrap_or_else(|| panic!("{key} on {object}"))
+    };
+    assert_eq!(own(0, "print_flow_ratio"), "1");
+    assert_eq!(own(1, "print_flow_ratio"), "1.10000002384186");
+    assert_eq!(own(5, "print_flow_ratio"), "0.899999976158142");
+    assert_eq!(own(0, "top_surface_pattern"), "archimedeanchords");
+    assert_eq!(own(0, "calib_flowrate_topinfill_special_order"), "1");
+    // 1.2 nozzles in single precision, as the reference sets it.
+    assert_eq!(own(0, "top_surface_line_width"), "0.48000002");
+    // Over the process: what is the same on every tile and not followed
+    // on an object, and what the reference sets there itself.
+    let process: std::collections::BTreeMap<&str, &str> = made
+        .process
+        .iter()
+        .map(|(k, v)| (k.as_str(), v.as_str()))
+        .collect();
+    for (key, value) in [
+        ("layer_height", "0.2"),
+        ("initial_layer_print_height", "0.25"),
+        ("seam_slope_type", "none"),
+        ("enable_extra_bridge_layer", "disabled"),
+        ("internal_bridge_density", "100%"),
+        ("spiral_mode", "0"),
+        ("reduce_crossing_wall", "1"),
+        ("max_volumetric_extrusion_rate_slope", "0"),
+    ] {
+        assert_eq!(process.get(key), Some(&value), "{key}");
+    }
+    assert!(!process.contains_key("print_flow_ratio"));
+    assert!(!process.contains_key("calib_flowrate_topinfill_special_order"));
+    // Ten layers: (0.25 + 9 × 0.2) / 2 = 1.025 of the 2 mm tile.
+    let copy = made.model.objects()[0].copies()[0].id();
+    let [low, high] = made.model.in_scene(Some(&bed), copy).unwrap().1.unwrap();
+    assert!((high[2] - low[2] - 2.05).abs() < 1e-3, "{low:?} {high:?}");
+    // The group in the middle of the bed.
+    let (mut least, mut most) = ([f64::MAX; 2], [f64::MIN; 2]);
+    for object in made.model.objects() {
+        let [low, high] = made
+            .model
+            .in_scene(Some(&bed), object.copies()[0].id())
+            .unwrap()
+            .1
+            .unwrap();
+        for axis in 0..2 {
+            least[axis] = least[axis].min(low[axis]);
+            most[axis] = most[axis].max(high[axis]);
+        }
+    }
+    for axis in 0..2 {
+        let middle = (bed.min[axis] + bed.max[axis]) / 2.0;
+        assert!(((least[axis] + most[axis]) / 2.0 - middle).abs() < 1e-6);
+    }
+
+    let (gcode, notes) = slice_made(&chosen, &made);
+    if let Ok(dir) = std::env::var("EDGE_CALIB_DUMP") {
+        std::fs::write(
+            std::path::Path::new(&dir).join("flow_pass1_u1.gcode"),
+            &gcode,
+        )
+        .unwrap();
+    }
+    // Nothing the tiles ask for is left undone.
+    assert!(
+        !notes
+            .iter()
+            .any(|note| note.starts_with("top_surface_pattern") || note.contains("set on")),
+        "{notes:?}"
+    );
+    assert_eq!(gcode.matches(";LAYER_CHANGE").count(), 10);
+    // The top surfaces of each tile are fed in proportion to its flow:
+    // the same lines, at the same speed, its own ratio.
+    let fed = fed_per_mm(&gcode, "Top surface");
+    // The most usual value: the lines of the tile's top, not its gaps.
+    let per_mm = |name: &str| {
+        let mut values = fed[name].clone();
+        values.sort_by(f64::total_cmp);
+        values[values.len() / 2]
+    };
+    let base = per_mm("flowrate_0");
+    for (name, ratio) in [
+        ("flowrate_10", 1.1),
+        ("flowrate_m20", 0.8),
+        ("flowrate_5", 1.05),
+    ] {
+        let got = per_mm(name) / base;
+        assert!((got - ratio).abs() < 0.002, "{name}: {got}");
     }
 }

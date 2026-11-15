@@ -225,6 +225,12 @@ const Calib = (() => {
     });
   }
 
+  // "Flow rate" (MainFrame.cpp, Plater.cpp `calib_flowrate`): no dialog;
+  // the menu item makes the test's project at once.
+  function flowRate(test) {
+    return make({ test });
+  }
+
   // "Tutorial" (MainFrame.cpp): the calibration guide. The reference sends
   // a person in China to a mirror by the country kept in its settings;
   // this app keeps no country.
@@ -232,5 +238,5 @@ const Calib = (() => {
     return openGuide('https://github.com/SoftFever/OrcaSlicer/wiki/Calibration');
   }
 
-  return { pressureAdvance, temperature, tutorial, parseList };
+  return { pressureAdvance, temperature, flowRate, tutorial, parseList };
 })();

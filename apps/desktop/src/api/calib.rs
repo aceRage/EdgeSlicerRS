@@ -18,10 +18,22 @@
 
 use std::sync::Arc;
 
-use edge_engine::calib::{CalibMode, CalibParams};
+use edge_engine::calib::{CalibMode, CalibParams, FlowTest};
 use serde_json::Value;
 
 use super::{File, Session, edit, lock, settings};
+
+/// The Flow rate menu's tests, which have no dialog: the menu item makes
+/// the test straight away (MainFrame.cpp, `calib_flowrate`).
+fn flow_test(args: &Value) -> Option<FlowTest> {
+    match args.get("test").and_then(Value::as_str)? {
+        "flow_pass1" => Some(FlowTest::Pass1),
+        "flow_pass2" => Some(FlowTest::Pass2),
+        "flow_yolo" => Some(FlowTest::Yolo),
+        "flow_yolo_perfectionist" => Some(FlowTest::YoloPerfectionist),
+        _ => None,
+    }
+}
 
 /// The test's values from the page's dialog.
 fn params(args: &Value) -> Result<CalibParams, String> {
@@ -88,7 +100,11 @@ impl Session {
     /// Makes a calibration's project (`calibrate`): the strip's listing,
     /// with `id` the new project's, or `full` when the strip has no room.
     pub(super) fn calibrate(&self, args: &Value) -> Result<Value, String> {
-        let params = params(args)?;
+        let flow = flow_test(args);
+        let params = match flow {
+            Some(_) => None,
+            None => Some(params(args)?),
+        };
         // What the new project starts from: the presets of the one shown
         // and what was set over them.
         let (choices, calib_dir) = {
@@ -115,15 +131,21 @@ impl Session {
         let set = settings::overrides(&choices, &basis);
         let settled = edge_engine::settled(&basis.chosen, &set, None).map_err(|e| e.to_string())?;
         let bed = super::bed_of(&settled).map(edge_engine::Bed::of);
-        let made = match params.mode {
-            CalibMode::PressureAdvanceTower
-            | CalibMode::PressureAdvanceLine
-            | CalibMode::PressureAdvancePattern => {
-                edge_engine::calib::pressure_advance(&params, &settled, &calib_dir, bed.as_ref())
+        let made = match (flow, &params) {
+            (Some(test), _) => {
+                edge_engine::calib::flow_rate(test, &settled, &calib_dir, bed.as_ref())
             }
-            CalibMode::TemperatureTower => {
-                edge_engine::calib::temperature(&params, &calib_dir, bed.as_ref())
-            }
+            (None, Some(params)) => match params.mode {
+                CalibMode::PressureAdvanceTower
+                | CalibMode::PressureAdvanceLine
+                | CalibMode::PressureAdvancePattern => {
+                    edge_engine::calib::pressure_advance(params, &settled, &calib_dir, bed.as_ref())
+                }
+                CalibMode::TemperatureTower => {
+                    edge_engine::calib::temperature(params, &calib_dir, bed.as_ref())
+                }
+            },
+            (None, None) => return Err("test was not given".into()),
         }
         .map_err(|e| e.to_string())?;
 
@@ -176,7 +198,7 @@ impl Session {
         project.file = Some(Arc::new(File::of(made.model)));
         project.opened = None;
         edit::push_step(project, "Import Object", before, None);
-        project.calibration = Some(made.params);
+        project.calibration = made.params;
         let id = project.id;
         state.active = id;
         Ok(state.listing_with(serde_json::json!({ "id": id, "notes": notes })))
@@ -393,5 +415,57 @@ mod tests {
             1 + 11 + 1 + 1
         );
         assert!(!gcode.contains(";LAYER_CHANGE"));
+    }
+
+    #[test]
+    fn the_flow_rate_tests_are_projects_of_tiles_each_with_its_own_flow() {
+        let dir = tempfile::tempdir().unwrap();
+        let session = Arc::new(Session::new(None));
+        choose_presets(&session);
+        for (test, name, tiles) in [
+            ("flow_pass1", "Flowrate Test - Pass1", 9),
+            ("flow_pass2", "Flowrate Test - Pass2", 10),
+            ("flow_yolo", "Orca YOLO Flow Calibration", 11),
+            (
+                "flow_yolo_perfectionist",
+                "Orca YOLO Flow Calibration - Perfectionist version",
+                16,
+            ),
+        ] {
+            let listing = ask(&session, "calibrate", json!({ "test": test }));
+            let id = listing["id"].as_u64().unwrap();
+            let detail = ask(&session, "project", json!({ "project": id }));
+            assert_eq!(detail["name"], name);
+            assert_eq!(detail["dirty"], true);
+            let over = &detail["choices"]["over"];
+            assert_eq!(over["layer_height"], "0.2", "{over}");
+            assert_eq!(over["seam_slope_type"], "none");
+            assert_eq!(
+                detail["choices"]["printer_over"]["resonance_avoidance"],
+                "0"
+            );
+            let objects = ask(&session, "plate_view", json!({ "project": id }));
+            let count = objects["objects"].as_array().map_or(0, Vec::len);
+            assert_eq!(count, tiles, "{test}: {objects}");
+            if test == "flow_pass1" {
+                let gcode = slice_and_read(&session, id, dir.path());
+                assert_eq!(gcode.matches(";LAYER_CHANGE").count(), 10);
+                // Each tile with its own flow: EXCLUDE_OBJECT names them.
+                assert!(gcode.contains("EXCLUDE_OBJECT_START NAME=flowrate_m20"));
+                if let Ok(out) = std::env::var("EDGE_CALIB_DUMP") {
+                    ask(
+                        &session,
+                        "project_save",
+                        json!({ "project": id, "path": std::path::Path::new(&out).join("flow_pass1.3mf").to_string_lossy() }),
+                    );
+                }
+                // Undone, the tiles go; what was set stays.
+                ask(&session, "undo", json!({ "project": id }));
+                let objects = ask(&session, "plate_view", json!({ "project": id }));
+                assert_eq!(objects["objects"].as_array().map_or(0, Vec::len), 0);
+                let detail = ask(&session, "project", json!({ "project": id }));
+                assert_eq!(detail["choices"]["over"]["layer_height"], "0.2");
+            }
+        }
     }
 }

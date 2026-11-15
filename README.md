@@ -822,7 +822,14 @@ feature filaments (`wall_filament`, `sparse_infill_filament`,
   `bottom_surface_pattern` and `internal_solid_infill_pattern` say whether
   lines are joined (`monotonic`, `rectilinear`) or left separate
   (`monotonicline`); any other pattern is laid as joined lines, with a
-  note. Both monotonic patterns are swept from one side of the area to
+  note, but `archimedeanchords` on a top surface, which is laid as the
+  reference lays it (FillPlanePath.cpp: the spiral about the middle of the
+  surface's own bounds, a quarter turn on from `solid_infill_direction`,
+  cut to the surface; `top_surface_fill_order` other than the default and
+  `center_of_surface_pattern` other than `each_surface` are noted), and in
+  the flow rate calibration's order where an object sets
+  `calib_flowrate_topinfill_special_order` (the chords, then the spiral in
+  the middle from the inside out). Both monotonic patterns are swept from one side of the area to
   the other, so that no line goes down between two already laid, which
   shows on a surface: the area falls into regions that can each be
   zigzagged in one go, and a region waits for everything beside its
