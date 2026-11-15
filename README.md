@@ -241,13 +241,27 @@ the reference's formulas, layer by layer, on a Klipper and a Marlin
 printer; the flow rate tiles, being an ordinary print, were also saved and
 sliced by the reference. Stringing (temp × retraction), Max flowrate,
 Cornering, Input Shaping, VFA and Ironing flow are not built yet; Max
-flowrate, Cornering, Input Shaping and VFA are vase-mode prints, and vase
-mode (`spiral_mode`) is not followed by this engine yet.
+flowrate, Cornering, Input Shaping and VFA are vase-mode prints.
 
 ## Status
 
 Working:
 
+- Spiral vase mode (`spiral_mode`): the settings it forces (one wall, no
+  top layers, no sparse fill, no retraction at a layer change), what it
+  refuses in the reference's words, each part sliced above its bottom to
+  its largest outline, solid only in the bottom layers, and every layer
+  of one loop and nothing else laid as a ramp by a port of the
+  reference's post-processor (SpiralVase.cpp, `edge-gcode`'s
+  `spiral_vase.rs`), read with its G-code reader in single precision:
+  the bottom transition's flow ramp (`spiral_starting_flow_ratio`), the
+  last layer laid again flat (`spiral_finishing_flow_ratio`) and
+  `spiral_mode_smooth`. Given the reference's own files (a cylinder, a
+  cone, a twisted star and a holed cube on a U1 and an Ender-3 V3 SE),
+  it writes every ramp again to within one in the last digit, the holed
+  cube's 576 moves exactly; sliced here and there, layer counts, wall
+  lengths and filament agree within 0.03 %. Not done: several objects
+  printed one after another, which vase mode needs for more than one.
 - STL and 3MF in, per-layer regions out: outer boundaries counter-clockwise
   with their holes clockwise, overlapping parts united, negative parts
   subtracted from their own object, and cracks between flush parts closed by

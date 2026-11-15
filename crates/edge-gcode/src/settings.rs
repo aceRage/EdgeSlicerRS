@@ -387,6 +387,9 @@ pub struct PrintSettings {
     /// A calibration print's change from layer to layer (`calib.rs`);
     /// none for any other print.
     pub calibration: Option<crate::calib::Calibration>,
+    /// Spiral vase mode (`spiral_mode`): how its spiral is laid; none
+    /// with it off.
+    pub spiral: Option<crate::spiral_vase::Spiral>,
 
     /// Settings present in the input that export does not honour yet, each
     /// with what is done instead.
@@ -540,6 +543,7 @@ impl Default for PrintSettings {
             produced_at: None,
             own_heights: false,
             calibration: None,
+            spiral: None,
             unsupported: Vec::new(),
         }
     }
@@ -932,6 +936,21 @@ impl PrintSettings {
             resolution: number("resolution", defaults.resolution)?,
             arc_fitting: flag("enable_arc_fitting", defaults.arc_fitting)?
                 && !flag("spiral_mode", false)?,
+            // GCode.cpp `_do_export` (`SpiralVase`, `set_max_xy_smoothing`
+            // over the nozzle's diameter) and PrintConfig.cpp.
+            spiral: if flag("spiral_mode", false)? {
+                Some(crate::spiral_vase::Spiral {
+                    smooth: flag("spiral_mode_smooth", false)?,
+                    max_xy_smoothing: settings
+                        .float_or_percent("spiral_mode_max_xy_smoothing")?
+                        .unwrap_or(FloatOrPercent::Percent(200.0))
+                        .resolve(nozzle_diameter),
+                    starting_flow_ratio: number("spiral_starting_flow_ratio", 0.0)?,
+                    finishing_flow_ratio: number("spiral_finishing_flow_ratio", 0.0)?,
+                })
+            } else {
+                None
+            },
             bed,
             tower_envelope: None,
             filament_diameter: number("filament_diameter", defaults.filament_diameter)?,

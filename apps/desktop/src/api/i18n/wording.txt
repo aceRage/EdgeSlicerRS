@@ -12,6 +12,7 @@
 # The C++ application's own words (`_L`), newer than its catalog: they
 # go through t() / tr() like any message id, and read in English in every
 # language until a pin bump brings catalogs that have them.
+Side stabilizers must be off too.	GUI/ConfigManipulation.cpp:1522
 "%s" has unsaved changes. Save them before closing it?	GUI/ProjectStrip.cpp:589
 "%s" is slicing. Stop slicing and close it?	GUI/ProjectStrip.cpp:602
 "%1%" contains settings that can run programs on this computer or write files outside the output folder. EdgeSlicer runs post-processing scripts every time G-code is exported, and for Bambu Lab printers every time a plate is sliced.	GUI/UntrustedSettingsGuard.cpp:129

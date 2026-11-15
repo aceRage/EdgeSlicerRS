@@ -224,7 +224,8 @@ mod tests {
         let plain = asked(r#"{"zaa_enabled": "1"}"#);
         assert_eq!(plain.notes_on("zaa_enabled").count(), 0);
         assert!(plain.read.contains("zaa_min_z"));
-        assert_eq!(contoured.notes_on("spiral_mode").count(), 1);
+        // Vase mode itself is followed: nothing is said of it.
+        assert_eq!(contoured.notes_on("spiral_mode").count(), 0);
         // A note about another setting whose name starts the same way is
         // not this one's.
         assert_eq!(contoured.notes_on("zaa").count(), 0);

@@ -174,13 +174,32 @@ pub fn slice_regions(
     planes: &[f64],
     closing_radius: Coord,
 ) -> Result<Vec<LayerRegions>, ClipError> {
+    slice_regions_vase(bodies, planes, closing_radius, &[])
+}
+
+/// [`slice_regions`], with each body cut, from the layer `largest_from`
+/// gives it on, to its largest outline alone, turned counter-clockwise:
+/// a vase's layers above its bottom, whose holes are closed and whose
+/// other islands are dropped (TriangleMeshSlicer.cpp
+/// `SlicingMode::PositiveLargestContour`). `largest_from` has an entry
+/// for each body, or none at all.
+pub fn slice_regions_vase(
+    bodies: &[Body<'_>],
+    planes: &[f64],
+    closing_radius: Coord,
+    largest_from: &[Option<usize>],
+) -> Result<Vec<LayerRegions>, ClipError> {
     let sliced: Vec<(Vec<Layer>, Option<Vec<Layer>>)> = bodies
         .iter()
-        .map(|body| {
-            (
-                slice(body.solid, planes),
-                body.negative.map(|mesh| slice(mesh, planes)),
-            )
+        .enumerate()
+        .map(|(at, body)| {
+            let mut solid = slice(body.solid, planes);
+            if let Some(Some(from)) = largest_from.get(at) {
+                for layer in solid.iter_mut().skip(*from) {
+                    keep_largest_contour(&mut layer.polygons);
+                }
+            }
+            (solid, body.negative.map(|mesh| slice(mesh, planes)))
         })
         .collect();
 
@@ -265,6 +284,28 @@ pub fn slice_regions(
             })
         })
         .collect()
+}
+
+/// Keeps the outline of largest area, holes included in the reckoning,
+/// and turns it counter-clockwise (TriangleMeshSlicer.cpp `make_loops`,
+/// `PositiveLargestContour`).
+fn keep_largest_contour(polygons: &mut Vec<Polygon>) {
+    let mut largest: Option<(usize, f64)> = None;
+    for (at, polygon) in polygons.iter().enumerate() {
+        let area = polygon.signed_area_mm2();
+        if largest.is_none_or(|(_, most)| area.abs() > most.abs()) {
+            largest = Some((at, area));
+        }
+    }
+    let Some((at, area)) = largest else {
+        return;
+    };
+    let mut kept = polygons.swap_remove(at);
+    if area < 0.0 {
+        kept.points.reverse();
+    }
+    polygons.clear();
+    polygons.push(kept);
 }
 
 /// One triangle's cut: a directed step from one mesh edge to another.

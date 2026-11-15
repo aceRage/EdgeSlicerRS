@@ -39,6 +39,7 @@ pub mod pushfit;
 mod regions;
 mod scene;
 pub mod sliced_file;
+mod spiral;
 pub mod tac;
 mod tac_data;
 mod toolpath;

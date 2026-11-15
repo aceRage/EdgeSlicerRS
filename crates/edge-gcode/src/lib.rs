@@ -29,6 +29,7 @@ mod seam_plan;
 mod settings;
 mod simplify;
 mod small_area;
+mod spiral_vase;
 mod unsupported;
 mod wipe;
 
@@ -60,6 +61,7 @@ pub use settings::{
     Labelling, Lift, ObjectLabel, OverhangFan, Plate, PrintSettings, Timelapse, WallDirection,
     WallOrder, gcode_template,
 };
+pub use spiral_vase::Spiral;
 
 #[derive(Debug, thiserror::Error)]
 pub enum GcodeError {
@@ -349,8 +351,18 @@ pub fn write_coded(
     codes: &[AtLayer],
     settings: &[PrintSettings],
 ) -> Result<Summary, GcodeError> {
-    write_timed(out, layers, slices, scene, contours, codes, settings, &[])
-        .map(|(summary, _)| summary)
+    write_timed(
+        out,
+        layers,
+        slices,
+        scene,
+        contours,
+        codes,
+        settings,
+        &[],
+        &[],
+    )
+    .map(|(summary, _)| summary)
 }
 
 /// How long each part of writing a file took.
@@ -382,6 +394,7 @@ pub fn write_timed(
     codes: &[AtLayer],
     settings: &[PrintSettings],
     regions: &[PrintSettings],
+    spiral: &[bool],
 ) -> Result<(Summary, WriteTimings), GcodeError> {
     let mut timings = WriteTimings::default();
     let started = Instant::now();
@@ -592,6 +605,7 @@ pub fn write_timed(
         contour_speed: contours.speed_scaling,
         codes,
         layer_count: groups.len(),
+        spiral_layer: false,
     };
     let several = layers.iter().any(|layer| layer.filament > 0);
     writer.preamble(several)?;
@@ -631,6 +645,13 @@ pub fn write_timed(
     } else {
         &groups[..]
     };
+    // Spiral vase mode: every layer's text goes through the reference's
+    // post-processor, which turns the layers given as spirals into ramps
+    // (`spiral_vase.rs`).
+    let mut vase = writer
+        .settings
+        .spiral
+        .map(|spiral| spiral_vase::SpiralVase::new(spiral, writer.settings.resolution));
     for (index, group) in laid.iter().enumerate() {
         writer.out.clear();
         reached.push((whole.len(), writer.state.summary.seconds));
@@ -659,7 +680,18 @@ pub fn write_timed(
         // Which of the lines about to be laid are contoured, by where
         // they are kept now.
         writer.contoured = contour::kept(&parts, profiles.get(group.clone()).unwrap_or(&[]));
+        // A spiral layer is one object's in one filament (GCode.cpp
+        // `process_layer`: a layer with a tool change is not one).
+        writer.spiral_layer =
+            vase.is_some() && group.len() == 1 && spiral.get(group.start) == Some(&true);
         writer.layer(index, &parts, group.start)?;
+        if let Some(vase) = &mut vase {
+            vase.enable(writer.spiral_layer);
+            let text = String::from_utf8_lossy(&writer.out).into_owned();
+            let (text, more) = vase.process_layer(&text, index + 1 == laid.len());
+            writer.out = text.into_bytes();
+            writer.fed(more);
+        }
         // Whole or not at all, and never off the bed: an arc counts by
         // its bulge, which the points it was fitted to do not show.
         if let (Some(reach), Some(bed)) = (writer.off_bed, writer.settings.bed) {
@@ -1175,6 +1207,10 @@ struct Writer<'a> {
     /// calibration's per-layer values are spread over (GCode.cpp
     /// `m_layer_count`).
     layer_count: usize,
+    /// Whether the layer being laid is turned into a spiral
+    /// (`spiral_mode`, GCode.cpp `spiral_vase_enable`): its loop is then
+    /// not clipped short of its seam (`m_enable_loop_clipping`).
+    spiral_layer: bool,
 }
 
 /// What the file says about the print outside its G-code.
@@ -2193,6 +2229,20 @@ impl Writer<'_> {
         // The last copy's stop, before the nozzle leaves the layer
         // (GCode.cpp `change_layer`).
         self.flush_labels()?;
+        // In spiral vase mode the nozzle goes up to the layer at once, a
+        // move of its own, which the spiral starts its ramp from
+        // (GCode.cpp `change_layer`: "force to normal lift immediately in
+        // spiral vase mode").
+        if s.spiral.is_some() {
+            self.feed(s.z_speed);
+            let feed_word = self.feed_word();
+            writeln!(self.out, "G1 Z{:.3}{feed_word}", layer.z)?;
+            if let Some(height) = self.state.height {
+                self.spend((layer.z - height).abs() / s.z_speed);
+            }
+            self.state.height = Some(layer.z);
+            self.state.pending_lift = None;
+        }
         self.variables.set("layer_num", Value::Int(index as i64));
         self.state.pictured = false;
         if let Some((_, Timelapse::LayerStart { .. })) = &s.time_lapse {
@@ -2305,6 +2355,12 @@ impl Writer<'_> {
         self.measured.clear();
         self.measured_used = 0;
         self.body(index, parts, cursor)?;
+        // The last spiral layer is laid again after itself, flat, and
+        // the reference's cooling sees it twice (`spiral_vase.rs`).
+        let doubled = self.spiral_layer && index + 1 == self.layer_count;
+        if doubled {
+            self.timing.lines.extend_from_within(..);
+        }
         if s.slow_down_for_layer_cooling {
             let slowdown = self
                 .timing
@@ -2317,6 +2373,9 @@ impl Writer<'_> {
                 self.slowdown = slowdown;
                 self.measured_used = 0;
                 self.body(index, parts, cursor)?;
+                if doubled {
+                    self.timing.lines.extend_from_within(..);
+                }
                 self.state.summary.slowed_layers += 1;
             }
         }
@@ -3005,16 +3064,28 @@ impl Writer<'_> {
                 WallDirection::CounterClockwise => false,
                 WallDirection::Clockwise => true,
             };
-            let turned = wall.is_hole != clockwise;
+            // In spiral vase mode every loop round material is laid
+            // counter-clockwise (GCode.cpp `extrude_loop`: "all contour
+            // are in the same orientation").
+            let turned = if s.spiral.is_some() && !wall.is_hole {
+                false
+            } else {
+                wall.is_hole != clockwise
+            };
             // An outermost wall starts at its seam and a wall behind
-            // one beside it (`seam_plan.rs`).
-            let placed = self.seams.place(
-                self.state.layer,
-                wall,
-                turned,
-                self.state.position,
-                s.staggered_inner_seams,
-            );
+            // one beside it (`seam_plan.rs`); in spiral vase mode every
+            // loop starts nearest the nozzle (`split_at(last_pos)`).
+            let placed = if s.spiral.is_some() {
+                None
+            } else {
+                self.seams.place(
+                    self.state.layer,
+                    wall,
+                    turned,
+                    self.state.position,
+                    s.staggered_inner_seams,
+                )
+            };
             let (edge, start) = match placed {
                 Some(placed) => (placed.edge, placed.start),
                 // With no outer wall on the layer to go by, at the
@@ -3044,7 +3115,9 @@ impl Writer<'_> {
                 continue;
             }
             let whole = (!wall.widths.is_empty()).then(|| path.clone());
-            seam::clip_end(&mut path, s.seam_gap);
+            if !self.spiral_layer {
+                seam::clip_end(&mut path, s.seam_gap);
+            }
             let Some(whole) = whole else {
                 let fitted = self.fit_loop(wall, turned, path[0]);
                 let laid = fitted.as_ref().map_or(&path, |fitted| &fitted.points);
@@ -4868,6 +4941,18 @@ impl Writer<'_> {
             .unwrap_or(self.settings.retraction_length)
     }
 
+    /// Counts `length` mm more filament fed by the tool in use (or less,
+    /// below nothing), as the spiral's flow ramps change it.
+    fn fed(&mut self, length: f64) {
+        let volume = length * self.filament_area;
+        self.state.summary.filament_mm += length;
+        self.state.summary.filament_mm3 += volume;
+        if let Some(used) = self.state.used.get_mut(self.state.tool) {
+            used.0 += length;
+            used.1 += volume;
+        }
+    }
+
     /// [`Self::retract`] by `total` mm rather than the filament's
     /// retraction length.
     fn retract_by(&mut self, total: f64, layer_change: bool) -> io::Result<()> {
@@ -4963,6 +5048,9 @@ impl Writer<'_> {
             z >= s.retract_lift_above && (s.retract_lift_below <= 0.0 || z <= s.retract_lift_below);
         if s.z_hop > 0.0 && in_range {
             self.state.pending_lift = Some(match s.lift {
+                // In spiral vase mode the nozzle goes straight up at once
+                // (GCodeWriter.cpp `lift`, `spiral_vase`).
+                _ if s.spiral.is_some() => Lift::Normal,
                 Lift::Auto if layer_change => Lift::Spiral,
                 Lift::Auto => Lift::Slope,
                 chosen => chosen,

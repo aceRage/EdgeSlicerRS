@@ -6,8 +6,8 @@ use std::{
 
 use edge_3mf::Body;
 use edge_adhesion::{AdhesionSettings, BrimKind, Footing};
-use edge_config::{FloatOrPercent, Settings};
-use edge_extrusion::{ExtrusionLoop, ExtrusionPath};
+use edge_config::{ConfigError, FloatOrPercent, Settings};
+use edge_extrusion::{ExtrusionLoop, ExtrusionPath, Role};
 use edge_gcode::{PrintSettings, Summary};
 use edge_geom::{ExPolygon, Point2, Polygon, scaled, unscaled};
 use edge_infill::{InfillSettings, Surface};
@@ -407,6 +407,23 @@ pub fn slice(job: Job, watch: &dyn Watcher) -> Result<Sliced, Failure> {
     let (min, max) = loaded.bounds;
 
     let print = PrintSettings::from_settings(&settings)?;
+    // What vase mode refuses (`crate::spiral`): the copies on the plate
+    // and the filaments the object prints in, colours painted on it
+    // among them.
+    let vase = crate::spiral::on(&settings)?;
+    if vase {
+        let copies = instance_labels.len().max(objects.len()).max(1);
+        let mut materials: Vec<usize> = bodies.iter().map(|body| body.filament).collect();
+        materials.extend(
+            (painted.iter())
+                .flat_map(|object| &object.facets)
+                .map(|facet| usize::from(facet.filament))
+                .filter(|filament| *filament > 0),
+        );
+        materials.sort_unstable();
+        materials.dedup();
+        crate::spiral::refuse(&settings, copies, materials.len())?;
+    }
     // A bare model has no place on the bed of its own: it goes in the
     // middle, as the reference's arranger leaves a single part. One that
     // was put somewhere by hand stays there.
@@ -637,7 +654,30 @@ pub fn slice(job: Job, watch: &dyn Watcher) -> Result<Sliced, Failure> {
             })
             .collect();
         let holes = crate::holes::HoleSettings::from_settings(&settings)?;
-        let mut layers = edge_slice::slice_regions(&borrowed, &planes, scaled(closing_radius))?;
+        // In vase mode each part is cut above its bottom to its largest
+        // outline alone (`crate::spiral`), by its region's bottom layers.
+        let largest_from: Vec<Option<usize>> = if vase {
+            let slices: Vec<f64> = planes
+                .iter()
+                .map(|plane| plane - f64::from(min[2]))
+                .collect();
+            (body_keys.iter())
+                .map(|key| {
+                    let own = regions
+                        .own(*key)
+                        .map_or(&settings, |region| &region.settings);
+                    crate::spiral::sliced_from(own, &slices).map(Some)
+                })
+                .collect::<Result<_, _>>()?
+        } else {
+            Vec::new()
+        };
+        let mut layers = edge_slice::slice_regions_vase(
+            &borrowed,
+            &planes,
+            scaled(closing_radius),
+            &largest_from,
+        )?;
         // Height ranges and modifiers lay their settings over what of an
         // object's parts they take (`crate::regions`).
         crate::regions::lay_over_parts(
@@ -993,6 +1033,7 @@ pub fn slice(job: Job, watch: &dyn Watcher) -> Result<Sliced, Failure> {
         // sparse fill on the layer, and each keeps what of the area inside
         // them is its own.
         let groups = crate::regions::wall_groups(&keys, &used, regions, &settings);
+        let regions_ref: &crate::regions::Regions = regions;
         let members = |leader: usize| -> Vec<usize> {
             (0..used.len())
                 .filter(|slot| groups[*slot] == leader)
@@ -1038,6 +1079,20 @@ pub fn slice(job: Job, watch: &dyn Watcher) -> Result<Sliced, Failure> {
                 let mut params = walls
                     .params_at(height, index, layers.len())
                     .map_err(|e| e.to_string())?;
+                // A vase's layers above its bottom: one classic wall round
+                // the largest piece, with no extra walls over air
+                // (LayerRegion.cpp `make_perimeters`, `spiral_mode`).
+                if vase {
+                    let own = regions_ref
+                        .own(keys[lays])
+                        .map_or(&settings, |region| &region.settings);
+                    let top = heights.top_of(index) - f64::from(min[2]);
+                    if crate::spiral::walls_spiral(own, index, top).map_err(|e| e.to_string())? {
+                        params.spiral = true;
+                        params.arachne = None;
+                        params.over_air = None;
+                    }
+                }
                 if let Some(fuzzy) = &mut params.fuzzy {
                     // The middle of the layer, where it was sliced;
                     // with Z contouring, where that was instead.
@@ -1253,7 +1308,7 @@ pub fn slice(job: Job, watch: &dyn Watcher) -> Result<Sliced, Failure> {
                     edge_infill::internal(&slices, &outlines, shells).map_err(|e| e.to_string())?;
                 // Whatever the filament, a surface is a top or a bottom by
                 // what the whole part has above and below it.
-                let surfaces = edge_infill::classify(
+                let mut surfaces = edge_infill::classify(
                     &slices,
                     &outlines,
                     inside_walls,
@@ -1262,6 +1317,28 @@ pub fn slice(job: Job, watch: &dyn Watcher) -> Result<Sliced, Failure> {
                     shells,
                 )
                 .map_err(|e| e.to_string())?;
+                // A vase is solid only in its bottom layers, the last of
+                // them a top, so it is laid as one; above, nothing is
+                // solid (PrintObject.cpp `detect_surfaces_type`,
+                // `discover_vertical_shells`, `spiral_mode`).
+                if vase {
+                    let (bottom, _) =
+                        crate::spiral::bottom(&settings).map_err(|e| e.to_string())?;
+                    let bottom = bottom.min(surfaces.len());
+                    for (index, layer) in surfaces.iter_mut().enumerate() {
+                        let kind = if index >= bottom {
+                            edge_infill::SurfaceKind::Sparse
+                        } else if bottom > 1 && index == bottom - 1 {
+                            edge_infill::SurfaceKind::Top
+                        } else {
+                            continue;
+                        };
+                        for surface in layer.iter_mut() {
+                            surface.kind = kind;
+                            surface.angle = None;
+                        }
+                    }
+                }
                 // Bridges, bottoms and tops reach into the fill beside them,
                 // and each bridge is turned to run from support to support.
                 let mut anchored =
@@ -1918,6 +1995,21 @@ pub fn slice(job: Job, watch: &dyn Watcher) -> Result<Sliced, Failure> {
     order_notes.extend(quality_notes);
     order_notes.extend(ironing_notes);
     order_notes.extend(crate::unfollowed::notes(&settings));
+    order_notes.extend(crate::spiral::object_notes(
+        &settings,
+        own.iter().map(|object| {
+            let set = (object.settings.iter())
+                .chain(
+                    object
+                        .volumes
+                        .iter()
+                        .flat_map(|volume| volume.settings.iter()),
+                )
+                .chain(object.ranges.iter().flat_map(|range| range.settings.iter()))
+                .collect();
+            (object.name.as_str(), set)
+        }),
+    )?);
     order_notes.extend(crate::regions::unfollowed(&own_set));
     // What a region's own settings ask of its walls and fill that is not
     // done, said once.
@@ -2873,6 +2965,29 @@ impl Sliced {
                 }
             })
             .collect();
+        // Which layers are laid as a spiral, in vase mode (`crate::spiral`).
+        let spiral: Vec<bool> = if crate::spiral::on(&self.settings)? {
+            let brim = (self.around.first())
+                .is_some_and(|loops| loops.iter().any(|lp| lp.role == Role::Brim));
+            let qualify = crate::spiral::Qualify::read(&self.settings, brim)?;
+            (self.entries.iter())
+                .zip(&plan)
+                .map(|(turn, layer)| {
+                    let own = (self.regions.own(self.keys[turn.filament]))
+                        .map_or(&self.settings, |region| &region.settings);
+                    let (bottom, _) = crate::spiral::bottom(own)?;
+                    Ok(qualify.layer(
+                        turn.layer,
+                        bottom,
+                        layer.loops.len(),
+                        layer.paths.len(),
+                        !self.supports[turn.layer].is_empty(),
+                    ))
+                })
+                .collect::<Result<_, ConfigError>>()?
+        } else {
+            Vec::new()
+        };
         // Nothing may be sent to a printer that would run it off its bed.
         if let Some([min_x, min_y, max_x, max_y]) = self.print.bed {
             let points = plan.iter().flat_map(|layer| {
@@ -2989,6 +3104,7 @@ impl Sliced {
                         &self.codes,
                         &prints,
                         &region_prints,
+                        &spiral,
                     )
                 })?;
         Ok(Gcode {

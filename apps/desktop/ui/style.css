@@ -1377,4 +1377,4 @@ body.side-dragging { cursor: ew-resize; user-select: none; -webkit-user-select: 
 .menu button .swatch { margin-right: var(--space-2); vertical-align: -1px; }
 
 /* A long path or URL in a question wraps inside the box. */
-#confirm-text { overflow-wrap: anywhere; }
+#confirm-text { overflow-wrap: anywhere; white-space: pre-line; }

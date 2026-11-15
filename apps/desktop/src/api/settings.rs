@@ -40,6 +40,7 @@ pub(super) mod items;
 pub(super) mod kept;
 mod printer_rules;
 mod rules;
+mod spiral;
 
 use std::{
     collections::{BTreeMap, BTreeSet},
@@ -836,14 +837,54 @@ impl Session {
                     over_mut(&mut choices, book, asked.filament).remove(name);
                 }
                 Some(value) => {
-                    let value = checked(option, value)?;
+                    let mut value = checked(option, value)?;
+                    // Vase mode turned on where the settings do not suit
+                    // it: the person is asked first (`spiral`), and the
+                    // answer, given with the same call again, changes
+                    // them or leaves vase mode off.
+                    let mut forced: Vec<(&str, &str)> = Vec::new();
+                    if book == Book::Process && name == "spiral_mode" && value == "1" {
+                        let mut off = choices.clone();
+                        over_mut(&mut off, book, asked.filament)
+                            .insert(name.to_owned(), "0".to_owned());
+                        let settled = edge_engine::settled(
+                            &basis.chosen,
+                            &overrides(&off, &basis),
+                            basis.project.as_deref(),
+                        )
+                        .map_err(|e| e.to_string())?;
+                        if !spiral::suits(&settled) {
+                            match args.get("answer").and_then(Value::as_str) {
+                                None => {
+                                    return Ok(json!({
+                                        "question": {
+                                            "key": name,
+                                            "text": spiral::question(&settled),
+                                            "answers": ["yes", "no"],
+                                        }
+                                    }));
+                                }
+                                Some("yes") => forced = spiral::FORCED.to_vec(),
+                                Some("no") => value = "0".to_owned(),
+                                Some(other) => {
+                                    return Err(format!("{other} is not an answer to it"));
+                                }
+                            }
+                        }
+                    }
                     // Set to what the preset has, it is the preset's again.
                     let preset = preset_values(asked, &choices, &basis);
+                    let options = &pages(book).options;
                     let own = over_mut(&mut choices, book, asked.filament);
-                    if preset.get(name).is_some_and(|preset| *preset == value) {
-                        own.remove(name);
-                    } else {
-                        own.insert(name.to_owned(), value);
+                    let wanted = std::iter::once((name, value.as_str())).chain(
+                        (forced.iter().copied()).filter(|(key, _)| options.contains_key(*key)),
+                    );
+                    for (name, value) in wanted {
+                        if preset.get(name).is_some_and(|preset| preset == value) {
+                            own.remove(name);
+                        } else {
+                            own.insert(name.to_owned(), value.to_owned());
+                        }
                     }
                 }
             }
