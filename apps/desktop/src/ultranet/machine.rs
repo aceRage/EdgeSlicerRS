@@ -110,6 +110,37 @@ pub struct Machine {
     /// The printer refused a `project_file` it was sent, unsigned ("mqtt
     /// message verify failed": `project_file_refusals`).
     pub refusals: u64,
+    /// The fans, 0..255 (`cooling_fan_speed`, `big_fan1_speed`,
+    /// `big_fan2_speed`, or `fan_gear`), when reported.
+    pub fan_part: Option<i64>,
+    pub fan_aux: Option<i64>,
+    pub fan_chamber: Option<i64>,
+    /// `support_aux_fan`, `support_chamber_fan`, `support_chamber_temp_edit`.
+    pub has_aux_fan: bool,
+    pub has_chamber_fan: bool,
+    pub chamber_edit: bool,
+    /// `spd_lvl`: 1 silent .. 4 ludicrous.
+    pub speed_level: Option<i64>,
+    /// `lights_report`'s `chamber_light`: on.
+    pub light: Option<bool>,
+    /// `home_flag`: bit 0 X, 1 Y, 2 Z homed; negative when not reported
+    /// (`is_axis_at_home` takes that as homed).
+    pub home_flag: Option<i64>,
+    /// `hms`: (attr, code).
+    pub hms: Vec<(u64, u64)>,
+    /// `info.module` of the answer to `get_version`: (name, software,
+    /// hardware, serial).
+    pub modules: Vec<(String, String, String, String)>,
+}
+
+/// `BambuFans::classic_fan_byte`: "0".."15" steps as 0..255.
+fn classic_fan_byte(value: &Value) -> Option<i64> {
+    let step = integer(value)?;
+    if step < 0 {
+        return None;
+    }
+    let step = step.min(15) as f64;
+    Some(((step / 1.5).floor() * 25.5).round() as i64)
 }
 
 fn number(value: &Value) -> Option<f64> {
@@ -201,9 +232,16 @@ impl Machine {
         };
         if let Some(info) = root.get("info")
             && info["command"] == "get_version"
-            && info.get("module").is_some()
+            && let Some(modules) = info["module"].as_array()
         {
             self.versions = true;
+            self.modules = modules
+                .iter()
+                .map(|m| {
+                    let field = |key: &str| text(&m[key]).unwrap_or_default();
+                    (field("name"), field("sw_ver"), field("hw_ver"), field("sn"))
+                })
+                .collect();
         }
         let Some(print) = root.get("print") else {
             return false;
@@ -301,6 +339,65 @@ impl Machine {
         if let Some(ams) = p.get("ams") {
             self.read_ams(ams);
         }
+        // DeviceManager.cpp l.4383: `fan_gear` packs the three, else each.
+        if let Some(gear) = integer(&p["fan_gear"]) {
+            self.fan_chamber = Some((gear >> 16) & 0xFF);
+            self.fan_aux = Some((gear >> 8) & 0xFF);
+            self.fan_part = Some(gear & 0xFF);
+        } else {
+            if let Some(v) = classic_fan_byte(&p["cooling_fan_speed"]) {
+                self.fan_part = Some(v);
+            }
+            if let Some(v) = classic_fan_byte(&p["big_fan1_speed"]) {
+                self.fan_aux = Some(v);
+            }
+            if let Some(v) = classic_fan_byte(&p["big_fan2_speed"]) {
+                self.fan_chamber = Some(v);
+            }
+        }
+        for (key, flag) in [
+            ("support_aux_fan", &mut self.has_aux_fan),
+            ("support_chamber_fan", &mut self.has_chamber_fan),
+            ("support_chamber_temp_edit", &mut self.chamber_edit),
+        ] {
+            if let Some(v) = p[key].as_bool() {
+                *flag = v;
+            }
+        }
+        if let Some(v) = integer(&p["spd_lvl"]) {
+            self.speed_level = Some(v);
+        }
+        if let Some(lights) = p["lights_report"].as_array() {
+            for light in lights {
+                if light["node"] == "chamber_light" {
+                    self.light = Some(light["mode"] != "off");
+                }
+            }
+        }
+        if let Some(v) = integer(&p["home_flag"]) {
+            self.home_flag = Some(v);
+        }
+        // l.4809: the list is the printer's whole list each time.
+        if let Some(list) = p["hms"].as_array() {
+            self.hms = list
+                .iter()
+                .filter_map(|item| Some((item["attr"].as_u64()?, item["code"].as_u64()?)))
+                .collect();
+        }
+    }
+
+    /// `is_axis_at_home`: whether `axis` ('x', 'y', 'z') is homed; a
+    /// printer that does not say counts as homed.
+    pub fn homed(&self, axis: char) -> bool {
+        let Some(flag) = self.home_flag.filter(|flag| *flag >= 0) else {
+            return true;
+        };
+        let bit = match axis {
+            'x' => 0,
+            'y' => 1,
+            _ => 2,
+        };
+        (flag >> bit) & 1 == 1
     }
 
     /// The AMS block (DeviceManager.cpp l.4849-5200).

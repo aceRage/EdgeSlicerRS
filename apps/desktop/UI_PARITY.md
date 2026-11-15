@@ -291,11 +291,153 @@ does with each option.
 | Where the address is set: "Physical Printer" ("Print Host upload": "Host Type", "Hostname, IP or URL", "Device UI", "Authorization Type", "API Key / Password", "HTTPS CA File", "User", "Password", "Test", "Browse ..."), and the "Devices" list for several printers of one model | `PhysicalPrinterDialog.cpp` l.127, l.596, `PrintHostDevicesDialog.cpp` | **added** (twelfth pass, `ui/hosts.js`): "Physical Printer" with "Print Host upload": "Host Type" (the types this app can send to, "Octo/Klipper" and "Elegoo Link", and the one in force if it is another, marked "(not yet)"), "Hostname, IP or URL" with "Test", "Device UI", "API Key / Password" (a field that shows only that a key is set; "Clear"), "HTTPS CA File" with "Browse ..." and the reference's hint; the reference's tooltips; "Test" tries what is typed before it is kept and says "Success!" and the host's own sentence, or its failure. Opened by "Connect to printer" on the Printer card (the fork's icon, `set_connection_tooltip`) and from Device. **differs**: the icon opens this dialog; in the fork it opens "Devices" with "Edit connection..." inside. "Use the preset's connection" takes a kept connection away. There is no name to save it under (the reference saves a physical printer preset; here it is kept for the printer preset, below). **not yet**: "Authorization Type", "User", "Password" (shown by the reference for PrusaLink only, which is not built), "Browse ..." for the address (Bonjour discovery), "Devices", "Printer" (`printhost_port`, Repetier and Obico), "Ignore HTTPS certificate revocation checks" (Windows) |
 | Where it is kept: the user's printer preset, and `<datadir>/hub/print_host_devices.json`; never the project (a saved 3MF has `print_host`, `print_host_webui`, `printhost_apikey` and the rest taken out, and they are ignored on load) | `libslic3r/Preset.cpp` l.1394, l.2710, `PresetBundle::full_config_secure` l.3220 | **differs**: kept for each printer preset in this app's data folder (section 8), the key in a file of its own; never in a project, which this app never writes them to. A printer without a kept connection uses its preset's (forty-seven vendor presets carry an address, for example Volumic's `192.168.0.60`) |
 | Sending: "Send G-code to printer host" ("Upload", "Upload and Print", the file name, "Switch to Device tab after upload."), and "Print host upload queue" | `PrintHostDialogs.cpp` l.515, l.1532, l.2358 | **added** (twelfth pass): "Send G-code to printer host", "Upload to Printer Host with the following filename:", the name offered as the reference offers it (the printer's `filename_format` filled in, `{print_time}` with the slice's time, folded to ASCII, the stem selected), "Please do not include the special characters …", the two questions before sending ("The filename '%s' contains special characters …", "Upload filename doesn't end with \".gcode\". …"), "Unload filaments after print" for Snapmaker's tool changers (ticked as the preset's `unload_filaments_at_end`), the Centauri Carbon's "Time-lapse", "Heated Bed Leveling", "Textured Build Plate (Side A)" / "Smooth Build Plate (Side B)" (the side the project's bed type means, and "The selected bed type does not match the file. …" when another is picked; the two ticks remembered), "Switch to Device tab after upload." (remembered), "Upload", "Upload and Print", "Cancel". The bytes sent are those "Export G-code file" writes. The queue: "ID", "Progress", "Status" ("Queued", "Uploading", "Error", "Canceling", "Canceled", "Completed"), "Host", "Size", "Filename", "Message", "Cancel selected", "Show error message", "Close"; one file after another; an error is shown as it happens ("Error uploading to print host:"). **differs**: the Centauri Carbon's options are in the same dialog under its name, with the two buttons (the reference's Elegoo dialog has an "Upload and Print" tick and one button); the queue says when a print was started. **added** (device pass), for "Upload and Print" to a U1: the toolhead of each filament, and the U1's own page's "Print Preferences" ("Auto Leveling", "Extrusion Flow Calibration" with its explanation, "Time-lapse Camera"), below, "A print on a U1". **not yet**: the "Group" and "Upload to storage" lists (Repetier, PrusaLink), the QIDI, Creality and Flashforge options; "Ongoing uploads" asked when the window closes |
-| Bambu monitor: camera, "Printing Progress", "Pause" / "Resume" / "Stop", temperatures, AMS, speed; needs the network plug-in (Bambu's, or the owner's own UltraNet) | `Monitor.cpp`, `StatusPanel` | **added** (UltraNet pass), for a printer in LAN mode through the UltraNet bridge (below, "A Bambu Lab printer through UltraNet"): the printer picked among those added, "Printing Progress" (the file, the bar and percent, the state, "Layer: %d/%d", the time left as `get_bbl_monitor_time_dhm` writes it), "Pause" / "Resume" at once and "Stop" after "Cancel print" / "Are you sure you want to cancel this print?", nozzle, bed and chamber temperatures, the AMS trays (name, type, colour, the one in use). Re-dialled when the session is lost. **not yet**: the camera, speed, fans, lights, HMS, "Storage", "Update", the AMS's humidity and drying, the printer's parts |
+| Bambu monitor: camera, "Printing Progress", "Pause" / "Resume" / "Stop", temperatures, AMS, speed; needs the network plug-in (Bambu's, or the owner's own UltraNet) | `Monitor.cpp`, `StatusPanel` | **added** (UltraNet pass), for a printer in LAN mode through the UltraNet bridge (below, "A Bambu Lab printer through UltraNet"): the printer picked among those added, "Printing Progress" (the file, the bar and percent, the state, "Layer: %d/%d", the time left as `get_bbl_monitor_time_dhm` writes it), "Pause" / "Resume" at once and "Stop" after "Cancel print" / "Are you sure you want to cancel this print?", nozzle, bed and chamber temperatures, the AMS trays (name, type, colour, the one in use). Re-dialled when the session is lost. **not yet**: the camera, speed, fans, lights, HMS, "Storage", "Update", the AMS's humidity and drying, the printer's parts. **added** (device-pages pass): speed, fans, lamp, temperatures set, axes, extruder, HMS, the versions of "Update", on the one Device page (below) |
 | Next to Device: "Stream" (cameras: `stream_center.html`, a page of the app's fed through the phone hub's relay: go2rtc for RTSP and ONVIF, MJPEG for Bambu P1, Elegoo's camera relay, Flashforge's `:8898/detail` probe) and "Printers" (every printer at a glance: the saved print-host devices of every model probed over Moonraker or PrusaLink, Elegoo's SDCP, the LAN Snapmakers, the Bambu printers of the device manager, with pause, resume and stop; `monitor.html`, `printer_cards.js`) | `StreamPanel.cpp`, `PrintersPanel.cpp`, `PrinterRowsBridge.cpp`, `RemoteAccess.cpp` `api_printers` l.2131 | **not yet**: a later pass (the owner's decision of 2026-11-13). What Printers would show of a print host is what Device's state line shows now, for each saved device |
 | The mobile hub (`RemoteHub.cpp`: phone access, its link, the hub's printer list and send) and everything tied to the Snapmaker account (the U1's cloud connect through Snapmaker's MQTT broker, the sign-in) | `RemoteHub.cpp`, `SSWCP.cpp`, `WebUserLoginDialog.cpp` | **not built, by decision**: vendor-account features are not to be built (the owner's decision of 2026-11-13); the U1 is reached over its own Moonraker on the local network |
 | "Print history": each plate's sends and exports (time, "Sent to printer", "Sent and started", "Uploaded only", "Exported to file", the printer, the connection, the file), kept in the project (`print_history`), recorded by every send path when it succeeded (`PlateHistoryRecorder::record`), shown in "Print history - %s" with "Clear history", "Not printed yet" and "This plate was changed after it was last sent to a printer." | `PlatePrintHistoryRecorder.cpp`, `PlatePrintHistoryDialog.cpp`, Plater.cpp l.30679 | **not yet**: it needs the project file to keep it (edge-3mf), a plate's entry point for the dialog, and each send to record; a later pass |
 | "Devices": several printers of one model, by address ("Add", "Edit", "Remove", "Test", "(last used)", a "Status" column), kept per printer model in `<datadir>/hub/print_host_devices.json`, the send dialog and Device preselecting the one last sent to | `Utils/PrintHostDevices.cpp`, `PrintHostDevicesDialog.cpp` | **not yet**: one connection for each printer preset here (the twelfth pass's `hosts::kept`); the store, the dialog and "Printer:" in Device's bar are a later pass |
+
+### One Device page for every printer family (device-pages pass)
+
+**The owner's decision of 2026-11-15**: the Device tab gives every printer
+family a native Device page, built on the Bambu monitor's layout, instead of
+each family having something different. This goes beyond the reference for
+every family but Bambu: the reference shows a print host its own web page
+(`PrinterWebView`), a U1 Snapmaker's closed bundled page, a Flashforge its own
+pages. It is a deliberate difference, said again for each family below. The
+printer's own web page stays, as the tab "Printer page", wherever the
+reference shows it (every print host), and the key is still never handed to
+it.
+
+**What the reference shows, by family, and where.**
+
+- **Bambu** (`Monitor.cpp` `MonitorPanel`): tabs on the left, "Status"
+  (`StatusPanel`), "Storage" (`MediaFilePanel`), "Update" (`UpgradePanel`),
+  "HMS" (`HMSPanel`, the tab's name untranslated), the printer picked in the
+  header above (`SideTools`, `SelectMachinePop`). Every command is MQTT JSON
+  (`MachineObject::publish_json`; G-code as `{"print":{"command":"gcode_line","param":...}}`).
+- **Flashforge** (`GUI/FlashForge/*`, `FFUtils.cpp`): a device list and a
+  page per printer ("Info and Control", "Temperature & Control", lamp,
+  filter, the IFS slots, "Local File List"); every command goes through the
+  closed `FlashNetwork.dll` (`Com*` calls), whose HTTP paths are not in the
+  source; its strings are not in the catalog. No jog, home or extrude is
+  shown (the classes exist, nothing builds them).
+- **Snapmaker U1**: `resources/web/flutter_web`, a closed Flutter page over
+  MQTT through `SSWCP.cpp` (not run here; its English catalog
+  `assets/assets/i10n/en.json` read): "Heated Bed Temp." (0-100 °C),
+  "Extruder Temp." per toolhead, "Print Speed" (50-150 %), "Led", "Main
+  Cooling Fan Speed", "Assist Cooling Fan Speed", the purifier, Pause /
+  Resume / Cancel ("Cancel printing Do you want to cancel the printing task
+  ?"), jog / home / extrude / park as G-code (`printer.gcode.script`),
+  "Camera", "Local Files" / "U-disk Files" / "Time-lapse Videos". The
+  fork's own C++ for a U1 on the LAN (`SnapmakerLan.cpp`, `RemoteSend.cpp`,
+  `Utils/MoonrakerProgress.cpp`, the phone hub's `DeviceControls.hpp`)
+  speaks Moonraker: `printer/print/pause|resume|cancel`,
+  `SET_HEATER_TEMPERATURE HEATER= TARGET=` (U1 bed 100, toolhead 300),
+  `M220 S` (10-300), `SET_LED LED=cavity_led WHITE=`, `M106 S`,
+  `SET_FAN_SPEED FAN=cavity_fan SPEED=`.
+- **Every other print host**: `PrinterWebView`, the printer's own page,
+  with "Printer page" / "Storage" over it (`PrinterStoragePanel`, Moonraker
+  hosts, the U1, the Centauri Carbon). The fork's Printers tab and phone hub
+  read a status of Moonraker, PrusaLink (`PrusaLinkStatus.cpp`, read only),
+  SDCP (`ElegooSdcpMonitor.cpp`: status, pause 129, stop 130, resume 131,
+  fans and light 403, camera 386) and the Centauri Carbon 2.
+
+**Every control and reading of the Bambu page, and what each needs.**
+
+| The reference | Message ids | Data / command | Here |
+| --- | --- | --- | --- |
+| Header: printer, online / connecting / failure lines | "No printer", "Connecting...", "Failed to connect to the printer", "Access code refused: re-enter it" | the LAN session | the printer list, Add, Remove, Connect of the UltraNet pass, kept |
+| Camera: live view, record, timelapse, storage icons, "Camera Setting", "Go Live", "Switch Camera View" | "Camera", "Timelapse", "Video", "Storage", "No Storage", "Go Live" | `bambu:///` URLs to Bambu's closed `BambuSource`; `ipcam_record_set`, `ipcam_timelapse`, `ipcam_resolution_set` | **listed, not built**: needs the bridge to carry the stream (proposed, ULTRANET_BRIDGE.md) |
+| "Printing Progress": thumbnail, file, percent, "Layer: %d/%d", time left (`get_bbl_monitor_time_dhm`), "Estimated finish time: ", the stage (`get_stage_string`, 35 stages) | as named | `subtask_name`, `mc_percent`, `layer_num`, `total_layer_num`, `mc_remaining_time`, `stg_cur` | built (thumbnail: needs the 3MF from the printer, not built) |
+| "Pause" / "Resume" (no question in the reference), "Stop" ("Cancel print" / "Are you sure you want to cancel this print?") | "Pause", "Resume", "Stop", "Cancel print" | `{"print":{"command":"pause"|"resume"|"stop"}}`; RUNNING / PAUSE / either | built; **differs**: Pause and Resume are asked too (owner's safety rule: everything that makes a printer act is confirmed) |
+| Error line, "Clear" | "Clear" | `print_error` | built as a line; "Clear" only hides it (the reference sends nothing either) |
+| Nozzle, bed, chamber: now and target, typed | (icons) | `M104 S`, `M140 S` as `gcode_line`; chamber `set_ctt` only with `support_chamber_temp_edit`; clamped to 300 / 120 / 60 | built (confirmed); chamber settable only when the printer reports `support_chamber_temp_edit` |
+| Fans "Part", "Aux", "Cham", 0-100 % in tens | "Part", "Aux", "Cham" | `M106 P1|P2|P3 S0..255`; readings `cooling_fan_speed`, `big_fan1_speed`, `big_fan2_speed` (0-15 steps) | built; Aux / Cham drawn when `support_aux_fan` / `support_chamber_fan` |
+| Speed: "Silent", "Standard", "Sport", "Ludicrous" | as named, "This only takes effect during printing" | `print_speed` `param` 1-4; `spd_lvl` | built |
+| "Lamp" | "Lamp" | `ledctrl` `chamber_light` on/off; `lights_report` | built |
+| Axes: ±1 / ±10 mm X, Y, "Bed"/"Z", home | "Bed", "Go Home", the RecenterDialog text | `G91 G1 ... F3000`, Z F900 as `command_axis_control` writes it; `G28`; `home_flag` | built; refused while printing and not paused |
+| "Extruder" up / down, "Unload" | "Extruder", "Please heat the nozzle to above 170°C before loading or unloading filament.", "Still load", "Still unload" | `M83 G0 E±10 F900` | built (with the 170 °C question); "Unload" (AMS) not built |
+| "Calibration", "Print Options", "Printer Parts" | as named | `calibration`, `xcam_control_set`, `print_option`, `set_accessories` | **not built** (a later pass) |
+| AMS: trays (type, colour, remain, active), humidity, "Load" / "Unload", "AMS Settings", drying | as named | `ams` block; `ams_change_filament`, `ams_user_setting`, `ams_filament_drying` | trays shown (as before); load, unload, settings, drying not built |
+| "HMS": level, text, code | "Fatal", "Serious", "Common", "Info", "Unknown" | `hms` [{attr, code}] in the report, the text from `resources/hms/hms_<lang>_<serial prefix>.json` | built (the contract carries it) |
+| "Update": model, serial, versions, "Update firmware" | "Model:", "Serial:", "Version:", "Update firmware" | `info.get_version` answer (`module`); the firmware list from Bambu's cloud | versions built (the contract carries `get_version`); updating **not built**: the list of firmware is a cloud call (proposed) |
+| "Storage": timelapse, video, model files; "Delete", "Download", "Print" | as named | Bambu's closed `BambuSource` tunnel (port 6000) | **listed, not built** (proposed) |
+
+**The design.** One page (`ui/device.js`), drawn from what the session says a
+printer can do. The Rust side has one adapter trait (`src/device/`:
+`Device`, with `caps` (what is drawn), `read` (the readings) and `command`),
+and an adapter per family; `src/api/device.rs` is the session's side
+(`device_info`, `device_read`, `device_command`). The page shows:
+"Status" (progress and the Pause / Resume / Stop buttons, the camera where
+the family's API gives a plain stream, temperatures, fans, speed, lamp,
+axes and extruder, the AMS or the toolheads), "Storage", the family's extras
+("HMS", "Update" for Bambu) and "Printer page" for a print host. A control
+the family's API does not have is not drawn. Every command is refused by the
+session unless it is confirmed, and in states where it cannot act (pause
+when not printing, axes while printing, a printer offline); a temperature
+above the printer's limit is brought down to it, as the reference does.
+
+| Family | Reached by | Readings | Commands | Storage | Camera | Reference |
+| --- | --- | --- | --- | --- | --- | --- |
+| Bambu (UltraNet) | the bridge, `send_message_to_printer` | as the table above | pause, resume, stop, temperatures, fans, speed, lamp, jog, home, extrude | not built (bridge) | not built (bridge) | the Bambu page itself |
+| Snapmaker U1 | Moonraker | state, file, percent, time left, layer, bed and four toolheads, part and cavity fans, speed, cavity LED, the filament loaded in each toolhead (`print_task_config`), homed axes | pause, resume, cancel, temperatures (bed 100, toolhead 300), fans, speed 50-150 %, LED, jog, home, extrude | Moonraker (as before) | Moonraker's webcams when one is a plain MJPEG stream (the U1's is WebRTC: not shown) | **beyond the reference** (its page is closed) |
+| Klipper (Moonraker) | Moonraker | what `printer/objects/list` holds: extruders, `heater_bed`, `heater_generic`, `fan`, `fan_generic`, `led`, `gcode_move`, `toolhead` | as the U1, limits from `configfile` | Moonraker | Moonraker's webcams (MJPEG) | **beyond the reference** (web view) |
+| OctoPrint | OctoPrint's REST API (`api/job`, `api/printer`, `api/printer/*`, `api/files`, `api/settings`) | state, file, percent, time left, tool and bed (and chamber) temperatures | pause, resume, cancel, temperatures, part fan (`M106`), feed rate 50-200 %, jog, home, extrude | `api/files` | `webcam.streamUrl` | **beyond the reference**, whose code has only `api/version` and the upload: OctoPrint's own published API |
+| Elegoo Centauri Carbon (SDCP) | its websocket | `ElegooSdcpMonitor.cpp`'s reading of command 0 | pause 129, resume 131, stop 130, fans and light 403 | not yet | command 386's URL | **beyond the reference** (web view and CANVAS card) |
+| PrusaLink | `api/v1/status`, `api/v1/job` | as `PrusaLinkStatus.cpp` reads them | none (the reference's code has none) | no | no | **beyond the reference** (web view) |
+| Duet / RepRapFirmware | `rr_gcode` / `machine/code` (`Duet.cpp`) | not in the reference's code | not built: the reference's code reads no status | no | no | web view, as the reference |
+| Flashforge | the closed `FlashNetwork.dll` | not in the source | not built | no | no | Flashforge's own pages, which this app does not have |
+
+What was built of this, and how it was checked, is in "The Device page:
+what is built", below.
+
+### The Device page: what is built
+
+Every reading and command below was checked against mocks only: the mock
+bridge (`ultranet::mock` in the tests; the Python twin
+`EdgeSlicerRS-baselines/work/devpages/bridge` in the browser) and mock
+printers on 127.0.0.1. None was ever sent to a printer.
+
+- **The template** (`ui/device.js`, `device.css`; `src/device/mod.rs`;
+  `src/api/device.rs`): Device's bar has "Status", "Storage", "HMS",
+  "Update", "Printer page", each shown only where the family has it. Status
+  is "Printing Progress" (file, bar, percent, the state or the Bambu stage,
+  "Layer: %d/%d", time left as `get_bbl_monitor_time_dhm` writes it, the
+  printer's message, "Pause" / "Resume", "Stop"), "Camera", "Control" (each
+  heater: now and its target, typed as TempInput takes it, not written over
+  while typed in; each fan in tens; "Speed"; "Lamp"), the axes (StatusPanel's
+  ring: ±1 / ±10 mm, home in the middle; Z or "Bed"; the extruder, 10 mm
+  up or down), and the AMS or the toolheads. The state is asked every
+  2.5 s while Device is looked at. **differs**: every command is asked
+  first, Pause and Resume included (the reference asks only before Stop);
+  the question ends with what to look at on the printer before it moves or
+  heats. The session refuses a command not confirmed, one the printer has
+  not got, pause when not printing, resume when not paused, stop when idle,
+  the axes and the extruder while printing; a target above the heater's
+  limit is brought down to it (TempInput), a target between 0 and 20 °C up
+  to 20; below 170 °C the extruder asks the reference's question with
+  "Still load" / "Still unload"; a jog on an axis not homed adds the
+  RecenterDialog's sentence.
+- **Bambu** (`src/device/bambu.rs`), re-seated from the UltraNet pass's
+  panel: the printer list, Add, Remove, Connect, the bridge's and the
+  access codes' notes stay over the bar (`bambu.js`); the panel's
+  progress, temperatures and AMS trays are the template's now, its Pause /
+  Resume / Stop the template's (the same commands). Added: the stage
+  (`stg_cur`), the fans (`cooling_fan_speed`, `big_fan1_speed`,
+  `big_fan2_speed` or `fan_gear`, drawn by `support_aux_fan` /
+  `support_chamber_fan`), the speed levels (`spd_lvl`), the lamp
+  (`lights_report`), `home_flag`, nozzle and bed targets, the chamber's
+  target only with `support_chamber_temp_edit`, jog / home / extrude as
+  `gcode_line`, "HMS" (the printer's `hms` list with the reference's texts
+  from `resources/hms`, by the serial's first three characters, in the
+  language else English; "Fatal", "Serious", "Common", "Info"), "Update" (the
+  modules' versions and serials from `get_version`; updating not built). A
+  printer not in Developer Mode is refused every command with the
+  reference's sentence before anything is sent. **not built**: the camera,
+  "Storage", firmware updating (they need more of the bridge:
+  ULTRANET_BRIDGE.md, proposed), "Calibration", "Print Options", "Printer
+  Parts", AMS load / unload / settings / drying, the thumbnail.
 
 ### Sending to a printer: what is built
 

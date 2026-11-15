@@ -19,11 +19,11 @@ const hostsState = {
   // Device: which part is shown, and what the frame was last pointed at.
   deviceTab: 'page',
   frameUrl: '',
-  // A U1's toolheads as last read for the send dialog, the mapping shown,
-  // and the Device tab's watch of the printer's state.
+  // A U1's toolheads as last read for the send dialog, the mapping shown;
+  // whether Device shows the native page.
   toolheads: null,
   mapping: [],
-  statusTimer: null,
+  native: false,
 };
 
 // The printer's address may be framed in this document: the served page
@@ -507,37 +507,46 @@ $('queue-error').addEventListener('click', () => {
 
 // ---- Device: the printer's page, and its files ----
 
-// Called by `showDevice` (app.js): with a connection, the printer's page
-// and its files in place of what the preset says of it. The frame is
-// pointed at the printer only here, when Device is looked at.
+// Called by `showDevice` (app.js): the printer's Device page. A family
+// with a native page (Bambu through UltraNet, a U1, Klipper, OctoPrint:
+// device.js) has "Status" first, Bambu "HMS" and "Update" too; a print
+// host keeps its own page ("Printer page") and its files ("Storage"). The
+// frame is pointed at the printer only here, when Device is looked at.
+const DEVICE_TABS = ['status', 'storage', 'hms', 'update', 'page'];
+
 function showPrinterPage() {
-  // A Bambu Lab printer: its own panel, through the UltraNet bridge (bambu.js).
-  if (isBambu() && typeof showBambuDevice === 'function') {
-    showBambuDevice();
-    return;
-  }
-  if (typeof hideBambuDevice === 'function') hideBambuDevice();
   const info = hostsState.info;
-  const url = info && info.printer ? info.device_url : null;
-  $('device-bar').hidden = !url;
-  $('device-view').hidden = !url;
-  $('device-page').hidden = Boolean(url);
-  $('device-setup').hidden = !(info && info.printer) || Boolean(url);
-  if (!url) {
+  const bambu = isBambu() && typeof showBambuDevice === 'function';
+  if (bambu) showBambuDevice();
+  else if (typeof hideBambuDevice === 'function') hideBambuDevice();
+  const url = !bambu && info && info.printer ? info.device_url : null;
+  const native = bambu || Boolean(url && info.native);
+  const has = { status: native, storage: Boolean(url), hms: bambu, update: bambu, page: Boolean(url) };
+  const shown = bambu || Boolean(url);
+  hostsState.native = native;
+  $('device-bar').hidden = !shown;
+  $('device-view').hidden = !shown;
+  $('device-page').hidden = shown;
+  $('device-setup').hidden = !(info && info.printer) || shown;
+  if (!shown) {
     hostsState.frameUrl = '';
     $('device-frame').removeAttribute('src');
+    if (typeof stopDevice === 'function') stopDevice();
     return;
   }
-  $('device-address').textContent = url;
-  $('device-address').title = info.from === 'kept' ? 'Kept for this printer preset' : 'As the printer preset gives it';
-  // Shown for every printer page, with the reference's reason where it has no storage.
-  $('device-tab-storage').hidden = false;
-
-  for (const [tab, name] of [[$('device-tab-page'), 'page'], [$('device-tab-storage'), 'storage']]) {
+  if (!has[hostsState.deviceTab]) hostsState.deviceTab = native ? 'status' : 'page';
+  $('device-address').textContent = url || '';
+  $('device-address').title = url ? (info.from === 'kept' ? 'Kept for this printer preset' : 'As the printer preset gives it') : '';
+  $('device-reload').hidden = !url;
+  $('device-connect').hidden = !url;
+  $('device-status').hidden = !native;
+  for (const name of DEVICE_TABS) {
+    const tab = $(`device-tab-${name}`);
+    tab.hidden = !has[name];
     tab.setAttribute('aria-selected', String(hostsState.deviceTab === name));
   }
-  $('device-frame').hidden = hostsState.deviceTab !== 'page';
-  $('device-storage').hidden = hostsState.deviceTab !== 'storage';
+  const panes = { status: 'device-native', storage: 'device-storage', hms: 'device-hms', update: 'device-update', page: 'device-frame' };
+  for (const [name, id] of Object.entries(panes)) $(id).hidden = hostsState.deviceTab !== name;
   // Nothing is asked of the printer until Device is looked at.
   if (state.tab !== 'device') return;
   if (hostsState.deviceTab === 'page' && hostsState.frameUrl !== url) {
@@ -550,62 +559,10 @@ function showPrinterPage() {
     $('device-frame').src = url;
   }
   if (hostsState.deviceTab === 'storage') showStorage();
-  watchStatus();
+  if (native && typeof watchDevice === 'function') watchDevice(true);
 }
 
-// The printer's state over the page, asked every few seconds while
-// Device is looked at (the reference's phone hub and its Printers tab ask
-// Moonraker the same way, SnapmakerLan.cpp `status`).
-const clock = (seconds) => {
-  const h = Math.floor(seconds / 3600);
-  const m = Math.round((seconds % 3600) / 60);
-  return h ? `${h}h${m}m` : `${m}m`;
-};
-
-function watchStatus() {
-  clearTimeout(hostsState.statusTimer);
-  const info = hostsState.info;
-  const shown = state.tab === 'device' && info && info.printer && info.status;
-  $('device-status').hidden = !shown;
-  if (!shown) return;
-  const project = activeId();
-  hostsState.statusTimer = setTimeout(async () => {
-    let status;
-    try {
-      status = await call('printer_status', { project });
-    } catch (error) {
-      status = { online: false, said: t('Offline'), error: error.message };
-    }
-    if (state.tab !== 'device' || activeId() !== project) return;
-    const line = $('device-status');
-    line.className = status.online ? `state-${status.state}` : 'error';
-    if (!status.known && status.known !== undefined) {
-      line.hidden = true;
-      return;
-    }
-    if (!status.online) {
-      line.textContent = status.said;
-      line.title = status.error || '';
-    } else {
-      const parts = [status.said];
-      if (status.filename) parts.push(status.filename);
-      if (status.state === 'printing' || status.state === 'paused' || status.state === 'complete') parts.push(`${status.percent}%`);
-      if (status.left) parts.push(`${clock(status.left)} left`);
-      if (status.total_layers) parts.push(`${t('Layer')} ${status.layer}/${status.total_layers}`);
-      if (status.bed) parts.push(`${t('Bed')} ${Math.round(status.bed[0])}/${Math.round(status.bed[1])} °C`);
-      // The toolheads being heated, with their number; else the first.
-      const nozzles = (status.nozzles || []).map((n, i) => [i, n]).filter(([, n]) => n[1] > 0);
-      const shown = nozzles.length ? nozzles : (status.nozzles || []).slice(0, 1).map((n) => [0, n]);
-      for (const [i, n] of shown) parts.push(`${status.nozzles.length > 1 ? `T${i + 1}` : t('Nozzle')} ${Math.round(n[0])}/${Math.round(n[1])} °C`);
-      line.textContent = parts.join(' · ');
-      line.title = status.message || '';
-    }
-    watchStatus();
-  }, $('device-status').textContent ? 3000 : 50);
-}
-
-$('device-tab-page').addEventListener('click', () => { hostsState.deviceTab = 'page'; showPrinterPage(); });
-$('device-tab-storage').addEventListener('click', () => { hostsState.deviceTab = 'storage'; showPrinterPage(); });
+for (const name of DEVICE_TABS) $(`device-tab-${name}`).addEventListener('click', () => { hostsState.deviceTab = name; showPrinterPage(); });
 $('device-reload').addEventListener('click', () => {
   if (hostsState.deviceTab === 'storage') {
     showStorage();
