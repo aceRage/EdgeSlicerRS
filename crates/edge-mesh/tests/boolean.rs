@@ -467,6 +467,169 @@ fn a_fold_through_itself_is_refused_when_asked() {
     }
 }
 
+/// A mesh of the triangles of several, its corners at one place made one,
+/// as a file of two bodies that touch is read.
+fn welded(parts: &[Mesh]) -> Mesh {
+    Mesh::from_triangle_soup(parts.iter().flat_map(|m| {
+        (0..m.triangles.len())
+            .map(|t| m.triangle(t))
+            .collect::<Vec<_>>()
+    }))
+}
+
+/// `mesh` with the edge from `a` to `b` split at `at` (a share of its
+/// length) on one side of it only: a T-junction.
+fn t_junction(mut mesh: Mesh, a: [f32; 3], b: [f32; 3], at: f64) -> Mesh {
+    let find = |m: &Mesh, p: [f32; 3]| m.vertices.iter().position(|v| *v == p).unwrap() as u32;
+    let (ia, ib) = (find(&mesh, a), find(&mesh, b));
+    let t = mesh
+        .triangles
+        .iter()
+        .position(|t| (0..3).any(|k| t[k] == ia && t[(k + 1) % 3] == ib))
+        .unwrap();
+    let tr = mesh.triangles[t];
+    let k = (0..3).find(|&k| tr[k] == ia).unwrap();
+    let v = mesh.vertices.len() as u32;
+    mesh.vertices.push(std::array::from_fn(|i| {
+        (f64::from(a[i]) + at * (f64::from(b[i]) - f64::from(a[i]))) as f32
+    }));
+    mesh.triangles[t] = [ia, v, tr[(k + 2) % 3]];
+    mesh.triangles.push([v, ib, tr[(k + 2) % 3]]);
+    mesh
+}
+
+/// Inputs a boolean library finds awkward, as files have them, and what
+/// the reference's Manifold refuses and leaves to mcut (MeshBoolean.cpp:
+/// `mfd::make_boolean` false on a status other than `NoError`): each gives
+/// a closed result whose volumes add up, or is refused for what it is.
+#[test]
+fn awkward_inputs() {
+    let c = cube([0.0; 3], [10.0; 3]);
+    // Two bodies that touch along an edge, at a corner, or over a face,
+    // read as one mesh with their corners welded: the edge or corner they
+    // share belongs to four triangles, the face to two of each body.
+    let edge = welded(&[
+        cube([0.0; 3], [10.0; 3]),
+        cube([10.0, 10.0, 0.0], [20.0, 20.0, 10.0]),
+    ]);
+    assert!(!check::is_closed(&edge));
+    close(
+        all_three(
+            "touching along an edge",
+            &cube([5.0, 5.0, 2.0], [15.0, 15.0, 8.0]),
+            &edge,
+            true,
+        ),
+        [2300.0, 300.0, 300.0],
+    );
+    let corner = welded(&[cube([0.0; 3], [10.0; 3]), cube([10.0; 3], [20.0; 3])]);
+    close(
+        all_three(
+            "touching at a corner",
+            &cube([5.0; 3], [15.0; 3]),
+            &corner,
+            true,
+        ),
+        [2750.0, 750.0, 250.0],
+    );
+    let face = welded(&[
+        cube([0.0; 3], [10.0; 3]),
+        cube([10.0, 0.0, 0.0], [20.0, 10.0, 10.0]),
+    ]);
+    close(
+        all_three(
+            "sharing a face",
+            &cube([5.0, 2.0, 2.0], [25.0, 8.0, 8.0]),
+            &face,
+            true,
+        ),
+        [2180.0, 180.0, 540.0],
+    );
+    // A shell inside another, both enclosing material, and a shell wound
+    // inward inside another (a hollow part).
+    let mut nested = cube([0.0; 3], [20.0; 3]);
+    nested.append(&cube([5.0; 3], [15.0; 3]), &edge_mesh::Transform::IDENTITY);
+    // The inner shell is not material twice over: the solid is the outer.
+    let slab = cube([-5.0, -5.0, 8.0], [25.0, 25.0, 12.0]);
+    assert!((Solid::new(&nested).unwrap().volume() - 8000.0).abs() < 1e-9);
+    for (op, want) in [
+        (Op::Union, 10000.0),
+        (Op::Difference, 2000.0),
+        (Op::Intersection, 1600.0),
+    ] {
+        let r = boolean::boolean(&slab, &nested, op).unwrap();
+        assert!(check::defects(&r).is_clean());
+        assert_eq!(edge_mesh::split::split(&r).len(), 1);
+        assert!(
+            (r.signed_volume() - want).abs() < 1e-9,
+            "{op:?} {}",
+            r.signed_volume()
+        );
+    }
+    let mut hollow = cube([0.0; 3], [20.0; 3]);
+    let mut void = cube([5.0; 3], [15.0; 3]);
+    for t in &mut void.triangles {
+        t.swap(1, 2);
+    }
+    hollow.append(&void, &edge_mesh::Transform::IDENTITY);
+    close(
+        all_three(
+            "hollow",
+            &hollow,
+            &cube([8.0, 8.0, -5.0], [12.0, 12.0, 25.0]),
+            true,
+        ),
+        [7320.0, 6840.0, 160.0],
+    );
+    // A T-junction, on an edge of the cube and, off the line by the
+    // rounding of its corner, on a slanted edge across a face.
+    let t = t_junction(c.clone(), [0.0, 0.0, 10.0], [10.0, 0.0, 10.0], 0.5);
+    assert_eq!(check::defects(&t).open_edges, 3);
+    close(
+        all_three("T-junction", &t, &cube([5.0; 3], [15.0; 3]), true),
+        [1875.0, 875.0, 125.0],
+    );
+    let slab = cube([0.0; 3], [10.0, 7.0, 10.0]);
+    let (a, b) = (0..slab.triangles.len())
+        .map(|t| slab.triangle(t))
+        .flat_map(|t| (0..3).map(move |k| (t[k], t[(k + 1) % 3])))
+        .find(|(a, b)| a[2] == 10.0 && b[2] == 10.0 && a[0] != b[0] && a[1] != b[1])
+        .unwrap();
+    let t = t_junction(slab, a, b, 1.0 / 3.0);
+    assert!(!check::is_closed(&t));
+    close(
+        all_three(
+            "T-junction off the line",
+            &t,
+            &cube([5.0; 3], [15.0; 3]),
+            true,
+        ),
+        [1650.0, 650.0, 50.0],
+    );
+    // A facet written twice.
+    let mut twice = cube([5.0; 3], [15.0; 3]);
+    twice.triangles.push(twice.triangles[4]);
+    for (op, want) in [
+        (Op::Union, 1875.0),
+        (Op::Difference, 875.0),
+        (Op::Intersection, 125.0),
+    ] {
+        let r = boolean::boolean(&c, &twice, op).unwrap();
+        assert!(check::defects(&r).is_clean());
+        assert!((r.signed_volume() - want).abs() < 1e-9, "{op:?}");
+    }
+    // A hole stays refused: nothing says what was there.
+    let mut open = cube([5.0; 3], [15.0; 3]);
+    open.triangles.truncate(10);
+    assert_eq!(
+        boolean::union(&c, &open).unwrap_err(),
+        BooleanError::Input {
+            operand: Operand::Second,
+            error: InputError::NotClosed
+        }
+    );
+}
+
 #[test]
 fn parts_combined_in_order() {
     let a = cube([0.0; 3], [10.0; 3]);
