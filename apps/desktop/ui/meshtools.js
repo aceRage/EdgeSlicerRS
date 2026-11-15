@@ -330,7 +330,7 @@
       node.hidden = false;
       const c = this.config;
       const original = there.part.triangles ? there.part.triangles[1] : there.object.triangles;
-      let name = there.part.name || there.object.name || '';
+      let name = there.part.name || there.object.name || this.host.project().file || '';
       if (name.length > NAME_CHARS) name = `${name.slice(0, NAME_CHARS - 3)}...`;
       // With "Detail level", the ratio and count are the preview's.
       if (!c.useCount && o.triangles !== null) c.shownRatio = (1 - f(o.triangles / original)) * 100;
@@ -560,7 +560,9 @@
       for (const object of fresh) {
         if ((object.part_list || []).length !== 1 || object.triangles < BIG) continue;
         this.notices = (this.notices || []).filter((notice) => notice.object !== object.id);
-        this.notices.push({ project: key, object: object.id, name: object.name || '' });
+        // An object read from a bare file goes by the file's name, as the list
+        // shows it.
+        this.notices.push({ project: key, object: object.id, name: object.name || project.file || '' });
       }
       this.showNotices();
     },
