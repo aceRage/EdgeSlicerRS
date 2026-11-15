@@ -1809,6 +1809,15 @@ there (its fill's order). Not picked up, waiting for the pin bump: Orca
 junction deviation, the models as `.drc`, `precise_z_height` off, and
 input shaping turned off on Klipper too.
 
+The dialogs of Max flowrate, VFA, the two input shaping tests and
+Cornering were seen in the browser at 1280 dark, English (the pane drew
+them at 800 wide), and at 900 light, German, opened from the menu, which
+shows the four on and Stringing and Ironing flow off; VFA's check said its
+lowered layer height for the U1's PLA (12 mm³/s: 0.12 mm) and made the
+project. Stringing (temp × retraction) and Ironing flow are not built
+yet: the menu keeps them off with "not yet: calibration models are not
+built".
+
 Checked: the engine's test slices "Pass 1" on a U1 and reads back that
 each tile's top surface feeds its own flow (+10%, -20%, +5% against
 `flowrate_0`, the median per mm within 0.2%), ten layers, and no note of

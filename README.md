@@ -235,13 +235,20 @@ The Calibration menu (`edge_engine::calib`, `edge_gcode::calib`,
 "Calibration prints") makes the reference's test prints as projects of
 their own: Temperature, Pressure advance (PA Tower, PA Line, PA Pattern),
 Flow rate (Pass 1, Pass 2 and the two YOLO tests, each tile an object with
-its own flow ratio) and the Retraction test. The reference's command line
-cannot make them, so each is checked by reading its G-code back against
-the reference's formulas, layer by layer, on a Klipper and a Marlin
-printer; the flow rate tiles, being an ordinary print, were also saved and
-sliced by the reference. Stringing (temp × retraction), Max flowrate,
-Cornering, Input Shaping, VFA and Ironing flow are not built yet; Max
-flowrate, Cornering, Input Shaping and VFA are vase-mode prints.
+its own flow ratio), the Retraction test, and the vase-mode tests Max
+flowrate (the outer wall's speed rising with the height), VFA (its speed
+stepped block by block), Input Shaping (frequency and damping: Klipper
+`SET_INPUT_SHAPER`, RepRapFirmware and Marlin 2 `M593`) and Cornering
+(`M205 J`, or the jerk: `SET_VELOCITY_LIMIT SQUARE_CORNER_VELOCITY`,
+`M205 X Y`). The reference's command line cannot make them, so each is
+checked by reading its G-code back against the reference's formulas,
+layer by layer, on a Klipper and a Marlin printer (and a Bambu Lab one
+where its form differs); the flow rate tiles and the vase-mode projects,
+saved here, were also sliced by the reference as plain prints, with the
+same layers and extruded lengths. Max flowrate's model is the
+reference's STEP file as the pin's own reader tessellates it (this engine
+reads no STEP), kept in `crates/edge-engine/calib`. Stringing (temp ×
+retraction) and Ironing flow are not built yet.
 
 ## Status
 
