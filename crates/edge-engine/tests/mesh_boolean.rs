@@ -498,7 +498,26 @@ fn sliced(model: &Model) -> String {
     )
     .unwrap();
     let sliced = edge_engine::slice(job, &Unwatched).unwrap();
-    String::from_utf8(sliced.gcode("2001-01-01 at 00:00:00").unwrap().text).unwrap()
+    unnamed(&String::from_utf8(sliced.gcode("2001-01-01 at 00:00:00").unwrap().text).unwrap())
+}
+
+/// The file with the objects' names taken out of the `; printing object`
+/// comments: the name is the file's the part was read from, which a test
+/// writes under a name of its own each time, or loses saving the part
+/// to a project and reading it back.
+fn unnamed(text: &str) -> String {
+    text.split_inclusive('\n')
+        .map(|line| {
+            for start in ["; printing object ", "; stop printing object "] {
+                if line.starts_with(start)
+                    && let Some(at) = line.rfind(" id:")
+                {
+                    return format!("{}{}", start.trim_end(), &line[at..]);
+                }
+            }
+            line.to_owned()
+        })
+        .collect()
 }
 
 /// The result saved and opened again is the same part, and slices as it

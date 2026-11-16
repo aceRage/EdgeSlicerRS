@@ -98,7 +98,27 @@ fn sliced(changes: &[(&str, &str)]) -> Sliced {
 }
 
 fn gcode(sliced: &Sliced) -> Vec<u8> {
-    sliced.gcode("1970-01-01 at 00:00:01 UTC").unwrap().text
+    let text = String::from_utf8(sliced.gcode("1970-01-01 at 00:00:01 UTC").unwrap().text).unwrap();
+    unnamed(&text).into_bytes()
+}
+
+/// The file with the objects' names taken out of the `; printing object`
+/// comments: the name is the file's the part was read from, which a test
+/// writes under a name of its own each time, or loses saving the part
+/// to a project and reading it back.
+fn unnamed(text: &str) -> String {
+    text.split_inclusive('\n')
+        .map(|line| {
+            for start in ["; printing object ", "; stop printing object "] {
+                if line.starts_with(start)
+                    && let Some(at) = line.rfind(" id:")
+                {
+                    return format!("{}{}", start.trim_end(), &line[at..]);
+                }
+            }
+            line.to_owned()
+        })
+        .collect()
 }
 
 /// The first layer cut through the narrow part of the hole.

@@ -982,7 +982,10 @@ fn g_code_set_at_layers_is_written_there_and_saved_with_its_plate() {
         &text[from..to]
     };
     assert!(layer(tops[4]).contains(&format!("\n;PAUSE_PRINT\n{pause}\n\n")));
-    assert!(layer(tops[9]).contains("\n;CUSTOM_GCODE\nM117 hi {not a placeholder}\nG4 S1\nG1 "));
+    assert!(
+        layer(tops[9])
+            .contains("\n;CUSTOM_GCODE\nM117 hi {not a placeholder}\nG4 S1\n; printing object ")
+    );
     assert_eq!(text.matches(";PAUSE_PRINT").count(), 1);
 
     let (again, _) = saved_as_edited(&model, "custom.3mf", &[Some(1)]);
