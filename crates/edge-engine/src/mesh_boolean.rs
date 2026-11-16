@@ -181,6 +181,7 @@ impl Model {
             seam: None,
             transform: Transform::translation(middle),
             decoration: false,
+            text: None,
             // Its settings go with it, not what its triangles carried.
             kept: a.kept.as_deref().map(|kept| Arc::new(kept.piece())),
             ..a.clone()
@@ -310,6 +311,7 @@ impl Model {
             seam: None,
             transform: Transform::translation(middle),
             decoration: false,
+            text: None,
         };
         self.reshape(bed, at, vec![made], vec![fresh()]);
         Ok(outcome)

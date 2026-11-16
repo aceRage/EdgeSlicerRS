@@ -143,7 +143,7 @@ impl History {
     /// Takes the last step back off when it is `name` and nothing came
     /// after it, giving what it was made to: the step to come is then
     /// one with it.
-    fn amend(&mut self, name: &str, before: &mut Option<Arc<File>>) -> bool {
+    pub(super) fn amend(&mut self, name: &str, before: &mut Option<Arc<File>>) -> bool {
         if self.redo.is_empty() && self.undo.last().is_some_and(|step| step.name == name) {
             let step = self.undo.pop().expect("a last step");
             *before = step.file;

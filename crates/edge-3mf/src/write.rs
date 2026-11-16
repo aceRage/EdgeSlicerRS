@@ -686,6 +686,29 @@ fn part_entries(part: &Part) -> Vec<Entry> {
             );
         }
     }
+    // Its text, where it is not what was read: its shape and text
+    // described again, after its metadata (bbs_3mf.cpp writes the shape,
+    // then the text, before the mesh's statistics).
+    let text_as_read = read.is_some_and(|read| match (&read.text, &part.text) {
+        (Some(was), Some(now)) => Arc::ptr_eq(was, now),
+        (None, None) => true,
+        _ => false,
+    });
+    if !text_as_read {
+        entries.retain(|entry| !kept::is_text_or_shape(entry));
+        if let Some(text) = &part.text {
+            let centre = part.mesh.bounds().map_or([0.0; 3], |(low, high)| {
+                std::array::from_fn(|axis| (f64::from(low[axis]) + f64::from(high[axis])) / 2.0)
+            });
+            let at = entries
+                .iter()
+                .rposition(|entry| matches!(entry, Entry::Meta { .. }))
+                .map_or(0, |at| at + 1);
+            let [shape, described] = text.entries(centre);
+            entries.insert(at, described);
+            entries.insert(at, shape);
+        }
+    }
     if !entries
         .iter()
         .any(|entry| matches!(entry, Entry::Raw(raw) if raw.starts_with("<mesh_stat")))

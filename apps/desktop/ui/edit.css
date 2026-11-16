@@ -299,3 +299,33 @@ dialog.plate-settings .row.end .grow { flex: 1; align-self: center; }
 .vlh-hints dd { margin: 0; }
 .vlh-row > .vlh-button, .vlh-row > .edit-label { flex: none; white-space: nowrap; }
 .vlh-row > .vlh-button { min-width: 80px; justify-content: center; border: 1px solid var(--line-2); border-radius: var(--radius-m); }
+
+/* "Emboss" (text.js): the panel, the text box, the list of fonts that
+   floats under the font's button, each family drawn in itself. */
+.text-panel { width: min(380px, calc(100% - var(--stage-left) - var(--stage-inset))); }
+.text-panel .text-input { width: 100%; min-height: 3.6em; resize: vertical; font: var(--size-body) var(--font-ui); }
+.text-panel .cut-note { margin: 0; }
+.text-panel .text-font-button { flex: 1 1 0; min-width: 0; max-width: 140px; height: var(--control-s); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; text-align: left; }
+.text-panel .text-face { flex: 0 1 auto; min-width: 0; max-width: 92px; }
+.text-panel .cut-line:has(.text-font-button) { flex-wrap: nowrap; }
+.text-panel .text-style { font: 700 var(--size-small) var(--font-ui); }
+.text-panel .text-style:not(.text-bold) { font-style: italic; font-weight: 400; }
+.text-panel button.icon.tool[aria-pressed="true"] { color: var(--accent); background: var(--accent-soft); }
+.text-panel .text-unit { display: inline-flex; align-items: center; gap: var(--space-1); }
+.text-panel .text-number { width: 84px; height: var(--control-s); font-size: var(--size-small); }
+.text-panel input[type="range"] { flex: 1 1 120px; min-width: 0; }
+.text-panel .text-advanced summary { cursor: pointer; color: var(--text-2); padding: var(--space-1) 0; }
+.text-panel .text-advanced[open] { display: grid; gap: var(--space-2); }
+.text-panel .text-checks { display: flex; flex-wrap: wrap; align-items: center; gap: var(--space-3); }
+.text-panel .text-checks .edit-check:has(input:disabled) { color: var(--text-off); }
+.text-panel .text-kinds button[aria-pressed="true"] { color: var(--accent); border-color: var(--accent); background: var(--accent-soft); }
+.text-fonts { position: absolute; z-index: 30; width: 300px; max-height: 360px; display: flex; flex-direction: column; gap: var(--space-2); padding: var(--space-2); border-radius: var(--radius-l); box-shadow: var(--shadow-float); }
+.text-fonts .text-filter { height: var(--control-s); }
+.text-font-list { overflow-y: auto; display: flex; flex-direction: column; }
+.text-font { display: grid; grid-template-columns: minmax(0, 1fr) 120px; align-items: center; gap: var(--space-2); height: 30px; padding: 0 var(--space-2); border: none; background: none; color: var(--text-2); text-align: left; }
+.text-font:hover { background: var(--fill-hover); color: var(--text-1); }
+.text-font[aria-selected="true"] { color: var(--accent); }
+.text-font-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.text-font-sample { height: 20px; display: flex; align-items: center; justify-content: flex-end; overflow: hidden; }
+.text-font-sample .text-sample { height: 18px; max-width: 120px; fill: currentColor; }
+.text-skipped { margin: 0; font-size: var(--size-small); }

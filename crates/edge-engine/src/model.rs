@@ -57,6 +57,9 @@ mod cut;
 #[path = "mesh_boolean.rs"]
 mod mesh_boolean;
 
+#[path = "emboss.rs"]
+pub mod emboss;
+
 #[path = "orient_job.rs"]
 mod orient_job;
 
@@ -1748,6 +1751,9 @@ impl Model {
                 // Its kind and settings go with each piece, not what the
                 // part's triangles carried or where it came from.
                 kept: held.kept.as_deref().map(|kept| Arc::new(kept.piece())),
+                // A piece of a text is no text (`text_configuration` reset).
+                text: None,
+                decoration: false,
                 ..held.clone()
             })
             .collect();
@@ -1836,6 +1842,7 @@ impl Model {
             seam: None,
             transform: part.transform,
             decoration: false,
+            text: None,
         };
         let shape = self.objects[at].shape.clone();
         let mut list = shape.parts.clone();
@@ -2431,6 +2438,7 @@ impl From<Opened> for Model {
                     seam: None,
                     transform: Transform::IDENTITY,
                     decoration: false,
+                    text: None,
                     kept: None,
                 }]);
                 let reach = shape.reach(&Transform::IDENTITY);

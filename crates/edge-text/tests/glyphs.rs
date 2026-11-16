@@ -117,3 +117,32 @@ fn a_symbol_the_font_lacks_comes_from_the_fallback() {
             .is_empty()
     );
 }
+
+#[test]
+fn a_font_says_what_it_is_called() {
+    let nanum = Font::open(&fonts().join("NanumGothic-Bold.ttf")).unwrap();
+    let info = nanum.info().unwrap();
+    assert_eq!(info.family, "NanumGothic");
+    assert_eq!(info.postscript, "NanumGothicBold");
+    // Its OS/2 weight class is 600, though it is the family's bold.
+    assert_eq!((info.style.as_str(), info.weight), ("Bold", 600));
+    assert!(!info.italic && !info.cff);
+    assert_eq!(nanum.count(), 1);
+    assert_eq!(edge_text::fonts_in(b"not a font at all"), 0);
+    // What is not a font is refused, not read.
+    assert!(Font::from_bytes(b"not a font at all".to_vec(), "x").is_err());
+}
+
+#[test]
+fn a_file_is_scanned_for_its_fonts_without_reading_it_whole() {
+    let mut skipped = Vec::new();
+    let faces =
+        edge_text::scan_file(&fonts().join("NanumGothic-Regular.ttf"), &mut skipped).unwrap();
+    assert!(skipped.is_empty());
+    assert_eq!(faces.len(), 1);
+    let whole = Font::open(&fonts().join("NanumGothic-Regular.ttf")).unwrap();
+    assert_eq!(faces[0].info, whole.info().unwrap());
+    // A text file is no font.
+    let readme = fonts().join("NotoSansSymbols2-Subset.README.txt");
+    assert!(edge_text::scan_file(&readme, &mut skipped).is_err());
+}
