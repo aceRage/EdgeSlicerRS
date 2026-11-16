@@ -1271,6 +1271,7 @@ impl Session {
             "calibrate" => self.calibrate(args),
             "calib_vfa_check" => self.calib_vfa_check(args),
             "calib_printer" => self.calib_printer(),
+            "calib_stringing" => self.calib_stringing(args),
             "project_open" => {
                 let path = Path::new(needed(args, "path")?);
                 let answer = self.project_open(path)?;

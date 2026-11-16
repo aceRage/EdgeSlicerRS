@@ -2034,14 +2034,76 @@ there (its fill's order). Not picked up, waiting for the pin bump: Orca
 junction deviation, the models as `.drc`, `precise_z_height` off, and
 input shaping turned off on Klipper too.
 
+Stringing (temp × retraction) (`Calib_Temp_Retract_Grid`, the dialog
+`TempRetract_Calibration_Dlg`, EdgeSlicer's own): "Stringing (temp ×
+retraction)" with "Settings" ("Start temp: ", "End temp: ", "Temp step: "
+in ℃, "Band height: ", "Retraction min: ", "Retraction max: ",
+"Retraction step: " in mm, the ticks "Raised labels", "Wait for
+temperature at each band (M109)", "Disable z-hop for this test", "Fillet
+tower base", each with its tooltip, and "Fillet radius: " with its own,
+off with the fillet), the line under them that says what is wrong or
+"%d columns × %d bands of %.0f mm  (max %d columns on this bed)",
+redone as a field is left or a tick changed (`update_summary`), the
+red note when the filament's range holds one band, and the note "Single
+toolhead. …". Its values on opening come from the first filament
+(`stringing_grid_default_params`: bands from the filament's temperature
+up and down by 5 within its range and 150 to 350, at most ten; 230 to 205
+when the values make no sense), 8 mm bands, retraction 0.2 to 1.6 by 0.2,
+the fillet on at 3 mm, labels off, M109 on. Its checks
+(`stringing_grid_params_valid`), in the reference's words, as the line
+under the fields and again when the test is made. The project "Stringing
+temp × retraction": a column `SG_col_NN` per retraction 12 mm apart (a
+10 × 30 × 1 mm plate with two 4 mm pillars 20 mm apart, in bands with a
+0.4 mm notch at each band's top, a concave fillet under each pillar, the
+retraction raised on the plate with labels on), with labels a tower
+`SG_label` before them with each band's temperature on its face, the
+whole in the middle of the bed; over the process `print_sequence` by
+layer, `enable_prime_tower`, `wipe_inward`, `raft_layers`,
+`enable_support` and `reduce_crossing_wall` off,
+`initial_layer_print_height` 0.2; over the printer
+`use_firmware_retraction` off, `max_layer_height` raised to 0.2, and with
+the tick `z_hop` 0 (and the first filament's `filament_z_hop` 0); on each
+object the first filament, two walls, three bottom layers, no top, no
+fill, layers of 0.2, aligned seam, inner walls first (those not followed
+on an object here, the same on every object, over the process). In the
+G-code (GCode.cpp): the first layer keeps the first layer's
+temperature; from the second, at each change of band (by the layer's
+middle, the base's 1 mm in band 0) `; Calib_TempRetract: band=… temp=…`
+and `M109`/`M104` as the flavour writes it (`set_temperature`: `G10` and
+`M116` on RepRapFirmware, nothing to wait on MakerWare and Sailfish), the
+filament's own second-layer temperature not written; before each copy
+`; Calib_TempRetract: col=… retract=…` and that length for its
+retractions (and wipes) on, the filament's own again for the label tower
+(`col=none`) and at the end (`restore retract=`). The grid is printed copy
+by copy with labels off too, as the reference prints every plate. Checked
+by the engine's test on a U1 (Klipper) and an Ender-3 V3 SE (Marlin 2,
+labelled), 245 layers each, every layer's band line and temperature, every
+copy's line and every retraction within its column's length; and by the
+session's (the defaults, the line under the fields, a refusal, the
+settings shown changed, the objects, slice, undo). The dialog was driven in
+the browser (800 wide, light): opened from the Calibration menu's code path
+on a U1 with Generic ASA (280 to 240, nine bands), the line said the
+fillet's and the range's errors and the columns and bands, the radius
+went off with its tick, and OK made the project, eight columns on the bed.
+The projects saved and sliced by the pin as plain prints (`edge-parity`;
+its command line cannot make the test): on the U1 245 layers in both,
+filament 3730.9 mm there and 3731.1 here, extruded path 120.27 and 120.28
+m, 3993 retractions in both, time 41m 51s there and 41m 33s here as the
+reference plans; on the Ender with labels 245 layers, 4130.2 and 4129.8
+mm, 4341 and 4344 retractions, travel 148.3 and 89.8 m and time 1h 52m
+and 1h 41m, of which the plain print here not going copy by copy with
+labels off is most (with `exclude_object` on: 125.0 m and 1h 45m); what
+is left is the order of a column's two pillars (the reference takes the
+back one first in every column, here the nearer) and where the aligned
+seam stands on them.
+
 The dialogs of Max flowrate, VFA, the two input shaping tests and
 Cornering were seen in the browser at 1280 dark, English (the pane drew
 them at 800 wide), and at 900 light, German, opened from the menu, which
 shows the four on and Stringing and Ironing flow off; VFA's check said its
 lowered layer height for the U1's PLA (12 mm³/s: 0.12 mm) and made the
-project. Stringing (temp × retraction) and Ironing flow are not built
-yet: the menu keeps them off with "not yet: calibration models are not
-built".
+project. Ironing flow is not built yet: the menu keeps it off with "not
+yet: calibration models are not built".
 
 Checked: the engine's test slices "Pass 1" on a U1 and reads back that
 each tile's top surface feeds its own flow (+10%, -20%, +5% against
@@ -4284,7 +4346,8 @@ its tooltip "not yet: …" saying what it waits for.
 | | "VFA" | | built: on in Prepare; the dialog "VFA test" |
 | | "Input Shaping" ▸ "Input Shaping Frequency", "Input Shaping Damping/zeta factor" | | built: on in Prepare; the dialogs "Input shaping Frequency test" and "Input shaping Damp test" |
 | | "Cornering" | | built: on in Prepare; the dialog "Cornering test" |
-| | "Stringing (temp × retraction)", "Ironing flow" | | off: "not yet: calibration models are not built" (the reference has the menu in the macOS bar and a title-bar menu elsewhere) |
+| | "Stringing (temp × retraction)" | | built: on in Prepare; the dialog "Stringing (temp × retraction)" |
+| | "Ironing flow" | | off: "not yet: calibration models are not built" (its model is text cut from a TrueType font, the filament's name among it, which this app cannot make yet) |
 | Account (macOS) | sign-in for Snapmaker, Bambu Lab, Flashforge | | not shown: the cloud is not this task |
 | Window (macOS) | "Minimize" [Cmd+M], "Zoom" | | the system's own, in the window; off in a browser |
 | | "Next Project", "Previous Project" | Cmd+Shift+] / [ | wired (`project_cycle`); on with two projects |

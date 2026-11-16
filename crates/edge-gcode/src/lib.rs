@@ -49,7 +49,9 @@ use edge_geom::{ExPolygon, Point2, scaled, unscaled};
 use edge_template::{TemplateError, Value, Variables, stream_double};
 use rayon::prelude::*;
 
-pub use calib::{AdvanceFirmware, Calibration, CalibrationKind, Corner, JerkForm, ShaperFirmware};
+pub use calib::{
+    AdvanceFirmware, Calibration, CalibrationKind, Corner, JerkForm, ShaperFirmware, StringingGrid,
+};
 pub use calib_draw::{HANDLE_SIZE as PA_HANDLE_SIZE, PaLine, PaPattern, Pen, pa_pattern};
 pub use contour::Contours;
 pub use edge_avoid::{Detour, Slices};
@@ -1370,6 +1372,13 @@ struct State {
     /// The jerk the cornering calibration last set (GCodeWriter.cpp
     /// `m_last_jerk`; nothing else here sets a jerk).
     calibration_jerk: f64,
+    /// The stringing grid's band last set (GCode.cpp
+    /// `m_temp_retract_last_band`).
+    stringing_band: Option<usize>,
+    /// Whether a column of the stringing grid has set its retraction
+    /// (`m_temp_retract_saved_retract`): the filament's is given back
+    /// after it, for anything else and at the end.
+    stringing_set: bool,
     /// Whether the nozzle holds molten plastic that would ooze on a travel:
     /// true once anything is extruded, or once the machine's start G-code
     /// has run, since that purges.
@@ -1432,6 +1441,94 @@ impl Writer<'_> {
         if let Some(start) = self.state.label_start.take() {
             self.out.extend_from_slice(start.as_bytes());
         }
+        Ok(())
+    }
+
+    /// The stringing grid being printed, if it is.
+    fn stringing_grid(&self) -> Option<&StringingGrid> {
+        match self.all.first()?.calibration.as_ref().map(|c| &c.kind) {
+            Some(CalibrationKind::StringingGrid(grid)) => Some(grid),
+            _ => None,
+        }
+    }
+
+    /// The stringing grid at the change to layer `index`, whose middle is
+    /// `middle` mm above the first layer's bottom (GCode.cpp
+    /// `process_layer`, `Calib_Temp_Retract_Grid`): the first layer keeps
+    /// the first layer's temperature (given back if a band was set before
+    /// it), each later one sets its band's when the band changes.
+    fn stringing_layer(
+        &mut self,
+        grid: &StringingGrid,
+        index: usize,
+        middle: f64,
+        tool: Option<usize>,
+    ) -> io::Result<()> {
+        if index == 0 {
+            // `reset_temp_retract_grid_first_layer`.
+            if self.state.stringing_band.take().is_some() {
+                let temperature = self.settings.nozzle_temperature_initial_layer;
+                if temperature > 0.0 {
+                    let temperature = temperature.round() as u32;
+                    writeln!(
+                        self.out,
+                        "; Calib_TempRetract: first layer temp={temperature}"
+                    )?;
+                    let line =
+                        calib::temperature_command(temperature, grid.wait, tool, &grid.flavor);
+                    self.out.extend_from_slice(line.as_bytes());
+                }
+            }
+            return Ok(());
+        }
+        // `apply_temp_retract_grid_layer`.
+        let band = grid.band(middle);
+        if self.state.stringing_band == Some(band) {
+            return Ok(());
+        }
+        self.state.stringing_band = Some(band);
+        // `std::lround`: halves away from zero, as Rust's `round`.
+        let temperature = grid.temperature(band).round().max(0.0) as u32;
+        writeln!(
+            self.out,
+            "; Calib_TempRetract: band={band} temp={temperature}"
+        )?;
+        let line = calib::temperature_command(temperature, grid.wait, tool, &grid.flavor);
+        self.out.extend_from_slice(line.as_bytes());
+        Ok(())
+    }
+
+    /// The stringing grid as a copy starts (GCode.cpp
+    /// `apply_temp_retract_grid_object`): a column's retraction, by the
+    /// number in its name, from here on; for anything else the
+    /// filament's own again, once a column has set its own. The
+    /// retraction the nozzle may still hold from the column before is
+    /// kept for the travel and given back as the column starts.
+    fn stringing_copy(&mut self, copy: usize) -> io::Result<()> {
+        let Some(grid) = self.stringing_grid() else {
+            return Ok(());
+        };
+        let column = calib::stringing_column(&self.copies()[copy].name);
+        let line = match column {
+            Some(column) => {
+                let length = grid.retraction(column);
+                self.state.stringing_set = true;
+                self.state.calibration_retraction = Some(length);
+                format!(
+                    "; Calib_TempRetract: col={column} retract={}\n",
+                    calib::general(length, 6)
+                )
+            }
+            None if self.state.stringing_set => {
+                self.state.calibration_retraction = None;
+                format!(
+                    "; Calib_TempRetract: col=none retract={}\n",
+                    calib::general(self.all[0].retraction_length, 6)
+                )
+            }
+            None => return Ok(()),
+        };
+        self.out.extend_from_slice(line.as_bytes());
         Ok(())
     }
 
@@ -2284,6 +2381,9 @@ impl Writer<'_> {
             {
                 self.state.calibration_outer_wall_speed = Some(speed);
             }
+            if let CalibrationKind::StringingGrid(grid) = &calibration.kind {
+                self.stringing_layer(grid, index, layer.z - layer.height / 2.0, tool)?;
+            }
         }
         if index == 1 {
             // GCode.cpp `process_layer`, the second layer's things: power
@@ -2302,8 +2402,14 @@ impl Writer<'_> {
                 self.unretract()?;
             }
         }
+        // The stringing grid sets the nozzle's temperature itself from the
+        // second layer on (GCode.cpp `process_layer`, "Review B1").
+        let grid = matches!(
+            s.calibration.as_ref().map(|calibration| &calibration.kind),
+            Some(CalibrationKind::StringingGrid(_))
+        );
         if index == 1 {
-            if s.nozzle_temperature != s.nozzle_temperature_initial_layer {
+            if s.nozzle_temperature != s.nozzle_temperature_initial_layer && !grid {
                 // With several tools the one in use is named; the others
                 // get their temperature when their turn comes. One nozzle
                 // is never named (GCodeWriter.cpp `set_temperature`).
@@ -2595,7 +2701,12 @@ impl Writer<'_> {
                 .map(cooling::pwm);
             let picture = traditional && !towered_layer;
             let homes = homes(layer);
-            if self.labelling().is_none() {
+            // The stringing grid sets each column's retraction as its copy
+            // starts, so it prints copy by copy, labelled or not, as the
+            // reference prints every plate (GCode.cpp `process_layer`, the
+            // loop over `instances_to_print`).
+            let by_copy = self.stringing_grid().is_some() && !self.copies().is_empty();
+            if self.labelling().is_none() && !by_copy {
                 let around: Vec<&ExtrusionLoop> = layer.around.iter().collect();
                 self.around(&around)?;
                 self.support(&layer.support.iter().collect::<Vec<_>>())?;
@@ -2657,6 +2768,7 @@ impl Writer<'_> {
                 .then(|| self.settings.plate.tower_at.or(self.all[0].plate.tower_at))
                 .flatten();
             for copy in labels::order(&copies, &present, tower) {
+                self.stringing_copy(copy)?;
                 self.begin_copy(copy)?;
                 let own: Vec<&ExtrusionLoop> = (layer.around.iter().zip(&brims))
                     .filter(|(_, owner)| **owner == Some(copy))
@@ -5189,6 +5301,18 @@ impl Writer<'_> {
             && let Some((_, off)) = s.power_loss_recovery
         {
             self.out.extend_from_slice(off.as_bytes());
+        }
+        // The stringing grid gives back the filament's retraction for the
+        // last one (GCode.cpp `restore_temp_retract_grid_retraction`).
+        if self.state.stringing_set {
+            self.state.stringing_set = false;
+            self.state.calibration_retraction = None;
+            let length = self.all[0].retraction_length;
+            writeln!(
+                self.out,
+                "; Calib_TempRetract: restore retract={}",
+                calib::general(length, 6)
+            )?;
         }
         self.retract(false)?;
         self.flush_labels()?;

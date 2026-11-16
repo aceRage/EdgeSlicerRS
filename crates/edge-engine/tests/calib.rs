@@ -1132,3 +1132,189 @@ fn the_cornering_test_spreads_the_corner_speed_over_the_layers() {
         "M205 J0.250 ; Junction Deviation\n"
     );
 }
+
+/// The stringing grid's per-copy and per-layer lines, read back.
+fn grid_params(labels: bool) -> CalibParams {
+    let mut params = CalibParams::new(CalibMode::StringingGrid, 230.0, 205.0, 5.0);
+    params.grid.print_labels = labels;
+    params.grid.fillet_radius = edge_engine::calib::stringing::max_fillet_radius();
+    params
+}
+
+#[test]
+fn the_stringing_grid_sets_its_bands_and_its_columns_retractions() {
+    use edge_engine::calib::stringing;
+    for (label, vendor, machine, labels) in [
+        ("klipper", "Snapmaker", "Snapmaker U1 (0.4 nozzle)", false),
+        (
+            "marlin",
+            "Creality",
+            "Creality Ender-3 V3 SE 0.4 nozzle",
+            true,
+        ),
+    ] {
+        let chosen = presets(vendor, machine);
+        let params = grid_params(labels);
+        let (made, gcode) = made_and_sliced(&chosen, &Settings::default(), |settings, bed| {
+            stringing::stringing_grid(&params, settings, Some(bed))
+        })
+        .unwrap();
+        if let Ok(dir) = std::env::var("EDGE_CALIB_DUMP") {
+            std::fs::write(
+                std::path::Path::new(&dir).join(format!("stringing_{label}.gcode")),
+                &gcode,
+            )
+            .unwrap();
+        }
+        assert_eq!(made.name, "Stringing temp × retraction");
+        // Eight columns of 0.2 to 1.6 mm, and the label tower.
+        let names: Vec<&str> = made.model.objects().iter().map(|o| o.name()).collect();
+        let mut expected: Vec<String> = (0..8).map(stringing::column_name).collect();
+        if labels {
+            expected.push("SG_label".to_owned());
+        }
+        assert_eq!(names, expected, "{label}");
+        // Six bands of 8 mm on a 1 mm base: 49 mm, 245 layers of 0.2.
+        let layer_texts = layers(&gcode);
+        assert_eq!(layer_texts.len(), 245, "{label}");
+        let grid = stringing::for_writer(
+            &params,
+            &edge_engine::settled(&chosen, &Overrides::default(), None).unwrap(),
+        );
+        let mut last_band = None;
+        for (index, text) in layer_texts.iter().enumerate() {
+            let z: f64 = text
+                .lines()
+                .find_map(|line| line.strip_prefix(";Z:"))
+                .unwrap()
+                .parse()
+                .unwrap();
+            let after = text
+                .split_once(";_SET_FAN_SPEED_CHANGING_LAYER\n")
+                .unwrap()
+                .1;
+            let bands: Vec<&str> = after
+                .lines()
+                .filter(|line| line.starts_with("; Calib_TempRetract: band="))
+                .collect();
+            if index == 0 {
+                assert!(bands.is_empty());
+            } else {
+                let band = grid.band(z - 0.1);
+                if last_band != Some(band) {
+                    let temperature = grid.temperature(band).round();
+                    assert_eq!(
+                        bands,
+                        vec![format!(
+                            "; Calib_TempRetract: band={band} temp={temperature}"
+                        )],
+                        "{label} at {z}"
+                    );
+                    let next = after
+                        .split_once(bands[0])
+                        .unwrap()
+                        .1
+                        .lines()
+                        .nth(1)
+                        .unwrap();
+                    // One filament: no tool named (GCodeWriter.cpp
+                    // `set_temperature`, `multiple_extruders`).
+                    assert_eq!(
+                        next,
+                        format!(
+                            "M109 S{temperature} ; set nozzle temperature and wait for it to be reached"
+                        ),
+                        "{label}"
+                    );
+                    last_band = Some(band);
+                } else {
+                    assert!(bands.is_empty(), "{label} at {z}");
+                }
+            }
+            // Each column's retraction from its start: every pull while
+            // it prints is its length (the travel to it keeps the one
+            // before, which is longer only on the layer's first column).
+            let mut length = None;
+            let mut columns = 0;
+            for line in text.lines() {
+                if let Some(rest) = line.strip_prefix("; Calib_TempRetract: col=") {
+                    let (column, value) = rest.split_once(" retract=").unwrap();
+                    if column == "none" {
+                        length = None;
+                        continue;
+                    }
+                    let column: usize = column.parse().unwrap();
+                    let value: f64 = value.parse().unwrap();
+                    assert!((value - (0.2 + 0.2 * column as f64)).abs() < 1e-9);
+                    length = Some(value);
+                    columns += 1;
+                } else if let (Some(length), Some(rest)) = (length, line.strip_prefix("G1 E-")) {
+                    let pulled: f64 = rest.split_whitespace().next().unwrap().parse().unwrap();
+                    assert!(
+                        pulled <= length + 1e-5,
+                        "{label} at {z}: {pulled} for {length}"
+                    );
+                }
+            }
+            assert_eq!(columns, 8, "{label} at {z}");
+        }
+        // The second layer's temperature is the grid's, not the filament's.
+        let second = layer_texts[1];
+        assert_eq!(second.matches("M104 ").count(), 0, "{label}");
+        assert!(
+            gcode.contains("; Calib_TempRetract: restore retract="),
+            "{label}"
+        );
+    }
+}
+
+#[test]
+fn the_stringing_grid_dialog_defaults_and_checks_are_the_references() {
+    use edge_engine::calib::stringing;
+    // PLA at 220 within 190-240: 225, 215, 230, 210, ... from the middle out.
+    let (params, needs) = stringing::default_params(220.0, 190.0, 240.0, 5.0, 0.0);
+    assert!(!needs);
+    assert_eq!((params.start, params.end), (240.0, 195.0));
+    assert_eq!(stringing::band_count(&params), 10);
+    // A range of one band asks for one.
+    let (params, needs) = stringing::default_params(220.0, 220.0, 220.0, 5.0, 0.0);
+    assert!(needs);
+    assert_eq!((params.start, params.end), (220.0, 220.0));
+    // Nonsense: 230 to 205.
+    let (params, needs) = stringing::default_params(0.0, 190.0, 240.0, 5.0, 0.0);
+    assert!(!needs);
+    assert_eq!((params.start, params.end), (230.0, 205.0));
+    let params = grid_params(false);
+    assert_eq!(stringing::params_valid(&params, 270.0), Ok(()));
+    // 270 mm: (270 - 30 - 35) / 12 = 17 columns; a 100 mm bed fits 2.
+    assert_eq!(stringing::max_columns(270.0), 17);
+    let error = stringing::params_valid(&params, 100.0).unwrap_err();
+    assert_eq!(
+        error.message,
+        "Grid does not fit the bed (max %1% columns at 12 mm pitch)"
+    );
+    assert_eq!(error.value.as_deref(), Some("2"));
+    let mut wide = grid_params(false);
+    wide.grid.fillet_radius = 4.0;
+    let error = stringing::params_valid(&wide, 270.0).unwrap_err();
+    assert_eq!(error.value.as_deref(), Some("3"));
+    let mut odd = grid_params(false);
+    odd.end = 207.0;
+    assert_eq!(
+        stringing::params_valid(&odd, 270.0).unwrap_err().message,
+        "The temperature range must be a multiple of the temperature step"
+    );
+    assert_eq!(stringing::retract_label(0.2), "0.2");
+    assert_eq!(stringing::retract_label(10.0), "10");
+    assert_eq!(edge_gcode::calib::stringing_column("SG_col_07"), Some(7));
+    assert_eq!(edge_gcode::calib::stringing_column("SG_col_3abc"), None);
+    assert_eq!(edge_gcode::calib::stringing_column("SG_label"), None);
+    assert_eq!(
+        edge_gcode::calib::temperature_command(215, true, None, "reprapfirmware"),
+        "G10 S215 ; set nozzle temperature\nM116 ; wait for temperature to be reached\n"
+    );
+    assert_eq!(
+        edge_gcode::calib::temperature_command(215, true, None, "sailfish"),
+        ""
+    );
+}

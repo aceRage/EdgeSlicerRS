@@ -60,6 +60,7 @@ fn params(args: &Value) -> Result<CalibParams, String> {
         Some("shaping_frequency") => CalibMode::InputShapingFrequency,
         Some("shaping_damping") => CalibMode::InputShapingDamping,
         Some("cornering") => CalibMode::Cornering,
+        Some("stringing") => CalibMode::StringingGrid,
         Some(other) => return Err(format!("there is no calibration \"{other}\" yet")),
         None => return Err("test was not given".into()),
     };
@@ -137,6 +138,9 @@ fn params(args: &Value) -> Result<CalibParams, String> {
             )),
         };
     }
+    if mode == CalibMode::StringingGrid {
+        return stringing_params(args);
+    }
     if mode == CalibMode::VfaTower {
         // VFA_Test_Dlg::on_start.
         let (start, end, step) = (number("start"), number("end"), number("step"));
@@ -174,6 +178,84 @@ fn params(args: &Value) -> Result<CalibParams, String> {
         ));
     }
     Ok(params)
+}
+
+/// The stringing grid dialog's values as read
+/// (`TempRetract_Calibration_Dlg::read_params`): the numbers, the radius
+/// only with the fillet on; checked against the bed by the caller.
+fn stringing_params(args: &Value) -> Result<CalibParams, String> {
+    let number = |key: &str| {
+        args.get(key)
+            .and_then(Value::as_f64)
+            .filter(|n| n.is_finite())
+    };
+    let tick =
+        |key: &str, otherwise: bool| args.get(key).and_then(Value::as_bool).unwrap_or(otherwise);
+    let invalid = || super::i18n::tr("Please input valid numbers.");
+    let (Some(start), Some(end), Some(step)) = (number("start"), number("end"), number("step"))
+    else {
+        return Err(invalid());
+    };
+    let mut params = CalibParams::new(CalibMode::StringingGrid, start, end, step);
+    let grid = &mut params.grid;
+    grid.band_height = number("band_height").ok_or_else(invalid)?;
+    grid.retract_start = number("retract_start").ok_or_else(invalid)?;
+    grid.retract_end = number("retract_end").ok_or_else(invalid)?;
+    grid.retract_step = number("retract_step").ok_or_else(invalid)?;
+    grid.fillet_base = tick("fillet", true);
+    if grid.fillet_base {
+        grid.fillet_radius = number("fillet_radius").ok_or_else(invalid)?;
+    }
+    grid.print_labels = tick("labels", false);
+    grid.wait_for_temperature = tick("wait", true);
+    grid.disable_z_hop = tick("no_z_hop", false);
+    Ok(params)
+}
+
+/// One of the stringing grid's checks (calib.cpp
+/// `stringing_grid_params_valid`, whose message ids the engine gives) in
+/// the language shown.
+fn grid_message(id: &str) -> String {
+    use super::i18n::tr;
+    match id {
+        "Temperature must be between 150 and 350 C" => {
+            tr("Temperature must be between 150 and 350 C")
+        }
+        "Start temperature must be >= end temperature" => {
+            tr("Start temperature must be >= end temperature")
+        }
+        "Temperature step must be between 1 and 20 C" => {
+            tr("Temperature step must be between 1 and 20 C")
+        }
+        "The temperature range must be a multiple of the temperature step" => {
+            tr("The temperature range must be a multiple of the temperature step")
+        }
+        "Band count must be between 2 and 10" => tr("Band count must be between 2 and 10"),
+        "Band height must be between 5 and 20 mm" => tr("Band height must be between 5 and 20 mm"),
+        "Total height must be <= 150 mm" => tr("Total height must be <= 150 mm"),
+        "Retraction must be between 0 and 10 mm" => tr("Retraction must be between 0 and 10 mm"),
+        "Retraction end must be >= start" => tr("Retraction end must be >= start"),
+        "Retraction step must be > 0" => tr("Retraction step must be > 0"),
+        "Fillet radius must be between 0.5 and %1% mm" => {
+            tr("Fillet radius must be between 0.5 and %1% mm")
+        }
+        "Column count must be at least 2" => tr("Column count must be at least 2"),
+        "Grid does not fit the bed (max %1% columns at 12 mm pitch)" => {
+            tr("Grid does not fit the bed (max %1% columns at 12 mm pitch)")
+        }
+        other => tr(other),
+    }
+}
+
+/// The stringing grid's check, in the reference's words.
+fn stringing_check(params: &CalibParams, bed_width: f64) -> Result<(), String> {
+    edge_engine::calib::stringing::params_valid(params, bed_width).map_err(|error| {
+        let said = grid_message(error.message);
+        match error.value {
+            Some(value) => super::i18n::fill(&said, &[&value]),
+            None => said,
+        }
+    })
 }
 
 /// The input shaping dialogs' values and their checks
@@ -285,6 +367,65 @@ impl Session {
             "shaper_types": shaper_types(flavor.as_deref()),
             "junction_deviation": flavor.as_deref() == Some("marlin2") && deviation > 0.0,
         }))
+    }
+
+    /// The stringing grid dialog (`calib_stringing`): with no values, its
+    /// defaults from the first filament (`TempRetract_Calibration_Dlg::
+    /// reset_to_defaults`); with them, the line under its fields
+    /// (`update_summary`): what is wrong, or the columns and bands.
+    pub(super) fn calib_stringing(&self, args: &Value) -> Result<Value, String> {
+        use edge_engine::calib::stringing;
+        let (_, settled) = self.calibration_settings()?;
+        let bed_width = stringing::bed_width(&settled);
+        let most = stringing::max_columns(bed_width).min(17);
+        if args.get("start").is_none() {
+            let first = |key: &str| -> f64 {
+                settled
+                    .floats(key)
+                    .ok()
+                    .flatten()
+                    .and_then(|values| values.first().copied().flatten())
+                    .unwrap_or(0.0)
+            };
+            // F14: the printer has no greatest nozzle temperature of its own.
+            let (params, needs_range) = stringing::default_params(
+                first("nozzle_temperature"),
+                first("nozzle_temperature_range_low"),
+                first("nozzle_temperature_range_high"),
+                5.0,
+                0.0,
+            );
+            let grid = &params.grid;
+            return Ok(serde_json::json!({
+                "start": params.start, "end": params.end, "step": params.step,
+                "band_height": grid.band_height, "retract_start": grid.retract_start,
+                "retract_end": grid.retract_end, "retract_step": grid.retract_step,
+                "labels": grid.print_labels, "wait": grid.wait_for_temperature,
+                "no_z_hop": grid.disable_z_hop, "fillet": grid.fillet_base,
+                "fillet_radius": grid.fillet_radius,
+                "max_fillet_radius": stringing::max_fillet_radius(),
+                "needs_range": needs_range,
+            }));
+        }
+        let summary = stringing_params(args)
+            .and_then(|params| stringing_check(&params, bed_width).map(|()| params))
+            .map(|params| {
+                super::i18n::fill(
+                    &super::i18n::tr(
+                        "%d columns × %d bands of %.0f mm  (max %d columns on this bed)",
+                    ),
+                    &[
+                        &stringing::retract_schedule(&params).len(),
+                        &stringing::band_count(&params),
+                        &params.grid.band_height,
+                        &most,
+                    ],
+                )
+            });
+        Ok(match summary {
+            Ok(summary) => serde_json::json!({ "ok": true, "summary": summary }),
+            Err(error) => serde_json::json!({ "ok": false, "summary": error }),
+        })
     }
 
     /// The settings a calibration made now would start from: the shown
@@ -464,6 +605,11 @@ impl Session {
                 }
                 CalibMode::Cornering => {
                     edge_engine::calib::cornering(params, &settled, &calib_dir, bed.as_ref())
+                }
+                CalibMode::StringingGrid => {
+                    let width = edge_engine::calib::stringing::bed_width(&settled);
+                    stringing_check(params, width)?;
+                    edge_engine::calib::stringing::stringing_grid(params, &settled, bed.as_ref())
                 }
             },
             (None, None) => return Err("test was not given".into()),
@@ -1112,5 +1258,90 @@ mod tests {
         ask(&session, "undo", json!({ "project": id }));
         let objects = ask(&session, "plate_view", json!({ "project": id }));
         assert_eq!(objects["objects"].as_array().map_or(0, Vec::len), 0);
+    }
+
+    #[test]
+    fn the_stringing_grid_opens_on_the_filament_and_is_checked_made_and_sliced() {
+        let dir = tempfile::tempdir().unwrap();
+        let session = Arc::new(Session::new(None));
+        choose_presets(&session);
+        // The dialog's defaults from the U1's first filament.
+        let d = ask(&session, "calib_stringing", json!({}));
+        assert_eq!(d["band_height"], 8.0, "{d}");
+        assert_eq!(d["retract_start"], 0.2);
+        assert_eq!(d["fillet_radius"], 3.0);
+        assert_eq!(d["needs_range"], false);
+        let args = |end: f64, radius: f64| {
+            json!({"test": "stringing", "start": 230, "end": end, "step": 5, "band_height": 8,
+                   "retract_start": 0.2, "retract_end": 1.6, "retract_step": 0.2,
+                   "fillet": true, "fillet_radius": radius, "labels": false, "wait": true,
+                   "no_z_hop": true})
+        };
+        // The line under the fields: what will be printed, or what is wrong.
+        let line = ask(&session, "calib_stringing", args(205.0, 3.0));
+        assert_eq!(line["ok"], true);
+        assert_eq!(
+            line["summary"],
+            "8 columns × 6 bands of 8 mm  (max 17 columns on this bed)"
+        );
+        let line = ask(&session, "calib_stringing", args(205.0, 4.0));
+        assert_eq!(
+            line["summary"],
+            "Fillet radius must be between 0.5 and 3 mm"
+        );
+        let line = ask(&session, "calib_stringing", args(207.0, 3.0));
+        assert_eq!(
+            line["summary"],
+            "The temperature range must be a multiple of the temperature step"
+        );
+        let refused = session.call("calibrate", &args(240.0, 3.0)).unwrap_err();
+        assert_eq!(refused, "Start temperature must be >= end temperature");
+        let listing = ask(&session, "calibrate", args(205.0, 3.0));
+        let id = listing["id"].as_u64().unwrap();
+        let detail = ask(&session, "project", json!({}));
+        assert_eq!(detail["name"], "Stringing temp × retraction");
+        let choices = &detail["choices"];
+        assert_eq!(choices["over"]["print_sequence"], "by layer", "{choices}");
+        assert_eq!(choices["over"]["initial_layer_print_height"], "0.2");
+        assert_eq!(choices["printer_over"]["use_firmware_retraction"], "0");
+        assert_eq!(choices["filament_over"][0]["filament_z_hop"], "0");
+        let objects = ask(&session, "plate_view", json!({ "project": id }));
+        assert_eq!(objects["objects"].as_array().map_or(0, Vec::len), 8);
+        dump(&session, id, "stringing.3mf");
+        let gcode = slice_and_read(&session, id, dir.path());
+        assert!(gcode.contains("; total layer number: 245"));
+        assert!(gcode.contains("; Calib_TempRetract: band=5 temp=205\nM109 S205 ;"));
+        assert!(gcode.contains("; Calib_TempRetract: col=7 retract=1.6\n"));
+        ask(&session, "undo", json!({ "project": id }));
+        let objects = ask(&session, "plate_view", json!({ "project": id }));
+        assert_eq!(objects["objects"].as_array().map_or(0, Vec::len), 0);
+
+        // A Marlin printer, labelled: the label tower before the columns.
+        let session = Arc::new(Session::new(None));
+        let machine = "Creality Ender-3 V3 SE 0.4 nozzle";
+        let presets = ask(
+            &session,
+            "presets",
+            json!({ "vendor": "Creality", "machine": machine }),
+        );
+        ask(
+            &session,
+            "project_set",
+            json!({
+                "source": "presets", "vendor": "Creality", "machine": machine,
+                "process": presets["processes"][0],
+                "filaments": [presets["filaments"][0]], "initial": true,
+            }),
+        );
+        let mut labelled = args(205.0, 3.0);
+        labelled["labels"] = json!(true);
+        labelled["no_z_hop"] = json!(false);
+        let listing = ask(&session, "calibrate", labelled);
+        let id = listing["id"].as_u64().unwrap();
+        let objects = ask(&session, "plate_view", json!({ "project": id }));
+        assert_eq!(objects["objects"].as_array().map_or(0, Vec::len), 9);
+        dump(&session, id, "stringing_marlin.3mf");
+        let gcode = slice_and_read(&session, id, dir.path());
+        assert!(gcode.contains("; Calib_TempRetract: col=none retract="));
     }
 }

@@ -499,6 +499,74 @@ const Calib = (() => {
     });
   }
 
+  // "Stringing (temp × retraction)" (calib_dlg.cpp
+  // `TempRetract_Calibration_Dlg`): the defaults from the first filament,
+  // the line under the fields saying what is wrong or what will be
+  // printed, the session checking the values again as the test is made.
+  async function stringing() {
+    const DEGREES = '\u2103';
+    const d = await call('calib_stringing');
+    const start = field('Start temp: ', DEGREES);
+    const end = field('End temp: ', DEGREES);
+    const step = field('Temp step: ', DEGREES);
+    const band = field('Band height: ', 'mm');
+    const rStart = field('Retraction min: ', 'mm');
+    const rEnd = field('Retraction max: ', 'mm');
+    const rStep = field('Retraction step: ', 'mm');
+    const radius = field('Fillet radius: ', 'mm');
+    start.input.value = String(Math.trunc(d.start));
+    end.input.value = String(Math.trunc(d.end));
+    step.input.value = shown(d.step);
+    band.input.value = shown(d.band_height);
+    rStart.input.value = shown(d.retract_start);
+    rEnd.input.value = shown(d.retract_end);
+    rStep.input.value = shown(d.retract_step);
+    radius.input.value = shown(d.fillet_radius);
+    radius.input.title = fmt(t('0.5 to %.1f mm: the largest radius keeps the fillet on the base plate.'), d.max_fillet_radius);
+    const labels = tick('Raised labels', 'Emboss retraction values on each base and temperatures on a label tower. Off by default: the values are in the G-code comments.', d.labels);
+    const wait = tick('Wait for temperature at each band (M109)', 'Use M109 (wait) at each temperature band. Off writes M104 and keeps printing while the hotend settles.', d.wait);
+    const noHop = tick('Disable z-hop for this test', 'Off (default): keep your z-hop and lift settings. On: z-hop 0 for this test only.', d.no_z_hop);
+    const fillet = tick('Fillet tower base', 'Add a concave fillet where each tower meets its base plate, so tall towers do not snap off at the joint.', d.fillet);
+    const summary = el('p', { className: 'quiet calib-note' });
+    const rangeNote = el('p', { className: 'calib-note calib-warn', textContent: t("The filament's temperature range fits only one band. Set a start and end temperature range to test."), hidden: !d.needs_range });
+    // read_params: `ToDouble` of each field, the radius only with the fillet on.
+    const values = () => ({
+      test: 'stringing',
+      start: readNumber(start), end: readNumber(end), step: readNumber(step),
+      band_height: readNumber(band), retract_start: readNumber(rStart),
+      retract_end: readNumber(rEnd), retract_step: readNumber(rStep),
+      fillet: fillet.input.checked, fillet_radius: readNumber(radius),
+      labels: labels.input.checked, wait: wait.input.checked, no_z_hop: noHop.input.checked,
+    });
+    async function update() {
+      radius.input.disabled = !fillet.input.checked;
+      try {
+        summary.textContent = (await call('calib_stringing', values())).summary;
+      } catch (error) {
+        summary.textContent = error.message;
+      }
+    }
+    for (const f of [start, end, step, band, rStart, rEnd, rStep, radius]) f.input.addEventListener('blur', update);
+    for (const f of [labels, wait, noHop, fillet]) f.input.addEventListener('change', update);
+    const dialog = el('dialog', { className: 'calib-dialog' }, el('form', { method: 'dialog' },
+      el('h2', { textContent: t('Stringing (temp × retraction)') }),
+      group('Settings', start.row, end.row, step.row, band.row, rStart.row, rEnd.row, rStep.row,
+        labels.row, wait.row, noHop.row, fillet.row, radius.row, summary, rangeNote),
+      el('p', { className: 'quiet calib-note', textContent: t('Single toolhead. Layer 1 keeps the first-layer temperature; band 0 starts at layer 2. Raft is disabled.') }),
+      el('div', { className: 'row end' },
+        el('button', { type: 'submit', value: 'ok', className: 'primary', textContent: t('OK') }),
+        el('button', { type: 'submit', value: 'cancel', formNoValidate: true, textContent: t('Cancel') }))));
+    await update();
+    return run(dialog, async () => {
+      try {
+        await make(values());
+      } catch (error) {
+        return error.message;
+      }
+      return null;
+    });
+  }
+
   // "Flow rate" (MainFrame.cpp, Plater.cpp `calib_flowrate`): no dialog;
   // the menu item makes the test's project at once.
   function flowRate(test) {
@@ -512,5 +580,5 @@ const Calib = (() => {
     return openGuide('https://github.com/SoftFever/OrcaSlicer/wiki/Calibration');
   }
 
-  return { pressureAdvance, temperature, retraction, maxFlowrate, vfa, inputShaping, cornering, flowRate, tutorial, parseList };
+  return { pressureAdvance, temperature, retraction, maxFlowrate, vfa, inputShaping, cornering, stringing, flowRate, tutorial, parseList };
 })();
