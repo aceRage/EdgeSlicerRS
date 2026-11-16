@@ -403,8 +403,7 @@ fn what_the_engine_does_with_an_option_is_its_own_answer() {
     for key in ["hollow_interior", "interlocking_beam"] {
         assert!(listed(&plain, "unread", key), "{key} is read");
     }
-    // Read, and said not to be followed when it asks for printing object
-    // by object.
+    // Read, and followed: printing object by object has no note.
     assert!(!listed(&plain, "unread", "print_sequence"));
     assert_eq!(plain["notes"].get("print_sequence"), None);
     let by_object = ask(
@@ -412,12 +411,7 @@ fn what_the_engine_does_with_an_option_is_its_own_answer() {
         "process_set",
         json!({ "key": "print_sequence", "value": "by object" }),
     );
-    assert!(
-        by_object["notes"]["print_sequence"][0]
-            .as_str()
-            .unwrap()
-            .contains("printing object by object is not followed")
-    );
+    assert_eq!(by_object["notes"].get("print_sequence"), None);
     ask(
         &session,
         "process_set",

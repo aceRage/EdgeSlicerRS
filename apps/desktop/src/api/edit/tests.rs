@@ -2458,3 +2458,37 @@ fn orienting_a_plate_lets_go_of_its_slice_only_and_a_locked_one_is_refused() {
         "lock partplate"
     );
 }
+
+#[test]
+fn a_plate_printed_by_object_is_checked_for_the_heads_clearance() {
+    // Plate 1's arms stand close together: printed by object, as the
+    // plate sets for itself, the slice fails in the reference's words.
+    let session = Arc::new(Session::new(None));
+    let project = open(&session, THREE_PLATES);
+    edit(
+        &session,
+        json!({ "op": "plate_settings", "plate": 1, "print_sequence": "by object" }),
+    );
+    ask(&session, "slice", json!({ "project": project, "plate": 1 }));
+    let status = loop {
+        let status = ask(&session, "status", json!({ "project": project }));
+        if status["state"] != "slicing" {
+            break status;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(5));
+    };
+    assert_eq!(status["state"], "failed", "{status}");
+    assert!(
+        status["error"]
+            .as_str()
+            .unwrap()
+            .contains("MC Arms is too close to others, and collisions may be caused."),
+        "{status}"
+    );
+    // Its own sequence taken away, the plate prints layer by layer.
+    edit(
+        &session,
+        json!({ "op": "plate_settings", "plate": 1, "print_sequence": null }),
+    );
+    sliced(&session, project, Some(1));
+}

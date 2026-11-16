@@ -290,6 +290,9 @@ pub struct PrintSettings {
     pub machine_end_gcode: Option<String>,
     pub before_layer_change_gcode: Option<String>,
     pub layer_change_gcode: Option<String>,
+    /// Written between two objects printed one after the other
+    /// (`printing_by_object_gcode`, GCode.cpp `_do_export`).
+    pub printing_by_object_gcode: Option<String>,
     pub filament_start_gcode: Option<String>,
     pub filament_end_gcode: Option<String>,
     /// The printer's own G-code for swapping tools.
@@ -513,6 +516,7 @@ impl Default for PrintSettings {
             machine_end_gcode: None,
             before_layer_change_gcode: None,
             layer_change_gcode: None,
+            printing_by_object_gcode: None,
             filament_start_gcode: None,
             filament_end_gcode: None,
             change_filament_gcode: None,
@@ -1086,6 +1090,7 @@ impl PrintSettings {
             machine_end_gcode: template("machine_end_gcode"),
             before_layer_change_gcode: template("before_layer_change_gcode"),
             layer_change_gcode: template("layer_change_gcode"),
+            printing_by_object_gcode: template("printing_by_object_gcode"),
             filament_start_gcode: template("filament_start_gcode"),
             filament_end_gcode: template("filament_end_gcode"),
             change_filament_gcode: settings
@@ -1458,6 +1463,22 @@ pub struct Plate {
     /// `wipe_tower_y`), which the copies a tool prints on a layer with a
     /// tower are ordered from.
     pub tower_at: Option<Point2>,
+    /// Printing object by object (`print_sequence` "by object"): each
+    /// copy in the order it is printed, with the entries of the layers
+    /// handed to the writer that are its own. Empty for a print laid
+    /// layer by layer.
+    pub by_object: Vec<ObjectRun>,
+}
+
+/// One copy printed whole before the next starts (GCode.cpp `_do_export`,
+/// the loop over `print_object_instances_ordering`).
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct ObjectRun {
+    /// The copy, by its place among [`Plate::labels`].
+    pub copy: usize,
+    /// Its entries among the layers handed to the writer, every one of
+    /// them its own and nothing of any other copy's.
+    pub entries: std::ops::Range<usize>,
 }
 
 /// One copy on the plate as the file labels it, so a printer can cancel

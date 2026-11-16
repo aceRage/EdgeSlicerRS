@@ -1210,8 +1210,8 @@ feature filaments (`wall_filament`, `sparse_infill_filament`,
     reference takes whichever its tree reaches first, so near the edges
     of a part the points differ (on plate 2 of `mcbrim_test.3mf`
     159500 points an object here, 148500 there); and it also leaves
-    other objects out when it prints object by object, which this
-    engine does not do, and asks that two objects it takes for the same
+    other objects out when it prints object by object, which is not
+    done here, and asks that two objects it takes for the same
     have the same settings, which are not read here.
   - Seams painted on or off (`paint_seam` on a project's triangles,
     read as colour paint is read, from any part of the object): at every
@@ -2097,8 +2097,36 @@ than the default and `other_layers_print_sequence` are noted and not
 followed. A plate's own settings in a project ("Customize current plate":
 its bed type, print sequence, vase mode, later layers' order) are laid over
 the project's for that plate's slice, as the reference lays a plate's
-config over the whole; `print_sequence` "by object" is noted and not
-followed: every object is printed together, layer by layer. On the first layer two tools whose smallest pieces are the
+config over the whole.
+
+Printing object by object (`print_sequence` "by object", the plate's own
+over the project's) prints each copy whole before the next starts
+(`edge_engine::sequential`, `by_object`; GCode.cpp `_do_export`). The
+copies go in the order the head's clearances allow (Print.cpp
+`sequential_print_clearance_valid`): each copy's outline grown by half the
+head's radius may not meet another's, nor its own outline an excluded
+area; a copy that reaches above the rods goes after every copy level with
+that part of it across the bed, and one above the lid last; a plate that
+fails is an error in the reference's words, naming the copy ("Right is too
+close to others, and collisions may be caused.", "TallA is too tall, and
+collisions will be caused."). Between copies the filament is pulled back,
+the tool changed there when the next copy starts with another, the nozzle
+taken up to the highest layer printed so far and across to the middle of
+the next copy's box, then `printing_by_object_gcode` and the first layer's
+temperatures; layers are numbered on through the copies, and first-layer
+speeds, fans and the second layer's temperatures go by each copy's own.
+The skirt goes with the first copy, each brim with its own. Vase mode
+prints several copies this way, each a vase. Refused with it: smooth
+timelapse, the prime tower with more than one filament (in the reference's
+own words, from a refusal the reference has switched off: it then prints
+the plate layer by layer where its first copy changes tool on its first
+layer), calibration prints and per-object skirts; G-code set at layers is
+left out with a note, as the reference leaves it out. Compared with the
+reference on two objects and three copies on a U1, a tall and a short
+object (the reference's order), two objects in two filaments, two vases,
+and on an Ender-3 V3 SE: the same objects in the same order, the same
+layers, filament within 0.4%; the travel within objects is short here by
+what it is short by printing layer by layer. On the first layer two tools whose smallest pieces are the
 same to a millionth count as the same, and the lower number goes first;
 the reference compares exactly, so where it has identical parts in
 several filaments its order among them can differ (plate 3 of

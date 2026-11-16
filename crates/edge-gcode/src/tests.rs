@@ -4124,3 +4124,87 @@ fn each_copy_is_labelled_round_its_own_islands() {
     assert!(marlin.contains("M486 S0\nM486 Aa_b_id_0_copy_0\nM486 S-1\n"));
     assert_eq!(marlin.matches("M486 S-1\n").count(), 4);
 }
+
+#[test]
+fn copies_printed_object_by_object_are_each_finished_before_the_next() {
+    // Two 10 mm squares 30 mm apart, three layers each, the second copy
+    // printed first: its layers, then the first's.
+    let walls = [wall(30.0, 0.0, 10.0, 0), wall(0.0, 0.0, 10.0, 0)];
+    let layer = |z: f64, at: usize| Layer {
+        z,
+        loops: &walls[at..at + 1],
+        islands: std::slice::from_ref(&(0..1)),
+        ..one_layer(&[], &[], &[])[0]
+    };
+    let layers: Vec<Layer<'_>> = (0..2)
+        .flat_map(|at| (1..=3).map(move |n| layer(0.2 * n as f64, at)))
+        .collect();
+    let mut settings = basic();
+    settings.machine_start_gcode = Some(String::new());
+    settings.labels = Some(Labelling::Klipper);
+    settings.nozzle_temperature_initial_layer = 215.0;
+    settings.nozzle_temperature = 205.0;
+    settings.printing_by_object_gcode = Some("; next object {current_object_idx}".into());
+    settings.plate.labels = vec![copy_at("a", 0, 1, 0.0), copy_at("b", 1, 2, 30.0)];
+    settings.plate.by_object = vec![
+        ObjectRun {
+            copy: 1,
+            entries: 0..3,
+        },
+        ObjectRun {
+            copy: 0,
+            entries: 3..6,
+        },
+    ];
+    let (text, _) = print(&layers, &settings);
+    // Six layers, numbered on through both copies.
+    assert_eq!(text.matches(";LAYER_CHANGE").count(), 6);
+    assert!(text.contains("; total layer number: 6\n"));
+    // Between the two: up to the top printed so far (lifted, 0.4 mm
+    // over its 0.6) and over to the
+    // middle of the next copy's box, its first layer's temperature, the
+    // printer's own G-code, then its first layer.
+    let between = &text[text.rfind("EXCLUDE_OBJECT_END NAME=b_id_1_copy_0").unwrap()..];
+    let between = &between[..between.find(";LAYER_CHANGE").unwrap()];
+    let lines: Vec<&str> = between.lines().collect();
+    assert!(lines[1].starts_with("G1 Z1.000"), "{between}");
+    assert!(lines[2].starts_with("G1 X5.000 Y5.000"), "{between}");
+    assert!(between.contains("M104 S215 ; set nozzle temperature\n; next object 1\n"));
+    // Each copy's second layer goes to the later layers' temperature.
+    assert_eq!(text.matches("M104 S205\n").count(), 2);
+    // The first copy's walls all come before the second's.
+    let xs: Vec<f64> = moves(&text)
+        .filter(|line| line.contains(" E"))
+        .filter_map(|line| word(line, 'X'))
+        .collect();
+    let first_a = xs.iter().position(|x| *x < 20.0).unwrap();
+    assert!(xs[..first_a].iter().all(|x| *x > 20.0));
+    assert!(xs[first_a..].iter().all(|x| *x < 20.0));
+
+    // The bed goes by what was last set (GCodeWriter.cpp
+    // `m_last_bed_temperature`): down at each copy's second layer and
+    // back up before the next copy.
+    let beds = |settings: &PrintSettings| -> Vec<String> {
+        let (text, _) = print(&layers, settings);
+        text.lines()
+            .filter(|line| line.ends_with("; set bed temperature"))
+            .map(str::to_owned)
+            .collect()
+    };
+    settings.bed_temperature_initial_layer = Some(60.0);
+    settings.bed_temperature = Some(55.0);
+    assert_eq!(
+        beds(&settings),
+        [
+            "M140 S55 ; set bed temperature",
+            "M140 S60 ; set bed temperature",
+            "M140 S55 ; set bed temperature",
+        ]
+    );
+    // One temperature throughout, for Klipper: written at the first
+    // copy's second layer, where the writer has none on record, and not
+    // again.
+    settings.bed_temperature = Some(60.0);
+    settings.klipper = true;
+    assert_eq!(beds(&settings), ["M140 S60 ; set bed temperature"]);
+}
